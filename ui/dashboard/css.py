@@ -1284,7 +1284,7 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
     50%      { opacity: 1; }
 }
 .cb-artiax-live { animation: cb-artiax-breathe 2.6s ease-in-out infinite; }
-/* The protocol light (roadmap 16) breathes the same way while a protocol chain is live. */
+/* The protocol light (roadmap 16) breathes the same way while the project's pipeline is running. */
 .cb-protocol-live { animation: cb-artiax-breathe 2.6s ease-in-out infinite; }
 
 /* ── Scrollbars: invisible everywhere, scrolling untouched ─────────────────── */

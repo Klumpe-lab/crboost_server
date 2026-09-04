@@ -15,7 +15,7 @@ from ui.components.species_pill import render_species_pill
 from ui.components.svg_icon import load_icon_svg
 from ui.curation_session_dialog import open_curation_control_center
 from ui.particles import session_status
-from ui.protocols_view import evaluate_if_settled, protocol_light
+from ui.protocols_view import protocol_light
 from ui.styles import MONO, SANS as FONT
 from ui.status_indicator import BoundStatusDot, _running_spinner_html
 from services.models_base import InstanceId, instance_id_to_job_type
@@ -1808,11 +1808,9 @@ class RosterWidget(FingerprintedView):
     # launches, so there is still exactly one launch affordance.
 
     def _build_protocol_btn(self):
-        """Foot-of-rail protocol light (roadmap 16 D6). Dim while the project was not created
-        from a protocol; blue and breathing while its chain is live; green / red once the
-        harness has a verdict; amber while a settled run still awaits evaluation (this tick
-        triggers it) or after an evaluation failed. The hover carries the protocol, the
-        verdict and what is running. Click → the Protocols view."""
+        """Foot-of-rail protocol light (roadmap 16). Dim while the project was not created from a
+        protocol; lit when it was; blue and breathing while its pipeline is running. The hover
+        names the protocol and what is running. Click → the Protocols view."""
         container = (
             ui.element("div")
             .style(
@@ -1833,15 +1831,11 @@ class RosterWidget(FingerprintedView):
         ui.timer(_CURATION_TICK_S, self._tick_protocol)
         return container
 
-    async def _tick_protocol(self):
-        project_path = self.panel.ui_mgr.project_path
-        if project_path is not None:
-            # Once per settled run: evaluate so the light turns green/red without the view open.
-            await evaluate_if_settled(self.panel.backend, project_path)
+    def _tick_protocol(self):
         self._paint_protocol()
 
     def _paint_protocol(self):
-        """In-memory state + one stat; gated on what it last painted (timer-driven)."""
+        """In-memory state only; gated on what it last painted (timer-driven)."""
         kind, text = protocol_light(self.panel.ui_mgr.project_path)
         if (kind, text) == self._protocol_paint:
             return
@@ -1850,9 +1844,7 @@ class RosterWidget(FingerprintedView):
         tip = self._refs.get("protocol_tip")
         if icon is None or tip is None:
             return
-        color = {"live": "#2563eb", "ok": "#16a34a", "bad": "#dc2626", "pending": "#d97706", "applied": SB_ACT}.get(
-            kind, SB_MUTE
-        )
+        color = {"live": "#2563eb", "lit": SB_ACT}.get(kind, SB_MUTE)
         icon.style(f"color: {color}; pointer-events: none;")
         live = kind == "live"
         icon.classes(add="cb-protocol-live" if live else "", remove="" if live else "cb-protocol-live")

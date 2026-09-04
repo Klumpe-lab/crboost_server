@@ -177,13 +177,6 @@ curation:
 # sync in either direction. Leave empty to switch the feature off entirely.
 species_catalog_root: ""
 
-# Protocol regression harness (docs/roadmaps/14-protocols-regression-harness.md). The
-# harness keeps the frozen dataset inputs (input/<protocol>/), the throwaway per-run
-# projects (runs/) and the recorded baselines (baseline/) under this root. Empty =
-# <DefaultProjectBase>/local_data. Keep it OUTSIDE the project base: runs must not show up
-# in the project hub or be adopted by the server's pipeline monitor.
-local_data:
-  root: ""
 
 # Tool execution configuration
 # exec_mode: 'container' or 'binary'

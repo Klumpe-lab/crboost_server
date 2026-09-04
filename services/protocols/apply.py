@@ -2,8 +2,8 @@
 
 Creates the project through the same facade the landing page uses, registers the protocol's
 species with their frozen assets, instantiates every stage with its FULL param snapshot and
-persists once. Validation runs BEFORE anything touches disk; expectation mismatches, schema
-drift and unknown fields come back as warnings in the result, never as silent substitutions.
+persists once. Validation runs BEFORE anything touches disk; unknown fields and rejected values
+come back as warnings in the result, never as silent substitutions.
 The same function is what a future "create project from protocol" landing action calls.
 """
 
@@ -30,7 +30,6 @@ from services.protocols.schema import (
     ProtocolSpecies,
     ProtocolStage,
     protocol_to_yaml,
-    schema_fingerprint,
 )
 from services.result import err, ok
 from services.templating.template_metadata import read_template_header
@@ -176,9 +175,7 @@ async def apply_protocol(
     project_dir = Path(created["project_path"])
     state: ProjectState = backend.state_service.state_for(project_dir)
 
-    warnings = expectation_warnings(state, protocol, backend.registry_for(project_dir))
-    assets, w = register_protocol_species(state, protocol, project_dir)
-    warnings += w
+    assets, warnings = register_protocol_species(state, protocol, project_dir)
     warnings += instantiate_stages(state, protocol, assets)
     state.pipeline_order = protocol.stage_ids()
     state.protocol_origin = ProtocolOrigin(
@@ -186,7 +183,6 @@ async def apply_protocol(
         version=protocol.version,
         bundle_dir=str(protocol.bundle_dir or ""),
         applied_at=datetime.now().isoformat(timespec="seconds"),
-        stage_fingerprints={iid: schema_fingerprint(type(state.jobs[iid])) for iid in protocol.stage_ids()},
     )
     # The frozen copy the Protocols view compares against later, whatever happens to the bundle.
     # Written by hand: dump_protocol() would rebind the live object's bundle dir to the project.
@@ -203,28 +199,6 @@ async def apply_protocol(
         warnings=warnings,
         load_warnings=list(state.load_warnings),
     )
-
-
-def expectation_warnings(state: ProjectState, protocol: Protocol, registry) -> list[str]:
-    """`expects:` vs the facts the mdocs produced. Warn, never block."""
-    out: list[str] = []
-    for key, exp in protocol.expects.items():
-        if key == "pixel_size_angstrom":
-            actual: float = state.microscope.pixel_size_angstrom
-        elif key == "tilt_series_count":
-            actual = float(len(registry.tilt_series_ids()))
-        elif key == "dose_per_tilt":
-            actual = state.acquisition.dose_per_tilt
-        elif key == "acceleration_voltage_kv":
-            actual = state.microscope.acceleration_voltage_kv
-        elif key == "tilt_axis_degrees":
-            actual = state.acquisition.tilt_axis_degrees
-        else:
-            out.append(f"expects.{key}: unknown expectation key — not checked")
-            continue
-        if not exp.holds(actual):
-            out.append(f"expects.{key}: dataset has {actual:g}, protocol was validated at {exp.about:g} ± {exp.tol:g}")
-    return out
 
 
 def register_protocol_species(
@@ -303,12 +277,6 @@ def instantiate_stages(state: ProjectState, protocol: Protocol, assets: dict[str
         state.ensure_job_initialized(st.job_type, instance_id=iid)
         jm = state.jobs[iid]
         cls_name = type(jm).__name__
-        expected = schema_fingerprint(type(jm))
-        if st.schema_fingerprint and st.schema_fingerprint != expected:
-            warnings.append(
-                f"{iid}: captured against a different {cls_name} field set "
-                f"(fingerprint {st.schema_fingerprint} ≠ {expected}); see the per-field notes"
-            )
         for name, value in st.params.items():
             if name not in jm.USER_PARAMS:
                 warnings.append(f"{iid}: '{name}' is not a user parameter of {cls_name} — NOT applied")

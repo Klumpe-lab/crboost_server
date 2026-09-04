@@ -289,7 +289,7 @@ class LandingStatusStrip(FingerprintedView):
             house_button(
                 "Protocols",
                 lambda: open_protocols_dialog(self.backend),
-                tooltip="Protocol bundles + the regression harness (run the copia case from here)",
+                tooltip="Protocol bundles: a protocol's stages and parameters, or create a project from one",
             )
 
             (
