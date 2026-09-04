@@ -1,6 +1,6 @@
 # Protocol: the CryoBoost v1 copia tutorial (EMPIAR-12580, one tilt series), importmovies -> class3d.
-# Authored 2026-08-27 from the tutorial: sphere template 550 A, I1, angular_search 90, class3d.random_seed 1,
-# denoise train/predict included. Dataset facts (apix, dose, tilts) come from the mdocs at project creation.
+# Authored 2026-08-27 from the tutorial and nothing else: sphere template 550 A, I1, angular_search 90,
+# class3d.random_seed 1. Dataset facts (apix, dose, tilts) come from the mdocs at project creation.
 # Stage params are FULL USER_PARAMS snapshots by design.
 name: copia-empiar12580
 version: 1
@@ -81,27 +81,6 @@ stages:
       array_throttle: 20
   - job: tsReconstruct
     params: {rescale_angpixs: 11.8, halfmap_frames: 1, deconv: 1, perdevice: 1, array_throttle: 20}
-  - job: denoisetrain
-    params:
-      denoise_method: cryoCARE
-      tomograms_for_training: ""
-      number_training_subvolumes: 600
-      subvolume_dimensions: 64
-      perdevice: 1
-      isonet_method: auto
-      isonet_deconv: false
-  - job: denoisepredict
-    params:
-      ntiles_x: 4
-      ntiles_y: 4
-      ntiles_z: 4
-      denoising_tomo_name: ""
-      perdevice: 1
-      array_throttle: 20
-      # Both are inherited from denoisetrain at run time; captured so the stage covers
-      # its full USER_PARAMS set and they must agree with the train stage above.
-      denoise_method: cryoCARE
-      isonet_deconv: false
   - job: templatematching
     species: copia
     # template_path / mask_path are filled from the species assets at apply

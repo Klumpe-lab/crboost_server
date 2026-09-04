@@ -69,7 +69,7 @@ Two levels:
 **The light** (`pipeline_roster._build_protocol_btn`): dim (not from a protocol) · lit (created from
 one) · blue, breathing while `pipeline_active`. Its hover names the protocol and what is running.
 
-**CLI** `crboost_protocol.py list | validate | export | apply`.
+**CLI** `crboost_protocol.py list | validate | export | apply`. How to write a protocol: `docs/protocols.md`.
 
 ## 4. Layout
 
@@ -77,7 +77,7 @@ one) · blue, breathing while `pipeline_active`. Its hover names the protocol an
 services/protocols/{schema,discovery,export,apply}.py
 services/project_state.py          ProtocolOrigin · ProjectState.protocol_origin · restore in load()
 crboost_protocol.py                list · validate · export · apply
-config/protocols/copia-empiar12580/{protocol.yaml, assets/}    the CryoBoost v1 tutorial, importmovies → class3d
+config/protocols/copia-empiar12580/{protocol.yaml, assets/}    the CryoBoost v1 tutorial, 11 stages importmovies → class3d (no denoising: not in the tutorial)
 ui/protocols_dialog.py             landing: list · detail · Create project
 ui/protocols_view.py               workspace: switcher · this project (params) · protocol as declared · save-as
 ui/protocols_blocks.py             shared species / stage / kv rendering
@@ -109,7 +109,7 @@ venv/bin/python3 -c "import main, ui.job_plugins as p; p.load_plugins(); print(s
 venv/bin/python3 crboost_protocol.py list
 venv/bin/python3 crboost_protocol.py validate copia-empiar12580
 # landing → Protocols → copia → Create project (movies/mdocs globs of the EMPIAR-12580 data) → workspace:
-#   13 staged rows in the roster, the foot light lit → Run → light breathes → chain to class3d
+#   11 staged rows in the roster, the foot light lit → Run → light breathes → chain to class3d
 #   (denoise predict → template matching now passes: the star fix of 2026-09-04)
 # workspace → light → Protocols view: this project's parameter tables; edit a param in a job tab → "edited" chip
 # resolution: the class3d job tab of the spawned project
