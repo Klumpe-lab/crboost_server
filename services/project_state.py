@@ -1312,12 +1312,15 @@ class ProjectState(BaseModel):
         # projects that predate that field, which would otherwise keep the pre-rename id.
         # Local import: services.particles pulls the job-spec/dashboard chain, which must
         # not become a module-level dependency of ProjectState.
-        from services.particles.ingest import migrate_legacy_manual_slugs
+        from services.particles.ingest import migrate_legacy_manual_slugs, relabel_seed_rows
 
         renamed = migrate_legacy_manual_slugs(project_state)
         for species_id, tomo, old, new in renamed:
             logger.info("Migrated pick list %s/%s: %s -> %s", species_id, tomo, old, new)
-        if renamed:
+        relabelled = relabel_seed_rows(project_state)
+        for species_id, tomo, stem in relabelled:
+            logger.info("Relabelled seeded pick list %s/%s: picks -> %s", species_id, tomo, stem)
+        if renamed or relabelled:
             project_state.mark_dirty()
 
         # pipeline_order (P1.0): use the persisted value; for legacy projects that

@@ -89,6 +89,14 @@ class CurationWatcher:
         self._unattributed: dict[str, dict[str, dict]] = defaultdict(dict)  # project → {dir: {reason, files}}
         self._reported: set[tuple[str, str, str]] = set()  # (project, dir, reason) already logged once
         self._hot: dict[str, list[Path]] = {}  # project → most recently launched curation dir(s)
+        # project → when the hot dir became the session's scope (epoch s). A user save in
+        # ANOTHER dir that is newer than this is an off-scope save (2026-09-06: ChimeraX's save
+        # dialog opens in the folder last saved to, so after a switch the previous scope's
+        # seed is what the dialog lists — and gets overwritten).
+        self._hot_at: dict[str, float] = {}
+        # One project tick at a time: `sweep_now` (the Picks tab's Refresh) and the loop must
+        # not ingest the same save twice — `_seen` is only written after an ingest completes.
+        self._tick_lock = asyncio.Lock()
         self._with_saves: dict[str, set[str]] = {}  # project → dirs that held a user .coords at the last full sweep
 
     # ── lifecycle (PipelineMonitor shape) ─────────────────────────────────────────
@@ -127,6 +135,28 @@ class CurationWatcher:
         found = self._unattributed.get(_key(project_path), {})
         return [{"dir": d, "reason": found[d]["reason"], "files": list(found[d]["files"])} for d in sorted(found)]
 
+    # ── write API: scope changes + the Picks tab's Refresh (2026-09-06) ─────────────
+
+    def mark_hot(self, project_path: Path, curation_dir: Path) -> None:
+        """Make ``curation_dir`` the hot dir NOW — called by the backend when a session is
+        launched on it or switched to it. Until now the hot set moved only on the full sweep
+        (every ``FULL_SWEEP_EVERY`` ticks), so the first save after a switch waited up to
+        ~30 s to be seen; a hot dir is rescanned every tick (~7 s to a row update). The full
+        sweep keeps re-deriving the same answer from the manifests, which is what survives a
+        restart."""
+        key = _key(project_path)
+        self._hot[key] = [Path(curation_dir)]
+        self._hot_at[key] = time.time()
+
+    async def sweep_now(self, project_path: Path) -> None:
+        """One immediate FULL sweep of a project — the Picks tab's Refresh button. Serialised
+        with the loop's tick; a save younger than ``SETTLE_SEC`` still waits for the next
+        pass (ArtiaX writes are not atomic)."""
+        from services.project_state import get_project_state_for
+
+        async with self._tick_lock:
+            await self._tick_project(Path(project_path), get_project_state_for(Path(project_path)), True)
+
     # ── tick ──────────────────────────────────────────────────────────────────────
 
     async def _loop(self) -> None:
@@ -149,7 +179,8 @@ class CurationWatcher:
         full = self._tick_n % FULL_SWEEP_EVERY == 1  # first tick sweeps everything (restart catch-up)
         for project_path, state in list(_project_states.items()):
             try:
-                await self._tick_project(Path(project_path), state, full)
+                async with self._tick_lock:
+                    await self._tick_project(Path(project_path), state, full)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -185,6 +216,21 @@ class CurationWatcher:
             if pl is not None and pl.created_at is not None and pl.created_at.timestamp() >= s.mtime:
                 self._seen.add(dedup)  # already registered (this or a newer save) — the restart-safe guard
                 continue
+            # Off-scope save: newer than the moment the hot dir became the session's scope,
+            # but not IN it. The mechanism still files it where it landed (that folder's
+            # manifest says whose it is) — this is the never-silent half: the WATCHER footer
+            # names it in red so a save into the previous scope's seed is seen, not swallowed.
+            hot_at = self._hot_at.get(key)
+            if hot and hot_at is not None and s.dir not in hot and s.mtime > hot_at:
+                h = hot[0]
+                self._note(
+                    key,
+                    "off-scope",
+                    s,
+                    message=f"saved while the session's scope was {h.parent.name}/{h.name} — ArtiaX's save "
+                    "dialog opens in the folder last saved to; if this was meant for the scoped list, its previous "
+                    "content is in imports/",
+                )
             if s.tomograms_star is None:
                 self._note(key, "no-geometry", s, message=s.reason)  # not `_seen`: geometry may appear later
                 continue
@@ -246,6 +292,11 @@ class CurationWatcher:
             # on; a hot dir is rescanned every tick instead of every sixth, which is the
             # whole latency difference the save contract quotes.
             self._hot[key] = [max(launched)[1]] if launched else []
+            if launched:
+                try:
+                    self._hot_at[key] = datetime.fromisoformat(max(launched)[0]).timestamp()
+                except ValueError:
+                    self._hot_at.pop(key, None)  # a hand-edited manifest; no off-scope check rather than a wrong one
         if not found:
             return []
 
