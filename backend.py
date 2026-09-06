@@ -998,7 +998,12 @@ class CryoBoostBackend:
     async def launch_curation_session(
         self, project_path: Path | None = None, cxc_path: Path | None = None, scope: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        return await self.curation_service.launch_curation_session(project_path, cxc_path=cxc_path, scope=scope)
+        res = await self.curation_service.launch_curation_session(project_path, cxc_path=cxc_path, scope=scope)
+        if res.get("success") and project_path and (scope or {}).get("curation_dir"):
+            # The scoped dir is where the next save lands — rescan it every tick from now,
+            # not from the next full sweep (which is what made a first save wait ~30 s).
+            self.curation_watcher.mark_hot(Path(project_path), Path(scope["curation_dir"]))
+        return res
 
     async def get_curation_session_info(self, session_dir: str, slurm_job_id: str | None = None) -> dict[str, Any]:
         return await self.curation_service.get_curation_session_info(session_dir, slurm_job_id)
@@ -1018,8 +1023,25 @@ class CryoBoostBackend:
         return await self.curation_service.send_chimerax_command(session_info, command, timeout=timeout)
 
     # NOTE (roadmap 10-S1): `save_session_particle_lists` / `save_curation_picks` /
-    # `load_into_session` / `get_curation_loaded` used to sit here. Model B sends a curation
-    # session NOTHING after launch, so they are gone — see services/curation/session_service.py.
+    # `load_into_session` / `get_curation_loaded` used to sit here and are gone. 13-S2 admits
+    # exactly one outbound command after launch — the confirmed scope switch below, which
+    # rewrites the scope on disk in the same call. See services/curation/session_service.py.
+
+    async def switch_curation_session(
+        self,
+        session_info: dict[str, Any],
+        *,
+        open_recon: str | None,
+        auto_coords: str | None,
+        seed_coords: str | None,
+        scope: dict[str, Any],
+    ) -> dict[str, Any]:
+        res = await self.curation_service.switch_session_scope(
+            session_info, open_recon=open_recon, auto_coords=auto_coords, seed_coords=seed_coords, scope=scope
+        )
+        if res.get("success") and scope.get("project_path") and scope.get("curation_dir"):
+            self.curation_watcher.mark_hot(Path(scope["project_path"]), Path(scope["curation_dir"]))
+        return res
 
     def curation_scope(
         self, project_path: Path, species_id: str, species_label: str, tomo_name: str, curation_dir: str = ""

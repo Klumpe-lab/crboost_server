@@ -22,6 +22,10 @@ than the recon itself (it loads in seconds instead of ~20 s). That shifts the co
 exact constant — ``(N-1)/2 * pixel_size`` — which export subtracts and import adds; see
 :func:`display_corner_offset`. It is recorded per curation dir in ``manifest.json``, so no caller
 has to infer it, and it is 0.0 whenever the full-res volume is what opens.
+
+Since roadmap 13-S1 every bundle also pre-seeds ONE empty ``.coords`` per (species, tomogram) —
+``<species_id>__<tomo>__picks.coords`` — which the ``.cxc`` opens last, so the user arrives in
+ArtiaX with the list crboost expects them to pick into already selected (:func:`ensure_seed_coords`).
 """
 
 from __future__ import annotations
@@ -223,6 +227,50 @@ def user_coords_saves(curation_dir: Path) -> list[Path]:
     return found
 
 
+# ── The pre-seeded default list (roadmap 13-S1) ───────────────────────────────
+#
+# One list per (species, tomogram) is the norm; N is the exception. So instead of asking
+# the user to decide WHERE a new ArtiaX list goes and WHAT it is called, crboost creates
+# it: a 0-byte `.coords`, named after the scope, placed in the curation dir, opened LAST
+# by the `.cxc` so it is the selected list when the user arrives, and registered as a
+# 0-pick `picks` row. The user picks into it and saves it back to the same file; the
+# watcher then updates that row. Extra lists still work (every `.coords` is its own list)
+# — the seed only removes the naming/placing decision from the common case.
+#
+# `species_id` is the token, never the display label: it is a stable slug and already the
+# directory name. `__` is the house component separator (`manual__`, `merged__`,
+# `templatematching__ribosome`); tomogram names carry only single underscores.
+
+SEED_SUFFIX = "__picks.coords"
+
+
+def default_seed_name(species_id: str, tomo_name: str) -> str:
+    """``<species_id>__<tomo>__picks.coords`` — the file name of the seeded default list."""
+    return f"{_safe_slug(species_id)}__{_safe_slug(tomo_name)}{SEED_SUFFIX}"
+
+
+def seed_coords_path(curation_dir: Path, species_id: str, tomo_name: str) -> Path:
+    return Path(curation_dir) / default_seed_name(species_id, tomo_name)
+
+
+def ensure_seed_coords(curation_dir: Path, species_id: str, tomo_name: str) -> tuple[Path, bool]:
+    """Create the seed ``.coords`` if it does not exist. Returns ``(path, created)``.
+
+    A 0-byte file is a valid ArtiaX list: its ``.coords`` reader is a csv row loop, so an
+    empty file opens as an empty particle list named after the file (checked against the
+    ArtiaX source 2026-09-04). Atomic create (``open(p, "x")``), NEVER truncates — a second
+    *Curate picks* on the same tomogram must not touch a seed the user has saved into.
+    """
+    p = seed_coords_path(curation_dir, species_id, tomo_name)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(p, "x"):
+            pass
+    except FileExistsError:
+        return p, False
+    return p, True
+
+
 # ── The staging contract: manifest.json (roadmap 10-S2) ───────────────────────
 #
 # A `.coords` file carries zero identity — three floats per line. Under Model B the
@@ -274,9 +322,10 @@ def write_manifest(curation_dir: Path, **fields) -> Path:
 # ── Display-binned recon (roadmap 10-S3) ──────────────────────────────────────
 #
 # ArtiaX takes ~20 s to open a 1 GB / 268 M-voxel reconstruction, and the cost is
-# COMPUTE, not I/O (ARTIAX_BRIDGE_PLAN.md:412-440). Model B has no in-session swap, so
-# "change tomogram" means relaunch — which is only tolerable if the open is seconds.
-# We therefore open a block-mean-binned copy, cached beside the recon.
+# COMPUTE, not I/O (ARTIAX_BRIDGE_PLAN.md:412-440). "Change tomogram" is a relaunch or,
+# since 13-S2, the confirmed in-session switch — both re-open a volume, and both are only
+# tolerable if the open is seconds. We therefore open a block-mean-binned copy, cached
+# beside the recon.
 #
 # COORDINATES. ArtiaX writes `.coords` as `continuous_voxel_index * header_apix` from the
 # volume CORNER. Block-binning by N maps binned voxel v onto full-res voxel
@@ -379,28 +428,98 @@ def ensure_display_recon(recon: Path, bin_factor: int, pixel_size_full: float, s
     return {**binned, "size": [bx, by, bz], "generated": True}
 
 
-def session_chimerax_commands(recon_mrc, auto_coords: Path | None = None) -> list[str]:
+def session_chimerax_commands(recon_mrc, auto_coords: Path | None = None, seed_coords: Path | None = None) -> list[str]:
     """The ChimeraX command lines that load a tomogram + our picks into ArtiaX.
 
     This is the single source of the load backbone: the ``.cxc`` bakes these in for
-    the auto-launch path, and the UI surfaces the same lines verbatim as copyable
-    "paste these into ChimeraX" guidance for an already-running session — so the two
-    never drift.
+    the auto-launch path, the in-session switch (13-S2) sends the same lines over REST,
+    and the UI surfaces them verbatim as copyable "paste these into ChimeraX" guidance —
+    so the three never drift. The seed is opened LAST, after the reference list, so it is
+    the model selected when the user arrives (13-S1).
     """
     cmds = ["artiax start", f"artiax open tomo {_cxc_quote(recon_mrc)}"]
     if auto_coords is not None:
         cmds.append(f"open {_cxc_quote(auto_coords)}")
+    if seed_coords is not None:
+        cmds.append(f"open {_cxc_quote(seed_coords)}")
     cmds.append("lighting simple")
     return cmds
 
 
-# NOTE (roadmap 10-S1, Model B): the in-session "swap to this tomogram" command
-# sequence used to live here (`swap_chimerax_commands`) and was POSTed over the REST
-# channel to re-point an ALREADY-running ArtiaX. It is DELETED. A session's scope is
-# declared once, at launch, and nothing drives the viewer afterwards — see
-# docs/roadmaps/picking_ui/10-external-picker-contract.md §1 for the five ways the
-# swap made a session's *meaning* untrustworthy. Changing tomogram = relaunch (S3 makes
-# that cheap) or ArtiaX's own file dialog, whose saves the staging contract catches.
+# ── The confirmed in-session switch (roadmap 13-S2) ───────────────────────────
+#
+# 10-S1 deleted the swap: the REST channel could re-point a running ArtiaX fine, but
+# crboost's record of the session's MEANING lived in a process dict a restart emptied,
+# so saves were misattributed. 13-S2 brings ONE outbound command back, on a stricter
+# footing: `switch_session_scope` sends this chain and rewrites `scope.json` + the
+# target dir's manifest in the SAME call, so the scope on disk is the switch's scope.
+# The chain itself was runtime-verified 2026-06-10 (ARTIAX_BRIDGE_PLAN.md:391-399).
+
+
+def swap_chimerax_commands(open_recon, auto_coords: Path | None = None, seed_coords: Path | None = None) -> str:
+    """One ``;``-chained ChimeraX command that closes what the session has open and loads
+    another tomogram + its lists — the launch backbone behind a ``close session``. The
+    seed is opened last here too, so the switched-to list is the selected one."""
+    return "close session ; " + " ; ".join(session_chimerax_commands(open_recon, auto_coords, seed_coords))
+
+
+def cd_chimerax_command(curation_dir) -> str:
+    """``cd <dir>``. Sent as its OWN call, never appended to the swap chain:
+    `send_chimerax_command` fails the whole ``;``-chain on any UserError, and a `cd` that
+    cannot land must not read as "the tomogram did not load".
+
+    What it buys is LESS than it looks (2026-09-06, from the ChimeraX + ArtiaX sources):
+    ChimeraX's save dialog is a QFileDialog that opens in Qt's *last visited* directory,
+    and only falls back to the cwd for the very first dialog of the process. So the cwd
+    steers the first save after launch and nothing after — after a switch, the dialog opens
+    in the PREVIOUS scope's folder. The reliable save target is the full path pasted into
+    the dialog, or :func:`save_chimerax_command` run from ChimeraX's command line."""
+    return f"cd {_cxc_quote(curation_dir)}"
+
+
+SAVE_DIR_SCRIPT = "set_save_dir.py"
+
+
+def write_save_dir_script(curation_dir: Path) -> Path:
+    """Write ``<curation_dir>/set_save_dir.py`` — the one lever that moves where ChimeraX's
+    save dialog opens. Qt keeps a process-wide *last visited* directory that every fresh
+    QFileDialog opens in; ``QFileDialog.setDirectory()`` sets it, even on a dialog that is
+    never shown. ArtiaX's save button passes no directory (``ArtiaXSaveDialog.display``,
+    ``initial_directory=None``), so this is what makes "the dialog opens in THIS folder"
+    true after a switch, not just for the first save of the process. Run by ChimeraX's
+    ``runscript`` — from the ``.cxc`` at launch and as its own call after a switch."""
+    d = Path(curation_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / SAVE_DIR_SCRIPT
+    target = json.dumps(str(d))
+    p.write_text(
+        "# crboost: point ChimeraX's file dialogs at this curation dir. Qt remembers the LAST\n"
+        "# visited directory process-wide; setDirectory() on a hidden QFileDialog sets it.\n"
+        "try:\n"
+        "    from Qt.QtWidgets import QFileDialog\n"
+        "except ImportError:  # older ChimeraX without the Qt shim\n"
+        "    from PyQt5.QtWidgets import QFileDialog\n"
+        "_d = QFileDialog()\n"
+        f"_d.setDirectory({target})\n"
+        "_d.deleteLater()\n"
+        f"session.logger.info('crboost: save dialog now opens in ' + {target})\n"
+    )
+    return p
+
+
+def runscript_chimerax_command(script_path) -> str:
+    """``runscript <file.py>`` — sent as its OWN call, like ``cd``, so a failure is reported
+    as "the dialog folder was not set" rather than as a failed switch."""
+    return f"runscript {_cxc_quote(script_path)}"
+
+
+def save_chimerax_command(coords_path, model_id: str) -> str:
+    """``save <path> partlist #N`` — ArtiaX's own save command for ONE particle list, for
+    the USER to run in ChimeraX's command line (it is never sent by crboost). Names both
+    the file and the list, so neither the dialog's remembered folder nor its list chooser
+    can redirect it. ``model_id`` is the ``#…`` id `info models` reports for the seed."""
+    mid = model_id if model_id.startswith("#") else f"#{model_id}"
+    return f"save {_cxc_quote(coords_path)} partlist {mid}"
 
 
 def build_session_cxc(
@@ -411,15 +530,17 @@ def build_session_cxc(
     species: str = "",
     pixel_size: float | None = None,
     tomo_size: Sequence[int] | None = None,
-    manual_coords: Path | None = None,
+    seed_coords: Path | None = None,
+    save_dir_script: Path | None = None,
     window_size: Sequence[int] | None = None,
 ) -> str:
     """Build a ChimeraX startup ``.cxc`` that preloads one tomogram + our picks in ArtiaX.
 
     Pure string generation (no numpy), so it runs anywhere. ``pixel_size`` / ``tomo_size``
     are baked into the header for transparency (crboost knows them; ChimeraX reads the
-    binned px from the MRC header). ``manual_coords`` is named in a comment as the save
-    target for the user's manual picks.
+    binned px from the MRC header). ``seed_coords`` is the pre-seeded default list (13-S1):
+    opened last so it is selected on arrival, and named in the trailing comment as the
+    file to save back into.
     """
     lines: list[str] = ["# crboost ChimeraX/ArtiaX curation session — AUTO-GENERATED, safe to tweak."]
     if tomo_name:
@@ -433,13 +554,26 @@ def build_session_cxc(
     lines.append("set bgColor black")
     if window_size is not None:
         lines.append(f"windowsize {int(window_size[0])} {int(window_size[1])}")
-    lines.extend(session_chimerax_commands(recon_mrc, auto_coords))
-    lines.append("# Manual picks: in the ArtiaX panel create a NEW particle list and pick into it")
-    lines.append("# (do NOT add to the auto list opened above), then save that list as a .coords file")
-    if manual_coords is not None:
-        lines.append(f"# into:  {Path(manual_coords).parent}")
-    lines.append("# Every .coords saved there becomes its OWN pick list, named after the file;")
-    lines.append("# saving again under the same name UPDATES that list. crboost ingests within seconds.")
+    lines.extend(session_chimerax_commands(recon_mrc, auto_coords, seed_coords))
+    if save_dir_script is not None:
+        # Last, after everything is loaded: a failure here stops the .cxc with the
+        # session already usable, and the control center states the folder anyway.
+        lines.append(runscript_chimerax_command(save_dir_script))
+    if seed_coords is not None:
+        lines.append(f"# Pick into the list opened last ({Path(seed_coords).name}) — do NOT add to the")
+        lines.append("# reference list — and save it back to the SAME file, confirming the overwrite:")
+        lines.append(f"#   {Path(seed_coords)}")
+        lines.append("# The runscript above points ChimeraX's save dialog at this folder (Qt otherwise opens")
+        lines.append("# the folder you LAST saved to). If the dialog still shows another folder, paste the")
+        lines.append("# full path above into its file-name field, or save from the command line:")
+        lines.append("#   save <that path> partlist #<this list's id>")
+        lines.append("# crboost updates that row within seconds. A save under another name in this folder")
+        lines.append("# still becomes its own list.")
+    else:
+        lines.append("# Manual picks: in the ArtiaX panel create a NEW particle list and pick into it")
+        lines.append("# (do NOT add to the reference list opened above), then save it as a .coords file")
+        lines.append("# into this folder. Every .coords saved there becomes its OWN pick list, named after")
+        lines.append("# the file; saving again under the same name UPDATES that list.")
     return "\n".join(lines) + "\n"
 
 
@@ -480,8 +614,14 @@ def prepare_curation_bundle(
     full-res open.
 
     ``candidates_star=None`` is the de-novo case: there are no reference picks to
-    preload, so no ``.coords`` is written and the ``.cxc`` opens the bare tomogram.
-    The user creates a particle list in ArtiaX and saves it; ingest is unchanged.
+    preload, so no reference ``.coords`` is written and the ``.cxc`` opens the tomogram
+    plus the seed alone.
+
+    With a ``species_id`` the bundle also pre-seeds the default list (13-S1,
+    :func:`ensure_seed_coords`): ``seed_coords`` / ``seed_created`` in the result, the seed
+    in the manifest and opened last by the ``.cxc``. Never overwrites an existing seed.
+    Without a species id (only the CLI ``bundle`` path) there is nothing to name it after,
+    so no seed — and the CLI says so rather than inventing one.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -504,7 +644,8 @@ def prepare_curation_bundle(
         n = export_tomo_picks_to_coords(
             Path(candidates_star), Path(tomograms_star), tomo_name, ref_coords, project_root, corner_offset_angst=offset
         )
-    manual_coords = out_dir / "manual.coords"
+    seed, seed_created = ensure_seed_coords(out_dir, species_id, tomo_name) if species_id else (None, False)
+    save_dir_script = write_save_dir_script(out_dir)
     cxc_path = out_dir / ("open.cxc" if is_auto else f"open__{_safe_slug(coords_label)}.cxc")
     cxc_path.write_text(
         build_session_cxc(
@@ -514,7 +655,8 @@ def prepare_curation_bundle(
             species=species,
             pixel_size=disp["pixel_size"],
             tomo_size=disp["size"],
-            manual_coords=manual_coords,
+            seed_coords=seed,
+            save_dir_script=save_dir_script,
             window_size=window_size,
         )
     )
@@ -527,6 +669,7 @@ def prepare_curation_bundle(
         tomograms_star=str(tomograms_star),
         declared_at=datetime.now().isoformat(timespec="seconds"),
         reference_exports=[ref_coords.name] if ref_coords is not None else [],
+        seed_coords=seed.name if seed is not None else "",
         cxc=cxc_path.name,
         recon=str(recon),
         open_recon=str(open_recon),
@@ -538,7 +681,9 @@ def prepare_curation_bundle(
     return {
         "cxc_path": str(cxc_path),
         "auto_coords": str(ref_coords) if ref_coords is not None else None,
-        "manual_coords": str(manual_coords),
+        "seed_coords": str(seed) if seed is not None else None,
+        "seed_created": bool(seed_created),
+        "save_dir_script": str(save_dir_script),
         "curation_dir": str(out_dir),
         "manifest_path": str(manifest_path(out_dir)),
         "recon": str(recon),
@@ -551,7 +696,7 @@ def prepare_curation_bundle(
         "tomo_size": [int(v) for v in disp["size"]],
         "auto_count": int(n),
         "coords_label": coords_label,
-        "commands": session_chimerax_commands(open_recon, ref_coords),
+        "commands": session_chimerax_commands(open_recon, ref_coords, seed),
     }
 
 
@@ -578,7 +723,8 @@ def _cli(argv=None) -> int:
     b.add_argument("--tomograms", required=True, type=Path)
     b.add_argument("--tomo", required=True)
     b.add_argument("--out-dir", required=True, type=Path)
-    b.add_argument("--species", default="")
+    b.add_argument("--species", default="", help="display label (header comment only)")
+    b.add_argument("--species-id", default="", help="registry id — names the pre-seeded default list (13-S1)")
     b.add_argument("--project-root", type=Path, default=None)
     b.add_argument("--display-bin", type=int, default=1, help="open a block-binned display copy of the recon (10-S3)")
 
@@ -607,6 +753,7 @@ def _cli(argv=None) -> int:
             args.tomo,
             args.out_dir,
             species=args.species,
+            species_id=args.species_id,
             project_root=args.project_root,
             display_bin=args.display_bin,
         )
@@ -615,6 +762,7 @@ def _cli(argv=None) -> int:
         print(f"  recon:  {info['recon']}")
         print(f"  opens:  {info['open_recon']}")
         print(f"  bin:    {info['display_bin']}  (corner offset {info['corner_offset_angst']:.4f} A)")
+        print(f"  seed:   {info['seed_coords'] or 'none (no species id — pass --species-id to pre-seed a list)'}")
         if info["display_note"]:
             print(f"  NOTE:   {info['display_note']}")
         print(f"  launch: CB_CXC={info['cxc_path']} containers/chimerax_artiax/launch_curation_vnc.sh")
