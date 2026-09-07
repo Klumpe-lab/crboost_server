@@ -659,11 +659,12 @@ async def curate_in_artiax(backend, ref: ListRef) -> None:
 
     Declares the scope: exports this (species, tomo)'s picks to a `.coords`, writes the
     `.cxc` that preloads them and the `manifest.json` that says which species and which
-    tomogram this directory is for, then opens the control center bound to it. Starting
-    the session from there stamps that scope onto the session too — and nothing changes it
-    afterwards, because under Model B crboost sends the viewer no further commands. A
-    different tomogram means coming back here and launching again (10-S3 makes the open
-    cheap enough for that to be the normal move).
+    tomogram this directory is for, pre-seeds the default list (13-S1: an empty
+    `<species>__<tomo>__picks.coords`, opened last by the `.cxc`, registered as a 0-pick
+    `picks` row — never overwritten on a repeat click), then opens the control center
+    bound to it. Starting the session from there stamps that scope onto the session too. A
+    different tomogram means coming back here: the control center then offers the confirmed
+    in-session switch (13-S2) or a restart.
 
     The bundle prep is the slow part on a tomogram whose display copy does not exist yet —
     hence the toast BEFORE the await, which names it. SingleFlight-guarded so repeated
@@ -704,6 +705,14 @@ async def curate_in_artiax(backend, ref: ListRef) -> None:
             # The display copy could not be built, so this session opens the full-res
             # volume and takes ~20 s. Say it once, here — never silently slow.
             ui.notify(f"No downscaled copy for {ref.tomo_name}: {bundle['display_note']}", type="warning", timeout=7000)
+        if bundle.get("seed_error"):
+            # The seed file exists and the .cxc opens it; only its 0-pick row is missing.
+            # The watcher registers it on the first save — say so rather than hide it.
+            ui.notify(
+                f"{bundle['seed_error']} — the seed still opens in ArtiaX; its row appears on the first save.",
+                type="warning",
+                timeout=7000,
+            )
         await open_curation_control_center(backend, ref.project_path, bundle=bundle)
 
 

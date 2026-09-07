@@ -361,19 +361,6 @@ _CB_CSS = """
     font-size: 11px; font-family: ui-monospace, monospace; color: #334155; justify-self: end;
 }
 .cb-ltable-badge { font-size: 12px; font-weight: 700; cursor: help; line-height: 1; }
-/* Vertical toolbox beside the table — since 09-S2 the Journey neither starts nor swaps an
- * ArtiaX session, so this holds the `curate ↗` ROUTE to the Particles registry's Picks &
- * curation tab. Kept OUT of the row so the list table stays clean. */
-.cb-list-toolbox {
-    flex: 0 0 auto;
-    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
-    padding: 3px 6px; background: #fafbfc; border: 1px solid #eef1f6; border-radius: 8px;
-}
-.cb-toolbox-link {
-    font-size: 10px; color: #6366f1; cursor: pointer;
-    text-decoration: underline; text-decoration-style: dotted; white-space: nowrap;
-}
-.cb-toolbox-link:hover { color: #4338ca; }
 .cb-badge-ok { color: #059669; }
 .cb-badge-todo { color: #94a3b8; }
 .cb-badge-stale { color: #d97706; }
@@ -1275,10 +1262,11 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
     font-family: ui-monospace, monospace; font-size: 9px; color: #94a3b8;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-/* ── Curation-session indicator (bottom of the primary sidebar) ─────────────── */
-/* Dim by default; when a ChimeraX + ArtiaX session of this user is up it goes green and
- * breathes. The pulse is a CSS animation, never a server tick (CLAUDE.md), and it is
- * deliberately shallow — a rail icon that flashes is noise, one that breathes is status. */
+/* ── Live-session marker (13-S3) ─────────────────────────────────────────────── */
+/* The 7 px green dot beside `Curate picks` on the tomogram the running ChimeraX + ArtiaX
+ * session has open (Picks & curation tab). It breathes: a CSS animation, never a server
+ * tick (CLAUDE.md), and deliberately shallow — a marker that flashes is noise, one that
+ * breathes is status. The foot-of-rail session icon that used this class is gone. */
 @keyframes cb-artiax-breathe {
     0%, 100% { opacity: 0.62; }
     50%      { opacity: 1; }

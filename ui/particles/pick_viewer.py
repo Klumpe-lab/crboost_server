@@ -338,6 +338,10 @@ def _render_invert_switch(root) -> None:
 
 
 _AUTO_KICKED_RECON_SLABS: set[str] = set()
+# Why a kicked slab render did NOT produce its PNGs, per `<recon_job_dir>:<ts>` key (13-S4).
+# The dedup set above blocks a re-kick for the process lifetime, so without this record a
+# failed render left the canvas spinning forever on a "succeeded" task that wrote nothing.
+_RECON_SLAB_ERRORS: dict[str, str] = {}
 
 
 def _recon_slab_paths(recon_job_dir: Path, ts_name: str) -> tuple[Path, Path]:
@@ -346,19 +350,28 @@ def _recon_slab_paths(recon_job_dir: Path, ts_name: str) -> tuple[Path, Path]:
 
 
 def _render_recon_slabs_sync(mrc_path: Path, xy_png: Path, xz_png: Path) -> str:
-    render_xy_slab_preview(Path(mrc_path), xy_png)
-    render_xz_slab_preview(Path(mrc_path), xz_png)
+    """Thread body. The two renderers return ``None`` — rather than raise — on missing deps,
+    a non-3D MRC or a read error (`preview_render.py`); that must fail THIS task, or the
+    task settles `succeeded` with no PNG and the canvas has nothing to say."""
+    for name, fn, png in (("X/Y", render_xy_slab_preview, xy_png), ("X/Z", render_xz_slab_preview, xz_png)):
+        if fn(Path(mrc_path), png) is None:
+            raise RuntimeError(
+                f"{name} slab renderer wrote nothing for {mrc_path} (expected {png}) — "
+                "unreadable / non-3D MRC or rendering deps unavailable; see the server log"
+            )
     return "recon slabs rendered"
 
 
-def _auto_kick_recon_slabs(recon_job_dir: Path, ts_name: str, mrc_path: Path, project_path: Path, refresh) -> None:
-    """Render the shared X/Y + X/Z slabs in the background if missing/stale.
-    Mirrors the candidate-extract preview auto-kick: module-level dedup set
-    plus BackgroundTask dedup_key, refresh-on-complete so the canvas fills
-    when the PNGs land."""
+def _auto_kick_recon_slabs(recon_job_dir: Path, ts_name: str, mrc_path: Path, project_path: Path, refresh) -> str:
+    """Render the shared X/Y + X/Z slabs in the background if missing/stale, and say
+    which of four states the canvas is in: ``fresh`` (both PNGs current — draw them),
+    ``failed`` (a kicked render did not produce them; the reason is in
+    `_RECON_SLAB_ERRORS`), ``in-flight`` (kicked earlier in this process, not settled),
+    ``kicked`` (submitted just now). Mirrors the candidate-extract preview auto-kick:
+    module-level dedup set plus BackgroundTask dedup_key, refresh-on-complete so the
+    canvas fills when the PNGs land. The caller must never spin on anything but
+    ``kicked`` / ``in-flight``."""
     key = f"{recon_job_dir}:{ts_name}"
-    if key in _AUTO_KICKED_RECON_SLABS:
-        return
     xy_png, xz_png = _recon_slab_paths(recon_job_dir, ts_name)
     fresh = (
         xy_png.exists()
@@ -367,7 +380,11 @@ def _auto_kick_recon_slabs(recon_job_dir: Path, ts_name: str, mrc_path: Path, pr
         and not is_output_stale(xz_png, [mrc_path])
     )
     if fresh:
-        return
+        return "fresh"
+    if key in _RECON_SLAB_ERRORS:
+        return "failed"
+    if key in _AUTO_KICKED_RECON_SLABS:
+        return "in-flight"
     _AUTO_KICKED_RECON_SLABS.add(key)
 
     async def _run(progress_cb):
@@ -376,6 +393,12 @@ def _auto_kick_recon_slabs(recon_job_dir: Path, ts_name: str, mrc_path: Path, pr
         progress_cb(0, 0, "rendering tomogram slabs…")
         return await _asyncio.to_thread(_render_recon_slabs_sync, mrc_path, xy_png, xz_png)
 
+    def _done(task) -> None:
+        # `status` is "succeeded" | "failed" | "cancelled" once settled (services/background_tasks.py).
+        if task.status != "succeeded":
+            _RECON_SLAB_ERRORS[key] = str(task.error or task.status)
+        refresh()
+
     from ui.background_task import BackgroundTask
 
     BackgroundTask(
@@ -383,7 +406,8 @@ def _auto_kick_recon_slabs(recon_job_dir: Path, ts_name: str, mrc_path: Path, pr
         subtitle="Shared canvas for the pick overlay",
         project_path=str(project_path),
         dedup_key=f"recon-slabs:{recon_job_dir}:{ts_name}",
-    ).submit(_run, on_complete=lambda _t: refresh(), show_start_toast=False)
+    ).submit(_run, on_complete=_done, show_start_toast=False)
+    return "kicked"
 
 
 # ── Per-list recon cutouts (the workbench contact sheet) ───────────────────────
@@ -1240,16 +1264,20 @@ def _render_pick_layer(picks: list, color: str, dims: list | None, axis: str, la
 # ---------------------------------------------------------------------------
 
 
-def _read_pick_list_voxels(star_path: Path, dims: list | None, pixel_size: float | None) -> list[dict]:
+def _read_pick_list_voxels(star_path: Path, dims: list | None, pixel_size: float | None) -> list[dict] | None:
     """Read a centered-Å pick star → voxel-space picks ``[{i, x, y, z}]`` for the
     canvas overlay, using the binned ``dims`` + ``pixel_size`` already resolved in
-    the render context (no MRC re-read per render). Returns ``[]`` if the file,
-    its deps, or the centered-coord columns are unavailable — so a missing/changed
-    list degrades to 'nothing drawn' rather than breaking the dashboard render.
-    Unknown dims/pixel size land here too: no overlay beats an overlay drawn at a
-    guessed scale (the geometry chip in the section header says why)."""
+    the render context (no MRC re-read per render).
+
+    Two empty answers, kept apart (13-S1): ``[]`` ONLY for a table that parsed to zero
+    rows — the seeded default list before its first save is exactly that, and it is not
+    a problem; ``None`` when the file is missing, the geometry is unresolved, no table
+    carries the centered columns, or the read raised (that one is logged here). Either
+    way the caller draws nothing — no overlay beats an overlay drawn at a guessed scale
+    (the geometry chip in the section header says why) — but only ``None`` is worth a
+    warning."""
     if not star_path or not Path(star_path).exists() or not pixel_size or pixel_size <= 0 or not dims:
-        return []
+        return None
     try:
         import starfile
 
@@ -1261,14 +1289,16 @@ def _read_pick_list_voxels(star_path: Path, dims: list | None, pixel_size: float
             if hasattr(v, "columns") and all(c in v.columns for c in CENTERED_COLS):
                 df = v
                 break
-        if df is None or len(df) == 0:
+        if df is None:
+            return None
+        if len(df) == 0:
             return []
         coords = df[CENTERED_COLS].to_numpy(dtype=float)
         vox = centered_angst_to_voxel(coords, [int(dims[0]), int(dims[1]), int(dims[2])], float(pixel_size))
         return [{"i": i, "x": float(vox[i][0]), "y": float(vox[i][1]), "z": float(vox[i][2])} for i in range(len(vox))]
     except Exception as e:
         logger.warning("Could not read pick list %s: %s", star_path, e)
-        return []
+        return None
 
 
 def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> list[dict]:
@@ -1308,20 +1338,23 @@ def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> li
         geometry_ok = bool(dims) and bool(pixel_size and pixel_size > 0)
         for pl in project_state.get_pick_lists(species_id, ts_name):
             picks = _read_pick_list_voxels(Path(pl.path), dims, pixel_size)
-            if not picks:
-                # P4: a PERSISTED list that reads back as 0 picks must NOT be silently
+            if picks is None:
+                # P4: a PERSISTED list that reads back UNREADABLE must NOT be silently
                 # dropped — that is exactly how a merged/manual list could vanish from
                 # the rail (a coord/dims/apix regression making its star unreadable
                 # looked identical to "no list"). Keep it in the rail (visible,
                 # selectable, debuggable) and log the cause instead of skipping it.
+                # A list that parsed to zero rows (`[]` — the seeded default before its
+                # first save, 13-S1) is not that case and earns no warning.
                 logger.warning(
-                    "pick list %r (%s) for %s/%s read back 0 picks from %s — rendering empty",
+                    "pick list %r (%s) for %s/%s could not be read from %s — rendering empty",
                     pl.slug,
                     pl.list_type,
                     species_id,
                     ts_name,
                     pl.path,
                 )
+                picks = []
             # P2: the table count must match the cutout sheet, which derives kept/total
             # live from <slug>_filtered.star. pl.filtered_count is a cache that goes
             # stale (None) when the filter was committed in a prior session, so source
@@ -1427,8 +1460,9 @@ def _ce_species_entry(
     if row is None:
         return None
     # Lazy-generate previews + IMOD overlays for this species (idempotent;
-    # refresh re-renders the dashboard when the background job lands).
-    _auto_kick_preview_generation(iid, jm, job_dir, project_path, refresh)
+    # refresh re-renders the dashboard when the background job lands). A non-empty
+    # note means NO preview is coming, and the species section says so (13-S4).
+    preview_note = _auto_kick_preview_generation(iid, jm, job_dir, project_path, refresh)
     _auto_kick_imod_generation(iid, jm, job_dir, project_path, refresh)
     manifest = read_preview_manifest(job_dir) or {}
     entry = (manifest.get("tomograms") or {}).get(ts_name) or {}
@@ -1471,6 +1505,7 @@ def _ce_species_entry(
         "entry": entry,
         "label": str(label),
         "color": color,
+        "preview_note": preview_note,
         "picks": picks_data.get("picks") or [],
         # picks.json / manifest first (parity), then the geometry provider. The old
         # `[1, 1, 1]` tail is gone: dims we don't know disable the overlay instead of
@@ -1941,7 +1976,6 @@ def render_particles_section(
                 project_path,
                 refresh,
                 refresh_roster,
-                manage_species,
                 mode=mode,
                 lists_host=lists_host,
                 detail_host=detail_host,
@@ -2001,14 +2035,39 @@ def _render_particles_canvas(
     # The slabs cache next to the star that declared the volume — the recon job dir
     # for a pipeline tomogram, the Tomograms dir for an imported one.
     slab_dir, mrc_path = geom.tomograms_star.parent, geom.recon_mrc
-    _auto_kick_recon_slabs(slab_dir, ts_name, mrc_path, project_path, refresh)
+    slab_state = _auto_kick_recon_slabs(slab_dir, ts_name, mrc_path, project_path, refresh)
     xy_png, xz_png = _recon_slab_paths(slab_dir, ts_name)
-    if not xy_png.exists():
+    # Honest canvas states (13-S4): a spinner ONLY while a render is actually in flight.
+    # A failed render says why and offers Retry; a missing PNG with no work behind it is
+    # reported as exactly that, never spun on.
+    if slab_state in ("kicked", "in-flight"):
         with ui.element("div").classes("cb-empty"):
             ui.spinner(size="26px", color="indigo-500")
             ui.label("Rendering tomogram slices…").classes("text-xs")
             ui.label("Auto-kicked in the background — the canvas fills when the slab PNG lands.").classes(
                 "text-[11px] italic text-gray-500"
+            )
+        return layer_ids
+    if slab_state == "failed":
+        key = f"{slab_dir}:{ts_name}"
+
+        def _retry(_e=None, k=key) -> None:
+            _RECON_SLAB_ERRORS.pop(k, None)
+            _AUTO_KICKED_RECON_SLABS.discard(k)
+            refresh()
+
+        with ui.element("div").classes("cb-empty"):
+            ui.icon("error_outline", size="26px").classes("text-red-500")
+            ui.label(f"Slab render failed — {_RECON_SLAB_ERRORS.get(key, 'unknown')}").classes(
+                "text-xs text-red-600"
+            ).tooltip(str(mrc_path))
+            house_button("Retry", _retry, tooltip="Re-render the X/Y + X/Z slabs from the reconstruction")
+        return layer_ids
+    if not xy_png.exists():
+        with ui.element("div").classes("cb-empty"):
+            ui.icon("error_outline", size="26px").classes("text-red-500")
+            ui.label(f"Slab PNG missing after a successful render — expected {xy_png} and {xz_png}").classes(
+                "text-xs text-red-600"
             )
         return layer_ids
 
@@ -2159,7 +2218,6 @@ def _render_species_tab_body(
     project_path: Path,
     refresh,
     refresh_roster=None,
-    manage_species=None,
     *,
     mode: str = "slim",
     lists_host,
@@ -2245,7 +2303,6 @@ def _render_species_tab_body(
             selected_slug=sel["slug"],
             on_select=_select,
             chip_els=chip_els,
-            manage_species=manage_species,
             refresh=refresh,
         )
     # The detail pane renders one tick later via a once-timer: _render_detail is
@@ -2325,12 +2382,11 @@ def _render_list_rail(
     selected_slug,
     on_select,
     chip_els: dict,
-    manage_species=None,
     refresh=None,
 ) -> None:
     """The lists strip: a compact aligned TABLE (header + one row per
     list: swatch · name · count(kept/total) · extracted-mark · copy-path · delete · visibility
-    eye) on the left + the `curate ↗` route into the registry on the right.
+    eye). No route into the registry here since 13-S3 — the species header carries it.
     Every row shares one grid template so the columns line up under the header. The auto
     (pytom) row's name carries a hover tooltip with its pick stats + template-match
     essentials. Clicking a row selects it → drives the detail; the copy, delete and
@@ -2440,20 +2496,10 @@ def _render_list_rail(
                     with ui.element("div").classes("cb-ltable-cell"):
                         if lst.get("_layer_els"):
                             _render_list_eye(lst, sp)
-        # The toolbox NAVIGATES, it no longer launches (picking-UI 09-S2). The ⚡ that
-        # started/swapped an ArtiaX session from here is gone: the app has exactly one
-        # launch affordance, 'curate' on a tomogram group of the Particles registry's
-        # "Picks & curation" tab, which is also where the save contract, the import path
-        # and the watcher log live. This link is the route to it, beside the lists it acts
-        # on; absent when the workspace gave us no route (a standalone journey mount).
-        with ui.element("div").classes("cb-list-toolbox"):
-            if manage_species is not None and species_id:
-                ui.label("curate ↗").classes("cb-toolbox-link").on(
-                    "click", lambda _e, s=species_id: manage_species(s)
-                ).tooltip(
-                    "Open this species in the Particles registry's Picks & curation tab — start or swap an "
-                    "ArtiaX session on a tomogram, import a .coords, extract, dedup, delete"
-                )
+        # No launch and no route here (picking-UI 13-S3): the app has exactly one door to
+        # ArtiaX — `Curate picks` on a tomogram group of the Particles registry's "Picks &
+        # curation" tab — and the species header above already carries the navigation
+        # link to that registry (`manage in Particles registry ↗`).
 
 
 async def _render_list_detail(
@@ -2499,12 +2545,21 @@ def _render_species_auto_section(
         _render_zero_picks_empty_state(manifest, sp["label"])
         return
     if status not in ("ok", "missing-volume"):
+        note = sp.get("preview_note") or ""
         with ui.element("div").classes("cb-empty"):
-            ui.spinner(size="28px", color="indigo-500")
-            ui.label("Generating preview for this tilt-series…").classes("text-xs")
-            ui.label("Auto-kicked in the background — the page refreshes when the manifest lands.").classes(
-                "text-[11px] italic text-gray-500"
-            )
+            if note:
+                # Nothing was submitted and nothing is in flight (13-S4): say why instead
+                # of spinning on a preview that is not coming.
+                ui.icon("hourglass_empty", size="28px").classes("text-gray-400")
+                ui.label(f"No candidate preview — {note}; run Pick candidates from the Jobs tab").classes(
+                    "text-xs text-gray-600"
+                )
+            else:
+                ui.spinner(size="28px", color="indigo-500")
+                ui.label("Generating preview for this tilt-series…").classes("text-xs")
+                ui.label("Auto-kicked in the background — the page refreshes when the manifest lands.").classes(
+                    "text-[11px] italic text-gray-500"
+                )
         return
 
     has_atlas = bool(entry.get("cutout_atlas") and entry.get("cutout_index"))
@@ -3947,30 +4002,36 @@ _AUTO_KICKED_IMOD: set[str] = set()
 
 
 def reset_auto_kick_state() -> None:
-    """Clear the auto-kick dedup sets — used by `open_tomo_dashboard` so each
-    fresh dashboard mount can re-trigger generation if the page is reloaded."""
+    """Clear the auto-kick dedup sets and the recorded slab-render failures — called by
+    `open_tomo_dashboard` and by `PickViewerPage.show` (13-S4), so each fresh mount can
+    re-trigger generation and a failed render gets another chance without a restart."""
     _AUTO_KICKED_PREVIEWS.clear()
     _AUTO_KICKED_IMOD.clear()
     _AUTO_KICKED_RECON_SLABS.clear()
+    _RECON_SLAB_ERRORS.clear()
     _AUTO_KICKED_LIST_CUTOUTS.clear()
 
 
-def _auto_kick_preview_generation(instance_id: str, job_model, job_dir: Path, project_path: Path, refresh) -> bool:
+def _auto_kick_preview_generation(instance_id: str, job_model, job_dir: Path, project_path: Path, refresh) -> str:
     """If the candidate-extract job has succeeded but some tomograms are
     missing from the preview manifest, kick off a background 'Render
     missing' with completion handler that refreshes the page when done.
-    Returns True iff a kickoff was submitted (or one was already in
-    flight). Safe to call on every render — both module-level set and
-    BackgroundTask dedup_key prevent re-submission."""
+    Safe to call on every render — both module-level set and BackgroundTask
+    dedup_key prevent re-submission.
+
+    Returns ``""`` when a kick was submitted or one is already in flight — i.e. a
+    preview may still arrive — else the reason nothing was submitted, which the species
+    section renders instead of a spinner (13-S4): a spinner with no work behind it is the
+    no-picks project's "spins forever"."""
     key = str(job_dir)
     if key in _AUTO_KICKED_PREVIEWS:
-        return False
+        return ""
     if getattr(job_model, "execution_status", None) != JobStatus.SUCCEEDED:
-        return False
+        return "candidate-extract has not finished for this species"
     candidates_star = job_dir / "candidates.star"
     tomograms_star = job_dir / "tomograms.star"
     if not candidates_star.exists() or not tomograms_star.exists():
-        return False
+        return "candidate-extract has not produced candidates.star / tomograms.star for this tilt-series"
     _AUTO_KICKED_PREVIEWS.add(key)
 
     diameter = float(getattr(job_model, "particle_diameter_ang", 0.0))
@@ -4001,7 +4062,7 @@ def _auto_kick_preview_generation(instance_id: str, job_model, job_dir: Path, pr
         project_path=str(project_path),
         dedup_key=f"render-previews:{job_dir}:no-force",
     ).submit(_run, on_complete=lambda _t: refresh(), show_start_toast=False)
-    return True
+    return ""
 
 
 def _auto_kick_imod_generation(instance_id: str, job_model, job_dir: Path, project_path: Path, refresh) -> bool:
@@ -4193,6 +4254,9 @@ class PickViewerPage:
                 self.species_id = species_id
             if tomo_name:
                 self.tomo_name = tomo_name
+            # Like the Journey mount: a fresh show may re-kick a render that failed or was
+            # blocked by the process-lifetime dedup sets (13-S4).
+            reset_auto_kick_state()
             self.render()
 
     def set_active(self, on: bool) -> None:
