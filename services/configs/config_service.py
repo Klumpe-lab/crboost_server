@@ -196,9 +196,10 @@ class CurationConfig(BaseModel):
     # 1 = off (open the full-res volume, as before 10-S3).
     display_bin: int = 2
     # The REST command channel (the worker starts `remotecontrol rest` on the node's
-    # loopback; crboost reaches it via `ssh <node> curl`). QUARANTINED since roadmap 10-S1:
-    # nothing may drive a session after launch (Model B), and this now gates only a
-    # launch-time health check. It is NOT a switch for loading/saving from crboost — that
+    # loopback; crboost reaches it via `ssh <node> curl`). QUARANTINED since roadmap 10-S1;
+    # it gates two things: the launch-time health check and the confirmed in-session scope
+    # switch (13-S2, "Switch session to this tomogram" in the control center). Off ⇒ the
+    # control center offers Restart only. It is NOT a switch for saving from crboost — that
     # path is deleted, deliberately.
     rest_enabled: bool = True
 

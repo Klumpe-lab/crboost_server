@@ -13,8 +13,6 @@ from ui.components.dialogs import dialog_host
 from ui.components.reactive import FingerprintedView
 from ui.components.species_pill import render_species_pill
 from ui.components.svg_icon import load_icon_svg
-from ui.curation_session_dialog import open_curation_control_center
-from ui.particles import session_status
 from ui.protocols_view import protocol_light
 from ui.styles import MONO, SANS as FONT
 from ui.status_indicator import BoundStatusDot, _running_spinner_html
@@ -38,10 +36,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Rail curation-session indicator: how often it ASKS `session_status`. That module keeps its
-# own ~16 s throttle on the actual `squeue`, so a tick inside the window is a dict read —
-# this cadence only decides how fast the icon reacts once the answer changes.
-_CURATION_TICK_S = 6.0
+# Foot-of-rail protocol light: how often it re-reads the in-memory protocol state. A tick is
+# a dict read; this cadence only decides how fast the light reacts once the answer changes.
+_RAIL_LIGHT_TICK_S = 6.0
 
 
 def _ts_cell(text: str, color: str, extra: str = ""):
@@ -49,17 +46,8 @@ def _ts_cell(text: str, color: str, extra: str = ""):
     ui.label(text).style(f"font-size: 9px; font-family: 'IBM Plex Mono', monospace; color: {color}; {extra}")
 
 
-# Journey nav glyph: three ascending bars — the surface carries per-TS progress and
-# statistics across the whole pipeline, which the previous ringed-lines circle said
-# nothing about. No axis: at 18 px the bars alone are the legible read.
-_TOMO_DASHBOARD_SVG = (
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
-    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
-    '<line x1="5.5" y1="19" x2="5.5" y2="14"/>'
-    '<line x1="12" y1="19" x2="12" y2="9.5"/>'
-    '<line x1="18.5" y1="19" x2="18.5" y2="5"/>'
-    "</svg>"
-)
+# The Journey nav glyph (three ascending bars) lives in static/icons/journey.svg since
+# 13-S3, so the Picks & curation tab's journey button draws the same asset.
 _SB_INFO = "#c0cad4"
 _AVATAR_PALETTE = ["#3b82f6", "#8b5cf6", "#06b6d4", "#10b981", "#f59e0b", "#ec4899"]
 
@@ -211,10 +199,8 @@ class RosterWidget(FingerprintedView):
         # Drives the nav-icon highlight; set by workspace _switch_to via
         # set_active_mode. Starts "pipeline" (the default view at load).
         self._active_mode: str = "pipeline"
-        # Last (status, scope, error) painted onto the rail's curation-session indicator, so
-        # its timer only touches the DOM when the session state actually moved.
-        self._curation_paint: tuple[str, str, str] | None = None
-        # Same gate for the protocol light (kind, tooltip) — roadmap 16 D6.
+        # Last (kind, tooltip) painted onto the foot-of-rail protocol light (roadmap 16 D6),
+        # so its timer only touches the DOM when the state actually moved.
         self._protocol_paint: tuple[str, str] | None = None
         # Last (tomogram, tilt-series) counts painted onto the rail badges, so their timer
         # only touches the DOM when a number actually moved.
@@ -1024,13 +1010,13 @@ class RosterWidget(FingerprintedView):
 
             ui.element("div").style("flex: 1;")
 
-            # Pinned to the FOOT of the rail, two status lights: the protocol light (is a
-            # protocol run up, and how did it do — it also opens the Protocols view, roadmap 16)
-            # above the curation-session indicator (is ArtiaX up, and on what). Neither is a
-            # place in the view stack above; they answer a question first, and say so by
-            # sitting apart without a separator.
+            # Pinned to the FOOT of the rail, one status light: the protocol light (is a
+            # protocol run up, and how did it do — it also opens the Protocols view, roadmap
+            # 16). It is not a place in the view stack above; it answers a question first,
+            # and says so by sitting apart without a separator. The ArtiaX session light that
+            # sat under it went with 13-S3: the live marker is on the in-session tomogram's
+            # `Curate picks` button, the one door to that session.
             self._build_protocol_btn()
-            self._build_curation_session_btn()
             ui.element("div").style("height: 6px;")
 
         self.rebuild_run_slot()
@@ -1794,18 +1780,17 @@ class RosterWidget(FingerprintedView):
         permanent "something is new" badge pointing at nothing in particular — removed.
         """
         return self._sb_svg_btn(
-            _TOMO_DASHBOARD_SVG,
+            "journey.svg",
             "Journey — one tilt-series end to end: motion, CTF, alignment, reconstruction, picks",
             self._open_journey,
             ref_key="dashboard_btn",
         )
 
-    # A ChimeraX + ArtiaX launcher used to sit here. It went with picking-UI roadmap 09-S2:
-    # a session is always started ON a tomogram, from the Particles registry's
-    # "Picks & curation" tab ('curate' on a tomogram group), so the app has exactly one
-    # launch affordance. What sits at the bottom of the rail now is an INDICATOR of that
-    # session (_build_curation_session_btn) whose click opens the control center — it never
-    # launches, so there is still exactly one launch affordance.
+    # A ChimeraX + ArtiaX launcher used to sit here (gone with picking-UI 09-S2), then an
+    # INDICATOR of that session (gone with 13-S3). A session is always started ON a
+    # tomogram — `Curate picks` on a tomogram group of the Particles registry's "Picks &
+    # curation" tab — and that button carries the live marker, so the app has exactly one
+    # door to ArtiaX and nothing on this rail points at it.
 
     def _build_protocol_btn(self):
         """Foot-of-rail protocol light (roadmap 16). Dim while the project was not created from a
@@ -1828,7 +1813,7 @@ class RosterWidget(FingerprintedView):
         self._refs["protocol_icon"] = icon
         self._refs["protocol_tip"] = tip
         self._paint_protocol()
-        ui.timer(_CURATION_TICK_S, self._tick_protocol)
+        ui.timer(_RAIL_LIGHT_TICK_S, self._tick_protocol)
         return container
 
     def _tick_protocol(self):
@@ -1849,95 +1834,6 @@ class RosterWidget(FingerprintedView):
         live = kind == "live"
         icon.classes(add="cb-protocol-live" if live else "", remove="" if live else "cb-protocol-live")
         tip.set_text(text)
-
-    def _build_curation_session_btn(self):
-        """Bottom-of-rail ChimeraX + ArtiaX control-session indicator.
-
-        Ever-present like the other rail entries, and dim while nothing is running. When a
-        session of this user IS up it turns green and breathes (CSS keyframes — see
-        `.cb-artiax-live`), and its hover says WHICH species and tomogram that session was
-        launched on, read from the session's own recorded scope. Clicking always opens the
-        control center: connect details while one is up, and the start panel otherwise.
-
-        `unknown` (a `squeue` that raised) is its own amber state — never painted as "no
-        session", which is the reading that gets a user to start a second ChimeraX.
-        """
-        container = (
-            ui.element("div")
-            .style(
-                "width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
-                "background: transparent; "
-                "display: flex; align-items: center; justify-content: center; "
-                "cursor: pointer; flex-shrink: 0;"
-            )
-            .on("click", self._open_control_center)
-        )
-        with container:
-            icon = ui.icon("view_in_ar", size="18px").style(f"color: {SB_MUTE}; pointer-events: none;")
-            tip = ui.tooltip("")
-        self._refs["curation_btn"] = container
-        self._refs["curation_icon"] = icon
-        self._refs["curation_tip"] = tip
-        self._paint_curation_session()
-        # The status itself is the shared, throttled session_status cache (one `squeue` per
-        # POLL_S across every observer), so this tick is nearly free and only repaints when
-        # the rendered state actually moved.
-        ui.timer(_CURATION_TICK_S, self._tick_curation_session)
-        return container
-
-    async def _tick_curation_session(self):
-        await session_status.poll(self.panel.backend)
-        self._paint_curation_session()
-
-    def _paint_curation_session(self):
-        """Reflect the cached session state onto the rail icon. Gated on the (status, scope)
-        it last painted: this runs on a timer, and re-sending identical style/class strings
-        every tick is churn the client has to process for nothing.
-
-        Four states, not three. `unknown` splits by WHY: a `squeue` that raised is amber and
-        says so, while "not asked yet" (the first seconds after a page load) is just dim —
-        painting that one amber would cry wolf on every single load.
-        """
-        st = session_status.status()
-        scope = session_status.scope_text()
-        error = session_status.last_error()
-        if (st, scope, error) == self._curation_paint:
-            return
-        self._curation_paint = (st, scope, error)
-
-        icon = self._refs.get("curation_icon")
-        tip = self._refs.get("curation_tip")
-        if icon is None or tip is None:
-            return
-        if st == session_status.LIVE:
-            color, live = "#16a34a", True
-            text = (
-                f"Picking {scope or 'a scope this session did not record'} — ChimeraX + ArtiaX is up. "
-                "Click for the control center."
-            )
-        elif st == session_status.UNKNOWN and error:
-            color, live = "#d97706", False
-            text = f"Could not ask SLURM whether a curation session is running — {error}. Click for the control center."
-        elif st == session_status.UNKNOWN:
-            color, live = SB_MUTE, False
-            text = "Checking for a running curation session… Click for the control center."
-        else:
-            color, live = SB_MUTE, False
-            text = (
-                "No curation session. Start one with 'curate' on a tomogram in Picks & curation, "
-                "or click here for the control center."
-            )
-        icon.style(f"color: {color}; pointer-events: none;")
-        icon.classes(add="cb-artiax-live" if live else "", remove="" if live else "cb-artiax-live")
-        tip.set_text(text)
-
-    async def _open_control_center(self):
-        """The rail indicator's click. Opens the SAME control center the Picks & curation
-        session chip does — SingleFlight-guarded, since it owns a dialog."""
-        async with self.panel.flight("rail_control_center") as acquired:
-            if not acquired:
-                return
-            await open_curation_control_center(self.panel.backend, self.panel.ui_mgr.project_path)
 
     def _sb_svg_btn(self, svg_name, tooltip, on_click, active=False, ref_key=None, color_override=None, badge=False):
         bg = SB_ABG if active else "transparent"

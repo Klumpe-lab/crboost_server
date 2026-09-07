@@ -1,8 +1,9 @@
 # 10 — The external picker: what ChimeraX can actually be told, and the contract that survives it
 
 **Status:** S1–S3 CODE-COMPLETE 2026-08-22 (see §6), runtime pass owed (§5). S4 remains a gated
-pilot — nothing built. Scoped 2026-08-21 from `q_important_ui_fixes.md:38-40` (+ the two session
-peeves at `:1-2`).
+pilot — nothing built. Re-scoped in part 2026-09-04 by 13 (`13-seeded-list-and-session-switch.md`):
+see the "[13 note]" paragraphs below — history is appended to, not rewritten.
+Scoped 2026-08-21 from `q_important_ui_fixes.md:38-40` (+ the two session peeves at `:1-2`).
 **Risk:** medium (S2 changes ingest semantics). **Depends on:** 09 for where the controls live.
 
 **Directive (maintainer, 2026-08-21):** *"We somewhat started walking down the path of adding little
@@ -55,6 +56,14 @@ is therefore adopted as the decision of record: no more outbound driving after l
 | Clunk | low (when it works) | medium — user saves by hand in ArtiaX; assignment dialog for strays | lowest possible — but must be built |
 | Risk | silent misattribution | none silent — worst case is "please assign this" | Qt/GL on el7 nodes; a new container |
 
+> **[13 note, 2026-09-04]** B's "outbound cmds after launch: none" is relaxed by exactly ONE command:
+> 13-S2 reintroduces the confirmed in-session scope switch (`close session ; artiax start ; artiax
+> open tomo ; open auto ; open seed ; lighting simple`, then `cd` as its own call) over the same
+> quarantined `send_chimerax_command` channel. It is confirm-first, never auto-saves, and closes
+> fragility #2 by rewriting `scope.json` + the target dir's manifest in the same call — so the
+> session's scope on disk is the switch's scope, and a crboost restart still names it. *Restart on
+> this tomogram* stays as the fallback and is the only path when `curation.rest_enabled` is off.
+
 **Recommendation:** build B now (S1–S3, small, picker-agnostic — nothing in it is wasted if C wins),
 pilot C behind the same contract (S4). Keep ChimeraX/ArtiaX as the shipping picker until the pilot
 clears its criteria.
@@ -71,6 +80,10 @@ Fix the two session peeves while in the file: the dialog closes on Esc (it is pa
 so wire the key handler explicitly), and `passwordless_vnc: false` becomes a `CurationConfig` option
 (`SecurityTypes None`) — default OFF, tooltip states the risk on a shared cluster.
 
+> **[13 note, 2026-09-04]** "quarantine the REST send path" holds, but the quarantine now admits two
+> callers: launch-time health checks and 13-S2's `switch_session_scope`. Any further caller must
+> record scope on disk in the same call, or it reopens fragility #2.
+
 **S2 — the staging contract.** Launch is the one moment identity is declared: the curate action
 (09's single affordance) writes `manifest.json` (`species_id`, `tomo_name`, `launched_at`, list of
 reference exports) into `Curation/<species>/<tomo>/` beside the generated `.cxc`. Ingest hardening:
@@ -82,6 +95,13 @@ inbox rows gain the explicit **assignment** action: pick species (+ tomogram if 
 file is moved into the right scoped dir and ingested. That assignment step IS the maintainer's
 staging mechanism — no ambiguity survives it. W1 (re-open an existing list for editing, re-ingest
 under the same slug) rides on the same per-stem slugs and closes here.
+
+> **[13 note, 2026-09-04]** "every `.coords` becomes its own list" stays the *mechanism* — the
+> watcher still ingests every settled file, one PickList per stem. The *advertised* contract is
+> narrower: one pre-seeded list per (species, tomogram), `<species_id>__<tomo>__picks.coords`, created
+> 0-byte and registered as a 0-pick `picks` row at the *Curate picks* click, opened LAST by the
+> `.cxc` so it is the selected list when the user arrives. Extra lists still work; the UI stops
+> advertising them and the naming/placing burden for them is the user's.
 
 **S3 — make launch fast enough to not miss the swap.** The display-binned recon from
 `ARTIAX_BRIDGE_PLAN.md:412-440`: generate (lazily, cached beside the recon) a bin×2/×4 copy for the
@@ -202,3 +222,9 @@ pick is two clicks or less. Explicitly NOT a volume renderer — slices only (ho
   picked on. If it was in fact a session save moved out of its folder, that is a `(N-1)/2·px` shift
   (~3.1 Å at N=2 / 6.2 Å per px). The import dialog states the assumption and points at the two
   routes that keep the frame exact (save into the folder, or assign from the inbox).
+
+- 2026-09-04 — **re-scoped in part by 13.** Model B's "no outbound driving after launch" is relaxed
+  by one confirmed command (the scope switch, 13-S2), the N-lists mechanism is kept but no longer
+  advertised (one pre-seeded list per (species, tomo), 13-S1), and the control-center doors 09/10
+  spread across the workspace collapse to the per-tomogram *Curate picks* button (13-S3). The
+  "[13 note]" paragraphs above mark where this doc now lies; nothing here was rewritten.

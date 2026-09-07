@@ -30,6 +30,7 @@ Stages 03 and 04 are written so the seams that expansion needs are the ones they
 | 10 | [external-picker-contract](10-external-picker-contract.md) | decision: no post-launch REST driving; scoped-launch + staging-inbox contract; display-binned recon; gated napari pilot | medium | scoped 2026-08-21 |
 | 11 | [pick-viewer](11-pick-viewer.md) | gallery → shared component: full page in the registry, slim in the Journey; selection-first clicks; curation mode explicit; toolbelt | medium-high | scoped 2026-08-21 |
 | 12 | [aggregate-candidates](12-aggregate-candidates.md) | stub — roster merge icon → "Aggregate candidates" spawning a prepopulated job; open design edge recorded | — | stub, unscheduled |
+| 13 | [seeded-list-and-session-switch](13-seeded-list-and-session-switch.md) | one pre-seeded ArtiaX list per (species, tomo) — `<species_id>__<tomo>__picks.coords`, registered as a 0-pick row at Curate click; confirmed in-session switch over REST (reverses 10 §1-2); one door (`[Curate picks]`), rail light + session chip + viewer-rail `curate ↗` deleted; honest slab/preview spinners | medium | **S0–S4 CODE-COMPLETE 2026-09-04** (ruff green; `check_boundaries.py` owed — no python in the agent sandbox); ONE runtime pass owed (§4) |
 
 Suggested order: 01 → 02 → 03 → 04 → 05 → 06. Only 01-S1 blocks anything (01-S2 needs it); the rest
 are independent and can land in any order.

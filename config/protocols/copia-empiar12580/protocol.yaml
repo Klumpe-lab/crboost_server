@@ -2,6 +2,8 @@
 # Authored 2026-08-27 from the tutorial and nothing else: sphere template 550 A, I1, angular_search 90,
 # class3d.random_seed 1. Dataset facts (apix, dose, tilts) come from the mdocs at project creation.
 # Stage params are FULL USER_PARAMS snapshots by design.
+# 2026-09-04: species + picking params reconciled against the reference run
+# /groups/klumpe/crboost_data/copia_demo2 (1056 picks on this TS): diameter 575 A, spherical d575_s5 mask.
 name: copia-empiar12580
 version: 1
 schema_version: 1
@@ -14,9 +16,9 @@ provenance:
 species:
   - id: copia
     name: Copia
-    diameter_ang: 550.0
+    diameter_ang: 575.0
     symmetry: I1
-    notes: copia retrotransposon capsid; sphere template 550 A at 11.80 A/px (box 96, lp 45)
+    notes: copia retrotransposon capsid; sphere template 550 A at 11.80 A/px (box 96, lp 45), spherical mask d575
     template:
       asset: assets/copia_template.mrc
       polarity: black
@@ -25,12 +27,9 @@ species:
       notes: ellipsoid_550_550_550_apix11.80_box96_lp45_black.mrc
     mask:
       asset: assets/copia_mask.mrc
-      method: relion
-      threshold: 1.85
-      extend_pixels: 5.0
+      method: spherical
       soft_edge_pixels: 5.0
-      lowpass_ang: 20.0
-      notes: ellipsoid_550_550_550_apix11.80_box96_lp45_mask_t1.850_e5_s5.mrc
+      notes: ellipsoid_550_550_550_apix11.80_box96_lp45_sphere_d575_s5.mrc
     extraction: {box_size: 384, crop_size: 224, binning: 1.0}
 stages:
   - job: importmovies
@@ -99,7 +98,7 @@ stages:
   - job: tmextractcand
     species: copia
     params:
-      particle_diameter_ang: 550.0
+      particle_diameter_ang: 575.0
       max_num_particles: 1500
       cutoff_method: NumberOfFalsePositives
       cc_threshold: 0.1
