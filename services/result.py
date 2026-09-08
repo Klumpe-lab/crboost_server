@@ -33,6 +33,11 @@ class ErrorCode(StrEnum):
     # and curation "nothing open" (that's success with count=0, not an error).
     NO_COORDS_FOUND = auto()
 
+    # Roadmap 17: resolving `/p/<name>` branches three ways — open it, render a chooser
+    # over the candidate paths, or send the user back to the landing page.
+    PROJECT_NOT_FOUND = auto()
+    PROJECT_AMBIGUOUS = auto()
+
 
 def ok(**data: Any) -> dict[str, Any]:
     """Successful outcome; payload keys stay ad-hoc by design."""

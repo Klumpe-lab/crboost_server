@@ -7,6 +7,7 @@ from ui.background_task_tray import mount_background_task_tray
 from ui.components.buttons import house_button
 from ui.components.reactive import SingleFlight
 from ui.pipeline_builder.pipeline_builder_panel import build_pipeline_builder_panel
+from ui.routing import RouteWriter, View, apply_route, route_of_url
 from ui.species.page import build_species_page
 from ui.ui_state import get_ui_state_manager
 
@@ -52,7 +53,21 @@ _ROSTER_RESIZER_JS = """
 """
 
 
-def build_workspace_page(backend: CryoBoostBackend):
+# workspace view name -> the URL view it addresses (roadmap 17). The Species page's
+# internal mode string is "workbench" for historical reasons; the URL says `species`.
+_MODE_VIEWS: dict[str, View] = {
+    "pipeline": View.PIPELINE,
+    "workbench": View.SPECIES,
+    "journey": View.JOURNEY,
+    "gallery": View.TOMOGRAMS,
+    "viewer": View.PICKS,
+    "protocols": View.PROTOCOLS,
+}
+
+
+def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | None = None) -> dict:
+    """Build the workspace and return its `callbacks` dict, which the routed page handler
+    needs to apply the URL's view+target (`ui.routing.apply_route`)."""
     ui_mgr = get_ui_state_manager()
     ui_mgr.prepare_for_page_rebuild()
 
@@ -61,7 +76,7 @@ def build_workspace_page(backend: CryoBoostBackend):
             ui.icon("error_outline", size="64px").classes("text-red-400")
             ui.label("No project loaded").classes("text-xl text-gray-600")
             house_button("Return to start", lambda: ui.navigate.to("/"))
-        return
+        return {}
 
     if not ui_mgr.project_path or not ui_mgr.project_path.exists():
         with ui.column().classes("w-full h-screen items-center justify-center gap-4"):
@@ -69,11 +84,42 @@ def build_workspace_page(backend: CryoBoostBackend):
             ui.label("Project path is invalid").classes("text-xl text-gray-600")
             ui.label(str(ui_mgr.project_path)).classes("text-sm text-gray-400 font-mono")
             house_button("Return to start", lambda: ui.navigate.to("/"))
-        return
+        return {}
 
     callbacks = {}
     _mode = {"current": "pipeline"}
     _refs = {}
+
+    if route_writer is None:
+        from ui.open_project import disambiguating_base
+
+        route_writer = RouteWriter(ui_mgr.project_path.name, disambiguating_base(ui_mgr.project_path))
+    callbacks["set_url"] = route_writer.write
+    callbacks["route_writer"] = route_writer
+    # apply_route enters views through the same toggles a click uses, and those switch
+    # BACK to the pipeline when the view is already showing — harmless on a fresh page,
+    # wrong on a Back/Forward. This lets it skip a toggle it doesn't need.
+    callbacks["current_mode"] = lambda: _mode["current"]
+
+    def _write_mode_url() -> None:
+        """The address bar follows the view (roadmap 17 S3). Every view writes the bare
+        route for itself here; the ones with a target (a job, a tilt-series, a species)
+        refine it from their own selection handler right after. The pipeline is the one
+        exception — its target is the active job, which lives on `ui_mgr`, so there is
+        nothing to wait for."""
+        mode = _mode["current"]
+        view = _MODE_VIEWS.get(mode, View.PIPELINE)
+        if view is View.PIPELINE and ui_mgr.active_instance_id:
+            iid = ui_mgr.active_instance_id
+            route_writer.write(View.JOB, iid, ui_mgr.get_job_ui_state(iid).active_monitor_tab)
+            return
+        if view is View.PICKS:
+            page = _refs.get("viewer_page")
+            if page is None or not page.species_id:
+                return  # a picks URL without a species names nothing — leave the bar alone
+            route_writer.write(View.PICKS, page.species_id, page.tomo_name)
+            return
+        route_writer.write(view)
 
     def _switch_to(mode_name: str):
         """Swap the visible view in main_area: pipeline / workbench / journey / viewer.
@@ -111,6 +157,11 @@ def build_workspace_page(backend: CryoBoostBackend):
         set_mode = callbacks.get("set_active_mode")
         if set_mode:
             set_mode(_mode["current"])
+
+        # Coarse route first, then the activations below let each view refine it with its
+        # own target — which is also what makes the history entry come out right: the view
+        # change pushes, the refinement replaces.
+        _write_mode_url()
 
         # Pause/resume the journey's 4 s live-refresh with its visibility.
         on_journey = callbacks.get("on_journey_active")
@@ -262,6 +313,9 @@ def build_workspace_page(backend: CryoBoostBackend):
             if _mode["current"] != "viewer":
                 _switch_to("viewer")
             await page.show(species_id, tomo_name)
+            # show() keeps whichever of the pair was passed as None, so the URL is
+            # written from the page's resolved selection, not from the arguments.
+            _write_mode_url()
 
     def _invalidate_gallery():
         """Something added tomograms to the project — make the wall re-collect on its next
@@ -269,6 +323,40 @@ def build_workspace_page(backend: CryoBoostBackend):
         page = _refs.get("gallery_page")
         if page is not None:
             page.invalidate()
+
+    def _on_popstate(e) -> None:
+        """Back/Forward (roadmap 17 S4): re-dispatch the popped URL onto the views that
+        are already built, instead of letting the browser rebuild the page (which is what
+        a real navigation would do, and would throw the Journey/gallery/viewer away)."""
+        raw = e.args
+        if isinstance(raw, list):
+            raw = raw[0] if raw else ""
+        popped = route_of_url(str(raw or ""))
+        if popped is None or popped.project != route_writer.project:
+            # Left this project's URL space entirely — let the browser have it.
+            ui.navigate.to(str(raw or "/"))
+            return
+        route_writer.adopt(popped)
+        route_writer.suppressed = True
+
+        async def _apply() -> None:
+            try:
+                await apply_route(callbacks, popped, ui_mgr.project_path)
+            finally:
+                route_writer.suppressed = False
+
+        ui.timer(0, _apply, once=True)
+
+    ui.on("cb_popstate", _on_popstate)
+    ui.timer(
+        0.1,
+        lambda: ui.run_javascript(
+            "window.addEventListener('popstate', function(){"
+            "  emitEvent('cb_popstate', location.pathname + location.search);"
+            "});"
+        ),
+        once=True,
+    )
 
     callbacks["invalidate_gallery"] = _invalidate_gallery
     callbacks["toggle_workbench"] = _toggle_workbench
@@ -373,3 +461,5 @@ def build_workspace_page(backend: CryoBoostBackend):
 
     # Wire the roster resizer once the DOM for this page exists on the client.
     ui.timer(0.1, lambda: ui.run_javascript(_ROSTER_RESIZER_JS), once=True)
+
+    return callbacks

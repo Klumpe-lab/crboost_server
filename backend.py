@@ -1203,6 +1203,7 @@ class CryoBoostBackend:
                     ts_count = 0
                     mnemonic = ""
                     source_directory = ""
+                    species: list[dict[str, str]] = []
                     try:
                         with open(params_file) as f:
                             data = json.load(f)
@@ -1223,6 +1224,15 @@ class CryoBoostBackend:
                         total_jobs_planned = len(jobs_dict)
                         ts_count = data.get("import_selected_tilt_series") or data.get("import_total_tilt_series") or 0
                         mnemonic = data.get("mnemonic") or ""
+                        # Registered particle species — the roster indexes over them so
+                        # "which projects have a ribosome in them" is answerable from the
+                        # project list. id/name/color only; the rest of ParticleSpecies is
+                        # nobody's business at roster scale.
+                        species = [
+                            {"id": s["id"], "name": s.get("name") or s["id"], "color": s.get("color") or "#3b82f6"}
+                            for s in (data.get("species_registry") or [])
+                            if isinstance(s, dict) and s.get("id")
+                        ]
                         # Where the raw data came from. Prefer the resolved
                         # frames dir; fall back to the movies glob's parent.
                         source_directory = data.get("import_source_directory") or ""
@@ -1280,6 +1290,7 @@ class CryoBoostBackend:
                             "pipeline_active": pipeline_active,
                             "total_jobs_planned": total_jobs_planned,
                             "ts_count": ts_count,
+                            "species": species,
                             "source_directory": source_directory,
                             "last_activity_ts": last_activity_ts,
                             "last_activity": datetime.fromtimestamp(last_activity_ts).strftime("%Y-%m-%d %H:%M"),

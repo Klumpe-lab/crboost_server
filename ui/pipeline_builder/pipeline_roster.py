@@ -1006,6 +1006,8 @@ class RosterWidget(FingerprintedView):
             )
             self._refs["run_slot"] = run_slot
 
+            self._build_link_btn()
+
             self._sb_svg_btn("cross.svg", "Close project", lambda: ui.navigate.to("/"))
 
             ui.element("div").style("flex: 1;")
@@ -1187,20 +1189,42 @@ class RosterWidget(FingerprintedView):
             "color: #94a3b8; letter-spacing: 0.09em; text-transform: uppercase;"
         )
 
+    # Label column of the parameter table. Wide enough for "Tilt-series" without
+    # hyphenating it, and the same on every section so the three tables read as one.
+    _PARAM_LABEL_W = 72
+
     def _render_overview_section(self, title: str, rows: list) -> None:
         """Label · value pairs on one grid. The label column is fixed, so values line up
-        and sit NEXT to what names them instead of across a 380 px gulf from it.
-        A row may carry a third element: an explicit value colour (warnings)."""
+        and sit NEXT to what names them instead of across a gulf from it.
+        A row may carry a third element: an explicit value colour (warnings).
+
+        Values are 9 px mono — one notch under the labels — because half of them are
+        absolute paths and globs, and at 10 px in a 380 px pane those wrapped to three
+        lines each. Any value that reads as an absolute path also gets the app's copy
+        button (`ui/components/copyable.py`), since a wrapped path is exactly what you
+        cannot hand-select."""
+        from ui.components.copyable import copy_button
+
         self._overview_section_header(title)
         for row in rows:
             row_lbl, row_val = row[0], row[1]
             color = row[2] if len(row) > 2 else "#1e40af"
+            text = str(row_val)
+            is_path = text.startswith("/")
             with ui.element("div").style(
-                "display: grid; grid-template-columns: 68px minmax(0, 1fr); "
+                f"display: grid; grid-template-columns: {self._PARAM_LABEL_W}px minmax(0, 1fr); "
                 "align-items: baseline; padding: 1px 12px; gap: 8px;"
             ):
                 ui.label(row_lbl).style(f"{FONT} font-size: 10px; color: #94a3b8;")
-                ui.label(str(row_val)).style(f"{MONO} font-size: 10px; color: {color}; word-break: break-all;")
+                if is_path:
+                    with ui.element("div").style("display: flex; align-items: baseline; gap: 3px; min-width: 0;"):
+                        ui.label(text).style(
+                            f"{MONO} font-size: 9px; color: {color}; word-break: break-all; "
+                            "flex: 1 1 0; min-width: 0; line-height: 1.4;"
+                        )
+                        copy_button(text, tooltip=f"Copy\n{text}", color="#cbd5e1")
+                else:
+                    ui.label(text).style(f"{MONO} font-size: 9px; color: {color}; word-break: break-all;")
 
     def _render_dataset_ts_expansion(self, state) -> None:
         """Collapsible per-tilt-series table living on the Dataset row.
@@ -1229,11 +1253,11 @@ class RosterWidget(FingerprintedView):
             # Same label column as _render_overview_section — this IS one of its rows, it
             # just happens to open.
             with ui.element("div").style(
-                "display: grid; grid-template-columns: 68px minmax(0, 1fr); "
+                f"display: grid; grid-template-columns: {self._PARAM_LABEL_W}px minmax(0, 1fr); "
                 "align-items: baseline; padding: 1px 12px; gap: 8px; width: 100%;"
             ):
                 ui.label("Selected").style(f"{FONT} font-size: 10px; color: #94a3b8;")
-                ui.label(header_text).style(f"{MONO} font-size: 10px; color: #1e40af;")
+                ui.label(header_text).style(f"{MONO} font-size: 9px; color: #1e40af;")
 
         with exp:
             with ui.element("div").style(
@@ -1267,6 +1291,7 @@ class RosterWidget(FingerprintedView):
         from nicegui import app as ng_app
         from services.project_state import get_project_state_for
         from services.configs.user_prefs_service import get_prefs_service
+        from ui.open_project import remember_project_opened
         from ui.projects_overview import ProjectsOverview
 
         panel = self.panel
@@ -1297,6 +1322,7 @@ class RosterWidget(FingerprintedView):
             panel.ui_mgr.load_from_project(
                 project_path=target, scheme_name="loaded", jobs=list(loaded_state.jobs.keys())
             )
+            remember_project_opened(target, label=loaded_state.project_name)
             ui.navigate.to("/workspace")
 
         # ── history helpers ───────────────────────────────────────────────────
@@ -1474,9 +1500,12 @@ class RosterWidget(FingerprintedView):
             with ui.element("div").style(
                 "display: flex; flex-direction: row; align-items: stretch; width: 100%; flex: 1 1 auto; min-height: 0;"
             ):
-                # LEFT — parameter panel for the previewed project.
+                # LEFT — parameter panel for the previewed project. 480 px, not 380: the
+                # Project section is four absolute paths and globs, and at 380 every one
+                # of them wrapped to three lines, which is what made this pane read as a
+                # ransom note rather than a table.
                 with ui.element("div").style(
-                    "flex: 0 0 380px; max-width: 40%; border-right: 1px solid #e5e7eb; "
+                    "flex: 0 0 480px; max-width: 44%; border-right: 1px solid #e5e7eb; "
                     "display: flex; flex-direction: column; min-height: 0; background: #ffffff;"
                 ):
                     with ui.element("div").style(
@@ -1505,7 +1534,7 @@ class RosterWidget(FingerprintedView):
                         current_path=current_path_str,
                         selected_path=current_path_str,
                         show_filter=True,
-                        height_css="calc(88vh - 116px)",
+                        height_css="calc(88vh - 148px)",
                         title="Projects Overview",
                     )
                     overview_ref["comp"] = overview
@@ -1834,6 +1863,65 @@ class RosterWidget(FingerprintedView):
         live = kind == "live"
         icon.classes(add="cb-protocol-live" if live else "", remove="" if live else "cb-protocol-live")
         tip.set_text(text)
+
+    def _build_link_btn(self):
+        """Copy-link (roadmap 17 S4): the URL that reproduces exactly where the user is.
+
+        A menu rather than a bare copy button on purpose — `navigator.clipboard` is a
+        secure-context API and this server is reached over plain http on the cluster, so
+        the write can quietly do nothing. Showing the URL (selectable) means the button
+        always works, with the copy icon as the fast path when the context allows it."""
+        from ui.components.copyable import copy_button
+        from ui.routing import route_to_path
+
+        writer = self.panel.callbacks.get("route_writer")
+        if writer is None:
+            return
+
+        def _absolute() -> str:
+            path = route_to_path(writer.current)
+            try:
+                origin = str(ui.context.client.request.base_url).rstrip("/")
+            except RuntimeError:
+                return path
+            return f"{origin}{path}"
+
+        btn = (
+            ui.button(icon="link")
+            .props("flat dense")
+            .style(
+                f"width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
+                f"color: {SB_MUTE}; background: transparent; min-width: 0;"
+            )
+        )
+        btn.tooltip("Link to this view — copy it, or send it to a colleague")
+        with btn:
+            menu = (
+                ui.menu()
+                .props('anchor="center right" self="center left" :offset="[8,0]"')
+                .style(
+                    "background: #ffffff; border: 1px solid #e2e8f0; border-radius: 5px; "
+                    "padding: 8px 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); max-width: 460px;"
+                )
+            )
+            with menu:
+                row = ui.element("div").style("display: flex; align-items: center; gap: 6px;")
+
+        def _fill() -> None:
+            # Rebuilt on every open: the route moves with each click, and a menu built
+            # once at rail time would hand out the URL of whatever view loaded first.
+            url = _absolute()
+            row.clear()
+            with row:
+                ui.label(url).style(
+                    "font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #475569; "
+                    "word-break: break-all; user-select: all;"
+                )
+                copy_button(url, tooltip="Copy link")
+
+        # The QMenu nested in the button opens on its own click; `before-show` fills it
+        # so the content is current without a flash of the previous route's URL.
+        menu.on("before-show", _fill)
 
     def _sb_svg_btn(self, svg_name, tooltip, on_click, active=False, ref_key=None, color_override=None, badge=False):
         bg = SB_ABG if active else "transparent"

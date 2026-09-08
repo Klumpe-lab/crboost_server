@@ -77,6 +77,7 @@ from ui.dashboard.figures import (
 )
 from ui.dashboard.pixel_sanity import render_pixel_sanity_table
 from ui.dashboard.strip import build_strip
+from ui.routing import View
 from ui.particles.pick_viewer import render_imported_particles_section, render_particles_section, reset_auto_kick_state
 
 logger = logging.getLogger(__name__)
@@ -396,6 +397,9 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             return
         prev = selected["ts"]
         selected["ts"] = ts
+        set_url = (callbacks or {}).get("set_url")
+        if set_url:
+            set_url(View.JOURNEY, ts)
         _sel_gen["n"] += 1
         mine = _sel_gen["n"]
         if prev in col_els:
@@ -546,6 +550,12 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         # render_strip) whenever the journey isn't the visible view; resume when
         # it is. Driven by the workspace's _switch_to.
         _active["on"] = on
+        if on and selected["ts"]:
+            # The workspace has just written the bare `/journey` route; name the
+            # tilt-series that is actually on screen (roadmap 17 S3).
+            set_url = (callbacks or {}).get("set_url")
+            if set_url:
+                set_url(View.JOURNEY, selected["ts"])
         try:
             if on:
                 live_timer.activate()
@@ -706,13 +716,7 @@ def _render_main_pane_for_ts(
         # jobs — e.g. a particle-only project), fall back to the imported-tomogram
         # manual-picking section so the imported tomos still surface.
         if render_particles_section(
-            ts_name,
-            project_state,
-            project_path,
-            refresh,
-            refresh_roster,
-            manage_species,
-            open_viewer=open_viewer,
+            ts_name, project_state, project_path, refresh, refresh_roster, manage_species, open_viewer=open_viewer
         ):
             rendered_any = True
         elif render_imported_particles_section(ts_name, project_state, project_path, refresh, refresh_roster):
@@ -2067,9 +2071,7 @@ def _render_reconstruct_section(ts_name: str, project_state, project_path: Path,
     return True
 
 
-def _render_recon_big_preview(
-    ts_name: str, project_state, project_path: Path, mrc_path: Path | None, refresh
-) -> None:
+def _render_recon_big_preview(ts_name: str, project_state, project_path: Path, mrc_path: Path | None, refresh) -> None:
     """Side-by-side tomogram preview: the WarpTools recon PNG (left) and the
     cryoCARE/IsoNet denoised X/Y slab (right).
 

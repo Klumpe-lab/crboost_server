@@ -16,6 +16,7 @@ from ui.current_project import current_project_state
 from ui.pipeline_builder.pipeline_constants import PHASE_JOBS, PHASE_PARTICLES, missing_deps, next_instance_id
 from ui.pipeline_builder.pipeline_roster import RosterWidget
 from ui.pipeline_builder.status_poller import StatusPoller
+from ui.routing import View
 from services.models_base import InstanceId, instance_id_to_job_type
 from ui.ui_state import get_ui_state_manager, get_job_display_name
 from ui.pipeline_builder.job_tab_component import render_job_tab
@@ -85,6 +86,7 @@ class PipelineBuilderPanel:
         self.callbacks["set_active_mode"] = self.roster.set_active_mode
         # Species page (roadmap 10 S4): open a job in the pipeline view / add one for a species.
         self.callbacks["open_job"] = self.switch_tab
+        self.callbacks["open_job_subsection"] = self.switch_to_job_subsection
         self.callbacks["add_instance_for_species"] = self.add_instance_for_species
 
         self.rebuild_pipeline_ui()
@@ -236,6 +238,9 @@ class PipelineBuilderPanel:
         self._ensure_job_rendered(instance_id)
         for iid, c in self._job_content_containers.items():
             c.set_visibility(iid == instance_id)
+        set_url = self.callbacks.get("set_url")
+        if set_url:
+            set_url(View.JOB, instance_id, self.ui_mgr.get_job_ui_state(instance_id).active_monitor_tab)
         self.roster.refresh()
 
     def switch_to_job_subsection(self, instance_id: str, tab_key: str):
