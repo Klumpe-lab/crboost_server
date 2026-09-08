@@ -1019,6 +1019,13 @@ _CB_CSS = """
 .cb-seg-btn.active .cb-seg-badge { color: #64748b; }
 .cb-seg-btn:hover { background: #f8fafc; }
 .cb-seg-btn.active { background: #f1f5f9; color: #1e293b; font-weight: 600; }
+/* Projects roster travel chevron (ui/projects_overview.py): a full-row-height column on
+ * the right edge, so "open this project" is the easiest target on the row rather than an
+ * 18 px round arrow. Lights up on its own hover AND on the row's, so it reads as part of
+ * the row rather than a separate control that happens to sit there. */
+.cb-proj-chevron:hover { background: #eff6ff; }
+.cb-proj-chevron:hover .q-icon { color: #2563eb !important; }
+.group:hover .cb-proj-chevron .q-icon { color: #64748b; }
 /* Template workbench lists (picking-UI roadmap 05): cards became table rows, so the
  * per-row facts (apix / box / lp, sigma stats, size, polarity) sit in columns sized to
  * their content instead of truncating inside a 260 px card. Only the FILE column flexes.

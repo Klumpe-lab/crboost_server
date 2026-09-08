@@ -23,6 +23,10 @@ from nicegui import ui, app
 from services.configs.user_prefs_service import get_prefs_service
 from services.project_state import SHARED_OWNER
 from ui.components.buttons import house_button
+from ui.components.copyable import copy_button
+from ui.components.fields import house_select
+from ui.components.segmented import render_segmented
+from ui.routing import Route, route_to_path
 from ui.styles import MONO, SANS as FONT
 
 logger = logging.getLogger(__name__)
@@ -45,6 +49,14 @@ CLR_IDLE = "#94a3b8"
 
 CURRENT_USER = getpass.getuser()
 DEFAULT_REFRESH_SEC = 15.0
+
+# Ordering of the rows inside each owner section. "Recently viewed" is the default
+# because it answers the question the list is usually open for ("take me back to the
+# one I was in"); it reads prefs.recent_projects, the per-user MRU written by every
+# path that lands someone in a workspace (ui/open_project.remember_project_opened).
+SORT_MODES = (("recent", "Last opened"), ("created", "Created"))
+DEFAULT_SORT = "recent"
+ANY_SPECIES = "__any__"
 
 
 def avatar_color(key: str) -> str:
@@ -144,6 +156,12 @@ class ProjectsOverview:
         self._list_container = None
         self._counts_label = None
         self._mine_label = None
+        self._sort_seg = None
+        self._species_select = None
+        self._sort_mode = DEFAULT_SORT
+        self._species_filter = ANY_SPECIES
+        self._syncing_species = False
+        self._mru_rank: dict[str, int] = {}
         self._timer = None
         self._last_scanned_base: str | None = None
         self._refresh_lock = asyncio.Lock()
@@ -220,14 +238,6 @@ class ProjectsOverview:
             self._selected_resolved = None
         self._render_list()
 
-    async def _travel(self, path: Path):
-        """Explicit 'open this project' from a row's arrow (preview mode)."""
-        try:
-            await self.on_open(path)
-        except Exception as e:
-            logger.info("Open project failed: %s", e)
-            ui.notify(f"Failed to open project: {e}", type="negative")
-
     def stop(self):
         """Cancel the auto-refresh timer (e.g. when a dialog closes)."""
         if self._timer is not None:
@@ -242,12 +252,15 @@ class ProjectsOverview:
     # =====================================================================
 
     def _build_header(self):
-        with ui.row().classes("w-full items-center px-4 pt-3 pb-2").style("gap: 10px;"):
+        with ui.row().classes("w-full items-center px-3 pt-2 pb-1").style("gap: 8px; flex-wrap: nowrap;"):
             ui.label(self.title).style(
-                f"{FONT} font-size: 13px; font-weight: 600; color: {CLR_HEADING}; "
+                f"{FONT} font-size: 12px; font-weight: 600; color: {CLR_HEADING}; "
                 "letter-spacing: -0.01em; flex-shrink: 0;"
             )
-            self._counts_label = ui.label("").style(f"{MONO} font-size: 10px; color: {CLR_SUBLABEL}; flex: 1;")
+            self._counts_label = ui.label("").style(
+                f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; flex: 1 1 0; min-width: 0; "
+                "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+            )
 
             # Refresh button -- explicit re-scan in addition to the timer.
             ui.button(icon="refresh", on_click=self.refresh).props("flat dense round size=xs").classes(
@@ -256,6 +269,86 @@ class ProjectsOverview:
 
             if self.show_filter:
                 self._build_mine_toggle()
+
+        self._build_sorter_bar()
+
+    def _build_sorter_bar(self):
+        """Order + species filter. Sorting happens INSIDE each owner section, so the
+        Lab/Shared grouping the roster has always had is untouched by it."""
+        with ui.row().classes("w-full items-center px-3 pb-2").style("gap: 8px; flex-wrap: nowrap;"):
+            ui.label("ORDER").style(
+                f"{FONT} font-size: 9px; font-weight: 700; color: {CLR_SUBLABEL}; "
+                "letter-spacing: 0.06em; flex-shrink: 0;"
+            )
+            self._sort_seg = render_segmented(list(SORT_MODES), self._sort_mode, self._on_sort)
+
+            ui.element("div").style("flex: 1 1 0; min-width: 0;")
+
+            # Species index across the scanned projects. Options are refreshed on every
+            # scan (_render_list); a species that no project registers is simply not
+            # offered rather than silently matching nothing.
+            self._species_select = house_select(
+                "SPECIES",
+                {ANY_SPECIES: "any"},
+                value=ANY_SPECIES,
+                width="w-28",
+                hint="Show only projects whose registry holds this particle species",
+                on_change=self._on_species_filter,
+            )
+
+    def _on_sort(self, key: str):
+        self._sort_mode = key
+        if self._sort_seg is not None:
+            self._sort_seg.set_active(key)
+        self._render_list()
+
+    def _on_species_filter(self, e):
+        # set_options() below re-enters this handler when it has to drop a value that
+        # no longer exists; _render_list is mid-clear() at that point, so the flag turns
+        # the echo into a no-op instead of a nested rebuild.
+        if self._syncing_species:
+            return
+        self._species_filter = e.value or ANY_SPECIES
+        self._render_list()
+
+    def _sync_species_options(self, projects: list[dict]):
+        """Rebuild the species dropdown's options from what the scan actually found.
+        Keeps the current selection when it still exists; falls back to 'any' (and says
+        so by moving the control) when the species it named has gone."""
+        if self._species_select is None:
+            return
+        names: dict[str, str] = {}
+        for proj in projects:
+            for sp in proj.get("species") or []:
+                names.setdefault(sp["id"], sp.get("name") or sp["id"])
+        options = {ANY_SPECIES: "any"} | {sid: names[sid] for sid in sorted(names, key=lambda k: names[k].lower())}
+        if options == self._species_select.options:
+            return
+        self._syncing_species = True
+        try:
+            if self._species_filter not in options:
+                self._species_filter = ANY_SPECIES
+            self._species_select.set_options(options, value=self._species_filter)
+        finally:
+            self._syncing_species = False
+
+    def _sort_key(self, proj: dict):
+        """Descending order within a section: most recent first for both modes.
+        A project the user has never opened has no MRU rank — it sorts after every one
+        that does, by activity, rather than being silently treated as 'just opened'."""
+        if self._sort_mode == "created":
+            return (-(proj.get("created_timestamp") or 0.0), proj.get("name", ""))
+        rank = self._mru_rank.get(self._resolved_path(proj))
+        return (0 if rank is not None else 1, rank if rank is not None else 0, -(proj.get("last_activity_ts") or 0.0))
+
+    @staticmethod
+    def _resolved_path(proj: dict) -> str:
+        try:
+            return str(Path(proj["path"]).resolve())
+        except OSError:
+            # Dangling/unreachable mount mid-scan: the unresolved path still keys the
+            # MRU correctly for anything opened from this same base.
+            return proj.get("path", "")
 
     def _build_mine_toggle(self):
         def on_toggle(e):
@@ -266,11 +359,11 @@ class ProjectsOverview:
         switch = (
             ui.switch(value=self.prefs.prefs.show_only_mine, on_change=on_toggle)
             .props("dense color=blue")
-            .style("transform: scale(0.7);")
+            .style("transform: scale(0.65);")
         )
         switch.tooltip(f"Filter to projects created by {CURRENT_USER}")
         self._mine_label = ui.label("Only mine").style(
-            f"{FONT} font-size: 10px; color: {CLR_LABEL}; cursor: pointer; flex-shrink: 0;"
+            f"{FONT} font-size: 9px; color: {CLR_LABEL}; cursor: pointer; flex-shrink: 0;"
         )
         self._mine_label.on("click", lambda: switch.set_value(not switch.value))
 
@@ -291,6 +384,9 @@ class ProjectsOverview:
         all_projects = self._projects
         eff = self._eff_owner_of  # mutable owner, falling back to created_by
 
+        self._sync_species_options(all_projects)
+        self._mru_rank = self.prefs.prefs.recent_project_rank()
+
         show_only_mine = self.prefs.prefs.show_only_mine
         if show_only_mine:
             # "Only mine" also surfaces the shared Lab area (under its own
@@ -298,6 +394,10 @@ class ProjectsOverview:
             visible = [p for p in all_projects if eff(p) in (CURRENT_USER, SHARED_OWNER)]
         else:
             visible = all_projects
+
+        species_filter = self._species_filter
+        if species_filter != ANY_SPECIES:
+            visible = [p for p in visible if any(s["id"] == species_filter for s in (p.get("species") or []))]
 
         # Header counts: live / failed / total visible.
         live_n = sum(1 for p in visible if p.get("live_status") == "running")
@@ -324,6 +424,11 @@ class ProjectsOverview:
                 base = self._last_scanned_base or ""
                 if not base:
                     msg = "Set a base location to scan for projects"
+                elif all_projects and species_filter != ANY_SPECIES:
+                    label = (self._species_select.options if self._species_select else {}).get(
+                        species_filter, species_filter
+                    )
+                    msg = f"No projects with a '{label}' species"
                 elif all_projects and show_only_mine:
                     msg = f"No projects owned by {CURRENT_USER}"
                 ui.label(msg).style(
@@ -348,8 +453,9 @@ class ProjectsOverview:
                 return (2, k.lower())
 
             for owner in sorted(groups, key=_section_order):
-                self._render_section_header(owner, groups[owner])
-                for proj in groups[owner]:
+                rows = sorted(groups[owner], key=self._sort_key)
+                self._render_section_header(owner, rows)
+                for proj in rows:
                     self._render_row(proj)
 
     def _render_section_header(self, creator: str, projects: list[dict]):
@@ -371,9 +477,9 @@ class ProjectsOverview:
             .classes("w-full items-center")
             .style(f"gap: 6px; padding: 5px 12px; background: #f1f5f9; border-bottom: 1px solid {CLR_BORDER};")
         ):
-            ui.element("div").style(f"width: 6px; height: 6px; border-radius: 50%; background: {dot}; flex-shrink: 0;")
+            ui.element("div").style(f"width: 5px; height: 5px; border-radius: 50%; background: {dot}; flex-shrink: 0;")
             ui.label(label_text).style(
-                f"{MONO} font-size: 10px; font-weight: 700; color: {CLR_LABEL}; letter-spacing: 0.02em;"
+                f"{MONO} font-size: 9px; font-weight: 700; color: {CLR_LABEL}; letter-spacing: 0.02em;"
             )
             if is_me:
                 ui.label("you").style(
@@ -381,37 +487,31 @@ class ProjectsOverview:
                     "background: #dbeafe; border-radius: 3px; padding: 0 5px;"
                 )
             ui.label(f"{len(projects)} project{'s' if len(projects) != 1 else ''}").style(
-                f"{MONO} font-size: 9px; color: {CLR_SUBLABEL};"
+                f"{MONO} font-size: 8px; color: {CLR_SUBLABEL};"
             )
             if live:
-                ui.label(f"· {live} live").style(f"{MONO} font-size: 9px; color: {CLR_RUNNING};")
+                ui.label(f"· {live} live").style(f"{MONO} font-size: 8px; color: {CLR_RUNNING};")
 
     # =====================================================================
     # ROW
     # =====================================================================
 
-    # Fixed column widths (px). Every row uses the same template so items
-    # land at identical x-offsets regardless of name/path length -- the
-    # name (line 1) and source path (line 2) are the only flexible cells
+    # Fixed column widths (px). Every row uses the same template so items land at
+    # identical x-offsets regardless of name/path length -- the name (line 1), the
+    # project path (line 1) and the source path (line 2) are the only flexible cells
     # and absorb all slack, so nothing else ever shifts.
-    _W_IDX = 20
-    _W_AVATAR = 20
-    _W_PILL = 50
-    _W_DATE = 76
-    _W_DELETE = 18
-    _W_XFER = 18
-    _W_TS = 48
-    _W_JOBS = 44
-    _W_RUNFAIL = 44
-    _W_ARROW = 24
+    _W_AVATAR = 18
+    _W_PILL = 46
+    _W_CHEVRON = 30
+    _W_TS = 44
+    _W_JOBS = 40
+    _W_RUNFAIL = 40
 
     def _render_row(self, proj: dict):
         path_str = proj["path"]
         name = proj["name"]
-        mnemonic = proj.get("mnemonic") or ""
         proj_color = avatar_color(name)
         initials = name[:3].upper()
-        stable_index = proj.get("stable_index", 0)
         ts_count = proj.get("ts_count") or 0
         total_planned = proj.get("total_jobs_planned") or 0
         succeeded = proj.get("succeeded") or 0
@@ -421,6 +521,12 @@ class ProjectsOverview:
         live_status = proj.get("live_status") or "idle"
         last_activity = proj.get("last_activity") or proj.get("modified") or ""
         source_dir = proj.get("source_directory") or ""
+        species = proj.get("species") or []
+        # The generated mnemonic ("icy-majestic-darwin") no longer takes a column — it
+        # competed with the project's real name for the eye and told the user nothing
+        # they had asked for. It stays one hover away on the name, where it is findable
+        # without being in the way.
+        mnemonic = proj.get("mnemonic") or ""
 
         is_current = False
         if self._current_resolved:
@@ -444,8 +550,9 @@ class ProjectsOverview:
                 except Exception as e:
                     logger.info("Preview project failed: %s", e)
 
-        # Preview mode (on_select set): a click previews the project and the
-        # row travels only via its explicit arrow. Otherwise a click opens it.
+        # Preview mode (on_select set): a click previews the project; the chevron is
+        # what travels. Otherwise a click anywhere on the row opens it, and the
+        # chevron just makes that obvious (and gives a big target on the right edge).
         preview_mode = self.on_select is not None
         is_selected = False
         if self._selected_resolved:
@@ -454,13 +561,20 @@ class ProjectsOverview:
             except Exception:
                 is_selected = False
 
-        # Two stacked lines: identity (left) + status (right) on line 1,
-        # source path (left) + counts (right) on line 2.
-        base_style = f"padding: 6px 12px 7px; gap: 4px; border-bottom: 1px solid {CLR_BORDER};"
+        # The row is a two-column flex: the text stack, and a full-height chevron.
+        # `overflow: hidden` is load-bearing, not cosmetic: this widget lives inside a
+        # QScrollArea, which scrolls BOTH ways — a row wider than the pane used to grow a
+        # horizontal scrollbar and take the status pill and the travel affordance off
+        # screen at 100 % zoom. Clipping means the roster degrades by dropping meta from
+        # the right of line 2 instead of hiding its own controls.
+        base_style = (
+            "display: flex; flex-direction: row; align-items: stretch; gap: 0; "
+            f"overflow: hidden; border-bottom: 1px solid {CLR_BORDER};"
+        )
         outline = " box-shadow: inset 0 0 0 1.5px #93c5fd;" if is_selected else ""
         if is_current:
             row_classes = "w-full group"
-            cur = " background: #eff6ff; border-left: 3px solid #3b82f6; padding-left: 9px;"
+            cur = " background: #eff6ff; border-left: 3px solid #3b82f6;"
             cur += " cursor: pointer;" if preview_mode else " cursor: default;"
             row_style = base_style + cur + outline
             row_click = _select if preview_mode else None
@@ -469,61 +583,106 @@ class ProjectsOverview:
             row_style = base_style + outline
             row_click = _select if preview_mode else _open
 
-        row = ui.column().classes(row_classes).style(row_style)
+        row = ui.element("div").classes(row_classes).style(row_style)
         if row_click is not None:
             row.on("click", row_click)
 
         fixed = "flex-shrink: 0; white-space: nowrap;"
         with row as row_el:
-            # ---- Line 1: idx + avatar + name/mnemonic | status + date + delete ----
-            with ui.row().classes("w-full items-center").style("gap: 8px; flex-wrap: nowrap;"):
-                ui.label(f"{stable_index:02d}").style(
-                    f"{MONO} font-size: 10px; color: {CLR_SUBLABEL}; width: {self._W_IDX}px; text-align: right; {fixed}"
-                )
-
+            with ui.element("div").style(
+                "flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 5px 4px 6px 10px;"
+            ):
+                # ---- Line 1: avatar + NAME + full path (copyable) | status ----
                 with ui.element("div").style(
-                    f"width: {self._W_AVATAR}px; height: {self._W_AVATAR}px; border-radius: 50%; "
-                    f"flex-shrink: 0; background: {proj_color}1a; border: 1px solid {proj_color}55; "
-                    "display: flex; align-items: center; justify-content: center;"
+                    "display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; min-width: 0;"
                 ):
-                    ui.label(initials).style(
-                        f"font-size: 7px; font-weight: 600; color: {proj_color}; "
-                        "letter-spacing: 0.03em; line-height: 1; pointer-events: none;"
-                    )
+                    with ui.element("div").style(
+                        f"width: {self._W_AVATAR}px; height: {self._W_AVATAR}px; border-radius: 50%; "
+                        f"flex-shrink: 0; background: {proj_color}1a; border: 1px solid {proj_color}55; "
+                        "display: flex; align-items: center; justify-content: center;"
+                    ):
+                        ui.label(initials).style(
+                            f"font-size: 6px; font-weight: 600; color: {proj_color}; "
+                            "letter-spacing: 0.03em; line-height: 1; pointer-events: none;"
+                        )
 
-                # Name + mnemonic -- the flexible cell. Only the name truncates
-                # under pressure; the (short) mnemonic never shrinks, so a long
-                # name can't push it around.
-                with ui.element("div").style(
-                    "flex: 1 1 0; min-width: 0; display: flex; align-items: baseline; gap: 6px; overflow: hidden;"
-                ):
-                    ui.label(name).style(
-                        f"{FONT} font-size: 11px; font-weight: 500; color: {CLR_HEADING}; "
-                        "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; "
-                        "min-width: 0; flex: 0 1 auto;"
+                    # The name is the one thing in this widget with weight. Everything
+                    # else on the row is 8-9 px meta, so 12/600 reads as the title
+                    # without needing a rule or a background to say so.
+                    name_lbl = ui.label(name).style(
+                        f"{FONT} font-size: 12px; font-weight: 600; color: {CLR_HEADING}; "
+                        "letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; "
+                        "white-space: nowrap; min-width: 0; flex: 0 1 auto;"
                     )
                     if mnemonic:
-                        ui.label(mnemonic).style(
-                            f"{MONO} font-size: 9px; color: {CLR_META}; font-style: italic; {fixed}"
-                        )
+                        name_lbl.tooltip(f"{name}\n{mnemonic}")
                     if is_current:
                         ui.label("CURRENT").style(
-                            f"{FONT} font-size: 8px; color: #1e40af; font-weight: 700; "
+                            f"{FONT} font-size: 7px; color: #1e40af; font-weight: 700; "
                             "background: #dbeafe; border: 1px solid #93c5fd; "
-                            "border-radius: 3px; padding: 0 5px; flex-shrink: 0; "
+                            "border-radius: 3px; padding: 0 4px; flex-shrink: 0; "
                             "letter-spacing: 0.05em;"
                         )
 
-                with ui.element("div").style(f"width: {self._W_PILL}px; {fixed} display: flex;"):
-                    self._render_status_pill(live_status)
+                    # The project's own absolute path, on the title line. Truncates at the
+                    # TAIL: the leaf directory is the project name already bolded to its
+                    # left, so what this cell is really carrying is which base it lives
+                    # under. (No `direction: rtl` head-truncation trick — bidi moves the
+                    # leading "/" to the far end and the path reads wrong.) Full path in
+                    # the hover and one click away on the copy icon.
+                    ui.label(path_str).style(
+                        f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; flex: 1 1 0; min-width: 0; "
+                        "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                    ).tooltip(path_str)
+                    with ui.element("div").style("display: flex; flex-shrink: 0;").on("click.stop", lambda _e: None):
+                        copy_button(path_str, tooltip=f"Copy project path\n{path_str}", color=CLR_GHOST)
 
-                ui.label(last_activity).style(
-                    f"{MONO} font-size: 9px; color: {CLR_GHOST}; width: {self._W_DATE}px; text-align: right; {fixed}"
-                )
+                    with ui.element("div").style(f"width: {self._W_PILL}px; {fixed} display: flex;"):
+                        self._render_status_pill(live_status)
 
+                # ---- Line 2: TS count · date · jobs · progress | species | actions ----
                 with ui.element("div").style(
-                    f"width: {self._W_XFER}px; {fixed} display: flex; justify-content: flex-end;"
+                    f"display: flex; align-items: center; gap: 7px; flex-wrap: nowrap; "
+                    f"min-width: 0; padding-left: {self._W_AVATAR + 6}px;"
                 ):
+                    ui.label(f"{ts_count} TS" if ts_count else "— TS").style(
+                        f"{MONO} font-size: 9px; color: {CLR_LABEL if ts_count else CLR_GHOST}; "
+                        f"width: {self._W_TS}px; {fixed}"
+                    )
+                    # The date is the first thing allowed to go when the pane is narrow:
+                    # it shrinks and ellipsises rather than pushing the columns after it
+                    # (and the chevron) out of the row.
+                    ui.label(last_activity).style(
+                        f"{MONO} font-size: 9px; color: {CLR_GHOST}; min-width: 0; flex: 0 1 auto; "
+                        "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                    )
+                    ui.label(f"{succeeded}/{total_planned}" if total_planned else "—").style(
+                        f"{MONO} font-size: 9px; color: {CLR_LABEL if total_planned else CLR_GHOST}; "
+                        f"width: {self._W_JOBS}px; text-align: right; {fixed}"
+                    )
+                    self._render_progress_bar(succeeded, failed, running_live, executed, total_planned)
+
+                    with ui.element("div").style(f"width: {self._W_RUNFAIL}px; {fixed} display: flex;"):
+                        if running_live:
+                            ui.label(f"{running_live} run").style(
+                                f"{FONT} font-size: 8px; font-weight: 600; color: {CLR_RUNNING};"
+                            )
+                        elif failed:
+                            ui.label(f"{failed} fail").style(
+                                f"{FONT} font-size: 8px; font-weight: 600; color: {CLR_FAILED};"
+                            )
+
+                    self._render_species_dots(species)
+
+                    # Absorbs the slack so the hover actions sit on the right edge and
+                    # the meta above never stretches.
+                    ui.element("div").style("flex: 1 1 0; min-width: 0;")
+
+                    if source_dir:
+                        ui.icon("folder_open", size="10px").style(f"color: {CLR_GHOST}; flex-shrink: 0;").tooltip(
+                            f"Raw data\n{source_dir}"
+                        )
+
                     if self.on_transfer is not None and not is_current:
 
                         async def _xfer(p=path_str, n=name):
@@ -540,9 +699,6 @@ class ProjectsOverview:
                             .tooltip("Transfer ownership")
                         )
 
-                with ui.element("div").style(
-                    f"width: {self._W_DELETE}px; {fixed} display: flex; justify-content: flex-end;"
-                ):
                     if self.on_delete is not None and not is_current:
 
                         async def _del(p=path_str, n=name, r=row_el):
@@ -557,68 +713,68 @@ class ProjectsOverview:
                             .on("click.stop", lambda: None)
                         )
 
-                # Explicit "travel" arrow — only in preview mode, and not on the
-                # already-loaded project. Always visible so it's obvious.
-                if preview_mode and not is_current:
-                    with ui.element("div").style(
-                        f"width: {self._W_ARROW}px; {fixed} display: flex; justify-content: flex-end;"
-                    ):
-                        (
-                            ui.button(icon="arrow_forward", on_click=lambda p=path_str: self._travel(Path(p)))
-                            .props("flat dense round size=xs")
-                            .classes("text-blue-400 hover:text-blue-600")
-                            .on("click.stop", lambda: None)
-                            .tooltip("Open this project")
-                        )
+            # ---- Travel chevron: full row height, its own hit area ----
+            # The old 18 px round arrow was a pixel-hunt; this is a full-height column
+            # on the right edge, so "go there" is the easiest thing on the row to hit.
+            self._render_chevron(path_str, is_current)
 
-            # ---- Line 2: source path | TS count + jobs + run/fail + bar ----
-            # Indented past the idx + avatar gutter (two 8px gaps between) so
-            # the folder icon lines up under the name, not under the idx.
-            with (
-                ui.row()
-                .classes("w-full items-center")
-                .style(f"gap: 8px; flex-wrap: nowrap; padding-left: {self._W_IDX + self._W_AVATAR + 16}px;")
+    def _render_chevron(self, path_str: str, is_current: bool):
+        if is_current:
+            with ui.element("div").style(
+                f"width: {self._W_CHEVRON}px; flex-shrink: 0; display: flex; "
+                "align-items: center; justify-content: center;"
             ):
-                # Source data directory -- the flexible cell; left-aligned so
-                # the absolute leading slash stays visible, truncates at the
-                # tail. Tooltip carries the full path.
-                with ui.element("div").style(
-                    "flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 4px; overflow: hidden;"
-                ):
-                    ui.icon("folder_open", size="11px").style(f"color: {CLR_GHOST}; flex-shrink: 0;")
-                    if source_dir:
-                        ui.label(source_dir).style(
-                            f"{MONO} font-size: 9px; color: {CLR_LABEL}; min-width: 0; "
-                            "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                        ).tooltip(source_dir)
-                    else:
-                        ui.label("no source recorded").style(
-                            f"{MONO} font-size: 9px; color: {CLR_GHOST}; font-style: italic;"
-                        )
+                ui.icon("check", size="14px").style(f"color: {CLR_RUNNING};").tooltip("Currently open")
+            return
+        # A real <a href> (roadmap 17 S5), not a click handler: the travel arrow now
+        # carries the project's addressable URL, so ⌘-click / middle-click opens it in a
+        # new browser tab and "copy link address" works. A plain click is the browser's
+        # own navigation to the same routed page, which loads the project and lands in
+        # the workspace exactly as the old handler did — and reports a missing project
+        # itself rather than through a toast on a page the user is leaving.
+        chev = (
+            ui.link(target=self._project_url(path_str))
+            .classes("cb-proj-chevron")
+            .style(
+                f"width: {self._W_CHEVRON}px; flex-shrink: 0; display: flex; "
+                "align-items: center; justify-content: center; cursor: pointer; "
+                f"border-left: 1px solid {CLR_BORDER}; text-decoration: none; "
+                "align-self: stretch; padding: 0;"
+            )
+            .tooltip("Open this project")
+        )
+        with chev:
+            ui.icon("chevron_right", size="20px").style(f"color: {CLR_GHOST}; pointer-events: none;")
 
-                ui.label(f"{ts_count} TS" if ts_count else "—").style(
-                    f"{MONO} font-size: 9px; color: {CLR_LABEL if ts_count else CLR_GHOST}; "
-                    f"width: {self._W_TS}px; text-align: right; {fixed}"
+    @staticmethod
+    def _project_url(path_str: str) -> str:
+        """`/p/<dirname>?base=<parent>`. The base is always pinned here: the roster lists
+        whatever directory the user pointed it at, which need not be one the resolver
+        searches, and one stat-free explicit answer beats a per-row search on every
+        refresh. The workspace drops the parameter again when it turns out to be
+        redundant."""
+        p = Path(path_str)
+        return route_to_path(Route(project=p.name, base=str(p.parent)))
+
+    def _render_species_dots(self, species: list[dict]):
+        """The species this project's registry holds -- the same colour token the
+        Species page and the roster chips use. Three at most; the rest is a count, and
+        the full list is in the hover. Absent species render nothing (a project with no
+        particles is the common case, not a gap to flag)."""
+        if not species:
+            return
+        names = ", ".join(s.get("name") or s["id"] for s in species)
+        with (
+            ui.element("div")
+            .style("display: flex; align-items: center; gap: 2px; flex-shrink: 0;")
+            .tooltip(f"Species: {names}")
+        ):
+            for sp in species[:3]:
+                ui.element("div").style(
+                    f"width: 6px; height: 6px; border-radius: 50%; background: {sp.get('color') or CLR_RUNNING};"
                 )
-
-                ui.label(f"{succeeded}/{total_planned}" if total_planned else "—").style(
-                    f"{MONO} font-size: 9px; color: {CLR_LABEL if total_planned else CLR_GHOST}; "
-                    f"width: {self._W_JOBS}px; text-align: right; {fixed}"
-                )
-
-                with ui.element("div").style(
-                    f"width: {self._W_RUNFAIL}px; {fixed} display: flex; justify-content: flex-end;"
-                ):
-                    if running_live:
-                        ui.label(f"{running_live} run").style(
-                            f"{FONT} font-size: 8px; font-weight: 600; color: {CLR_RUNNING};"
-                        )
-                    elif failed:
-                        ui.label(f"{failed} fail").style(
-                            f"{FONT} font-size: 8px; font-weight: 600; color: {CLR_FAILED};"
-                        )
-
-                self._render_progress_bar(succeeded, failed, running_live, executed, total_planned)
+            if len(species) > 3:
+                ui.label(f"+{len(species) - 3}").style(f"{MONO} font-size: 8px; color: {CLR_SUBLABEL};")
 
     def _render_status_pill(self, status: str):
         s = _STATUS_STYLES.get(status, _STATUS_STYLES["idle"])
@@ -785,9 +941,13 @@ class ProjectsOverview:
             with row_el:
                 ui.spinner("dots", size="xs").style(f"color: {CLR_SUBLABEL};")
                 ui.label(f"Deleting {name}...").style(
-                    f"{FONT} font-size: 11px; color: {CLR_SUBLABEL}; font-style: italic; margin-left: 8px;"
+                    f"{FONT} font-size: 10px; color: {CLR_SUBLABEL}; font-style: italic; margin-left: 8px;"
                 )
-            row_el.style(add="opacity: 0.5; pointer-events: none; cursor: default;")
+            # The row is a stretch-aligned flex row (text stack + chevron); with both
+            # gone the spinner would sit flush against the top-left corner.
+            row_el.style(
+                add="opacity: 0.5; pointer-events: none; cursor: default; align-items: center; padding: 8px 12px;"
+            )
             row_el.is_deleted = True
         except Exception as e:
             logger.debug("Could not grey out row: %s", e)

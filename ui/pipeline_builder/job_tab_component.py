@@ -11,6 +11,7 @@ from ui.components.buttons import house_button
 from ui.current_project import current_project_state
 from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
 from ui.job_plugins import get_extra_tabs, get_full_panel_renderer
+from ui.routing import View
 from ui.components.species_pill import render_species_pill
 from ui.status_indicator import BoundStatusDot
 from services.models_base import instance_id_to_job_type
@@ -312,6 +313,9 @@ def _handle_tab_switch(
     job_type: JobType, instance_id: str, tab_key: str, backend, ui_mgr: UIStateManager, callbacks: dict[str, Callable]
 ):
     ui_mgr.set_job_monitor_tab(instance_id, tab_key, user_initiated=True)
+    set_url = (callbacks or {}).get("set_url")
+    if set_url:
+        set_url(View.JOB, instance_id, tab_key)
     widget_refs = ui_mgr.get_job_widget_refs(instance_id)
 
     if widget_refs.switcher_container:
@@ -380,7 +384,6 @@ def _handle_delete(
     if getattr(job_model, "IS_INTERACTIVE", False):
         remove_cb = callbacks.get("remove_instance_from_pipeline")
         if remove_cb:
-
             state = current_project_state()
             if state and instance_id in state.jobs:
                 del state.jobs[instance_id]

@@ -2,12 +2,19 @@
 Main UI router.
 """
 
+from dataclasses import replace
+from pathlib import Path
+
 from nicegui import ui, Client, app
 
 from backend import CryoBoostBackend
 from services.configs.user_prefs_service import get_prefs_service
+from services.project_resolve import resolve_project
+from services.result import ErrorCode
 from ui.dashboard.css import ensure_assets_loaded
 from services.project_state import get_project_state_for
+from ui.open_project import disambiguating_base, load_project_into_tab, workspace_url
+from ui.routing import Route, RouteWriter, apply_route, parse_route, route_to_path
 from ui.ui_state import get_ui_state_manager
 from ui.components.buttons import house_button
 from ui.data_import_panel import build_data_import_panel
@@ -171,26 +178,107 @@ def create_ui_router(backend: CryoBoostBackend):
             project_path_provider=lambda: str(ui_mgr.project_path) if ui_mgr.project_path else None
         )
 
-    # --- PAGE 2: WORKSPACE ---
+    # --- PAGE 2: WORKSPACE (roadmap 17 — addressable at /p/<project>/<view>/<target>) ---
+
+    async def _open_routed_workspace(client: Client, route: Route) -> None:
+        """One body behind all four `/p/...` shapes: resolve the project from its
+        directory name, load it into this tab, build the workspace, then drive it onto
+        the route's view + target."""
+        await client.connected()
+        ensure_assets_loaded()
+
+        # resolve_project reads the user's bases out of the prefs singleton, which is
+        # only populated once someone loads it from this browser's storage.
+        get_prefs_service().load_from_app_storage(app.storage.user)
+
+        ui_mgr = get_ui_state_manager()
+        found = resolve_project(route.project, base=route.base, current=ui_mgr.project_path)
+        if not found["success"]:
+            if found.get("code") == ErrorCode.PROJECT_AMBIGUOUS:
+                _render_project_chooser(route, found.get("candidates") or [])
+                return
+            searched = found.get("searched") or []
+            where = f" Searched: {', '.join(searched)}." if searched else ""
+            ui.notify(f"{found['error']}{where}", type="warning", timeout=9000)
+            ui.navigate.to("/")
+            return
+
+        # Unconditional: StateService.load_project is load-if-absent (the in-memory state
+        # stays authoritative), so re-entering a project this tab already holds costs a
+        # dict lookup and correctly re-stamps it onto the "recently viewed" MRU.
+        target = found["path"]
+        if not await load_project_into_tab(backend, ui_mgr, target):
+            ui.navigate.to("/")
+            return
+
+        # The canonical base, not the one the URL happened to carry: a link that pinned a
+        # base it did not need gets tidied to the short form by the first write.
+        writer = RouteWriter(target.name, disambiguating_base(target))
+        writer.adopt(route)
+        writer.suppressed = True
+        callbacks = build_workspace_page(backend, writer)
+
+        async def _apply() -> None:
+            try:
+                await apply_route(callbacks, route, target)
+            finally:
+                writer.suppressed = False
+
+        # After the first paint: the lazy views (journey, gallery, viewer, protocols)
+        # build themselves inside their own callbacks, and those need the DOM to exist.
+        ui.timer(0.05, _apply, once=True)
+
+    def _render_project_chooser(route: Route, candidates: list[str]) -> None:
+        """Two bases hold a project of this name. Do not guess (CLAUDE.md, *Surfacing
+        uncertainty*) — show both absolute paths, each a link that pins its base."""
+        with ui.column().classes("w-full h-screen items-center justify-center gap-4"):
+            ui.icon("alt_route", size="48px").classes("text-amber-400")
+            ui.label(f"'{route.project}' exists in {len(candidates)} places").classes("text-base text-gray-700")
+            ui.label("Pick the one you meant — the link will pin it.").classes("text-xs text-gray-500")
+            with ui.column().classes("gap-2 items-stretch"):
+                for cand in candidates:
+                    base = str(Path(cand).parent)
+                    url = route_to_path(replace(route, base=base))
+                    house_button(cand, lambda u=url: ui.navigate.to(u)).style(
+                        "font-family: 'IBM Plex Mono', monospace; justify-content: flex-start;"
+                    )
+
+    @ui.page("/p/{project}")
+    async def project_page(client: Client, project: str):
+        await _open_routed_workspace(client, parse_route(project, [], client.request.query_params))
+
+    @ui.page("/p/{project}/{view}")
+    async def project_view_page(client: Client, project: str, view: str):
+        await _open_routed_workspace(client, parse_route(project, [view], client.request.query_params))
+
+    @ui.page("/p/{project}/{view}/{a}")
+    async def project_view_a_page(client: Client, project: str, view: str, a: str):
+        await _open_routed_workspace(client, parse_route(project, [view, a], client.request.query_params))
+
+    @ui.page("/p/{project}/{view}/{a}/{b}")
+    async def project_view_ab_page(client: Client, project: str, view: str, a: str, b: str):
+        await _open_routed_workspace(client, parse_route(project, [view, a, b], client.request.query_params))
+
+    # Kept as a redirect so every existing `ui.navigate.to("/workspace")` in the codebase
+    # keeps working: it means "this tab's project", which the addressable URL spells out.
     @ui.page("/workspace")
     async def workspace_page(client: Client):
         await client.connected()
+        ensure_assets_loaded()
 
+        get_prefs_service().load_from_app_storage(app.storage.user)
         ui_mgr = get_ui_state_manager()
-
+        if not ui_mgr.project_path or not ui_mgr.project_path.exists():
+            ui.navigate.to("/")
+            return
         if not ui_mgr.is_project_created:
-            if ui_mgr.project_path and ui_mgr.project_path.exists():
-                recovered_state = get_project_state_for(ui_mgr.project_path)
-                ui_mgr.load_from_project(
-                    project_path=recovered_state.project_path,
-                    scheme_name="recovered",
-                    jobs=list(recovered_state.jobs.keys()),
-                )
-            else:
-                ui.navigate.to("/")
-                return
-
-        build_workspace_page(backend)
+            recovered_state = get_project_state_for(ui_mgr.project_path)
+            ui_mgr.load_from_project(
+                project_path=recovered_state.project_path,
+                scheme_name="recovered",
+                jobs=list(recovered_state.jobs.keys()),
+            )
+        ui.navigate.to(workspace_url(ui_mgr.project_path))
 
     # --- AUX PAGES ---
     @ui.page("/cluster-info")

@@ -28,6 +28,7 @@ from ui.components.segmented import Segmented, render_segmented
 from ui.components.species_pill import render_species_pill
 from ui.components.svg_icon import load_icon_svg
 from ui.dashboard.css import ensure_assets_loaded
+from ui.routing import View
 from ui.species.catalog import import_from_catalog
 from ui.species.jobs_tab import JobsTab
 from ui.species.overview_tab import OverviewTab
@@ -148,6 +149,9 @@ class SpeciesPage:
         self.visible = on
         if on:
             self.observe()
+            # The workspace has just written the bare `/species` route; refine it to the
+            # species and tab actually on screen.
+            self._write_url()
 
     # ── Selection ─────────────────────────────────────────────────────────────
 
@@ -158,6 +162,7 @@ class SpeciesPage:
         self._refresh_chrome()
         self._refresh_visible_tab()
         self._push_tab_badges()
+        self._write_url()
 
     def select_tab(self, key: str) -> None:
         self.active_tab = key
@@ -167,6 +172,15 @@ class SpeciesPage:
             self._ensure_tab(self.active_species_id, key)
         self._apply_visibility()
         self._refresh_visible_tab()
+        self._write_url()
+
+    def _write_url(self) -> None:
+        """Address bar follows the selection (roadmap 17 S3) — but only while this page
+        is the visible view, so the initial species auto-select behind a pipeline view
+        doesn't hijack the URL."""
+        set_url = self.callbacks.get("set_url")
+        if set_url and self.visible and self.active_species_id:
+            set_url(View.SPECIES, self.active_species_id, self.active_tab)
 
     def _ensure_tab(self, species_id: str, key: str) -> None:
         if (species_id, key) in self._tabs:

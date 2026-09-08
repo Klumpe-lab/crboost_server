@@ -1837,6 +1837,7 @@ def render_particles_section(
     mode: str = "slim",
     initial_species_id: str | None = None,
     open_viewer=None,
+    on_species_change=None,
 ) -> bool:
     """The pick viewer, in either mount: a shared tomogram canvas with every species'
     picks overlaid (toggleable), the lists strip across the top, and the selected list's
@@ -1850,7 +1851,9 @@ def render_particles_section(
     (11-S3), so the header carries the route there (``manage_species``); a removed action
     the user cannot navigate to reads as a lost feature rather than a moved one.
     `open_viewer(species_id, tomo_name)` is the slim mount's route INTO the full page;
-    `initial_species_id` preselects a species tab when the full page was opened on one."""
+    `initial_species_id` preselects a species tab when the full page was opened on one, and
+    `on_species_change(species_id)` reports a later tab switch back to the mount (the full
+    page uses it to keep its address bar truthful, roadmap 17)."""
     geom = geometry_for_ts(project_state, project_path, ts_name)
     species_data = _collect_species_data_for_ts(project_state, project_path, ts_name, refresh)
     if not species_data:
@@ -1967,6 +1970,8 @@ def render_particles_section(
             the hover bridge had to re-resolve its grid lazily."""
             gen["n"] += 1
             mine = gen["n"]
+            if on_species_change is not None:
+                on_species_change(sp.get("species_id"))
             _show_admin_for(sp)
             lists_host.clear()
             detail_host.clear()
@@ -4259,6 +4264,19 @@ class PickViewerPage:
             reset_auto_kick_state()
             self.render()
 
+    def _species_changed(self, species_id: str | None) -> None:
+        """A species tab inside the viewer was clicked. Keep the page's own idea of the
+        selection — and the address bar — on the species actually shown, so copying the
+        link does not send someone to the one it was opened on (roadmap 17 S3)."""
+        if not species_id or species_id == self.species_id:
+            return
+        self.species_id = species_id
+        set_url = self.callbacks.get("set_url")
+        if set_url and self.tomo_name:
+            from ui.routing import View
+
+            set_url(View.PICKS, species_id, self.tomo_name)
+
     def set_active(self, on: bool) -> None:
         """Pause the coalesce timer while the page isn't the visible view — driven by
         the workspace's `_switch_to`, like the Journey's."""
@@ -4296,6 +4314,7 @@ class PickViewerPage:
                 self._manage_species,
                 mode="full",
                 initial_species_id=self.species_id,
+                on_species_change=self._species_changed,
             )
             if not rendered:
                 with ui.element("div").classes("cb-empty"):

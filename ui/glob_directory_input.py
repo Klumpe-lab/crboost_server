@@ -87,7 +87,7 @@ class GlobDirectoryInput:
                 ui.input(value=self._dir_value, placeholder=placeholder, on_change=self._handle_change)
                 .props("dense borderless hide-bottom-space")
                 .style(
-                    f"{_MONO} font-size: 11px; width: 100%; border-bottom: 1px solid {_CLR_GHOST}; padding: 1px 2px;"
+                    f"{_MONO} font-size: 10px; width: 100%; border-bottom: 1px solid {_CLR_GHOST}; padding: 1px 2px;"
                 )
             )
             self.input_el.on("keyup.escape", lambda e: self._hide_dropdown())
@@ -237,7 +237,7 @@ class GlobDirectoryInput:
             self._hide_dropdown()
             return
         row_style = (
-            f"{_MONO} font-size: 11px; color: #374151; padding: 5px 12px; text-align: left; "
+            f"{_MONO} font-size: 10px; color: #374151; padding: 5px 12px; text-align: left; "
             "border-bottom: 1px solid #f3f4f6;"
         )
         with self._suggestion_col:
@@ -253,7 +253,7 @@ class GlobDirectoryInput:
                         "flat no-caps align=left"
                     ).classes("flex-1 min-w-0 rounded-none hover:bg-sky-100").style(row_style + " color: #0369a1;")
                     ui.label("recently viewed").style(
-                        "font-family: system-ui, sans-serif; font-size: 8px; color: #f59e0b; "
+                        "font-family: 'IBM Plex Sans', sans-serif; font-size: 8px; color: #f59e0b; "
                         "letter-spacing: 0.04em; white-space: nowrap; padding: 0 6px;"
                     )
                     if self._on_forget_recent:
