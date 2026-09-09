@@ -120,7 +120,7 @@ def aggregate_output_star(
     half-map columns dropped. Downstream (template matching) reads TOMO_COL from this STAR."""
     import pandas as pd
 
-    block_name, df = _global_block(starfile.read(input_star))
+    _, df = _global_block(starfile.read(input_star, always_dict=True))
     ok_set = set(ok_ts_names)
     keep_rows = []
     for _, row in df.iterrows():
@@ -141,7 +141,8 @@ def aggregate_output_star(
             out_df = out_df.drop(columns=col)
 
     out_path = job_dir / "tomograms.star"
-    starfile.write({block_name: out_df} if block_name else out_df, out_path, overwrite=True)
+    # The block name is a pipeline contract, never inherited from the input.
+    starfile.write({"global": out_df}, out_path, overwrite=True)
     print(f"[SUPERVISOR] Wrote denoised STAR with {len(out_df)} tomogram(s): {out_path}", flush=True)
 
 

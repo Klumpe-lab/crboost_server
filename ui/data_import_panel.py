@@ -28,7 +28,14 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MOVIES_EXT = "*.eer"
 DEFAULT_MDOCS_EXT = "*.mdoc"
-LABEL = "font-family: system-ui, -apple-system, sans-serif;"
+
+# Type scale for this panel — THREE sizes and two families, matching the projects
+# roster beside it. 12/600 titles a card, 10 is the working size (field labels and
+# input text alike), 9 is metadata and hints. There used to be a fourth family here
+# (`LABEL`, system-ui) and six sizes; the panel read as several applications stacked.
+SZ_TITLE = "12px"
+SZ_BODY = "10px"
+SZ_META = "9px"
 
 # Blue-tinted slate palette -- feels more like scientific instrument UI
 # than pure neutral grays
@@ -658,7 +665,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                 with ui.row().classes("w-full justify-center items-center py-6"):
                     ui.spinner("dots", size="md").style(f"color: {CLR_ACCENT};")
                     ui.label("Creating project — importing data and initializing...").style(
-                        f"{FONT} font-size: 11px; color: {CLR_LABEL}; margin-left: 8px;"
+                        f"{FONT} font-size: {SZ_BODY}; color: {CLR_LABEL}; margin-left: 8px;"
                     )
 
         if btn:
@@ -694,10 +701,11 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                         with ui.row().classes("w-full justify-center items-center py-6"):
                             ui.icon("check_circle", size="md").style(f"color: {CLR_SUCCESS};")
                             ui.label(f"Project '{di.project_name}' created — opening workspace...").style(
-                                f"{FONT} font-size: 11px; color: {CLR_SUCCESS}; margin-left: 8px;"
+                                f"{FONT} font-size: {SZ_BODY}; color: {CLR_SUCCESS}; margin-left: 8px;"
                             )
 
                 prefs_service.prefs.add_recent_root(di.project_base_path, label=di.project_name)
+                prefs_service.prefs.add_recent_project(str(project_path), label=di.project_name)
                 prefs_service.save_to_app_storage(app.storage.user)
                 await asyncio.sleep(0.8)
                 # Navigate via JS — the NiceGUI slot context may be stale after the sleep
@@ -760,6 +768,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                 prefs_service.prefs.add_recent_root(
                     str(state.project_path.parent) if state.project_path else "", label=state.project_name
                 )
+                prefs_service.prefs.add_recent_project(str(state.project_path or project_dir), label=state.project_name)
                 prefs_service.save_to_app_storage(app.storage.user)
 
                 # Load report (roadmap 03 stage 5): anything load() had to drop or
@@ -1069,25 +1078,30 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         f"border: 1px solid {CLR_BORDER}; "
         "box-shadow: 0 1px 3px rgba(15,23,42,0.06);"
     )
-    section_style = f"border: 1px solid {CLR_BORDER}; border-radius: 6px; padding: 8px 10px; background: #f8fafc;"
+    section_style = f"border: 1px solid {CLR_BORDER}; border-radius: 6px; padding: 7px 9px; background: #f8fafc;"
     field_label_style = (
-        f"{LABEL} font-size: 10px; font-weight: 400; color: {CLR_LABEL}; letter-spacing: 0.01em; margin-bottom: 2px;"
+        f"{FONT} font-size: {SZ_BODY}; font-weight: 500; color: {CLR_LABEL}; "
+        "letter-spacing: 0.01em; margin-bottom: 2px;"
     )
-    input_mono_style = f"{MONO} font-size: 11px; flex: 1; border-bottom: 1px solid {CLR_GHOST}; padding: 1px 2px;"
-    input_sans_style = f"{FONT} font-size: 12px; width: 100%; border-bottom: 1px solid {CLR_GHOST}; padding: 1px 2px;"
+    input_mono_style = f"{MONO} font-size: {SZ_BODY}; flex: 1; border-bottom: 1px solid {CLR_GHOST}; padding: 1px 2px;"
+    input_sans_style = (
+        f"{FONT} font-size: {SZ_BODY}; width: 100%; border-bottom: 1px solid {CLR_GHOST}; padding: 1px 2px;"
+    )
 
     with ui.row().classes("w-full gap-3 items-start").style(FONT):
         # =================================================================
-        # LEFT COLUMN: Project Setup (wider)
+        # LEFT COLUMN: Project Setup
+        # Narrower than the roster on purpose: this card is a form the user fills
+        # once, the roster beside it is the thing they read and re-read. 1 : 1.45.
         # =================================================================
-        with ui.column().classes("gap-2").style("flex: 2; min-width: 0;"):
-            with ui.column().classes("w-full gap-0 px-5 py-4").style(card_style):
+        with ui.column().classes("gap-2").style("flex: 1 1 0; min-width: 0;"):
+            with ui.column().classes("w-full gap-0 px-4 py-3").style(card_style):
                 ui.label("Project Setup").style(
-                    f"{FONT} font-size: 13px; font-weight: 600; color: {CLR_HEADING}; "
-                    "letter-spacing: -0.02em; margin-bottom: 10px;"
+                    f"{FONT} font-size: {SZ_TITLE}; font-weight: 600; color: {CLR_HEADING}; "
+                    "letter-spacing: -0.01em; margin-bottom: 8px;"
                 )
 
-                with ui.row().classes("w-full gap-5 mb-3"):
+                with ui.row().classes("w-full gap-4 mb-2"):
                     with ui.column().classes("gap-0").style("flex: 1;"):
                         ui.label("Project Name").style(field_label_style)
                         project_name_input = (
@@ -1105,11 +1119,11 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                     with ui.column().classes("gap-0").style("flex: 2;"):
                         with ui.row().classes("items-center gap-1"):
                             ui.label("Base Location").style(field_label_style)
-                            with ui.icon("help_outline", size="12px").style(f"color: {CLR_GHOST}; cursor: help;"):
+                            with ui.icon("help_outline", size="11px").style(f"color: {CLR_GHOST}; cursor: help;"):
                                 ui.tooltip(
                                     "Where the project directory will be created. "
                                     "Processing artifacts and results are stored here."
-                                ).style(f"{FONT} font-size: 10px;")
+                                ).style(f"{FONT} font-size: {SZ_META};")
                         with ui.row().classes("w-full items-center gap-1"):
                             project_path_input = GlobDirectoryInput(
                                 extension="",
@@ -1127,7 +1141,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                                     "flat dense round size=xs"
                                 ).classes("text-slate-400 hover:text-slate-600")
                                 ui.tooltip("New project directory will be created here").style(
-                                    f"{FONT} font-size: 10px;"
+                                    f"{FONT} font-size: {SZ_META};"
                                 )
 
                 # Project creation has NO type switches left. The particle-only toggle went
@@ -1149,13 +1163,13 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                 with ui.row().classes("w-full items-center justify-between mb-2"):
                     with ui.row().classes("items-center gap-1"):
                         ui.label("Shared (lab) project").style(field_label_style)
-                        with ui.icon("help_outline", size="12px").style(f"color: {CLR_GHOST}; cursor: help;"):
+                        with ui.icon("help_outline", size="11px").style(f"color: {CLR_GHOST}; cursor: help;"):
                             ui.tooltip(
                                 "Create under the shared Lab area instead of your own. "
                                 "Ownership can be transferred later from the roster."
-                            ).style(f"{FONT} font-size: 10px;")
+                            ).style(f"{FONT} font-size: {SZ_META};")
                     ui.switch(value=ui_mgr.data_import.is_shared, on_change=on_shared_toggle).props("dense").style(
-                        "transform: scale(0.75);"
+                        "transform: scale(0.65);"
                     )
 
                 raw_data_section = ui.column().classes("w-full gap-1")
@@ -1167,12 +1181,12 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                         with ui.row().classes("w-full items-center justify-between"):
                             with ui.row().classes("items-center gap-1"):
                                 ui.label("Raw Frames & SerialEM Mdocs").style(field_label_style)
-                                with ui.icon("help_outline", size="12px").style(f"color: {CLR_GHOST}; cursor: help;"):
+                                with ui.icon("help_outline", size="11px").style(f"color: {CLR_GHOST}; cursor: help;"):
                                     ui.tooltip(
                                         "Directory containing your primary data "
                                         "(frame files and .mdoc metadata). "
                                         "These files will never be modified."
-                                    ).style(f"{FONT} font-size: 10px;")
+                                    ).style(f"{FONT} font-size: {SZ_META};")
 
                             def toggle_mdocs_separate(e):
                                 local_refs["mdocs_separate"] = e.value
@@ -1181,7 +1195,9 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                                     container.set_visibility(e.value)
 
                             with ui.row().classes("items-center gap-1"):
-                                ui.label("mdocs elsewhere").style(f"{FONT} font-size: 9px; color: {CLR_SUBLABEL};")
+                                ui.label("mdocs elsewhere").style(
+                                    f"{FONT} font-size: {SZ_META}; color: {CLR_SUBLABEL};"
+                                )
                                 (
                                     ui.switch(value=False, on_change=toggle_mdocs_separate)
                                     .props("dense")
@@ -1211,7 +1227,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                             )
                             local_refs["scan_button"].disable()
                             movies_hint = ui.label("No pattern").style(
-                                f"{FONT} font-size: 9px; color: {CLR_SUBLABEL}; padding-left: 2px;"
+                                f"{FONT} font-size: {SZ_META}; color: {CLR_SUBLABEL}; padding-left: 2px;"
                             )
                         ui_mgr.panel_refs.movies_hint_label = movies_hint
 
@@ -1236,7 +1252,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                                 "flat dense round size=xs"
                             ).classes("text-slate-400 hover:text-slate-600")
                         mdocs_hint = ui.label("No pattern").style(
-                            f"{FONT} font-size: 9px; color: {CLR_SUBLABEL}; padding-left: 2px; margin-top: 1px;"
+                            f"{FONT} font-size: {SZ_META}; color: {CLR_SUBLABEL}; padding-left: 2px; margin-top: 1px;"
                         )
                         ui_mgr.panel_refs.mdocs_hint_label = mdocs_hint
 
@@ -1246,14 +1262,14 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                     with ui.column().classes("w-full gap-0").style("margin-top: 2px;"):
                         with ui.row().classes("items-center gap-1"):
                             ui.label("Gain Reference").style(field_label_style)
-                            with ui.icon("help_outline", size="12px").style(f"color: {CLR_GHOST}; cursor: help;"):
+                            with ui.icon("help_outline", size="11px").style(f"color: {CLR_GHOST}; cursor: help;"):
                                 ui.tooltip(
                                     "Optional gain reference file (.mrc / .tiff / .dm4 / .gain). Applied "
                                     "project-wide by every job that needs gain correction — frameseries "
                                     "motion/CTF and tilt-series import. Leave empty if your frames are "
                                     "already gain-corrected."
-                                ).style(f"{FONT} font-size: 10px;")
-                            ui.label("optional").style(f"{FONT} font-size: 9px; color: {CLR_SUBLABEL};")
+                                ).style(f"{FONT} font-size: {SZ_META};")
+                            ui.label("optional").style(f"{FONT} font-size: {SZ_META}; color: {CLR_SUBLABEL};")
                         with ui.row().classes("w-full items-center gap-1"):
                             gain_input = (
                                 ui.input(
@@ -1279,7 +1295,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                             "import reconstructed tomograms or pick coordinates from the workspace afterwards.",
                         )
                         ui.label("start empty, import tomograms or picks later").style(
-                            f"{FONT} font-size: 9px; color: {CLR_SUBLABEL};"
+                            f"{FONT} font-size: {SZ_META}; color: {CLR_SUBLABEL};"
                         )
 
                 # Dataset overview (populated when mdocs are validated). Lives
@@ -1290,7 +1306,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
 
                 with ui.row().classes("w-full items-center justify-between mt-3"):
                     status_indicator = ui.label("Enter details to begin...").style(
-                        f"{FONT} font-size: 10px; color: {CLR_SUBLABEL};"
+                        f"{FONT} font-size: {SZ_BODY}; color: {CLR_SUBLABEL};"
                     )
                     ui_mgr.panel_refs.status_indicator = status_indicator
 
@@ -1301,8 +1317,12 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
 
         # =================================================================
         # RIGHT COLUMN: Projects Overview + History sidebar
+        # `min-width: 0`, not a 460 px floor: a floor here is what pushed the pair
+        # past the viewport at 100 % zoom and left the roster's right edge (its
+        # status pill, its travel chevron) behind a horizontal scrollbar. The roster
+        # rows shrink honestly instead — every fixed cell in them is under 46 px.
         # =================================================================
-        with ui.column().classes("gap-2").style("flex: 2; min-width: 460px; max-width: 820px;"):
+        with ui.column().classes("gap-2").style("flex: 1.45 1 0; min-width: 0;"):
             # ----- Projects Overview -----
             async def _open_from_overview(p: Path):
                 await handle_load_project(p)
@@ -1329,8 +1349,10 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                     .classes("text-slate-400 hover:text-blue-600")
                 ):
                     with ui.row().classes("items-center gap-1"):
-                        ui.icon("folder_open", size="12px")
-                        ui.label("Browse for another base location").style(f"{FONT} font-size: 10px; font-weight: 500;")
+                        ui.icon("folder_open", size="11px")
+                        ui.label("Browse for another base location").style(
+                            f"{FONT} font-size: {SZ_META}; font-weight: 500;"
+                        )
 
     # =========================================================================
     # WIRING

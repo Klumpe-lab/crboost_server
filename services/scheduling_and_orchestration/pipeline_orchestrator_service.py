@@ -63,8 +63,7 @@ def _toposort_submit_order(nodes: list[str], edges: list[tuple]) -> tuple:
 
 def write_scheme_star(star_handler: StarfileService, scheme_dir: Path, scheme_name: str, job_names: list[str]) -> None:
     """A linear RELION scheme: `job_names` in order, WAIT/EXIT operators, one edge per
-    hop. Shared by the schemer deploy path and the protocol scheme export
-    (services/protocols/scheme_export.py), so both emit the identical artifact."""
+    hop. Used by the schemer deploy path."""
     general_df = pd.DataFrame(
         {"rlnSchemeName": [f"Schemes/{scheme_name}/"], "rlnSchemeCurrentNodeName": [job_names[0]]}
     )

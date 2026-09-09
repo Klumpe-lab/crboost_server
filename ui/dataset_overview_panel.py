@@ -124,12 +124,16 @@ def build_dataset_overview_panel(overview: DatasetOverview, on_change: Callable[
     )
 
     # --- Table container ---
+    # `overflow-x: auto` + `min-width: 0`, not `overflow: hidden`: COL_WIDTHS is 466 px
+    # of fixed columns, so with a clipped container this table set the *minimum* width of
+    # the whole Project Setup card and, through it, of the landing page. It scrolls
+    # inside itself now (CLAUDE.md: wide tables scroll in their own container).
     with (
         ui.column()
         .classes("w-full gap-0")
         .style(
             f"border: 1px solid {CLR_BORDER}; border-radius: 6px; "
-            "overflow: hidden; max-height: 420px; overflow-y: auto;"
+            "min-width: 0; max-height: 420px; overflow-y: auto; overflow-x: auto;"
         )
     ):
         # Column headers with select-all checkbox
@@ -137,7 +141,7 @@ def build_dataset_overview_panel(overview: DatasetOverview, on_change: Callable[
             ui.element("div")
             .classes("w-full")
             .style(
-                f"display: grid; grid-template-columns: {COL_WIDTHS}; "
+                f"display: grid; grid-template-columns: {COL_WIDTHS}; min-width: max-content; "
                 f"border-bottom: 1px solid {CLR_BORDER}; background: #f8fafc; "
                 "position: sticky; top: 0; z-index: 1;"
             )
@@ -363,7 +367,10 @@ def _build_position_group(pos, overview, refresh_all, row_registry):
                 row_el = (
                     ui.element("div")
                     .classes("w-full")
-                    .style(f"display: grid; grid-template-columns: {COL_WIDTHS}; background: white; {border}")
+                    .style(
+                        f"display: grid; grid-template-columns: {COL_WIDTHS}; min-width: max-content; "
+                        f"background: white; {border}"
+                    )
                 )
                 row_registry[ts.ts_label] = row_el
 
@@ -420,7 +427,7 @@ def _build_position_group(pos, overview, refresh_all, row_registry):
         ui.element("div")
         .classes("w-full")
         .style(
-            f"display: grid; grid-template-columns: {COL_WIDTHS}; "
+            f"display: grid; grid-template-columns: {COL_WIDTHS}; min-width: max-content; "
             f"background: {CLR_POS_BG}; "
             f"border-bottom: 1px solid {CLR_BORDER}; cursor: pointer;"
         )

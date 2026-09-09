@@ -3,21 +3,27 @@ reconnect, and round-trip manual picks (`.coords` ↔ centered-Å star) between 
 and the pipeline.
 
 Model B (roadmap 10, maintainer decision 2026-08-21): a session's SCOPE — which species,
-which tomogram — is declared exactly once, at launch, and written into the scoped
-directory's `manifest.json`. crboost sends the viewer NO commands after that. The old
-outbound driving (`load_into_session` / `save_curation_picks` /
-`save_session_particle_lists`) is gone: it inferred the session's meaning from an
-in-memory dict that a restart emptied, silently filed a second species' picks under the
-first, and ingested only the newest of N saved lists. What replaces it is the staging
-contract — every `.coords` in a scoped dir becomes its own pick list, and anything saved
-outside one lands in the unattributed inbox for explicit assignment
-(`assign_unattributed_coords`), never a guess."""
+which tomogram — is declared at launch and written into the scoped directory's
+`manifest.json` and the session's `scope.json`. The old outbound driving
+(`load_into_session` / `save_curation_picks` / `save_session_particle_lists`) is gone: it
+inferred the session's meaning from an in-memory dict that a restart emptied, silently
+filed a second species' picks under the first, and ingested only the newest of N saved
+lists. What replaces it is the staging contract — every `.coords` in a scoped dir becomes
+its own pick list, and anything saved outside one lands in the unattributed inbox for
+explicit assignment (`assign_unattributed_coords`), never a guess.
+
+Roadmap 13-S2 admits exactly ONE outbound command after launch: the confirmed scope switch
+(`switch_session_scope`). It re-points the running viewer over the same REST channel AND
+rewrites `scope.json` + the target manifest in the same call, so the scope on disk is
+always the viewer's scope — the invariant the old swap broke. It never saves for the
+user; the UI confirms first because `close session` drops unsaved ArtiaX lists."""
 
 from __future__ import annotations
 import asyncio
 import json
 import logging
 import os
+import re
 import shlex
 import socket
 import uuid
@@ -32,6 +38,18 @@ from services.result import ErrorCode, err, ok
 logger = logging.getLogger(__name__)
 
 
+def _model_id_in_probe(res: dict[str, Any], model_name: str) -> str | None:
+    """The ``#…`` id of the model called ``model_name`` in an ``info models`` REST reply,
+    or None. ChimeraX prints one ``#id, name, shown`` line per model into the log, which
+    the JSON body carries under ``log messages`` keyed by level. A non-JSON body (server
+    not in json mode) has no ``data`` and yields None too — the caller must not read that
+    as "absent"."""
+    log = (res.get("data") or {}).get("log messages") or {}
+    text = "\n".join(str(x) for v in log.values() if isinstance(v, (list, tuple)) for x in v)
+    m = re.search(r"(#[\d.]+),\s*" + re.escape(model_name) + r"\s*,", text)
+    return m.group(1) if m else None
+
+
 class CurationSessionService:
     """Curation-session lifecycle + REST command channel. The backend facade
     delegates its same-named curation methods here; UI code never imports this
@@ -43,10 +61,12 @@ class CurationSessionService:
         self.username = username
         self.config_service = get_config_service()
         self.slurm_service = slurm_service
-        # Serializes the user-level session registry's append/prune. There is no
-        # per-session lock any more: nothing drives a running session, so nothing races
-        # on it (Model B — see the module docstring).
+        # Serializes the user-level session registry's append/prune.
         self._curation_registry_lock = asyncio.Lock()
+        # Serializes the ONE thing that drives a running session — the scope switch
+        # (13-S2) — so two clicks cannot interleave their `close session` chains, and the
+        # scope written to disk is the scope of the chain that ran last.
+        self._switch_lock = asyncio.Lock()
 
     async def launch_curation_session(
         self, project_path: Path | None = None, cxc_path: Path | None = None, scope: dict[str, Any] | None = None
@@ -189,16 +209,28 @@ class CurationSessionService:
     # ── declared scope (Model B) ───────────────────────────────────────────────
 
     @staticmethod
-    def _record_scope(session_dir: Path, slurm_job_id: str | None, scope: dict[str, Any] | None) -> None:
-        """Persist the launch-declared scope beside the session, and stamp it into the
+    def _record_scope(
+        session_dir: Path, slurm_job_id: str | None, scope: dict[str, Any] | None, *, how: str = "launch"
+    ) -> None:
+        """Persist the session's scope beside it (`scope.json`), and stamp it into the
         scoped dir's manifest. Best-effort: a session whose scope could not be written
         still runs — its saves are attributed by the manifest the bundle already wrote,
-        and worst case they reach the unattributed inbox. Never blocks a launch."""
+        and worst case they reach the unattributed inbox. Never blocks a launch.
+
+        `how` is `launch` or `switch` (13-S2), recorded as `scope_set_by`. `launched_at`
+        now means "became this session's scope at" — it is the watcher's hot-dir key
+        (`watcher.py`, the newest `launched_at` across manifests is rescanned every tick),
+        which is exactly what a switch must move to the new dir."""
         if not scope:
             return
         from services.visualization import artiax_bridge
 
-        payload = {**scope, "slurm_job_id": slurm_job_id, "launched_at": datetime.now().isoformat(timespec="seconds")}
+        payload = {
+            **scope,
+            "slurm_job_id": slurm_job_id,
+            "launched_at": datetime.now().isoformat(timespec="seconds"),
+            "scope_set_by": how,
+        }
         try:
             (Path(session_dir) / "scope.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
         except OSError as e:
@@ -212,9 +244,103 @@ class CurationSessionService:
                 launched_at=payload["launched_at"],
                 slurm_job_id=slurm_job_id,
                 session_dir=str(session_dir),
+                scope_set_by=how,
             )
         except OSError as e:
-            logger.warning("Could not stamp launch onto the manifest in %s: %s", cur_dir, e)
+            logger.warning("Could not stamp %s onto the manifest in %s: %s", how, cur_dir, e)
+
+    async def switch_session_scope(
+        self,
+        session_info: dict[str, Any],
+        *,
+        open_recon: str | None,
+        auto_coords: str | None,
+        seed_coords: str | None,
+        scope: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Re-point a LIVE session at another (species, tomogram) — the one outbound command
+        13-S2 admits after launch. `session_info` is what `find_active_curation_session*`
+        returned (`node`, `rest_port`, `session_dir`, `slurm_job_id`); the three paths are
+        the target bundle's; `scope` is `curation_scope(...)` for the target.
+
+        Order matters and is the whole point: (1) the swap chain over REST — failure here
+        means ArtiaX still has the OLD tomogram and the scope on disk stays the old one;
+        (2) `cd` as its own call, best-effort (`cd_error`); (3) the scope written to
+        `scope.json` and the target manifest via `_record_scope(how="switch")`, so the
+        watcher's hot dir and every reconnecting UI follow the viewer. Never saves for the
+        user — the UI confirms first. `ok(switched, scope_recorded, cd_error, commands)` /
+        `err(...)`; a scope that could not be recorded is `ok(scope_recorded=False,
+        warning=…)`, loud, never silent.
+        """
+        from services.visualization import artiax_bridge
+
+        if not self.config_service.curation.rest_enabled:
+            return err("curation.rest_enabled is off — use Restart on this tomogram")
+        if not open_recon or not seed_coords:
+            return err("the target bundle has no recon / seed to open — prepare it again (Curate picks)")
+        chain = artiax_bridge.swap_chimerax_commands(
+            open_recon, Path(auto_coords) if auto_coords else None, Path(seed_coords)
+        )
+        cd_cmd = artiax_bridge.cd_chimerax_command(scope["curation_dir"])
+        seed_name = Path(seed_coords).name
+        async with self._switch_lock:
+            res = await self.send_chimerax_command(session_info, chain, timeout=120)
+            if not res.get("success"):
+                return err(f"ArtiaX did not switch: {res.get('error')}", raw=res.get("raw"))
+            # VERIFY, don't assume (2026-09-06): a chain that returned ok is not proof the seed
+            # is open and selected. `info models` lists `#id, name, shown` per model; the seed's
+            # model is named after its file. Absent → the switch failed, whatever the chain said.
+            probe = await self.send_chimerax_command(session_info, "info models", timeout=15)
+            seed_model_id = _model_id_in_probe(probe, seed_name)
+            if seed_model_id is None and probe.get("success") and probe.get("data") is not None:
+                return err(
+                    f"ArtiaX switched the tomogram but did not open {seed_name} — use Restart on this tomogram",
+                    raw=probe.get("raw"),
+                )
+            cd_res = await self.send_chimerax_command(session_info, cd_cmd, timeout=15)
+            cd_error = None if cd_res.get("success") else str(cd_res.get("error"))
+            # Point ChimeraX's save dialog at the new folder: Qt opens every fresh dialog in
+            # its LAST-visited dir and the cwd only seeds the first one of the process, so
+            # `cd` alone leaves the dialog in the previous scope's folder. A hidden
+            # QFileDialog.setDirectory() from the runscript moves it. Own call, best-effort.
+            script = artiax_bridge.write_save_dir_script(Path(scope["curation_dir"]))
+            rs_res = await self.send_chimerax_command(
+                session_info, artiax_bridge.runscript_chimerax_command(script), timeout=15
+            )
+            save_dir_error = None if rs_res.get("success") else str(rs_res.get("error"))
+            # The dialog-proof save path regardless: `save <seed> partlist #id`, for the user
+            # to run in ChimeraX's command line. crboost never sends it.
+            save_command = artiax_bridge.save_chimerax_command(seed_coords, seed_model_id) if seed_model_id else None
+            sdir = session_info.get("session_dir")
+            if not sdir:
+                logger.warning("Switched ArtiaX to %s but the session has no session_dir — scope NOT recorded", scope)
+                return ok(
+                    switched=True,
+                    scope_recorded=False,
+                    cd_error=cd_error,
+                    save_dir_error=save_dir_error,
+                    seed_model_id=seed_model_id,
+                    save_command=save_command,
+                    commands=[chain, cd_cmd],
+                    warning="ArtiaX switched, but this session has no session dir — its scope on disk was not "
+                    "updated, so the watcher and a reconnect still name the previous tomogram",
+                )
+            self._record_scope(Path(sdir), session_info.get("slurm_job_id"), scope, how="switch")
+        logger.info(
+            "Curation session switched to %s/%s (seed model %s)",
+            scope.get("species_id"),
+            scope.get("tomo_name"),
+            seed_model_id or "unverified",
+        )
+        return ok(
+            switched=True,
+            scope_recorded=True,
+            cd_error=cd_error,
+            save_dir_error=save_dir_error,
+            seed_model_id=seed_model_id,
+            save_command=save_command,
+            commands=[chain, cd_cmd],
+        )
 
     @staticmethod
     def _read_scope(session_dir: Path) -> dict[str, Any]:
@@ -500,13 +626,14 @@ class CurationSessionService:
     ) -> dict[str, Any]:
         """Run a ChimeraX/ArtiaX command string in a LIVE curation session.
 
-        QUARANTINED (roadmap 10-S1). This channel works, but under Model B nothing may
-        drive a session after launch — the maintainer's decision of record, because a
-        session driven from outside cannot be trusted to mean what crboost thinks it
-        means (10-external-picker-contract.md §1). It is kept for LAUNCH-TIME HEALTH
-        CHECKS ONLY, gated on `curation.rest_enabled`; adding a caller that loads, saves
-        or otherwise steers a running viewer re-opens exactly the bug class Model B
-        closed. Change the tomogram by relaunching (10-S3 makes that cheap).
+        QUARANTINED (roadmap 10-S1, relaxed by 13-S2). A session driven from outside
+        cannot be trusted to mean what crboost thinks it means unless the scope on disk
+        moves with it (10-external-picker-contract.md §1). This channel therefore carries
+        exactly two things, both gated on `curation.rest_enabled`: launch-time health
+        checks, and `switch_session_scope` — which records the new scope in the SAME
+        call. Any further caller must do the same, or it reopens the bug class Model B
+        closed; a caller that saves on the user's behalf is still out of bounds (that
+        path was never verified and is what the old swap pretended to do).
 
         Reaches the node's loopback REST server by ssh-hopping (the headnode can ssh
         to a node where the user has a running job — the same access VNC relies on).
@@ -651,7 +778,66 @@ class CurationSessionService:
         except Exception as e:
             logger.warning("prepare_curation_bundle failed for %s: %s", tomo_name, e)
             return err(str(e))
+        if info.get("seed_coords"):
+            # The seed is registered HERE, at the Curate click, as a 0-pick row (13-S1) —
+            # not left for the watcher, which would only meet it after the first save. The
+            # bundle stays ok on a registration failure: the `.cxc` opens the seed
+            # regardless, and the watcher registers it on the first save.
+            reg = await self._ensure_seed_registered(
+                Path(project_path),
+                Path(tomograms_star),
+                tomo_name,
+                species_label,
+                species_id,
+                Path(info["seed_coords"]),
+                created=bool(info.get("seed_created")),
+            )
+            info["seed_slug"] = reg.get("slug")
+            info["seed_registered"] = bool(reg.get("registered"))
+            info["seed_error"] = reg.get("error") if not reg.get("success") else None
         return ok(**info)
+
+    async def _ensure_seed_registered(
+        self,
+        project_path: Path,
+        tomograms_star: Path,
+        tomo_name: str,
+        species_label: str,
+        species_id: str,
+        seed: Path,
+        *,
+        created: bool,
+    ) -> dict[str, Any]:
+        """Make sure the seeded default list is a registered ``PickList`` (13-S1).
+
+        Idempotent: a seed that already existed AND is already registered is left alone —
+        count and label untouched, no re-ingest, no watcher event. A just-created seed is
+        always registered from the file (0 rows → a header-only star, count 0); an existing
+        seed with no registered list (the list was deleted but the file survived, or a
+        pre-13 dir) is registered from whatever it holds. ``ok(slug, registered)`` /
+        ``err(...)``.
+        """
+        from services.particles.ingest import default_slug_for, register_manual_pick_list
+        from services.project_state import get_project_state_for, get_state_service
+
+        slug = default_slug_for(species_id, tomo_name)
+        state = get_project_state_for(project_path)
+        if not created and state.get_pick_list(slug, species_id, tomo_name) is not None:
+            return ok(slug=slug, registered=False)
+        try:
+            res = await self.import_curation_picks(
+                project_path, tomograms_star, tomo_name, species_label, species_id, coords_path=seed, archive=False
+            )
+            if not res.get("success"):
+                return err(f"seed list not registered: {res.get('error')}", slug=slug)
+            register_manual_pick_list(state, res, species_id, tomo_name)
+            # Explicit path, force=True: this can run from a click handler whose client
+            # context a bare save would silently no-op on (cf. list_admin.delete_pick_list).
+            await get_state_service().save_project(project_path=project_path, force=True)
+        except Exception as e:
+            logger.exception("Could not register the seed list %s for %s/%s", seed.name, species_id, tomo_name)
+            return err(f"seed list not registered: {e}", slug=slug)
+        return ok(slug=slug, registered=True)
 
     def curation_scope(
         self, project_path: Path, species_id: str, species_label: str, tomo_name: str, curation_dir: str = ""
@@ -703,9 +889,12 @@ class CurationSessionService:
         species_id: str = "",
         *,
         coords_path: Path | None = None,
+        archive: bool = True,
     ) -> dict[str, Any]:
         """Ingest a manually-saved ArtiaX `.coords` for one (species, tomo) back
-        into the pipeline.
+        into the pipeline. `archive=False` skips the `imports/` provenance copy — the
+        seed registration (13-S1) uses it, because a 0-byte file nobody saved is not an
+        import worth archiving.
 
         Converts the `.coords` (physical Å from the volume corner) → a RELION-5
         centered-Å particles star at `Curation/<species>/<tomo>/manual__<stem>.star`
@@ -775,15 +964,16 @@ class CurationSessionService:
 
         # Archive the raw .coords for provenance (ArtiaX files carry no author).
         raw_copy = chosen
-        try:
-            raw_dir = cur_dir / "imports"
-            raw_dir.mkdir(parents=True, exist_ok=True)
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            dest = raw_dir / f"{stamp}__{chosen.stem}.coords"
-            await asyncio.to_thread(lambda: dest.write_bytes(Path(chosen).read_bytes()))
-            raw_copy = dest
-        except Exception as e:
-            logger.warning("Could not archive raw import %s: %s", chosen, e)
+        if archive:
+            try:
+                raw_dir = cur_dir / "imports"
+                raw_dir.mkdir(parents=True, exist_ok=True)
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                dest = raw_dir / f"{stamp}__{chosen.stem}.coords"
+                await asyncio.to_thread(lambda: dest.write_bytes(Path(chosen).read_bytes()))
+                raw_copy = dest
+            except Exception as e:
+                logger.warning("Could not archive raw import %s: %s", chosen, e)
 
         return ok(
             count=int(count),

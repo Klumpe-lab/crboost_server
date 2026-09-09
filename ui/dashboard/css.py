@@ -361,19 +361,6 @@ _CB_CSS = """
     font-size: 11px; font-family: ui-monospace, monospace; color: #334155; justify-self: end;
 }
 .cb-ltable-badge { font-size: 12px; font-weight: 700; cursor: help; line-height: 1; }
-/* Vertical toolbox beside the table — since 09-S2 the Journey neither starts nor swaps an
- * ArtiaX session, so this holds the `curate ↗` ROUTE to the Particles registry's Picks &
- * curation tab. Kept OUT of the row so the list table stays clean. */
-.cb-list-toolbox {
-    flex: 0 0 auto;
-    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
-    padding: 3px 6px; background: #fafbfc; border: 1px solid #eef1f6; border-radius: 8px;
-}
-.cb-toolbox-link {
-    font-size: 10px; color: #6366f1; cursor: pointer;
-    text-decoration: underline; text-decoration-style: dotted; white-space: nowrap;
-}
-.cb-toolbox-link:hover { color: #4338ca; }
 .cb-badge-ok { color: #059669; }
 .cb-badge-todo { color: #94a3b8; }
 .cb-badge-stale { color: #d97706; }
@@ -1032,6 +1019,13 @@ _CB_CSS = """
 .cb-seg-btn.active .cb-seg-badge { color: #64748b; }
 .cb-seg-btn:hover { background: #f8fafc; }
 .cb-seg-btn.active { background: #f1f5f9; color: #1e293b; font-weight: 600; }
+/* Projects roster travel chevron (ui/projects_overview.py): a full-row-height column on
+ * the right edge, so "open this project" is the easiest target on the row rather than an
+ * 18 px round arrow. Lights up on its own hover AND on the row's, so it reads as part of
+ * the row rather than a separate control that happens to sit there. */
+.cb-proj-chevron:hover { background: #eff6ff; }
+.cb-proj-chevron:hover .q-icon { color: #2563eb !important; }
+.group:hover .cb-proj-chevron .q-icon { color: #64748b; }
 /* Template workbench lists (picking-UI roadmap 05): cards became table rows, so the
  * per-row facts (apix / box / lp, sigma stats, size, polarity) sit in columns sized to
  * their content instead of truncating inside a 260 px card. Only the FILE column flexes.
@@ -1275,15 +1269,18 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
     font-family: ui-monospace, monospace; font-size: 9px; color: #94a3b8;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-/* ── Curation-session indicator (bottom of the primary sidebar) ─────────────── */
-/* Dim by default; when a ChimeraX + ArtiaX session of this user is up it goes green and
- * breathes. The pulse is a CSS animation, never a server tick (CLAUDE.md), and it is
- * deliberately shallow — a rail icon that flashes is noise, one that breathes is status. */
+/* ── Live-session marker (13-S3) ─────────────────────────────────────────────── */
+/* The 7 px green dot beside `Curate picks` on the tomogram the running ChimeraX + ArtiaX
+ * session has open (Picks & curation tab). It breathes: a CSS animation, never a server
+ * tick (CLAUDE.md), and deliberately shallow — a marker that flashes is noise, one that
+ * breathes is status. The foot-of-rail session icon that used this class is gone. */
 @keyframes cb-artiax-breathe {
     0%, 100% { opacity: 0.62; }
     50%      { opacity: 1; }
 }
 .cb-artiax-live { animation: cb-artiax-breathe 2.6s ease-in-out infinite; }
+/* The protocol light (roadmap 16) breathes the same way while the project's pipeline is running. */
+.cb-protocol-live { animation: cb-artiax-breathe 2.6s ease-in-out infinite; }
 
 /* ── Scrollbars: invisible everywhere, scrolling untouched ─────────────────── */
 /* Dense panels lost their edges under a 15 px native bar; wheel / trackpad /

@@ -4,9 +4,10 @@
 polled per surface: one process-wide cached flag is refreshed at most every `POLL_S`, and
 every caller reads the cache. Callers `poll()` on whatever cadence suits them — the throttle
 here decides when a `squeue` actually happens, so adding a second observer costs nothing.
-Two observers: the Particles registry's Picks & curation tab, and the always-present
-control-session icon at the bottom of the primary sidebar. Both read this one cache, so the
-second costs no extra `squeue`.
+One observer since 13-S3: the Particles registry's Picks & curation tab, which polls while
+shown and paints the live marker on the in-session tomogram's `Curate picks` button. (The
+foot-of-rail session icon that shared this cache is gone.) The control center forces a
+refresh after a scope switch so that marker moves at once rather than on the next tick.
 
 Three states, not two. A `squeue` that RAISES must not read as "no session running" — that
 would tell the user to start a second ChimeraX while one is up. It reports `unknown` and

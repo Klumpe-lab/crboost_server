@@ -2,8 +2,8 @@
 
 Creates the project through the same facade the landing page uses, registers the protocol's
 species with their frozen assets, instantiates every stage with its FULL param snapshot and
-persists once. Validation runs BEFORE anything touches disk; expectation mismatches, schema
-drift and unknown fields come back as warnings in the result, never as silent substitutions.
+persists once. Validation runs BEFORE anything touches disk; unknown fields and rejected values
+come back as warnings in the result, never as silent substitutions.
 The same function is what a future "create project from protocol" landing action calls.
 """
 
@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import glob
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,8 +22,15 @@ from services import species_admin
 from services.configs.config_service import get_config_service
 from services.jobs.spec import JOB_SPEC_BY_TYPE
 from services.models_base import JobType, SpeciesOrigin
-from services.project_state import ExtractionParams, ProjectState, TemplateMask
-from services.protocols.schema import Protocol, ProtocolSpecies, ProtocolStage, schema_fingerprint
+from services.project_state import ExtractionParams, ProjectState, ProtocolOrigin, TemplateMask
+from services.protocols.schema import (
+    PROJECT_PROTOCOL_DIRNAME,
+    PROTOCOL_FILENAME,
+    Protocol,
+    ProtocolSpecies,
+    ProtocolStage,
+    protocol_to_yaml,
+)
 from services.result import err, ok
 from services.templating.template_metadata import read_template_header
 
@@ -167,11 +175,20 @@ async def apply_protocol(
     project_dir = Path(created["project_path"])
     state: ProjectState = backend.state_service.state_for(project_dir)
 
-    warnings = expectation_warnings(state, protocol, backend.registry_for(project_dir))
-    assets, w = register_protocol_species(state, protocol, project_dir)
-    warnings += w
+    assets, warnings = register_protocol_species(state, protocol, project_dir)
     warnings += instantiate_stages(state, protocol, assets)
     state.pipeline_order = protocol.stage_ids()
+    state.protocol_origin = ProtocolOrigin(
+        name=protocol.name,
+        version=protocol.version,
+        bundle_dir=str(protocol.bundle_dir or ""),
+        applied_at=datetime.now().isoformat(timespec="seconds"),
+    )
+    # The frozen copy the Protocols view compares against later, whatever happens to the bundle.
+    # Written by hand: dump_protocol() would rebind the live object's bundle dir to the project.
+    frozen_dir = project_dir / PROJECT_PROTOCOL_DIRNAME
+    frozen_dir.mkdir(parents=True, exist_ok=True)
+    (frozen_dir / PROTOCOL_FILENAME).write_text(protocol_to_yaml(protocol))
     state.mark_dirty()
     await backend.save_project(project_dir, force=True)
     for line in warnings:
@@ -182,28 +199,6 @@ async def apply_protocol(
         warnings=warnings,
         load_warnings=list(state.load_warnings),
     )
-
-
-def expectation_warnings(state: ProjectState, protocol: Protocol, registry) -> list[str]:
-    """`expects:` vs the facts the mdocs produced. Warn, never block."""
-    out: list[str] = []
-    for key, exp in protocol.expects.items():
-        if key == "pixel_size_angstrom":
-            actual: float = state.microscope.pixel_size_angstrom
-        elif key == "tilt_series_count":
-            actual = float(len(registry.tilt_series_ids()))
-        elif key == "dose_per_tilt":
-            actual = state.acquisition.dose_per_tilt
-        elif key == "acceleration_voltage_kv":
-            actual = state.microscope.acceleration_voltage_kv
-        elif key == "tilt_axis_degrees":
-            actual = state.acquisition.tilt_axis_degrees
-        else:
-            out.append(f"expects.{key}: unknown expectation key — not checked")
-            continue
-        if not exp.holds(actual):
-            out.append(f"expects.{key}: dataset has {actual:g}, protocol was validated at {exp.about:g} ± {exp.tol:g}")
-    return out
 
 
 def register_protocol_species(
@@ -282,12 +277,6 @@ def instantiate_stages(state: ProjectState, protocol: Protocol, assets: dict[str
         state.ensure_job_initialized(st.job_type, instance_id=iid)
         jm = state.jobs[iid]
         cls_name = type(jm).__name__
-        expected = schema_fingerprint(type(jm))
-        if st.schema_fingerprint and st.schema_fingerprint != expected:
-            warnings.append(
-                f"{iid}: captured against a different {cls_name} field set "
-                f"(fingerprint {st.schema_fingerprint} ≠ {expected}); see the per-field notes"
-            )
         for name, value in st.params.items():
             if name not in jm.USER_PARAMS:
                 warnings.append(f"{iid}: '{name}' is not a user parameter of {cls_name} — NOT applied")
@@ -323,6 +312,33 @@ def instantiate_stages(state: ProjectState, protocol: Protocol, assets: dict[str
 def _coerce(jm, name: str, value: Any) -> Any:
     field = type(jm).model_fields[name]
     return TypeAdapter(field.annotation).validate_python(value)
+
+
+def stage_edits(state: ProjectState, protocol: Protocol) -> dict[str, list[tuple[str, Any, Any]]]:
+    """Per stage instance, the user parameters whose CURRENT value differs from what the
+    protocol pinned: `{instance_id: [(name, protocol_value, current_value)]}`. Compared after
+    the same coercion apply used, so `"3"` vs `3` is not an edit; a stage the project no
+    longer has is absent. Species-shaped defaults are not pins and are not compared. Read-only
+    — the Protocols view renders these as "edited" chips (roadmap 16 D7; never "drift")."""
+    out: dict[str, list[tuple[str, Any, Any]]] = {}
+    for st in protocol.stages:
+        jm = state.jobs.get(st.instance_id)
+        if jm is None:
+            continue
+        edits: list[tuple[str, Any, Any]] = []
+        for name, value in st.params.items():
+            if name not in jm.USER_PARAMS:
+                continue
+            try:
+                want = _coerce(jm, name, value)
+            except ValidationError:
+                continue  # rejected at apply and reported then — the job never held it, so not an edit
+            have = getattr(jm, name, None)
+            if want != have:
+                edits.append((name, want, have))
+        if edits:
+            out[st.instance_id] = edits
+    return out
 
 
 def _apply_species_defaults(jm, st: ProtocolStage, ps: ProtocolSpecies, entry: dict[str, str], warnings) -> set[str]:

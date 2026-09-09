@@ -196,20 +196,12 @@ class CurationConfig(BaseModel):
     # 1 = off (open the full-res volume, as before 10-S3).
     display_bin: int = 2
     # The REST command channel (the worker starts `remotecontrol rest` on the node's
-    # loopback; crboost reaches it via `ssh <node> curl`). QUARANTINED since roadmap 10-S1:
-    # nothing may drive a session after launch (Model B), and this now gates only a
-    # launch-time health check. It is NOT a switch for loading/saving from crboost — that
+    # loopback; crboost reaches it via `ssh <node> curl`). QUARANTINED since roadmap 10-S1;
+    # it gates two things: the launch-time health check and the confirmed in-session scope
+    # switch (13-S2, "Switch session to this tomogram" in the control center). Off ⇒ the
+    # control center offers Restart only. It is NOT a switch for saving from crboost — that
     # path is deleted, deliberately.
     rest_enabled: bool = True
-
-
-class LocalDataConfig(BaseModel):
-    """Local data of the protocol regression harness (roadmap 14). `root` holds the frozen dataset
-    inputs (`input/<protocol>/`), the per-run throwaway projects (`runs/`) and the recorded
-    baselines (`baseline/`). Empty = `<DefaultProjectBase>/local_data` — deliberately OUTSIDE
-    the project base itself so the server's PipelineMonitor never adopts a CLI-driven run."""
-
-    root: str = ""
 
 
 class Config(BaseModel):
@@ -233,7 +225,6 @@ class Config(BaseModel):
     # feature is OFF: no catalog affordance is rendered anywhere, which is the state every
     # existing install is in until someone points this at a shared directory.
     species_catalog_root: str = ""
-    local_data: LocalDataConfig = Field(default_factory=LocalDataConfig)
 
     # DEV TOGGLE (temporary): global override so every project uses the afterok orchestrator
     # (schemer-free submit + inline import) without per-project project_params.json edits. A
@@ -316,17 +307,6 @@ class ConfigService:
         silent "feature off"."""
         raw = (self._config.species_catalog_root or "").strip()
         return Path(raw).expanduser() if raw else None
-
-    @property
-    def local_data_root(self) -> Path | None:
-        """Root of the regression harness's on-disk area (roadmap 14): the configured
-        `local_data.root`, else `<DefaultProjectBase>/local_data`, else None when neither
-        is set (the harness then refuses to run and names the missing key)."""
-        raw = (self._config.local_data.root or "").strip()
-        if raw:
-            return Path(raw).expanduser()
-        base = (self._config.local.DefaultProjectBase or "").strip()
-        return Path(base).expanduser() / "local_data" if base else None
 
     @property
     def venv_path(self) -> Path | None:

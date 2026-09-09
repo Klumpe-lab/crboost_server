@@ -38,11 +38,18 @@ _KIND_STYLE = {
 
 
 def house_button(
-    label: str, on_click: Callable | None = None, *, kind: str = "default", tooltip: str | None = None
+    label: str,
+    on_click: Callable | None = None,
+    *,
+    kind: str = "default",
+    tooltip: str | None = None,
+    icon: str | None = None,
 ) -> ui.button:
     # color=None: NiceGUI defaults to color='primary', whose bg-primary class paints
     # the Material blue pill with !important — it must not exist, not be overridden.
-    btn = ui.button(label, on_click=on_click, color=None).props("unelevated dense no-caps")
+    # `icon` (a Material name) leads the label — the one icon+text button in the house
+    # vocabulary is `Curate picks` (13-S3), where the glyph is the door to ArtiaX.
+    btn = ui.button(label, icon=icon, on_click=on_click, color=None).props("unelevated dense no-caps")
     btn.classes("cb-btn" + ("" if kind == "default" else f" cb-btn--{kind}"))
     btn.style(_BASE_STYLE + _KIND_STYLE[kind])
     if tooltip:

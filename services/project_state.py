@@ -46,7 +46,8 @@ logger = logging.getLogger(__name__)
 # 3.3: +PickList.source_kind/source_ref + ParticleSpecies.catalog_id (09-S2); 3.4: +created_at (10-S3);
 # 3.5: +ParticleSpecies.catalog_version + ImportedTomograms.batches, -is_aggregation (denovo S5/S6, 12);
 # 3.6: -authoritative_pick_lists (the per-tomogram nomination is gone; merges name their own sources)
-SCHEMA_VERSION: tuple[int, int] = (3, 6)
+# 3.7: +protocol_origin (roadmap 16 S1: which protocol bundle a project was created from)
+SCHEMA_VERSION: tuple[int, int] = (3, 7)
 
 
 def _afterok_global_default() -> bool:
@@ -677,6 +678,18 @@ class ImportedTomograms(BaseModel):
         ]
 
 
+class ProtocolOrigin(BaseModel):
+    """Which protocol bundle a project was created from (roadmap 16 S1). Stamped by
+    `services/protocols/apply.apply_protocol`; the frozen copy of the bundle's protocol.yaml
+    lives at `<project>/protocol/protocol.yaml` and is what the Protocols view's "edited"
+    chips compare against — the bundle itself may change after the apply."""
+
+    name: str
+    version: int = 1
+    bundle_dir: str = ""
+    applied_at: str = ""  # ISO seconds
+
+
 class ProjectState(BaseModel):
     """Complete project state with direct global parameter access"""
 
@@ -752,6 +765,9 @@ class ProjectState(BaseModel):
     # Live status under this flag requires the P1.B reconciler. See
     # ORCHESTRATOR_REPLACEMENT_PLAN.md §6.
     use_afterok_orchestrator: bool = Field(default_factory=_afterok_global_default)
+    # Roadmap 16 S1: provenance of a project created from a protocol bundle; None for a
+    # hand-built project. Additive, and restored explicitly in load() (field-by-field).
+    protocol_origin: ProtocolOrigin | None = None
     # Sole job-dir-number allocator for the afterok path. Seeded once from
     # default_pipeline.star's rlnPipeLineJobCounter at the first submit_chain, then
     # monotonic -- always consumes a slot (no reuse-on-rerun), which fixes the
@@ -1296,12 +1312,15 @@ class ProjectState(BaseModel):
         # projects that predate that field, which would otherwise keep the pre-rename id.
         # Local import: services.particles pulls the job-spec/dashboard chain, which must
         # not become a module-level dependency of ProjectState.
-        from services.particles.ingest import migrate_legacy_manual_slugs
+        from services.particles.ingest import migrate_legacy_manual_slugs, relabel_seed_rows
 
         renamed = migrate_legacy_manual_slugs(project_state)
         for species_id, tomo, old, new in renamed:
             logger.info("Migrated pick list %s/%s: %s -> %s", species_id, tomo, old, new)
-        if renamed:
+        relabelled = relabel_seed_rows(project_state)
+        for species_id, tomo, stem in relabelled:
+            logger.info("Relabelled seeded pick list %s/%s: picks -> %s", species_id, tomo, stem)
+        if renamed or relabelled:
             project_state.mark_dirty()
 
         # pipeline_order (P1.0): use the persisted value; for legacy projects that
@@ -1320,6 +1339,15 @@ class ProjectState(BaseModel):
             data.get("use_afterok_orchestrator", False) or _afterok_global_default()
         )
         project_state.job_dir_counter = data.get("job_dir_counter", 0)
+
+        # Roadmap 16 S1: protocol provenance — explicit restore, same reason as above. A
+        # malformed block is reported through load_warnings, never silently dropped.
+        _po = data.get("protocol_origin")
+        if _po:
+            try:
+                project_state.protocol_origin = ProtocolOrigin.model_validate(_po)
+            except ValidationError as e:
+                project_state.load_warnings.append(f"protocol_origin could not be restored and was dropped: {e}")
 
         return project_state
 

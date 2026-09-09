@@ -23,14 +23,12 @@ from services.path_resolution_service import PathResolutionService
 from services.project_state import ProjectState
 from services.protocols.schema import (
     ASSETS_DIRNAME,
-    Expectation,
     Protocol,
     ProtocolExtraction,
     ProtocolMask,
     ProtocolSpecies,
     ProtocolStage,
     ProtocolTemplate,
-    schema_fingerprint,
 )
 from services.templating.template_metadata import get_effective_mask_path, get_effective_template_path
 
@@ -65,11 +63,7 @@ def export_protocol(
                 tm_assets[sid] = (tpl, msk)
         stages.append(
             ProtocolStage(
-                job=jt.value,
-                species=sid,
-                params=params,
-                inputs=_portable_inputs(state, resolver, iid, jm, warnings),
-                schema_fingerprint=schema_fingerprint(type(jm)),
+                job=jt.value, species=sid, params=params, inputs=_portable_inputs(state, resolver, iid, jm, warnings)
             )
         )
 
@@ -78,15 +72,10 @@ def export_protocol(
         for sid in dict.fromkeys(s.species for s in stages if s.species)
     ]
 
-    expects = {"pixel_size_angstrom": Expectation(about=state.microscope.pixel_size_angstrom)}
-    if state.import_selected_tilt_series > 0:
-        expects["tilt_series_count"] = Expectation(about=float(state.import_selected_tilt_series))
-
     protocol = Protocol(
         name=name,
         description=description,
         provenance={"exported_from": state.project_name, "exported_at": datetime.now().isoformat(timespec="seconds")},
-        expects=expects,
         species=species,
         stages=stages,
     )
