@@ -93,8 +93,11 @@ genuine producer drift.
 3. Every liveness guard is **in-memory, single-process**, so it is wrong after a restart, wrong with
    two server processes, and clearable by an unrelated code path.
 
-Note the amplifier: with the UI stalling for seconds (see roadmap 16 / the 2026-08-28 latency fixes),
+Note the amplifier: with the UI stalling for seconds (the 2026-08-28 latency fixes, landed without a roadmap),
 a user re-clicking Run is the normal case, not the exotic one.
+
+Roadmap 16 (Protocols view) depends on S4 here: its Stop uses `stop_and_cleanup` today, and it
+deliberately offers no Retry until this submitter-side pre-flight exists (16 D9).
 
 ---
 

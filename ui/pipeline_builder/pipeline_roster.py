@@ -13,8 +13,7 @@ from ui.components.dialogs import dialog_host
 from ui.components.reactive import FingerprintedView
 from ui.components.species_pill import render_species_pill
 from ui.components.svg_icon import load_icon_svg
-from ui.curation_session_dialog import open_curation_control_center
-from ui.particles import session_status
+from ui.protocols_view import protocol_light
 from ui.styles import MONO, SANS as FONT
 from ui.status_indicator import BoundStatusDot, _running_spinner_html
 from services.models_base import InstanceId, instance_id_to_job_type
@@ -37,10 +36,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Rail curation-session indicator: how often it ASKS `session_status`. That module keeps its
-# own ~16 s throttle on the actual `squeue`, so a tick inside the window is a dict read —
-# this cadence only decides how fast the icon reacts once the answer changes.
-_CURATION_TICK_S = 6.0
+# Foot-of-rail protocol light: how often it re-reads the in-memory protocol state. A tick is
+# a dict read; this cadence only decides how fast the light reacts once the answer changes.
+_RAIL_LIGHT_TICK_S = 6.0
 
 
 def _ts_cell(text: str, color: str, extra: str = ""):
@@ -48,17 +46,8 @@ def _ts_cell(text: str, color: str, extra: str = ""):
     ui.label(text).style(f"font-size: 9px; font-family: 'IBM Plex Mono', monospace; color: {color}; {extra}")
 
 
-# Journey nav glyph: three ascending bars — the surface carries per-TS progress and
-# statistics across the whole pipeline, which the previous ringed-lines circle said
-# nothing about. No axis: at 18 px the bars alone are the legible read.
-_TOMO_DASHBOARD_SVG = (
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
-    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
-    '<line x1="5.5" y1="19" x2="5.5" y2="14"/>'
-    '<line x1="12" y1="19" x2="12" y2="9.5"/>'
-    '<line x1="18.5" y1="19" x2="18.5" y2="5"/>'
-    "</svg>"
-)
+# The Journey nav glyph (three ascending bars) lives in static/icons/journey.svg since
+# 13-S3, so the Picks & curation tab's journey button draws the same asset.
 _SB_INFO = "#c0cad4"
 _AVATAR_PALETTE = ["#3b82f6", "#8b5cf6", "#06b6d4", "#10b981", "#f59e0b", "#ec4899"]
 
@@ -210,9 +199,9 @@ class RosterWidget(FingerprintedView):
         # Drives the nav-icon highlight; set by workspace _switch_to via
         # set_active_mode. Starts "pipeline" (the default view at load).
         self._active_mode: str = "pipeline"
-        # Last (status, scope, error) painted onto the rail's curation-session indicator, so
-        # its timer only touches the DOM when the session state actually moved.
-        self._curation_paint: tuple[str, str, str] | None = None
+        # Last (kind, tooltip) painted onto the foot-of-rail protocol light (roadmap 16 D6),
+        # so its timer only touches the DOM when the state actually moved.
+        self._protocol_paint: tuple[str, str] | None = None
         # Last (tomogram, tilt-series) counts painted onto the rail badges, so their timer
         # only touches the DOM when a number actually moved.
         self._counts_paint: tuple | None = None
@@ -919,7 +908,12 @@ class RosterWidget(FingerprintedView):
             pc = self._refs.get("pipeline_btn")
             if pc is not None:
                 pc.style("background: transparent;")
-        for ref_key, m in (("wb_btn", "workbench"), ("dashboard_btn", "journey"), ("gallery_btn", "gallery")):
+        for ref_key, m in (
+            ("wb_btn", "workbench"),
+            ("dashboard_btn", "journey"),
+            ("gallery_btn", "gallery"),
+            ("protocol_btn", "protocols"),
+        ):
             c = self._refs.get(ref_key)
             if c is not None:
                 c.style(f"background: {SB_ABG if mode == m else 'transparent'};")
@@ -946,6 +940,12 @@ class RosterWidget(FingerprintedView):
         tg = self.panel.toggle_gallery
         if tg is not None:
             await tg()
+
+    async def _open_protocols(self):
+        """The foot-of-rail protocol light's click: the Protocols view (roadmap 16 D6)."""
+        tp = self.panel.toggle_protocols
+        if tp is not None:
+            await tp()
 
     # ── Sidebar ───────────────────────────────────────────────────────────────
 
@@ -1006,14 +1006,19 @@ class RosterWidget(FingerprintedView):
             )
             self._refs["run_slot"] = run_slot
 
+            self._build_link_btn()
+
             self._sb_svg_btn("cross.svg", "Close project", lambda: ui.navigate.to("/"))
 
             ui.element("div").style("flex: 1;")
 
-            # Pinned to the FOOT of the rail: the curation-session indicator is not a place
-            # to navigate to, it is the answer to "is ArtiaX up, and on what". Keeping it out
-            # of the view stack above says so without a separator.
-            self._build_curation_session_btn()
+            # Pinned to the FOOT of the rail, one status light: the protocol light (is a
+            # protocol run up, and how did it do — it also opens the Protocols view, roadmap
+            # 16). It is not a place in the view stack above; it answers a question first,
+            # and says so by sitting apart without a separator. The ArtiaX session light that
+            # sat under it went with 13-S3: the live marker is on the in-session tomogram's
+            # `Curate picks` button, the one door to that session.
+            self._build_protocol_btn()
             ui.element("div").style("height: 6px;")
 
         self.rebuild_run_slot()
@@ -1184,20 +1189,42 @@ class RosterWidget(FingerprintedView):
             "color: #94a3b8; letter-spacing: 0.09em; text-transform: uppercase;"
         )
 
+    # Label column of the parameter table. Wide enough for "Tilt-series" without
+    # hyphenating it, and the same on every section so the three tables read as one.
+    _PARAM_LABEL_W = 72
+
     def _render_overview_section(self, title: str, rows: list) -> None:
         """Label · value pairs on one grid. The label column is fixed, so values line up
-        and sit NEXT to what names them instead of across a 380 px gulf from it.
-        A row may carry a third element: an explicit value colour (warnings)."""
+        and sit NEXT to what names them instead of across a gulf from it.
+        A row may carry a third element: an explicit value colour (warnings).
+
+        Values are 9 px mono — one notch under the labels — because half of them are
+        absolute paths and globs, and at 10 px in a 380 px pane those wrapped to three
+        lines each. Any value that reads as an absolute path also gets the app's copy
+        button (`ui/components/copyable.py`), since a wrapped path is exactly what you
+        cannot hand-select."""
+        from ui.components.copyable import copy_button
+
         self._overview_section_header(title)
         for row in rows:
             row_lbl, row_val = row[0], row[1]
             color = row[2] if len(row) > 2 else "#1e40af"
+            text = str(row_val)
+            is_path = text.startswith("/")
             with ui.element("div").style(
-                "display: grid; grid-template-columns: 68px minmax(0, 1fr); "
+                f"display: grid; grid-template-columns: {self._PARAM_LABEL_W}px minmax(0, 1fr); "
                 "align-items: baseline; padding: 1px 12px; gap: 8px;"
             ):
                 ui.label(row_lbl).style(f"{FONT} font-size: 10px; color: #94a3b8;")
-                ui.label(str(row_val)).style(f"{MONO} font-size: 10px; color: {color}; word-break: break-all;")
+                if is_path:
+                    with ui.element("div").style("display: flex; align-items: baseline; gap: 3px; min-width: 0;"):
+                        ui.label(text).style(
+                            f"{MONO} font-size: 9px; color: {color}; word-break: break-all; "
+                            "flex: 1 1 0; min-width: 0; line-height: 1.4;"
+                        )
+                        copy_button(text, tooltip=f"Copy\n{text}", color="#cbd5e1")
+                else:
+                    ui.label(text).style(f"{MONO} font-size: 9px; color: {color}; word-break: break-all;")
 
     def _render_dataset_ts_expansion(self, state) -> None:
         """Collapsible per-tilt-series table living on the Dataset row.
@@ -1226,11 +1253,11 @@ class RosterWidget(FingerprintedView):
             # Same label column as _render_overview_section — this IS one of its rows, it
             # just happens to open.
             with ui.element("div").style(
-                "display: grid; grid-template-columns: 68px minmax(0, 1fr); "
+                f"display: grid; grid-template-columns: {self._PARAM_LABEL_W}px minmax(0, 1fr); "
                 "align-items: baseline; padding: 1px 12px; gap: 8px; width: 100%;"
             ):
                 ui.label("Selected").style(f"{FONT} font-size: 10px; color: #94a3b8;")
-                ui.label(header_text).style(f"{MONO} font-size: 10px; color: #1e40af;")
+                ui.label(header_text).style(f"{MONO} font-size: 9px; color: #1e40af;")
 
         with exp:
             with ui.element("div").style(
@@ -1264,6 +1291,7 @@ class RosterWidget(FingerprintedView):
         from nicegui import app as ng_app
         from services.project_state import get_project_state_for
         from services.configs.user_prefs_service import get_prefs_service
+        from ui.open_project import remember_project_opened
         from ui.projects_overview import ProjectsOverview
 
         panel = self.panel
@@ -1294,6 +1322,7 @@ class RosterWidget(FingerprintedView):
             panel.ui_mgr.load_from_project(
                 project_path=target, scheme_name="loaded", jobs=list(loaded_state.jobs.keys())
             )
+            remember_project_opened(target, label=loaded_state.project_name)
             ui.navigate.to("/workspace")
 
         # ── history helpers ───────────────────────────────────────────────────
@@ -1471,9 +1500,12 @@ class RosterWidget(FingerprintedView):
             with ui.element("div").style(
                 "display: flex; flex-direction: row; align-items: stretch; width: 100%; flex: 1 1 auto; min-height: 0;"
             ):
-                # LEFT — parameter panel for the previewed project.
+                # LEFT — parameter panel for the previewed project. 480 px, not 380: the
+                # Project section is four absolute paths and globs, and at 380 every one
+                # of them wrapped to three lines, which is what made this pane read as a
+                # ransom note rather than a table.
                 with ui.element("div").style(
-                    "flex: 0 0 380px; max-width: 40%; border-right: 1px solid #e5e7eb; "
+                    "flex: 0 0 480px; max-width: 44%; border-right: 1px solid #e5e7eb; "
                     "display: flex; flex-direction: column; min-height: 0; background: #ffffff;"
                 ):
                     with ui.element("div").style(
@@ -1502,7 +1534,7 @@ class RosterWidget(FingerprintedView):
                         current_path=current_path_str,
                         selected_path=current_path_str,
                         show_filter=True,
-                        height_css="calc(88vh - 116px)",
+                        height_css="calc(88vh - 148px)",
                         title="Projects Overview",
                     )
                     overview_ref["comp"] = overview
@@ -1777,31 +1809,22 @@ class RosterWidget(FingerprintedView):
         permanent "something is new" badge pointing at nothing in particular — removed.
         """
         return self._sb_svg_btn(
-            _TOMO_DASHBOARD_SVG,
+            "journey.svg",
             "Journey — one tilt-series end to end: motion, CTF, alignment, reconstruction, picks",
             self._open_journey,
             ref_key="dashboard_btn",
         )
 
-    # A ChimeraX + ArtiaX launcher used to sit here. It went with picking-UI roadmap 09-S2:
-    # a session is always started ON a tomogram, from the Particles registry's
-    # "Picks & curation" tab ('curate' on a tomogram group), so the app has exactly one
-    # launch affordance. What sits at the bottom of the rail now is an INDICATOR of that
-    # session (_build_curation_session_btn) whose click opens the control center — it never
-    # launches, so there is still exactly one launch affordance.
+    # A ChimeraX + ArtiaX launcher used to sit here (gone with picking-UI 09-S2), then an
+    # INDICATOR of that session (gone with 13-S3). A session is always started ON a
+    # tomogram — `Curate picks` on a tomogram group of the Particles registry's "Picks &
+    # curation" tab — and that button carries the live marker, so the app has exactly one
+    # door to ArtiaX and nothing on this rail points at it.
 
-    def _build_curation_session_btn(self):
-        """Bottom-of-rail ChimeraX + ArtiaX control-session indicator.
-
-        Ever-present like the other rail entries, and dim while nothing is running. When a
-        session of this user IS up it turns green and breathes (CSS keyframes — see
-        `.cb-artiax-live`), and its hover says WHICH species and tomogram that session was
-        launched on, read from the session's own recorded scope. Clicking always opens the
-        control center: connect details while one is up, and the start panel otherwise.
-
-        `unknown` (a `squeue` that raised) is its own amber state — never painted as "no
-        session", which is the reading that gets a user to start a second ChimeraX.
-        """
+    def _build_protocol_btn(self):
+        """Foot-of-rail protocol light (roadmap 16). Dim while the project was not created from a
+        protocol; lit when it was; blue and breathing while its pipeline is running. The hover
+        names the protocol and what is running. Click → the Protocols view."""
         container = (
             ui.element("div")
             .style(
@@ -1810,74 +1833,95 @@ class RosterWidget(FingerprintedView):
                 "display: flex; align-items: center; justify-content: center; "
                 "cursor: pointer; flex-shrink: 0;"
             )
-            .on("click", self._open_control_center)
+            .on("click", self._open_protocols)
         )
         with container:
-            icon = ui.icon("view_in_ar", size="18px").style(f"color: {SB_MUTE}; pointer-events: none;")
-            tip = ui.tooltip("")
-        self._refs["curation_btn"] = container
-        self._refs["curation_icon"] = icon
-        self._refs["curation_tip"] = tip
-        self._paint_curation_session()
-        # The status itself is the shared, throttled session_status cache (one `squeue` per
-        # POLL_S across every observer), so this tick is nearly free and only repaints when
-        # the rendered state actually moved.
-        ui.timer(_CURATION_TICK_S, self._tick_curation_session)
+            icon = ui.icon("fact_check", size="18px").style(f"color: {SB_MUTE}; pointer-events: none;")
+            tip = ui.tooltip("").style("white-space: pre-line;")
+        self._refs["protocol_btn"] = container
+        self._refs["protocol_icon"] = icon
+        self._refs["protocol_tip"] = tip
+        self._paint_protocol()
+        ui.timer(_RAIL_LIGHT_TICK_S, self._tick_protocol)
         return container
 
-    async def _tick_curation_session(self):
-        await session_status.poll(self.panel.backend)
-        self._paint_curation_session()
+    def _tick_protocol(self):
+        self._paint_protocol()
 
-    def _paint_curation_session(self):
-        """Reflect the cached session state onto the rail icon. Gated on the (status, scope)
-        it last painted: this runs on a timer, and re-sending identical style/class strings
-        every tick is churn the client has to process for nothing.
-
-        Four states, not three. `unknown` splits by WHY: a `squeue` that raised is amber and
-        says so, while "not asked yet" (the first seconds after a page load) is just dim —
-        painting that one amber would cry wolf on every single load.
-        """
-        st = session_status.status()
-        scope = session_status.scope_text()
-        error = session_status.last_error()
-        if (st, scope, error) == self._curation_paint:
+    def _paint_protocol(self):
+        """In-memory state only; gated on what it last painted (timer-driven)."""
+        kind, text = protocol_light(self.panel.ui_mgr.project_path)
+        if (kind, text) == self._protocol_paint:
             return
-        self._curation_paint = (st, scope, error)
-
-        icon = self._refs.get("curation_icon")
-        tip = self._refs.get("curation_tip")
+        self._protocol_paint = (kind, text)
+        icon = self._refs.get("protocol_icon")
+        tip = self._refs.get("protocol_tip")
         if icon is None or tip is None:
             return
-        if st == session_status.LIVE:
-            color, live = "#16a34a", True
-            text = (
-                f"Picking {scope or 'a scope this session did not record'} — ChimeraX + ArtiaX is up. "
-                "Click for the control center."
-            )
-        elif st == session_status.UNKNOWN and error:
-            color, live = "#d97706", False
-            text = f"Could not ask SLURM whether a curation session is running — {error}. Click for the control center."
-        elif st == session_status.UNKNOWN:
-            color, live = SB_MUTE, False
-            text = "Checking for a running curation session… Click for the control center."
-        else:
-            color, live = SB_MUTE, False
-            text = (
-                "No curation session. Start one with 'curate' on a tomogram in Picks & curation, "
-                "or click here for the control center."
-            )
+        color = {"live": "#2563eb", "lit": SB_ACT}.get(kind, SB_MUTE)
         icon.style(f"color: {color}; pointer-events: none;")
-        icon.classes(add="cb-artiax-live" if live else "", remove="" if live else "cb-artiax-live")
+        live = kind == "live"
+        icon.classes(add="cb-protocol-live" if live else "", remove="" if live else "cb-protocol-live")
         tip.set_text(text)
 
-    async def _open_control_center(self):
-        """The rail indicator's click. Opens the SAME control center the Picks & curation
-        session chip does — SingleFlight-guarded, since it owns a dialog."""
-        async with self.panel.flight("rail_control_center") as acquired:
-            if not acquired:
-                return
-            await open_curation_control_center(self.panel.backend, self.panel.ui_mgr.project_path)
+    def _build_link_btn(self):
+        """Copy-link (roadmap 17 S4): the URL that reproduces exactly where the user is.
+
+        A menu rather than a bare copy button on purpose — `navigator.clipboard` is a
+        secure-context API and this server is reached over plain http on the cluster, so
+        the write can quietly do nothing. Showing the URL (selectable) means the button
+        always works, with the copy icon as the fast path when the context allows it."""
+        from ui.components.copyable import copy_button
+        from ui.routing import route_to_path
+
+        writer = self.panel.callbacks.get("route_writer")
+        if writer is None:
+            return
+
+        def _absolute() -> str:
+            path = route_to_path(writer.current)
+            try:
+                origin = str(ui.context.client.request.base_url).rstrip("/")
+            except RuntimeError:
+                return path
+            return f"{origin}{path}"
+
+        btn = (
+            ui.button(icon="link")
+            .props("flat dense")
+            .style(
+                f"width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
+                f"color: {SB_MUTE}; background: transparent; min-width: 0;"
+            )
+        )
+        btn.tooltip("Link to this view — copy it, or send it to a colleague")
+        with btn:
+            menu = (
+                ui.menu()
+                .props('anchor="center right" self="center left" :offset="[8,0]"')
+                .style(
+                    "background: #ffffff; border: 1px solid #e2e8f0; border-radius: 5px; "
+                    "padding: 8px 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); max-width: 460px;"
+                )
+            )
+            with menu:
+                row = ui.element("div").style("display: flex; align-items: center; gap: 6px;")
+
+        def _fill() -> None:
+            # Rebuilt on every open: the route moves with each click, and a menu built
+            # once at rail time would hand out the URL of whatever view loaded first.
+            url = _absolute()
+            row.clear()
+            with row:
+                ui.label(url).style(
+                    "font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #475569; "
+                    "word-break: break-all; user-select: all;"
+                )
+                copy_button(url, tooltip="Copy link")
+
+        # The QMenu nested in the button opens on its own click; `before-show` fills it
+        # so the content is current without a flash of the previous route's URL.
+        menu.on("before-show", _fill)
 
     def _sb_svg_btn(self, svg_name, tooltip, on_click, active=False, ref_key=None, color_override=None, badge=False):
         bg = SB_ABG if active else "transparent"

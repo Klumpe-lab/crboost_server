@@ -10,7 +10,9 @@ A ``manual`` list is re-derived by the ``CurationWatcher`` from the user's ``.co
 in the tomogram's curation dir (after a restart the ``_seen`` set is empty), so deleting it
 means deleting that save too — it is listed, and the archived ``imports/`` copies are kept
 for provenance. Since roadmap 10-S2 the match is by file STEM, so deleting one hand-picked
-list leaves the other lists saved in the same session alone. The authoritative choice is NOT
+list leaves the other lists saved in the same session alone — and deleting the seeded default
+``picks`` list (13-S1) deletes its seed file with it; the next *Curate picks* re-seeds a fresh
+0-pick one. The authoritative choice is NOT
 rewritten: a dangling choice surfaces through the gate ("dangling choice") and the Picks
 tab's radio, instead of silently falling back to ``auto``.
 """

@@ -7,16 +7,18 @@ template+mask it came from — is an auxiliary fact of a row here.
 
 Top to bottom:
 
-- **Status line** — the `curation session` link (click → the control center; its tooltip
-  carries the WHERE-TO-SAVE contract, derived from the watcher's own cadence) and
-  `Extract all pending`. The lists / picks / kept / extracted chips that used to sit beside
-  it are gone: each was a sum of the table right below, so the strip restated the page.
+- **Title row** — `PICKS & CURATION` (its tooltip carries the WHERE-TO-SAVE contract, derived
+  from the watcher's own cadence) and `Extract all pending`. The session chip that sat here
+  went with 13-S3: the control center is reachable only through `Curate picks`, and the live
+  marker sits on the in-session tomogram's button. The lists / picks / kept / extracted chips
+  are gone too: each was a sum of the table right below, so the strip restated the page.
 - **One group per tomogram**, over the species' whole tomogram universe rather than only the
   ones that already hold picks: a tomogram with nothing on it is exactly where de-novo
   picking starts, and it is a legitimate `.coords` import target. The name carries the
   copy-save-dir button (it copies that tomogram's folder), and the group actions are the ONE
-  place each remaining verb exists — `curate` (the single ArtiaX launch/scope affordance in
-  the app, 09-S2), `viewer ↗`, `journey ↗`.
+  place each remaining verb exists — `Curate picks` (the single door to ArtiaX in the app,
+  09-S2 / 13-S3, with a green dot when the live session has this tomogram open), the viewer
+  icon and the journey icon.
 - **The list table** per group: swatch · list · source · origin · picks · Extracted · job ·
   actions, closed by the always-present import row. `origin` (09-S4) names the template +
   mask that produced the picks, resolved from the candidate-extract instance's recorded
@@ -68,7 +70,8 @@ from nicegui import ui
 from services.aggregation.extraction import extraction_params_for_species
 from services.curation.watcher import FULL_SWEEP_EVERY, SETTLE_SEC, TICK_SEC
 from services.dashboard_data import glyph_for
-from services.models_base import JobStatus, ListExtractionState, PickListType
+from services.models_base import JobStatus, ListExtractionState, PickListType, PickSourceKind
+from services.particles.ingest import is_default_slug
 from services.particles.list_ref import AUTO_SLUG, ListRef, auto_ref, list_ref_for, species_tomo_map
 from services.particles.species_overview import NOT_APPLICABLE, ExtractJob, ListRow, SpeciesOverview, species_overview
 from services.project_state import get_project_state_for
@@ -77,7 +80,7 @@ from ui.background_task import BackgroundTask
 from ui.components.buttons import house_button
 from ui.components.chip import render_chip
 from ui.components.reactive import FingerprintedView, SingleFlight
-from ui.curation_session_dialog import open_curation_control_center
+from ui.components.svg_icon import load_icon_svg
 from ui.local_file_picker import local_file_picker
 from ui.particles import list_actions, session_status
 from ui.species.tab import TabContext
@@ -98,17 +101,12 @@ _LINK_CLS = "text-[10px] text-indigo-500 cursor-pointer underline decoration-dot
 _DETECT_S = FULL_SWEEP_EVERY * TICK_SEC + SETTLE_SEC
 _HOT_DETECT_S = TICK_SEC + SETTLE_SEC
 
-# The session's word + what it means, for the one link that opens the control center.
-_SESSION_TEXT = {
-    session_status.LIVE: ("running", "A ChimeraX + ArtiaX session of yours is up"),
-    session_status.OFF: ("none", "No session running — 'curate' on a tomogram starts one"),
-    session_status.UNKNOWN: ("unknown", "Could not ask SLURM whether a session is running"),
-}
 _EVENT_CLS = {
     "ingested": "cb-badge-ok",
     "error": "text-red-600",
     "no-geometry": "cb-badge-stale",
     "unattributed": "cb-badge-stale",
+    "off-scope": "text-red-600",  # a save landed in a folder the live session was NOT scoped to
 }
 
 # The `job` column's mark per extraction-job status: (glyph, css class, words for the hover).
@@ -144,17 +142,31 @@ def _count_text(count: int, kept: int | None) -> str:
     return f"{kept}/{count}" if kept is not None and kept != count else str(count)
 
 
+def _coords_path(row: ListRow) -> str:
+    """The ``.coords`` file behind a hand-picked list — a session save sits beside its star
+    under the list's recorded stem, an external import IS its recorded path. "" for auto /
+    merged lists and for rows that pre-date provenance (nothing is guessed)."""
+    if row.list_type != PickListType.MANUAL.value or not row.source_ref:
+        return ""
+    if row.source_kind == PickSourceKind.ARTIAX.value and row.star_path:
+        return str(Path(row.star_path).parent / f"{row.source_ref}.coords")
+    if row.source_kind == PickSourceKind.IMPORT.value and "/" in row.source_ref:
+        return row.source_ref
+    return ""
+
+
 def _save_contract(species_slug: str) -> str:
-    """The WHERE-TO-SAVE contract, as the session chip's tooltip (09-S1). It used to be a
-    prose block of its own; it is the one thing a user must get right by hand, but it is
-    also read once, so it hangs off the chip that says whether a session is up."""
+    """The WHERE-TO-SAVE contract, as the title's tooltip (09-S1, reworded by 13-S1). It
+    used to be a prose block of its own; it is the one thing a user must get right by
+    hand, but it is also read once, so it hangs off the title rather than the page."""
     return (
-        f"Save from ArtiaX into Curation/{species_slug}/<tomogram>/ · format .coords (positions only, corner-Å) · "
-        f"any filename EXCEPT auto.coords and *_ref.coords, which are crboost's own exports · EVERY file becomes "
-        f"its own list, named after it, and re-saving under the same name updates that list · "
-        f"picked up automatically within ~{_HOT_DETECT_S:.0f} s in the tomogram the session was launched on, "
-        f"~{_DETECT_S:.0f} s elsewhere — nothing to press here. A save that lands outside these folders shows in "
-        f"UNATTRIBUTED SAVES below, where you assign it. Copy a tomogram's exact folder with its ⧉ button."
+        f"'Curate picks' pre-seeds ONE empty list per tomogram — Curation/{species_slug}/<tomogram>/"
+        f"{species_slug}__<tomogram>__picks.coords — and opens it last in ArtiaX. Pick into it and save it back to "
+        f"that same file (positions-only .coords, not RELION star) · picked up within ~{_HOT_DETECT_S:.0f} s in the "
+        f"session's tomogram, ~{_DETECT_S:.0f} s elsewhere — nothing to press here. ArtiaX's save dialog opens in "
+        f"the folder you LAST saved to, so after a switch paste the list's path (its ⧉ button) into the dialog. "
+        f"A save under another name in that folder still becomes its own list, named after the file; a save "
+        f"outside these folders shows in UNATTRIBUTED SAVES below, where you assign it."
     )
 
 
@@ -235,12 +247,27 @@ def _compute(state, project_path: Path, species_id: str) -> _Computed:
             _TomoInfo(
                 tomo_name=tomo,
                 has_geometry=star is not None,
-                n_saves=len(artiax_bridge.user_coords_saves(cdir)),
+                n_saves=_count_user_saves(cdir, species_id, tomo),
                 curation_dir=str(cdir),
                 ref=auto_ref(project_path, anchors, species_id, tomo, star),
             )
         )
     return _Computed(ov, refs, tuple(tomos), species_slug, color, None)
+
+
+def _count_user_saves(cdir: Path, species_id: str, tomo: str) -> int:
+    """User `.coords` in the dir, EXCLUDING an untouched seed (13-S1): the 0-byte file
+    crboost created is not something the user saved, and the `saves` chip claims it is."""
+    seed = artiax_bridge.seed_coords_path(cdir, species_id, tomo)
+    n = 0
+    for c in artiax_bridge.user_coords_saves(cdir):
+        try:
+            if c == seed and c.stat().st_size == 0:
+                continue
+        except OSError:
+            continue  # vanished between glob and stat — the next recompute sees what is there
+        n += 1
+    return n
 
 
 # ── View ──────────────────────────────────────────────────────────────────────
@@ -253,10 +280,12 @@ class _PicksView(FingerprintedView):
 
     def signature(self) -> Any:
         c = self._tab.computed
+        sc = session_status.scope()
         return (
             self._tab.ctx.species_id,
             get_project_state_for(self._tab.ctx.project_path).registry_rev,
             session_status.status(),
+            (sc.get("species_id"), sc.get("tomo_name")),  # the live dot moves with the session's scope
             None if c is None else (c.overview, c.refs, c.tomos, c.species_slug, c.species_color, c.error),
             self._tab.watcher_signature(),
         )
@@ -265,9 +294,24 @@ class _PicksView(FingerprintedView):
 
     def render(self) -> None:
         c = self._tab.computed
-        with ui.row().classes("w-full items-baseline gap-2 px-1"):
-            ui.label("PICKS & CURATION").classes(_LABEL_CLS)
-            ui.label("every list on every tomogram — curate here, look in the Journey").classes(_HINT_CLS)
+        with ui.row().classes("w-full items-center gap-2 px-1"):
+            # The title carries the save contract on hover (13-S3); the hint tail that sat
+            # beside it said what the table below makes obvious.
+            ui.label("PICKS & CURATION").classes(_LABEL_CLS).tooltip(
+                _save_contract(c.species_slug) if c is not None and not c.error else "computing…"
+            )
+            ui.space()
+            if c is not None and not c.error:
+                # The watcher scans the session's folder every ~5 s and everything else every
+                # ~30 s; this sweeps the whole project now and recomputes the table.
+                house_button("Refresh", self._tab.refresh_now).tooltip(
+                    "Scan every curation folder for saves now and recompute the counts — the watcher otherwise "
+                    "sees the session's own folder within ~7 s and the others within ~30 s"
+                )
+                house_button("Extract all pending", self._tab.extract_all_pending).tooltip(
+                    "Subtomo-extract every list of this species that is not extracted / stale — shows what it would "
+                    "submit before anything is sent"
+                )
         if c is None:
             ui.label("computing…").classes(_HINT_CLS + " px-1")
             return
@@ -276,7 +320,6 @@ class _PicksView(FingerprintedView):
                 "species_overview / ref resolution / the curation-dir scan raised; full traceback in the server log"
             )
             return
-        self._render_header(c)
         if not c.tomos:
             ui.label(
                 "No tomogram is described by any tomograms.star yet — reconstruct or import tomograms first."
@@ -291,29 +334,11 @@ class _PicksView(FingerprintedView):
             self._render_group(c, info, by_tomo.get(info.tomo_name, []))
         self._render_log()
 
-    def _render_header(self, c: _Computed) -> None:
-        """One link and one button. The lists / picks / kept / extracted roll-up chips are
-        gone: every number in them was a sum of the table directly below, so the strip
-        restated the page in pills above it. The SESSION is not a roll-up — it is the only
-        door to the control center, and the WHERE-TO-SAVE contract hangs off it — so it
-        survives as a link in the same vocabulary as `viewer ↗` / `journey ↗`."""
-        st = session_status.status()
-        text, tip = _SESSION_TEXT[st]
-        if session_status.last_error():
-            tip = f"{tip}\n{session_status.last_error()}"
-        with ui.row().classes("w-full items-center gap-2 px-1 flex-wrap"):
-            ui.label(f"curation session · {text} ↗").classes(_LINK_CLS).on(
-                "click", self._tab.open_control_center
-            ).tooltip(f"{tip} — click for the control center. {_save_contract(c.species_slug)}")
-            ui.space()
-            house_button("Extract all pending", self._tab.extract_all_pending).tooltip(
-                "Subtomo-extract every list of this species that is not extracted / stale — shows what it would "
-                "submit before anything is sent"
-            )
-
     def _render_no_picks_hint(self) -> None:
         with ui.row().classes("w-full items-center gap-1 px-1 pt-1"):
-            ui.label("No picks yet — 'curate' a tomogram below to pick into it in ArtiaX, or run").classes(_HINT_CLS)
+            ui.label("No picks yet — 'Curate picks' on a tomogram below to pick into it in ArtiaX, or run").classes(
+                _HINT_CLS
+            )
             ui.label("Pick candidates").classes(_LINK_CLS).on("click", lambda: self._tab.select_tab("jobs"))
             ui.label("from the Jobs tab.").classes(_HINT_CLS)
 
@@ -345,8 +370,8 @@ class _PicksView(FingerprintedView):
                     "saves",
                     str(info.n_saves),
                     status="info",
-                    tooltip="user .coords files in this tomogram's curation dir — the watcher registers EACH as "
-                    "its own pick list, named after the file",
+                    tooltip="user .coords files in this tomogram's curation dir (an untouched pre-seeded list is not "
+                    "a save) — the watcher registers EACH as its own pick list, named after the file",
                 )
             ui.space()
             self._render_group_actions(info)
@@ -393,31 +418,47 @@ class _PicksView(FingerprintedView):
         row.on("click", lambda _e, i=info: self._tab.import_picks(i.ref, start_dir=i.curation_dir))
 
     def _render_group_actions(self, info: _TomoInfo) -> None:
-        """The ONE place each per-tomogram verb exists (09-S2): launch/scope an ArtiaX
-        session, jump to the viewer or the Journey. The sidebar launcher, the Picks-tab ⚡
-        and the species-level import header button are gone; the Journey's ⚡ navigates
-        here. Since 10-S1 `curate` no longer has a swap branch — a session's scope is
-        declared once, at launch. Import moved to the table's own import row and copy to
-        the tomogram's name; what is left here is what LEAVES this table."""
-        ui.button(icon="view_in_ar", on_click=lambda _e, r=info.ref: self._tab.curate(r)).props(
-            "flat dense round size=sm color=indigo"
-        ).tooltip(
-            "Curate in ArtiaX. Declares this species + tomogram as a session's scope (reference picks, the "
-            "startup script, and the manifest that makes every save here attributable), then opens the control "
-            "center to start one on it. A session already running keeps the tomogram it was launched on — crboost "
-            "does not switch it; the control center says which one that is."
+        """The ONE place each per-tomogram verb exists (09-S2): the door to ArtiaX, and the
+        jumps to the viewer and the Journey. The sidebar launcher, the Picks-tab ⚡, the
+        species-level import header button, the session chip, the rail light and the
+        viewer-rail `curate ↗` are all gone (09-S2 … 13-S3); the Journey's ⚡ navigates here.
+        Import moved to the table's own import row and copy to the tomogram's name; what is
+        left here is what LEAVES this table.
+
+        `Curate picks` is the one icon+text button in the house vocabulary: the glyph IS the
+        door. The green dot beside it is the live marker — the running session has THIS
+        tomogram open — read from the shared `session_status` cache the tab already polls."""
+        # The live dot precedes the button, so a row that gains it does not shift the
+        # button under a cursor already on it.
+        if self._tab.session_live_here(info.tomo_name):
+            ui.element("span").classes("cb-artiax-live").style(
+                "display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #16a34a; "
+                "flex: 0 0 auto;"
+            ).tooltip("the live ChimeraX + ArtiaX session has this tomogram open")
+        house_button(
+            "Curate picks",
+            lambda _e, r=info.ref: self._tab.curate(r),
+            icon="view_in_ar",
+            tooltip="Prepares this tomogram for ArtiaX — the reference picks, the startup script, the manifest "
+            "that makes every save here attributable — pre-seeds "
+            f"{artiax_bridge.default_seed_name(self._tab.ctx.species_id, info.tomo_name)} as "
+            "a 0-pick list (never overwrites one that exists), and opens the control center to start a session "
+            "on it. With a session already running on another tomogram it offers Switch or Restart.",
         )
-        # 09-S5, landed with picking_ui/11-S5: `viewer ↗` opens the full-page pick viewer
-        # on this (species, tomogram) — slabs, the lists strip and the cutout gallery at
-        # workspace size, with curation mode. `journey ↗` stays beside it because the two
-        # answer different questions: the viewer is about THESE picks, the Journey about
-        # everything that happened to this tilt-series before them.
-        ui.label("viewer ↗").classes(_LINK_CLS).on(
-            "click", lambda _e, t=info.tomo_name: self._tab.open_viewer(t)
+        # 09-S5, landed with picking_ui/11-S5: the viewer icon opens the full-page pick
+        # viewer on this (species, tomogram) — slabs, the lists strip and the cutout gallery
+        # at workspace size, with curation mode. The Journey icon stays beside it because
+        # the two answer different questions: the viewer is about THESE picks, the Journey
+        # about everything that happened to this tilt-series before them.
+        ui.button(icon="grid_view", on_click=lambda _e, t=info.tomo_name: self._tab.open_viewer(t)).props(
+            "flat dense round size=sm color=indigo"
         ).tooltip("Open this tomogram's picks in the full-page pick viewer")
-        ui.label("journey ↗").classes(_LINK_CLS).on(
-            "click", lambda _e, t=info.tomo_name: self._tab.open_in_journey(t)
-        ).tooltip("This tomogram's whole pipeline — motion, CTF, alignment, reconstruction")
+        with (
+            ui.button(on_click=lambda _e, t=info.tomo_name: self._tab.open_in_journey(t))
+            .props("flat dense round size=sm color=indigo")
+            .tooltip("This tomogram's whole pipeline — motion, CTF, alignment, reconstruction")
+        ):
+            ui.html(load_icon_svg("journey.svg", "#4f46e5", size=16), sanitize=False)
 
     def _render_row(self, c: _Computed, tomo: str, row: ListRow) -> None:
         ref = self._tab.ref(tomo, row.slug)
@@ -425,7 +466,23 @@ class _PicksView(FingerprintedView):
             ui.element("div").classes(f"cb-ltable-swatch cb-swatch-{glyph_for(PickListType(row.list_type))}").style(
                 f"background: {c.species_color};"
             ).tooltip(f"{row.list_type} list")
-            ui.label(row.label).classes("cb-ltable-name").tooltip(row.star_path or "no backing star on disk")
+            # ONE grid child: the name and, for a hand-picked list, the copy-path button
+            # beside it (the maintainer, 2026-09-06: no alias, the file name itself, and its
+            # path one click away — it is what has to be found in ArtiaX's save dialog).
+            coords = _coords_path(row)
+            with ui.row().classes("items-center gap-0 flex-nowrap").style("min-width: 0; overflow: hidden;"):
+                name = ui.label(row.label).classes("cb-ltable-name").style("min-width: 0;")
+                if is_default_slug(row.slug, self._tab.ctx.species_id, tomo):
+                    name.tooltip(
+                        f"the pre-seeded ArtiaX list — pick into it and save it back to {coords or 'this file'}; "
+                        f"crboost updates this row · {row.star_path or 'no backing star'}"
+                    )
+                else:
+                    name.tooltip(row.star_path or "no backing star on disk")
+                if coords:
+                    ui.button(icon="content_copy", on_click=lambda _e, p=coords: self._tab.copy_file(p)).props(
+                        "flat dense round size=xs"
+                    ).tooltip(f"Copy this list's .coords path — {coords}")
             if row.source_kind:
                 ui.label(row.source_kind).classes("cb-ptable-source").tooltip(
                     f"{row.source_kind} · {row.source_ref or '—'}"
@@ -610,6 +667,20 @@ class PicksTab:
         # where scheduling a task is not this object's business).
         self._view.refresh()
 
+    async def refresh_now(self) -> None:
+        """The Refresh button: sweep every curation folder of the project NOW (the watcher
+        ingests what it finds and bumps the registry rev), then recompute this tab without
+        waiting for its 15 s disk cadence. A save younger than the watcher's settle window
+        is picked up on the next tick, not here — ArtiaX writes are not atomic."""
+        async with self._flight("refresh_now") as acquired:
+            if not acquired:
+                return
+            watcher = self._watcher()
+            if watcher is not None:
+                await watcher.sweep_now(self.ctx.project_path)
+            self._last_at = 0.0
+            self.refresh()
+
     def refresh(self) -> None:
         """Page tick / on show. Two independent cadences: the session poll (shared, ~16 s,
         squeue) and the disk recompute (15 s) — neither runs while the page is hidden,
@@ -728,25 +799,27 @@ class PicksTab:
 
     # ── ArtiaX round trip ─────────────────────────────────────────────────────
 
-    async def open_control_center(self) -> None:
-        """The session chip's click. Since 09-S2 the control center is reachable ONLY from
-        here — the sidebar launcher is gone — so a session is always started against a
-        tomogram ('curate') or inspected from the chip that reports its state."""
-        async with self._flight("control_center") as acquired:
-            if not acquired:
-                return
-            await open_curation_control_center(self.backend, self.ctx.project_path)
+    def session_live_here(self, tomo: str) -> bool:
+        """True when the running session's recorded scope is THIS species + tomogram — the
+        live dot beside `Curate picks` (13-S3). No I/O: reads the shared `session_status`
+        cache this tab already polls, and the view's signature carries the scope so the dot
+        moves on the tick after a switch."""
+        if not session_status.is_live():
+            return False
+        sc = session_status.scope()
+        return sc.get("species_id") == self.ctx.species_id and sc.get("tomo_name") == tomo
 
     async def curate(self, ref: ListRef) -> None:
         """THE launch/scope affordance (09-S2), and since 10-S1 the ONLY one: it declares
         this (species, tomogram) as a session's scope — writing the reference export, the
-        `.cxc` and the `manifest.json` — and opens the control center to start one.
+        `.cxc`, the `manifest.json` and the pre-seeded default list (13-S1) — and opens the
+        control center to start one.
 
-        It used to branch on liveness and SWAP a running session over the REST channel.
-        That branch is gone with the swap itself (Model B): a running session keeps the
-        tomogram it was launched on, and the control center says which one that is when it
-        differs from this panel's. The `unknown`-liveness hazard goes with it — there is no
-        longer a decision to get wrong."""
+        It used to branch on liveness HERE and swap a running session over the REST channel.
+        That branch stays gone: this is one path, always. When a session is live on another
+        tomogram, the control center says so and offers the confirmed switch (13-S2) or a
+        restart — the decision is made there, in front of the warning, never on a stale
+        liveness flag in this tab."""
         await list_actions.curate_in_artiax(self.backend, ref)
 
     async def import_picks(self, ref: ListRef, *, start_dir: str | None = None) -> None:
@@ -787,6 +860,14 @@ class PicksTab:
     def copy(self, path: str) -> None:
         ui.clipboard.write(path)
         ui.notify("Copied the save folder — paste it into ArtiaX's save dialog", type="positive", timeout=1500)
+
+    def copy_file(self, path: str) -> None:
+        ui.clipboard.write(path)
+        ui.notify(
+            "Copied the .coords path — paste it into the file-name field of ArtiaX's save dialog",
+            type="positive",
+            timeout=2500,
+        )
 
     # ── List actions ──────────────────────────────────────────────────────────
 

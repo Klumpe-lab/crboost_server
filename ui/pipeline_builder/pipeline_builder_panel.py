@@ -16,6 +16,7 @@ from ui.current_project import current_project_state
 from ui.pipeline_builder.pipeline_constants import PHASE_JOBS, PHASE_PARTICLES, missing_deps, next_instance_id
 from ui.pipeline_builder.pipeline_roster import RosterWidget
 from ui.pipeline_builder.status_poller import StatusPoller
+from ui.routing import View
 from services.models_base import InstanceId, instance_id_to_job_type
 from ui.ui_state import get_ui_state_manager, get_job_display_name
 from ui.pipeline_builder.job_tab_component import render_job_tab
@@ -45,6 +46,7 @@ class PipelineBuilderPanel:
         ensure_pipeline_mode: Callable | None = None,
         toggle_journey: Callable | None = None,
         toggle_gallery: Callable | None = None,
+        toggle_protocols: Callable | None = None,
     ):
         self.backend = backend
         self.callbacks = callbacks
@@ -54,6 +56,7 @@ class PipelineBuilderPanel:
         self.ensure_pipeline_mode = ensure_pipeline_mode
         self.toggle_journey = toggle_journey
         self.toggle_gallery = toggle_gallery
+        self.toggle_protocols = toggle_protocols
 
         self.ui_mgr = get_ui_state_manager()
 
@@ -83,6 +86,7 @@ class PipelineBuilderPanel:
         self.callbacks["set_active_mode"] = self.roster.set_active_mode
         # Species page (roadmap 10 S4): open a job in the pipeline view / add one for a species.
         self.callbacks["open_job"] = self.switch_tab
+        self.callbacks["open_job_subsection"] = self.switch_to_job_subsection
         self.callbacks["add_instance_for_species"] = self.add_instance_for_species
 
         self.rebuild_pipeline_ui()
@@ -234,6 +238,9 @@ class PipelineBuilderPanel:
         self._ensure_job_rendered(instance_id)
         for iid, c in self._job_content_containers.items():
             c.set_visibility(iid == instance_id)
+        set_url = self.callbacks.get("set_url")
+        if set_url:
+            set_url(View.JOB, instance_id, self.ui_mgr.get_job_ui_state(instance_id).active_monitor_tab)
         self.roster.refresh()
 
     def switch_to_job_subsection(self, instance_id: str, tab_key: str):
@@ -662,6 +669,7 @@ def build_pipeline_builder_panel(
     ensure_pipeline_mode: Callable | None = None,
     toggle_journey: Callable | None = None,
     toggle_gallery: Callable | None = None,
+    toggle_protocols: Callable | None = None,
 ) -> None:
     panel = PipelineBuilderPanel(
         backend=backend,
@@ -672,6 +680,7 @@ def build_pipeline_builder_panel(
         ensure_pipeline_mode=ensure_pipeline_mode,
         toggle_journey=toggle_journey,
         toggle_gallery=toggle_gallery,
+        toggle_protocols=toggle_protocols,
     )
 
     # The render-scoped self-heal of `apply_aggregation_overrides` was REMOVED here by

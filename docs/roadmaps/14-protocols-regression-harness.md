@@ -1,5 +1,13 @@
 # Roadmap 14 — Protocols + the copia regression harness
 
+> **Superseded 2026-09-04 — see roadmap 16.** The harness described here (frozen input, run.json
+> verdicts, record / bless / bands, INFRA classification, site snapshots, Tier A snapshots,
+> `crboost_regress.py`, the RELION scheme export) was DELETED on 2026-09-04: a protocol is the shape of
+> a pipeline with its parameters, nothing about results. What survives from this roadmap is
+> `services/protocols/{schema,discovery,export,apply}.py`, `crboost_protocol.py` and the copia bundle.
+> Sections §3 "RELION scheme derivation" / "Runner + verdicts" / "Per-stage checks" / "Tier A", §4
+> S4–S5 / S7 and §8 describe deleted code and are kept as history only.
+
 **Status:** S0–S7 **CODE-COMPLETE 2026-08-27**, built back-to-back on code-review confidence
 (maintainer standing decision 2026-08-17: verify ONCE at the end). Design of record is
 `FEATURE_recipes.md` (2026-08-11); decisions of 2026-08-26/27 are folded in below. Runtime owed:
@@ -271,7 +279,12 @@ class3d `resolution_ang` (O4 of the design doc).
 
 ## 9. Deferred
 
-Mid-project protocol grafting · "create project from protocol" landing action + builder drift
-chips (FEATURE_recipes §7) · explicit `inputs` wiring at apply (needs instance-id override keys
+Mid-project protocol grafting · explicit `inputs` wiring at apply (needs instance-id override keys
 in the resolver) · native RELION job.stars / v1 wrapper form of the scheme export · 26S
 multi-species variant · driver transcripts in Tier A · cadence/cron.
+
+**Continued in roadmap 16 (2026-09-03):** the runner inversion (a run IS a project; `launch_run` /
+`evaluate_run` / CLI-only `wait_for_settle`), `ProjectState.protocol_origin`, the workspace
+Protocols view with the builder "edited" chips FEATURE_recipes §7 asked for, and the fixes for the
+second-observer, root-logger, cancel-orphans-chain and prune-deletes-project defects found in
+the S4–S6 code here.

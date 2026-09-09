@@ -38,6 +38,10 @@ class UserPreferences(BaseModel):
     show_only_mine: bool = True
     recent_project_roots: list[RecentPath] = Field(default_factory=list)
     recent_data_paths: list[RecentPath] = Field(default_factory=list)
+    # Individual projects (not their base directories), most-recently-opened first.
+    # Feeds the "Recently viewed" sort of the projects roster; "viewed" is per-user,
+    # which is why it lives here and not in the project on disk.
+    recent_projects: list[RecentPath] = Field(default_factory=list)
 
     # Journey dashboard prefs — user-level, persist across projects + TS.
     # `dashboard_panel` is the ONE section the Journey shows ("all" = every section);
@@ -88,6 +92,16 @@ class UserPreferences(BaseModel):
 
     def prune_invalid_roots(self) -> int:
         return self._prune_mru(self.recent_project_roots)
+
+    # --- individual projects (MRU behind the roster's "Recently viewed" sort) ---
+
+    def add_recent_project(self, path: str, label: str | None = None) -> bool:
+        return self._add_to_mru(self.recent_projects, path, label)
+
+    def recent_project_rank(self) -> dict[str, int]:
+        """Resolved project dir -> position in the MRU (0 = most recent). Projects the
+        user has never opened are simply absent; the caller decides where they sort."""
+        return {r.path: i for i, r in enumerate(self.recent_projects)}
 
     # --- data paths (raw frames / mdocs directories) ---
 
@@ -185,10 +199,7 @@ class UserPrefsService:
         return self._prefs
 
     def update_fields(
-        self,
-        project_base_path: str | None = None,
-        movies_glob: str | None = None,
-        mdocs_glob: str | None = None,
+        self, project_base_path: str | None = None, movies_glob: str | None = None, mdocs_glob: str | None = None
     ):
         """Update basic preference fields (NOT recent_roots)"""
         if project_base_path is not None:

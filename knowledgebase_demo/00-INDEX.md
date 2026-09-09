@@ -12,7 +12,7 @@ of what the thing does and why.
 | [04](04-cluster-dispatch.md) | **How work reaches the cluster** | supervisor → SLURM array → containers; who watches it | 2 diagrams + the status model |
 | [05](05-ui-tour.md) | **UI tour / screenshot checklist** | Every surface in the order you'd demo it | your screenshot shopping list |
 | [06](06-particles-species-picking.md) | **Species, templates, picking, curation** | The particle half of the app | 4–6 slides |
-| [07](07-protocols-reproducibility.md) | **Protocols & the regression harness** | Making a run portable and re-runnable | 2–3 slides |
+| [07](07-protocols-reproducibility.md) | **Protocols** | The shape of a pipeline with its parameters, portable and re-runnable | 2–3 slides |
 | [08](08-demo-runsheet.md) | **Live-demo run sheet** | Literal click order, with fallbacks | speaker notes |
 | [09](09-gaps-and-limits.md) | **Honest limits** | What's WIP, what to not promise | 1 closing slide |
 

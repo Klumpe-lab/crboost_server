@@ -147,7 +147,10 @@ def _species_rows(project_state, project_path: Path, geoms: list[TomoGeometry]) 
                 if geom is not None and geom.is_usable:
                     picks: list[dict] = []
                     for pl in lists:
-                        picks.extend(_read_pick_list_voxels(Path(pl.path), list(geom.dims_xyz_px), geom.binned_apix))
+                        # None = unreadable (already logged by the reader); the wall draws what it can.
+                        picks.extend(
+                            _read_pick_list_voxels(Path(pl.path), list(geom.dims_xyz_px), geom.binned_apix) or []
+                        )
                     n, dots = len(picks), _normalized_dots(picks, geom.dims_xyz_px)
                     dims = [int(geom.dims_xyz_px[0]), int(geom.dims_xyz_px[1])]
                 else:

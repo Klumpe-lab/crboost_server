@@ -20,7 +20,6 @@ Register as an extra tab via the plugin system:
         render_array_task_tracker(instance_id, job_model, ui_mgr)
 """
 
-import asyncio
 from pathlib import Path
 
 from nicegui import ui
@@ -31,11 +30,11 @@ from services.array_tasks import (
     sort_ts_by_position,
     ts_anchor_id,
     read_tail as _read_tail,
-    escape_html as _escape_html,
     read_manifest as _read_manifest,
     scan_statuses as _scan_statuses,
     resolve_job_dir,
 )
+from ui.components.log_pane import STDERR_STYLE, STDOUT_STYLE, log_pane
 from ui.styles import MONO
 
 # ── Status constants ──
@@ -261,58 +260,9 @@ def _render_inline_log(job_dir: Path, task_idx: int) -> None:
             ui.label("No log output yet.").style(f"{MONO} font-size: 10px; color: #94a3b8;")
             return
         if stdout_text:
-            _log_pane("stdout", stdout_text, stdout_path, color="#334155", bg="#f8fafc", border="#e2e8f0", max_h="60vh")
+            log_pane("stdout", stdout_text, stdout_path, max_h="60vh", **STDOUT_STYLE)
         if stderr_text:
-            _log_pane("stderr", stderr_text, stderr_path, color="#b91c1c", bg="#fef2f2", border="#fecaca", max_h="40vh")
-
-
-def _log_pane(title: str, text: str, path: Path, *, color: str, bg: str, border: str, max_h: str) -> None:
-    """A log pane that claims the row's full width: title + file name + a copy button
-    (copies the WHOLE file — the pane shows the tail), over a wrapped <pre> so long
-    lines fold instead of scrolling sideways."""
-    with ui.row().classes("w-full items-center no-wrap").style("gap: 6px;"):
-        ui.label(title).style(
-            f"{MONO} font-size: 9px; color: {'#dc2626' if title == 'stderr' else '#64748b'}; font-weight: 600;"
-        )
-        ui.label(path.name).style(f"{MONO} font-size: 9px; color: #94a3b8;")
-        ui.space()
-        (
-            ui.button(icon="content_copy", on_click=lambda p=path: _copy_full_log(p))
-            .props("flat dense round size=xs")
-            .style("color: #94a3b8;")
-            .tooltip(f"Copy the full {title} to the clipboard")
-        )
-    ui.html(
-        f'<pre style="{MONO} font-size: 10px; line-height: 1.45; color: {color}; '
-        f"white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; width: 100%; box-sizing: border-box; "
-        f"max-height: {max_h}; overflow-y: auto; background: {bg}; "
-        f'padding: 6px 8px; border-radius: 4px; border: 1px solid {border};">'
-        f"{_escape_html(text)}</pre>",
-        sanitize=False,
-    ).classes("w-full")
-
-
-# Clipboard payload cap: a runaway log can be hundreds of MB, and the text travels
-# over the socket. Keep the tail, say so at the top.
-_COPY_CAP_BYTES = 8 * 2**20
-
-
-def _read_full(path: Path) -> str | None:
-    if not path.exists():
-        return None
-    text = path.read_text(errors="replace")
-    if len(text) > _COPY_CAP_BYTES:
-        text = f"[... truncated to the last {_COPY_CAP_BYTES // 2**20} MB ...]\n" + text[-_COPY_CAP_BYTES:]
-    return text
-
-
-async def _copy_full_log(path: Path) -> None:
-    text = await asyncio.to_thread(_read_full, path)
-    if text is None:
-        ui.notify(f"{path.name} not found", type="warning")
-        return
-    ui.clipboard.write(text)
-    ui.notify(f"Copied {path.name} ({len(text.splitlines())} lines)", type="positive", timeout=1500)
+            log_pane("stderr", stderr_text, stderr_path, max_h="40vh", **STDERR_STYLE)
 
 
 def _render_placeholder(message: str) -> None:
