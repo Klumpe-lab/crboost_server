@@ -1403,6 +1403,7 @@ class CryoBoostBackend:
         import_summary: dict[str, Any] | None = None,
         detected_params: dict[str, Any] | None = None,
         shared: bool = False,
+        progress_cb=None,
     ):
         return await self.project_service.initialize_new_project(
             project_name=project_name,
@@ -1414,6 +1415,7 @@ class CryoBoostBackend:
             import_summary=import_summary,
             detected_params=detected_params,
             shared=shared,
+            progress_cb=progress_cb,
         )
 
     async def transfer_project_ownership(self, project_path: Path, new_owner: str | None) -> dict[str, Any]:

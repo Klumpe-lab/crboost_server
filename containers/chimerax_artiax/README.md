@@ -48,36 +48,3 @@ Both paths run the same worker, `curation_session.sh`. It prints a `ssh -L …` 
 password (and writes `session.json` for crboost). On your Mac: run that tunnel, then point the
 **TurboVNC Viewer** at `localhost:5901`. In ChimeraX, `open <recon>.mrc` + `open <picks>.coords`
 (or use the bundle/`.cxc` crboost will generate).
-
-## First-run checklist (the bits I couldn't test from the sandbox — verify once)
-- **ChimeraX exe name**: the `.deb` usually installs `chimerax`. If it's `ChimeraX`, run with
-  `CX_BIN=ChimeraX ./launch_curation_vnc.sh`.
-- **`apptainer` on compute nodes**: if not on PATH, fix the `module load` line in `curation_session.sh`.
-- **VNC reachability**: the tunnel forwards login→`$NODE:$VNC_PORT`, so the server binds with
-  `-localhost no`. If an intra-cluster firewall blocks that rfb port, either `ssh` straight to the
-  node (if allowed) or ask IT for the open port range.
-- **`vncserver` flags**: written for TigerVNC (`-rfbport`, `-localhost`, `-SecurityTypes VncAuth`).
-  Adjust if you swap in TurboVNC server.
-- **ChimeraX fetch (build time)**: if the build errors with "could not parse a download URL" or a
-  non-.deb download, the pinned `CHIMERAX_VERSION` likely doesn't ship an ubuntu22.04 build — bump
-  it in the def's `%post`. ArtiaX is baked into `/opt/cx` (`XDG_DATA_HOME`); nothing installs at runtime.
-- **GPU variant specifics** (`_GL.sif` on partition `g`): a clean startup has **no** `libEGL ...
-  /dev/dri ... Permission denied` spam — that spam = silent Mesa/software fallback (re-check the EGL
-  vendor json + `__EGL_VENDOR_LIBRARY_FILENAMES`). Confirm hardware GL with `vglrun -d egl glxinfo |
-  grep -i "OpenGL renderer"` → want `NVIDIA … Tesla P100`, not `llvmpipe`. The worker adds
-  `--writable-tmpfs` so ChimeraX's `preregistration`/history writes don't hit the read-only `/opt/cx`;
-  if a node rejects that flag, drop it (the writes are non-fatal anyway). KNOWN-COSMETIC, non-fatal,
-  on both variants: the `Log`/`ChimeraXHtmlView` error (QtWebEngine missing `libgbm1`/`libasound2`/
-  `libxshmfence1` — Log panel only, ArtiaX unaffected; add those libs in a rebuild to fix).
-
-## Roadmap (next, in crboost itself)
-Full plan: `services/visualization/ARTIAX_BRIDGE_PLAN.md` → "## Plug the GPU container into the
-manual-picking infrastructure". In short:
-- **One-click launch** ✓ runtime-validated (CPU + GPU) — sidebar button →
-  `backend.launch_curation_session()` sbatch's the worker, UI surfaces node/port/password + tunnel.
-- **GPU one-click** — `CurationConfig` needs `gres`/`vgl` knobs; `launch_curation_session` then adds
-  `#SBATCH --gres=…` + `export CX_VGL=1` (manual `launch_curation_vnc.sh g` already does this).
-- **Preload (kill the blank session)** — `CB_CXC` hook exists in the worker; crboost generates the
-  per-tomo `.cxc` (`open <recon>` + `open <picks>.coords`) and passes `CB_CXC`.
-- **Step-through + ingest** — per-tomo `.cxc` + `crboost next/prev/save`; auto-ingest saved `.coords`
-  → the multi-list workbench.

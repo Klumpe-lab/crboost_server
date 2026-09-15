@@ -47,7 +47,8 @@ logger = logging.getLogger(__name__)
 # 3.5: +ParticleSpecies.catalog_version + ImportedTomograms.batches, -is_aggregation (denovo S5/S6, 12);
 # 3.6: -authoritative_pick_lists (the per-tomogram nomination is gone; merges name their own sources)
 # 3.7: +protocol_origin (roadmap 16 S1: which protocol bundle a project was created from)
-SCHEMA_VERSION: tuple[int, int] = (3, 7)
+# 3.8: +import_source_kind + acquisition.dose_per_tilt_source (roadmap 18 D3: SerialEM stack ingest)
+SCHEMA_VERSION: tuple[int, int] = (3, 8)
 
 
 def _afterok_global_default() -> bool:
@@ -781,6 +782,11 @@ class ProjectState(BaseModel):
     import_selected_tilt_series: int = 0
     import_source_directory: str = ""
     import_frame_extension: str = ""
+    # Which delivery layer Create imported (roadmap 18 D3): "" legacy / "movies" (one file
+    # per tilt, symlinked) / "stacks" (SerialEM tilt stacks split into frames/). Drives the
+    # job-init stamps in ensure_job_initialized, the roster Dataset rows and the
+    # tsReconstruct tab hint — nothing else.
+    import_source_kind: str = ""
     # Per-TS/per-tilt import details + filter labels used to be mirrored here
     # (import_position_details / import_tilt_series_details / tilt_metadata /
     # tilt_filter_labels); the TiltSeriesRegistry is the single source now
@@ -1074,6 +1080,19 @@ class ProjectState(BaseModel):
                 "Auto-set rescale_angpixs = %s (%s * %s)", computed, self.microscope.pixel_size_angstrom, binning
             )
 
+        # Data facts stamped at init (roadmap 18 D5) — the detector's frame size is what
+        # the reconstruction volume must cover, and a single-frame input (SerialEM stacks
+        # split into one .mrc per tilt) has no even/odd halves to average or reconstruct.
+        # Both are facts of the data, not preferences; the user can still edit the tab.
+        if hasattr(job_params, "tomo_dimensions"):
+            w, h = self.acquisition.detector_dimensions
+            job_params.tomo_dimensions = f"{w}x{h}x2048"
+        if self.import_source_kind == "stacks":
+            if hasattr(job_params, "out_average_halves"):
+                job_params.out_average_halves = False
+            if hasattr(job_params, "halfmap_frames"):
+                job_params.halfmap_frames = 0
+
         self.jobs[instance_id] = job_params
         self.update_modified()
 
@@ -1274,6 +1293,7 @@ class ProjectState(BaseModel):
         project_state.import_selected_tilt_series = data.get("import_selected_tilt_series", 0)
         project_state.import_source_directory = data.get("import_source_directory", "")
         project_state.import_frame_extension = data.get("import_frame_extension", "")
+        project_state.import_source_kind = data.get("import_source_kind", "")
         # import_position_details / import_tilt_series_details / tilt_metadata /
         # tilt_filter_labels keys from older projects are deliberately ignored —
         # the TiltSeriesRegistry is the single source (dropped on next save).

@@ -58,10 +58,12 @@ error flips the CTF phase beyond ~20 Å, and those tilts cancel signal in every 
 tomo CTF refinement cannot rescue it (search range ±3000–6000 Å, errors up to 40 000 Å). Everything from
 extraction on must be re-run once the fits are right.
 
-**What the code should do (open).** tsCtf driver: flag every tilt whose fitted defocus deviates > 1 µm from
-the tilt-series median (or from a 1D `TiltPS1D` scan like the one above, which is cheap and robust) in the job
-log, the registry and the tsCtf tab / Journey, instead of passing it through. Run `--check` only on fits that
-passed that test. Do not ship `1.1:8` / `30:6` as dataset-independent defaults.
+**What the code should do (open).** Scoped as `docs/roadmaps/18-ctf-fit-outlier-check.md` (2026-09-09): an
+independent 1D defocus estimate per tilt from Warp's own `PS1D` / `TiltPS1D`, with the scan window and band
+read from the same XML (no dataset numbers in the check), a `diverged | unverifiable | ok` verdict per tilt in
+the registry, Journey and job tabs, job failure when a quarter of the series diverged, and the hand verdict
+marked unreliable on diverged fits. Projects A / C / Sven's try2 are its regression test. Do not ship
+`1.1:8` / `30:6` as dataset-independent defaults.
 
 ---
 
@@ -76,3 +78,35 @@ by the RELION GUI, its docs and tutorials is the *oversampled* step, because the
 `_rlnPsiStep` in `run_it*_sampling.star`: 3.75 at order 4). Same convention for `offset_step`: GUI step 1 px is
 `--offset_step 2`. Anyone translating a tutorial into a protocol picks one order too fine. Fix: rewrite the
 description and the UI label in GUI terms (order + 1 at oversampling 1); correct the copia protocol comment.
+
+---
+
+## 3. Long tilt-series names break AreTomo's IMOD output; Warp drops the series and the pipeline runs on unaligned angles
+
+**Status:** DRIVER GUARD + CREATION WARNING added 2026-09-09 (`drivers/ts_alignment.py` `warp_marked_unselected`,
+`services/protocols/apply.py` `long_tilt_series_name_warnings`). The AreTomo bug itself is not ours.
+**Seen:** `/groups/klumpe/crboost_data/copia-empiar12580-tutorial-20260909-1414` (2026-09-09), tilt-series name
+`copia-empiar12580-tutorial-20260909-1414_Position_1` (51 chars). The 42-char name of
+`copia-empiar12580-20260908-1447_Position_1` works.
+
+**How it shows.** The tomogram preview (Warp's `<ts>_11.80Apx.png`, Journey, Tomograms view) shows the particle
+layer as a diagonal band instead of filling the field: the sample plane is inclined in the volume. Template
+matching still finds ~1000 picks, so nothing downstream complains. The alignment job reports success.
+
+**Where to look.** `External/<align job>/task_0.out`: `Failed to process <ts>.tomostar, marked as unselected` /
+`Could not find <ts>.tlt` / `1/1, 1 failed`. `External/<align job>/warp_tiltseries/<ts>.xml`:
+`UnselectManual="True"`, `<Angles>` = the nominal stage angles (the good run has AreTomo's tilt-offset applied,
+−44.01 for nominal −32), `<AxisAngle>` unrefined. `tiltstack/<ts>/<ts>_Imod/`: the `.tlt` is there under a
+mangled name (`20260909-1414_Position_1.st`, 252 bytes = the 28 angles) instead of `<ts>_st.tlt`; `.xf` and
+`.xtilt` are fine. tsCtf then fits `PlaneNormal` ≈ 12° off z to absorb the missing tilt offset.
+
+**Why.** Our tilt-series id is `<project dirname>_<mdoc stem>`, and protocol projects are named
+`<protocol>-<YYYYMMDD-HHMM>`, so a 9-char longer protocol name pushed the basename from 42 to 51. AreTomo 1.0's
+`-OutImod` writer mangles the `.tlt` file name at that length (exact limit unknown: 42 good, 51 bad); WarpTools
+`ts_aretomo` needs that `.tlt` to import the alignment, gives up on the series, flags it `UnselectManual`, and
+exits 0. Our driver's success check only looked for the `.st.aln`, which AreTomo had written.
+
+**What to do.** Keep project names short (`copia-tutorial`, not `copia-empiar12580-tutorial`). A project that hit
+this must be recreated: every job from alignment on ran with the wrong geometry. The driver now fails the series
+when the XML says `UnselectManual="True"`, and protocol creation warns when a tilt-series name would exceed 42
+characters. Open: the same warning for non-protocol project creation, and pinning the exact AreTomo limit.

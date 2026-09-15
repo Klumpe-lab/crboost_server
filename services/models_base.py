@@ -253,6 +253,9 @@ class MicroscopeParams(BaseModel):
 class AcquisitionParams(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
     dose_per_tilt: float = Field(default=3.0, ge=0.1, le=9.0)
+    # Where dose_per_tilt came from (roadmap 18 D3): "" legacy / "mdoc" / "estimated"
+    # (zero-thickness fit of the mdoc DoseRate, shown as an estimate everywhere) / "user".
+    dose_per_tilt_source: str = ""
     detector_dimensions: tuple[int, int] = (4096, 4096)
     tilt_axis_degrees: float = Field(default=-95.0, ge=-180.0, le=180.0)
     eer_fractions_per_frame: int | None = Field(default=None, ge=1, le=100)

@@ -25,7 +25,7 @@ from services.protocols.schema import Protocol
 from ui.components.buttons import house_button
 from ui.components.copyable import copyable_path
 from ui.components.dialogs import dialog_host
-from ui.components.fields import house_text
+from ui.components.fields import house_number, house_text
 from ui.components.reactive import SingleFlight
 from ui.dashboard.css import ensure_assets_loaded
 from ui.open_project import open_project_in_workspace
@@ -152,6 +152,40 @@ async def _open_create_dialog(backend, parent_dialog, info: ProtocolInfo) -> Non
                 movies_in = house_text("movies", width="w-full", value=defaults.get("movies", ""))
                 mdocs_in = house_text("mdocs", width="w-full", value=defaults.get("mdocs", ""))
                 gain_in = house_text("gain ref", width="w-full", placeholder="optional")
+                # Dose per tilt with its provenance (roadmap 18 D4): the mdocs' value when
+                # they carry one, else the scan's estimate — prefilled and said to be one;
+                # the user's number wins. Never the model default.
+                dose_state = {"source": ""}
+                with ui.row().classes("w-full items-center gap-2 no-wrap"):
+                    dose_in = house_number("dose/tilt", width="w-20", placeholder="e⁻/Å²")
+                    dose_hint = ui.label("").style(f"{TEXT} font-size: 9px;")
+
+                def _on_dose_edit(_e=None):
+                    dose_state["source"] = "user"
+                    dose_hint.set_text("your value")
+
+                dose_in.on_value_change(_on_dose_edit)
+
+                async def _prefill_dose():
+                    from services.configs.mdoc_service import get_mdoc_service
+
+                    mdocs = (mdocs_in.value or "").strip()
+                    if not mdocs or dose_state["source"] == "user":
+                        return
+                    facts = await asyncio.to_thread(get_mdoc_service().get_autodetect_params, mdocs) or {}
+                    est = facts.get("dose_estimate")
+                    if facts.get("dose_per_tilt") is not None:
+                        value, source, text = facts["dose_per_tilt"], "mdoc", "from the mdocs"
+                    elif est is not None:
+                        value, source, text = est.value, "estimated", f"estimated — {est.describe()}"
+                    else:
+                        value, source, text = None, "", "not in the mdocs and no estimate possible — enter it"
+                    dose_in.set_value(value)  # fires the edit handler; restore the real source after it
+                    dose_state["source"] = source
+                    dose_hint.set_text(text)
+
+                mdocs_in.on("blur", lambda _e: asyncio.create_task(_prefill_dose()))
+                asyncio.create_task(_prefill_dose())
 
             async def _create() -> None:
                 async with _flight("create-submit") as got:
@@ -176,6 +210,8 @@ async def _open_create_dialog(backend, parent_dialog, info: ProtocolInfo) -> Non
                         movies_glob=movies,
                         mdocs_glob=mdocs,
                         gain_reference_path=(gain_in.value or "").strip() or None,
+                        dose_per_tilt=float(dose_in.value) if dose_in.value not in (None, "") else None,
+                        dose_per_tilt_source=dose_state["source"],
                     )
                     if not res["success"]:
                         ui.notify(f"Create failed: {res['error']}", type="negative", timeout=10000)

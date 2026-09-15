@@ -13,6 +13,8 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 import pandas as pd
 
+from services.tilt_series.models import frame_id_to_warp_key
+
 logger = logging.getLogger(__name__)
 
 
@@ -53,7 +55,7 @@ class WarpXmlParser:
         """Parse frame series XML to extract CTF parameters"""
         tree = ET.parse(xml_path)
         root = tree.getroot()
-        ctf  = root.find(".//CTF")
+        ctf = root.find(".//CTF")
 
         if ctf is None:
             raise ValueError(f"No CTF data found in {xml_path}")
@@ -86,14 +88,15 @@ class WarpXmlParser:
         # This maps to rlnTomoHand = -1 in the output STAR.
         are_angles_inverted = root.get("AreAnglesInverted", "False").strip() == "True"
 
-        # MoviePath is authoritative for tilt ordering and identity.
+        # MoviePath is authoritative for tilt ordering and identity. The key is
+        # the single-suffix stem passed through the ONE drift rule
+        # (frame_id_to_warp_key), so `.eer`, `.tif` and `.mrc` movies all resolve
+        # via TiltSeries.frame_by_warp_key — a replace-chain that only knew
+        # `_EER.eer`/`.tif`/`.eer` left every `.mrc` frame unresolvable.
         movie_paths_all = []
         for path in root.find("MoviePath").text.split("\n"):
             if path.strip():
-                movie_name = os.path.basename(path).replace("_EER.eer", "")
-                movie_name = movie_name.replace(".tif", "")
-                movie_name = movie_name.replace(".eer", "")
-                movie_paths_all.append(movie_name)
+                movie_paths_all.append(frame_id_to_warp_key(Path(os.path.basename(path.strip())).stem))
 
         def _read_grid(grid_name: str) -> dict:
             grid = root.find(grid_name)
@@ -129,9 +132,11 @@ class WarpXmlParser:
         missing = sorted(set(range(len(movie_paths_all))) - ctf_z)
         if missing:
             logger.warning(
-                "%s: %d of %d tilts have no CTF fit (Z=%s); those tilts will be reported "
-                "as unresolved at merge time.",
-                xml_path, len(missing), len(movie_paths_all), missing,
+                "%s: %d of %d tilts have no CTF fit (Z=%s); those tilts will be reported as unresolved at merge time.",
+                xml_path,
+                len(missing),
+                len(movie_paths_all),
+                missing,
             )
 
         rows = [

@@ -1,0 +1,176 @@
+# Protocol: the CryoBoost v1 copia tutorial (EMPIAR-12580, one tilt series), importmovies -> class3d,
+# TUTORIAL-FAITHFUL variant of copia-empiar12580 (2026-09-09). Short name on purpose: the project dirname
+# becomes the tilt-series name prefix, and AreTomo 1.0 mangles its IMOD .tlt beyond ~42 characters
+# (docs/known_bugs.md #3). Differences from that protocol:
+#   - template + TM mask are the v1 repo's own files (CryoBoost/data/vols/copiaBlack_11.8A.mrc,
+#     mask_copia_11.8A.mrc = what v1's warp_tomo_prep/templatematching/job.star points at); the v1 mask is
+#     tighter (r ~245 A) than our spherical d575 mask (r ~305 A)
+#   - species diameter / peak-extraction diameter 550 A (tutorial "Enter 550 as diameter for peak extraction")
+#   - class3d healpix_order 3 (tutorial GUI 3.75 deg) and tau_fudge 4 (RELION default, tutorial leaves it)
+# Everything else identical to copia-empiar12580 (incl. the fs_ctf band fix 30:10, docs/known_bugs.md #1).
+name: copia-tutorial
+version: 1
+schema_version: 1
+description: 'CryoBoost v1 tutorial on copia (EMPIAR-12580), tutorial-faithful: v1 template+mask files, extraction diameter 550, Class3D 3.75 deg T=4'
+provenance:
+  empiar: EMPIAR-12580
+  empiar_path: data/Copia_TiltSeries
+  doi: 10.1101/2024.02.21.581285
+  tutorial: https://cryoboost.readthedocs.io/en/latest/extdocs/tutorial/tutorial.html
+species:
+  - id: copia
+    name: Copia
+    diameter_ang: 550.0
+    symmetry: I1
+    notes: copia retrotransposon capsid; v1 tutorial template + TM mask files (11.80 A/px, box 96)
+    template:
+      asset: assets/copia_template.mrc
+      polarity: black
+      source: v1:data/vols/copiaBlack_11.8A.mrc
+      lowpass_ang: 45.0
+      notes: 'tutorial "Use basic shape 550:550:550"; file copied from the v1 repo'
+    mask:
+      asset: assets/copia_mask.mrc
+      method: relion
+      threshold: 1.85
+      extend_pixels: 5.0
+      lowpass_ang: 20.0
+      soft_edge_pixels: 5.0
+      notes: 'tutorial "Generate(Mask), Extend 5, SoftEdge 5" (GUI threshold 1.85, lowpass 20); file copied from the v1 repo'
+    extraction: {box_size: 384, crop_size: 224, binning: 1.0}
+stages:
+  - job: importmovies
+    params: {optics_group_name: opticsGroup1, do_at_most: -1}
+  - job: fsMotionAndCtf
+    params:
+      do_phase: false
+      m_range_min_max: "500:10"
+      m_bfac: -500
+      m_grid: 1x1x3
+      c_range_min_max: "30:10"     # was 30:6.0 (v1): beyond ~10 A these 2 e/A2 tilts are noise and the fit diverged on 22/28 -> docs/known_bugs.md #1
+      c_defocus_min_max: "1.1:8"
+      c_grid: 2x2x1
+      c_use_sum: false
+      c_window: 512
+      out_average_halves: true
+      out_skip_first: 0
+      out_skip_last: 0
+      perdevice: 2
+      do_at_most: -1
+      gain_operations: null
+      array_throttle: 20
+  - job: tsImport
+    params: {mdoc_pattern: "*.mdoc", min_intensity: 0.0, do_at_most: -1, tomo_dimensions: 4096x4096x2048}
+  - job: aligntiltsWarp
+    params:
+      alignment_method: AreTomo
+      rescale_angpixs: 11.8
+      tomo_dimensions: 4096x4096x2048
+      sample_thickness_nm: 180.0
+      do_at_most: -1
+      perdevice: 1
+      patch_x: 0
+      patch_y: 0
+      axis_iter: 0          # tutorial: tilt-axis refinement OFF
+      axis_batch: 0
+      imod_patch_size: 200
+      imod_overlap: 50
+      array_throttle: 20
+  - job: tsCtf
+    params:
+      do_phase: false
+      window: 512
+      range_min_max: "30:10"       # ts_ctf only refines the fs_ctf defoci locally; same band as fsMotionAndCtf
+      defocus_hand: set_flip   # tutorial: "Invert Defocus Hand = Yes"
+      defocus_min_max: "1.1:8"
+      perdevice: 1
+      array_throttle: 20
+  - job: tsReconstruct
+    params: {rescale_angpixs: 11.8, halfmap_frames: 1, deconv: 1, perdevice: 1, array_throttle: 20}
+  - job: templatematching
+    species: copia
+    # template_path / mask_path are filled from the species assets at apply
+    params:
+      angular_search: "90.0"
+      symmetry: C1
+      defocus_weight: true
+      dose_weight: true
+      spectral_whitening: false
+      random_phase_correction: false
+      non_spherical_mask: false
+      bandpass_filter: "None"
+      gpu_split: auto
+      perdevice: 1
+      array_throttle: 4
+  - job: tmextractcand
+    species: copia
+    params:
+      particle_diameter_ang: 550.0   # tutorial: 550 = template diameter ("avoid mult. extraction")
+      max_num_particles: 1500
+      cutoff_method: NumberOfFalsePositives
+      cc_threshold: 0.1
+      expected_false_positives: 1.0
+      apix_score_map: auto
+      score_filter_method: "None"
+      score_filter_value: "None"
+      array_throttle: 16
+  - job: subtomoExtraction
+    species: copia
+    params:
+      binning: 1.0
+      box_size: 384
+      crop_size: 224
+      do_float16: true
+      do_stack2d: true
+      max_dose: -1.0
+      min_frames: 1
+      array_throttle: 16
+  - job: reconstructParticle
+    species: copia
+    params:
+      box_size: 384
+      crop_size: 224
+      symmetry: I1
+      binning: 1
+      snr: 0.0
+      theme: default
+      whiten: false
+      no_ctf: false
+      do_helix: false
+      helical_twist: -1.0
+      helical_rise: 0.0
+      helical_z_percentage: 30.0
+      helical_tube_outer_diameter: -1.0
+      helical_nr_asu: 1
+      threads: 24
+      threads_in: 3
+      threads_out: 2
+      other_args: ""
+  - job: class3d
+    species: copia
+    params:
+      n_classes: 1
+      n_iterations: 15
+      tau_fudge: 4.0          # tutorial leaves the RELION default
+      healpix_order: 3        # tutorial GUI 3.75 deg = --healpix_order 3
+      offset_range: 5
+      offset_step: 2
+      sigma_ang: -1.0
+      oversampling: 1
+      symmetry: I1
+      ini_high: 45.0
+      particle_diameter: 575.0
+      solvent_mask_path: ""
+      flatten_solvent: true
+      zero_mask: true
+      firstiter_cc: true
+      do_ctf: true
+      do_norm: true
+      do_scale: true
+      dont_combine_weights_via_disc: true
+      pad: 2
+      use_gpu: true
+      preread_images: true
+      threads: 4
+      pool: 30
+      random_seed: 1

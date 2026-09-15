@@ -1171,6 +1171,17 @@ class RosterWidget(FingerprintedView):
             ds_rows.append(("Source", state.import_source_directory))
         if state.import_frame_extension:
             ds_rows.append(("Format", state.import_frame_extension))
+        # Roadmap 18 D3: which delivery layer Create imported, and a dose that is not the
+        # mdocs' own fact (estimated from DoseRate, or typed) says so — stated, not folded.
+        if state.import_source_kind == "stacks":
+            ds_rows.append(("Source layer", "SerialEM stacks (split)"))
+        elif state.import_source_kind == "movies":
+            ds_rows.append(("Source layer", "movies"))
+        dose_source = state.acquisition.dose_per_tilt_source
+        if dose_source == "estimated":
+            ds_rows.append(("Dose/tilt", f"{state.acquisition.dose_per_tilt:g} (estimated)", "#b45309"))
+        elif dose_source == "user":
+            ds_rows.append(("Dose/tilt", f"{state.acquisition.dose_per_tilt:g} (user)"))
         if ds_rows or state.import_total_positions or state.import_total_tilt_series:
             self._render_overview_section("Dataset", ds_rows)
             self._render_dataset_ts_expansion(state)

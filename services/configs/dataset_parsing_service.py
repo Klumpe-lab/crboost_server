@@ -2,21 +2,25 @@
 """
 Parses cryo-ET dataset directories into a structured position/tilt-series hierarchy.
 
-Uses mdoc filenames as the authoritative source for stage/beam position disambiguation.
-Each mdoc's ZValue sections provide the definitive frame-to-tilt-series association.
+One mdoc = one tilt-series, named after the mdoc file. Each mdoc's ZValue sections
+provide the definitive frame-to-tilt-series association; the source layer of each
+series (per-tilt movies vs a SerialEM stack beside the mdoc) is inferred per mdoc
+(roadmap 18 D1) and never chosen by the user.
 """
 
 import glob
 import logging
 import os
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from collections.abc import Callable
 
-from services.configs.mdoc_service import get_mdoc_service
+from services.configs.mdoc_service import MdocFacts, acquisition_from_mdoc, get_mdoc_service, ts_name_from_mdoc
+from services.stack_import import choose_source_layer, resolve_stack
 from services.tilt_series.preimport import (
     AcquisitionSummary,
     DatasetOverview,
+    SourceKind,
     StagePositionInfo,
     TiltInfo,
     TiltSeriesInfo,
@@ -24,6 +28,8 @@ from services.tilt_series.preimport import (
 from services.tilt_series.build import parse_position
 
 logger = logging.getLogger(__name__)
+
+_MOVIE_EXTENSIONS = (".eer", ".tiff", ".tif", ".mrc")
 
 
 class DatasetParsingService:
@@ -42,6 +48,7 @@ class DatasetParsingService:
             mdocs_glob: Glob pattern for mdoc files (e.g., "/data/frames/*.mdoc")
             frames_dir: Directory containing frame files. If None, inferred from
                         mdoc SubFramePath entries or from the mdoc directory itself.
+                        Frames are also looked for beside each mdoc.
             progress_cb: Optional (current, total) callback invoked as each mdoc
                         is parsed. Runs on the calling (worker) thread.
         """
@@ -54,86 +61,102 @@ class DatasetParsingService:
             )
 
         resolved_frames_dir = self._resolve_frames_directory(mdoc_paths, frames_dir)
-        frame_ext = self._detect_frame_extension(resolved_frames_dir)
 
         warnings: list[str] = []
         tilt_series_list: list[TiltSeriesInfo] = []
+        skipped_no_sections = 0
 
         total_mdocs = len(mdoc_paths)
         if progress_cb:
             progress_cb(0, total_mdocs)
 
         for mdoc_idx, mdoc_path in enumerate(mdoc_paths):
-            parsed = self._parse_mdoc_filename(mdoc_path.name)
-            if parsed is None:
-                warnings.append(f"Skipped mdoc with unrecognized name: {mdoc_path.name}")
-                continue
-
-            stage_pos, beam_pos = parsed
-
             try:
                 mdoc_data = self.mdoc_service.parse_mdoc_file(mdoc_path)
             except Exception as e:
                 warnings.append(f"Failed to parse {mdoc_path.name}: {e}")
                 continue
 
+            if not mdoc_data["data"]:
+                # A raw SerialEM delivery holds one per-movie mdoc per tilt (no [ZValue]
+                # section) next to the stack mdoc — those are not tilt-series.
+                skipped_no_sections += 1
+                continue
+
             tilts: list[TiltInfo] = []
             for section in mdoc_data["data"]:
-                tilt = self._build_tilt_info(section, resolved_frames_dir)
+                tilt = self._build_tilt_info(section, resolved_frames_dir, mdoc_path.parent)
                 if tilt is not None:
                     tilts.append(tilt)
 
-            acq = self._extract_acquisition_params(mdoc_data)
+            facts = acquisition_from_mdoc(mdoc_data)
+            ts_name = ts_name_from_mdoc(mdoc_path.name)
+            parsed_pos = parse_position(ts_name)
+            stage_pos, beam_pos = (parsed_pos[0], parsed_pos[1] or 1) if parsed_pos else (None, None)
+            source_kind, stack = self._classify_source(mdoc_path, tilts, facts)
+            if source_kind == "stack":
+                for tilt in tilts:
+                    tilt.frame_filename = Path(tilt.frame_filename).with_suffix(".mrc").name
 
             ts = TiltSeriesInfo(
+                ts_name=ts_name,
                 stage_position=stage_pos,
                 beam_position=beam_pos,
                 mdoc_filename=mdoc_path.name,
                 mdoc_path=mdoc_path,
                 tilts=tilts,
-                pixel_size=acq.get("pixel_size"),
-                voltage=acq.get("voltage"),
-                dose_per_tilt=acq.get("dose_per_tilt"),
-                tilt_axis=acq.get("tilt_axis"),
+                source_kind=source_kind,
+                stack_path=stack[0] if stack else None,
+                stack_nz=stack[1] if stack else None,
+                pixel_size=facts.pixel_size,
+                voltage=facts.voltage,
+                dose_per_tilt=facts.dose_per_tilt,
+                dose_estimate=facts.dose_estimate,
+                tilt_axis=facts.tilt_axis,
+                acquisition_software=facts.software,
+                software_version=facts.software_version,
+                detector_dimensions=facts.detector_dimensions,
             )
             tilt_series_list.append(ts)
 
-            missing = ts.missing_frames
-            if missing > 0:
-                warnings.append(f"{ts.ts_label}: {missing}/{ts.tilt_count} frames not found")
+            if source_kind == "missing":
+                warnings.append(f"{ts.ts_label}: no movies and no stack found for {ts.tilt_count} tilts")
+            elif ts.missing_frames > 0:
+                warnings.append(f"{ts.ts_label}: {ts.missing_frames}/{ts.tilt_count} frames not found")
 
             if progress_cb:
                 progress_cb(mdoc_idx + 1, total_mdocs)
 
+        if skipped_no_sections:
+            warnings.append(f"Skipped {skipped_no_sections} mdocs without [ZValue] sections (per-movie mdocs)")
+
+        frame_ext = self._frame_extension(tilt_series_list, resolved_frames_dir, warnings)
         positions = self._aggregate_to_positions(tilt_series_list)
-        acq_summary = self._build_acquisition_summary(tilt_series_list)
+        first_with_software = next((ts for ts in tilt_series_list if ts.acquisition_software), None)
+        first_with_dims = next((ts for ts in tilt_series_list if ts.detector_dimensions), None)
 
         return DatasetOverview(
             source_directory=str(resolved_frames_dir) if resolved_frames_dir else str(Path(mdocs_glob).parent),
             frame_extension=frame_ext,
             positions=positions,
             parse_warnings=warnings,
-            acquisition_summary=acq_summary,
+            acquisition_summary=AcquisitionSummary.from_tilt_series(tilt_series_list),
+            acquisition_software=first_with_software.acquisition_software if first_with_software else "",
+            software_version=first_with_software.software_version if first_with_software else "",
+            detector_dimensions=first_with_dims.detector_dimensions if first_with_dims else None,
         )
 
-    def _parse_mdoc_filename(self, mdoc_name: str) -> tuple[int, int] | None:
-        """
-        Extract (stage_position, beam_position) from mdoc filename via the
-        canonical Position parser.
-
-        'Position_10.mdoc'   -> (10, 1)
-        'Position_10_2.mdoc' -> (10, 2)
-        'prefix_Position_10.mdoc' -> (10, 1)  (prefixed names accepted)
-
-        Returns None if the filename doesn't end in Position_{stage}[_{beam}].mdoc.
-        """
-        if not mdoc_name.endswith(".mdoc"):
-            return None
-        parsed = parse_position(mdoc_name[: -len(".mdoc")])
-        if parsed is None:
-            return None
-        stage, beam = parsed
-        return (stage, beam or 1)
+    def _classify_source(
+        self, mdoc_path: Path, tilts: list[TiltInfo], facts: MdocFacts
+    ) -> tuple[SourceKind, tuple[Path, int] | None]:
+        """Roadmap 18 D1: movies when every SubFramePath resolved; stack when
+        `<mdoc dir>/<ImageFile>` is an MRC with nz == sections; both complete →
+        SerialEM prefers the (frame-aligned) stack, Tomo5 the movies."""
+        movies_complete = bool(tilts) and all(t.frame_path is not None for t in tilts)
+        movies_partial = any(t.frame_path is not None for t in tilts)
+        stack = resolve_stack(mdoc_path, facts.image_file, facts.n_sections)
+        kind = choose_source_layer(facts.software, movies_complete, movies_partial, stack is not None)
+        return kind, (stack if kind == "stack" else None)
 
     def _resolve_frames_directory(self, mdoc_files: list[Path], frames_dir: str | None) -> Path | None:
         """
@@ -177,16 +200,41 @@ class DatasetParsingService:
 
         return None
 
+    def _frame_extension(
+        self, tilt_series_list: list[TiltSeriesInfo], frames_dir: Path | None, warnings: list[str]
+    ) -> str:
+        """The extension the import will record: `.mrc` for stack series (the split
+        writes MRC slices), the resolved movies' suffix otherwise; a directory sniff
+        remains the fallback when nothing resolved at all."""
+        kinds = Counter(ts.source_kind for ts in tilt_series_list if ts.source_kind != "missing")
+        if len(kinds) > 1:
+            warnings.append(
+                "Mixed source layers: "
+                + ", ".join(f"{n} series from {'stacks' if k == 'stack' else k}" for k, n in kinds.most_common())
+            )
+        if not kinds:
+            return self._detect_frame_extension(frames_dir)
+        if kinds.most_common(1)[0][0] == "stack":
+            return ".mrc"
+        for ts in tilt_series_list:
+            if ts.source_kind != "movies":
+                continue
+            for tilt in ts.tilts:
+                if tilt.frame_path is not None:
+                    return tilt.frame_path.suffix.lower()
+        return self._detect_frame_extension(frames_dir)
+
     def _detect_frame_extension(self, frames_dir: Path | None) -> str:
         if not frames_dir or not frames_dir.exists():
             return ""
-        for ext in [".eer", ".tiff", ".tif", ".mrc"]:
+        for ext in _MOVIE_EXTENSIONS:
             if any(frames_dir.glob(f"*{ext}")):
                 return ext
         return ""
 
-    def _build_tilt_info(self, section: dict, frames_dir: Path | None) -> TiltInfo | None:
-        """Build a TiltInfo from a parsed mdoc ZValue section."""
+    def _build_tilt_info(self, section: dict, frames_dir: Path | None, mdoc_dir: Path) -> TiltInfo | None:
+        """Build a TiltInfo from a parsed mdoc ZValue section. The movie is looked for
+        in `frames_dir`, then beside the mdoc (one-folder-per-series deliveries)."""
         z_value_str = section.get("ZValue")
         if z_value_str is None:
             return None
@@ -215,10 +263,13 @@ class DatasetParsingService:
 
         # Resolve the actual file path
         frame_path = None
-        if frames_dir:
-            candidate = frames_dir / frame_filename
+        for directory in (frames_dir, mdoc_dir):
+            if directory is None:
+                continue
+            candidate = directory / frame_filename
             if candidate.exists():
                 frame_path = candidate.resolve()
+                break
 
         # Extract numeric MDOC stats for per-tilt metadata registry
         mdoc_stats: dict[str, float] = {}
@@ -267,102 +318,20 @@ class DatasetParsingService:
             date_time=section.get("DateTime"),
         )
 
-    def _extract_acquisition_params(self, mdoc_data: dict) -> dict:
-        """Extract acquisition parameters from an mdoc's header and first ZValue section."""
-        result: dict = {}
-        header_text = mdoc_data.get("header", "")
-        sections = mdoc_data.get("data", [])
-        first = sections[0] if sections else {}
-
-        # Parse header key=value lines
-        header_kv: dict[str, str] = {}
-        for line in header_text.split("\n"):
-            if "=" in line:
-                k, v = line.split("=", 1)
-                header_kv[k.strip()] = v.strip()
-
-        # Pixel size
-        for src in [header_kv, first]:
-            if "PixelSpacing" in src:
-                try:
-                    result["pixel_size"] = float(src["PixelSpacing"])
-                    break
-                except (ValueError, TypeError):
-                    # Non-numeric PixelSpacing — leave unset; acquisition summary shows the gap.
-                    pass
-
-        # Voltage
-        for src in [header_kv, first]:
-            if "Voltage" in src:
-                try:
-                    result["voltage"] = float(src["Voltage"])
-                    break
-                except (ValueError, TypeError):
-                    # Non-numeric Voltage — leave unset; acquisition summary shows the gap.
-                    pass
-
-        # Dose per tilt (from ExposureDose in first section)
-        if "ExposureDose" in first:
-            try:
-                result["dose_per_tilt"] = round(float(first["ExposureDose"]), 2)
-            except (ValueError, TypeError):
-                # Non-numeric ExposureDose — leave unset; acquisition summary shows the gap.
-                pass
-
-        # Tilt axis
-        if "Tilt axis angle" in header_kv:
-            try:
-                result["tilt_axis"] = float(header_kv["Tilt axis angle"])
-            except (ValueError, TypeError):
-                # Non-numeric tilt-axis header value — leave unset; summary shows the gap.
-                pass
-        elif "RotationAngle" in first:
-            try:
-                result["tilt_axis"] = abs(float(first["RotationAngle"]))
-            except (ValueError, TypeError):
-                # Non-numeric RotationAngle — leave unset; summary shows the gap.
-                pass
-
-        return result
-
-    def _build_acquisition_summary(self, tilt_series_list: list[TiltSeriesInfo]) -> AcquisitionSummary:
-        """Collect unique acquisition parameter values across all tilt-series."""
-        pxs: set = set()
-        vs: set = set()
-        ds: set = set()
-        tas: set = set()
-        tcs: set = set()
-        ars: set = set()
-        for ts in tilt_series_list:
-            if ts.pixel_size is not None:
-                pxs.add(round(ts.pixel_size, 3))
-            if ts.voltage is not None:
-                vs.add(round(ts.voltage, 0))
-            if ts.dose_per_tilt is not None:
-                ds.add(round(ts.dose_per_tilt, 1))
-            if ts.tilt_axis is not None:
-                tas.add(round(ts.tilt_axis, 1))
-            tcs.add(ts.tilt_count)
-            lo, hi = ts.angle_range
-            ars.add((round(lo, 0), round(hi, 0)))
-        return AcquisitionSummary(
-            pixel_sizes=sorted(pxs),
-            voltages=sorted(vs),
-            doses=sorted(ds),
-            tilt_axes=sorted(tas),
-            tilt_counts=sorted(tcs),
-            angle_ranges=sorted(ars),
-        )
-
     def _aggregate_to_positions(self, tilt_series_list: list[TiltSeriesInfo]) -> list[StagePositionInfo]:
-        """Group tilt-series by stage_position, sort by position number."""
+        """Group tilt-series by stage position when every series has one (Tomo5 names);
+        otherwise a single flat group, `stage_position=None`, sorted by name."""
+        if not all(ts.stage_position is not None for ts in tilt_series_list):
+            flat = sorted(tilt_series_list, key=lambda ts: ts.ts_name)
+            return [StagePositionInfo(stage_position=None, tilt_series=flat)] if flat else []
+
         groups: dict[int, list[TiltSeriesInfo]] = defaultdict(list)
         for ts in tilt_series_list:
             groups[ts.stage_position].append(ts)
 
         positions = []
         for stage_pos in sorted(groups.keys()):
-            series = sorted(groups[stage_pos], key=lambda ts: ts.beam_position)
+            series = sorted(groups[stage_pos], key=lambda ts: ts.beam_position or 1)
             positions.append(StagePositionInfo(stage_position=stage_pos, tilt_series=series))
         return positions
 

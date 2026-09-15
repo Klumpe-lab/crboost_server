@@ -48,17 +48,48 @@ def reconstruction_mrc_path(job_dir: Path, ts_name: str, rescale_angpixs: float)
 def build_reconstruct_command(
     params: TsReconstructParams, settings_file: Path, input_processing: Path, output_processing: Path
 ) -> ToolCommand:
-    return (
+    cmd = (
         ToolCommand("WarpTools ts_reconstruct")
         .opt_path("--settings", settings_file, quote=True)
         .opt_path("--input_processing", input_processing, quote=True)
         .opt_path("--output_processing", output_processing, quote=True)
         .opt("--angpix", params.rescale_angpixs)
-        .opt("--halfmap_frames", params.halfmap_frames)
-        .opt("--deconv", params.deconv)
-        .opt("--perdevice", params.perdevice)
-        .flag("--dont_invert")
     )
+    # --halfmap_frames and --deconv are Warp SWITCHES: their mere presence enables
+    # them, whatever value follows (`--halfmap_frames 0` still died on "Can't find
+    # half-averages", job 1947533). Emit each only when the parameter is 1.
+    if params.halfmap_frames == 1:
+        cmd.flag("--halfmap_frames")
+    if params.deconv == 1:
+        cmd.flag("--deconv")
+    return cmd.opt("--perdevice", params.perdevice).flag("--dont_invert")
+
+
+def first_movie_path(tomostar: Path) -> Path:
+    """The first `_wrpMovieName` of a tomostar (absolute after per-TS staging)."""
+    for line in tomostar.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("data_", "loop_", "_", "#")):
+            continue
+        return Path(stripped.split()[0])
+    raise ValueError(f"tomostar has no data rows: {tomostar}")
+
+
+def require_even_odd_halves(staged_tomostar: Path) -> None:
+    """Fail BEFORE Warp when the frame-series job wrote no even/odd half-averages.
+
+    Warp keys the halves as `<warp_frameseries>/average/{even,odd}/<movie stem>.mrc`
+    (the fs_motion_ctf adapter's `even_mrc`). Single-frame input (SerialEM stacks
+    split into one .mrc per tilt) leaves those folders empty, and Warp's own error
+    only surfaces after the whole per-TS staging ran.
+    """
+    movie = first_movie_path(staged_tomostar)
+    even = movie.parent / "average" / "even" / f"{movie.stem}.mrc"
+    if not even.exists():
+        raise FileNotFoundError(
+            f"no even/odd halves for this tilt-series ({even} missing) — "
+            f"set halfmap_frames to 0 (CryoCARE unavailable: the input has no frame halves)"
+        )
 
 
 class TsReconstructDriver(ArrayDriver):
@@ -110,6 +141,8 @@ class TsReconstructDriver(ArrayDriver):
             ctx.job_dir, item, ctx.paths["input_processing"], ctx.paths["warp_tiltseries_settings"]
         )
         self.log(f"Staged settings: {staged_settings}")
+        if ctx.params.halfmap_frames == 1:
+            require_even_odd_halves(staged_settings.parent / "tomostar" / f"{item}.tomostar")
         return staged_settings, staged_processing
 
     def build_command(self, ctx: DriverContext[TsReconstructParams], item: str, staged) -> ToolCommand:
