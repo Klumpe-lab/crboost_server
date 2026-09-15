@@ -3,7 +3,7 @@
 # class3d.random_seed 1. Dataset facts (apix, dose, tilts) come from the mdocs at project creation.
 # Stage params are FULL USER_PARAMS snapshots by design.
 # 2026-09-04: species + picking params reconciled against the reference run
-# /groups/klumpe/crboost_data/copia_demo2 (1056 picks on this TS): diameter 575 A, spherical d575_s5 mask.
+# /groups/<name_of_group>/crboost_data/copia_demo2 (1056 picks on this TS): diameter 575 A, spherical d575_s5 mask.
 name: copia-empiar12580
 version: 1
 schema_version: 1

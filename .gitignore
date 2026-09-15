@@ -38,11 +38,12 @@ source_me
 
 # Tool-specific
 promptbuilder.py
-CLAUDE.md
 .claude/
 
 /*.md
 !README.md
+!CLAUDE.md
+!munich_handoff_note.md
 
 
 **.sif

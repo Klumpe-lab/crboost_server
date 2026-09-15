@@ -1,6 +1,6 @@
 line-length = 120
 target-version = "py311"
-exclude = ["venv", ".git", ".nicegui", "docs/attic"]
+exclude = ["venv", ".git", ".nicegui", "docs/reports/v1-parity/scripts"]
 
 [lint]
 select = ["E", "F", "UP", "B", "RUF"]

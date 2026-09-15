@@ -5,7 +5,7 @@ three questions that keep coming back: what is the actual difference between Tem
 matching, Pick candidates and Subtomo extraction; which STAR file carries which fact; and
 what has to agree before two sets of picks may be united.
 
-Written 2026-08-22 alongside `docs/roadmaps/picking_ui/12-aggregate-candidates.md`, which
+Written 2026-08-22 alongside `docs/roadmaps/completed/picking_ui/roadmap_12-aggregate-candidates.md`, which
 depends on every fact below. Update the two together.
 
 ---

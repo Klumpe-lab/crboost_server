@@ -15,7 +15,7 @@ Mapping to our RELION-5 centered-Å convention (see :mod:`services.particles.coo
 
 Because we own both directions and exchange in ArtiaX's corner-Å (= voxel*px) space, the ``N/2``
 centering term cancels in any our→ArtiaX→our round trip regardless of the half-voxel parity
-ambiguity. See ``docs/ARTIAX_BRIDGE_PLAN.md``.
+ambiguity. See ``docs/roadmaps/completed/roadmap_artiax-bridge.md``.
 
 Since roadmap 10-S3 the volume ArtiaX opens may be a block-binned DISPLAY copy of the recon rather
 than the recon itself (it loads in seconds instead of ~20 s). That shifts the corner origin by one
@@ -167,7 +167,7 @@ def import_coords_to_centered_star(
 # `chimerax open_<tomo>.cxc` (CB_CXC env) and the session comes up preloaded.
 #
 # The command backbone below is the set CONFIRMED to work by hand (see
-# ARTIAX_BRIDGE_PLAN.md "Landed (session 1)"): `artiax start`, `artiax open tomo`,
+# docs/roadmaps/completed/roadmap_artiax-bridge.md "Landed (session 1)"): `artiax start`, `artiax open tomo`,
 # bare `open <f>.coords` (ArtiaX auto-detects the format and the picks land on the
 # density with no flip), `lighting simple`. Steps whose exact ArtiaX subcommand is
 # not yet confirmed (forcing a particle-list pixel size, creating an empty manual
@@ -322,7 +322,7 @@ def write_manifest(curation_dir: Path, **fields) -> Path:
 # ── Display-binned recon (roadmap 10-S3) ──────────────────────────────────────
 #
 # ArtiaX takes ~20 s to open a 1 GB / 268 M-voxel reconstruction, and the cost is
-# COMPUTE, not I/O (ARTIAX_BRIDGE_PLAN.md:412-440). "Change tomogram" is a relaunch or,
+# COMPUTE, not I/O (docs/roadmaps/completed/roadmap_artiax-bridge.md:412-440). "Change tomogram" is a relaunch or,
 # since 13-S2, the confirmed in-session switch — both re-open a volume, and both are only
 # tolerable if the open is seconds. We therefore open a block-mean-binned copy, cached
 # beside the recon.
@@ -453,7 +453,7 @@ def session_chimerax_commands(recon_mrc, auto_coords: Path | None = None, seed_c
 # so saves were misattributed. 13-S2 brings ONE outbound command back, on a stricter
 # footing: `switch_session_scope` sends this chain and rewrites `scope.json` + the
 # target dir's manifest in the SAME call, so the scope on disk is the switch's scope.
-# The chain itself was runtime-verified 2026-06-10 (ARTIAX_BRIDGE_PLAN.md:391-399).
+# The chain itself was runtime-verified 2026-06-10 (docs/roadmaps/completed/roadmap_artiax-bridge.md:391-399).
 
 
 def swap_chimerax_commands(open_recon, auto_coords: Path | None = None, seed_coords: Path | None = None) -> str:

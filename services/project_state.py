@@ -56,7 +56,7 @@ def _afterok_global_default() -> bool:
     conf.yaml) so the afterok orchestrator can be exercised on every project without per-project
     project_params.json edits. Applied as the field default (fresh projects) and OR'd into the
     load path (existing projects); a per-project True always wins. Remove with the config field
-    once the afterok path is validated. See ORCHESTRATOR_REPLACEMENT_PLAN.md §6a."""
+    once the afterok path is validated. See docs/roadmaps/roadmap_orchestrator-replacement.md §6a."""
     try:
         from services.configs.config_service import get_config_service
 
@@ -740,13 +740,13 @@ class ProjectState(BaseModel):
     # participating set + order lived ONLY in UIState.selected_jobs (per-browser-tab
     # NiceGUI storage); persisting it here lets a tab-less submitter/reconciler know
     # the run set. Written through at deploy; backfilled from `jobs` on load for
-    # legacy projects. See ORCHESTRATOR_REPLACEMENT_PLAN.md §6 (P1.0).
+    # legacy projects. See docs/roadmaps/roadmap_orchestrator-replacement.md §6 (P1.0).
     pipeline_order: list[str] = Field(default_factory=list)
     species_registry: list[ParticleSpecies] = Field(default_factory=list)
     # Per-(species, tomo) manual-curation workbench. Only workbench-authored
     # lists (manual/imported/merged) persist here; `auto`/`filtered` are
     # disk-backed and synthesized at render time so this never goes stale
-    # against the files the resolver owns. See ARTIAX_BRIDGE_PLAN.md
+    # against the files the resolver owns. See docs/roadmaps/completed/roadmap_artiax-bridge.md
     # "## Curation workbench — the multi-list model".
     pick_lists: list[PickList] = Field(default_factory=list)
     # A per-(species, tomo) `authoritative_pick_lists` dict used to live here: which ONE list
@@ -764,7 +764,7 @@ class ProjectState(BaseModel):
     # (submit_chain) instead of relion_schemer. Default False (schemer) so a test
     # project can exercise the afterok DAG while existing projects are unaffected.
     # Live status under this flag requires the P1.B reconciler. See
-    # ORCHESTRATOR_REPLACEMENT_PLAN.md §6.
+    # docs/roadmaps/roadmap_orchestrator-replacement.md §6.
     use_afterok_orchestrator: bool = Field(default_factory=_afterok_global_default)
     # Roadmap 16 S1: provenance of a project created from a protocol bundle; None for a
     # hand-built project. Additive, and restored explicitly in load() (field-by-field).

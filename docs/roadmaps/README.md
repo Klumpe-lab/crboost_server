@@ -1,32 +1,37 @@
-# Refactor roadmaps
+# Roadmaps
 
-Derived from `docs/architecture-assessment-2026-08-10.md` (full audit with file:line citations) and
-the maintainer's feedback on it, plus the UX walkthroughs since. Each roadmap is independently
-executable and every stage is a self-contained commit.
+Forward-looking plans. Every file here is named `roadmap_*`; reference documentation lives in `docs/`
+and investigations / handoffs / audits live in `docs/reports/`.
 
-**Completed roadmaps move to [archive/](archive/README.md)** — 00–04, 07, 08–12, `denovo_picking/`
-and `picking_ui/01–06` all live there now, with their stage logs intact. This file lists only what is
-still open.
+**This folder lists only what is still open** (not started, or partially built). Roadmaps whose stages
+are all code-complete — and plans that were superseded — live in [completed/](completed/README.md) with
+their stage logs intact.
 
 ## Live
 
-| # | Roadmap | Theme | Risk | Status |
-|---|---|---|---|---|
-| 05 | [per-ts-top-up](05-per-ts-top-up.md) | Re-run one failed/skipped tilt-series without recomputing the job or its downstream chain | medium (capability gap; index-shift hazard gates the cascade stage) | stage 0 partial 2026-08-13 (aggregation contract + `is_excluded` round-trip verified); no code |
-| 06 | [dl-tilt-filter](06-dl-tilt-filter.md) | DL tilt filter as always-interactive first-class method; hard approval barrier | medium (orchestration barrier + resume) | scoped 2026-08-11, revised same day; not started |
-| 13 | [roster-staged-vs-queued](13-roster-staged-vs-queued.md) | The roster paints a just-added job with the same amber "Scheduled" dot as one queued on the cluster; derive the split from `pipeline_active` + `pipeline_order` rather than adding a `JobStatus` member | low (render-only; no model or migration) | scoped 2026-08-23; not started |
-| 14 | [protocols-regression-harness](14-protocols-regression-harness.md) | Protocols (portable declarative pipeline shapes: schema · export · apply) — the copia EMPIAR-12580 bundle; the regression harness this roadmap also built was DELETED 2026-09-04 (see 16) | medium | S0–S7 2026-08-27; **superseded by 16 on 2026-09-04** — protocol core kept, harness deleted |
-| 15 | [job-dir-ownership](15-job-dir-ownership.md) | An `External/jobNNN/` dir has no owner: every liveness guard is in one server process's RAM, so a retry can 'sbatch' a second supervisor into a live job dir and 'rmtree' its working set mid-run (reproduced 2026-08-28, 62/114 TS lost to a bogus "producer drift"). On-disk ownership lock + atomic input rebuilds + markers that only the owner may write | medium (touches the supervisor entry path and the retry launcher; no model or migration) | scoped 2026-08-28 from a production failure; not started |
-| 16 | [protocols-workbench](16-protocols-workbench.md) | A protocol is the shape of a pipeline with its parameters: create a regular project from one (landing dialog) and run it through the regular pipeline; the workspace Protocols view shows the protocol beside the project's parameters ("edited"), the bundle as declared, and save-as-protocol; `ProjectState.protocol_origin` + a frozen `<project>/protocol/protocol.yaml` | small (services/protocols + two UI files; schema 3.7 additive) | re-scoped and cut back 2026-09-04; code complete, runtime §6 owed |
-| 17 | [url-routing](17-url-routing.md) | Addressable URLs — `/p/<project>/<view>/<target>` for every view (job tab + subsection, journey on a TS, species tab, pick viewer, gallery, protocols): paste a link and land there, click around and the address bar tracks. Project identity = the directory name (+ `?base=` to disambiguate); History API only, never `navigate.to` | low-medium (no model, no migration — the deep-link callbacks all exist already; what is missing is the address bar) | scoped 2026-09-07; **S0–S5 code-complete 2026-09-08**, runtime §7 (15 steps) OWED |
-| — | [picking_ui/](picking_ui/00-overview.md) | index + the **guideline of record** for species-derived fields in job tabs; 07 = the deferred cross-project particle registry (scoping only, P-25) | — | 01–06 built and archived; **wave 2 built 2026-08-21/22**: 08 (control vocabulary + workbench chrome), 09 (Picks & curation one surface), 10-S1…S3 (external-picker contract, Model B adopted; S4 napari gated) and 11-S1…S6 (pick viewer, full page + slim) are all CODE-COMPLETE and owe ONE runtime pass together. 12 (aggregate candidates) stays a stub — it is blocked on a maintainer decision about which job the flow spawns. **13 scoped 2026-09-04** — one pre-seeded ArtiaX list per (species, tomo), confirmed in-session switch over REST (reverses 10's Model-B "no outbound" clause), one door (Curate picks), spinner fixes; **S0–S4 CODE-COMPLETE 2026-09-04**, ONE runtime pass owed (13 §4) |
-| 18 | [k3-stack-ingest](18-k3-stack-ingest.md) | SerialEM/K3 tilt stacks as a data source FROM THE LANDING PAGE: per-mdoc source-layer inference (no format switch), split at Create inside the threaded import, missing dose ESTIMATED from DoseRate (zero-thickness fit, 4.3 e/Å² on the sample) and flagged, `import_source_kind` + `dose_per_tilt_source`; halves/tomo_dimensions stamped from data facts, no protocol bundle. Analysis + dry run: `notes/k3_ingest/00-plan.md` | low-medium (S0 `ts_reconstruct.py` switch fix + `.mrc` XML-key fix touch every project) | dry run GREEN end to end 2026-09-09; **S0–S4 CODE-COMPLETE 2026-09-09**, runtime pass (§6) owed |
-| — | [particles-ux-peeves](particles-ux-peeves.md) | living triage sheet for the maintainer's Journey/Species/roster walkthrough (bug / structural / cosmetic → home stage) | — | seeded 2026-08-16 (P-01…P-08); walkthrough intake 2026-08-18 (P-10…P-25, homed in picking_ui/) |
-| — | [ARC-RUNTIME-CHECKLIST.md](ARC-RUNTIME-CHECKLIST.md) | the one consolidated runtime script for roadmaps 07, 08–12 and de-novo S5/S6 | — | §0 static gates GREEN 2026-08-18; sections 1–5 (~40 steps) OWED |
+| # | Roadmap | Theme | Status |
+|---|---|---|---|
+| 05 | [per-ts-top-up](roadmap_05-per-ts-top-up.md) | Re-run one failed/skipped tilt-series without recomputing the job or its downstream chain | stage 0 partial 2026-08-13; no code. **File deleted in `bc2b41b` — restore pending** |
+| 06 | [dl-tilt-filter](roadmap_06-dl-tilt-filter.md) | DL tilt filter as always-interactive first-class method; hard approval barrier | scoped 2026-08-11; not started |
+| 13 | [roster-staged-vs-queued](roadmap_13-roster-staged-vs-queued.md) | The roster paints a just-added job with the same amber "Scheduled" dot as one queued on the cluster; derive the split from `pipeline_active` + `pipeline_order` | scoped 2026-08-23; not started |
+| 15 | [job-dir-ownership](roadmap_15-job-dir-ownership.md) | On-disk ownership lock for `External/jobNNN/` so a retry cannot sbatch a second supervisor into a live job dir (reproduced 2026-08-28, 62/114 TS lost) | scoped 2026-08-28; not started |
+| 19 | [ctf-fit-outlier-check](roadmap_19-ctf-fit-outlier-check.md) | Per-tilt CTF-fit outlier check: fail loudly when Warp's defocus fit diverges (was numbered 18, which collided with k3-stack-ingest) | scoped 2026-09-09; not started |
+| — | [orchestrator-replacement](roadmap_orchestrator-replacement.md) | `relion_schemer` out → ProjectState + SLURM afterok DAG + thin reconciler | partial: afterok DAG is the main path (`_submit_chain`, `reconcile_afterok`); P1.C and the schemer decommission not started |
+| — | [registry-consolidation](roadmap_registry-consolidation.md) | TiltSeriesRegistry becomes THE store | partial: phases 0–2 built; phase 4 (de-star the drivers) not done |
+| — | [tilt-filter-tomostar-relion-split](roadmap_tilt-filter-tomostar-relion-split.md) | Tilt-filter verdicts propagate through the tomostar / RELION star split | partial: stage 1, 2A + emit_star fix runtime-verified; 2B, 3, §5 open |
+| — | [task-status-state-machine](roadmap_task-status-state-machine.md) | `.ok/.fail/.skip` markers → one JSON task record | partial: containment landed (`is_superseded_task`); §5 JSON record not built |
+| — | [preprocessing-metrics](roadmap_preprocessing-metrics.md) | Warp/AreTomo readouts surfaced in the UI (catalogue: `docs/preprocessing-metrics-inventory.md`) | partial: ①–④ + ⑥ code-complete, pending runtime; ⑤ exposure-curation scatter not built |
+| — | [picking_ui/07](picking_ui/roadmap_07-scoping-particle-registry-edges.md) | Deferred cross-project particle registry (scoping only, P-25) | scoping only. **File deleted in `bc2b41b` — restore pending** |
+| — | [picking_ui/10](picking_ui/roadmap_10-external-picker-contract.md) | External-picker contract (Model B) | S1–S3 code-complete; S4 napari pilot gated. **File deleted in `bc2b41b` — restore pending** |
+| — | [particles-ux-peeves](roadmap_particles-ux-peeves.md) | Living triage sheet for the maintainer's Journey/Species/roster walkthrough | partial: most rows homed and built; P-25, P-49/50 open |
+| — | [arc-runtime-checklist](roadmap_arc-runtime-checklist.md) | The one consolidated runtime script for roadmaps 07, 08–12 and de-novo S5/S6 | §0 static gates green 2026-08-18; sections 1–5 (~40 steps) owed |
+
+The picking-UI series index and guideline of record is
+[completed/picking_ui/roadmap_00-overview.md](completed/picking_ui/roadmap_00-overview.md) (restore pending).
 
 ## The open debt
 
-**Everything archived is code-complete and unverified at runtime.** The standing decision (maintainer,
+**Everything in completed/ is code-complete and unverified at runtime.** The standing decision (maintainer,
 2026-08-17) is to build back-to-back and verify ONCE at the end rather than gating each stage, so the
 whole species-registry arc plus `picking_ui/01–06` is sitting on code-review confidence.
 `ruff check .` is clean; `python -c "import main"` and `python check_boundaries.py` were green on
@@ -34,16 +39,16 @@ whole species-registry arc plus `picking_ui/01–06` is sitting on code-review c
 interpreter on the mounted path).
 
 **Not yet collected into any roadmap:** the Jobs tab peeves and the
-"don't touch this yet" items in `q_important_ui_fixes.md:60-66` (beam-induced-motion connected graph,
+"don't touch this yet" items in the maintainer's notes (beam-induced-motion connected graph,
 tomo-recon gallery with Journey links, landing-page data-identification jank, pre-populated per-TS
-task rows, logs-tab width + copy button). They land in `particles-ux-peeves.md` first. The Picks /
+task rows, logs-tab width + copy button). They land in `roadmap_particles-ux-peeves.md` first. The Picks /
 Curation peeves and the de-novo-picking-feel intake arrived 2026-08-21 and are homed in
 `picking_ui/08–12` (rows P-32…P-48).
 
-**05 is not from the audit.** 00–04 derive from `docs/architecture-assessment-2026-08-10.md`; 05 comes
+**05 is not from the audit.** 00–04 derive from `docs/reports/architecture-audit/architecture-assessment-2026-08-10.md`; 05 comes
 from a reproduced production failure in `/groups/klumpe/crboost_data/deadcode_test` (2026-08-11) and
 fixes a capability gap rather than a structural one. It shares an enum and a state-machine phase with
-`docs/task-status-state-machine-roadmap.md` — read that one first.
+`docs/roadmaps/roadmap_task-status-state-machine.md` — read that one first.
 
 Shared rules for all roadmaps:
 

@@ -9,11 +9,11 @@ frequency is visible. Fixed entries stay, marked FIXED with the commit, until no
 ## 1. Warp per-tilt CTF fits diverge on low-dose tilts (fsMotionAndCtf `fs_ctf`, tsCtf `ts_ctf`)
 
 **Status:** ROOT CAUSE FOUND 2026-09-08 (experiment `<project>/tutorial_sta/ctf_fit_test.sbatch`; full log and
-decision tree in `docs/copia-ctf-fit-investigation.md`): the frame-series fit band `c_range_min_max 30:6` is too greedy for
+decision tree in `docs/reports/copia/copia-ctf-fit-investigation.md`): the frame-series fit band `c_range_min_max 30:6` is too greedy for
 2 e/Å² tilts; `30:10` fits all 28 images at 5.10–5.53 µm. Protocol fixed; driver-side guard still open. The first
 workaround tried, a tight defocus window (`4.0:6.5`), made it WORSE: see below.
 **Seen:** `copia-empiar12580-20260906-1319` (17 of 28 tilts wrong), `copia-empiar12580-20260908-1407` (22 of 28);
-also in v1 with Warp `2.0.0dev31`: `/groups/klumpe/user/sven.klumpe/Processing/Copia/try2` (Position_11_2, 1.55 Å/px,
+also in v1 with Warp `2.0.0dev31`: `/groups/klumpe/user/<pi>/Processing/Copia/try2` (Position_11_2, 1.55 Å/px,
 3.2 e/Å² per tilt, same `30:6.0`/`1.1:8`): the 7 last-acquired tilts (|tilt| ≥ 27°) at 1.1–2.2 µm instead of ~5,
 carried unchanged into `ts_ctf`; only 7 of 39, so it still refined to 9.8 Å. Severity scales with per-tilt SNR.
 **Fix verified:** `copia-empiar12580-20260908-1447` (protocol with `30:10`): all 28 tilts 5.15–5.58 µm, CTF fit resolution
@@ -58,11 +58,11 @@ error flips the CTF phase beyond ~20 Å, and those tilts cancel signal in every 
 tomo CTF refinement cannot rescue it (search range ±3000–6000 Å, errors up to 40 000 Å). Everything from
 extraction on must be re-run once the fits are right.
 
-**What the code should do (open).** Scoped as `docs/roadmaps/18-ctf-fit-outlier-check.md` (2026-09-09): an
+**What the code should do (open).** Scoped as `docs/roadmaps/roadmap_19-ctf-fit-outlier-check.md` (2026-09-09): an
 independent 1D defocus estimate per tilt from Warp's own `PS1D` / `TiltPS1D`, with the scan window and band
 read from the same XML (no dataset numbers in the check), a `diverged | unverifiable | ok` verdict per tilt in
 the registry, Journey and job tabs, job failure when a quarter of the series diverged, and the hand verdict
-marked unreliable on diverged fits. Projects A / C / Sven's try2 are its regression test. Do not ship
+marked unreliable on diverged fits. Projects A / C / the PI's try2 are its regression test. Do not ship
 `1.1:8` / `30:6` as dataset-independent defaults.
 
 ---

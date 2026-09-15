@@ -33,7 +33,7 @@ Enumeration/staging semantics (census #38/#39, maintainer decision):
 Tolerant tally (census #41, deliberate): per-TS alignment failure is normal in
 cryo-ET — failed/missing TS are warned about and dropped from aggregation;
 only a total wipeout fails the job. The failed-TS-absent-downstream gap is
-owned by docs/roadmaps/05-per-ts-top-up.md.
+owned by docs/roadmaps/roadmap_05-per-ts-top-up.md.
 
 The mode dispatch, both bootstraps, manifest lookup, exclusions, tally and exit
 markers all live in ArrayDriver; this file is the alignment-specific hooks.

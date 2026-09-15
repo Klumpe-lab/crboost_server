@@ -27,71 +27,33 @@ cd crboost_server
 
 ## 2. Create Python Environment
 
-Create a dedicated Python environment for CryoBoost Server:
+Create the environment as a venv named `venv` **in the repository root**. The pipeline drivers that run
+inside SLURM jobs are launched with exactly `<repo>/venv/bin/python3`, so the venv must live there and
+must start on the compute nodes (repo on a shared filesystem, and the same Python modules loaded in
+`config/qsub.sh`):
 
 ```bash
-# Using conda (recommended)
-conda create -n crboost python=3.11 -y
-conda activate crboost
-
-# Or using venv
-python3 -m venv venv
-source venv/bin/activate
-
-pip install -r requirements.txt
+python3 -m venv venv          # python3 = a 3.11 interpreter that compute nodes can also run
+venv/bin/pip install -r requirements.txt
 ```
 
-It is not unlikely that your cluster's Python comes pre-bundled with a bunch of its own packages. Here, if version conflicts arise -- default to your cluster's modules. We will eventually serve conda configs that should circumvent this.
+It is not unlikely that your cluster's Python comes pre-bundled with a bunch of its own packages. Here, if version conflicts arise -- default to your cluster's modules.
 
 
 ## 3. Run Preflight Check
 
-CryoBoost includes a setup validation script that helps configure your installation and checks that everything is in place:
 ```bash
-python preflight.py
+venv/bin/python3 preflight.py
 ```
 
-The script will:
-- Create `config/conf.yaml` from the template (interactive prompts for paths)
-- Create `config/qsub.sh` from the template
-- Validate your Python environment and required modules
-- Check that container .sif files exist and are functional
-- Verify SLURM connectivity and partition names
-- Check directory permissions
+On the first run it creates `config/conf.yaml` and `config/qsub.sh` from their templates and stops so you can
+edit them. Every later run checks, without editing anything:
+- the Python version and that every package from `requirements.txt` imports
+- that `config/conf.yaml` loads, `DefaultProjectBase` is writable, and every `tools:` path exists
+- that `sbatch`/`squeue`/`sacct`/`sinfo` and `apptainer` are on PATH, and every configured partition exists
+- that `config/qsub.sh` still has its placeholders, exit-marker block and `exit $EXIT_CODE`
 
-Run it after cloning to set up your config files, then re-run after making changes to verify everything is correct:
-```
-$ python preflight.py
-CryoBoost Setup - /groups/group/software/crboost_server
-
-1. Configuration: config/conf.yaml
-  [OK] conf.yaml exists
-
-2. Python (conf.yaml -> crboost_python)
-  [OK] /path/to/venv/bin/python3
-  [OK] Version: Python 3.11.5
-  [OK] Modules: pydantic, yaml, nicegui
-
-3. Containers (conf.yaml -> containers)
-  [OK] relion: 10.3GB - RELION version: 5.0.1
-  [OK] warp_aretomo: 9.5GB - WarpTools
-  ...
-
-Summary
-  crboost_root: /groups/group/software/crboost_server
-  crboost_python: /path/to/venv/bin/python3
-  DefaultProjectBase: /groups/group/crboost_data
-
-  Containers:
-    relion: OK
-    warp_aretomo: OK
-    ...
-
-  Ready to go!
-  Start server: /path/to/venv/bin/python3 main.py
-```
-
-If anything is missing or misconfigured, the script will list what needs to be fixed.
+It exits non-zero and lists each failed check.
 
 
 ## 4. Configure Paths
@@ -143,18 +105,38 @@ example-g            up   infinite      7   idle [REDACTED]
 
 
 
-### Container Paths
-Update container paths to point to your Apptainer images:
+### Tools (containers)
+Every external tool has an entry under `tools:` — either an Apptainer image (`exec_mode: "container"` +
+`container_path`) or a native executable (`exec_mode: "binary"` + `bin_path`):
 
 ```yaml
 #config/conf.yaml
-containers:
-  warp_aretomo: /path/to/containers/warp_aretomo.sif
-  cryocare    : /path/to/containers/cryocare.sif
-  pytom       : /path/to/containers/pytom_match_pick.sif
-  relion      : /path/to/containers/relion5.0_tomo.sif
+tools:
+  warp_aretomo:
+    exec_mode: "container"
+    container_path: "/path/to/containers/warp_aretomo.sif"
+    bin_path: ""
+  relion:
+    exec_mode: "container"
+    container_path: "/path/to/containers/relion5.0_tomo.sif"
+    bin_path: ""
+  # ... likewise cryocare, isonet, pytom, imod, pymol, miss_alignment, cistem
 ```
-These containers are for Relion and other external tools that are used in the pipeline (Warp, AreTomo2, PyTOM, CryoCare). We will shortly provide a way to mix locally (or cluster-specific module-loaded) tools with containerized tools freely, but currently to circumvent compatibility issues everything is assumed to run in a container.
+
+| `tools:` key | used for | definition file in `container_defs/` |
+|---|---|---|
+| `warp_aretomo` | WarpTools motion/CTF, tilt-series alignment (AreTomo / IMOD patch), CTF, reconstruction | `warp_2.0.0dev36_aretomo1.0.0_cuda11.8_glibc2.31.def` |
+| `relion` | subtomogram extraction, particle reconstruction, Class3D, template/mask preparation | `relion5.0_tomo.def` |
+| `pytom` | template matching + candidate extraction | `pytom_match_pick_0.10.0.def` |
+| `cryocare` | cryoCARE denoising | `cryocare.def` |
+| `isonet` | IsoNet2 denoising (alternative to cryoCARE) | `isonet2.def` |
+| `imod` | IMOD utilities used by the pick viewer | `imod.def` |
+| `pymol` | template generation from a PDB/mmCIF model | `pymol.def` |
+| `miss_alignment` | learned tilt-series alignment refinement | `miss_alignment_torch2.8.0_cuda12.9.def` |
+| `cistem` | template simulation (`simulate`), native binary | — |
+
+The ChimeraX/ArtiaX curation image (`chimerax_artiax_GL.def`) is configured separately under `curation.sif_path`.
+The legacy top-level `containers:` map is still read, but `tools:` is the format to use.
 
 
 
@@ -167,7 +149,7 @@ The definition files are in `container_defs`. Your cluster must provide `apptain
 apptainer build --fakeroot --nv relion5.0_tomo.sif container_defs/relion5.0_tomo.def
 
 # Build CryoCARE container
-apptainer build fakeroot --nv cryocare.sif container_defs/cryocare.def
+apptainer build --fakeroot --nv cryocare.sif container_defs/cryocare.def
 
 # Build Warp+AreTomo container
 apptainer build --fakeroot --nv warp_aretomo.sif container_defs/warp_2.0.0dev36_aretomo1.0.0_cuda11.8_glibc2.31.def
@@ -175,60 +157,27 @@ apptainer build --fakeroot --nv warp_aretomo.sif container_defs/warp_2.0.0dev36_
 
 ## 6. Update SLURM Template
 
-TLDR: if you have a Relion/Warp slurm script that already works for you -- adapt that as a basis. Set `ENV PATHS`, delete `SLURM HEADER` section. If your modules don't load -- contact us.
+`config/qsub.sh` is the one SLURM script every job CryoBoost queues is built from; `preflight.py` creates it
+from `config/qsub.template.sh`. Per-job resources come from the UI through the RELION-style placeholders
+(`XXXextra1XXX` … `XXXextra8XXX` = partition, constraint, nodes, ntasks-per-node, cpus-per-task, gres, mem,
+time), so you only define the cluster environment once:
 
+- **SLURM HEADER** — the module loads (or equivalent) that make `<repo>/venv/bin/python3` start on a compute
+  node and put `apptainer` on PATH. Our own Lmod lines are in the template as a commented example.
+- **Optional** — `#SBATCH --account` / `--qos` / `--exclude` lines your cluster needs.
+- **Leave untouched** — every `XXX…XXX` placeholder, the `RELION_JOB_EXIT_*` marker block (matched verbatim
+  by `drivers/array_job_base.py`), and the final `exit $EXIT_CODE` (job dependencies chain on it).
+  `preflight.py` checks all three.
 
-`qsub.sh` is the template slurm script that is shared between all jobs CryoBoost queues on your cluster. You need to define it once per cluster environment -- job parameters will configurable in the UI (via relion template vars ex. `XXXextra1XXX`).
-
-`ENV PATHS`: particular environment paths to your CryoboostServer installation and the python environment in which it runs (on the _headnode_). **YOU MUST SET THESE**.
-
-
-
-```bash
-#!/bin/bash
-#SBATCH --job-name=CryoBoost
-#SBATCH --partition=XXXextra1XXX
-#SBATCH --constraint="XXXextra2XXX"
-#SBATCH --nodes=XXXextra3XXX
-#SBATCH --ntasks-per-node=XXXextra4XXX
-#SBATCH --cpus-per-task=XXXextra5XXX
-#SBATCH --gres=XXXextra6XXX
-#SBATCH --mem=XXXextra7XXX
-#SBATCH --time=XXXextra8XXX
-#SBATCH --output=XXXoutfileXXX
-#SBATCH --error=XXXerrfileXXX
-
-# ------------ SLURM HEADER  -----------
-export MODULEPATH=/software/system/REDACTED
-. /opt/ohpc/REDACTED/init/bash
-
-module load build-env/f2022
-module load miniconda3/24.7.1-0
-module load python/3.11.5-gcccore-13.2.0 
-module load gcccore/13.2.0 
-module load arrow/16.1.0-gfbf-2023b
-which python3
-python3 --version
-# ------------ ------------  -----------
-
-
-# ------------ ENV PATHS  --------------
-export CRBOOST_SERVER_DIR="/users/cryoboost_user/dev/crboost_server/"
-export CRBOOST_PYTHON="/users/cryoboost_user/dev/crboost_server/venv/bin/python3"
-export PYTHONPATH="${CRBOOST_SERVER_DIR}:${PYTHONPATH}"
-# ------------ ---------  --------------
-```
+If you have a RELION/Warp SLURM script that already works on your cluster, its module lines are the right
+starting point for the SLURM HEADER.
 
 ## 7. Start the Server
 
 Launch CryoBoost Server:
 
 ```bash
-# Activate environment first
-conda activate crboost  # or: source venv/bin/activate
-
-# Start the server
-python main.py --port 8081 --host 0.0.0.0
+venv/bin/python3 main.py --port 8081 --host 0.0.0.0
 ```
 
 The server will display access URLs:
@@ -282,18 +231,6 @@ Your Laptop          SSH Tunnel               Head Node
 │ localhost:  │     │       ↓         │     │ CryoBoost    │
 │   8080      │     │ SSH Connection  │     │ Server       │ 
 └─────────────┘     └─────────────────┘     └──────────────┘
-```
-
-## Troubleshooting
-
-### Environment Variables
-
-You can use environment variables in `conf.yaml` for dynamic paths:
-
-```yaml
-local:
-  DefaultProjectBase: "${HOME}/crboost_projects"
-  DefaultMoviesGlob : "${DATA_DIR}/movies/*.eer"
 ```
 
 ## Notes

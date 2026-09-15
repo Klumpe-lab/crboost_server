@@ -273,7 +273,7 @@ def resolve_canonical_optset(subtomo_job_dir: Path) -> Path:
     """The optimisation_set a downstream consumer should read: the curated
     `_filtered` one if it exists, else the original. Single definition of
     "which star is canonical", shared by the IO-slot resolver's intent and by
-    cross-project aggregation (PICKS_FILTER_AGGREGATION_ROADMAP.md §factor out)."""
+    cross-project aggregation (docs/roadmaps/completed/roadmap_picks-filter-aggregation.md §factor out)."""
     filtered = subtomo_job_dir / OPTIMISATION_SET_FILTERED_NAME
     if filtered.exists():
         return filtered
@@ -398,7 +398,7 @@ def discard_ts_filter(subtomo_job_dir: Path, ts_name: str) -> str:
 # was removed 2026-05-21 — it mis-targeted every species at one subtomo job.
 # The gallery now passes the species-matched subtomo_job_dir directly (resolved
 # via _matching_subtomo_instance in the dashboard). See
-# PICKS_FILTER_AGGREGATION_ROADMAP.md.
+# docs/roadmaps/completed/roadmap_picks-filter-aggregation.md.
 
 
 # ── List-parametric filtering (manual / imported / merged workbench lists) ────

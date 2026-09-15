@@ -610,7 +610,7 @@ class PipelineOrchestratorService:
     def _write_import_stars_inline(self, job_model: ImportMoviesParams, job_dir: Path, project_dir: Path) -> None:
         """Write ``Import/jobNNN/tilt_series.star`` + per-TS ``tilt_series/<TS>.star`` from the
         TiltSeriesRegistry, reproducing what relion_python_tomo_import would emit (Option B; see
-        ORCHESTRATOR_REPLACEMENT_PLAN.md §6a). Runs inline in the server process -- pure metadata,
+        docs/roadmaps/roadmap_orchestrator-replacement.md §6a). Runs inline in the server process -- pure metadata,
         no relion binary, no container, no SLURM job. Columns mirror a known-good schemer-produced
         import (the ``post_handedness_fix`` oracle): an 8-col global block + a 6-col per-TS block,
         per-tilt rows in acquisition (tilt_index) order.

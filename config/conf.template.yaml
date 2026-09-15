@@ -10,8 +10,8 @@ crboost_python: "/path/to/crboost_server/venv"
 
 # DEV TOGGLE (temporary): true => every project uses the afterok orchestrator (schemer-free
 # submit + inline import) instead of relion_schemer, without per-project project_params.json
-# edits. A per-project `use_afterok_orchestrator: true` still wins on its own. Default false.
-use_afterok_orchestrator: false
+# edits. A per-project `use_afterok_orchestrator: true` still wins on its own. Code default: false.
+use_afterok_orchestrator: true
 
 local:
   # Default directory where new projects will be created
@@ -211,7 +211,7 @@ tools:
   cistem:
     exec_mode: "binary"
     container_path: ""
-    bin_path: "/groups/klumpe/software/cisTEM/bin/simulate"
+    bin_path: "/path/to/cisTEM/bin/simulate"   # something like /groups/<name_of_group>/software/cisTEM/bin/simulate
   pymol:
     exec_mode: "container"
     container_path: "/path/to/pymol.sif"
