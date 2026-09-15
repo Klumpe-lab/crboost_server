@@ -127,10 +127,17 @@ async def apply_protocol(
     mdocs_glob: str,
     gain_reference_path: str | None = None,
     shared: bool = False,
+    dose_per_tilt: float | None = None,
+    dose_per_tilt_source: str = "",
 ) -> dict[str, Any]:
     """Create `<project_base_path>/<project_name>` from `protocol`. `ok(project_path=,
     stages=[instance ids], warnings=[...], load_warnings=[...])` or `err(...)` (validation
-    problems in `problems`, project-creation errors verbatim)."""
+    problems in `problems`, project-creation errors verbatim).
+
+    `dose_per_tilt` (+ its source, "user" when typed) overrides the mdocs' value. When the
+    mdocs carry no dose and none is passed, project creation uses the scan's estimate and
+    records it as "estimated"; it refuses only when no estimate is possible either
+    (roadmap 18 D4 — a protocol never runs on a silent 3.0)."""
     problems = validate_protocol(protocol)
     if problems:
         return err("Protocol cannot be applied:\n  - " + "\n  - ".join(problems), problems=problems)
@@ -143,21 +150,29 @@ async def apply_protocol(
     for src, dst in (
         ("pixel_spacing", "pixel_size_angstrom"),
         ("voltage", "acceleration_voltage_kv"),
-        ("dose_per_tilt", "dose_per_tilt"),
         ("tilt_axis_angle", "tilt_axis_degrees"),
+        ("acquisition_software", "acquisition_software"),
+        ("detector_dimensions", "detector_dimensions"),
     ):
         if facts.get(src) is not None:
             detected[dst] = facts[src]
+    if dose_per_tilt is not None:
+        detected["dose_per_tilt"] = dose_per_tilt
+        detected["dose_per_tilt_source"] = dose_per_tilt_source or "user"
+    elif facts.get("dose_per_tilt") is not None:
+        detected["dose_per_tilt"] = facts["dose_per_tilt"]
+        detected["dose_per_tilt_source"] = "mdoc"
     if gain_reference_path:
         detected["gain_reference_path"] = str(gain_reference_path)
     mdoc_files = sorted(glob.glob(mdocs_glob))
+    # frame_extension is NOT guessed from the movies glob: the import records what it
+    # actually linked or split (`.mrc` for SerialEM stacks).
     import_summary = {
         "total_positions": len(mdoc_files),
         "selected_positions": len(mdoc_files),
         "total_tilt_series": len(mdoc_files),
         "selected_tilt_series": len(mdoc_files),
         "source_directory": str(Path(movies_glob).parent),
-        "frame_extension": Path(movies_glob).suffix,
     }
 
     created = await backend.create_project_and_scheme(
@@ -177,6 +192,7 @@ async def apply_protocol(
 
     assets, warnings = register_protocol_species(state, protocol, project_dir)
     warnings += instantiate_stages(state, protocol, assets)
+    warnings += long_tilt_series_name_warnings(project_name, mdoc_files)
     state.pipeline_order = protocol.stage_ids()
     state.protocol_origin = ProtocolOrigin(
         name=protocol.name,
@@ -199,6 +215,23 @@ async def apply_protocol(
         warnings=warnings,
         load_warnings=list(state.load_warnings),
     )
+
+
+# Longest tilt-series basename (`<project dirname>_<mdoc stem>`) known to survive AreTomo 1.0's IMOD output
+# writer; at 51 it mangled the `.tlt` name, Warp dropped the series, and the pipeline ran on nominal tilt
+# angles (docs/known_bugs.md #3). The exact limit is not known.
+ARETOMO_TS_NAME_MAX_KNOWN_GOOD = 42
+
+
+def long_tilt_series_name_warnings(project_name: str, mdoc_files: list[str]) -> list[str]:
+    longest = max((f"{project_name}_{Path(m).stem}" for m in mdoc_files), key=len, default="")
+    if len(longest) <= ARETOMO_TS_NAME_MAX_KNOWN_GOOD:
+        return []
+    return [
+        f"tilt-series names reach {len(longest)} characters ('{longest}'); AreTomo's IMOD output broke at 51 "
+        f"and {ARETOMO_TS_NAME_MAX_KNOWN_GOOD} is the longest known to work — the alignment job will refuse such "
+        f"series (docs/known_bugs.md #3). Use a shorter project name."
+    ]
 
 
 def register_protocol_species(

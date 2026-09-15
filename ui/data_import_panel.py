@@ -50,6 +50,7 @@ CLR_ACCENT_TEXT = "#1e40af"
 CLR_META = "#64748b"  # slate-500 -- readable metadata
 CLR_SUCCESS = "#0d9488"  # teal-600: academic, not shouty green
 CLR_ERROR = "#be4343"  # muted red, not aggressive
+CLR_WARN = "#d97706"  # amber-600: an estimate standing in for a fact
 CLR_RUNNING = "#3b82f6"  # blue-500: active pipeline badge
 
 # Shown on both raw-data fields while they are BOTH empty — the data-less project
@@ -87,6 +88,9 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         "parse_progress_timer": None,
         "raw_data_section": None,  # whole frames+mdocs+overview block
         "gain_input": None,  # optional project-wide gain-reference path input
+        "dose_row": None,  # dose-per-tilt row, shown only when the mdocs record no dose
+        "dose_input": None,
+        "dose_hint": None,
         "scan_button": None,
         "committed_base_path": None,  # last base path a roster scan ran for
         "client": ui.context.client,  # detached tasks check this before touching the DOM
@@ -189,6 +193,11 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             is_valid, _count, msg = await _validate_glob_full(pattern)
             if ui_mgr.data_import.movies_glob != pattern:
                 return  # pattern changed while we were checking
+            # Once a scan has spoken, the frames field stops gating on its own glob:
+            # SerialEM stacks live one folder down and only become frames at Create.
+            verdict = _overview_frames_verdict()
+            if verdict is not None:
+                is_valid, msg = verdict
             ui_mgr.update_data_import(movies_valid=is_valid)
             if ui_mgr.panel_refs.movies_input:
                 update_input_validation(ui_mgr.panel_refs.movies_input, is_valid, msg)
@@ -196,6 +205,29 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             update_create_button_state()
 
         _glob_tasks["movies"] = asyncio.create_task(_finish())
+
+    def _current_overview():
+        """The parsed overview, but only while it belongs to the mdocs glob in the form."""
+        ov = local_refs.get("current_dataset_overview")
+        if ov is None or local_refs.get("overview_glob") != ui_mgr.data_import.mdocs_glob:
+            return None
+        return ov
+
+    def _overview_frames_verdict() -> tuple[bool, str] | None:
+        """(valid, hint) for the frames field from the scan: what Create will actually
+        import — `156 .mrc frames on create (4 stacks)` / `164 .eer frames` — or the
+        series that resolved nowhere. None when no scan matches the form."""
+        ov = _current_overview()
+        if ov is None or not ov.positions:
+            return None
+        unresolved = ov.unresolved_selected
+        if unresolved:
+            return False, f"{unresolved} selected tilt-series have neither movies nor a stack on disk"
+        kinds = ov.source_kinds()
+        ext = ov.frame_extension or "?"
+        if kinds.get("stack"):
+            return True, f"{ov.selected_frames} {ext} frames on create ({kinds['stack']} stacks)"
+        return True, f"{ov.selected_frames} {ext} frames"
 
     def update_mdocs_validation():
         pattern = ui_mgr.data_import.mdocs_glob
@@ -225,13 +257,29 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             is_valid, count, msg = await _validate_glob_full(pattern)
             if ui_mgr.data_import.mdocs_glob != pattern:
                 return
+            # Co-located mdocs are derived from the data folder; a SerialEM delivery keeps
+            # one folder per series, so when the derived depth matches nothing, try the
+            # other depth and adopt it through the (hidden) mdocs input's extension —
+            # state, prefs and the input then move together via on_mdocs_change.
+            if not is_valid and not local_refs["mdocs_separate"] and ui_mgr.panel_refs.mdocs_input:
+                ext = ui_mgr.panel_refs.mdocs_input.extension
+                other = f"*/{ext}" if not ext.startswith("*/") else ext[len("*/") :]
+                other_ok, _n, _m = await _validate_glob_full(
+                    str(Path(pattern).parents[1 if ext.startswith("*/") else 0] / other)
+                )
+                if ui_mgr.data_import.mdocs_glob != pattern:
+                    return
+                if other_ok:
+                    ui_mgr.panel_refs.mdocs_input.set_extension(other)  # re-enters via on_mdocs_change
+                    return
             ui_mgr.update_data_import(mdocs_valid=is_valid)
             if ui_mgr.panel_refs.mdocs_input:
                 update_input_validation(ui_mgr.panel_refs.mdocs_input, is_valid, msg)
             _set_hint(ui_mgr.panel_refs.mdocs_hint_label, msg, CLR_SUCCESS if is_valid else CLR_ERROR)
             update_create_button_state()
             if is_valid:
-                _render_scan_affordance(f"{count} mdocs found", CLR_SUCCESS, can_scan=True)
+                where = " in subfolders" if "/*/" in pattern else ""
+                _render_scan_affordance(f"{count} mdocs found{where}", CLR_SUCCESS, can_scan=True)
             else:
                 _render_scan_affordance(f"mdocs: {msg}", CLR_ERROR, can_scan=False)
 
@@ -272,15 +320,25 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         if is_dataless():
             return missing
         # A half-filled form is a mistake, not a data-less project — ask for the rest.
+        verdict = _overview_frames_verdict()
+        frames_ok = di.movies_valid or (verdict is not None and verdict[0])
         if not di.movies_glob:
             missing.append("Data Path")
-        elif not di.movies_valid:
+        elif not frames_ok:
             missing.append("Valid Frames")
         if not di.mdocs_glob:
             missing.append("Mdocs Pattern")
         elif not di.mdocs_valid:
             missing.append("Valid Mdocs")
+        # The dose row is only in play when the mdocs record no dose; then it must hold a
+        # number (the estimate prefills it, the user may clear it — never a silent 3.0).
+        if _dose_row_needed() and di.dose_per_tilt_override is None:
+            missing.append("Dose per tilt")
         return missing
+
+    def _dose_row_needed() -> bool:
+        ov = _current_overview()
+        return ov is not None and ov.selected_acquisition_summary().dose_missing > 0
 
     # Form behaviour: Create is always clickable; a click with gaps reddens the
     # gap fields (like any form) instead of listing them in a status line. A
@@ -292,10 +350,14 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         "Valid Frames": "movies_input",
         "Mdocs Pattern": "mdocs_input",
         "Valid Mdocs": "mdocs_input",
+        "Dose per tilt": "dose_input",
     }
 
     def _field_el(req: str):
-        return getattr(ui_mgr.panel_refs, _FIELD_FOR_REQUIREMENT[req], None)
+        name = _FIELD_FOR_REQUIREMENT[req]
+        if name == "dose_input":
+            return local_refs.get("dose_input")
+        return getattr(ui_mgr.panel_refs, name, None)
 
     def _mark_missing(missing: list[str]):
         for req in missing:
@@ -650,14 +712,29 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                 detected_params["pixel_size_angstrom"] = sel_summary.pixel_sizes[0]
             if sel_summary.voltages:
                 detected_params["acceleration_voltage_kv"] = sel_summary.voltages[0]
-            if sel_summary.doses:
+            # Dose with its provenance (roadmap 18 D4): the mdoc's value, else the row —
+            # the scan's estimate or the user's number. Never the model default.
+            if sel_summary.dose_missing > 0:
+                if di.dose_per_tilt_override is not None:
+                    detected_params["dose_per_tilt"] = di.dose_per_tilt_override
+                    detected_params["dose_per_tilt_source"] = di.dose_per_tilt_source or "estimated"
+            elif sel_summary.doses:
                 detected_params["dose_per_tilt"] = sel_summary.doses[0]
+                detected_params["dose_per_tilt_source"] = "mdoc"
             if sel_summary.tilt_axes:
                 detected_params["tilt_axis_degrees"] = sel_summary.tilt_axes[0]
+            if overview.acquisition_software:
+                detected_params["acquisition_software"] = overview.acquisition_software
+            if overview.detector_dimensions:
+                detected_params["detector_dimensions"] = overview.detector_dimensions
             if di.gain_reference_path:
                 detected_params["gain_reference_path"] = di.gain_reference_path
 
-        # Show progress overlay in the dataset overview area
+        # Show progress overlay in the dataset overview area. The import thread reports
+        # short status strings ("splitting stack 2/4") into a plain dict; a ui.timer
+        # repaints the label on the UI thread (same pattern as the scan's progress bar).
+        create_progress = {"text": ""}
+        progress_timer = None
         progress_container = local_refs.get("dataset_overview_container")
         if progress_container:
             progress_container.clear()
@@ -667,6 +744,13 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                     ui.label("Creating project — importing data and initializing...").style(
                         f"{FONT} font-size: {SZ_BODY}; color: {CLR_LABEL}; margin-left: 8px;"
                     )
+                    create_step_lbl = ui.label("").style(
+                        f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; margin-left: 8px;"
+                    )
+                progress_timer = ui.timer(0.5, lambda: create_step_lbl.set_text(create_progress["text"]))
+
+        def _on_create_progress(text: str):
+            create_progress["text"] = text
 
         if btn:
             btn.props("loading")
@@ -683,6 +767,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                 import_summary=import_summary,
                 detected_params=detected_params,
                 shared=di.is_shared,
+                progress_cb=_on_create_progress,
             )
             if result.get("success"):
                 project_path = Path(result["project_path"])
@@ -723,6 +808,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                 pass  # slot already deleted (e.g. page navigated away)
         finally:
             try:
+                if progress_timer is not None:
+                    progress_timer.cancel()
                 if btn:
                     btn.props(remove="loading")
                 update_locking_state()
@@ -905,6 +992,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             if local_refs["overview_glob"] == ui_mgr.data_import.mdocs_glob:
                 return
             local_refs["current_dataset_overview"] = None
+            _refresh_dose_row()  # the dose question belonged to the dropped overview
         local_refs["parse_gen"] += 1  # any in-flight scan is for an old glob
         _stop_parse_timer()
         container.clear()
@@ -923,6 +1011,59 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         if timer is not None:
             timer.cancel()
             local_refs["parse_progress_timer"] = None
+
+    def _refresh_dose_row():
+        """Show the dose row iff the current overview's selection has series without a
+        dose in the mdoc; prefill it with the estimate the first time (roadmap 18 D4)."""
+        row, inp, hint = local_refs["dose_row"], local_refs["dose_input"], local_refs["dose_hint"]
+        if row is None or inp is None:
+            return
+        ov = _current_overview()
+        needed = ov is not None and ov.selected_acquisition_summary().dose_missing > 0
+        row.set_visibility(needed)
+        di = ui_mgr.data_import
+        if not needed:
+            if di.dose_per_tilt_source != "user":
+                di.dose_per_tilt_override, di.dose_per_tilt_source = None, ""
+            return
+        if di.dose_per_tilt_source != "user":
+            est = ov.dose_estimate()
+            inp.value = f"{est:.2f}" if est is not None else ""  # fires on_dose_change ("user") —
+            di.dose_per_tilt_override, di.dose_per_tilt_source = est, ("estimated" if est else "")  # — overridden here
+        detail = ov.dose_estimate_detail()
+        if di.dose_per_tilt_source == "user":
+            _set_hint(hint, f"your value; the scan estimated {ov.dose_estimate()} ({detail})", CLR_SUBLABEL)
+        elif detail:
+            _set_hint(
+                hint,
+                f"estimated from DoseRate×ExposureTime/px² with a zero-thickness fit — {detail}; "
+                "the acquirer's number replaces it",
+                CLR_WARN,
+            )
+        else:
+            _set_hint(hint, "not in the mdocs and no estimate possible — enter it", CLR_ERROR)
+
+    def on_dose_change(e):
+        raw = (e.value if hasattr(e, "value") else str(e or "")).strip()
+        try:
+            value = float(raw) if raw else None
+        except ValueError:
+            value = None
+        di = ui_mgr.data_import
+        di.dose_per_tilt_override, di.dose_per_tilt_source = value, "user"
+        update_create_button_state()
+
+    def _apply_overview_to_fields(overview):
+        """What the scan concluded, written back into the form: the frames extension
+        follows the chosen layer (`.mrc` for stacks), the dose row appears when the
+        mdocs record none. Both happen through the normal change handlers."""
+        ext = overview.frame_extension
+        movies_input = ui_mgr.panel_refs.movies_input
+        if ext and movies_input and movies_input.extension != f"*{ext}":
+            movies_input.set_extension(f"*{ext}")  # re-enters on_movies_change → validation
+        else:
+            update_movies_validation()
+        _refresh_dose_row()
 
     def on_data_commit(_glob: str):
         """Enter / picker / recent entry on a data field: the user chose a
@@ -1037,7 +1178,12 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
 
                     house_button("Save selection", _do_save_selection)
 
-                build_dataset_overview_panel(overview, on_change=update_create_button_state)
+                def _on_selection_change():
+                    _refresh_dose_row()
+                    update_create_button_state()
+
+                build_dataset_overview_panel(overview, on_change=_on_selection_change)
+            _apply_overview_to_fields(overview)
         except Exception as e:
             logger.exception("Dataset parsing failed for %s", mdocs_glob)
             if gen != local_refs["parse_gen"]:
@@ -1180,12 +1326,12 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                     with ui.column().classes("w-full gap-0"):
                         with ui.row().classes("w-full items-center justify-between"):
                             with ui.row().classes("items-center gap-1"):
-                                ui.label("Raw Frames & SerialEM Mdocs").style(field_label_style)
+                                ui.label("Raw frames / tilt stacks & mdocs").style(field_label_style)
                                 with ui.icon("help_outline", size="11px").style(f"color: {CLR_GHOST}; cursor: help;"):
                                     ui.tooltip(
-                                        "Directory containing your primary data "
-                                        "(frame files and .mdoc metadata). "
-                                        "These files will never be modified."
+                                        "Directory containing your primary data: frame files (.eer/.tif) with "
+                                        "their .mdoc metadata, or SerialEM tilt stacks (.mrc + .mrc.mdoc), flat "
+                                        "or one folder per series. These files will never be modified."
                                     ).style(f"{FONT} font-size: {SZ_META};")
 
                             def toggle_mdocs_separate(e):
@@ -1230,6 +1376,34 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                                 f"{FONT} font-size: {SZ_META}; color: {CLR_SUBLABEL}; padding-left: 2px;"
                             )
                         ui_mgr.panel_refs.movies_hint_label = movies_hint
+
+                    # Dose per tilt — only when the scanned mdocs record none (SerialEM
+                    # without dose calibration). Prefilled with the scan's estimate and
+                    # said to be one; the user's number wins (roadmap 18 D4).
+                    dose_row = ui.column().classes("w-full gap-0").style("margin-top: 2px;")
+                    dose_row.set_visibility(False)
+                    local_refs["dose_row"] = dose_row
+                    with dose_row:
+                        with ui.row().classes("items-center gap-1"):
+                            ui.label("Dose per tilt").style(field_label_style)
+                            with ui.icon("help_outline", size="11px").style(f"color: {CLR_GHOST}; cursor: help;"):
+                                ui.tooltip(
+                                    "The mdocs carry no ExposureDose. This value is estimated from the per-tilt "
+                                    "DoseRate × ExposureTime / pixel² (transmitted) extrapolated to zero lamella "
+                                    "thickness (incident). Overwrite it with the acquirer's number when you have it."
+                                ).style(f"{FONT} font-size: {SZ_META};")
+                            ui.label("e⁻/Å² · estimated").style(f"{FONT} font-size: {SZ_META}; color: {CLR_WARN};")
+                        with ui.row().classes("w-full items-center gap-1"):
+                            dose_input = (
+                                ui.input(value="", placeholder="e⁻/Å² per tilt", on_change=on_dose_change)
+                                .props("dense borderless hide-bottom-space")
+                                .style(
+                                    f"{MONO} font-size: {SZ_BODY}; width: 90px; border-bottom: 1px solid {CLR_GHOST};"
+                                )
+                            )
+                            local_refs["dose_input"] = dose_input
+                            dose_hint = ui.label("").style(f"{FONT} font-size: {SZ_META}; color: {CLR_SUBLABEL};")
+                            local_refs["dose_hint"] = dose_hint
 
                     # Separate mdocs input (hidden by default)
                     mdocs_separate_container = ui.column().classes("w-full gap-0")

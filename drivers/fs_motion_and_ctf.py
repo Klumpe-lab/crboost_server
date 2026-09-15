@@ -111,8 +111,11 @@ def build_warp_commands(params: FsMotionCtfParams, frames_rel: str, extension: s
         .opt("--folder_processing", "warp_frameseries")
         .opt("--output", "warp_frameseries.settings")
         .opt("--angpix", params.pixel_size)
-        .opt("--eer_ngroups", f"-{params.eer_ngroups}")
     )
+    # EER fractions only mean something for EER input; .tif movies and single-frame .mrc
+    # (split SerialEM stacks) get no grouping option at all (legacy CryoBoost gated the same).
+    if extension.lower().endswith(".eer"):
+        create_settings.opt("--eer_ngroups", f"-{params.eer_ngroups}")
     add_gain_options(create_settings, params.gain_path, params.gain_operations)
 
     run_main = (
@@ -150,13 +153,10 @@ def build_warp_commands(params: FsMotionCtfParams, frames_rel: str, extension: s
     settings_gate = (
         "test -f warp_frameseries.settings || "
         "{ echo 'ERROR: WarpTools create_settings produced no warp_frameseries.settings "
-        "(it exits 0 on unknown options — check its output above for \"Option ... is unknown\")' >&2; "
+        '(it exits 0 on unknown options — check its output above for "Option ... is unknown")\' >&2; '
         "exit 1; }"
     )
-    return (
-        f"test -f warp_frameseries.settings || ({create_settings.render()}); "
-        f"{settings_gate}; {run_main.render()}"
-    )
+    return f"test -f warp_frameseries.settings || ({create_settings.render()}); {settings_gate}; {run_main.render()}"
 
 
 def detect_frame_extension(frames_dir: Path) -> str:

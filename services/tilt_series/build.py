@@ -33,9 +33,7 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def build_from_dataset_overview(
-    overview: DatasetOverview, *, project_prefix: str = ""
-) -> list[TiltSeries]:
+def build_from_dataset_overview(overview: DatasetOverview, *, project_prefix: str = "") -> list[TiltSeries]:
     """Construct TS entities from an already-parsed DatasetOverview.
 
     `project_prefix` is prepended to TS labels to match how WarpTools names the
@@ -99,12 +97,19 @@ def _build_one_ts(ts_info: TiltSeriesInfo, *, project_prefix: str) -> TiltSeries
         )
         cumulative += dose_per_tilt
 
+    # Names without the Position suffix (SerialEM) carry no stage/beam — the registry's
+    # cosmetic fields take the same (0, 1) that build_from_mdocs assigns them.
+    if ts_info.stage_position is None:
+        stage_position, beam_position = infer_position(ts_label)
+    else:
+        stage_position, beam_position = ts_info.stage_position, ts_info.beam_position or 1
+
     return TiltSeries(
         id=ts_id,
         mdoc_path=ts_info.mdoc_path,
         mdoc_filename=ts_info.mdoc_filename,
-        stage_position=ts_info.stage_position,
-        beam_position=ts_info.beam_position,
+        stage_position=stage_position,
+        beam_position=beam_position,
         frames=frames,
         is_selected=ts_info.selected,
     )
@@ -120,12 +125,17 @@ def build_from_mdocs(
     *,
     frames_dir: Path | None = None,
     project_prefix: str = "",
+    dose_per_tilt_fallback: float | None = None,
 ) -> list[TiltSeries]:
     """Parse mdocs directly when no DatasetOverview is available.
 
     `frames_dir` is optional; if provided, each frame's `raw_path` is resolved
     to an absolute path within it. Otherwise `raw_path` is left as the bare
     filename from the mdoc's `SubFramePath`.
+
+    `dose_per_tilt_fallback` (the project's dose, estimated or user-supplied) drives
+    the accumulated pre-exposure when the mdoc's `ExposureDose` is absent or 0
+    (SerialEM without dose calibration); otherwise pre-exposure would accumulate 0.
     """
     from services.configs.mdoc_service import get_mdoc_service
 
@@ -157,7 +167,7 @@ def build_from_mdocs(
 
         cumulative = 0.0
         frames: list[Frame] = []
-        dose_per_tilt = _coerce_float(sorted_sections[0].get("ExposureDose")) or 0.0
+        dose_per_tilt = _coerce_float(sorted_sections[0].get("ExposureDose")) or dose_per_tilt_fallback or 0.0
 
         for i, sec in enumerate(sorted_sections):
             subframe_path = sec.get("SubFramePath", "").replace("\\", "/")

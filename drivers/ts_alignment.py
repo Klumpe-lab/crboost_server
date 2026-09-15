@@ -41,6 +41,7 @@ markers all live in ArrayDriver; this file is the alignment-specific hooks.
 
 import shutil
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 server_dir = Path(__file__).parent.parent
@@ -133,11 +134,27 @@ def has_alignment_output(warp_dir: Path, ts_name: str, method: AlignmentMethod) 
     tiltstack = warp_dir / "tiltstack" / ts_name
     if not tiltstack.is_dir():
         return False
+    if warp_marked_unselected(warp_dir / f"{ts_name}.xml"):
+        return False
     if method == AlignmentMethod.ARETOMO:
         return any(tiltstack.glob("*.st.aln"))
     if method == AlignmentMethod.IMOD:
         return any(tiltstack.glob("*.xf")) and any(tiltstack.glob("*.tlt"))
     return False
+
+
+def warp_marked_unselected(xml_path: Path) -> bool:
+    """Warp's own failure verdict: `ts_aretomo` sets `UnselectManual="True"` on the
+    tilt-series XML when it could not import the alignment ("Failed to process ...,
+    marked as unselected"), and every later WarpTools step skips that series.
+
+    The `.st.aln` can exist while this is set: AreTomo 1.0 wrote its IMOD `.tlt` under
+    a mangled name for a 51-character tilt-series basename, Warp did not find it, and
+    the series went on with nominal tilt angles (docs/known_bugs.md #3).
+    """
+    if not xml_path.exists():
+        return False
+    return ET.parse(xml_path).getroot().get("UnselectManual", "").lower() == "true"
 
 
 class TsAlignmentDriver(ArrayDriver):
@@ -323,6 +340,13 @@ class TsAlignmentDriver(ArrayDriver):
         staged_xml = staged_warp / f"{item}.xml"
         if not staged_xml.exists():
             raise FileNotFoundError(f"Alignment produced no XML for {item} (expected {staged_xml})")
+        if warp_marked_unselected(staged_xml):
+            raise RuntimeError(
+                f"WarpTools marked {item} unselected: it could not import the alignment "
+                f"(see 'Failed to process ... Exception details' in the container output above). "
+                f"With a {len(item)}-character tilt-series name this is usually AreTomo's IMOD "
+                f"output writer mangling the .tlt name (docs/known_bugs.md #3)."
+            )
         if not has_alignment_output(staged_warp, item, ctx.params.alignment_method):
             raise RuntimeError(
                 f"No alignment output for {item}: WarpTools produced no .st.aln/.xf in "

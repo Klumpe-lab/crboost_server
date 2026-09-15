@@ -230,8 +230,15 @@ def _build_acquisition_summary_bar(s, overview, row_registry):
         with ui.row().classes("w-full items-center gap-4 flex-wrap"):
             _param_chip("Pixel", s.pixel_sizes, "\u212b", ".3f", "pixel_size")
             _param_chip("Voltage", s.voltages, "kV", ".0f", "voltage")
-            _param_chip("Dose/tilt", s.doses, "e\u207b/\u212b\u00b2", ".1f", "dose_per_tilt")
+            if s.dose_missing > 0:
+                _estimated_dose_chip(overview)
+            else:
+                _param_chip("Dose/tilt", s.doses, "e\u207b/\u212b\u00b2", ".1f", "dose_per_tilt")
             _param_chip("Tilt axis", s.tilt_axes, "\u00b0", ".1f", "tilt_axis")
+
+        source_line = overview.source_line()
+        if source_line:
+            ui.label(source_line).style(f"{FONT} font-size: 9px; color: {CLR_SUBLABEL}; margin-top: 2px;")
 
         warnings = s.param_warnings()
         if warnings:
@@ -326,6 +333,29 @@ def _param_chip(label, values, unit, fmt=".2f", category=None):
             ui.label(unit).style(f"{FONT} font-size: 8px; color: {CLR_SUBLABEL};")
 
 
+def _estimated_dose_chip(overview: DatasetOverview) -> None:
+    """The dose chip when the mdocs record none: the scan's estimate in the amber
+    dose colour, marked as such, the fit behind it in the tooltip (roadmap 18 D4)."""
+    amber = CATEGORY_COLORS["dose_per_tilt"][0]
+    est = overview.dose_estimate()
+    with ui.row().classes("items-baseline gap-0.5"):
+        ui.label("Dose/tilt").style(
+            f"{FONT} font-size: 8px; color: {CLR_SUBLABEL}; text-transform: uppercase; letter-spacing: 0.03em;"
+        )
+        value = ui.label(f"{est:.1f}" if est is not None else "?").style(
+            f"{MONO} font-size: 11px; font-weight: 600; color: {amber};"
+        )
+        ui.label("e⁻/Å² · estimated" if est is not None else "not in mdoc").style(
+            f"{FONT} font-size: 8px; color: {amber};"
+        )
+        detail = overview.dose_estimate_detail()
+        value.tooltip(
+            f"No ExposureDose in the mdocs. {detail}. Prefilled in the dose field; the acquirer's number replaces it."
+            if detail
+            else "No ExposureDose in the mdocs and no DoseRate/ExposureTime to estimate from — enter the dose."
+        )
+
+
 def _build_position_group(pos, overview, refresh_all, row_registry):
     """Build a collapsible position header + lazily-rendered tilt-series rows. Returns pos checkbox."""
     ts_container_ref = [None]
@@ -383,7 +413,8 @@ def _build_position_group(pos, overview, refresh_all, row_registry):
                     ts_checkboxes.append(cb)
 
                     ui.label("").style(CELL)
-                    ui.label(str(ts.beam_position)).style(f"{MONO} font-size: 10px; color: {CLR_LABEL}; {CELL}")
+                    beam = "—" if ts.beam_position is None else str(ts.beam_position)
+                    ui.label(beam).style(f"{MONO} font-size: 10px; color: {CLR_LABEL}; {CELL}")
 
                     tc_style = f"{MONO} font-size: 10px; {CELL}"
                     if ts.missing_frames > 0:
@@ -444,7 +475,8 @@ def _build_position_group(pos, overview, refresh_all, row_registry):
         with ui.row().classes("items-center gap-0.5").style(f"{CELL}"):
             chevron = ui.icon("chevron_right", size="12px").style(f"color: {CLR_SUBLABEL};")
             chevron_ref[0] = chevron
-            ui.label(str(pos.stage_position)).style(f"{MONO} font-size: 11px; font-weight: 600; color: {CLR_HEADING};")
+            stage = "—" if pos.stage_position is None else str(pos.stage_position)
+            ui.label(stage).style(f"{MONO} font-size: 11px; font-weight: 600; color: {CLR_HEADING};")
 
         ui.label(f"{n_beams}").style(f"{MONO} font-size: 10px; color: {CLR_SUBLABEL}; {CELL}")
         ui.label(f"{n_tilts}").style(f"{MONO} font-size: 10px; color: {CLR_SUBLABEL}; {CELL}")
@@ -526,8 +558,9 @@ def build_dry_run_summary(overview: DatasetOverview) -> None:
                 )
             ui.label(
                 "CryoBoost creates symbolic links (symlinks) pointing to your "
-                "original frame files. The raw .eer/.mrc/.tiff files are never "
+                "original frame files; SerialEM tilt stacks are split into one file "
+                "per tilt inside the project. The raw .eer/.mrc/.tiff files are never "
                 "copied, moved, or modified. Mdoc files are copied into the "
                 "project directory with updated paths, but the originals remain "
-                "untouched. All downstream processing operates on symlinked copies."
+                "untouched. All downstream processing operates on the project's copies."
             ).style(f"{FONT} font-size: 10px; color: #166534; line-height: 1.5;")

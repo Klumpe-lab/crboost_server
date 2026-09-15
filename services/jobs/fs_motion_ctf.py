@@ -51,21 +51,21 @@ class FsMotionCtfParams(AbstractJobParams):
         ),
     ]
 
-    do_phase: bool = Field(default=False, description="Estimate phase shifts (CTF phase plate or spurious phase)")
-    m_range_min_max: str = Field(default="500:10", description="Motion estimation range min:max in Angstroms")
-    m_bfac: int = Field(default=-500, description="B-factor for motion estimation (negative = more smoothing)")
-    m_grid: str = Field(default="1x1x3", description="Motion estimation grid XxYxZ")
-    c_range_min_max: str = Field(default="30:6.0", description="CTF fitting resolution range min:max in Angstroms")
-    c_defocus_min_max: str = Field(default="1.1:8", description="Defocus search range min:max in microns")
-    c_grid: str = Field(default="2x2x1", description="CTF estimation grid XxYxZ")
-    c_use_sum: bool = Field(default=False, description="Use frame sum for CTF estimation instead of individual frames")
-    c_window: int = Field(default=512, ge=128, description="CTF estimation window size in pixels")
-    out_average_halves: bool = Field(default=True, description="Output half-set averages for independent validation")
-    out_skip_first: int = Field(default=0, description="Skip this many initial tilts")
-    out_skip_last: int = Field(default=0, description="Skip this many final tilts")
-    perdevice: int = Field(default=2, ge=0, le=8, description="Parallel tilt series per GPU")
-    do_at_most: int = Field(default=-1, description="Process at most N tilt series (-1 = all)")
-    gain_operations: str | None = Field(
+    do_phase          : bool       = Field(default=False, description="Estimate phase shifts (CTF phase plate or spurious phase)")
+    m_range_min_max   : str        = Field(default="500:10", description="Motion estimation range min:max in Angstroms")
+    m_bfac            : int        = Field(default=-500, description="B-factor for motion estimation (negative = more smoothing)")
+    m_grid            : str        = Field(default="1x1x3", description="Motion estimation grid XxYxZ")
+    c_range_min_max   : str        = Field(default="30:6.0", description="CTF fitting resolution range min:max in Angstroms")
+    c_defocus_min_max : str        = Field(default="1.1:8", description="Defocus search range min:max in microns")
+    c_grid            : str        = Field(default="2x2x1", description="CTF estimation grid XxYxZ")
+    c_use_sum         : bool       = Field(default=False, description="Use frame sum for CTF estimation instead of individual frames")
+    c_window          : int        = Field(default=512, ge=128, description="CTF estimation window size in pixels")
+    out_average_halves: bool       = Field(default=True, description="Output half-set averages for independent validation")
+    out_skip_first    : int        = Field(default=0, description="Skip this many initial tilts")
+    out_skip_last     : int        = Field(default=0, description="Skip this many final tilts")
+    perdevice         : int        = Field(default=2, ge=0, le=8, description="Parallel tilt series per GPU")
+    do_at_most        : int        = Field(default=-1, description="Process at most N tilt series (-1 = all)")
+    gain_operations   : str | None = Field(
         default=None, description="Colon-separated gain operations: flip_x, flip_y, transpose (e.g. flip_x:transpose)"
     )
     array_throttle: int = Field(

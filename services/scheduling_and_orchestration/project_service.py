@@ -1,5 +1,7 @@
 import shutil
 import logging
+from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 import os
@@ -8,8 +10,9 @@ import asyncio
 import json
 from typing import TYPE_CHECKING
 
-from services.configs.mdoc_service import get_mdoc_service
+from services.configs.mdoc_service import acquisition_from_mdoc, get_mdoc_service, ts_name_from_mdoc
 from services.configs.starfile_service import StarfileService
+from services.stack_import import choose_source_layer, resolve_stack, split_stack
 from services.models_base import InstanceId
 from services.project_state import (
     JobType,
@@ -38,8 +41,17 @@ class DataImportService:
         mdocs_glob: str,
         import_prefix: str,
         selected_mdoc_paths: list[str] | None = None,
+        progress_cb: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
-        """Synchronous core of data import — runs in thread pool to avoid blocking the event loop."""
+        """Synchronous core of data import — runs in thread pool to avoid blocking the event loop.
+
+        Per mdoc, the source layer is re-derived from disk with the scan's rule (roadmap 18
+        D1 — the overview is not passed down): movies are symlinked into `frames/` (looked
+        for in the movies dir, then beside the mdoc), a SerialEM stack is split into one
+        `.mrc` per tilt. The mdoc copy is `mdoc/<prefix><ts_name>.mdoc` (D6). Returns
+        `ok(layer=…, frame_extension=…, n_frames=…)`; `progress_cb` receives short status
+        strings for the Create spinner.
+        """
         try:
             frames_dir = project_dir / "frames"
             mdoc_dir = project_dir / "mdoc"
@@ -61,36 +73,71 @@ class DataImportService:
             if not mdoc_files:
                 return err(f"No .mdoc files found with pattern: {mdocs_glob}")
 
-            for mdoc_path_str in mdoc_files:
+            layers: Counter[str] = Counter()
+            extensions: Counter[str] = Counter()
+            n_frames = 0
+            n_series = len(mdoc_files)
+            for idx, mdoc_path_str in enumerate(sorted(mdoc_files)):
                 mdoc_path = Path(mdoc_path_str)
-
                 parsed_mdoc = self.mdoc_service.parse_mdoc_file(mdoc_path)
+                if not parsed_mdoc["data"]:
+                    logger.warning("Skipping %s: no [ZValue] sections", mdoc_path.name)
+                    continue
+                facts = acquisition_from_mdoc(parsed_mdoc)
+                ts_name = ts_name_from_mdoc(mdoc_path.name)
+                new_mdoc_path = mdoc_dir / f"{import_prefix}{ts_name}.mdoc"
 
+                sources: list[tuple[dict, Path | None]] = []
                 for section in parsed_mdoc["data"]:
                     if "SubFramePath" not in section:
                         continue
+                    name = Path(section["SubFramePath"].replace("\\", "/")).name
+                    found = next((d / name for d in (source_movie_dir, mdoc_path.parent) if (d / name).exists()), None)
+                    sources.append((section, found))
+                movies_complete = bool(sources) and all(p is not None for _, p in sources)
+                movies_partial = any(p is not None for _, p in sources)
+                stack = resolve_stack(mdoc_path, facts.image_file, facts.n_sections)
+                layer = choose_source_layer(facts.software, movies_complete, movies_partial, stack is not None)
 
+                if layer == "stack":
+                    if progress_cb:
+                        progress_cb(f"splitting stack {idx + 1}/{n_series}")
+                    result = split_stack(mdoc_path, frames_dir, prefix=import_prefix, progress=progress_cb)
+                    new_mdoc_path.write_text(result.mdoc_text)
+                    layers["stacks"] += 1
+                    extensions[".mrc"] += 1
+                    n_frames += result.n_frames
+                    continue
+
+                if progress_cb:
+                    progress_cb(f"linking movies {idx + 1}/{n_series}")
+                for section, source_movie_path in sources:
                     original_movie_name = Path(section["SubFramePath"].replace("\\", "/")).name
                     prefixed_movie_name = f"{import_prefix}{original_movie_name}"
-
                     section["SubFramePath"] = prefixed_movie_name
-
-                    source_movie_path = source_movie_dir / original_movie_name
-                    link_path = frames_dir / prefixed_movie_name
-
-                    if not source_movie_path.exists():
-                        logger.warning("Source movie not found: %s", source_movie_path)
+                    if source_movie_path is None:
+                        logger.warning("Source movie not found: %s", source_movie_dir / original_movie_name)
                         continue
-
+                    link_path = frames_dir / prefixed_movie_name
                     if not link_path.exists():
                         os.symlink(source_movie_path.resolve(), link_path)
-
-                new_mdoc_path = mdoc_dir / f"{import_prefix}{mdoc_path.name}"
-
+                    extensions[source_movie_path.suffix.lower()] += 1
+                    n_frames += 1
                 self.mdoc_service.write_mdoc_file(parsed_mdoc, new_mdoc_path)
+                layers["movies"] += 1
 
-            return ok(message=f"Imported {len(mdoc_files)} tilt-series.")
+            if not layers:
+                return err("No tilt-series imported: every selected mdoc lacks [ZValue] sections.")
+            if len(layers) > 1:
+                logger.warning("Mixed source layers imported into %s: %s", project_dir, dict(layers))
+            return ok(
+                message=f"Imported {sum(layers.values())} tilt-series.",
+                layer=layers.most_common(1)[0][0],
+                frame_extension=extensions.most_common(1)[0][0] if extensions else "",
+                n_frames=n_frames,
+            )
         except Exception as e:
+            logger.exception("Data import failed for %s", project_dir)
             return err(str(e))
 
     async def setup_project_data(
@@ -100,10 +147,17 @@ class DataImportService:
         mdocs_glob: str,
         import_prefix: str,
         selected_mdoc_paths: list[str] | None = None,
+        progress_cb: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         """Async wrapper — offloads blocking file I/O to a thread."""
         return await asyncio.to_thread(
-            self._setup_project_data_sync, project_dir, movies_glob, mdocs_glob, import_prefix, selected_mdoc_paths
+            self._setup_project_data_sync,
+            project_dir,
+            movies_glob,
+            mdocs_glob,
+            import_prefix,
+            selected_mdoc_paths,
+            progress_cb,
         )
 
 
@@ -259,8 +313,10 @@ class ProjectService:
         mdocs_glob: str,
         import_prefix: str,
         selected_mdoc_paths: list[str] | None = None,
+        progress_cb: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
-        """Creates the project directory structure and imports the raw data."""
+        """Creates the project directory structure and imports the raw data. On success the
+        import result is returned as is (it carries `layer` / `frame_extension` / `n_frames`)."""
         try:
             project_dir.mkdir(parents=True, exist_ok=True)
             self.set_project_root(project_dir)
@@ -270,13 +326,9 @@ class ProjectService:
 
             await self._setup_qsub_templates(project_dir)
 
-            import_result = await self.data_importer.setup_project_data(
-                project_dir, movies_glob, mdocs_glob, import_prefix, selected_mdoc_paths
+            return await self.data_importer.setup_project_data(
+                project_dir, movies_glob, mdocs_glob, import_prefix, selected_mdoc_paths, progress_cb
             )
-            if not import_result["success"]:
-                return import_result
-
-            return ok(message="Project directory structure created and data imported.")
         except Exception as e:
             return err(f"Failed during directory setup: {e!s}")
 
@@ -291,8 +343,13 @@ class ProjectService:
         else:
             logger.warning("qsub.sh not found at %s", source_qsub)
 
-    def _build_and_persist_registry(self, project_dir: Path, mdocs_glob: str) -> int:
+    def _build_and_persist_registry(
+        self, project_dir: Path, mdocs_glob: str, *, dose_per_tilt_fallback: float | None = None
+    ) -> int:
         """Build TiltSeries registry from mdocs and save to {project}/registry/.
+
+        `dose_per_tilt_fallback` (the project's dose) feeds the per-frame pre-exposure when
+        the mdocs record no ExposureDose (SerialEM without dose calibration).
 
         Called from `initialize_new_project` after data import, and from
         `load_project_state` if the registry sidecar is missing for a legacy
@@ -312,7 +369,11 @@ class ProjectService:
         frames_dir = project_dir / "frames"
         project_mdoc_glob = str(project_dir / "mdoc" / "*.mdoc")
 
-        ts_list = build_from_mdocs(project_mdoc_glob, frames_dir=frames_dir if frames_dir.exists() else None)
+        build_kwargs = {
+            "frames_dir": frames_dir if frames_dir.exists() else None,
+            "dose_per_tilt_fallback": dose_per_tilt_fallback,
+        }
+        ts_list = build_from_mdocs(project_mdoc_glob, **build_kwargs)
         # Fallback: if the project mdoc dir is empty (shouldn't happen for a
         # post-import project but can for hand-assembled test projects), fall
         # back to the source glob. Warn because this produces unprefixed TS
@@ -324,7 +385,7 @@ class ProjectService:
                 project_mdoc_glob,
                 mdocs_glob,
             )
-            ts_list = build_from_mdocs(mdocs_glob, frames_dir=frames_dir if frames_dir.exists() else None)
+            ts_list = build_from_mdocs(mdocs_glob, **build_kwargs)
         if not ts_list:
             logger.info("Registry: no mdocs found for %s", project_dir)
             return 0
@@ -359,6 +420,7 @@ class ProjectService:
         import_summary: dict[str, Any] | None = None,
         detected_params: dict[str, Any] | None = None,
         shared: bool = False,
+        progress_cb: Callable[[str], None] | None = None,
     ):
         try:
             project_dir = Path(project_base_path).expanduser() / project_name
@@ -412,12 +474,51 @@ class ProjectService:
                 # job.gain_path -> acquisition.gain_reference_path.
                 if detected_params.get("gain_reference_path"):
                     state.acquisition.gain_reference_path = detected_params["gain_reference_path"]
+                if detected_params.get("dose_per_tilt_source"):
+                    state.acquisition.dose_per_tilt_source = detected_params["dose_per_tilt_source"]
+                if detected_params.get("acquisition_software"):
+                    state.acquisition.acquisition_software = detected_params["acquisition_software"]
+                if detected_params.get("detector_dimensions"):
+                    state.acquisition.detector_dimensions = tuple(detected_params["detector_dimensions"])
                 state.update_modified()
             elif mdocs_glob:
                 # Fallback: re-parse mdocs (legacy path / no overview available).
                 # Gated on having mdocs at all — data-less projects (aggregation or
                 # particle-only) have none, so this is skipped without a flag check.
                 await self.backend.state_service.update_from_mdoc(mdocs_glob, project_path=project_dir)
+
+            # The dose per tilt is never left to the model default (roadmap 18 D4): every
+            # creation path ends with a value AND its provenance. Callers that pass a source
+            # ("user", "estimated") are believed; otherwise the first mdoc decides — its
+            # ExposureDose ("mdoc") or the zero-thickness estimate ("estimated") — and a
+            # dataset that allows neither refuses to create rather than run on 3.0.
+            if mdocs_glob:
+                found = await asyncio.to_thread(self.data_importer.mdoc_service.first_mdoc_facts, mdocs_glob)
+                facts = found[0] if found else None
+                given = detected_params or {}
+                if facts is not None:
+                    if facts.software and not given.get("acquisition_software"):
+                        state.acquisition.acquisition_software = facts.software
+                    if facts.detector_dimensions and not given.get("detector_dimensions"):
+                        state.acquisition.detector_dimensions = facts.detector_dimensions
+                    if not state.acquisition.dose_per_tilt_source:
+                        dose_given = "dose_per_tilt" in given
+                        if dose_given or facts.dose_per_tilt is not None:
+                            if not dose_given:
+                                state.acquisition.dose_per_tilt = facts.dose_per_tilt
+                            state.acquisition.dose_per_tilt_source = "mdoc"
+                        elif facts.dose_estimate is not None:
+                            state.acquisition.dose_per_tilt = facts.dose_estimate.value
+                            state.acquisition.dose_per_tilt_source = "estimated"
+                            logger.warning(
+                                "%s: dose per tilt not in the mdocs — using the estimate %.2f e/Å² (%s)",
+                                project_name,
+                                facts.dose_estimate.value,
+                                facts.dose_estimate.describe(),
+                            )
+                        else:
+                            return err("dose per tilt: not in the mdocs and no estimate possible — enter it")
+                    state.update_modified()
 
             # Apply dataset import summary so it's saved atomically with the project
             if import_summary:
@@ -434,10 +535,16 @@ class ProjectService:
             # Create Dirs & Import Data (runs blocking I/O in thread pool)
             import_prefix = f"{project_name}_"
             structure_result = await self.create_project_structure(
-                project_dir, movies_glob, mdocs_glob, import_prefix, selected_mdoc_paths
+                project_dir, movies_glob, mdocs_glob, import_prefix, selected_mdoc_paths, progress_cb
             )
             if not structure_result["success"]:
                 return structure_result
+            # What the import actually did (roadmap 18 D3) — set BEFORE the jobs are
+            # initialized so ensure_job_initialized's stamps see it.
+            if structure_result.get("layer"):
+                state.import_source_kind = structure_result["layer"]
+            if structure_result.get("frame_extension"):
+                state.import_frame_extension = structure_result["frame_extension"]
 
             # 2. Instantiate the selected jobs with their code defaults.
             if selected_jobs:
@@ -456,7 +563,9 @@ class ProjectService:
             # mdocs glob, not a project-type flag.
             if mdocs_glob:
                 try:
-                    self._build_and_persist_registry(project_dir, mdocs_glob)
+                    self._build_and_persist_registry(
+                        project_dir, mdocs_glob, dose_per_tilt_fallback=state.acquisition.dose_per_tilt
+                    )
                 except Exception as e:
                     logger.warning("Registry construction failed for %s: %s", project_dir, e)
 
