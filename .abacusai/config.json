@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "strictness": "strict",
-    "allow": [
-      "Bash(cd /users/artem.kushner/dev/crboost_server)",
-      "Bash(git diff *)"
-    ]
-  }
-}
