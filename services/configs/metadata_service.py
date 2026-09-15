@@ -1,9 +1,8 @@
 """Warp XML parsing.
 
 Only `WarpXmlParser` lives here. The old `MetadataTranslator` (WarpTools → RELION STAR
-translation) was superseded by `services/tilt_series/adapters/` and deleted 2026-08-10
-(see docs/roadmaps/completed/roadmap_00-deletions-and-lint.md). Eventual home for this parser is
-`services/formats/warp_xml.py` (Roadmap 01).
+translation) was superseded by `services/tilt_series/adapters/` and deleted. Eventual home
+for this parser is `services/formats/warp_xml.py`.
 """
 
 import glob

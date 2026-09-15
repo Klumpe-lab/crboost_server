@@ -1,4 +1,4 @@
-"""Export = project -> Protocol (the authoring tool; roadmap 14 S1).
+"""Export = project -> Protocol (the authoring tool).
 
 Walks `state.jobs` in pipeline order and keeps, per job, the FULL `USER_PARAMS` snapshot,
 the species binding and the IO wiring; the species a stage references is exported with the

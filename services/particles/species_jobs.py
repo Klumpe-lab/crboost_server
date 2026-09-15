@@ -1,4 +1,4 @@
-"""Species ↔ pipeline-job attribution over the whole particle phase (roadmap 10 S4).
+"""Species ↔ pipeline-job attribution over the whole particle phase.
 
 `dashboard_data.ce_instances_by_species` inverts `resolve_species` for candidate-extract
 instances only; the Species page's Jobs tab needs the same inversion for every

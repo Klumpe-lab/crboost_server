@@ -1,4 +1,4 @@
-"""Templates & masks tab (roadmap 10 S2) — the mounted Template Workbench.
+"""Templates & masks tab — the mounted Template Workbench.
 
 `TemplateWorkbench` (`ui/template_workbench.py`: molstar bridge, ready gate, dedup,
 polarity pairs) is constructed ONCE per species inside the tab's container, exactly as

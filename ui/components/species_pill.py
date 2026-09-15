@@ -1,7 +1,7 @@
-"""The one species pill (roadmap 08 S1).
+"""The one species pill.
 
 Every surface that names a species — roster row, job-tab header, the Config tab
-of a particle-phase job (and the Species rail in roadmap 10) — draws the same
+of a particle-phase job, and the Species rail — draws the same
 capsule: species name in the species color on a tinted, bordered pill. Three
 copies of the style string used to live in the roster, the default renderer and
 the job-tab header; a recolor / rename now looks identical everywhere.
@@ -48,8 +48,7 @@ def species_opener(callbacks: dict | None, species_id: str) -> Callable[[], None
 
 def render_species_line(species, *, on_open: Callable[[], None] | None = None) -> None:
     """The one-line species header of a particle-phase job's Config tab: the pill
-    plus an "open in Species" link (the workbench view today, the Species page
-    from roadmap 10). With no resolvable species the line is an amber notice —
+    plus an "open in Species" link. With no resolvable species the line is an amber notice —
     the job's dropdowns / sanity checks depend on the link, so it must not be
     silent (CLAUDE.md "Surfacing uncertainty")."""
     with ui.row().classes("items-center gap-2").style("margin-bottom: 6px; flex-wrap: nowrap;"):

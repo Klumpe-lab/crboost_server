@@ -1,4 +1,4 @@
-"""Protocols dialog — the landing-page entry to protocol bundles (roadmap 16).
+"""Protocols dialog — the landing-page entry to protocol bundles.
 
 Opened from the status strip's "Protocols" action beside the settings gear. One row per discovered
 bundle: name (click → every stage with its parameters) · version, stages, species, description ·
@@ -152,9 +152,9 @@ async def _open_create_dialog(backend, parent_dialog, info: ProtocolInfo) -> Non
                 movies_in = house_text("movies", width="w-full", value=defaults.get("movies", ""))
                 mdocs_in = house_text("mdocs", width="w-full", value=defaults.get("mdocs", ""))
                 gain_in = house_text("gain ref", width="w-full", placeholder="optional")
-                # Dose per tilt with its provenance (roadmap 18 D4): the mdocs' value when
-                # they carry one, else the scan's estimate — prefilled and said to be one;
-                # the user's number wins. Never the model default.
+                # Dose per tilt with its provenance: the mdocs' value when they carry
+                # one, else the scan's estimate — prefilled and labeled; the user's
+                # number wins. Never the model default.
                 dose_state = {"source": ""}
                 with ui.row().classes("w-full items-center gap-2 no-wrap"):
                     dose_in = house_number("dose/tilt", width="w-20", placeholder="e⁻/Å²")

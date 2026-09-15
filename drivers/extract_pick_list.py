@@ -1,4 +1,4 @@
-"""Per-pick-list subtomogram extraction (roadmap 07).
+"""Per-pick-list subtomogram extraction.
 
 Given ONE curation pick list's coordinate star, build a per-list ``optimisation_set``
 and run ``relion_tomo_subtomo`` on it, landing the extracted particles + a final
@@ -20,9 +20,9 @@ qsub sets to the list's out dir, so ``job_dir`` IS ``Curation/<species>/<tomo>/<
 The qsub wrapper touches ``RELION_JOB_EXIT_SUCCESS/FAILURE`` — this driver deliberately does
 NOT (two writers would contradict each other); it signals through its exit code. It DOES write
 ``<job-dir>/result.json`` (``{ok, optimisation_set, particles, count}`` or ``{ok: false, error}``),
-the contract the awaiter reads to record ``PickList.mark_extracted`` and to surface a failure
-(census #69/#70) — including when the bootstrap itself fails, which is why the result.json write
-wraps the bootstrap and not just the run.
+the contract the awaiter reads to record ``PickList.mark_extracted`` and to surface a failure —
+including when the bootstrap itself fails, which is why the result.json write wraps the bootstrap
+and not just the run.
 
 The relion command + container wrapping mirror ``drivers/subtomo_extraction.py`` exactly.
 """
@@ -120,8 +120,8 @@ def _run(params: ExtractPickListParams, job_dir: Path, project_path: Path) -> di
 def main() -> None:
     # qsub.sh cd's into the list's out dir before invoking us, so cwd IS the job dir.
     # Resolve it BEFORE the bootstrap: get_driver_context exits the process on a missing
-    # or mistyped instance, and a failure with no result.json is exactly the silent hole
-    # census #69/#70 exist to prevent — the awaiter would see only an exit marker.
+    # or mistyped instance, and a failure with no result.json leaves the awaiter with
+    # only an exit marker and no diagnostics.
     out_dir = Path.cwd().resolve()
     result: dict
     try:
@@ -147,8 +147,8 @@ def main() -> None:
 
 
 def _write_result(out_dir: Path, result: dict) -> None:
-    """Best-effort result.json — the dashboard contract (census #69). Never raises: a
-    failure to record the outcome must not mask the outcome itself (the exit code stands)."""
+    """Best-effort result.json for the dashboard. Never raises: a failure to record the
+    outcome must not mask the outcome itself (the exit code stands)."""
     try:
         (out_dir / "result.json").write_text(json.dumps(result))
     except OSError:

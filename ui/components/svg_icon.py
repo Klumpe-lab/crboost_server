@@ -1,4 +1,4 @@
-"""Inline `static/icons/*.svg` loading (picking-UI roadmap 01 S0).
+"""Inline `static/icons/*.svg` loading.
 
 The roster grew a private loader because it was the only surface drawing house SVGs;
 the Species page's empty state needs the same glyph at a different size, so the read
