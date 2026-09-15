@@ -1,4 +1,4 @@
-"""Protocol — the shape of a pipeline with its parameters, as a portable bundle (roadmap 16).
+"""Protocol — the shape of a pipeline with its parameters, as a portable bundle.
 
 A protocol is a bundle directory:
 

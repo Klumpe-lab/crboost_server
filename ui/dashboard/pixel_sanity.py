@@ -1,4 +1,4 @@
-"""Journey dashboard — pixel / binning sanity panel (ROADMAP §11).
+"""Journey dashboard — pixel / binning sanity panel.
 
 One dense monospace table showing how pixel size + tomogram dimensions +
 per-instance box / padding / particle-diameter propagate through the pipeline,
@@ -12,9 +12,8 @@ from __future__ import annotations
 
 from nicegui import ui
 
-# Compatibility re-exports (roadmap-01 stage 3c) — the computation moved to
-# services/pixel_chain.py. Delete after one release; new code imports from
-# services.pixel_chain directly.
+# Compatibility re-exports — the computation moved to services/pixel_chain.py.
+# Delete after one release; new code imports from services.pixel_chain directly.
 from services.pixel_chain import apply_sanity_rules as _apply_sanity_rules, compute_pixel_chain as _compute_pixel_chain
 
 __all__ = ["_apply_sanity_rules", "_compute_pixel_chain", "_render_pixel_sanity_table", "render_pixel_sanity_table"]

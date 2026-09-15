@@ -29,7 +29,7 @@ There is no test suite.
 
 - `config/conf.yaml` — main config (created from `config/conf.template.yaml` by `preflight.py`). Contains: `crboost_root`, `crboost_python`, local paths, SLURM defaults, and per-tool execution config (container vs binary).
 - `config/qsub.sh` — SLURM job submission template. Uses RELION-style `XXXextra1XXX`..`XXXextra8XXX` placeholders that get substituted with `SlurmConfig` fields at submission time.
-- `config/protocols/<name>/` — Protocol bundles (`protocol.yaml` + `assets/`): the shape of a pipeline with its parameters, applied at project creation to make a REGULAR project (`services/protocols/`, roadmap 16). A project created from one carries `ProjectState.protocol_origin` and a frozen `<project>/protocol/protocol.yaml`; the workspace Protocols view (foot-of-rail light, `ui/protocols_view.py`) shows protocol vs current parameters. Nothing about results lives in protocols. How to write one: `docs/protocols.md`. Job instances take their code defaults; there are no per-job template files.
+- `config/protocols/<name>/` — Protocol bundles (`protocol.yaml` + `assets/`): the shape of a pipeline with its parameters, applied at project creation to make a REGULAR project (`services/protocols/`). A project created from one carries `ProjectState.protocol_origin` and a frozen `<project>/protocol/protocol.yaml`; the workspace Protocols view (foot-of-rail light, `ui/protocols_view.py`) shows protocol vs current parameters. Nothing about results lives in protocols. How to write one: `docs/protocols.md`. Job instances take their code defaults; there are no per-job template files.
 
 ## Architecture
 
@@ -61,7 +61,7 @@ Python scripts that execute on compute nodes inside SLURM jobs. Each driver call
 ### UI (`ui/`)
 
 NiceGUI-based. `main_ui.py` defines routes. Key components:
-- `routing.py` — addressable URLs (roadmap 17). `View`/`Route`/`parse_route`/`route_to_path` are the pure URL↔(view, target) mapping; `apply_route` drives a route onto a built workspace *through the workspace `callbacks` dict*; `RouteWriter` (exposed as `callbacks["set_url"]`) writes the URL back. Deliberately imports nothing from `ui.*` at module level — half of `ui` imports it.
+- `routing.py` — addressable URLs. `View`/`Route`/`parse_route`/`route_to_path` are the pure URL↔(view, target) mapping; `apply_route` drives a route onto a built workspace *through the workspace `callbacks` dict*; `RouteWriter` (exposed as `callbacks["set_url"]`) writes the URL back. Deliberately imports nothing from `ui.*` at module level — half of `ui` imports it.
 - `data_import_panel.py` — landing page: project creation/loading, data glob inputs.
 - `workspace_page.py` — main workspace after project load.
 - `pipeline_builder/` — pipeline configuration, job tabs, SLURM config, status polling.
@@ -117,7 +117,7 @@ creation, nothing auto-propagates — they just have a species-shaped default. S
 - **Absent is stated, never defaulted.** No template registered means the row says so and
   points at the Species page; it never silently picks the first file it finds.
 
-Full guideline of record: `docs/roadmaps/completed/picking_ui/roadmap_00-overview.md`.
+Full guideline of record: `docs/picking_ui/overview.md`.
 
 ## Results and exceptions — one idiom
 

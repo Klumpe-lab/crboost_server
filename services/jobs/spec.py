@@ -195,7 +195,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         driver="subtomo_extraction.py",
         plugins=("subtomo_extraction",),
     ),
-    # Per-pick-list extraction (roadmap 07). phase=None: this is NOT a roster job --
+    # Per-pick-list extraction. phase=None: this is NOT a roster job --
     # one instance exists per pick list and its home is the Species page's Picks tab,
     # not the pipeline. The row itself is mandatory even so, because jobtype_paramclass()
     # is derived from JOB_SPECS and ProjectState.load drops instances of a type with no
@@ -249,8 +249,8 @@ def driver_launch_prefix(*, server_dir: Path, driver_script: Path) -> str:
     runs a job type; this is *how* it gets started. Both callers must not drift on the
     interpreter choice or the PYTHONPATH export; both are the pipeline entry points in
     `driver_invocation` below. (`backend.extract_pick_list` used to be a third, passing
-    its own argument set instead of `--instance_id`; roadmap 07-S2 gave that job a real
-    instance, so it goes through `driver_invocation` like everything else.)
+    its own argument set instead of `--instance_id`; that job now has a real instance,
+    so it goes through `driver_invocation` like everything else.)
 
     The venv interpreter is used when the repo has one, else bare `python3` from PATH.
     """

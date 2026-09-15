@@ -1700,7 +1700,7 @@ def _defocus_source_df(project_state, project_path: Path, ts_name: str):
 
 
 def _render_tilt_qc_section(ts_name: str, project_state, project_path: Path, refresh) -> bool:
-    """Tomo-native per-tilt QC (roadmap ③): the defocus through-focus curve
+    """Tomo-native per-tilt QC: the defocus through-focus curve
     (with a linear-fit handedness slope cue) beside shift-magnitude-vs-tilt
     (per-TS max = the headline alignment-difficulty number). Both read existing
     per-tilt stars — no new plumbing. No-op if neither CTF nor alignment has run
@@ -1868,7 +1868,7 @@ def _render_tilt_filter_section(ts_name: str, project_state, project_path: Path,
 # polarity. If the WarpTools `TomoFullReconstructInvert` setting changes
 # between runs or projects, the polarity chip flags the mismatch before
 # TM produces meaningless CC scores. Reads a center 1024×1024 Z slice
-# only — full-volume reads are forbidden per ROADMAP §4.1.
+# only — full-volume reads are forbidden (too slow / too much memory).
 # ---------------------------------------------------------------------------
 
 
@@ -1900,8 +1900,7 @@ def _compute_tomogram_polarity(mrc_path: Path) -> dict | None:
             half = 512
             y0, y1 = max(0, cy - half), min(ny, cy + half)
             x0, x1 = max(0, cx - half), min(nx, cx + half)
-            # Materialize a copy so the array survives the mmap close
-            # (ROADMAP §4.5 mmap view trap).
+            # Materialize a copy so the array survives the mmap close.
             slab = np.array(data[cz, y0:y1, x0:x1], dtype=np.float32, copy=True)
     except Exception as e:
         logger.warning("Could not read tomogram %s for polarity: %s", mrc_path, e)

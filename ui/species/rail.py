@@ -1,4 +1,4 @@
-"""Species rail (roadmap 10 S1) — the left column of the Species page.
+"""Species rail — the left column of the Species page.
 
 One row per registered species (the one species pill + a muted "n tpl · n lists"
 meta) and a "+" at the bottom. A `FingerprintedView`: the page's 3-s observe tick and
@@ -69,9 +69,8 @@ class SpeciesRail(FingerprintedView):
         with add:
             ui.icon("add", size="13px")
             ui.label("New species")
-        # Second entry point only when a lab catalog is configured (roadmap 12). Not a
-        # disabled row when it is off: an affordance for a feature this install does not
-        # have is worse than no affordance.
+        # Second entry point only when a lab catalog is configured. Not a disabled
+        # row when it is off: an affordance for a missing feature is worse than none.
         if self._on_add_from_catalog is not None and catalog_is_enabled():
             from_cat = ui.element("div").classes("cb-srail-add").on("click", lambda _e: self._on_add_from_catalog())
             with from_cat:

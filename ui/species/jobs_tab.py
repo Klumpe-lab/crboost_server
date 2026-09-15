@@ -1,4 +1,4 @@
-"""Jobs tab (roadmap 10 S4) — this species' particle-phase pipeline jobs.
+"""Jobs tab — this species' particle-phase pipeline jobs.
 
 Rows = job type · instance id · status dot · drift chips · "open" (the pipeline view on
 that instance via `callbacks["open_job"]`). Drift = the species' `symmetry` / Ø versus

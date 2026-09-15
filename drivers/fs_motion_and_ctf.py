@@ -51,8 +51,8 @@ def read_ts_frame_mapping(input_star: Path, project_root: Path) -> tuple[dict[st
 
     Returns (mapping, unresolved) where `unresolved` maps each TS whose per-TS
     star could not be found to a reason string. Those TS still enter the
-    manifest so their tasks fail visibly (census #12) instead of the TS being
-    silently dropped from the run.
+    manifest so their tasks fail visibly instead of the TS being silently
+    dropped from the run.
     """
     star_svc = StarfileService()
     star_data = star_svc.read(input_star)
@@ -176,8 +176,8 @@ def stage_fs_environment(job_dir: Path, ts_name: str, frame_filenames: list[str]
     ├── warp_frameseries.settings  ← created by WarpTools
     └── warp_frameseries/    ← WarpTools output dir
 
-    A missing source frame raises (census #13): motion/CTF-correcting a partial
-    frame set and green-ticking it hides data loss the operator must see.
+    A missing source frame raises: motion/CTF-correcting a partial frame set
+    and green-ticking it hides data loss the operator must see.
     """
     stage_root = job_dir / ".staging" / f"task_{ts_name}"
     stage_root.mkdir(parents=True, exist_ok=True)
@@ -307,9 +307,8 @@ class FsMotionCtfDriver(ArrayDriver):
         manifest = read_manifest(ctx.job_dir)
         unresolved = manifest.get("unresolved_ts", {})
         if item in unresolved:
-            # Census #12: the supervisor could not resolve this TS's per-TS star.
-            # The TS stays in the manifest so it fails HERE, visibly, instead of
-            # silently vanishing from the run.
+            # The supervisor could not resolve this TS's per-TS star. The TS stays
+            # in the manifest so it fails here visibly instead of silently vanishing.
             raise FileNotFoundError(f"Cannot process '{item}': {unresolved[item]}")
         frame_filenames = manifest["ts_frames"][item]
         self.log(f"{len(frame_filenames)} frames")
@@ -331,8 +330,8 @@ class FsMotionCtfDriver(ArrayDriver):
         return stage_root
 
     def verify_outputs(self, ctx: DriverContext[FsMotionCtfParams], item: str, staged) -> None:
-        # Census #14: WarpTools writes one XML per frame; a zero/short XML count
-        # after exit 0 means degenerate output and must not green-tick.
+        # WarpTools writes one XML per frame; a zero/short XML count after exit 0
+        # means degenerate output and must not green-tick.
         stage_root, _ext = staged
         staged_warp = stage_root / "warp_frameseries"
         n_frames = sum(1 for _ in (stage_root / "frames").iterdir())

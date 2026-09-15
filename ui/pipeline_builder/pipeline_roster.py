@@ -199,8 +199,8 @@ class RosterWidget(FingerprintedView):
         # Drives the nav-icon highlight; set by workspace _switch_to via
         # set_active_mode. Starts "pipeline" (the default view at load).
         self._active_mode: str = "pipeline"
-        # Last (kind, tooltip) painted onto the foot-of-rail protocol light (roadmap 16 D6),
-        # so its timer only touches the DOM when the state actually moved.
+        # Last (kind, tooltip) painted onto the foot-of-rail protocol light, so its
+        # timer only touches the DOM when the state actually moved.
         self._protocol_paint: tuple[str, str] | None = None
         # Last (tomogram, tilt-series) counts painted onto the rail badges, so their timer
         # only touches the DOM when a number actually moved.
@@ -296,8 +296,7 @@ class RosterWidget(FingerprintedView):
             ui_mgr.is_running,
             per_job,
             array_state,
-            # Species pill draws name + color: a rename / recolor in the workbench
-            # must repaint the row (roadmap 08 S0.3).
+            # Species pill draws name + color: a rename / recolor must repaint the row.
             current_project_state().species_identity(),
             # The PARTICLES header's import button carries a green dot once tomograms have
             # been imported. Without this input the dot only appeared on the NEXT unrelated
@@ -942,7 +941,7 @@ class RosterWidget(FingerprintedView):
             await tg()
 
     async def _open_protocols(self):
-        """The foot-of-rail protocol light's click: the Protocols view (roadmap 16 D6)."""
+        """The foot-of-rail protocol light's click: opens the Protocols view."""
         tp = self.panel.toggle_protocols
         if tp is not None:
             await tp()
@@ -990,8 +989,7 @@ class RosterWidget(FingerprintedView):
                 )
 
             # Journey — unified per-TS inspection surface that replaces the old
-            # "Tilt Series Journey" matrix and standalone "Candidate Previews"
-            # dialog. See services/visualization/ROADMAP.md for the consolidation plan.
+            # "Tilt Series Journey" matrix and standalone "Candidate Previews" dialog.
             ui.element("div").style("height: 1px;")
             self._build_dashboard_btn()
 
@@ -1012,12 +1010,9 @@ class RosterWidget(FingerprintedView):
 
             ui.element("div").style("flex: 1;")
 
-            # Pinned to the FOOT of the rail, one status light: the protocol light (is a
-            # protocol run up, and how did it do — it also opens the Protocols view, roadmap
-            # 16). It is not a place in the view stack above; it answers a question first,
-            # and says so by sitting apart without a separator. The ArtiaX session light that
-            # sat under it went with 13-S3: the live marker is on the in-session tomogram's
-            # `Curate picks` button, the one door to that session.
+            # Pinned to the FOOT of the rail: one status light for protocol state. It is
+            # not a place in the view stack above; it answers a question first, and says so
+            # by sitting apart without a separator.
             self._build_protocol_btn()
             ui.element("div").style("height: 6px;")
 
@@ -1171,8 +1166,8 @@ class RosterWidget(FingerprintedView):
             ds_rows.append(("Source", state.import_source_directory))
         if state.import_frame_extension:
             ds_rows.append(("Format", state.import_frame_extension))
-        # Roadmap 18 D3: which delivery layer Create imported, and a dose that is not the
-        # mdocs' own fact (estimated from DoseRate, or typed) says so — stated, not folded.
+        # Which delivery layer Create imported, and a dose that is not the mdocs' own
+        # fact (estimated from DoseRate, or typed) says so — stated, not folded.
         if state.import_source_kind == "stacks":
             ds_rows.append(("Source layer", "SerialEM stacks (split)"))
         elif state.import_source_kind == "movies":
@@ -1240,9 +1235,9 @@ class RosterWidget(FingerprintedView):
     def _render_dataset_ts_expansion(self, state) -> None:
         """Collapsible per-tilt-series table living on the Dataset row.
 
-        Rows come from the TiltSeriesRegistry (roadmap 02 stage 4) — the
-        ProjectState mirror it used to read is gone. Pre-registry projects
-        simply have no expansion (counts in the header still render).
+        Rows come from the TiltSeriesRegistry — the ProjectState mirror it used
+        to read is gone. Pre-registry projects have no expansion (counts in the
+        header still render).
         """
         from services.tilt_series import get_registry_for
 
@@ -1833,9 +1828,8 @@ class RosterWidget(FingerprintedView):
     # door to ArtiaX and nothing on this rail points at it.
 
     def _build_protocol_btn(self):
-        """Foot-of-rail protocol light (roadmap 16). Dim while the project was not created from a
-        protocol; lit when it was; blue and breathing while its pipeline is running. The hover
-        names the protocol and what is running. Click → the Protocols view."""
+        """Foot-of-rail protocol light. Dim when no protocol; lit when present; blue and
+        breathing while its pipeline runs. Hover names the protocol. Click → Protocols view."""
         container = (
             ui.element("div")
             .style(
@@ -1876,7 +1870,7 @@ class RosterWidget(FingerprintedView):
         tip.set_text(text)
 
     def _build_link_btn(self):
-        """Copy-link (roadmap 17 S4): the URL that reproduces exactly where the user is.
+        """Copy-link: the URL that reproduces exactly where the user is.
 
         A menu rather than a bare copy button on purpose — `navigator.clipboard` is a
         secure-context API and this server is reached over plain http on the cluster, so

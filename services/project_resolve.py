@@ -1,11 +1,11 @@
-"""Turn a project *directory name* into an absolute path (roadmap 17 S1).
+"""Turn a project *directory name* into an absolute path.
 
 The URL scheme addresses a project by its directory name — ``/p/HIV_Tomo_Batch1`` — so
 that deep links need no new id, no schema change and no index file. This module is the
 one place that turns that name back into a path, by searching the bases the user
 actually works out of.
 
-Search order (§3 of the roadmap):
+Search order:
 
 1. an explicit ``base`` — the ``?base=`` query param. Authoritative: if the project is
    not there, that is the answer, nothing else is searched.

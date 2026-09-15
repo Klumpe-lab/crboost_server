@@ -33,7 +33,7 @@ def setup_logging(debug: bool = False):
     # logger.info() is diagnostic and stays hidden unless --debug.
     logging.basicConfig(
         level=logging.DEBUG if debug else logging.WARNING,
-        # name:lineno makes every record trackable to its file (roadmap 03 stage 2)
+        # name:lineno makes every record trackable to its file
         format="%(asctime)s %(levelname).1s %(name)s:%(lineno)d %(message)s",
         datefmt="%H:%M:%S",
     )

@@ -15,7 +15,7 @@ render path can read them on every tick without re-parsing. The ingest adapter
 (``services/tilt_series/adapters/fs_motion_ctf.py``) ingests the SAME two values
 into ``FsMotionCtfFrameOutput.ctf_resolution/mean_frame_movement`` (schema 1.2+);
 this XML read path serves runs that predate that, and is slated for retirement
-when the dashboard goes registry-only (roadmap 02 stage 3).
+when the dashboard goes registry-only.
 
 Units note: ``MeanFrameMovement`` carries no unit in the file. Warp convention is
 Ångström (not pixels) — surfaced as unverified where displayed. See

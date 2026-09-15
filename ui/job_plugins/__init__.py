@@ -112,7 +112,7 @@ def get_extra_tabs(job_type: JobType) -> list[ExtraTab]:
 # `ui.job_plugins._field_styles` (which initialises this package), and a plugin
 # panel pulls `ui.components.fields` back — whichever module happened to be
 # imported first was still half-initialised when the other reached it, and the
-# plugin was dropped with only a warning (roadmap 16 stage log).
+# plugin was dropped with only a warning.
 # The module list is derived from JobSpec.plugins — when you create a plugin
 # file, list its basename on the job type's row in services/jobs/spec.py.
 # ---------------------------------------------------------------------------
