@@ -16,11 +16,11 @@
 #               that preloads a tomogram + picks; see services/visualization/artiax_bridge.py).
 set -euo pipefail
 
-# Make a pre-banner failure DIAGNOSABLE. A couple of early apptainer calls below send
+# Make a pre-banner failure diagnosable. A couple of early apptainer calls below send
 # their output to /dev/null; under `set -e` a failure there would kill the worker with a
-# 0-byte slurm.log, and crboost could then only report a blank "session exited" (the exact
-# 2026-07-07 symptom). This ERR trap prints the failing line to stderr (→ slurm.log) before
-# the shell exits, so the next occurrence names the node + the command that died.
+# 0-byte slurm.log, and crboost could then only report a blank "session exited". This ERR
+# trap prints the failing line to stderr (→ slurm.log) before the shell exits, naming the
+# node and the command that died.
 trap 'rc=$?; echo "==== curation worker FAILED (exit $rc) on $(hostname -s 2>/dev/null) at line ${LINENO}: ${BASH_COMMAND} ====" >&2' ERR
 
 SIF="${CX_SIF:?CX_SIF must be set to the chimerax_artiax.sif path (conf.yaml curation.sif_path)}"

@@ -18,7 +18,6 @@ from services.project_state import (
     JobType,
     get_state_service,
     jobtype_paramclass,
-    # CHANGED: new registry functions
     set_project_state_for,
 )
 from services.result import err, ok
@@ -45,10 +44,10 @@ class DataImportService:
     ) -> dict[str, Any]:
         """Synchronous core of data import — runs in thread pool to avoid blocking the event loop.
 
-        Per mdoc, the source layer is re-derived from disk with the scan's rule (roadmap 18
-        D1 — the overview is not passed down): movies are symlinked into `frames/` (looked
+        Per mdoc, the source layer is re-derived from disk with the scan's rule (the
+        overview is not passed down): movies are symlinked into `frames/` (looked
         for in the movies dir, then beside the mdoc), a SerialEM stack is split into one
-        `.mrc` per tilt. The mdoc copy is `mdoc/<prefix><ts_name>.mdoc` (D6). Returns
+        `.mrc` per tilt. The mdoc copy is `mdoc/<prefix><ts_name>.mdoc`. Returns
         `ok(layer=…, frame_extension=…, n_frames=…)`; `progress_cb` receives short status
         strings for the Create spinner.
         """
@@ -251,7 +250,7 @@ class ProjectService:
     def set_project_root(self, project_dir: Path):
         """Set the project root for path resolution and update state."""
         self.project_root = project_dir.resolve()
-        # CHANGED: use registry instead of tab-context .state
+        # Path-keyed registry, not tab-context state.
         if self.backend and self.backend.state_service:
             state = self.backend.state_service.state_for(self.project_root)
             state.project_path = self.project_root
@@ -352,10 +351,8 @@ class ProjectService:
         the mdocs record no ExposureDose (SerialEM without dose calibration).
 
         Called from `initialize_new_project` after data import, and from
-        `load_project_state` if the registry sidecar is missing for a legacy
-        project. Returns the number of TS added. Caller swallows exceptions —
-        this is Stage 1 additive plumbing; absence of a registry doesn't break
-        existing flows.
+        `load_project_state` if the registry sidecar is missing or stale. Returns
+        the number of TS added. Callers log exceptions and continue.
 
         Reads from `{project_dir}/mdoc/*.mdoc` — the post-import copies, which
         carry the `{project_name}_` prefix added by `DataImportService`. The
@@ -452,9 +449,8 @@ class ProjectService:
             # (Reconstruct/Class3D/Refine3D) are added through the regular job roster. They
             # pick up the active merge's MergedSources/<slug>/optimisation_set.star through
             # the synthetic `mergedSources` producer the path resolver registers
-            # (apply_aggregation_overrides wires it via a source_overrides key). De-novo S6
-            # removed the `is_aggregation` type this used to be gated on — nothing about
-            # creation depends on it any more.
+            # (apply_aggregation_overrides wires it via a source_overrides key). Creation
+            # does not depend on a project-type flag.
 
             # Apply microscope/acquisition params from the already-parsed dataset
             # overview (avoids re-parsing all mdocs from scratch). A data-less project has
@@ -482,13 +478,13 @@ class ProjectService:
                     state.acquisition.detector_dimensions = tuple(detected_params["detector_dimensions"])
                 state.update_modified()
             elif mdocs_glob:
-                # Fallback: re-parse mdocs (legacy path / no overview available).
-                # Gated on having mdocs at all — data-less projects (aggregation or
-                # particle-only) have none, so this is skipped without a flag check.
+                # Fallback: re-parse mdocs (no overview available).
+                # Gated on having mdocs at all — data-less projects have none, so
+                # this is skipped without a flag check.
                 await self.backend.state_service.update_from_mdoc(mdocs_glob, project_path=project_dir)
 
-            # The dose per tilt is never left to the model default (roadmap 18 D4): every
-            # creation path ends with a value AND its provenance. Callers that pass a source
+            # The dose per tilt is never left to the model default: every
+            # creation path ends with a value and its provenance. Callers that pass a source
             # ("user", "estimated") are believed; otherwise the first mdoc decides — its
             # ExposureDose ("mdoc") or the zero-thickness estimate ("estimated") — and a
             # dataset that allows neither refuses to create rather than run on 3.0.
@@ -528,9 +524,8 @@ class ProjectService:
                 state.import_selected_tilt_series = import_summary.get("selected_tilt_series", 0)
                 state.import_source_directory = import_summary.get("source_directory", "")
                 state.import_frame_extension = import_summary.get("frame_extension", "")
-                # Per-position/per-TS details + tilt_metadata are NOT mirrored
-                # into ProjectState anymore — the TiltSeriesRegistry built below
-                # is the single source (roadmap 02 stage 4).
+                # Per-position/per-TS details + tilt_metadata live in the
+                # TiltSeriesRegistry built below, not in ProjectState.
 
             # Create Dirs & Import Data (runs blocking I/O in thread pool)
             import_prefix = f"{project_name}_"
@@ -539,7 +534,7 @@ class ProjectService:
             )
             if not structure_result["success"]:
                 return structure_result
-            # What the import actually did (roadmap 18 D3) — set BEFORE the jobs are
+            # What the import actually did — set before the jobs are
             # initialized so ensure_job_initialized's stamps see it.
             if structure_result.get("layer"):
                 state.import_source_kind = structure_result["layer"]
@@ -556,11 +551,9 @@ class ProjectService:
                         logger.warning("Skipping unknown job '%s'", job_str)
 
             # 3. Build the TiltSeries registry from the imported mdocs, persist to
-            # sidecar JSON under {project}/registry/. Stage-1 addition: failure
-            # here is logged but non-fatal while we harden the registry; the
-            # STAR pipeline continues to work. Data-less projects (aggregation or
-            # particle-only) have no mdocs of their own to register — gate on the
-            # mdocs glob, not a project-type flag.
+            # sidecar JSON under {project}/registry/. Failure here is logged but
+            # non-fatal. Data-less projects have no mdocs of their own to
+            # register — gate on the mdocs glob, not a project-type flag.
             if mdocs_glob:
                 try:
                     self._build_and_persist_registry(
@@ -576,7 +569,7 @@ class ProjectService:
             logger.info("Initializing Relion project...")
 
             init_command = "unset DISPLAY && relion --tomo --do_projdir ."
-            # Aggregation projects have no raw-data parents to bind. Path("").parent
+            # Data-less projects have no raw-data parents to bind. Path("").parent
             # would resolve to the cwd, which is wrong and would clutter the binds.
             binds = [str(project_dir.resolve())]
             if movies_glob:
@@ -603,7 +596,7 @@ class ProjectService:
 
     async def load_project_state(self, project_path: str) -> dict[str, Any]:
         """
-        Loads a project using the new StateService.
+        Loads a project via StateService.
         """
         try:
             project_dir = Path(project_path)
@@ -640,16 +633,15 @@ class ProjectService:
             if not load_success:
                 return err(f"StateService failed to load project from {params_file}")
 
-            # CHANGED: use explicit path to get the state we just loaded
+            # Explicit path: the state just loaded
             state = self.backend.state_service.state_for(project_dir)
             self.set_project_root(project_dir)
 
             # Rebuild TS registry if it's absent OR its TS IDs have drifted from
-            # the project mdoc dir stems. Drift detection catches the
-            # pre-fix-bug state where the registry was built from unprefixed
-            # source mdocs and produced TS IDs that don't match what ts_import
-            # writes. Without this, a stale registry sidecar would silently
-            # make every ingest step fail with "TS missing from registry".
+            # the project mdoc dir stems. Drift detection catches a registry
+            # built from unprefixed source mdocs, whose TS IDs don't match what
+            # ts_import writes; such a stale sidecar makes every ingest step
+            # fail with "TS missing from registry".
             try:
                 registry = self.backend.registry_for(project_dir)
                 reg_ids = set(registry.tilt_series_ids())

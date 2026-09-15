@@ -46,7 +46,7 @@ _JOB_LABELS = {jt.value: jt.name.replace("_", " ").title() for jt in JobType}
 # in every section and run to the right edge.
 _LABEL_W = 132
 # Every container row is a plain div inside a ui.column (align-items: flex-start):
-# without an explicit width it shrink-wraps, which is what squeezed the editor left.
+# without an explicit width it shrink-wraps to the left.
 _ROW_BOX = "width: 100%; box-sizing: border-box;"
 # Label-plus-input cells that flow into as many columns as the row allows. The cell
 # is `minmax(200px, 1fr)` and the input takes what the label leaves — so every input

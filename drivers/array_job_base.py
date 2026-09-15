@@ -15,9 +15,6 @@ Any driver that processes tilt series independently can use this module:
     2. Call stage_per_ts_environment() to isolate one TS
     3. Run job-specific WarpTools command
     4. Call write_status_atomic() to report outcome
-
-Extracted from drivers/ts_reconstruct.py to support parallelization of
-fs_motion_and_ctf, ts_alignment, ts_ctf, and future per-TS jobs.
 """
 
 import json
@@ -125,7 +122,7 @@ def write_status_atomic(status_dir: Path, item_name: str, ok: bool) -> None:
     earlier attempt keeps the red failed-task badge lit forever after a
     successful retry. So success clears any prior `.fail`/`.skip`.
 
-    Failure deliberately does NOT clear an existing `.ok`. Normal dispatch never
+    Failure does not clear an existing `.ok`. Normal dispatch never
     re-runs an item that already has `.ok` (see `get_previously_done`), so an
     `.ok` present at failure time means the writer is an orphan from a superseded
     submission and the recorded success is the trustworthy record.
@@ -723,18 +720,15 @@ def install_cancel_handler(array_job_id: str, job_dir: Path) -> None:
 class ArrayDriver(ABC):
     """Template for the supervisor + per-item SLURM-array drivers.
 
-    The eight per-TS drivers each re-implemented the same skeleton: dispatch on
-    SLURM_ARRAY_TASK_ID, two near-identical bootstrap try/excepts, the manifest
-    index lookup, exclusion pre-marking, the results tally, the RELION_JOB_EXIT_*
-    markers, and the fail-status handler. All of that lives here now; a subclass
-    supplies only what is genuinely per-job.
+    The base owns the shared skeleton: dispatch on SLURM_ARRAY_TASK_ID, bootstrap,
+    the manifest index lookup, exclusion pre-marking, the results tally, the
+    RELION_JOB_EXIT_* markers, and the fail-status handler. A subclass supplies
+    only what is per-job.
 
     Required hooks: `enumerate_items`, `build_command`, `aggregate`.
-    Optional hooks exist for the divergences the stage-0 census recorded as
-    deliberate — a supervisor-side compute step before dispatch (ts_ctf's global
-    ts_defocus_hand), in-task idempotency, per-TS staging, output verification,
-    and copy-back. Each defaults to a no-op, so a driver that does not need one
-    does not mention it.
+    Optional hooks cover the per-driver differences — a supervisor-side compute
+    step before dispatch (ts_ctf's global ts_defocus_hand), in-task idempotency,
+    per-TS staging, output verification, and copy-back. Each defaults to a no-op.
 
     Class attributes a subclass must set: `params_class`, `job_name`,
     `driver_script`. `retry_attempts` > 1 routes the tool through
@@ -797,9 +791,8 @@ class ArrayDriver(ABC):
 
     def tally_acceptable(self, ctx: DriverContext, results: ArrayResults) -> bool:
         """False → job FAILED before aggregation. Default: strict (every item
-        must be `.ok`/`.skip`). ts_alignment overrides with its documented
-        tolerant policy (per-TS alignment failure is normal; only a total
-        wipeout is fatal) — census #41."""
+        must be `.ok`/`.skip`). ts_alignment overrides with a tolerant policy
+        (per-TS alignment failure is normal; only a total wipeout is fatal)."""
         return results.all_succeeded
 
     @abstractmethod
@@ -893,10 +886,9 @@ class ArrayDriver(ABC):
             self.pre_dispatch(ctx, items)
 
             if print_cmd_only():
-                # CRBOOST_PRINT_CMD (roadmap 14 Tier A): render every per-item command through
-                # the normal run_command echo — which prints instead of executing — and stop
-                # before anything reaches SLURM. Without this gate the supervisor honoured the
-                # flag only in its tasks and still sbatched a real array.
+                # CRBOOST_PRINT_CMD: render every per-item command through the normal
+                # run_command echo — which prints instead of executing — and stop before
+                # anything reaches SLURM.
                 for item in items:
                     self.execute(ctx, item, self.stage(ctx, item))
                 print(f"[SUPERVISOR] {PRINT_CMD_ENV} set: {len(items)} command(s) printed, nothing submitted")
@@ -989,7 +981,7 @@ class ArrayDriver(ABC):
             try:
                 write_status_atomic(status_dir, label, ok=False)
             except Exception as inner:
-                # Deliberately broad and last-ditch: we are already on the failure path,
-                # and masking the real error with a status-write error helps nobody.
+                # Broad and last-ditch: we are already on the failure path, and a
+                # status-write error must not mask the real error.
                 print(f"[TASK {array_idx}] Could not write fail status: {inner}", file=sys.stderr, flush=True)
             sys.exit(1)

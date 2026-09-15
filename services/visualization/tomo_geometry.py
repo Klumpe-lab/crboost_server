@@ -2,11 +2,8 @@
 
 Before the dashboard can draw a pick, cut a tile, or hand a tomogram to ArtiaX it
 needs four facts: which ``tomograms.star`` describes it, where its reconstructed
-MRC is, its binned dimensions, and its binned pixel size. Those used to be dug out
-in three places with three different fallback chains (the recon-MRC resolver, the
-preview manifest, and the imported-tomogram renderer's inline star arithmetic).
-This module is the single provider — and the single place allowed to answer
-"unknown".
+MRC is, its binned dimensions, and its binned pixel size. This module is the single
+provider of those facts — and the single place allowed to answer "unknown".
 
 **It never invents a pixel size or a dimension.** ``binned_apix is None`` with
 ``apix_provenance == "missing"`` is a first-class result the UI renders as a red

@@ -43,20 +43,19 @@ logger = logging.getLogger(__name__)
 # load.  A major mismatch emits a loud warning; a missing version (pre-versioning
 # files) is treated as (0, 0).
 
-# 3.3: +PickList.source_kind/source_ref + ParticleSpecies.catalog_id (09-S2); 3.4: +created_at (10-S3);
-# 3.5: +ParticleSpecies.catalog_version + ImportedTomograms.batches, -is_aggregation (denovo S5/S6, 12);
-# 3.6: -authoritative_pick_lists (the per-tomogram nomination is gone; merges name their own sources)
-# 3.7: +protocol_origin (roadmap 16 S1: which protocol bundle a project was created from)
-# 3.8: +import_source_kind + acquisition.dose_per_tilt_source (roadmap 18 D3: SerialEM stack ingest)
+# 3.3: +PickList.source_kind/source_ref + ParticleSpecies.catalog_id; 3.4: +created_at;
+# 3.5: +ParticleSpecies.catalog_version + ImportedTomograms.batches, -is_aggregation;
+# 3.6: -authoritative_pick_lists (merges name their own sources)
+# 3.7: +protocol_origin (which protocol bundle a project was created from)
+# 3.8: +import_source_kind + acquisition.dose_per_tilt_source (SerialEM stack ingest)
 SCHEMA_VERSION: tuple[int, int] = (3, 8)
 
 
 def _afterok_global_default() -> bool:
-    """DEV TOGGLE (temporary): repo-config global override (`use_afterok_orchestrator: true` in
-    conf.yaml) so the afterok orchestrator can be exercised on every project without per-project
+    """Temporary dev toggle: repo-config global override (`use_afterok_orchestrator: true` in
+    conf.yaml) that enables the afterok orchestrator on every project without per-project
     project_params.json edits. Applied as the field default (fresh projects) and OR'd into the
-    load path (existing projects); a per-project True always wins. Remove with the config field
-    once the afterok path is validated. See docs/roadmaps/roadmap_orchestrator-replacement.md §6a."""
+    load path (existing projects); a per-project True always wins."""
     try:
         from services.configs.config_service import get_config_service
 
@@ -72,7 +71,7 @@ SHARED_OWNER = "@lab"
 
 # Project-relative location for aggregation merge outputs. Stable name, not under
 # External/ so it can't collide with the schemer's jobNNN allocation. Each named
-# merge writes its own MergedSources/<slug>/ folder (legacy projects wrote a flat
+# merge writes its own MergedSources/<slug>/ folder (older projects have a flat
 # MergedSources/optimisation_set.star).
 MERGED_DIR_NAME = "MergedSources"
 
@@ -132,11 +131,11 @@ def slugify(name: str) -> str:
 
 
 class TemplateMask(BaseModel):
-    """A mask volume registered to a species. v3 makes masks a sibling
-    of templates (not owned by any one template). The `relion_mask_create`
-    knobs and the `derived_from_template_id` provenance let the user
-    later answer "how did I make this mask and from what?". Box/apix are
-    read from the MRC header on demand — never persisted on the model.
+    """A mask volume registered to a species. Masks are siblings of
+    templates, not owned by any one template. The `relion_mask_create`
+    knobs and the `derived_from_template_id` provenance record how the
+    mask was made and from what. Box/apix are read from the MRC header
+    on demand, never persisted on the model.
     """
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
@@ -157,10 +156,9 @@ class TemplateMask(BaseModel):
 
 
 class ParticleTemplate(BaseModel):
-    """A specific template volume + its metadata. v3 allows a species to
-    register many templates (the user selects which one is "current"
-    via species.selected_template_id). Masks are NOT nested here in v3 —
-    they live on species.masks as sibling first-class objects.
+    """A specific template volume + its metadata. A species can register
+    many templates; species.selected_template_id names the current one.
+    Masks are not nested here; they live on species.masks.
 
     `lowpass_resolution_ang` records the resolution this template was
     filtered to (None = unfiltered) — purely metadata, doesn't re-apply
@@ -182,7 +180,7 @@ class ParticleTemplate(BaseModel):
 
 class TemplateWorkbenchUIState(BaseModel):
     """Pure UI widget state for the template workbench. Used to remember
-    layout preferences between sessions. Deliberately small."""
+    layout preferences between sessions."""
 
     auto_box: bool = True
     apply_lowpass: bool = False
@@ -192,7 +190,7 @@ class TemplateWorkbenchUIState(BaseModel):
 class ExtractionParams(BaseModel):
     """Per-species subtomogram extraction geometry.
 
-    NO defaults on purpose. A species picked de novo has no template-matching job
+    No defaults on purpose. A species picked de novo has no template-matching job
     to inherit box/bin/crop from, and guessing them silently produces
     wrong-but-plausible extractions that are painful to trace back. Absent means
     "the user has not decided yet" — the extract dialog must ask.
@@ -214,9 +212,8 @@ class ParticleSpecies(BaseModel):
     origin: str = ""
 
     # The lab-catalog entry this species came from or was published to, and which version
-    # of it (roadmap 12). None/None = project-local, which stays the common case. A BACKLINK
-    # only: import and publish both copy, so nothing here is ever re-read to sync — see
-    # services/particles/catalog.py.
+    # of it. None/None = project-local, the common case. A backlink only: import and publish
+    # both copy, so nothing here is re-read to sync (see services/particles/catalog.py).
     catalog_id: str | None = None
     catalog_version: int | None = None
 
@@ -233,10 +230,10 @@ class ParticleSpecies(BaseModel):
     symmetry: str = "C1"
     notes: str = ""
 
-    # ── v3 decoupled collections ─────────────────────────────────────────
+    # ── Templates and masks ──────────────────────────────────────────────
     # Templates and masks are independent registers; the workbench manages
     # both, the user selects which is "active" per category. New
-    # generations APPEND (not replace) so prior work isn't lost.
+    # generations append rather than replace, so prior work is kept.
     templates: list[ParticleTemplate] = Field(default_factory=list)
     masks: list[TemplateMask] = Field(default_factory=list)
     selected_template_id: str = ""
@@ -266,13 +263,11 @@ class ParticleSpecies(BaseModel):
 def _migrate_v1_to_v2(data: dict[str, Any]) -> None:
     """Idempotent v1→v2 migration. Mutates `data` in place.
 
-    PR 1 of the template-first-class refactor is additive: old fields
-    (species.template_path, species.mask_path, species.workbench, the
-    particle_diameter_ang on the candidate-extract job, symmetry on the
-    TM job) stay on disk so code paths not yet ported keep working. New
-    mirrors land on species.template, species.diameter_ang,
-    species.symmetry, species.workbench_ui. Old fields are removed in
-    PR 3 once all readers have flipped.
+    Additive: v1 fields (species.template_path, species.mask_path,
+    species.workbench, the particle_diameter_ang on the candidate-extract
+    job, symmetry on the TM job) stay; mirrors land on species.template,
+    species.diameter_ang, species.symmetry, species.workbench_ui. The
+    v2→v3 migration drops the species-level v1 fields.
     """
     if tuple(data.get("schema_version", (0, 0)))[:2] >= (2, 0):
         return
@@ -307,9 +302,8 @@ def _migrate_v1_to_v2(data: dict[str, Any]) -> None:
                 k: wb[k] for k in ("auto_box", "apply_lowpass", "basic_shape_def", "auto_infer_seed") if k in wb
             }
 
-    # Lift particle-intrinsic fields off job models onto the species. Old
-    # fields stay on the job model for now (PR 1 is additive); PR 3 removes
-    # them once readers have flipped.
+    # Copy particle-intrinsic fields from job models onto the species. The
+    # job-model fields stay.
     for jm in data.get("jobs", {}).values():
         if not isinstance(jm, dict):
             continue
@@ -330,12 +324,10 @@ def _migrate_v1_to_v2(data: dict[str, Any]) -> None:
 def _migrate_v2_to_v3(data: dict[str, Any], project_root: Path | None) -> None:
     """v2 → v3 migration: decouple masks from templates; promote both to
     sibling collections on the species (`species.templates` /
-    `species.masks`) with UUID identity. Drop the seed concept entirely
-    (mask-creation uses the white template + thresholding; seeds were a
-    fidelity optimization we don't need). Hard cut — v2 fields are
-    removed at migration time. The filesystem `templates/<sid>/` folder
-    is walked to register any orphan .mrc files left behind by prior
-    workbench sessions.
+    `species.masks`) with UUID identity. Seeds are dropped (mask creation
+    uses the white template + thresholding). v2 fields are removed. The
+    filesystem `templates/<sid>/` folder is walked to register any orphan
+    .mrc files left behind by earlier workbench sessions.
 
     Idempotent and version-guarded.
     """
@@ -416,8 +408,8 @@ def _migrate_v2_to_v3(data: dict[str, Any], project_root: Path | None) -> None:
                 for f in files:
                     fname = f.name
                     fpath = str(f)
-                    # Seeds are no longer first-class — skip the binary
-                    # ellipsoid precursors left by basic-shape generation.
+                    # Skip seeds: binary ellipsoid precursors left by
+                    # basic-shape generation.
                     if fname.endswith("_seed.mrc"):
                         continue
                     is_mask = fname.endswith("_mask.mrc")
@@ -452,7 +444,7 @@ def _migrate_v2_to_v3(data: dict[str, Any], project_root: Path | None) -> None:
         sp["selected_template_id"] = selected_template_id or ""
         sp.setdefault("selected_mask_id", "")
 
-        # ── Hard cut: drop v2 fields ───────────────────────────────────
+        # ── Drop v2 fields ─────────────────────────────────────────────
         for legacy in ("template", "template_path", "mask_path", "workbench"):
             sp.pop(legacy, None)
         # workbench_ui loses the obsolete auto_infer_seed knob.
@@ -519,7 +511,7 @@ class AggregationMerge(BaseModel):
 class PickList(BaseModel):
     """One pick list in the per-(species, tomo) curation workbench.
 
-    Only workbench-AUTHORED lists (manual/imported/merged) are persisted here.
+    Only workbench-authored lists (manual/imported/merged) are persisted here.
     The `auto` (PyTOM candidates.star) and `filtered` (particles_filtered.star)
     lists are disk-backed and synthesized at render time, never stored — so the
     registry can't go stale against the files the resolver already owns. `slug`
@@ -532,13 +524,13 @@ class PickList(BaseModel):
     tomo_name: str = ""
     path: str = ""  # the .star/.coords file backing this list
     count: int = 0  # cached pick count, for display
-    color: str = "#3b82f6"  # LEGACY (roadmap 09-S2): lists render in species.color; kept so old JSON loads
+    color: str = "#3b82f6"  # unused: lists render in species.color; kept so old JSON loads
     visible: bool = True  # persisted so the toggle survives reloads
     parent_slugs: list[str] = Field(default_factory=list)  # provenance for derived lists
     created_at: datetime = Field(default_factory=datetime.now)
     created_by: str = ""
 
-    # Provenance (roadmap 09-S2): where the coordinates came from. `source_kind` is a
+    # Provenance: where the coordinates came from. `source_kind` is a
     # PickSourceKind value ("tm" | "artiax" | "import" | "merge"; "" on lists that
     # pre-date the field), `source_ref` names the source (CE instance id · .coords
     # stem · imported path · "a+b+c" parent slugs).
@@ -546,16 +538,14 @@ class PickList(BaseModel):
     source_ref: str = ""
 
     # ── Per-list subtomo extraction tracking ─────────────────────────────────
-    # Manual/imported/merged lists are raw COORDINATES (never extracted), so they
-    # can't go downstream until their picks are subtomo-extracted. Extraction is
-    # scoped PER LIST (each list's particles land in their own output, recorded in
-    # `extracted_path`) and the user triggers it per list — neither fully automatic
-    # (no throwaway re-extractions) nor tedious. We persist the durable facts and
-    # DERIVE the state (extraction_state()) so no stored boolean can drift from disk
-    # truth (cf. the stuck-yellow stale-flag bug). `extracted_path` is the
-    # optimisation_set.star produced by extracting THIS list — the per-list handle
-    # a merge source can point at.
-    extracted_path: str = ""  # optimisation_set.star from extracting THIS list ("" = never extracted)
+    # Manual/imported/merged lists are raw coordinates, so they can't go downstream
+    # until their picks are subtomo-extracted. Extraction is per list (each list's
+    # particles land in their own output, recorded in `extracted_path`) and
+    # user-triggered, which avoids throwaway re-extractions. Only the durable facts are
+    # stored; the state is derived (extraction_state()) so no stored flag can drift
+    # from disk. `extracted_path` is the optimisation_set.star produced by extracting
+    # this list, the per-list handle a merge source can point at.
+    extracted_path: str = ""  # optimisation_set.star from extracting this list ("" = never extracted)
     extracted_count: int = 0  # picks covered by that extraction (≠ count ⇒ picks added/removed ⇒ stale)
     extracted_at: datetime | None = None  # when the extraction ran (vs source mtime ⇒ in-place edits ⇒ stale)
 
@@ -573,7 +563,7 @@ class PickList(BaseModel):
             return ListExtractionState.NOT_EXTRACTED
         # Picks changed since extraction? Count delta is the cheap add/remove signal;
         # the source star's mtime (vs when extraction ran) catches in-place edits that
-        # keep the same count (a moved pick). Per-list extraction consumes the KEPT
+        # keep the same count (a moved pick). Per-list extraction consumes the kept
         # subset, so compare against filtered_count (the kept count) when a keep/drop
         # filter is committed — else extracting 4-of-7 would read as stale at once.
         expected_count = self.filtered_count if self.filtered_count is not None else self.count
@@ -582,7 +572,7 @@ class PickList(BaseModel):
         if self.extracted_at is not None and self.path:
             try:
                 # Extraction consumes the curated subset (<stem>_filtered.star) when a
-                # keep/drop filter is committed; re-curation rewrites THAT file, not the
+                # keep/drop filter is committed; re-curation rewrites that file, not the
                 # base star, so a same-count swap (drop A, keep B) only bumps the filtered
                 # star's mtime. Stat whichever file the extraction actually consumed.
                 base = Path(self.path)
@@ -602,11 +592,11 @@ class PickList(BaseModel):
 
 
 class ImportBatch(BaseModel):
-    """ONE import action: what the user selected, once. The committed
+    """One import action: what the user selected, once. The committed
     ``Tomograms/tomograms.star`` is rebuilt from the whole batch list on every commit, so a
-    batch is the unit of provenance AND the unit of removal — nothing is edited in place.
+    batch is the unit of provenance and the unit of removal; nothing is edited in place.
 
-    ``renamed`` / ``skipped`` are that rebuild's report FOR THIS BATCH: a tomogram name that
+    ``renamed`` / ``skipped`` are that rebuild's report for this batch: a tomogram name that
     collided with an earlier batch's was renamed (the earlier one keeps its name, and its
     picks with it), and a recon file already imported by an earlier batch was skipped rather
     than duplicated. Both are recorded, never silent — the same rule
@@ -636,15 +626,15 @@ class ImportBatch(BaseModel):
 
 class ImportedTomograms(BaseModel):
     """Tomograms injected into a project via the PARTICLES-header import utility — a
-    project-level artifact, NOT a pipeline job. The committed ``tomograms.star`` lives at
+    project-level artifact, not a pipeline job. The committed ``tomograms.star`` lives at
     ``star_path`` (``Tomograms/tomograms.star``, project-relative). See
-    services/tomogram_import.py + PARTICLE_PROJECT_ROADMAP.md (P1, un-job-ified).
+    services/tomogram_import.py.
 
-    ``batches`` is the source of truth since de-novo S5; the scalar source fields below it
-    are the LAST batch, kept so the dialog reopens on the prior selection and so records
-    written before S5 still load. They are never read for the rebuild — ``effective_batches``
-    is what does that, and it folds a pre-S5 record into a single synthetic batch so one
-    additional import does not silently drop what was already there."""
+    ``batches`` is the source of truth; the scalar source fields below it mirror the last
+    batch, so the dialog reopens on the prior selection and older records without batches
+    still load. The rebuild never reads them directly: ``effective_batches`` folds a
+    batch-less record into a single synthetic batch so an additional import does not drop
+    what was already there."""
 
     star_path: str = ""  # project-relative (or absolute) path to the committed tomograms.star
     batches: list[ImportBatch] = Field(default_factory=list)
@@ -658,9 +648,9 @@ class ImportedTomograms(BaseModel):
     imported_at: datetime = Field(default_factory=datetime.now)
 
     def effective_batches(self) -> list[ImportBatch]:
-        """The batch list to rebuild from. A record written before S5 has none, so its
-        scalar fields ARE its one batch — reconstructed here rather than migrated on load,
-        so a project that is only ever read keeps its file untouched."""
+        """The batch list to rebuild from. An older record has no batches, so its scalar
+        fields are its one batch, reconstructed here rather than migrated on load so a
+        project that is only ever read keeps its file untouched."""
         if self.batches:
             return list(self.batches)
         if not (self.source_paths or self.reference_star):
@@ -680,7 +670,7 @@ class ImportedTomograms(BaseModel):
 
 
 class ProtocolOrigin(BaseModel):
-    """Which protocol bundle a project was created from (roadmap 16 S1). Stamped by
+    """Which protocol bundle a project was created from. Stamped by
     `services/protocols/apply.apply_protocol`; the frozen copy of the bundle's protocol.yaml
     lives at `<project>/protocol/protocol.yaml` and is what the Protocols view's "edited"
     chips compare against — the bundle itself may change after the apply."""
@@ -712,10 +702,10 @@ class ProjectState(BaseModel):
     owner: str | None = None
     job_path_mapping: dict[str, str] = Field(default_factory=dict)
 
-    # Transient load report (roadmap 03 stage 5): human-readable messages for every
-    # block load() had to drop or reset (schema drift, corrupt sub-payloads). Shown
-    # once in the UI after project open so silent data loss becomes visible.
-    # exclude=True — never persisted; it describes THIS load, not the project.
+    # Transient load report: human-readable messages for every block load() had to
+    # drop or reset (schema drift, corrupt sub-payloads). Shown once in the UI after
+    # project open so silent data loss becomes visible.
+    # exclude=True: never persisted; it describes this load, not the project.
     load_warnings: list[str] = Field(default_factory=list, exclude=True)
 
     movies_glob: str = ""
@@ -723,10 +713,9 @@ class ProjectState(BaseModel):
 
     # Cross-project merge: particles from several projects, merged into
     # MergedSources/<slug>/ and consumed downstream through the synthetic
-    # `mergedSources` producer. NOT a project type — the `is_aggregation` flag that used
-    # to mark one was deleted by de-novo S6 (any project can merge; an old project's
-    # persisted `true` is simply ignored on load). Sources persist here so the user can
-    # re-merge after adding more datasets.
+    # `mergedSources` producer. Not a project type: any project can merge, and an older
+    # project's `is_aggregation` key is ignored on load. Sources persist here so the user
+    # can re-merge after adding more datasets.
     aggregation_sources: list[AggregationSource] = Field(default_factory=list)
     aggregation_merges: list[AggregationMerge] = Field(default_factory=list)
     active_merge_slug: str = ""
@@ -736,43 +725,38 @@ class ProjectState(BaseModel):
     slurm_defaults: SlurmConfig = Field(default_factory=SlurmConfig.from_config_defaults)
 
     jobs: dict[str, SerializeAsAny[AbstractJobParams]] = Field(default_factory=dict)
-    # Persisted pipeline membership + submit order (instance_ids). Historically the
-    # participating set + order lived ONLY in UIState.selected_jobs (per-browser-tab
-    # NiceGUI storage); persisting it here lets a tab-less submitter/reconciler know
-    # the run set. Written through at deploy; backfilled from `jobs` on load for
-    # legacy projects. See docs/roadmaps/roadmap_orchestrator-replacement.md §6 (P1.0).
+    # Persisted pipeline membership + submit order (instance_ids). Kept here, not only in
+    # UIState.selected_jobs (per-browser-tab NiceGUI storage), so a tab-less
+    # submitter/reconciler knows the run set. Written through at deploy; backfilled from
+    # `jobs` on load for projects without the field.
     pipeline_order: list[str] = Field(default_factory=list)
     species_registry: list[ParticleSpecies] = Field(default_factory=list)
     # Per-(species, tomo) manual-curation workbench. Only workbench-authored
     # lists (manual/imported/merged) persist here; `auto`/`filtered` are
     # disk-backed and synthesized at render time so this never goes stale
-    # against the files the resolver owns. See docs/roadmaps/completed/roadmap_artiax-bridge.md
-    # "## Curation workbench — the multi-list model".
+    # against the files the resolver owns.
     pick_lists: list[PickList] = Field(default_factory=list)
-    # A per-(species, tomo) `authoritative_pick_lists` dict used to live here: which ONE list
-    # downstream extraction / aggregation consumed. It is gone — what feeds a refinement is
-    # the source set the user selects in the Aggregate-candidates flow, in front of the merge
-    # it produces, so there is nothing left for a stored nomination to decide. Old
-    # project_params.json files may still carry the key; it is simply not read.
+    # Older project_params.json files carry an `authoritative_pick_lists` key; it is not
+    # read. What feeds a refinement is the source set the user selects in the
+    # Aggregate-candidates flow.
     # Tomograms injected via the PARTICLES-header import utility (particle-only projects
     # with no upstream recon). A project-level artifact, not a job — see ImportedTomograms
     # / services/tomogram_import.py. None ⇒ no import committed.
     imported_tomograms: ImportedTomograms | None = None
     pipeline_active: bool = Field(default=False)
 
-    # Orchestrator rework (P1.A): per-project opt-in to the SLURM afterok submit path
-    # (submit_chain) instead of relion_schemer. Default False (schemer) so a test
-    # project can exercise the afterok DAG while existing projects are unaffected.
-    # Live status under this flag requires the P1.B reconciler. See
-    # docs/roadmaps/roadmap_orchestrator-replacement.md §6.
+    # Per-project opt-in to the SLURM afterok submit path (submit_chain) instead of
+    # relion_schemer. Off unless set here or by the conf.yaml global toggle, so existing
+    # projects stay on the schemer. Live status under this flag requires the afterok
+    # reconciler.
     use_afterok_orchestrator: bool = Field(default_factory=_afterok_global_default)
-    # Roadmap 16 S1: provenance of a project created from a protocol bundle; None for a
-    # hand-built project. Additive, and restored explicitly in load() (field-by-field).
+    # Provenance of a project created from a protocol bundle; None for a hand-built
+    # project. Restored explicitly in load() (field-by-field).
     protocol_origin: ProtocolOrigin | None = None
     # Sole job-dir-number allocator for the afterok path. Seeded once from
     # default_pipeline.star's rlnPipeLineJobCounter at the first submit_chain, then
-    # monotonic -- always consumes a slot (no reuse-on-rerun), which fixes the
-    # job-number off-by-one. 0 = unseeded.
+    # monotonic: always consumes a slot (no reuse on rerun), which avoids a job-number
+    # off-by-one after abort + redeploy. 0 = unseeded.
     job_dir_counter: int = 0
 
     # Dataset import summary (set at project creation)
@@ -782,21 +766,20 @@ class ProjectState(BaseModel):
     import_selected_tilt_series: int = 0
     import_source_directory: str = ""
     import_frame_extension: str = ""
-    # Which delivery layer Create imported (roadmap 18 D3): "" legacy / "movies" (one file
+    # Which delivery layer Create imported: "" legacy / "movies" (one file
     # per tilt, symlinked) / "stacks" (SerialEM tilt stacks split into frames/). Drives the
     # job-init stamps in ensure_job_initialized, the roster Dataset rows and the
     # tsReconstruct tab hint — nothing else.
     import_source_kind: str = ""
-    # Per-TS/per-tilt import details + filter labels used to be mirrored here
-    # (import_position_details / import_tilt_series_details / tilt_metadata /
-    # tilt_filter_labels); the TiltSeriesRegistry is the single source now
-    # (roadmap 02 stage 4). Old JSON keys are ignored on load and dropped on
-    # the next save (forward-only migration).
+    # Per-TS/per-tilt import details and filter labels live in the TiltSeriesRegistry.
+    # Older files carry import_position_details / import_tilt_series_details /
+    # tilt_metadata / tilt_filter_labels; those keys are ignored on load and dropped on
+    # the next save.
     tilt_filter_png_dir: str | None = None
 
     _dirty: bool = PrivateAttr(default=False)
-    # Non-persisted change counter for species / templates / masks / pick lists
-    # (roadmap 08 §1). Wake-up input for poll gates only;
+    # Non-persisted change counter for species / templates / masks / pick lists.
+    # Wake-up input for poll gates only;
     # DOM gates use precise tuples (species_identity). Never bumped by mark_dirty.
     _registry_rev: int = PrivateAttr(default=0)
 
@@ -804,7 +787,7 @@ class ProjectState(BaseModel):
     @classmethod
     def _migrate_aggregation_sources(cls, v):
         """Coerce legacy `List[str]` (bare optset paths) into AggregationSource.
-        Pre-fine-selection projects stored only paths; treat each as all-tomos."""
+        Older projects store only paths; each is treated as all tomos."""
         if not isinstance(v, list):
             return v
         return [{"optset_path": s} if isinstance(s, str) else s for s in v]
@@ -930,8 +913,7 @@ class ProjectState(BaseModel):
         )
         self.species_registry.append(species)
         self.update_modified()
-        # mark_dirty: StateService.save_project writes only when dirty (or forced) —
-        # without this a created species was silently not persisted (roadmap 08 H1).
+        # mark_dirty: StateService.save_project writes only when dirty (or forced).
         self.mark_dirty()
         self.bump_registry_rev()
         return species
@@ -946,7 +928,7 @@ class ProjectState(BaseModel):
         pick_lists = [f"{pl.tomo_name}/{pl.slug}" for pl in self.pick_lists if pl.species_id == species_id]
         # A per-particle job names its species EITHER on the model (`species_id`) or in
         # its instance-id suffix (`templatematching__ribosome`) — both are explicit, and
-        # a delete that misses one leaves an orphan job in the roster. Deliberately NOT
+        # a delete that misses one leaves an orphan job in the roster. Not
         # `resolve_species`: its single-species fallback would attribute every per-particle
         # job to the last remaining species, so deleting that species would take the whole
         # particle chain with it.
@@ -958,7 +940,7 @@ class ProjectState(BaseModel):
         # Overrides pointing at one of this species' pick-list producers. The resolver
         # key is "<jobtype>:<instance_path>" and a per-list producer's instance path is
         # `pick_list__<species>__<tomo>__<slug>` (path_resolution_service.
-        # pick_list_producer_id). Match on the SPECIES-scoped prefix, never on slug:
+        # pick_list_producer_id). Match on the species-scoped prefix, never on slug:
         # hand-picked lists are slugged after their .coords file and the same name recurs
         # across species, so a slug match would purge other species' overrides too.
         from services.path_resolution_service import pick_list_producer_prefix_for_species
@@ -972,14 +954,13 @@ class ProjectState(BaseModel):
         return {"pick_lists": pick_lists, "jobs": jobs, "source_overrides": overrides}
 
     def remove_species(self, species_id: str) -> bool:
-        """Drop a species from the registry AND purge everything referencing it.
+        """Drop a species from the registry and purge everything referencing it.
 
         Returns True if removed. File cleanup (templates/<sid>/, Curation/<sid>/)
         is the caller's responsibility — this method only mutates in-memory state.
 
-        Previously this dropped only the registry entry, leaving pick lists and
-        resolver overrides pointing at a species that no longer exists; those dangling
-        refs then resolved to nothing at deploy time, far from the delete that caused them.
+        Pick lists and resolver overrides left pointing at a deleted species would
+        resolve to nothing at deploy time, far from the delete that caused them.
         """
         before = len(self.species_registry)
         self.species_registry = [s for s in self.species_registry if s.id != species_id]
@@ -1080,7 +1061,7 @@ class ProjectState(BaseModel):
                 "Auto-set rescale_angpixs = %s (%s * %s)", computed, self.microscope.pixel_size_angstrom, binning
             )
 
-        # Data facts stamped at init (roadmap 18 D5) — the detector's frame size is what
+        # Data facts stamped at init: the detector's frame size is what
         # the reconstruction volume must cover, and a single-frame input (SerialEM stacks
         # split into one .mrc per tilt) has no even/odd halves to average or reconstruct.
         # Both are facts of the data, not preferences; the user can still edit the tab.
@@ -1140,9 +1121,8 @@ class ProjectState(BaseModel):
         out the run, the species binding, the I/O overrides and the recorded job dir.
 
         The replacement value is the field's own declared default, never a guess, and
-        every repair is surfaced through `load_warnings` (CLAUDE.md: never fail silently).
-        A model that is still invalid without the offending keys raises — the caller
-        reports and skips, which is the old behavior.
+        every repair is surfaced through `load_warnings`. A model that is still invalid
+        without the offending keys raises; the caller reports and skips the instance.
         """
         try:
             return param_class(**job_data), []
@@ -1253,12 +1233,11 @@ class ProjectState(BaseModel):
                 project_state.load_warnings.append(f"Imported-tomograms record could not be loaded ({e})")
 
         # Restore aggregation state (cross-project merge). load() is field-by-field,
-        # so these MUST be restored explicitly -- otherwise a reloaded project (a UI
-        # restart OR a SLURM driver loading from disk) silently loses its merge
+        # so these must be restored explicitly; otherwise a reloaded project (a UI
+        # restart or a SLURM driver loading from disk) silently loses its merge
         # registry, the synthetic `mergedSources` resolver candidate vanishes, and
         # consumers fail to resolve input_optimisation at drive time. A legacy
-        # `is_aggregation` key is TOLERATED AND IGNORED (de-novo S6 deleted the flag and
-        # opened merging to every project); it is simply not read back.
+        # `is_aggregation` key is ignored.
         project_state.active_merge_slug = data.get("active_merge_slug", "")
         try:
             # Mirror the _migrate_aggregation_sources validator (direct construction
@@ -1278,7 +1257,7 @@ class ProjectState(BaseModel):
             project_state.load_warnings.append(f"Aggregation merges could not be loaded and were reset ({e})")
             project_state.aggregation_merges = []
 
-        # Restore curation workbench pick lists (same field-by-field drop bug).
+        # Restore curation workbench pick lists (explicit, same reason).
         try:
             project_state.pick_lists = [PickList(**p) for p in data.get("pick_lists", [])]
         except Exception as e:
@@ -1295,8 +1274,8 @@ class ProjectState(BaseModel):
         project_state.import_frame_extension = data.get("import_frame_extension", "")
         project_state.import_source_kind = data.get("import_source_kind", "")
         # import_position_details / import_tilt_series_details / tilt_metadata /
-        # tilt_filter_labels keys from older projects are deliberately ignored —
-        # the TiltSeriesRegistry is the single source (dropped on next save).
+        # tilt_filter_labels keys from older projects are ignored: the
+        # TiltSeriesRegistry is the single source (dropped on next save).
 
         project_state.tilt_filter_png_dir = data.get("tilt_filter_png_dir")
 
@@ -1325,11 +1304,11 @@ class ProjectState(BaseModel):
                 logger.exception("Skipping job instance '%s' - failed to deserialize", instance_id)
                 project_state.load_warnings.append(f"Job '{instance_id}' could not be loaded and was skipped ({e})")
 
-        # One list per saved .coords (picking-UI roadmap 10-S2): rename pre-10 lists that
-        # all shared the slug "manual", re-keying their per-list extraction job instance and
-        # any override onto their producer. Placed HERE — after the jobs load (it moves job
-        # entries) and before pipeline_order is derived from `jobs.keys()` for legacy
-        # projects that predate that field, which would otherwise keep the pre-rename id.
+        # One list per saved .coords: rename older lists that all share the slug "manual",
+        # re-keying their per-list extraction job instance and any override onto their
+        # producer. Runs after the jobs load (it moves job entries) and before
+        # pipeline_order is derived from `jobs.keys()` for projects without that field,
+        # which would otherwise keep the pre-rename id.
         # Local import: services.particles pulls the job-spec/dashboard chain, which must
         # not become a module-level dependency of ProjectState.
         from services.particles.ingest import migrate_legacy_manual_slugs, relabel_seed_rows
@@ -1343,24 +1322,22 @@ class ProjectState(BaseModel):
         if renamed or relabelled:
             project_state.mark_dirty()
 
-        # pipeline_order (P1.0): use the persisted value; for legacy projects that
-        # predate the field, backfill from the loaded job set in file order -- every
-        # initialized job is part of the pipeline. The authoritative value is the
-        # write-through at deploy.
+        # pipeline_order: use the persisted value; for projects without the field,
+        # backfill from the loaded job set in file order (every initialized job is part
+        # of the pipeline). The authoritative value is the write-through at deploy.
         _persisted_order = data.get("pipeline_order") or list(project_state.jobs.keys())
-        # Drop instance_ids whose job failed to deserialize (e.g. a removed JobType like
-        # the former 'importtomograms') so pipeline_order never references a ghost job.
+        # Drop instance_ids whose job failed to deserialize (e.g. a removed JobType such
+        # as 'importtomograms') so pipeline_order never references a ghost job.
         project_state.pipeline_order = [iid for iid in _persisted_order if iid in project_state.jobs]
 
-        # Orchestrator rework (P1.A): explicit restore (load() is field-by-field, not
-        # cls(**data)). Both are additive optional fields, so defaulting keeps legacy
-        # projects on the schemer path untouched.
+        # Explicit restore (load() is field-by-field, not cls(**data)). Both fields are
+        # optional, so defaulting keeps older projects on the schemer path.
         project_state.use_afterok_orchestrator = (
             data.get("use_afterok_orchestrator", False) or _afterok_global_default()
         )
         project_state.job_dir_counter = data.get("job_dir_counter", 0)
 
-        # Roadmap 16 S1: protocol provenance — explicit restore, same reason as above. A
+        # Protocol provenance: explicit restore, same reason as above. A
         # malformed block is reported through load_warnings, never silently dropped.
         _po = data.get("protocol_origin")
         if _po:
@@ -1375,7 +1352,6 @@ class ProjectState(BaseModel):
 # =========================================================================
 # Path-keyed ProjectState registry
 #
-# Replaces the old module-level _project_state singleton.
 # Each project directory gets exactly one ProjectState instance.
 # Two browser tabs on the same project share the same instance.
 # Two tabs on different projects get different instances.
@@ -1439,7 +1415,7 @@ class StateService:
         if not mdoc_data:
             return
 
-        # CHANGED: explicit path when available (initialize_new_project
+        # Explicit path when available (initialize_new_project
         # calls this before the UI tab has a project_path set)
         if project_path:
             s = self.state_for(project_path)
@@ -1463,9 +1439,9 @@ class StateService:
             # In-memory state is authoritative — it may be ahead of disk
             # while a pipeline is running (sync_all_jobs updates job
             # execution_status/relion_job_name on every tick). Re-reading
-            # from disk here would clobber those in-flight updates, which
-            # was the root cause of jobs appearing stuck at the deploy-time
-            # Scheduled state after a pipeline run. get_project_state_for
+            # from disk here would clobber those in-flight updates and leave
+            # jobs stuck at their deploy-time Scheduled state after a
+            # pipeline run. get_project_state_for
             # already loads from disk only when no instance is registered.
             state = get_project_state_for(project_path)
             if state.project_path is None:
@@ -1477,7 +1453,7 @@ class StateService:
     async def save_project(self, project_path: Path, *, force: bool = False):
         """Persist the registered ProjectState for `project_path` (skipped when
         the state isn't dirty, unless `force`). Explicit path only — UI-triggered
-        saves go through backend.save_project (roadmap 01 stage 4)."""
+        saves go through backend.save_project."""
         async with self._save_lock:
             state = get_project_state_for(project_path)
             if not state.project_path:

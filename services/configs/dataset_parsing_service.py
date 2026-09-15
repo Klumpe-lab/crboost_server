@@ -5,7 +5,7 @@ Parses cryo-ET dataset directories into a structured position/tilt-series hierar
 One mdoc = one tilt-series, named after the mdoc file. Each mdoc's ZValue sections
 provide the definitive frame-to-tilt-series association; the source layer of each
 series (per-tilt movies vs a SerialEM stack beside the mdoc) is inferred per mdoc
-(roadmap 18 D1) and never chosen by the user.
+and never chosen by the user.
 """
 
 import glob
@@ -149,7 +149,7 @@ class DatasetParsingService:
     def _classify_source(
         self, mdoc_path: Path, tilts: list[TiltInfo], facts: MdocFacts
     ) -> tuple[SourceKind, tuple[Path, int] | None]:
-        """Roadmap 18 D1: movies when every SubFramePath resolved; stack when
+        """Movies when every SubFramePath resolved; stack when
         `<mdoc dir>/<ImageFile>` is an MRC with nz == sections; both complete →
         SerialEM prefers the (frame-aligned) stack, Tomo5 the movies."""
         movies_complete = bool(tilts) and all(t.frame_path is not None for t in tilts)

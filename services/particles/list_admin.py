@@ -1,4 +1,4 @@
-"""Pick-list administration (roadmap 11-S2): delete ONE workbench list, headless.
+"""Pick-list administration: delete one workbench list, headless.
 
 The counterpart of ``species_admin.delete_species`` at list granularity, for the Species
 page's Picks tab. ``pick_list_files`` names what a delete removes so the confirm dialog
@@ -9,12 +9,9 @@ fatal — the registry entry goes even when a file is stuck.
 A ``manual`` list is re-derived by the ``CurationWatcher`` from the user's ``.coords`` save
 in the tomogram's curation dir (after a restart the ``_seen`` set is empty), so deleting it
 means deleting that save too — it is listed, and the archived ``imports/`` copies are kept
-for provenance. Since roadmap 10-S2 the match is by file STEM, so deleting one hand-picked
-list leaves the other lists saved in the same session alone — and deleting the seeded default
-``picks`` list (13-S1) deletes its seed file with it; the next *Curate picks* re-seeds a fresh
-0-pick one. The authoritative choice is NOT
-rewritten: a dangling choice surfaces through the gate ("dangling choice") and the Picks
-tab's radio, instead of silently falling back to ``auto``.
+for provenance. The match is by file stem, so deleting one hand-picked list leaves the
+other lists saved in the same session alone, and deleting the seeded default ``picks`` list
+deletes its seed file with it; the next *Curate picks* re-seeds a fresh 0-pick one.
 """
 
 from __future__ import annotations
@@ -37,16 +34,15 @@ logger = logging.getLogger(__name__)
 def pick_list_files(pl: PickList) -> dict[str, list[Path]]:
     """What deleting ``pl`` removes, by kind: ``stars`` (its star + ``<stem>_filtered.star``
     when present), ``dirs`` (the per-list extraction output) and, for a ``manual`` list,
-    ``coords`` (the ONE user save the watcher would re-register this list from). Only paths
+    ``coords`` (the one user save the watcher would re-register this list from). Only paths
     that exist are listed.
 
-    Both narrowed by roadmap 10-S2, which made a manual list per saved ``.coords``:
-    ``coords`` matches this list's own source file by stem — deleting one list must not
-    take its neighbours' saves with it — and the extraction dir is taken from the RECORDED
-    ``extracted_path`` when there is one, since a list migrated off the old shared
-    ``manual`` slug has an output dir that no longer matches its slug.
+    A manual list exists per saved ``.coords``, so ``coords`` matches this list's own source
+    file by stem — deleting one list must not take its neighbours' saves with it. The
+    extraction dir is taken from the recorded ``extracted_path`` when there is one: older
+    lists shared a single ``manual`` slug, and their output dir does not match the slug.
 
-    An AGGREGATE list is its whole ``MergedSources/<name>/`` directory, not its
+    An aggregate list is its whole ``MergedSources/<name>/`` directory, not its
     ``particles.star``: the merge wrote four more files beside it (tomograms, optimisation
     set, provenance, summary), and an ``optimisation_set.star`` left behind still reads as a
     live merged source to everything that probes that path."""
@@ -95,15 +91,15 @@ async def delete_pick_list(project_path: Path, species_id: str, tomo_name: str, 
             logger.warning("Could not remove %s: %s", d, e)
             errors.append(f"Could not remove {d.name}/: {e}")
 
-    # The per-list extraction instance describes THIS list (roadmap 07) and its out dir has
-    # just gone with `files["dirs"]`. It has to go too: a `manual` list is re-minted under the
-    # same slug by the curation watcher on the next save, and would otherwise inherit the
+    # The per-list extraction instance describes this list and its out dir has just gone
+    # with `files["dirs"]`. It has to go too: a `manual` list is re-minted under the same
+    # slug by the curation watcher on the next save, and would otherwise inherit the
     # deleted list's status and failure text until something resubmits it.
-    # PRECONDITION the caller owns: any in-flight extraction of this list is already cancelled
+    # Precondition the caller owns: any in-flight extraction of this list is already cancelled
     # (`backend.cancel_pick_list_extraction`). Popping the instance discards the only record of
-    # its SLURM id, and the job would re-create the directory just deleted — so a delete that
-    # skips the cancel leaves an orphan nothing in the project can stop or explain. Kept out of
-    # here rather than done here: this module is UI-free and holds no SlurmService.
+    # its SLURM id, and the job would re-create the directory just deleted, leaving an orphan
+    # nothing in the project can stop. The cancel is not done here because this module is
+    # UI-free and holds no SlurmService.
     state.jobs.pop(extract_pick_list_instance_id(species_id, tomo_name, slug), None)
     state.remove_pick_list(slug, species_id, tomo_name)
     # Awaited, not fire-and-forget: a create_task here could be GC'd before it runs and

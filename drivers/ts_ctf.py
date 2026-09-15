@@ -35,12 +35,12 @@ from services.tilt_series.adapters import TsCtfIngestAdapter
 
 # The supervisor copies the upstream settings file and tomostar dir into the job dir
 # once; every array task then stages from those copies. They are a supervisor↔task
-# contract, NOT resolver outputs — nothing declares them as OutputSlots, and the
-# resolver's `warp_tiltseries_settings` input points at the UPSTREAM (alignment) file,
-# not at our copy of it. Both ends name them here because a task looking for a name the
-# supervisor never wrote fails staging outright (ledger #8). The literals are dictated
-# by the settings file's own relative DataFolder="tomostar" /
-# ProcessingFolder="warp_tiltseries" keys, so they are not free choices.
+# contract, not resolver outputs: nothing declares them as OutputSlots, and the
+# resolver's `warp_tiltseries_settings` input points at the upstream (alignment) file,
+# not at our copy. Both ends read the names from here because a task looking for a name
+# the supervisor never wrote fails staging outright. The literals are dictated by the
+# settings file's own relative DataFolder="tomostar" / ProcessingFolder="warp_tiltseries"
+# keys.
 LOCAL_SETTINGS_NAME = "warp_tiltseries.settings"
 LOCAL_TOMOSTAR_NAME = "tomostar"
 
@@ -250,10 +250,9 @@ class TsCtfDriver(ArrayDriver):
         self.log("Defocus hand detection complete.")
 
     def aggregate(self, ctx: DriverContext[TsCtfParams], results: ArrayResults) -> None:
-        # If the registry is empty (legacy project), we can't proceed — the user must
-        # reload the project so the backend backfills mdoc-derived identity. Fail loud
-        # rather than fall back to the old string-keyed merge (the path that produced
-        # the silent-corruption bug).
+        # An empty registry (a project created before the registry existed) cannot be
+        # merged into: the user must reload the project so the backend backfills
+        # mdoc-derived identity. A string-keyed merge is not a fallback: it silently corrupts results.
         registry = get_registry_for(ctx.project_path)
         if not registry.tilt_series_ids():
             raise RuntimeError(

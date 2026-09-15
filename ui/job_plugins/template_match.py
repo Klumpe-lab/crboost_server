@@ -1,5 +1,5 @@
 """
-Template Matching plugin (v3).
+Template Matching plugin.
 
 Species is locked at job creation time. The species's templates and masks
 are surfaced as two independent dropdowns so the user picks both
@@ -14,16 +14,15 @@ skips template_path / mask_path / symmetry because we render all three
 in the "From species" section below.
 
 Those three rows are job parameters with a species-shaped default, so they sit in the
-SAME Parameters card as everything else — one `section_header` + `field_grid` in the
-house vocabulary, never a nested card with its own font scale (picking-UI roadmap 02;
-guideline of record in docs/roadmaps/completed/picking_ui/roadmap_00-overview.md). Each row's tooltip
-names the species value it defaulted from, because the driver reads the JOB's value:
+same Parameters card as everything else — one `section_header` + `field_grid` in the
+house vocabulary, never a nested card with its own font scale. Each row's tooltip
+names the species value it defaulted from, because the driver reads the job's value:
 the species card can say I1 while the run is C1, and only this tooltip and the Species
 page's Jobs-tab drift chip will say so.
 
 The Config tab opens with the one species line (pill + "open in Species");
 species facts (templates, masks, Ø, symmetry) live on the species itself, not
-here (roadmap 08 S1). If species.templates is empty the row states the absence and
+here. If species.templates is empty the row states the absence and
 points at the Species page rather than preselecting anything.
 """
 

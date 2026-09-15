@@ -7,33 +7,28 @@ Mode is determined by the SLURM_ARRAY_TASK_ID env var:
 
 - Unset:  SUPERVISOR mode. Refreshes the job-local snapshot of the producer's
           tomostar dir + settings, enumerates tilt-series from the
-          TiltSeriesRegistry (the enumeration authority — census #38/#39
-          pilot), runs a dispatch-time drift check (registry vs tomostar dir
-          vs input star), writes the task manifest, submits a SLURM array with
-          one task per TS, polls until completion, then aggregates alignment
-          metadata.
+          TiltSeriesRegistry, runs a dispatch-time drift check (registry vs
+          tomostar dir vs input star), writes the task manifest, submits a
+          SLURM array with one task per TS, polls until completion, then
+          aggregates alignment metadata.
 
 - Set:    TASK mode. Stages a per-TS environment (single tomostar + settings),
           runs ts_aretomo or ts_etomo_patches for one tilt-series.
 
-Enumeration/staging semantics (census #38/#39, maintainer decision):
-- The registry is the source of truth for WHICH tilt-series exist; the old
-  `*.tomostar` glob could resurrect stale files or silently omit a TS whose
-  file a partial producer write lost.
-- The whole-dir tomostar snapshot is refreshed on EVERY supervisor run (it
-  used to be copied once and reused stale across re-runs). The snapshot
-  itself stays: it marries the settings file with the possibly-different
-  producer's tomostar dir (tilt filter) and insulates a running array from
-  producer churn.
+Enumeration and staging:
+- The registry decides which tilt-series exist; a `*.tomostar` glob would pick
+  up stale files and miss a TS whose file a partial producer write lost.
+- The tomostar snapshot is refreshed on every supervisor run. It pairs the
+  settings file with the producer's tomostar dir (which differs after the tilt
+  filter) and shields a running array from changes in the producer.
 - A live (non-muted) registry TS missing from the tomostar dir or the input
-  star is DRIFT: it stays in the manifest and its task fails fast with the
-  reason (containment rule — others proceed, job ends FAILED). Extra files
-  the registry doesn't know are warned about and never dispatched.
+  star is drift: it stays in the manifest and its task fails fast with the
+  reason (the others proceed, the job ends FAILED). Extra files the registry
+  doesn't know are warned about and never dispatched.
 
-Tolerant tally (census #41, deliberate): per-TS alignment failure is normal in
-cryo-ET — failed/missing TS are warned about and dropped from aggregation;
-only a total wipeout fails the job. The failed-TS-absent-downstream gap is
-owned by docs/roadmaps/roadmap_05-per-ts-top-up.md.
+Per-TS alignment failure is normal in cryo-ET: failed or missing TS are warned
+about and dropped from aggregation; only a total wipeout fails the job. Dropped
+TS are absent downstream.
 
 The mode dispatch, both bootstraps, manifest lookup, exclusions, tally and exit
 markers all live in ArrayDriver; this file is the alignment-specific hooks.
@@ -174,24 +169,22 @@ class TsAlignmentDriver(ArrayDriver):
         input_star = ctx.paths["input_star"]
         require_producer_input(input_star, "Input STAR")
 
-        # Census #38: the registry is the enumeration authority; the sources on
-        # disk are checked against it, never trusted as the item list. It also
-        # carries the tilt-filter's verdict (per-frame is_filtered_out), so it is
-        # loaded before the snapshot below, which applies that cut.
+        # The registry is the enumeration authority; the sources on disk are
+        # checked against it, never trusted as the item list. It also carries the
+        # tilt filter's verdict (per-frame is_filtered_out), so it is loaded before
+        # the snapshot below, which applies that cut.
         registry = get_registry_for(ctx.project_path)
 
-        # Refresh the job-local snapshot on EVERY supervisor run (census #39):
-        # tasks stage from stable job-local paths, but a supervisor re-run must
-        # see the producer's CURRENT tomostars (re-trimmed tilts, added/removed
-        # TS), never a stale first-run copy.
+        # Refresh the job-local snapshot on every supervisor run: tasks stage from
+        # stable job-local paths, but a supervisor re-run must see the producer's
+        # current tomostars (re-trimmed tilts, added/removed TS).
         #
-        # The tilt-filter cut is applied HERE, at consumption, instead of by the
+        # The tilt-filter cut is applied here, at consumption, rather than by the
         # filter writing a tomostar dir of its own: the filter is interactive and
         # may be committed before, after, or never relative to tsImport, and a
-        # separate producer dir made downstream wiring depend on that ordering (a
-        # pending filter silently fell back to the untrimmed tomostar). Reading the
-        # verdict from the registry collapses both paths -- filter off and filter
-        # on -- onto one: an empty drop set copies the tomostars verbatim.
+        # separate producer dir would make downstream wiring depend on that
+        # ordering. With the verdict in the registry, filter off and filter on take
+        # the same path: an empty drop set copies the tomostars verbatim.
         local_tomostar_dir = ctx.job_dir / "tomostar"
         if local_tomostar_dir.exists():
             shutil.rmtree(str(local_tomostar_dir))
@@ -264,9 +257,9 @@ class TsAlignmentDriver(ArrayDriver):
     def aggregate(self, ctx: DriverContext[TsAlignmentParams], results: ArrayResults) -> None:
         aligned_ts = results.ok
 
-        # Aggregate metadata via the TiltSeries registry. Fail loud on an
-        # empty registry rather than fall back to the legacy string-keyed
-        # merge — that's the silent-corruption path this refactor retires.
+        # Aggregate metadata via the TiltSeries registry. An empty registry
+        # fails loud: there is no string-keyed merge fallback, since that path
+        # silently corrupts metadata.
         self.log(f"Aggregating alignment metadata for {len(aligned_ts)} tilt-series...")
 
         input_star_path = ctx.paths.get("input_star")
@@ -298,7 +291,7 @@ class TsAlignmentDriver(ArrayDriver):
     # ---------------- task ----------------
 
     def task_already_done(self, ctx: DriverContext[TsAlignmentParams], item: str) -> bool:
-        # Idempotency: skip only if a PREVIOUS run left REAL alignment output
+        # Idempotency: skip only if a previous run left real alignment output
         # for this TS. The {ts}.xml alone is not proof — WarpTools writes it
         # even for tilt-series AreTomo failed on (see has_alignment_output),
         # so a bare-XML check would let a failed TS masquerade as done on retry.
@@ -332,7 +325,7 @@ class TsAlignmentDriver(ArrayDriver):
         return staged
 
     def verify_outputs(self, ctx: DriverContext[TsAlignmentParams], item: str, staged) -> None:
-        # Verify REAL alignment output landed in the STAGED dir. WarpTools
+        # Verify real alignment output landed in the staged dir. WarpTools
         # exits 0 and still writes {ts}.xml even when AreTomo fails to align
         # this tilt-series, so the XML is not a success signal — check the
         # alignment matrices.

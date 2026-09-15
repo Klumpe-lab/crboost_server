@@ -24,18 +24,17 @@ class TiltFilterParams(AbstractJobParams):
 
     # The DL reads the motion-corrected averages via the fs-motion star; that is this
     # job's only input. The verdict is a per-frame `is_filtered_out` stamp in the
-    # TiltSeries registry, NOT a file this job produces: alignment applies the cut when
+    # TiltSeries registry, not a file this job produces: alignment applies the cut when
     # it snapshots the tomostar dir (drivers/ts_alignment.py), and CTF/reconstruct
     # inherit it from that snapshot.
     #
-    # Deliberately NOT a TOMOSTAR_DIR producer. It used to consume tsImport's tomostar
-    # and emit a trimmed copy, which forced an ordering this interactive job cannot
-    # honour -- the user reaches the gallery as soon as fsMotion's PNGs exist, which is
-    # routinely before tsImport has run -- and it put a phantom `pending_tiltFilter`
-    # entry in alignment's tomostar source menu that a pending filter resolved to
-    # silently, running alignment on the unfiltered tilt set. With the verdict in the
-    # registry, tsImport is the sole tomostar producer, the commit has no upstream
-    # dependency at all, and filter-off vs filter-on differ only by the drop set.
+    # Not a TOMOSTAR_DIR producer. Consuming tsImport's tomostar would force an ordering
+    # this interactive job cannot honour -- the user reaches the gallery as soon as
+    # fsMotion's PNGs exist, routinely before tsImport has run -- and a pending filter
+    # would show up as alignment's tomostar source and silently resolve to the unfiltered
+    # tilt set. With the verdict in the registry, tsImport is the sole tomostar producer,
+    # the commit has no upstream dependency, and filter-off vs filter-on differ only by
+    # the drop set.
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(key="input_star", accepts=[JobFileType.FS_MOTION_CTF_STAR], preferred_source="fsMotionAndCtf")
     ]
@@ -77,16 +76,16 @@ class TiltFilterParams(AbstractJobParams):
 async def finalize_pipeline_output(state, job_model, ts_data, project_path: Path) -> dict:
     """Commit the tilt-filter verdict: stamp every tilt's keep/drop decision into the
     TiltSeries registry, which is what alignment reads when it snapshots the tomostar
-    dir. Runs at commit for BOTH the DL-assisted and manual-labelling paths (the SLURM
+    dir. Runs at commit for both the DL-assisted and manual-labelling paths (the SLURM
     driver only runs for the DL pass; manual labelling never dispatches it).
 
-    Deliberately has no upstream dependency: the registry exists from import onward, so
+    Has no upstream dependency: the registry exists from import onward, so
     the user can commit before, after, or without tsImport having run. Re-stamps in both
     directions on every commit, so un-labelling a tilt restores it. Downstream jobs pick
     the new verdict up when they are (re)queued -- the forward-only staleness convention.
 
     Returns ok(kept=..., dropped=...) or err(...); the UI caller surfaces the outcome.
-    A failure here means the cut was NOT recorded, so the caller must not mark the job
+    A failure here means the cut was not recorded, so the caller must not mark the job
     succeeded."""
     from services.tilt_series import get_registry_for
 
@@ -136,7 +135,7 @@ async def finalize_pipeline_output(state, job_model, ts_data, project_path: Path
         logger.exception("tilt-filter commit: registry save failed")
         return err("Cannot commit: writing the tilt verdict to the registry failed. See the server log.")
 
-    # Stale slots from the pre-registry design, when this job produced its own tomostar.
+    # Older projects carry output slots from when this job produced its own tomostar.
     for dead in ("output_tomostar", "output_star", "output_processing"):
         job_model.paths.pop(dead, None)
 

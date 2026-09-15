@@ -109,9 +109,9 @@ def _find_ts_ctf_star(project_path):
 
 def _find_fs_motion_warp_dir(project_path):
     """Locate the FS-motion job's `warp_frameseries` folder — it holds the
-    per-tilt WarpTools XMLs with the REAL CTF-fit resolution + motion that the
+    per-tilt WarpTools XMLs with the real CTF-fit resolution + motion that the
     star hides behind 1e-6 placeholders. Returns None if not found / not run.
-    See docs/preprocessing-metrics-inventory.md §4."""
+    See docs/preprocessing-metrics-inventory.md."""
     state = current_project_state()
     if not state:
         return None
@@ -124,10 +124,9 @@ def _find_fs_motion_warp_dir(project_path):
 
 
 def _find_fs_motion_star(project_path):
-    """Locate the fs-motion job's output star (`fs_motion_and_ctf.star`). Since the
-    tilt filter moved upstream (before alignment), this is the per-tilt star the DL
-    classifies — it lists the same motion-corrected averages (rlnMicrographName) the
-    old ts_ctf star did, so the classifier sees identical images."""
+    """Locate the fs-motion job's output star (`fs_motion_and_ctf.star`). The tilt
+    filter runs before alignment, so this is the per-tilt star the DL classifies; it
+    lists the motion-corrected averages (rlnMicrographName)."""
     state = current_project_state()
     if not state:
         return None
@@ -146,8 +145,7 @@ def _find_fs_motion_star(project_path):
 
 
 def _notify_finalize(res: dict) -> None:
-    """Surface finalize_pipeline_output's outcome — same messages the pre-move
-    inline version emitted."""
+    """Surface finalize_pipeline_output's outcome."""
     if res.get("success"):
         ui.notify(
             f"Filter committed: {res['kept']} tilts kept, {res['dropped']} dropped — "
@@ -407,7 +405,7 @@ def _render_dl_config(job_model=None, backend=None, project_path=None, gallery_c
                             labeled_p = out_dir / "tiltseries_labeled.star"
                             await asyncio.to_thread(write_tilt_series, ts_data, labeled_p, "tilt_series_labeled")
 
-                            # Commit the verdict to the registry -- that IS the cut
+                            # Commit the verdict to the registry -- that is the cut
                             # alignment applies. Only a recorded verdict may claim
                             # SUCCEEDED; otherwise the job would look done while
                             # downstream silently ran on the unfiltered tilt set.
@@ -484,8 +482,7 @@ def _render_generate(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job
                 n = await asyncio.to_thread(generate_tilt_thumbnails, ts_ctf_star, project_path, png_dir, progress_cb)
                 # Resolve by explicit path: this runs in a BackgroundTask with no
                 # client/tab context, where bare current_project_state() returns a blank
-                # throwaway — so the assignment + path-less save silently no-opped and
-                # tilt_filter_png_dir never persisted (same class as the curation W2 bug).
+                # throwaway and a path-less save silently does nothing.
                 if project_path:
                     st = get_state_service().state_for(project_path)
                     st.tilt_filter_png_dir = str(png_dir)
@@ -526,8 +523,7 @@ def _build_gallery(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job_m
 
 def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, job_model=None):
     state = current_project_state()
-    # job_model.tilt_labels is the durable label store (the ProjectState
-    # tilt_filter_labels mirror is gone — roadmap 02 stage 4).
+    # job_model.tilt_labels is the durable label store.
     labels = dict(job_model.tilt_labels) if job_model is not None and job_model.tilt_labels else {}
 
     if labels:
@@ -544,8 +540,7 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
 
     # Real per-tilt CTF-fit resolution + motion from the FS-motion warp XMLs
     # (cryoBoostKey == the XML basename == frame stem). The star's own res/motion
-    # columns are 1e-6 placeholders — the card's old "0.0px" chip read one of
-    # those. None where the XML is absent (no invented value).
+    # columns are 1e-6 placeholders. None where the XML is absent (no invented value).
     fs_warp_dir = _find_fs_motion_warp_dir(project_path)
     if fs_warp_dir is not None:
         from services.tilt_series.frameseries_quality import read_frame_quality
@@ -763,7 +758,7 @@ def _build_cards_html(ts_df, labels) -> str:
         defocus_u = row.get("rlnDefocusU", None)
         # Real CTF-fit resolution + motion from the WarpTools XML (see
         # _render_gallery_content); the star's rlnAccumMotionTotal is a 1e-6
-        # placeholder, so we no longer read it here.
+        # placeholder.
         ctf_res = row.get("_xmlRes", None)
         motion = row.get("_xmlMotion", None)
         mrc_path = row.get("rlnMicrographName", "")
@@ -874,8 +869,7 @@ def _attach_grid_click_handler(html_el, labels, full_df, ts_data, refresh_stats,
             )
 
             # Clicks mutate the shared in-memory `labels` dict; Save persists it
-            # to job_model.tilt_labels (the per-click ProjectState mirror write
-            # went away with roadmap 02 stage 4).
+            # to job_model.tilt_labels.
             refresh_stats()
 
     html_el.on(

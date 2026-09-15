@@ -55,9 +55,9 @@ def build_reconstruct_command(
         .opt_path("--output_processing", output_processing, quote=True)
         .opt("--angpix", params.rescale_angpixs)
     )
-    # --halfmap_frames and --deconv are Warp SWITCHES: their mere presence enables
-    # them, whatever value follows (`--halfmap_frames 0` still died on "Can't find
-    # half-averages", job 1947533). Emit each only when the parameter is 1.
+    # --halfmap_frames and --deconv are Warp switches: their presence enables them,
+    # whatever value follows (`--halfmap_frames 0` still fails with "Can't find
+    # half-averages"). Emit each only when the parameter is 1.
     if params.halfmap_frames == 1:
         cmd.flag("--halfmap_frames")
     if params.deconv == 1:
@@ -110,7 +110,7 @@ class TsReconstructDriver(ArrayDriver):
 
     def aggregate(self, ctx: DriverContext[TsReconstructParams], results: ArrayResults) -> None:
         # Aggregate metadata via the TiltSeries registry. Fail loud on an
-        # empty registry rather than fall back to the legacy path.
+        # empty registry.
         registry = get_registry_for(ctx.project_path)
         if not registry.tilt_series_ids():
             raise RuntimeError(

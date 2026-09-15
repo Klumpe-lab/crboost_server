@@ -1,5 +1,4 @@
-"""tsCTF ingest adapter — registry-driven replacement for
-`MetadataTranslator.update_ts_ctf_metadata`.
+"""tsCTF ingest adapter — registry-driven.
 
 Flow:
 
@@ -12,7 +11,7 @@ Flow:
        upstream columns we must preserve), overlay CTF values from the
        registry onto each tilt row, write out the same hierarchical layout.
 
-Identity is resolved ONCE, via the registry, at the (ts_id, filename) pair.
+Identity is resolved once, via the registry, at the (ts_id, filename) pair.
 No `Path(stem)` heuristics, no `_EER.eer` strip chains.
 """
 
@@ -108,8 +107,7 @@ class TsCtfIngestAdapter(BaseIngestAdapter):
         in_star_dir = input_star_path.parent
         out_ts_df = in_ts_df.copy()
 
-        # Rewrite per-TS star file paths to point to the new tilt_dir (same
-        # convention as the legacy writer).
+        # Rewrite per-TS star file paths to point to the new tilt_dir.
         out_ts_df["rlnTomoTiltSeriesStarFile"] = out_ts_df["rlnTomoTiltSeriesStarFile"].apply(
             lambda x: f"{preserve_subfolder}/{Path(x).name}"
         )
@@ -260,8 +258,8 @@ class TsCtfIngestAdapter(BaseIngestAdapter):
 
         Frames absent from the CTF output (because WarpTools `ts_import` dropped
         them from the tomostar, so `ts_ctf` never refit them) retain the
-        per-frame defocus values that `fs_motion_and_ctf` wrote. Matches legacy
-        CryoBoost behavior; downstream WarpTools uses the tomostar as the
+        per-frame defocus values that `fs_motion_and_ctf` wrote. Matches CryoBoost
+        v1 behavior; downstream WarpTools uses the tomostar as the
         authoritative frame set, so these rows are cosmetic."""
         errors: list[str] = []
         by_frame_id = {p.frame_id: p for p in ctf_output.per_frame}

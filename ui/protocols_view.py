@@ -1,4 +1,4 @@
-"""Protocols view — the workspace surface of roadmap 16.
+"""Protocols view — the workspace surface for protocol bundles.
 
 Opened from the foot-of-rail protocol light (`pipeline_roster._build_protocol_btn`) and swapped
 into the main area like the Journey / Tomograms views. One header, two levels:
@@ -12,7 +12,7 @@ into the main area like the Journey / Tomograms views. One header, two levels:
   project as a protocol".
 
 A protocol is the shape of a pipeline with its parameters, nothing more: results, logs and
-statuses live where they always did (the roster, the job tabs, the Journey). Disk reads happen
+statuses live in the roster, the job tabs and the Journey. Disk reads happen
 off the event loop; the two FingerprintedViews rebuild only when their signature moves.
 """
 

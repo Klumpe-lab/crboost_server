@@ -1,8 +1,8 @@
-"""Tab contract of the Species page (roadmap 10 §6).
+"""Tab contract of the Species page.
 
 The page treats every tab the same way: `build(container)` once, on the first
 selection of (species, tab), into a container the page owns and keeps (visibility
-flips on switch — never clear()+rebuild); `refresh()` on the page's 3-s observe tick
+flips on switch, no clear()+rebuild); `refresh()` on the page's 3-s observe tick
 and whenever the tab is shown, expected to be signature-gated (`FingerprintedView`)
 or a no-op.
 """

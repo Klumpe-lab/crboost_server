@@ -115,17 +115,16 @@ def main():
 
         df = ts_data.all_tilts_df
 
-        # Step 8: record the per-tilt verdict in the registry. This IS the functional
+        # Step 8: record the per-tilt verdict in the registry. This is the functional
         # cut -- alignment reads these flags when it snapshots the tomostar dir, so
-        # this job writes no tomostar of its own (that coupled it to tsImport having
+        # this job writes no tomostar of its own (that would couple it to tsImport having
         # run first, which an interactive job cannot guarantee). The labeled/filtered
         # stars above are for the dashboard's keep/drop panel. Frame.id is the
         # raw-movie stem == cryoBoostKey, so we can stamp by key.
         #
-        # Fail-loud (maintainer decision 2026-08-14): the registry is the single source
-        # of truth for downstream reads, so a missed verdict stamp is stale-data
-        # corruption, not a cosmetic miss. A stamp failure fails the job; a re-run is
-        # cheap.
+        # Fail loud: the registry is the single source of truth for downstream reads,
+        # so a missed verdict stamp is stale-data corruption, not a cosmetic miss. A
+        # stamp failure fails the job; a re-run is cheap.
         from services.tilt_series import get_registry_for
 
         registry = get_registry_for(project_path)

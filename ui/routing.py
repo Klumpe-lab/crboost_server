@@ -1,6 +1,6 @@
-"""Addressable URLs for the workspace (roadmap 17).
+"""Addressable URLs for the workspace.
 
-The workspace is ONE page whose six views are sibling containers swapped by CSS
+The workspace is one page whose six views are sibling containers swapped by CSS
 ``display`` (``ui/workspace_page.py``). Everything needed to *navigate* it already exists
 as the ``callbacks`` dict; what this module adds is the address bar:
 

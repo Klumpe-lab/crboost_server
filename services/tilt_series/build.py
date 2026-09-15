@@ -70,12 +70,10 @@ def _build_one_ts(ts_info: TiltSeriesInfo, *, project_prefix: str) -> TiltSeries
         frame_id = Path(tilt.frame_filename).stem
 
         # Prefer mdoc-reported pre-exposure if present; else accumulate.
-        # NB: mdoc_stats keys the value under "prior_dose" (dataset_parsing_service),
-        # NOT the raw mdoc key "PriorRecordDose" — the earlier lookup used the raw key
-        # and so silently always fell through to the cumulative sum. PriorRecordDose is
-        # authoritative (SerialEM's own pre-exposure record, correct for dose-symmetric /
-        # variable-dose ordering); the cumsum assumes constant dose_per_tilt. This now
-        # matches the legacy build_from_mdocs path, which already reads PriorRecordDose.
+        # mdoc_stats keys the value under "prior_dose" (dataset_parsing_service), not the
+        # raw mdoc key "PriorRecordDose". PriorRecordDose is authoritative (SerialEM's own
+        # pre-exposure record, correct for dose-symmetric / variable-dose ordering); the
+        # cumsum assumes constant dose_per_tilt.
         pre_exposure = _coerce_float(tilt.mdoc_stats.get("prior_dose"))
         if pre_exposure is None:
             pre_exposure = cumulative
@@ -286,13 +284,12 @@ _POSITION_RE = re.compile(r"Position_(\d+)(?:_(\d+))?$")
 
 
 def parse_position(label: str) -> tuple[int, int | None] | None:
-    """Decode the ``..._Position_{stage}[_{beam}]`` suffix grammar — THE one
-    position parser (roadmap 02 stage 2); nothing else may regex/split for
-    stage/beam. Returns (stage, beam) with beam None when the label carries no
-    explicit beam, or None when the label doesn't end in the suffix at all.
-    Only genuinely-deriving import-time reads and display fallbacks belong
-    here — display of a registry-known TS should read the entity's
-    stage_position/beam_position fields instead."""
+    """Decode the ``..._Position_{stage}[_{beam}]`` suffix grammar; the one
+    position parser, nothing else may regex/split for stage/beam. Returns
+    (stage, beam) with beam None when the label carries no explicit beam, or
+    None when the label doesn't end in the suffix at all. Only import-time
+    derivation and display fallbacks belong here; display of a registry-known
+    TS reads the entity's stage_position/beam_position fields instead."""
     m = _POSITION_RE.search(label)
     if not m:
         return None

@@ -19,7 +19,7 @@ class PDBService:
         self.container_service = get_container_service()
 
     # =========================================================================
-    # BOX SIZE CALCULATION - Restore original logic
+    # BOX SIZE CALCULATION
     # =========================================================================
 
     def _calculate_optimal_box(
@@ -39,7 +39,7 @@ class PDBService:
         return int(box_size)
 
     # =========================================================================
-    # PYMOL WRAPPER - Fixed for container file access
+    # PYMOL WRAPPER
     # =========================================================================
 
     async def _run_pymol_script(
@@ -57,7 +57,7 @@ class PDBService:
 
         result = await self.backend.run_shell_command(cmd, cwd=output_dir, tool_name="pymol", additional_binds=binds)
 
-        # Only delete on SUCCESS
+        # Only delete on success; keep the script for debugging otherwise
         if result.get("success") and script_file.exists():
             script_file.unlink()
         else:
@@ -66,7 +66,7 @@ class PDBService:
         return result
 
     # =========================================================================
-    # CIF POST-PROCESSING - Critical for CISTEM compatibility
+    # CIF POST-PROCESSING - required for cisTEM compatibility
     # =========================================================================
 
     def _reparse_cif(self, cif_path: Path) -> bool:
@@ -199,7 +199,7 @@ except Exception as e:
         if not result.get("success"):
             return err(result.get("error") or "Unknown error")
 
-        # CRITICAL: Re-parse CIF on host
+        # Re-parse CIF on host
         if output_path.endswith(".cif") and Path(output_path).exists():
             if not self._reparse_cif(Path(output_path)):
                 return err("CIF post-processing failed")
@@ -212,7 +212,7 @@ except Exception as e:
         return ok(path=output_path)
 
     # =========================================================================
-    # CISTEM SIMULATION - Fixed to match original exactly
+    # CISTEM SIMULATION
     # =========================================================================
 
     async def simulate_map_from_pdb(
@@ -232,7 +232,7 @@ except Exception as e:
     ) -> dict[str, Any]:
         """Simulate density map from PDB using CISTEM."""
         try:
-            # CHECK: Ensure cistem is configured (binary or container)
+            # Ensure cistem is configured (binary or container)
             cistem_config = self.container_service.config.get_tool_config("cistem")
             if not cistem_config:
                 return err("Tool 'cistem' not configured in conf.yaml")
@@ -325,8 +325,8 @@ except Exception as e:
     ) -> dict[str, Any]:
         """
         Prepare structure with PyMOL then run CISTEM.
-        Uses absolute paths throughout - cisTEM supports this natively.
-        Refactored to support both Container and Binary modes via ContainerService.
+        Uses absolute paths throughout; cisTEM supports them natively.
+        Supports both container and binary modes via ContainerService.
         """
 
         import os
@@ -399,11 +399,11 @@ except Exception as e:
         if not pymol_result.get("success"):
             return err(f"PyMOL failed: {pymol_result.get('error') or 'unknown error'}")
 
-        # CRITICAL: Verify file exists on HOST
+        # Verify the file exists on the host
         if not struct_file.exists():
             return err(f"PyMOL did not create {struct_file.name}")
 
-        # CRITICAL: Re-parse CIF using BioPython (matches original libpdb.py lines 69-74)
+        # Re-parse CIF using BioPython (as the original libpdb.py does)
         logger.info("Re-parsing CIF with BioPython...")
         if not self._reparse_cif(struct_file):
             return err("CIF post-processing failed")
@@ -423,15 +423,15 @@ except Exception as e:
             tool_config.exec_mode, inner_cmd, struct_file, sim_output_path, sim_box, sim_apix, num_threads,
         )
 
-        # Prepare stdin parameters (using absolute paths!)
+        # Prepare stdin parameters (absolute paths)
         # cisTEM reads these line-by-line
         stdin_input = "\n".join(
             [
-                str(sim_output_path),      # outFile - ABSOLUTE PATH
+                str(sim_output_path),      # outFile - absolute path
                 "Yes",                     # scPotential
                 str(int(sim_box)),         # boxSize
                 str(num_threads),          # threads
-                str(struct_file),          # inputPDBPath - ABSOLUTE PATH
+                str(struct_file),          # inputPDBPath - absolute path
                 "No",                      # addPart
                 str(sim_apix),             # outputPix
                 str(mod_scale_bf),         # perAtomScaleBfact
@@ -462,7 +462,7 @@ except Exception as e:
             env = os.environ.copy()
             env["OMP_NUM_THREADS"] = str(num_threads)
 
-            # 4. Execute WITHOUT blocking the event loop
+            # 4. Execute without blocking the event loop
             process = await asyncio.create_subprocess_shell(
                 full_command,
                 stdin=asyncio.subprocess.PIPE,

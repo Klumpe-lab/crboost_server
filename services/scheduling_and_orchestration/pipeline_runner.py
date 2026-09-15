@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 def _afterok_state_to_status(slurm_state: str) -> JobStatus:
-    """Map a SLURM squeue/sacct state string to a JobStatus (P1.B afterok reconciler).
+    """Map a SLURM squeue/sacct state string to a JobStatus for the afterok reconciler.
     Unrecognized states -> UNKNOWN so the caller can decline to downgrade a live job."""
     s = (slurm_state or "").split()[0].upper()  # 'CANCELLED by 123' -> 'CANCELLED'
     if s == "COMPLETED":
@@ -77,7 +77,7 @@ class PipelineRunnerService:
         self._active_processes: dict[Path, asyncio.subprocess.Process] = {}
         self._stdout_log_paths: dict[Path, Path] = {}
         self._stderr_log_paths: dict[Path, Path] = {}
-        # P1.B afterok reconciler: first-absent monotonic time per supervisor slurm_id, for the
+        # Afterok reconciler: first-absent monotonic time per supervisor slurm_id, for the
         # grace window that concludes a marker-less vanished job FAILED (see reconcile_afterok).
         self._afterok_absent_since: dict[str, float] = {}
         # Retry monitors bypass the schemer but still count as pipeline activity —
@@ -103,11 +103,10 @@ class PipelineRunnerService:
     # -------------------------------------------------------------------------
 
     async def sync_all_jobs(self, project_path: str) -> dict[str, bool]:
-        # Orchestrator rework (P1.A): afterok-orchestrator projects do NOT use
-        # default_pipeline.star as their status source. Running the schemer-oriented
-        # reconcile below against one would wipe submit_chain's slurm_job_id /
-        # relion_job_name / QUEUED (those jobs have no matching star rows). The P1.B
-        # reconciler owns status for these projects; until then this is a no-op for them.
+        # Afterok-orchestrator projects do not use default_pipeline.star as their status
+        # source. Running the schemer-oriented reconcile below against one would wipe
+        # submit_chain's slurm_job_id / relion_job_name / QUEUED (those jobs have no matching
+        # star rows). reconcile_afterok owns status for these projects.
         afterok_state = self.backend.state_service.state_for(Path(project_path))
         if getattr(afterok_state, "use_afterok_orchestrator", False):
             return {}
@@ -158,7 +157,7 @@ class PipelineRunnerService:
         # Stop the pipeline on any job failure. Using stop_and_cleanup (not just
         # stop_pipeline) so that any Scheduled/Pending downstream jobs are
         # patched to Failed too — otherwise the UI's all_done check in
-        # status_poller.py:45-51 sees `scheduled > 0` and the spinner never
+        # status_poller.py sees `scheduled > 0` and the spinner never
         # resolves. Also scancels any live array tasks collected from job
         # manifests. The failed job's own supervisor already exited, so this
         # is idempotent on that side.
@@ -172,14 +171,11 @@ class PipelineRunnerService:
         #     even dispatched into default_pipeline.star — e.g. a pending tsCtf)
         #     stay Scheduled forever and the UI hangs on a phantom "done".
         #
-        # Critical guard on the second trigger: only fire when the schemer is
-        # NOT active. With a live schemer, stale Failed rows from previous runs
-        # (jobs the user is now re-attempting) would otherwise trigger stop on
-        # every tick — `mem_has_live_job` is True for any fresh attempt and
-        # the OR with `star_has_live_row` made the branch indistinguishable
-        # from a genuine schemer-halt. See 2026-05-18 incident: subtomo retries
-        # kept getting scancel'd within seconds because old job011/014/015
-        # Failed rows sat in default_pipeline.star.
+        # The second trigger only fires when the schemer is not active. With a
+        # live schemer, stale Failed rows from previous runs (jobs the user is
+        # re-attempting) would trigger stop on every tick, because
+        # `mem_has_live_job` is True for any fresh attempt; retries would get
+        # scancel'd within seconds.
         needs_stop_on_fail = bool(failed_job_paths)
         if already_failed_in_star and not needs_stop_on_fail and not self.is_active(Path(project_path)):
             mem_has_live_job = any(
@@ -353,11 +349,10 @@ class PipelineRunnerService:
                 if old_status != JobStatus.SCHEDULED:
                     changes[instance_id] = True
             elif job_model.execution_status not in (JobStatus.SCHEDULED, JobStatus.UNKNOWN, JobStatus.FAILED):
-                # FAILED is excluded on purpose: a job with no relion_job_name
-                # that is FAILED was deliberately marked so by stop_and_cleanup
-                # (upstream failed, this one never got to run). Resetting it to
-                # SCHEDULED here would resurrect it as "pending" under a
-                # phantom-done pipeline — the exact stuck state this guards.
+                # FAILED is excluded: a job with no relion_job_name that is
+                # FAILED was marked so by stop_and_cleanup (upstream failed, this
+                # one never got to run). Resetting it to SCHEDULED would resurrect
+                # it as "pending" under a phantom-done pipeline.
                 job_model.execution_status = JobStatus.SCHEDULED
                 job_model.relion_job_name = None
                 job_model.relion_job_number = None
@@ -386,29 +381,29 @@ class PipelineRunnerService:
         return None
 
     def _afterok_refine_running(self, job_dir: Path | None) -> JobStatus:
-        """B1 refinement for a supervisor squeue reports as RUNNING: 'supervisor
-        RUNNING' with no started child is still queued work (see any_task_started).
-        A single-shot (no-manifest) job is genuinely RUNNING."""
+        """Refine a supervisor squeue reports as RUNNING: 'supervisor RUNNING' with no
+        started child is still queued work (see any_task_started). A single-shot
+        (no-manifest) job is genuinely RUNNING."""
         started = any_task_started(job_dir) if job_dir is not None else None
         if started is not None:
             return JobStatus.RUNNING if started else JobStatus.QUEUED
         return JobStatus.RUNNING
 
     async def reconcile_afterok(self, project_path: str) -> dict[str, bool]:
-        """P1.B: status reconciler for afterok-orchestrator projects (the monitor dispatches
-        these here instead of sync_all_jobs, which stays guarded off for them). Per NON-TERMINAL
-        tracked job (submit_chain set slurm_job_id), in order of authority:
+        """Status reconciler for afterok-orchestrator projects (the monitor dispatches these here
+        instead of sync_all_jobs, which is guarded off for them). Per non-terminal tracked job
+        (submit_chain set slurm_job_id), in order of authority:
           1. disk RELION_JOB_EXIT_SUCCESS/FAILURE sentinels (written by the supervisor/qsub
              trailer; survive sacct purge),
-          2. targeted ``squeue -j`` -> QUEUED-vs-RUNNING (B1) + DependencyNeverSatisfied,
+          2. targeted ``squeue -j`` -> QUEUED-vs-RUNNING + DependencyNeverSatisfied,
           3. ``sacct`` terminal state for jobs that left the queue without a sentinel,
           4. a grace window: a job absent from squeue with no sentinel and no sacct row is
              concluded FAILED after _AFTEROK_ABSENT_GRACE_SEC, so a marker-less death (SIGKILL /
              NODE_FAIL / external scancel) -- even with sacct unavailable -- always winds down.
-        Mutates execution_status IN PLACE on the bound model; drives pipeline_active off live-job
-        presence (NOT is_active, which is always False for a headnode-process-free afterok run);
-        scancels DependencyNeverSatisfied dependents (stop-on-fail propagates over ticks). NEVER
-        concludes 'done' from an errored squeue (the B2 hazard)."""
+        Mutates execution_status in place on the bound model; drives pipeline_active off live-job
+        presence (not is_active, which is always False for a headnode-process-free afterok run);
+        scancels DependencyNeverSatisfied dependents (stop-on-fail propagates over ticks). Never
+        concludes 'done' from an errored squeue."""
         from services.computing.slurm_service import normalize_slurm_ids
 
         state = self.backend.state_service.state_for(Path(project_path))
@@ -449,7 +444,7 @@ class PipelineRunnerService:
             now = time.monotonic()
             queued = await self.backend.slurm_service.query_jobs_by_ids(list(pending.keys()))
             if queued is None:
-                # B2 guard: squeue errored. Do NOT downgrade any pending job; keep prior status
+                # squeue errored. Do not downgrade any pending job; keep prior status
                 # (the run is presumed live) and persist only the pass-1 sentinel changes.
                 logger.warning("reconcile_afterok[%s]: squeue unavailable this tick; holding status", proj.name)
             else:
@@ -503,16 +498,16 @@ class PipelineRunnerService:
         # Pass 4 -- pipeline_active follows live-job presence; tracked excludes terminal jobs, so an
         # all-resolved tracked set means the chain is done. (is_active is meaningless here: an
         # afterok run owns no headnode process.)
-        # INTERACTIVE jobs are excluded from that vote: they are never part of the chain (the
+        # Interactive jobs are excluded from that vote: they are never part of the chain (the
         # orchestrator refuses to dispatch them, pipeline_orchestrator_service.py) -- their
-        # slurm_job_id comes from their own one-off submit. A live per-list extraction
-        # (roadmap 07) would otherwise hold `pipeline_active` open, i.e. make the roster read as
-        # a live run, and one that dies with the server would pin it there for good. They stay
-        # in `tracked`, so passes 1-3 keep reconciling them off the disk sentinels -- but only
-        # for as long as a REAL pipeline job is live: the moment this vote clears
-        # `pipeline_active`, PipelineMonitor drops the project and this reconciler stops running
-        # for it. An interactive job left non-terminal after that is settled by its own owner
-        # (`backend.reconcile_pick_list_extractions` for per-list extractions), not here.
+        # slurm_job_id comes from their own one-off submit. A live per-list extraction would
+        # otherwise hold `pipeline_active` open, i.e. make the roster read as a live run, and one
+        # that dies with the server would pin it there for good. They stay in `tracked`, so passes
+        # 1-3 keep reconciling them off the disk sentinels -- but only while a real pipeline job
+        # is live: once this vote clears `pipeline_active`, PipelineMonitor drops the project and
+        # this reconciler stops running for it. An interactive job left non-terminal after that is
+        # settled by its own owner (`backend.reconcile_pick_list_extractions` for per-list
+        # extractions), not here.
         any_live = any(
             jm.execution_status in (JobStatus.QUEUED, JobStatus.RUNNING) and not getattr(jm, "IS_INTERACTIVE", False)
             for jm in tracked.values()
@@ -531,8 +526,8 @@ class PipelineRunnerService:
                 logger.error("reconcile_afterok[%s]: failed to persist status changes: %s", proj.name, e)
 
         # Pass 5 -- the same fsMotion-SUCCEEDED side effect sync_all_jobs has. Afterok projects
-        # never reach that reconciler, so without this no run on this orchestrator ever gets its
-        # tilt thumbnails unless a tilt-filter job exists and someone opens its panel.
+        # never reach that reconciler, so without this they get no tilt thumbnails unless a
+        # tilt-filter job exists and someone opens its panel.
         for iid in changes:
             jm = tracked.get(iid)
             if jm is not None and jm.execution_status == JobStatus.SUCCEEDED and jm.job_type == JobType.FS_MOTION_CTF:
@@ -651,10 +646,9 @@ class PipelineRunnerService:
         """run.out / run.err for a job dir, TAIL ONLY by default.
 
         Every consumer of this renders a tail (the logs tab shows the last 500 lines) on a 3 s
-        timer, while a supervisor's run.err can reach megabytes — a driver dumping a pydantic
-        error per tilt-series produced a 5.3 MB stderr on a 114-TS project. Reading those in
-        full, on the event loop, stalled every other client for seconds per tick. Pass
-        ``tail_bytes=0`` for the whole file (the logs tab's copy button, on demand).
+        timer, while a supervisor's run.err can reach megabytes (a driver dumping a pydantic
+        error per tilt-series). Reading those in full stalls every other client for seconds per
+        tick. Pass ``tail_bytes=0`` for the whole file (the logs tab's copy button, on demand).
         """
         job_path = Path(project_path) / job_name.rstrip("/")
 
@@ -744,8 +738,8 @@ class PipelineRunnerService:
                     init_full_command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=project_dir
                 )
                 try:
-                    # 30s was too tight: on a shared filesystem the apptainer
-                    # cold-start + relion first-run can push past that easily.
+                    # On a shared filesystem the apptainer cold-start + relion
+                    # first-run can take minutes.
                     _stdout, stderr = await asyncio.wait_for(init_process.communicate(), timeout=180.0)
                     if init_process.returncode != 0:
                         logger.info("Relion init failed: %s", stderr.decode())
@@ -791,14 +785,13 @@ class PipelineRunnerService:
                 raise
             self._active_processes[resolved] = process
 
-            # pipeline_active is flipped AFTER the process is registered in
+            # pipeline_active is flipped after the process is registered in
             # _active_processes. Setting it earlier creates a race: the
             # PipelineMonitor's 3-s tick can fire during the apptainer/
             # subprocess-spawn await window and observe (pipeline_active=True
             # && is_active=False), which triggers the sync_all_jobs self-heal
-            # at line 161 — clearing pipeline_active back to False and
-            # orphaning the schemer (jobs run, but no one updates their
-            # execution_status, so the orchestrator cards stay yellow).
+            # that clears pipeline_active and orphans the schemer (jobs run,
+            # but no one updates their execution_status).
             state.pipeline_active = True
             await self.backend.state_service.save_project(project_path=project_dir, force=True)
             logger.info("Pipeline marked active, state protected from resets")
@@ -996,7 +989,7 @@ class PipelineRunnerService:
 
         When dependency_after_ids is non-empty, injects
         ``--dependency=afterok:<id>[:<id>...]`` so the job stays PENDING until every
-        listed job completes successfully (the SLURM afterok DAG, P1.A)."""
+        listed job completes successfully (the SLURM afterok DAG)."""
         clean_env = {k: v for k, v in os.environ.items() if not k.startswith(("SLURM_", "SBATCH_"))}
         args = ["sbatch"]
         if dependency_after_ids:
@@ -1014,7 +1007,7 @@ class PipelineRunnerService:
         return stdout.strip().split()[-1]
 
     async def submit_supervisor(self, script_path: Path, cwd: Path, after_ids: list[str] | None = None) -> str:
-        """Public seam for the afterok orchestrator (P1.A): sbatch one supervisor
+        """Public seam for the afterok orchestrator: sbatch one supervisor
         script, optionally gated on its producers' supervisor job ids via afterok.
         Returns the SLURM job id. Thin wrapper over _sbatch_script."""
         return await self._sbatch_script(script_path, cwd, dependency_after_ids=after_ids)
@@ -1143,7 +1136,7 @@ class PipelineRunnerService:
 
         errors = []
 
-        # Afterok-orchestrator projects (P1.B): a full stop = scancel every tracked supervisor by its
+        # Afterok-orchestrator projects: a full stop = scancel every tracked supervisor by its
         # persisted slurm_job_id (authoritative -- covers still-PENDING dependents with no run.out or
         # manifest), mark the live jobs FAILED, and clear pipeline_active. No schemer process, no star.
         afterok_state = self.backend.state_service.state_for(project_dir)
@@ -1305,9 +1298,9 @@ class PipelineRunnerService:
         if not job_model:
             return err(f"Job '{instance_id}' not found in state")
 
-        # Afterok-orchestrator projects (P1.B): cancel via the persisted supervisor slurm_job_id
+        # Afterok-orchestrator projects: cancel via the persisted supervisor slurm_job_id
         # (authoritative -- works for a still-PENDING dependent with no run.out/manifest), mark the
-        # job FAILED, and DO NOT clear pipeline_active: cancelling one supervisor parks its afterok
+        # job FAILED, and do not clear pipeline_active: cancelling one supervisor parks its afterok
         # dependents (DependencyNeverSatisfied), which reconcile_afterok scancels, and Pass 4 winds
         # pipeline_active down only when every job is terminal. Clearing it here would stop the
         # monitor ticking and freeze the rest of the live DAG.

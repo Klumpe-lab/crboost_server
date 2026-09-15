@@ -2,8 +2,8 @@
 """
 Service for reading, writing, and filtering tilt series STAR files.
 
-Replaces the old CryoBoost's tiltSeriesMeta class for tilt-filtering workflows,
-built on the patterns already established in MetadataTranslator.
+The counterpart of CryoBoost v1's tiltSeriesMeta class for tilt-filtering workflows,
+built on the patterns in MetadataTranslator.
 """
 
 from __future__ import annotations
@@ -360,7 +360,7 @@ def ensure_tilt_thumbnails(project_path: str | Path, state) -> bool:
     """Render the PNG previews of fsMotion's motion-corrected averages in the
     background if this project has none yet. Returns True when a task was submitted.
 
-    The PNGs back BOTH the tilt-filter gallery and the Journey's per-tilt hover
+    The PNGs back both the tilt-filter gallery and the Journey's per-tilt hover
     cards, so every project that ran fsMotionAndCtf needs them — with or without a
     tilt-filter job in the pipeline. Callers: both status reconcilers, on the
     fsMotion -> SUCCEEDED edge, and the Journey, which self-heals a run whose edge

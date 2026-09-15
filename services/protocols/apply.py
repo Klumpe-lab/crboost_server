@@ -1,10 +1,10 @@
-"""Apply = Protocol -> a new project (the one engine; roadmap 14 S3).
+"""Apply = Protocol -> a new project.
 
 Creates the project through the same facade the landing page uses, registers the protocol's
-species with their frozen assets, instantiates every stage with its FULL param snapshot and
-persists once. Validation runs BEFORE anything touches disk; unknown fields and rejected values
+species with their frozen assets, instantiates every stage with its full param snapshot and
+persists once. Validation runs before anything touches disk; unknown fields and rejected values
 come back as warnings in the result, never as silent substitutions.
-The same function is what a future "create project from protocol" landing action calls.
+Both the Protocols dialog and the `crboost_protocol.py` CLI call this.
 """
 
 from __future__ import annotations
@@ -136,8 +136,8 @@ async def apply_protocol(
 
     `dose_per_tilt` (+ its source, "user" when typed) overrides the mdocs' value. When the
     mdocs carry no dose and none is passed, project creation uses the scan's estimate and
-    records it as "estimated"; it refuses only when no estimate is possible either
-    (roadmap 18 D4 — a protocol never runs on a silent 3.0)."""
+    records it as "estimated"; it refuses only when no estimate is possible either, so a
+    protocol never runs on a silent default dose."""
     problems = validate_protocol(protocol)
     if problems:
         return err("Protocol cannot be applied:\n  - " + "\n  - ".join(problems), problems=problems)
@@ -218,7 +218,7 @@ async def apply_protocol(
 
 
 # Longest tilt-series basename (`<project dirname>_<mdoc stem>`) known to survive AreTomo 1.0's IMOD output
-# writer; at 51 it mangled the `.tlt` name, Warp dropped the series, and the pipeline ran on nominal tilt
+# writer; at 51 the `.tlt` name is mangled, Warp drops the series, and the pipeline runs on nominal tilt
 # angles (docs/known_bugs.md #3). The exact limit is not known.
 ARETOMO_TS_NAME_MAX_KNOWN_GOOD = 42
 
@@ -303,7 +303,7 @@ def _fill_species(sp, ps: ProtocolSpecies) -> None:
 def instantiate_stages(state: ProjectState, protocol: Protocol, assets: dict[str, dict[str, str]]) -> list[str]:
     """Create every stage instance and apply its param snapshot. Values are coerced through
     the field's own type (enums, ints — a float can never land in an int field). Unknown
-    fields, rejected values and fields the protocol does not cover are all REPORTED."""
+    fields, rejected values and fields the protocol does not cover are all reported."""
     warnings: list[str] = []
     for st in protocol.stages:
         iid = st.instance_id
@@ -334,9 +334,9 @@ def instantiate_stages(state: ProjectState, protocol: Protocol, assets: dict[str
             warnings.append(f"{iid}: not covered by the protocol, code defaults in effect: {', '.join(uncovered)}")
 
         for slot, producer in st.inputs.items():
-            # The resolver's override keys embed the producer's job DIRECTORY, which a fresh
+            # The resolver's override keys embed the producer's job directory, which a fresh
             # project has not allocated yet; a key written now would silently stop matching
-            # the moment the producer is deployed. Until the resolver accepts instance ids,
+            # once the producer is deployed. The resolver does not accept instance ids, so
             # explicit wiring is reported and automatic (species-aware) selection is used.
             warnings.append(f"{iid}.{slot}: explicit wiring to '{producer}' NOT applied (automatic selection used)")
     return warnings
@@ -348,11 +348,11 @@ def _coerce(jm, name: str, value: Any) -> Any:
 
 
 def stage_edits(state: ProjectState, protocol: Protocol) -> dict[str, list[tuple[str, Any, Any]]]:
-    """Per stage instance, the user parameters whose CURRENT value differs from what the
+    """Per stage instance, the user parameters whose current value differs from what the
     protocol pinned: `{instance_id: [(name, protocol_value, current_value)]}`. Compared after
-    the same coercion apply used, so `"3"` vs `3` is not an edit; a stage the project no
-    longer has is absent. Species-shaped defaults are not pins and are not compared. Read-only
-    — the Protocols view renders these as "edited" chips (roadmap 16 D7; never "drift")."""
+    the same coercion apply used, so `"3"` vs `3` is not an edit; a stage missing from the
+    project is absent. Species-shaped defaults are not pins and are not compared. Read-only
+    — the Protocols view renders these as "edited" chips."""
     out: dict[str, list[tuple[str, Any, Any]]] = {}
     for st in protocol.stages:
         jm = state.jobs.get(st.instance_id)

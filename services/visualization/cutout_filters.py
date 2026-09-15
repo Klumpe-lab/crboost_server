@@ -2,8 +2,8 @@
 
 The Journey tab's cutout tiles are eyeballed to curate picks. On non-denoised
 tomograms the raw tiles are noisy and the particle is hard to see. This module
-provides display-only filters (they NEVER touch the data, the picks, or any
-star file) plus the shared atlas-assembly used by BOTH cutout pipelines:
+provides display-only filters (they never touch the data, the picks, or any
+star file) plus the shared atlas-assembly used by both cutout pipelines:
 
   - subtomo-extracted cutouts  → services/visualization/preview_render.py
   - recon-sourced cutouts      → services/visualization/recon_cutouts.py
@@ -11,13 +11,12 @@ star file) plus the shared atlas-assembly used by BOTH cutout pipelines:
 Both pipelines reduce to the same thing: a list of 2D float frames (one per
 pick, in pick order, None where a pick had no usable cutout). `build_filtered_atlas`
 takes that list, applies one filter preset, normalizes tomogram-wide, and lays
-the tiles into a sprite-atlas PNG array + an index dict — byte-identical schema
-to the previous per-module assembly, so the gallery consumes it unchanged.
+the tiles into a sprite-atlas PNG array + an index dict for the gallery.
 
 The cutoff is specified in Ångström and converted to a pixel frequency with the
 source file's own pixel size (`apix`, read from the MRC header by the caller) —
 so recon cutouts (reconstruction bin) and subtomo cutouts (extraction bin), which
-have DIFFERENT pixel sizes, each filter at the right scale automatically. The
+have different pixel sizes, each filter at the right scale automatically. The
 resolved apix and its provenance ride along in the index JSON so the UI can show
 the user exactly what value was used and where it came from.
 
@@ -44,9 +43,9 @@ logger = logging.getLogger(__name__)
 #   param_label  option label within the type (the PARAM dropdown)
 #   kind         render dispatch: raw | lowpass | bandpass | denoise | clahe
 #   + kind params: cutoff_ang/highpass_ang (freq) | weight (denoise) | clip_limit (clahe)
-# Pure lowpass only blurs; the genuinely useful filters for noisy, non-denoised
-# cutouts are edge-preserving DENOISE (TV) and LOCAL CONTRAST (CLAHE) — listed
-# first so they're the obvious choices. Defaults tuned for large viral VLPs
+# Pure lowpass only blurs; the useful filters for noisy, non-denoised cutouts
+# are edge-preserving denoise (TV) and local contrast (CLAHE), listed first so
+# they're the obvious choices. Defaults tuned for large viral VLPs
 # (Copia/412, ~40-60 nm). `raw` MUST stay first and is the default selection.
 DEFAULT_FILTER_PRESETS: list[dict] = [
     {"key": "raw", "type": "raw", "type_label": "None (raw)", "param_label": "", "kind": "raw"},
@@ -121,8 +120,8 @@ FREQ_KINDS = ("raw", "lowpass", "bandpass")
 
 
 def get_filter_presets() -> list[dict]:
-    """The active preset list. Single accessor so a future conf.yaml override is
-    a one-function change; today it returns the module default."""
+    """The active preset list (the module default). Callers go through this
+    accessor so a conf.yaml override would change one function."""
     return DEFAULT_FILTER_PRESETS
 
 

@@ -6,9 +6,8 @@ Persistence layout (per project):
         index.json                         # cheap listing: ts_id → frame_count
         tilt_series/{ts_id}.json           # full TiltSeries serialized
 
-Per-TS sidecars anticipate Stage 6 (lazy load for 100s of TS projects). For now
-the registry is loaded eagerly — all TS are read into memory at project load —
-but the on-disk shape already supports partial loads and per-TS atomic writes.
+The registry is loaded eagerly (all TS are read into memory at project load);
+the per-TS sidecars allow partial loads and per-TS atomic writes.
 
 Concurrency: a single asyncio.Lock per registry serializes saves. Mutations
 are in-memory and lock-free; `save()` flushes dirty TS to disk in one pass.
@@ -42,14 +41,14 @@ logger = logging.getLogger(__name__)
 # (1, 2): additive Frame raw acquisition metadata (exposure_dose, dose_rate,
 #         exposure_time, defocus, intensities, image_shift) captured from mdoc;
 #         additive FsMotionCtfFrameOutput.ctf_resolution / mean_frame_movement
-#         (real QC values from the Warp XML, formerly star placeholders).
+#         (real QC values from the Warp XML; the star columns are placeholders).
 # (1, 3): additive Frame.filter_probability (DL tilt-filter score alongside the
 #         boolean verdict); additive DenoisePredictTomogramOutput tomogram output.
 # (1, 4): additive per-tilt QC the Journey charts: FsMotionCtfFrameOutput
 #         defocus_spread_um + motion_track_x/y/source; TsAlignmentPerFrame
 #         average_intensity / masked_fraction / fov_fraction; TsCtfTiltSeriesOutput
 #         ctf_resolution / plane_normal. Older registries read fine (fields
-#         default to None) and re-earn them via `crboost_reingest.py`.
+#         default to None) and are backfilled by `crboost_reingest.py`.
 REGISTRY_SCHEMA_VERSION = (1, 4)
 
 
@@ -309,13 +308,12 @@ class TiltSeriesRegistry:
         self._dirty_index = False
 
     def refresh_from_disk(self) -> None:
-        """Re-sync with the on-disk registry, re-parsing ONLY the sidecars that changed.
+        """Re-sync with the on-disk registry, re-parsing only the sidecars that changed.
 
         A driver ingesting on a compute node rewrites a handful of sidecars and touches the
-        index; the previous behaviour (throw the instance away and `load()` a fresh one) then
-        re-validated every sidecar in the project. On a 114-tilt-series project that is ~19 MB
-        of pydantic per poll, on the event loop. Only sidecars whose own mtime moved are
-        re-read here; the rest keep their parsed objects.
+        index. A full `load()` would re-validate every sidecar in the project (~19 MB of
+        pydantic per poll on a 114-tilt-series project, on the event loop), so only sidecars
+        whose own mtime moved are re-read; the rest keep their parsed objects.
 
         Caller must ensure there are no unsaved in-memory changes (see get_registry_for).
         """
@@ -406,7 +404,7 @@ class TiltSeriesRegistry:
         self._ts_mtime_ns[ts.id] = mtime_ns
 
     def _forget_tilt_series(self, ts_id: str) -> None:
-        """Drop a TS from memory WITHOUT deleting its sidecar — the disk copy is already gone
+        """Drop a TS from memory without deleting its sidecar — the disk copy is already gone
         or was removed by another process. `remove_tilt_series` is the user-facing delete."""
         ts = self._tilt_series.pop(ts_id, None)
         self._ts_mtime_ns.pop(ts_id, None)

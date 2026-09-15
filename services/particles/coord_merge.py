@@ -1,11 +1,10 @@
-"""Coordinate-grade union of one species' pick lists, across tomograms and projects
-(roadmap `picking_ui/12-S2`).
+"""Coordinate-grade union of one species' pick lists, across tomograms and projects.
 
 The stage-③ merge in ``services/subtomo_merge.py`` unites EXTRACTED particles: it needs an
 optics block and refuses a candidates star by name. This module is its counterpart one
 stage earlier, uniting POSITIONS — a manual list, a ``candidates.star`` and an imported
 list are the same kind of thing here, differing only in how many columns they carry
-(``docs/particle-data-flow.md`` §2).
+(``docs/particle-data-flow.md``).
 
 Output is the same directory shape the post-extraction merge writes, so one consumer
 serves both grades::
@@ -23,9 +22,9 @@ the optics block at extraction time from ``tomograms.star`` — raising rather t
 when a required optics column is absent. Nothing here fabricates one either.
 
 **One species per merge.** Enforced by the caller, not here: this module never reads a
-species. Uniting two species into one particle set is not a workflow (roadmap 12, D2).
+species. Uniting two species into one particle set is not a workflow.
 
-**Column policy** (roadmap 12, D5). Sources contribute different column sets, and a
+**Column policy.** Sources contribute different column sets, and a
 placeholder must never be indistinguishable from a measurement:
 
   * ``rlnAngleRot/Tilt/Psi`` — filled with 0 for sources that lack them. This is not an
@@ -38,7 +37,6 @@ placeholder must never be indistinguishable from a measurement:
     Promoted into the main star only when every source carries it.
 
 numpy/pandas/starfile are hard deps (top-level, as everywhere in ``services/particles``).
-Compile-checked in Claude's bare venv; runtime-exercised by the aggregation flow.
 """
 
 from __future__ import annotations
@@ -210,14 +208,13 @@ def plan_merge(sources: list[CoordSource], *, registry_lookup=None) -> MergePlan
     # merged name -> (row, project_path, acquisition key or None, handedness)
     accepted: dict[str, tuple[pd.Series, Path, tuple[str, str] | None, int | None]] = {}
     by_key: dict[tuple[str, str], str] = {}
-    # (resolved project, tomogram name) -> merged name. Same project AND same tomogram is
-    # the same tomogram, trivially -- no acquisition key, no transferability gate, no
-    # rename. That case is not an edge: two hand-picked lists (or manual + auto) on ONE
-    # volume is the commonest merge there is. Without this the second such source collides
-    # in `used_names` below and is disambiguated as though it came from another project,
-    # scattering one volume's picks over two `rlnTomoName`s -- and since `list_extraction`
-    # slices a list star by `rlnTomoName`, everything under the invented name is then
-    # dropped from the extraction without a word.
+    # (resolved project, tomogram name) -> merged name. Same project and same tomogram is
+    # the same tomogram -- no acquisition key, no transferability gate, no rename. This is
+    # the commonest merge (two lists, or manual + auto, on one volume). Without it the
+    # second source collides in `used_names` below and is renamed as though it came from
+    # another project, splitting one volume's picks over two `rlnTomoName`s; since
+    # `list_extraction` slices a list star by `rlnTomoName`, the renamed picks would be
+    # silently dropped from extraction.
     by_origin: dict[tuple[str, str], str] = {}
     used_names: set[str] = set()
 
@@ -313,10 +310,9 @@ def _classify_columns(frames: list[pd.DataFrame]) -> tuple[list[str], list[str],
         if col in ANGLE_COLS:
             main.append(col)  # 0 is RELION's real "no prior"
             continue
-        # Score columns and everything else share one rule, and deliberately: a column
-        # every row states is honest in the main star, a ragged one is not. Score is
-        # called out in SCORE_COLS only so the caller can name it in the UI ("filter
-        # applies to N of M") -- there is no separate policy for it here.
+        # Score columns and everything else share one rule: a column every row states goes
+        # in the main star, a ragged one goes to the sidecar. SCORE_COLS exists only so the
+        # caller can name it in the UI ("filter applies to N of M").
         (main if coverage[col] == total_rows else sidecar).append(col)
     return main, sidecar, coverage
 
@@ -335,7 +331,7 @@ def merge_coordinate_sources(
     ``imported`` < ``filtered`` < ``auto``), and that ORDER is the only thing encoding
     "a hand placement wins a clash" — the dedup in ``pick_merge`` is a keep-first walk.
     Nothing is deduplicated here: the union is meant to contain clashers so the caller can
-    report them and let the user decide (roadmap 12, D4).
+    report them and let the user decide.
 
     Raises when the plan is blocking. Returns the summary dict, which is also written to
     ``merge_summary.json``.
@@ -462,7 +458,7 @@ def merge_coordinate_sources(
 
 
 # ---------------------------------------------------------------------------
-# Collision report (roadmap 12-S3)
+# Collision report
 # ---------------------------------------------------------------------------
 
 
@@ -470,7 +466,7 @@ def clash_report(particles_star: Path, radius_angst: float) -> dict[str, Any]:
     """Per-tomogram and total clash counts for a merged coordinate set at `radius_angst`.
 
     Computed AFTER the union and never applied: the union is meant to contain clashers,
-    and dedup is the user's call (roadmap 12, D4). Row order carries priority, so the
+    and dedup is the user's call. Row order carries priority, so the
     ``n_removed`` here is exactly what ``pick_merge.deduplicate_star`` would drop.
     """
     df = _coord_block(Path(particles_star))
@@ -490,9 +486,9 @@ def clash_report(particles_star: Path, radius_angst: float) -> dict[str, Any]:
 # Headless CLI
 # ---------------------------------------------------------------------------
 #
-# Same precedent as `list_extraction`: build the artifacts WITHOUT touching SLURM so the
-# star format can be eyeballed before the dialog exists, and so the merge is verifiable in
-# the module env where numpy/pandas/starfile actually import.
+# Same pattern as `list_extraction`: build the artifacts without touching SLURM, so the
+# star format can be inspected and the merge verified in the module env where
+# numpy/pandas/starfile import.
 #
 #   python -m services.particles.coord_merge \
 #       --source <list.star>:<tomograms.star>:<tomo>:<project>:<type> \

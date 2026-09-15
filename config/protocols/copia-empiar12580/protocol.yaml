@@ -1,8 +1,8 @@
 # Protocol: the CryoBoost v1 copia tutorial (EMPIAR-12580, one tilt series), importmovies -> class3d.
-# Authored 2026-08-27 from the tutorial and nothing else: sphere template 550 A, I1, angular_search 90,
+# Taken from the tutorial: sphere template 550 A, I1, angular_search 90,
 # class3d.random_seed 1. Dataset facts (apix, dose, tilts) come from the mdocs at project creation.
-# Stage params are FULL USER_PARAMS snapshots by design.
-# 2026-09-04: species + picking params reconciled against the reference run
+# Stage params are full USER_PARAMS snapshots.
+# Species + picking params match the reference run
 # /groups/<name_of_group>/crboost_data/copia_demo2 (1056 picks on this TS): diameter 575 A, spherical d575_s5 mask.
 name: copia-empiar12580
 version: 1
@@ -40,7 +40,7 @@ stages:
       m_range_min_max: "500:10"
       m_bfac: -500
       m_grid: 1x1x3
-      c_range_min_max: "30:10"     # was 30:6.0 (v1): beyond ~10 A these 2 e/A2 tilts are noise and the fit diverged on 22/28 -> docs/known_bugs.md #1
+      c_range_min_max: "30:10"     # v1 uses 30:6.0; beyond ~10 A these 2 e/A2 tilts are noise and the fit diverges on 22/28 -> docs/known_bugs.md #1
       c_defocus_min_max: "1.1:8"
       c_grid: 2x2x1
       c_use_sum: false

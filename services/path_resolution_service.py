@@ -81,8 +81,8 @@ class PathResolutionError(ValueError):
 
 # Instance-path markers for the synthetic (non-job) producers. The merge and the pick-list
 # extractions have no JobType of their own and borrow MERGED_SOURCES, told apart by instance
-# path; imported tomograms got their own (JobType.IMPORTED_TOMOGRAMS, de-novo roadmap D-8/S5),
-# so only their LEGACY override keys still carry the mergedSources prefix.
+# path. Imported tomograms have their own (JobType.IMPORTED_TOMOGRAMS); only their legacy
+# override keys carry the mergedSources prefix.
 PICK_LIST_PRODUCER_PREFIX = "pick_list__"
 IMPORTED_TOMOGRAMS_INSTANCE_PATH = "Tomograms"
 IMPORTED_TOMOGRAMS_PRODUCER_ID = "importedTomograms"
@@ -121,8 +121,8 @@ def _synthetic_override_target(override_key: str) -> str:
     the ``mergedSources:`` prefix and are told apart by instance path — routing a dangling
     pick-list override through the merged-sources branch would tell the user
     "merged-sources optimisation_set not found" about a list that simply needs re-extracting.
-    Imported tomograms now have their own JobType (D-8/S5); the old ``mergedSources:Tomograms``
-    form is still recognised so overrides persisted before that keep resolving."""
+    Imported tomograms have their own JobType; the legacy ``mergedSources:Tomograms`` form is
+    also recognised so older persisted overrides keep resolving."""
     if override_key.startswith(f"{JobType.IMPORTED_TOMOGRAMS.value}:"):
         return "imported"
     prefix = f"{JobType.MERGED_SOURCES.value}:"
@@ -138,9 +138,8 @@ def _synthetic_override_target(override_key: str) -> str:
 
 class PathResolutionService:
     """
-    Stage 3: schema-based path resolution.
-    Now with user override support, candidate enumeration for UI,
-    and species-aware scoring.
+    Schema-based path resolution with user overrides, candidate enumeration
+    for the UI, and species-aware scoring.
     """
 
     def __init__(self, state: ProjectState, active_instance_ids: set | None = None):
@@ -293,8 +292,7 @@ class PathResolutionService:
         then species-aware automatic selection -- but the chosen producer's *clean*
         ``instance_id`` is recorded instead of a path. Returns deduplicated
         ``(producer_instance_id, consumer_instance_id)`` pairs, suitable for a SLURM
-        ``--dependency=afterok`` topological submit (P1.A of the orchestrator
-        rework; see docs/roadmaps/roadmap_orchestrator-replacement.md §6).
+        ``--dependency=afterok`` topological submit.
 
         Producers with no SLURM job are excluded: a ``manual:`` file override
         (user-picked file, no producing job) and every synthetic producer
@@ -572,9 +570,8 @@ class PathResolutionService:
         return f"the pick list behind '{producer_id}' no longer exists — re-extract, or repoint this input"
 
     def _dangling_imported_message(self) -> str:
-        """Why an imported-tomograms override stopped resolving. Its own message since D-8/S5:
-        before that it borrowed MERGED_SOURCES and reported itself as a missing merged-sources
-        optimisation set, which named the wrong artifact AND the wrong file type."""
+        """Why an imported-tomograms override stopped resolving. Kept separate from the
+        merged-sources message, which would name the wrong artifact and file type."""
         rec = getattr(self.state, "imported_tomograms", None)
         if not rec or not rec.star_path:
             return "the tomogram import this input points at was removed — re-import, or repoint this input"
@@ -601,10 +598,10 @@ class PathResolutionService:
 
         job_type_str, instance_path = override_key.split(":", 1)
         if job_type_str == JobType.MERGED_SOURCES.value and instance_path == IMPORTED_TOMOGRAMS_INSTANCE_PATH:
-            # Legacy key: imported tomograms borrowed MERGED_SOURCES until D-8/S5 gave them
-            # their own JobType, so an override persisted before that names the old producer.
-            # Rewritten rather than migrated on load — the override lives on every job model
-            # that carries one, and a read-time rewrite cannot miss a project.
+            # Legacy key: older projects persist imported-tomogram overrides under
+            # MERGED_SOURCES. Rewritten at read time rather than migrated on load — the
+            # override lives on every job model that carries one, and a read-time rewrite
+            # cannot miss a project.
             job_type_str = JobType.IMPORTED_TOMOGRAMS.value
 
         matches = [
@@ -708,8 +705,8 @@ class PathResolutionService:
         # optset (slug folder: MergedSources/<slug>/optimisation_set.star, or a
         # legacy flat MergedSources/optimisation_set.star) as a synthetic producer so
         # consumers (ReconstructParticle / Class3D / Refine3D) discover it through the
-        # normal candidate enumeration -- works regardless of the state.is_aggregation
-        # flag, which has been a single point of failure. ProjectState owns the
+        # normal candidate enumeration -- independent of the state.is_aggregation
+        # flag. ProjectState owns the
         # active-merge resolution so the instance_path here matches the source_key
         # that apply_aggregation_overrides writes.
         merged_optset = self.state.active_merged_optset()
@@ -754,7 +751,7 @@ class PathResolutionService:
         index[JobFileType.TOMOGRAMS_STAR].append(
             OutputCandidate(
                 produces=JobFileType.TOMOGRAMS_STAR,
-                producer_job_type=JobType.IMPORTED_TOMOGRAMS,  # its own sentinel since D-8/S5
+                producer_job_type=JobType.IMPORTED_TOMOGRAMS,
                 producer_output_key="output_star",
                 path=str(star),
                 instance_path=IMPORTED_TOMOGRAMS_INSTANCE_PATH,
@@ -773,7 +770,7 @@ class PathResolutionService:
         have been subtomo-extracted (`backend.extract_pick_list`, which runs OUTSIDE the
         pipeline graph); `PickList.extracted_path` is that extraction's optset. Injecting
         it here is what lets reconstructParticle / class3d resolve a de-novo species with
-        no subtomoExtraction roster row at all (denovo roadmap D-7). The state is DERIVED
+        no subtomoExtraction roster row at all. The state is derived
         (`extraction_state()`), so a re-curated list drops out of the pool by itself.
 
         Multiple EXTRACTED lists can exist for one (species, tomo). All are injected so
@@ -781,9 +778,8 @@ class PathResolutionService:
         `relion_job_number` — a free integer for synthetic producers, and already the
         scorer's preference rank — is assigned so the most recent extraction outranks the
         older ones. The winner says so in its label, which the UI dropdown renders verbatim,
-        so the choice is never silent. (An authoritative-slug tiebreak used to come first;
-        that per-tomogram nomination is gone — a specific list is chosen by overriding the
-        slot here, or by naming it as a source in the Aggregate-candidates flow.)
+        so the choice is never silent. A specific list is chosen by overriding the slot, or
+        by naming it as a source in the Aggregate-candidates flow.
         """
         from services.models_base import ListExtractionState
 
@@ -802,8 +798,8 @@ class PathResolutionService:
         for (_species_id, tomo_name), group in by_tomo.items():
             # Ascending, so the LAST entry is the winner and rank == list position.
             # Ranks start at 0 so a lone pick list ties the other synthetic producers
-            # (mergedSources / importedTomograms) exactly as before; only a genuine
-            # multi-list tie spends rank to break itself.
+            # (mergedSources / importedTomograms); only a genuine multi-list tie spends
+            # rank to break itself.
             ranked = sorted(group, key=lambda pl: pl.extracted_at.timestamp() if pl.extracted_at is not None else 0.0)
             for rank, pl in enumerate(ranked):
                 label = f"Pick list — {pl.label or pl.slug} · {tomo_name}"
@@ -990,7 +986,7 @@ class PathResolutionService:
 
 
 # -----------------------------------------------------------------------------
-# Context Paths Helper (unchanged)
+# Context Paths Helper
 # -----------------------------------------------------------------------------
 
 
@@ -1006,7 +1002,7 @@ def get_context_paths(job_type: JobType, job_model: AbstractJobParams, job_dir: 
 
     # tomostar_dir: for TS_IMPORT it's an output (resolved by IO slots).
     # For alignment/ctf/reconstruct it comes from upstream via IO slots.
-    # Only import_movies and fs_motion_ctf still use the project-root fallback.
+    # Only import_movies and fs_motion_ctf use the project-root fallback.
     if job_type in [JobType.IMPORT_MOVIES, JobType.FS_MOTION_CTF]:
         paths["tomostar_dir"] = str(project_root / "tomostar")
 
@@ -1018,7 +1014,7 @@ def get_context_paths(job_type: JobType, job_model: AbstractJobParams, job_dir: 
 
     if job_type == JobType.TEMPLATE_MATCH_PYTOM:
         tm_model = job_model
-        # v3 resolution:
+        # Resolution:
         #   1. Job-level template_path / mask_path acts as a per-job
         #      override when explicitly set. The TM plugin's dropdowns
         #      write a specific entry's path into these fields, so the

@@ -30,10 +30,8 @@ Output (under ``Curation/<species>/<tomo>/<slug>/``):
 The optset read/write primitives come from ``services.subtomo_merge`` so this and
 the in-job extraction driver read and emit the identical format.
 
-NOTE: this is py_compile + ruff only in Claude's venv (no numpy/pandas there); it
-is runtime-tested by the user in the module env. The CLI below builds the artifacts
-WITHOUT running extraction so the star format can be eyeballed before a SLURM job is
-ever submitted.
+The CLI below builds the artifacts without running extraction, so the star format can
+be checked before a SLURM job is submitted.
 """
 
 from __future__ import annotations
@@ -182,7 +180,7 @@ def build_list_optset(candidate_optset: Path, list_star: Path, tomo_name: str, o
 # The particle schema relion_tomo_subtomo consumes: identity, position, orientation,
 # optics group. Manual picks are positions only, so the three Euler angles are written
 # as explicit zeros — "unoriented" IS zero here, it is not a stand-in for a value we
-# failed to look up. Deliberately omits the PyTOM score columns a mirrored
+# failed to look up. Omits the PyTOM score columns a mirrored
 # candidates.star carries: the tool never reads them and inventing scores would be a lie.
 SYNTHESIZED_PARTICLE_COLS = [
     "rlnTomoName",

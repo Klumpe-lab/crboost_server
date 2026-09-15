@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 # distinguisher; the glyph is secondary reinforcement so several lists over one
 # tomogram read apart at a glance. Machine picks = circle, ArtiaX/curation
 # products = diamond/triangle, external = square. The CSS lives next to
-# `.cb-pick-ghost` (the `.cb-shape-*` rules). Easy to retune — it's one dict.
+# `.cb-pick-ghost` (the `.cb-shape-*` rules).
 _PICK_LIST_GLYPH = {
     PickListType.AUTO: "circle",
     PickListType.FILTERED: "circle",
@@ -133,9 +133,9 @@ def resolve_volume_for_3dmod(tomo_row: pd.Series, project_path: Path) -> Path | 
 
 
 def vis_asset_url(asset_path: str) -> str:
-    # mtime-keyed cache-buster — see ROADMAP §4.7. When the atlas/manifest
-    # regenerates, the URL changes, so the browser doesn't keep serving a
-    # stale copy from disk cache against an unchanged path.
+    # mtime-keyed cache-buster: when the atlas/manifest regenerates, the URL
+    # changes, so the browser doesn't serve a stale copy from disk cache
+    # against an unchanged path.
     try:
         v = int(Path(asset_path).stat().st_mtime)
     except OSError:
@@ -182,11 +182,11 @@ _PILL_STAGES: list[tuple[str, str, JobType | None]] = [
 PREP_STAGES = _PILL_STAGES[:4]
 
 
-# ── Registry-backed per-tilt readers (roadmap 02 stage 3) ─────────────────────
+# ── Registry-backed per-tilt readers ──────────────────────────────────────────
 # The dashboard's per-TS facts come from the TiltSeriesRegistry, not from
 # re-reading emitted STARs/XMLs. Each reader returns None (or {}) when the
-# registry has no data for the job+TS — the caller renders a loud
-# "not in registry" marker, never a silent star fallback (stage-0 decision).
+# registry has no data for the job+TS; the caller renders a visible
+# "not in registry" marker, never a silent star fallback.
 
 
 def registry_ts_for(project_path: Path, ts_name: str):
@@ -202,7 +202,7 @@ def registry_ts_for(project_path: Path, ts_name: str):
 def fsm_registry_df(project_path: Path, instance_id: str, ts_name: str) -> pd.DataFrame | None:
     """Per-tilt DataFrame from FsMotionCtfFrameOutput rows, with the same rln
     column names the per-tilt star carried (so the plot helpers are unchanged) —
-    plus the REAL per-tilt QC values as `cbCtfResolution`/`cbMeanFrameMovement`
+    plus the real per-tilt QC values as `cbCtfResolution`/`cbMeanFrameMovement`
     (registry ingests them from the Warp XML; the star columns for these are
     1e-6 placeholders). None when the registry has no output for this job+TS."""
     ts = registry_ts_for(project_path, ts_name)
@@ -233,8 +233,8 @@ def fsm_motion_tracks(project_path: Path, instance_id: str, ts_name: str) -> lis
     """Per-tilt beam-induced motion tracks from the fsMotion registry outputs:
     [{tilt, index, frame, x, y, source}] for the frames that carry one. `index`
     counts frames WITH an fsMotion output, so it matches the row numbers of
-    `fsm_registry_df`. Empty when this run predates track ingest (re-ingest to
-    earn them — `crboost_reingest.py`)."""
+    `fsm_registry_df`. Empty when the registry holds no tracks for this run
+    (re-ingest with `crboost_reingest.py`)."""
     ts = registry_ts_for(project_path, ts_name)
     if ts is None:
         return []
@@ -354,9 +354,9 @@ def alignment_registry_df(project_path: Path, instance_id: str, ts_name: str) ->
 
 
 def _filter_ran_for_ts(ts) -> bool:
-    """Whether the tilt-filter stamped this TS. A pre-stamping legacy run left
-    no per-frame verdicts, which is indistinguishable from "never ran" — those
-    projects re-earn the section by re-running the filter (stage-0 decision)."""
+    """Whether the tilt-filter stamped this TS. A run that left no per-frame
+    verdicts is indistinguishable from "never ran"; re-running the filter
+    brings the section back."""
     return any(f.is_filtered_out or f.filter_probability is not None for f in ts.frames)
 
 
@@ -375,9 +375,8 @@ def filter_verdicts_from_registry(project_path: Path, ts_name: str) -> dict[str,
 
 
 def filter_kept_dropped_from_registry(project_path: Path, ts_name: str) -> dict | None:
-    """Registry version of the old labeled-vs-filtered star diff: kept/dropped
-    counts + the dropped tilts (index, angle, frame). None when the filter
-    never stamped this TS."""
+    """Kept/dropped counts + the dropped tilts (index, angle, frame) from the
+    registry's filter verdicts. None when the filter never stamped this TS."""
     ts = registry_ts_for(project_path, ts_name)
     if ts is None or not _filter_ran_for_ts(ts):
         return None
@@ -392,7 +391,7 @@ def filter_kept_dropped_from_registry(project_path: Path, ts_name: str) -> dict 
 def denoised_mrc_from_registry(project_path: Path, instance_id: str, ts_name: str) -> Path | None:
     """Denoised-tomogram path from DenoisePredictTomogramOutput, or None. The
     exists() check keeps stale registry entries (deleted volumes) out of the
-    method selector, matching the old disk-glob behavior."""
+    method selector."""
     ts = registry_ts_for(project_path, ts_name)
     if ts is None or ts.tomogram is None:
         return None
@@ -404,11 +403,11 @@ def denoised_mrc_from_registry(project_path: Path, instance_id: str, ts_name: st
 
 
 def warp_hand_from_registry(state, project_path: Path) -> int | None:
-    """Warp's APPLIED handedness (its ts_defocus_hand decision, recorded by the
+    """Warp's applied handedness (its ts_defocus_hand result, recorded by the
     tsCtf ingest as are_angles_inverted): -1/+1 when consistent across TS,
     0 when mixed, None when no tsCtf output is in the registry. This is a
-    different authority than the Import star's declared rlnTomoHand — the chip
-    shows both; divergence is a real finding (the 412 lesson)."""
+    different authority than the Import star's declared rlnTomoHand; the chip
+    shows both, and divergence is a real finding."""
     found = find_job_by_type(state, JobType.TS_CTF)
     if not found:
         return None
@@ -459,7 +458,7 @@ def _array_stage_status(project_path: Path, jm) -> tuple[list[str], dict[str, st
 
     Prefers the per-TS array-task tracker (.task_manifest.json + .task_status/)
     when present. Falls back to the stage's output star + job-level execution
-    status for legacy jobs that ran before the tracker was wired up.
+    status for jobs without the tracker.
     """
     job_dir = resolve_job_dir(jm, project_path)
     if job_dir is None:
@@ -553,10 +552,9 @@ def _candidate_extract_status_per_ts(job_dir: Path, jm, manifest: dict | None = 
         TS that's expected (per the staged tomograms.star) but not yet
         covered by any of the buckets above.
 
-    ``manifest`` lets a caller that has ALREADY read this job's preview manifest hand it
+    ``manifest`` lets a caller that has already read this job's preview manifest hand it
     over: ``read_preview_manifest`` is an uncached ``read_text`` + ``json.loads`` on every
-    call, and ``collect_species_journey`` needs the same document for its own entries — so
-    without this every CE species parsed it twice per collect.
+    call, and ``collect_species_journey`` needs the same document for its own entries.
     """
     if manifest is None:
         manifest = read_preview_manifest(job_dir) or {}
@@ -565,10 +563,9 @@ def _candidate_extract_status_per_ts(job_dir: Path, jm, manifest: dict | None = 
     errored = {e.get("tomo") for e in (summary.get("errored") or []) if e.get("tomo")}
 
     # Fast path: orchestrator-recorded zero_picks (v10+). Fallback: scan
-    # tmResults for legacy manifests. Keyed on the KEY'S PRESENCE, not on the set being
-    # non-empty: a v10+ manifest that found no zero-pick tomograms records
-    # `"zero_picks": []`, which is a real recorded answer — treating it as a miss re-scanned
-    # every `tmResults/*_particles.star` on every call, which is what real manifests carry.
+    # tmResults for legacy manifests. Keyed on the key's presence, not on the set being
+    # non-empty: `"zero_picks": []` is a recorded answer, and treating it as a miss would
+    # re-scan every `tmResults/*_particles.star` on every call.
     zero_picks: set[str] = set(summary.get("zero_picks") or [])
     if "zero_picks" not in summary:
         zero_picks = _zero_pick_tomos_from_tmresults(job_dir)
@@ -626,7 +623,7 @@ def _subtomo_extract_status_per_ts(job_dir: Path, jm, expected_ts: set[str] | No
 
     Two layouts are supported, in priority order:
 
-      1. **Array layout** (post-conversion): `.task_manifest.json` exists.
+      1. **Array layout**: `.task_manifest.json` exists.
          Per-TS pass/fail from `.task_status/<ts>.{ok,fail}` is the source
          of truth. An "ok" task that didn't write any row to particles.star
          is demoted to "zero" (extraction ran but produced 0 particles for
@@ -755,8 +752,8 @@ def collect_dashboard_journey(project_state, project_path: Path) -> tuple[dict[s
     for ts_name, st in subtomo_combined.items():
         journey.setdefault(ts_name, {})["subtomo"] = st
 
-    # Imported tomograms (PARTICLES-header import utility, a project-level artifact —
-    # NOT a job): a data-less / particle-only project has no array stages, so its
+    # Imported tomograms (PARTICLES-header import utility, a project-level artifact,
+    # not a job): a data-less / particle-only project has no array stages, so its
     # tomograms reach the strip only here. No pipeline pills (nothing ran upstream) —
     # surfaced purely so the tomogram is selectable + the Particles section renders.
     imported_star = project_state.imported_tomograms_star_path()
@@ -799,11 +796,10 @@ def ce_instances_by_species(state) -> tuple[dict[str, list[tuple[str, object]]],
     """Invert `resolve_species` over the candidate-extract instances:
     ``({species_id: [(iid, jm), ...]}, unclaimed)``.
 
-    `unclaimed` holds instances `resolve_species` cannot attribute to a REGISTERED
-    species — a bare instance id with no `species_id` field and 2+ species in the
+    `unclaimed` holds instances `resolve_species` cannot attribute to a registered
+    species: a bare instance id with no `species_id` field and 2+ species in the
     project, or a `species_id` naming a species that no longer exists. Those still
-    render a species entry of their own today, so the inversion has to keep emitting
-    them (see `species_render_plan`)."""
+    render a species entry of their own (see `species_render_plan`)."""
     by_species: dict[str, list[tuple[str, object]]] = {}
     unclaimed: list[tuple[str, object]] = []
     known = {sp.id for sp in (getattr(state, "species_registry", None) or [])}
@@ -825,19 +821,14 @@ def ce_instance_for_species(state, species_id: str) -> tuple[str, object] | None
 def species_render_plan(state) -> list[tuple[object | None, str | None, tuple[str, object] | None]]:
     """The dashboard's species enumeration: ``[(species, species_id, ce_instance), ...]``.
 
-    THE INVERSION (de-novo picking, S2): the Particles panel and the roster particle
-    track enumerate the species REGISTRY, not candidate-extract jobs — so a species
-    created de novo, with no template and no template-matching chain, still gets a
-    row to pick into.
+    The Particles panel and the roster particle track enumerate the species registry,
+    not candidate-extract jobs, so a species created de novo, with no template and no
+    template-matching chain, still gets a row to pick into.
 
-    Parity contract with the pre-inversion enumeration: **one entry per
-    candidate-extract instance exactly as before** (species-claimed instances under
-    their species, unattributable ones appended), plus **one extra entry per
-    registered species that no candidate-extract instance claims**. A CE-rich project
-    therefore drives the identical render path with identical inputs; the only
-    intended visible differences are species order (registry order rather than
-    instance-id order) and color (persisted `species.color` rather than the
-    positional palette index)."""
+    One entry per candidate-extract instance (species-claimed instances under their
+    species, unattributable ones appended), plus one entry per registered species that
+    no candidate-extract instance claims. Species follow registry order and use the
+    persisted `species.color`."""
     by_species, unclaimed = ce_instances_by_species(state)
     plan: list[tuple[object | None, str | None, tuple[str, object] | None]] = []
     for sp in getattr(state, "species_registry", None) or []:
@@ -866,23 +857,19 @@ def pick_list_counts_for_species(state, species_id: str | None) -> dict[str, int
 
 
 def pick_list_subtomo_status(state, species_id: str, tomo_name: str) -> str:
-    """Strip ``subtomo_status`` for one (species, tomogram) DERIVED from its pick lists'
-    extraction state — the only extraction fact a de-novo species has, since it owns no
-    subtomo-extraction job whose out dir could be probed. ``ok`` once ANY list has an
-    extraction output on disk, else ``pending``. Before roadmap 11-S3 / 07 §3-S4 this was
-    hardcoded ``"pending"``, so a per-list extraction never moved the strip for a de-novo
-    species.
+    """Strip ``subtomo_status`` for one (species, tomogram), derived from its pick lists'
+    extraction state: the only extraction fact a de-novo species has, since it owns no
+    subtomo-extraction job whose out dir could be probed. ``ok`` once any list has an
+    extraction output on disk, else ``pending``.
 
-    TWO states, not three — deliberately coarser than 11-S3 §3's "STALE → warn" (see its
-    stage record). Telling STALE from EXTRACTED needs ``PickList.filtered_count`` synced
-    from the list's ``_filtered.star`` (``picks_filter.sync_filtered_count``, a pandas read
-    per list); without that sync a list filtered in a PRIOR session reads falsely STALE
-    right after a correct extraction of its kept subset — the failure
-    ``aggregation.extraction`` and ``species_overview`` each call the sync to avoid. The
-    strip derives this for EVERY tomogram on a render path, so it can afford neither the
-    reads nor a wrong-but-plausible amber cell: freshness is the Picks tab's per-list badge,
-    which does sync. What is shared is the authority — ``extraction_state()`` is called
-    here, never re-implemented.
+    Two states, not three. Telling STALE from EXTRACTED needs ``PickList.filtered_count``
+    synced from the list's ``_filtered.star`` (``picks_filter.sync_filtered_count``, a
+    pandas read per list); without that sync a list filtered in a prior session reads
+    falsely STALE right after a correct extraction of its kept subset, which is why
+    ``aggregation.extraction`` and ``species_overview`` each call the sync. The strip
+    derives this for every tomogram on a render path, so it can afford neither the reads
+    nor a wrong-but-plausible amber cell; freshness is shown by the Picks tab's per-list
+    badge, which does sync. ``extraction_state()`` is called here, never re-implemented.
 
     Costs nothing for a list that was never extracted (``extracted_path`` empty
     short-circuits before any syscall) and a few stats for one that was; callers still
@@ -928,7 +915,7 @@ def collect_species_journey(project_state, project_path: Path, only_ts: str | No
     novo) contributes a row for each tomogram it has pick lists on — its only per-TS
     fact, with `subtomo_status` derived from those lists' extraction state.
 
-    ``only_ts`` restricts the rows to ONE tilt series. The Journey's main-pane signature
+    ``only_ts`` restricts the rows to one tilt series. The Journey's main-pane signature
     fingerprints just the selected TS, so it asks for just that one and skips the
     per-list extraction stats of every other tomogram; the strip, which draws them all,
     passes None."""
@@ -1014,7 +1001,7 @@ def journey_signature(journey: dict, species_journey: dict, ts_names: list) -> t
         prep = tuple(jr.get(k, "") for k, _, _ in PREP_STAGES)
         sps = tuple(
             # color: the strip draws the per-species dot from it (ui/dashboard/strip.py),
-            # so a workbench recolor must move this signature (roadmap 08 S0.3).
+            # so a workbench recolor must move this signature.
             (s["label"], s["color"], s["pick_status"], s["subtomo_status"], s["n_picks"], s.get("filtered_count"))
             for s in species_journey.get(ts, [])
         )

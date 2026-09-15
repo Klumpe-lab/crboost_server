@@ -1,34 +1,32 @@
 """The coordinate half of the "Aggregate" dialog — unite one species' picks at any
-granularity (roadmap `picking_ui/12-S4/S5/S6`).
+granularity.
 
 Opened from the roster's PARTICLES-header icon. **Two grades, two modes of one surface**
-(`docs/particle-data-flow.md` §3), switched by the segmented control in the header:
+(`docs/particle-data-flow.md`), switched by the segmented control in the header:
 
   COORDINATE grade   picks not yet extracted — manual lists, imported `.coords`, a
                      candidate-extract `candidates.star`. Owned here.
   EXTRACTED grade    particles that already have pixels. Owned by
-                     `merge_card.open_aggregation_merge_dialog`, which has done this
-                     correctly for a while and is not worth reimplementing.
+                     `merge_card.open_aggregation_merge_dialog`.
 
-Why the coordinate half is a separate MODULE rather than a panel inside `merge_card`: that
-dialog is built around `AggregationSource`, one entry per optimisation set, and its whole
-selection model is optset-shaped. A coordinate source is a LIST — several per tomogram,
-most of them with no optset anywhere. Bolting a second identity model into the same tree
-would make both harder to read than either is now.
+The coordinate half is a separate module rather than a panel inside `merge_card` because
+that dialog is built around `AggregationSource`, one entry per optimisation set, and its
+selection model is optset-shaped. A coordinate source is a list — several per tomogram,
+most of them with no optset anywhere. A second identity model in the same tree would make
+both harder to read.
 
-Separate modules, ONE surface: the header switch, the palette, the project→tomogram→list
-tree grammar and the right-flush numeric column are deliberately shared with `merge_card`
-so switching grade does not feel like switching application. Keep them in step — the first
-version of this dialog rendered bare white rows and read as a different program.
+Separate modules, one surface: the header switch, the palette, the project→tomogram→list
+tree grammar and the right-flush numeric column are shared with `merge_card` so switching
+grade does not feel like switching application. Keep them in step.
 
-**One species per aggregate, always** (roadmap 12, D2). The species picker is the first
-control and everything below re-derives from it. This is what removes the geometry
-ambiguity — whose box, whose Ø — that made this feature hard to scope.
+**One species per aggregate, always.** The species picker is the first control and
+everything below re-derives from it. This removes the geometry ambiguity — whose box,
+whose Ø.
 
-The terminal action follows the payload GRADE, never a user choice (roadmap 12, D1): a
-coordinate union is what a Pick-candidates job WOULD have produced, so the offer is to
-skip that job and extract. ② is a peak-finder over score volumes; handing it coordinates
-would leave it nothing to do.
+The terminal action follows the payload grade, never a user choice: a coordinate union is
+what a Pick-candidates job would have produced, so the offer is to skip that job and
+extract. Pick candidates is a peak-finder over score volumes; handing it coordinates would
+leave it nothing to do.
 """
 
 from __future__ import annotations
@@ -55,7 +53,7 @@ from ui.projects_overview import avatar_color
 
 log = logging.getLogger(__name__)
 
-# Same palette as ui/aggregation/merge_card.py — the two grades are two modes of ONE
+# Same palette as ui/aggregation/merge_card.py — the two grades are two modes of one
 # surface, so they must not read as two applications. Steelblue is the single accent,
 # reserved for the curated/original highlight; everything else stays neutral slate.
 STEEL = "#4682b4"
@@ -63,7 +61,7 @@ SLATE = "#475569"
 SLATE_MUTED = "#94a3b8"
 AMBER = "#b45309"
 
-# The two payload grades (docs/particle-data-flow.md §3). The switch between them is a
+# The two payload grades (docs/particle-data-flow.md). The switch between them is a
 # real control in both dialogs' headers, not a text link: they are the two modes of
 # "aggregate this species", and which one you want is the first thing you decide.
 GRADE_COORDS = "coords"
@@ -72,7 +70,7 @@ GRADE_TABS = ((GRADE_COORDS, "Picks · coordinates"), (GRADE_EXTRACTED, "Extract
 
 # Lists whose picks a human has vetted. `curated_only` narrows the tree to these, the
 # coordinate-grade counterpart of merge_card's "Show curated only" switch: there, curation
-# is a filtered star beside an original; here it is what KIND of list this is.
+# is a filtered star beside an original; here it is what kind of list this is.
 _CURATED_TYPES = frozenset(
     {PickListType.MANUAL.value, PickListType.FILTERED.value, PickListType.MERGED.value, PickListType.IMPORTED.value}
 )
@@ -87,7 +85,7 @@ _TYPE_GLYPH = {
     PickListType.MERGED.value: ("merge_type", "curated: two or more lists already combined"),
 }
 
-# Fallback clash radius when the species states no diameter. NOT a guessed particle size:
+# Fallback clash radius when the species states no diameter. Not a guessed particle size:
 # the field is disabled and labelled "no Ø on the species" so the number on screen is
 # visibly ours, and the species page is where it gets fixed.
 _NO_DIAMETER_RADIUS = 0.0
@@ -143,7 +141,7 @@ class _Row:
 def _rows_for_project(project_path: Path) -> list[_Row]:
     """Every coordinate-grade list in one project, as selectable rows.
 
-    Reads the project's own ProjectState — including a FOREIGN one, which is exactly how
+    Reads the project's own ProjectState — including a foreign one, which is how
     cross-project aggregation reaches lists that have never been extracted and therefore
     have no optimisation set for `discover_subtomo_optimisation_sets` to find.
 
@@ -245,8 +243,8 @@ def _enumerate(project_path: Path) -> list[_Row]:
 
 
 class _AggregateDialog:
-    """State of ONE open aggregate dialog. Per-tab, never a module global — the same
-    reason `merge_card._MergeDialog` exists rather than the `_DIALOG_REFS` it replaced."""
+    """State of one open aggregate dialog. Per-tab, never a module global, like
+    `merge_card._MergeDialog`."""
 
     def __init__(self, project_path: Path) -> None:
         self.project_path = Path(project_path)
@@ -273,7 +271,7 @@ class _AggregateDialog:
     # ---- derived ----
 
     def species_options(self) -> dict[str, str]:
-        """Species present in ANY discovered project, keyed by id. Two projects can label
+        """Species present in any discovered project, keyed by id. Two projects can label
         one species differently; the id is what the pick lists agree on."""
         out: dict[str, str] = {}
         for r in self.rows:
@@ -282,7 +280,7 @@ class _AggregateDialog:
 
     def visible_rows(self) -> list[_Row]:
         """Rows of the chosen species that survive the tree's filter + curated-only
-        narrowing. Selection is checked against `self.selected` and NOT re-filtered:
+        narrowing. Selection is checked against `self.selected` and not re-filtered:
         narrowing the view must never silently drop something already chosen."""
         rows = [r for r in self.rows if r.species_id == self.species_id]
         if self.curated_only:
@@ -381,7 +379,7 @@ class _AggregateDialog:
 
     # ---- tree (project → tomogram → list) ----------------------------------------
     #
-    # Deliberately the same grammar as merge_card's `_MergeSelector`: expandable project
+    # The same grammar as merge_card's `_MergeSelector`: expandable project
     # header with the project avatar, indented children, a right-flush numeric column that
     # lines up across all three levels, steelblue reserved for the curated highlight. The
     # two dialogs are two modes of one surface and a user should not have to relearn the
@@ -471,7 +469,7 @@ class _AggregateDialog:
             ui.label(name).classes("text-xs font-semibold text-slate-700 truncate").style("flex: 1; min-width: 0;")
             # Name + three-word handle, exactly as merge_card draws it. The handle is the
             # identity people actually use, and it disambiguates two projects that share a
-            # directory name — which "other project" never could.
+            # directory name.
             if prows[0].mnemonic:
                 ui.label(prows[0].mnemonic).classes("text-[9px] font-mono text-slate-400 italic").style(
                     "flex-shrink: 0;"
@@ -484,12 +482,11 @@ class _AggregateDialog:
                     "Another project — coordinates pool only once the tomogram identity gate passes "
                     "(matching acquisition, handedness and reconstruction geometry)."
                 )
-            # No select-all checkbox on this row on purpose: the whole header is the
-            # expand target (as it is in merge_card), and a checkbox inside a clickable
-            # row needs a propagation guard whose interaction with QCheckbox's own click
-            # handling is exactly the kind of thing that reads as a dead control. Bulk
-            # selection is the per-tomogram checkbox one level down; bulk NARROWING is the
-            # filter and the curated-only switch.
+            # No select-all checkbox on this row: the whole header is the expand target
+            # (as it is in merge_card), and a checkbox inside a clickable row needs a
+            # propagation guard that interacts with QCheckbox's own click handling and
+            # easily reads as a dead control. Bulk selection is the per-tomogram checkbox
+            # one level down; bulk narrowing is the filter and the curated-only switch.
             self._num_cell(f"{n_sel}/{len(prows)}", "lists", accent=bool(n_sel))
             self._num_cell(str(len(tomos)), "tomos")
             self._picks_cell(picks, curated=curated)
@@ -602,9 +599,9 @@ class _AggregateDialog:
 
     # ---- terminal action ----------------------------------------------------------
     #
-    # The verb follows the payload GRADE, never a dropdown (roadmap 12, D1). ② Pick
-    # candidates is a peak-finder over score volumes; a union of coordinate lists is what
-    # it WOULD have produced, so the offer is to skip it and extract. What varies is only
+    # The verb follows the payload grade, never a dropdown. Pick candidates is a
+    # peak-finder over score volumes; a union of coordinate lists is what it would have
+    # produced, so the offer is to skip it and extract. What varies is only
     # the shape of the union — one tomogram is a pick list and extracts per-list; several
     # need the project's subtomo-extraction job.
 
@@ -688,10 +685,8 @@ class _AggregateDialog:
             await _show_result(self, summary, report, single_tomo, out_dir)
 
     async def _register_pick_list(self, chosen, tomo_name: str, slug: str, label: str, summary: dict) -> None:
-        """L1 case: an aggregate confined to ONE tomogram of THIS project is a merged pick
-        list, so register it and it gets a chip on the picks surface like any other. This
-        is the replacement 09-S3 promised when it deleted the merge bar — until now nothing
-        could create a merged list at all (roadmap 12-S6)."""
+        """L1 case: an aggregate confined to one tomogram of this project is a merged pick
+        list, so register it and it gets a chip on the picks surface like any other."""
         if any(r.project_path != self.project_path.resolve() for r in chosen):
             return  # a cross-project union is not addressable by (species, tomo, slug)
         bk = get_backend()
@@ -725,7 +720,7 @@ def _single_tomo(rows: list[_Row]) -> str | None:
 
 
 async def _show_blockers(lines: list[str]) -> None:
-    """A wall, not a question. Every line here is a STATED disagreement between two
+    """A wall, not a question. Every line here is a stated disagreement between two
     reconstructions of the same acquisition — pooling their coordinates would put picks in
     the wrong physical place, which no amount of user intent makes correct."""
     with dialog_host(), ui.dialog() as dlg, ui.card().classes("w-[38rem] max-w-full gap-2"):
@@ -745,8 +740,8 @@ async def _show_blockers(lines: list[str]) -> None:
 async def _confirm_unverified(lines: list[str], renamed: dict[str, str]) -> bool:
     """A question, not a wall. These are facts nothing on disk states (handedness is the
     usual one) plus any tomogram name we had to disambiguate. Neither is proof of a
-    problem, and silently assuming either way is what the never-invent-defaults policy
-    forbids — so the user is shown them and decides."""
+    problem, and neither may be silently assumed either way, so the user is shown them
+    and decides."""
     with dialog_host(), ui.dialog() as dlg, ui.card().classes("w-[38rem] max-w-full gap-2"):
         ui.label("Aggregate with unverified facts?").classes("text-sm font-bold")
         for line in lines[:20]:
@@ -764,9 +759,9 @@ async def _confirm_unverified(lines: list[str], renamed: dict[str, str]) -> bool
 
 
 async def _show_result(d: _AggregateDialog, summary: dict, report, single_tomo: str | None, out_dir: Path) -> None:
-    """What was produced, what clashes, and the ONE thing to do next.
+    """What was produced, what clashes, and the one thing to do next.
 
-    The verb follows the payload grade, never a dropdown (roadmap 12, D1): a coordinate
+    The verb follows the payload grade, never a dropdown: a coordinate
     union is what a Pick-candidates job would have produced, so the offer is to extract.
     """
     dropped = summary["columns"]["sidecar_only"]
@@ -816,11 +811,10 @@ async def _show_result(d: _AggregateDialog, summary: dict, report, single_tomo: 
 
 
 async def _extract_merged_list(d: _AggregateDialog, summary: dict, tomo_name: str, out_dir: Path) -> None:
-    """L1 terminal action: subtomo-extract the merged list through the per-list extraction
-    roadmap 07 already built.
+    """L1 terminal action: subtomo-extract the merged list through per-list extraction.
 
-    Geometry comes from the species' COMMITTED `extraction_params` or nowhere. There is no
-    fallback box here on purpose: `ExtractionParams` carries no defaults precisely because a
+    Geometry comes from the species' committed `extraction_params` or nowhere. There is no
+    fallback box here: `ExtractionParams` carries no defaults because a
     guessed box produces wrong-but-plausible subtomograms, and this is not the surface that
     gets to decide one. Absent, the user is sent to the panel that owns the decision.
     """
@@ -868,9 +862,9 @@ async def _extract_merged_list(d: _AggregateDialog, summary: dict, tomo_name: st
 def _prepopulate_subtomo(d: _AggregateDialog, summary: dict) -> None:
     """Point the project's subtomo-extraction job at the aggregate.
 
-    Deliberately does NOT submit. Extraction geometry (box / crop / binning) is a decision
-    the species owns and the job tab states; silently launching one with whatever numbers
-    happened to be on the instance is exactly the invented-default this codebase refuses.
+    Does not submit. Extraction geometry (box / crop / binning) is a decision the species
+    owns and the job tab states; silently launching one with whatever numbers happen to be
+    on the instance would be an invented default.
     The user lands on a job whose input is already correct and presses run themselves.
     """
     from services.models_base import JobType
@@ -917,10 +911,8 @@ def open_aggregate_dialog(project_path) -> None:
             ui.space()
             ui.button(icon="close", on_click=dlg.close).props("flat dense round size=sm").classes("text-slate-500")
 
-        # Same vertical order as merge_card, top to bottom: SCOPE selectors (what am I
-        # looking at) → the tree → NAME the output → the action. The name input used to sit
-        # in the top row here and at the bottom there, which is the inconsistency that made
-        # the two modes feel like different programs.
+        # Same vertical order as merge_card, top to bottom: scope selectors (what am I
+        # looking at) → the tree → name the output → the action.
         toolbar = ui.row().classes("w-full items-center gap-3 px-4 py-1.5 border-b border-slate-100 bg-slate-50")
         filter_row = ui.row().classes("w-full items-center gap-2 px-3 pt-2")
         tree = ui.column().classes("w-full px-2 gap-0 overflow-auto bg-white").style("max-height: 48vh;")
@@ -968,15 +960,15 @@ def open_aggregate_dialog(project_path) -> None:
             ).style(f"color: {SLATE_MUTED};")
             ui.space()
             house_button("Cancel", dlg.close)
-            # The accent button NAMES the job it starts, and re-names itself as the shape of
-            # the selection changes (roadmap 12, D1). `refresh_action` only sets text, so a
-            # click landing mid-update still hits this element.
-            # `lambda: d.run(dlg)`, NOT `asyncio.create_task(d.run(dlg))`. NiceGUI keys its
+            # The accent button names the job it starts, and re-names itself as the shape of
+            # the selection changes. `refresh_action` only sets text, so a click landing
+            # mid-update still hits this element.
+            # `lambda: d.run(dlg)`, not `asyncio.create_task(d.run(dlg))`. NiceGUI keys its
             # slot stack on `id(asyncio.current_task())` (`nicegui/slot.py`), so a bare task
-            # starts with an EMPTY stack and the first `ui.notify` in `run()` dies with
+            # starts with an empty stack and the first `ui.notify` in `run()` dies with
             # "The current slot cannot be determined". Returning the coroutine instead makes
             # NiceGUI await it inside `with parent_slot:` (`events.handle_event`), which is
-            # what gives `run()` a client — for its notifies AND for the `dialog_host()`
+            # what gives `run()` a client — for its notifies and for the `dialog_host()`
             # lookups in the blocker / unverified / result dialogs it awaits.
             action = house_button("Aggregate", lambda: d.run(dlg), kind="accent")
             with action:

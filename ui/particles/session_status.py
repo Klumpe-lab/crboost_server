@@ -1,22 +1,22 @@
-"""Curation-session liveness, shared by the Journey and the Species page (roadmap 11-S4).
+"""Curation-session liveness, one process-wide cache.
 
 `backend.find_active_curation_session_any` shells out to `squeue`, so this must not be
 polled per surface: one process-wide cached flag is refreshed at most every `POLL_S`, and
 every caller reads the cache. Callers `poll()` on whatever cadence suits them — the throttle
-here decides when a `squeue` actually happens, so adding a second observer costs nothing.
-One observer since 13-S3: the Particles registry's Picks & curation tab, which polls while
-shown and paints the live marker on the in-session tomogram's `Curate picks` button. (The
-foot-of-rail session icon that shared this cache is gone.) The control center forces a
-refresh after a scope switch so that marker moves at once rather than on the next tick.
+here decides when a `squeue` actually happens, so adding another observer costs nothing.
+The observer is the Particles registry's Picks & curation tab, which polls while shown and
+paints the live marker on the in-session tomogram's `Curate picks` button. The control
+center forces a refresh after a scope switch so that marker moves at once rather than on
+the next tick.
 
-Three states, not two. A `squeue` that RAISES must not read as "no session running" — that
+Three states, not two. A `squeue` that raises must not read as "no session running" — that
 would tell the user to start a second ChimeraX while one is up. It reports `unknown` and
-the surfaces say so (never-fail-silently).
+the surfaces say so.
 
-The poll also caches the live session's declared SCOPE (its `scope.json`: species + tomogram
-it was launched on), because the sidebar icon's whole job in the active state is to answer
-"what is being picked right now" on hover. Empty for `off`/`unknown`, and empty as well for a
-session launched before scopes were recorded — stated as unknown, never guessed at.
+The poll also caches the live session's declared scope (its `scope.json`: species + tomogram
+it was launched on), so a surface can answer "what is being picked right now". Empty for
+`off`/`unknown`, and empty as well for a session launched before scopes were recorded —
+stated as unknown, never guessed at.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ import time
 
 logger = logging.getLogger(__name__)
 
-POLL_S = 16.0  # the Journey's cadence (every 4th 4-s tick), now the shared throttle
+POLL_S = 16.0  # shared throttle: every 4th tick of a 4-s poll
 
 LIVE = "live"
 OFF = "off"
@@ -88,7 +88,7 @@ async def poll(backend, *, force: bool = False) -> str:
         _state["scope"] = dict((info or {}).get("scope") or {})
         _state["error"] = ""
     except Exception as e:
-        # Reported, not swallowed, and NOT downgraded to "off": the surfaces show
+        # Reported, not swallowed, and not downgraded to "off": the surfaces show
         # `unknown` with this text rather than inviting a duplicate ChimeraX launch.
         logger.exception("Curation-session poll failed")
         _state["status"] = UNKNOWN

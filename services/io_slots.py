@@ -59,8 +59,8 @@ class OutputSlot(BaseModel):
     """
     Declares: "this job produces artifact type X at logical key K".
 
-    path_template is intentionally dumb in Stage 0: it's a relative path under job_dir.
-    Later (Stage 3) PathResolutionService can interpret it.
+    path_template is a relative path under job_dir; PathResolutionService joins it
+    onto the producer's job dir.
     """
 
     model_config = ConfigDict(validate_assignment=True)
@@ -94,8 +94,8 @@ class InputSlot(BaseModel):
     """
     Declares: "this job needs something compatible with types in accepts[]".
 
-    preferred_source is not used in Stage 0, but we add it now because
-    it’s central to your denoise-vs-reconstruct case.
+    preferred_source picks between compatible producers, e.g. denoised vs
+    reconstructed tomograms.
     """
 
     model_config = ConfigDict(validate_assignment=True)
@@ -104,7 +104,7 @@ class InputSlot(BaseModel):
     accepts: list[JobFileType] = Field(..., min_length=1)
     required: bool = Field(default=True)
 
-    # Preference knobs (used by resolver later)
+    # Preference knobs (read by the resolver)
     preferred_source: str | None = Field(
         default=None, description="JobType string (or later: job instance id) preferred as source if available"
     )
@@ -125,7 +125,7 @@ class InputSlot(BaseModel):
 
 
 # -----------------------------------------------------------------------------
-# Resolution record types (still just data in Stage 0)
+# Resolution record types
 # -----------------------------------------------------------------------------
 
 
@@ -146,7 +146,7 @@ class ResolvedInput(BaseModel):
     # Identity of what output we used
     source_output_key: str
 
-    # Resolved path value (string to match your job_model.paths storage)
+    # Resolved path value (string to match job_model.paths storage)
     path: str
 
 
@@ -203,7 +203,7 @@ class ResolvedManifest(BaseModel):
 
 
 # -----------------------------------------------------------------------------
-# Lightweight schema validation helpers (optional but useful even in Stage 0)
+# Lightweight schema validation helpers
 # -----------------------------------------------------------------------------
 
 

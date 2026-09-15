@@ -16,7 +16,7 @@ class DenoisePredictParams(AbstractJobParams):
     IS_TOMO_JOB: ClassVar[bool] = True
 
     # denoise_method and isonet_deconv are in USER_PARAMS for the dirty-marking and the
-    # freeze-once-scheduled that entails, but they are NOT rendered by the generic grid —
+    # freeze-once-scheduled that entails, but they are not rendered by the generic grid —
     # render_denoise_inheritance owns them, and shows them as a read-only chip whenever a
     # denoisetrain job produced this job's model (see inherited_from_train). Predict must
     # run whatever the model was trained as, so an independent setting would only invite a
@@ -131,10 +131,9 @@ class DenoisePredictParams(AbstractJobParams):
             return (None, None)
         # Coerce, don't isinstance-check: a str-Enum job param that was last written by a
         # `ui.select` binding holds the bare value ("IsoNet"), not the member, and an
-        # isinstance test on that reads as "no train method found" — which is how predict
-        # ended up silently running cryoCARE against an IsoNet model. `enum_forward`
-        # (ui/job_plugins/_field_styles.py) stops it at the source; this keeps a state
-        # mutated before that fix from lying too.
+        # isinstance test on that reads as "no train method found", so predict would silently
+        # run cryoCARE against an IsoNet model. `enum_forward` (ui/job_plugins/_field_styles.py)
+        # stops it at the source; older saved states can still hold the bare value.
         m = getattr(train, "denoise_method", None)
         d = getattr(train, "isonet_deconv", None)
         try:

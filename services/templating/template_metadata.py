@@ -5,10 +5,9 @@ Cache invalidates whenever the file's mtime changes, so editing or
 re-rendering a template is picked up on the next read without a manual
 flush.
 
-Disk is the single source of truth for template apix and box. Per the v2
-plan we deliberately do NOT persist these on the ParticleTemplate model —
-the model's job is identity, provenance, and editor state, not a stale
-mirror of the MRC header.
+Disk is the single source of truth for template apix and box. They are not
+persisted on the ParticleTemplate model: the model holds identity,
+provenance, and editor state, not a stale mirror of the MRC header.
 """
 
 from __future__ import annotations
@@ -101,7 +100,7 @@ def read_template_header(template_path: str) -> TemplateHeader:
 
 
 def get_effective_template_path(species) -> str:
-    """Resolve the path of the species's selected template (v3 schema).
+    """Resolve the path of the species's selected template.
 
     Returns the path of the template whose id matches
     species.selected_template_id, or "" if no template is selected /
@@ -118,7 +117,7 @@ def get_effective_template_path(species) -> str:
 
 
 def get_effective_mask_path(species) -> str:
-    """Resolve the path of the species's selected mask (v3 schema)."""
+    """Resolve the path of the species's selected mask."""
     if species is None:
         return ""
     get_sel = getattr(species, "get_selected_mask", None)

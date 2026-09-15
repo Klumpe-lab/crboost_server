@@ -1,18 +1,15 @@
 """The pick viewer — slabs + pick lists + the cutout gallery for one tomogram.
 
-Carved out of ``ui/tomo_dashboard_dialog.py`` (picking-UI roadmap 11-S1), which had grown
-to 5.8k lines with this component welded into its middle. It is ONE component with TWO
-mounts:
+One component with two mounts:
 
-- ``mode="slim"`` — the Journey's Particles section, where it has always lived: look,
-  filter, cross-link. No curation, no extraction verbs.
+- ``mode="slim"`` — the Journey's Particles section: look, filter, cross-link. No
+  curation, no extraction verbs.
 - ``mode="full"`` — the full page reached from the Particles registry's Picks & curation
   tab, filling the workspace main area: bigger slabs, curation mode, the per-list
   extraction verb, fullscreen.
 
-Layout (both mounts): the LISTS STRIP runs full width across the top, and below it one row
-with the slabs LEFT and the gallery RIGHT, tops aligned. The rail used to sit at the top of
-the right column, which is what pushed the gallery a rail's-height below the slabs.
+Layout (both mounts): the lists strip runs full width across the top, and below it one row
+with the slabs left and the gallery right, tops aligned.
 
 Two gallery backends share one chrome: the auto (PyTOM) list renders the subtomo atlas with
 a Save/Reset dirty model, a workbench list (manual/imported/merged) renders a contact sheet
@@ -80,7 +77,7 @@ _SELECTED_LIST_SLUG: dict[tuple[str, str], str] = {}
 # are locked to this number together — it is not a free display knob.
 _DISPLAY_TILE_PX = 96
 
-# Box-select arms ONLY in curation mode (11-S4): the grid carries `.cb-curating`
+# Box-select arms only in curation mode: the grid carries `.cb-curating`
 # while the toolbelt toggle is on, and the marquee refuses to start without it —
 # so a drag across a look-only gallery scrolls/selects text as the user expects.
 # A movement threshold separates click from drag, and the synthetic click the
@@ -168,17 +165,15 @@ _MARQUEE_JS = """
 })();
 """
 
-# Slab lightbox (11-S5, full page only): click a slab → a full-viewport overlay of THAT
-# slab with its pick markers, wheel to zoom, drag to pan, Esc/backdrop-click to close.
+# Slab lightbox (full page only): click a slab → a full-viewport overlay of that slab
+# with its pick markers, wheel to zoom, drag to pan, Esc/backdrop-click to close.
 # The overlay is a DOM clone of the slab host, so the dots come along for free and stay
 # in register with the image; every id is stripped from the clone so the hover bridge and
 # the keep/drop dot-sync keep targeting the real layers and never the copy.
 #
-# Deviation from the stage text, recorded in the roadmap log: it says "wheel = Z". There
-# is no Z stack to scroll — `render_xy_slab_preview` writes ONE central-Z-average PNG per
-# tomogram, and rendering a slice per wheel tick would be a background render per tick
-# (and browser volume rendering is a decision of record against). Wheel zooms instead,
-# which is what a user reaching for a lightbox on a 1024-px projection actually wants.
+# The wheel zooms rather than steps through Z: `render_xy_slab_preview` writes one
+# central-Z-average PNG per tomogram, a slice per wheel tick would be a background render
+# per tick, and volumes are not rendered in the browser.
 _SLAB_LIGHTBOX_JS = """
 (function() {
     if (window.__cbSlabLightbox) return;
@@ -235,10 +230,10 @@ def _read_picks_json(path: Path) -> dict:
         return {"picks": [], "tomo_dims_xyz_px": [0, 0, 0], "score_field": None, "n": 0}
 
 
-# Atlas-index parse cache (P3): path -> (mtime, meta). The cutout sheet re-reads
-# the same index JSON on every visit; memoizing by mtime skips the parse on a warm
-# revisit AND lets the sheet skip its loading spinner when the index is already in
-# memory. Invalidated automatically when the index file is rewritten (new mtime).
+# Atlas-index parse cache: path -> (mtime, meta). The cutout sheet re-reads the same
+# index JSON on every visit; memoizing by mtime skips the parse on a warm revisit and
+# lets the sheet skip its loading spinner when the index is already in memory.
+# A rewritten index file (new mtime) invalidates the entry.
 _ATLAS_INDEX_MEMO: dict[str, tuple[float, dict]] = {}
 
 
@@ -264,9 +259,9 @@ def _read_atlas_index(index_path: Path) -> dict | None:
         return None
 
 
-# Keep/drop derive cache (P2 + P3): derive_keep_state_for_list reads TWO stars
+# Keep/drop derive cache: derive_keep_state_for_list reads two stars
 # (source + <slug>_filtered.star) to recover which rows survived curation. Both the
-# rail count (P2) and the cutout sheet's keep overlay (P3) need it, and collect runs
+# rail count and the cutout sheet's keep overlay need it, and collect runs
 # on every 4s refresh — so memoize by (source mtime, filtered mtime) to avoid
 # re-reading two stars per list per tick. None = no filter committed (all kept).
 _KEEP_STATE_MEMO: dict[str, tuple[tuple, set[int] | None]] = {}
@@ -338,9 +333,9 @@ def _render_invert_switch(root) -> None:
 
 
 _AUTO_KICKED_RECON_SLABS: set[str] = set()
-# Why a kicked slab render did NOT produce its PNGs, per `<recon_job_dir>:<ts>` key (13-S4).
+# Why a kicked slab render did not produce its PNGs, per `<recon_job_dir>:<ts>` key.
 # The dedup set above blocks a re-kick for the process lifetime, so without this record a
-# failed render left the canvas spinning forever on a "succeeded" task that wrote nothing.
+# failed render would leave the canvas spinning forever.
 _RECON_SLAB_ERRORS: dict[str, str] = {}
 
 
@@ -581,10 +576,8 @@ def _auto_kick_list_cutouts(
 def _render_list_header(lst: dict, sp: dict, project_path: Path) -> None:
     """Swatch + label (+ merge provenance) for one workbench list, rendered inside a
     caller-provided row so the contact sheet and the building/empty states share one
-    header. The 'Open in ArtiaX' action lived here too but was REDUNDANT with the rail
-    toolbox's ⚡ (both open this tomo in ArtiaX) — removed per the user; its handler was
-    kept as the W1 round-trip-edit foundation until roadmap 10-S2 closed W1 a different
-    way (re-saving a `.coords` under the same name updates that list), so it is gone."""
+    header. Opening the tomo in ArtiaX is the rail toolbox's ⚡; re-saving a `.coords`
+    under the same name updates that list."""
     ui.element("div").classes(f"cb-species-swatch cb-swatch-{lst['shape']}").style(f"background: {lst['color']};")
     ui.label(lst["label"]).classes("cb-section-title")
     parents = lst.get("parent_slugs") or []
@@ -627,8 +620,8 @@ def _render_list_cutout_sheet(
     subset to `<slug>_filtered.star` (no Save click) — so the selection persists across
     navigation and the merge + per-list extraction consume exactly the kept picks; the
     rail table's count cell live-updates to kept/total. "Reset" clears the filter (all
-    kept). These lists are scoreless, so keep/discard IS the filter — there is no score
-    threshold ([[feedback_per_list_extraction]])."""
+    kept). These lists are scoreless, so keep/discard is the filter; there is no score
+    threshold."""
     from services.particles import picks_filter
 
     index = atlas_meta.get("index", {})
@@ -652,7 +645,7 @@ def _render_list_cutout_sheet(
     # <slug>_filtered.star (serialized via `commit`) — so the selection persists across
     # navigation and the merge/extraction consume exactly the kept picks, no Save click.
     state = {"keep_set": set(initial_keep) if initial_keep is not None else None, "curating": False}
-    sel: dict = {"idx": None}  # 11-S4: the selected tile, outside curation mode
+    sel: dict = {"idx": None}  # the selected tile, outside curation mode
     commit = {"running": False, "dirty": False}
     species_id = sp.get("species_id") or ""
     tomo_name = sp["row"]["tomo_name"]
@@ -931,7 +924,7 @@ def _render_list_cutout_sheet(
 
     def _select(i: int | None) -> None:
         """Selection outside curation mode — the same click model the subtomo gallery
-        uses (11-S4). One tile at a time; its slab dots light with it."""
+        uses. One tile at a time; its slab dots light with it."""
         prev = sel["idx"]
         if prev is not None and prev in tiles:
             tiles[prev].classes(remove="selected")
@@ -997,7 +990,7 @@ def _render_list_cutout_sheet(
                 _render_3dmod_popover(sp["row"], with_peek=False)
                 curate_btn = None
                 if mode == "full":
-                    # Curation belongs to the full page (11-S6): the Journey's mount is
+                    # Curation belongs to the full page: the Journey's mount is
                     # look-and-filter, and a keep/drop there would be a second place to
                     # change what downstream consumes.
                     curate_btn = _toolbelt_button(
@@ -1047,11 +1040,10 @@ def _render_list_cutout_sheet(
 
 def _render_list_extraction_line(sp: dict, lst: dict, project_path: Path, refresh) -> None:
     """One line above a workbench list's contact sheet naming its subtomo-extraction state
-    and, in the full viewer, offering the verb (11-S5).
+    and, in the full viewer, offering the verb.
 
-    The tiles below are cut from the binned RECON, so a sheet full of them says nothing
-    about whether subtomograms were ever extracted — the two are unrelated, and that is
-    exactly the confusion this line closes. The button calls the same
+    The tiles below are cut from the binned recon, so a sheet full of them says nothing
+    about whether subtomograms were ever extracted; this line states it. The button calls the same
     ``list_actions.extract_list`` the registry row does; the ref is built at click time
     because ``tomograms_star_for`` reads stars."""
     species_id = sp.get("species_id") or ""
@@ -1101,18 +1093,15 @@ def _render_list_extraction_line(sp: dict, lst: dict, project_path: Path, refres
 
 async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, refresh, *, mode: str = "slim") -> None:
     """Detail pane for ONE workbench list (manual/imported/merged): a read-only
-    recon-sourced cutout sheet (these lists were never subtomo-extracted, so tiles
-    are cut from the binned recon at each pick voxel). Carved from the old per-list
-    loop so the rail's detail pane can show a single selected list.
+    recon-sourced cutout sheet (these lists are not subtomo-extracted, so tiles
+    are cut from the binned recon at each pick voxel).
 
-    The merged-list overlap/dedup panel moved to the Particles registry's Picks & curation
-    tab (which acts on every tomogram at once) and stays there. The per-list EXTRACT verb
-    comes back in ``mode="full"`` only (11-S5) — it is the same `list_actions.extract_list`
-    the registry row fires, not a second implementation, and it is the answer to standing
-    in front of a list and seeing that no subtomograms were ever cut from it.
+    The merged-list overlap/dedup panel lives in the Particles registry's Picks & curation
+    tab, which acts on every tomogram at once. The per-list extract verb shows in
+    ``mode="full"`` only; it is the same `list_actions.extract_list` the registry row fires.
 
     The read-only disk probes (recon/star stat, atlas staleness, atlas-index read)
-    run OFF the event loop via ``asyncio.to_thread`` so selecting a list doesn't
+    run off the event loop via ``asyncio.to_thread`` so selecting a list doesn't
     freeze the whole UI on Lustre latency — a spinner shows until they return."""
     recon = (sp.get("row") or {}).get("vol_path")
 
@@ -1135,11 +1124,11 @@ async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, r
     atlas_path, index_path = _list_cutout_paths(project_path, species_id, tomo_name, lst["slug"])
     star_path = lst.get("path")
 
-    # Spinner while the disk probes run off-loop (Lustre stat/read latency was the
-    # "laggy on switch" freeze — it blocked the event loop mid-click). P3: on a warm
-    # REVISIT the atlas index is already in memory and the keep-state derive is
-    # memoized, so the probe returns near-instantly — skip the "loading cutouts…"
-    # spinner that otherwise flashes on every open and reads as a full re-render.
+    # Spinner while the disk probes run off-loop (Lustre stat/read latency would block
+    # the event loop mid-click). On a warm revisit the atlas index is already in memory
+    # and the keep-state derive is memoized, so the probe returns near-instantly; skip
+    # the "loading cutouts…" spinner, which would flash on every open and read as a
+    # full re-render.
     warm = str(index_path) in _ATLAS_INDEX_MEMO
     pending_box = None
     if warm:
@@ -1211,11 +1200,9 @@ async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, r
         _render_list_cutouts_status(lst, sp, project_path, building=not io["index_exists"])
 
 
-# Merging and the merged-list overlap/dedup panel left the Journey in 11-S3: both are
-# per-list ACTIONS, and the Picks & curation tab owns those across every tomogram
-# (`ui/species/picks_tab.py` → `list_actions.merge_lists` / `open_dedup_dialog`). The
-# popup that preceded the inline merge bar died 2026-06-11; see W3 in
-# docs/roadmaps/completed/roadmap_artiax-bridge.md.
+# Merging and the merged-list overlap/dedup panel are per-list actions, owned by the
+# Picks & curation tab across every tomogram (`ui/species/picks_tab.py` →
+# `list_actions.merge_lists` / `open_dedup_dialog`).
 
 
 def _render_pick_layer(picks: list, color: str, dims: list | None, axis: str, layer_id: str, shape: str = "circle"):
@@ -1269,10 +1256,10 @@ def _read_pick_list_voxels(star_path: Path, dims: list | None, pixel_size: float
     canvas overlay, using the binned ``dims`` + ``pixel_size`` already resolved in
     the render context (no MRC re-read per render).
 
-    Two empty answers, kept apart (13-S1): ``[]`` ONLY for a table that parsed to zero
-    rows — the seeded default list before its first save is exactly that, and it is not
-    a problem; ``None`` when the file is missing, the geometry is unresolved, no table
-    carries the centered columns, or the read raised (that one is logged here). Either
+    Two empty answers, kept apart: ``[]`` only for a table that parsed to zero rows
+    (the seeded default list before its first save, which is fine); ``None`` when the
+    file is missing, the geometry is unresolved, no table carries the centered columns,
+    or the read raised (that one is logged here). Either
     way the caller draws nothing — no overlay beats an overlay drawn at a guessed scale
     (the geometry chip in the section header says why) — but only ``None`` is worth a
     warning."""
@@ -1339,13 +1326,11 @@ def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> li
         for pl in project_state.get_pick_lists(species_id, ts_name):
             picks = _read_pick_list_voxels(Path(pl.path), dims, pixel_size)
             if picks is None:
-                # P4: a PERSISTED list that reads back UNREADABLE must NOT be silently
-                # dropped — that is exactly how a merged/manual list could vanish from
-                # the rail (a coord/dims/apix regression making its star unreadable
-                # looked identical to "no list"). Keep it in the rail (visible,
-                # selectable, debuggable) and log the cause instead of skipping it.
-                # A list that parsed to zero rows (`[]` — the seeded default before its
-                # first save, 13-S1) is not that case and earns no warning.
+                # A persisted list that reads back unreadable is kept in the rail
+                # (visible, selectable, debuggable) with the cause logged: dropping it
+                # would make an unreadable star look identical to "no list".
+                # A list that parsed to zero rows (`[]`, the seeded default before its
+                # first save) is not that case and earns no warning.
                 logger.warning(
                     "pick list %r (%s) for %s/%s could not be read from %s — rendering empty",
                     pl.slug,
@@ -1355,7 +1340,7 @@ def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> li
                     pl.path,
                 )
                 picks = []
-            # P2: the table count must match the cutout sheet, which derives kept/total
+            # The table count must match the cutout sheet, which derives kept/total
             # live from <slug>_filtered.star. pl.filtered_count is a cache that goes
             # stale (None) when the filter was committed in a prior session, so source
             # the count from the same star the sheet reads whenever it exists.
@@ -1383,7 +1368,7 @@ def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> li
                     "slug": pl.slug,
                     "label": pl.label or pl.slug,
                     "list_type": pl.list_type,
-                    # Species color for every list (09-S2): PickList.color is legacy; the
+                    # Species color for every list; PickList.color is ignored. The
                     # glyph (shape) tells the list types apart on the shared canvas.
                     "color": sp["color"],
                     "shape": glyph_for(pl.list_type),
@@ -1423,7 +1408,7 @@ def _denovo_species_entry(species, species_id: str, idx: int, color: str, geom: 
     }
     return {
         "idx": idx,
-        # D-1: an internal key for tabs / canvas layers, never a roster job.
+        # An internal key for tabs / canvas layers, never a roster job.
         "iid": f"pick__{species_id}",
         "jm": None,
         "job_dir": None,
@@ -1449,8 +1434,7 @@ def _denovo_species_entry(species, species_id: str, idx: int, color: str, geom: 
 def _ce_species_entry(
     ce, species_id, idx: int, color: str, geom, project_state, project_path: Path, ts_name: str, refresh
 ) -> dict | None:
-    """Species-section entry backed by a candidate-extract instance — the pre-inversion
-    path, unchanged except for the color source and the dims fallback."""
+    """Species-section entry backed by a candidate-extract instance."""
     iid, jm = ce
     job_dir = job_dir_for(project_state, iid, jm, project_path)
     if not job_dir:
@@ -1461,16 +1445,15 @@ def _ce_species_entry(
         return None
     # Lazy-generate previews + IMOD overlays for this species (idempotent;
     # refresh re-renders the dashboard when the background job lands). A non-empty
-    # note means NO preview is coming, and the species section says so (13-S4).
+    # note means no preview is coming, and the species section says so.
     preview_note = _auto_kick_preview_generation(iid, jm, job_dir, project_path, refresh)
     _auto_kick_imod_generation(iid, jm, job_dir, project_path, refresh)
     manifest = read_preview_manifest(job_dir) or {}
     entry = (manifest.get("tomograms") or {}).get(ts_name) or {}
     picks_data = _read_picks_json(Path(entry["picks_json"])) if entry.get("picks_json") else {}
     label = (manifest.get("template") or {}).get("species_name") or split_species_id(iid) or iid
-    # Resolve the subtomo job for THIS species (by species_id) so the
-    # gallery's save-filter writes into the right job — the old lex-greatest
-    # heuristic mis-targeted every species at one subtomo job.
+    # Resolve the subtomo job for this species (by species_id) so the
+    # gallery's save-filter writes into that species' job, not another's.
     sub_match = matching_subtomo_instance(project_state, species_id)
     subtomo_job_dir = job_dir_for(project_state, sub_match[0], sub_match[1], project_path) if sub_match else None
     # Auto list's curated kept count (the subtomo-gallery keep/drop), read off the
@@ -1507,9 +1490,8 @@ def _ce_species_entry(
         "color": color,
         "preview_note": preview_note,
         "picks": picks_data.get("picks") or [],
-        # picks.json / manifest first (parity), then the geometry provider. The old
-        # `[1, 1, 1]` tail is gone: dims we don't know disable the overlay instead of
-        # collapsing every dot into the corner.
+        # picks.json / manifest first, then the geometry provider. Unknown dims disable
+        # the overlay; a placeholder extent would collapse every dot into the corner.
         "dims": picks_data.get("tomo_dims_xyz_px")
         or entry.get("tomo_dims_xyz_px")
         or (list(geom.dims_xyz_px) if geom and geom.dims_xyz_px else None),
@@ -1523,8 +1505,8 @@ def _collect_species_data_for_ts(project_state, project_path: Path, ts_name: str
     Drives both the shared canvas overlay and the per-species tabs.
 
     Enumerates `species_render_plan` (the registry, not the candidate-extract jobs):
-    a species with a CE instance keeps the pre-inversion entry exactly; a species
-    without one gets a geometry-backed entry so it can be picked into de novo."""
+    a species with a CE instance gets the job-backed entry; a species without one
+    gets a geometry-backed entry so it can be picked into de novo."""
     geom = geometry_for_ts(project_state, project_path, ts_name)
     out: list[dict] = []
     for idx, (species, species_id, ce) in enumerate(species_render_plan(project_state)):
@@ -1580,9 +1562,8 @@ def _sync_species_master_eye(sp: dict) -> None:
 def _render_species_master_eye(sp: dict, tab) -> None:
     """A master visibility eye inside a species tab: one click toggles ALL that
     species' canvas overlay layers. It lives on the tab strip (not the rail) so a
-    species' overlay can be toggled even while another species' tab is open —
-    what the retired cross-species 'Show picks' row gave. ``click.stop`` keeps the
-    click from also switching tabs."""
+    species' overlay can be toggled even while another species' tab is open.
+    ``click.stop`` keeps the click from also switching tabs."""
     vis0 = any(lst.get("visible", True) for lst in (sp.get("lists") or []))
     sp["_master_visible"] = vis0
     with tab:
@@ -1605,16 +1586,13 @@ def _render_species_master_eye(sp: dict, tab) -> None:
 # fraction of viewport height, so the slab column's width = its vh cap · aspect.
 # Lower → narrower slabs → more width for the gallery column beside them.
 #
-# The second number is a hard ceiling on the slab column's share of the row WIDTH.
+# The second number is a hard ceiling on the slab column's share of the row width.
 # The vh cap alone sets the slab width to vh·aspect, which on a typical monitor lands
-# at ~half the row — so the gallery column beside it only ever got the OTHER half,
-# regardless of flex (this was the "gallery is half-width" bug: the two prior fixes
-# tweaked vh + flex but never bounded the horizontal split). Capping the slab's width
-# as a % of the row bounds that split directly. Lower → wider gallery.
+# at ~half the row, leaving the gallery the other half regardless of flex. Capping the
+# slab's width as a % of the row bounds that split directly. Lower → wider gallery.
 #
-# Mode-dependent since 11-S2: the Journey's slim mount shares its column with six other
-# section cards and keeps the old 60vh/34%; the full page IS the viewer, so its slabs
-# get the height and the width the maintainer asked for.
+# Mode-dependent: the Journey's slim mount shares its column with six other section
+# cards; the full page is the viewer, so its slabs get more height and width.
 _SLAB_CAPS = {"slim": (60, 34), "full": (74, 46)}
 
 
@@ -1637,8 +1615,8 @@ def _render_imported_species_row(sp_obj, project_state, ts_name: str) -> None:
 
     Counts come straight from the PickList registry (pl.count) — independent of the
     tomogram's apix/dims, which are surfaced separately with their own markers (so a
-    suspect/missing geometry never silently mis-states a pick count). P2.1 lists picks;
-    P2.2 adds the canvas overlay, which is what actually needs apix + dims."""
+    suspect/missing geometry never silently mis-states a pick count). Only a canvas
+    overlay needs apix + dims."""
     color = (
         getattr(sp_obj, "color", "")
         or SPECIES_OVERLAY_COLORS[sum(map(ord, str(sp_obj.id))) % len(SPECIES_OVERLAY_COLORS)]
@@ -1662,8 +1640,7 @@ def render_imported_particles_section(
     A separate, deliberately-simple renderer: the candidate-extract canvas + gallery
     machinery assumes auto-pick data this source has none of, so we don't drive it
     blind. Shows the imported tomogram's geometry — with provenance markers, never a
-    silent apix default (CLAUDE.md) — plus each registered species' manual pick lists.
-    The 'register species & pick' launcher (P2.2) will mount here."""
+    silent apix default (CLAUDE.md) — plus each registered species' manual pick lists."""
     imported_star = project_state.imported_tomograms_star_path()
     if not imported_star:
         return False
@@ -1789,8 +1766,8 @@ def _render_geometry_chip(geom: TomoGeometry | None) -> None:
 
 
 async def _prompt_new_species(project_path: Path, refresh) -> None:
-    """Create a label-only species from the Particles empty state (D-5's second
-    entry point; the roster's PARTICLES header carries the first). ``origin="manual"``
+    """Create a label-only species from the Particles empty state (the roster's
+    PARTICLES header is the other entry point). ``origin="manual"``
     — no template directory, because a de-novo species may never have a template.
     SingleFlight-guarded: this button sits in a poll-refreshed container and can be
     rebuilt mid-click."""
@@ -1814,8 +1791,7 @@ async def _prompt_new_species(project_path: Path, refresh) -> None:
 
 def _render_no_species_empty_state(project_path: Path, refresh) -> None:
     """Particles section for a tomogram nobody has declared a species for yet. The
-    de-novo entry point (D-5): picking needs a species, and this is where the user
-    is standing when they realize that."""
+    de-novo entry point: picking needs a species, so the section offers to create one."""
     with ui.element("div").classes("cb-empty"):
         ui.icon("scatter_plot", size="28px").classes("text-gray-400")
         ui.label("No particle species yet.").classes("text-xs")
@@ -1847,13 +1823,12 @@ def render_particles_section(
     `mode="full"` is the page reached from the Particles registry: bigger slabs, curation
     mode, the per-list extraction verb, fullscreen and the slab lightbox.
 
-    Merge / dedup / import / delete live on the Species page
-    (11-S3), so the header carries the route there (``manage_species``); a removed action
-    the user cannot navigate to reads as a lost feature rather than a moved one.
-    `open_viewer(species_id, tomo_name)` is the slim mount's route INTO the full page;
+    Merge / dedup / import / delete live on the Species page, so the header carries the
+    route there (``manage_species``).
+    `open_viewer(species_id, tomo_name)` is the slim mount's route into the full page;
     `initial_species_id` preselects a species tab when the full page was opened on one, and
     `on_species_change(species_id)` reports a later tab switch back to the mount (the full
-    page uses it to keep its address bar truthful, roadmap 17)."""
+    page uses it to keep its address bar in step)."""
     geom = geometry_for_ts(project_state, project_path, ts_name)
     species_data = _collect_species_data_for_ts(project_state, project_path, ts_name, refresh)
     if not species_data:
@@ -1891,11 +1866,10 @@ def render_particles_section(
                 _render_invert_switch(card)
 
         def _show_manage_link_for(sp: dict) -> None:
-            """'manage in Particles registry ↗' for the active species (11-S3). The Journey no longer
-            merges / dedups / extracts / imports — this is
-            the one-click route to where those now live (the Picks & curation tab, selected by
-            `manage_species`), so their removal reads as a move. Absent when the workspace
-            gave us no route (a standalone journey mount) or the species has no id."""
+            """'manage in Particles registry ↗' for the active species: the one-click route to
+            merge / dedup / extract / import (the Picks & curation tab, selected by
+            `manage_species`). Absent when the workspace gave us no route (a standalone
+            journey mount) or the species has no id."""
             manage_host.clear()
             sid = sp.get("species_id")
             if manage_species is None or not sid:
@@ -1909,7 +1883,7 @@ def render_particles_section(
                 )
 
         def _show_viewer_link_for(sp: dict) -> None:
-            """`full viewer ↗` — the slim mount's route into the full page (11-S6), on the
+            """`full viewer ↗` — the slim mount's route into the full page, on the
             active species + this tomogram. Absent in the full page (already there) and
             when the workspace gave us no route."""
             viewer_host.clear()
@@ -1931,11 +1905,8 @@ def render_particles_section(
             _show_manage_link_for(sp)
             _show_viewer_link_for(sp)
 
-        # Layout (11-S2): species tabs, then the LISTS STRIP full width across the
-        # top, then ONE row with the slabs LEFT and the gallery RIGHT. The strip used
-        # to sit at the top of the right column, which is exactly what pushed the
-        # gallery a rail's-height below the slabs — with it hoisted out, the two
-        # columns start at the same y.
+        # Layout: species tabs, then the lists strip full width across the top, then
+        # one row with the slabs left and the gallery right, both starting at the same y.
         tabs_host = ui.element("div").classes("w-full")
         lists_host = ui.element("div").classes("cb-lists-strip w-full")
         with ui.element("div").classes("cb-particles-split"):
@@ -1957,17 +1928,15 @@ def render_particles_section(
             # active species' gallery cross-links to its own dots.
             canvas_layers = _render_particles_canvas(species_data, geom, ts_name, project_path, refresh, slab_vh)
 
-        # Species-switch generation. The two hosts are now SHARED by every species (they
-        # were per-`ui.tab_panel` before), and the detail pane renders one tick late off a
-        # once-timer — so without this, switching species twice quickly lets the first
-        # species' pending timer paint its gallery into the second's pane.
+        # Species-switch generation. The two hosts are shared by every species, and the
+        # detail pane renders one tick late off a once-timer, so without this, switching
+        # species twice quickly lets the first species' pending timer paint its gallery
+        # into the second's pane.
         gen = {"n": 0}
 
         def _show_species(sp: dict) -> None:
             """Swap the whole per-species half of the surface: toolbar, lists strip,
-            detail. Replaces the old `ui.tab_panels`, which built every species' rail
-            AND gallery up front and kept the inactive ones out of the DOM — the reason
-            the hover bridge had to re-resolve its grid lazily."""
+            detail. Only the active species is built."""
             gen["n"] += 1
             mine = gen["n"]
             if on_species_change is not None:
@@ -2008,8 +1977,7 @@ def render_particles_section(
             with tabs:
                 for sp in species_data:
                     # Name + a master-eye toggling all of this species' canvas overlays
-                    # at once (replacing the retired cross-species "Show picks" row). A
-                    # CSS ::before dot (driven by the inline --sp-color) ties each tab
+                    # at once. A CSS ::before dot (driven by the inline --sp-color) ties each tab
                     # to its canvas overlay color.
                     tab = ui.tab(sp["iid"], label=sp["label"]).classes("cb-species-tab")
                     tab.style(f"--sp-color: {sp['color']};")
@@ -2042,7 +2010,7 @@ def _render_particles_canvas(
     slab_dir, mrc_path = geom.tomograms_star.parent, geom.recon_mrc
     slab_state = _auto_kick_recon_slabs(slab_dir, ts_name, mrc_path, project_path, refresh)
     xy_png, xz_png = _recon_slab_paths(slab_dir, ts_name)
-    # Honest canvas states (13-S4): a spinner ONLY while a render is actually in flight.
+    # Canvas states: a spinner only while a render is actually in flight.
     # A failed render says why and offers Retry; a missing PNG with no work behind it is
     # reported as exactly that, never spun on.
     if slab_state in ("kicked", "in-flight"):
@@ -2098,16 +2066,15 @@ def _render_particles_canvas(
     z_dim = max(int(dims[2]), 1)
     nonce = uuid.uuid4().hex[:8]
 
-    # Visibility is driven by the per-tab master-eye + per-chip eyes (Slice B
-    # item 1) — the old per-list "Show picks" checkbox row was retired. Both eyes
+    # Visibility is driven by the per-tab master-eye + per-chip eyes. Both eyes
     # toggle each list's `_layer_els` (populated just below) through
     # `_apply_pick_list_visibility`.
 
     # X/Y and X/Z share ONE stack that fills the (per-tomo width-capped) canvas
     # column — each child is width:100% of the stack and derives its height from
     # its own aspect-ratio. The COLUMN's max-width (set in render_particles_section
-    # to min(1400px, slab_vh·x/y), R1) caps the X/Y at ~slab_vh tall while preserving the
-    # tomogram aspect AND hugging the previews (no whitespace before the gallery);
+    # to min(1400px, slab_vh·x/y)) caps the X/Y at ~slab_vh tall while preserving the
+    # tomogram aspect and hugging the previews (no whitespace before the gallery);
     # the X/Z then reads as a proportional strip below it (height = width · z/x).
     stack = ui.element("div").classes("cb-canvas-stack")
     with stack:
@@ -2238,9 +2205,8 @@ def _render_species_tab_body(
     below it: the auto list → the subtomo gallery/scatter cross-linked to this species'
     canvas dots via `layer_ids`; a workbench list → its recon cutout sheet.
 
-    Both hosts belong to the section (not to a `ui.tab_panel`) since 11-S2, which is what
-    lets the strip span the full width while the gallery's top edge lines up with the
-    slabs'."""
+    Both hosts belong to the section (not to a `ui.tab_panel`), which lets the strip span
+    the full width while the gallery's top edge lines up with the slabs'."""
     tm_info = _tm_essentials_for_species(sp)
     if sp["row"]["status"] == "missing-volume":
         with lists_host:
@@ -2311,7 +2277,7 @@ def _render_species_tab_body(
             refresh=refresh,
         )
     # The detail pane renders one tick later via a once-timer: _render_detail is
-    # async now (its workbench-list branch probes disk off-loop), so it can't be
+    # async (its workbench-list branch probes disk off-loop), so it can't be
     # called inline from this sync builder — schedule it onto the event loop.
     ui.timer(0.05, _render_detail, once=True)
 
@@ -2335,9 +2301,8 @@ def _render_list_eye(lst: dict, sp: dict) -> None:
 
 def _attach_auto_chip_tooltip(el, sp: dict, tm_info: dict) -> None:
     """Rich hover tooltip for the pytom (auto) chip's type tag: the per-tomo
-    auto-pick stats + the template-match run params that used to clutter the tab
-    header inline (Slice B item 3). Two labeled sections so it's clear the stats
-    describe the auto pick SET and the TM line the template-match RUN."""
+    auto-pick stats + the template-match run params. Two labeled sections so it's
+    clear the stats describe the auto pick set and the TM line the template-match run."""
     row = sp["row"]
     entry = sp.get("entry") or {}
     diameter = float(getattr(sp["jm"], "particle_diameter_ang", 0.0) or 0.0)
@@ -2391,20 +2356,18 @@ def _render_list_rail(
 ) -> None:
     """The lists strip: a compact aligned TABLE (header + one row per
     list: swatch · name · count(kept/total) · extracted-mark · copy-path · delete · visibility
-    eye). No route into the registry here since 13-S3 — the species header carries it.
+    eye). The route into the registry is on the species header, not here.
     Every row shares one grid template so the columns line up under the header. The auto
     (pytom) row's name carries a hover tooltip with its pick stats + template-match
     essentials. Clicking a row selects it → drives the detail; the copy, delete and
     eye controls use click.stop so they don't also select. `chip_els` is filled {slug:
     row-element} so selection can re-highlight without rebuilding the table.
 
-    Otherwise look only (11-S3, tightened by 09-S2): curate / dedup / extract / import stay on
-    the Particles registry's Picks & curation tab, where they act across every tomogram at
-    once. DELETE is the exception and deliberately so — you decide a list is junk while
-    LOOKING at its dots, and routing that through another page loses which list you meant.
-    It runs `list_actions.delete_list`, the same confirm the Picks tab's row uses. A
-    read-only `auth` radio used to sit between `picks` and `ext`, naming the one list
-    downstream consumed; the authoritative model is gone, so the column went with it."""
+    Otherwise look only: curate / dedup / extract / import stay on the Particles registry's
+    Picks & curation tab, where they act across every tomogram at once. Delete is the
+    exception: you decide a list is junk while looking at its dots, and routing that
+    through another page loses which list you meant. It runs `list_actions.delete_list`,
+    the same confirm the Picks tab's row uses."""
     from backend import get_backend  # local: ui -> backend is a one-way edge at import time
 
     state_obj = current_project_state()
@@ -2454,7 +2417,7 @@ def _render_list_rail(
                                 # Symbol only in the table (○/✓/⚠); full label on hover.
                                 ui.label(text.split(" ", 1)[0]).classes(f"cb-ltable-badge {cls}").tooltip(text)
                     with ui.element("div").classes("cb-ltable-cell"):
-                        # P6: copy the full path to this list's backing file (auto →
+                        # Copy the full path to this list's backing file (auto →
                         # candidates.star; workbench → its star). Tooltip shows it; the
                         # click copies. click.stop so copying doesn't also select the row.
                         copy_path = (
@@ -2501,10 +2464,10 @@ def _render_list_rail(
                     with ui.element("div").classes("cb-ltable-cell"):
                         if lst.get("_layer_els"):
                             _render_list_eye(lst, sp)
-        # No launch and no route here (picking-UI 13-S3): the app has exactly one door to
-        # ArtiaX — `Curate picks` on a tomogram group of the Particles registry's "Picks &
-        # curation" tab — and the species header above already carries the navigation
-        # link to that registry (`manage in Particles registry ↗`).
+        # No launch and no route here: the app has one door to ArtiaX — `Curate picks` on
+        # a tomogram group of the Particles registry's "Picks & curation" tab — and the
+        # species header above carries the link to that registry
+        # (`manage in Particles registry ↗`).
 
 
 async def _render_list_detail(
@@ -2553,7 +2516,7 @@ def _render_species_auto_section(
         note = sp.get("preview_note") or ""
         with ui.element("div").classes("cb-empty"):
             if note:
-                # Nothing was submitted and nothing is in flight (13-S4): say why instead
+                # Nothing was submitted and nothing is in flight: say why instead
                 # of spinning on a preview that is not coming.
                 ui.icon("hourglass_empty", size="28px").classes("text-gray-400")
                 ui.label(f"No candidate preview — {note}; run Pick candidates from the Jobs tab").classes(
@@ -2631,13 +2594,11 @@ def _render_zero_picks_empty_state(manifest: dict, species_name: str | None) -> 
                 ).classes("text-[10px] italic text-gray-500").style("max-width: 480px;")
 
 
-# ── The gallery toolbelt (11-S3) ──────────────────────────────────────────────
-# One icon row on the gallery header replaces the strip of controls that had
-# accumulated under the grid: a sort select, a display-filter pair, a per-tomogram
-# 3dmod block, a per-pick 3dmod block, a hovered-pick stats row and a filtered-set
-# path row. Each icon opens a popover holding the controls it used to show inline;
-# the two 3dmod blocks and the outputs row are now ONE popover, so 3dmod exists in
-# exactly one place per gallery instead of two plus two hint strings.
+# ── The gallery toolbelt ──────────────────────────────────────────────────────
+# One icon row on the gallery header holds the gallery controls: sort, display
+# filter, 3dmod commands + the filtered-set path, curate, fullscreen. Popover icons
+# hold their controls; the per-tomogram and per-pick 3dmod commands and the outputs
+# share one popover, so 3dmod exists in one place per gallery.
 
 
 # Client-side only: fullscreen the viewer ROOT (the nearest .cb-particles-root
@@ -2777,9 +2738,9 @@ def _render_reference_strip(
     template's central X/Y slice through the same percentile pipeline), the highest-
     scoring picks it found here, and the worst-scoring ones that still cleared the
     cutoff — the practical noise floor. The user evaluates the ambiguous middle band
-    against all three ([[feedback_gallery_calibration_anchors]]).
+    against all three.
 
-    Collapsible and CLOSED by default since 11-S2: three tile rows permanently above
+    Collapsible and closed by default: three tile rows permanently above
     the grid cost more vertical space than they earn once the user has calibrated. The
     open/closed flag lives in `ref_state` (owned by the gallery) so a display-filter
     switch — which re-renders this strip so the anchors match the grid's filter —
@@ -2997,11 +2958,9 @@ def _render_gallery_body(
             pick_xy_frac[i] = [fx, fy_top]
             pick_xz_frac[i] = [fx, fz_top]
 
-    # ce_job_dir + subtomo_job_dir are passed in from the species data, resolved
-    # per-species. They used to be guessed here — ce via path arithmetic that
-    # landed on <ce>/vis (the "Could not read candidates … from …/vis" bug), and
-    # subtomo via a lex-greatest heuristic that mis-targeted every species at one
-    # job. Both are now correct for any number of registered species.
+    # ce_job_dir + subtomo_job_dir come from the species data, resolved per species.
+    # Deriving them here (from the preview path, or the newest subtomo job) picks the
+    # wrong job once several species are registered.
     ts_name = row.get("tomo_name") or ""
     from services.particles import picks_filter
 
@@ -3037,13 +2996,13 @@ def _render_gallery_body(
 
     state = {
         "selected_idx": None,  # shift-click peek target (stale-result guard)
-        # 11-S4: the SELECTED pick. Clicking a tile or a slab dot selects it — a
-        # persistent highlight on both — and that is ALL a click does unless curation
-        # mode is armed. Esc / a click on empty gallery space clears it.
+        # The selected pick. Clicking a tile or a slab dot selects it — a persistent
+        # highlight on both — and that is all a click does unless curation mode is
+        # armed. Esc / a click on empty gallery space clears it.
         "selected": None,
-        # 11-S4: curation mode. OFF by default and unavailable in the slim mount: the
+        # Curation mode. Off by default and unavailable in the slim mount: the
         # Journey is look-and-filter, the full page is where picks are curated. While
-        # ON, a click means keep/drop, the lasso arms, and Save/Reset appear.
+        # on, a click means keep/drop, the lasso arms, and Save/Reset appear.
         "curating": False,
         "sort_mode": "best",
         # Filter state. keep_set == None means "no curation yet — every pick
@@ -3060,7 +3019,7 @@ def _render_gallery_body(
     can_filter = bool(subtomo_job_dir is not None and ce_job_dir is not None and ts_name)
     can_curate = can_filter and mode == "full"
 
-    # Layout (11-S2/S3): header row with the toolbelt, a curation bar that exists only
+    # Layout: header row with the toolbelt, a curation bar that exists only
     # while curation mode is armed, the collapsible reference strip, then the grid.
     counter_label = None
     save_btn = None
@@ -3226,7 +3185,7 @@ def _render_gallery_body(
         grid_container = ui.element("div").classes("cb-gallery-scroll w-full")
         grid_container._props["id"] = gallery_id
 
-    # ── Toolbelt (11-S3): sort · display filter · 3dmod · curate · fullscreen ──
+    # ── Toolbelt: sort · display filter · 3dmod · curate · fullscreen ──
     with toolbelt:
         sort_btn = _toolbelt_button("sort", "Sort order")
         with sort_btn, ui.menu().props("anchor='bottom right' self='top right'"):
@@ -3354,11 +3313,10 @@ def _render_gallery_body(
             _select_pick(idx)
 
     # Captured at render time (valid context). _sync_dropped_dots uses this
-    # instead of resolving the client via context.slot — which, inside a
-    # tile-click handler, is the tile that _refresh_grid's grid_container.clear()
-    # just deleted (the "parent element this slot belongs to has been deleted"
-    # crash that also left the Save button stuck disabled because the exception
-    # aborted _toggle_keep before _refresh_counter ran).
+    # instead of resolving the client via context.slot, which inside a tile-click
+    # handler is the tile that _refresh_grid's grid_container.clear() just deleted;
+    # that raises "parent element this slot belongs to has been deleted" and aborts
+    # _toggle_keep before _refresh_counter runs.
     _gallery_client = ui.context.client
 
     def _sync_dropped_dots() -> None:
@@ -3396,7 +3354,7 @@ def _render_gallery_body(
         )
 
     def _select_pick(pick_idx: int | None) -> None:
-        """11-S4: the click model outside curation mode. One pick is selected at a
+        """The click model outside curation mode. One pick is selected at a
         time; the tile keeps `.selected` and its slab dots `.cb-ghost-selected` until
         another is picked or Esc/click-away clears it. Nothing about keep/drop moves —
         selecting is how you point at a pick, not how you judge it."""
@@ -3470,8 +3428,7 @@ def _render_gallery_body(
                 tile = ui.element("div").classes(cls).style(style)
                 tile._props["data-pick-idx"] = str(pick_idx)
                 if pick is not None:
-                    # The tile's own tooltip carries the pick's numbers — it is where
-                    # score/coords live now that the hover info row is gone (11-S3).
+                    # The tile's own tooltip carries the pick's numbers (score, coords).
                     parts = [f"#{pick_idx}"]
                     if pick.get("score") is not None:
                         parts.append(f"score={pick['score']:.4f}")
@@ -3526,7 +3483,7 @@ def _render_gallery_body(
     # Ghost-dot clicks on the slab act like tile clicks — the bridge dispatches a
     # CustomEvent on grid_container, scoped to it so it's cleaned up with the gallery.
     grid_container.on("cbpickclick", _on_dot_click, js_handler="(e) => emit(e.detail)")
-    # Esc / a click on empty gallery space clears the selection (11-S4).
+    # Esc / a click on empty gallery space clears the selection.
     grid_container.on("cbpickdeselect", lambda _e: _select_pick(None), js_handler="(e) => emit({})")
 
     # Box-select (lasso): the marquee JS collects the enclosed tiles' pick idxs
@@ -3578,9 +3535,8 @@ def _render_gallery_body(
         #     matching ghost dots active.
         #   ghost-dot mouseover     → same, plus add .cb-tile-highlight on
         #     the matching gallery tile and scroll it into view if hidden.
-        # The horizontal hover info row this also used to fill is gone (11-S3): the
-        # numbers it showed live on each tile's own tooltip, and clicking a tile now
-        # SELECTS it, which is the persistent readout.
+        # Pick numbers live on each tile's own tooltip; clicking a tile selects it,
+        # which is the persistent readout.
         bridge_js = f"""
         setTimeout(function() {{
             const galleryId = {json.dumps(gallery_id)};
@@ -3600,13 +3556,10 @@ def _render_gallery_body(
             }}).filter(function(x) {{ return x && x.marker; }});
             if (!wired.length) return;
 
-            // Delegate on the Particles card — the common ancestor of BOTH the
-            // canvas (left) and every species' gallery (right, in lazily-mounted
-            // tab panels). The gallery grid is resolved LAZILY at event time, so
-            // the cross-link works no matter which tab was active when this ran.
-            // (Fix for the dead-hover bug on non-default tabs: q-tab-panels only
-            // mount the active panel, so the old one-shot getElementById(galleryId)
-            // bailed for inactive tabs and never wired their listeners.)
+            // Delegate on the Particles card — the common ancestor of both the
+            // canvas (left) and the species' gallery (right). The gallery grid is
+            // resolved at event time, so the cross-link does not depend on the grid
+            // being in the DOM when this runs.
             const root = wired[0].host.closest('.cb-section-card') || document.body;
             const ourLayerIds = wired.map(function(w) {{ return w.layerId; }});
             function getGrid() {{ return document.getElementById(galleryId); }}
@@ -3650,11 +3603,10 @@ def _render_gallery_body(
                     }}
                 }}
             }}
-            // Clear ALL active state in our scope (every active ghost + every
+            // Clear all active state in our scope (every active ghost + every
             // highlighted tile). Called at the start of each hover so only one
-            // pick is ever active — moving tile→tile no longer accumulates
-            // stuck dots (the bug: mouseout only fired on full grid-exit, so a
-            // tile→tile move never deactivated the one you left).
+            // pick is ever active: mouseout tears down only on a full exit, so a
+            // tile→tile move would otherwise leave the previous dot lit.
             function clearActive() {{
                 wired.forEach(function(w) {{
                     w.host.querySelectorAll('.cb-pick-ghost.cb-ghost-active').forEach(function(g) {{
@@ -3806,10 +3758,9 @@ def _render_hover_card_skeleton() -> dict:
     """The scatter fallback's "Hovered pick" readout — a 2-column key/value grid the
     Plotly hover handler writes into.
 
-    The gallery's horizontal variant of this (an info row above the grid, filled by the
-    hover bridge in JS) is gone since 11-S3: it was the top item of the kitchen sink,
-    and the same numbers now sit on each tile's own tooltip. The scatter fallback keeps
-    it because a scatter point has nowhere else to say what it is."""
+    The gallery has no such readout (the same numbers sit on each tile's own tooltip);
+    the scatter fallback needs it because a scatter point has nowhere else to say what
+    it is."""
     labels: dict = {}
     with ui.element("div").classes("cb-hover-card") as card:
         for key in ("idx", "px", "ang", "score", "z%-tile", "nn"):
@@ -4008,7 +3959,7 @@ _AUTO_KICKED_IMOD: set[str] = set()
 
 def reset_auto_kick_state() -> None:
     """Clear the auto-kick dedup sets and the recorded slab-render failures — called by
-    `open_tomo_dashboard` and by `PickViewerPage.show` (13-S4), so each fresh mount can
+    `open_tomo_dashboard` and by `PickViewerPage.show`, so each fresh mount can
     re-trigger generation and a failed render gets another chance without a restart."""
     _AUTO_KICKED_PREVIEWS.clear()
     _AUTO_KICKED_IMOD.clear()
@@ -4026,8 +3977,8 @@ def _auto_kick_preview_generation(instance_id: str, job_model, job_dir: Path, pr
 
     Returns ``""`` when a kick was submitted or one is already in flight — i.e. a
     preview may still arrive — else the reason nothing was submitted, which the species
-    section renders instead of a spinner (13-S4): a spinner with no work behind it is the
-    no-picks project's "spins forever"."""
+    section renders instead of a spinner, which would otherwise spin forever with no
+    work behind it."""
     key = str(job_dir)
     if key in _AUTO_KICKED_PREVIEWS:
         return ""
@@ -4219,7 +4170,7 @@ async def _handle_generate_for_instance(
 
 
 # ---------------------------------------------------------------------------
-# The full page (11-S5): the viewer filling the workspace main area
+# The full page: the viewer filling the workspace main area
 # ---------------------------------------------------------------------------
 
 
@@ -4260,14 +4211,14 @@ class PickViewerPage:
             if tomo_name:
                 self.tomo_name = tomo_name
             # Like the Journey mount: a fresh show may re-kick a render that failed or was
-            # blocked by the process-lifetime dedup sets (13-S4).
+            # blocked by the process-lifetime dedup sets.
             reset_auto_kick_state()
             self.render()
 
     def _species_changed(self, species_id: str | None) -> None:
         """A species tab inside the viewer was clicked. Keep the page's own idea of the
         selection — and the address bar — on the species actually shown, so copying the
-        link does not send someone to the one it was opened on (roadmap 17 S3)."""
+        link does not send someone to the one it was opened on."""
         if not species_id or species_id == self.species_id:
             return
         self.species_id = species_id
@@ -4293,7 +4244,7 @@ class PickViewerPage:
     def _render_body(self) -> None:
         # Explicit-path resolution, not the tab accessor: `refresh` reaches here from
         # BackgroundTask completions too, where a bare tab lookup yields a blank
-        # throwaway state (ui/current_project.py's W2 warning).
+        # throwaway state (see ui/current_project.py).
         state = get_project_state_for(self.project_path)
         with ui.element("div").classes("cb-viewer-page"):
             self._render_header(state)

@@ -80,8 +80,8 @@ class JobType(str, Enum):
     TEMPLATE_MATCH_PYTOM = "templatematching"
     TEMPLATE_EXTRACT_PYTOM = "tmextractcand"
     SUBTOMO_EXTRACTION = "subtomoExtraction"
-    # Per-pick-list extraction (roadmap 07). One instance per (species, tomogram,
-    # slug) triple; NOT a scheme/roster job -- see services/jobs/extract_pick_list.py.
+    # Per-pick-list extraction. One instance per (species, tomogram, slug)
+    # triple; not a scheme/roster job -- see services/jobs/extract_pick_list.py.
     EXTRACT_PICK_LIST = "extractPickList"
     RECONSTRUCT_PARTICLE = "reconstructParticle"
 
@@ -95,10 +95,10 @@ class JobType(str, Enum):
 
     # Synthetic source, same contract as MERGED_SOURCES: the PARTICLES-header tomogram
     # import (services/tomogram_import.py) is a project-level artifact, not a job, but its
-    # committed Tomograms/tomograms.star has to be a resolver producer candidate. It used
-    # to borrow MERGED_SOURCES and be told apart by instance path, which made a dangling
-    # imported star report itself as a missing merged-sources optimisation set (de-novo
-    # roadmap D-8 / S5). Legacy `mergedSources:Tomograms` override keys still resolve.
+    # committed Tomograms/tomograms.star has to be a resolver producer candidate. A type of
+    # its own keeps a dangling imported star from reporting itself as a missing
+    # merged-sources optimisation set. Legacy `mergedSources:Tomograms` override keys still
+    # resolve.
     IMPORTED_TOMOGRAMS = "importedTomograms"
 
     @classmethod
@@ -115,7 +115,7 @@ class InstanceId:
     """Typed form of the job instance-id grammar: ``{job_type}`` or
     ``{job_type}__{suffix}``, where the suffix is a species id
     (``templatematching__ribosome``) or a numeric disambiguator
-    (``templatematching__2``). This class is the ONE place the ``__``
+    (``templatematching__2``). This class is the only place the ``__``
     separator is known; nothing else may hand-split an instance id."""
 
     job_type: JobType
@@ -171,9 +171,8 @@ def resolve_species(state, job_model, instance_id: str | None = None):
     3. Single-species fallback: if exactly one species exists in the
        project, attribute the job to it.
 
-    Returns (species or None, species_id or None). THE canonical chain —
-    formerly triplicated across dashboard_data / template_metadata /
-    aggregation.extraction."""
+    Returns (species or None, species_id or None). The one canonical chain;
+    callers must not reimplement it."""
     if instance_id:
         sid = split_species_id(instance_id)
         if sid:
@@ -210,7 +209,7 @@ class SpeciesOrigin(StrEnum):
     plain str — `""` on species that pre-date the field means WORKBENCH — and
     validated at the write site (`ProjectState.add_species`)."""
 
-    WORKBENCH = "workbench"  # template-driven (the Species page "+", formerly the workbench "+")
+    WORKBENCH = "workbench"  # template-driven (the Species page "+")
     MANUAL = "manual"  # created de novo for hand picking (roster "+", Journey empty state)
     IMPORTED = "imported"
 
@@ -228,12 +227,12 @@ class PickSourceKind(StrEnum):
 
 
 class ListExtractionState(str, Enum):
-    """Whether a workbench pick list's COORDINATES have been subtomo-extracted, so
+    """Whether a workbench pick list's coordinates have been subtomo-extracted, so
     downstream refinement can read its particles. Manual/imported/merged lists are
     raw coordinates and can't go downstream until extracted; auto/filtered map to
-    the existing subtomo job. DERIVED from durable facts on the PickList, never a
+    the existing subtomo job. Derived from durable facts on the PickList, never a
     stored boolean — see PickList.extraction_state() (avoids the stale-flag trap).
-    Extraction is scoped PER LIST and triggered by the user per list (neither
+    Extraction is scoped per list and triggered by the user per list (neither
     fully automatic — no throwaway re-extractions — nor manually tedious)."""
 
     NOT_EXTRACTED = "not_extracted"  # coordinates only; needs extraction to go downstream
@@ -253,7 +252,7 @@ class MicroscopeParams(BaseModel):
 class AcquisitionParams(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
     dose_per_tilt: float = Field(default=3.0, ge=0.1, le=9.0)
-    # Where dose_per_tilt came from (roadmap 18 D3): "" legacy / "mdoc" / "estimated"
+    # Where dose_per_tilt came from: "" legacy / "mdoc" / "estimated"
     # (zero-thickness fit of the mdoc DoseRate, shown as an estimate everywhere) / "user".
     dose_per_tilt_source: str = ""
     detector_dimensions: tuple[int, int] = (4096, 4096)
@@ -293,7 +292,7 @@ SPECIES_OVERLAY_COLORS = [
 def species_palette_color(species_id: str) -> str:
     """Deterministic palette color for a species id.
 
-    Deliberately NOT `hash()`: PYTHONHASHSEED randomizes str hashing per process,
+    Not `hash()`: PYTHONHASHSEED randomizes str hashing per process,
     so the same species would change color between server restarts. Summing the
     code points is stable across runs and matches what the dashboard already does
     for workbench-authored species.

@@ -1,8 +1,7 @@
-"""The species overlay-colour swatch (picking-UI roadmap 01 S2).
+"""The species overlay-colour swatch.
 
-Hoisted out of `ui.species.overview_tab._render_color_swatch`, which was welded to a
-saved species (it mutated + saved on pick). The creation dialog needs the same control
-*before* a species exists, so the persistence closure is now the caller's `on_pick`.
+The creation dialog needs this control before a species exists, so persistence is the
+caller's `on_pick`, not the swatch's.
 
 Species share one tomogram canvas, so colour is how a user tells two picks apart —
 editable, constrained to the palette that stays legible over greyscale

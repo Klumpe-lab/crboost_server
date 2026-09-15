@@ -1,4 +1,4 @@
-"""Protocols — the shape of a pipeline with its parameters, as a portable bundle (roadmap 16).
+"""Protocols — the shape of a pipeline with its parameters, as a portable bundle.
 
     schema.py         Protocol / ProtocolSpecies / ProtocolStage + yaml load/dump
     discovery.py      config/protocols/ + ~/.crboost/protocols/ lookup

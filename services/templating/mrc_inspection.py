@@ -1,8 +1,7 @@
 """Rich MRC inspection for the template-import flow.
 
-When a user drops in an .mrc file ("boss said use this"), we want to
-extract everything we can from the file before asking the user to fill
-out metadata fields by hand. This module is the building block for that
+When a user imports an .mrc file, extract everything we can from the
+file before asking the user to fill out metadata fields by hand. This module is the building block for that
 flow: open the volume, read the header + statistics, run a couple of
 heuristics (polarity, mask-likeness, provenance hints from header
 labels), and return one frozen `MrcInspection` record that the import
@@ -250,7 +249,7 @@ _TOOL_KEYWORDS = (
 # Mask intrinsic-shape inspection
 #
 # A mask's *measured* diameter and isotropy often disagree with the filename
-# (the user's "_d575" mask measured 606 Å due to soft edge). The Journey
+# (a "_d575" mask can measure 606 Å because of its soft edge). The Journey
 # panel surfaces these so the user can validate what TM actually sees.
 # ---------------------------------------------------------------------------
 

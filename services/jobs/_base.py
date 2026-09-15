@@ -81,7 +81,7 @@ class AbstractJobParams(BaseModel):
     CONFIG_PREAMBLE: ClassVar[str] = ""
 
     # ------------------------------------------------------------------
-    # Phase 1c: USER_PARAMS whitelist.
+    # USER_PARAMS whitelist.
     #
     # Each subclass declares which of its fields are user-tunable
     # parameters (i.e. things the user edits in the config tab).
@@ -90,15 +90,12 @@ class AbstractJobParams(BaseModel):
     #   - Immutability enforcement (blocked on running/completed jobs)
     #   - Dirty-marking on change (triggers persistence at next save point)
     #
-    # Everything NOT listed here is internal metadata (execution_status,
+    # Everything not listed here is internal metadata (execution_status,
     # paths, slurm_overrides, etc.) that can always be written freely
     # by backend code regardless of job status.
     #
-    # When you add a new user-facing parameter to a job subclass,
-    # add it to that subclass's USER_PARAMS set. If you forget,
-    # the field will behave as metadata (no immutability, no dirty mark)
-    # which is safe but means edits won't auto-persist -- you'll notice
-    # quickly in testing.
+    # A user-facing parameter missing from USER_PARAMS behaves as metadata
+    # (no immutability, no dirty mark), so its edits don't auto-persist.
     # ------------------------------------------------------------------
     USER_PARAMS: ClassVar[set[str]] = set()
 
@@ -121,10 +118,9 @@ class AbstractJobParams(BaseModel):
     # Format: "jobtype:instance_path" e.g. "tsReconstruct:External/job005"
     #         or "manual:/absolute/path/to/file.star"
     source_overrides: dict[str, str] = Field(default_factory=dict)
-    # After the ClassVar declarations, before execution_status:
     job_type: JobType | None = None
 
-    # This is now a private attribute, not a Pydantic model field.
+    # Private attribute, not a Pydantic model field.
     _project_state: ProjectState | None = None
 
     def get_effective_slurm_config(self) -> SlurmConfig:
@@ -209,7 +205,7 @@ class AbstractJobParams(BaseModel):
         # 3. Store the preset enum value
         self.slurm_overrides["preset"] = preset.value
 
-        # Phase 1b: mark dirty instead of saving immediately.
+        # Mark dirty instead of saving immediately.
         # The UI save_handler (called right after this) triggers the actual write.
         if self._project_state:
             self._project_state.mark_dirty()
@@ -221,7 +217,7 @@ class AbstractJobParams(BaseModel):
         if field != "preset":
             self.slurm_overrides["preset"] = SlurmPreset.CUSTOM.value
 
-        # Phase 1b: mark dirty instead of saving immediately.
+        # Mark dirty instead of saving immediately.
         if self._project_state:
             self._project_state.mark_dirty()
 
@@ -250,8 +246,7 @@ class AbstractJobParams(BaseModel):
         # Add job-specific options (in_mic, in_tomoset, etc.)
         options.extend(self._get_job_specific_options())
 
-        # CRITICAL: Add actual path values for validation
-        # This helps relion_schemer understand dependencies
+        # Actual path values, so relion_schemer can see the job's dependencies
         for key, path_value in self.paths.items():
             if key in ["input_star", "model_path", "input_tomoset"]:
                 # Convert to relative path for RELION
@@ -305,7 +300,7 @@ class AbstractJobParams(BaseModel):
             ("min_dedicated", "1"),
         ]
 
-        # Add ONLY the qsub_extra values - NO labels needed!
+        # Only the qsub_extra values; no labels
         slurm_dict = slurm.to_qsub_extra_dict()
         for var_name, value in slurm_dict.items():
             options.append((var_name, value))
@@ -391,10 +386,9 @@ class AbstractJobParams(BaseModel):
         return self.project_root / "mdoc"
 
     # ------------------------------------------------------------------
-    # Phase 1b + 1c: Rewritten __setattr__
+    # __setattr__
     #
-    # Uses USER_PARAMS whitelist instead of a fragile bypass blacklist.
-    # Only user-tunable params get immutability enforcement and dirty-marking.
+    # Only user-tunable params (USER_PARAMS) get immutability enforcement and dirty-marking.
     # Everything else (metadata fields) is written freely.
     # ------------------------------------------------------------------
     def __setattr__(self, name: str, value: Any) -> None:

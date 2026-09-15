@@ -189,7 +189,7 @@ for (const [label, slug, prog] of STAGES) {
   console.log('mixed roster:'); emit('roster-mixed-live', W, y, s);
 }
 
-// 5 ── array job expanded: running per-tilt-series tasks  (@ui, doc 04)
+// 5 ── array job expanded: running per-tilt-series tasks
 {
   const W = 300;
   const mk = (i, st) => ({ name: `TS_${String(i).padStart(2,'0')}`, st });

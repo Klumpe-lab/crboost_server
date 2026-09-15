@@ -28,7 +28,7 @@ From: nvidia/cuda:12.1.0-devel-ubuntu22.04
     . /opt/conda/etc/profile.d/conda.sh
     mamba env create -f isonet2_environment.yml
 
-    # 6. Make script executable (correct path!)
+    # 6. Make script executable
     chmod +x /opt/IsoNet2/IsoNet/bin/isonet.py
 
 %environment

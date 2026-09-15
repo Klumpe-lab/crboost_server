@@ -1,26 +1,23 @@
 """Pick-list ingest: register what the curation / import machinery wrote on disk as
-``PickList`` entries on ``ProjectState`` (roadmap 09-S2).
+``PickList`` entries on ``ProjectState``.
 
 Pure state mutation, UI-free — shared by the species page's explicit "Import picks
 from path…" click and the server-side curation watcher. Callers persist: the UI through
 ``backend.save_project(project_path, force=True)``, server loops through
 ``StateService.save_project(project_path=...)`` (no client context there).
 
-ONE LIST PER SOURCE FILE (roadmap 10-S2). This module used to mint every hand-picked list
-with the literal slug ``"manual"``, one per (species, tomogram) — so of N lists saved in an
-ArtiaX session, N−1 vanished on ingest, and which ArtiaX list a file had been was recorded
-nowhere. The slug is now derived from the ``.coords`` file stem, which makes the file the
-identity: a new name is a new list, and re-saving under the SAME name updates that list in
-place (the round-trip edit, W1). ``load_project_state`` migrates pre-10 ``"manual"`` lists.
+One list per source file. A hand-picked list's slug is derived from its ``.coords`` file
+stem, so the file is the identity: a new name is a new list, and re-saving under the same
+name updates that list in place. Older projects carry lists with the literal slug
+``"manual"`` (one per species and tomogram); ``load_project_state`` migrates them.
 
-THE SEEDED DEFAULT (roadmap 13-S1). That mechanism stays, but the advertised contract is one
-list per (species, tomogram): *Curate picks* pre-creates ``<species_id>__<tomo>__picks.coords``
-empty and registers it here as a 0-pick row — "pick into it in ArtiaX". Its slug is
-``manual__<that stem>`` like any other save, so the watcher's re-ingest of the user's save
-into the same file is the ordinary same-slug upsert. It is labelled by its file stem like
-every other manual list (the maintainer, 2026-09-06: no alias — the name the user has to
-find in ArtiaX's save dialog is the one the table shows); ``relabel_seed_rows`` fixes rows
-written while it was aliased ``picks``.
+The seeded default. The advertised contract is one list per (species, tomogram): *Curate
+picks* pre-creates ``<species_id>__<tomo>__picks.coords`` empty and registers it here as a
+0-pick row — "pick into it in ArtiaX". Its slug is ``manual__<that stem>`` like any other
+save, so the watcher's re-ingest of the user's save into the same file is the ordinary
+same-slug upsert. It is labelled by its file stem like every other manual list, because
+that is the name the user has to find in ArtiaX's save dialog; ``relabel_seed_rows`` fixes
+older rows labelled ``picks``.
 """
 
 from __future__ import annotations
@@ -33,8 +30,8 @@ from services.project_state import PickList, ProjectState
 from services.visualization.artiax_bridge import default_seed_name
 
 MANUAL_PREFIX = "manual__"
-LEGACY_MANUAL_SLUG = "manual"  # what every hand-picked list was called before 10-S2
-_ALIASED_SEED_LABEL = "picks"  # what seeded rows were labelled 2026-09-04..06; relabelled at load
+LEGACY_MANUAL_SLUG = "manual"  # slug of every hand-picked list in older projects
+_ALIASED_SEED_LABEL = "picks"  # label of seeded rows in older projects; relabelled at load
 
 
 def manual_slug_for(coords_path: Path | str) -> str:
@@ -60,7 +57,7 @@ def register_manual_pick_list(state: ProjectState, result: dict, species_id: str
     """Upsert the pick list for ONE ``.coords`` from an ``import_curation_picks`` result
     (``{count, slug, out_star, coords_source, created_by, ...}``). The slug is that file's
     (``manual__<stem>``), so two lists saved in one session land as two lists and a
-    re-save of the same file replaces only itself. The label is the file stem (P5) — the
+    re-save of the same file replaces only itself. The label is the file stem — the
     seeded default included — not a fixed "Manual (ArtiaX)".
 
     Provenance: ``source_kind`` is ``artiax`` when the .coords sits in the tomogram's
@@ -91,17 +88,17 @@ def register_manual_pick_list(state: ProjectState, result: dict, species_id: str
 
 
 def migrate_legacy_manual_slugs(state: ProjectState) -> list[tuple[str, str, str, str]]:
-    """Rename pre-10-S2 ``"manual"`` lists to ``manual__<stem>``, re-keying everything
+    """Rename legacy ``"manual"`` lists to ``manual__<stem>``, re-keying everything
     that referenced them by slug. Returns the ``(species, tomo, old, new)`` it changed
     (empty on an already-migrated project), so the loader can log what moved.
 
     Called from ``load_project_state`` — before anything reads the registry, so no
-    consumer ever sees the two schemes at once. THREE things key on the slug and all three
+    consumer ever sees the two schemes at once. Three things key on the slug and all three
     are rewritten here: the list itself, the per-list extraction job instance, and any
     downstream job whose input is overridden onto this list's synthetic producer
     (``pick_list__<species>__<tomo>__<slug>``) — miss that last one and the override
     silently reads as "the pick list behind this no longer exists".
-    FILES are deliberately NOT renamed: ``PickList.path`` and ``extracted_path`` are
+    Files are not renamed: ``PickList.path`` and ``extracted_path`` are
     absolute and stay valid, and renaming a star out from under a recorded extraction
     output would break the very link that proves it current.
 
@@ -140,8 +137,8 @@ def migrate_legacy_manual_slugs(state: ProjectState) -> list[tuple[str, str, str
 
 
 def relabel_seed_rows(state: ProjectState) -> list[tuple[str, str, str]]:
-    """Rows registered while the seeded default list was aliased ``picks`` (13-S1,
-    2026-09-04..06) get their file stem back as the label — what every other manual list
+    """Older rows where the seeded default list is labelled ``picks`` get their file stem
+    back as the label — what every other manual list
     shows, and the name the user must find in ArtiaX's save dialog. Called from
     ``load_project_state`` beside ``migrate_legacy_manual_slugs``; returns the
     ``(species, tomo, stem)`` it changed so the loader can log and mark dirty. A session

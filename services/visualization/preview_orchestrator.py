@@ -2,7 +2,7 @@
 Per-job orchestrator for candidate-pick previews.
 
 For each tomogram in a candidate-extract job, writes a per-tomo picks.json
-plus one job-level manifest.json (v4). Also resolves the WarpTools-rendered
+plus one job-level manifest.json. Also resolves the WarpTools-rendered
 tomogram preview PNG (produced during ts_reconstruct) so the UI can use it
 as a backdrop for the X/Y pick scatter.
 
@@ -222,8 +222,8 @@ def generate_candidate_previews(
     """Build per-tomo picks.json + sprite-atlas + manifest for one extract job.
 
     `project_state` (optional) lets us walk the project's SUBTOMO_EXTRACTION
-    jobs to build per-pick cutout atlases. Drivers that haven't been updated
-    just don't get atlases — the manifest still produces correctly without it.
+    jobs to build per-pick cutout atlases. Without it there are no atlases;
+    the manifest is still produced correctly.
 
     `instance_id` + `job_model` (optional) let us resolve the species this
     extract job is attached to so we can render a template reference tile in
@@ -287,13 +287,12 @@ def generate_candidate_previews(
     def _write_manifest(*, partial: bool) -> None:
         """Persist the manifest as it stands.
 
-        Called after EVERY tomogram, not only at the end: one tomogram costs
+        Called after every tomogram, not only at the end: one tomogram costs
         ~a minute (the cutout atlas is re-rendered for every display-filter
-        preset), so an end-only write meant any interruption — a server
-        restart, a kill — discarded every atlas the pass had already written.
-        The entries stayed `cutout_atlas=None`, and the dashboard fell back to
-        the scatter view ("no subtomo extraction yet") even though the tiles
-        were sitting on disk. Partial writes carry forward the prior entry for
+        preset), so with an end-only write any interruption — a server
+        restart, a kill — would discard every atlas the pass had written,
+        leaving `cutout_atlas=None` and the dashboard on the scatter view
+        while the tiles sit on disk. Partial writes carry forward the prior entry for
         any tomogram this pass hasn't reached yet, so an interrupted pass never
         loses ground. Written tmp+replace so a kill mid-write can't truncate it.
         """
@@ -345,9 +344,8 @@ def generate_candidate_previews(
             # Recover from stale-empty-cutout caches: if a SUBTOMO_EXTRACTION
             # job exists for this tomogram now but the cached entry has no
             # cutout atlas, treat the entry as stale and rebuild it. This
-            # covers two real scenarios: (1) the candidate-extract driver
-            # historically called the orchestrator without `project_state`
-            # so cutouts silently never built; (2) the subtomo job ran AFTER
+            # covers two cases: (1) a cache written without `project_state`,
+            # where cutouts never built; (2) the subtomo job ran after
             # the candidate-extract job, so the original cache predates it.
             cache_missing_cutout = tomo_name in tomos_with_subtomo and not prior_entry.get("cutout_atlas")
             # A *partial* cached atlas can be a mid-extraction snapshot: the

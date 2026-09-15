@@ -149,9 +149,9 @@ class PipelineOrchestratorService:
         if state.pipeline_active:
             return err("Pipeline is already running. Wait for it to complete or cancel it first.")
 
-        # Persist the participating set + order for this run (P1.0 of the orchestrator
-        # rework) so a tab-less submitter/reconciler has the pipeline membership
-        # without UIState. The FULL selected set, in UI order (incl. already-finished
+        # Persist the participating set + order for this run so a tab-less
+        # submitter/reconciler has the pipeline membership without UIState.
+        # The full selected set, in UI order (incl. already-finished
         # upstreams, which the afterok DAG needs as producers). The save on the
         # retry/fresh paths below persists it.
         state.pipeline_order = list(selected_instance_ids)
@@ -171,17 +171,16 @@ class PipelineOrchestratorService:
 
         events.info("Pipeline started: %s — %s", project_dir.name, ", ".join(instances_to_run))
 
-        # Orchestrator rework (P1.A): when the project opts into the afterok DAG, submit the WHOLE
-        # remaining set (FAILED + fresh) directly via SLURM dependencies. _submit_chain allocates
-        # fresh External/jobNNN dirs and rewires the afterok edges, so afterok re-runs do NOT use the
-        # schemer in-place retry path below; edges to already-SUCCEEDED producers are dropped (their
-        # outputs exist on disk). Dormant unless the flag is set; the schemer path is unchanged when off.
+        # When the project opts into the afterok DAG, submit the whole remaining set (FAILED + fresh)
+        # directly via SLURM dependencies. _submit_chain allocates External/jobNNN dirs and wires the
+        # afterok edges, so afterok re-runs do not use the schemer retry path below; edges to
+        # already-SUCCEEDED producers are dropped (their outputs exist on disk).
         if state.use_afterok_orchestrator:
             return await self._submit_chain(project_dir=project_dir, instances_to_run=instances_to_run, state=state)
 
         # Schemer path -- Partition: jobs that FAILED with an existing External/jobNNN dir get
         # re-sbatched in place (preserves .task_status/*.ok for per-TS skip). Fresh jobs go through
-        # the schemer as before. If both exist, retries run first; the monitor hands off on success.
+        # the schemer. If both exist, retries run first; the monitor hands off on success.
         retry_ids: list[str] = []
         fresh_ids: list[str] = []
         for iid in instances_to_run:
@@ -310,7 +309,7 @@ class PipelineOrchestratorService:
         )
 
     async def _submit_chain(self, project_dir: Path, instances_to_run: list[str], state) -> dict[str, Any]:
-        """P1.A: submit the pipeline as a SLURM afterok DAG instead of via relion_schemer.
+        """Submit the pipeline as a SLURM afterok DAG instead of via relion_schemer.
 
         For each fresh job: allocate a stable External/jobNNN dir from the ProjectState
         counter (monotonic, no reuse -> no off-by-one), resolve paths, write the RELION-compat
@@ -320,12 +319,12 @@ class PipelineOrchestratorService:
         Then toposort resolve_edges() and sbatch each supervisor with --dependency=afterok on
         its producers' supervisor job ids.
 
-        This method SUBMITS and persists slurm_job_id + QUEUED + pipeline_active=True. The monitor
-        dispatches afterok projects to reconcile_afterok (P1.B) -- which owns live status and winds
+        This method submits and persists slurm_job_id + QUEUED + pipeline_active=True. The monitor
+        dispatches afterok projects to reconcile_afterok -- which owns live status and winds
         pipeline_active back down on completion -- while sync_all_jobs stays guarded off for them.
-        The chain executes in SLURM regardless of the headnode process (the durability win).
+        The chain executes in SLURM regardless of the headnode process.
 
-        Failure handling: job-dir allocation uses a LOCAL counter committed to ProjectState only
+        Failure handling: job-dir allocation uses a local counter committed to ProjectState only
         after a clean prepare + toposort, so an early failure leaks neither the counter nor a
         persisted dir number; whatever reaches SLURM is always persisted, so no slurm_job_id handle
         is lost on a mid-chain sbatch error.
@@ -333,10 +332,9 @@ class PipelineOrchestratorService:
         server_dir = Path(__file__).parent.parent.parent.resolve()
 
         # Seed the sole job-dir allocator once from the existing RELION counter, then own it.
-        # (P1.C removes the star read entirely.)
         if not state.job_dir_counter:
             state.job_dir_counter = max(self._get_current_relion_counter(project_dir), 1)
-        # Allocate from a LOCAL counter during prepare; commit to state.job_dir_counter only after
+        # Allocate from a local counter during prepare; commit to state.job_dir_counter only after
         # the whole prepare + toposort succeeds, so an early failure leaks neither the counter nor a
         # persisted dir number (mirrors the schemer path's discardable local next_job_num).
         next_job_num = state.job_dir_counter
@@ -359,13 +357,12 @@ class PipelineOrchestratorService:
 
             # Dir allocation. Fresh jobs consume a slot from the sole monotonic allocator
             # (job_dir_counter), never reused -- so crboost's numbers can't drift off-by-one.
-            # The ONE exception: a FAILED job that already owns a dir is re-submitted IN PLACE on
+            # The one exception: a FAILED job that already owns a dir is re-submitted in place on
             # that same dir, so the supervisor's submit_array_job sees the prior `.task_status/*.ok`
             # and reruns only the failed/missing tilt-series instead of all of them. This reuses a
             # dir crboost itself allocated and recorded (relion_job_number) and consumes no counter
-            # slot -- categorically unlike the schemer-era off-by-one (H1), which came from a SECOND
-            # allocator (RELION's schemer) assigning the next number while we reused a stale one.
-            # The afterok path has no second allocator, so in-place reuse here cannot reproduce H1.
+            # slot. An off-by-one needs a second allocator (RELION's schemer) assigning the next
+            # number while a stale one is reused; the afterok path has none, so reuse here is safe.
             existing_rel = (job_model.relion_job_name or "").rstrip("/")
             reuse_dir = (
                 job_model.execution_status == JobStatus.FAILED
@@ -386,7 +383,7 @@ class PipelineOrchestratorService:
             job_dir.mkdir(parents=True, exist_ok=True)
             # Clear stale exit sentinels so the reconciler's pass-1 can't latch a prior run's
             # terminal status. On a reused FAILED dir this is what lets the rerun proceed;
-            # `.task_status/*.ok` is deliberately left intact so the supervisor (clean_status_dir
+            # `.task_status/*.ok` is left intact so the supervisor (clean_status_dir
             # keep_ok=True) skips already-done items and resubmits only what failed.
             for _marker in ("RELION_JOB_EXIT_SUCCESS", "RELION_JOB_EXIT_FAILURE"):
                 (job_dir / _marker).unlink(missing_ok=True)
@@ -408,7 +405,7 @@ class PipelineOrchestratorService:
             state.job_path_mapping[instance_id] = rel
             resolver.invalidate_cache()
 
-            # RELION-compat job.star into the real job dir (P1.C builds the full export on this).
+            # RELION-compat job.star into the real job dir.
             self._write_job_star(
                 scheme_job_dir=job_dir,
                 instance_id=instance_id,
@@ -497,7 +494,7 @@ class PipelineOrchestratorService:
             failed_iid, exc = submit_error
             return err(
                 f"sbatch failed for {failed_iid}: {exc}. {len(submitted)} earlier job(s) are queued "
-                f"in SLURM and recorded; cancel them manually until the P1.B reconciler lands.",
+                f"in SLURM and recorded; cancel them manually if needed.",
                 afterok=True,
                 submitted=submitted,
             )
@@ -513,12 +510,12 @@ class PipelineOrchestratorService:
         self, job_dir: Path, job_model: AbstractJobParams, fn_exe: str, server_dir: Path
     ) -> Path:
         """Render config/qsub.sh -> <job_dir>/run_submit.script for a direct (schemer-free)
-        supervisor submit (P1.A).
+        supervisor submit.
 
         Resources come from job_model._get_queue_options() -- the same per-job-type routing the
         schemer reads from job.star (array jobs -> lightweight supervisor_slurm_defaults; single
         jobs -> get_effective_slurm_config). Unlike the array renderer, the RELION_JOB_EXIT marker
-        block is KEPT: for a single supervisor job that marker is the completion signal.
+        block is kept: for a single supervisor job that marker is the completion signal.
         """
         template = (server_dir / "config" / "qsub.sh").read_text()
         opts = dict(job_model._get_queue_options())  # qsub_extra1..8 already routed per job type
@@ -609,10 +606,9 @@ class PipelineOrchestratorService:
 
     def _write_import_stars_inline(self, job_model: ImportMoviesParams, job_dir: Path, project_dir: Path) -> None:
         """Write ``Import/jobNNN/tilt_series.star`` + per-TS ``tilt_series/<TS>.star`` from the
-        TiltSeriesRegistry, reproducing what relion_python_tomo_import would emit (Option B; see
-        docs/roadmaps/roadmap_orchestrator-replacement.md §6a). Runs inline in the server process -- pure metadata,
-        no relion binary, no container, no SLURM job. Columns mirror a known-good schemer-produced
-        import (the ``post_handedness_fix`` oracle): an 8-col global block + a 6-col per-TS block,
+        TiltSeriesRegistry, reproducing what relion_python_tomo_import would emit. Runs inline in the
+        server process -- pure metadata, no relion binary, no container, no SLURM job. Columns mirror a
+        known-good schemer-produced import: an 8-col global block + a 6-col per-TS block,
         per-tilt rows in acquisition (tilt_index) order.
         """
         from services.tilt_series import get_registry_for
@@ -676,7 +672,7 @@ class PipelineOrchestratorService:
         logger.info("import writer: wrote tilt_series.star + %d per-TS stars into %s", len(global_rows), job_dir)
 
     def _build_import_command(self, params: ImportMoviesParams) -> str:
-        # IMPORT is written inline by _write_import_stars_inline (Option B, §6a). This fn_exe is never
+        # IMPORT is written inline by _write_import_stars_inline. This fn_exe is never
         # executed -- the afterok path writes the star inline and does not submit an import supervisor;
         # the schemer's relion.importtomo job.star ignores fn_exe and runs relion's native importer.
         # Kept as a harmless no-op so a stray execution can't run a wrong relion_import command.
@@ -781,9 +777,7 @@ class PipelineOrchestratorService:
 
 
 class JobTypeResolver:
-    # Reverse of JobSpec.driver. BEHAVIOR CHANGE vs the old hand-table (stage 6c,
-    # 2026-08-11): tilt_filter.py is now included — the hand-table omitted it, so
-    # tiltFilter job dirs resolved to None here.
+    # Reverse of JobSpec.driver.
     DRIVER_TO_JOBTYPE: ClassVar[dict[str, str]] = {
         s.driver: s.job_type.value for s in JOB_SPECS if s.driver is not None
     }

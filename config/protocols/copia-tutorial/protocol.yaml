@@ -1,5 +1,5 @@
 # Protocol: the CryoBoost v1 copia tutorial (EMPIAR-12580, one tilt series), importmovies -> class3d,
-# TUTORIAL-FAITHFUL variant of copia-empiar12580 (2026-09-09). Short name on purpose: the project dirname
+# tutorial-faithful variant of copia-empiar12580. Short name on purpose: the project dirname
 # becomes the tilt-series name prefix, and AreTomo 1.0 mangles its IMOD .tlt beyond ~42 characters
 # (docs/known_bugs.md #3). Differences from that protocol:
 #   - template + TM mask are the v1 repo's own files (CryoBoost/data/vols/copiaBlack_11.8A.mrc,
@@ -47,7 +47,7 @@ stages:
       m_range_min_max: "500:10"
       m_bfac: -500
       m_grid: 1x1x3
-      c_range_min_max: "30:10"     # was 30:6.0 (v1): beyond ~10 A these 2 e/A2 tilts are noise and the fit diverged on 22/28 -> docs/known_bugs.md #1
+      c_range_min_max: "30:10"     # v1 uses 30:6.0; beyond ~10 A these 2 e/A2 tilts are noise and the fit diverges -> docs/known_bugs.md #1
       c_defocus_min_max: "1.1:8"
       c_grid: 2x2x1
       c_use_sum: false

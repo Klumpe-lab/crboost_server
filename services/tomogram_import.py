@@ -1,19 +1,19 @@
-"""Tomogram import — a project-level utility (NOT a pipeline job).
+"""Tomogram import — a project-level utility, not a pipeline job.
 
 Particle-only / data-less projects have no preprocessing pipeline to produce a
 ``tomograms.star``; this module lets the PARTICLES-header import utility inject one,
-either by SYNTHESIZING it from a set of reconstructed ``.mrc`` files (reading dims +
-voxel size from each header) or by REFERENCING an existing ``tomograms.star``.
+either by synthesizing it from a set of reconstructed ``.mrc`` files (reading dims +
+voxel size from each header) or by referencing an existing ``tomograms.star``.
 
-There is deliberately no ``JobType`` here: nothing in the manual-picking flow resolves
-the tomograms.star as a job *output* — the dashboard, ArtiaX and per-list optset build
-read it directly — so modelling it as a SLURM/IO job bought nothing. The committed star
+There is no ``JobType`` here: nothing in the manual-picking flow resolves the
+tomograms.star as a job *output* — the dashboard, ArtiaX and per-list optset build
+read it directly — so modelling it as a SLURM/IO job buys nothing. The committed star
 is recorded on ``ProjectState.imported_tomograms``.
 
 Heavy deps (pandas, starfile, mrcfile) are imported lazily so importing this module
 stays light.
 
-Schema mirrors a real tsReconstruct ``data_global`` block (post_handedness_fix oracle):
+Schema mirrors a real tsReconstruct ``data_global`` block:
 synthesize writes the 13 picking/TM-relevant columns (omits halfmaps +
 ``rlnTomoTiltSeriesStarFile``, which are the denoise / TemplateMatch paths).
 """
@@ -31,8 +31,8 @@ class TomoImportMode(str, Enum):
 
 
 # What counts as a reconstructed tomogram on disk. `.rec` is IMOD/etomo's own name for the
-# same MRC container and is what a tilt-series reconstructed outside Warp usually arrives as
-# — excluding it made half the plausible source directories look empty (de-novo S5).
+# same MRC container and is what a tilt-series reconstructed outside Warp usually arrives as;
+# without it half the plausible source directories look empty.
 TOMOGRAM_SUFFIXES: tuple[str, ...] = (".mrc", ".rec")
 
 
@@ -44,9 +44,8 @@ def probe_mrc_metadata(paths: list[Path]) -> list[dict]:
     """Per-file MRC header metadata for the pre-commit preview (headers only, no data).
 
     Each entry: ``{name, path, nx, ny, nz, voxel_size, has_voxel_size, error}``. A
-    missing voxel size (``has_voxel_size=False``) is surfaced — NOT silently defaulted —
-    so the import widget can flag it and let the user supply a pixel size before
-    committing (CLAUDE.md 'Surfacing uncertainty')."""
+    missing voxel size (``has_voxel_size=False``) is surfaced, not defaulted, so the
+    import widget can flag it and let the user supply a pixel size before committing."""
     import mrcfile
 
     out: list[dict] = []
@@ -197,9 +196,9 @@ def _synthesize_rows(
 
         # Unbinned tilt-series pixel size: explicit override wins; else derive from the
         # recon voxel size and binning (recon voxel size == ts_px * binning). If neither
-        # is available we RAISE rather than silently defaulting to 1.0 Å/px — the import
-        # widget's pre-commit preview surfaces a missing voxel_size so the user supplies
-        # `pixel_size_angstrom` first (CLAUDE.md 'Surfacing uncertainty').
+        # is available, raise rather than default to 1.0 Å/px; the import widget's
+        # pre-commit preview surfaces a missing voxel_size so the user supplies
+        # `pixel_size_angstrom` first.
         if pixel_size_angstrom > 0:
             ts_px = float(pixel_size_angstrom)
         elif recon_apix > 0:
@@ -232,17 +231,17 @@ def _synthesize_rows(
 
 
 def _fold_batch_rows(df, seen_names: set, seen_paths: set) -> tuple:
-    """Fold ONE batch's rows into the merged star, against what earlier batches already put
+    """Fold one batch's rows into the merged star, against what earlier batches already put
     there. Returns ``(rows, renamed, skipped)``.
 
-    Two collisions, both reported and neither silent (same rule as
-    ``drivers/subtomo_merge.py``'s cross-project guard):
+    Two collisions, both reported (same rule as ``drivers/subtomo_merge.py``'s
+    cross-project guard):
 
-      * **same recon file** — already imported by an earlier batch, so the row is DROPPED.
+      * **same recon file** — already imported by an earlier batch, so the row is dropped.
         Re-importing a directory you imported before must not double every tomogram.
-      * **same tomogram name, different file** — the row is RENAMED (``<name>__2``). The
-        EARLIER row keeps the name on purpose: picks, curation saves and pick lists are
-        keyed on it, and renaming the incumbent would strand every one of them.
+      * **same tomogram name, different file** — the row is renamed (``<name>__2``). The
+        earlier row keeps the name: picks, curation saves and pick lists are keyed on it,
+        and renaming the incumbent would strand every one of them.
     """
     renamed: list[dict] = []
     skipped: list[dict] = []
@@ -287,7 +286,7 @@ def write_tomograms_star(
     project_tag: str = "",
     require_last: bool = True,
 ) -> dict:
-    """Write ``out_path`` (a ``tomograms.star``) from a LIST of import batches, in order.
+    """Write ``out_path`` (a ``tomograms.star``) from a list of import batches, in order.
 
     Each batch is a dict of the fields ``ProjectState.ImportBatch`` carries
     (``source_mode``, ``source_paths`` | ``reference_star``, ``pixel_size_angstrom``,
@@ -299,13 +298,13 @@ def write_tomograms_star(
     re-read cost (MRC headers) is paid off the event loop by the caller.
 
     Returns ``{"count": total_rows, "per_batch": [{"count", "renamed", "skipped", "error"}]}``.
-    A PRIOR batch that cannot be read (its reference star moved, its recon files are gone)
+    A prior batch that cannot be read (its reference star moved, its recon files are gone)
     contributes ``error`` and zero rows instead of failing the whole rebuild — nothing in the
-    import dialog can repair a source directory that moved. The LAST batch is the one being
-    added right now, and ``require_last`` makes its failure fatal BEFORE anything is written:
-    otherwise a failed import would still have rewritten the committed star from the prior
-    batches, quietly dropping the rows of any prior batch that had gone unreadable. Also
-    raises when nothing at all could be written."""
+    import dialog can repair a source directory that moved. The last batch is the one being
+    added right now, and ``require_last`` makes its failure fatal before anything is written:
+    otherwise a failed import would still rewrite the committed star from the prior batches,
+    quietly dropping the rows of any prior batch that had gone unreadable. Also raises when
+    nothing at all could be written."""
     import pandas as pd
     import starfile
 
@@ -343,7 +342,7 @@ def write_tomograms_star(
             report.update(count=len(rows), renamed=renamed, skipped=skipped)
         reports.append(report)
 
-    # Both guards run BEFORE the write: out_path is the committed star, and rewriting it
+    # Both guards run before the write: out_path is the committed star, and rewriting it
     # from a rebuild the caller is about to reject would be a silent side effect of a
     # failed import.
     if require_last and reports and reports[-1]["error"]:

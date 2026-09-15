@@ -1,8 +1,8 @@
-"""The one status chip (roadmap 10 S3).
+"""The shared status chip.
 
 `.cb-chip` capsule — LABEL · value — tinted by `status` (`ok | warn | error | info |
-neutral`, CSS in `ui/dashboard/css.py`). Hoisted from the Journey's `_render_chip` and
-the tomogram-import dialog's `_chip` copy when the Species page became the third user.
+neutral`, CSS in `ui/dashboard/css.py`). Used by the Journey, the tomogram-import dialog
+and the Species page.
 """
 
 from __future__ import annotations
@@ -24,10 +24,9 @@ def render_chip(
     return chip
 
 
-# ── Tiny tag chips (picking-UI roadmap 03 S1) ────────────────────────────────
-# Hoisted from `TemplateWorkbench._polarity_chip` / `._method_chip` when the Species
-# page's bindings block became the second surface that has to state how a template or
-# mask was made. Structurally one thing: a 9 px uppercase tag.
+# ── Tiny tag chips ───────────────────────────────────────────────────────────
+# Shared by the template workbench and the Species page's bindings block, both of
+# which state how a template or mask was made. Structurally one thing: a 9 px uppercase tag.
 
 _TAG_STYLE = (
     "font-size: 9px; font-weight: 700; text-transform: uppercase; "

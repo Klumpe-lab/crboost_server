@@ -1,12 +1,11 @@
-"""Species administration (roadmap 10 S3) — the delete cascade, headless.
+"""Species administration — the delete cascade, headless.
 
-Moved out of `TemplateWorkbench._do_delete_species` so the Species page's Overview
-tab can delete a species without a mounted workbench. Order matters: bound pipeline
-jobs first (`backend.delete_job` reads the job model for its directory, so the state
-must still describe them), then template / mask files (+ `.meta.json` sidecars), then
-the empty-only `templates/<sid>` rmdir, then `ProjectState.remove_species` (registry +
-pick lists + authoritative choices + resolver overrides; marks dirty + bumps the rev)
-and a forced save. Failures are collected into the result, never fatal — a
+Headless so the Species page's Overview tab can delete a species without a mounted
+workbench. Order matters: bound pipeline jobs first (`backend.delete_job` reads the job
+model for its directory, so the state must still describe them), then template / mask
+files (+ `.meta.json` sidecars), then the empty-only `templates/<sid>` rmdir, then
+`ProjectState.remove_species` (registry + pick lists + resolver overrides; marks dirty +
+bumps the rev) and a forced save. Failures are collected into the result, never fatal — a
 half-deleted species is still better than one whose registry entry survives while
 its jobs are gone.
 """
@@ -93,14 +92,13 @@ async def delete_species(backend, project_path: Path, species_id: str) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Template / mask registration (picking-UI roadmap 01 S1)
+# Template / mask registration
 #
-# Lifted verbatim from `TemplateWorkbench._append_template` / `._append_mask` /
-# `._select_template` / `._select_mask` so registering a template no longer requires
-# a mounted 2111-line workbench — the species creation dialog binds a template and a
-# mask up front through exactly these calls. None of them save: they mutate through
+# Headless so registering a template does not require a mounted workbench — the
+# species creation dialog binds a template and a mask up front through these calls.
+# None of them save: they mutate through
 # `ProjectState.mutate_species` (marks dirty + bumps the registry rev) and return, so
-# the caller keeps owning persistence (the workbench saves + refreshes per register,
+# the caller owns persistence (the workbench saves + refreshes per register,
 # the creation dialog force-saves once at the end).
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -108,9 +106,9 @@ async def delete_species(backend, project_path: Path, species_id: str) -> dict:
 def ingest_template_file(project_path: Path | str, species_id: str, src: Path | str) -> Path:
     """Copy a template / mask volume into `templates/<species_id>/` and return the
     destination. Never clobbers: a different file already under that name gets `_2`, `_3`, …
-    appended; a source that already IS the destination is returned untouched. Lifted from
-    the template import dialog so the protocol apply engine (roadmap 14) copies assets the
-    same way the UI does."""
+    appended; a source that already is the destination is returned untouched. Shared by
+    the template import dialog and the protocol apply engine so both copy assets the
+    same way."""
     species_dir = Path(project_path) / "templates" / species_id
     species_dir.mkdir(parents=True, exist_ok=True)
     src = Path(src)
@@ -191,7 +189,7 @@ def register_mask(state, species_id: str, mask: TemplateMask) -> dict:
 
 def select_template(state, species_id: str, template_id: str) -> dict:
     """Make `template_id` the species' current template. Unknown ids are a no-op on the
-    model (as before) and reported here."""
+    model and reported here."""
     found = [False]
 
     def _apply(sp) -> None:

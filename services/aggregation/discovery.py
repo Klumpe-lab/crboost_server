@@ -32,9 +32,9 @@ class SubtomoCandidate:
     species_color: str | None = None
     mnemonic: str = ""
     has_filter: bool = False  # True if a curated particles_filtered.star exists
-    # The lab-catalog entry this project's species was instantiated from (roadmap 12), when
-    # any. It is what makes "the same species in another project" a fact rather than a guess:
-    # every project mints its own local species id, so matching on THAT finds nothing.
+    # The lab-catalog entry this project's species was instantiated from, if any. It is what
+    # makes "the same species in another project" a fact rather than a guess: every project
+    # mints its own local species id, so matching on that finds nothing.
     catalog_id: str | None = None
 
     def to_dict(self) -> dict:
@@ -258,11 +258,11 @@ def load_tomo_curation(job_dir: str) -> list[TomoCuration]:
 def discover_pick_list_projects(base_paths: Iterable[str]) -> list[Path]:
     """Every project directory under `base_paths`, as absolute paths, de-duplicated.
 
-    Distinct from `discover_subtomo_optimisation_sets` on purpose: that one surfaces
-    projects that have EXTRACTED something, which is the wrong filter one stage earlier. A
-    de-novo project whose only particles are hand-placed coordinates has no optimisation
-    set at all and would be invisible to it, yet it is exactly the kind of project the
-    coordinate-grade aggregation exists to pull from (roadmap picking_ui/12-S4).
+    Distinct from `discover_subtomo_optimisation_sets`: that one surfaces projects that
+    have extracted something, which is the wrong filter one stage earlier. A de-novo
+    project whose only particles are hand-placed coordinates has no optimisation set at
+    all and would be invisible to it, yet it is exactly the kind of project the
+    coordinate-grade aggregation pulls from.
 
     Membership is `project_params.json` — the ProjectState serialization — because that is
     the one file every crboost project has and no other directory does.

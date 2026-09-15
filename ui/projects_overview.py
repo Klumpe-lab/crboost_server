@@ -273,8 +273,8 @@ class ProjectsOverview:
         self._build_sorter_bar()
 
     def _build_sorter_bar(self):
-        """Order + species filter. Sorting happens INSIDE each owner section, so the
-        Lab/Shared grouping the roster has always had is untouched by it."""
+        """Order + species filter. Sorting happens inside each owner section, so the
+        Lab/Shared grouping is unaffected by it."""
         with ui.row().classes("w-full items-center px-3 pb-2").style("gap: 8px; flex-wrap: nowrap;"):
             ui.label("ORDER").style(
                 f"{FONT} font-size: 9px; font-weight: 700; color: {CLR_SUBLABEL}; "
@@ -438,9 +438,8 @@ class ProjectsOverview:
                 return
 
             # Group by effective owner -- it lives in a section header rather
-            # than on every row (it used to crowd the name/mnemonic). The
-            # current user floats to the top, then Lab / Shared, then the rest
-            # alphabetically.
+            # than on every row. The current user floats to the top, then
+            # Lab / Shared, then the rest alphabetically.
             groups: dict[str, list[dict]] = {}
             for proj in visible:
                 groups.setdefault(eff(proj), []).append(proj)
@@ -522,10 +521,8 @@ class ProjectsOverview:
         last_activity = proj.get("last_activity") or proj.get("modified") or ""
         source_dir = proj.get("source_directory") or ""
         species = proj.get("species") or []
-        # The generated mnemonic ("icy-majestic-darwin") no longer takes a column — it
-        # competed with the project's real name for the eye and told the user nothing
-        # they had asked for. It stays one hover away on the name, where it is findable
-        # without being in the way.
+        # The generated mnemonic ("icy-majestic-darwin") gets no column: it would compete
+        # with the project's real name for the eye. It is one hover away on the name.
         mnemonic = proj.get("mnemonic") or ""
 
         is_current = False
@@ -563,7 +560,7 @@ class ProjectsOverview:
 
         # The row is a two-column flex: the text stack, and a full-height chevron.
         # `overflow: hidden` is load-bearing, not cosmetic: this widget lives inside a
-        # QScrollArea, which scrolls BOTH ways — a row wider than the pane used to grow a
+        # QScrollArea, which scrolls both ways — a row wider than the pane would grow a
         # horizontal scrollbar and take the status pill and the travel affordance off
         # screen at 100 % zoom. Clipping means the roster degrades by dropping meta from
         # the right of line 2 instead of hiding its own controls.
@@ -625,7 +622,7 @@ class ProjectsOverview:
                         )
 
                     # The project's own absolute path, on the title line. Truncates at the
-                    # TAIL: the leaf directory is the project name already bolded to its
+                    # tail: the leaf directory is the project name already bolded to its
                     # left, so what this cell is really carrying is which base it lives
                     # under. (No `direction: rtl` head-truncation trick — bidi moves the
                     # leading "/" to the far end and the path reads wrong.) Full path in
@@ -714,8 +711,8 @@ class ProjectsOverview:
                         )
 
             # ---- Travel chevron: full row height, its own hit area ----
-            # The old 18 px round arrow was a pixel-hunt; this is a full-height column
-            # on the right edge, so "go there" is the easiest thing on the row to hit.
+            # A full-height column on the right edge, so "go there" is the easiest
+            # thing on the row to hit.
             self._render_chevron(path_str, is_current)
 
     def _render_chevron(self, path_str: str, is_current: bool):
@@ -726,12 +723,11 @@ class ProjectsOverview:
             ):
                 ui.icon("check", size="14px").style(f"color: {CLR_RUNNING};").tooltip("Currently open")
             return
-        # A real <a href> (roadmap 17 S5), not a click handler: the travel arrow now
-        # carries the project's addressable URL, so ⌘-click / middle-click opens it in a
-        # new browser tab and "copy link address" works. A plain click is the browser's
-        # own navigation to the same routed page, which loads the project and lands in
-        # the workspace exactly as the old handler did — and reports a missing project
-        # itself rather than through a toast on a page the user is leaving.
+        # A real <a href>, not a click handler: the travel arrow carries the project's
+        # addressable URL, so ⌘-click / middle-click opens it in a new browser tab and
+        # "copy link address" works. A plain click is the browser's own navigation to
+        # the routed page, which loads the project, lands in the workspace, and reports
+        # a missing project itself rather than through a toast on a page the user is leaving.
         chev = (
             ui.link(target=self._project_url(path_str))
             .classes("cb-proj-chevron")
@@ -779,9 +775,7 @@ class ProjectsOverview:
     def _render_status_pill(self, status: str):
         s = _STATUS_STYLES.get(status, _STATUS_STYLES["idle"])
         # Compact dot+label so the pill stays under ~46 px wide and doesn't
-        # bleed past the idx column. The "running" spinner is replaced by a
-        # smaller animated dot via CSS-driven opacity to save horizontal real
-        # estate; falls back to a solid dot for non-running states.
+        # bleed past the idx column.
         with ui.element("div").style("display: flex; align-items: center; gap: 3px; flex-shrink: 0;"):
             ui.element("div").style(
                 f"width: 5px; height: 5px; border-radius: 50%; background: {s['color']}; flex-shrink: 0;"

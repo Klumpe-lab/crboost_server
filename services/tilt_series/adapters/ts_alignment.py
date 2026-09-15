@@ -1,5 +1,4 @@
-"""ts_alignment ingest adapter — registry-driven replacement for
-`MetadataTranslator.update_ts_alignment_metadata`.
+"""ts_alignment ingest adapter.
 
 Flow:
 
@@ -12,13 +11,11 @@ Flow:
     2. emit_star: read the input STAR (fsMotionAndCtf's output — preserves the
        motion/CTF columns we must carry forward), overlay the 5 alignment
        columns onto each tilt row, write the hierarchical STAR + the
-       `all_tilts.star` sidecar the legacy writer produced.
+       `all_tilts.star` sidecar.
 
-Identity is resolved ONCE, at ingest, via tomostar → Frame. The
+Identity is resolved once, at ingest, via tomostar → Frame. The
 `_assert_ts_identity_consistency` invariant (tomostar ∩ per-TS XML ∩
-tiltstack dir sets must agree) is enforced as an ingest precondition — that
-check lived in `MetadataTranslator` before this refactor; it belongs in the
-adapter now.
+tiltstack dir sets must agree) is enforced as an ingest precondition.
 """
 
 from __future__ import annotations
@@ -87,8 +84,7 @@ class TsAlignmentIngestAdapter(BaseIngestAdapter):
         """Populate the registry with per-TS alignment outputs.
 
         `alignment_angpix` is the binned-stack pixel size used for shift
-        conversion. If 0, auto-infer from the first `.st` MRC header — same
-        behavior as the pre-refactor code.
+        conversion. If 0, auto-infer from the first `.st` MRC header.
 
         Tilt-series whose alignment output can't be parsed are *dropped*, not
         fatal: AreTomo legitimately fails to solve some tilt-series, and one
@@ -169,7 +165,7 @@ class TsAlignmentIngestAdapter(BaseIngestAdapter):
         out_ts_df = in_ts_df.copy()
 
         # Resolve frame pixel size for the rlnTomoTiltSeriesPixelSize column.
-        # Any of three possible source columns, matching the legacy cascade.
+        # First of three possible source columns present.
         pixel_size_col = next(
             (
                 c
@@ -217,8 +213,8 @@ class TsAlignmentIngestAdapter(BaseIngestAdapter):
             self.starfile_service.write({ts_id: updated}, tilt_dir / f"{ts_id}.star")
             emitted.append(ts_id)
 
-            # Build the {ts-row-expanded + per-tilt} wide DataFrame that the
-            # legacy writer dumped into all_tilts.star for downstream jobs.
+            # Build the {ts-row-expanded + per-tilt} wide DataFrame written to
+            # all_tilts.star for downstream jobs.
             ts_row_df = pd.concat([pd.DataFrame(ts_row).T] * len(updated), ignore_index=True)
             ts_row_df.index = updated.index
             all_tilts_list.append(pd.concat([ts_row_df, updated], axis=1))
@@ -482,16 +478,16 @@ class TsAlignmentIngestAdapter(BaseIngestAdapter):
 
     def _assert_ts_identity_consistency(self, expected_ts_ids: set) -> None:
         """The three independent sources of per-TS identity — tomostar files,
-        per-TS XMLs, and tiltstack dirs — MUST agree for every TS being
+        per-TS XMLs, and tiltstack dirs — must agree for every TS being
         ingested. Drift there means the upstream array-job staging corrupted
         something, and silently picking one source's value for another TS is
-        exactly the failure mode this refactor exists to prevent.
+        cross-TS contamination.
 
         Only the ingested (expected) TS must be present in all three sources:
         a muted TS, or one whose task failed, never ran — it legitimately has
         a tomostar but no XML/tiltstack output, and must not fail the job.
-        Non-expected extras are surfaced as a warning; full-set drift policing
-        is a dispatch-time concern (census #38/#39), not an ingest one."""
+        Non-expected extras are surfaced as a warning; full-set drift checks
+        belong at dispatch time, not at ingest."""
         tomostar_stems = (
             {p.stem for p in self.tomostar_dir.glob("*.tomostar")}
             if self.tomostar_dir.is_dir() else set()
@@ -539,9 +535,8 @@ class TsAlignmentIngestAdapter(BaseIngestAdapter):
         Frames absent from the alignment output (because WarpTools `ts_import`
         dropped them from the tomostar via the hardcoded outward-intensity walk —
         see `ImportTiltseries.cs:335-350`) are left in the STAR with NaN
-        alignment columns. This mirrors the authoritative legacy CryoBoost
-        behavior (`CryoBoost/src/warp/tsAlignment.py:132-140`) which iterated
-        over the tomostar and left unmatched STAR rows un-overlaid. Downstream
+        alignment columns, as CryoBoost v1 does (`CryoBoost/src/warp/tsAlignment.py:132-140`
+        iterates over the tomostar and leaves unmatched STAR rows un-overlaid). Downstream
         WarpTools treats the tomostar as the authoritative frame set, so those
         NaN rows are cosmetic and never processed by ts_ctf/ts_reconstruct."""
         errors: list[str] = []

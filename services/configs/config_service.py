@@ -37,15 +37,14 @@ def find_repo_root() -> Path:
         if (parent / "config" / "conf.yaml").exists():
             return parent
 
-    # Last resort fallback to the old logic but corrected for the new depth
-    # config_service.py is now in services/configs/, so we need .parent.parent
+    # Last resort: derive the root from this file's location (services/configs/)
     return Path(__file__).resolve().parent.parent.parent
 
 
 _REPO_ROOT = find_repo_root()
 DEFAULT_CONFIG_PATH = _REPO_ROOT / "config" / "conf.yaml"
 
-# Per-user override lives alongside the existing ~/.crboost/prefs.json
+# Per-user override lives alongside ~/.crboost/prefs.json
 # (see services/configs/user_prefs_service.py). Home-scoped, so each user's
 # server picks up only their own edits.
 USER_OVERRIDE_PATH = Path.home() / ".crboost" / "conf.yaml"
@@ -183,24 +182,23 @@ class CurationConfig(BaseModel):
     geometry: str = "1920x1080"
     chimerax_bin: str = "chimerax"
     login_host: str | None = None
-    # VNC auth. Default ON: the worker mints a one-time random password (VncAuth).
-    # True switches the desktop to `-SecurityTypes None` — no password at all, so ANYONE
+    # VNC auth. By default the worker mints a one-time random password (VncAuth).
+    # True switches the desktop to `-SecurityTypes None` — no password at all, so anyone
     # who can reach that node's rfb port drives the session. Opt-in per site; the control
-    # center states the risk beside the (empty) password field. Roadmap 10-S1.
+    # center states the risk beside the (empty) password field.
     passwordless_vnc: bool = False
     # Open a block-binned display copy of the reconstruction instead of the full-res
-    # volume (roadmap 10-S3). ArtiaX spends ~20 s COMPUTING on a 1 GB / 268 M-voxel recon;
+    # volume. ArtiaX spends ~20 s computing on a 1 GB / 268 M-voxel recon;
     # 2 is ~8x fewer voxels, 4 is ~64x. Generated once, cached beside the recon. The
     # (N-1)/2·px corner shift this introduces is recorded in the dir's manifest and undone
     # exactly on ingest — see services/visualization/artiax_bridge.display_corner_offset.
-    # 1 = off (open the full-res volume, as before 10-S3).
+    # 1 = off (open the full-res volume).
     display_bin: int = 2
     # The REST command channel (the worker starts `remotecontrol rest` on the node's
-    # loopback; crboost reaches it via `ssh <node> curl`). QUARANTINED since roadmap 10-S1;
-    # it gates two things: the launch-time health check and the confirmed in-session scope
-    # switch (13-S2, "Switch session to this tomogram" in the control center). Off ⇒ the
-    # control center offers Restart only. It is NOT a switch for saving from crboost — that
-    # path is deleted, deliberately.
+    # loopback; crboost reaches it via `ssh <node> curl`). It is used for two things only:
+    # the launch-time health check and the confirmed in-session scope switch ("Switch
+    # session to this tomogram" in the control center). Off ⇒ the control center offers
+    # Restart only. It does not enable saving from crboost; no such path exists.
     rest_enabled: bool = True
 
 
@@ -219,14 +217,13 @@ class Config(BaseModel):
     curation: CurationConfig = Field(default_factory=CurationConfig)
     tools: dict[str, ToolConfig] = Field(default_factory=dict)
     containers: dict[str, str] | None = None
-    # Lab-level species catalog root (roadmap 12). Cross-project species DEFINITIONS live
-    # here — name, diameter, symmetry, notes, templates + masks with their provenance;
-    # picks, filters, merges and extractions stay project-bound. Empty or absent = the
-    # feature is OFF: no catalog affordance is rendered anywhere, which is the state every
-    # existing install is in until someone points this at a shared directory.
+    # Lab-level species catalog root. Cross-project species definitions live here — name,
+    # diameter, symmetry, notes, templates + masks with their provenance; picks, filters,
+    # merges and extractions stay project-bound. Empty or absent = the feature is off: no
+    # catalog affordance is rendered anywhere.
     species_catalog_root: str = ""
 
-    # DEV TOGGLE (temporary): global override so every project uses the afterok orchestrator
+    # Dev toggle (temporary): global override so every project uses the afterok orchestrator
     # (schemer-free submit + inline import) without per-project project_params.json edits. A
     # per-project `use_afterok_orchestrator: true` still wins on its own. Remove once validated.
     use_afterok_orchestrator: bool = False
@@ -368,8 +365,8 @@ class ConfigService:
     def is_tool_configured(self, tool_name: str) -> bool:
         """True when `tool_name` (or its legacy alias) has an entry under `tools:` /
         `containers:`. `get_tool_config`'s last fallback — a bare-binary guess named after
-        the tool — is deliberately NOT counted: a protocol pinning a tool must find it
-        configured, not assumed (roadmap 14)."""
+        the tool — is not counted: a protocol pinning a tool must find it configured, not
+        assumed."""
         legacy_mapping = {
             "warptools": "warp_aretomo",
             "aretomo": "warp_aretomo",

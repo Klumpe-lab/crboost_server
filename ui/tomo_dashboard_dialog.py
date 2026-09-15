@@ -16,9 +16,9 @@ Pill states per stage:
               "never ran".
   pending   — stage hasn't reached this TS yet
 
-The surface used to be called "Tomogram Dashboard"; it's been renamed
-"Journey" because it carries per-TS analytics across the whole pipeline,
-not just the candidate-extract preview pair.
+Journey carries per-TS analytics across the whole pipeline, not just the
+candidate-extract preview pair; the module name (tomo_dashboard_dialog) is
+historical.
 """
 
 from __future__ import annotations
@@ -84,7 +84,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Dashboard panel prefs (R2/R3) — user-level, persisted across projects + TS
+# Dashboard panel prefs — user-level, persisted across projects + TS
 # via the shared user_prefs_service (app.storage.user + ~/.crboost/prefs.json).
 # ---------------------------------------------------------------------------
 
@@ -105,7 +105,7 @@ _ALL_PANELS = "all"
 
 
 def _selected_panel() -> str:
-    """The ONE section the Journey shows, or "all". An unknown stored key (a section
+    """The one section the Journey shows, or "all". An unknown stored key (a section
     renamed or removed) falls back to "all" rather than to an empty page."""
     key = str(get_prefs_service().prefs.dashboard_panel or _ALL_PANELS)
     if key == _ALL_PANELS or any(key == k for k, _ in _DASHBOARD_PANEL_KEYS):
@@ -163,16 +163,15 @@ def _build_panel_selector(host, on_change) -> Segmented:
 def build_journey_panel(container, callbacks: dict | None = None) -> None:
     """Build the per-TS Journey dashboard embedded into ``container``.
 
-    Formerly ``open_tomo_dashboard`` (a maximized dialog). De-dialoged in P1 so
-    the journey swaps into the workspace ``main_area`` like the pipeline and
-    workbench views, instead of an overlay that covered the 60px icon strip.
+    The journey swaps into the workspace ``main_area`` like the pipeline and
+    workbench views rather than opening as an overlay over the 60px icon strip.
     ``container`` is the workspace's ``journey_container`` (a flex column).
     ``callbacks``, when given, receives ``on_journey_active(bool)`` so the
     workspace can pause the live-refresh timer while the journey is hidden, and
     supplies ``open_species`` + ``species_select_tab`` — composed here into the
-    Particles section's route to the Species page, which owns the pick-list actions
-    since 11-S3. Read here and passed DOWN rather than stashed module-level: those
-    callbacks close over one client's page.
+    Particles section's route to the Species page, which owns the pick-list actions.
+    Read here and passed down rather than stashed module-level: those callbacks
+    close over one client's page.
     """
     state = current_project_state()
     if state.project_path is None:
@@ -187,18 +186,17 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
 
     def _manage_species(species_id: str) -> None:
         """The Particles section's route into the registry — used by the section header's
-        'manage in Particles registry ↗' and the list toolbox's 'curate ↗' (09-S2).
-        Composed here, where the workspace's callbacks are in scope: select the species AND
+        'manage in Particles registry ↗' and the list toolbox's 'curate ↗'.
+        Composed here, where the workspace's callbacks are in scope: select the species and
         land on Picks & curation — the page otherwise reuses its last tab (Overview on a
-        fresh workspace), and none of the actions that moved off the Journey are on
-        Overview, so the link would strand the user one step short of what it promises."""
+        fresh workspace), which has none of the pick-list actions."""
         _open_species(species_id)
         select_tab = (callbacks or {}).get("species_select_tab")
         if select_tab is not None:
             select_tab("picks")
 
     manage_species = _manage_species if _open_species is not None else None
-    # `full viewer ↗` (11-S6): the slim mount's route into the full-page pick viewer on
+    # `full viewer ↗`: the slim mount's route into the full-page pick viewer on
     # the active species + this tomogram. None on a standalone journey mount.
     _open_viewer = (callbacks or {}).get("open_pick_viewer")
     _, ts_names0 = collect_dashboard_journey(state, project_path)
@@ -211,7 +209,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
 
     container.clear()
     with container:
-        # Column layout: ONE thin header line about the selected tilt series (its
+        # Column layout: one thin header line about the selected tilt series (its
         # dropdown holds the whole-project overview) with the section selector at
         # its right end, and the selected TS's detail pane below.
         with ui.element("div").classes("cb-jhead"):
@@ -244,9 +242,9 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         # FingerprintedView discipline for the main pane (mirrors render_strip).
         # The 4 s live timer fires refresh_all on every background-task tick, but
         # rebuilding the pane tears down its Plotly charts (and WebGL contexts) —
-        # so gate on the SELECTED ts's fingerprint: an unrelated-ts task moving
+        # so gate on the selected ts's fingerprint: an unrelated-ts task moving
         # must not twitch the pane. Landed artifacts (previews / slabs / manifests)
-        # are NOT fingerprinted here — each auto-kick's on_complete calls
+        # are not fingerprinted here — each auto-kick's on_complete calls
         # request_refresh(force_main=True), which bypasses this gate.
         ts = selected["ts"]
         if ts is None:
@@ -254,13 +252,12 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         if journey_data is None:
             journey_data = collect_dashboard_journey(state, project_path)
         journey, _ts_names = journey_data
-        # Only the SELECTED ts is fingerprinted below, so collect only its rows: a
+        # Only the selected ts is fingerprinted below, so collect only its rows: a
         # de-novo species' subtomo_status is derived per pick list and costs a few
-        # stats each (11-S3), and this runs on every refresh — no reason to pay it for
-        # the other 39 tomograms. When `refresh_all` already collected UNFILTERED for the
-        # strip, slice this TS's rows out of THAT rather than paying a second pass:
-        # `only_ts` is a pure row filter (`services/dashboard_data.py`), so the results are
-        # identical. The strip's own collect (unfiltered) draws them all.
+        # stats each, and this runs on every refresh. When `refresh_all` already
+        # collected unfiltered for the strip, slice this TS's rows out of that rather
+        # than paying a second pass: `only_ts` is a pure row filter
+        # (`services/dashboard_data.py`), so the results are identical.
         if species_data is not None:
             species_journey = {ts: species_data.get(ts, [])}
         else:
@@ -273,9 +270,9 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         job_states = tuple(
             (iid, str(getattr(jm, "execution_status", ""))) for iid, jm in sorted((state.jobs or {}).items())
         )
-        # Per-TS pick-list facts the pane renders (rail table rows). Deliberately
-        # EXCLUDES filtered_count (in-pane keep/drop commits) — and NOT the coarse
-        # registry_rev — so a keep/drop burst never tears the pane down (roadmap 08 §1).
+        # Per-TS pick-list facts the pane renders (rail table rows). Excludes
+        # filtered_count (in-pane keep/drop commits) and the coarse registry_rev,
+        # so a keep/drop burst never tears the pane down.
         pick_lists_sig = tuple(
             sorted(
                 (pl.species_id, pl.slug, pl.count, str(pl.path), str(pl.extracted_at))
@@ -320,7 +317,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
     def render_strip(journey_data=None, species_data=None) -> None:
         # Signature-gated (FingerprintedView discipline): the 4 s live timer
         # calls refresh_all on every background-task tick, but we only rebuild
-        # when the journey data OR the selection actually changed — otherwise a
+        # when the journey data or the selection actually changed — otherwise a
         # tick mid-click would tear down the column under the click.
         # `refresh_all` hoists both collects so one pass pays for them once; a bare call
         # (selection change, exclude toggle, the pane's own callback) collects here.
@@ -386,11 +383,11 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
 
     async def select_ts(ts: str) -> None:
         # Instant feedback: move the column highlight + paint a spinner now and
-        # flush to the client, THEN run the heavy per-TS render. The render is
+        # flush to the client, then run the heavy per-TS render. The render is
         # still synchronous (it builds NiceGUI elements), but the CSS spinner
         # animates client-side while it runs, so the click feels instant. A
         # generation guard drops a stale render if the user clicks another column
-        # during the flush. The strip rebuild runs LAST so any run_javascript in
+        # during the flush. The strip rebuild runs last so any run_javascript in
         # the detail render fires while the clicked column is still alive (the
         # select-ordering pitfall), and it picks up the new selection + filtered.
         if selected["ts"] == ts:
@@ -417,22 +414,21 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         render_strip()
 
     def refresh_all(force_main: bool = False) -> None:
-        # ONE collect per pass. `render_strip` needs both unfiltered and `_main_signature`
-        # needs the same journey plus one TS's species rows, and NEITHER collector memoizes
-        # internally — so this ran the whole thing twice on every 4 s tick and on every
-        # keep/drop Save (`refresh_roster`), which on a fully-extracted de-novo project is
-        # the per-list extraction stats of every tomogram, doubled.
+        # One collect per pass. `render_strip` needs both unfiltered and `_main_signature`
+        # needs the same journey plus one TS's species rows, and neither collector memoizes
+        # internally. On a fully-extracted de-novo project a collect costs the per-list
+        # extraction stats of every tomogram, so it must not run twice per tick.
         journey_data = collect_dashboard_journey(state, project_path)
         species_data = collect_species_journey(state, project_path)
         render_strip(journey_data, species_data)
         render_main(force=force_main, journey_data=journey_data, species_data=species_data)
 
-    # P1: coalesce the initial refresh storm. On load several background auto-kicks
+    # Coalesce the initial refresh storm. On load several background auto-kicks
     # (preview / IMOD / recon-slabs / coords-ingest / list-cutouts) each fire
     # on_complete → refresh, and the 4 s live tick adds more — N immediate full
-    # rebuilds make the page "jitter a few times on load". Those paths call
-    # request_refresh() to raise a flag instead; the coalesce timer (set up with the
-    # live timer below) flushes ONE trailing-edge rebuild once requests go quiet. The
+    # rebuilds make the page jitter on load. Those paths call request_refresh()
+    # to raise a flag instead; the coalesce timer (set up with the live timer
+    # below) flushes one trailing-edge rebuild once requests go quiet. The
     # first paint just below still rebuilds immediately.
     _refresh_req = {"pending": False, "quiet": 0, "force_main": False}
 
@@ -466,14 +462,12 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             registry = get_background_task_registry()
             proj_tasks = registry.for_project(str(project_path))
             active = [t for t in proj_tasks if t.is_running]
-            # Running-task MEMBERSHIP only — deliberately NOT progress_current/total.
-            # The main pane shows "generating…" placeholders + final results, never a
-            # progress bar (that lives in the tray), so a task START (id appears here)
-            # and FINISH (id leaves here → enters `finished` below) each warrant one
-            # rebuild — but a per-tick PROGRESS update must NOT, or every tick of a
-            # long preview/cutout job tears down and rebuilds the whole pane (the
-            # "jittery every few seconds" bug). CLAUDE.md: polls observe state, they
-            # don't rebuild the DOM on every tick.
+            # Running-task membership only, not progress_current/total. The main pane
+            # shows "generating…" placeholders + final results, never a progress bar
+            # (that lives in the tray), so a task start (id appears here) and finish
+            # (id leaves here → enters `finished` below) each warrant one rebuild, but a
+            # per-tick progress update must not, or every tick of a long preview/cutout
+            # job tears down and rebuilds the whole pane.
             running = tuple(sorted(t.id for t in active))
             # Recently-finished tasks so the dashboard picks up the final manifest
             # write within one refresh window.
@@ -482,38 +476,31 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
                 for t in proj_tasks
                 if not t.is_running and t.finished_at and (t.finished_at - t.started_at).total_seconds() < 86400
             )
-            # No curation-session liveness here since 09-S2: the Journey no longer starts
-            # or swaps an ArtiaX session, so it neither shows session state nor pays for a
-            # `squeue`. The one surface that does is the Particles registry's Picks &
-            # curation tab, which polls the shared `ui/particles/session_status` cache.
+            # No curation-session liveness here: the Journey does not start or switch an
+            # ArtiaX session, so it neither shows session state nor pays for a `squeue`.
+            # The Particles registry's Picks & curation tab polls the shared
+            # `ui/particles/session_status` cache instead.
             #
             # registry_rev: coarse in-memory counter of species / pick-list / template
-            # mutations (roadmap 08 §1). It only WAKES this gate; the strip / main
-            # sigs below are precise (species_identity, per-TS pick-list tuple), so a
-            # bump that changes nothing drawn is a no-op rebuild-wise. An ArtiaX save
-            # reaches the pane THROUGH it: the server-side CurationWatcher registers the
-            # `manual` list (add_pick_list → rev++), so no .coords mtime is folded here.
+            # mutations. It only wakes this gate; the strip / main sigs below are
+            # precise (species_identity, per-TS pick-list tuple), so a bump that
+            # changes nothing drawn is a no-op rebuild-wise. An ArtiaX save reaches the
+            # pane through it: the server-side CurationWatcher registers the `manual`
+            # list (add_pick_list → rev++), so no .coords mtime is folded here.
             sig = (running, finished, state.registry_rev)
             if sig != _last_signature["sig"]:
                 prev = _last_signature["sig"]
                 _last_signature["sig"] = sig
                 request_refresh(force_main=False)  # timer tick — let render_main self-gate
-                # Diagnostics AFTER the refresh, on purpose: a logging bug must never be
-                # able to stop the pane from updating, which is exactly what happened here.
-                #
-                # Name what moved, so a lingering rebuild is diagnosable from the log
-                # rather than guessed at (the dashboard has no auto-reload).
+                # Diagnostics run after the refresh so a logging bug can never stop the
+                # pane from updating. They name what moved, so a lingering rebuild is
+                # diagnosable from the log (the dashboard has no auto-reload).
                 #
                 # Each label is paired with the member it describes rather than indexed
-                # positionally: 09-S2 dropped the curation-session member from `sig` and
-                # the positional diagnostics were left behind, so this read `sig[3]` of a
-                # 3-tuple and raised IndexError on EVERY change — taking the refresh call
-                # down with it. The pane simply stopped live-refreshing.
-                #
-                # `strict=False` on the label zip is deliberate: if the members and their
-                # labels ever drift again, the worst outcome must be an unnamed change in
-                # the log, never an exception on a polling path. The inner zip is strict
-                # because the guard above already proved the two are the same length.
+                # positionally. `strict=False` on the label zip means members and labels
+                # drifting apart log an unnamed change instead of raising on a polling
+                # path. The inner zip is strict because the guard above proves the two
+                # tuples have the same length.
                 if prev is not None and len(prev) == len(sig):
                     moved = [
                         name
@@ -530,7 +517,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
     live_timer = ui.timer(4.0, _maybe_refresh)
 
     def _flush_refresh() -> None:
-        # Trailing-edge flush of the coalesced refresh (P1): rebuild once the request
+        # Trailing-edge flush of the coalesced refresh: rebuild once the request
         # flag has been quiet for ~one tick, so a burst of auto-kick completions
         # collapses into a single rebuild instead of N. Idle cost is one bool check.
         if not _refresh_req["pending"]:
@@ -552,7 +539,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         _active["on"] = on
         if on and selected["ts"]:
             # The workspace has just written the bare `/journey` route; name the
-            # tilt-series that is actually on screen (roadmap 17 S3).
+            # tilt-series that is actually on screen.
             set_url = (callbacks or {}).get("set_url")
             if set_url:
                 set_url(View.JOURNEY, selected["ts"])
@@ -567,7 +554,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             pass
 
     async def _show_ts(ts: str, section: str | None = None) -> None:
-        """The Species page's "open in Journey" (roadmap 11-S2): select this
+        """The Species page's "open in Journey": select this
         tilt-series' column and optionally scroll one section card into view. The
         workspace has already switched to (and built) the journey by the time this runs.
         A tomogram with no column is reported, not silently ignored — the strip only
@@ -681,11 +668,11 @@ def _render_main_pane_for_ts(
 ) -> None:
     """Render the main-pane section stack for the selected TS. Sections emit
     in pipeline order; each is a no-op if the corresponding job isn't in the
-    pipeline (per ROADMAP §2.1 contract). `refresh_roster` is a sidebar-only
+    pipeline. `refresh_roster` is a sidebar-only
     refresh the gallery calls after save/discard so the roster review column
     updates without rebuilding the main pane (which would reset the active tab).
     `manage_species(species_id)` is the workspace's route to the Species page's Picks
-    tab — threaded (not stashed module-level) because it closes over ONE client's page."""
+    tab — threaded (not stashed module-level) because it closes over one client's page."""
     rendered_any = False
     visible = _visible_panels()
 
@@ -709,8 +696,7 @@ def _render_main_pane_for_ts(
 
     # Particles — one unified section: a shared tomogram canvas with every
     # species' picks overlaid (toggleable), plus a per-species tab carrying
-    # that species' TM sanity strip + gallery / scatter. Replaces both the
-    # old per-species Template Match cards and the candidate-extract cards.
+    # that species' TM sanity strip + gallery / scatter.
     if "particles" in visible:
         # Candidate-extract path first; if it renders nothing (no TEMPLATE_EXTRACT
         # jobs — e.g. a particle-only project), fall back to the imported-tomogram
@@ -735,7 +721,7 @@ def _render_main_pane_for_ts(
 
 
 # ---------------------------------------------------------------------------
-# Slice C analytics sections — primitive key/value datadumps (no new manifests
+# Analytics sections — primitive key/value datadumps (no new manifests
 # needed; read directly from job_model.* + the stage's output star)
 # ---------------------------------------------------------------------------
 
@@ -818,7 +804,7 @@ def _render_stage0_chips(project_state, project_path: Path) -> None:
             disk_hand = _read_tomohand_from_import_star(imp_dir / "tilt_series.star")
 
     # Stale-default: compare to the AcquisitionParams field default. Catches
-    # projects created before the 2026-05-16 invert_defocus_hand=True flip.
+    # projects created under the earlier invert_defocus_hand=False default.
     default_hand = -1 if bool(AcquisitionParams.model_fields["invert_defocus_hand"].default) else 1
 
     # Status logic:
@@ -854,7 +840,7 @@ def _render_stage0_chips(project_state, project_path: Path) -> None:
             f"{acq.invert_defocus_hand}). Current code default would give "
             f"{default_hand:+d} — verify this project's value is intentional. "
             f"_rlnTomoHand is the sign convention for depth-dependent defocus in "
-            f"RELION's CTF correction (see HANDOFF_412_DEBUG.md)."
+            f"RELION's CTF correction."
         )
     else:
         status = "ok"
@@ -866,7 +852,7 @@ def _render_stage0_chips(project_state, project_path: Path) -> None:
             f"convention is -1 (invert_defocus_hand=True)."
         )
 
-    # Third authority (registry): the hand Warp ACTUALLY applied (ts_defocus_hand,
+    # Third authority (registry): the hand Warp actually applied (ts_defocus_hand,
     # recorded by the tsCtf ingest). The Import star is the declared intention;
     # this is what the data got — disagreement is a real chirality finding.
     warp_hand = warp_hand_from_registry(project_state, project_path)
@@ -893,7 +879,7 @@ def _render_dataset_section(ts_name: str, project_state, project_path: Path, ref
     """Project-wide acquisition + microscope settings + pixel/binning sanity table.
     Two-column key/val grid above; below it, a dense per-stage table showing
     pixel size, tomo dims, and template/extract/subtomo box + padding with
-    inline sanity-rule warnings (ROADMAP §11). A chip strip at the top
+    inline sanity-rule warnings. A chip strip at the top
     surfaces import-time choices that silently change downstream science
     (TomoHand, etc.)."""
     ms = project_state.microscope
@@ -932,7 +918,7 @@ def _render_dataset_section(ts_name: str, project_state, project_path: Path, ref
     collapsed = _dataset_collapsed()
     with ui.element("div").classes("cb-section-card w-full") as card:
         card._props["data-section"] = "dataset"
-        # R3: clickable header toggles the body. Collapsed (default) = just the
+        # Clickable header toggles the body. Collapsed (default) = just the
         # header + metric strip; expanded reveals the chips, key/val grid, and
         # the pixel/binning sanity table. State persists across projects + TS.
         header = ui.element("div").classes("cb-section-card-header cb-collapsible-header")
@@ -1052,7 +1038,7 @@ def _plot_cell(
 
 def _render_registry_gap(ts_name: str, status_label: str) -> None:
     """Loud, honest placeholder when the registry has no data for a job+TS.
-    Stage-0 decision: consumers are registry-only — a run that predates registry
+    Consumers are registry-only — a run that predates registry
     ingest shows this marker and re-earns its dashboard data by re-running;
     there is no silent star fallback."""
     running = status_label.lower() in ("running", "queued", "scheduled")
@@ -1070,9 +1056,9 @@ def _render_registry_gap(ts_name: str, status_label: str) -> None:
 def _tilt_thumbs(project_state, project_path: Path, names: list) -> dict[str, str]:
     """{frame basename: thumbnail url} for the hover cards, asking for the PNGs when
     the project has none. They are normally rendered on the fsMotion → SUCCEEDED edge,
-    but a run that finished while no server was watching leaves none behind, and only
-    the tilt-filter panel would ever ask — so a pipeline without a tilt-filter job used
-    to lose its hover images for good. The pass shows in the background-task tray; the
+    but a run that finished while no server was watching leaves none behind, and
+    otherwise only the tilt-filter panel asks — so a pipeline without a tilt-filter job
+    would lose its hover images for good. The pass shows in the background-task tray; the
     cards pick the images up on the next render."""
     thumbs = tilt_thumb_urls(project_state, project_path, names)
     if not thumbs and names:
@@ -1153,7 +1139,7 @@ _HINT_INTENSITY = (
 )
 _HINT_FOV = (
     "Warp's FOVFraction per tilt from the tilt-series XML — read as the fraction of the field of view still "
-    "usable after the alignment shifts. Its exact definition is not documented by Warp (metrics inventory §8); "
+    "usable after the alignment shifts. Its exact definition is not documented by Warp; "
     "plotted raw, unscaled."
 )
 _HINT_MASKED = (
@@ -1163,8 +1149,7 @@ _HINT_MASKED = (
 _HINT_THROUGHFOCUS = (
     "Mean per-tilt CTF defocus ((U+V)/2) vs stage tilt, sorted by angle — the through-focus curve. "
     "A clean tilt series traces a smooth trend; scatter or a kink at high tilt flags bad CTF fits. "
-    "The dashed line is a linear fit; its slope sign is a handedness cue (ties to the TomoHand / 412 "
-    "defocus-sign issue)."
+    "The dashed line is a linear fit; its slope sign is a handedness cue (see the TomoHand chip)."
 )
 
 
@@ -1176,8 +1161,8 @@ def _render_ctf_motion_plots(
     on_select_tilt: Callable[[str], None] | None = None,
 ) -> None:
     """Defocus + astigmatism (always scatter — each tilt is an independent estimate)
-    and, when the caller has the REAL per-tilt values (registry QC fields, XML-sourced
-    at ingest — the star's rlnCtfMaxResolution was a 1e-6 placeholder), the CTF fit
+    and, when the caller has the real per-tilt values (registry QC fields, XML-sourced
+    at ingest — the star's rlnCtfMaxResolution is a 1e-6 placeholder), the CTF fit
     resolution. `cd` is the section's hover-card customdata (`_per_tilt_customdata`),
     shared by every chart so hover / click select the same frame; `on_select_tilt`
     is the CTF-fit panel's hook."""
@@ -1239,7 +1224,7 @@ def _render_alignment_plots(df: pd.DataFrame, cd: list[list]) -> None:
 
     Markers only — even for smoothly-varying metrics, connecting per-tilt
     estimates with lines turns outliers into zigzag and obscures the actual
-    distribution (see `feedback_dashboard_plot_principles`).
+    distribution.
     """
     tilts = _safe_floats(df["rlnTomoNominalStageTiltAngle"])
 
@@ -1319,7 +1304,7 @@ def _render_alignment_plots(df: pd.DataFrame, cd: list[list]) -> None:
 
 
 class _CtfFitPanel:
-    """The "CTF fit" tile: Warp's measured 1-D power spectrum vs the CTF model for ONE
+    """The "CTF fit" tile: Warp's measured 1-D power spectrum vs the CTF model for one
     tilt, with a scrubber over the tilt-series (sorted by stage angle) and
     `select_frame(frame)` for the section's other charts to call on click / hover,
     so the fit follows the tilt under the cursor. `entries`: [(tilt_deg, tilt_index,
@@ -1422,8 +1407,8 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
             return True
 
         # Real CTF-fit resolution + motion: registry QC fields (XML-sourced at
-        # ingest); the star's rlnCtfMaxResolution / rlnAccumMotion* were 1e-6
-        # placeholders, which is why these never came from star columns.
+        # ingest); the star's rlnCtfMaxResolution / rlnAccumMotion* are 1e-6
+        # placeholders.
         tilts = _safe_floats(df["rlnTomoNominalStageTiltAngle"])
         ctf_res_series = _safe_floats(df["cbCtfResolution"])
         motion_series = _safe_floats(df["cbMeanFrameMovement"])

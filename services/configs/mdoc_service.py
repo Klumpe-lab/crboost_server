@@ -13,14 +13,14 @@ logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# One mdoc interpretation (roadmap 18 §4.1)
+# One mdoc interpretation
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
 class DoseEstimate:
     """Dose per tilt derived from the per-section `DoseRate × ExposureTime / PixelSpacing²`
-    when the mdoc carries no `ExposureDose`. `transmitted_low_tilt` is what came THROUGH
+    when the mdoc carries no `ExposureDose`. `transmitted_low_tilt` is what came through
     the lamella at the lowest |tilt|; `incident` is the zero-thickness extrapolation of
     `ln dose` against `1 / cos(θ − θ₀)` (None when the fit is not trustworthy) — the
     number the specimen actually received. Always an estimate; the acquirer's value
@@ -48,7 +48,7 @@ class DoseEstimate:
 
 @dataclass(frozen=True)
 class MdocFacts:
-    """Acquisition facts of ONE mdoc — the only interpretation of an mdoc's header and
+    """Acquisition facts of one mdoc — the only interpretation of an mdoc's header and
     first section (scan, autodetect, protocol apply and the stack split all read this)."""
 
     software: str = ""  # "SerialEM" / "Tomo5" / ""
@@ -65,8 +65,8 @@ class MdocFacts:
 
 def ts_name_from_mdoc(mdoc_name: str) -> str:
     """`area_5-A_ts_002.mrc.mdoc` → `area_5-A_ts_002`; `Position_1.mdoc` → `Position_1`
-    (roadmap 18 D6: the series name is the mdoc name minus `.mdoc` minus a trailing
-    `.mrc`/`.st`, so TS ids never carry a dot)."""
+    (the series name is the mdoc name minus `.mdoc` minus a trailing `.mrc`/`.st`, so
+    TS ids never carry a dot)."""
     name = mdoc_name[: -len(".mdoc")] if mdoc_name.endswith(".mdoc") else mdoc_name
     for stack_ext in (".mrc", ".st"):
         if name.endswith(stack_ext):
@@ -141,7 +141,7 @@ def acquisition_from_mdoc(parsed: dict[str, Any]) -> MdocFacts:
         return kv.get(key) if key in kv else first.get(key)
 
     # Tilt axis. SerialEM: the `Tilt axis angle` header line, else |RotationAngle|.
-    # Tomo5: |RotationAngle| of the first section — runtime-verified, untouched.
+    # Tomo5: |RotationAngle| of the first section.
     tilt_axis = None
     if software == "SerialEM" and "Tilt axis angle" in kv:
         tilt_axis = _float_or_none(kv["Tilt axis angle"])
@@ -187,7 +187,7 @@ _MAX_FIT_RMS = 0.05
 
 
 def estimate_incident_dose(sections: list[dict[str, Any]], pixel_size: float) -> DoseEstimate | None:
-    """Per-tilt dose from `DoseRate × ExposureTime / PixelSpacing²` (roadmap 18 D4).
+    """Per-tilt dose from `DoseRate × ExposureTime / PixelSpacing²`.
 
     The lamella attenuates the beam as `exp(−t / (λ·cos(θ − θ₀)))`, so `ln dose` is linear
     in `1 / cos(θ − θ₀)`: the intercept is the incident dose, the slope `−t/λ`, θ₀ the

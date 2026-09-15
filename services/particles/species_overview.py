@@ -1,20 +1,20 @@
-"""Headless per-species pick / extraction overview (roadmap 09-S3).
+"""Headless per-species pick / extraction overview.
 
 One read model for "where does this species stand": every pick list on every tomogram
 as a ``ListRow`` (count · kept · extraction state · provenance) plus the species roll-up
-(``SpeciesOverview``). The Species page (roadmap 10 status block, 11 Picks tab) and the CLI
+(``SpeciesOverview``). The Species page (status block, Picks tab) and the CLI
 below render it; nothing here draws.
 
 Composition only — the facts come from the readers that already own the disk work:
 ``aggregation.discovery.load_tomo_curation`` / ``counts_by_tomo`` (per-tomo auto
 accounting), ``aggregation.extraction.subtomo_job_dir_for_species``, ``dashboard_data``
 (bound candidate-extract / subtomo instances), ``PickList.extraction_state()`` after a
-headless ``picks_filter.sync_filtered_count``. Takes an EXPLICIT ``ProjectState`` (never the
+headless ``picks_filter.sync_filtered_count``. Takes an explicit ``ProjectState`` (never the
 tab-context accessor); callers run it off the event loop.
 
-Since roadmap 07 each workbench row also carries its ``ExtractJob``: the per-list
-extraction instance's live status, failure text and geometry. That is the transient half —
-``extraction_state`` stays the authority on whether the list IS extracted — and it is an
+Each workbench row also carries its ``ExtractJob``: the per-list extraction instance's
+live status, failure text and geometry. That is the transient half —
+``extraction_state`` stays the authority on whether the list is extracted — and it is an
 in-memory ``state.jobs`` read, so it costs nothing next to the star reads above.
 """
 
@@ -36,7 +36,7 @@ NOT_APPLICABLE = "n/a"  # auto list of a species with no subtomo job: nothing to
 
 @dataclass(frozen=True, slots=True)
 class ExtractJob:
-    """The per-list extraction JOB behind one row (roadmap 07) — the LIVE half of the story
+    """The per-list extraction job behind one row — the live half of the story
     ``extraction_state`` tells durably: what the last submit is doing right now, why it
     failed, and with which geometry it cut.
 
@@ -64,7 +64,7 @@ class ExtractJob:
 
 
 def extract_job_for(state, species_id: str, tomo_name: str, slug: str) -> ExtractJob | None:
-    """The per-list extraction instance for ONE list, or None when it was never submitted.
+    """The per-list extraction instance for one list, or None when it was never submitted.
 
     Public because the row builder is not the only caller: anything about to destroy a list's
     output directory (delete, re-extract) has to know whether a job is currently writing into
@@ -86,19 +86,19 @@ def extract_job_for(state, species_id: str, tomo_name: str, slug: str) -> Extrac
 
 
 def tm_origin_for_ce(state, ce_iid: str | None) -> tuple[str, str, str]:
-    """``(template_path, mask_path, note)`` — the template + mask that produced ONE
-    candidate-extract instance's picks (roadmap 09-S4).
+    """``(template_path, mask_path, note)`` — the template + mask that produced one
+    candidate-extract instance's picks.
 
-    A SNAPSHOT chain, not a guess: the candidate-extract instance recorded the ``tmResults``
+    A recorded chain, not a guess: the candidate-extract instance recorded the ``tmResults``
     directory it actually consumed in ``paths["input_tm_job"]``, and that directory's parent
-    IS the template-match job dir. So the answer stays right for a species that has since
+    is the template-match job dir. So the answer stays right for a species that has since
     acquired a second template-match instance, and it is an in-memory ``state.jobs`` read —
     no disk, safe on a render / signature path.
 
     All three empty = no template was involved at all, which is the de-novo answer, not a
     gap: with no candidate-extract instance the auto row's counts came out of the subtomo
     job's own curation records. Otherwise a missing link leaves both paths empty and puts a
-    SHORT reason in ``note``, which the row prints in place of a name (the cell is narrow;
+    short reason in ``note``, which the row prints in place of a name (the cell is narrow;
     its tooltip carries the sentence). Nothing here falls back to "the species' template".
     """
     if not ce_iid:
@@ -132,12 +132,12 @@ class ListRow:
     extracted_path: str | None  # the optimisation_set produced from this list, when one exists
     source_kind: str  # PickSourceKind value ("" on lists that pre-date the field)
     source_ref: str
-    extract_job: ExtractJob | None  # the live per-list extraction job (roadmap 07); None = never submitted
-    # ORIGIN (picking-UI roadmap 09-S4) — which template and mask actually produced these
-    # coordinates. Full paths, so the row can name the file and hover the whole path; "" on a
-    # list no template produced (manual / imported / merged). ``origin_note`` carries the reason
-    # the chain could NOT be resolved for a list that should have one, and is shown INSTEAD of a
-    # name — never as a fallback guess (CLAUDE.md "Surfacing uncertainty").
+    extract_job: ExtractJob | None  # the live per-list extraction job; None = never submitted
+    # Origin: which template and mask actually produced these coordinates. Full paths, so
+    # the row can name the file and hover the whole path; "" on a list no template produced
+    # (manual / imported / merged). ``origin_note`` carries the reason the chain could not be
+    # resolved for a list that should have one, and is shown instead of a name — never as a
+    # fallback guess (CLAUDE.md "Surfacing uncertainty").
     template_path: str
     mask_path: str
     origin_note: str

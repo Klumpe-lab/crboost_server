@@ -1,6 +1,5 @@
-"""Open another project in this tab's workspace (roadmap 16 S4 — hoisted from the project hub's
-`_switch_project`). The workspace is built per project, so this always ends in a navigation;
-callers that own a dialog close it first."""
+"""Open another project in this tab's workspace. The workspace is built per project, so this
+always ends in a navigation; callers that own a dialog close it first."""
 
 from __future__ import annotations
 
@@ -40,7 +39,7 @@ def disambiguating_base(project_path: Path | str) -> str | None:
 
 
 def workspace_url(project_path: Path | str) -> str:
-    """The addressable URL for a project's workspace (roadmap 17)."""
+    """The addressable URL for a project's workspace."""
     path = Path(project_path)
     return route_to_path(Route(project=path.name, base=disambiguating_base(path)))
 
@@ -48,8 +47,8 @@ def workspace_url(project_path: Path | str) -> str:
 async def load_project_into_tab(backend, ui_mgr, target: Path | str) -> bool:
     """Load `target` through the facade and point this tab's UI state at it. False (with
     a toast) when it is not a project or fails to load. No navigation — the routed page
-    handlers (roadmap 17) are already on the right URL, and `open_project_in_workspace`
-    adds the navigate for the callers that still travel."""
+    handlers are already on the right URL, and `open_project_in_workspace` adds the
+    navigate for callers that need it."""
     target = Path(target).expanduser()
     if not (target / "project_params.json").exists():
         ui.notify(f"No project_params.json in {target}", type="warning")

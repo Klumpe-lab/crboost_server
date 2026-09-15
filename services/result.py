@@ -1,9 +1,9 @@
 # services/result.py
-"""One idiom for service-level outcomes (roadmap 03).
+"""One idiom for service-level outcomes.
 
-Every service/backend method that reports an outcome builds it here — never a
-hand-built ``{"success": ...}`` literal. The result stays a plain dict (JSON-safe,
-NiceGUI-safe, zero migration cliff); payload keys stay ad-hoc. The only hard
+Every service/backend method that reports an outcome builds it here, not as a
+hand-built ``{"success": ...}`` literal. The result is a plain dict (JSON-safe,
+NiceGUI-safe); payload keys are ad-hoc. The only hard
 contract: ``success`` is always present, failures always carry ``error`` (human
 text), and ``code`` appears only for the few flows where a caller branches on the
 cause. UI consumption rule: render ``result["error"]``; branch on
@@ -21,20 +21,17 @@ from typing import Any
 
 
 class ErrorCode(StrEnum):
-    """Stable machine-readable failure causes — the values are the wire format.
+    """Stable machine-readable failure causes; the values are the wire format.
 
-    Add a member ONLY when a caller genuinely branches on the cause; everything
-    else is text-only via ``err(message)``.
+    Add a member only when a caller branches on the cause; everything else is
+    text-only via ``err(message)``.
     """
 
-    # Stage-0 census (docs/roadmaps/completed/roadmap_03-stage0-census.md): the repo has exactly ONE cause-branching
-    # consumer today — tomo_dashboard_dialog's import-picks fallback dialog. Candidates
-    # that did NOT earn a code: "No jobs selected." (nobody branches; prose is enough)
-    # and curation "nothing open" (that's success with count=0, not an error).
+    # Branched on by tomo_dashboard_dialog's import-picks fallback dialog.
     NO_COORDS_FOUND = auto()
 
-    # Roadmap 17: resolving `/p/<name>` branches three ways — open it, render a chooser
-    # over the candidate paths, or send the user back to the landing page.
+    # Resolving `/p/<name>` branches three ways: open it, render a chooser over the
+    # candidate paths, or send the user back to the landing page.
     PROJECT_NOT_FOUND = auto()
     PROJECT_AMBIGUOUS = auto()
 

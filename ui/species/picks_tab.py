@@ -1,32 +1,29 @@
-"""Picks & curation (picking-UI roadmap 09) — the ONE surface for this species' picks.
+"""Picks & curation — the one surface for this species' picks.
 
-Merges what were two tabs (Picks, 11-S2 · Curation, 11-S4) into a single one, because they
-answered the same two questions with two vocabularies: *which tomogram* and *which species*.
-Everything else a pick set has — source, count, filter status, extraction status, the
-template+mask it came from — is an auxiliary fact of a row here.
+A pick set is addressed by *which tomogram* and *which species*. Everything else it has —
+source, count, filter status, extraction status, the template+mask it came from — is an
+auxiliary fact of a row here.
 
 Top to bottom:
 
-- **Title row** — `PICKS & CURATION` (its tooltip carries the WHERE-TO-SAVE contract, derived
-  from the watcher's own cadence) and `Extract all pending`. The session chip that sat here
-  went with 13-S3: the control center is reachable only through `Curate picks`, and the live
-  marker sits on the in-session tomogram's button. The lists / picks / kept / extracted chips
-  are gone too: each was a sum of the table right below, so the strip restated the page.
+- **Title row** — `PICKS & CURATION` (its tooltip carries the where-to-save contract, derived
+  from the watcher's own cadence) and `Extract all pending`. The control center is reachable
+  only through `Curate picks`, and the live marker sits on the in-session tomogram's button.
 - **One group per tomogram**, over the species' whole tomogram universe rather than only the
   ones that already hold picks: a tomogram with nothing on it is exactly where de-novo
   picking starts, and it is a legitimate `.coords` import target. The name carries the
-  copy-save-dir button (it copies that tomogram's folder), and the group actions are the ONE
+  copy-save-dir button (it copies that tomogram's folder), and the group actions are the one
   place each remaining verb exists — `Curate picks` (the single door to ArtiaX in the app,
-  09-S2 / 13-S3, with a green dot when the live session has this tomogram open), the viewer
-  icon and the journey icon.
+  with a green dot when the live session has this tomogram open), the viewer icon and the
+  journey icon.
 - **The list table** per group: swatch · list · source · origin · picks · Extracted · job ·
-  actions, closed by the always-present import row. `origin` (09-S4) names the template +
-  mask that produced the picks, resolved from the candidate-extract instance's recorded
+  actions, closed by the always-present import row. `origin` names the template + mask that
+  produced the picks, resolved from the candidate-extract instance's recorded
   template-match input — never guessed.
 - **Watcher footer** — what the server did with this species' saves, plus every dir holding
-  a save it could NOT attribute, with the reason. That second list is the never-silent half.
+  a save it could not attribute, with the reason.
 
-Rows come from `species_overview` (09-S3); refs, the tomogram universe and the per-tomogram
+Rows come from `species_overview`; refs, the tomogram universe and the per-tomogram
 curation-dir globs all read disk, so they run in one off-loop `_compute`: when the in-memory
 key (registry rev + job statuses + watcher log) moves, on show, and at most every
 `_DISK_REFRESH_S` while shown. The view is a `FingerprintedView` over that value; the session
@@ -36,24 +33,19 @@ Every action is `ui/particles/list_actions`, so the Journey and this tab drive o
 implementation. `on_done` is a no-op for most of them: the actions bump the registry rev, and
 the rev is what repaints this view.
 
-Two columns tell the extraction story, and the split is deliberate: `Extracted` is DERIVED
-(`PickList.extraction_state()` — is there a RECORDED extraction output that still exists and
-is current with the picks?), while `job` reports the per-list extraction JOB behind it
-(roadmap 07-S4) — queued / running / succeeded / failed, with the failure text and the
+Two columns tell the extraction story: `Extracted` is derived
+(`PickList.extraction_state()` — is there a recorded extraction output that still exists and
+is current with the picks?), while `job` reports the per-list extraction job behind it —
+queued / running / succeeded / failed, with the failure text and the
 geometry it cut with on hover and its logs on click. Neither is a disk sweep: an extraction
 whose awaiter died is recorded by nobody, so both columns go stale together (see
 `backend._await_extraction_outdirs`) and re-extracting is the recovery — which is why nothing
 here hard-blocks that action. This table is the only place either column is visible.
 
-Aggregation is deliberately NOT here (09-S3): merged lists still render, and their dedup
-inspect still opens, but CREATING a merge moves to the Aggregate-candidates flow. The service
-and dialog layers (`list_actions.merge_lists` / `open_dedup_dialog`) are untouched.
-
-There is no `auth` column and no roll-up `gate` chip any more. Both served the
-authoritative-list model — one list per (species, tomogram) nominated as THE one downstream
-consumes — which is gone: what reaches a refinement is now whatever the user selects as a
-source in the Aggregate-candidates flow, chosen there, in front of the merge it feeds. So a
-list here is simply extracted or not, and `Extract all pending` cuts every list that isn't.
+Creating a merge is not here: merged lists render and their dedup inspect opens, but merges
+are made in the Aggregate-candidates flow. What reaches a refinement is whatever the user
+selects as a source there, in front of the merge it feeds, so a list here is simply
+extracted or not, and `Extract all pending` cuts every list that isn't.
 """
 
 from __future__ import annotations
@@ -123,8 +115,8 @@ _JOB_CHIP = {
 
 def _job_tooltip(job: ExtractJob, status: JobStatus) -> str:
     """One actionable line for the `job` mark: what the extraction is doing, the SLURM id to
-    check, the geometry it cut with (nothing else in the project records that — before roadmap
-    07 it lived only in the launch command line) and the failure text when there is one.
+    check, the geometry it cut with (nothing else in the project records that) and the
+    failure text when there is one.
     Quasar tooltips collapse newlines, so it stays a single line."""
     bits = [f"extraction {_JOB_CHIP.get(status, ('', '', status.value))[2]}"]
     if job.slurm_job_id:
@@ -156,9 +148,8 @@ def _coords_path(row: ListRow) -> str:
 
 
 def _save_contract(species_slug: str) -> str:
-    """The WHERE-TO-SAVE contract, as the title's tooltip (09-S1, reworded by 13-S1). It
-    used to be a prose block of its own; it is the one thing a user must get right by
-    hand, but it is also read once, so it hangs off the title rather than the page."""
+    """The where-to-save contract, as the title's tooltip. It is the one thing a user must
+    get right by hand, but it is read once, so it hangs off the title rather than the page."""
     return (
         f"'Curate picks' pre-seeds ONE empty list per tomogram — Curation/{species_slug}/<tomogram>/"
         f"{species_slug}__<tomogram>__picks.coords — and opens it last in ArtiaX. Pick into it and save it back to "
@@ -185,7 +176,7 @@ def _dedup_default_radius(state, species_id: str) -> float:
 
 @dataclass(frozen=True, slots=True)
 class _TomoInfo:
-    """One tomogram group's own facts — the half that came from the Curation tab."""
+    """One tomogram group's own facts."""
 
     tomo_name: str
     has_geometry: bool  # a tomograms.star carries it — without one nothing loads or imports
@@ -256,7 +247,7 @@ def _compute(state, project_path: Path, species_id: str) -> _Computed:
 
 
 def _count_user_saves(cdir: Path, species_id: str, tomo: str) -> int:
-    """User `.coords` in the dir, EXCLUDING an untouched seed (13-S1): the 0-byte file
+    """User `.coords` in the dir, excluding an untouched seed: the 0-byte file
     crboost created is not something the user saved, and the `saves` chip claims it is."""
     seed = artiax_bridge.seed_coords_path(cdir, species_id, tomo)
     n = 0
@@ -295,8 +286,7 @@ class _PicksView(FingerprintedView):
     def render(self) -> None:
         c = self._tab.computed
         with ui.row().classes("w-full items-center gap-2 px-1"):
-            # The title carries the save contract on hover (13-S3); the hint tail that sat
-            # beside it said what the table below makes obvious.
+            # The title carries the save contract on hover.
             ui.label("PICKS & CURATION").classes(_LABEL_CLS).tooltip(
                 _save_contract(c.species_slug) if c is not None and not c.error else "computing…"
             )
@@ -347,7 +337,7 @@ class _PicksView(FingerprintedView):
     def _render_group(self, c: _Computed, info: _TomoInfo, rows: list[ListRow]) -> None:
         with ui.element("div").classes("cb-ptable-group"):
             ui.label(info.tomo_name).classes("cb-ptable-group-name")
-            # Copying the save dir is an act ON THE NAME beside it — the folder is the
+            # Copying the save dir is an act on the name beside it — the folder is the
             # tomogram's — so it sits with the name rather than at the far right with the
             # navigation verbs, a whole row's width away from what it copies.
             ui.button(icon="content_copy", on_click=lambda _e, d=info.curation_dir: self._tab.copy(d)).props(
@@ -376,7 +366,7 @@ class _PicksView(FingerprintedView):
             ui.space()
             self._render_group_actions(info)
 
-        # The table box is drawn for EVERY tomogram, empty of lists or not, because the
+        # The table box is drawn for every tomogram, empty of lists or not, because the
         # import row lives in it and that row is the point of an empty tomogram.
         with ui.element("div").classes("cb-ltable cb-ptable"):
             if rows:
@@ -402,11 +392,10 @@ class _PicksView(FingerprintedView):
             self._render_import_row(info)
 
     def _render_import_row(self, info: _TomoInfo) -> None:
-        """The import affordance, one per tomogram and ALWAYS there — under a group's lists
+        """The import affordance, one per tomogram and always there — under a group's lists
         and, for a tomogram with none, as the only thing in its table box. A `.coords` that
         landed outside the curation dir has no other way into this species, and a tomogram
-        with no picks yet is exactly where a de-novo import starts; an icon that only
-        appeared beside groups that already had rows hid the case it exists for."""
+        with no picks yet is exactly where a de-novo import starts."""
         row = ui.element("div").classes("cb-ptable-import")
         with row:
             ui.label("+")
@@ -418,15 +407,13 @@ class _PicksView(FingerprintedView):
         row.on("click", lambda _e, i=info: self._tab.import_picks(i.ref, start_dir=i.curation_dir))
 
     def _render_group_actions(self, info: _TomoInfo) -> None:
-        """The ONE place each per-tomogram verb exists (09-S2): the door to ArtiaX, and the
-        jumps to the viewer and the Journey. The sidebar launcher, the Picks-tab ⚡, the
-        species-level import header button, the session chip, the rail light and the
-        viewer-rail `curate ↗` are all gone (09-S2 … 13-S3); the Journey's ⚡ navigates here.
-        Import moved to the table's own import row and copy to the tomogram's name; what is
-        left here is what LEAVES this table.
+        """The one place each per-tomogram verb exists: the door to ArtiaX, and the jumps to
+        the viewer and the Journey (the Journey's ⚡ navigates here). Import sits in the
+        table's own import row and copy on the tomogram's name; what is left here is what
+        leaves this table.
 
-        `Curate picks` is the one icon+text button in the house vocabulary: the glyph IS the
-        door. The green dot beside it is the live marker — the running session has THIS
+        `Curate picks` is the one icon+text button in the house vocabulary: the glyph is the
+        door. The green dot beside it is the live marker — the running session has this
         tomogram open — read from the shared `session_status` cache the tab already polls."""
         # The live dot precedes the button, so a row that gains it does not shift the
         # button under a cursor already on it.
@@ -445,11 +432,11 @@ class _PicksView(FingerprintedView):
             "a 0-pick list (never overwrites one that exists), and opens the control center to start a session "
             "on it. With a session already running on another tomogram it offers Switch or Restart.",
         )
-        # 09-S5, landed with picking_ui/11-S5: the viewer icon opens the full-page pick
-        # viewer on this (species, tomogram) — slabs, the lists strip and the cutout gallery
-        # at workspace size, with curation mode. The Journey icon stays beside it because
-        # the two answer different questions: the viewer is about THESE picks, the Journey
-        # about everything that happened to this tilt-series before them.
+        # The viewer icon opens the full-page pick viewer on this (species, tomogram) —
+        # slabs, the lists strip and the cutout gallery at workspace size, with curation
+        # mode. The Journey icon sits beside it because the two answer different questions:
+        # the viewer is about these picks, the Journey about everything that happened to
+        # this tilt-series before them.
         ui.button(icon="grid_view", on_click=lambda _e, t=info.tomo_name: self._tab.open_viewer(t)).props(
             "flat dense round size=sm color=indigo"
         ).tooltip("Open this tomogram's picks in the full-page pick viewer")
@@ -466,9 +453,9 @@ class _PicksView(FingerprintedView):
             ui.element("div").classes(f"cb-ltable-swatch cb-swatch-{glyph_for(PickListType(row.list_type))}").style(
                 f"background: {c.species_color};"
             ).tooltip(f"{row.list_type} list")
-            # ONE grid child: the name and, for a hand-picked list, the copy-path button
-            # beside it (the maintainer, 2026-09-06: no alias, the file name itself, and its
-            # path one click away — it is what has to be found in ArtiaX's save dialog).
+            # One grid child: the name and, for a hand-picked list, the copy-path button
+            # beside it. The name is the file name itself, not an alias, with its path one
+            # click away — it is what has to be found in ArtiaX's save dialog.
             coords = _coords_path(row)
             with ui.row().classes("items-center gap-0 flex-nowrap").style("min-width: 0; overflow: hidden;"):
                 name = ui.label(row.label).classes("cb-ltable-name").style("min-width: 0;")
@@ -489,7 +476,7 @@ class _PicksView(FingerprintedView):
                 )
             else:
                 ui.label("—").classes("cb-ptable-source").tooltip(
-                    "no provenance recorded — this list pre-dates source tracking (09-S2)"
+                    "no provenance recorded — this list pre-dates source tracking"
                 )
             self._render_origin(row)
             ui.label(_count_text(row.count, row.kept)).classes("cb-ltable-count").tooltip(
@@ -501,9 +488,9 @@ class _PicksView(FingerprintedView):
                 self._render_actions(tomo, row, ref)
 
     def _render_origin(self, row: ListRow) -> None:
-        """The `origin` cell (09-S4): which template and mask produced these coordinates.
+        """The `origin` cell: which template and mask produced these coordinates.
 
-        ALWAYS exactly one grid child. Three honest answers and no fourth: the template's
+        Always exactly one grid child. Three honest answers and no fourth: the template's
         file name (full paths on hover), "—" for coordinates no template produced, or the
         reason the chain could not be resolved — never a guess at which template it "probably"
         was (CLAUDE.md "Surfacing uncertainty")."""
@@ -524,13 +511,12 @@ class _PicksView(FingerprintedView):
         )
 
     def _render_ext_cell(self, row: ListRow) -> None:
-        """The `Extracted` column — ALWAYS exactly one grid child, a MARK only when there is
+        """The `Extracted` column — always exactly one grid child, a mark only when there is
         something to mark: ✓ when this list's subtomograms are cut and current, ⚠ when they
-        are stale and need re-cutting. Not-extracted and not-applicable are BLANK. They used
-        to draw `○` and `·`, but not-extracted is the majority state of a picking project, so
-        a glyph on nearly every row said nothing while making the two that matter hard to
-        find. The state stays on the cell's hover either way — blank here means "nothing has
-        happened", never "we don't know"."""
+        are stale and need re-cutting. Not-extracted and not-applicable are blank:
+        not-extracted is the majority state of a picking project, so a glyph on nearly every
+        row would hide the two that matter. The state stays on the cell's hover either way —
+        blank here means "nothing has happened", never "we don't know"."""
         cell = ui.element("div").classes("cb-ltable-cell")
         if row.extraction_state == NOT_APPLICABLE:
             cell.tooltip("auto list of a species with no subtomo-extraction job — nothing to extract here")
@@ -547,13 +533,13 @@ class _PicksView(FingerprintedView):
         cell.tooltip(text)
 
     def _render_job_chip(self, row: ListRow) -> None:
-        """The `job` column: what the per-list extraction INSTANCE is doing (roadmap 07-S4).
+        """The `job` column: what the per-list extraction instance is doing.
 
-        ALWAYS emits exactly one grid child — the cell stays empty for a list with no
+        Always emits exactly one grid child — the cell stays empty for a list with no
         instance (the `auto` list never gets one, and a list that was never submitted has
         nothing to add to `Extracted`), because a skipped child would slide every later column of
-        that row one place left. Clicking opens the job's logs: this job deliberately has no
-        roster row, so the mark is the only door to them."""
+        that row one place left. Clicking opens the job's logs: this job has no roster row,
+        so the mark is the only door to them."""
         cell = ui.element("div").classes("cb-ltable-cell")
         job = row.extract_job
         if job is None:
@@ -571,10 +557,9 @@ class _PicksView(FingerprintedView):
     def _render_actions(self, tomo: str, row: ListRow, ref: ListRef | None) -> None:
         """extract · dedup · delete, always in those three slots.
 
-        `dedup` only applies to a merged list, but the slot is HELD (an empty box of the same
-        width) on every other row rather than skipped: three verbs that slide one place left
-        whenever a row happens not to be merged is the same staggering the grid template above
-        exists to kill, one level down."""
+        `dedup` only applies to a merged list, but the slot is held (an empty box of the same
+        width) on every other row rather than skipped, so the verbs line up across rows the
+        same way the grid columns do."""
         if ref is None or row.slug == AUTO_SLUG:
             return  # the auto list follows its subtomo job; it is not extracted per list
         extracted = row.extraction_state == ListExtractionState.EXTRACTED.value
@@ -626,8 +611,8 @@ class _PicksView(FingerprintedView):
                                 "\n".join(Path(f).name for f in u["files"])
                             )
                         ui.space()
-                        # The staging step (10-S2): the ONLY way these picks acquire a
-                        # species, and it is the user's call — never an inference.
+                        # The only way these picks acquire a species, and it is the
+                        # user's call — never an inference.
                         ui.label("assign ↗").classes(_LINK_CLS).on(
                             "click", lambda _e, entry=u: self._tab.assign_unattributed(entry)
                         ).tooltip("Move these .coords into a species + tomogram's curation folder and import them")
@@ -716,8 +701,8 @@ class PicksTab:
                 return
             ctx = self.ctx
             if self.backend is not None:
-                # Settle any extraction instance whose awaiter is gone BEFORE reading the rows
-                # off it (roadmap 07 review, finding A): otherwise the `job` chip asserts
+                # Settle any extraction instance whose awaiter is gone before reading the rows
+                # off it: otherwise the `job` chip asserts
                 # Queued/Running for a job that left the SLURM queue long ago, and a finished
                 # one stays unrecorded. No-op — and no squeue call — when nothing is
                 # non-terminal, which is the normal case; runs at most per `_DISK_REFRESH_S`.
@@ -770,7 +755,7 @@ class PicksTab:
             select(key)
 
     async def open_viewer(self, tomo: str | None) -> None:
-        """Open the full-page pick viewer on this species + tomogram (picking_ui 11-S5).
+        """Open the full-page pick viewer on this species + tomogram.
         The workspace builds the page on first use and swaps it into the main area; this
         tab's own SingleFlight guards the link, which sits in a poll-refreshed container."""
         async with self._flight("viewer") as acquired:
@@ -800,8 +785,8 @@ class PicksTab:
     # ── ArtiaX round trip ─────────────────────────────────────────────────────
 
     def session_live_here(self, tomo: str) -> bool:
-        """True when the running session's recorded scope is THIS species + tomogram — the
-        live dot beside `Curate picks` (13-S3). No I/O: reads the shared `session_status`
+        """True when the running session's recorded scope is this species + tomogram — the
+        live dot beside `Curate picks`. No I/O: reads the shared `session_status`
         cache this tab already polls, and the view's signature carries the scope so the dot
         moves on the tick after a switch."""
         if not session_status.is_live():
@@ -810,20 +795,18 @@ class PicksTab:
         return sc.get("species_id") == self.ctx.species_id and sc.get("tomo_name") == tomo
 
     async def curate(self, ref: ListRef) -> None:
-        """THE launch/scope affordance (09-S2), and since 10-S1 the ONLY one: it declares
-        this (species, tomogram) as a session's scope — writing the reference export, the
-        `.cxc`, the `manifest.json` and the pre-seeded default list (13-S1) — and opens the
-        control center to start one.
+        """The launch/scope affordance, and the only one: it declares this (species,
+        tomogram) as a session's scope — writing the reference export, the `.cxc`, the
+        `manifest.json` and the pre-seeded default list — and opens the control center to
+        start one.
 
-        It used to branch on liveness HERE and swap a running session over the REST channel.
-        That branch stays gone: this is one path, always. When a session is live on another
-        tomogram, the control center says so and offers the confirmed switch (13-S2) or a
-        restart — the decision is made there, in front of the warning, never on a stale
-        liveness flag in this tab."""
+        It does not branch on liveness. When a session is live on another tomogram, the
+        control center says so and offers the confirmed switch or a restart — the decision
+        is made there, in front of the warning, never on a stale liveness flag in this tab."""
         await list_actions.curate_in_artiax(self.backend, ref)
 
     async def import_picks(self, ref: ListRef, *, start_dir: str | None = None) -> None:
-        """The import row's click: BROWSE first — the shared file picker, opened on this
+        """The import row's click: browse first — the shared file picker, opened on this
         tomogram's curation dir, whose path bar also takes an absolute path straight to a
         file — then the import confirm, pre-filled, because the frame a by-path file is
         read in is stated there and nowhere else. SingleFlight-guarded like every dialog
@@ -852,9 +835,8 @@ class PicksTab:
             )
 
     async def assign_unattributed(self, entry: dict) -> None:
-        """Give an orphaned save an explicit (species, tomogram) — the staging step of
-        10-S2. Its files are MOVED into the right curation dir and the watcher ingests
-        them; nothing here infers anything."""
+        """Give an orphaned save an explicit (species, tomogram). Its files are moved into
+        the right curation dir and the watcher ingests them; nothing here infers anything."""
         await list_actions.assign_unattributed(self.backend, self.ctx.project_path, entry, on_done=self.refresh)
 
     def copy(self, path: str) -> None:
@@ -881,8 +863,8 @@ class PicksTab:
         )
 
     async def open_logs(self, row: ListRow) -> None:
-        """This list's extraction job: its logs, the geometry it cut with, its failure text
-        (roadmap 07-S4). SingleFlight-guarded like every dialog opener here — the mark lives
+        """This list's extraction job: its logs, the geometry it cut with, its failure text.
+        SingleFlight-guarded like every dialog opener here — the mark lives
         in a rev-gated container a refresh can replace mid-click, so a user can legitimately
         land several clicks before one opens."""
         job = row.extract_job
@@ -905,7 +887,7 @@ class PicksTab:
     # ── Extract all pending ───────────────────────────────────────────────────
 
     async def extract_all_pending(self) -> None:
-        """Pre-flight FIRST (the pending report is the preview), then submit. Never a blind
+        """Pre-flight first (the pending report is the preview), then submit. Never a blind
         fan-out: `extract_pending_lists` starts one SLURM job per pending list, so the user
         sees the count, the tomograms and the blocked reasons before confirming — and commits
         the extraction geometry here if the species has none."""

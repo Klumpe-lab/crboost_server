@@ -4,8 +4,7 @@ Pure dict builders for the dashboard's charts: the picks-only XY/XZ scatter +
 score histogram (fallback when no subtomo cutout atlas exists) and the per-tilt
 metric charts (defocus / motion / shifts / angles), plus the small numeric
 helpers that prep series for them. ``ui.plotly()`` takes a JSON dict directly,
-so these depend on no plotting package. Extracted from
-``ui/tomo_dashboard_dialog.py`` (R0 refactor); py_compile + ruff only.
+so these depend on no plotting package.
 """
 
 from __future__ import annotations
@@ -281,8 +280,7 @@ def _is_meaningful_series(values: list[float], *, threshold: float = 1e-3) -> bo
     """True when the column carries real signal — at least one finite value
     AND max-abs above `threshold`. Filters out WarpTools placeholder columns
     (`1e-6` for AccumMotion / CtfMaxResolution; `None` for CtfFigureOfMerit)
-    so we don't pollute the dashboard with flat-line plots. See memory
-    `project_warp_relion_star_placeholders.md`."""
+    so we don't pollute the dashboard with flat-line plots."""
     finite = [v for v in values if v is not None]
     if not finite:
         return False
@@ -334,7 +332,7 @@ _MONO = "IBM Plex Mono, monospace"
 # Omitting it takes the else branch, where `outerBoundsMode: "auto"` (outerBounds = the
 # whole canvas) and `outerBoundsContain: "all"` make ECharts shrink the plot rect until
 # labels AND names fit. That is exact, so grid left/top/right/bottom below are only a
-# starting rect — no hand-computed margin arithmetic, which is what failed here before.
+# starting rect — no hand-computed margin arithmetic.
 #
 # nameGap is still ours: outerBounds prevents cropping, not collision, and the tick
 # labels end ~20 px under the axis line (8 px margin + a 9 px line).
@@ -760,7 +758,7 @@ def build_ctf_fit_chart(
     if freq_inv_a:
         x_axis.update({"min": round(freq_inv_a[0], 4), "max": round(freq_inv_a[-1], 4)})
     # Auto-ranged on purpose: measured ÷ envelope overshoots 1 at the ring maxima and
-    # undershoots 0 between them, and a fixed 0…1 window cut the curves off.
+    # undershoots 0 between them, so a fixed 0…1 window would cut the curves off.
     return {
         "animation": False,
         "grid": _grid(True),

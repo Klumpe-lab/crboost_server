@@ -1,11 +1,10 @@
-"""Pick-list ACTIONS shared by the Journey and the Species page (roadmap 11-S1).
+"""Pick-list actions shared by the Journey and the Species page.
 
-Carved out of ``ui/tomo_dashboard_dialog.py`` so the Species page (manage & act) and the
-Journey (look & curate) drive the same code for extract / merge / dedup / curate /
-import: each helper takes the ``backend`` and a ``ListRef`` (``services/particles/list_ref``)
-instead of the Journey's ``sp`` / ``lst`` render dicts, resolves ``ProjectState`` by the
-ref's EXPLICIT path (never the tab accessor — the extraction wait runs in a BackgroundTask
-with no client context, W2), and reports back through ``on_done`` (the Journey passes its
+The Species page (manage & act) and the Journey (look & curate) drive the same code for
+extract / merge / dedup / curate / import: each helper takes the ``backend`` and a
+``ListRef`` (``services/particles/list_ref``), resolves ``ProjectState`` by the ref's
+explicit path (never the tab accessor — the extraction wait runs in a BackgroundTask
+with no client context), and reports back through ``on_done`` (the Journey passes its
 ``request_refresh``; the Species page passes a no-op — the registry rev drives its views).
 One module-level ``SingleFlight`` guards every handler: the buttons that fire them live in
 poll-refreshed containers, so several clicks can land before one does.
@@ -45,8 +44,7 @@ _flight = SingleFlight()
 
 _HINT_CLS = "text-[10px] text-gray-400"
 
-# Extraction-state badge shown on each workbench list row (Slice A surfaces it; the
-# per-list Extract action that flips it is Slice C). Auto lists show none.
+# Extraction-state badge shown on each workbench list row. Auto lists show none.
 _EXTRACTION_BADGE = {
     ListExtractionState.EXTRACTED: ("✓ extracted", "cb-badge-ok"),
     ListExtractionState.NOT_EXTRACTED: ("○ not extracted", "cb-badge-todo"),
@@ -70,13 +68,13 @@ def _no_backend() -> None:
 
 
 async def extract_list(backend, ref: ListRef, *, on_done: OnDone) -> None:
-    """Submit + track a per-list subtomo extraction (Slice C). Resolves three things —
+    """Submit + track a per-list subtomo extraction. Resolves three things —
     the schema source (the species' candidate optset, else the tomogram's tomograms.star
     for a de-novo species), this list's curated star, and the extraction geometry — then
     fires ``backend.extract_pick_list_and_wait`` (submit + await the out dir + record
     ``PickList.mark_extracted`` + persist). A species with no committed geometry gets the
-    required dialog instead of a guessed box size (D-3). SingleFlight-guarded; the wait
-    runs in a BackgroundTask (the backend persists by explicit ``project_path``, W2)."""
+    required dialog instead of a guessed box size. SingleFlight-guarded; the wait
+    runs in a BackgroundTask (the backend persists by explicit ``project_path``)."""
     async with _flight(f"extract:{ref.species_id}:{ref.tomo_name}:{ref.slug}") as acquired:
         if not acquired:
             return
@@ -119,8 +117,8 @@ async def extract_list(backend, ref: ListRef, *, on_done: OnDone) -> None:
         subtomo_jm = state.jobs.get(ref.subtomo_iid) if ref.subtomo_iid else None
         params = extraction_params_for_species(state, ref.species_id, subtomo_jm)
         if params is None:
-            # D-3: no committed geometry anywhere. ASK — never fall back to the old
-            # silent 384/1.0/224, which cut wrong-but-plausible subtomograms.
+            # No committed geometry anywhere: ask. A default box size would cut
+            # wrong-but-plausible subtomograms.
             prompt_extraction_geometry(backend, ref, candidate_optset, tomograms_star, list_star, on_done=on_done)
             return
 
@@ -134,8 +132,8 @@ async def _confirm_reextract(ref: ListRef, job) -> bool:
 
     A question, not a block: submitting again deletes the out dir the queued/running job is
     writing into, so the user has to mean it — but a watcher lost to a server restart leaves
-    the instance reading Running with nothing left to move it (the accepted residual of
-    roadmap 07-S3), and disabling the action there would strand the list for good."""
+    the instance reading Running with nothing left to move it, and disabling the action
+    there would strand the list for good."""
     with dialog_host(), ui.dialog() as confirm, ui.card().classes("w-[28rem] max-w-full gap-2"):
         ui.label(f"An extraction for '{ref.label}' is already {job.execution_status.value.lower()}").classes(
             "text-sm font-bold"
@@ -190,22 +188,21 @@ def _submit_list_extraction(
             **params,
         )
         if not res.get("success"):
-            # RAISE, don't return: the task registry marks a task succeeded on any
-            # non-exception return (services/background_tasks.runner), so handing back an
-            # err() dict painted a failed extraction as a green, message-less success in the
-            # tray — one of the invisible failures roadmap 07 exists to end. The instance's
-            # own status/last_error carry it too (07-S3); this is the transient surface.
+            # Raise, don't return: the task registry marks a task succeeded on any
+            # non-exception return (services/background_tasks.runner), so an err() dict would
+            # show a failed extraction as a green success in the tray. The instance's own
+            # status/last_error carry the failure too; this is the transient surface.
             raise RuntimeError(res.get("error") or "extraction failed")
         return f"{res.get('count', 0)} particles extracted"
 
     dedup_key = f"extract:{ref.species_id}:{ref.tomo_name}:{ref.slug}"
     in_flight = BackgroundTask.existing(dedup_key)
     if in_flight is not None and not replacing:
-        # The registry DEDUPES by returning the existing task id WITHOUT calling the
+        # The registry dedupes by returning the existing task id without calling the
         # coroutine (services/background_tasks.BackgroundTaskRegistry.submit), so submitting
-        # here would do nothing at all while the toast below claimed otherwise. Say what is
-        # actually true. Reachable in the narrow window where the awaiter has already written
-        # a terminal status (so `extract_list` asks nothing) but its task is still settling.
+        # here would do nothing while the toast below claimed otherwise. Reachable in the
+        # narrow window where the awaiter has already written a terminal status (so
+        # `extract_list` asks nothing) but its task is still settling.
         ui.notify(f"An extraction for '{ref.label}' is still in flight — see the task tray.", type="info")
         return
     if in_flight is not None:
@@ -227,20 +224,19 @@ def _submit_list_extraction(
     )
 
 
-# ── Extraction logs + geometry record (roadmap 07-S4) ─────────────────────────
+# ── Extraction logs + geometry record ─────────────────────────────────────────
 
 _MONO = "font-family: ui-monospace, SFMono-Regular, Menlo, monospace;"
-_LOG_MAX_LINES = 400  # lines KEPT from each file (the tail); the marker below says what went
-# The widget holds more than we ever push, on purpose: `ui.log(max_lines=N)` drops from the
-# FRONT, so capping it at the truncation threshold would evict the "[… truncated …]" marker —
-# the one line that says the view is partial. Same split as `ui/pipeline_builder/logs_tab.py`.
+_LOG_MAX_LINES = 400  # lines kept from each file (the tail); the marker below says what went
+# The widget holds more than is ever pushed: `ui.log(max_lines=N)` drops from the front, so
+# capping it at the truncation threshold would evict the "[… truncated …]" marker, the one
+# line that says the view is partial. Same split as `ui/pipeline_builder/logs_tab.py`.
 _LOG_WIDGET_LINES = _LOG_MAX_LINES * 2
 
 
 def extraction_geometry_text(job: ExtractJob) -> str:
     """The geometry this instance last cut with, or a plain statement that no submit has
-    written one yet. Before roadmap 07 this existed ONLY in the launch command line, so
-    nothing could say after the fact what box a list had been cut with."""
+    written one yet."""
     if not job.box_size:
         return "geometry not recorded — this instance has never been submitted"
     return f"box {job.box_size} px · bin {job.binning:g} · crop {job.crop_size or 'none'}"
@@ -254,11 +250,10 @@ async def open_extraction_logs(backend, project_path: Path, job: ExtractJob, *, 
     scheme job so it has neither. ``backend.get_job_logs`` needs only a directory — and
     ``config/qsub.sh`` already writes ``run.out``/``run.err`` into the list's out dir — so the
     instance's recorded ``job_dir`` is the whole address. An instance whose submit never
-    recorded one says exactly that instead of showing empty logs.
+    recorded one says so instead of showing empty logs.
 
     ``job`` is a snapshot taken when the row was rendered, so Reload re-reads the instance's
-    live status and failure text as well as the two files — a Reload that refreshed only half
-    the dialog would be its own small lie."""
+    live status and failure text as well as the two files."""
     if backend is None:
         _no_backend()
         return
@@ -292,8 +287,7 @@ async def open_extraction_logs(backend, project_path: Path, job: ExtractJob, *, 
 
         if not job.job_dir:
             ui.label(
-                "This instance recorded no job directory, so there is nothing to read — it was never submitted "
-                "(or was submitted by a build that predates roadmap 07)."
+                "This instance recorded no job directory, so there is nothing to read — it was never submitted."
             ).classes("text-[11px] text-orange-700")
         else:
             ui.label(job.job_dir).classes("text-[10px] text-gray-400").style(_MONO)
@@ -338,19 +332,18 @@ async def open_extraction_logs(backend, project_path: Path, job: ExtractJob, *, 
     # Await + delete, never bare close(): this dialog is parented at the layout slot (which
     # nothing ever clears) and every log line is an element, so closing alone retains the whole
     # tree for the life of the page and re-sends it on a websocket reconnect. Awaiting also
-    # makes the caller's SingleFlight cover the dialog's lifetime, which is what its docstring
-    # already claims — a second click while it is open is a no-op instead of a second dialog.
-    # The `value` guard is not defensive noise: `Dialog.__await__` OPENS the dialog, so a user
-    # who dismissed it while `_load()` was reading run.out off Lustre would see it pop back.
+    # makes the caller's SingleFlight cover the dialog's lifetime, so a second click while it
+    # is open is a no-op. The `value` guard is needed because `Dialog.__await__` opens the
+    # dialog: a user who dismissed it while `_load()` was reading run.out would see it pop back.
     if dialog.value:
         await dialog
     dialog.delete()
 
 
 def geometry_inputs() -> tuple[ui.number, ui.number, ui.number]:
-    """The three extraction-geometry fields (box / binning / crop), EMPTY on purpose —
-    prefilling them with the old 384/1.0/224 would just relabel a silent default as a
-    confirmed one. Shared by the per-list prompt and the Picks tab's extract-all pre-flight."""
+    """The three extraction-geometry fields (box / binning / crop), empty on purpose: a
+    prefilled value would turn a silent default into a confirmed one. Shared by the
+    per-list prompt and the Picks tab's extract-all pre-flight."""
     box_in = house_number("Box size", min=16, step=2, width="w-28", hint="px, unbinned")
     bin_in = house_number("Binning", min=0.1, step=0.5, width="w-28")
     crop_in = house_number("Crop size", min=16, step=2, width="w-28", hint="px")
@@ -358,8 +351,8 @@ def geometry_inputs() -> tuple[ui.number, ui.number, ui.number]:
 
 
 async def commit_extraction_geometry(backend, project_path: Path, species_id: str, box, binning, crop) -> bool:
-    """Validate the three fields and persist ``species.extraction_params`` (D-3) through
-    ``mutate_species`` (dirty + rev) and an AWAITED forced save — the extraction that follows
+    """Validate the three fields and persist ``species.extraction_params`` through
+    ``mutate_species`` (dirty + rev) and an awaited forced save — the extraction that follows
     runs in a BackgroundTask with no client context, and a fire-and-forget save can lose the
     geometry the user just committed. False = not committed (the reason was toasted)."""
     if not box or not binning or not crop:
@@ -390,9 +383,9 @@ def prompt_extraction_geometry(
     on_done: OnDone,
 ) -> None:
     """Ask for box / binning / crop before a first extraction, and persist the answer on
-    the species (D-3).
+    the species.
 
-    Reached only when NOTHING has committed a geometry: no SUBTOMO_EXTRACTION job model
+    Reached only when nothing has committed a geometry: no SUBTOMO_EXTRACTION job model
     and no ``species.extraction_params``.
     """
     with dialog_host(), ui.dialog() as dialog, ui.card().classes("w-[26rem] max-w-full gap-2"):
@@ -430,8 +423,7 @@ def can_merge_source(ref: ListRef) -> bool:
     """Whether ``merge_source_for`` can produce a star for this ref: an ``auto`` row with
     neither a committed filter nor a candidate-extract job has nothing to contribute, and
     ``picks_filter.merge_source_for`` answers that case by raising. The gate is here so a
-    merge caller can say so instead. (Its old caller, the Picks table's merge tick, went
-    with picking-UI 09-S3 — creating merges is the Aggregate-candidates flow's job.)"""
+    merge caller can say so instead."""
     if ref.slug != AUTO_SLUG:
         return bool(ref.star_path)
     return picks_filter.auto_source_for(ref.ce_job_dir, ref.subtomo_job_dir) is not None
@@ -499,7 +491,7 @@ async def merge_lists(backend, refs: list[ListRef], name: str) -> str | None:
     )
     # Persist by explicit project_path (not the client-context default) so the
     # merged list survives a restart even if this runs without a resolvable
-    # client state — the same contract the manual-list persist proved out (P4).
+    # client state.
     await backend.save_project(ref.project_path, force=True)
     ui.notify(f"Created '{raw_name}' — {res.get('count', 0)} picks from {len(chosen)} lists", type="positive")
     return slug
@@ -517,7 +509,7 @@ async def delete_list(
     renders from ``sp`` / ``lst`` dicts and has no anchors resolved — can offer the same
     delete as the Species page's Picks table without a disk pass to build one.
 
-    An in-flight extraction is cancelled FIRST: its output directory is what this removes,
+    An in-flight extraction is cancelled first: its output directory is what this removes,
     and its instance goes with the list, so a job left running would re-create the directory
     with nothing left in the project able to stop it.
     """
@@ -595,8 +587,8 @@ async def dedup_list(backend, ref: ListRef, radius_ang: float, *, on_done: OnDon
 
 
 def open_dedup_dialog(backend, ref: ListRef, *, default_radius_ang: float, on_done: OnDone) -> None:
-    """Overlap overview + 'Deduplicate' for a merged list, as a dialog (the Journey's former
-    inline clash panel, now the Picks tab's). At the CHOSEN radius it shows how many picks clash;
+    """Overlap overview + 'Deduplicate' for a merged list, as a dialog. At the chosen radius
+    it shows how many picks clash;
     the user varies the radius and clicks Deduplicate to remove them (manual kept over
     auto). Nothing dedups automatically."""
     if not ref.star_path:
@@ -655,20 +647,20 @@ def open_dedup_dialog(backend, ref: ListRef, *, default_radius_ang: float, on_do
 
 
 async def curate_in_artiax(backend, ref: ListRef) -> None:
-    """Per-tomo 'Curate in ArtiaX' — THE launch/scope affordance (roadmap 09-S2, 10-S1).
+    """Per-tomo 'Curate in ArtiaX' — the launch/scope affordance.
 
     Declares the scope: exports this (species, tomo)'s picks to a `.coords`, writes the
     `.cxc` that preloads them and the `manifest.json` that says which species and which
-    tomogram this directory is for, pre-seeds the default list (13-S1: an empty
+    tomogram this directory is for, pre-seeds the default list (an empty
     `<species>__<tomo>__picks.coords`, opened last by the `.cxc`, registered as a 0-pick
     `picks` row — never overwritten on a repeat click), then opens the control center
     bound to it. Starting the session from there stamps that scope onto the session too. A
     different tomogram means coming back here: the control center then offers the confirmed
-    in-session switch (13-S2) or a restart.
+    in-session switch or a restart.
 
-    The bundle prep is the slow part on a tomogram whose display copy does not exist yet —
-    hence the toast BEFORE the await, which names it. SingleFlight-guarded so repeated
-    clicks prep only one bundle."""
+    The bundle prep is the slow part on a tomogram whose display copy does not exist yet,
+    hence the toast before the await. SingleFlight-guarded so repeated clicks prep only
+    one bundle."""
     async with _flight(f"{ref.species_id}:{ref.tomo_name}") as acquired:
         if not acquired:
             return
@@ -722,12 +714,12 @@ async def curate_in_artiax(backend, ref: ListRef) -> None:
 async def register_imported_picks(backend, ref: ListRef, result: dict, *, on_done: OnDone) -> None:
     """Explicit-import click path: upsert the ``manual__<stem>`` PickList for this
     (species, tomo) from a ``backend.import_curation_picks`` result
-    (``services.particles.ingest``, shared with the server-side watcher), persist AWAITED
+    (``services.particles.ingest``, shared with the server-side watcher), persist awaited
     with force=True so the registry actually lands on disk (a fire-and-forget
-    ``create_task(save_project())`` was getting GC'd before it ran, leaving
-    ``pick_lists: []`` in project_params.json), toast, and ``on_done`` so the new diamond
-    layer appears. Importing a file whose name matches an existing list REPLACES that
-    list — same name, same list (10-S2) — so the toast names it."""
+    ``create_task(save_project())`` can be GC'd before it runs, leaving ``pick_lists: []``
+    in project_params.json), toast, and ``on_done`` so the new diamond layer appears.
+    Importing a file whose name matches an existing list replaces that list — same name,
+    same list — so the toast names it."""
     pl = register_manual_pick_list(get_project_state_for(ref.project_path), result, ref.species_id, ref.tomo_name)
     await backend.save_project(ref.project_path, force=True)
     src = Path(result.get("coords_source", "")).name
@@ -772,11 +764,11 @@ def import_picks_from_path(
             or "No saved .coords was found in this project's curation dirs. Paste the full path to the "
             ".coords you saved from ArtiaX (any filename)."
         ).classes("text-xs text-gray-600")
-        # The frame a by-path file is read in. A save made INSIDE a curation dir carries
-        # that session's display-binning offset (10-S3) via its manifest; a file from
-        # anywhere else has no manifest, so it is read as full-resolution corner-Å. That is
-        # the right default for an external file and wrong by (N-1)/2·px for a session save
-        # the user moved out — so say which, rather than let a silent few-Å shift through.
+        # The frame a by-path file is read in. A save made inside a curation dir carries
+        # that session's display-binning offset via its manifest; a file from anywhere else
+        # has no manifest, so it is read as full-resolution corner-Å. That is right for an
+        # external file and wrong by (N-1)/2·px for a session save the user moved out, so
+        # the dialog says which rather than let a silent few-Å shift through.
         ui.label(
             "Read as full-resolution coordinates. If this file came out of a crboost curation session, "
             "put it back in that tomogram's folder (or assign it from UNATTRIBUTED SAVES) instead — that "
@@ -828,22 +820,20 @@ def import_picks_from_path(
     dialog.open()
 
 
-# ── Staging: assign an unattributed save (roadmap 10-S2) ──────────────────────
+# ── Staging: assign an unattributed save ──────────────────────────────────────
 
 _CHOOSE = "— choose —"  # no pre-selection: a wrong default here files picks under the wrong species
 
 
 async def assign_unattributed(backend, project_path: Path, entry: dict, *, on_done: OnDone) -> None:
     """Assign `.coords` files the watcher could not attribute to an explicit
-    (species, tomogram) — the maintainer's staging mechanism, and the reason nothing in
-    the ingest path ever guesses.
+    (species, tomogram). This staging step is why nothing in the ingest path guesses.
 
     ``entry`` is one row of ``CurationWatcher.unattributed()`` (``dir`` · ``reason`` ·
-    ``files``). Confirming MOVES those files into ``Curation/<species>/<tomo>/`` and
+    ``files``). Confirming moves those files into ``Curation/<species>/<tomo>/`` and
     writes the manifest that declares the identity; the watcher ingests them within a
-    tick. Neither dropdown is pre-selected — filing someone's hand-picked coordinates
-    under a plausible-looking species is exactly the silent misattribution Model B exists
-    to make impossible.
+    tick. Neither dropdown is pre-selected: filing hand-picked coordinates under a
+    plausible-looking species is a silent misattribution.
     """
     async with _flight(f"assign:{entry.get('dir')}") as acquired:
         if not acquired:

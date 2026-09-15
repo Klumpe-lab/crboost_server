@@ -44,9 +44,8 @@ class UserPreferences(BaseModel):
     recent_projects: list[RecentPath] = Field(default_factory=list)
 
     # Journey dashboard prefs — user-level, persist across projects + TS.
-    # `dashboard_panel` is the ONE section the Journey shows ("all" = every section);
-    # a single-select replaced the per-panel hidden set (2026-08-27). Dataset section
-    # starts collapsed (header + metrics only).
+    # `dashboard_panel` is the one section the Journey shows ("all" = every section).
+    # Dataset section starts collapsed (header + metrics only).
     dashboard_panel: str = "all"
     dashboard_dataset_collapsed: bool = True
 
