@@ -41,7 +41,7 @@ class DataImportFormState(BaseModel):
     movies_valid: bool = False
     mdocs_valid: bool = False
 
-    # Dose per tilt when the mdocs record none (roadmap 18 D4): prefilled with the
+    # Dose per tilt when the mdocs record none: prefilled with the
     # scan's estimate ("estimated"), overwritten by the user ("user"). None = the row
     # is not in play (the mdocs carry the dose) or the user cleared it.
     dose_per_tilt_override: float | None = None

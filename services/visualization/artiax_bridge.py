@@ -1,6 +1,6 @@
 """Bridge between crboost picks and ChimeraX/ArtiaX ``.coords`` files.
 
-ArtiaX ``.coords`` format (decoded from a real ArtiaX 0.6 save, 2026-06-02):
+ArtiaX ``.coords`` format (decoded from a real ArtiaX 0.6 save):
     - Plain text, one particle per line, three whitespace-separated floats: ``X Y Z``.
     - No header, no orientation columns (positions only — matches our positions-only design).
     - Values are PHYSICAL ÅNGSTRÖM from the volume CORNER origin, i.e. ``voxel_index * pixel_size``,
@@ -15,15 +15,15 @@ Mapping to our RELION-5 centered-Å convention (see :mod:`services.particles.coo
 
 Because we own both directions and exchange in ArtiaX's corner-Å (= voxel*px) space, the ``N/2``
 centering term cancels in any our→ArtiaX→our round trip regardless of the half-voxel parity
-ambiguity. See ``docs/roadmaps/completed/roadmap_artiax-bridge.md``.
+ambiguity.
 
-Since roadmap 10-S3 the volume ArtiaX opens may be a block-binned DISPLAY copy of the recon rather
-than the recon itself (it loads in seconds instead of ~20 s). That shifts the corner origin by one
+The volume ArtiaX opens may be a block-binned display copy of the recon rather than the recon
+itself (it loads in seconds instead of ~20 s). That shifts the corner origin by one
 exact constant — ``(N-1)/2 * pixel_size`` — which export subtracts and import adds; see
 :func:`display_corner_offset`. It is recorded per curation dir in ``manifest.json``, so no caller
 has to infer it, and it is 0.0 whenever the full-res volume is what opens.
 
-Since roadmap 13-S1 every bundle also pre-seeds ONE empty ``.coords`` per (species, tomogram) —
+Every bundle also pre-seeds one empty ``.coords`` per (species, tomogram) —
 ``<species_id>__<tomo>__picks.coords`` — which the ``.cxc`` opens last, so the user arrives in
 ArtiaX with the list crboost expects them to pick into already selected (:func:`ensure_seed_coords`).
 """
@@ -166,13 +166,11 @@ def import_coords_to_centered_star(
 # session so the user never types a path or a pixel size — the worker launches
 # `chimerax open_<tomo>.cxc` (CB_CXC env) and the session comes up preloaded.
 #
-# The command backbone below is the set CONFIRMED to work by hand (see
-# docs/roadmaps/completed/roadmap_artiax-bridge.md "Landed (session 1)"): `artiax start`, `artiax open tomo`,
+# The command backbone below is confirmed to work by hand: `artiax start`, `artiax open tomo`,
 # bare `open <f>.coords` (ArtiaX auto-detects the format and the picks land on the
-# density with no flip), `lighting simple`. Steps whose exact ArtiaX subcommand is
-# not yet confirmed (forcing a particle-list pixel size, creating an empty manual
-# list) are left as comments for the user to fill in on the first runtime test,
-# rather than emitted as commands that could error and halt the script.
+# density with no flip), `lighting simple`. Commands without a confirmed ArtiaX syntax
+# (e.g. forcing a particle-list pixel size) are not emitted, since a failing command
+# halts the script.
 
 
 def _cxc_quote(path) -> str:
@@ -198,23 +196,22 @@ def curation_dir(project_root, tomo_name: str, *, species_id: str = "", species_
 
     Keyed on ``species_id`` (the stable PickList-registry key; ``species_label`` then
     ``tomo_name`` are fallbacks) so prepare / import / merge / discover / prescan all
-    resolve the SAME directory. A ``.coords`` under here belongs to ``tomo_name``,
-    period — even with a generic filename — which is what kills the cross-tomo save
-    bleed (a per-species dir could not attribute a generic save to a tomogram).
+    resolve the same directory. A ``.coords`` under here belongs to ``tomo_name``, even
+    with a generic filename, so a save is never attributed to another tomogram.
     """
     sp_slug = _safe_slug(species_id or species_label or tomo_name)
     return Path(project_root) / "Curation" / sp_slug / _safe_slug(tomo_name)
 
 
 def user_coords_saves(curation_dir: Path) -> list[Path]:
-    """The user's saved ArtiaX ``.coords`` in ONE tomogram's curation dir, newest first.
+    """The user's saved ArtiaX ``.coords`` in one tomogram's curation dir, newest first.
 
     Every ``.coords`` under a ``curation_dir`` is that tomogram's by construction, so
-    newest-wins is bleed-proof. EXCLUDES crboost's own exports (``auto.coords``,
+    newest-wins cannot cross tomograms. Excludes crboost's own exports (``auto.coords``,
     ``*_ref.coords``); the non-recursive glob skips the ``imports/`` archive. Match is by
-    extension + mtime, NOT a fixed name — the user may name the save anything. Shared by
+    extension + mtime, not a fixed name, since the user may name the save anything. Shared by
     the explicit import (``session_service._discover_manual_coords``) and the server-side
-    ``CurationWatcher`` so both apply ONE rule. Empty when the dir does not exist."""
+    ``CurationWatcher`` so both apply one rule. Empty when the dir does not exist."""
     d = Path(curation_dir)
     if not d.is_dir():
         return []
@@ -227,15 +224,15 @@ def user_coords_saves(curation_dir: Path) -> list[Path]:
     return found
 
 
-# ── The pre-seeded default list (roadmap 13-S1) ───────────────────────────────
+# ── The pre-seeded default list ───────────────────────────────────────────────
 #
 # One list per (species, tomogram) is the norm; N is the exception. So instead of asking
-# the user to decide WHERE a new ArtiaX list goes and WHAT it is called, crboost creates
-# it: a 0-byte `.coords`, named after the scope, placed in the curation dir, opened LAST
+# the user to decide where a new ArtiaX list goes and what it is called, crboost creates
+# it: a 0-byte `.coords`, named after the scope, placed in the curation dir, opened last
 # by the `.cxc` so it is the selected list when the user arrives, and registered as a
 # 0-pick `picks` row. The user picks into it and saves it back to the same file; the
-# watcher then updates that row. Extra lists still work (every `.coords` is its own list)
-# — the seed only removes the naming/placing decision from the common case.
+# watcher then updates that row. Extra lists still work (every `.coords` is its own list);
+# the seed only removes the naming/placing step from the common case.
 #
 # `species_id` is the token, never the display label: it is a stable slug and already the
 # directory name. `__` is the house component separator (`manual__`, `merged__`,
@@ -257,9 +254,9 @@ def ensure_seed_coords(curation_dir: Path, species_id: str, tomo_name: str) -> t
     """Create the seed ``.coords`` if it does not exist. Returns ``(path, created)``.
 
     A 0-byte file is a valid ArtiaX list: its ``.coords`` reader is a csv row loop, so an
-    empty file opens as an empty particle list named after the file (checked against the
-    ArtiaX source 2026-09-04). Atomic create (``open(p, "x")``), NEVER truncates — a second
-    *Curate picks* on the same tomogram must not touch a seed the user has saved into.
+    empty file opens as an empty particle list named after the file (per the ArtiaX source).
+    Atomic create (``open(p, "x")``), never truncates: a second *Curate picks* on the same
+    tomogram must not touch a seed the user has saved into.
     """
     p = seed_coords_path(curation_dir, species_id, tomo_name)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -271,15 +268,14 @@ def ensure_seed_coords(curation_dir: Path, species_id: str, tomo_name: str) -> t
     return p, True
 
 
-# ── The staging contract: manifest.json (roadmap 10-S2) ───────────────────────
+# ── The staging contract: manifest.json ───────────────────────────────────────
 #
-# A `.coords` file carries zero identity — three floats per line. Under Model B the
-# ONE moment identity is declared is when crboost prepares a scoped launch, and this
-# is where it is written down: `Curation/<species>/<tomo>/manifest.json`, beside the
-# generated `.cxc`. Everything downstream reads it instead of reversing the directory
-# NAMES back into a species and a tomogram (which cannot survive a slug collision, and
-# which is fragility #1/#3 of §1 in the roadmap). A dir with no manifest still falls
-# back to slug matching, so pre-existing projects keep working.
+# A `.coords` file carries zero identity: three floats per line. Identity is declared
+# when crboost prepares a scoped launch and written to
+# `Curation/<species>/<tomo>/manifest.json`, beside the generated `.cxc`. Everything
+# downstream reads it instead of reversing the directory names back into a species and a
+# tomogram, which cannot survive a slug collision. A dir with no manifest still falls
+# back to slug matching, so older projects keep working.
 
 MANIFEST_NAME = "manifest.json"
 MANIFEST_SCHEMA = 1
@@ -290,10 +286,10 @@ def manifest_path(curation_dir: Path) -> Path:
 
 
 def read_manifest(curation_dir: Path) -> dict | None:
-    """The declared scope of one curation dir, or None when it has none (a dir that
-    predates 10-S2, or one the user created by hand). Never raises: an unreadable or
-    malformed manifest is reported as absent and the caller falls back to slug
-    attribution — which is surfaced, never silently guessed at."""
+    """The declared scope of one curation dir, or None when it has none (an older dir,
+    or one the user created by hand). Never raises: an unreadable or malformed manifest
+    is reported as absent and the caller falls back to slug attribution, which is
+    surfaced, never silently guessed at."""
     p = manifest_path(curation_dir)
     try:
         data = json.loads(p.read_text())
@@ -319,25 +315,24 @@ def write_manifest(curation_dir: Path, **fields) -> Path:
     return p
 
 
-# ── Display-binned recon (roadmap 10-S3) ──────────────────────────────────────
+# ── Display-binned recon ──────────────────────────────────────────────────────
 #
 # ArtiaX takes ~20 s to open a 1 GB / 268 M-voxel reconstruction, and the cost is
-# COMPUTE, not I/O (docs/roadmaps/completed/roadmap_artiax-bridge.md:412-440). "Change tomogram" is a relaunch or,
-# since 13-S2, the confirmed in-session switch — both re-open a volume, and both are only
-# tolerable if the open is seconds. We therefore open a block-mean-binned copy, cached
-# beside the recon.
+# compute, not I/O. "Change tomogram" is a relaunch or the confirmed in-session switch;
+# both re-open a volume, and both are only tolerable if the open takes seconds. We
+# therefore open a block-mean-binned copy, cached beside the recon.
 #
-# COORDINATES. ArtiaX writes `.coords` as `continuous_voxel_index * header_apix` from the
-# volume CORNER. Block-binning by N maps binned voxel v onto full-res voxel
-# u = v*N + (N-1)/2 (the block's CENTRE), so
+# Coordinates: ArtiaX writes `.coords` as `continuous_voxel_index * header_apix` from the
+# volume corner. Block-binning by N maps binned voxel v onto full-res voxel
+# u = v*N + (N-1)/2 (the block's centre), so
 #
 #     corner_full = corner_display + (N-1)/2 * pixel_size_full
 #
-# — one constant, uniform on all three axes, exact. It is applied on export (subtract)
+# One constant, uniform on all three axes, exact. It is applied on export (subtract)
 # and on import (add), and recorded in the manifest so the ingest side never has to
-# infer it. It is NOT a rounding fudge: with N=1 it is 0.0 and every path is byte-for-byte
-# what it was before. Trailing voxels that don't fill a block are cropped from the FAR
-# edge, which leaves the corner origin — and therefore the whole mapping — untouched.
+# infer it. It is not a rounding fudge; with N=1 it is 0.0. Trailing voxels that don't
+# fill a block are cropped from the far edge, which leaves the corner origin, and
+# therefore the whole mapping, untouched.
 
 DISPLAY_SUFFIX = "_cbdisp"
 
@@ -432,10 +427,10 @@ def session_chimerax_commands(recon_mrc, auto_coords: Path | None = None, seed_c
     """The ChimeraX command lines that load a tomogram + our picks into ArtiaX.
 
     This is the single source of the load backbone: the ``.cxc`` bakes these in for
-    the auto-launch path, the in-session switch (13-S2) sends the same lines over REST,
-    and the UI surfaces them verbatim as copyable "paste these into ChimeraX" guidance —
-    so the three never drift. The seed is opened LAST, after the reference list, so it is
-    the model selected when the user arrives (13-S1).
+    the auto-launch path, the in-session switch sends the same lines over REST, and the
+    UI surfaces them verbatim as copyable "paste these into ChimeraX" guidance, so the
+    three never drift. The seed is opened last, after the reference list, so it is the
+    model selected when the user arrives.
     """
     cmds = ["artiax start", f"artiax open tomo {_cxc_quote(recon_mrc)}"]
     if auto_coords is not None:
@@ -446,14 +441,11 @@ def session_chimerax_commands(recon_mrc, auto_coords: Path | None = None, seed_c
     return cmds
 
 
-# ── The confirmed in-session switch (roadmap 13-S2) ───────────────────────────
+# ── The confirmed in-session switch ───────────────────────────────────────────
 #
-# 10-S1 deleted the swap: the REST channel could re-point a running ArtiaX fine, but
-# crboost's record of the session's MEANING lived in a process dict a restart emptied,
-# so saves were misattributed. 13-S2 brings ONE outbound command back, on a stricter
-# footing: `switch_session_scope` sends this chain and rewrites `scope.json` + the
-# target dir's manifest in the SAME call, so the scope on disk is the switch's scope.
-# The chain itself was runtime-verified 2026-06-10 (docs/roadmaps/completed/roadmap_artiax-bridge.md:391-399).
+# `switch_session_scope` sends this chain and rewrites `scope.json` + the target dir's
+# manifest in the same call, so the scope on disk is always the viewer's scope and saves
+# stay correctly attributed across a server restart. The chain is runtime-verified.
 
 
 def swap_chimerax_commands(open_recon, auto_coords: Path | None = None, seed_coords: Path | None = None) -> str:
@@ -464,15 +456,15 @@ def swap_chimerax_commands(open_recon, auto_coords: Path | None = None, seed_coo
 
 
 def cd_chimerax_command(curation_dir) -> str:
-    """``cd <dir>``. Sent as its OWN call, never appended to the swap chain:
+    """``cd <dir>``. Sent as its own call, never appended to the swap chain:
     `send_chimerax_command` fails the whole ``;``-chain on any UserError, and a `cd` that
     cannot land must not read as "the tomogram did not load".
 
-    What it buys is LESS than it looks (2026-09-06, from the ChimeraX + ArtiaX sources):
-    ChimeraX's save dialog is a QFileDialog that opens in Qt's *last visited* directory,
-    and only falls back to the cwd for the very first dialog of the process. So the cwd
-    steers the first save after launch and nothing after — after a switch, the dialog opens
-    in the PREVIOUS scope's folder. The reliable save target is the full path pasted into
+    It does less than it looks (per the ChimeraX + ArtiaX sources): ChimeraX's save
+    dialog is a QFileDialog that opens in Qt's *last visited* directory, and only falls
+    back to the cwd for the very first dialog of the process. So the cwd steers the first
+    save after launch and nothing after; after a switch, the dialog opens in the previous
+    scope's folder. The reliable save target is the full path pasted into
     the dialog, or :func:`save_chimerax_command` run from ChimeraX's command line."""
     return f"cd {_cxc_quote(curation_dir)}"
 
@@ -485,7 +477,7 @@ def write_save_dir_script(curation_dir: Path) -> Path:
     save dialog opens. Qt keeps a process-wide *last visited* directory that every fresh
     QFileDialog opens in; ``QFileDialog.setDirectory()`` sets it, even on a dialog that is
     never shown. ArtiaX's save button passes no directory (``ArtiaXSaveDialog.display``,
-    ``initial_directory=None``), so this is what makes "the dialog opens in THIS folder"
+    ``initial_directory=None``), so this is what makes "the dialog opens in this folder"
     true after a switch, not just for the first save of the process. Run by ChimeraX's
     ``runscript`` — from the ``.cxc`` at launch and as its own call after a switch."""
     d = Path(curation_dir)
@@ -508,14 +500,14 @@ def write_save_dir_script(curation_dir: Path) -> Path:
 
 
 def runscript_chimerax_command(script_path) -> str:
-    """``runscript <file.py>`` — sent as its OWN call, like ``cd``, so a failure is reported
+    """``runscript <file.py>``, sent as its own call like ``cd``, so a failure is reported
     as "the dialog folder was not set" rather than as a failed switch."""
     return f"runscript {_cxc_quote(script_path)}"
 
 
 def save_chimerax_command(coords_path, model_id: str) -> str:
-    """``save <path> partlist #N`` — ArtiaX's own save command for ONE particle list, for
-    the USER to run in ChimeraX's command line (it is never sent by crboost). Names both
+    """``save <path> partlist #N``: ArtiaX's own save command for one particle list, for
+    the user to run in ChimeraX's command line (crboost never sends it). Names both
     the file and the list, so neither the dialog's remembered folder nor its list chooser
     can redirect it. ``model_id`` is the ``#…`` id `info models` reports for the seed."""
     mid = model_id if model_id.startswith("#") else f"#{model_id}"
@@ -538,7 +530,7 @@ def build_session_cxc(
 
     Pure string generation (no numpy), so it runs anywhere. ``pixel_size`` / ``tomo_size``
     are baked into the header for transparency (crboost knows them; ChimeraX reads the
-    binned px from the MRC header). ``seed_coords`` is the pre-seeded default list (13-S1):
+    binned px from the MRC header). ``seed_coords`` is the pre-seeded default list:
     opened last so it is selected on arrival, and named in the trailing comment as the
     file to save back into.
     """
@@ -592,9 +584,9 @@ def prepare_curation_bundle(
     display_bin: int = 1,
 ) -> dict:
     """Materialize everything a ChimeraX/ArtiaX session needs to open one
-    tomogram preloaded with a reference pick list — and DECLARE that session's scope.
+    tomogram preloaded with a reference pick list, and declare that session's scope.
 
-    This is the one moment identity exists (roadmap 10-S2): the manifest written here
+    This is the one moment identity exists: the manifest written here
     says which species and which tomogram this directory is for, so a ``.coords`` saved
     into it later is attributable without reversing directory names. ``out_dir`` is the
     per-(species, tomo) :func:`curation_dir`, so the exports use plain, tomo-implicit
@@ -607,7 +599,7 @@ def prepare_curation_bundle(
     pointing at ``cxc_path``.
 
     ``display_bin`` > 1 opens a block-binned display copy of the recon instead of the
-    full-res volume (10-S3, generated once and cached beside it). Both the reference
+    full-res volume (generated once and cached beside it). Both the reference
     export and — via the manifest — the ingest of the user's saves then work in that
     volume's frame; see :func:`display_corner_offset`. ``display_note`` in the result is
     non-empty exactly when the copy could not be made and the session is getting the slow
@@ -617,8 +609,8 @@ def prepare_curation_bundle(
     preload, so no reference ``.coords`` is written and the ``.cxc`` opens the tomogram
     plus the seed alone.
 
-    With a ``species_id`` the bundle also pre-seeds the default list (13-S1,
-    :func:`ensure_seed_coords`): ``seed_coords`` / ``seed_created`` in the result, the seed
+    With a ``species_id`` the bundle also pre-seeds the default list
+    (:func:`ensure_seed_coords`): ``seed_coords`` / ``seed_created`` in the result, the seed
     in the manifest and opened last by the ``.cxc``. Never overwrites an existing seed.
     Without a species id (only the CLI ``bundle`` path) there is nothing to name it after,
     so no seed — and the CLI says so rather than inventing one.
@@ -724,9 +716,9 @@ def _cli(argv=None) -> int:
     b.add_argument("--tomo", required=True)
     b.add_argument("--out-dir", required=True, type=Path)
     b.add_argument("--species", default="", help="display label (header comment only)")
-    b.add_argument("--species-id", default="", help="registry id — names the pre-seeded default list (13-S1)")
+    b.add_argument("--species-id", default="", help="registry id; names the pre-seeded default list")
     b.add_argument("--project-root", type=Path, default=None)
-    b.add_argument("--display-bin", type=int, default=1, help="open a block-binned display copy of the recon (10-S3)")
+    b.add_argument("--display-bin", type=int, default=1, help="open a block-binned display copy of the recon")
 
     r = sub.add_parser("selftest", help="pure round-trip check (no ArtiaX): centered->coords->centered")
     r.add_argument("--candidates", required=True, type=Path)

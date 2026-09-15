@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 # schedule the driver writes into config.yaml. List length == number of macro-iterations.
 # alignment modes: "anchoring" (iterative) | "global" (single pass) | [N, N] (local
 # NxN image-warping grid). Kept here (not in the driver) so the walltime estimate below
-# and the driver's config.yaml read the SAME schedule. Values from docs/miss-alignment.md §5.
+# and the driver's config.yaml read the same schedule. Values from the config schema in
+# docs/miss-alignment.md.
 MISS_ALIGN_SCHEDULES: dict[MissAlignSchedule, list[dict]] = {
     MissAlignSchedule.FAST: [{"downsample": 2, "alignment": "anchoring"}, {"downsample": 1, "alignment": "global"}],
     MissAlignSchedule.DEFAULT: [
@@ -44,8 +45,7 @@ MISS_ALIGN_SCHEDULES: dict[MissAlignSchedule, list[dict]] = {
 # invocation trains + realigns ALL selected tilt-series across a coarse->fine schedule of macro-
 # iterations. Each iteration = a fixed TRAINING budget (steps_per_epoch x max_epochs training steps,
 # INDEPENDENT of n_ts — training samples one pooled dataset) + a per-TS ALIGNMENT phase. So the cost
-# driver is steps x epochs x per-step-time, NOT n_ts x iters (the old flat model badly under-shot and
-# the job died mid-iteration, before the per-iteration checkpoint — see below). per-step time is
+# driver is steps x epochs x per-step-time, NOT n_ts x iters. Per-step time is
 # card-dependent and unknowable at submit, so we use a conservative RTX-class constant: UNDER-
 # requesting is catastrophic (killed mid-iteration -> no checkpoint -> the resume restarts the same
 # iteration forever), while OVER-requesting is harmless (SLURM frees the slot when the job ends).
@@ -81,13 +81,13 @@ class MissAlignParams(AbstractJobParams):
 
     An OPTIONAL, insertable post-alignment job: it consumes aligntiltsWarp's warp_tiltseries/
     (which supplies the required initial coarse alignment), refines the per-TS Warp XMLs, and
-    feeds tsCtf/tsReconstruct with ZERO format conversion (it is Warp-native). v1 = the tool's
+    feeds tsCtf/tsReconstruct with ZERO format conversion (it is Warp-native). Runs the tool's
     `train` subcommand, which both trains and aligns. See docs/miss-alignment.md.
 
     Routing note: because this job refines the multi-producer WARP_TILTSERIES_DIR in place,
-    downstream tsCtf does NOT auto-prefer it (that would regress no-missAlign pipelines — see
-    container_defs/MISS_ALIGNMENT_INTEGRATION.md). For P1, point tsCtf's `input_processing` at
-    this job via the IO-tab source dropdown; auto-wiring via a per-instance source_override is P2.
+    downstream tsCtf does NOT auto-prefer it (that would break pipelines without missAlign).
+    Point tsCtf's `input_processing` at this job via the IO-tab source dropdown; nothing
+    wires it automatically.
     """
 
     job_type: JobType = Field(default=JobType.MISS_ALIGN)
@@ -240,9 +240,8 @@ class MissAlignParams(AbstractJobParams):
         Prefer the user's REAL default-QOS MaxWallDurationPerJob, probed live via sacctmgr and cached
         by SlurmService.get_user_qos_limits() (the landing-page probe populates it). That's the true
         limit `sbatch` enforces, so a job can safely request up to it. Fall back to the conservative
-        supervisor default walltime from conf.yaml only when the QOS hasn't been probed this session
-        (which historically strangled the estimate below one macro-iteration -> QOSMaxWall-safe but
-        stuck-looping; the live value fixes that)."""
+        supervisor default walltime from conf.yaml only when the QOS hasn't been probed this session;
+        that fallback can cap the estimate below one macro-iteration, so the resume never advances."""
         try:
             real = get_cached_qos_maxwall_minutes()
             if real > 0:

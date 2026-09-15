@@ -45,7 +45,7 @@ class CandidateExtractPytomParams(AbstractJobParams):
     # Particle params
     particle_diameter_ang: float = Field(default=200.0)
     # ge=1: PyTOM's `-n` is a required, strictly-positive cap ("error: -n must be larger
-    # than 0", argparse exit 2) — a stored 0 got all the way to a GPU node before saying so.
+    # than 0", argparse exit 2); without the bound a stored 0 only fails on the GPU node.
     # There is no "0 = uncapped" spelling; leave the cap high instead.
     max_num_particles: int = Field(
         default=1500, ge=1, description="Hard cap on candidates per tilt-series after the cutoff is applied."
@@ -53,14 +53,12 @@ class CandidateExtractPytomParams(AbstractJobParams):
 
     # Thresholding strategy + per-strategy values.
     #
-    # The legacy single-field `cutoff_value` was reused for two strategies with
-    # incomparable scales: under FALSE_POSITIVES it's "expected FPs per tomogram"
-    # (e.g. 1.0 = strict), under MANUAL it's "raw LCC threshold" (e.g. 0.1).
-    # Flipping the dropdown without re-entering a sensible scale gave silently
-    # wrong results (e.g. carrying 1.0 over to MANUAL means CC ≥ 1.0 → 0 picks).
-    # Each strategy now has its own backing field; the UI shows only the
-    # relevant one based on `cutoff_method`. Old project JSONs are migrated by
-    # `_migrate_legacy_cutoff_value` below.
+    # The two strategies have incomparable scales: under FALSE_POSITIVES the value is
+    # "expected FPs per tomogram" (e.g. 1.0 = strict), under MANUAL it is a raw LCC
+    # threshold (e.g. 0.1). A shared field would carry 1.0 over to MANUAL on a dropdown
+    # flip (CC ≥ 1.0 → 0 picks), so each strategy has its own backing field and the UI
+    # shows only the one matching `cutoff_method`. Older project files carry a single
+    # `cutoff_value`; `_migrate_legacy_cutoff_value` below routes it on load.
     cutoff_method: ExtractionCutoffMethod = Field(default=ExtractionCutoffMethod.FALSE_POSITIVES)
     cc_threshold: float = Field(
         default=0.1,
@@ -80,13 +78,12 @@ class CandidateExtractPytomParams(AbstractJobParams):
         dict from JSON load is what we mutate.
 
         Behavior:
-          - If the JSON has `cutoff_value` and NEITHER `cc_threshold` nor
-            `expected_false_positives` was explicitly set, route the value
-            into the field that matches `cutoff_method`.
-          - If both old + new are present (mid-migration JSONs), prefer the
-            explicit new field — don't clobber what the user has set.
+          - If the JSON has `cutoff_value` and neither `cc_threshold` nor
+            `expected_false_positives` is set, route the value into the
+            field that matches `cutoff_method`.
+          - If both old and new keys are present, the explicit new field wins.
           - The legacy key is always removed from the dict (Pydantic v2
-            BaseModel defaults to extra='ignore' so this is belt-and-braces).
+            BaseModel already defaults to extra='ignore').
         """
         if not isinstance(data, dict):
             return data

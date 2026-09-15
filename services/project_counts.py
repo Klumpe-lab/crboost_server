@@ -1,20 +1,15 @@
-"""How much data a project holds — the two numbers the workspace rail badges.
+"""How much data a project holds: the tilt-series and tomogram counts on the workspace
+rail badges. One number per rail icon, recomputed off the event loop and repainted only
+when it changes.
 
-The workspace has no cheap way to say "your tomograms arrived". The counts live behind
-the Tomograms wall and the project-hub popover, so a user who imports volumes into an
-empty project sees nothing move. These two functions are the answer: one number per
-rail icon, recomputed off the event loop and repainted only when it changes.
+Both counts are cheap: star rows and in-memory registry entries, no MRC headers (that is
+``services.visualization.tomo_geometry.all_geometries``' job, on a render path, not a
+poll). The one disk cost is an ``exists()`` per tomogram row, memoized on the source
+stars' mtimes so an unchanged project costs two ``stat`` calls per tick.
 
-Both are deliberately CHEAP — star rows and in-memory registry entries, no MRC headers
-(that is ``services.visualization.tomo_geometry.all_geometries``' job, and it sits on a
-render path, not a poll). The one disk cost is an ``exists()`` per tomogram row, and it
-is memoized on the source stars' mtimes so an unchanged project costs two ``stat`` calls
-per tick.
-
-Nothing here invents a number. A source that cannot be read contributes zero rows and
-says so in ``unreadable``; a row whose volume is not on disk is counted in ``missing``
-rather than folded into the total silently (CLAUDE.md 'Surfacing uncertainty') — the
-badge tooltip is where the user reads it.
+A source that cannot be read contributes zero rows and is listed in ``unreadable``; a
+row whose volume is not on disk is counted in ``missing`` rather than folded into the
+total. The badge tooltip shows both.
 """
 
 from __future__ import annotations
@@ -134,7 +129,7 @@ def tomogram_counts(project_state, project_path: Path) -> TomogramCounts:
 def tilt_series_counts(project_state, project_path: Path) -> TiltSeriesCounts:
     """Tilt-series in the registry, and how many are in the processing set.
 
-    The registry is the store (roadmap 02); a pre-registry project has none, so the
+    The registry is the store; a pre-registry project has none, so the
     counts recorded on ``ProjectState`` at import time stand in — the same fallback the
     project-hub parameter pane makes."""
     from services.tilt_series import get_registry_for

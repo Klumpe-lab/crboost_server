@@ -1,5 +1,5 @@
-"""``ListRef`` — the identity of ONE pick list on ONE tomogram, as the shared pick-list
-actions consume it (roadmap 11-S1).
+"""``ListRef``: the identity of one pick list on one tomogram, as the shared pick-list
+actions consume it.
 
 The Journey and the Species page describe the same list from different materials (the
 Journey from its ``sp`` / ``lst`` render dicts, the Species page from a ``PickList`` plus
@@ -31,16 +31,15 @@ def fs_slug(name: str) -> str:
 
 
 def extract_pick_list_instance_id(species_id: str, tomo_name: str, slug: str) -> str:
-    """Instance id of the per-list extraction job for ONE pick list (roadmap 07).
+    """Instance id of the per-list extraction job for one pick list.
 
     Keyed on the full ``(species, tomo, slug)`` triple for the same reason
     ``path_resolution_service.pick_list_producer_id`` is: ``PickList.slug`` is unique only
-    WITHIN a (species, tomogram). Hand-picked lists are slugged after the ``.coords`` file
+    within a (species, tomogram). Hand-picked lists are slugged after the ``.coords`` file
     they came from (``manual__<stem>``, ``services/particles/ingest.py``), and the same
     ``manual__picks`` is minted on every tomogram the user saves that name on, so a
-    slug-only id would collapse them onto ONE instance — the second submit silently
-    overwriting the first's geometry, status and error. (Before roadmap 10-S2 the literal
-    ``"manual"`` collapsed EVERY hand-picked list in the project.)
+    slug-only id would collapse them onto one instance, the second submit silently
+    overwriting the first's geometry, status and error.
 
     Not string-equal to the producer id and not derivable from it: the tomogram name is
     slugged here because this id is interpolated unquoted into the driver launch command

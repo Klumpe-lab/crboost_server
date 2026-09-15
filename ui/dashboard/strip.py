@@ -1,6 +1,6 @@
 """Journey dashboard — the tomogram header line + the tomogram switcher.
 
-The Journey's header is ONE thin line about the selected tilt series: its position
+The Journey's header is one thin line about the selected tilt series: its position
 label and index (``Pos 3 · Beam 2``, ``3 / 14``), the four preparation stages as
 labelled status dots, and every species' pick count in it. The line is clickable: it
 drops down a table of every tilt series in the project (the same facts per row, plus

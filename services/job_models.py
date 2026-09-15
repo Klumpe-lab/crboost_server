@@ -2,9 +2,8 @@
 """
 Backwards-compatibility shim.
 
-All job model classes now live in services/jobs/ (one file per job type).
-This module re-exports everything so existing ``from services.job_models import X``
-continues to work.
+Job model classes live in services/jobs/ (one file per job type).
+This module re-exports them so ``from services.job_models import X`` keeps working.
 """
 
 from services.jobs import (

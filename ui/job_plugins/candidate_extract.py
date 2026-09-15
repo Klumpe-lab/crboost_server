@@ -8,8 +8,8 @@ instances and want to be inspectable without first navigating to a specific
 job tab.
 
 The Config tab opens with the one species line (pill + "open in Species");
-species facts (Ø, symmetry, templates) live on the species itself, not here
-(roadmap 08 S1). particle_diameter_ang on this job remains as a per-job
+species facts (Ø, symmetry, templates) live on the species itself, not here.
+particle_diameter_ang on this job is a per-job
 override; new projects should leave it at the default and edit
 species.diameter_ang via the workbench.
 """
@@ -51,12 +51,11 @@ def render_candidate_extract_params(job_type, job_model, is_frozen, save_handler
     common = dict(job_model=job_model, is_frozen=is_frozen, save_handler=save_handler)
 
     # ── Pick threshold ──────────────────────────────────────────────────
-    # The strategy dropdown swaps which cutoff input we show. The two
-    # strategies have INCOMPARABLE scales (CC ∈ [0,1] vs FP count typically
+    # The strategy dropdown swaps which cutoff input is shown. The two
+    # strategies have incomparable scales (CC ∈ [0,1] vs FP count typically
     # 1–100), so they live in separate backing fields (cc_threshold and
-    # expected_false_positives) and we only render the one that matches the
-    # current strategy. Flipping the strategy preserves your value for the
-    # OTHER strategy — no value-stomping.
+    # expected_false_positives) and only the one matching the current
+    # strategy is rendered. Flipping the strategy keeps the other's value.
     section_header("Pick threshold", first=True)
     with field_grid():
         # Strategy change must re-render the per-strategy cutoff field below.
@@ -152,9 +151,8 @@ def render_candidate_extract_params(job_type, job_model, is_frozen, save_handler
             hint="For tophat: '<connectivity>:<bins>' (e.g. '1:5'). Leave 'None' otherwise.",
             **common,
         )
-        # array_throttle is deliberately NOT here (peeve P-09): the SLURM Resources section
-        # renders it for every array job (ui/pipeline_builder/slurm_tab.py), so a second
-        # field bound to the same attribute just showed the value twice.
+        # array_throttle is not rendered here: the SLURM Resources section renders it for
+        # every array job (ui/pipeline_builder/slurm_tab.py).
 
 
 def _string_select(label, *, job_model, attr, choices, is_frozen, save_handler, hint=None):

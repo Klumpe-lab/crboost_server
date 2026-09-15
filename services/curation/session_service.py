@@ -2,21 +2,17 @@
 reconnect, and round-trip manual picks (`.coords` ↔ centered-Å star) between ArtiaX
 and the pipeline.
 
-Model B (roadmap 10, maintainer decision 2026-08-21): a session's SCOPE — which species,
-which tomogram — is declared at launch and written into the scoped directory's
-`manifest.json` and the session's `scope.json`. The old outbound driving
-(`load_into_session` / `save_curation_picks` / `save_session_particle_lists`) is gone: it
-inferred the session's meaning from an in-memory dict that a restart emptied, silently
-filed a second species' picks under the first, and ingested only the newest of N saved
-lists. What replaces it is the staging contract — every `.coords` in a scoped dir becomes
-its own pick list, and anything saved outside one lands in the unattributed inbox for
-explicit assignment (`assign_unattributed_coords`), never a guess.
+A session's scope (which species, which tomogram) is declared at launch and written into
+the scoped directory's `manifest.json` and the session's `scope.json`, so it survives a
+server restart. Every `.coords` in a scoped dir becomes its own pick list; anything saved
+outside one lands in the unattributed inbox for explicit assignment
+(`assign_unattributed_coords`), never a guess.
 
-Roadmap 13-S2 admits exactly ONE outbound command after launch: the confirmed scope switch
-(`switch_session_scope`). It re-points the running viewer over the same REST channel AND
-rewrites `scope.json` + the target manifest in the same call, so the scope on disk is
-always the viewer's scope — the invariant the old swap broke. It never saves for the
-user; the UI confirms first because `close session` drops unsaved ArtiaX lists."""
+The only command that drives a running session is the confirmed scope switch
+(`switch_session_scope`). It re-points the viewer over the REST channel and rewrites
+`scope.json` + the target manifest in the same call, so the scope on disk always matches
+the viewer. It never saves for the user; the UI confirms first because `close session`
+drops unsaved ArtiaX lists."""
 
 from __future__ import annotations
 import asyncio
@@ -63,9 +59,9 @@ class CurationSessionService:
         self.slurm_service = slurm_service
         # Serializes the user-level session registry's append/prune.
         self._curation_registry_lock = asyncio.Lock()
-        # Serializes the ONE thing that drives a running session — the scope switch
-        # (13-S2) — so two clicks cannot interleave their `close session` chains, and the
-        # scope written to disk is the scope of the chain that ran last.
+        # Serializes the scope switch, the one thing that drives a running session, so two
+        # clicks cannot interleave their `close session` chains, and the scope written to
+        # disk is the scope of the chain that ran last.
         self._switch_lock = asyncio.Lock()
 
     async def launch_curation_session(
@@ -80,8 +76,8 @@ class CurationSessionService:
         instead of blank.
 
         `scope` is that bundle's declared identity — `{species_id, species_label,
-        tomo_name, curation_dir, project_path}`. It is the ONLY moment the session's
-        meaning is fixed (Model B): it is written to `<session_dir>/scope.json` so a
+        tomo_name, curation_dir, project_path}`. It is the only moment the session's
+        meaning is fixed: it is written to `<session_dir>/scope.json` so a
         reconnecting UI — or this process after a restart — can say what the running
         viewer was launched on, and stamped into the scoped dir's `manifest.json` as
         `launched_at`, which is what tells the curation watcher that dir is hot.
@@ -136,8 +132,7 @@ class CurationSessionService:
         # under apptainer --nv, so the _GL.sif renders on the GPU instead of software-GL llvmpipe.
         gres_line = f"#SBATCH --gres={cur.gres}\n" if cur.gres else ""
         vgl_export = "export CX_VGL=1\n" if cur.vgl else ""
-        # Opt-in only (roadmap 10-S1, the maintainer's "can we make it passwordless?"):
-        # the desktop then runs `-SecurityTypes None`, so anyone who can reach the rfb
+        # Opt-in only: the desktop then runs `-SecurityTypes None`, so anyone who can reach the rfb
         # port on that node drives it. Off by default; the control center states the risk.
         nopass_export = "export CX_VNC_NOPASS=1\n" if cur.passwordless_vnc else ""
         sbatch_script.write_text(
@@ -206,7 +201,7 @@ class CurationSessionService:
         logger.info("Curation session submitted: SLURM job %s (session %s)", slurm_job_id, session_id)
         return ok(slurm_job_id=slurm_job_id, session_dir=str(session_dir), session_id=session_id)
 
-    # ── declared scope (Model B) ───────────────────────────────────────────────
+    # ── declared scope ─────────────────────────────────────────────────────────
 
     @staticmethod
     def _record_scope(
@@ -217,10 +212,10 @@ class CurationSessionService:
         still runs — its saves are attributed by the manifest the bundle already wrote,
         and worst case they reach the unattributed inbox. Never blocks a launch.
 
-        `how` is `launch` or `switch` (13-S2), recorded as `scope_set_by`. `launched_at`
-        now means "became this session's scope at" — it is the watcher's hot-dir key
-        (`watcher.py`, the newest `launched_at` across manifests is rescanned every tick),
-        which is exactly what a switch must move to the new dir."""
+        `how` is `launch` or `switch`, recorded as `scope_set_by`. `launched_at` means
+        "became this session's scope at": it is the watcher's hot-dir key (`watcher.py`,
+        the newest `launched_at` across manifests is rescanned every tick), so a switch
+        must move it to the new dir."""
         if not scope:
             return
         from services.visualization import artiax_bridge
@@ -258,13 +253,13 @@ class CurationSessionService:
         seed_coords: str | None,
         scope: dict[str, Any],
     ) -> dict[str, Any]:
-        """Re-point a LIVE session at another (species, tomogram) — the one outbound command
-        13-S2 admits after launch. `session_info` is what `find_active_curation_session*`
-        returned (`node`, `rest_port`, `session_dir`, `slurm_job_id`); the three paths are
-        the target bundle's; `scope` is `curation_scope(...)` for the target.
+        """Re-point a live session at another (species, tomogram). `session_info` is what
+        `find_active_curation_session*` returned (`node`, `rest_port`, `session_dir`,
+        `slurm_job_id`); the three paths are the target bundle's; `scope` is
+        `curation_scope(...)` for the target.
 
-        Order matters and is the whole point: (1) the swap chain over REST — failure here
-        means ArtiaX still has the OLD tomogram and the scope on disk stays the old one;
+        Order matters: (1) the swap chain over REST; failure here means ArtiaX still has
+        the old tomogram and the scope on disk stays the old one;
         (2) `cd` as its own call, best-effort (`cd_error`); (3) the scope written to
         `scope.json` and the target manifest via `_record_scope(how="switch")`, so the
         watcher's hot dir and every reconnecting UI follow the viewer. Never saves for the
@@ -287,8 +282,7 @@ class CurationSessionService:
             res = await self.send_chimerax_command(session_info, chain, timeout=120)
             if not res.get("success"):
                 return err(f"ArtiaX did not switch: {res.get('error')}", raw=res.get("raw"))
-            # VERIFY, don't assume (2026-09-06): a chain that returned ok is not proof the seed
-            # is open and selected. `info models` lists `#id, name, shown` per model; the seed's
+            # A chain that returned ok is not proof the seed is open and selected. `info models` lists `#id, name, shown` per model; the seed's
             # model is named after its file. Absent → the switch failed, whatever the chain said.
             probe = await self.send_chimerax_command(session_info, "info models", timeout=15)
             seed_model_id = _model_id_in_probe(probe, seed_name)
@@ -346,8 +340,7 @@ class CurationSessionService:
     def _read_scope(session_dir: Path) -> dict[str, Any]:
         """``{"scope": {...}}`` for a session dir, or ``{}``. Merged into what the two
         find_active_* methods return, so every consumer of a live session also learns what
-        it was launched on — including after a crboost restart, which is precisely what
-        the old in-memory `_curation_loaded` could not survive."""
+        it was launched on, including after a crboost restart."""
         try:
             data = json.loads((Path(session_dir) / "scope.json").read_text())
         except (OSError, ValueError):
@@ -370,8 +363,8 @@ class CurationSessionService:
 
         # No session.json yet — ask SLURM why. query_jobs_by_ids distinguishes the two
         # cases get_user_jobs conflates (get_user_jobs returns [] on squeue failure, which
-        # is indistinguishable from "no jobs"): None = squeue ITSELF failed (a transient we
-        # must NOT read as "job gone"); {} = squeue is healthy and the job genuinely left.
+        # is indistinguishable from "no jobs"): None = squeue itself failed (a transient, not
+        # "job gone"); {} = squeue is healthy and the job genuinely left.
         state = None
         squeue_ok = True
         if slurm_job_id:
@@ -388,16 +381,14 @@ class CurationSessionService:
             # RUNNING (or similar) but session.json not visible yet — just started / NFS lag.
             return ok(status="starting", slurm_state=state)
         if not squeue_ok:
-            # Couldn't reach the scheduler this tick — keep the spinner up rather than
-            # fabricate an "ended" for a job that may well be alive (the transient-squeue
-            # false-ended bug). The next 3 s poll re-checks.
+            # Couldn't reach the scheduler this tick; keep the spinner up rather than
+            # report "ended" for a job that may well be alive. The next 3 s poll re-checks.
             return ok(status="pending", slurm_state="scheduler unreachable — retrying")
 
         # squeue is healthy and the job is genuinely gone. Only "ended" if the job actually
-        # ran (its log exists) — otherwise this is the brief post-sbatch window before it
-        # registers, so report pending. If it ran but wrote NOTHING (0-byte log), it died in
-        # the node-side container/VNC bring-up before logging — surface an actionable message
-        # instead of a blank so the user retries rather than facing a mystery "session exited".
+        # ran (its log exists); otherwise this is the brief post-sbatch window before it
+        # registers, so report pending. If it ran but wrote nothing (0-byte log), it died in
+        # the node-side container/VNC bring-up before logging; say so, so the user retries.
         log_file = sdir / "slurm.log"
         if log_file.exists():
             tail = log_file.read_text()[-1200:].strip()
@@ -450,8 +441,8 @@ class CurationSessionService:
         return sorted({jid for jid in recorded if jid in live or jid.split("_", 1)[0] in live_bases})
 
     # Curation jobs are submitted with `-J cb-curation`; a session is "live" iff
-    # its SLURM job is in one of these states (squeue is the source of truth — we
-    # never trust a cached is-running flag; see project memory on the stuck-yellow bug).
+    # its SLURM job is in one of these states (squeue is the source of truth, never a
+    # cached is-running flag).
     _CURATION_LIVE_STATES = ("RUNNING", "PENDING", "CONFIGURING", "SCHEDULED", "COMPLETING")
 
     async def find_active_curation_session(self, project_path: Path) -> dict[str, Any] | None:
@@ -577,12 +568,12 @@ class CurationSessionService:
                 continue
             chosen = (d, match)
 
-        # Prune dead entries — but ONLY when squeue actually returned data. An empty
+        # Prune dead entries, but only when squeue actually returned data. An empty
         # result is indistinguishable from a squeue failure (get_user_jobs returns []
         # on error without caching it), and pruning then would wipe still-live sessions
-        # — the one backing store the cross-project reuse path reads. Re-read fresh
-        # under the lock so a concurrent launch's append isn't lost to a stale rewrite,
-        # and drop only entries we CONFIRMED dead (preserving any new lines).
+        # from the store the cross-project reuse path reads. Re-read fresh under the
+        # lock so a concurrent launch's append isn't lost to a stale rewrite, and drop
+        # only entries confirmed dead.
         if jobs and dead_dirs:
             try:
                 async with self._curation_registry_lock:
@@ -626,14 +617,11 @@ class CurationSessionService:
     ) -> dict[str, Any]:
         """Run a ChimeraX/ArtiaX command string in a LIVE curation session.
 
-        QUARANTINED (roadmap 10-S1, relaxed by 13-S2). A session driven from outside
-        cannot be trusted to mean what crboost thinks it means unless the scope on disk
-        moves with it (docs/roadmaps/picking_ui/roadmap_10-external-picker-contract.md §1).
-        This channel therefore carries exactly two things, both gated on `curation.rest_enabled`: launch-time health
-        checks, and `switch_session_scope` — which records the new scope in the SAME
-        call. Any further caller must do the same, or it reopens the bug class Model B
-        closed; a caller that saves on the user's behalf is still out of bounds (that
-        path was never verified and is what the old swap pretended to do).
+        A session driven from outside means what crboost thinks it means only if the
+        scope on disk moves with it. This channel therefore carries exactly two things,
+        both gated on `curation.rest_enabled`: launch-time health checks, and
+        `switch_session_scope`, which records the new scope in the same call. Any further
+        caller must do the same. Saving on the user's behalf is out of bounds.
 
         Reaches the node's loopback REST server by ssh-hopping (the headnode can ssh
         to a node where the user has a running job — the same access VNC relies on).
@@ -702,13 +690,12 @@ class CurationSessionService:
         log_err = log.get("error") if isinstance(log, dict) else None
         log_err_txt = (log_err[0] if isinstance(log_err, (list, tuple)) else str(log_err)) if log_err else None
         # ChimeraX's REST `error` is {"type","message"} (sometimes a bare string), and it carries
-        # BOTH real failures and benign internal noise. Distinguish them: a real command failure is
-        # a UserError (bad args / missing file — we MUST surface it); an internal trigger bug is some
-        # other exception type. Concretely, ArtiaX/ChimeraX's command-history save() raises
-        # AttributeError ("'ParticleList' object has no attribute 'string'") on EVERY command once a
-        # particle list is open — the command still ran and the tomo/picks loaded, so it must not
-        # fail the call (it was toasting "Load failed" on every successful swap). Heuristic: fail
-        # only on a UserError dict or a clean non-traceback string; log everything else as noise.
+        # both real failures and benign internal noise. A real command failure is a UserError
+        # (bad args / missing file, must surface); an internal trigger bug is some other exception
+        # type. ArtiaX/ChimeraX's command-history save() raises AttributeError ("'ParticleList'
+        # object has no attribute 'string'") on every command once a particle list is open; the
+        # command still ran, so it must not fail the call. Heuristic: fail only on a UserError
+        # dict or a clean non-traceback string; log everything else as noise.
         real_err = None
         benign_err = None
         if isinstance(cx_err, dict):
@@ -745,8 +732,8 @@ class CurationSessionService:
         preloads them in ArtiaX, and DECLARE the scope in the dir's `manifest.json`.
         Returns the resolved paths + the copyable ChimeraX command lines (`commands`);
         pass `cxc_path` + `scope` to launch_curation_session(). Disk I/O + numpy run off
-        the event loop — including the one-time display-recon downsample (10-S3), which
-        is why the caller should say it is preparing before awaiting this.
+        the event loop, including the one-time display-recon downsample, which is why
+        the caller should say it is preparing before awaiting this.
 
         Defaults to the PyTOM auto list (`candidates_star`). Pass `source_star` +
         `coords_label` to open a SPECIFIC workbench list instead (its centered-Å
@@ -779,8 +766,8 @@ class CurationSessionService:
             logger.warning("prepare_curation_bundle failed for %s: %s", tomo_name, e)
             return err(str(e))
         if info.get("seed_coords"):
-            # The seed is registered HERE, at the Curate click, as a 0-pick row (13-S1) —
-            # not left for the watcher, which would only meet it after the first save. The
+            # The seed is registered here, at the Curate click, as a 0-pick row, not left
+            # for the watcher, which would only meet it after the first save. The
             # bundle stays ok on a registration failure: the `.cxc` opens the seed
             # regardless, and the watcher registers it on the first save.
             reg = await self._ensure_seed_registered(
@@ -808,13 +795,13 @@ class CurationSessionService:
         *,
         created: bool,
     ) -> dict[str, Any]:
-        """Make sure the seeded default list is a registered ``PickList`` (13-S1).
+        """Make sure the seeded default list is a registered ``PickList``.
 
-        Idempotent: a seed that already existed AND is already registered is left alone —
-        count and label untouched, no re-ingest, no watcher event. A just-created seed is
+        Idempotent: a seed that already existed and is already registered is left alone
+        (count and label untouched, no re-ingest, no watcher event). A just-created seed is
         always registered from the file (0 rows → a header-only star, count 0); an existing
-        seed with no registered list (the list was deleted but the file survived, or a
-        pre-13 dir) is registered from whatever it holds. ``ok(slug, registered)`` /
+        seed with no registered list (the list was deleted but the file survived, or the
+        dir predates seeding) is registered from whatever it holds. ``ok(slug, registered)`` /
         ``err(...)``.
         """
         from services.particles.ingest import default_slug_for, register_manual_pick_list
@@ -865,13 +852,12 @@ class CurationSessionService:
     ) -> list[Path]:
         """Saved ArtiaX `.coords` for one (species, tomo), newest first.
 
-        Scans ONLY that tomogram's `curation_dir` — every `.coords` under it is THIS
-        tomogram's by construction, so newest-wins is bleed-proof (the old per-species
-        scan could grab a different tomo's save, and `.coords` are physical-Å tied to
-        one volume → geometric garbage). EXCLUDES crboost's own exports (`auto.coords`,
-        `*_ref.coords`); the non-recursive glob skips the `imports/` archive. Match is
-        by extension + mtime, NOT a fixed name — the user may name the save anything
-        (e.g. `particles.coords`)."""
+        Scans only that tomogram's `curation_dir`: every `.coords` under it is this
+        tomogram's by construction, so newest-wins cannot pick up another tomogram's save
+        (`.coords` are physical Å tied to one volume). Excludes crboost's own exports
+        (`auto.coords`, `*_ref.coords`); the non-recursive glob skips the `imports/`
+        archive. Match is by extension + mtime, not a fixed name, since the user may name
+        the save anything (e.g. `particles.coords`)."""
         from services.visualization import artiax_bridge
 
         return artiax_bridge.user_coords_saves(
@@ -892,9 +878,9 @@ class CurationSessionService:
         archive: bool = True,
     ) -> dict[str, Any]:
         """Ingest a manually-saved ArtiaX `.coords` for one (species, tomo) back
-        into the pipeline. `archive=False` skips the `imports/` provenance copy — the
-        seed registration (13-S1) uses it, because a 0-byte file nobody saved is not an
-        import worth archiving.
+        into the pipeline. `archive=False` skips the `imports/` provenance copy; the
+        seed registration uses it, because a 0-byte file nobody saved is not an import
+        worth archiving.
 
         Converts the `.coords` (physical Å from the volume corner) → a RELION-5
         centered-Å particles star at `Curation/<species>/<tomo>/manual__<stem>.star`
@@ -904,14 +890,12 @@ class CurationSessionService:
         matching `manual__<stem>` PickList on ProjectState (this method owns only file
         I/O, off the event loop).
 
-        ONE STAR PER SOURCE FILE (roadmap 10-S2). It used to be one `manual.star` per
-        (species, tomo), so of N lists saved in a session N−1 were silently overwritten;
-        the file stem is now the identity, which also makes re-saving under the same name
-        an UPDATE of that list (W1) rather than a new one.
+        One star per source file: the file stem is the list identity, so N lists saved in
+        a session stay N lists, and re-saving under the same name updates that list.
 
-        The dir's `manifest.json` supplies `corner_offset_angst` — the display-binning
-        term (10-S3) — so a pick placed on the binned display volume maps back into the
-        full-res frame exactly. Absent manifest ⇒ 0.0, which is what every pre-S3 dir is.
+        The dir's `manifest.json` supplies `corner_offset_angst`, the display-binning
+        term, so a pick placed on the binned display volume maps back into the full-res
+        frame exactly. Absent manifest ⇒ 0.0 (no display binning).
 
         When `coords_path` is None, auto-discovers the newest non-export `.coords` for
         this (species, tomo) — the explicit-click fallback; the watcher always names one.
@@ -989,8 +973,8 @@ class CurationSessionService:
     async def assign_unattributed_coords(
         self, project_path: Path, source: Path, species_id: str, species_label: str, tomo_name: str
     ) -> dict[str, Any]:
-        """THE staging step (roadmap 10-S2, the maintainer's "the user assigns the list
-        ArtiaX just produced to a particular species so there is absolutely no ambiguity").
+        """The staging step: the user assigns a list ArtiaX produced to a species, so its
+        attribution is never ambiguous.
 
         `source` is a `.coords` file the watcher could not attribute — or the directory
         holding several. Every user save under it is MOVED into
@@ -1000,10 +984,9 @@ class CurationSessionService:
         written down. Returns `moved` (destination paths) + `skipped` (what could not be
         moved, and why).
 
-        A destination name already taken is NOT overwritten — the incoming file gets a
-        `__2`, `__3` … suffix, because same-name means same PickList and silently
-        replacing someone's earlier list is the failure mode this whole stage exists to
-        remove.
+        A destination name already taken is not overwritten: the incoming file gets a
+        `__2`, `__3` … suffix, because same name means same PickList and would silently
+        replace an earlier list.
         """
         from services.visualization import artiax_bridge
 

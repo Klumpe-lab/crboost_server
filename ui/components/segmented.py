@@ -1,10 +1,10 @@
-"""Compact segmented control (roadmap 10 S1).
+"""Compact segmented control.
 
 The flat, dense tab switcher of the job tab (`job_tab_component._render_tab_switcher`)
-hoisted into a reusable component: 9 px buttons on one bordered strip, the active
-segment tinted `#f1f5f9`. NOT Quasar `ui.tabs` (see `feedback_ui_chrome_conventions`).
-Switching only flips the `active` class on the segments — no clear()+rebuild, so a
-click that lands mid-switch still hits a live element.
+as a reusable component: 9 px buttons on one bordered strip, the active segment tinted
+`#f1f5f9`, instead of Quasar `ui.tabs`. Switching only flips the `active` class on the
+segments, with no clear()+rebuild, so a click that lands mid-switch still hits a live
+element.
 """
 
 from __future__ import annotations

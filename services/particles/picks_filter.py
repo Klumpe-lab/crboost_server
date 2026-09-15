@@ -273,7 +273,7 @@ def resolve_canonical_optset(subtomo_job_dir: Path) -> Path:
     """The optimisation_set a downstream consumer should read: the curated
     `_filtered` one if it exists, else the original. Single definition of
     "which star is canonical", shared by the IO-slot resolver's intent and by
-    cross-project aggregation (docs/roadmaps/completed/roadmap_picks-filter-aggregation.md §factor out)."""
+    cross-project aggregation."""
     filtered = subtomo_job_dir / OPTIMISATION_SET_FILTERED_NAME
     if filtered.exists():
         return filtered
@@ -394,20 +394,13 @@ def discard_ts_filter(subtomo_job_dir: Path, ts_name: str) -> str:
     return "reverted_ts"
 
 
-# NOTE: `find_subtomo_job_dir_for_cutouts` (lex-greatest-subtomo-job heuristic)
-# was removed 2026-05-21 — it mis-targeted every species at one subtomo job.
-# The gallery now passes the species-matched subtomo_job_dir directly (resolved
-# via _matching_subtomo_instance in the dashboard). See
-# docs/roadmaps/completed/roadmap_picks-filter-aggregation.md.
-
-
 # ── List-parametric filtering (manual / imported / merged workbench lists) ────
-# Workbench lists are NOT subtomo-extracted: their star IS the curated pick list
+# Workbench lists are not subtomo-extracted: their star is the curated pick list
 # (centered-Å rows, one per pick) and the gallery pick index == the row order
 # (cutouts + overlay dots are keyed by row position). So "filter" here is simply
 # "keep a subset of rows" → write `<stem>_filtered.star` beside the source. None
 # of the candidates Å-match / optimisation-set indirection above applies — that
-# is only needed for the AUTO list, whose score-sorted gallery order differs from
+# is only needed for the auto list, whose score-sorted gallery order differs from
 # its subtomo particle rows. Manual lists are scoreless, so the only "filter" is
 # the user's per-tile keep/discard (no threshold); the kept subset is canonical.
 
@@ -435,8 +428,8 @@ def filtered_list_path(source_star: Path) -> Path:
 
 
 def save_filtered_list(source_star: Path, dropped_indices: set[int], out_star: Path | None = None) -> dict:
-    """Write the source list MINUS the dropped rows. `dropped_indices` are 0-based
-    ROW positions the user discarded; EVERY other row is kept — including any pick
+    """Write the source list minus the dropped rows. `dropped_indices` are 0-based
+    row positions the user discarded; every other row is kept — including any pick
     with no gallery tile (e.g. an out-of-bounds recon cutout), so a save never
     silently loses a placed pick the curator never saw. Preserves the star's block
     structure, swapping only the pick table. Returns
@@ -498,8 +491,8 @@ def sync_filtered_count(pl) -> bool:
 
     ``PickList.extraction_state()`` compares the extracted count against ``filtered_count``,
     but that cache only self-heals when the dashboard renders
-    (``_collect_pick_lists_for_species``). A HEADLESS reader (aggregation) must call this
-    first, or a correctly-extracted filtered list reads falsely STALE off a ``None`` cache
+    (``_collect_pick_lists_for_species``). A headless reader (aggregation) must call this
+    first, or a correctly-extracted filtered list reads falsely stale off a ``None`` cache
     (extracted_count=kept vs the fallback total). Reads up to two stars; not memoized —
     callers over many lists should batch. Pandas/starfile is pulled in via
     ``derive_keep_state_for_list``."""
@@ -535,7 +528,7 @@ def auto_source_for(ce_job_dir: str | Path | None, subtomo_job_dir: str | Path |
     ``particles_filtered.star`` (exactly the kept auto picks), else the candidate-extract
     job's full ``candidates.star`` — or None when neither exists.
 
-    Split out of ``merge_source_for`` so the UI can ask BEFORE offering the action. The
+    Split out of ``merge_source_for`` so the UI can ask before offering the action. The
     ``auto`` row is rendered from the subtomo job's per-tomo curation records, which outlive
     any committed filter, so a species with a subtomo job, no committed filter and no CE job
     draws a mergeable-looking row that ``merge_source_for`` can only answer by raising."""
@@ -549,7 +542,7 @@ def auto_source_for(ce_job_dir: str | Path | None, subtomo_job_dir: str | Path |
 def merge_source_for(
     slug: str, lists: list[dict], *, ce_job_dir: str | Path | None, subtomo_job_dir: str | Path | None
 ) -> dict | None:
-    """Which star a pick list contributes to a MERGE — its KEPT subset, so the user's
+    """Which star a pick list contributes to a merge — its kept subset, so the user's
     keep/drop never bleeds dropped picks into a merge:
 
     - ``auto`` → the subtomo job's ``particles_filtered.star`` (centered-Å coords +
@@ -561,7 +554,7 @@ def merge_source_for(
     ``lists`` are the dashboard's render dicts (``slug`` / ``path`` / ``list_type``).
     Returns ``{"path", "type", "slug"}`` in the shape ``merge_pick_lists`` consumes, or
     None for a slug that is not a sourced list. Raises for ``auto`` with nothing to source
-    from — callers that RENDER a merge control ask ``auto_source_for`` first and disable it,
+    from — callers that render a merge control ask ``auto_source_for`` first and disable it,
     so reaching the raise means the control was offered on state that has since changed."""
     if slug == "auto":
         src = auto_source_for(ce_job_dir, subtomo_job_dir)

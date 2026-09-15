@@ -1,27 +1,22 @@
 """Per-list subtomo-extraction inputs + which lists still need cutting.
 
-Everything ``backend.extract_pick_list`` needs to cut ONE workbench pick list — the schema
+Everything ``backend.extract_pick_list`` needs to cut one workbench pick list — the schema
 source, the star to consume, the geometry — resolved from an explicit ``ProjectState``, plus
 ``pending_extractions``: the lists of a species whose subtomograms are missing or stale, and
-the reason for the ones that extraction alone cannot fix. Also holds ONE mutator,
+the reason for the ones that extraction alone cannot fix. Also holds one mutator,
 ``apply_aggregation_overrides``, which points consumer jobs' input_optimisation slots at the
 active merged optset.
 
-This module used to be ``authoritative.py`` and its centre of gravity was the
-authoritative-list model: one pick list per (species, tomogram) nominated as THE one
-downstream consumes, resolved to an optimisation_set handle and rolled up into a
-ready/pending/blocked ``GateReport``. That model is gone. What reaches a refinement is now
-whatever the user selects as a source in the Aggregate-candidates flow — chosen explicitly,
-in front of the merge it feeds — so nothing needs a stored per-tomogram nomination, and a
-list is simply extracted or not.
+What reaches a refinement is whatever the user selects as a source in the
+Aggregate-candidates flow, so no list is nominated per tomogram; a list is simply
+extracted or not.
 
-PURE / HEADLESS by design:
-  - Takes an EXPLICIT ``ProjectState`` (never the tab-context accessor), so it is correct
-    inside a background task / CLI with no NiceGUI client context (the W2 lesson).
+Pure and headless:
+  - Takes an explicit ``ProjectState`` (never the tab-context accessor), so it is correct
+    inside a background task / CLI with no NiceGUI client context.
   - Resolves job dirs from the passed state's ``relion_job_name`` / ``job_path_mapping``
-    via a local copy of ``services.dashboard_data.job_dir_for`` (kept from when that
-    helper still read the client-context global; both are headless now).
-  - Imports NO UI module.
+    via a local copy of ``services.dashboard_data.job_dir_for``.
+  - Imports no UI module.
 """
 
 from __future__ import annotations
@@ -42,9 +37,8 @@ logger = logging.getLogger(__name__)
 
 
 def _job_dir(state, instance_id: str, job_model, project_path: Path) -> Path | None:
-    """Resolve a job's dir from the EXPLICIT state (``relion_job_name``, then
-    ``job_path_mapping``). Local copy of ``services.dashboard_data.job_dir_for`` from when
-    that helper still read the client-context tab accessor (both are headless now)."""
+    """Resolve a job's dir from the explicit state (``relion_job_name``, then
+    ``job_path_mapping``). Local copy of ``services.dashboard_data.job_dir_for``."""
     rjn = getattr(job_model, "relion_job_name", None)
     if rjn:
         d = project_path / str(rjn).rstrip("/")
@@ -98,12 +92,12 @@ def extraction_params_for_species(state, species_id: str, subtomo_jm=None) -> di
 
     Precedence: the species' SUBTOMO_EXTRACTION job model (whatever the auto set was cut
     with, so a manual list stays mixable with it) → ``species.extraction_params``
-    (committed through the extract dialog for a de-novo species). There is deliberately NO
-    third branch: the old ``384/1.0/224`` fallback silently cut wrong-but-plausible
-    subtomograms for every species that never ran a subtomo job, and a box size is not
-    ours to guess (denovo roadmap D-3). None means "ask the user", never "use a default".
+    (committed through the extract dialog for a de-novo species). There is no third branch:
+    a fixed box/bin/crop fallback would silently cut wrong-but-plausible subtomograms for
+    every species that never ran a subtomo job, and a box size is not ours to guess.
+    None means "ask the user", never "use a default".
 
-    ``max_dose=-1`` / ``min_frames=1`` ARE defaults, legitimately: they are the tool's own
+    ``max_dose=-1`` / ``min_frames=1`` are defaults, legitimately: they are the tool's own
     "no limit" sentinels (the driver omits the flags entirely at those values), and
     stack2d/float16 are output-representation choices, not sample geometry.
     """
@@ -209,7 +203,7 @@ class PendingExtraction:
     slug: str
     label: str
     extraction_state: str  # ListExtractionState value: NOT_EXTRACTED | STALE
-    # The optimisation_set a PREVIOUS extraction of this list produced, "" when there is
+    # The optimisation_set a previous extraction of this list produced, "" when there is
     # none. Present precisely when the list is STALE, which is what lets a merge tell
     # "a source you selected is behind its picks" from "a list that was never cut".
     extracted_path: str
@@ -220,7 +214,7 @@ def pending_extractions(state, project_path: Path, species_id: str) -> list[Pend
     """Every workbench pick list of ``species_id`` that is NOT_EXTRACTED or STALE, in
     (tomogram, slug) order, each carrying its blocked reason or "".
 
-    The ``auto`` candidate set is deliberately absent: it is not a ``PickList`` and is never
+    The ``auto`` candidate set is absent: it is not a ``PickList`` and is never
     cut per list — re-running the SUBTOMO_EXTRACTION job is what refreshes it.
 
     Touches disk (a ``filtered_count`` sync per list plus the input probes), so callers run
@@ -275,17 +269,14 @@ def apply_aggregation_overrides(state) -> int:
     Also clears stale `is_orphaned` / `missing_inputs` markers since they
     were written before the override existed.
 
-    INVOCATION-scoped, deliberately (de-novo S6). Callers:
+    Invocation-scoped. Callers:
       - a new RP/Class3D/Refine3D is added while a merge is active;
       - a merge finished (retro-wires already-added consumers);
       - the merge card set a different merge active.
 
-    It used to be render-scoped as well ("self-heal on every workspace render") and gated on
-    `state.is_aggregation`. That flag is gone, so a render-scoped mutator would now run for
-    EVERY project on every render — new, riskier behaviour rather than the same behaviour
-    with one fewer flag. A project with an active merge opted into this wiring by creating
-    the merge; nothing needs to re-decide it on a render. The early return below is now the
-    only guard: no active merged optset ⇒ nothing to wire.
+    It does not run on workspace render: there it would run for every project on every
+    render. A project with an active merge opted into this wiring by creating the merge.
+    The early return below is the only guard: no active merged optset ⇒ nothing to wire.
     """
     optset = state.active_merged_optset()
     if optset is None or not optset.exists():

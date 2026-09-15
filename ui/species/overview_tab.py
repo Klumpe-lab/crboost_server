@@ -1,12 +1,11 @@
 """Overview tab: identity editor · bound files · status line · extraction geometry ·
-provenance · delete (roadmap 10 S3, decluttered by picking-UI roadmaps 03 + 04).
+provenance · delete.
 
-The identity editor is the species header that used to sit on top of the Template
-Workbench (swatch, name, diameter, symmetry, notes) — built ONCE per species in its own
-container, outside every rev-gated view (the rev moves on every edit it makes). Writes
-go through `state.mutate_species`; persistence is `backend.save_project(path,
-debounce_s=1.0)` + Quasar input debounce, i.e. one save per pause instead of one per
-keystroke (peeve P-02).
+The identity editor (swatch, name, diameter, symmetry, notes) is built once per species
+in its own container, outside every rev-gated view (the rev moves on every edit it
+makes). Writes go through `state.mutate_species`; persistence is
+`backend.save_project(path, debounce_s=1.0)` + Quasar input debounce, i.e. one save per
+pause instead of one per keystroke.
 
 `_BindingsView` is an in-memory `FingerprintedView`, cheap on every tick.
 `ExtractionGeometryPanel` is built once for the same reason as the identity editor (it
@@ -50,14 +49,13 @@ from ui.species.tab import TabContext
 logger = logging.getLogger(__name__)
 
 _DISK_REFRESH_S = 15.0  # status/sanity recompute cadence while shown (both touch disk)
-# Three ranks, and they must not collide (the maintainer, 2026-08-19: "separate them
-# visually based on what's separate conceptually"):
+# Three ranks, and they must not collide — what is separate conceptually looks separate:
 #   SECTION  — `PAGE_SECTION_STYLE` from the house vocabulary: 12 px semibold MIXED case.
 #              "Species info" / "Template matching files" / "Extraction geometry".
 #   FIELD    — 9 px uppercase, muted: the label beside one input.
 #   HINT     — 10 px, lightest: the sentence explaining a section or a value.
-# A section title is never uppercase and a field label never is not — that difference is
-# the whole hierarchy, so do not reach for the other one to "emphasise" something.
+# A section title is never uppercase and a field label always is — that difference is
+# the hierarchy, so do not borrow one style to emphasise the other.
 _TITLE_CLS = "text-sm font-semibold text-gray-800"
 _LABEL_CLS = "text-[9px] font-bold text-gray-400 uppercase tracking-wide"
 _HINT_CLS = "text-[10px] text-gray-400"
@@ -111,8 +109,7 @@ def render_identity_editor(backend, project_path: Path, species_id: str) -> None
 
     No card and no coloured stripe: the species colour is already carried by the swatch
     and the header pill, and every input reads at the scale of the label beside it
-    (Quasar's own ~14 px against 10 px labels was the whole "huge / heterogenous"
-    complaint)."""
+    (Quasar's default ~14 px dwarfs the 10 px labels)."""
     state = get_project_state_for(project_path)
     sp = state.get_species(species_id)
     if sp is None:
@@ -154,7 +151,7 @@ def render_identity_editor(backend, project_path: Path, species_id: str) -> None
                     .classes("cb-field w-24")
                 )
                 # The unit is a sibling label, not Quasar's in-field suffix: at this width
-                # the suffix used to compete with the value and clip it.
+                # the suffix competes with the value and clips it.
                 diam_input.tooltip("Ø of the particle in ångström — the default for new pick-candidates jobs.")
                 ui.label("Å").classes(_HINT_CLS)
 
@@ -223,9 +220,9 @@ def render_identity_editor(backend, project_path: Path, species_id: str) -> None
 
 
 def _mask_source(sp: ParticleSpecies, m: TemplateMask) -> str:
-    """Where a mask came from. `imported_from` is a `ParticleTemplate` field and does NOT
-    exist on `TemplateMask` — a mask's provenance is `derived_from_template_id` (the soft
-    link v3 kept for this) plus the creation `method`. Unknown stays "?" rather than being
+    """Where a mask came from. `imported_from` is a `ParticleTemplate` field and does not
+    exist on `TemplateMask` — a mask's provenance is `derived_from_template_id` (a soft
+    link) plus the creation `method`. Unknown stays "?" rather than being
     filled in with a plausible guess."""
     if m.derived_from_template_id:
         tpl = sp.get_template_by_id(m.derived_from_template_id)
@@ -238,7 +235,7 @@ def _mask_source(sp: ParticleSpecies, m: TemplateMask) -> str:
 def _render_provenance(sp: ParticleSpecies) -> None:
     """origin · created · catalog — the first reader of `ParticleSpecies.origin`;
     template / mask sources on hover."""
-    origin = sp.origin or SpeciesOrigin.WORKBENCH.value  # "" pre-dates the field = workbench
+    origin = sp.origin or SpeciesOrigin.WORKBENCH.value  # "" on older species = workbench
     created = sp.created_at.strftime("%Y-%m-%d %H:%M") if sp.created_at else "—"
     if sp.catalog_id and sp.catalog_version:
         catalog = f"{sp.catalog_id} v{sp.catalog_version}"
@@ -366,13 +363,13 @@ _GEOMETRY_FIELDS = (("box_size", "Box", 16, 2), ("binning", "Binning", 0.1, 0.5)
 class ExtractionGeometryPanel:
     """`species.extraction_params` — box / binning / crop for hand-picked lists.
 
-    NOT a `FingerprintedView`: it owns three inputs, and every commit bumps the registry
+    Not a `FingerprintedView`: it owns three inputs, and every commit bumps the registry
     rev, so a signature-gated rebuild would destroy the field the user just typed into
     (the same reason the identity editor is built once). Only the effective-value line
     is refreshed, and only when its text actually moved.
 
-    Empty is a real state. Unset renders empty, never `384 / 1.0 / 224` dressed up as a
-    choice the user made (de-novo D-3: a box size is not ours to guess).
+    Empty is a real state. Unset renders empty, never a default dressed up as a choice
+    the user made: a box size is not ours to guess.
     """
 
     def __init__(self, tab: OverviewTab) -> None:
@@ -389,12 +386,11 @@ class ExtractionGeometryPanel:
                 "Extraction geometry",
                 tooltip=(
                     "One geometry per species per project. A species extracted from tomogram sets at "
-                    "different binnings needs one per set — see docs/roadmaps/picking_ui/07."
+                    "different binnings would need one per set, which is not supported."
                 ),
             )
-            # Which job this actually feeds. Without it the panel reads as three orphan
-            # numbers — it is the box the SUBTOMO EXTRACTION job cuts, and the answer the
-            # per-list extract modal would otherwise stop and ask for.
+            # Name the job this feeds: the box the Subtomo extraction job cuts, and the
+            # answer the per-list extract modal would otherwise stop and ask for.
             ui.label(
                 "Feeds the Subtomo extraction job: the box cut around every pick. Set here once and a new "
                 "Subtomo extraction job starts with these values; hand-picked lists that have no such job "
@@ -506,15 +502,11 @@ class _StatusView(FingerprintedView):
     def render(self) -> None:
         """One muted sentence of plain numbers.
 
-        What used to be here and is now elsewhere: the counts moved to the tab strip;
-        the `gate` chip went (the concept stays — the Picks tab's "Extract all pending"
-        still runs its gate-report pre-flight, and per-list state is a column in that
-        table); the pick-candidates / subtomo instance-id pills went (the Jobs tab lists
-        exactly those jobs with type, status and drift chips — it is the owner); the
-        templates / masks chips went (roadmap 03's bindings block supersedes them); and
-        the pixel/binning sanity table went to the Tomogram Dashboard, which is where it
-        belongs — the chain is a property of (this project's tomograms x this binning),
-        not of the particle. Do not bring them back here.
+        Everything else lives elsewhere: counts in the tab strip; per-list state and the
+        extract actions on the Picks tab; the pick-candidates / subtomo jobs on the Jobs
+        tab (type, status, drift chips); template / mask bindings in the block above; and
+        the pixel/binning sanity table on the Tomogram Dashboard — that chain is a property
+        of (this project's tomograms x this binning), not of the particle.
         """
         c = self._tab.computed
         with ui.column().classes("w-full gap-1 px-1"):
@@ -553,8 +545,7 @@ class OverviewTab:
 
     def build(self, container: ui.element) -> None:
         ctx = self.ctx
-        # gap-5: sections separate by AIR, not by underline rules — the rules made the
-        # tab read as a stack of gray lines while the sections themselves stayed cramped.
+        # gap-5: sections separate by whitespace, not by underline rules.
         with container, ui.column().classes("w-full gap-5 p-3"):
             render_identity_editor(ctx.backend, ctx.project_path, ctx.species_id)
             bindings_slot = ui.element("div").classes("w-full")
@@ -566,7 +557,7 @@ class OverviewTab:
             with ui.row().classes("w-full items-center gap-2 px-1"):
                 house_button("Delete species", self._request_delete, kind="danger")
                 ui.label("registry entry, pick lists, templates / masks on disk and the bound jobs").classes(_HINT_CLS)
-                # Only when a lab catalog is configured (roadmap 12) — see ui/species/catalog.py.
+                # Only when a lab catalog is configured — see ui/species/catalog.py.
                 if catalog_is_enabled():
                     ui.space()
                     house_button(
@@ -667,7 +658,7 @@ class OverviewTab:
         dialog.open()
 
     async def _publish_to_catalog(self) -> None:
-        """Overview action (roadmap 12): publish this species as a new catalog version.
+        """Publish this species as a new catalog version.
         The confirm, the file check and the SingleFlight all live in `ui.species.catalog`."""
         ctx = self.ctx
         await publish_to_catalog(ctx.backend, ctx.project_path, ctx.species_id, on_done=self.refresh)

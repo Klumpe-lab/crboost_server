@@ -20,10 +20,9 @@ Mode is determined by `SLURM_ARRAY_TASK_ID`:
 slicing and array submission — used by aggregation projects to fuse
 additional optimisation sets into the job without an extraction pass.
 
-Supervisor-side staging is deliberate (census #45): slicing a RELION
-optimisation set needs the full particles/tomograms tables in memory, which
-only the supervisor parses — per-task re-parsing of the whole upstream star
-N times would be waste.
+Staging happens on the supervisor: slicing a RELION optimisation set needs the
+full particles/tomograms tables in memory, which only the supervisor parses;
+re-parsing the whole upstream star in each of N tasks would be waste.
 
 Output layout after the supervisor merge:
   <job_dir>/
@@ -228,8 +227,7 @@ def _merge_per_ts_outputs(
 
 
 def _run_additional_sources_merge(params, job_dir: Path) -> None:
-    """Run the aggregation merge against `params.additional_sources`.
-    Mirrors the legacy one-shot driver's `run_merge` body."""
+    """Run the aggregation merge against `params.additional_sources`."""
     additional_sources = list(params.additional_sources or [])
     if not additional_sources:
         return
@@ -263,8 +261,7 @@ class SubtomoExtractionDriver(ArrayDriver):
 
     def whole_job_short_circuit(self, ctx: DriverContext[SubtomoExtractionParams]) -> bool:
         # Aggregation short-circuit: skip extraction entirely, just merge
-        # supplied optimisation sets into job_dir. Mirrors the original
-        # one-shot driver's merge_only branch verbatim.
+        # supplied optimisation sets into job_dir.
         if ctx.params.merge_only:
             self.log("merge_only=True, skipping extraction.")
             if not ctx.params.additional_sources:
@@ -304,8 +301,8 @@ class SubtomoExtractionDriver(ArrayDriver):
             # render a clear "no picks anywhere — skipped" banner. We exit
             # SUCCESS rather than fail because (a) the schemer would otherwise
             # halt the whole pipeline on an upstream-data condition that's
-            # diagnostic, not a job bug, and (b) it mirrors the existing per-TS
-            # SKIP semantics which are also "succeeded but did no work".
+            # diagnostic, not a job bug, and (b) it matches the per-TS SKIP
+            # semantics, which are also "succeeded but did no work".
             status_dir = ctx.job_dir / STATUS_DIR_NAME
             status_dir.mkdir(parents=True, exist_ok=True)
             for f in status_dir.glob("*.skip"):
@@ -357,7 +354,7 @@ class SubtomoExtractionDriver(ArrayDriver):
 
         # Excluded TS are muted — never staged, dispatched, or merged. The
         # base's apply_exclusions writes their .skip markers (and clears any
-        # stale .ok/.fail — census #44); here we only need the filter.
+        # stale .ok/.fail); here we only need the filter.
         self._excluded_set = load_excluded_ts(ctx.project_path)
         excluded_ts = [t for t in ts_names if t in self._excluded_set]
         self._ts_with_picks = [t for t in ts_with_picks if t not in self._excluded_set]

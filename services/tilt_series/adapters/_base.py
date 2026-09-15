@@ -1,15 +1,11 @@
-"""Shared internals for the per-job-type ingest adapters.
+"""Shared internals for the per-job-type ingest adapters: the constructor head, the
+STAR helpers and the excluded-ids filtering. Each adapter keeps only its parsing core
+and its own STAR overlay.
 
-The four adapters had copy-pasted the same constructor head, the same two STAR
-helpers, and the same excluded-ids filtering — three copies of `_read_only_block`,
-two of `_resolve_per_ts_path`, three of the exclusion pattern. They live here now;
-each adapter keeps only its parsing core and its own STAR overlay.
-
-Deliberately NOT an abstract base: `ingest` and `emit_star` have genuinely
-different signatures per job type (tsReconstruct needs pixel sizes, ts_alignment
-needs an alignment method and returns the surviving TS list, fs_motion needs a
-project root), and forcing them into one shape would mean **kwargs soup. The
-contract this base owns is identity + I/O plumbing, not the ingest verbs.
+Not an abstract base: `ingest` and `emit_star` have different signatures per job
+type (tsReconstruct needs pixel sizes, ts_alignment needs an alignment method and
+returns the surviving TS list, fs_motion needs a project root), and one shared shape
+would mean **kwargs soup. This base owns identity + I/O plumbing, not the ingest verbs.
 """
 
 from __future__ import annotations

@@ -79,25 +79,22 @@ def create_ui_router(backend: CryoBoostBackend):
             .pulse-failed    { animation: cb-pulse 1.4s ease-in-out infinite; }
             .pulse-orphaned  { animation: cb-pulse 1.6s ease-in-out infinite; }
 
-            /* The RUNNING-job "working" indicator is a self-contained inline
-               SVG/SMIL pulsating dot (ui/status_indicator._running_spinner_html)
-               — no @keyframes here, because CSS-based spinners (glyph rotate,
-               ::before content-cycle, class-animated dots) kept rendering blank
-               on the v-html-injected roster spans, most likely a cache-stale
+            /* The running-job indicator is a self-contained inline SVG/SMIL
+               pulsating dot (ui/status_indicator._running_spinner_html), so no
+               @keyframes here: CSS-based spinners (glyph rotate, ::before
+               content-cycle, class-animated dots) render blank on the
+               v-html-injected roster spans, most likely because of a stale
                Python-injected stylesheet. SVG carries its own animation. */
 
-            /* The .cb-select / .cb-field control chrome lives in ui/dashboard/css.py
-               (_CB_CSS) ONLY — every page calls ensure_assets_loaded(). A duplicate
-               copy used to sit here; it existed only to drift (deleted 2026-08-21,
-               picking-UI roadmap 08 S1). */
+            /* The .cb-select / .cb-field control chrome lives only in
+               ui/dashboard/css.py (_CB_CSS); every page calls ensure_assets_loaded(). */
 
-            /* NOTE (2026-08-21): do NOT add new app-wide rules to this block.
-               This <style> is baked into the page shell, and the shell is
-               served stale on this deployment — new rules here never reached
-               the browser (the .cb-btn / spinner-kill incident). App-wide
-               control chrome goes in ui/dashboard/css.py (_CB_CSS), which
-               ensure_assets_loaded() injects per client AFTER connect, over
-               the socket; structural styling goes inline on the elements. */
+            /* Do not add new app-wide rules to this block. This <style> is
+               baked into the page shell, and the shell is served stale on this
+               deployment, so new rules here may never reach the browser.
+               App-wide control chrome goes in ui/dashboard/css.py (_CB_CSS),
+               which ensure_assets_loaded() injects per client after connect,
+               over the socket; structural styling goes inline on the elements. */
             .cb-select-popup {
                 border: 1px solid #e2e8f0; border-radius: 5px;
                 box-shadow: 0 6px 18px rgba(15,23,42,.10);
@@ -178,7 +175,7 @@ def create_ui_router(backend: CryoBoostBackend):
             project_path_provider=lambda: str(ui_mgr.project_path) if ui_mgr.project_path else None
         )
 
-    # --- PAGE 2: WORKSPACE (roadmap 17 — addressable at /p/<project>/<view>/<target>) ---
+    # --- PAGE 2: WORKSPACE (addressable at /p/<project>/<view>/<target>) ---
 
     async def _open_routed_workspace(client: Client, route: Route) -> None:
         """One body behind all four `/p/...` shapes: resolve the project from its
@@ -229,8 +226,8 @@ def create_ui_router(backend: CryoBoostBackend):
         ui.timer(0.05, _apply, once=True)
 
     def _render_project_chooser(route: Route, candidates: list[str]) -> None:
-        """Two bases hold a project of this name. Do not guess (CLAUDE.md, *Surfacing
-        uncertainty*) — show both absolute paths, each a link that pins its base."""
+        """Two bases hold a project of this name. Do not guess: show both absolute
+        paths, each a link that pins its base."""
         with ui.column().classes("w-full h-screen items-center justify-center gap-4"):
             ui.icon("alt_route", size="48px").classes("text-amber-400")
             ui.label(f"'{route.project}' exists in {len(candidates)} places").classes("text-base text-gray-700")

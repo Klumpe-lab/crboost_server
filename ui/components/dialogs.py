@@ -4,12 +4,12 @@ NiceGUI runs an event handler "within the context of the parent slot of the send
 (``nicegui/events.py`` ``handle_event``). So a ``ui.dialog()`` created inside a click
 handler lands in whatever container held the button — and if that container is cleared
 by a refresh, or is itself a dialog that the handler just closed, the new dialog exists
-but can never paint. Two shipped bugs came from exactly this:
+but can never paint. For example:
 
-  · the Journey's rail rebuild and the Species page's rev-gated Picks table destroyed
-    dialogs mid-interaction ("parent element ... has been deleted"), and
-  · the aggregate dialog's "extracted particles instead" link closed itself and opened
-    the merge dialog INSIDE its own closing card, so the click read as a no-op.
+  · a refresh (the Journey's rail rebuild, the Species page's rev-gated Picks table)
+    destroys the dialog mid-interaction ("parent element ... has been deleted"), and
+  · a dialog that closes itself and opens another from its own handler puts the new one
+    inside the closing card, so the click reads as a no-op.
 
 ``client.layout.default_slot`` lives for the whole page and is never cleared, so it is
 the right host for anything modal. ``nullcontext()`` when there is no client layout (a

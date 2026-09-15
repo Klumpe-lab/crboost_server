@@ -125,9 +125,8 @@ def build_dataset_overview_panel(overview: DatasetOverview, on_change: Callable[
 
     # --- Table container ---
     # `overflow-x: auto` + `min-width: 0`, not `overflow: hidden`: COL_WIDTHS is 466 px
-    # of fixed columns, so with a clipped container this table set the *minimum* width of
-    # the whole Project Setup card and, through it, of the landing page. It scrolls
-    # inside itself now (CLAUDE.md: wide tables scroll in their own container).
+    # of fixed columns; in a clipped container this table would set the minimum width of
+    # the whole Project Setup card and, through it, of the landing page.
     with (
         ui.column()
         .classes("w-full gap-0")
@@ -335,7 +334,7 @@ def _param_chip(label, values, unit, fmt=".2f", category=None):
 
 def _estimated_dose_chip(overview: DatasetOverview) -> None:
     """The dose chip when the mdocs record none: the scan's estimate in the amber
-    dose colour, marked as such, the fit behind it in the tooltip (roadmap 18 D4)."""
+    dose colour, marked as such, the fit behind it in the tooltip."""
     amber = CATEGORY_COLORS["dose_per_tilt"][0]
     est = overview.dose_estimate()
     with ui.row().classes("items-baseline gap-0.5"):

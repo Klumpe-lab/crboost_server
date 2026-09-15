@@ -1,13 +1,13 @@
-"""One row for "a file this thing is bound to" (picking-UI roadmap 03 S1).
+"""One row for "a file this thing is bound to".
 
 filename (truncated, never the directory) · copy · optional deep
-link to wherever the binding is *changed*. The absolute path is a HOVER fact only — on the
+link to wherever the binding is *changed*. The absolute path shows only on hover, on the
 filename and on the copy button. Absent is a first-class state: with no path
 the row still renders and says so, because a species with no template is legitimate and
 a species whose template silently vanished is not (CLAUDE.md "Surfacing uncertainty").
 
-Clipboard goes through `ui.components.copyable.copy_button` — the app already has one
-copy affordance with a `navigator.clipboard` fallback; this is not a second one.
+Clipboard goes through `ui.components.copyable.copy_button`, the app's one copy
+affordance with a `navigator.clipboard` fallback.
 """
 
 from __future__ import annotations
@@ -22,10 +22,8 @@ from ui.components.copyable import copy_button
 _MONO = "font-family: 'IBM Plex Mono', monospace;"
 _SANS = "font-family: 'IBM Plex Sans', sans-serif;"
 
-# The FILENAME is the only thing drawn. It is the flexing cell in a table row, so it
-# ellipsises rather than pushing the columns beside it off screen; the directory it
-# lives in is a hover fact, not a layout cost (the maintainer, 2026-08-19: "the absolute
-# path should not be displayed but only show up on clipboard-copy hover").
+# Only the filename is drawn. It is the flexing cell in a table row, so it ellipsises
+# rather than pushing the columns beside it off screen; the directory shows on hover only.
 _NAME_STYLE = (
     f"{_MONO} font-size: 10px; font-weight: 500; color: #1e293b; flex: 1 1 0; min-width: 0; "
     "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: default;"

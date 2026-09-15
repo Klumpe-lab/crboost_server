@@ -1,9 +1,8 @@
 """
 Merge-sources dialog — collect the same species' particles from several projects.
 
-Opened from the PARTICLES phase header of ANY project (de-novo S6 removed the
-`is_aggregation` project type: merging is a capability, not a kind of project).
-The user builds a list of upstream optimisation_set.star sources and merges them
+Opened from the particles phase header of any project; merging is a capability,
+not a kind of project. The user builds a list of upstream optimisation_set.star sources and merges them
 into <project>/MergedSources/<slug>/. The output is a project-level resource that
 any downstream job (Reconstruct/Class3D/Refine3D/...) reads through the synthetic
 `mergedSources` producer the path resolver registers for the active merge
@@ -86,9 +85,8 @@ def _slugify(name: str, existing: set) -> str:
 
 def has_merged_outputs(state) -> bool:
     """True if ``state`` has at least one usable merged optset. Lets a caller render a
-    'merged' badge without opening the dialog. Takes the state explicitly — every caller
-    already holds one, and reaching for the client context made this unusable off a
-    request (S6)."""
+    'merged' badge without opening the dialog. Takes the state explicitly so it works
+    outside a request context."""
     return active_merged_optset(state) is not None
 
 
@@ -107,20 +105,15 @@ def _selection_label(src: AggregationSource | None, n_total: int | None) -> str:
 
 
 class _MergeDialog:
-    """The state of ONE open merge dialog (S6).
+    """The state of one open merge dialog.
 
-    What this replaced: module-level `_DIALOG_REFS` / `_registry_expanded` globals plus a
-    `current_project_state()` reach in a dozen helpers. Both were per-PROCESS where the
-    thing they describe is per-TAB — a second browser tab opening the dialog overwrote the
-    first tab's element refs, so the first tab's "add a manual path" then rebuilt a selector
-    that had already been destroyed, and expanding a registry row in one tab expanded it in
-    the other. Documented as a bug in docs/roadmaps/completed/roadmap_picks-filter-aggregation.md; this is the
-    fix, not a tidy-up.
+    Element refs and expansion state are per tab, so they live here rather than in module
+    globals: a second browser tab opening the dialog must not overwrite the first tab's
+    refs or share its expanded rows.
 
-    ``state`` is resolved from an explicit ``project_path`` at open. That is what lets the
-    merge itself run without a client context (a `current_project_state()` inside a
-    background task silently hands back a blank throwaway), and it is why every helper below
-    takes ``self.state`` instead of reaching for one."""
+    ``state`` is resolved from an explicit ``project_path`` at open, so the merge runs
+    without a client context (`current_project_state()` inside a background task silently
+    returns a blank throwaway). Helpers use ``self.state`` for the same reason."""
 
     def __init__(self, project_path: Path) -> None:
         self.project_path = Path(project_path)
@@ -149,7 +142,7 @@ class _MergeDialog:
     def persist(self) -> None:
         """Persist deferred + off the event loop. A full ProjectState.save() does a
         model_dump of every job/species + a JSON disk write (~hundreds of ms on a
-        real project), so doing it inline made each checkbox click hang. Debounced
+        real project), too slow to run inline on each checkbox click. Debounced
         (0.4 s trailing edge, coalesced per project) via the facade; force=True
         because update_modified() doesn't mark the state dirty."""
         self.state.update_modified()
@@ -255,12 +248,11 @@ class _MergeDialog:
             if not sources:
                 merge_btn.disable()
             else:
-                # The extracted grade's terminal action, stated before the click. Unlike the
-                # coordinate grade — where the union has to be extracted before anything can
-                # read it — merged particles already have pixels, so the merge itself IS the
-                # handoff: `apply_aggregation_overrides` registers the synthetic
-                # `mergedSources` producer and every downstream job that consumes particles
-                # (Reconstruct / Class3D / Refine3D) is repointed at it.
+                # Unlike the coordinate grade, where the union has to be extracted before
+                # anything can read it, merged particles already have pixels, so the merge is
+                # the handoff: `apply_aggregation_overrides` registers the synthetic
+                # `mergedSources` producer and repoints every downstream particle consumer
+                # (Reconstruct / Class3D / Refine3D) at it.
                 merge_btn.tooltip(
                     "Merges into MergedSources/<name>/ and wires it as this project's active source — "
                     "Reconstruct, Class3D and Refine3D then read the merged particles. No job is submitted."
@@ -310,18 +302,16 @@ class _MergeDialog:
             self.refresh_footer()
 
     async def preflight_blockers(self) -> list[str]:
-        """Selected sources of THIS project whose optimisation_set is BEHIND its pick list,
-        as lines to show before merging (docs/roadmaps/completed/roadmap_list-extraction-and-aggregation.md §8.9).
+        """Selected sources of this project whose optimisation_set is behind its pick list,
+        as lines to show before merging.
 
-        A merge consumes each source's optimisation_set exactly as it stands on disk. When
-        the list behind one has been re-picked or re-curated since it was cut, that source
-        contributes yesterday's particles — silently, with no error anywhere. This is the
-        one place that can notice, and it is cheap next to the merge itself.
+        A merge consumes each source's optimisation_set as it stands on disk. If the list
+        behind one was re-picked or re-curated since it was cut, that source silently
+        contributes its previous particles. This check is cheap next to the merge itself.
 
-        Matched by PATH, not by species: a list that was never extracted has no optset and
-        therefore cannot be one of the sources, so warning about it would be crying wolf.
-        Sources from OTHER projects are not checked at all — this project's state cannot
-        answer for them, and inventing a verdict would be worse than saying nothing."""
+        Matched by path, not by species: a list that was never extracted has no optset and
+        cannot be one of the sources. Sources from other projects are not checked, because
+        this project's state cannot answer for them."""
         bk = get_backend()
         if bk is None:
             return []
@@ -352,7 +342,7 @@ class _MergeDialog:
     async def run_merge(self) -> None:
         """Pre-flight, then merge. SingleFlight-guarded: the merge is minutes of driver work
         and the button lives in a footer that a selection change rebuilds, so a second click
-        used to start a second merge into the same directory."""
+        would otherwise start a second merge into the same directory."""
         async with self.flight("merge") as acquired:
             if not acquired:
                 ui.notify("A merge is already running.", type="info", timeout=2000)
@@ -432,8 +422,8 @@ class _MergeSelector:
     """Project → Species → Tomogram selection tree for the merge dialog.
 
     Discovery (cross-project scan) is async + cached. Per-tomogram curation is
-    loaded lazily when a species node is expanded — reading every particles.star
-    up front would not scale (docs/roadmaps/completed/roadmap_picks-filter-aggregation.md §scale)."""
+    loaded lazily when a species node is expanded; reading every particles.star
+    up front does not scale."""
 
     def __init__(self, dlg: _MergeDialog, body: ui.element, on_change) -> None:
         self.dlg = dlg
@@ -446,11 +436,9 @@ class _MergeSelector:
         self.expanded_projects: set = set()
         self.expanded_species: set = set()
         self.curation: dict[str, list] = {}  # optset_path -> List[TomoCuration]
-        # Species narrowing, the control the coordinate dialog already had and this one
-        # did not. "" = every species. Unlike the coordinate grade — where one species per
-        # aggregate is ENFORCED (roadmap 12, D2) because the geometry has to be unambiguous
-        # — a pixel-grade merge of several species is merely unusual, so this narrows the
-        # tree without forbidding anything.
+        # Species narrowing; "" = every species. The coordinate grade enforces one species
+        # per aggregate because the geometry has to be unambiguous; a pixel-grade merge of
+        # several species is merely unusual, so this narrows the tree without forbidding it.
         self.species_filter: str = ""
         self.species_select = None  # bound by the dialog; options filled after discovery
         self.filter = ""
@@ -603,7 +591,7 @@ class _MergeSelector:
             or f in c.instance_id.lower()
             or (c.species_label and f in c.species_label.lower())
             or (c.mnemonic and f in c.mnemonic.lower())
-            or (c.catalog_id and f in c.catalog_id.lower())  # roadmap 12: one term finds every copy
+            or (c.catalog_id and f in c.catalog_id.lower())  # one term finds every copy
         ]
 
     @staticmethod
@@ -690,9 +678,8 @@ class _MergeSelector:
                 "flex: 1; min-width: 0;"
             ).tooltip("SubtomoExtraction job instance")
 
-            # Catalog link (roadmap 12): the ONE identity that is comparable across projects.
-            # Local species ids are minted per project, so "the same species elsewhere" was
-            # previously something the user matched by eye.
+            # The catalog id is the only species identity comparable across projects; local
+            # species ids are minted per project.
             if cand.catalog_id:
                 twins = [c for c in self.candidates if c.catalog_id == cand.catalog_id]
                 chip = ui.label(f"⌗ {cand.catalog_id}").style(
@@ -721,12 +708,11 @@ class _MergeSelector:
             self._render_tomos(cand)
 
     def _select_catalog_twins(self, catalog_id: str) -> None:
-        """Select every discovered copy of one lab-catalog species, whole sets (roadmap 12-S4).
+        """Select every discovered copy of one lab-catalog species, whole sets.
 
-        Grouping across projects has to key on `catalog_id`: each project mints its own local
+        Grouping across projects keys on `catalog_id`: each project mints its own local
         species id, so the same particle looks like N unrelated species here. Selects rather
-        than toggles — the reason to click a catalog chip is "give me all of these", and
-        un-selecting is what the per-row checkboxes are for."""
+        than toggles; un-selecting is what the per-row checkboxes are for."""
         twins = [c for c in self.candidates if c.catalog_id == catalog_id]
         for c in twins:
             self.dlg.toggle_species_all(c, True)
@@ -869,16 +855,13 @@ class _MergeSelector:
 def open_aggregation_merge_dialog(project_path) -> None:
     """Open the merge-sources dialog for ``project_path``. Modal, scrollable.
 
-    Open to EVERY project since S6 — the `is_aggregation` flag it used to no-op on is
-    gone. Merging picks from several projects is a capability, not a project type: the
-    resolver's merged-sources candidate injection was already unconditional, and gating
-    the only door to it behind a checkbox chosen at creation time meant a regular project
-    could never reach it.
+    Available in every project: merging picks from several projects is a capability, not a
+    project type, and the resolver's merged-sources candidate injection is unconditional.
 
-    This is the EXTRACTED half of one two-mode surface; the coordinate half is
+    This is the extracted half of one two-mode surface; the coordinate half is
     ``ui/aggregation/aggregate_dialog.py`` and the header switch moves between them. The
-    dialog is parented at the page layout slot (``dialog_host``) precisely so that switch
-    works: built in the caller's slot, this card would land inside the closing dialog that
+    dialog is parented at the page layout slot (``dialog_host``) so that switch works:
+    built in the caller's slot, this card would land inside the closing dialog that
     opened it and never paint."""
     from ui.aggregation.aggregate_dialog import GRADE_EXTRACTED, GRADE_TABS, open_aggregate_dialog
 

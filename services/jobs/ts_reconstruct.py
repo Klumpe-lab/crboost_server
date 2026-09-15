@@ -17,7 +17,7 @@ class TsReconstructParams(AbstractJobParams):
     USER_PARAMS: ClassVar[set[str]] = {"rescale_angpixs", "halfmap_frames", "deconv", "perdevice", "array_throttle"}
 
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
-        # The tilt cut now propagates natively (tiltFilter trims the tomostar
+        # The tilt cut propagates natively (tiltFilter trims the tomostar
         # upstream of alignment), so tsCtf's star already contains only kept tilts.
         InputSlot(key="input_star", accepts=[JobFileType.TS_CTF_TILT_SERIES_STAR], preferred_source="tsCtf"),
         # input_processing must come from tsCtf (the canonical producer of the per-TS XMLs

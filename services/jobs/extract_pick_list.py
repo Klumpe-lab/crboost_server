@@ -7,16 +7,15 @@ from services.models_base import JobCategory, JobType
 
 
 class ExtractPickListParams(AbstractJobParams):
-    """Subtomogram extraction of ONE pick list (roadmap 07).
+    """Subtomogram extraction of one pick list.
 
     Identity: one instance per pick list, keyed on the `(species_id, tomo_name, slug)`
     triple through `services.particles.list_ref.extract_pick_list_instance_id`. A slug
-    alone does NOT identify a list -- a hand-picked list is slugged after its `.coords`
+    alone does not identify a list: a hand-picked list is slugged after its `.coords`
     file (`manual__<stem>`), and the same name recurs on every tomogram the user saves it
-    on -- so the triple is the key here exactly as it is for `pick_list_producer_id`.
+    on. The triple is the key here, as it is for `pick_list_producer_id`.
 
-    NOT a scheme/roster job. Two things keep it out of the pipeline machinery, and both
-    are load-bearing rather than cosmetic:
+    Not a scheme/roster job. Two things keep it out of the pipeline machinery:
 
       * `IS_INTERACTIVE = True` -- nothing filters `state.jobs` by pipeline membership,
         so without this flag `sync_all_jobs`' orphan sweep would reset the instance to
@@ -32,9 +31,9 @@ class ExtractPickListParams(AbstractJobParams):
     OUTPUT_SCHEMA: otherwise each per-list instance would join the resolver's output
     index as a producer candidate for other jobs' input slots.
 
-    Geometry defaults are deliberately "unset" sentinels, not guesses: `box_size` /
-    `binning` are 0 until a submit writes the values the user (or the species'
-    committed geometry) supplied. Nothing may extract with a zero box.
+    Geometry defaults are "unset" sentinels, not guesses: `box_size` / `binning` are 0
+    until a submit writes the values the user (or the species' committed geometry)
+    supplied. Nothing may extract with a zero box.
     """
 
     job_type: JobType = Field(default=JobType.EXTRACT_PICK_LIST)
@@ -71,10 +70,10 @@ class ExtractPickListParams(AbstractJobParams):
     do_stack2d: bool = Field(default=True, description="Write 2D stacks")
     do_float16: bool = Field(default=True, description="Write float16 output")
 
-    # ── failure text (roadmap 07 S3) ──
-    # Deliberately OUTSIDE USER_PARAMS: USER_PARAMS fields are frozen once the job
-    # leaves SCHEDULED/FAILED, and the whole point of this field is to be written the
-    # moment an extraction fails, so a failure survives the dialog that launched it.
+    # ── failure text ──
+    # Outside USER_PARAMS: those fields are frozen once the job leaves SCHEDULED/FAILED,
+    # and this one is written the moment an extraction fails, so a failure survives the
+    # dialog that launched it.
     last_error: str = Field(default="", description="Failure text from the driver's result.json, if any")
 
     def is_driver_job(self) -> bool:

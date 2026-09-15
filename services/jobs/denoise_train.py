@@ -9,12 +9,12 @@ from services.computing.slurm_service import SlurmConfig
 
 
 # ── Dynamic training walltime ─────────────────────────────────────────────────
-# denoise_train is a SINGLE (non-array) job: it reduces ONE model from ALL the
+# denoise_train is a single (non-array) job: it trains one model from all the
 # selected tilt-series, so its SLURM --time must cover every tomogram
 # sequentially. A flat profile walltime (conf.yaml denoisetrain.time) silently
 # truncates larger datasets -- the in-job watchdog kills the run at 0.9x the
-# remaining walltime, which is what failed a 40-TS IsoNet refine (10 epochs x
-# ~12 min + ~48 min prepare_star/make_mask, well over the 2 h allocation).
+# remaining walltime (a 40-TS IsoNet refine needs 10 epochs x ~12 min plus
+# ~48 min prepare_star/make_mask, well over a 2 h allocation).
 #
 # Linear model `base + per_ts * n_selected_ts`, floored at the static profile
 # time and capped. Sized for IsoNet refine (the slower path); cryoCARE
@@ -27,16 +27,15 @@ _TRAIN_WALLTIME_PER_TS_MIN = 5  # marginal training cost per tilt-series
 _TRAIN_WALLTIME_CAP_MIN = 8 * 60  # never request more than the partition realistically allows
 
 # IsoNet2 `refine` cost model, measured on copia_demo (clip-g4, 1 tomogram at 11.8 A/px,
-# cube_size 96, unet-medium, batch_size 4). An earlier flat 165-min base assumed refine ran
-# "a FIXED ~10-epoch schedule"; both halves of that were wrong and cost a run:
+# cube_size 96, unet-medium, batch_size 4). Two things are easy to get wrong:
 #
-#   * EPOCHS. `--epochs` defaults to 50, not 10, and `--save_interval` (10) only controls the
+#   * Epochs. `--epochs` defaults to 50, and `--save_interval` (10) only controls the
 #     checkpoint/preview cadence -- the "Training for 20 to 30 epochs" log lines are intervals,
-#     not the whole schedule. copia_demo's 2:50 allocation died at epoch 22/50.
-#   * SCALING. An epoch is ONE FULL PASS over every crop of every training tomogram: IsoNet2
+#     not the whole schedule.
+#   * Scaling. An epoch is one full pass over every crop of every training tomogram: IsoNet2
 #     sets steps_per_epoch to a 2e8 sentinel and trains min(len(train_loader), steps_per_epoch)
-#     (IsoNet2 models/train.py), so nothing caps it. Epoch cost is LINEAR in the tomogram
-#     count -- 750 batches = 6.4 min for one tomogram, ~2 h for twenty. It is NOT constant.
+#     (IsoNet2 models/train.py), so nothing caps it. Epoch cost is linear in the tomogram
+#     count -- 750 batches = 6.4 min for one tomogram, ~2 h for twenty.
 #
 # The preview after each save_interval is constant, not linear: `--prev_tomo_idx` defaults to 1,
 # so only the first tomogram is predicted (~6.2 min) however many are being trained on.
@@ -183,7 +182,7 @@ class DenoiseTrainParams(AbstractJobParams):
             return base_time  # cryoCARE can't be estimated without a count -> profile default
         else:
             minutes = _TRAIN_WALLTIME_BASE_MIN + _TRAIN_WALLTIME_PER_TS_MIN * n_ts
-        minutes = max(minutes, _hms_to_minutes(base_time))  # never below today's profile/default
+        minutes = max(minutes, _hms_to_minutes(base_time))  # never below the profile/default
         minutes = min(minutes, _TRAIN_WALLTIME_CAP_MIN)
         return _minutes_to_hms(minutes)
 

@@ -16,8 +16,7 @@ matching the subtomo atlas so pure-noise tiles stay uniformly grey instead of
 being stretched to look like low-SNR particles.
 
 numpy is a hard dep (top-level, like `preview_render`); mrcfile/PIL are imported
-lazily and degrade to None if absent — so this runs in the module-loaded app
-env, not Claude's bare venv.
+lazily and degrade to None if absent, so the module imports without them.
 """
 
 from __future__ import annotations

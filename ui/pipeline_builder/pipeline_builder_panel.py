@@ -84,7 +84,7 @@ class PipelineBuilderPanel:
         self.callbacks["remove_instance_from_pipeline"] = self.remove_instance_from_pipeline
         self.callbacks["invalidate_tm_tabs"] = self.invalidate_tm_tabs
         self.callbacks["set_active_mode"] = self.roster.set_active_mode
-        # Species page (roadmap 10 S4): open a job in the pipeline view / add one for a species.
+        # Species page: open a job in the pipeline view / add one for a species.
         self.callbacks["open_job"] = self.switch_tab
         self.callbacks["open_job_subsection"] = self.switch_to_job_subsection
         self.callbacks["add_instance_for_species"] = self.add_instance_for_species
@@ -293,17 +293,14 @@ class PipelineBuilderPanel:
         if instance_id is None:
             instance_id = next_instance_id(job_type, self.ui_mgr.selected_jobs, list(state.jobs.keys()))
 
-        # A NEW per-particle job must name its species. Unattributable ones are not a
-        # display wart: `species_render_plan` still emits them (parity contract), so they
-        # draw a full Journey species tab, while the Species page's universe IS the
-        # registry — which means every action 11-S3 moved there is unreachable for exactly
-        # those instances. `prompt_species_and_add` asks for the species, but it is only
-        # ONE caller; the invariant belongs here, where the two registered callbacks
-        # (`add_job_to_pipeline`, `add_instance_to_pipeline`) also arrive. Re-selecting an
-        # EXISTING instance is untouched — it already has one. `_ensure_prerequisites` does
-        # NOT pass through here, so it would bypass this; today it cannot produce a particle
-        # job, because no PARTICLES-phase spec declares a `prerequisite` (all point at
-        # tsImport). Give one a particle prerequisite and it needs the same gate.
+        # A new per-particle job must name its species. `species_render_plan` still emits
+        # unattributed instances, so they draw a full Journey species tab, but the Species
+        # page lists only registered species — its per-species actions would be unreachable
+        # for them. The check lives here rather than in `prompt_species_and_add` because the
+        # registered callbacks (`add_job_to_pipeline`, `add_instance_to_pipeline`) arrive
+        # here too. Re-selecting an existing instance is untouched. `_ensure_prerequisites`
+        # bypasses this gate; that is safe only while no PARTICLES-phase spec declares a
+        # `prerequisite` (all point at tsImport).
         if job_type in PHASE_JOBS[PHASE_PARTICLES] and species_id is None and instance_id not in state.jobs:
             ui.notify(
                 f"{get_job_display_name(job_type)} needs a particle species — add it from the "
@@ -340,22 +337,13 @@ class PipelineBuilderPanel:
                     sp = p_state.get_species(species_id)
                     if sp:
                         # Default new TM jobs to the species's currently
-                        # selected template + mask + symmetry. The v3
-                        # helpers resolve template/mask via
-                        # species.selected_*_id; symmetry is a top-level
-                        # field on Species (defaults "C1").
-                        #
-                        # Previously this excluded symmetry — the rationale
-                        # was that PyTOM's driver silently dropped non-Cn
-                        # values, so a species declared as I1 would have
-                        # silently run C1 anyway. That's no longer true:
-                        # drivers/template_match_pytom.py now generates an
-                        # asymmetric-unit angle list for D/T/O/I via
-                        # services.templating.angle_lists and passes it as
-                        # --angular-search <file>. With the driver honoring
-                        # the value, inheriting from the species is the
-                        # principle-of-least-surprise default; the user can
-                        # still override in the TM-job dropdown.
+                        # selected template + mask + symmetry. The helpers
+                        # resolve template/mask via species.selected_*_id;
+                        # symmetry is a top-level field on Species (defaults
+                        # "C1"). drivers/template_match_pytom.py builds an
+                        # asymmetric-unit angle list for D/T/O/I symmetries,
+                        # so inheriting symmetry is safe; the user can
+                        # override it in the TM-job dropdown.
                         if job_type == JobType.TEMPLATE_MATCH_PYTOM:
                             job_model.template_path = get_effective_template_path(sp)
                             job_model.mask_path = get_effective_mask_path(sp)
@@ -416,23 +404,19 @@ class PipelineBuilderPanel:
                 del overrides[k]
 
     def remove_instance_from_pipeline(self, instance_id: str):
-        """Drop an instance from the pipeline and PERSIST that.
+        """Drop an instance from the pipeline and persist that.
 
-        The save is `force=True` and the state is marked dirty, both on purpose. A
-        deletion mutates `jobs` / `job_path_mapping` / `pipeline_order` / other jobs'
-        `source_overrides` directly, and none of those writes go through the USER_PARAMS
-        setter that maintains `is_dirty` — `ensure_job_initialized` only calls
-        `update_modified()`, which merely stamps `modified_at` (see `merge_card.persist`,
-        which documents the same trap). A plain `save_project()` is gated on
-        `force or state.is_dirty` (`StateService.save_project`), so before this the delete
-        lived in memory only: the job vanished from the roster and came straight back on
-        the next server restart, because `project_params.json` had never been rewritten.
-        An ADD survived that only by accident — editing any parameter afterwards marks the
-        state dirty and writes the whole thing out, the new job included.
+        The state is marked dirty and saved with `force=True`. A deletion mutates `jobs` /
+        `job_path_mapping` / `pipeline_order` / other jobs' `source_overrides` directly, and
+        none of those writes go through the USER_PARAMS setter that maintains `is_dirty`
+        (`update_modified()` only stamps `modified_at`; `merge_card.persist` has the same
+        trap). `StateService.save_project` is gated on `force or state.is_dirty`, so without
+        both the delete would live in memory only and the job would come back on the next
+        server restart.
 
-        The state is resolved by EXPLICIT path when we have one, not `current_project_state()`:
-        the save targets `ui_mgr.project_path`, and deleting out of one state while saving
-        another is exactly how a deletion goes missing.
+        The state is resolved by explicit path when there is one, not `current_project_state()`:
+        the save targets `ui_mgr.project_path`, and deleting from one state while saving
+        another loses the deletion.
         """
         if self.ui_mgr.is_running:
             return
@@ -453,10 +437,8 @@ class PipelineBuilderPanel:
         if job_model and job_model.execution_status != JobStatus.SUCCEEDED:
             del state.jobs[instance_id]
             state.job_path_mapping.pop(instance_id, None)
-            # Persisted run membership must not keep naming a job that no longer exists.
-            # Load filters it out (`project_state.py` builds pipeline_order from the ids
-            # still in `jobs`), so this is belt-and-braces — but it keeps the file honest
-            # between the delete and the next load.
+            # Load already filters pipeline_order to the ids still in `jobs`; this keeps the
+            # file consistent between the delete and the next load.
             state.pipeline_order = [iid for iid in state.pipeline_order if iid != instance_id]
         state.mark_dirty()
 
@@ -500,8 +482,7 @@ class PipelineBuilderPanel:
     def _restore_interactive_state(job_type: JobType, instance_id: str, state):
         """Restore persisted labels/state when re-creating an interactive job.
         Labels come from the registry's per-frame filter verdicts (the last
-        filter run stamped them) — the ProjectState tilt_filter_labels mirror
-        is gone (roadmap 02 stage 4)."""
+        filter run stamped them)."""
         if job_type != JobType.TILT_FILTER:
             return
         job_model = state.jobs.get(instance_id)
@@ -683,13 +664,9 @@ def build_pipeline_builder_panel(
         toggle_protocols=toggle_protocols,
     )
 
-    # The render-scoped self-heal of `apply_aggregation_overrides` was REMOVED here by
-    # de-novo S6. It existed to retro-wire consumer jobs added before the merge hook was
-    # wired, and it was safe only because `is_aggregation` kept it to a handful of projects.
-    # With that flag deleted it would have become a mutator running on every workspace render
-    # of every project — a behaviour change smuggled in as a cleanup. The wiring now happens
-    # where the user acts: adding a consumer job (above), finishing a merge, and switching
-    # the active merge (both in ui/aggregation/merge_card.py).
+    # `apply_aggregation_overrides` does not run on render: it would mutate every project on
+    # every workspace render. It runs where the user acts: adding a consumer job (above),
+    # finishing a merge, and switching the active merge (both in ui/aggregation/merge_card.py).
 
     # Must be created in the current NiceGUI rendering context before
     # panel.build() is called, since rebuild_pipeline_ui writes into it.

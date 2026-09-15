@@ -42,15 +42,14 @@ def get_backend() -> CryoBoostBackend | None:
 
 
 def _is_pipeline_job_dict(job: Any) -> bool:
-    """Does this RAW ``project_params.json`` job entry belong to the pipeline's own run?
+    """Does this raw ``project_params.json`` job entry belong to the pipeline's own run?
 
-    Per-list subtomogram extractions (roadmap 07 §4) do not: they are one-off interactive jobs
-    whose home is the Species page's Picks tab, which shows their status itself. Counting them
-    in the project-hub scan would let ONE failed list extraction leave the whole project
-    reading "failed" indefinitely (nothing clears that status until the next submit), let a
-    running one make an idle project read "running", and inflate its planned-job total. That
-    scan reads json, so it cannot see ``IS_INTERACTIVE``; the job type is the filter.
-    ``tiltFilter`` deliberately stays counted — interactive to launch, but pipeline work."""
+    Per-list subtomogram extractions do not: they are one-off interactive jobs whose status
+    the Species page's Picks tab shows. Counting them in the project-hub scan would let one
+    failed list extraction leave the whole project reading "failed" until the next submit,
+    let a running one make an idle project read "running", and inflate its planned-job total.
+    The scan reads json and cannot see ``IS_INTERACTIVE``, so the job type is the filter.
+    ``tiltFilter`` stays counted: interactive to launch, but pipeline work."""
     return not (isinstance(job, dict) and job.get("job_type") == JobType.EXTRACT_PICK_LIST.value)
 
 
@@ -105,8 +104,8 @@ class CryoBoostBackend:
         self.curation_service = CurationSessionService(
             server_dir=self.server_dir, username=self.username, slurm_service=self.slurm_service
         )
-        # CurationWatcher registers ArtiaX .coords saves as `manual` pick lists server-side
-        # (roadmap 09-S4); same lifecycle as the monitor — started/stopped in main.py.
+        # CurationWatcher registers ArtiaX .coords saves as `manual` pick lists server-side;
+        # same lifecycle as the monitor — started/stopped in main.py.
         self.curation_watcher = CurationWatcher(self)
         # Pending debounced saves, keyed by project path — see save_project().
         self._pending_saves: dict[str, asyncio.Task] = {}
@@ -288,20 +287,20 @@ class CryoBoostBackend:
         do_stack2d: bool = True,
         do_float16: bool = True,
     ) -> dict[str, Any]:
-        """Subtomo-extract ONE curation pick list (Slice C): submit
-        ``drivers/extract_pick_list.py`` as a one-off SLURM job via ``config/qsub.sh``
-        (same mechanism as ``submit_tilt_filter_dl``). Output lands in
-        ``<list_star dir>/<slug>/`` so lists extract independently. Returns the SLURM
-        job id + the dir to watch (``RELION_JOB_EXIT_SUCCESS/FAILURE`` + ``result.json``
-        appear there; the caller records ``PickList.mark_extracted`` on success).
+        """Subtomo-extract one curation pick list: submit ``drivers/extract_pick_list.py``
+        as a one-off SLURM job via ``config/qsub.sh`` (same mechanism as
+        ``submit_tilt_filter_dl``). Output lands in ``<list_star dir>/<slug>/`` so lists
+        extract independently. Returns the SLURM job id + the dir to watch
+        (``RELION_JOB_EXIT_SUCCESS/FAILURE`` + ``result.json`` appear there; the caller
+        records ``PickList.mark_extracted`` on success).
 
         Exactly one schema source: ``candidate_optset`` mirrors the species'
         candidate-extract schema; ``tomograms_star`` synthesizes it for a de-novo
         species with no candidate-extract job.
 
-        ``box_size``/``binning``/``crop_size`` are REQUIRED — they used to default to
-        384/1.0/224, which silently cut wrong-but-plausible subtomograms for any species
-        without a subtomo job. The caller resolves them from the species (see
+        ``box_size``/``binning``/``crop_size`` have no defaults: a default would cut
+        wrong-but-plausible subtomograms for any species without a subtomo job. The caller
+        resolves them from the species (see
         ``aggregation.extraction.extraction_params_for_species``) or asks the user."""
         project_path = Path(project_path)
         if (candidate_optset is None) == (tomograms_star is None):
@@ -309,20 +308,20 @@ class CryoBoostBackend:
         out_dir = Path(list_star).parent / slug
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        # ── job identity (roadmap 07-S1) ────────────────────────────────────────
-        # Create/update the per-list instance BEFORE sbatch: from S2 the driver
-        # bootstraps off it and `get_driver_context` exits when the instance is
-        # missing. Two orderings here are load-bearing:
-        #   · `execution_status` is reset FIRST because writes to USER_PARAMS fields
+        # ── job identity ────────────────────────────────────────────────────────
+        # Create/update the per-list instance before sbatch: the driver bootstraps
+        # off it and `get_driver_context` exits when the instance is missing. Two
+        # orderings here are load-bearing:
+        #   · `execution_status` is reset first because writes to USER_PARAMS fields
         #     are silently dropped once a job leaves SCHEDULED/FAILED — the reverse
-        #     order would re-cut a re-curated list with the PREVIOUS geometry and
+        #     order would re-cut a re-curated list with the previous geometry and
         #     report nothing.
-        #   · the whole instance update happens BEFORE the output below is destroyed.
-        #     Both halves of the Picks tab's story live on this one shared in-memory
-        #     state, so a render landing in between would pair the freshly-absent
-        #     output (`extraction_state()` → NOT_EXTRACTED) with the PREVIOUS run's
-        #     Succeeded/Failed and its stale error text. Reset first and the only
-        #     visible transient is "not extracted · submitting", which is true.
+        #   · the whole instance update happens before the output below is destroyed.
+        #     The Picks tab reads both from this shared in-memory state, so a render
+        #     landing in between would pair the freshly-absent output
+        #     (`extraction_state()` → NOT_EXTRACTED) with the previous run's
+        #     Succeeded/Failed and its stale error text. Resetting first leaves only
+        #     "not extracted · submitting" as the visible transient, which is true.
         # `paths["job_dir"]` is the out dir qsub already writes run.out/run.err and
         # the exit markers into. `reconcile_afterok` resolves a job by that same dir,
         # but only while the project has a real pipeline job live: this job never sets
@@ -370,9 +369,9 @@ class CryoBoostBackend:
 
         await asyncio.to_thread(_clear_previous_output)
 
-        # The driver reads every one of those values off the instance now (roadmap 07-S2),
-        # so the launch is the standard instance form: --instance_id/--project_path, and
-        # qsub cd's into out_dir, which is what the driver takes as its job dir.
+        # The driver reads every one of those values off the instance, so the launch is the
+        # standard instance form: --instance_id/--project_path, and qsub cd's into out_dir,
+        # which is what the driver takes as its job dir.
         driver_cmd = driver_invocation(
             server_dir=self.server_dir,
             driver_script=self.server_dir / "drivers" / "extract_pick_list.py",
@@ -538,10 +537,9 @@ class CryoBoostBackend:
         optics_group_name: str = "opticsGroup1",
         replace: bool = False,
     ) -> dict[str, Any]:
-        """Add one import BATCH and rebuild ``Tomograms/tomograms.star`` from every batch the
-        project holds (de-novo S5). ``replace=True`` throws the prior batches away instead —
-        the pre-S5 single-slot behaviour, kept as an explicit user choice rather than the
-        silent default it used to be.
+        """Add one import batch and rebuild ``Tomograms/tomograms.star`` from every batch the
+        project holds. ``replace=True`` discards the prior batches instead, as an explicit
+        user choice.
 
         Raises (propagated to the UI) if the batch being added cannot be read — a selected
         MRC with no voxel size and no pixel-size override, a reference star that is gone —
@@ -623,24 +621,21 @@ class CryoBoostBackend:
         SLURM id THIS awaiter submitted — the instance is shared, so that id is how a status
         write proves it belongs to the run being watched).
         Returns {out_dir: ("done"|"failed", data)} for the resolved ones (an out dir absent
-        from the result = still running). Disk scans run off the event loop. The ONE
-        extraction watcher — both the batch path (extract_pending_lists) and the
-        per-list path (extract_pick_list_and_wait) use it.
+        from the result = still running). Disk scans run off the event loop. Both the batch
+        path (extract_pending_lists) and the per-list path (extract_pick_list_and_wait) use it.
 
-        It is also the ONLY refresher those instances get (roadmap 07-S3): a one-off
-        extraction deliberately does not set ``pipeline_active`` (the roster would read as a
-        live run), and ``PipelineMonitor._tick_once`` iterates only active projects — so
+        While it runs it is the only refresher those instances get: a one-off extraction does
+        not set ``pipeline_active`` (the roster would read as a live run), and
+        ``PipelineMonitor._tick_once`` iterates only active projects — so
         QUEUED → RUNNING → SUCCEEDED/FAILED happens here, and the driver's own error text
         lands on the instance so a failure outlives the dialog that launched it.
-        It is NOT the last word, though it used to be: if this awaiter dies (server restart,
-        tray cancel, or ``timeout_s`` elapsing) nothing here will ever move the instance again,
-        and ``PickList.mark_extracted`` — which only these two callers run — would never land
-        either, leaving a finished job's optimisation set orphaned on disk with both surfaces
-        reading "not extracted" (``PickList.extraction_state()`` keys off the RECORDED
-        ``extracted_path``, so it cannot discover an output nobody recorded).
-        ``reconcile_pick_list_extractions`` is the recovery: it asks SLURM about any instance
-        left non-terminal and settles it off this same out dir. Re-extracting stays a recovery
-        path too, which is why nothing on it may be hard-blocked."""
+        If this awaiter dies (server restart, tray cancel, or ``timeout_s`` elapsing), nothing
+        here moves the instance again and ``PickList.mark_extracted`` never lands, leaving a
+        finished job's optimisation set orphaned on disk with both surfaces reading
+        "not extracted" (``PickList.extraction_state()`` keys off the recorded
+        ``extracted_path``). ``reconcile_pick_list_extractions`` is the recovery: it asks SLURM
+        about any instance left non-terminal and settles it off this same out dir.
+        Re-extracting is a recovery path too, so nothing on it may be hard-blocked."""
         pending = set(targets)
         results: dict[str, tuple] = {}
         if not pending:
@@ -677,7 +672,7 @@ class CryoBoostBackend:
         self, project_path: Path, targets: dict[str, tuple[str, str | None]], done: dict[str, tuple], started: set[str]
     ) -> None:
         """Write one poll tick of ``_await_extraction_outdirs`` onto the per-list extraction
-        instances (roadmap 07-S3): the ones SLURM has just started → RUNNING, the resolved
+        instances: the ones SLURM has just started → RUNNING, the resolved
         ones → SUCCEEDED, or FAILED carrying the driver's own error text. ``last_error`` sits
         outside ``USER_PARAMS`` precisely so it stays writable on a job that has left
         SCHEDULED. One forced save per tick that changed something, by EXPLICIT path — both
@@ -732,11 +727,11 @@ class CryoBoostBackend:
     ) -> dict[str, Any]:
         """scancel ONE list's in-flight extraction and mark its instance FAILED.
 
-        The delete path needs this (roadmap 07 review, finding H): deleting a pick list
-        rmtree's the very out dir a running extraction is writing into, the job then RE-CREATES
-        it, and the instance that held its SLURM id is popped in the same breath — so nothing
-        in the project can stop it or explain the directory that reappeared. Cancelling first
-        keeps the delete honest. No-op ``ok(cancelled=None)`` when nothing is in flight."""
+        The delete path needs this: deleting a pick list removes the out dir a running
+        extraction is writing into, the job then re-creates it, and the instance that held its
+        SLURM id is popped at the same time — so nothing in the project could stop the job or
+        explain the directory that reappeared. No-op ``ok(cancelled=None)`` when nothing is in
+        flight."""
         project_path = Path(project_path)
         state = self.state_service.state_for(project_path)
         jm = state.jobs.get(extract_pick_list_instance_id(species_id, tomo_name, slug))
@@ -763,26 +758,23 @@ class CryoBoostBackend:
         with its BackgroundTask, so a server restart, a tray Cancel or ``timeout_s`` elapsing
         strands one mid-flight — nothing else picks it up (``IS_INTERACTIVE`` keeps it out of
         every sweep, and ``PipelineMonitor`` ticks only projects with ``pipeline_active``,
-        which a one-off extraction deliberately never sets). Neither consequence is cosmetic:
-        the chip asserts Queued/Running forever, and ``extract_pending_lists`` reports
-        the list as "still running" and refuses to resubmit it *for good* — the batch button
-        becomes a permanent no-op for that list, with the per-row confirm as the only way out.
+        which a one-off extraction never sets). The chip then shows Queued/Running forever,
+        and ``extract_pending_lists`` reports the list as "still running" and never resubmits
+        it, leaving the per-row confirm as the only way out.
 
         So ask SLURM instead of trusting the stored status:
 
           · id still in the queue → genuinely live; promote QUEUED → RUNNING once the
             allocation has started (``run.out`` exists). Left alone otherwise.
-          · ``query_jobs_by_ids`` returns None → squeue ITSELF failed. Conclude NOTHING
+          · ``query_jobs_by_ids`` returns None → squeue itself failed. Conclude nothing
             (transient infra is not evidence) and report the instance as ``unknown``.
           · id gone from the queue → the out dir decides. A ``result.json`` with ``ok`` also
-            runs ``PickList.mark_extracted``, which is how an output whose awaiter died gets
-            RECOVERED rather than re-cut; an exit-failure carries the driver's own text; and
-            "left the queue without writing a result" is itself a failure, stated as one
-            instead of left spinning.
-          · no ``slurm_job_id`` recorded at all → ``unknown``, untouched: that is also the
+            runs ``PickList.mark_extracted``, so an output whose awaiter died is recovered
+            rather than re-cut; an exit-failure carries the driver's own text; and
+            "left the queue without writing a result" is itself a failure.
+          · no ``slurm_job_id`` recorded → ``unknown``, untouched: this is also the
             sub-second window inside ``extract_pick_list`` between resetting the instance and
-            sbatch returning, and marking a job that is *being submitted right now* as failed
-            would be a worse lie than the one being fixed.
+            sbatch returning, and a job being submitted right now must not be marked failed.
 
         Cheap when there is nothing to do (no non-terminal instance ⇒ no squeue call) and
         idempotent, so poll paths may call it. Returns
@@ -885,11 +877,10 @@ class CryoBoostBackend:
         )
 
         project_path = Path(project_path)
-        # Settle before deciding (roadmap 07 review, finding A/B): an instance whose awaiter
-        # died reads Queued/Running with nothing left to move it, and the skip below would
-        # then refuse to resubmit that list forever. Running first also matters for the count —
-        # a finished-but-unrecorded extraction gets `mark_extracted` here and drops out of
-        # `pending` entirely instead of being cut a second time.
+        # Settle before deciding: an instance whose awaiter died reads Queued/Running with
+        # nothing left to move it, and the skip below would then never resubmit that list.
+        # It also keeps the count right — a finished-but-unrecorded extraction gets
+        # `mark_extracted` here and drops out of `pending` instead of being cut a second time.
         recon = await self.reconcile_pick_list_extractions(project_path, species_id)
         live_instances = set(recon.get("live") or [])
         state = self.state_service.state_for(project_path)
@@ -901,17 +892,15 @@ class CryoBoostBackend:
         still_running: list[dict] = []
         watching: list[dict] = []  # {tomo, slug, out_dir, instance_id, slurm_job_id}
         for h in pending:
-            # NEVER resubmit a list whose extraction is genuinely in flight (roadmap 07-S3):
-            # a submit wipes out/ and the exit markers first, so a second job would cut into
-            # the dir the first is writing. This is the common case rather than an edge — a
-            # list counts as "pending" the moment a re-extract clears its output, so a single
-            # in-flight re-extract puts the list right back in this loop's input.
-            # "Genuinely" = SLURM still has the id (`live_instances`), not merely a stored
-            # status: the reconciler above has already settled everything else, and an instance
-            # with no recorded id is deliberately NOT skipped — there is provably no job to
-            # clash with, so resubmitting is right (the sub-second cost is a duplicate submit
-            # if a per-row extract is sbatch-ing this very list at this very moment, which the
-            # per-list SingleFlight and the task-registry dedup key already make unlikely).
+            # Never resubmit a list whose extraction is in flight: a submit wipes out/ and the
+            # exit markers first, so a second job would cut into the dir the first is writing.
+            # This is the common case — a list counts as "pending" the moment a re-extract
+            # clears its output, so an in-flight re-extract puts the list back in this loop.
+            # In flight means SLURM still has the id (`live_instances`), not a stored status:
+            # the reconciler above has settled everything else. An instance with no recorded id
+            # is not skipped — there is no job to clash with. The remaining race (a per-row
+            # extract sbatch-ing this list at this moment) is covered by the per-list
+            # SingleFlight and the task-registry dedup key.
             if extract_pick_list_instance_id(species_id, h.tomo_name, h.slug) in live_instances:
                 logger.info("extract_pending_lists: %s/%s is live in SLURM — not resubmitting", h.tomo_name, h.slug)
                 still_running.append({"tomo": h.tomo_name, "slug": h.slug})
@@ -1022,10 +1011,9 @@ class CryoBoostBackend:
     ) -> dict[str, Any]:
         return await self.curation_service.send_chimerax_command(session_info, command, timeout=timeout)
 
-    # NOTE (roadmap 10-S1): `save_session_particle_lists` / `save_curation_picks` /
-    # `load_into_session` / `get_curation_loaded` used to sit here and are gone. 13-S2 admits
-    # exactly one outbound command after launch — the confirmed scope switch below, which
-    # rewrites the scope on disk in the same call. See services/curation/session_service.py.
+    # The only outbound command to a running session after launch is the confirmed scope
+    # switch below, which rewrites the scope on disk in the same call.
+    # See services/curation/session_service.py.
 
     async def switch_curation_session(
         self,
@@ -1113,7 +1101,7 @@ class CryoBoostBackend:
     async def deduplicate_pick_list(
         self, project_path: Path, species_id: str, tomo_name: str, slug: str, radius_ang: float
     ) -> dict[str, Any]:
-        """Greedy radius-dedup ONE registered pick list in place (roadmap 11-S1): rewrite
+        """Greedy radius-dedup one registered pick list in place: rewrite
         its star (``CurationSessionService.deduplicate_pick_list``), then update the
         ``PickList`` count, persist by explicit path and bump the registry rev — the list
         reads STALE afterwards (extracted_count ≠ count) until it is re-extracted. Returns
@@ -1129,8 +1117,8 @@ class CryoBoostBackend:
         pl.count = int(res.get("n_after", pl.count))
         state.mark_dirty()
         state.bump_registry_rev()
-        # AWAIT (force) so the dedup'd count lands on disk — a fire-and-forget
-        # create_task gets GC'd before it runs (same bug as the manual-list save).
+        # Await (force) so the dedup'd count lands on disk — a fire-and-forget
+        # create_task can be GC'd before it runs.
         await self.state_service.save_project(project_path=project_path, force=True)
         return res
 
@@ -1195,9 +1183,8 @@ class CryoBoostBackend:
                     owner_raw = None
                     pipeline_active = False
                     total_jobs_planned = 0
-                    # Initialized here, not only inside the try below: an unreadable
-                    # project_params.json must still reach the fallback path (which exists so
-                    # "the UI always has something to show"), and _derive_live_status is called
+                    # Initialized outside the try below: an unreadable project_params.json
+                    # still reaches the fallback path, and _derive_live_status is called
                     # unconditionally at the bottom of this block.
                     jobs_dict: dict[str, Any] = {}
                     ts_count = 0
@@ -1224,10 +1211,8 @@ class CryoBoostBackend:
                         total_jobs_planned = len(jobs_dict)
                         ts_count = data.get("import_selected_tilt_series") or data.get("import_total_tilt_series") or 0
                         mnemonic = data.get("mnemonic") or ""
-                        # Registered particle species — the roster indexes over them so
-                        # "which projects have a ribosome in them" is answerable from the
-                        # project list. id/name/color only; the rest of ParticleSpecies is
-                        # nobody's business at roster scale.
+                        # Registered particle species, so the roster can answer "which projects
+                        # have a ribosome in them". id/name/color only.
                         species = [
                             {"id": s["id"], "name": s.get("name") or s["id"], "color": s.get("color") or "#3b82f6"}
                             for s in (data.get("species_registry") or [])

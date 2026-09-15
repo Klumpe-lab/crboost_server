@@ -24,8 +24,8 @@ from services.templating.template_metadata import get_effective_template_path, r
 
 
 # Template-header reads are cached centrally in
-# services.templating.template_metadata (mtime-keyed); use the shared
-# helper here as a thin tuple shim so existing callsites don't change.
+# services.templating.template_metadata (mtime-keyed); this is a thin
+# tuple shim over that helper.
 
 
 def _read_template_apix_box(template_path: str) -> tuple[float | None, int | None]:
@@ -189,9 +189,9 @@ def compute_pixel_chain(project_state) -> list[dict]:
     # ---- Template Match (one row per species) ----
     for tm_iid, tm_jm in template_match_instances(project_state):
         species, species_id = resolve_species(project_state, tm_jm, tm_iid)
-        # Template path: per-job override (v1) wins when set, otherwise the
-        # species's v2 template (or v1 fallback). MRC header is the
-        # authoritative source for apix and box.
+        # Template path: a per-job override wins when set, otherwise the
+        # species' selected template. The MRC header is the authoritative
+        # source for apix and box.
         tmpl_path = getattr(tm_jm, "template_path", "") or (get_effective_template_path(species) if species else "")
         tmpl_px = 0.0
         tmpl_box = 0
@@ -205,7 +205,7 @@ def compute_pixel_chain(project_state) -> list[dict]:
         ang_search = getattr(tm_jm, "angular_search", None)
         if ang_search:
             notes.append(f"θ={ang_search}°")
-        # Symmetry: prefer species (v2 source of truth); fall back to job (v1).
+        # Symmetry: prefer the species; fall back to the job field.
         sym = (getattr(species, "symmetry", None) if species else None) or getattr(tm_jm, "symmetry", None)
         if sym:
             notes.append(f"sym={sym}")
@@ -236,9 +236,8 @@ def compute_pixel_chain(project_state) -> list[dict]:
     for ce_iid, ce_jm in candidate_extract_instances(project_state):
         species, species_id = resolve_species(project_state, ce_jm, ce_iid)
         ce_species_ids.add(species_id)
-        # Particle diameter: prefer species.diameter_ang (v2 source of truth);
-        # fall back to the per-Pick-job value (v1) so projects pre-migration
-        # still surface a number.
+        # Particle diameter: prefer species.diameter_ang; fall back to the
+        # per-Pick-job value, which older projects still carry.
         species_diameter = float(getattr(species, "diameter_ang", 0.0) or 0.0) if species else 0.0
         diameter = species_diameter or float(getattr(ce_jm, "particle_diameter_ang", 0.0) or 0.0)
         if diameter:
@@ -277,8 +276,8 @@ def compute_pixel_chain(project_state) -> list[dict]:
     # A species picked de novo never gets a Pick row from the loop above, so it would
     # be absent from the sanity table entirely. Its picks live in the reconstruction's
     # frame, so that is the geometry to show. On an imported-only project there is no
-    # recon job and these read blank — honest: the per-tomogram geometry (with its
-    # provenance) is surfaced in the Particles section, which knows the tilt series.
+    # recon job and these read blank; the per-tomogram geometry (with its provenance)
+    # is shown in the Particles section, which knows the tilt series.
     for sp in getattr(project_state, "species_registry", None) or []:
         if sp.id in ce_species_ids:
             continue
@@ -366,8 +365,7 @@ def apply_sanity_rules(rows: list[dict]) -> None:
                 r["warnings"]["particle"] = ("warn", msg)
 
     # Box vs particle diameter  (TM and Subtomo)
-    # Box vs particle Ø — tighter zones than the older 1.5–3.0× window
-    # (per JOURNEY_CANDIDATE_METRICS.md §"Box and crop sizing rationality"):
+    # Box vs particle Ø zones:
     #   red  < 1.5×  (particle won't fit; tight Refine3D shifts will clip)
     #   amber 1.5–2.0× (acceptable but no margin for refinement)
     #   green 2.0–3.0×
@@ -415,7 +413,7 @@ def apply_sanity_rules(rows: list[dict]) -> None:
 
     # Subtomo crop sanity
     #
-    # Crop ratio thresholds (per JOURNEY_CANDIDATE_METRICS.md):
+    # Crop ratio thresholds:
     #   red    crop < diameter  (particle clipped — absolute floor)
     #   red    crop > box       (invalid; crop must fit inside box)
     #   amber  crop / diameter  < 1.2× (tight; no margin for shifts)

@@ -161,7 +161,7 @@ def scan_statuses(job_dir: Path, items: list[str]) -> dict[str, str]:
                 skip_set.add(p.stem)
 
     # One directory listing rather than one stat() per item: this runs on a 5 s UI timer over
-    # the shared filesystem, and a 114-tilt-series job made it 114 round-trips a tick.
+    # the shared filesystem, where a 114-tilt-series job would cost 114 round-trips a tick.
     started: set = set()
     if job_dir.is_dir():
         started = {e.name for e in os.scandir(job_dir) if e.name.startswith("task_") and e.name.endswith(".out")}
@@ -182,7 +182,7 @@ def scan_statuses(job_dir: Path, items: list[str]) -> dict[str, str]:
 
 
 class TaskProgress(NamedTuple):
-    """Job-level tally over per-item statuses — THE settledness arithmetic.
+    """Job-level tally over per-item statuses; the single settledness arithmetic.
 
     Every consumer (roster chip, tracker summary/progress-bar, dashboards)
     derives its counts from here so they can't disagree on what "settled"
@@ -220,8 +220,7 @@ def mark_stopped_tasks_failed(job_dir: Path) -> int:
 
     Control-plane writer: call only AFTER the owning array has been scancel'd.
     Nothing but that convention guarantees the task is dead and won't write its
-    own marker (claim records that enforce this are a later phase of
-    docs/roadmaps/roadmap_task-status-state-machine.md).
+    own marker.
     """
     items = manifest_items(job_dir)
     if not items:

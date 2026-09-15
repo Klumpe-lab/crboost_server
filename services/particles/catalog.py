@@ -1,6 +1,6 @@
-"""Lab-level species catalog (roadmap 12) — cross-project species DEFINITIONS.
+"""Lab-level species catalog — cross-project species definitions.
 
-Two tiers, and the split is the whole design. A **definition** is cross-project by nature:
+Two tiers. A **definition** is cross-project by nature:
 name, diameter, symmetry, notes, colour, templates and masks with their provenance. Everything
 else a species accumulates — picks, keep/drop filters, merges, extractions — is project-bound,
 because coordinates are relative to a project's tomograms and RELION-compat wants project-local

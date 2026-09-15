@@ -1,4 +1,4 @@
-"""SerialEM tilt stacks as a landing-page source (roadmap 18).
+"""SerialEM tilt stacks as a landing-page source.
 
 A SerialEM delivery ships one frame-aligned stack per tilt-series (`<ts>.mrc` +
 `<ts>.mrc.mdoc`, one `[ZValue]` section per slice). The pipeline's input contract is
@@ -55,7 +55,7 @@ def resolve_stack(mdoc_path: Path, image_file: str, n_sections: int) -> tuple[Pa
 
 
 def choose_source_layer(software: str, movies_complete: bool, movies_partial: bool, has_stack: bool) -> str:
-    """Roadmap 18 D1, the one rule for scan and import: `"stack"` when a valid stack
+    """The one rule for scan and import: `"stack"` when a valid stack
     exists and either the movies are incomplete or the dialect is SerialEM (whose
     stacks are the frame-aligned data its users mean; Tomo5 stacks are unaligned sums);
     `"movies"` when any movie resolved; `"missing"` otherwise."""
@@ -68,7 +68,7 @@ def choose_source_layer(software: str, movies_complete: bool, movies_partial: bo
 
 def frame_name_for_slice(sub_frame_path: str) -> str:
     """`Z:\\…\\area_5-A_ts_002_001_000_-10.0.tif` → `area_5-A_ts_002_001_000_-10.0.mrc`
-    (roadmap 18 D6: the slice keeps the movie's basename, single suffix swapped)."""
+    (the slice keeps the movie's basename, single suffix swapped)."""
     return Path(Path(sub_frame_path.replace("\\", "/")).name).with_suffix(".mrc").name
 
 

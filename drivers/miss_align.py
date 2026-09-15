@@ -41,7 +41,7 @@ except ImportError as e:
 # Self-contained dim-stamping script, run in-container (warpylib + torch live only in the
 # miss_alignment SIF). Dims are passed as argv so no string formatting is needed here. The
 # physical extents are pixels x apix (Å), scale-invariant, so they stay correct under any
-# later downsampling. See docs/miss-alignment.md §6.
+# later downsampling. See docs/miss-alignment.md (thin XML → stamp dimensions).
 STAMP_SCRIPT = """\
 import glob, sys, torch
 from warpylib import TiltSeries
@@ -83,9 +83,9 @@ def allocated_gpu_count(default: int) -> int:
 def read_settings_dims(settings_path: Path) -> dict:
     """Parse warp_tiltseries.settings for the physical dims miss-alignment needs.
 
-    apix MUST come from the settings PixelSize — NOT MicroscopeParams.pixel_size_angstrom,
-    which defaults to 1.35 (the apix-default trap). The .settings file is the authoritative
-    per-run source. Raises on any missing/blank/non-positive value (never invent a default).
+    apix comes from the settings PixelSize, not MicroscopeParams.pixel_size_angstrom, which
+    defaults to 1.35 even when unset. The .settings file is the authoritative per-run source.
+    Raises on any missing/blank/non-positive value.
     """
     root = ET.parse(settings_path).getroot()
 
@@ -135,7 +135,7 @@ def build_config(params: MissAlignParams, training_directory: Path) -> dict:
     return {
         "general": {
             "training_directory": str(training_directory),
-            "apply_ctf": False,  # CTF doubles cost with no alignment benefit (docs §5)
+            "apply_ctf": False,  # CTF doubles cost with no alignment benefit
             "iteration_settings": schedule,
             "seed": 45132,
         },
@@ -202,24 +202,24 @@ def main():
         require_producer_input(settings_src, "warp_tiltseries.settings")
         require_producer_input(input_star, "aligned_tilt_series.star")
 
-        # P1 aligns the EXISTING aligned tiltstack/*.st (the proven path). prepare_stacks_apix > 0 would
-        # rebuild the stacks from RAW frames, which needs tilt_movie_paths in each XML (crboost's thin XML
-        # has none) plus the frames + tomostar bound in-container (additional_binds is empty until P2 wires
-        # them). Refuse up front rather than stage + train for hours and only then fail (never-fail-silently).
+        # The driver aligns the existing aligned tiltstack/*.st. prepare_stacks_apix > 0 would rebuild the
+        # stacks from raw frames, which needs tilt_movie_paths in each XML (crboost's thin XML has none)
+        # plus the frames + tomostar bound in-container (additional_binds does not carry them). Refuse up
+        # front rather than stage + train for hours and only then fail.
         if params.prepare_stacks_apix > 0:
             raise RuntimeError(
                 f"prepare_stacks_apix={params.prepare_stacks_apix} is not supported yet — rebuilding tilt "
-                f"stacks from raw frames requires the frames + tomostar bound in-container (a P2 feature). "
+                f"stacks from raw frames requires the frames + tomostar bound in-container. "
                 f"Set prepare_stacks_apix=0 to align the existing tiltstack/*.st (the proven path)."
             )
 
-        # 1. Stage COPIES into the job dir. miss-alignment refines the XMLs IN PLACE and writes an
-        #    iterN/ snapshot + model.ckpt per macro-iteration, so on a RE-RUN we resume from the last
-        #    checkpoint rather than restart: if a prior attempt left iter*/ snapshots AND a model.ckpt
-        #    here, keep them (no re-stage) and start at the next iteration. A fresh run — or an
-        #    incomplete one with no checkpoint — stages a clean copy from the upstream aligntiltsWarp
-        #    output. (PENDING RUNTIME: confirm the tool auto-loads warp_tiltseries/model.ckpt when
-        #    --start-at-iteration > 0.)
+        # 1. Stage copies into the job dir. miss-alignment refines the XMLs in place and writes an
+        #    iterN/ snapshot + model.ckpt per macro-iteration, so a re-run resumes from the last
+        #    checkpoint rather than restarting: if a prior attempt left iter*/ snapshots and a model.ckpt
+        #    here, keep them (no re-stage) and start at the next iteration. A fresh run, or an
+        #    incomplete one with no checkpoint, stages a clean copy from the upstream aligntiltsWarp
+        #    output. Unverified: that the tool auto-loads warp_tiltseries/model.ckpt when
+        #    --start-at-iteration > 0.
         staged_processing = job_dir / "warp_tiltseries"
         prior_iters = (
             sorted(d for d in staged_processing.glob("iter*") if d.is_dir()) if staged_processing.exists() else []
@@ -261,7 +261,7 @@ def main():
 
         # 4. Run `miss-alignment train`. --cleanenv wipes host env and --no-home means $HOME
         #    is unset, so point HOME/MPLCONFIGDIR at a writable job-dir subdir (torch/matplotlib
-        #    caches). P1 is single-GPU: index 0 within the gpu:1 allocation.
+        #    caches).
         jobtmp = job_dir / ".miss_align_home"
         (jobtmp / "mpl").mkdir(parents=True, exist_ok=True)
         # --cleanenv wipes USER/LOGNAME, and on this LDAP/SSSD cluster the bind-mounted static
@@ -274,7 +274,7 @@ def main():
         # CPU-side pool sampler (Lightning warns "num_workers ... may be a bottleneck") — the dominant
         # slowdown in practice. dataloader_workers=0 auto-scales to the allocated CPUs (minus headroom
         # for the trainer main process + recon worker); a positive value pins it. Either way it is
-        # clamped to the tool's pool constraint pool//n_partitions >= 2*batch_size (docs §4) so it never
+        # clamped to the tool's pool constraint pool//n_partitions >= 2*batch_size so it never
         # raises at datamodule construction; oversubscribing the allocated CPUs is warned, not clamped.
         cpus = int(os.environ.get("SLURM_CPUS_PER_TASK") or 1)
         max_loaders_by_pool = params.pool_size // (2 * params.batch_size)
@@ -299,8 +299,8 @@ def main():
             mode = "auto"
         print(f"[DRIVER] dataloaders={n_dataloaders} ({mode}, cpus={cpus}, cap={max_loaders_by_pool})", flush=True)
         # GPU device split. Map the allocated GPUs (0..N-1): GPU 0 -> training, the rest -> the
-        # reconstruction pool, so recon and training run on SEPARATE cards instead of contending for
-        # one (docs §4). A single GPU keeps the shared 0/0 mode. Driven by the num_gpus job param
+        # reconstruction pool, so recon and training run on separate cards instead of contending for
+        # one. A single GPU keeps the shared 0/0 mode. Driven by the num_gpus job param
         # (which sets --gres); we read the real allocation so a manual gres override still maps right.
         n_gpus = allocated_gpu_count(default=params.num_gpus)
         training_devices = "0"
@@ -319,15 +319,15 @@ def main():
             .opt("--dataloaders-per-trainer", n_dataloaders)
             .opt("--start-at-iteration", resume_from)
         )
-        # (--prepare-stacks is intentionally NOT appended here: prepare_stacks_apix > 0 is refused
-        #  above until P2 wires the raw-frame + tomostar binds. Re-enable it there, not here.)
+        # --prepare-stacks is not appended: prepare_stacks_apix > 0 is refused above because the
+        # raw-frame + tomostar binds are not wired.
         print(f"[DRIVER] Train command: {train_cmd}", flush=True)
         run_tool(train_cmd, tool_name=params.get_tool_name(), cwd=job_dir, binds=additional_binds)
 
         # 5. Verify the refined output. The XMLs were staged in before training, so their mere
         #    presence is not proof of work; miss-alignment writes a warp_tiltseries/iterN/ snapshot
-        #    per macro-iteration (docs/miss-alignment.md §4, confirmed by the §9 smoke run). Require
-        #    at least one iter*/ dir so a silent no-op (tool exits 0 without refining) fails loudly.
+        #    per macro-iteration (docs/miss-alignment.md). Require at least one iter*/ dir so a
+        #    silent no-op (tool exits 0 without refining) fails loudly.
         refined_xmls = list(staged_processing.glob("*.xml"))
         if not refined_xmls:
             raise RuntimeError(f"miss-alignment produced no XMLs in {staged_processing}")

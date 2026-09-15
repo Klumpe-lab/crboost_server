@@ -142,7 +142,7 @@ def generate_candidate_vis(
     particle_diameter_ang: float,
     output_dir: Path,
     command_runner: Callable[[str, Path], None] | None = None,
-    project_root: Path | None = None,  # <-- add
+    project_root: Path | None = None,
 ) -> None:
     """
     Generate IMOD visualization models and Warp-compatible coordinates.
@@ -185,7 +185,7 @@ def generate_candidate_vis(
             continue
 
         pixel_size = _get_pixel_size(tomo_row)
-        tomo_size = _get_binned_tomo_size(tomo_row, project_root=project_root)  # <-- pass through
+        tomo_size = _get_binned_tomo_size(tomo_row, project_root=project_root)
         tomo_particles = particles_df[particles_df["rlnTomoName"] == tomo_name]
         coords = _get_imod_coords(tomo_particles, tomo_size, pixel_size)
 
@@ -201,8 +201,7 @@ def generate_candidate_vis(
             thickness=2,
         )
 
-        # Center marker model (red, small)
-        # Old code: diameterInAng = 8 * pixs, then radius = diameterInAng / (pixs * 2) = 4px
+        # Center marker model (red, small): 4 px radius, as in CryoBoost v1
         _write_imod_model(
             coords,
             output_txt=dir_center / f"coords_{tomo_name}.txt",

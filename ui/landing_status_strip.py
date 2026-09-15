@@ -153,9 +153,9 @@ class LandingStatusStrip(FingerprintedView):
             s.slurm_ok = len(parts) > 0
             s.slurm_partitions = len(parts)
             nodes = await self.backend.slurm_service.get_nodes_info()
-            # sinfo's PARTITION summary emits one line per node-state, so its %D is a per-state
-            # subset (that's the "g · 1 node" bug). Derive per-partition totals from the NODE list
-            # (one row per node), which is authoritative: node count, GPU-type groups, and the modal
+            # sinfo's partition summary emits one line per node-state, so its %D is a per-state
+            # subset. Derive per-partition totals from the node list (one row per node), which
+            # is authoritative: node count, GPU-type groups, and the modal
             # CPU/mem spec (so cpu-only partitions get details too).
             part_names: dict = defaultdict(set)
             gpu_by_part: dict = defaultdict(lambda: defaultdict(int))

@@ -25,10 +25,7 @@ CLR_SUBLABEL = "#94a3b8"  # slate-400
 CLR_BORDER = "#e2e8f0"  # slate-200
 
 # Single label column width applied across Parameters / I/O / SLURM so
-# labels line up vertically when the user scans down a section card. Was
-# previously per-section (params: no width / slurm: 92px / io: 96px),
-# which made the three sections feel like three different forms stacked
-# on top of each other.
+# labels line up vertically and the three sections read as one form.
 LABEL_W = 110
 
 LABEL_STYLE = (
@@ -43,13 +40,12 @@ SUFFIX_STYLE = f"{SANS} font-size: 9px; color: {CLR_SUBLABEL}; flex-shrink: 0;"
 
 ROW_STYLE = "display: flex; align-items: baseline; gap: 8px; width: 100%; min-width: 0; min-height: 19px; padding: 0;"
 
-# Legacy alias kept for any callers that still reference it directly.
+# Legacy alias for callers that reference it directly.
 PATH_LABEL_W = LABEL_W
 
 # Sub-section headers (rendered INSIDE a card's content area, e.g.
-# "Per-Task Resources" / "Supervisor" inside SLURM). The user explicitly
-# pushed back on the uppercase + letter-spacing treatment — use mixed
-# case at a slightly larger size instead, so the visual hierarchy is
+# "Per-Task Resources" / "Supervisor" inside SLURM). Mixed case at a slightly
+# larger size, not uppercase + letter-spacing, so the visual hierarchy is
 # bold-vs-regular rather than caps-vs-lowercase.
 SECTION_HEADER_STYLE = (
     f"{SANS} font-size: 11px; font-weight: 600; color: {CLR_HEADER}; "
@@ -66,13 +62,12 @@ PAGE_SECTION_STYLE = f"{SANS} font-size: 12px; font-weight: 600; color: #334155;
 GROUP_STYLE = "width: 100%; border: 1px solid #eef2f6; border-radius: 4px; padding: 6px 8px 8px; margin-top: 6px;"
 GROUP_MUTED_STYLE = GROUP_STYLE + " background: #fafbfc;"
 
-LABEL_PATH_STYLE = LABEL_STYLE  # path labels share the same column width now
+LABEL_PATH_STYLE = LABEL_STYLE  # path labels share the same column width
 
 # The one phrasing for the block of fields a job inherited from its species at
 # creation (template / mask / symmetry / Ø / extraction geometry). They are still job
 # parameters — snapshot-at-creation, nothing auto-propagates — so they are weakly
-# separated inside the SAME Parameters card, never boxed in a nested card of their own.
-# See docs/roadmaps/completed/picking_ui/roadmap_00-overview.md.
+# separated inside the same Parameters card, never boxed in a nested card of their own.
 SPECIES_SECTION_TITLE = "From species — override for this run"
 
 
@@ -91,10 +86,9 @@ def section_rule():
 def field_grid():
     """Auto-packing multi-column grid of field rows. Fields flow into as many
     ~300px columns as the width allows (typically 2-4), so short numeric/enum
-    fields no longer leave the right half of the panel empty, and the section
-    is far shorter vertically. Path fields stay full-width in their own column
-    (they are rendered outside field_grid); section headers sit above each grid.
-    Name kept for backwards compat with callers pre-dating the layout pivot."""
+    fields don't leave the right half of the panel empty and the section stays
+    short. Path fields stay full-width in their own column (they are rendered
+    outside field_grid); section headers sit above each grid."""
     el = ui.element("div").style(
         "display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); "
         "column-gap: 18px; row-gap: 2px; width: 100%; align-items: start;"
@@ -202,14 +196,14 @@ def numeric_forward(job_model, attr: str) -> Callable:
     `ui.number` always hands back a JS float (or None when the box is cleared) and
     `AbstractJobParams` does not validate on assignment, so without this an `int` field
     silently accepts e.g. `0.05`, `model_dump()` writes it to project_params.json, and the
-    NEXT load fails validation — which used to drop the whole job instance and leave the
-    driver reporting `FATAL: Instance '<id>' not found`. Coerce at the point of entry
-    instead of discovering it a restart later.
+    next load fails validation, dropping the whole job instance (the driver then reports
+    `FATAL: Instance '<id>' not found`). Coerce at the point of entry instead of
+    discovering it a restart later.
 
     Out-of-range values are refused the same way garbage is: an int field declaring `ge=1`
-    that accepts a 0 writes a value pydantic would reject on the next load AND that the
-    tool downstream rejects harder — `max_num_particles: 0` reached PyTOM as `-n 0` and
-    died with "must be larger than 0" on a compute node. Refusing (rather than clamping)
+    that accepts a 0 writes a value pydantic would reject on the next load and that the
+    tool downstream rejects harder — `max_num_particles: 0` reaches PyTOM as `-n 0`, which
+    dies with "must be larger than 0" on a compute node. Refusing (rather than clamping)
     is what keeps mid-typing safe: the prefixes of "1500" that fall below a bound leave
     the last good value in place until a whole in-range number is typed.
     """
@@ -277,8 +271,8 @@ def enum_forward(job_model, attr: str, enum_type) -> Callable:
     on assignment, so a plain binding leaves e.g. the str `"IsoNet"` where a `DenoiseMethod`
     member belongs. Comparisons still pass (these are str-Enums), which is why it hides —
     but `isinstance(value, DenoiseMethod)` does not, and denoise-predict's
-    `inherited_from_train` used that to decide whether it could read the trained method.
-    It always said no, so predict silently fell back to its cryoCARE default.
+    `inherited_from_train` uses that to decide whether it can read the trained method;
+    with a raw str it says no and predict silently falls back to its cryoCARE default.
     """
 
     def _forward(value):
@@ -299,7 +293,7 @@ def enum_field(
         sel = ui.select(options=options, value=getattr(job_model, attr)).bind_value(
             job_model, attr, forward=enum_forward(job_model, attr, enum_type)
         )
-        # `.cb-select` (themed in ui/main_ui.py) gives a clean 1px-bordered box and
+        # `.cb-select` (themed in ui/dashboard/css.py) gives a clean 1px-bordered box and
         # a themed popup instead of the default Quasar Material underline/float.
         sel.props(_INPUT_PROPS_BASE)
         sel.props('popup-content-class="cb-select-popup"')

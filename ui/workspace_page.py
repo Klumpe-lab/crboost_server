@@ -53,8 +53,8 @@ _ROSTER_RESIZER_JS = """
 """
 
 
-# workspace view name -> the URL view it addresses (roadmap 17). The Species page's
-# internal mode string is "workbench" for historical reasons; the URL says `species`.
+# workspace view name -> the URL view it addresses. The Species page's internal
+# mode string is "workbench"; the URL says `species`.
 _MODE_VIEWS: dict[str, View] = {
     "pipeline": View.PIPELINE,
     "workbench": View.SPECIES,
@@ -102,7 +102,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
     callbacks["current_mode"] = lambda: _mode["current"]
 
     def _write_mode_url() -> None:
-        """The address bar follows the view (roadmap 17 S3). Every view writes the bare
+        """The address bar follows the view. Every view writes the bare
         route for itself here; the ones with a target (a job, a tilt-series, a species)
         refine it from their own selection handler right after. The pipeline is the one
         exception — its target is the active job, which lives on `ui_mgr`, so there is
@@ -123,7 +123,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
 
     def _switch_to(mode_name: str):
         """Swap the visible view in main_area: pipeline / workbench / journey / viewer.
-        Each is a sibling container toggled via CSS display. EVERY view but the pipeline
+        Each is a sibling container toggled via CSS display. Every view but the pipeline
         hides the 340px job roster (the roster is the pipeline view's own navigation —
         see the roster's set_active_mode) and pauses its refresh timers when not visible
         (the journey panel's on_journey_active / the viewer page's set_active)."""
@@ -268,7 +268,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
     _protocols_flight = SingleFlight()
 
     async def _show_protocols():
-        """The foot-of-rail protocol light: the Protocols view (roadmap 16) — this project's parameters
+        """The foot-of-rail protocol light: the Protocols view — this project's parameters
         beside the protocol it was created from, and the protocol library. Built lazily like the
         gallery; toggles back to the pipeline on a second click."""
         async with _protocols_flight("toggle") as acquired:
@@ -325,7 +325,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
             page.invalidate()
 
     def _on_popstate(e) -> None:
-        """Back/Forward (roadmap 17 S4): re-dispatch the popped URL onto the views that
+        """Back/Forward: re-dispatch the popped URL onto the views that
         are already built, instead of letting the browser rebuild the page (which is what
         a real navigation would do, and would throw the Journey/gallery/viewer away)."""
         raw = e.args
@@ -437,7 +437,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
             )
             _refs["gallery_container"] = gallery_container
 
-            # Pick viewer (picking-UI 11-S5): the full-page mount of the slabs + lists +
+            # Pick viewer: the full-page mount of the slabs + lists +
             # gallery component, opened from a tomogram row of the Particles registry's
             # Picks & curation tab. Lazily built on first use, like the journey; it has
             # no nav icon of its own — its own header carries the routes back.
@@ -446,8 +446,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
             )
             _refs["viewer_container"] = viewer_container
 
-            # Protocols (roadmap 16): the run-as-a-project view. Lazily built on the first
-            # click of the foot-of-rail protocol light.
+            # Protocols: lazily built on the first click of the foot-of-rail protocol light.
             protocols_container = ui.element("div").style(
                 "width: 100%; height: 100%; display: none; flex-direction: column;"
             )

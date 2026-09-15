@@ -1,5 +1,4 @@
-"""Species creation prompt + the one create path (roadmap 10 S1, widened by
-picking-UI roadmap 01 S2).
+"""Species creation prompt + the one create path.
 
 `prompt_species_draft` is the dialog every "+" shares; `create_species` applies the
 draft (`ProjectState.add_species` marks dirty + bumps the registry rev, then the
@@ -7,10 +6,9 @@ optional template / mask registrations, then one forced save). Callers only diff
 `origin` (`SpeciesOrigin`) and in what they do afterwards (select it on the Species
 page, rebuild the roster, refresh the Journey).
 
-The dialog used to be a single name field, which meant a species was never usable
-straight after creation: the user had to go back to the Species page and bind a
-template and a mask before any TM job could run. Binding them here is optional —
-a de-novo species legitimately has neither, and nothing is invented for it.
+The dialog can bind a template and a mask so a species is ready for TM straight after
+creation. Both are optional: a de-novo species legitimately has neither, and nothing is
+invented for it.
 """
 
 from __future__ import annotations

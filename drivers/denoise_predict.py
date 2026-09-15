@@ -69,8 +69,8 @@ def read_tomo_map(input_star: Path) -> tuple[list[str], dict[str, str]]:
     reconstruct tomograms.star. The array maps index N -> ts_names[N]; the basename map
     lets each task resolve its even/odd halves without re-parsing the whole STAR.
 
-    Strict 'global'-block read (census #33): a star without one is malformed input,
-    not something to guess a block for.
+    Strict 'global'-block read: a star without one is malformed input, not something
+    to guess a block for.
     """
     data = starfile.read(input_star, always_dict=True)
     df = data.get("global")
@@ -160,8 +160,7 @@ def stamp_denoise_registry(
     preprocessing step). Done here in the single-threaded supervisor — never in the parallel
     array tasks, which would race on the shared registry JSON.
 
-    Fail-loud (maintainer decision 2026-08-14): the registry is the single source of truth
-    for downstream reads, so a missed stamp is stale-data corruption, not a cosmetic miss.
+    Fails loud: downstream jobs read from the registry, so a missed stamp is stale data.
     Any failure here fails the job; the denoised MRCs stay on disk and a re-run skips the
     already-done compute, so only this cheap recording step repeats."""
     registry = get_registry_for(project_path)
@@ -388,7 +387,7 @@ class DenoisePredictDriver(ArrayDriver):
         staging all three keeps predict correct for either method. [deconv], then predict into a
         per-task dir and move the single corrected MRC to the canonical denoised path (out_mrc).
         Predicting into an isolated per-task dir sidesteps IsoNet's output-filename convention --
-        ISONET-ASSUMPTION: predict writes exactly one full-size .mrc. See ISONET_INTEGRATION_PLAN.md."""
+        ISONET-ASSUMPTION: predict writes exactly one full-size .mrc."""
         job_dir = ctx.job_dir
         out_mrc = staged["out_mrc"]
         stage = job_dir / ".staging" / f"task_{item}"

@@ -20,9 +20,9 @@ from ui.job_plugins.default_renderer import render_default_params_card
 @register_params_renderer(JobType.TS_RECONSTRUCT)
 def render_reconstruct_params(job_type, job_model, is_frozen, save_handler, *, ui_mgr=None, backend=None, **ctx):
     # A project imported from SerialEM tilt stacks has one frame per tilt, so the
-    # frame-series job wrote no even/odd half-averages: halfmap_frames was stamped 0
-    # at init (roadmap 18 D5) and turning it back on fails before Warp runs. Absent
-    # is stated here, beside the field it explains, never defaulted around silently.
+    # frame-series job wrote no even/odd half-averages: halfmap_frames is stamped 0
+    # at init and turning it back on fails before Warp runs. The hint sits beside the
+    # field it explains.
     state = getattr(job_model, "_project_state", None)
     if state is not None and getattr(state, "import_source_kind", "") == "stacks":
         ui.label(

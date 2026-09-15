@@ -1,12 +1,12 @@
 """Tomogram identity across projects, and whether two tomograms' coordinates are
-interchangeable (roadmap `picking_ui/12-S1`).
+interchangeable.
 
-Two DIFFERENT questions need two DIFFERENT keys, and conflating them is the whole
+Two different questions need two different keys, and conflating them is the main
 difficulty of cross-project aggregation:
 
 ``distinguishing_key`` — *"are these two different things?"*
     The absolute ``rlnTomoReconstructedTomogram`` path. Two reconstructions are never
-    the same file, so this can never wrongly equate. It also cannot RECOGNISE the same
+    the same file, so this can never wrongly equate. It also cannot recognise the same
     tilt series reprocessed in another project, because each project writes its own
     reconstruction under its own job dir.
 
@@ -17,20 +17,17 @@ difficulty of cross-project aggregation:
     None when either half is absent -- a partial key is not a key, and guessing one
     would silently equate unrelated series.
 
-A matching acquisition key is NECESSARY BUT NOT SUFFICIENT for merging coordinates.
-``rlnCenteredCoordinate*Angst`` is measured in Angstrom from the tomogram CENTRE, which
-makes it pleasantly binning-independent -- but two projects can reconstruct one tilt
+A matching acquisition key is necessary but not sufficient for merging coordinates.
+``rlnCenteredCoordinate*Angst`` is measured in Angstrom from the tomogram centre, which
+makes it binning-independent -- but two projects can reconstruct one tilt
 series with a different alignment, handedness or Z-height, and then the centre is a
 different physical point. Identical numbers would name different places.
 ``check_transferable`` is that second gate.
 
-The report separates BLOCKING from UNVERIFIED on purpose. A stated disagreement is
-fatal. A fact neither side states (handedness, typically -- see ``read_tomo_hand``) is
-NOT silently assumed equal and NOT silently assumed unequal: it rides back as an
-``unverified`` line for the caller to put in front of the user, per CLAUDE.md's
-"surfacing uncertainty" policy.
-
-Compile-checked in Claude's bare venv; runtime-exercised by the aggregation flow.
+The report separates blocking from unverified facts. A stated disagreement is fatal.
+A fact neither side states (typically handedness -- see ``read_tomo_hand``) is assumed
+neither equal nor unequal: it comes back as an ``unverified`` line for the caller to
+show the user.
 """
 
 from __future__ import annotations
@@ -121,12 +118,11 @@ def acquisition_key(ts: TiltSeries) -> tuple[str, str] | None:
 def read_tomo_hand(tilt_series_star: str | Path) -> int | None:
     """``rlnTomoHand`` (+1 / -1) from a per-TS tilt star, or None when it is not stated.
 
-    Handedness is the one transferability fact that does NOT live in tomograms.star -- it
+    Handedness is the one transferability fact that does not live in tomograms.star -- it
     is written into the Import job's tilt_series.star and carried per tilt series. A
     project whose star predates that column has no handedness on record, and this returns
     None so the caller can say so rather than assume agreement. A handedness flip mirrors
-    Z: every imported pick lands on the wrong side of the section, silently. That is the
-    412 chirality cascade.
+    Z: every imported pick silently lands on the wrong side of the section.
     """
     path = Path(tilt_series_star)
     if not path.exists():

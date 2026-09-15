@@ -1,36 +1,30 @@
-"""Server-side curation watcher (roadmap 09-S4, hardened by 10-S2).
+"""Server-side curation watcher.
 
 Detects ArtiaX ``.coords`` saves under ``<project>/Curation/<species>/<tomo>/`` and
-registers each as a pick list — with no Journey tab open. Replaces the Journey's
-render-path prescan (``_auto_kick_coords_ingest`` + the ``.coords`` mtime terms in its
-refresh gates), which only ran while the Particles section of the *selected* tilt series
-was being rendered.
+registers each as a pick list, whether or not a Journey tab is open.
 
-Shape = the ``PipelineMonitor`` skeleton (start / stop / _loop / _tick_once). Per open
-project, every tick scans the HOT dirs and every ``FULL_SWEEP_EVERY``-th tick the whole
+Same shape as ``PipelineMonitor`` (start / stop / _loop / _tick_once). Per open project,
+every tick scans the hot dirs and every ``FULL_SWEEP_EVERY``-th tick the whole
 ``Curation/*/*/`` tree. Scanning, attribution and the geometry lookup run off the event
 loop; ingest (``backend.import_curation_picks`` → ``register_manual_pick_list`` → save by
 explicit path — no client context here) runs sequentially on it, one save at a time.
 
-EVERY save, not the newest (10-S2). It used to ingest only the newest ``.coords`` per dir
-and collapse every one of them onto a single ``manual`` slug, so of N lists a user saved in
-a session, N−1 silently disappeared. Now each file is its own pick list, keyed by its stem
-(``services.particles.ingest.manual_slug_for``) — which also makes re-saving under the same
-name an update of that list rather than a new one.
+Every save is ingested, not just the newest: each file is its own pick list, keyed by its
+stem (``services.particles.ingest.manual_slug_for``), so re-saving under the same name
+updates that list rather than creating a new one.
 
-ATTRIBUTION comes from the dir's ``manifest.json`` — written when crboost declared the
-session's scope — and falls back to matching the registered species ids / known tomogram
-names against the ``<species>/<tomo>`` directory slugs only when there is no manifest (a
-pre-10 project). A dir that resolves to nothing, or to two things (slug collision), or
-whose manifest names a species the registry no longer has, is reported through
-``unattributed()`` and never guessed at; the Picks & curation tab turns each of those into
-an explicit "assign to species + tomogram" action, which is the staging mechanism of
-record. Dedup: ``_seen`` (project, coords file, int(mtime)) plus the list's
+Attribution comes from the dir's ``manifest.json``, written when crboost declared the
+session's scope. Without a manifest (an older project, or a hand-made dir) the registered
+species ids / known tomogram names are matched against the ``<species>/<tomo>`` directory
+slugs. A dir that resolves to nothing, or to two things (slug collision), or whose manifest
+names a species the registry no longer has, is reported through ``unattributed()`` and never
+guessed at; the Picks & curation tab turns each into an explicit "assign to species +
+tomogram" action. Dedup: ``_seen`` (project, coords file, int(mtime)) plus the list's
 ``created_at >= mtime`` guard, which makes a restart re-register nothing.
 
-The HOT set is derived from the manifests too (their ``launched_at``), not from an
-in-memory record of what a session was told to load: that record was empty after a crboost
-restart while ArtiaX kept picking, which is fragility #2 of the roadmap's §1.
+The hot set is derived from the manifests too (their ``launched_at``), not from an in-memory
+record of what a session was told to load, so it survives a crboost restart while ArtiaX
+keeps picking.
 """
 
 from __future__ import annotations
@@ -90,9 +84,9 @@ class CurationWatcher:
         self._reported: set[tuple[str, str, str]] = set()  # (project, dir, reason) already logged once
         self._hot: dict[str, list[Path]] = {}  # project → most recently launched curation dir(s)
         # project → when the hot dir became the session's scope (epoch s). A user save in
-        # ANOTHER dir that is newer than this is an off-scope save (2026-09-06: ChimeraX's save
-        # dialog opens in the folder last saved to, so after a switch the previous scope's
-        # seed is what the dialog lists — and gets overwritten).
+        # another dir that is newer than this is an off-scope save (ChimeraX's save dialog
+        # opens in the folder last saved to, so after a switch it lists the previous scope's
+        # seed, which then gets overwritten).
         self._hot_at: dict[str, float] = {}
         # One project tick at a time: `sweep_now` (the Picks tab's Refresh) and the loop must
         # not ingest the same save twice — `_seen` is only written after an ingest completes.
@@ -119,7 +113,7 @@ class CurationWatcher:
         self._task = None
         logger.info("CurationWatcher stopped")
 
-    # ── read API (the Picks & curation tab's watcher footer, roadmap 11-S4 / 09-S1) ────
+    # ── read API (the Picks & curation tab's watcher footer) ──────────────────────
 
     def events(self, project_path: Path) -> list[dict]:
         """Newest-last ingest / error / unattributed events for one project (in-memory,
@@ -131,18 +125,18 @@ class CurationWatcher:
         tomogram) — surfaced, never guessed. ``{"dir", "reason", "files"}`` per dir, sorted
         by dir. The reason is what the Picks & curation tab shows so the user can fix the
         name rather than wonder why a save did nothing, and ``files`` is what its "assign"
-        action would move (10-S2)."""
+        action would move."""
         found = self._unattributed.get(_key(project_path), {})
         return [{"dir": d, "reason": found[d]["reason"], "files": list(found[d]["files"])} for d in sorted(found)]
 
-    # ── write API: scope changes + the Picks tab's Refresh (2026-09-06) ─────────────
+    # ── write API: scope changes + the Picks tab's Refresh ──────────────────────────
 
     def mark_hot(self, project_path: Path, curation_dir: Path) -> None:
-        """Make ``curation_dir`` the hot dir NOW — called by the backend when a session is
-        launched on it or switched to it. Until now the hot set moved only on the full sweep
-        (every ``FULL_SWEEP_EVERY`` ticks), so the first save after a switch waited up to
+        """Make ``curation_dir`` the hot dir immediately — called by the backend when a session
+        is launched on it or switched to it. Otherwise the hot set moves only on the full sweep
+        (every ``FULL_SWEEP_EVERY`` ticks), and the first save after a switch would wait up to
         ~30 s to be seen; a hot dir is rescanned every tick (~7 s to a row update). The full
-        sweep keeps re-deriving the same answer from the manifests, which is what survives a
+        sweep re-derives the same answer from the manifests, which is what survives a
         restart."""
         key = _key(project_path)
         self._hot[key] = [Path(curation_dir)]
@@ -217,9 +211,9 @@ class CurationWatcher:
                 self._seen.add(dedup)  # already registered (this or a newer save) — the restart-safe guard
                 continue
             # Off-scope save: newer than the moment the hot dir became the session's scope,
-            # but not IN it. The mechanism still files it where it landed (that folder's
-            # manifest says whose it is) — this is the never-silent half: the WATCHER footer
-            # names it in red so a save into the previous scope's seed is seen, not swallowed.
+            # but not in it. It is still filed where it landed (that folder's manifest says
+            # whose it is), and the watcher footer names it in red so a save into the previous
+            # scope's seed is visible.
             hot_at = self._hot_at.get(key)
             if hot and hot_at is not None and s.dir not in hot and s.mtime > hot_at:
                 h = hot[0]
@@ -285,12 +279,11 @@ class CurationWatcher:
                 found.append((d, c, mtime))
         if full:
             self._with_saves[key] = with_saves
-            # Hot = the dir of the most recently LAUNCHED session — where the user is
+            # Hot = the dir of the most recently launched session — where the user is
             # picking, or last was. ISO-8601 timestamps sort lexicographically. It stays hot
-            # after that session ends, which costs one glob per tick and is the honest
-            # trade for surviving a crboost restart. Empty until some dir has been launched
-            # on; a hot dir is rescanned every tick instead of every sixth, which is the
-            # whole latency difference the save contract quotes.
+            # after that session ends, which costs one glob per tick and survives a crboost
+            # restart. Empty until some dir has been launched on; a hot dir is rescanned
+            # every tick instead of every sixth.
             self._hot[key] = [max(launched)[1]] if launched else []
             if launched:
                 try:
@@ -326,11 +319,11 @@ class CurationWatcher:
     def _attribute(d: Path, manifest: dict | None, species_by_id: dict, species_by_slug: dict, tomo_by_slug: dict):
         """``(species, tomo_name, reasons)`` for one curation dir. The manifest crboost
         wrote when it declared the session's scope is authoritative — no name reversal, so
-        a slug collision cannot misfile anything. Without one (a pre-10 dir, or one the
+        a slug collision cannot misfile anything. Without one (an older dir, or one the
         user made by hand) the directory names are matched against the registered species
-        ids / known tomogram names, exactly as before. A manifest naming a species the
-        registry no longer holds is an error to report, NOT a reason to fall back to
-        guessing at the directory name."""
+        ids / known tomogram names. A manifest naming a species the registry no longer
+        holds is an error to report, not a reason to fall back to guessing at the
+        directory name."""
         if manifest and manifest.get("species_id") and manifest.get("tomo_name"):
             sp = species_by_id.get(str(manifest["species_id"]))
             if sp is None:

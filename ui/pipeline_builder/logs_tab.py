@@ -53,7 +53,7 @@ def render_logs_tab(job_type: JobType, instance_id: str, job_model, backend, ui_
                 .tooltip("stderr has output")
             )
             ui.space()
-            # Copies the WHOLE current log (the panel shows the last 500 lines).
+            # Copies the whole current log (the panel shows the last 500 lines).
             (
                 ui.button(icon="content_copy", on_click=lambda: _copy_active_log(monitor, backend, ui_mgr))
                 .props("flat dense round size=xs")
@@ -112,7 +112,7 @@ def render_logs_tab(job_type: JobType, instance_id: str, job_model, backend, ui_
 
 
 async def _copy_active_log(monitor: dict, backend, ui_mgr: UIStateManager) -> None:
-    """Copy the WHOLE log. The panel is fed a tail (the poll must stay cheap — a supervisor's
+    """Copy the whole log. The panel is fed a tail (the poll must stay cheap — a supervisor's
     run.err reaches megabytes), so the full text is read here, once, on demand."""
     tab = monitor.get("_active", "stdout")
     job_path = monitor.get("_job_path")

@@ -135,7 +135,7 @@ class QosLimit:
 
 
 # Cached QOS MaxWall (minutes) for the running user, populated by SlurmService.get_user_qos_limits()
-# (e.g. the landing-page probe). Read SYNCHRONOUSLY by walltime estimators that can't await — the
+# (e.g. the landing-page probe). Read synchronously by walltime estimators that can't await — the
 # preferred source for miss_align's QOS-safe cap. Convention: >0 a real per-job wall limit,
 # _QOS_UNLIMITED = QOS sets no wall limit, 0 = not yet probed / query failed (callers fall back).
 _QOS_UNLIMITED = 100_000
@@ -279,7 +279,7 @@ class SlurmService:
 
     async def get_user_qos_limits(self, force_refresh: bool = False) -> list[QosLimit]:
         """The QOS(es) available to this user and their per-job limits, via sacctmgr. Also refreshes
-        the module-level `_qos_maxwall_cache_min` with the DEFAULT QOS's MaxWall (the limit a job
+        the module-level `_qos_maxwall_cache_min` with the default QOS's MaxWall (the limit a job
         without an explicit --qos actually hits) so sync walltime estimators can read it. Returns []
         (and leaves the cache untouched) when sacctmgr is unavailable — never raises."""
         global _qos_maxwall_cache_min
@@ -464,10 +464,10 @@ class SlurmService:
     async def query_jobs_by_ids(self, job_ids: list[str]) -> dict[str, tuple[str, str]] | None:
         """Targeted ``squeue -j <ids>`` for specific jobs (uncached -- the afterok reconciler
         needs fresh per-tick reads). Returns ``{normalized_job_id: (state, reason)}`` for ids
-        STILL in the queue.
+        still in the queue.
 
-        Critically distinguishes the two cases the broad ``get_user_jobs`` conflates (the B2 bug):
-          - ``None``  -> squeue ITSELF failed; the caller must NOT treat this as "jobs gone".
+        Distinguishes the two cases the broad ``get_user_jobs`` conflates:
+          - ``None``  -> squeue itself failed; the caller must not treat this as "jobs gone".
           - ``{}``    -> squeue succeeded but none of the ids are queued (they genuinely left).
         ``squeue -j`` exits non-zero once a job leaves the queue ("Invalid job id specified"),
         which is benign-empty, not an error.

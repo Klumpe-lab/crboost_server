@@ -2,7 +2,6 @@
 # drivers/driver_base.py
 """
 Shared bootstrap logic for all CryoBoost drivers.
-Refactored for Single Source of Truth architecture.
 """
 
 import subprocess
@@ -49,8 +48,8 @@ T = TypeVar("T", bound=AbstractJobParams)
 def get_driver_context(expected_type: type[T] | None = None) -> tuple[ProjectState, T, dict, Path, Path, JobType]:
     """
     Primary bootstrap function for all drivers.
-    Identity is now derived from --instance_id rather than --job_type,
-    which supports multiple instances of the same job type per project.
+    Identity comes from --instance_id, which supports multiple instances of
+    the same job type per project.
 
     Pass the expected param class to get full type safety in the driver:
         state, params, ctx, job_dir, proj, jt = get_driver_context(FsMotionCtfParams)
@@ -145,10 +144,8 @@ def get_driver_context(expected_type: type[T] | None = None) -> tuple[ProjectSta
 class DriverContext(Generic[T]):
     """One driver's bootstrap result, as a single frozen object.
 
-    Replaces `get_driver_context()`'s 6-positional tuple plus bare `context_data`
-    dict — an unpack that appeared under three different local names across 17
-    sites, each re-doing the same two conversions (`paths` to `Path`, binds to a
-    mutable list). Those conversions happen once, here.
+    Wraps `get_driver_context()`'s 6-tuple plus `context_data` dict and does the
+    two conversions every driver needs (`paths` to `Path`, binds to a mutable list).
 
     `params` keeps its concrete type: `DriverContext.load(TsReconstructParams)`
     returns a `DriverContext[TsReconstructParams]`.
@@ -197,8 +194,8 @@ def derive_watchdog_timeout() -> int:
       3. Hard fallback of 8 hours. The watchdog exists to kill orphaned
          container processes holding a SLURM slot after a tool crash; SLURM
          itself will kill the job at --time, so the fallback only needs to
-         exceed the longest tool we'd realistically run. 25 min was too short
-         (post-loop pytom/Warp finalization alone can take 15+ min).
+         exceed the longest tool we'd realistically run (post-loop pytom/Warp
+         finalization alone can take 15+ min).
 
     In all cases we apply a 90% safety margin so the watchdog fires before
     SLURM's own SIGTERM, letting us emit a clean failure marker.
@@ -250,9 +247,8 @@ def print_cmd_only() -> bool:
     Snapshot mode for command-parity work: set ``CRBOOST_PRINT_CMD=1`` and a driver
     emits its usual ``[run_command] $ ...`` lines — fully container-wrapped, byte-for
     -byte what would have executed — without launching anything. The gate lives in
-    ``run_command`` rather than ``run_tool`` on purpose: every driver funnels through
-    it, migrated or not, so a snapshot taken before a command-builder refactor is
-    directly diffable against one taken after.
+    ``run_command`` rather than ``run_tool`` because every driver funnels through it,
+    so snapshots taken before and after a command-builder change are directly diffable.
 
     Read at call time, not import time, so a caller can flip it per command.
 
@@ -269,17 +265,16 @@ def run_command(command: str, cwd: Path, timeout: int | None = None, idle_timeou
     """
     Run a shell command, stream output, and check for errors.
 
-    Two independent watchdogs, because "hung" and "slow" are different failures
-    and only one of them used to be caught:
+    Two independent watchdogs, because "hung" and "slow" are different failures:
 
       timeout (total wall-clock) -- derived from SLURM walltime at 90% (see
-        derive_watchdog_timeout) when unset. This does NOT save the job: a run
-        that trips it was going to exceed --time anyway. What it buys is that WE
-        kill it rather than SLURM, so the driver still gets to write a .fail
-        marker and log a reason instead of vanishing mid-line.
+        derive_watchdog_timeout) when unset. This does not save the job: a run
+        that trips it was going to exceed --time anyway. It means we kill it
+        rather than SLURM, so the driver still writes a .fail marker and logs a
+        reason instead of vanishing mid-line.
 
-      idle_timeout (seconds with ZERO output) -- the one that actually targets
-        the documented hazard: a tool crashes, an orphaned child keeps the stdout
+      idle_timeout (seconds with zero output) -- targets the hang hazard: a
+        tool crashes, an orphaned child keeps the stdout
         pipe open, and the readline loop below blocks forever on a pipe that will
         never EOF. Total-runtime alone is a poor detector for that, because it
         scales with the allocation: under the 14-day g_long QOS a process hung in
@@ -400,13 +395,12 @@ def run_command_with_retries(
 class ToolCommand:
     """Ordered accumulator for one tool invocation, rendered as a flat string.
 
-    Deliberately NOT a quoting engine. Every tool execution ends up as a single
+    Not a quoting engine. Every tool execution ends up as a single
     ``bash -c '<string>'`` argument (the container wrapper quotes the whole command),
-    so compound shell survives — and the per-site quoting policy differs across
-    drivers and is part of the bytes we must preserve. Hence ``opt_path`` takes a
-    mandatory ``quote=`` that transcribes the call site's existing policy; the
-    ``quote=False`` sites double as the greppable inventory of unquoted-path
-    injection hazards.
+    so compound shell survives, and the quoting policy differs across drivers.
+    Hence ``opt_path`` takes a mandatory ``quote=`` that states the call site's
+    policy; the ``quote=False`` sites double as the greppable inventory of
+    unquoted-path injection hazards.
 
     Rendering is ``" ".join(parts)`` in insertion order: no reordering, no dedup, no
     validation, no implicit quoting. Value formatting quirks (``round(...)``,
@@ -459,7 +453,7 @@ def add_gain_options(cmd: ToolCommand, gain_path, gain_operations: str | None) -
     after printing "Option 'x' is unknown." for anything else, so a wrong name
     yields no settings file and no failure. Callers guard for that separately.
 
-    ``gain_operations`` is the colon-joined vocabulary CryoBoost used
+    ``gain_operations`` is CryoBoost's colon-joined vocabulary
     (``"flip_x:transpose"``); words outside it are ignored.
     """
     if not gain_path or str(gain_path) == "None":
@@ -487,9 +481,8 @@ def run_tool(
 ) -> None:
     """Wrap a tool command for its execution mode and run it.
 
-    Consolidates the wrap-and-run tail every driver repeats. ``binds`` are extra
-    paths to bind into the container: the wrapper resolves, dedups and sorts them
-    itself, so caller-side ordering and dedup idiom cannot affect the emitted bytes.
+    ``binds`` are extra paths to bind into the container: the wrapper resolves,
+    dedups and sorts them itself, so caller-side ordering cannot affect the emitted bytes.
     ``attempts > 1`` routes through ``run_command_with_retries``.
 
     Accepts a plain ``str`` as well as a ``ToolCommand`` — compound shell (guard

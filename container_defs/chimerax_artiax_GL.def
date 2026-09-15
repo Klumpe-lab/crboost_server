@@ -4,7 +4,7 @@ From: ubuntu:22.04
 # GPU / VirtualGL variant of the ChimeraX + ArtiaX curation appliance for CBE.
 #
 # Why this exists: the base chimerax_artiax.sif forces Mesa SOFTWARE GL (llvmpipe)
-# on a CPU node, which makes 3-D rendering 3-5 s/frame (see reference_chimerax_vnc_perf).
+# on a CPU node, which makes 3-D rendering 3-5 s/frame.
 # A plain GPU node does NOT help by itself — a TigerVNC Xvnc server does software
 # GLX. VirtualGL is what bypasses the X server's software GLX: it renders OpenGL on
 # the GPU and reads the frames back into the Xvnc desktop. So this image bakes in
@@ -21,14 +21,14 @@ From: ubuntu:22.04
 #   separate 3-D X server needed; only the 2-D Xvnc desktop.
 #   Quick manual test:  CX_SIF=/path/chimerax_artiax_GL.sif ./launch_curation_vnc.sh g
 #
-# LIKELY SNAGS (this is fiddly container GL — expect a round or two):
+# LIKELY SNAGS:
 #   1. `vglrun` can't open an EGL device → try `-d /dev/dri/card0` (or card1) instead
 #      of `-d egl`; confirm the GPU node injected /dev/nvidia* (it should with --nv).
 #   2. ChimeraX still renders software (no speedup) → VGL didn't intercept. Check
 #      `vglrun -v chimerax` output for "Attempting to use EGL"; ensure the bundled
 #      Mesa libGL isn't winning — VGL's faker (LD_PRELOAD by vglrun) must load first.
 #   3. "libvglfaker.so: cannot open shared object file" despite being present → the
-#      CentOS-7 kernel-3.10 vs newer-ABI-tag trap (reference_cbe_kernel_abi); %post
+#      CentOS-7 kernel-3.10 vs newer-ABI-tag trap; %post
 #      below strips .note.ABI-tag from the VGL libs, but re-check if you bump VGL.
 #   4. Qt uses EGL not GLX (rare for ChimeraX's xcb/QOpenGLWidget path) → VGL's GLX
 #      interception won't fire; try `vglrun +wm` / the EGL front-end. Unlikely here.
@@ -36,8 +36,7 @@ From: ubuntu:22.04
 #      driver; that's a node-config issue, not the container.
 
 %environment
-    # NO software-GL forcing here (that's the whole point) — the GPU + VirtualGL
-    # provide hardware GL. Mesa stays installed as the 2-D / no-VGL fallback.
+    # No software-GL forcing here — the GPU + VirtualGL provide hardware GL. Mesa stays installed as the 2-D / no-VGL fallback.
     export QT_X11_NO_MITSHM=1
     export PATH=/opt/VirtualGL/bin:$PATH
     # ArtiaX is baked into /opt/cx/share and loads from there (read-only is fine for DATA).
@@ -53,7 +52,7 @@ From: ubuntu:22.04
 
     CHIMERAX_VERSION=1.9        # <-- bump to a current STABLE production release
     UBUNTU_REL=22.04            # must match the 'From:' base image above
-    VGL_VERSION=3.1.4           # VirtualGL release (verified 2026-06-03: virtualgl_3.1.4_amd64.deb); EGL back-end needs >= 3.0
+    VGL_VERSION=3.1.4           # VirtualGL release (virtualgl_3.1.4_amd64.deb); EGL back-end needs >= 3.0
 
     apt-get update
     # x11vnc is here ONLY for `x11vnc -storepasswd`: TigerVNC 1.12's packages ship the
@@ -74,8 +73,8 @@ From: ubuntu:22.04
         libfontconfig1 libfreetype6 libdbus-1-3 libglib2.0-0 libnss3
 
     # QtWebEngine runtime for ChimeraX's Log panel. Without these the Log fails to
-    # render (QtWebEngine can't init) and command errors vanish into a dead panel —
-    # which is exactly why the scipy failure below was invisible in the GUI.
+    # render (QtWebEngine can't init) and command errors vanish into a dead panel,
+    # hiding failures like the scipy one below.
     apt-get install -y --no-install-recommends libgbm1 libasound2 libxshmfence1
 
     # --- VirtualGL (not in apt) — fetch the .deb from the VGL GitHub release ---
@@ -152,11 +151,11 @@ JSON
     # That silently kills EVERY `artiax` command — ArtiaX imports scipy on first use, and
     # the traceback vanishes into the (separately-broken) Log panel, so the command just
     # appears to do nothing. This is NOT the .note.ABI-tag trap: objcopy can't fix segment
-    # alignment, which is why the strip sweep above never helped scipy. The fix is a
-    # different WHEEL — manylinux2014 scipy is el7-built and page-aligned. Pin the proven
-    # 1.11.4; keep numpy at the bundled 1.26.4 (which already loads). Placed AFTER the
-    # objcopy sweep on purpose: these fresh el7 wheels must NOT be stripped (that's the
-    # exact state validated headlessly). The import assertion hard-fails a regression.
+    # alignment, so the strip sweep above does not help scipy. The fix is a different
+    # WHEEL — manylinux2014 scipy is el7-built and page-aligned. Pin 1.11.4 (known to load);
+    # keep numpy at the bundled 1.26.4 (which already loads). Placed AFTER the objcopy
+    # sweep because these el7 wheels must NOT be stripped. The import assertion
+    # hard-fails a regression.
     /usr/lib/ucsf-chimerax/bin/python3.11 -m pip install --force-reinstall --no-cache-dir "numpy==1.26.4" "scipy==1.11.4"
     /usr/lib/ucsf-chimerax/bin/python3.11 -c "import scipy.linalg; print('scipy', __import__('scipy').__version__, 'loads on el7 OK')"
 

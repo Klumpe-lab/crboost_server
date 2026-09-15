@@ -2,10 +2,8 @@
 Auxiliary merge logic for STA subtomo extraction outputs.
 
 A library, not a driver: it runs on the compute node inside subtomo_extraction /
-extract_candidates, AND in the server process behind the aggregation merge card.
-It lived in `drivers/` until roadmap 04 stage 5, which forced `ui/` to import from
-`drivers/` and made `services/particles/list_extraction.py` hand-mirror two of
-its functions to dodge a services→drivers import. Both are gone now.
+extract_candidates, and in the server process behind the aggregation merge card,
+so it lives in `services/` where both `drivers/` and `ui/` can import it.
 
 Input: optimisation_set.star files (or directories containing one)
 Each optimisation_set.star points to:
@@ -273,10 +271,8 @@ CRITICAL_OPTICS_COLS = ["rlnVoltage", "rlnSphericalAberration", "rlnAmplitudeCon
 # These describe the physical size of the extracted stacks. Two sources extracted at
 # different box sizes or binnings merge into one particles.star that claims a SINGLE
 # geometry for stacks that are physically different sizes -- RELION then reads them
-# wrong with no error anywhere. Until 2026-08-22 a divergence here only printed a
-# `[MERGE WARN] ... using primary value` line to a server log nobody reads
-# (roadmap picking_ui/12-S0). Absence is still tolerated: a column no source declares
-# is not a mismatch, and inventing one would be worse than saying nothing.
+# wrong with no error anywhere. Absence is tolerated: a column no source declares is
+# not a mismatch, and inventing one would be worse than saying nothing.
 GEOMETRY_OPTICS_COLS = ["rlnImageSize", "rlnImagePixelSize", "rlnTomoSubtomogramBinning"]
 
 # Checked only if present in all sources; a divergence is advisory.

@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Architecture-boundary linter (roadmap 01, stage 7).
+"""Architecture-boundary linter.
 
 Run alongside ruff:  python check_boundaries.py   (exit 1 on any violation)
 
-AST-based on purpose: function-local imports dodge grep-style review (51 of the
-boundary violations the 2026-08-10 audit found were function-local), and kwargs
+AST-based on purpose: function-local imports dodge grep-style review, and kwargs
 hide on continuation lines. Rules are declarative lists below — grow them as
 shims are deleted or new boundaries land.
 
@@ -16,8 +15,8 @@ Rules:
       through backend.save_project (owns force/debounce policy). Detected as
       any `<receiver>.save_project(...)` whose receiver mentions
       get_state_service / state_service.
-  R3  Stage-3 re-export shims are frozen: no NEW imports of them (existing
-      code was repointed; delete the shims after one release).
+  R3  Re-export shims are frozen: no new imports of them; delete a shim once
+      nothing imports it.
   R4  No new module-level dict literals keyed by 3+ JobType members outside
       services/jobs/spec.py — that's a per-concern job table growing back.
 """

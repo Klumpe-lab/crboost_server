@@ -10,8 +10,8 @@ Layout:
   • Array jobs additionally show a walltime estimate and a read-only
     Supervisor resource summary in their own bordered groups.
 
-The S/M/L preset row was removed by user request; presets remain on the
-model and can still be applied programmatically, but no longer have UI.
+Presets exist on the model and can be applied programmatically; the panel
+has no preset UI.
 """
 
 import math

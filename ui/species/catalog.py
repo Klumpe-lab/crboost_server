@@ -1,4 +1,4 @@
-"""Species-catalog dialogs (roadmap 12-S3) — the only UI the lab catalog has.
+"""Species-catalog dialogs, the only UI the lab catalog has.
 
 Two actions, both snapshots and both explicit: **import** instantiates a catalog species into
 this project (rail → "From catalog"), **publish** copies this project's species up as a new

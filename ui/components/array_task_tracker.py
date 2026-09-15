@@ -50,7 +50,7 @@ _CHIP = {
     _FAIL: ("error", "#dc2626", "#fef2f2"),
     _RUNNING: ("sync", "#2563eb", "#eff6ff"),
     _PENDING: ("schedule", "#9ca3af", "#f9fafb"),
-    # Deliberate non-run: upstream produced nothing for this item, supervisor
+    # Intentional non-run: upstream produced nothing for this item, supervisor
     # pre-marked it. Distinguished from "fail" (red) and "pending" (waiting)
     # so the user can tell "skipped by design" from "didn't make it yet".
     _SKIP: ("remove_circle_outline", "#94a3b8", "#f8fafc"),
@@ -97,7 +97,7 @@ def render_array_task_tracker(instance_id: str, job_model, ui_mgr) -> None:
     item_to_task_idx = {name: i for i, name in enumerate(items)}
 
     # cb-scroll-tight: NiceGUI lays scroll-area / expansion content out as a flex
-    # column with align-items: flex-start + 1 rem padding, which squeezed every
+    # column with align-items: flex-start + 1 rem padding, which squeezes every
     # task's log pane to the left; the rows own their spacing and fill the width.
     with ui.column().classes("w-full h-full overflow-hidden cb-scroll-tight").style("gap: 0;"):
         # ── Summary bar ──

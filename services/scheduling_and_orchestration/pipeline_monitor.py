@@ -1,12 +1,10 @@
 """
 Server-side pipeline observer + restart recovery.
 
-PipelineMonitor is the *single observer* of pipeline status across all
-projects loaded in this server process. It replaces the per-tab status
-pollers that previously each called sync_all_jobs on their own 3-s timer
-and that diverged from each other (landing-page roster read raw
-project_params.json with no reconciliation; the workspace tab reconciled;
-neither did anything when failure happened in a closed tab).
+PipelineMonitor is the single observer of pipeline status across all
+projects loaded in this server process. Reconciliation runs here rather
+than in per-tab pollers so every surface sees the same state and failures
+are caught even when no tab is open.
 
 Responsibilities:
 
@@ -29,11 +27,10 @@ Responsibilities:
      `state.pipeline_active`).
 
 All UI surfaces (landing page, workspace pipeline indicator, project hub
-dialog) now read from `state.pipeline_active` and `job_model.execution_status`
-in memory; they no longer reconcile themselves. The per-tab status
-refresher (`StatusPoller`) is kept as a thin UI-refresh tick so the roster
-and run-slot rebuild themselves when state changes — but it does NOT call
-`sync_all_jobs` anymore.
+dialog) read `state.pipeline_active` and `job_model.execution_status`
+in memory and do not reconcile. The per-tab `StatusPoller` is a thin
+UI-refresh tick so the roster and run-slot rebuild when state changes;
+it does not call `sync_all_jobs`.
 """
 
 from __future__ import annotations
@@ -131,7 +128,7 @@ class PipelineMonitor:
         state = get_project_state_for(project_path)  # loads + registers
         logger.info("Recovery[%s]: state loaded, reconciling...", project_path.name)
 
-        # Afterok-orchestrator projects (P1.B): the chain lives entirely in SLURM, so loading the
+        # Afterok-orchestrator projects: the chain lives entirely in SLURM, so loading the
         # state into the registry (above) is all recovery needs -- the normal tick's
         # reconcile_afterok re-observes it. Skip the schemer-oriented recovery (sync_all_jobs is a
         # no-op for them and a re-deploy would double-submit a chain that is still running).
@@ -141,9 +138,9 @@ class PipelineMonitor:
 
         # Step 1: reconcile what's on disk. sync_all_jobs walks
         # RELION_JOB_EXIT_* markers, patches default_pipeline.star, and
-        # — critically — its self-heal branch at pipeline_runner.py:132
-        # clears `pipeline_active` for us because is_active() now reports
-        # False (in-memory _active_processes evaporated with uvicorn).
+        # its self-heal branch in pipeline_runner.py clears
+        # `pipeline_active` because is_active() reports False after a
+        # restart (in-memory _active_processes died with uvicorn).
         await self._backend.pipeline_runner.sync_all_jobs(str(project_path))
         state = get_project_state_for(project_path)
 
@@ -222,7 +219,7 @@ class PipelineMonitor:
             return
 
         for project_path, state in targets:
-            # Afterok-orchestrator projects (P1.B): reconcile from SLURM + sentinels and skip the
+            # Afterok-orchestrator projects: reconcile from SLURM + sentinels and skip the
             # schemer-specific handling below (no schemer stderr, no default_pipeline.star, no
             # deferred re-deploy -- reconcile_afterok owns their status + pipeline_active).
             if getattr(state, "use_afterok_orchestrator", False):
@@ -235,9 +232,8 @@ class PipelineMonitor:
             # sbatch errors land on the schemer's stderr while the row in
             # default_pipeline.star still reads "Running" — sync_all_jobs
             # alone can't detect this because no exit marker is written
-            # for a job that never sbatched cleanly. Used to live in the
-            # per-tab status_poller; moved here so it fires even when no
-            # workspace tab is open.
+            # for a job that never sbatched cleanly. Checked here so it
+            # fires even when no workspace tab is open.
             try:
                 sbatch_errors = self._backend.pipeline_runner.get_sbatch_errors(project_path)
             except Exception:

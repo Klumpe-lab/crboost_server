@@ -24,7 +24,7 @@ rebuild window has a ~7% chance of swallowing any given click.
 
 # The pattern
 
-  - Pollers observe state. They tick on a timer, but they DON'T touch
+  - Pollers observe state. They tick on a timer, but they don't touch
     the DOM directly. They compute a cheap fingerprint of the data
     they'd render and ask the view to refresh. The view rebuilds only
     if the fingerprint changed.

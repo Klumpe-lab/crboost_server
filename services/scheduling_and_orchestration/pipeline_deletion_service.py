@@ -185,16 +185,11 @@ class PipelineDeletionService:
         job_name = job_path.rstrip("/") + "/"
         
         # 1. Load the pipeline graph and decide whether this job is actually tracked in it.
-        #    With the afterok orchestrator active (now the default for every project —
-        #    conf.yaml use_afterok_orchestrator: true) jobs live only in ProjectState, so
-        #    default_pipeline.star is commonly absent, process-less, or simply does not list
-        #    this job. All three mean "no graph row to prune" — the job dir still has to go
-        #    to Trash, but there is nothing to remove from the star.
-        #
-        #    The old code raised a hard "Pipeline has no jobs" the moment the process table
-        #    was empty, which is the *normal* state for an afterok project. That failed every
-        #    delete on its first attempt; the retry only "succeeded" because the caller had
-        #    already dropped the instance from state, so the second call short-circuited.
+        #    With the afterok orchestrator (conf.yaml use_afterok_orchestrator) jobs live only
+        #    in ProjectState, so default_pipeline.star is commonly absent, process-less, or
+        #    does not list this job. All three mean "no graph row to prune": the job dir still
+        #    goes to Trash, but there is nothing to remove from the star. An empty process
+        #    table is the normal state for an afterok project, not an error.
         graph = self.load_pipeline_graph(project_dir)
         job_in_star = (
             graph is not None
@@ -203,8 +198,8 @@ class PipelineDeletionService:
         )
         if not job_in_star:
             # Just move the dir to Trash. Leaving it behind confuses job-number allocation and
-            # makes the roster re-render the now-stateless instance as a ghost "scheduled"
-            # (yellow) entry, instead of a spurious failure that strands a partial delete.
+            # makes the roster re-render the stateless instance as a ghost "scheduled"
+            # (yellow) entry.
             moved = self._move_job_dir_to_trash(project_dir, job_name)
             return DeletionResult(
                 success=True,
@@ -324,10 +319,6 @@ class PipelineDeletionService:
                     orphans.append((job_name, missing))
         
         return orphans
-
-    # In services/pipeline_deletion_service.py
-
-    # Add to PipelineDeletionService class:
 
     def preview_deletion(
         self,

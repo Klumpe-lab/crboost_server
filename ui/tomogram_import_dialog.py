@@ -1,6 +1,6 @@
-"""PARTICLES-header tomogram-import dialog — a project-level utility, NOT a pipeline job.
+"""Particles-header tomogram-import dialog — a project-level utility, not a pipeline job.
 
-ONE source field, and three things it accepts:
+One source field, and three things it accepts:
 
   · a **folder** of reconstructed volumes (``.mrc`` / etomo ``.rec``) — every volume in it
     is scanned and listed, tick off the ones you don't want;
@@ -8,18 +8,16 @@ ONE source field, and three things it accepts:
   · an existing **tomograms.star** — its rows are read back and referenced, nothing is
     copied or recomputed.
 
-The mode is READ OFF the path instead of picked on a tab. The file browser already asks
-"which of these do you have"; a tab that must be chosen before browsing asks it a second
-time, and the two tabs it used to have carried two source fields, two status lines and two
-copies of the same review table. Whatever the path resolves to lands in the SAME table,
-and that table is the confirmation — nothing is committed until the user has seen it.
+The mode is read off the path instead of picked on a tab: the file browser already asks
+"which of these do you have". Whatever the path resolves to lands in the same table, and
+that table is the confirmation — nothing is committed until the user has seen it.
 
 Every row shows dims + pixel size, or a red chip when the MRC header has no voxel size (so
 apix is never silently defaulted to 1.0 — CLAUDE.md 'Surfacing uncertainty').
 
-Imports ACCUMULATE (de-novo S5): each commit is a batch, the committed star is rebuilt from
-all of them, and the prior batches are listed at the bottom with their collision report.
-"Replace all" is still available — as a choice, not as the silent default it used to be.
+Imports accumulate: each commit is a batch, the committed star is rebuilt from all of
+them, and the prior batches are listed at the bottom with their collision report.
+"Replace all" is an explicit choice, never the default.
 
 Chrome: the house vocabulary (``house_button`` / ``house_field`` / ``PAGE_SECTION_STYLE``),
 sections separated by whitespace rather than boxed in bordered cards. See
@@ -50,8 +48,8 @@ _STATUS_BAD = "font-size: 10px; color: #b45309; line-height: 1.35;"
 # the files worth showing beside them.
 _PICKER_GLOB = "*.mrc,*.rec,*.star"
 # Display cap only — every scanned file stays selected and gets imported. A Lustre recon
-# directory can hold thousands of tomograms, and one DOM row each is what made this dialog
-# "laggy, terrible"; the table says how many it is not showing rather than quietly eliding them.
+# directory can hold thousands of tomograms, and one DOM row each makes the dialog lag; the
+# table says how many it is not showing rather than quietly eliding them.
 _MAX_PREVIEW_ROWS = 300
 _PROBE_CHUNK = 100  # header probes per await, so the status line moves during a long scan
 
@@ -68,13 +66,12 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
     ensure_assets_loaded()  # the dialog can open on pages that never mounted the dashboard
     project_path = Path(project_path)
 
-    # The pixel-size field is a deliberate opt-in OVERRIDE, left BLANK by default: each
-    # recon MRC's own header voxel size is authoritative (ts_px = recon_apix / binning), so
-    # prefilling would silently win over a present, valid header. We can't prefill from the
-    # project microscope apix anyway — for a particle-only project it's the model default
-    # (1.35, ge=0.5, never 0), i.e. meaningless here. A file whose header truly lacks a
-    # voxel size is flagged per-row (warn chip) and the commit RAISES unless the user fills
-    # this in — surfaced, never silently defaulted (CLAUDE.md 'Surfacing uncertainty').
+    # The pixel-size field is an opt-in override, blank by default: each recon MRC's own
+    # header voxel size is authoritative (ts_px = recon_apix / binning), so prefilling would
+    # silently win over a present, valid header. The project microscope apix is no source
+    # either — for a particle-only project it is the model default (1.35, never 0). A file
+    # whose header lacks a voxel size is flagged per-row (warn chip) and the commit raises
+    # unless the user fills this in (CLAUDE.md 'Surfacing uncertainty').
 
     # `typed` is the last string _resolve was handed — a blur whose text hasn't moved is not
     # a new request (clicking Browse… blurs the field, and re-scanning Lustre for that would
@@ -218,9 +215,8 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
         selected.clear()
         row_checkboxes.clear()
         # Probed in chunks, not one 3000-file await: each probe opens an MRC header off the
-        # event loop, and on Lustre that is seconds — a single await left the dialog showing
-        # a bare "Probing…" with no sign of progress (the "laggy, terrible" report). The
-        # table is drawn ONCE at the end; drawing per chunk would rebuild it O(n²) times.
+        # event loop, and on Lustre that is seconds — a single await would show no progress.
+        # The table is drawn once at the end; drawing per chunk would rebuild it O(n²) times.
         status.style(_STATUS)
         status.text = f"Reading headers… 0/{len(paths)}"
         for start in range(0, len(paths), _PROBE_CHUNK):
@@ -256,7 +252,7 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
         _update_counts()
 
     async def _resolve(raw: str) -> None:
-        """Turn whatever is in the path field into a preview. The ONE entry point —
+        """Turn whatever is in the path field into a preview. The one entry point —
         Browse…, Enter in the field and the 'whole folder' shortcut all land here, so
         there is exactly one place that decides what a path means."""
         raw = (raw or "").strip()

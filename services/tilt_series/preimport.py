@@ -56,7 +56,7 @@ class TiltSeriesInfo(BaseModel):
     tilts: list[TiltInfo] = Field(default_factory=list)
     selected: bool = True
 
-    # Which layer of the delivery the scan chose for this series (roadmap 18 D1):
+    # Which layer of the delivery the scan chose for this series:
     # "movies" = one file per SubFramePath resolved; "stack" = <mdoc dir>/<ImageFile>
     # with nz == sections, split at Create; "missing" = neither.
     source_kind: SourceKind = "missing"

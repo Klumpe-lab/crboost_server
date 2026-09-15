@@ -1,27 +1,23 @@
 """Single curation control center for a ChimeraX+ArtiaX manual-picking session.
 
-Option A (no in-crboost proxying): crboost submits the VNC desktop as a SLURM job
-and hands the user the exact connection details — one SSH tunnel + a viewer + a
-password. ONE panel, opened from the Picks & curation tab's per-tomogram "Curate picks"
-— and only from there since 13-S3. It is a **one-stop shop with a STABLE layout**: a
-status chip (live / starting / off / failed) drives the chrome, Start/Stop swap in
-place, and the Connect + Scope + Save sections are built ONCE — the live values
-(tunnel / address / password) fill into fixed slots when the session comes up
-rather than the whole panel re-rendering into a different shape. The session is
-per-project and reused (find_active_curation_session) — at most one lives at a
-time, so reconnecting keeps the user's one tunnel + viewer.
+crboost does not proxy the desktop: it submits the VNC desktop as a SLURM job and
+hands the user the exact connection details — one SSH tunnel + a viewer + a
+password. The panel opens from the Picks & curation tab's per-tomogram "Curate picks".
+Its layout is stable: a status chip (live / starting / off / failed) drives the
+chrome, Start/Stop swap in place, and the Connect + Scope + Save sections are built
+once — the live values (tunnel / address / password) fill into fixed slots when the
+session comes up rather than the whole panel re-rendering into a different shape. The
+session is per-project and reused (find_active_curation_session) — at most one lives
+at a time, so reconnecting keeps the user's one tunnel + viewer.
 
-MODEL B (roadmap 10-S1) + THE ONE SWITCH (13-S2). "Load into running session" and "Save
-picks now" are gone, along with the backend REST calls behind them: the user saves in
-ArtiaX themselves, and crboost's job is to say exactly WHERE (section 3) and to ingest
-whatever lands there. What that bought is that a saved `.coords` can no longer be
-attributed to the wrong species — the failure the old swap made invisible. The one
-outbound command that came back is *Switch session to this tomogram*: confirm-first
-(unsaved ArtiaX lists are lost), and the backend rewrites the scope on disk in the same
-call, so the panel, the watcher and a reconnect all follow the viewer. *Restart on this
-tomogram* stays as the fallback, and is the only path when `curation.rest_enabled` is off.
+The user saves in ArtiaX themselves; crboost says exactly where (section 3) and ingests
+whatever lands there, so a saved `.coords` cannot be attributed to the wrong species.
+The one outbound command is *Switch session to this tomogram*: confirm-first (unsaved
+ArtiaX lists are lost), and the backend rewrites the scope on disk in the same call, so
+the panel, the watcher and a reconnect all follow the viewer. *Restart on this tomogram*
+is the fallback, and the only path when `curation.rest_enabled` is off.
 
-The panel is parented at the page LAYOUT slot, NOT the caller's slot: "curate" is
+The panel is parented at the page layout slot, not the caller's slot: "curate" is
 an async click handler on a button inside a poll-refreshed container, and NiceGUI
 (``events.handle_event``) runs an async handler within the sender's
 ``parent_slot`` — so a dialog created naively lands there and is destroyed the next
@@ -45,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 # One copyable-code language across all three sections: a white inset on the light
 # section panels, mono, bordered. `_BOX` is a single inline value (address, tunnel,
-# folder); `_BLOCK` is the multi-line command paste — it WRAPS (whitespace-pre-wrap +
+# folder); `_BLOCK` is the multi-line command paste — it wraps (whitespace-pre-wrap +
 # break-all) so a long command never spills a horizontal scrollbar off the card.
 _BOX = (
     "font-mono text-[11px] bg-white border border-slate-200 text-slate-700 "
@@ -60,7 +56,7 @@ _BLOCK = (
 _SECTION = "w-full gap-1.5 rounded-lg border border-slate-200 bg-slate-50 p-3"
 
 # Per-client: the currently-open curation panel, so re-opening (e.g. switching to
-# the next tomogram in an 80–100-tomo session) REPLACES it instead of stacking
+# the next tomogram in an 80–100-tomo session) replaces it instead of stacking
 # hidden overlays. Keyed by client id so two browser tabs don't delete each other's.
 _OPEN_DIALOGS: dict = {}
 
@@ -70,20 +66,19 @@ def _copy_js(text: str) -> str:
 
 
 async def open_curation_control_center(backend, project_path: Path | None, *, bundle: dict) -> None:
-    """Open the curation control center — from `Curate picks` on a tomogram, and only
-    from there (13-S3: the session chip and the rail light that opened it unbound are gone).
+    """Open the curation control center from `Curate picks` on a tomogram.
 
     ``bundle`` (from ``backend.prepare_curation_bundle``) ties the panel to one
     (species, tomogram): Start launches a session scoped to it, section 2 states that
     scope, and section 3 names the seeded list to save back into. The panel checks
-    liveness itself and, when a session is live on ANOTHER scope, offers Switch / Restart.
+    liveness itself and, when a session is live on another scope, offers Switch / Restart.
     """
     b = bundle
     cxc_path = b.get("cxc_path")
     commands = b.get("commands") or []
-    # The per-(species,tomo) curation folder: the ONE place a save may land for this
+    # The per-(species,tomo) curation folder: the one place a save may land for this
     # scope, and what section 3 tells the user to point ArtiaX's save dialog at. The seed
-    # (13-S1) is the file IN it the user is expected to save back into.
+    # is the file in it the user is expected to save back into.
     save_dir = b.get("curation_dir") or ""
     seed_path = str(b.get("seed_coords") or "")
     seed_name = Path(seed_path).name if seed_path else ""
@@ -96,7 +91,7 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
     cmd_block = "\n".join(commands)
     _cur_cfg = getattr(getattr(backend, "config_service", None), "curation", None)
     passwordless = bool(getattr(_cur_cfg, "passwordless_vnc", False))
-    # The in-session switch (13-S2) rides the REST channel; with it off, Restart is the
+    # The in-session switch rides the REST channel; with it off, Restart is the
     # only way to change what the viewer has open.
     rest_enabled = bool(getattr(_cur_cfg, "rest_enabled", False))
 
@@ -187,10 +182,10 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
     ctx = host_slot if host_slot is not None else nullcontext()
     with ctx:
         with (
-            # `no-backdrop-dismiss` (not `persistent`): Esc closes the panel — the
-            # maintainer's peeve — while a stray click on the backdrop, mid copy-paste of a
-            # tunnel command, does not. Quasar's own Esc handling does the closing; the
-            # value-change hook below runs OUR teardown (poll timer, registry entry).
+            # `no-backdrop-dismiss` (not `persistent`): Esc closes the panel, while a
+            # stray click on the backdrop, mid copy-paste of a tunnel command, does not.
+            # Quasar's own Esc handling does the closing; the value-change hook below runs
+            # our teardown (poll timer, registry entry).
             ui.dialog().props("no-backdrop-dismiss") as dialog,
             ui.card()
             .classes("w-[56rem] max-w-full")
@@ -208,7 +203,7 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
                 )
             ui.separator()
 
-            # What the RUNNING session was launched on (its `scope.json`), which may be a
+            # What the running session was launched on (its `scope.json`), which may be a
             # different tomogram — or a different project — from the one this panel was
             # opened for. Filled on reconnect; hidden when nothing is running.
             loaded_lbl = ui.label("").classes(
@@ -222,8 +217,8 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
                 with ui.row().classes("w-full items-center gap-2"):
                     start_btn = house_button("Start session", lambda: _start(), kind="accent")
                     # Two ways to change what a live session has open, both shown only when
-                    # its scope DIFFERS from this panel's — otherwise there is nothing to
-                    # change, and a permanently-present button reads as one. Switch (13-S2)
+                    # its scope differs from this panel's — otherwise there is nothing to
+                    # change, and a permanently-present button reads as one. Switch
                     # re-points the running viewer over its command channel and is the
                     # accent when the channel is on; Restart is the fallback, and the accent
                     # only when it is the sole option (one accent per state).
@@ -296,7 +291,7 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
                                     "off in the config if this cluster is shared."
                                 ).classes("text-[10px] text-orange-700")
 
-                # ── SECTION 2 · SCOPE (declared at launch; never changed after) ──
+                # ── SECTION 2 · SCOPE (declared at launch) ──
                 with ui.column().classes(_SECTION):
                     hdr = _section_head("my_location", "This session's scope")
                     with hdr:
@@ -356,7 +351,7 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
                             ui.label(seed_name).classes(_BOX).tooltip(seed_path)
                             _copy(seed_path, "Copy the full file path — paste it into the save dialog's name field")
                     # Known only after a switch (`info models` names the seed's model id): the
-                    # dialog-proof save, run by the USER in ChimeraX's command line.
+                    # dialog-proof save, run by the user in ChimeraX's command line.
                     save_cmd_row = ui.row().classes("items-center gap-1 w-full")
                     with save_cmd_row:
                         _kw("Command")
@@ -394,7 +389,7 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
     _OPEN_DIALOGS[cid] = dialog
     dialog.open()
 
-    # ── single state applier (NO body rebuild — targeted updates only) ──────────
+    # ── single state applier (no body rebuild — targeted updates only) ──────────
     _chip_base = "text-[11px] font-semibold px-2 py-0.5 rounded-full whitespace-nowrap "
     _chip = {
         "live": ("● Live on {node}", _chip_base + "bg-green-100 text-green-700"),
@@ -404,11 +399,10 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
     }
 
     def _refresh_scope() -> bool:
-        """Reflect what the LIVE session was launched on (its `scope.json`, read back by
-        find_active_curation_session). Unlike the pre-10 indicator this survives a crboost
-        restart, because the scope is on disk rather than in a process-local dict — and a
-        switch (13-S2) rewrites that same file, so it reflects the viewer after one too.
-        Returns True when that scope DIFFERS from the one this panel was opened for — the
+        """Reflect what the live session was launched on (its `scope.json`, read back by
+        find_active_curation_session). This survives a crboost restart because the scope is
+        on disk, and a switch rewrites that same file, so it follows the viewer.
+        Returns True when that scope differs from the one this panel was opened for — the
         case that offers Switch / Restart."""
         cur = sv.get("scope") or {}
         tn = cur.get("tomo_name") or ""
@@ -425,7 +419,7 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
         )
         cd = cur.get("curation_dir")
         if cd:
-            save_dir_lbl.set_text(cd)  # the save folder is the RUNNING session's, not this panel's
+            save_dir_lbl.set_text(cd)  # the save folder is the running session's, not this panel's
         return not same
 
     def _apply(kind: str, busy_msg: str = "") -> None:
@@ -488,9 +482,9 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
         try:
             _stop_timer()
             _apply("starting", "Submitting curation session…")
-            # The scope goes WITH the launch: it is what `scope.json` records and what the
-            # dir's manifest is stamped with, and it is the only declaration of identity
-            # this session will ever get (Model B).
+            # The scope goes with the launch: it is what `scope.json` records and what the
+            # dir's manifest is stamped with, and it is the session's only declaration of
+            # identity.
             scope = None
             if tomo_name and project_path is not None and backend is not None:
                 scope = backend.curation_scope(project_path, species_id, species_label, tomo_name, save_dir)
@@ -510,10 +504,9 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
             state["busy"] = False
 
     async def _restart() -> None:
-        """Relaunch the session scoped to THIS tomogram — the sanctioned way to change what
-        ArtiaX has open, and the only one (10-S1). Confirmed, because stopping the job
-        drops whatever is unsaved in the running viewer: crboost cannot save it for the
-        user any more, and pretending otherwise is what the old swap did."""
+        """Relaunch the session scoped to this tomogram. Confirmed first, because stopping
+        the job drops whatever is unsaved in the running viewer and crboost cannot save it
+        for the user."""
         if state["busy"] or state["restarting"]:
             return
         state["restarting"] = True
@@ -541,7 +534,7 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
             state["restarting"] = False
 
     async def _switch() -> None:
-        """Re-point the RUNNING session at this tomogram over its command channel (13-S2).
+        """Re-point the running session at this tomogram over its command channel.
         Confirmed first, because `close session` drops whatever is unsaved in ArtiaX and
         crboost does not save it for the user. The backend records the new scope on disk
         in the same call; on failure the viewer still has the old tomogram, the old scope
@@ -632,7 +625,7 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
             return
         state["busy"] = True
         try:
-            # Pass project_path so Stop sweeps the WHOLE zombie pile, not just the one
+            # Pass project_path so Stop sweeps every stale session, not just the one
             # we reconnected to — otherwise a stale session keeps getting re-found.
             await backend.stop_curation_session(sv["job_id"], project_path=project_path)
             _stop_timer()
@@ -647,7 +640,7 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
     _apply("starting", "Checking for a running session…")
     active = (await backend.find_active_curation_session(project_path)) if project_path else None
     if not active:
-        # Per-user reuse: the user's one live session may live under a DIFFERENT
+        # Per-user reuse: the user's one live session may live under a different
         # project — find it across all projects so we reconnect instead of relaunch.
         try:
             active = await backend.find_active_curation_session_any()

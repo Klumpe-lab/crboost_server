@@ -1,7 +1,7 @@
 """
 Per-tomogram pick data writer for the candidate-preview UI.
 
-The actual plotting now happens client-side in Plotly (responsive layout, hover
+The actual plotting happens client-side in Plotly (responsive layout, hover
 tooltips, image overlays) — this module just emits the per-tomogram JSON that
 the UI fetches when a tomogram is selected. Pure metadata, no volume reads,
 no matplotlib.
@@ -112,7 +112,7 @@ def is_output_stale(target: Path, sources) -> bool:
 
 # ---------------------------------------------------------------------------
 # X/Z slab preview — server-side rendered once per tomogram, cached as PNG.
-# This is NOT a Z-MIP / per-pick rendering (which §3.1 forbids); it's the
+# This is not a Z-MIP / per-pick volume rendering; it's the
 # X/Z analogue of the WarpTools-emitted top-down PNG, generated once with a
 # bounded read budget. Volume bytes touched per tomogram are capped so we
 # don't read 2 GB MRCs end-to-end on Lustre.
@@ -156,8 +156,9 @@ def render_xz_slab_preview(
             half = n_slices // 2
             y_lo = max(0, (ny // 2) - half)
             y_hi = min(ny, y_lo + n_slices)
-            # Always copy out — see §3.5 mmap view trap. Cast to float32 inside
-            # the with-block so the mmap is still valid when np.array is called.
+            # Always copy out: a view into the mmap is invalid once the file closes.
+            # Cast to float32 inside the with-block so the mmap is still valid when
+            # np.array is called.
             slab = np.array(data[:, y_lo:y_hi, :], dtype=np.float32, copy=True)
     except Exception as e:
         logger.warning("X/Z slab read failed for %s: %s", mrc_path, e)
@@ -198,10 +199,9 @@ def render_xy_slab_preview(
     Bytewise mirror of `render_xz_slab_preview` — same percentile clip, same
     byte budget, same uint8 conversion — so template, X/Y slab, X/Z slab, and
     subtomo cutouts all share polarity (low density → dark, high → bright).
-    Replaces the WarpTools-rendered tomogram PNG in the dashboard, which used
-    WarpTools' own convention and so could be inverted relative to the other
-    three renderings. The dashboard's invert toggle then flips all four at
-    once via CSS.
+    The WarpTools-rendered tomogram PNG follows WarpTools' own convention and
+    can be inverted relative to the other three renderings. The dashboard's
+    invert toggle flips all four at once via CSS.
 
     The slab is centered on Z (since the picker's per-pick z is rarely at the
     z-midplane, but the central Z-slab covers the cellular layer for plunge-
@@ -267,10 +267,9 @@ def render_xy_slab_preview(
 # Subtomo cutout sprite-atlas — turns each pick's per-particle .mrcs (the
 # 2D tilt-stack from `relion_tomo_subtomo`) into a small thumbnail; packs
 # all thumbnails for one tomogram into a single sprite-sheet PNG that the
-# UI displays as a CSS-background-image grid. Atlas-as-sprite-sheet is the
-# correct application of the v2 stamp pattern (see ROADMAP §5.2): the
-# cutouts come from already-2D extracted data, not from re-projecting the
-# tomogram volume — so missing-wedge streaks aren't an issue at this scale.
+# UI displays as a CSS-background-image grid. The cutouts come from
+# already-2D extracted data, not from re-projecting the tomogram volume, so
+# missing-wedge streaks aren't an issue at this scale.
 # ---------------------------------------------------------------------------
 
 

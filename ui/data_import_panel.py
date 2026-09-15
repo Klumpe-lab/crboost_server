@@ -29,10 +29,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_MOVIES_EXT = "*.eer"
 DEFAULT_MDOCS_EXT = "*.mdoc"
 
-# Type scale for this panel — THREE sizes and two families, matching the projects
+# Type scale for this panel — three sizes and two families, matching the projects
 # roster beside it. 12/600 titles a card, 10 is the working size (field labels and
-# input text alike), 9 is metadata and hints. There used to be a fourth family here
-# (`LABEL`, system-ui) and six sizes; the panel read as several applications stacked.
+# input text alike), 9 is metadata and hints.
 SZ_TITLE = "12px"
 SZ_BODY = "10px"
 SZ_META = "9px"
@@ -53,7 +52,7 @@ CLR_ERROR = "#be4343"  # muted red, not aggressive
 CLR_WARN = "#d97706"  # amber-600: an estimate standing in for a fact
 CLR_RUNNING = "#3b82f6"  # blue-500: active pipeline badge
 
-# Shown on both raw-data fields while they are BOTH empty — the data-less project
+# Shown on both raw-data fields while they are both empty — the data-less project
 # (tomograms / picks imported into the workspace later). Empty globs are the only
 # way to ask for one, so they must not read as a validation failure.
 _DATALESS_HINT = "empty — project without raw data"
@@ -168,7 +167,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         quick_ok, quick_msg = _validate_glob_quick(pattern)
         if not quick_ok:
             ui_mgr.update_data_import(movies_valid=False)
-            # Empty on BOTH globs is the data-less request, not a mistake — say so in
+            # Empty on both globs is the data-less request, not a mistake — say so in
             # the neutral voice and clear the field error, or the one legitimate way to
             # create a project without raw data reads as a broken form.
             neutral = is_dataless()
@@ -298,9 +297,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
     def is_dataless() -> bool:
         """True when the user asked for a project with no raw data.
 
-        Both globs empty is the signal — creation mechanics were already
-        glob-gated, never flag-gated, so the old `is_particle_only` toggle was a
-        transient UI field that duplicated what the globs already said.
+        Both globs empty is the signal; project creation is glob-gated, not
+        flag-gated.
         """
         di = ui_mgr.data_import
         return not di.movies_glob and not di.mdocs_glob
@@ -314,9 +312,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         if not (di.project_base_path and di.project_base_path.strip()):
             missing.append("Project Path")
         # Data-less projects skip raw frames + mdocs entirely. Derived from the globs
-        # rather than a mode flag: leaving both empty IS the request for a project with
-        # no raw data (tomograms/picks arrive later from the Particles section). The
-        # legacy aggregation toggle is still an explicit flag until S6 retires it.
+        # rather than a mode flag: leaving both empty is the request for a project with
+        # no raw data (tomograms/picks arrive later from the Particles section).
         if is_dataless():
             return missing
         # A half-filled form is a mistake, not a data-less project — ask for the rest.
@@ -582,11 +579,10 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         update_movies_validation()
         prefs_service.update_fields(movies_glob=glob_str)
         debounced_save()
-        # When mdocs are co-located, mdocs_glob is DERIVED from this directory — so it
-        # has to follow the field all the way down to empty. Deriving only on a
-        # non-empty value stranded the last derived pattern in state, and the mdocs
-        # input is hidden in co-located mode, so clearing the frames path could never
-        # reach is_dataless() and "Create" stayed disabled on "Missing: Data Path".
+        # When mdocs are co-located, mdocs_glob is derived from this directory, so it
+        # follows the field all the way down to empty. The mdocs input is hidden in
+        # co-located mode; a stale derived pattern would keep is_dataless() false and
+        # "Create" disabled on "Missing: Data Path".
         if not local_refs["mdocs_separate"]:
             if glob_str:
                 parent = str(Path(glob_str).parent) if "*" in glob_str else glob_str
@@ -608,10 +604,9 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
     def clear_raw_data():
         """Empty both raw-data globs in one click — the data-less project.
 
-        Discoverability, not new mechanics: creation has always been glob-gated, but
-        the fields are pre-filled from prefs/config on every load, so asking for a
-        project with no raw data meant knowing to blank a field whose partner is
-        hidden. See is_dataless()."""
+        Creation is glob-gated, but the fields are pre-filled from prefs/config on
+        every load, so without this a project with no raw data means knowing to blank
+        a field whose partner is hidden. See is_dataless()."""
         if ui_mgr.panel_refs.movies_input:
             ui_mgr.panel_refs.movies_input.set_from_glob("")  # cascades to mdocs when co-located
         if local_refs["mdocs_separate"] and ui_mgr.panel_refs.mdocs_input:
@@ -696,8 +691,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             selected_ts = overview.get_selected_tilt_series()
             selected_mdoc_paths = [str(ts.mdoc_path) for ts in selected_ts]
             # Scalar counts only — per-position/per-TS details and per-tilt mdoc
-            # stats live in the TiltSeriesRegistry (roadmap 02 stage 4), not in
-            # a ProjectState mirror.
+            # stats live in the TiltSeriesRegistry, not in a ProjectState mirror.
             import_summary = {
                 "total_positions": len(overview.positions),
                 "selected_positions": sum(1 for p in overview.positions if p.selected),
@@ -712,7 +706,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                 detected_params["pixel_size_angstrom"] = sel_summary.pixel_sizes[0]
             if sel_summary.voltages:
                 detected_params["acceleration_voltage_kv"] = sel_summary.voltages[0]
-            # Dose with its provenance (roadmap 18 D4): the mdoc's value, else the row —
+            # Dose with its provenance: the mdoc's value, else the row —
             # the scan's estimate or the user's number. Never the model default.
             if sel_summary.dose_missing > 0:
                 if di.dose_per_tilt_override is not None:
@@ -773,11 +767,6 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                 project_path = Path(result["project_path"])
                 scheme_name = f"scheme_{di.project_name}"
                 ui_mgr.set_project_created(project_path, scheme_name)
-                # (Dropped: a mirror of an aggregation project's pre-initialized
-                # SubtomoExtraction into ui_mgr.selected_jobs. Aggregation projects
-                # have had no pipeline jobs at creation time since the merge moved to
-                # a standalone workspace card — see project_service.create_project —
-                # so the branch reloaded an EMPTY job list over the user's selections.)
 
                 # Show success state before navigating
                 if progress_container:
@@ -858,7 +847,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                 prefs_service.prefs.add_recent_project(str(state.project_path or project_dir), label=state.project_name)
                 prefs_service.save_to_app_storage(app.storage.user)
 
-                # Load report (roadmap 03 stage 5): anything load() had to drop or
+                # Load report: anything load() had to drop or
                 # reset is surfaced once here instead of dying in the server log.
                 if state.load_warnings:
                     n = len(state.load_warnings)
@@ -979,7 +968,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
     _PROGRESS_BOX = f"border: 1px solid {CLR_BORDER}; border-radius: 6px; padding: 8px 10px; background: #f8fafc;"
 
     def _render_scan_affordance(msg: str, color: str, *, can_scan: bool):
-        """Stage-1 feedback under the path fields: the mdoc count and the Scan
+        """Pre-scan feedback under the path fields: the mdoc count and the Scan
         button. Replaces a stale overview whenever the glob moves away from the
         one it was parsed for; leaves a matching overview alone."""
         container = local_refs["dataset_overview_container"]
@@ -1014,7 +1003,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
 
     def _refresh_dose_row():
         """Show the dose row iff the current overview's selection has series without a
-        dose in the mdoc; prefill it with the estimate the first time (roadmap 18 D4)."""
+        dose in the mdoc; prefill it with the estimate the first time."""
         row, inp, hint = local_refs["dose_row"], local_refs["dose_input"], local_refs["dose_hint"]
         if row is None or inp is None:
             return
@@ -1098,9 +1087,9 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         frames_dir = str(Path(movies_glob).parent) if movies_glob and "*" in movies_glob else None
 
         # One generation per scan. The worker thread can't be cancelled, so a
-        # superseded scan simply stops being allowed to touch the DOM — this is
-        # what used to make the bar fill up and yank back: two overlapping
-        # parses of different globs reporting into one progress dict.
+        # superseded scan simply stops being allowed to touch the DOM. Otherwise
+        # two overlapping parses of different globs report into one progress
+        # dict and the bar fills up and yanks back.
         local_refs["parse_gen"] += 1
         gen = local_refs["parse_gen"]
         _stop_parse_timer()
@@ -1290,11 +1279,10 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                                     f"{FONT} font-size: {SZ_META};"
                                 )
 
-                # Project creation has NO type switches left. The particle-only toggle went
-                # with roadmap 08-S1 and the aggregation toggle with de-novo S6: leaving the
-                # raw-data globs empty IS the request for a data-less project (see
-                # is_dataless()), and merging particles across projects is a capability every
-                # project has, reachable from the PARTICLES header of the roster. The
+                # Project creation has no type switches. Leaving the raw-data globs empty is
+                # the request for a data-less project (see is_dataless()), and merging
+                # particles across projects is a capability every project has, reachable
+                # from the PARTICLES header of the roster. The
                 # dataless_hint below says what is about to be created, so neither can happen
                 # by accident.
 
@@ -1379,7 +1367,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
 
                     # Dose per tilt — only when the scanned mdocs record none (SerialEM
                     # without dose calibration). Prefilled with the scan's estimate and
-                    # said to be one; the user's number wins (roadmap 18 D4).
+                    # said to be one; the user's number wins.
                     dose_row = ui.column().classes("w-full gap-0").style("margin-top: 2px;")
                     dose_row.set_visibility(False)
                     local_refs["dose_row"] = dose_row
@@ -1460,7 +1448,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                             )
 
                     # The data-less project, stated where the raw-data fields are (the
-                    # only place the question comes up). Action sits WITH its hint.
+                    # only place the question comes up). Action sits with its hint.
                     with ui.row().classes("w-full items-center gap-2").style("margin-top: 4px;"):
                         house_button(
                             "No raw data",
@@ -1473,7 +1461,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                         )
 
                 # Dataset overview (populated when mdocs are validated). Lives
-                # inside raw_data_section so the aggregation toggle hides it too.
+                # inside raw_data_section.
                 with raw_data_section:
                     dataset_overview_container = ui.column().classes("w-full gap-0 mt-1")
                     local_refs["dataset_overview_container"] = dataset_overview_container
@@ -1491,10 +1479,10 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
 
         # =================================================================
         # RIGHT COLUMN: Projects Overview + History sidebar
-        # `min-width: 0`, not a 460 px floor: a floor here is what pushed the pair
-        # past the viewport at 100 % zoom and left the roster's right edge (its
-        # status pill, its travel chevron) behind a horizontal scrollbar. The roster
-        # rows shrink honestly instead — every fixed cell in them is under 46 px.
+        # `min-width: 0`, not a 460 px floor: a floor pushes the pair past the
+        # viewport at 100 % zoom and hides the roster's right edge (its status
+        # pill, its travel chevron) behind a horizontal scrollbar. The roster rows
+        # shrink instead — every fixed cell in them is under 46 px.
         # =================================================================
         with ui.column().classes("gap-2").style("flex: 1.45 1 0; min-width: 0;"):
             # ----- Projects Overview -----

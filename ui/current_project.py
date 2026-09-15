@@ -6,7 +6,7 @@ the ProjectState of the project loaded in the current browser tab. This is the
 only place allowed to resolve state from UI context; services and background
 tasks must use ``get_project_state_for(path)`` / ``StateService.state_for(path)``
 with an explicit path — a bare tab-context lookup in a background task silently
-yields a blank throwaway state (the historical W2 ArtiaX bug class).
+yields a blank throwaway state.
 """
 
 from services.project_state import ProjectState, get_project_state_for

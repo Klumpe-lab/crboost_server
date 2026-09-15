@@ -1,10 +1,9 @@
-"""The Species page (roadmap 10) — `[rail 200px | detail]`.
+"""The Species page — `[rail 200px | detail]`.
 
 Detail = header row (active species' pill + segmented tabs) + one container per
 (species, tab), built lazily on first selection and cached; a switch only flips
-visibility. Tabs: Overview (S3: identity editor, status, sanity, delete) · Templates &
-masks (the mounted workbench, S2) · Picks & curation (11-S2 + 11-S4, merged into one surface
-by picking-UI roadmap 09) · Jobs (S4). The page
+visibility. Tabs: Overview (identity editor, status, sanity, delete) · Templates &
+masks (the mounted workbench) · Picks & curation · Jobs. The page
 owns the 3-s registry observe (species created / deleted elsewhere — roster "+", another
 browser tab, the Overview's delete) and the `on_workbench_active` / `workbench_select_species`
 hooks the workspace registers (`workspace_page._switch_to` / `_open_species`); the
@@ -125,11 +124,10 @@ class SpeciesPage:
                         house_button("Add first species", self.add_species, kind="accent")
 
         state = get_project_state_for(self.project_path)
-        # Paint the rail BEFORE building any tab. A tab that raises during build kills the
-        # rest of this page's render, and with the refresh after the selection that meant
-        # one broken tab presented as "the registry is empty" — the species were there all
-        # along. The rail reads only `state.species_registry`, so it never needs the
-        # selection to have succeeded.
+        # Paint the rail before building any tab. A tab that raises during build kills the
+        # rest of this page's render; with the rail refreshed after the selection, one broken
+        # tab would present as "the registry is empty". The rail reads only
+        # `state.species_registry`, so it never needs the selection to have succeeded.
         self._rail.refresh()
         if state.species_registry:
             self.select_species(state.species_registry[0].id)
@@ -175,7 +173,7 @@ class SpeciesPage:
         self._write_url()
 
     def _write_url(self) -> None:
-        """Address bar follows the selection (roadmap 17 S3) — but only while this page
+        """Address bar follows the selection — but only while this page
         is the visible view, so the initial species auto-select behind a pipeline view
         doesn't hijack the URL."""
         set_url = self.callbacks.get("set_url")
@@ -267,8 +265,7 @@ class SpeciesPage:
         self._push_tab_badges()
 
     def _push_tab_badges(self) -> None:
-        """Counts on the tab strip for the active species (picking-UI roadmap 04 S1) —
-        they used to be chips in the Overview's "kitchen sink" status block. All three
+        """Counts on the tab strip for the active species. All three
         reads are in-memory, so this rides the 3-s observe with no disk cost;
         `set_badge` is a no-op when the number has not moved."""
         if self._segmented is None:
@@ -296,7 +293,7 @@ class SpeciesPage:
                 self.select_species(species.id)
 
     async def add_species_from_catalog(self) -> None:
-        """Rail "From catalog" (roadmap 12): pick a lab-catalog species and instantiate it
+        """Rail "From catalog": pick a lab-catalog species and instantiate it
         here. Only rendered when `species_catalog_root` is configured; the import itself is
         SingleFlight-guarded inside `ui.species.catalog`."""
         await import_from_catalog(self.backend, self.project_path, on_done=self.select_species)

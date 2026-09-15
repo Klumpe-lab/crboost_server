@@ -1,7 +1,7 @@
-"""One log pane (roadmap 16 S4 — hoisted from array_task_tracker._log_pane).
+"""One log pane.
 
-Title + file name + a copy button that copies the WHOLE file (the pane shows the tail), over a
-wrapped <pre> so long lines fold instead of scrolling sideways. Bare-Path API on purpose:
+Title + file name + a copy button that copies the whole file (the pane shows the tail), over a
+wrapped <pre> so long lines fold instead of scrolling sideways. Takes a bare Path so that
 anything that has a file can show it — an array task's task_N.out, a protocol stage's
 run.out / run.err / run_submit.script — without a relion_job_name or per-instance widget refs.
 """

@@ -1,12 +1,11 @@
 """Three-panel orthoslice viewer for templates and masks.
 
-Replaces the broken molstar mount in the workbench. NiceGUI + plotly
-heatmap-via-dict. Templates are 64–128 px so loading the full volume
-into memory and rendering three slices is cheap (~1–8 MB per template).
+NiceGUI + plotly heatmap-via-dict. Templates are 64–128 px so loading the
+full volume into memory and rendering three slices is cheap (~1–8 MB per
+template).
 
-Per project memory: do NOT use plotly's `scaleanchor` for cryo-ET-shaped
-volumes; use container CSS. Use `ui.html(..., sanitize=False)` only when
-strictly needed.
+Don't use plotly's `scaleanchor` for cryo-ET-shaped volumes; use container
+CSS. Use `ui.html(..., sanitize=False)` only when strictly needed.
 
 Public API: `render_template_viewer(template_path, mask_path=None, ...)`
 mounts the viewer in the current NiceGUI parent. Call `update_paths(...)`
@@ -195,7 +194,7 @@ def render_template_viewer(
 
         # Plot row — each cell is a square container (aspect-ratio: 1) so
         # cubic templates render visually cubic without using plotly's
-        # scaleanchor (per project memory: aspect-ratio CSS, not scaleanchor).
+        # scaleanchor.
         with ui.row().classes("w-full gap-2 flex-nowrap justify-center"):
             for axis_key, slice_fn, mask_fn, axis_labels in (
                 ("xy", _slice_xy, _mask_xy, ("x", "y")),

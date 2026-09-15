@@ -18,13 +18,12 @@ Mode is determined by the SLURM_ARRAY_TASK_ID env var:
           `.task_status/{tomo}.{ok|fail}`.
 
 Enumeration is from the TM output (one `*_job.json` per tomogram TM actually
-processed), not the input star — the coordinate list follows what TM produced.
-Interim per census #25: the star-minus-TM difference is reported LOUDLY so a
-TM-partial run can't silently narrow extraction. Staging is one shared
-job-local dir on purpose (census #26): pytom's job.json embeds output_dir and
-tasks write distinct name-keyed files, so there is nothing to isolate. Note
-the `target.exists(): continue` skip means a re-run never re-patches a changed
-upstream file.
+processed), not the input star; the coordinate list follows what TM produced.
+Tomograms in the star but missing from the TM output are reported as a warning so a
+partial TM run can't silently narrow extraction. Staging is one shared job-local
+dir: pytom's job.json embeds output_dir and tasks write distinct name-keyed files,
+so there is nothing to isolate. The `target.exists(): continue` skip means a re-run
+never re-patches a changed upstream file.
 
 The mode dispatch, both bootstraps, manifest lookup, exclusions, tally and exit
 markers all live in ArrayDriver; this file is the extraction-specific hooks.
@@ -72,10 +71,8 @@ def get_pixel_size_from_star(tomograms_star: Path) -> float:
 def cleanup_tomo_names(candidates_star: Path, apix_fallback: float) -> int:
     """Remove the pixel size suffix from rlnTomoName in the merged candidates STAR.
 
-    Raises on any failure (census #28, maintainer decision): a suffixed
-    rlnTomoName silently breaks every downstream join (subtomo/refine see zero
-    matches), which is exactly the wrong-but-plausible failure class the
-    never-fail-silently policy targets.
+    Raises on any failure: a suffixed rlnTomoName silently breaks every
+    downstream join (subtomo/refine see zero matches).
     """
     data = starfile.read(candidates_star, always_dict=True)
     df = None
@@ -204,10 +201,8 @@ class ExtractCandidatesPytomDriver(ArrayDriver):
         suffix = "_job.json"
         tomo_names: list[str] = sorted(j.name[: -len(suffix)] for j in job_jsons)
 
-        # Census #25 (interim, maintainer decision): TM output is the
-        # enumeration source, but a tomogram present in the input star and
-        # absent from TM output must be reported LOUDLY, never dropped in
-        # silence.
+        # TM output is the enumeration source, but a tomogram present in the
+        # input star and absent from TM output is reported, not dropped silently.
         star_only = sorted(set(read_star_tomo_names(input_tomograms)) - set(tomo_names))
         if star_only:
             self.log(
@@ -253,8 +248,8 @@ class ExtractCandidatesPytomDriver(ArrayDriver):
             excluded_set = set(results.skipped)
             star_files = [f for f in star_files if f.name[: -len("_particles.star")] not in excluded_set]
         if not star_files:
-            # Deliberately stricter than all_succeeded (census #27): an empty
-            # candidates.star is a poisoned contract for downstream extraction.
+            # Stricter than all_succeeded: an empty candidates.star breaks
+            # downstream extraction.
             raise RuntimeError("No *_particles.star files produced by tasks")
         if len(star_files) == 1:
             shutil.copy(star_files[0], candidates_star)

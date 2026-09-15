@@ -1,8 +1,7 @@
 """Import an external .mrc file as the species's template.
 
-The "boss handed me an .mrc and said use this" workflow. Implements the
-register-external flow per the v2 plan: a file is not a template until we
-have inspected it, presented the metadata to the user, accepted their
+The "someone handed me an .mrc and said use this" workflow. A file is not
+a template until we have inspected it, presented the metadata to the user, accepted their
 confirmation/edits, and ingested it into the project's
 templates/<species_id>/ directory with a populated `ParticleTemplate`
 record.
@@ -62,8 +61,8 @@ async def open_template_import_dialog(
                 ui.label("Import template").classes("text-base font-semibold text-gray-800")
                 ui.label(f"→ species: {species.name}").classes("text-xs text-gray-500 ml-2")
 
-            # Info banner — imports always ADD a new entry to species.templates
-            # in v3 (selection unchanged unless the user opts in below).
+            # Info banner — imports always add a new entry to species.templates
+            # (selection unchanged unless the user opts in below).
             existing_count = len(getattr(species, "templates", []) or [])
             if existing_count > 0:
                 with ui.row().classes("w-full items-center px-4 py-2 bg-blue-50 border-b border-blue-100 gap-2"):

@@ -101,8 +101,7 @@ _FILETYPE_INFO: dict[JobFileType, tuple] = {
 }
 
 # ── Shared visual tokens ─────────────────────────────────────────────────────
-# Same name style for BOTH input and output slots (the user asked for these to
-# stop looking like two different things — one darker, one grayed).
+# Same name style for input and output slots.
 _SLOT_NAME_STYLE = (
     f"{FONT} font-size: 10px; font-weight: 500; color: #334155; cursor: help; "
     "flex-shrink: 0; width: 130px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
@@ -162,7 +161,7 @@ def _is_pending_path(p: str | None) -> bool:
 
 
 def _candidate_name(c) -> str:
-    """Human, DISAMBIGUATED name for one upstream producer candidate.
+    """Human, disambiguated name for one upstream producer candidate.
 
     Two queued jobs of the same type (e.g. two Alignments) must not collapse to
     the same label. We build "<Display Name>" plus a per-instance discriminator:
@@ -430,7 +429,7 @@ class IOConfigComponent:
                 self._selector_face("#cbd5e1", "—", "")
 
     def _input_name_label(self, slot):
-        # Explains the artifact TYPE only. The concrete resolved path is shown
+        # Explains the artifact type only. The concrete resolved path is shown
         # inline beneath the row (copyable), not buried in this hover.
         name = ui.label(snake_to_title(slot.key)).style(_SLOT_NAME_STYLE)
         with name, ui.tooltip().style(_TIP_PANEL_STYLE):

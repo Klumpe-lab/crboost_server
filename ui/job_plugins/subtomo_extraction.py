@@ -1,9 +1,7 @@
 """Subtomo Extraction plugin.
 
-The cross-project merge ("Particle Merge") used to live here, but for
-aggregation projects it now lives in a standalone workspace card
-(ui/aggregation/merge_card.py). For normal pipelines, merging across
-extraction outputs is rare enough that the dedicated per-job UI was removed.
+The cross-project merge lives in a workspace card (ui/aggregation/merge_card.py),
+not in this job tab.
 
 Job-specific fields (`box_size`, `crop_size`, `binning`) stay on the
 job — these ARE subtomo decisions. But there's a real cross-link worth
@@ -19,7 +17,7 @@ here so the user knows before they touch Run, and the driver writes a
 .skipped_no_candidates.json sidecar + RELION_JOB_EXIT_SUCCESS rather
 than a hard fail (see drivers/subtomo_extraction.py).
 
-Layout (roadmap 08 S1): one species line on top (pill + "open in Species"),
+Layout: one species line on top (pill + "open in Species"),
 the two sanity checks as one-line chips (same rules + text, less chrome — the
 box / crop / binning explainer lives in the Journey's Dataset pixel table
 tooltips), then the plain parameter form.

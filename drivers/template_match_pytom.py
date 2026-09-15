@@ -6,7 +6,7 @@ Mode is determined by the SLURM_ARRAY_TASK_ID env var:
 
 - Unset:  SUPERVISOR mode. Submitted by relion_schemer via the standard qsub.sh.
           Reads the tomograms STAR, preflight-checks the registry, writes the
-          per-tomogram text inputs (tilt angles / defocus / dose) ONCE, persists
+          per-tomogram text inputs (tilt angles / defocus / dose) once, persists
           a task manifest with per-tomogram metadata, builds run_array.sh, and
           sbatches the array. Polls squeue until the array is empty, then emits
           the output tomograms STAR. Exit code 0 only if every tomogram has a
@@ -19,14 +19,13 @@ Mode is determined by the SLURM_ARRAY_TASK_ID env var:
           prepared by the supervisor. Atomically writes
           `.task_status/{name}.{ok|fail}`.
 
-No per-task staging isolation on purpose (census #18): pytom takes explicit
-per-tomogram args, outputs are name-keyed, so tasks cannot collide. The task
-reads its inputs from the manifest snapshot, not the drive-time resolver
-(census #20): all array tasks of one submission must see identical,
-already-validated template/mask/star inputs even if project state changes
-mid-array.
+There is no per-task staging isolation: pytom takes explicit per-tomogram args
+and outputs are name-keyed, so tasks cannot collide. The task reads its inputs
+from the manifest snapshot, not the drive-time resolver: all array tasks of one
+submission must see identical, already-validated template/mask/star inputs even
+if project state changes mid-array.
 
-Tomograms are 1:1 with tilt-series in v1 (Tomogram.tilt_series_id == ts_id), so
+Tomograms are 1:1 with tilt-series (Tomogram.tilt_series_id == ts_id), so
 the manifest keys off ts_names / tilt_series_ids() directly.
 
 The mode dispatch, both bootstraps, manifest lookup, exclusions, tally and exit
@@ -50,8 +49,8 @@ from services.configs.starfile_service import StarfileService
 from services.job_models import TemplateMatchPytomParams
 
 
-# TEMPORARY: Use pytom 0.10-style text file inputs instead of --relion5-tomograms-star.
-# Set to True to replicate GT pipeline behavior for score comparison.
+# Temporary: pytom 0.10-style text file inputs instead of --relion5-tomograms-star.
+# True replicates the original CryoBoost pipeline, so scores are comparable with it.
 LEGACY_TEXT_INPUT = True
 
 
@@ -71,8 +70,8 @@ def _get_df_from_star(path: Path) -> pd.DataFrame:
 
 
 def read_global_block(path: Path) -> pd.DataFrame:
-    """The 'global' block of a pipeline-written STAR (census #21: the named
-    block, via StarfileService, is the canonical read path for enumeration)."""
+    """The 'global' block of a pipeline-written STAR. The named block, read via
+    StarfileService, is the canonical read path for enumeration."""
     star_data = StarfileService().read(path)
     df = star_data.get("global")
     if df is None:
@@ -156,8 +155,8 @@ def make_pytom_tomograms_star(*, tomograms_star: Path, tiltseries_global_star: P
             "Check that rlnTomoName matches between tomograms.star and ts_ctf_tilt_series.star."
         )
 
-    # TEMPORARY: Neutralize rlnTomoHand while investigating score compression vs GT.
-    # The GT (old CryoBoost + pytom 0.10) never passed handedness to pytom.
+    # Temporary: force rlnTomoHand to 1. The original CryoBoost + pytom 0.10 pipeline
+    # never passes handedness to pytom, and scores are compared against it.
     if "rlnTomoHand" in tomo_df.columns:
         print(f"[TEMP-DEBUG] Overriding rlnTomoHand from {tomo_df['rlnTomoHand'].tolist()} -> 1")
         tomo_df["rlnTomoHand"] = 1
@@ -280,7 +279,7 @@ class TemplateMatchPytomDriver(ArrayDriver):
         tm_results_dir = job_dir / "tmResults"
         tm_results_dir.mkdir(exist_ok=True)
 
-        # Prepare per-tomogram inputs ONCE so tasks don't each re-parse STARs.
+        # Prepare per-tomogram inputs once so tasks don't each re-parse STARs.
         if LEGACY_TEXT_INPUT:
             self.log("LEGACY MODE: generating text files for pytom 0.10")
             generate_legacy_text_files(tiltseries_global_star=input_star_ts, output_dir=job_dir)
@@ -348,9 +347,9 @@ class TemplateMatchPytomDriver(ArrayDriver):
         }
 
     def aggregate(self, ctx: DriverContext[TemplateMatchPytomParams], results: ArrayResults) -> None:
-        # Census #19 (maintainer decision): never edit primary files — excluded
-        # tomograms stay as rows in the output star; downstream consults the
-        # registry/project state for mutedness, not row absence.
+        # Primary files are never edited: excluded tomograms stay as rows in the
+        # output star; downstream consults the registry/project state for
+        # mutedness, not row absence.
         output_tomograms = ctx.job_dir / "tomograms.star"
         shutil.copy2(ctx.paths["input_tomograms"], output_tomograms)
         self.log(f"Copied tomograms.star to {output_tomograms}")
@@ -359,7 +358,7 @@ class TemplateMatchPytomDriver(ArrayDriver):
 
     def task_already_done(self, ctx: DriverContext[TemplateMatchPytomParams], item: str) -> bool:
         # Covers the crash-after-output-before-status window for the most
-        # expensive per-item tool in the pipeline (census #23).
+        # expensive per-item tool in the pipeline.
         out_scores = scores_mrc_path(ctx.job_dir, item)
         if out_scores.exists() and out_scores.stat().st_size > 0:
             self.log(f"Scores already exist, skipping: {out_scores}")

@@ -3,7 +3,7 @@ tomogram voxel space.
 
 Single source of truth for the centered-Å ↔ voxel mapping. Used by the gallery
 visualization (``imod_vis``) and by the ArtiaX bridge so both share one definition
-of the convention. See ``docs/roadmaps/completed/roadmap_artiax-bridge.md``.
+of the convention.
 
 Convention (RELION-5)::
 

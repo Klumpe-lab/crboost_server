@@ -1,7 +1,6 @@
-"""Template Workbench — v3 layout, two columns (picking-UI roadmaps 05 + 06).
+"""Template Workbench — two columns.
 
-Visual structure (the species header moved to the Species page's Overview tab in
-roadmap 10 S3):
+Visual structure (the species header lives on the Species page's Overview tab):
 
   ┌ TEMPLATES  · rows + SOURCE ┐ ┌ MASKS · rows + SOURCE ┐   (one auto-fit grid;
   └────────────────────────────┘ └───────────────────────┘    one column when narrow)
@@ -9,25 +8,24 @@ roadmap 10 S3):
     Activity log (collapsed)                                     (full width)
 
 Each column is <things> + <where new ones come from>. The lists are `.cb-tw-table`
-grids (CSS in ui/dashboard/css.py), not cards: a card 260 px wide truncated three of
-its five lines, while a column sized to its content does not.
+grids (CSS in ui/dashboard/css.py), not cards: a narrow card truncates most of its
+lines, while a column sized to its content does not.
 
-Design rules enforced here:
+Design rules:
   - Color palette is gray + indigo (templates) + purple (masks) +
     white/black polarity chips. No blue/emerald/amber tints elsewhere.
-  - Font scale collapsed to three: text-sm (section titles),
+  - Three font sizes: text-sm (section titles),
     text-xs (body / form labels), text-[10px] (captions / chips / mono).
-    The creation forms use `Segmented` + `.cb-field`, NOT Quasar tabs and bare
-    QFields — those were the two surfaces that leaked a fourth and fifth size in.
+    The creation forms use `Segmented` + `.cb-field`, not Quasar tabs and bare
+    QFields, which bring in their own larger sizes.
   - Selection is a class flip across kept row handles; a list is rebuilt only when
-    its membership moved (register / delete). Clicking a row must not destroy it.
+    its membership changes (register / delete). Clicking a row must not destroy it.
   - All template-producing actions (shape, pdb, emdb, import, resample,
     apply-lowpass, flip-polarity) write to canonical paths and skip the
-    write if a registered entry already exists at that path — no
-    accidental dup spam.
+    write if a registered entry already exists at that path.
   - Delete is confirmed in a modal; removes the file + sidecar from disk.
 
-Schema reference: services/project_state.py v3 — species.templates and
+Schema reference: services/project_state.py — species.templates and
 species.masks are sibling collections with UUID identity.
 """
 
@@ -153,9 +151,8 @@ COLOR_PALETTE = [
 # Three font sizes total. Two accent colors total. Section panels use
 # a thin gray underline rather than full card borders.
 
-# Three ranks, and a thing may only use the one that matches what it IS. They used to be
-# one class, which is why "SOURCE" (a block of the page) and "apix" (one input's label)
-# shouted at each other in the same voice:
+# Three ranks; an element uses the one that matches what it is, so a page block
+# ("Source") and one input's label ("apix") never read at the same weight:
 #   SECTION  — `_section()` below: 11 px semibold MIXED case + a rule. Templates · Masks ·
 #              Source · Viewer. The page's structure.
 #   TOOL     — `_TOOL_CLS`: 10 px semibold mixed case. One tool inside a panel — Resample,
@@ -168,7 +165,7 @@ _LABEL_CLS = "text-[9px] font-bold text-gray-400 uppercase tracking-wide"
 _HINT_CLS = "text-[10px] text-gray-400"
 _MONO_CLS = "text-[10px] font-mono text-gray-600"
 # Inside a table row everything except the filename runs at 9 px, matching the stats and
-# size badges that were already drawn there.
+# size badges.
 _ROW_MONO_CLS = "text-[9px] font-mono text-gray-600"
 _INDIGO = "#6366f1"
 _PURPLE = "#a855f7"
@@ -176,12 +173,12 @@ _PURPLE = "#a855f7"
 # ("Templates & masks", not "Templates & Masks"). "From template" says what the tool
 # does; which tool it is (relion_mask_create) is named in the panel's own hint.
 _SOURCE_TABS = (("shape", "Shape"), ("pdb", "PDB / EMDB"), ("import", "Import"), ("edit", "Edit current"))
-# "From template" first AND the default: most particles are not spherical, so the
+# "From template" first and the default: most particles are not spherical, so the
 # threshold-derived mask is the normal case and the sphere is the special one.
 _MASK_TABS = (("relion", "From template"), ("sphere", "Sphere"), ("import", "Import"))
-# One column shape for BOTH lists: they sit side by side, so aligned columns read as one
+# One column shape for both lists: they sit side by side, so aligned columns read as one
 # system. Only FILE flexes (and therefore ellipsises); everything else is sized to its
-# content, which is what ends the "a bunch of text, some of which is truncated" problem.
+# content.
 _TW_COLS = "16px minmax(0, 1fr) 54px 112px 104px 50px 44px"
 # Both lists render at this fixed height (≈ head + 7 rows, scrolling beyond) so the two
 # columns' Source blocks start on the same line and list growth never reflows the page.
@@ -194,9 +191,8 @@ _SANS = "font-family: 'IBM Plex Sans', sans-serif;"
 def _section(title: str) -> None:
     """A block header for the page's own structure — Templates, Masks, Source, Viewer.
     `PAGE_SECTION_STYLE` (12 px semibold), no underline rule and no explanatory tail:
-    the header + whitespace carry the structure, the tables draw their own head border,
-    and every extra hairline made the page read as a grid of gray lines. What used to
-    be the hint ("click a row to select") is obvious from the table itself."""
+    the header + whitespace carry the structure and the tables draw their own head
+    border."""
     with ui.row().classes("w-full items-baseline gap-2 px-1"):
         ui.label(title).style(PAGE_SECTION_STYLE)
 
@@ -213,10 +209,10 @@ def _stacked_panels(holder: ui.element, panels: dict[str, ui.element]):
     keeps the height of its tallest panel and switching tabs never shoves the content
     below it around.
 
-    Everything is INLINE styles, not classes: the page-shell stylesheet is served
-    stale on this deployment, and a class-based version rendered all four panels at
-    once with a dead switch until the shell refreshed. Inline styles ride the
-    socket-delivered DOM and cannot go stale (same doctrine as _field_styles.py)."""
+    Styles are inline, not classes: the page-shell stylesheet is served stale on this
+    deployment, and a class-based version renders all panels at once with a dead
+    switch until the shell refreshes. Inline styles ride the socket-delivered DOM and
+    cannot go stale (same as _field_styles.py)."""
     holder.style("display: grid; width: 100%;")
 
     def _panel(key: str) -> ui.element:
@@ -255,10 +251,10 @@ def _membership_moved(rows: dict, species, attr: str) -> bool:
 
 
 class TemplateWorkbench:
-    """Per-species workbench — templates, masks and the viewer of ONE species. Mounted
+    """Per-species workbench — templates, masks and the viewer of one species. Mounted
     by the Species page's Templates & masks tab (`ui/species/templates_tab.py`); the
     species' identity (name, color, Ø, symmetry, notes) and its delete cascade live on
-    the page's Overview tab since roadmap 10 S3."""
+    the page's Overview tab."""
 
     def __init__(self, backend, project_path: str, species_id: str):
         self.backend = backend
@@ -267,11 +263,10 @@ class TemplateWorkbench:
         self.output_folder = os.path.join(project_path, "templates", species_id)
         os.makedirs(self.output_folder, exist_ok=True)
 
-        # Scope iframe + event name per-species so multiple workbench tabs
-        # don't cross-leak. Before this, all iframes shared id='molstar-frame'
-        # so document.getElementById hit the FIRST one only — load_volume
-        # posts went to the wrong iframe, and the postMessage listeners
-        # cross-fired into the wrong workbench's Activity Log.
+        # Scope iframe + event name per species so multiple workbench tabs
+        # don't cross-talk: with a shared id, document.getElementById hits the
+        # first iframe only, load_volume posts go to the wrong iframe, and the
+        # postMessage listeners fire into the wrong workbench's Activity Log.
         # `species_id` is already a slug; safe in a DOM id and event name.
         self._iframe_id = f"molstar-frame-{species_id}"
         self._molstar_event_name = f"molstar_event_{species_id}"
@@ -323,7 +318,7 @@ class TemplateWorkbench:
         self.loaded_items: list = []
         self.session_item_containers: dict = {}
 
-        # Bridge robustness state (see MOLSTAR_VIEWER_PLAN.md Slice A):
+        # Bridge robustness state:
         #   _pending_commands: posts buffered until iframe emits `ready`.
         #   _optimistic_visibility: client-side override per itemId; the
         #     icon flips immediately on click and gets reconciled on the
@@ -335,7 +330,7 @@ class TemplateWorkbench:
         self._optimistic_visibility: dict[str, bool] = {}
         self._inflight_timestamps: dict[tuple[str, str], float] = {}
 
-        # Slice C UI affordances:
+        # Load spinners:
         #   _pending_loads: optimistic spinner entries for in-flight
         #     load_volume requests. FIFO-correlated with itemsChanged
         #     growth — we can't track per-item since molstar generates
@@ -388,7 +383,7 @@ class TemplateWorkbench:
 
     def _mutate_species(self, fn) -> None:
         # Model-level mutation: marks dirty + bumps registry_rev so the roster /
-        # journey / workbench-strip gates see the edit (roadmap 08 S0.2).
+        # journey / workbench-strip gates see the edit.
         get_project_state_for(Path(self.project_path)).mutate_species(self.species_id, fn)
 
     async def _save_state(self) -> None:
@@ -490,8 +485,7 @@ class TemplateWorkbench:
         if not species_admin.select_template(self._state(), self.species_id, template_id)["success"]:
             return
         # The click that selects a row must not destroy that row: flip the class across
-        # the kept handles (Segmented.set_active is the precedent) and refresh only what
-        # genuinely depends on the selection.
+        # the kept handles and refresh only what depends on the selection.
         _flip_selection(self._template_rows, template_id)
         asyncio.create_task(self._after_select())
 
@@ -510,7 +504,7 @@ class TemplateWorkbench:
         self._refresh_viewer()
 
     def _refresh_after_change(self) -> None:
-        """After a register / delete. A list is rebuilt only when its MEMBERSHIP moved —
+        """After a register / delete. A list is rebuilt only when its membership changed;
         a selection change alone goes through `_select_*`, which flips a class."""
         sp = self._get_species()
         if self._templates_table is not None and _membership_moved(self._template_rows, sp, "templates"):
@@ -622,18 +616,17 @@ class TemplateWorkbench:
             ui.notify(problem, type="warning")
 
     # ==================================================================
-    # MOLSTAR BRIDGE (Slice A — see MOLSTAR_VIEWER_PLAN.md)
+    # MOLSTAR BRIDGE
     #
     # The iframe is a black box: postMessage out, events back. Three
     # robustness layers sit between the UI and the raw bridge:
     #
     #   1. READY GATE — commands posted before the iframe emits `ready`
-    #      get queued and replayed on `ready`. Prevents the silent
-    #      "post-before-ready" drop that used to make session state
-    #      look stuck.
+    #      get queued and replayed on `ready`; otherwise they are dropped
+    #      silently and session state looks stuck.
     #   2. IN-FLIGHT DEDUP — per-(itemId, action) timestamp; identical
     #      sends within DEDUP_WINDOW_S are dropped. Double-click spam on
-    #      visibility used to corrupt molstar's internal state.
+    #      visibility corrupts molstar's internal state.
     #   3. OPTIMISTIC UI — visibility toggles flip the icon immediately
     #      and reconcile against itemsChanged. The user sees an instant
     #      response even when the iframe is mid-load on a big volume.
@@ -644,9 +637,9 @@ class TemplateWorkbench:
 
     DEDUP_WINDOW_S = 0.2
     _DEDUP_ACTIONS = frozenset({"setVisibility", "setColor", "setIsoValue", "deleteItem"})
-    # Files above this on disk are likely to choke molstar (the 1.55 Å/px
-    # ~345 MB report). Card size badge turns red above this and orange
-    # at half-threshold so the user has a pre-load warning.
+    # Files above this on disk are likely to choke molstar (a ~345 MB
+    # volume at 1.55 Å/px stalls it). The row size badge turns red above
+    # this and orange at half-threshold as a pre-load warning.
     MOLSTAR_WARN_MB = 300
     # A pending load_volume that hasn't been reconciled by itemsChanged
     # within PENDING_ERROR_S is flipped to error; pruned PENDING_PRUNE_S
@@ -751,8 +744,8 @@ class TemplateWorkbench:
         elif event_type == "volumeStats":
             # Raw molstar-side stats + the inversion heuristic outcome.
             # Reveals when the heuristic mis-detects black-polarity
-            # templates (Slice B2 issue) or when the parser falls back
-            # to default {-1, 1, 0, 0.1} stats.
+            # templates or when the parser falls back to default
+            # {-1, 1, 0, 0.1} stats.
             iid = e.args.get("itemId", "?")
             stats = e.args.get("stats", {}) or {}
             inv = e.args.get("isInverted", False)
@@ -777,13 +770,11 @@ class TemplateWorkbench:
     def _hard_reset_viewer(self) -> None:
         """Nuclear reset: remount the iframe entirely.
 
-        Why: molstar's internal load queue can jam on a partially-loaded
-        large volume; soft `clear` then never gets processed. Remounting
-        the iframe is the Python-side equivalent of a page reload, but
-        without re-rendering the rest of the workbench.
-
-        How to apply: callable from a UI button. Clears all bridge state
-        so a fresh `ready` flushes against an empty queue."""
+        molstar's internal load queue can jam on a partially-loaded large
+        volume; a soft `clear` then never gets processed. Remounting the
+        iframe is the equivalent of a page reload without re-rendering the
+        rest of the workbench. Clears all bridge state so a fresh `ready`
+        flushes against an empty queue."""
         self.viewer_ready = False
         self.loaded_items = []
         self._pending_commands.clear()
@@ -839,10 +830,9 @@ class TemplateWorkbench:
                 logger.warning("slice viewer update_paths failed: %s", e)
 
     def _refresh_viewer(self) -> None:
-        """Called after register/select. In v3 we deliberately do NOT
-        auto-load selected entries — the user controls what's in the
-        viewer via the per-card eye icon. This method exists for legacy
-        callers and is now a no-op for molstar mode."""
+        """Called after register/select. Molstar mode does not auto-load
+        selected entries (the user controls what's in the viewer via the
+        per-row eye icon), so this only updates the slice fallback."""
         if self.viewer_mode == "slice" and self._slice_controller is not None:
             # Slice viewer is Python-side and cheap; reflect current
             # selection there for the fallback case.
@@ -880,8 +870,8 @@ class TemplateWorkbench:
         color_hex = f"#{color:06x}" if isinstance(color, int) else "#CCCCCC"
 
         with self._session_list_container:
-            # Flat hover-highlighted row, not a nested card: the per-item borders were
-            # most of the tray's gray-line noise (roadmap 08 S4).
+            # Flat hover-highlighted row, not a nested card: per-item borders add
+            # gray-line noise to the tray.
             container = ui.column().classes("w-full gap-0 px-1 rounded hover:bg-slate-100")
             with container:
                 with ui.row().classes("items-center gap-1 no-wrap w-full").style("height: 22px;"):
@@ -1142,7 +1132,7 @@ class TemplateWorkbench:
 
     def _render_row_actions(self, *, on_load_to_viewer, on_delete) -> None:
         """Eye (load to viewer) + delete X. `click.stop` so an action never selects the
-        row as a side effect — the X used to re-render the row mid-modal-open."""
+        row as a side effect."""
         with ui.element("div").classes("cb-tw-cell").style("justify-content: flex-end;"):
             eye = ui.button(icon="visibility").props("flat round dense size=xs color=grey")
             eye.tooltip("Load into viewer")
@@ -1154,7 +1144,7 @@ class TemplateWorkbench:
 
     def _format_stats_line(self, h) -> tuple[str, str] | None:
         """Return (label, color) for a min/max/σ chip line. None if the
-        header doesn't carry stats (file unreadable / pre-v3 file).
+        header doesn't carry stats (file unreadable / no stats in header).
 
         Color flags the normalization state:
           - std around 1 (post-normalize): gray, looks good.
@@ -1253,11 +1243,10 @@ class TemplateWorkbench:
         with ui.column().classes("gap-1 min-w-0 mt-3").style("width: 100%;"):
             _section("Source")
 
-            # `Segmented`, not `ui.tabs()`: Quasar's QTab renders 14 px UPPERCASE, which
-            # was larger and louder than the 10 px "SOURCE" header above it. Switching
-            # flips visibility, so a panel's typed values survive the switch — and the
-            # grid-stacked holder keeps the height of the tallest panel, so the viewer
-            # below no longer jumps on every tab flip.
+            # `Segmented`, not `ui.tabs()`: Quasar's QTab renders 14 px uppercase, louder
+            # than the section header above it. Switching flips visibility, so a panel's
+            # typed values survive the switch, and the grid-stacked holder keeps the
+            # height of the tallest panel, so the viewer below does not jump on a tab flip.
             switcher = render_segmented(_SOURCE_TABS, "shape", lambda k: _switch(k))
             holder = ui.element("div")
             panels: dict[str, ui.element] = {}
@@ -1373,11 +1362,10 @@ class TemplateWorkbench:
     # ── Edit Current — discrete action sections ──────────────────────
 
     def _render_edit_current_form(self) -> None:
-        """Chip row + all three tool sections render ALWAYS — with no selection they are
-        disabled behind one hint instead of collapsing to a single line. The panel is the
-        tallest in the source stack, so its height swing used to shove the viewer and
-        everything below it ~200 px on every selection change (roadmap 08 S5a). Absent is
-        stated, never folded away."""
+        """The chip row and all three tool sections always render; with no selection they
+        are disabled behind one hint instead of collapsing to a single line. The panel is
+        the tallest in the source stack, so collapsing it would shift the viewer and
+        everything below it ~200 px on every selection change."""
         sp = self._get_species()
         sel = sp.get_selected_template() if sp else None
 
@@ -1429,9 +1417,8 @@ class TemplateWorkbench:
     def _render_action_section(
         self, *, title: str, description: str, inputs_builder, on_click, button_label: str
     ) -> None:
-        """One tool: title, hint, inputs row, button. Separation between the three tools
-        is WHITESPACE + the TOOL-rank header — the tinted group boxes were one more gray
-        rectangle on a page already drowning in them (roadmap 08 S4)."""
+        """One tool: title, hint, inputs row, button. The three tools are separated by
+        whitespace and the TOOL-rank header, not by boxes."""
         with ui.column().classes("w-full gap-1 mt-2"):
             with ui.row().classes("w-full items-baseline gap-2"):
                 # `_TOOL_CLS`, not `_LABEL_CLS`: this names a tool that owns the inputs
@@ -1492,11 +1479,10 @@ class TemplateWorkbench:
                 self._render_mask_rows()
 
             # Same two-line header shape as the templates column. The derived-from line
-            # is a SOURCE statement; it used to be filed as the section's subtitle, which
-            # is why the masks column read as having no stated source at all.
+            # states where new masks come from, so it sits on the Source header.
             with ui.row().classes("w-full items-baseline gap-2 px-1 mt-3"):
                 ui.label("Source").style(PAGE_SECTION_STYLE)
-                # Dynamic state, not a hint: says WHICH template new masks derive from.
+                # Dynamic state, not a hint: says which template new masks derive from.
                 self._mask_source_label = ui.label("").classes(_HINT_CLS)
                 self._update_mask_source_label()
 
@@ -1565,9 +1551,8 @@ class TemplateWorkbench:
     def _mask_note(self, mask: TemplateMask) -> str | None:
         """A mask has no `imported_from` — that field belongs to `ParticleTemplate`. A
         mask's provenance is the template it was derived from (`derived_from_template_id`,
-        the soft link the v3 model kept for exactly this question); the *method* rides the
-        chip next to it. None when neither is recorded — the row then says only the path,
-        rather than implying a source it does not have."""
+        a soft link); the method rides the chip next to it. None when neither is recorded,
+        so the row shows only the path rather than implying a source it does not have."""
         if mask.derived_from_template_id:
             sp = self._get_species()
             tpl = sp.get_template_by_id(mask.derived_from_template_id) if sp else None
@@ -1664,8 +1649,8 @@ class TemplateWorkbench:
                 ui.label("Viewer").style(PAGE_SECTION_STYLE)
                 ui.element("div").classes("flex-1")
                 ui.label("mode").classes(_HINT_CLS)
-                # Chrome only (the viewer itself is untouched): this was the last 14 px
-                # Quasar field on the page, sitting beside a 10 px label.
+                # `.cb-field` chrome so the select matches the 10 px label beside it
+                # instead of rendering as a 14 px Quasar field.
                 toggle = (
                     ui.select(options={"molstar": "molstar (3D)", "slice": "slice (fallback)"}, value=self.viewer_mode)
                     .props('dense popup-content-class="cb-select-popup"')
@@ -1679,12 +1664,12 @@ class TemplateWorkbench:
                 .classes("w-full overflow-hidden")
                 .style("border: 1px solid #e5e7eb; box-shadow: none;")
             ):
-                # Grid-stacked (same doctrine as _stacked_panels): both panels share one
+                # Grid-stacked (same as _stacked_panels): both panels share one
                 # cell, the hidden one is visibility-hidden, so the card always holds the
                 # 380 px molstar height and molstar ↔ slice never moves the Activity log.
                 with ui.element("div").style("display: grid; width: 100%;"):
                     # gap-3, no tray border-r: whitespace separates the tray from the
-                    # viewer now (roadmap 08 S4).
+                    # viewer.
                     self._molstar_panel = ui.row().classes("w-full gap-3").style("height: 380px; grid-area: 1 / 1;")
                     with self._molstar_panel:
                         with ui.column().classes("w-44 p-2 bg-white h-full"):
@@ -1746,7 +1731,7 @@ class TemplateWorkbench:
 
     def _render_log_panel(self) -> None:
         # House section header + plain disclosure caret instead of Quasar's boxed
-        # ui.expansion — one less bordered widget on the page (roadmap 08 S4).
+        # ui.expansion — one less bordered widget on the page.
         state = {"open": False}
         with ui.row().classes("w-full items-center gap-1 px-1 cursor-pointer select-none") as header:
             caret = (

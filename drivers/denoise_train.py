@@ -37,9 +37,9 @@ def run_isonet_train(params, paths, job_dir, project_path, additional_binds):
     then tar the refined model dir to the OUTPUT_SCHEMA model slot (denoising_model.tar.gz; inner
     dir 'isonet_maps/' so the archive is self-identifying vs cryoCARE's 'denoising_model/').
 
-    Flag NAMES are from the IsoNet2 HEAD Fire signatures; the top-level command set matches the
+    Flag names are from the IsoNet2 HEAD Fire signatures; the top-level command set matches the
     installed sif. ISONET-ASSUMPTION markers flag conventions to confirm with a smoke run
-    (isonet.py <cmd> --help; a 1-2 TS prepare_star+refine). See ISONET_INTEGRATION_PLAN.md.
+    (isonet.py <cmd> --help; a 1-2 TS prepare_star+refine).
     """
     input_star = paths["input_star"]
 
@@ -136,8 +136,8 @@ def run_isonet_train(params, paths, job_dir, project_path, additional_binds):
     if params.isonet_method == IsoNetRefineMethod.AUTO:
         refine_method = IsoNetRefineMethod.ISONET2_N2N.value
 
-    # --epochs MUST be explicit: the container defaults to 50, which no walltime we request
-    # covers past a couple of tomograms. --ncpus MUST be explicit too -- it defaults to a flat
+    # --epochs must be explicit: the container defaults to 50, which no walltime we request
+    # covers past a couple of tomograms. --ncpus must be explicit too -- it defaults to a flat
     # 16 regardless of the allocation, so a 4-core job spawns 16 dataloader workers and thrashes
     # (torch itself warns "suggested max worker in current system is 8").
     refine = (
@@ -152,10 +152,9 @@ def run_isonet_train(params, paths, job_dir, project_path, additional_binds):
     if ncpus > 0:
         refine.opt("--ncpus", ncpus)
 
-    # Say up front whether the budget covers what we asked for, so an under-allocated run says
-    # so at minute 3 instead of at hour 3 (CLAUDE.md: surface the gap, don't fail silently).
-    # `n` is the REAL staged count, post tomograms_for_training — the deploy-time estimate had
-    # to guess it from the project's tilt-series count.
+    # Say up front whether the budget covers the requested training, so an under-allocated run
+    # says so at minute 3 instead of at hour 3. `n` is the actual staged count after
+    # tomograms_for_training; the deploy-time estimate only has the project's tilt-series count.
     need_min = params.isonet_work_minutes(n)
     have_min = int(derive_watchdog_timeout() / 60)
     print(
@@ -267,7 +266,7 @@ def validate_extracted_data(train_data_path: Path):
         if len(dataset) == 0:
             raise ValueError("Extracted dataset is empty!")
 
-        # Check calculated stats (this is what caused your IndexError previously)
+        # Check calculated normalization stats
         print(f"    -> Dataset Stats: Mean={dm.mean:.4f}, Std={dm.std:.4f}", flush=True)
 
         if np.isnan(dm.mean) or np.isnan(dm.std):
@@ -347,7 +346,7 @@ def main():
         if not col_name:
             raise ValueError("Could not find tomogram filename column in STAR file.")
 
-        # Prefer the explicit half-map columns the per-TS reconstruct now emits; fall back to
+        # Prefer the explicit half-map columns the per-TS reconstruct emits; fall back to
         # deriving reconstruction/{even,odd}/<name> for older projects that lack them.
         has_half_cols = (
             "rlnTomoReconstructedTomogramHalf1" in tomo_df.columns
@@ -385,7 +384,7 @@ def main():
         # CONFIGURATION & EXTRACTION
         # ==========================================
 
-        # --- FIX: Safe normalization logic ---
+        # --- Normalization sample count ---
         # 1. Total available patches
         total_extracted_patches = found_count * params.number_training_subvolumes
 
@@ -458,9 +457,8 @@ def main():
         model_output_dir = job_dir / "train_data" / "denoising_model"
 
         if model_output_dir.exists():
-            # We want to create the tarball in the job_dir (one level up from train_data)
-            # We use -C to change directory to train_data so the tarball structure starts at 'denoising_model'
-            # (not train_data/denoising_model)
+            # Run from train_data so the archive root is 'denoising_model' (not
+            # train_data/denoising_model); the tarball lands one level up, in job_dir.
             tar_cmd = "tar -czf ../denoising_model.tar.gz denoising_model"
             run_command(tar_cmd, cwd=job_dir / "train_data")
         else:
