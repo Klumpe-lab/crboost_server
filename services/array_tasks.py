@@ -221,7 +221,7 @@ def mark_stopped_tasks_failed(job_dir: Path) -> int:
     Control-plane writer: call only AFTER the owning array has been scancel'd.
     Nothing but that convention guarantees the task is dead and won't write its
     own marker (claim records that enforce this are a later phase of
-    docs/task-status-state-machine-roadmap.md).
+    docs/roadmaps/roadmap_task-status-state-machine.md).
     """
     items = manifest_items(job_dir)
     if not items:

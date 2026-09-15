@@ -517,7 +517,7 @@ def diagnose_stale_producer(path: Path) -> str:
     (e.g. alignment) ends up pointed at an empty stub dir (job003) instead of
     the real producer output (job004). Returns "" when nothing useful is found.
 
-    See docs/ORCHESTRATOR_ROADMAP.md.
+    See docs/reports/orchestrator/jobnum-off-by-one-hypotheses.md.
     """
     try:
         name = path.name
@@ -552,7 +552,7 @@ def diagnose_stale_producer(path: Path) -> str:
                 f"\n  ↳ LIKELY CAUSE: stale job-number mapping after an aborted+redeployed scheme run —"
                 f" the predicted External/jobNNN drifted behind RELION's actual assignment, so this job"
                 f" points at an empty stub ({job_dir.name}) instead of the real producer output."
-                f"\n     See docs/ORCHESTRATOR_ROADMAP.md (job-number off-by-one)."
+                f"\n     See docs/reports/orchestrator/jobnum-off-by-one-hypotheses.md (job-number off-by-one)."
             )
         return f"\n  ↳ A populated '{name}' exists elsewhere:\n        {listed}" + cause
     except Exception:

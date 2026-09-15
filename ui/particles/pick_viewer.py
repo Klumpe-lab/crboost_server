@@ -1215,7 +1215,7 @@ async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, r
 # per-list ACTIONS, and the Picks & curation tab owns those across every tomogram
 # (`ui/species/picks_tab.py` → `list_actions.merge_lists` / `open_dedup_dialog`). The
 # popup that preceded the inline merge bar died 2026-06-11; see W3 in
-# docs/ARTIAX_BRIDGE_PLAN.md.
+# docs/roadmaps/completed/roadmap_artiax-bridge.md.
 
 
 def _render_pick_layer(picks: list, color: str, dims: list | None, axis: str, layer_id: str, shape: str = "circle"):

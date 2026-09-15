@@ -297,7 +297,7 @@ def _section_environment(nv: dict[str, Any]) -> None:
         nv["crboost_python"],
         set_py,
         kind="tool",
-        note="Baked into config/qsub.sh at preflight — re-run preflight.py (or restart) to apply to new jobs.",
+        note="Informational: drivers run <crboost root>/venv/bin/python3 (the venv must work on compute nodes).",
     )
 
 

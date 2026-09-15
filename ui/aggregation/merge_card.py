@@ -114,7 +114,7 @@ class _MergeDialog:
     thing they describe is per-TAB — a second browser tab opening the dialog overwrote the
     first tab's element refs, so the first tab's "add a manual path" then rebuilt a selector
     that had already been destroyed, and expanding a registry row in one tab expanded it in
-    the other. Documented as a bug in docs/PICKS_FILTER_AGGREGATION_ROADMAP.md; this is the
+    the other. Documented as a bug in docs/roadmaps/completed/roadmap_picks-filter-aggregation.md; this is the
     fix, not a tidy-up.
 
     ``state`` is resolved from an explicit ``project_path`` at open. That is what lets the
@@ -311,7 +311,7 @@ class _MergeDialog:
 
     async def preflight_blockers(self) -> list[str]:
         """Selected sources of THIS project whose optimisation_set is BEHIND its pick list,
-        as lines to show before merging (docs/LIST_EXTRACTION_AND_AGGREGATION.md §8.9).
+        as lines to show before merging (docs/roadmaps/completed/roadmap_list-extraction-and-aggregation.md §8.9).
 
         A merge consumes each source's optimisation_set exactly as it stands on disk. When
         the list behind one has been re-picked or re-curated since it was cut, that source
@@ -433,7 +433,7 @@ class _MergeSelector:
 
     Discovery (cross-project scan) is async + cached. Per-tomogram curation is
     loaded lazily when a species node is expanded — reading every particles.star
-    up front would not scale (PICKS_FILTER_AGGREGATION_ROADMAP.md §scale)."""
+    up front would not scale (docs/roadmaps/completed/roadmap_picks-filter-aggregation.md §scale)."""
 
     def __init__(self, dlg: _MergeDialog, body: ui.element, on_change) -> None:
         self.dlg = dlg

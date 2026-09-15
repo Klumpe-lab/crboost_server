@@ -628,8 +628,8 @@ class CurationSessionService:
 
         QUARANTINED (roadmap 10-S1, relaxed by 13-S2). A session driven from outside
         cannot be trusted to mean what crboost thinks it means unless the scope on disk
-        moves with it (10-external-picker-contract.md §1). This channel therefore carries
-        exactly two things, both gated on `curation.rest_enabled`: launch-time health
+        moves with it (docs/roadmaps/picking_ui/roadmap_10-external-picker-contract.md §1).
+        This channel therefore carries exactly two things, both gated on `curation.rest_enabled`: launch-time health
         checks, and `switch_session_scope` — which records the new scope in the SAME
         call. Any further caller must do the same, or it reopens the bug class Model B
         closed; a caller that saves on the user's behalf is still out of bounds (that

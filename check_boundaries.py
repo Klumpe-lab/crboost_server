@@ -33,10 +33,7 @@ ROOT = Path(__file__).parent
 NO_UI_TREES = ("services", "drivers", "backend.py")
 
 # Pure re-export shims (module -> where to import from instead).
-BANNED_SHIM_MODULES = {
-    "ui.components.task_utils": "services.array_tasks",
-    "ui.dashboard.data": "services.dashboard_data",
-}
+BANNED_SHIM_MODULES: dict[str, str] = {}
 # Shimmed names inside modules that also hold live code ((module, name) -> replacement).
 BANNED_SHIM_NAMES = {
     ("ui.dashboard.pixel_sanity", "_apply_sanity_rules"): "services.pixel_chain.apply_sanity_rules",

@@ -16,7 +16,7 @@ in the "From species" section below.
 Those three rows are job parameters with a species-shaped default, so they sit in the
 SAME Parameters card as everything else — one `section_header` + `field_grid` in the
 house vocabulary, never a nested card with its own font scale (picking-UI roadmap 02;
-guideline of record in docs/roadmaps/picking_ui/00-overview.md). Each row's tooltip
+guideline of record in docs/roadmaps/completed/picking_ui/roadmap_00-overview.md). Each row's tooltip
 names the species value it defaulted from, because the driver reads the JOB's value:
 the species card can say I1 while the run is C1, and only this tooltip and the Species
 page's Jobs-tab drift chip will say so.

@@ -125,7 +125,7 @@ has settled.
 
 ## Replacing `relion_schemer`
 
-See `docs/scheduler-proposal.md`. Short version: the monitor is the
+See `docs/roadmaps/completed/roadmap_scheduler-proposal.md`. Short version: the monitor is the
 foundation of a homegrown scheduler. Once we replace
 `relion_schemer`-driven node advancement with an in-process loop, the
 "restart recovery" branch goes away — restart-safety becomes a property

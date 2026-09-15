@@ -27,7 +27,7 @@ class ErrorCode(StrEnum):
     else is text-only via ``err(message)``.
     """
 
-    # Stage-0 census (03-stage0-census.md): the repo has exactly ONE cause-branching
+    # Stage-0 census (docs/roadmaps/completed/roadmap_03-stage0-census.md): the repo has exactly ONE cause-branching
     # consumer today — tomo_dashboard_dialog's import-picks fallback dialog. Candidates
     # that did NOT earn a code: "No jobs selected." (nobody branches; prose is enough)
     # and curation "nothing open" (that's success with count=0, not an error).

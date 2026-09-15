@@ -1,15 +1,22 @@
 nicegui==3.0.3
 fastapi==0.118.0
 uvicorn==0.37.0
+pydantic==2.12.3
 pyyaml
+requests
 
 numpy
 pandas
 scipy
 biopython==1.86
 scikit-image==0.26.0
+Pillow==12.0.0
 matplotlib
 
 starfile==0.5.13
 mrcfile==1.5.4
 tifffile==2025.12.20
+
+# DL tilt filter (drivers/tilt_filter.py runs on the host venv, not in a container)
+torch==2.6.0
+torchvision==0.21.0

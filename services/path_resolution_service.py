@@ -294,7 +294,7 @@ class PathResolutionService:
         ``instance_id`` is recorded instead of a path. Returns deduplicated
         ``(producer_instance_id, consumer_instance_id)`` pairs, suitable for a SLURM
         ``--dependency=afterok`` topological submit (P1.A of the orchestrator
-        rework; see ORCHESTRATOR_REPLACEMENT_PLAN.md §6).
+        rework; see docs/roadmaps/roadmap_orchestrator-replacement.md §6).
 
         Producers with no SLURM job are excluded: a ``manual:`` file override
         (user-picked file, no producing job) and every synthetic producer

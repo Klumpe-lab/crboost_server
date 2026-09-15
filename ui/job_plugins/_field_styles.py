@@ -72,7 +72,7 @@ LABEL_PATH_STYLE = LABEL_STYLE  # path labels share the same column width now
 # creation (template / mask / symmetry / Ø / extraction geometry). They are still job
 # parameters — snapshot-at-creation, nothing auto-propagates — so they are weakly
 # separated inside the SAME Parameters card, never boxed in a nested card of their own.
-# See docs/roadmaps/picking_ui/00-overview.md.
+# See docs/roadmaps/completed/picking_ui/roadmap_00-overview.md.
 SPECIES_SECTION_TITLE = "From species — override for this run"
 
 
