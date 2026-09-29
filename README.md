@@ -124,8 +124,7 @@ tools:
 | `cistem` | template simulation (`simulate`), native binary | — |
 
 The ChimeraX/ArtiaX curation image (`chimerax_artiax_GL.def`) is configured separately under
-`curation.sif_path`. The legacy top-level `containers:` map is still read, but `tools:` is the format
-to use.
+`curation.sif_path`.
 
 </details>
 
