@@ -26,6 +26,9 @@ Responsibilities:
      any per-job failure invokes `stop_and_cleanup` (which clears
      `state.pipeline_active`).
 
+  4. On the same tick, settle any in-flight tilt-filter DL prediction run
+     (`reconcile_tilt_filter_predict`), with or without an active pipeline.
+
 All UI surfaces (landing page, workspace pipeline indicator, project hub
 dialog) read `state.pipeline_active` and `job_model.execution_status`
 in memory and do not reconcile. The per-tab `StatusPoller` is a thin
@@ -47,6 +50,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 TICK_INTERVAL_SEC = 3.0
+
+
+def _predict_in_flight(state) -> bool:
+    """Whether a tilt-filter DL prediction run of this project is queued or running."""
+    return any(getattr(jm, "predict_in_flight", False) for jm in state.jobs.values())
 
 
 class PipelineMonitor:
@@ -214,11 +222,23 @@ class PipelineMonitor:
 
         # Snapshot to avoid mutation-during-iteration when a new project
         # opens or closes mid-tick.
-        targets = [(path, state) for path, state in list(_project_states.items()) if state.pipeline_active]
+        targets = [
+            (path, state)
+            for path, state in list(_project_states.items())
+            if state.pipeline_active or _predict_in_flight(state)
+        ]
         if not targets:
             return
 
         for project_path, state in targets:
+            if _predict_in_flight(state):
+                try:
+                    await self._backend.pipeline_runner.reconcile_tilt_filter_predict(str(project_path))
+                except Exception:
+                    logger.exception("Monitor: tilt-filter prediction reconcile failed for %s", project_path)
+            if not state.pipeline_active:
+                continue
+
             # Afterok-orchestrator projects: reconcile from SLURM + sentinels and skip the
             # schemer-specific handling below (no schemer stderr, no default_pipeline.star, no
             # deferred re-deploy -- reconcile_afterok owns their status + pipeline_active).
