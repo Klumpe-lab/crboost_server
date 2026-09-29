@@ -12,7 +12,7 @@ From: ubuntu:22.04
 #
 # BUILD (fakeroot works on CBE via a root-mapped namespace):
 #   apptainer build --fakeroot chimerax_artiax_GL.sif chimerax_artiax_GL.def
-#   # point conf.yaml curation.sif_path (or CX_SIF) at the built _GL.sif
+#   # point conf.yaml curation.sif_path at the built _GL.sif
 #
 # RUN (the worker does this for you when CX_VGL is set):
 #   apptainer exec --nv ...binds... chimerax_artiax_GL.sif \

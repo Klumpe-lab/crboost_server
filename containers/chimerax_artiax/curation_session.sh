@@ -10,7 +10,8 @@
 # The session lives until ChimeraX quits; then the VNC server is torn down.
 #
 # Required env: CX_SIF (path to chimerax_artiax.sif).
-# Optional env: CX_BIN (chimerax|ChimeraX), CX_DISPLAY, CX_GEOMETRY,
+# Optional env: CX_BINDS (colon-separated host paths to bind besides /tmp and $HOME),
+#               CX_BIN (chimerax|ChimeraX), CX_DISPLAY, CX_GEOMETRY,
 #               CX_LOGIN_HOST, CB_SESSION_DIR, CX_VGL, CX_VNC_NOPASS (start the
 #               desktop with SecurityTypes None — NO password), CB_CXC (startup .cxc
 #               that preloads a tomogram + picks; see services/visualization/artiax_bridge.py).
@@ -103,7 +104,18 @@ else
   SAVE_DIR="$HOME"
 fi
 
-BINDS=(-B /tmp -B /groups -B /software -B /scratch -B "$HOME")
+# /tmp carries the node-wide X locks and $HOME the VNC password. Everything else the session
+# opens (the site's data/software roots, the project) arrives as CX_BINDS, colon-separated:
+# crboost passes conf.yaml's container_binds + the project. A path this node lacks is skipped.
+BINDS=(-B /tmp -B "$HOME")
+if [ -n "${CX_BINDS:-}" ]; then
+  IFS=: read -ra EXTRA_BINDS <<< "$CX_BINDS"
+  for p in "${EXTRA_BINDS[@]}"; do
+    if [ -n "$p" ] && [ -e "$p" ]; then
+      BINDS+=(-B "$p")
+    fi
+  done
+fi
 
 # apptainer may be module-provided on compute nodes; ignore if already on PATH.
 module load Apptainer 2>/dev/null || module load apptainer 2>/dev/null || true

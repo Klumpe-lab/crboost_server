@@ -157,9 +157,9 @@ class CurationConfig(BaseModel):
     """ChimeraX+ArtiaX remote manual-picking session (VNC over a SLURM job).
 
     The SIF location is intentionally NOT hardcoded — every cluster keeps its
-    containers somewhere different, so it is set here (or via the CX_SIF env var,
-    which takes precedence). login_host defaults to the server's own FQDN, i.e.
-    the headnode the user already SSHes into to reach the crboost UI.
+    containers somewhere different, so it is set here. login_host defaults to
+    the server's own FQDN, i.e. the headnode the user already SSHes into to
+    reach the crboost UI.
     """
 
     sif_path: str | None = None
