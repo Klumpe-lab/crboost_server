@@ -20,11 +20,7 @@ markers all live in ArrayDriver; this file is the fs_motion-specific hooks.
 """
 
 import shutil
-import sys
 from pathlib import Path
-
-server_dir = Path(__file__).parent.parent
-sys.path.insert(0, str(server_dir))
 
 from drivers.array_job_base import ArrayDriver, ArrayResults, read_manifest
 from drivers.driver_base import DriverContext, ToolCommand, add_gain_options, require_producer_input

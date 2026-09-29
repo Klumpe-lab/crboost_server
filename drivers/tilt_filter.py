@@ -11,9 +11,6 @@ import sys
 import traceback
 from pathlib import Path
 
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
-
 try:
     from drivers.driver_base import get_driver_context
     from services.jobs.tilt_filter import TiltFilterParams

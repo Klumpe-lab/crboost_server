@@ -44,13 +44,9 @@ markers all live in ArrayDriver; this file is the subtomo-specific hooks.
 
 import json
 import shutil
-import sys
 from pathlib import Path
 
 import pandas as pd
-
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
 
 from drivers.array_job_base import ArrayDriver, ArrayResults, load_excluded_ts, write_skip_status, STATUS_DIR_NAME
 from drivers.driver_base import DriverContext, ToolCommand

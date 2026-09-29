@@ -193,3 +193,19 @@ gone. cisTEM's `OMP_NUM_THREADS` rides on the command. The schemer passes its ow
 
 Deployed confs need, before running this code: `container_binds: [/groups, /scratch, /software,
 /programs]` (today's bind set at CBE) and `tools.cistem.bin_path: /groups/klumpe/software/cisTEM/bin`.
+
+**S2a (2026-09-29), code-complete, not run — interpreter and root (R1).** Drivers run `crboost_python`
+when set, else `sys.executable` of the running server; a non-executable interpreter raises, and both
+backend launchers (tilt-filter DL, pick-list extraction) build the command before touching job state or
+old output. `config_service.REPO_ROOT` from `__file__` replaces the cwd walk; `main.py` (static mount,
+CSS, backend root), the project qsub copy and `ui/components/svg_icon.py` (a fifth cwd-relative path —
+icons silently blank when started elsewhere) use it. `crboost_root`, `venv_path`/`venv_python` and the
+duplicate tilt-filter launch code are gone; preflight checks the driver interpreter, not `<repo>/venv`.
+Deviation: **PYTHONPATH lives in the driver command** (`spec.driver_launch_prefix`, built by the running
+server from its own root), not in qsub.sh — qsub.sh gets copied between checkouts and worktrees, so a
+path baked into it would run a worktree's jobs against the main checkout. qsub.template.sh's ENV PATHS
+block (`CRBOOST_SERVER_DIR`, the unused `CRBOOST_PYTHON`) is gone. `.env` is untracked and unread;
+delete it locally.
+
+**S2b (2026-09-29), code-complete, not run.** The seventeen per-driver `sys.path` inserts are gone;
+every launch goes through `driver_invocation`, whose command carries the one PYTHONPATH.
