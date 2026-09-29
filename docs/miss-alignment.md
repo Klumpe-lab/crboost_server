@@ -50,14 +50,14 @@ apptainer's `sh` — cosmetic, the container is fine.
 
 ## 3. Runtime / invocation contract
 
-crboost runs tools as `apptainer exec --nv --cleanenv --no-home` (see
+crboost runs tools as `apptainer exec --nv --cleanenv` (see
 `services/computing/container_service.py`). For miss-alignment specifically:
 
 - **`--nv`** — required (GPU).
 - **`--cleanenv`** wipes host env → any env the tool needs must be set *inside* the
-  inner command string or baked into the def `%environment`.
-- **`--no-home`** → set a **faux writable HOME** so torch/matplotlib/triton caches
-  have somewhere to go: `env HOME=<jobtmp> MPLCONFIGDIR=<jobtmp>/mpl`. (A plain
+  inner command string or baked into the def `%environment`. The wrapper already sets
+  the torch/matplotlib/triton cache dirs (`TORCHINDUCTOR_CACHE_DIR`, `MPLCONFIGDIR`,
+  `TRITON_CACHE_DIR`, …) to `${TMPDIR:-/tmp}/crboost-$USER` on the node. (A plain
   `import miss_alignment` is clean; matplotlib/fontconfig noise only appears when it
   *plots* — training thumbnails/tensorboard.)
 - **`OMP_NUM_THREADS=1 MKL_NUM_THREADS=1`** recommended (the tool sets torch threads

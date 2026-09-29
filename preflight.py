@@ -138,13 +138,19 @@ def check_config():
         is_container = tool.exec_mode == "container"
         path = tool.container_path if is_container else tool.bin_path
         if not path:
-            warn(f"tools.{name}: no {'container_path' if is_container else 'bin_path'} set; jobs using it will fail")
+            fail(f"tools.{name}: no {'container_path' if is_container else 'bin_path'} set; set it or delete the entry")
         elif is_container and not Path(path).is_file():
             fail(f"tools.{name}: container not found: {path}")
-        elif not is_container and not (Path(path).is_file() or shutil.which(path)):
-            fail(f"tools.{name}: binary not found: {path}")
+        elif not is_container and not Path(path).is_dir():
+            fail(f"tools.{name}: bin_path is not a directory (it goes first on PATH): {path}")
         else:
             ok(f"tools.{name}: {path}")
+
+    for bind in cfg.container_binds:
+        if Path(bind).exists():
+            ok(f"container_binds: {bind}")
+        else:
+            fail(f"container_binds: {bind} does not exist")
     return cfg
 
 
@@ -153,11 +159,14 @@ def check_slurm(cfg) -> None:
     for exe in ("sbatch", "squeue", "sacct", "sinfo"):
         if shutil.which(exe) is None:
             fail(f"{exe} not on PATH")
-    runtime = shutil.which("apptainer") or shutil.which("singularity")
-    if runtime is None:
-        fail("neither apptainer nor singularity on PATH (compute nodes need it too: load it in qsub.sh)")
-    else:
-        ok(f"container runtime: {runtime}")
+    if cfg is not None:
+        runtime = shutil.which(cfg.container_runtime)
+        if runtime is None:
+            fail(
+                f"container_runtime {cfg.container_runtime} not on PATH (compute nodes need it too: load it in qsub.sh)"
+            )
+        else:
+            ok(f"container runtime: {runtime}")
 
     if cfg is None or shutil.which("sinfo") is None:
         return

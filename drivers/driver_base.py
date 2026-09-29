@@ -29,6 +29,24 @@ except ImportError as e:
     sys.exit(1)
 
 
+def project_binds(state: ProjectState, project_path: Path) -> list[str]:
+    """Host paths every container call of this project's jobs needs: the project tree, the
+    raw-data directories its frames/ links point into, and the gain reference. conf.yaml's
+    `container_binds` (the site roots) are added by the wrapper."""
+    paths = [project_path]
+    for pattern in (state.movies_glob, state.mdocs_glob):
+        if pattern:
+            root = Path(pattern).parent
+            while any(c in str(root) for c in "*?["):
+                root = root.parent
+            paths.append(root)
+    if state.import_source_directory:
+        paths.append(Path(state.import_source_directory))
+    if state.acquisition.gain_reference_path:
+        paths.append(Path(state.acquisition.gain_reference_path).parent)
+    return [str(p.resolve()) for p in paths]
+
+
 def load_project_state(project_path: Path) -> ProjectState:
     """
     Loads the main project_params.json file using the ProjectState.load
@@ -128,7 +146,7 @@ def get_driver_context(expected_type: type[T] | None = None) -> tuple[ProjectSta
         "instance_id": instance_id,
         "job_type": job_type.value,
         "paths": local_paths,
-        "additional_binds": job_model.additional_binds,
+        "additional_binds": project_binds(project_state, project_path),
     }
 
     print(
