@@ -1,8 +1,8 @@
 # Roadmap 20 — Site portability: the Munich install review, one container wrapper, site values only in config
 
 **Status:** approved in full 2026-09-29 (maintainer: "long overdue cleanup and consolidation"). R6, S1,
-S2a–S2d code-complete and committed on `bindmounts_and_auth` 2026-09-29, none run yet; stage 0 facts owed.
-**Next session: start at S2e** — see the handoff below and the stage log at the end. Sources: the Munich collaborator's install review
+S2a–S2e code-complete and committed on `bindmounts_and_auth` 2026-09-29, none run yet; stage 0 facts owed.
+**Next session: start at S3** — see the handoff below and the stage log at the end. Sources: the Munich collaborator's install review
 (September 2026: everything ran, template generation included, after a handful of local patches) and a
 repo-wide audit of how paths and flags flow config → container → driver (2026-09-29).
 
@@ -17,12 +17,7 @@ attribution trailer, no names) and let them commit. Items touching the same file
 
 1. **S2c — one sbatch renderer (§1.5).** Done; see the stage log.
 2. **S2d — names (§1.6).** Done; see the stage log.
-3. **S2e — config hygiene (§1.3).** Empty code defaults for `SlurmDefaultsConfig.partition` (`"g"`),
-   `SupervisorSlurmConfig.partition`/`constraint` (`"g"`, `"g2|g3|g4"`) and `CurationConfig.partition`
-   (`"c"`); `SlurmConfig.from_config_defaults` (`slurm_service.py:73-80`) raises instead of falling back to
-   built-ins; unknown / misspelled conf keys become load warnings shown in the UI (the idiom is
-   `ProjectState.load_warnings`; the config needs its own list, surfaced on the landing status strip);
-   preflight names each missing key. Remove the now-unknown `crboost_root:` line from the local dev conf.
+3. **S2e — config hygiene (§1.3).** Done; see the stage log.
 4. **S3 — ChimeraX worker (§1.3) + container defs (§1.7).** `curation_session.sh:106` hard-codes
    `BINDS=(-B /tmp -B /groups -B /software -B /scratch -B "$HOME")`: have `services/curation/session_service.py`
    (the sbatch it writes around `:148`, which already exports `CX_SIF`) export the computed binds instead
@@ -35,11 +30,12 @@ attribution trailer, no names) and let them commit. Items touching the same file
 6. **S5** — the Munich re-install; the maintainer's step.
 
 **Owed by the maintainer (runtime):** stage-0 facts 1–2 (commands in the stage log; fact 3 is moot since
-S2c drops an empty `--constraint`); the S2c smoke check (below); §3 item 1 at
-CBE; before any deployed install pulls S1, its `conf.yaml` needs `container_runtime: apptainer`,
-`container_binds: [/groups, /scratch, /software, /programs]` and `tools.cistem.bin_path:
-/groups/klumpe/software/cisTEM/bin`, and before it pulls S2d, `tsreconstruct_supervisor_slurm:` renamed
-to `supervisor_slurm:` (the local dev conf already has all of it).
+S2c drops an empty `--constraint`); §3 item 1 at CBE. The shared install's `conf.yaml`
+(`/groups/klumpe/software/crboost_server`) needs, any time before it pulls this branch (its current code
+accepts them): `container_runtime: apptainer`, `container_binds: [/groups, /scratch, /software,
+/programs]`, and `supervisor_slurm:` in place of `tsreconstruct_supervisor_slurm:`; and at the pull
+itself: `tools.cistem.bin_path: /groups/klumpe/software/cisTEM/bin` (a directory now; its current code
+wants the `simulate` binary) and no `crboost_root:` line. The local dev conf already has all of it.
 
 **Working notes.** No Python in the assistant sandbox: the ceiling is `venv/bin/ruff check` + reading. Six
 ruff errors predate this work (`services/curation/session_service.py:285`, `services/jobs/fs_motion_ctf.py:54-63`),
@@ -266,8 +262,8 @@ failure in the afterok chain returns an error. Deviations, each deliberate:
   batch shell that writes the marker dies with the same signal; `reconcile_afterok` concludes FAILED from
   sacct or its absent-grace window, as for any SIGKILL or OOM death.
 
-Smoke check, on the headnode (renders into a temp dir, submits nothing): render a quoted, an empty-constraint
-and an array script with `write_sbatch_script` from the live `config/qsub.sh` and eyeball them.
+Render smoke check passed on the headnode 2026-09-29: a quoted, an empty-constraint and an array script
+rendered from the live `config/qsub.sh`.
 
 **S2d (2026-09-29), code-complete, not run.** Tool names are the conf keys: the five WarpTools jobs say
 `warp_aretomo`, ImportMovies and the schemer say `relion`. `get_tool_config` / `is_tool_configured` look up
@@ -278,3 +274,13 @@ handoff); protocol validation asks `is_tool_configured` for every stage's tool, 
 protocol with an import stage would have reported relion as unconfigured. Until S2e warns on unknown keys, a
 conf still saying `tsreconstruct_supervisor_slurm:` is silently ignored and the supervisor gets the code
 defaults (the local dev conf's values equal them; S2e empties them).
+
+**S2e (2026-09-29), code-complete, not run.** No site values in code defaults: `slurm_defaults.partition`,
+`supervisor_slurm.partition`/`constraint`, `curation.partition` and `SlurmConfig`'s own
+partition/constraint default to empty. Preflight fails on an unset `slurm_defaults.partition` or
+`supervisor_slurm.partition` by key name, and warns on an unset `curation.partition` when curation has a
+`sif_path`. `SlurmConfig.from_config_defaults` no longer falls back to built-ins; a config that does not
+load raises. `ConfigService.load_warnings` lists, per conf file, every key the models do not read (dotted
+path) and every `job_resource_profiles` entry named after no job type; the list is logged, printed by
+preflight, and shown on the landing status strip as an amber "config" dot with a popover, only when
+non-empty. The local dev conf lost `crboost_root:`.

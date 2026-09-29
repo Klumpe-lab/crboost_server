@@ -45,8 +45,8 @@ class SlurmConfig(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
     preset: SlurmPreset = Field(default=SlurmPreset.CUSTOM)
-    partition: str = "g"
-    constraint: str = "g2|g3|g4"
+    partition: str = ""
+    constraint: str = ""
     nodes: int = Field(default=1, ge=1)
     ntasks_per_node: int = Field(default=1, ge=1)
     cpus_per_task: int = Field(default=4, ge=1)
@@ -78,13 +78,7 @@ class SlurmConfig(BaseModel):
 
     @classmethod
     def from_config_defaults(cls) -> "SlurmConfig":
-        try:
-            config_service = get_config_service()
-            defaults = config_service.slurm_defaults
-            return cls(**defaults.model_dump())
-        except Exception as e:
-            logger.info("Could not load config defaults, using built-in: %s", e)
-            return cls()
+        return cls(**get_config_service().slurm_defaults.model_dump())
 
 
 QSUB_TEMPLATE = REPO_ROOT / "config" / "qsub.sh"
