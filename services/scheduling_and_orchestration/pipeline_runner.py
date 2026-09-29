@@ -776,7 +776,7 @@ class PipelineRunnerService:
             full_run_command = self.backend.container_service.wrap_command_for_tool(
                 command=run_command,
                 cwd=project_dir,
-                tool_name="relion_schemer",
+                tool_name="relion",
                 additional_binds=[*additional_bind_paths, *slurm_binds],
             )
 

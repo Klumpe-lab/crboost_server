@@ -97,7 +97,7 @@ class FsMotionCtfParams(AbstractJobParams):
         return True
 
     def get_tool_name(self) -> str:
-        return "warptools"
+        return "warp_aretomo"
 
     @property
     def m_range_min(self) -> int:

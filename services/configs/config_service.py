@@ -125,10 +125,6 @@ class JobResourceProfile(BaseModel):
     time: str | None = None
 
 
-# Backward compat alias
-TsReconstructSupervisorSlurmConfig = SupervisorSlurmConfig
-
-
 class LocalConfig(BaseModel):
     DefaultProjectBase: str | None = None
     DefaultMoviesGlob: str | None = None
@@ -202,14 +198,11 @@ class Config(BaseModel):
     crboost_python: str = ""
     local: LocalConfig = Field(default_factory=LocalConfig)
     slurm_defaults: SlurmDefaultsConfig = Field(default_factory=SlurmDefaultsConfig)
-    # Accepts both new key "supervisor_slurm" and legacy "tsreconstruct_supervisor_slurm"
     supervisor_slurm: SupervisorSlurmConfig = Field(default_factory=SupervisorSlurmConfig)
-    tsreconstruct_supervisor_slurm: SupervisorSlurmConfig | None = None
     job_resource_profiles: dict[str, JobResourceProfile] = Field(default_factory=dict)
     processing_defaults: ProcessingDefaultsConfig = Field(default_factory=ProcessingDefaultsConfig)
     curation: CurationConfig = Field(default_factory=CurationConfig)
     tools: dict[str, ToolConfig] = Field(default_factory=dict)
-    containers: dict[str, str] | None = None
     container_runtime: ContainerRuntime = ContainerRuntime.APPTAINER
     # Host directories bound into every container call, at the same path: the site's data
     # and software roots. The project tree, the raw-data directories and the gain reference
@@ -267,10 +260,6 @@ class ConfigService:
 
         data = _deep_merge(base_data, override) if override else dict(base_data)
 
-        # Migrate legacy key: tsreconstruct_supervisor_slurm → supervisor_slurm
-        if "tsreconstruct_supervisor_slurm" in data and "supervisor_slurm" not in data:
-            data["supervisor_slurm"] = data.pop("tsreconstruct_supervisor_slurm")
-
         self._effective_data: dict = data
         self._config = Config(**data)
 
@@ -308,11 +297,6 @@ class ConfigService:
         return self._config.supervisor_slurm
 
     @property
-    def tsreconstruct_supervisor_slurm_defaults(self) -> SupervisorSlurmConfig:
-        """Backward compat alias."""
-        return self.supervisor_slurm_defaults
-
-    @property
     def default_project_base(self) -> str | None:
         return self._config.local.DefaultProjectBase
 
@@ -327,36 +311,12 @@ class ConfigService:
     def get_tool_config(self, tool_name: str) -> ToolConfig:
         if tool_name in self._config.tools:
             return self._config.tools[tool_name]
-
-        legacy_mapping = {
-            "warptools": "warp_aretomo",
-            "aretomo": "warp_aretomo",
-            "relion_import": "relion",
-            "relion_schemer": "relion",
-        }
-        lookup_name = legacy_mapping.get(tool_name, tool_name)
-
-        if lookup_name in self._config.tools:
-            return self._config.tools[lookup_name]
-
-        if self._config.containers and lookup_name in self._config.containers:
-            return ToolConfig(exec_mode="container", container_path=self._config.containers[lookup_name])
-
-        raise LookupError(f"Tool '{tool_name}' is not configured: add tools.{lookup_name} to config/conf.yaml")
+        raise LookupError(f"Tool '{tool_name}' is not configured: add tools.{tool_name} to config/conf.yaml")
 
     def is_tool_configured(self, tool_name: str) -> bool:
-        """True when `tool_name` (or its legacy alias) has an entry under `tools:` /
-        `containers:` — i.e. when `get_tool_config` would not raise."""
-        legacy_mapping = {
-            "warptools": "warp_aretomo",
-            "aretomo": "warp_aretomo",
-            "relion_import": "relion",
-            "relion_schemer": "relion",
-        }
-        name = legacy_mapping.get(tool_name, tool_name)
-        if tool_name in self._config.tools or name in self._config.tools:
-            return True
-        return bool(self._config.containers and name in self._config.containers)
+        """True when `tool_name` has an entry under `tools:` — i.e. when `get_tool_config`
+        would not raise."""
+        return tool_name in self._config.tools
 
     # ── Per-user override management (settings UI) ────────────────────────
 

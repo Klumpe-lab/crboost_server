@@ -1,8 +1,8 @@
 # Roadmap 20 — Site portability: the Munich install review, one container wrapper, site values only in config
 
-**Status:** approved in full 2026-09-29 (maintainer: "long overdue cleanup and consolidation"). R6, S1, S2a,
-S2b code-complete and committed on `bindmounts_and_auth` 2026-09-29, none run yet; stage 0 facts owed.
-**Next session: start at S2c** — see the handoff below and the stage log at the end. Sources: the Munich collaborator's install review
+**Status:** approved in full 2026-09-29 (maintainer: "long overdue cleanup and consolidation"). R6, S1,
+S2a–S2d code-complete and committed on `bindmounts_and_auth` 2026-09-29, none run yet; stage 0 facts owed.
+**Next session: start at S2e** — see the handoff below and the stage log at the end. Sources: the Munich collaborator's install review
 (September 2026: everything ran, template generation included, after a handful of local patches) and a
 repo-wide audit of how paths and flags flow config → container → driver (2026-09-29).
 
@@ -15,27 +15,8 @@ self-test (stage 4).
 Each item is its own commit; hand the maintainer `git add`/`git commit` lines (one per line, no
 attribution trailer, no names) and let them commit. Items touching the same file go in separate turns.
 
-1. **S2c — one sbatch renderer (§1.5).** The four copies: `backend.submit_tilt_filter_dl` (`XXXextra1XXX`
-   at `backend.py:218`), `backend.extract_pick_list` (`backend.py:389`),
-   `drivers/array_job_base.build_array_sbatch_script` (`:473`, injects `#SBATCH --array`), and
-   `pipeline_orchestrator_service._render_supervisor_script` (`:509`, reads `qsub_extraN` from job.star
-   options). Put the function beside `SlurmConfig` in `services/computing/slurm_service.py`, not in
-   `config_service.py`, so S2c stays file-disjoint from S2d/S2e. Drop the `--constraint` line when the
-   constraint is empty (right whatever stage-0 fact 3 says); fix the quoting at the source — the live
-   confs carry `constraint: '''g2|g3|g4'''`, which is why every renderer does `.strip("'\"")`. Exit markers:
-   `config/qsub.sh` writes `RELION_JOB_EXIT_*`, and nine drivers touch them too (`grep -l RELION_JOB_EXIT_
-   drivers/`) — write them in one place. Keep the contract that `array_job_base` strips qsub.sh's marker
-   block verbatim from array child tasks (`preflight.MARKER_BLOCK`).
-2. **S2d — names (§1.6).** `get_tool_name` returns `"warptools"` in `services/jobs/{fs_motion_ctf,
-   ts_alignment,ts_reconstruct,ts_ctf,ts_import}.py` → `"warp_aretomo"`. Then delete both alias maps in
-   `config_service` (`get_tool_config`, `is_tool_configured`; the only alias caller left is
-   `pipeline_runner.py:779` `tool_name="relion_schemer"` → `"relion"`), the `containers:` fallback + field
-   (+ README "legacy `containers:` map" sentence), and `tsreconstruct_supervisor_slurm` (field, the
-   migration in `ConfigService.__init__`, the `TsReconstructSupervisorSlurmConfig` alias,
-   `tsreconstruct_supervisor_slurm_defaults`). The CBE confs (shared install and the local dev one) still say
-   `tsreconstruct_supervisor_slurm:` — have the maintainer rename it to `supervisor_slurm:` first; the
-   local dev conf may be edited in place. `services/templating/mrc_inspection.py`'s "warptools" is an
-   MRC-provenance label, not a tool key — leave it.
+1. **S2c — one sbatch renderer (§1.5).** Done; see the stage log.
+2. **S2d — names (§1.6).** Done; see the stage log.
 3. **S2e — config hygiene (§1.3).** Empty code defaults for `SlurmDefaultsConfig.partition` (`"g"`),
    `SupervisorSlurmConfig.partition`/`constraint` (`"g"`, `"g2|g3|g4"`) and `CurationConfig.partition`
    (`"c"`); `SlurmConfig.from_config_defaults` (`slurm_service.py:73-80`) raises instead of falling back to
@@ -53,16 +34,18 @@ attribution trailer, no names) and let them commit. Items touching the same file
    installs). Both tiers go through `get_container_service().wrap_command_for_tool`.
 6. **S5** — the Munich re-install; the maintainer's step.
 
-**Owed by the maintainer (runtime):** the three stage-0 facts (commands in the stage log); §3 item 1 at
+**Owed by the maintainer (runtime):** stage-0 facts 1–2 (commands in the stage log; fact 3 is moot since
+S2c drops an empty `--constraint`); the S2c smoke check (below); §3 item 1 at
 CBE; before any deployed install pulls S1, its `conf.yaml` needs `container_runtime: apptainer`,
 `container_binds: [/groups, /scratch, /software, /programs]` and `tools.cistem.bin_path:
-/groups/klumpe/software/cisTEM/bin` (the local dev conf already has them).
+/groups/klumpe/software/cisTEM/bin`, and before it pulls S2d, `tsreconstruct_supervisor_slurm:` renamed
+to `supervisor_slurm:` (the local dev conf already has all of it).
 
 **Working notes.** No Python in the assistant sandbox: the ceiling is `venv/bin/ruff check` + reading. Six
 ruff errors predate this work (`services/curation/session_service.py:285`, `services/jobs/fs_motion_ctf.py:54-63`),
 and several files carry older format drift — format only the lines you touch. Roadmap 06 is being built in
-a separate worktree on `dl_filter`; the tilt-filter launch in `backend.py` and the header of
-`drivers/tilt_filter.py` changed here, so expect a small conflict when the two merge. After this roadmap,
+a separate worktree on `dl_filter`; the tilt-filter launch in `backend.py` and the header and exit-marker
+lines of `drivers/tilt_filter.py` changed here, so expect a small conflict when the two merge. After this roadmap,
 roadmap 23 (per-user servers) is next; its "repo-relative paths from `__file__`" item is already done (S2a).
 
 ## The review, item by item (verbatim substance, paraphrased)
@@ -265,3 +248,33 @@ delete it locally.
 
 **S2b (2026-09-29), code-complete, not run.** The seventeen per-driver `sys.path` inserts are gone;
 every launch goes through `driver_invocation`, whose command carries the one PYTHONPATH.
+
+**S2c (2026-09-29), code-complete, not run.** `slurm_service.write_sbatch_script` renders every qsub.sh
+submission (tilt-filter DL, pick-list extraction, array tasks, afterok supervisors): logs `run.*` /
+`task_%a.*` beside the script; `--array` straight under the shebang (the old insert was anchored on the
+`--output` line, so a reworded one silently gave a non-array child that ran as another supervisor); the
+`--constraint` line dropped when empty; a qsub.sh without the exit-marker block refused. The block is one
+constant, `QSUB_EXIT_MARKERS`, which preflight imports. The rendered trailer is the only writer of
+`RELION_JOB_EXIT_*`: class3d, ts_import, reconstruct_particle, tilt_filter, denoise_train, miss_align and
+ArrayDriver only exit 0/1. The tilt-filter launch renders before it flips the job to RUNNING; a render
+failure in the afterok chain returns an error. Deviations, each deliberate:
+- **Constraint quotes are stripped by a `SlurmConfig` validator, not fixed in the conf alone.** Every
+  project file stores a quoted constraint (39× `'g2|g3|g4'`, 15× `'g4'`, 1× `'g2|g4'` in the 55 newest; the
+  last two typed into overrides), so dropping the renderers' strips would have broken every existing
+  project. The local dev conf now says `"g2|g3|g4"`; the shared install's triple quotes are harmless.
+- **A killed array supervisor writes no marker.** Its SIGTERM handler still scancels the array, but the
+  batch shell that writes the marker dies with the same signal; `reconcile_afterok` concludes FAILED from
+  sacct or its absent-grace window, as for any SIGKILL or OOM death.
+
+Smoke check, on the headnode (renders into a temp dir, submits nothing): render a quoted, an empty-constraint
+and an array script with `write_sbatch_script` from the live `config/qsub.sh` and eyeball them.
+
+**S2d (2026-09-29), code-complete, not run.** Tool names are the conf keys: the five WarpTools jobs say
+`warp_aretomo`, ImportMovies and the schemer say `relion`. `get_tool_config` / `is_tool_configured` look up
+`tools:` only; the alias maps, the `containers:` fallback and field, and every trace of
+`tsreconstruct_supervisor_slurm` (field, migration, class alias, property) are gone. The local dev conf's
+key is renamed. Deviation: **ImportMovies was a second alias caller** (`relion_import`, missed in the
+handoff); protocol validation asks `is_tool_configured` for every stage's tool, so without the rename every
+protocol with an import stage would have reported relion as unconfigured. Until S2e warns on unknown keys, a
+conf still saying `tsreconstruct_supervisor_slurm:` is silently ignored and the supervisor gets the code
+defaults (the local dev conf's values equal them; S2e empties them).
