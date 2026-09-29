@@ -1,16 +1,42 @@
 from __future__ import annotations
 import asyncio
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import ClassVar
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from services.jobs._base import AbstractJobParams
-from services.models_base import JobType, JobCategory
+from services.models_base import JobStatus, JobType, JobCategory
 from services.io_slots import InputSlot, OutputSlot, JobFileType
 from services.result import err, ok
 
 logger = logging.getLogger(__name__)
+
+
+class TiltFilterPredictRun(BaseModel):
+    """One DL prediction run: a one-off SLURM job in its own directory under
+    TiltFilter/dl_run/. It writes P(bad) per tilt into the registry and never the verdict,
+    so its status lives here, apart from the job's execution_status (which says whether a
+    verdict is committed). Settled by PipelineRunnerService.reconcile_tilt_filter_predict."""
+
+    job_dir: str
+    model: str
+    slurm_job_id: str | None = None
+    status: JobStatus = JobStatus.QUEUED
+    submitted_at: datetime = Field(default_factory=datetime.now)
+    error: str = ""
+
+
+def next_predict_run_dir(project_path: Path) -> Path:
+    """Create and return TiltFilter/dl_run/NNN for the next prediction run. One directory
+    per run keeps each run's log and exit markers its own."""
+    root = project_path / "TiltFilter" / "dl_run"
+    root.mkdir(parents=True, exist_ok=True)
+    taken = [int(p.name) for p in root.iterdir() if p.is_dir() and p.name.isdigit()]
+    run_dir = root / f"{max(taken, default=0) + 1:03d}"
+    run_dir.mkdir()
+    return run_dir
 
 
 class TiltFilterParams(AbstractJobParams):
@@ -47,6 +73,11 @@ class TiltFilterParams(AbstractJobParams):
     prob_threshold: float = Field(default=0.1, ge=0.0, le=1.0, description="Probability threshold for classification")
     prob_action: str = Field(default="assignToGood", description="Action for low-confidence predictions")
     tilt_labels: dict[str, str] = Field(default_factory=dict, description="Manual good/bad label overrides by tilt key")
+    predict_run: TiltFilterPredictRun | None = None
+
+    @property
+    def predict_in_flight(self) -> bool:
+        return self.predict_run is not None and self.predict_run.status in (JobStatus.QUEUED, JobStatus.RUNNING)
 
     def _get_job_specific_options(self) -> list[tuple[str, str]]:
         input_star = self.paths.get("input_star", "")

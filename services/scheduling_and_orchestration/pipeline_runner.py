@@ -36,6 +36,16 @@ def _afterok_state_to_status(slurm_state: str) -> JobStatus:
     return JobStatus.UNKNOWN
 
 
+def _driver_fatal_line(job_dir: Path) -> str:
+    """The driver's own FATAL line from the job's run.err, else a pointer to the log."""
+    log = job_dir / "run.err"
+    try:
+        lines = log.read_text(errors="replace").splitlines()
+    except OSError:
+        return f"failed; no log at {log}"
+    return next((line.strip() for line in reversed(lines) if "FATAL" in line), f"failed; see {log}")
+
+
 # A tracked afterok job that has left the queue with NO exit sentinel and NO sacct terminal row
 # is concluded FAILED after this many seconds absent, so pipeline_active always winds down even
 # when a SIGKILL/NODE_FAIL/scancel bypassed the qsub trailer AND sacct is unavailable. Kept well
@@ -80,6 +90,8 @@ class PipelineRunnerService:
         # Afterok reconciler: first-absent monotonic time per supervisor slurm_id, for the
         # grace window that concludes a marker-less vanished job FAILED (see reconcile_afterok).
         self._afterok_absent_since: dict[str, float] = {}
+        # The same grace window for tilt-filter prediction runs (reconcile_tilt_filter_predict).
+        self._predict_absent_since: dict[str, float] = {}
         # Retry monitors bypass the schemer but still count as pipeline activity —
         # tracked here so is_active() reports true and sync_all_jobs doesn't clear
         # pipeline_active out from under a running retry.
@@ -535,6 +547,71 @@ class PipelineRunnerService:
                 break
 
         return {k: v for k, v in changes.items() if not k.startswith("__")}
+
+    async def reconcile_tilt_filter_predict(self, project_path: str) -> bool:
+        """Settle the tilt filter's in-flight DL prediction run (`TiltFilterParams.predict_run`).
+
+        The run is a one-off SLURM job outside the chain, so neither reconciler above sees it,
+        and its status must not ride on the job's execution_status (that one says whether a
+        verdict is committed). Same order of authority as reconcile_afterok: the exit markers
+        in the run's directory, then squeue, then sacct, then the absent-grace window. Returns
+        True when a run changed; persists the change itself."""
+        proj = Path(project_path)
+        state = self.backend.state_service.state_for(proj)
+        runs = [jm.predict_run for jm in state.jobs.values() if getattr(jm, "predict_in_flight", False)]
+        if not runs:
+            return False
+
+        def settle(run, new: JobStatus, error: str = "") -> bool:
+            if new == run.status:
+                return False
+            events.info("Tilt filter DL run %s: %s -> %s", Path(run.job_dir).name, run.status.value, new.value)
+            run.status = new
+            run.error = error
+            return True
+
+        changed = False
+        pending = {}  # slurm_id -> run lacking an exit marker
+        for run in runs:
+            run_dir = Path(run.job_dir)
+            if (run_dir / "RELION_JOB_EXIT_SUCCESS").exists():
+                changed |= settle(run, JobStatus.SUCCEEDED)
+            elif (run_dir / "RELION_JOB_EXIT_FAILURE").exists():
+                changed |= settle(run, JobStatus.FAILED, await asyncio.to_thread(_driver_fatal_line, run_dir))
+            elif run.slurm_job_id:
+                pending[str(run.slurm_job_id)] = run
+            # No SLURM id yet: the submit is between persisting the run and sbatch returning.
+
+        if pending:
+            queued = await self.backend.slurm_service.query_jobs_by_ids(list(pending))
+            if queued is None:
+                logger.warning("reconcile_tilt_filter_predict[%s]: squeue unavailable this tick; holding", proj.name)
+            else:
+                absent = [sid for sid in pending if sid not in queued]
+                terminal = (await self.backend.slurm_service.query_terminal_states(absent) or {}) if absent else {}
+                now = time.monotonic()
+                for sid, run in pending.items():
+                    if sid in queued:
+                        self._predict_absent_since.pop(sid, None)
+                        new = _afterok_state_to_status(queued[sid][0])
+                        changed |= settle(run, JobStatus.QUEUED if new == JobStatus.UNKNOWN else new)
+                    elif sid in terminal:
+                        self._predict_absent_since.pop(sid, None)
+                        new = _afterok_state_to_status(terminal[sid][0])
+                        if new != JobStatus.UNKNOWN:
+                            error = f"SLURM ended the job: {terminal[sid][0]}" if new == JobStatus.FAILED else ""
+                            changed |= settle(run, new, error)
+                    elif now - self._predict_absent_since.setdefault(sid, now) >= _AFTEROK_ABSENT_GRACE_SEC:
+                        self._predict_absent_since.pop(sid, None)
+                        reason = "left the queue without an exit marker (killed, node failure or scancel)"
+                        changed |= settle(run, JobStatus.FAILED, reason)
+
+        if changed:
+            try:
+                await self.backend.state_service.save_project(project_path=proj, force=True)
+            except Exception:
+                logger.exception("reconcile_tilt_filter_predict[%s]: failed to persist", proj.name)
+        return changed
 
     def _extract_job_number(self, job_path: str) -> int:
         try:
