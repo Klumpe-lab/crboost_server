@@ -47,8 +47,8 @@ XXXcommandXXX
 EXIT_CODE=$?
 echo "--- SLURM JOB END (Exit Code: $EXIT_CODE) ---"
 
-# Keep this block byte-for-byte: drivers/array_job_base.py finds it verbatim and strips it from
-# array child tasks, so that only the supervisor writes the exit markers.
+# Keep this block byte-for-byte: crboost refuses a qsub.sh without it, and strips it from array
+# child tasks so that only the supervisor writes the exit markers.
 if [ $EXIT_CODE -eq 0 ]; then
     echo "Creating RELION_JOB_EXIT_SUCCESS"
     touch "./RELION_JOB_EXIT_SUCCESS"

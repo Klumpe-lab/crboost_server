@@ -8,8 +8,8 @@ from typing import ClassVar, Any
 from dataclasses import dataclass
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
-from services.configs.config_service import get_config_service
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from services.configs.config_service import REPO_ROOT, get_config_service
 from services.result import err, ok
 
 logger = logging.getLogger(__name__)
@@ -66,6 +66,13 @@ class SlurmConfig(BaseModel):
         "time": "qsub_extra8",
     }
 
+    @field_validator("constraint", mode="before")
+    @classmethod
+    def _unquote_constraint(cls, value: Any) -> Any:
+        # Confs, project files and typed overrides carry shell-quoted constraints ('g2|g3|g4');
+        # qsub.sh quotes the value itself.
+        return value.strip("'\" ") if isinstance(value, str) else value
+
     def to_qsub_extra_dict(self) -> dict[str, str]:
         return {self.QSUB_EXTRA_MAPPING[field]: str(getattr(self, field)) for field in self.QSUB_EXTRA_MAPPING}
 
@@ -78,6 +85,52 @@ class SlurmConfig(BaseModel):
         except Exception as e:
             logger.info("Could not load config defaults, using built-in: %s", e)
             return cls()
+
+
+QSUB_TEMPLATE = REPO_ROOT / "config" / "qsub.sh"
+
+# qsub.sh's exit-marker block, byte for byte as in config/qsub.template.sh. Array tasks get it
+# stripped: the first task to finish would otherwise mark the whole job done while the rest still run.
+QSUB_EXIT_MARKERS = (
+    "if [ $EXIT_CODE -eq 0 ]; then\n"
+    '    echo "Creating RELION_JOB_EXIT_SUCCESS"\n'
+    '    touch "./RELION_JOB_EXIT_SUCCESS"\n'
+    "else\n"
+    '    echo "Creating RELION_JOB_EXIT_FAILURE"\n'
+    '    touch "./RELION_JOB_EXIT_FAILURE"\n'
+    "fi"
+)
+
+
+def write_sbatch_script(script_path: Path, cfg: SlurmConfig, command: str, *, array: str | None = None) -> Path:
+    """Render config/qsub.sh to run `command` with `cfg`'s resources and write it, executable, to
+    `script_path`. The SLURM logs land beside it (run.out/.err; task_<index>.out/.err for an array), and
+    qsub.sh cd's into that directory before running `command`. `array` is the `--array` spec."""
+    script = QSUB_TEMPLATE.read_text()
+    if QSUB_EXIT_MARKERS not in script:
+        raise ValueError(f"{QSUB_TEMPLATE}: the exit-marker block differs from config/qsub.template.sh")
+    if array is not None:
+        # Straight under the shebang: sbatch stops reading #SBATCH lines at the first command.
+        shebang, body = script.split("\n", 1)
+        script = f"{shebang}\n#SBATCH --array={array}\n{body}"
+        script = script.replace(
+            QSUB_EXIT_MARKERS,
+            "# [array task] RELION markers suppressed — supervisor writes them after all tasks finish",
+        )
+    if not cfg.constraint:
+        lines = script.splitlines(keepends=True)
+        script = "".join(line for line in lines if not (line.startswith("#SBATCH") and "XXXextra2XXX" in line))
+
+    logs = script_path.parent / ("task_%a" if array is not None else "run")
+    # qsub_extraN fills XXXextraNXXX.
+    values = {f"XXX{key.removeprefix('qsub_')}XXX": value for key, value in cfg.to_qsub_extra_dict().items()}
+    values |= {"XXXoutfileXXX": f"{logs}.out", "XXXerrfileXXX": f"{logs}.err", "XXXcommandXXX": command}
+    for placeholder, value in values.items():
+        script = script.replace(placeholder, value)
+
+    script_path.write_text(script)
+    script_path.chmod(0o755)
+    return script_path
 
 
 @dataclass

@@ -148,15 +148,15 @@ apptainer build --fakeroot --nv warp_aretomo.sif   container_defs/warp_2.0.0dev3
 
 Every job CryoBoost queues is built from this one script (created from `config/qsub.template.sh`).
 Per-job resources come from the UI via RELION-style placeholders (`XXXextra1XXX` … `XXXextra8XXX` =
-partition, constraint, nodes, ntasks-per-node, cpus-per-task, gres, mem, time), so you only define
-the cluster environment once:
+partition, constraint, nodes, ntasks-per-node, cpus-per-task, gres, mem, time; an empty constraint
+drops the `--constraint` line), so you only define the cluster environment once:
 
 - **SLURM HEADER** — the module loads (or equivalent) that make the server's Python start on a
   compute node and put `apptainer` on PATH. Our Lmod lines are in the template as a commented example.
 - **Optional** — `#SBATCH --account` / `--qos` / `--exclude` lines your cluster needs.
 - **Leave untouched** — every `XXX...XXX` placeholder, the `RELION_JOB_EXIT_*` marker block (matched
-  verbatim by `drivers/array_job_base.py`), and the final `exit $EXIT_CODE` (job dependencies chain on
-  it). `preflight.py` checks all three.
+  verbatim; CryoBoost refuses to submit without it), and the final `exit $EXIT_CODE` (job dependencies
+  chain on it). `preflight.py` checks all three.
 
 If you already have a working RELION/Warp SLURM script, its module lines are the right starting point.
 

@@ -42,17 +42,6 @@ REQUIRED_MODULES = [
     "torchvision",
 ]
 
-# drivers/array_job_base.py finds this block verbatim in qsub.sh and strips it from array child tasks.
-MARKER_BLOCK = (
-    "if [ $EXIT_CODE -eq 0 ]; then\n"
-    '    echo "Creating RELION_JOB_EXIT_SUCCESS"\n'
-    '    touch "./RELION_JOB_EXIT_SUCCESS"\n'
-    "else\n"
-    '    echo "Creating RELION_JOB_EXIT_FAILURE"\n'
-    '    touch "./RELION_JOB_EXIT_FAILURE"\n'
-    "fi"
-)
-
 failures: list[str] = []
 
 
@@ -197,13 +186,18 @@ def check_slurm(cfg) -> None:
 
 def check_qsub() -> None:
     print("\nconfig/qsub.sh")
+    try:
+        from services.computing.slurm_service import QSUB_EXIT_MARKERS
+    except ImportError as e:  # a missing package; the imports check above already names it
+        fail(f"cannot check the exit-marker block: {e}")
+        return
     text = QSUB_FILE.read_text()
     before = len(failures)
     for placeholder in ("XXXcommandXXX", "XXXoutfileXXX", "XXXerrfileXXX", "XXXextra1XXX"):
         if placeholder not in text:
             fail(f"{placeholder} is gone; crboost fills it per job")
-    if MARKER_BLOCK not in text:
-        fail("exit-marker block differs from qsub.template.sh; array child tasks would write RELION_JOB_EXIT_*")
+    if QSUB_EXIT_MARKERS not in text:
+        fail("exit-marker block differs from qsub.template.sh; crboost refuses to submit jobs with it")
     if "exit $EXIT_CODE" not in text:
         fail("no `exit $EXIT_CODE`; failed jobs would exit 0 and their afterok dependents would still run")
     if len(failures) == before:

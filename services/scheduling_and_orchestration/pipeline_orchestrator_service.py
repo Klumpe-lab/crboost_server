@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 from datetime import datetime
 
-from services.computing.slurm_service import normalize_slurm_ids
+from services.computing.slurm_service import SlurmConfig, normalize_slurm_ids, write_sbatch_script
 from services.configs.config_service import get_config_service
 from services.configs.starfile_service import StarfileService
 from services.job_models import ImportMoviesParams
@@ -435,7 +435,11 @@ class PipelineOrchestratorService:
                 job_model.slurm_job_id = None
             else:
                 fn_exe = self._build_fn_exe(instance_id, job_type, job_model, project_dir, server_dir)
-                script_path = self._render_supervisor_script(job_dir, job_model, fn_exe, server_dir)
+                try:
+                    script_path = self._render_supervisor_script(job_dir, job_model, fn_exe)
+                except (OSError, ValueError) as e:
+                    logger.exception("sbatch script render failed for %s", instance_id)
+                    return err(f"Could not write the sbatch script for {instance_id}: {e}")
                 prepared[instance_id] = (job_dir, script_path)
 
         # Derive the dependency DAG, restrict to the SUBMITTED set, toposort (cycle-checked).
@@ -506,41 +510,18 @@ class PipelineOrchestratorService:
             submitted=submitted,
         )
 
-    def _render_supervisor_script(
-        self, job_dir: Path, job_model: AbstractJobParams, fn_exe: str, server_dir: Path
-    ) -> Path:
+    def _render_supervisor_script(self, job_dir: Path, job_model: AbstractJobParams, fn_exe: str) -> Path:
         """Render config/qsub.sh -> <job_dir>/run_submit.script for a direct (schemer-free)
         supervisor submit.
 
         Resources come from job_model._get_queue_options() -- the same per-job-type routing the
         schemer reads from job.star (array jobs -> lightweight supervisor_slurm_defaults; single
-        jobs -> get_effective_slurm_config). Unlike the array renderer, the RELION_JOB_EXIT marker
+        jobs -> get_effective_slurm_config). Unlike an array render, the RELION_JOB_EXIT marker
         block is kept: for a single supervisor job that marker is the completion signal.
         """
-        template = (server_dir / "config" / "qsub.sh").read_text()
         opts = dict(job_model._get_queue_options())  # qsub_extra1..8 already routed per job type
-
-        replacements = {
-            "XXXextra1XXX": opts.get("qsub_extra1", ""),  # partition
-            "XXXextra2XXX": opts.get("qsub_extra2", "").strip("'\""),  # constraint (template wraps it in quotes)
-            "XXXextra3XXX": opts.get("qsub_extra3", "1"),  # nodes
-            "XXXextra4XXX": opts.get("qsub_extra4", "1"),  # ntasks-per-node
-            "XXXextra5XXX": opts.get("qsub_extra5", "1"),  # cpus-per-task
-            "XXXextra6XXX": opts.get("qsub_extra6", ""),  # gres
-            "XXXextra7XXX": opts.get("qsub_extra7", ""),  # mem
-            "XXXextra8XXX": opts.get("qsub_extra8", ""),  # time
-            "XXXoutfileXXX": str(job_dir / "run.out"),
-            "XXXerrfileXXX": str(job_dir / "run.err"),
-            "XXXcommandXXX": fn_exe,
-        }
-        script = template
-        for placeholder, value in replacements.items():
-            script = script.replace(placeholder, value)
-
-        out_path = job_dir / "run_submit.script"
-        out_path.write_text(script)
-        out_path.chmod(0o755)
-        return out_path
+        cfg = SlurmConfig(**{field: opts[key] for field, key in SlurmConfig.QSUB_EXTRA_MAPPING.items()})
+        return write_sbatch_script(job_dir / "run_submit.script", cfg, fn_exe)
 
     def _write_job_star(
         self,
