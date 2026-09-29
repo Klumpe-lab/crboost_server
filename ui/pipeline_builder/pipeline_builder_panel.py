@@ -482,7 +482,7 @@ class PipelineBuilderPanel:
     def _restore_interactive_state(job_type: JobType, instance_id: str, state):
         """Restore persisted labels/state when re-creating an interactive job.
         Labels come from the registry's per-frame filter verdicts (the last
-        filter run stamped them)."""
+        commit stamped them)."""
         if job_type != JobType.TILT_FILTER:
             return
         job_model = state.jobs.get(instance_id)
@@ -493,23 +493,16 @@ class PipelineBuilderPanel:
         try:
             reg = get_registry_for(state.project_path)
         except Exception:
+            logger.exception("Tilt filter: registry unreadable; the re-added job starts without its committed labels")
             return
-        labels = {
-            f.id: ("bad" if f.is_filtered_out else "good")
-            for ts in reg.all_tilt_series()
-            for f in ts.frames
-            if f.is_filtered_out or f.filter_probability is not None
-        }
+        # The registry stamps ARE the committed output (the filter produces no files of
+        # its own; alignment applies the cut when it snapshots the tomostars), so a
+        # dropped tilt means the user committed and the restored job may claim SUCCEEDED.
+        # A commit that dropped nothing leaves no trace; that job starts over unapproved.
+        labels = {f.id: "bad" for ts in reg.all_tilt_series() for f in ts.frames if f.is_filtered_out}
         if labels:
             job_model.tilt_labels = labels
-            # The registry stamps ARE the committed output (the filter produces no
-            # files of its own; alignment applies the cut when it snapshots the
-            # tomostars). Frames carrying a verdict therefore mean the user has
-            # committed, so the restored job may claim SUCCEEDED. Probability-only
-            # stamps come from a DL pass the user never approved, so require at
-            # least one actual drop before calling it committed.
-            if any(f.is_filtered_out for ts in reg.all_tilt_series() for f in ts.frames):
-                job_model.execution_status = JobStatus.SUCCEEDED
+            job_model.execution_status = JobStatus.SUCCEEDED
 
     # ── Full rebuild ──────────────────────────────────────────────────────────
 

@@ -353,32 +353,38 @@ def alignment_registry_df(project_path: Path, instance_id: str, ts_name: str) ->
     )
 
 
-def _filter_ran_for_ts(ts) -> bool:
-    """Whether the tilt-filter stamped this TS. A run that left no per-frame
-    verdicts is indistinguishable from "never ran"; re-running the filter
-    brings the section back."""
-    return any(f.is_filtered_out or f.filter_probability is not None for f in ts.frames)
+def tilt_filter_committed(project_state) -> bool:
+    """Whether the project's tilt-filter job has committed a verdict (it is SUCCEEDED).
+    A committed filter that dropped nothing from a TS leaves no per-frame trace, so the
+    readers below need this to tell "all kept" from "never filtered"."""
+    found = find_job_by_type(project_state, JobType.TILT_FILTER)
+    return found is not None and found[1].execution_status == JobStatus.SUCCEEDED
 
 
-def filter_verdicts_from_registry(project_path: Path, ts_name: str) -> dict[str, str]:
-    """{frame_basename: "keep (p=0.92)" | "drop (p=0.12)"} from the registry's
-    per-frame verdicts, for per-tilt plot hovers. Empty when the filter never
-    stamped this TS."""
+def _verdict_covers(ts, committed: bool) -> bool:
+    """A verdict applies to this TS: the filter is committed, or the TS carries a drop."""
+    return committed or any(f.is_filtered_out for f in ts.frames)
+
+
+def filter_verdicts_from_registry(project_path: Path, ts_name: str, *, committed: bool) -> dict[str, str]:
+    """{frame_basename: "keep" | "drop (P(bad) 0.83)"} from the registry's per-frame
+    verdicts, for per-tilt plot hovers; the P(bad) suffix appears where the DL predicted
+    the tilt. Empty when no verdict covers this TS (see `tilt_filter_committed`)."""
     ts = registry_ts_for(project_path, ts_name)
-    if ts is None or not _filter_ran_for_ts(ts):
+    if ts is None or not _verdict_covers(ts, committed):
         return {}
     out: dict[str, str] = {}
     for f in ts.frames:
-        p = f" (p={f.filter_probability:.2f})" if f.filter_probability is not None else ""
+        p = f" (P(bad) {f.p_bad:.2f})" if f.p_bad is not None else ""
         out[f.raw_filename] = ("drop" if f.is_filtered_out else "keep") + p
     return out
 
 
-def filter_kept_dropped_from_registry(project_path: Path, ts_name: str) -> dict | None:
+def filter_kept_dropped_from_registry(project_path: Path, ts_name: str, *, committed: bool) -> dict | None:
     """Kept/dropped counts + the dropped tilts (index, angle, frame) from the
-    registry's filter verdicts. None when the filter never stamped this TS."""
+    registry's filter verdicts. None when no verdict covers this TS."""
     ts = registry_ts_for(project_path, ts_name)
-    if ts is None or not _filter_ran_for_ts(ts):
+    if ts is None or not _verdict_covers(ts, committed):
         return None
     dropped = [
         {"index": f.tilt_index, "tilt_angle": f.nominal_tilt_angle_deg, "frame": f.raw_filename}

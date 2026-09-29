@@ -133,19 +133,11 @@ def main():
                 f"TiltSeries registry is empty for project {project_path}. "
                 f"Reload the project in the UI to backfill the registry from mdocs, then restart this job."
             )
-        verdicts = zip(
-            df["cryoBoostKey"], (df["cryoBoostDlLabel"] != "good"), df["cryoBoostDlProbability"], strict=False
-        )
         stamped = 0
-        for stem, is_filt, prob in verdicts:
+        for stem, is_filt in zip(df["cryoBoostKey"], (df["cryoBoostDlLabel"] != "good"), strict=True):
             # An unknown stem means the registry and the star disagree on frame
             # identity — drift that must surface, not be skipped over.
-            registry.set_frame_filtered(
-                str(stem),
-                bool(is_filt),
-                reason="DL tilt-filter" if is_filt else None,
-                probability=float(prob) if prob is not None else None,
-            )
+            registry.set_frame_filtered(str(stem), bool(is_filt), reason="DL tilt-filter" if is_filt else None)
             stamped += 1
         registry.save()
         print(f"[DRIVER] Stamped tilt-filter verdict on {stamped} registry frames", flush=True)

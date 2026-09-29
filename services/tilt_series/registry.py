@@ -49,7 +49,10 @@ logger = logging.getLogger(__name__)
 #         average_intensity / masked_fraction / fov_fraction; TsCtfTiltSeriesOutput
 #         ctf_resolution / plane_normal. Older registries read fine (fields
 #         default to None) and are backfilled by `crboost_reingest.py`.
-REGISTRY_SCHEMA_VERSION = (1, 4)
+# (1, 5): additive Frame.p_bad (the DL classifier's P(bad), kept apart from the
+#         verdict). Frame.filter_probability is dropped on load: it held the winning
+#         class's probability (1.0 after a manual commit), not a P(bad).
+REGISTRY_SCHEMA_VERSION = (1, 5)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -193,24 +196,18 @@ class TiltSeriesRegistry:
         """The set of TS ids the user has excluded from processing."""
         return {ts.id for ts in self._tilt_series.values() if ts.is_excluded}
 
-    def set_frame_filtered(
-        self, frame_id: str, filtered: bool, *, reason: str | None = None, probability: float | None = None
-    ) -> None:
-        """Record the tilt-filter's per-frame verdict (forward-only; re-stamped on
-        every filter re-run). The functional cut is the trimmed tomostar the filter
-        writes — this keeps the registry authoritative. `probability` is the DL
-        classifier score for the tilt (stored when provided; an omitted value leaves
-        any prior score untouched). Mutates in memory + marks the parent TS dirty; the
-        caller persists via save()/save_async(). Raises KeyError if the frame is
-        unknown (caller decides whether that's fatal)."""
+    def set_frame_filtered(self, frame_id: str, filtered: bool, *, reason: str | None = None) -> None:
+        """Record the tilt-filter's per-frame verdict, which alignment applies when it
+        snapshots the tomostars. Re-stamped on every commit, in both directions. A DL
+        prediction (`Frame.p_bad`) is left as it is. Mutates in memory + marks the parent
+        TS dirty; the caller persists via save()/save_async(). Raises KeyError if the
+        frame is unknown (caller decides whether that's fatal)."""
         ts = self._frame_index.get(frame_id)
         if ts is None:
             raise KeyError(f"No frame with id {frame_id!r} in registry")
         frame = ts.frame_by_id(frame_id)
         frame.is_filtered_out = filtered
         frame.filter_reason = reason if filtered else None
-        if probability is not None:
-            frame.filter_probability = probability
         self._dirty_ts.add(ts.id)
 
     def filtered_out_frame_ids(self) -> set[str]:
