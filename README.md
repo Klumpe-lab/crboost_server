@@ -90,9 +90,14 @@ confine jobs to nodes with particular hardware.
 ### Tools
 
 Each external tool is either an Apptainer image (`exec_mode: "container"` + `container_path`) or a
-native executable (`exec_mode: "binary"` + `bin_path`):
+native executable (`exec_mode: "binary"` + `bin_path`, the directory holding it — crboost puts it first
+on `PATH`). A tool without an entry fails the job that needs it. Container calls bind `/tmp`, the
+project directory, the raw-data directories and the gain reference; list the other places your data
+and software live under `container_binds`:
 
 ```yaml
+container_runtime: apptainer        # or singularity
+container_binds: [/groups, /scratch]
 tools:
   warp_aretomo:
     exec_mode: "container"

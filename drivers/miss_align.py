@@ -203,13 +203,12 @@ def main():
         require_producer_input(input_star, "aligned_tilt_series.star")
 
         # The driver aligns the existing aligned tiltstack/*.st. prepare_stacks_apix > 0 would rebuild the
-        # stacks from raw frames, which needs tilt_movie_paths in each XML (crboost's thin XML has none)
-        # plus the frames + tomostar bound in-container (additional_binds does not carry them). Refuse up
-        # front rather than stage + train for hours and only then fail.
+        # stacks from raw frames, which needs tilt_movie_paths in each XML (crboost's thin XML has none).
+        # Refuse up front rather than stage + train for hours and only then fail.
         if params.prepare_stacks_apix > 0:
             raise RuntimeError(
                 f"prepare_stacks_apix={params.prepare_stacks_apix} is not supported yet — rebuilding tilt "
-                f"stacks from raw frames requires the frames + tomostar bound in-container. "
+                f"stacks from raw frames requires tilt_movie_paths in each tilt-series XML. "
                 f"Set prepare_stacks_apix=0 to align the existing tiltstack/*.st (the proven path)."
             )
 
@@ -259,16 +258,11 @@ def main():
         with open(job_dir / "config.yaml", "w") as f:
             yaml.safe_dump(config, f, sort_keys=False, default_flow_style=False)
 
-        # 4. Run `miss-alignment train`. --cleanenv wipes host env and --no-home means $HOME
-        #    is unset, so point HOME/MPLCONFIGDIR at a writable job-dir subdir (torch/matplotlib
-        #    caches).
-        jobtmp = job_dir / ".miss_align_home"
-        (jobtmp / "mpl").mkdir(parents=True, exist_ok=True)
-        # --cleanenv wipes USER/LOGNAME, and on this LDAP/SSSD cluster the bind-mounted static
-        # /etc/passwd can't resolve our uid → getpass.getuser() (torch.compile's inductor cache-dir
-        # setup) throws "getpwuid(): uid not found". Set USER/LOGNAME so that lookup short-circuits,
-        # and point TORCHINDUCTOR_CACHE_DIR at the job dir so torch skips default_cache_dir() entirely
-        # (and keeps its compile cache writable + isolated).
+        # 4. Run `miss-alignment train`. The container wrapper points the torch/matplotlib
+        #    caches at node-local scratch. --cleanenv wipes USER/LOGNAME, and when the
+        #    container's passwd cannot resolve our uid (an LDAP/SSSD cluster with a bind-mounted
+        #    static /etc/passwd), getpass.getuser() throws "getpwuid(): uid not found"; setting
+        #    USER/LOGNAME short-circuits that lookup.
         username = os.environ.get("USER") or getpass.getuser()
         # dataloaders-per-trainer == PyTorch DataLoader workers. At 1 the GPU starves waiting on the
         # CPU-side pool sampler (Lightning warns "num_workers ... may be a bottleneck") — the dominant
@@ -307,10 +301,7 @@ def main():
         recon_devices = "0" if n_gpus == 1 else ",".join(str(i) for i in range(1, n_gpus))
         print(f"[DRIVER] GPUs={n_gpus}: training-devices={training_devices} recon-devices={recon_devices}", flush=True)
         train_cmd = (
-            ToolCommand(
-                f"env HOME={jobtmp} MPLCONFIGDIR={jobtmp}/mpl USER={username} LOGNAME={username} "
-                f"TORCHINDUCTOR_CACHE_DIR={jobtmp}/torchinductor OMP_NUM_THREADS=1 MKL_NUM_THREADS=1"
-            )
+            ToolCommand(f"env USER={username} LOGNAME={username} OMP_NUM_THREADS=1 MKL_NUM_THREADS=1")
             .raw("miss-alignment train")
             .opt("--config-file", "config.yaml")
             .opt("--training-devices", training_devices)
@@ -319,8 +310,7 @@ def main():
             .opt("--dataloaders-per-trainer", n_dataloaders)
             .opt("--start-at-iteration", resume_from)
         )
-        # --prepare-stacks is not appended: prepare_stacks_apix > 0 is refused above because the
-        # raw-frame + tomostar binds are not wired.
+        # --prepare-stacks is not appended: prepare_stacks_apix > 0 is refused above.
         print(f"[DRIVER] Train command: {train_cmd}", flush=True)
         run_tool(train_cmd, tool_name=params.get_tool_name(), cwd=job_dir, binds=additional_binds)
 

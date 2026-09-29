@@ -178,10 +178,19 @@ curation:
 species_catalog_root: ""
 
 
+# Container runtime on the headnode and the compute nodes: apptainer or singularity.
+container_runtime: apptainer
+
+# Host directories bound into every container call, at the same path: where your data and
+# software live (e.g. [/groups, /scratch]). The project directory, the raw-data directories
+# and the gain reference are bound per job on top of these; /tmp is always bound.
+container_binds: []
+
 # Tool execution configuration
 # exec_mode: 'container' or 'binary'
 # container_path: path to .sif file (required if exec_mode is container)
-# bin_path: path to executable or wrapper (required if exec_mode is binary)
+# bin_path: directory holding the tool's executables, put first on PATH (required if exec_mode is binary)
+# A tool with no entry here fails the job that needs it; nothing falls back to a guessed binary.
 tools:
   warp_aretomo:
     exec_mode: "container"
@@ -211,11 +220,11 @@ tools:
   cistem:
     exec_mode: "binary"
     container_path: ""
-    bin_path: "/path/to/cisTEM/bin/simulate"   # something like /groups/<name_of_group>/software/cisTEM/bin/simulate
+    bin_path: "/path/to/cisTEM/bin"   # the directory holding `simulate`, e.g. /groups/<name_of_group>/software/cisTEM/bin
   pymol:
     exec_mode: "container"
     container_path: "/path/to/pymol.sif"
-    bin_path: "pymol"
+    bin_path: ""
   # warpem miss-alignment: learned tilt-series alignment refinement (Warp-native).
   miss_alignment:
     exec_mode: "container"

@@ -6,6 +6,7 @@ from pathlib import Path
 import textwrap
 from typing import Any
 from services.computing.container_service import get_container_service
+from services.configs.config_service import get_config_service
 from services.result import err, ok
 from services.templating.template_service import normalize_white_and_negate_to_black
 
@@ -52,10 +53,9 @@ class PDBService:
         script_file.write_text(script_content)
 
         cmd = f"python3 {script_file.name}"
-        binds = [str(output_dir)] + (additional_binds or [])
-        binds = list(set(str(Path(b).resolve()) for b in binds if Path(b).exists()))
-
-        result = await self.backend.run_shell_command(cmd, cwd=output_dir, tool_name="pymol", additional_binds=binds)
+        result = await self.backend.run_shell_command(
+            cmd, cwd=output_dir, tool_name="pymol", additional_binds=additional_binds or []
+        )
 
         # Only delete on success; keep the script for debugging otherwise
         if result.get("success") and script_file.exists():
@@ -233,8 +233,7 @@ except Exception as e:
         """Simulate density map from PDB using CISTEM."""
         try:
             # Ensure cistem is configured (binary or container)
-            cistem_config = self.container_service.config.get_tool_config("cistem")
-            if not cistem_config:
+            if not get_config_service().is_tool_configured("cistem"):
                 return err("Tool 'cistem' not configured in conf.yaml")
 
             pdb_path = str(Path(pdb_path).resolve())
@@ -329,7 +328,6 @@ except Exception as e:
         Supports both container and binary modes via ContainerService.
         """
 
-        import os
         import asyncio
         import textwrap
         from pathlib import Path
@@ -411,12 +409,10 @@ except Exception as e:
         logger.info("✓ Structure prepared: %s (%s bytes)", struct_file.name, f"{struct_file.stat().st_size:,}")
 
         # === RUN CISTEM ===
-        # 1. Resolve Tool Path and Mode
-        tool_config = self.container_service.config.get_tool_config("cistem")
-        if tool_config.exec_mode == "container":
-            inner_cmd = "simulate"  # Binary inside container
-        else:
-            inner_cmd = tool_config.bin_path  # Absolute path to binary on host
+        # 1. Resolve Tool Path and Mode. The wrapper puts `simulate` on PATH in both modes;
+        # OMP_NUM_THREADS rides on the command because --cleanenv drops the caller's env.
+        tool_config = get_config_service().get_tool_config("cistem")
+        inner_cmd = f"OMP_NUM_THREADS={num_threads} simulate"
 
         logger.info(
             "Step 2/3: cisTEM Density Simulation: mode=%s, cmd=%s, input=%s, output=%s, box=%s, apix=%s, threads=%s",
@@ -458,18 +454,13 @@ except Exception as e:
                 additional_binds=[str(output_folder)],
             )
 
-            # 3. Environment setup (cisTEM needs OMP_NUM_THREADS)
-            env = os.environ.copy()
-            env["OMP_NUM_THREADS"] = str(num_threads)
-
-            # 4. Execute without blocking the event loop
+            # 3. Execute without blocking the event loop
             process = await asyncio.create_subprocess_shell(
                 full_command,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(output_folder),
-                env=env,
             )
 
             try:

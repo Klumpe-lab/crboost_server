@@ -433,5 +433,4 @@ class TemplateMatchPytomDriver(ArrayDriver):
 
 
 if __name__ == "__main__":
-    os.environ["TQDM_DISABLE"] = "1"
     TemplateMatchPytomDriver().main()

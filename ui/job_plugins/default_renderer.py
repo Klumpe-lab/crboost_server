@@ -32,7 +32,6 @@ BASE_FIELDS: set[str] = {
     "relion_job_name",
     "relion_job_number",
     "paths",
-    "additional_binds",
     "slurm_overrides",
     "source_overrides",
     "is_orphaned",

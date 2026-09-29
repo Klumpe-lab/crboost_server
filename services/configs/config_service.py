@@ -15,6 +15,7 @@ import copy
 import logging
 import shutil
 import yaml
+from enum import StrEnum
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import Any, Literal
@@ -152,11 +153,19 @@ class LocalConfig(BaseModel):
 
 
 class ToolConfig(BaseModel):
-    """Configuration for a specific external tool"""
+    """Configuration for a specific external tool.
+
+    `container_path` is the image a container tool runs in; `bin_path` is the directory
+    holding a binary tool's executables, put first on PATH for its calls."""
 
     exec_mode: Literal["container", "binary"] = "container"
     container_path: str | None = None
     bin_path: str | None = None
+
+
+class ContainerRuntime(StrEnum):
+    APPTAINER = "apptainer"
+    SINGULARITY = "singularity"
 
 
 class ProcessingDefaultsConfig(BaseModel):
@@ -217,6 +226,11 @@ class Config(BaseModel):
     curation: CurationConfig = Field(default_factory=CurationConfig)
     tools: dict[str, ToolConfig] = Field(default_factory=dict)
     containers: dict[str, str] | None = None
+    container_runtime: ContainerRuntime = ContainerRuntime.APPTAINER
+    # Host directories bound into every container call, at the same path: the site's data
+    # and software roots. The project tree, the raw-data directories and the gain reference
+    # are bound per job on top of these.
+    container_binds: list[str] = Field(default_factory=list)
     # Lab-level species catalog root. Cross-project species definitions live here — name,
     # diameter, symmetry, notes, templates + masks with their provenance; picks, filters,
     # merges and extractions stay project-bound. Empty or absent = the feature is off: no
@@ -360,13 +374,11 @@ class ConfigService:
         if self._config.containers and lookup_name in self._config.containers:
             return ToolConfig(exec_mode="container", container_path=self._config.containers[lookup_name])
 
-        return ToolConfig(exec_mode="binary", bin_path=tool_name)
+        raise LookupError(f"Tool '{tool_name}' is not configured: add tools.{lookup_name} to config/conf.yaml")
 
     def is_tool_configured(self, tool_name: str) -> bool:
         """True when `tool_name` (or its legacy alias) has an entry under `tools:` /
-        `containers:`. `get_tool_config`'s last fallback — a bare-binary guess named after
-        the tool — is not counted: a protocol pinning a tool must find it configured, not
-        assumed."""
+        `containers:` — i.e. when `get_tool_config` would not raise."""
         legacy_mapping = {
             "warptools": "warp_aretomo",
             "aretomo": "warp_aretomo",
@@ -377,12 +389,6 @@ class ConfigService:
         if tool_name in self._config.tools or name in self._config.tools:
             return True
         return bool(self._config.containers and name in self._config.containers)
-
-    def get_tool_path(self, tool_name: str) -> str | None:
-        config = self.get_tool_config(tool_name)
-        if config.exec_mode == "container":
-            return config.container_path
-        return config.bin_path
 
     # ── Per-user override management (settings UI) ────────────────────────
 

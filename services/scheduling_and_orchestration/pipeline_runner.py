@@ -762,12 +762,22 @@ class PipelineRunnerService:
             self._stderr_log_paths[resolved] = stderr_log
 
             scheme_control_dir = f"Schemes/{scheme_name}/"
+            # The schemer submits its jobs with sbatch from inside the container: it needs the
+            # host's SLURM client, munge socket and user database, and the names of the eight
+            # extra qsub fields that config/qsub.sh's XXXextraNXXX placeholders take.
+            qsub_fields = ("Partition", "Constraint", "Nodes", "Tasks", "CPUs", "GRES", "Memory", "Walltime")
+            qsub_env = "".join(f"export RELION_QSUB_EXTRA{i}='{name}'; " for i, name in enumerate(qsub_fields, start=1))
             run_command = (
+                f"export RELION_QSUB_EXTRA_COUNT={len(qsub_fields)}; {qsub_env}"
                 f"unset DISPLAY && relion_schemer --scheme {scheme_name} "
                 f"--run --pipeline_control {scheme_control_dir} --verb 2"
             )
+            slurm_binds = ["/usr/bin", "/usr/lib64/slurm", "/run/munge", "/etc/passwd", "/etc/group"]
             full_run_command = self.backend.container_service.wrap_command_for_tool(
-                command=run_command, cwd=project_dir, tool_name="relion_schemer", additional_binds=additional_bind_paths
+                command=run_command,
+                cwd=project_dir,
+                tool_name="relion_schemer",
+                additional_binds=[*additional_bind_paths, *slurm_binds],
             )
 
             logger.info("Starting schemer, logging to %s", scheme_log_dir)

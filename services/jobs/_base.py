@@ -108,9 +108,8 @@ class AbstractJobParams(BaseModel):
     is_orphaned: bool = Field(default=False)
     missing_inputs: list[str] = Field(default_factory=list)
 
-    # We store the resolved paths and binds here to persist them in project_params.json
+    # We store the resolved paths here to persist them in project_params.json
     paths: dict[str, str] = Field(default_factory=dict)
-    additional_binds: list[str] = Field(default_factory=list)
     slurm_overrides: dict[str, Any] = Field(default_factory=dict)
 
     # User overrides for input slot sources
