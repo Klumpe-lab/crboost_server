@@ -1,11 +1,14 @@
 from __future__ import annotations
 import asyncio
 import logging
+import statistics
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import ClassVar
 from pydantic import BaseModel, Field
 
+from services.configs.config_service import TiltFilterModelConfig, get_config_service
 from services.jobs._base import AbstractJobParams
 from services.models_base import JobStatus, JobType, JobCategory
 from services.io_slots import InputSlot, OutputSlot, JobFileType
@@ -46,7 +49,7 @@ class TiltFilterParams(AbstractJobParams):
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
     IS_INTERACTIVE: ClassVar[bool] = True
 
-    USER_PARAMS: ClassVar[set[str]] = {"model_name", "image_size", "dl_batch_size", "prob_threshold", "prob_action"}
+    USER_PARAMS: ClassVar[set[str]] = {"model", "threshold", "dl_batch_size"}
 
     # The DL reads the motion-corrected averages via the fs-motion star; that is this
     # job's only input. The verdict is a per-frame `is_filtered_out` stamp in the
@@ -67,11 +70,16 @@ class TiltFilterParams(AbstractJobParams):
 
     OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = []
 
-    model_name: str = Field(default="default", description="DL model name for tilt quality classification")
-    image_size: int = Field(default=384, ge=128, le=1024, description="Target image size for DL inference")
+    # Older project files carry `model_name` / `prob_threshold` / `prob_action` / `image_size`;
+    # they are ignored on load. `prob_threshold` was a cut on the winning class's probability,
+    # so `threshold` must never take its value.
+    model: str | None = Field(
+        default=None, description="Tilt classifier: a key of conf.yaml's tilt_filter.models; None runs the default"
+    )
+    threshold: float = Field(
+        default=0.5, ge=0.0, le=1.0, description="A tilt with P(bad) at or above this is predicted bad"
+    )
     dl_batch_size: int = Field(default=32, ge=1, le=256, description="Batch size for DL inference")
-    prob_threshold: float = Field(default=0.1, ge=0.0, le=1.0, description="Probability threshold for classification")
-    prob_action: str = Field(default="assignToGood", description="Action for low-confidence predictions")
     tilt_labels: dict[str, str] = Field(default_factory=dict, description="Manual good/bad label overrides by tilt key")
     predict_run: TiltFilterPredictRun | None = None
 
@@ -99,6 +107,45 @@ class TiltFilterParams(AbstractJobParams):
     @staticmethod
     def get_input_requirements() -> dict[str, str]:
         return {"ctf": "tsCtf"}
+
+
+# ── the classifier: registry lookup and liveness (shared by the submit, the driver and the panel) ──
+
+
+def resolve_model(key: str | None) -> tuple[str, TiltFilterModelConfig]:
+    """The conf.yaml registry entry a prediction run uses: `key`, or `default_model` when the
+    job never picked one. Raises ValueError saying what is missing: no models configured, no
+    default, an unknown key, or a weights file that is not on disk."""
+    registry = get_config_service().tilt_filter
+    if not registry.models:
+        raise ValueError("No tilt classifier is configured (tilt_filter.models in conf.yaml).")
+    name = key or registry.default_model
+    if not name:
+        raise ValueError("No model chosen, and conf.yaml sets no tilt_filter.default_model.")
+    entry = registry.models.get(name)
+    if entry is None:
+        raise ValueError(f"Model '{name}' is not in conf.yaml's tilt_filter.models ({', '.join(registry.models)}).")
+    if not Path(entry.path).is_file():
+        raise ValueError(f"Model '{name}': weights file not found at {entry.path}.")
+    return name, entry
+
+
+# A series whose P(bad) spread stays below this has predictions that do not depend on the image.
+LIVENESS_MIN_STD = 0.05
+
+
+def prediction_liveness(p_bad_by_series: Mapping[str, Sequence[float]]) -> tuple[bool, float] | None:
+    """Whether a run's predictions carry information, and their mean P(bad).
+
+    Dead means every series with 2+ predictions has a P(bad) spread below LIVENESS_MIN_STD:
+    the network answers the same whatever the image. One clean series under a live model can
+    have a narrow spread, so a single varying series is enough to count as live. None when no
+    series has 2 predictions to compare."""
+    spreads = [statistics.pstdev(v) for v in p_bad_by_series.values() if len(v) >= 2]
+    if not spreads:
+        return None
+    mean = statistics.fmean(p for v in p_bad_by_series.values() for p in v)
+    return any(s >= LIVENESS_MIN_STD for s in spreads), mean
 
 
 # ── commit-time verdict (shared by the DL and manual-label paths) ──

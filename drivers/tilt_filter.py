@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-SLURM driver for tilt series filtering (DL pass).
+SLURM driver for one DL prediction run of the tilt filter.
 
-Runs on a GPU compute node. Converts MRC tilt images to PNG,
-runs the DL classifier, writes labeled + filtered star files.
+Runs on a GPU node in the run's own directory (TiltFilter/dl_run/NNN). Classifies every
+tilt listed in the fs-motion star and writes P(bad) per tilt into the TiltSeries registry.
+It writes no verdict (Frame.is_filtered_out) and does not save project_params.json: the
+server settles the run from this directory's exit markers.
 """
 
 import os
@@ -16,11 +18,127 @@ sys.path.insert(0, str(project_root))
 
 try:
     from drivers.driver_base import get_driver_context
-    from services.jobs.tilt_filter import TiltFilterParams
+    from services.jobs.tilt_filter import LIVENESS_MIN_STD, TiltFilterParams, prediction_liveness, resolve_model
 except ImportError as e:
     print("FATAL: Could not import services. Check PYTHONPATH.", file=sys.stderr)
     print(f"Error: {e}", file=sys.stderr)
     sys.exit(1)
+
+
+def _named(keys: list[str]) -> str:
+    return ", ".join(keys[:5]) + (f" (+{len(keys) - 5} more)" if len(keys) > 5 else "")
+
+
+def _is_model_input(png: Path, size: int) -> bool:
+    """True when `png` is an 8-bit grayscale size x size image, usable by the model as it is."""
+    from PIL import Image
+
+    try:
+        with Image.open(png) as img:
+            return img.mode == "L" and img.size == (size, size)
+    except OSError:  # missing or not an image: the tilt is converted from its MRC instead
+        return False
+
+
+def predict(state, job_model: TiltFilterParams, job_dir: Path, project_path: Path) -> None:
+    from filterTilts.deepLearning.model_loader import ModelLoader
+    from filterTilts.image_processor import ImageProcessor
+    from services.tilt_series import get_registry_for
+    from services.tilt_series_service import get_tilt_image_paths, load_tilt_series
+
+    run = job_model.predict_run
+    if run is None:
+        raise RuntimeError("project_params.json records no prediction run for this job")
+    model_key, entry = resolve_model(run.model)
+    workers = len(os.sched_getaffinity(0))
+
+    # The model first, so a missing weights file or GPU fails the run before any conversion.
+    loader = ModelLoader(entry.path, entry.arch, entry.normalisation, gpu=0, num_workers=workers)
+    loader.load_model()
+    size = loader.input_size
+    print(
+        f"[DRIVER] Model {model_key}: {entry.arch}, '{entry.normalisation}' normalisation, {entry.path}, "
+        f"on {loader.device_name}",
+        flush=True,
+    )
+
+    star_rel = job_model.paths.get("input_star", "")
+    if not star_rel:
+        raise RuntimeError("No input star file resolved")
+    input_star = Path(star_rel) if Path(star_rel).is_absolute() else project_path / star_rel
+    if not input_star.exists():
+        raise RuntimeError(f"Input star file does not exist: {input_star}")
+    ts_data = load_tilt_series(str(input_star), str(project_path))
+    df = ts_data.all_tilts_df
+    if df.empty:
+        raise RuntimeError(f"{input_star} lists no tilts")
+    tilt_keys = [str(k) for k in df["cryoBoostKey"]]
+    print(f"[DRIVER] {len(df)} tilts in {ts_data.num_tomograms} tilt series from {input_star}", flush=True)
+
+    # The gallery thumbnails are the model's input byte for byte (ImageProcessor at the
+    # network's size, named after the MRC). A tilt without a usable one is converted from its
+    # MRC into this run's directory.
+    png_dir = Path(state.tilt_filter_png_dir or project_path / "TiltFilter" / "png")
+    mrc_paths = get_tilt_image_paths(ts_data, project_path)
+    inputs = [png_dir / f"{Path(m).stem}.png" for m in mrc_paths]
+    todo = [i for i, png in enumerate(inputs) if not _is_model_input(png, size)]
+    if todo:
+        conv_dir = job_dir / "png"
+        print(
+            f"[DRIVER] {len(todo)} of {len(inputs)} tilts have no usable PNG in {png_dir}; "
+            f"converting them into {conv_dir}",
+            flush=True,
+        )
+        processor = ImageProcessor(target_size=size, max_workers=workers)
+        processor.batch_convert([mrc_paths[i] for i in todo], len(todo), str(conv_dir), show_progress=False)
+        # batch_convert skips a tilt it cannot read without saying which, so the files decide.
+        for i in todo:
+            inputs[i] = conv_dir / inputs[i].name
+        failed = [tilt_keys[i] for i in todo if not _is_model_input(inputs[i], size)]
+        if failed:
+            raise RuntimeError(
+                f"{len(failed)} tilts could not be made into a {size}x{size} model input: {_named(failed)}"
+            )
+    else:
+        print(f"[DRIVER] Model inputs: the gallery PNGs in {png_dir}", flush=True)
+
+    p_bad = loader.predict_p_bad([str(p) for p in inputs], job_model.dl_batch_size)
+
+    registry = get_registry_for(project_path)
+    if not registry.tilt_series_ids():
+        raise RuntimeError(
+            f"The TiltSeries registry of {project_path} is empty. Reload the project in the UI to backfill it "
+            "from the mdocs, then run DL again."
+        )
+    unknown = []
+    for key, p in zip(tilt_keys, p_bad, strict=True):
+        try:
+            registry.set_frame_prediction(key, p)
+        except KeyError:
+            unknown.append(key)
+    if unknown:
+        # Nothing is saved: a partial set of predictions would read as a complete run.
+        raise RuntimeError(f"{len(unknown)} tilts are not in the TiltSeries registry: {_named(unknown)}")
+    registry.save()
+    print(
+        f"[DRIVER] Wrote P(bad) for {len(p_bad)} tilts to the registry (min {min(p_bad):.3f}, max {max(p_bad):.3f})",
+        flush=True,
+    )
+
+    by_series: dict[str, list[float]] = {}
+    for ts_name, p in zip(df["rlnTomoName"], p_bad, strict=True):
+        by_series.setdefault(str(ts_name), []).append(p)
+    liveness = prediction_liveness(by_series)
+    if liveness is None:
+        print("[DRIVER] Liveness not assessed: no tilt series has two predictions", flush=True)
+    elif liveness[0]:
+        print(f"[DRIVER] Liveness: P(bad) varies within tilt series (mean {liveness[1]:.3f})", flush=True)
+    else:
+        print(
+            f"[DRIVER] WARNING: the model gives every tilt P(bad) ~ {liveness[1]:.3f} (spread below "
+            f"{LIVENESS_MIN_STD} in every tilt series); its verdicts are meaningless",
+            flush=True,
+        )
 
 
 def main():
@@ -28,9 +146,7 @@ def main():
     print("--- SLURM JOB START (tilt_filter) ---", flush=True)
 
     try:
-        _project_state, job_model, _context_data, job_dir, project_path, _job_type = get_driver_context(
-            TiltFilterParams
-        )
+        state, job_model, _context_data, job_dir, project_path, _job_type = get_driver_context(TiltFilterParams)
     except Exception as e:
         print(f"[DRIVER] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr)
         sys.exit(1)
@@ -38,119 +154,17 @@ def main():
     print(f"Node: {os.uname().nodename}", flush=True)
     print(f"CWD: {job_dir}", flush=True)
 
-    success_file = job_dir / "RELION_JOB_EXIT_SUCCESS"
-    failure_file = job_dir / "RELION_JOB_EXIT_FAILURE"
-
-    input_star = job_model.paths.get("input_star", "")
-    if not input_star:
-        print("[DRIVER] ERROR: No input star file resolved", file=sys.stderr, flush=True)
-        failure_file.touch()
-        sys.exit(1)
-
-    input_star_abs = Path(input_star)
-    if not input_star_abs.is_absolute():
-        input_star_abs = project_path / input_star
-
-    if not input_star_abs.exists():
-        print(f"[DRIVER] ERROR: Input star file does not exist: {input_star_abs}", file=sys.stderr, flush=True)
-        failure_file.touch()
-        sys.exit(1)
-
     try:
-        from services.tilt_series_service import (
-            load_tilt_series,
-            get_tilt_image_paths,
-            apply_labels,
-            filter_good_tilts,
-            write_tilt_series,
-        )
-        from filterTilts.image_processor import ImageProcessor
-        from filterTilts.deepLearning.model_loader import ModelLoader
-        from filterTilts.deepLearning.statistics_calculator import PredictionThresholder
-
-        output_dir = job_dir / "filtered"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        png_dir = output_dir / "png"
-
-        # Step 1: Load tilt series
-        print(f"[DRIVER] Loading tilt series from {input_star_abs}", flush=True)
-        ts_data = load_tilt_series(str(input_star_abs), str(project_path))
-        mrc_paths = get_tilt_image_paths(ts_data, project_path)
-        print(f"[DRIVER] Loaded {ts_data.num_tilts} tilts from {ts_data.num_tomograms} tilt series", flush=True)
-
-        # Step 2: Convert MRC to PNG
-        print("[DRIVER] Converting MRC images to PNG...", flush=True)
-        processor = ImageProcessor(target_size=job_model.image_size, max_workers=min(16, max(1, len(mrc_paths))))
-        pil_images = processor.batch_convert(mrc_paths, len(mrc_paths), str(png_dir), show_progress=True)
-        print(f"[DRIVER] Converted {len(pil_images)} images", flush=True)
-
-        # Step 3: Run DL inference
-        print(f"[DRIVER] Running DL inference with model: {job_model.model_name}", flush=True)
-        model_loader = ModelLoader(job_model.model_name, gpu=0)
-        model_loader.load_model()
-        pred_labels, pred_probs = model_loader.predict_batch(pil_images, job_model.dl_batch_size)
-        print(f"[DRIVER] Inference complete: {len(pred_labels)} predictions", flush=True)
-
-        # Step 4: Apply threshold
-        thresholder = PredictionThresholder(prob_threshold=job_model.prob_threshold, prob_action=job_model.prob_action)
-        pred_labels, pred_probs = thresholder.apply_threshold(pred_labels, pred_probs)
-
-        # Step 5: Apply predictions to tilt data
-        ts_data.all_tilts_df["cryoBoostDlLabel"] = pred_labels
-        ts_data.all_tilts_df["cryoBoostDlProbability"] = pred_probs
-
-        # Step 6: Apply any existing manual overrides
-        if job_model.tilt_labels:
-            apply_labels(ts_data, job_model.tilt_labels)
-
-        # Step 7: Write output files
-        labeled_path = output_dir / "tiltseries_labeled.star"
-        write_tilt_series(ts_data, labeled_path, "tilt_series_labeled")
-        print(f"[DRIVER] Wrote labeled star: {labeled_path}", flush=True)
-
-        good_data = filter_good_tilts(ts_data)
-        filtered_path = output_dir / "tiltseries_filtered.star"
-        write_tilt_series(good_data, filtered_path, "tilt_series_filtered")
-        print(f"[DRIVER] Wrote filtered star: {filtered_path} ({good_data.num_tilts} good tilts)", flush=True)
-
-        df = ts_data.all_tilts_df
-
-        # Step 8: record the per-tilt verdict in the registry. This is the functional
-        # cut -- alignment reads these flags when it snapshots the tomostar dir, so
-        # this job writes no tomostar of its own (that would couple it to tsImport having
-        # run first, which an interactive job cannot guarantee). The labeled/filtered
-        # stars above are for the dashboard's keep/drop panel. Frame.id is the
-        # raw-movie stem == cryoBoostKey, so we can stamp by key.
-        #
-        # Fail loud: the registry is the single source of truth for downstream reads,
-        # so a missed verdict stamp is stale-data corruption, not a cosmetic miss. A
-        # stamp failure fails the job; a re-run is cheap.
-        from services.tilt_series import get_registry_for
-
-        registry = get_registry_for(project_path)
-        if not registry.tilt_series_ids():
-            raise RuntimeError(
-                f"TiltSeries registry is empty for project {project_path}. "
-                f"Reload the project in the UI to backfill the registry from mdocs, then restart this job."
-            )
-        stamped = 0
-        for stem, is_filt in zip(df["cryoBoostKey"], (df["cryoBoostDlLabel"] != "good"), strict=True):
-            # An unknown stem means the registry and the star disagree on frame
-            # identity — drift that must surface, not be skipped over.
-            registry.set_frame_filtered(str(stem), bool(is_filt), reason="DL tilt-filter" if is_filt else None)
-            stamped += 1
-        registry.save()
-        print(f"[DRIVER] Stamped tilt-filter verdict on {stamped} registry frames", flush=True)
-
-        success_file.touch()
-        print("--- SLURM JOB END (Exit Code: 0) ---", flush=True)
-
+        predict(state, job_model, job_dir, project_path)
     except Exception as e:
         print(f"[DRIVER] FATAL: {e}", file=sys.stderr, flush=True)
         traceback.print_exc(file=sys.stderr)
-        failure_file.touch()
+        (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
         print("--- SLURM JOB END (Exit Code: 1) ---", file=sys.stderr, flush=True)
         sys.exit(1)
+
+    (job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
+    print("--- SLURM JOB END (Exit Code: 0) ---", flush=True)
 
 
 if __name__ == "__main__":

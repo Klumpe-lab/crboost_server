@@ -33,6 +33,7 @@ from pathlib import Path
 import pandas as pd
 from nicegui import app, ui
 
+from services.configs.config_service import get_config_service
 from services.configs.user_prefs_service import get_prefs_service
 from services.dashboard_data import (
     alignment_registry_df,
@@ -1826,12 +1827,10 @@ def _render_tilt_filter_section(ts_name: str, project_state, project_path: Path,
     status_label = ""
     if jm is not None:
         status_label = getattr(jm.execution_status, "value", str(jm.execution_status))
+        default_model = get_config_service().tilt_filter.default_model
         param_rows = [
-            ("model", jm.model_name),
-            ("image size", str(jm.image_size)),
-            ("batch size", str(jm.dl_batch_size)),
-            ("probability threshold", f"{jm.prob_threshold:g}"),
-            ("action", jm.prob_action),
+            ("model", jm.model or f"{default_model or 'none configured'} (default)"),
+            ("threshold on P(bad)", f"{jm.threshold:g}"),
         ]
 
     with ui.element("div").classes("cb-section-card w-full") as card:

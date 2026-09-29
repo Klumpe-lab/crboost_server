@@ -6,7 +6,10 @@ To add models, define architectures as classes inheriting from nn.Module, and ad
 
 class SmallSimpleCNN(nn.Module):
     """CNN architecture for binary classification (good/bad tilts)."""
-    
+
+    # fc1 expects a 6x6 map after six 2x max-pools, so the network takes 384x384 only.
+    input_size = 384
+
     def __init__(self):
         super().__init__()
         self.conv1 = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1)

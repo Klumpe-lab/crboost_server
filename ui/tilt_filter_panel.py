@@ -18,6 +18,7 @@ from pathlib import Path
 from nicegui import ui
 
 from backend import get_backend
+from services.configs.config_service import get_config_service
 from services.models_base import JobStatus
 from services.tilt_series.build import parse_position
 from services.project_state import get_state_service
@@ -25,7 +26,7 @@ from ui.components.buttons import house_button
 from ui.components.fields import house_number, house_select
 from ui.components.reactive import SingleFlight
 from ui.current_project import current_project_state
-from services.jobs.tilt_filter import finalize_pipeline_output
+from services.jobs.tilt_filter import finalize_pipeline_output, resolve_model
 from services.tilt_series_service import (
     apply_labels,
     filter_good_tilts,
@@ -49,6 +50,7 @@ CLR_BORDER = "#e2e8f0"
 CLR_ACCENT = "#2563eb"
 CLR_SUCCESS = "#0d9488"
 CLR_ERROR = "#be4343"
+CLR_WARN = "#d97706"
 CLR_POS_BG = "#f1f5f9"
 CARD = (
     f"background: white; border-radius: 6px; border: 1px solid {CLR_BORDER}; box-shadow: 0 1px 2px rgba(15,23,42,0.04);"
@@ -189,7 +191,9 @@ def render_tilt_filter_job_panel(job_type, instance_id, job_model, backend, ui_m
                     _build_gallery(source_star, project_path, png_dir, gallery_c, stats_c, job_model=job_model)
 
             # ── DL config (collapsed) ──
-            _render_dl_config(job_model, backend, project_path, instance_id, on_predictions=_reload_gallery)
+            _render_dl_config(
+                job_model, backend, project_path, instance_id, save_handler, on_predictions=_reload_gallery
+            )
 
             # ── Stats + Gallery ──
             stats_c = ui.element("div").classes("w-full")
@@ -212,11 +216,12 @@ def _render_waiting():
         )
 
 
-def _render_dl_config(job_model, backend, project_path, instance_id, on_predictions) -> None:
-    """The DL section: model settings, Run DL, and the latest prediction run's status.
+def _render_dl_config(job_model, backend, project_path, instance_id, save_handler, on_predictions) -> None:
+    """The DL section: model and threshold, Run DL, and the latest prediction run's status.
     The run is a SLURM job that the server monitor settles; this view only observes
     `job_model.predict_run`, so closing the tab changes nothing. `on_predictions` runs
     when a run this view saw in flight lands."""
+    models = get_config_service().tilt_filter
     with (
         ui.expansion("Deep Learning Auto-Filter", icon="smart_toy")
         .props("dense")
@@ -225,23 +230,34 @@ def _render_dl_config(job_model, backend, project_path, instance_id, on_predicti
     ):
         with ui.column().classes("w-full gap-2 px-2 pb-2"):
             with ui.row().classes("gap-3 flex-wrap items-center"):
-                model_sel = house_select(
-                    "Model", ["default", "binary", "oneclass"], value=job_model.model_name, width="w-32"
-                )
-                thresh_inp = house_number(
+                chosen = job_model.model or models.default_model
+                options = list(models.models)
+                if chosen and chosen not in options:
+                    options.append(chosen)  # gone from conf.yaml: still shown, and the marker says so
+
+                def _pick(e) -> None:
+                    job_model.model = e.value
+                    save_handler()
+                    _check_model()
+
+                model_sel = house_select("Model", options, value=chosen, width="w-40", on_change=_pick)
+                with ui.icon("error", size="14px").style(f"color: {CLR_ERROR};") as model_marker:
+                    marker_tip = ui.tooltip("")
+                house_number(
                     "Threshold",
-                    value=job_model.prob_threshold,
+                    model=job_model,
+                    attr="threshold",
                     min=0.0,
                     max=1.0,
                     step=0.05,
                     format="%.2f",
                     width="w-20",
+                    hint="A tilt with P(bad) at or above this is predicted bad.",
+                    on_change=lambda _e: save_handler(),
                 )
-                action_sel = house_select(
-                    "Low-conf. action",
-                    {"assignToGood": "Keep", "assignToBad": "Remove"},
-                    value=job_model.prob_action,
-                    width="w-28",
+                ui.label("uncalibrated").style(f"{FONT} font-size: 8px; color: {CLR_WARN};").tooltip(
+                    "Not calibrated on labelled tilts for this model: the default 0.5 is the network's own "
+                    "decision boundary, not a validated cut."
                 )
 
             flight = SingleFlight()
@@ -250,17 +266,28 @@ def _render_dl_config(job_model, backend, project_path, instance_id, on_predicti
                 async with flight("run") as acquired:
                     if not acquired:
                         return
-                    job_model.model_name = model_sel.value
-                    job_model.prob_threshold = thresh_inp.value
-                    job_model.prob_action = action_sel.value
                     res = await backend.submit_tilt_filter_predict(project_path, instance_id)
                     if not res.get("success"):
                         ui.notify(res.get("error") or "Could not submit the DL run.", type="negative")
                     _observe()
 
             with ui.row().classes("w-full items-center gap-2"):
-                house_button("Run DL filter", _run_dl, kind="accent")
+                run_btn = house_button("Run DL filter", _run_dl, kind="accent")
                 status_c = ui.row().classes("items-center gap-1")
+
+            def _check_model() -> None:
+                """Red marker and a disabled Run DL while the chosen model cannot run here."""
+                try:
+                    resolve_model(model_sel.value)
+                except ValueError as e:
+                    marker_tip.text = str(e)
+                    model_marker.set_visibility(True)
+                    run_btn.disable()
+                    return
+                model_marker.set_visibility(False)
+                run_btn.enable()
+
+            _check_model()
 
             seen = {"key": None, "in_flight": job_model.predict_in_flight}
 

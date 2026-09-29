@@ -1,8 +1,8 @@
 # Roadmap 06 — DL tilt filter: three modes on the job row, a parked pipeline, and working weights
 
 **Status:** rev 4, approved 2026-09-29 (rev 1 2026-08-11). **In progress on branch `dl_filter`:** stage 0
-done; stage 1 chunks 1–3 committed, chunks 4–5 open. Next session: read §12 (implementation log) and
-start at chunk 4; the decisions below are settled.
+done; stage 1 chunks 1–4 committed, chunk 5 open. Next session: read §12 (implementation log) and
+start at chunk 5; the decisions below are settled.
 
 **Maintainer's decisions (2026-09-29):**
 1. The filter has three modes, chosen **on the tilt-filter job row**: **Manual**, **DL review**, **DL auto**.
@@ -259,10 +259,11 @@ Only after DL auto has run on real data.
 | 2 | tilt filter: per-frame P(bad) in the registry, kept apart from the verdict | `Frame.p_bad` (registry schema 1.5); `filter_probability` dropped on load; `set_frame_filtered` carries no probability; dashboard kept/dropped readers take `committed=tilt_filter_committed(state)`; re-adding the job restores only the drops |
 | — | requirements: note why torch stays at 2.6.0 | comment only |
 | 3 | tilt filter: DL prediction runs in their own job dir, settled by the monitor | `TiltFilterPredictRun`, `predict_run`, `predict_in_flight`, `next_predict_run_dir`; `backend.submit_tilt_filter_predict` replaces `submit_tilt_filter_dl` (leaves execution_status alone, refuses while a run is in flight); `PipelineRunnerService.reconcile_tilt_filter_predict`; the monitor tick covers projects with an in-flight run; panel DL section above the gallery with a 3 s observer; the unused standalone panel entry is gone |
-| 4 | open | predict-only inference — spec below |
+| 4 | tilt filter: predict-only DL runs write P(bad) per tilt from the registered model | params `model` / `threshold` (on P(bad), 0.5) / `dl_batch_size`; `resolve_model` + `prediction_liveness` in `services/jobs/tilt_filter.py`; `ModelLoader(path, arch, normalisation)` GPU-only with `predict_p_bad`; `SmallSimpleCNN.input_size = 384`; `registry.set_frame_prediction`; driver predicts from the gallery PNGs, converts the rest, never writes the verdict; `statistics_calculator.py` deleted; panel model select from the registry with a red marker, threshold with an "uncalibrated" marker; dashboard rows model / threshold |
 | 5 | open | review gallery — spec below |
 
-Defects fixed so far: h and 1 (commit 3); g in part (commits no longer stamp a probability, commit 2).
+Defects fixed so far: h and 1 (commit 3); g in part (commits no longer stamp a probability, commit 2);
+b, d, e, i (commit 4).
 
 ### Refinements to §3 / §6 made while building
 - Predicted-bad is derived from `p_bad` and the job's current threshold, not stored (§3).
@@ -271,8 +272,19 @@ Defects fixed so far: h and 1 (commit 3); g in part (commits no longer stamp a p
 - The dashboard's kept/dropped readers need the job's committed state: a committed filter that dropped
   nothing from a TS leaves no per-frame trace. (Manual commits used to stamp `filter_probability = 1.0` on
   every tilt, which is what marked such a TS as filtered.)
+- Chunk 4: `predict_p_bad` takes PNG paths that a `DataLoader` streams, not PIL images, so a 9,000-tilt
+  project never holds every input in memory.
+- Chunk 4: a gallery PNG that is not an L-mode 384² image counts as absent and is converted like a missing one;
+  only a tilt that still has no usable input after conversion fails the run.
+- Chunk 4: tilts unknown to the registry are collected and named together, and nothing is saved when any is
+  unknown (a partial set of predictions would read as a complete run).
+- Chunk 4: the checkpoint must be a dict holding `model_architecture` and `model_state_dict`; a bare state
+  dict is refused because its architecture cannot be checked. Route 2's conversion (§7) writes that format.
+- Chunk 4: a model picked in the panel is stored on the job; an untouched job keeps `model = None` and runs
+  the site's `default_model` of the moment. `predict_run.model` records the key that actually ran.
+- Chunk 4: `prediction_liveness` returns None (not assessed) when no series has two predictions.
 
-### Chunk 4 — predict-only inference (next)
+### Chunk 4 — predict-only inference (done)
 Files: `filterTilts/deepLearning/{model_loader,model_architectures,statistics_calculator}.py`,
 `drivers/tilt_filter.py`, `services/jobs/tilt_filter.py`, `services/tilt_series/registry.py`, `backend.py`,
 `ui/tilt_filter_panel.py` (DL section inputs only), `ui/tomo_dashboard_dialog.py` (param rows).
@@ -311,7 +323,7 @@ Files: `filterTilts/deepLearning/{model_loader,model_architectures,statistics_ca
   std(P(bad)) < 0.05; also returns the mean P(bad) for the banner. Reading "within series" as "within every
   series" keeps a clean series under a live model from raising the banner.
 
-### Chunk 5 — review gallery (after 4)
+### Chunk 5 — review gallery (next)
 Files: `ui/tilt_filter_panel.py`, `services/tilt_series_service.py`.
 - The gallery reads `p_bad` per tilt from the registry; predicted = `p_bad ≥ job.threshold`; effective label =
   `tilt_labels.get(key)` → predicted → "good".
@@ -336,4 +348,6 @@ Files: `ui/tilt_filter_panel.py`, `services/tilt_series_service.py`.
   `driver_invocation`, so roadmap 20's interpreter change reaches it unchanged.
 - Noticed, not fixed: `_hdr` in `ui/tilt_filter_panel.py` is dead; the dashboard's registry-gap marker reads
   "Job is running" for an unapproved (SCHEDULED) filter; defect 2 (params frozen after Approve) waits for
-  stage 2.
+  stage 2 — until then the panel's model select and threshold still move after an Approve while the job
+  keeps its values; `TiltFilterParams.get_output_assets` names `filtered/tiltseries_*.star`, which no run
+  writes any more (its only caller, `ProjectService.resolve_job_paths`, is itself uncalled).

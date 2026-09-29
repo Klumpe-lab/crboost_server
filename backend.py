@@ -173,7 +173,7 @@ class CryoBoostBackend:
         and SLURM (`PipelineRunnerService.reconcile_tilt_filter_predict`), so neither a
         closed tab nor a server restart loses it. The job's execution_status says whether a
         verdict is committed and is left alone."""
-        from services.jobs.tilt_filter import TiltFilterPredictRun, next_predict_run_dir
+        from services.jobs.tilt_filter import TiltFilterPredictRun, next_predict_run_dir, resolve_model
         from services.path_resolution_service import PathResolutionError, PathResolutionService
 
         project_path = Path(project_path)
@@ -184,6 +184,10 @@ class CryoBoostBackend:
         if job_model.predict_in_flight:
             run = job_model.predict_run
             return err(f"A prediction run is already {run.status.value.lower()} (SLURM job {run.slurm_job_id}).")
+        try:
+            model_key, _entry = resolve_model(job_model.model)
+        except ValueError as e:
+            return err(str(e))
 
         try:
             io_paths = PathResolutionService(state).resolve_all_paths(
@@ -198,7 +202,7 @@ class CryoBoostBackend:
 
         # Recorded before the first await, so a second click finds this run in flight.
         run_dir = next_predict_run_dir(project_path)
-        run = TiltFilterPredictRun(job_dir=str(run_dir), model=job_model.model_name)
+        run = TiltFilterPredictRun(job_dir=str(run_dir), model=model_key)
         job_model.predict_run = run
         state.mark_dirty()
         # The driver reads the run off project_params.json, so it must be on disk before sbatch.
