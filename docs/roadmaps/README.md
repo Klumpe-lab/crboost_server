@@ -12,10 +12,14 @@ their stage logs intact.
 | # | Roadmap | Theme | Status |
 |---|---|---|---|
 | 05 | [per-ts-top-up](roadmap_05-per-ts-top-up.md) | Re-run one failed/skipped tilt-series without recomputing the job or its downstream chain | stage 0 partial 2026-08-13; no code. **File deleted in `bc2b41b` — restore pending** |
-| 06 | [dl-tilt-filter](roadmap_06-dl-tilt-filter.md) | DL tilt filter as always-interactive first-class method; hard approval barrier | scoped 2026-08-11; not started |
+| 06 | [dl-tilt-filter](roadmap_06-dl-tilt-filter.md) | DL tilt filter with three modes on the job row (Manual / DL review park the pipeline until Approve; DL auto runs in the chain); weights under evaluation (the shipped file is a collapsed last epoch) | rev 4 approved 2026-09-29; not started |
 | 13 | [roster-staged-vs-queued](roadmap_13-roster-staged-vs-queued.md) | The roster paints a just-added job with the same amber "Scheduled" dot as one queued on the cluster; derive the split from `pipeline_active` + `pipeline_order` | scoped 2026-08-23; not started |
 | 15 | [job-dir-ownership](roadmap_15-job-dir-ownership.md) | On-disk ownership lock for `External/jobNNN/` so a retry cannot sbatch a second supervisor into a live job dir (reproduced 2026-08-28, 62/114 TS lost) | scoped 2026-08-28; not started |
 | 19 | [ctf-fit-outlier-check](roadmap_19-ctf-fit-outlier-check.md) | Per-tilt CTF-fit outlier check: fail loudly when Warp's defocus fit diverges (was numbered 18, which collided with k3-stack-ingest) | scoped 2026-09-09; not started |
+| 20 | [site-portability](roadmap_20-site-portability.md) | The Munich install review + one container wrapper: site values only in config, interpreter from `sys.executable`, tool caches in `$TMPDIR`, self-test | R6 + S1 + S2a/b committed 2026-09-29 (not run); next: S2c — handoff at the top of the file |
+| 21 | [miss-alignment-and-warp-export](roadmap_21-miss-alignment-and-warp-export.md) | Miss-alignment as a declared refinement stage the resolver follows (no other job changes); drop-in output; Warp particle export only if its local-deformation grids prove useful | rev 2 approved 2026-09-29; not started |
+| 22 | [blank-tilt-rays](roadmap_22-blank-tilt-rays.md) | The "aliasing" artifact is beam-blocked tilts surviving Warp's import coin flip; deterministic blank-exposure exclusion | investigated 2026-09-29; maintainer confirming on a separate branch |
+| 23 | [per-user-servers](roadmap_23-per-user-servers.md) | One server per person with Jupyter-style tokens: launcher, single-writer lease, read-only viewing of others' projects | approved 2026-09-29; not started |
 | — | [orchestrator-replacement](roadmap_orchestrator-replacement.md) | `relion_schemer` out → ProjectState + SLURM afterok DAG + thin reconciler | partial: afterok DAG is the main path (`_submit_chain`, `reconcile_afterok`); P1.C and the schemer decommission not started |
 | — | [registry-consolidation](roadmap_registry-consolidation.md) | TiltSeriesRegistry becomes THE store | partial: phases 0–2 built; phase 4 (de-star the drivers) not done |
 | — | [tilt-filter-tomostar-relion-split](roadmap_tilt-filter-tomostar-relion-split.md) | Tilt-filter verdicts propagate through the tomostar / RELION star split | partial: stage 1, 2A + emit_star fix runtime-verified; 2B, 3, §5 open |
@@ -28,6 +32,22 @@ their stage logs intact.
 
 The picking-UI series index and guideline of record is
 [completed/picking_ui/roadmap_00-overview.md](completed/picking_ui/roadmap_00-overview.md) (restore pending).
+
+## Release-prep arc (2026-09-29)
+
+Five roadmaps from the pre-release list, all approved. Each opens with its settled decisions and starts at
+stage 0. Suggested order, by dependency:
+
+1. **20 site-portability** — the container wrapper and config cleanup the others lean on (miss-alignment's
+   cluster-install failure is this roadmap's silent binary fallback).
+2. **23 per-user-servers** — the security item for release.
+3. **06 dl-tilt-filter** — stages 0–1 first, so the weights can be judged while new ones are requested.
+4. **21 miss-alignment** — plumbing and drop-in output first; real runs once defaults are picked from the paper.
+5. **22 blank-tilt-rays** — independent; being confirmed on its own branch.
+
+Found along the way, owned by none of them yet: candidate scoring counts a species match only for
+succeeded candidates, so a fresh multi-species run may cross-bind (21 §6); deploy has no re-entrancy lock,
+so a double Run may submit twice (06 defect 4).
 
 ## The open debt
 

@@ -1,13 +1,69 @@
 # Roadmap 20 — Site portability: the Munich install review, one container wrapper, site values only in config
 
-**Status:** approved in full 2026-09-29 (maintainer: "long overdue cleanup and consolidation"). Stage 0 papercut +
-stage 1 code-complete 2026-09-29, not run; stage 0 facts owed (see the stage log at the end). Sources: the Munich collaborator's install review
+**Status:** approved in full 2026-09-29 (maintainer: "long overdue cleanup and consolidation"). R6, S1, S2a,
+S2b code-complete and committed on `bindmounts_and_auth` 2026-09-29, none run yet; stage 0 facts owed.
+**Next session: start at S2c** — see the handoff below and the stage log at the end. Sources: the Munich collaborator's install review
 (September 2026: everything ran, template generation included, after a handful of local patches) and a
 repo-wide audit of how paths and flags flow config → container → driver (2026-09-29).
 
 **Success for the whole roadmap:** Munich runs an **unmodified checkout**. Each local patch the reviewer
 had to make becomes unnecessary, and a fresh install with only their own `conf.yaml` values passes the
 self-test (stage 4).
+
+## Handoff (2026-09-29) — what is left, in order
+
+Each item is its own commit; hand the maintainer `git add`/`git commit` lines (one per line, no
+attribution trailer, no names) and let them commit. Items touching the same file go in separate turns.
+
+1. **S2c — one sbatch renderer (§1.5).** The four copies: `backend.submit_tilt_filter_dl` (`XXXextra1XXX`
+   at `backend.py:218`), `backend.extract_pick_list` (`backend.py:389`),
+   `drivers/array_job_base.build_array_sbatch_script` (`:473`, injects `#SBATCH --array`), and
+   `pipeline_orchestrator_service._render_supervisor_script` (`:509`, reads `qsub_extraN` from job.star
+   options). Put the function beside `SlurmConfig` in `services/computing/slurm_service.py`, not in
+   `config_service.py`, so S2c stays file-disjoint from S2d/S2e. Drop the `--constraint` line when the
+   constraint is empty (right whatever stage-0 fact 3 says); fix the quoting at the source — the live
+   confs carry `constraint: '''g2|g3|g4'''`, which is why every renderer does `.strip("'\"")`. Exit markers:
+   `config/qsub.sh` writes `RELION_JOB_EXIT_*`, and nine drivers touch them too (`grep -l RELION_JOB_EXIT_
+   drivers/`) — write them in one place. Keep the contract that `array_job_base` strips qsub.sh's marker
+   block verbatim from array child tasks (`preflight.MARKER_BLOCK`).
+2. **S2d — names (§1.6).** `get_tool_name` returns `"warptools"` in `services/jobs/{fs_motion_ctf,
+   ts_alignment,ts_reconstruct,ts_ctf,ts_import}.py` → `"warp_aretomo"`. Then delete both alias maps in
+   `config_service` (`get_tool_config`, `is_tool_configured`; the only alias caller left is
+   `pipeline_runner.py:779` `tool_name="relion_schemer"` → `"relion"`), the `containers:` fallback + field
+   (+ README "legacy `containers:` map" sentence), and `tsreconstruct_supervisor_slurm` (field, the
+   migration in `ConfigService.__init__`, the `TsReconstructSupervisorSlurmConfig` alias,
+   `tsreconstruct_supervisor_slurm_defaults`). The CBE confs (shared install and the local dev one) still say
+   `tsreconstruct_supervisor_slurm:` — have the maintainer rename it to `supervisor_slurm:` first; the
+   local dev conf may be edited in place. `services/templating/mrc_inspection.py`'s "warptools" is an
+   MRC-provenance label, not a tool key — leave it.
+3. **S2e — config hygiene (§1.3).** Empty code defaults for `SlurmDefaultsConfig.partition` (`"g"`),
+   `SupervisorSlurmConfig.partition`/`constraint` (`"g"`, `"g2|g3|g4"`) and `CurationConfig.partition`
+   (`"c"`); `SlurmConfig.from_config_defaults` (`slurm_service.py:73-80`) raises instead of falling back to
+   built-ins; unknown / misspelled conf keys become load warnings shown in the UI (the idiom is
+   `ProjectState.load_warnings`; the config needs its own list, surfaced on the landing status strip);
+   preflight names each missing key. Remove the now-unknown `crboost_root:` line from the local dev conf.
+4. **S3 — ChimeraX worker (§1.3) + container defs (§1.7).** `curation_session.sh:106` hard-codes
+   `BINDS=(-B /tmp -B /groups -B /software -B /scratch -B "$HOME")`: have `services/curation/session_service.py`
+   (the sbatch it writes around `:148`, which already exports `CX_SIF`) export the computed binds instead
+   (`container_binds` + the project root). Drop the server-side `CX_SIF` override (`session_service.py:90`,
+   `os.environ.get("CX_SIF") or cur.sif_path`) and its mentions in `CurationConfig` / the conf template;
+   keep the `CX_SIF` export as the transport to the worker. §1.7 (pinned container defs) is image-rebuild
+   work, not code.
+5. **S4 — self-test (§1.8).** pytest is not in `requirements.txt` or the venv — add it (the maintainer
+   installs). Both tiers go through `get_container_service().wrap_command_for_tool`.
+6. **S5** — the Munich re-install; the maintainer's step.
+
+**Owed by the maintainer (runtime):** the three stage-0 facts (commands in the stage log); §3 item 1 at
+CBE; before any deployed install pulls S1, its `conf.yaml` needs `container_runtime: apptainer`,
+`container_binds: [/groups, /scratch, /software, /programs]` and `tools.cistem.bin_path:
+/groups/klumpe/software/cisTEM/bin` (the local dev conf already has them).
+
+**Working notes.** No Python in the assistant sandbox: the ceiling is `venv/bin/ruff check` + reading. Six
+ruff errors predate this work (`services/curation/session_service.py:285`, `services/jobs/fs_motion_ctf.py:54-63`),
+and several files carry older format drift — format only the lines you touch. Roadmap 06 is being built in
+a separate worktree on `dl_filter`; the tilt-filter launch in `backend.py` and the header of
+`drivers/tilt_filter.py` changed here, so expect a small conflict when the two merge. After this roadmap,
+roadmap 23 (per-user servers) is next; its "repo-relative paths from `__file__`" item is already done (S2a).
 
 ## The review, item by item (verbatim substance, paraphrased)
 
