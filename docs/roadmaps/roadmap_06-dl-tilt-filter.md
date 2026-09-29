@@ -1,8 +1,8 @@
 # Roadmap 06 — DL tilt filter: three modes on the job row, a parked pipeline, and working weights
 
 **Status:** rev 4, approved 2026-09-29 (rev 1 2026-08-11). **In progress on branch `dl_filter`:** stage 0
-done; stage 1 chunks 1–4 committed, chunk 5 open. Next session: read §12 (implementation log) and
-start at chunk 5; the decisions below are settled.
+done; stage 1 code-complete (chunks 1–5), its runtime check (§9, §10 item 1) owed. Next session: read §12
+(implementation log) and start stage 2; the decisions below are settled.
 
 **Maintainer's decisions (2026-09-29):**
 1. The filter has three modes, chosen **on the tilt-filter job row**: **Manual**, **DL review**, **DL auto**.
@@ -200,7 +200,7 @@ added; **(3)** retrain on our own labels. The registry's per-model `arch`/`norma
 - Predict-only driver mode; `predict_run` with its own job dir, tracked by the reconciler; P(bad) in the
   gallery; `tilt_labels` = touched only; Approve = commit; liveness banner. Defects b, d, e, f, g, h, i, 1.
 - Built as five commits (log and specs in §12): 1 config registry ✓ · 2 registry `p_bad` ✓ · 3 run
-  lifecycle ✓ · 4 predict-only inference · 5 review gallery.
+  lifecycle ✓ · 4 predict-only inference ✓ · 5 review gallery ✓.
 - *Success:* Run DL on a labelled 412 project → predictions for every tilt, worst first; edits survive a
   re-run; closing the tab mid-run changes nothing; with the current weights the banner appears.
 
@@ -260,10 +260,10 @@ Only after DL auto has run on real data.
 | — | requirements: note why torch stays at 2.6.0 | comment only |
 | 3 | tilt filter: DL prediction runs in their own job dir, settled by the monitor | `TiltFilterPredictRun`, `predict_run`, `predict_in_flight`, `next_predict_run_dir`; `backend.submit_tilt_filter_predict` replaces `submit_tilt_filter_dl` (leaves execution_status alone, refuses while a run is in flight); `PipelineRunnerService.reconcile_tilt_filter_predict`; the monitor tick covers projects with an in-flight run; panel DL section above the gallery with a 3 s observer; the unused standalone panel entry is gone |
 | 4 | tilt filter: predict-only DL runs write P(bad) per tilt from the registered model | params `model` / `threshold` (on P(bad), 0.5) / `dl_batch_size`; `resolve_model` + `prediction_liveness` in `services/jobs/tilt_filter.py`; `ModelLoader(path, arch, normalisation)` GPU-only with `predict_p_bad`; `SmallSimpleCNN.input_size = 384`; `registry.set_frame_prediction`; driver predicts from the gallery PNGs, converts the rest, never writes the verdict; `statistics_calculator.py` deleted; panel model select from the registry with a red marker, threshold with an "uncalibrated" marker; dashboard rows model / threshold |
-| 5 | open | review gallery — spec below |
+| 5 | tilt filter: review gallery shows P(bad), keeps only the labels a human set, and commits on Approve | gallery reads `p_bad` from the registry; effective label = human label → prediction at the job's threshold → good; worst-first sort, dashed/ring = predicted, solid/filled = human; clicks write `tilt_labels` with a 1 s debounced save; threshold field in the gallery row, labels re-derive live; Approve (refused while a run is in flight) replaces Save; liveness banner; `apply_labels` / `filter_good_tilts` / `write_tilt_series` deleted |
 
 Defects fixed so far: h and 1 (commit 3); g in part (commits no longer stamp a probability, commit 2);
-b, d, e, i (commit 4).
+b, d, e, i (commit 4); f, g (commit 5). Stage 1's defect list is closed.
 
 ### Refinements to §3 / §6 made while building
 - Predicted-bad is derived from `p_bad` and the job's current threshold, not stored (§3).
@@ -283,6 +283,18 @@ b, d, e, i (commit 4).
 - Chunk 4: a model picked in the panel is stored on the job; an untouched job keeps `model = None` and runs
   the site's `default_model` of the moment. `predict_run.model` records the key that actually ran.
 - Chunk 4: `prediction_liveness` returns None (not assessed) when no series has two predictions.
+- Chunk 5: the threshold field sits in the gallery's action row (shown once predictions exist), not in the
+  DL section: it moves the gallery's labels, which re-derive as it changes, and the DL section is collapsed
+  by default.
+- Chunk 5: Approve refuses while a prediction run is in flight — it would commit against predictions about to
+  change, and its registry save would race the driver's.
+- Chunk 5: `TiltFilter/tiltseries_{labeled,filtered}.star` are no longer written. Their only reader was the
+  roster's name match in `_remove_interactive_job`, which finds nothing now that the job has no output slots.
+- Chunk 5: a human's good label shows a filled grey dot; an untouched good tilt shows none (every card used to
+  carry a white ring, which would read as the predicted-bad ring).
+- Chunk 5, fixed on the way: the first gallery build landed outside its container, so the reload after a DL
+  run appended a second gallery; a group's "−N" count counted a stale copy and, once hidden at zero, never
+  came back (`.style()` merges, so the display had to be written explicitly).
 
 ### Chunk 4 — predict-only inference (done)
 Files: `filterTilts/deepLearning/{model_loader,model_architectures,statistics_calculator}.py`,
@@ -323,7 +335,7 @@ Files: `filterTilts/deepLearning/{model_loader,model_architectures,statistics_ca
   std(P(bad)) < 0.05; also returns the mean P(bad) for the banner. Reading "within series" as "within every
   series" keeps a clean series under a live model from raising the banner.
 
-### Chunk 5 — review gallery (next)
+### Chunk 5 — review gallery (done)
 Files: `ui/tilt_filter_panel.py`, `services/tilt_series_service.py`.
 - The gallery reads `p_bad` per tilt from the registry; predicted = `p_bad ≥ job.threshold`; effective label =
   `tilt_labels.get(key)` → predicted → "good".
@@ -350,4 +362,6 @@ Files: `ui/tilt_filter_panel.py`, `services/tilt_series_service.py`.
   "Job is running" for an unapproved (SCHEDULED) filter; defect 2 (params frozen after Approve) waits for
   stage 2 — until then the panel's model select and threshold still move after an Approve while the job
   keeps its values; `TiltFilterParams.get_output_assets` names `filtered/tiltseries_*.star`, which no run
-  writes any more (its only caller, `ProjectService.resolve_job_paths`, is itself uncalled).
+  writes any more (its only caller, `ProjectService.resolve_job_paths`, is itself uncalled); the roster's
+  downstream check in `_remove_interactive_job` (a job path containing `tiltseries_filtered`) can no longer
+  match — stage 2's Re-open/commit rules are where "who consumed this verdict" gets answered (alignment).
