@@ -15,10 +15,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Generic, TypeVar
 
-# Add server root to path to import services
-server_dir = Path(__file__).parent.parent
-sys.path.append(str(server_dir))
-
 try:
     from services.project_state import ProjectState, AbstractJobParams, JobType
     from services.computing.container_service import get_container_service

@@ -18,9 +18,6 @@ except ImportError:
     HAS_DEPS = False
     print("[WARN] Could not import cryocare/mrcfile/numpy. Validation will be skipped.", file=sys.stderr)
 
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
-
 try:
     from drivers.driver_base import ToolCommand, derive_watchdog_timeout, get_driver_context, run_command, run_tool
     from services.job_models import DenoiseTrainParams

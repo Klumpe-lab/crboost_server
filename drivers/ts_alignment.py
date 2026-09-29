@@ -39,9 +39,6 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-server_dir = Path(__file__).parent.parent
-sys.path.insert(0, str(server_dir))
-
 from drivers.array_job_base import (
     ArrayDriver,
     ArrayResults,

@@ -27,9 +27,6 @@ from pathlib import Path
 
 import yaml
 
-server_dir = Path(__file__).parent.parent
-sys.path.insert(0, str(server_dir))
-
 try:
     from drivers.driver_base import ToolCommand, get_driver_context, run_tool, require_producer_input
     from services.jobs.miss_align import MissAlignParams, MISS_ALIGN_SCHEDULES

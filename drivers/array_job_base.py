@@ -30,7 +30,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 server_dir = Path(__file__).parent.parent
-sys.path.insert(0, str(server_dir))
 
 from drivers.driver_base import PRINT_CMD_ENV, DriverContext, print_cmd_only, run_tool
 from services.computing.slurm_service import SlurmConfig

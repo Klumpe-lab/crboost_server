@@ -13,9 +13,6 @@ import sys
 import traceback
 from pathlib import Path
 
-server_dir = Path(__file__).parent.parent
-sys.path.insert(0, str(server_dir))
-
 from drivers.driver_base import ToolCommand, add_gain_options, get_driver_context, run_tool
 from services.jobs.ts_import import TsImportParams
 
