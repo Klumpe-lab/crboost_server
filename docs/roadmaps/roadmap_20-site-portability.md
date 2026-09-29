@@ -1,8 +1,8 @@
 # Roadmap 20 — Site portability: the Munich install review, one container wrapper, site values only in config
 
-**Status:** approved in full 2026-09-29 (maintainer: "long overdue cleanup and consolidation"). R6, S1,
-S2a–S2e code-complete and committed on `bindmounts_and_auth` 2026-09-29, none run yet; stage 0 facts owed.
-**Next session: start at S3** — see the handoff below and the stage log at the end. Sources: the Munich collaborator's install review
+**Status:** approved in full 2026-09-29 (maintainer: "long overdue cleanup and consolidation"). R6 and
+S1–S4 code-complete and committed on `bindmounts_and_auth` 2026-09-29; none of it has run on the cluster.
+**Next: the runtime pass** (owed below), then S5 — see the handoff below and the stage log at the end. Sources: the Munich collaborator's install review
 (September 2026: everything ran, template generation included, after a handful of local patches) and a
 repo-wide audit of how paths and flags flow config → container → driver (2026-09-29).
 
@@ -18,27 +18,23 @@ attribution trailer, no names) and let them commit. Items touching the same file
 1. **S2c — one sbatch renderer (§1.5).** Done; see the stage log.
 2. **S2d — names (§1.6).** Done; see the stage log.
 3. **S2e — config hygiene (§1.3).** Done; see the stage log.
-4. **S3 — ChimeraX worker (§1.3) + container defs (§1.7).** `curation_session.sh:106` hard-codes
-   `BINDS=(-B /tmp -B /groups -B /software -B /scratch -B "$HOME")`: have `services/curation/session_service.py`
-   (the sbatch it writes around `:148`, which already exports `CX_SIF`) export the computed binds instead
-   (`container_binds` + the project root). Drop the server-side `CX_SIF` override (`session_service.py:90`,
-   `os.environ.get("CX_SIF") or cur.sif_path`) and its mentions in `CurationConfig` / the conf template;
-   keep the `CX_SIF` export as the transport to the worker. §1.7 (pinned container defs) is image-rebuild
-   work, not code.
-5. **S4 — self-test (§1.8).** pytest is not in `requirements.txt` or the venv — add it (the maintainer
-   installs). Both tiers go through `get_container_service().wrap_command_for_tool`.
+4. **S3 — ChimeraX worker (§1.3) + container defs (§1.7).** Worker done; see the stage log. §1.7
+   (pinned container defs) is image-rebuild work, not code: do it with the next rebuild.
+5. **S4 — self-test (§1.8).** Done; see the stage log.
 6. **S5** — the Munich re-install; the maintainer's step.
 
-**Owed by the maintainer (runtime):** stage-0 facts 1–2 (commands in the stage log; fact 3 is moot since
-S2c drops an empty `--constraint`); §3 item 1 at CBE. The shared install's `conf.yaml`
-(`/groups/klumpe/software/crboost_server`) needs, any time before it pulls this branch (its current code
-accepts them): `container_runtime: apptainer`, `container_binds: [/groups, /scratch, /software,
-/programs]`, and `supervisor_slurm:` in place of `tsreconstruct_supervisor_slurm:`; and at the pull
-itself: `tools.cistem.bin_path: /groups/klumpe/software/cisTEM/bin` (a directory now; its current code
-wants the `simulate` binary) and no `crboost_root:` line. The local dev conf already has all of it.
+**Owed by the maintainer (runtime):**
+1. `venv/bin/pip install 'pytest>=7'`, then `venv/bin/python -m pytest` and `venv/bin/python -m pytest -m cluster`
+   at CBE. The cluster tier's probe commands have never run; fix whichever ones the images disagree with.
+2. Stage-0 facts 1–2 (commands in the stage log; fact 3 is moot since S2c drops an empty `--constraint`).
+3. §3 item 1: the copia chain end to end at CBE.
+4. The shared install (`/groups/klumpe/software/crboost_server`): its `conf.yaml` already has
+   `container_runtime`, `container_binds` and `supervisor_slurm:` (2026-09-29). When it pulls this branch:
+   `tools.cistem.bin_path: /groups/klumpe/software/cisTEM/bin` (a directory now; its current code wants the
+   `simulate` binary), delete the `crboost_root:` line, and install pytest into its venv.
 
 **Working notes.** No Python in the assistant sandbox: the ceiling is `venv/bin/ruff check` + reading. Six
-ruff errors predate this work (`services/curation/session_service.py:285`, `services/jobs/fs_motion_ctf.py:54-63`),
+ruff errors predate this work (`services/curation/session_service.py:289`, `services/jobs/fs_motion_ctf.py:54-63`),
 and several files carry older format drift — format only the lines you touch. Roadmap 06 is being built in
 a separate worktree on `dl_filter`; the tilt-filter launch in `backend.py` and the header and exit-marker
 lines of `drivers/tilt_filter.py` changed here, so expect a small conflict when the two merge. After this roadmap,
@@ -284,3 +280,27 @@ load raises. `ConfigService.load_warnings` lists, per conf file, every key the m
 path) and every `job_resource_profiles` entry named after no job type; the list is logged, printed by
 preflight, and shown on the landing status strip as an amber "config" dot with a popover, only when
 non-empty. The local dev conf lost `crboost_root:`.
+
+**S3 (2026-09-29), code-complete, not run — ChimeraX worker.** The worker binds `/tmp` and `$HOME` itself
+and everything else from `CX_BINDS` (colon-separated; a path the node lacks is skipped); the server
+passes `container_binds` + the project. The server-side `CX_SIF` override is gone: the SIF is
+`curation.sif_path` only, and `CX_SIF` stays as the transport to the worker. A launch with no
+`curation.partition` now says so instead of submitting `#SBATCH -p ` with nothing after it. The manual
+launcher (`launch_curation_vnc.sh`) no longer gets `/groups` & co. for free: set `CX_BINDS` by hand.
+§1.7 waits for the next image rebuild.
+
+**S4 (2026-09-29), code-complete, not run — self-test.** `pytest.ini` + `tests/`. `pytest` (the default
+selection) runs preflight's checks as a test, asserts no conf key goes unread and renders `qsub.sh` as
+an array script. `pytest -m cluster` submits one `sbatch --wait` job per configured tool (slurm_defaults'
+resources, 15 min) from `~/.crboost/selftest/<name>/`, all before waiting on any. Each job starts
+`tests/cluster_probe.py` the way a driver starts (the driver interpreter, the PYTHONPATH export) and
+calls `run_tool`, so the container command is built on the compute node as in production; built on the
+headnode it would bind the headnode's `$TMPDIR` cache path. Probes: `nvidia-smi` + `WarpTools --help`;
+`relion_refine --version`; `pytom_match_template.py --help` + a CuPy reduction; cryoCARE import + TF sees
+the GPU; `isonet.py --help`; `miss-alignment --help` + `torch.cuda.is_available()`; IMOD `point2model` on
+one point (what crboost runs); `import pymol`; `simulate` on PATH (cisTEM prompts on stdin, so it is not
+run); ChimeraX `--version` from `curation.sif_path` via a bare `<runtime> exec`, as the worker starts it.
+A configured tool without a probe fails `test_every_tool_has_a_probe`. `pytest>=7` is in
+`requirements.txt`. Deviations: no DL tilt-filter checkpoint probe (roadmap 06 is replacing the weights);
+the probe commands come from the container defs and the drivers but have never run against the images,
+so the first `-m cluster` run at CBE settles them.

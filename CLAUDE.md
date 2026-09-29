@@ -23,7 +23,8 @@ ruff format .
 python check_boundaries.py
 ```
 
-There is no test suite.
+`tests/` is the install self-test, not unit tests: `pytest` checks the headnode setup (seconds),
+`pytest -m cluster` submits one short SLURM job per configured tool (minutes).
 
 ## Configuration
 

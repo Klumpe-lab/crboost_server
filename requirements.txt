@@ -20,3 +20,6 @@ tifffile==2025.12.20
 # DL tilt filter (drivers/tilt_filter.py runs on the host venv, not in a container)
 torch==2.6.0
 torchvision==0.21.0
+
+# Self-test: `pytest` (headnode, seconds) and `pytest -m cluster` (one job per tool)
+pytest>=7

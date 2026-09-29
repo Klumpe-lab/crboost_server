@@ -24,6 +24,7 @@ python3 -m venv venv && venv/bin/pip install -r requirements.txt
 venv/bin/python3 preflight.py        # 1st run writes config/conf.yaml + config/qsub.sh, then stops
 $EDITOR config/conf.yaml config/qsub.sh
 venv/bin/python3 preflight.py        # must exit 0
+venv/bin/python3 -m pytest -m cluster   # one short SLURM job per tool (minutes); must pass
 venv/bin/python3 main.py --port 8081 --host 0.0.0.0
 ```
 
@@ -45,17 +46,25 @@ If your cluster's Python ships its own packages and versions conflict, prefer th
 </details>
 
 <details>
-<summary><b>Preflight checks</b></summary>
+<summary><b>Preflight checks and self-test</b></summary>
 
 `venv/bin/python3 preflight.py` creates `config/conf.yaml` and `config/qsub.sh` from their templates on
 the first run and stops. Every later run only verifies (it never edits):
 
 - Python version, and that every package in `requirements.txt` imports
-- `config/conf.yaml` loads, `DefaultProjectBase` is writable, every `tools:` path exists
+- `config/conf.yaml` loads, `DefaultProjectBase` is writable, every `tools:` path and `container_binds`
+  entry exists, the partitions are set; a key no setting reads (a misspelling) is a warning
 - `sbatch`/`squeue`/`sacct`/`sinfo` and `apptainer` are on PATH, and every configured partition exists
 - `config/qsub.sh` still has its placeholders, exit-marker block and `exit $EXIT_CODE`
 
 It exits non-zero and lists each failed check.
+
+**Self-test.** `venv/bin/python3 -m pytest` runs the same checks as tests, plus a render of
+`config/qsub.sh` (headnode, seconds). `venv/bin/python3 -m pytest -m cluster` submits one short job
+per configured tool, run the way a pipeline driver runs it, and waits for all of them (minutes,
+mostly queue): each proves the tool starts in its container on a compute node with the site's binds
+and sees the GPU where it needs one. Job directories are under `~/.crboost/selftest/`; a failure
+prints the command and the job's log paths.
 
 </details>
 
