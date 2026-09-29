@@ -210,6 +210,16 @@ class TiltSeriesRegistry:
         frame.filter_reason = reason if filtered else None
         self._dirty_ts.add(ts.id)
 
+    def set_frame_prediction(self, frame_id: str, p_bad: float) -> None:
+        """Record the DL classifier's P(bad) for one frame. A prediction only: the verdict
+        (`is_filtered_out`) is left as it is. Mutates in memory + marks the parent TS dirty;
+        the caller persists via save(). Raises KeyError if the frame is unknown."""
+        ts = self._frame_index.get(frame_id)
+        if ts is None:
+            raise KeyError(f"No frame with id {frame_id!r} in registry")
+        ts.frame_by_id(frame_id).p_bad = p_bad
+        self._dirty_ts.add(ts.id)
+
     def filtered_out_frame_ids(self) -> set[str]:
         """The set of frame ids the tilt-filter has marked filtered-out."""
         return {f.id for ts in self._tilt_series.values() for f in ts.frames if f.is_filtered_out}
