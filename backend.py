@@ -166,53 +166,50 @@ class CryoBoostBackend:
 
         self._pending_saves[key] = asyncio.create_task(_delayed())
 
-    async def submit_tilt_filter_dl(self, project_path: Path, instance_id: str) -> dict[str, Any]:
-        """Submit the tilt filter DL driver as a standalone SLURM job."""
-        from services.path_resolution_service import PathResolutionService
-        from services.models_base import JobStatus
+    async def submit_tilt_filter_predict(self, project_path: Path, instance_id: str) -> dict[str, Any]:
+        """Submit one DL prediction run of the tilt filter: drivers/tilt_filter.py as a
+        one-off SLURM job in its own directory (TiltFilter/dl_run/NNN). The run is recorded
+        in `job_model.predict_run`, which the PipelineMonitor settles from the exit markers
+        and SLURM (`PipelineRunnerService.reconcile_tilt_filter_predict`), so neither a
+        closed tab nor a server restart loses it. The job's execution_status says whether a
+        verdict is committed and is left alone."""
+        from services.jobs.tilt_filter import TiltFilterPredictRun, next_predict_run_dir
+        from services.path_resolution_service import PathResolutionError, PathResolutionService
 
+        project_path = Path(project_path)
         state = self.state_service.state_for(project_path)
         job_model = state.jobs.get(instance_id)
         if not job_model:
             return err(f"Job '{instance_id}' not found")
+        if job_model.predict_in_flight:
+            run = job_model.predict_run
+            return err(f"A prediction run is already {run.status.value.lower()} (SLURM job {run.slurm_job_id}).")
 
-        # Resolve input paths
-        resolver = PathResolutionService(state)
         try:
-            io_paths = resolver.resolve_all_paths(
+            io_paths = PathResolutionService(state).resolve_all_paths(
                 job_model.job_type, job_model, project_path / "TiltFilter", instance_id=instance_id
             )
-            job_model.paths.update({k: str(v) for k, v in io_paths.items() if v is not None})
-        except Exception as e:
+        except PathResolutionError as e:
             return err(f"Path resolution failed: {e}")
+        input_star = io_paths.get("input_star")
+        if input_star is None or not (project_path / input_star).exists():
+            return err("The motion-correction output star is not on disk yet; run fsMotion first.")
+        job_model.paths.update({k: str(v) for k, v in io_paths.items() if v is not None})
 
-        # Create job directory and clean up stale markers from previous runs
-        job_dir = project_path / "TiltFilter" / "dl_run"
-        job_dir.mkdir(parents=True, exist_ok=True)
-        for marker in ("RELION_JOB_EXIT_SUCCESS", "RELION_JOB_EXIT_FAILURE"):
-            (job_dir / marker).unlink(missing_ok=True)
-
-        # Save state so the driver can read it
-        job_model.execution_status = JobStatus.RUNNING
+        # Recorded before the first await, so a second click finds this run in flight.
+        run_dir = next_predict_run_dir(project_path)
+        run = TiltFilterPredictRun(job_dir=str(run_dir), model=job_model.model_name)
+        job_model.predict_run = run
         state.mark_dirty()
+        # The driver reads the run off project_params.json, so it must be on disk before sbatch.
         await self.state_service.save_project(project_path=project_path, force=True)
 
-        # Build driver command
-        python_exe = self.server_dir / "venv" / "bin" / "python3"
-        if not python_exe.exists():
-            python_exe = "python3"
-        script_path = self.server_dir / "drivers" / "tilt_filter.py"
-        driver_cmd = (
-            f"export PYTHONPATH={self.server_dir}:${{PYTHONPATH}}; "
-            f"{python_exe} {script_path} "
-            f"--instance_id {instance_id} "
-            f"--project_path {project_path}"
+        driver_cmd = driver_invocation(
+            server_dir=self.server_dir,
+            driver_script=self.server_dir / "drivers" / "tilt_filter.py",
+            instance_id=instance_id,
+            project_path=project_path,
         )
-
-        # Build sbatch script from template
-        qsub_template = self.server_dir / "config" / "qsub.sh"
-        template_text = qsub_template.read_text()
-
         slurm_cfg = job_model.get_effective_slurm_config()
         # Strip surrounding quotes that may be stored in config values
         constraint = slurm_cfg.constraint.strip("'\"")
@@ -225,49 +222,44 @@ class CryoBoostBackend:
             "XXXextra6XXX": slurm_cfg.gres,
             "XXXextra7XXX": slurm_cfg.mem,
             "XXXextra8XXX": slurm_cfg.time,
-            "XXXoutfileXXX": str(job_dir / "run.out"),
-            "XXXerrfileXXX": str(job_dir / "run.err"),
+            "XXXoutfileXXX": str(run_dir / "run.out"),
+            "XXXerrfileXXX": str(run_dir / "run.err"),
             "XXXcommandXXX": driver_cmd,
         }
-        script = template_text
+        script = (self.server_dir / "config" / "qsub.sh").read_text()
         for placeholder, value in replacements.items():
             script = script.replace(placeholder, value)
-
-        sbatch_path = job_dir / "run_tilt_filter.sh"
+        sbatch_path = run_dir / "run_tilt_filter.sh"
         sbatch_path.write_text(script)
         sbatch_path.chmod(0o755)
 
-        # Submit via sbatch
         try:
             proc = await asyncio.create_subprocess_exec(
                 "sbatch",
                 str(sbatch_path),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=str(job_dir),
+                cwd=str(run_dir),
             )
             stdout, stderr = await proc.communicate()
-            if proc.returncode != 0:
-                job_model.execution_status = JobStatus.FAILED
-                state.mark_dirty()
-                await self.state_service.save_project(project_path=project_path, force=True)
-                return err(f"sbatch failed: {stderr.decode().strip()}")
-
-            # Parse job ID from "Submitted batch job 12345"
-            output = stdout.decode().strip()
-            slurm_job_id = output.split()[-1] if output else None
-            job_model.slurm_job_id = slurm_job_id
-            state.mark_dirty()
+        except OSError as e:
+            logger.exception("Tilt filter DL: sbatch could not be started")
+            run.status = JobStatus.FAILED
+            run.error = f"sbatch could not be started: {e}"
             await self.state_service.save_project(project_path=project_path, force=True)
-
-            events.info("Tilt filter DL queued: SLURM job %s", slurm_job_id)
-            return ok(slurm_job_id=slurm_job_id, job_dir=str(job_dir))
-
-        except Exception as e:
-            job_model.execution_status = JobStatus.FAILED
-            state.mark_dirty()
+            return err(run.error)
+        if proc.returncode != 0:
+            run.status = JobStatus.FAILED
+            run.error = f"sbatch failed: {stderr.decode().strip()}"
             await self.state_service.save_project(project_path=project_path, force=True)
-            return err(str(e))
+            return err(run.error)
+
+        # "Submitted batch job 12345"
+        output = stdout.decode().strip()
+        run.slurm_job_id = output.split()[-1] if output else None
+        await self.state_service.save_project(project_path=project_path, force=True)
+        events.info("Tilt filter DL run %s queued: SLURM job %s", run_dir.name, run.slurm_job_id)
+        return ok(slurm_job_id=run.slurm_job_id, job_dir=str(run_dir))
 
     async def extract_pick_list(
         self,
@@ -289,7 +281,7 @@ class CryoBoostBackend:
     ) -> dict[str, Any]:
         """Subtomo-extract one curation pick list: submit ``drivers/extract_pick_list.py``
         as a one-off SLURM job via ``config/qsub.sh`` (same mechanism as
-        ``submit_tilt_filter_dl``). Output lands in ``<list_star dir>/<slug>/`` so lists
+        ``submit_tilt_filter_predict``). Output lands in ``<list_star dir>/<slug>/`` so lists
         extract independently. Returns the SLURM job id + the dir to watch
         (``RELION_JOB_EXIT_SUCCESS/FAILURE`` + ``result.json`` appear there; the caller
         records ``PickList.mark_extracted`` on success).
