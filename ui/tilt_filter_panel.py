@@ -4,7 +4,7 @@ The tilt-filter job panel (full-panel job plugin).
 
 Runs the DL prediction as a SLURM job, generates thumbnails of fsMotion's
 motion-corrected tilts, and provides a gallery grouped by position/beam/tilt-series
-for good/bad labelling.
+where the model's predictions are reviewed and overridden; Approve commits the verdict.
 """
 
 from __future__ import annotations
@@ -15,26 +15,21 @@ import logging
 import urllib.parse
 from pathlib import Path
 
+import pandas as pd
 from nicegui import ui
 
 from backend import get_backend
 from services.configs.config_service import get_config_service
 from services.models_base import JobStatus
+from services.tilt_series import get_registry_for
 from services.tilt_series.build import parse_position
 from services.project_state import get_state_service
 from ui.components.buttons import house_button
 from ui.components.fields import house_number, house_select
 from ui.components.reactive import SingleFlight
 from ui.current_project import current_project_state
-from services.jobs.tilt_filter import finalize_pipeline_output, resolve_model
-from services.tilt_series_service import (
-    apply_labels,
-    filter_good_tilts,
-    generate_tilt_thumbnails,
-    get_label_summary,
-    load_tilt_series,
-    write_tilt_series,
-)
+from services.jobs.tilt_filter import finalize_pipeline_output, prediction_liveness, resolve_model
+from services.tilt_series_service import generate_tilt_thumbnails, get_label_summary, load_tilt_series
 from ui.status_indicator import _running_spinner_html
 from ui.styles import MONO
 
@@ -56,6 +51,10 @@ CARD = (
     f"background: white; border-radius: 6px; border: 1px solid {CLR_BORDER}; box-shadow: 0 1px 2px rgba(15,23,42,0.04);"
 )
 SEC = f"border: 1px solid {CLR_BORDER}; border-radius: 5px; padding: 6px 8px; background: #f8fafc;"
+# Tilt cards: red is bad, grey good.
+BAD_EDGE = "#ef4444"
+GOOD_EDGE = "#d1d5db"
+GOOD_DOT = "#64748b"
 
 
 # ── Tiny helpers ─────────────────────────────────────────────────────────────
@@ -74,14 +73,6 @@ def _chip(label, value, color=CLR_LABEL):
     with ui.column().classes("items-center gap-0"):
         ui.label(str(value)).style(f"{MONO} font-size: 13px; font-weight: 700; color: {color};")
         ui.label(label).style(f"{FONT} font-size: 7px; color: {CLR_SUBLABEL}; text-transform: uppercase;")
-
-
-def _meta_row(label, value):
-    with ui.row().classes("items-baseline gap-2"):
-        ui.label(label).style(
-            f"{FONT} font-size: 7px; color: {CLR_SUBLABEL}; text-transform: uppercase; min-width: 60px;"
-        )
-        ui.label(str(value)).style(f"{MONO} font-size: 9px; color: {CLR_LABEL}; word-break: break-all;")
 
 
 def _parse_pos_beam(ts_name: str):
@@ -200,11 +191,11 @@ def render_tilt_filter_job_panel(job_type, instance_id, job_model, backend, ui_m
             gallery_c = ui.column().classes("w-full gap-0")
             has_pngs = png_dir.exists() and any(png_dir.glob("*.png"))
 
-            if not has_pngs:
-                with gallery_c:
+            with gallery_c:
+                if not has_pngs:
                     _render_generate(source_star, project_path, png_dir, gallery_c, stats_c, job_model=job_model)
-            else:
-                _build_gallery(source_star, project_path, png_dir, gallery_c, stats_c, job_model=job_model)
+                else:
+                    _build_gallery(source_star, project_path, png_dir, gallery_c, stats_c, job_model=job_model)
 
 
 def _render_waiting():
@@ -217,10 +208,11 @@ def _render_waiting():
 
 
 def _render_dl_config(job_model, backend, project_path, instance_id, save_handler, on_predictions) -> None:
-    """The DL section: model and threshold, Run DL, and the latest prediction run's status.
+    """The DL section: the model, Run DL, and the latest prediction run's status.
     The run is a SLURM job that the server monitor settles; this view only observes
     `job_model.predict_run`, so closing the tab changes nothing. `on_predictions` runs
-    when a run this view saw in flight lands."""
+    when a run this view saw in flight lands. The threshold lives with the gallery, whose
+    labels it moves."""
     models = get_config_service().tilt_filter
     with (
         ui.expansion("Deep Learning Auto-Filter", icon="smart_toy")
@@ -243,22 +235,6 @@ def _render_dl_config(job_model, backend, project_path, instance_id, save_handle
                 model_sel = house_select("Model", options, value=chosen, width="w-40", on_change=_pick)
                 with ui.icon("error", size="14px").style(f"color: {CLR_ERROR};") as model_marker:
                     marker_tip = ui.tooltip("")
-                house_number(
-                    "Threshold",
-                    model=job_model,
-                    attr="threshold",
-                    min=0.0,
-                    max=1.0,
-                    step=0.05,
-                    format="%.2f",
-                    width="w-20",
-                    hint="A tilt with P(bad) at or above this is predicted bad.",
-                    on_change=lambda _e: save_handler(),
-                )
-                ui.label("uncalibrated").style(f"{FONT} font-size: 8px; color: {CLR_WARN};").tooltip(
-                    "Not calibrated on labelled tilts for this model: the default 0.5 is the network's own "
-                    "decision boundary, not a validated cut."
-                )
 
             flight = SingleFlight()
 
@@ -394,27 +370,66 @@ def _render_generate(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-def _build_gallery(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job_model=None):
+def _build_gallery(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job_model):
     try:
         ts_data = load_tilt_series(str(ts_ctf_star), str(project_path))
     except Exception as e:
         ui.label(f"Failed to load tilt series: {e}").style(f"color: {CLR_ERROR};")
         return
-    _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, job_model=job_model)
+    _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, job_model)
 
 
-def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, job_model=None):
+def _registry_p_bad(project_path, keys) -> dict[str, float]:
+    """P(bad) per tilt key from the latest prediction run, as the registry holds it. Tilts
+    without a prediction are absent."""
+    registry = get_registry_for(Path(project_path))
+    p_bad: dict[str, float] = {}
+    for key in keys:
+        try:
+            p = registry.get_frame(key).p_bad
+        except KeyError:  # a tilt the registry does not know has no prediction to show
+            continue
+        if p is not None:
+            p_bad[key] = p
+    return p_bad
+
+
+def _effective_label(key, p_bad, labels, threshold) -> str:
+    """A human's label wins; else the prediction at the threshold; else good. `p_bad` is NaN
+    for a tilt without a prediction, and NaN compares false."""
+    return labels.get(key) or ("bad" if p_bad >= threshold else "good")
+
+
+def _render_liveness_banner(df) -> None:
+    """Warn when the predictions do not depend on the image (see prediction_liveness)."""
+    by_series: dict[str, list[float]] = {}
+    for ts_name, p in zip(df["rlnTomoName"], df["_p_bad"], strict=True):
+        if pd.notna(p):
+            by_series.setdefault(ts_name, []).append(p)
+    liveness = prediction_liveness(by_series)
+    if liveness is None or liveness[0]:
+        return
+    with (
+        ui.row()
+        .classes("w-full items-center gap-2 no-wrap")
+        .style(f"{SEC} background: #fef2f2; border-color: #fecaca;")
+    ):
+        ui.icon("warning", size="14px").style(f"color: {CLR_ERROR};")
+        ui.label(f"The model gives every tilt P(bad) ≈ {liveness[1]:.2f} — its verdicts are meaningless.").style(
+            f"{FONT} font-size: 10px; color: {CLR_ERROR};"
+        )
+
+
+def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, job_model):
     state = current_project_state()
-    # job_model.tilt_labels is the durable label store.
-    labels = dict(job_model.tilt_labels) if job_model is not None and job_model.tilt_labels else {}
-
-    if labels:
-        apply_labels(ts_data, labels)
-    elif "cryoBoostDlLabel" not in ts_data.all_tilts_df.columns:
-        ts_data.all_tilts_df["cryoBoostDlLabel"] = "good"
-        ts_data.all_tilts_df["cryoBoostDlProbability"] = 1.0
+    # The tilts a human labelled. Clicks write straight into it, so a label outlives a
+    # gallery rebuild, a DL re-run and the tab; every other tilt takes the prediction.
+    labels = job_model.tilt_labels
+    flight = SingleFlight()
 
     df = ts_data.all_tilts_df
+    df["_p_bad"] = df["cryoBoostKey"].map(_registry_p_bad(project_path, df["cryoBoostKey"].unique()))
+    has_predictions = bool(df["_p_bad"].notna().any())
     png_map: dict[str, Path] = {f.stem: f for f in sorted(png_dir.glob("*.png"))}
     df["_png"] = df["cryoBoostKey"].map(lambda k: str(png_map.get(k, "")))
     # Unique row ID for DOM identification (cryoBoostKey can have duplicates)
@@ -434,6 +449,19 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
         df["_xmlRes"] = None
         df["_xmlMotion"] = None
 
+    def _relabel() -> None:
+        """Every tilt's effective label into cryoBoostDlLabel, which the stats, the group
+        counts and the commit read."""
+        df["cryoBoostDlLabel"] = [
+            _effective_label(k, p, labels, job_model.threshold)
+            for k, p in zip(df["cryoBoostKey"], df["_p_bad"], strict=True)
+        ]
+
+    _relabel()
+
+    async def _persist() -> None:
+        await get_backend().save_project(project_path, force=True, debounce_s=1.0)
+
     # ── Live stats ──
     def _refresh_stats():
         stats_c.clear()
@@ -448,6 +476,9 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
 
     _refresh_stats()
 
+    if has_predictions:
+        _render_liveness_banner(df)
+
     # ── Build position → tilt-series hierarchy ──
     ts_names = sorted(df["rlnTomoName"].unique().tolist())
     hierarchy: dict[int, list] = {}
@@ -459,11 +490,51 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
     # ── Actions + collapse controls ──
     group_refs: list = []
 
-    view_opts = {"sort": "acquisition"}
+    view_opts = {"sort": "p_bad" if has_predictions else "acquisition"}
+    applied = {"threshold": job_model.threshold}
+
+    async def _approve():
+        async with flight("approve") as acquired:
+            if not acquired:
+                return
+            if job_model.predict_in_flight:
+                ui.notify("A DL prediction run is in flight; approve once its predictions have landed.", type="warning")
+                return
+            res = await finalize_pipeline_output(state, job_model, ts_data, project_path)
+            _notify_finalize(res)
+            if res.get("success"):
+                job_model.execution_status = JobStatus.SUCCEEDED
+                await get_backend().save_project(project_path, force=True)
+
+    async def _set_all_good():
+        for key in df["cryoBoostKey"]:
+            labels[key] = "good"
+        df["cryoBoostDlLabel"] = "good"
+        _refresh_stats()
+        # Bulk-update all visible cards via JS — no full re-render needed
+        ui.run_javascript(
+            "document.querySelectorAll('.tilt-card').forEach(card => {"
+            + _js_apply_look("card", _card_look(False, touched=True))
+            + "});"
+        )
+        for refs in group_refs:
+            _set_bad_count(refs["bad_lbl"], 0)
+        ui.notify("All tilts set to good", type="info")
+        await _persist()
+
+    async def _on_threshold(_e) -> None:
+        # The field refuses out-of-range and half-typed values, which leave the threshold as it was.
+        if job_model.threshold == applied["threshold"]:
+            return
+        applied["threshold"] = job_model.threshold
+        _relabel()
+        _refresh_stats()
+        _render_groups()
+        await _persist()
 
     with ui.row().classes("w-full items-center gap-2 py-1 flex-wrap"):
-        house_button("Save labels", lambda: _save(), kind="accent")
-        house_button("Set all good", lambda: _set_all_good())
+        house_button("Approve", _approve, kind="accent", tooltip="Commit these labels; alignment drops the bad tilts.")
+        house_button("Set all good", _set_all_good)
 
         ui.element("div").style("width: 1px; height: 16px; background: #e2e8f0; margin: 0 2px;")
         house_button("Expand all", lambda: _expand_all(True))
@@ -474,19 +545,41 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
             ui.label("Sort within group").style(f"{FONT} font-size: 7px; color: {CLR_SUBLABEL};")
             sort_sel = (
                 ui.select(
-                    {"acquisition": "Acquisition order", "angle": "Tilt angle", "probability": "DL probability"},
-                    value="acquisition",
+                    {"acquisition": "Acquisition order", "angle": "Tilt angle", "p_bad": "P(bad), worst first"},
+                    value=view_opts["sort"],
                 )
                 .props("dense borderless hide-bottom-space")
                 .style(f"{FONT} font-size: 10px; color: {CLR_LABEL};")
                 .classes("w-36")
             )
 
+        if has_predictions:
+            ui.element("div").style("width: 1px; height: 16px; background: #e2e8f0; margin: 0 2px;")
+            house_number(
+                "Threshold",
+                model=job_model,
+                attr="threshold",
+                min=0.0,
+                max=1.0,
+                step=0.05,
+                format="%.2f",
+                width="w-20",
+                hint="A tilt with P(bad) at or above this is predicted bad.",
+                on_change=_on_threshold,
+            )
+            ui.label("uncalibrated").style(f"{FONT} font-size: 8px; color: {CLR_WARN};").tooltip(
+                "Not calibrated on labelled tilts for this model: the default 0.5 is the network's own "
+                "decision boundary, not a validated cut."
+            )
+
         ui.space()
         bad_only = ui.checkbox("Show only removed").style(f"{FONT} font-size: 10px; color: {CLR_LABEL};")
 
-    # ── Save explanation ──
-    save_info_c = ui.column().classes("w-full gap-0.5").style(f"{SEC} display: none;")
+    if has_predictions:
+        ui.label(
+            "Dashed border: predicted bad. Solid border with a filled dot: your label, which a new threshold "
+            "or a DL re-run leaves alone."
+        ).style(f"{FONT} font-size: 8px; color: {CLR_SUBLABEL};")
 
     # ── Groups ──
     group_c = ui.column().classes("w-full gap-1")
@@ -497,9 +590,38 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
         s = view_opts["sort"]
         if s == "angle" and "rlnTomoNominalStageTiltAngle" in ts_df.columns:
             return ts_df.sort_values("rlnTomoNominalStageTiltAngle").reset_index(drop=True)
-        if s == "probability" and "cryoBoostDlProbability" in ts_df.columns:
-            return ts_df.sort_values("cryoBoostDlProbability", ascending=True).reset_index(drop=True)
+        if s == "p_bad":
+            return ts_df.sort_values("_p_bad", ascending=False, na_position="last").reset_index(drop=True)
         return ts_df  # acquisition order = default dataframe order
+
+    async def _on_card_click(e, refs) -> None:
+        args = e.args or {}
+        key = args.get("key", "")
+        if args.get("action") == "zoom":
+            _show_upsample(args.get("mrc", ""), key, project_path)
+            return
+        rows = df["cryoBoostKey"] == key
+        if args.get("action") != "toggle" or not rows.any():
+            return
+        new = "good" if df.loc[rows, "cryoBoostDlLabel"].iloc[0] == "bad" else "bad"
+        labels[key] = new
+        df.loc[rows, "cryoBoostDlLabel"] = new
+        # Unique row ID for DOM targeting (cryoBoostKey can have duplicates)
+        rid = args.get("rid", "")
+        restyle = _js_apply_look("card", _card_look(new == "bad", touched=True))
+        ui.run_javascript(f"const card = document.querySelector('[data-rid=\"{rid}\"]'); if (card) {{ {restyle} }}")
+        in_group = df["rlnTomoName"] == refs["ts_name"]
+        _set_bad_count(refs["bad_lbl"], int((df.loc[in_group, "cryoBoostDlLabel"] == "bad").sum()))
+        _refresh_stats()
+        await _persist()
+
+    def _populate(refs) -> None:
+        """A group's cards, rendered on its first expand, with one click handler for the grid."""
+        with refs["body"]:
+            grid = ui.html(_build_cards_html(refs["ts_df"], labels, job_model.threshold), sanitize=False).classes(
+                "w-full"
+            )
+        grid.on("click", handler=lambda e: _on_card_click(e, refs), js_handler=_CARD_CLICK_JS)
 
     rendering = {"active": False}
 
@@ -527,9 +649,7 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
                         continue
                     ts_df = _sort_ts_df(ts_df)
                     start_expanded = expand_state.get(ts_name, False)
-                    refs = _render_ts_group(
-                        ts_name, pos_key, beam, ts_df, labels, df, ts_data, _refresh_stats, project_path, start_expanded
-                    )
+                    refs = _render_ts_group(ts_name, pos_key, beam, ts_df, _populate, start_expanded)
                     group_refs.append(refs)
 
             rendering["active"] = False
@@ -549,94 +669,78 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
             # Deferred render on expand-all
             if expand and not refs["rendered"]["v"]:
                 refs["rendered"]["v"] = True
-                _populate_group_body(refs, labels, df, ts_data, _refresh_stats, project_path)
-
-    async def _save():
-        try:
-            out_dir = project_path / "TiltFilter"
-            out_dir.mkdir(parents=True, exist_ok=True)
-            apply_labels(ts_data, labels)
-
-            labeled_p = out_dir / "tiltseries_labeled.star"
-            await asyncio.to_thread(write_tilt_series, ts_data, labeled_p, "tilt_series_labeled")
-
-            good = filter_good_tilts(ts_data)
-            filtered_p = out_dir / "tiltseries_filtered.star"
-            await asyncio.to_thread(write_tilt_series, good, filtered_p, "tilt_series_filtered")
-
-            # Persist labels and mark job complete
-            if job_model is not None:
-                job_model.tilt_labels = dict(labels)
-                # Commit the verdict to the registry so alignment consumes the manual
-                # cut, not just the display stars. Only a recorded verdict may claim
-                # SUCCEEDED (see the DL path).
-                res = await finalize_pipeline_output(state, job_model, ts_data, project_path)
-                _notify_finalize(res)
-                if res.get("success"):
-                    job_model.execution_status = JobStatus.SUCCEEDED
-            if state:
-                state.mark_dirty()
-                await get_backend().save_project(project_path)
-
-            sm = get_label_summary(ts_data)
-            ui.notify(f"Saved: {sm['good']} good, {sm['bad']} bad", type="positive", timeout=4000)
-
-            # Show save info
-            save_info_c.clear()
-            save_info_c.style("display: flex;")
-            with save_info_c:
-                _meta_row("Labeled (all tilts)", str(labeled_p))
-                _meta_row("Filtered (good only)", str(filtered_p))
-                if job_model is not None:
-                    ui.label(
-                        "Labels saved to the Tilt Filter job. Downstream jobs "
-                        "(Reconstruct, Template Match) will use the filtered tilt set."
-                    ).style(f"{FONT} font-size: 9px; color: {CLR_SUCCESS}; line-height: 1.3;")
-
-        except Exception as e:
-            logger.exception("Save failed")
-            ui.notify(f"Save failed: {e}", type="negative")
-
-    async def _set_all_good():
-        for key in df["cryoBoostKey"].tolist():
-            labels[key] = "good"
-        df["cryoBoostDlLabel"] = "good"
-        ts_data.all_tilts_df["cryoBoostDlLabel"] = "good"
-        if job_model is not None:
-            job_model.tilt_labels = dict(labels)
-        if state:
-            state.mark_dirty()
-        _refresh_stats()
-        # Bulk-update all visible cards via JS — no full re-render needed
-        ui.run_javascript("""
-            document.querySelectorAll('.tilt-card').forEach(card => {
-                card.style.border = '1.5px solid #d1d5db';
-                const dot = card.querySelector('.tilt-dot');
-                if (dot) dot.style.background = 'transparent';
-                const info = card.querySelector('.tilt-info');
-                if (info) info.style.background = '#fafafa';
-            });
-        """)
-        for refs in group_refs:
-            refs["bad_lbl"].text = "\u22120"
-            refs["bad_lbl"].style(f"{MONO} font-size: 9px; font-weight: 600; color: {CLR_ERROR}; display: none;")
-        ui.notify("All tilts set to good", type="info")
+                _populate(refs)
 
 
 # ── Card grid HTML builder ──────────────────────────────────────────────────
 
+# One delegated click handler per grid: the zoom button opens the upsample view, anywhere
+# else on a card toggles its label.
+_CARD_CLICK_JS = """(event) => {
+    const zoom = event.target.closest('.tilt-zoom');
+    if (zoom) {
+        event.stopPropagation();
+        const card = zoom.closest('.tilt-card');
+        if (card) emit({action: 'zoom', key: card.dataset.key, mrc: card.dataset.mrc});
+        return;
+    }
+    const card = event.target.closest('.tilt-card');
+    if (card) emit({action: 'toggle', key: card.dataset.key, rid: card.dataset.rid});
+}"""
 
-def _build_cards_html(ts_df, labels) -> str:
-    """Build the entire card grid for one tilt-series group as a single HTML string."""
+
+def _card_look(is_bad: bool, touched: bool) -> dict[str, str]:
+    """Card chrome for one tilt. Red is bad, grey good; a solid border with a filled dot is a
+    human's label, a dashed border with a ring dot the model's prediction. An untouched good
+    tilt carries no dot."""
+    edge = BAD_EDGE if is_bad else GOOD_EDGE
+    info_bg = "#fef2f2" if is_bad else "#fafafa"
+    if touched:
+        dot_bg = BAD_EDGE if is_bad else GOOD_DOT
+        return {"border": f"1.5px solid {edge}", "dot_bg": dot_bg, "dot_border": "1px solid white", "info_bg": info_bg}
+    if is_bad:
+        return {
+            "border": f"1.5px dashed {edge}",
+            "dot_bg": "transparent",
+            "dot_border": f"1.5px solid {edge}",
+            "info_bg": info_bg,
+        }
+    return {"border": f"1.5px solid {edge}", "dot_bg": "transparent", "dot_border": "none", "info_bg": info_bg}
+
+
+def _js_apply_look(card: str, look: dict[str, str]) -> str:
+    """JS statements restyling the card element held in the JS variable `card`."""
+    return (
+        f"{card}.style.border = '{look['border']}';"
+        f"const dot = {card}.querySelector('.tilt-dot');"
+        f"if (dot) {{ dot.style.background = '{look['dot_bg']}'; dot.style.border = '{look['dot_border']}'; }}"
+        f"const info = {card}.querySelector('.tilt-info');"
+        f"if (info) info.style.background = '{look['info_bg']}';"
+    )
+
+
+def _set_bad_count(bad_lbl, n_bad: int) -> None:
+    """A group header's bad-tilt count; hidden at zero. Written in full each time because
+    `.style()` merges, so a display left out would keep an earlier `display: none`."""
+    bad_lbl.text = f"−{n_bad}"
+    bad_lbl.style(
+        f"{MONO} font-size: 9px; font-weight: 600; color: {CLR_ERROR}; display: {'none' if n_bad == 0 else 'block'};"
+    )
+
+
+def _build_cards_html(ts_df, labels, threshold) -> str:
+    """Build the entire card grid for one tilt-series group as a single HTML string. Labels
+    come from `labels` and the threshold as they are now, not from `ts_df`, which is a copy
+    taken when the group was laid out."""
     cards = []
     for _, row in ts_df.iterrows():
         key = row["cryoBoostKey"]
         rid = row["_row_id"]
         png_path = row.get("_png", "")
-        label = labels.get(key, row.get("cryoBoostDlLabel", "good"))
-        is_bad = label == "bad"
+        p_bad = row["_p_bad"]
+        label = _effective_label(key, p_bad, labels, threshold)
+        look = _card_look(label == "bad", touched=key in labels)
         angle = row.get("rlnTomoNominalStageTiltAngle", None)
-        prob = row.get("cryoBoostDlProbability", 1.0)
         defocus_u = row.get("rlnDefocusU", None)
         # Real CTF-fit resolution + motion from the WarpTools XML (see
         # _render_gallery_content); the star's rlnAccumMotionTotal is a 1e-6
@@ -644,10 +748,6 @@ def _build_cards_html(ts_df, labels) -> str:
         ctf_res = row.get("_xmlRes", None)
         motion = row.get("_xmlMotion", None)
         mrc_path = row.get("rlnMicrographName", "")
-
-        bdr = "#ef4444" if is_bad else "#d1d5db"
-        dot_bg = "#ef4444" if is_bad else "transparent"
-        info_bg = "#fef2f2" if is_bad else "#fafafa"
 
         if png_path:
             encoded_path = urllib.parse.quote(str(png_path), safe="/")
@@ -663,14 +763,17 @@ def _build_cards_html(ts_df, labels) -> str:
 
         info_parts = []
         if angle is not None:
-            info_parts.append(f'<span style="font-weight:600;color:{CLR_HEADING};">{angle:.0f}\u00b0</span>')
-        if isinstance(prob, (int, float)) and prob < 1.0:
-            info_parts.append(f'<span style="color:{CLR_SUBLABEL};">p{prob:.2f}</span>')
+            info_parts.append(f'<span style="font-weight:600;color:{CLR_HEADING};">{angle:.0f}°</span>')
+        if pd.notna(p_bad):
+            p_color = CLR_ERROR if p_bad >= threshold else CLR_SUBLABEL
+            info_parts.append(
+                f'<span style="color:{p_color};" title="P(bad) from the latest DL run">p{p_bad:.2f}</span>'
+            )
         if defocus_u is not None and defocus_u > 0:
-            info_parts.append(f'<span style="color:{CLR_SUBLABEL};">{defocus_u / 10000:.1f}\u00b5</span>')
+            info_parts.append(f'<span style="color:{CLR_SUBLABEL};">{defocus_u / 10000:.1f}µ</span>')
         if isinstance(ctf_res, (int, float)) and ctf_res > 0:
             info_parts.append(
-                f'<span style="color:{CLR_SUBLABEL};" title="CTF fit resolution (\u00c5)">{ctf_res:.1f}\u00c5</span>'
+                f'<span style="color:{CLR_SUBLABEL};" title="CTF fit resolution (Å)">{ctf_res:.1f}Å</span>'
             )
         if isinstance(motion, (int, float)) and motion > 0:
             info_parts.append(
@@ -682,17 +785,17 @@ def _build_cards_html(ts_df, labels) -> str:
 
         cards.append(
             f'<div class="tilt-card" data-rid="{rid}" data-key="{escaped_key}" data-mrc="{escaped_mrc}" '
-            f'style="border:1.5px solid {bdr};border-radius:4px;overflow:hidden;'
+            f'style="border:{look["border"]};border-radius:4px;overflow:hidden;'
             'position:relative;cursor:pointer;transition:border-color 0.12s;">'
             f"{img_html}"
             f'<div class="tilt-dot" style="position:absolute;top:3px;right:3px;width:8px;height:8px;'
-            f'border-radius:50%;background:{dot_bg};border:1px solid white;pointer-events:none;"></div>'
+            f'border-radius:50%;background:{look["dot_bg"]};border:{look["dot_border"]};pointer-events:none;"></div>'
             '<button class="tilt-zoom" style="position:absolute;top:2px;left:2px;color:white;'
             "background:rgba(0,0,0,0.3);width:18px;height:18px;border:none;border-radius:50%;"
             'cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center;" '
             'title="Upsample &amp; zoom">&#x1F50D;</button>'
             f'<div class="tilt-info" style="display:flex;gap:3px;padding:2px 4px;align-items:center;'
-            f"background:{info_bg};font-family:'IBM Plex Mono',monospace;font-size:8px;\">"
+            f"background:{look['info_bg']};font-family:'IBM Plex Mono',monospace;font-size:8px;\">"
             f"{''.join(info_parts)}</div>"
             "</div>"
         )
@@ -704,88 +807,10 @@ def _build_cards_html(ts_df, labels) -> str:
     )
 
 
-def _attach_grid_click_handler(html_el, labels, full_df, ts_data, refresh_stats, project_path, ts_df, bad_lbl):
-    """Attach a single event-delegation click handler to a card grid HTML element."""
-
-    def _handle_click(e):
-        args = e.args
-        if not args:
-            return
-        action = args.get("action")
-        key = args.get("key", "")
-
-        if action == "zoom":
-            mrc = args.get("mrc", "")
-            _show_upsample(mrc, key, project_path)
-
-        elif action == "toggle" and key:
-            rid = args.get("rid", "")
-            cur = labels.get(key)
-            if cur is None:
-                mask = full_df["cryoBoostKey"] == key
-                cur = full_df.loc[mask, "cryoBoostDlLabel"].iloc[0] if mask.any() else "good"
-
-            new = "good" if cur == "bad" else "bad"
-            labels[key] = new
-            full_df.loc[full_df["cryoBoostKey"] == key, "cryoBoostDlLabel"] = new
-            ts_data.all_tilts_df.loc[ts_data.all_tilts_df["cryoBoostKey"] == key, "cryoBoostDlLabel"] = new
-
-            is_bad = new == "bad"
-            # Use unique row ID for DOM targeting (cryoBoostKey can have duplicates)
-            ui.run_javascript(f"""
-                const card = document.querySelector('[data-rid="{rid}"]');
-                if (card) {{
-                    card.style.border = '1.5px solid {"#ef4444" if is_bad else "#d1d5db"}';
-                    const dot = card.querySelector('.tilt-dot');
-                    if (dot) dot.style.background = '{"#ef4444" if is_bad else "transparent"}';
-                    const info = card.querySelector('.tilt-info');
-                    if (info) info.style.background = '{"#fef2f2" if is_bad else "#fafafa"}';
-                }}
-            """)
-
-            n_bad_now = int((ts_df["cryoBoostDlLabel"] == "bad").sum())
-            bad_lbl.text = f"\u2212{n_bad_now}"
-            bad_lbl.style(
-                f"{MONO} font-size: 9px; font-weight: 600; color: {CLR_ERROR}; "
-                f"{'display: none' if n_bad_now == 0 else ''};"
-            )
-
-            # Clicks mutate the shared in-memory `labels` dict; Save persists it
-            # to job_model.tilt_labels.
-            refresh_stats()
-
-    html_el.on(
-        "click",
-        handler=_handle_click,
-        js_handler="""(event) => {
-            const zoom = event.target.closest('.tilt-zoom');
-            if (zoom) {
-                event.stopPropagation();
-                const card = zoom.closest('.tilt-card');
-                if (card) emit({action: 'zoom', key: card.dataset.key, mrc: card.dataset.mrc});
-                return;
-            }
-            const card = event.target.closest('.tilt-card');
-            if (card) emit({action: 'toggle', key: card.dataset.key, rid: card.dataset.rid});
-        }""",
-    )
-
-
-def _populate_group_body(refs, labels, full_df, ts_data, refresh_stats, project_path):
-    """Render card HTML into a group body (called on first expand)."""
-    with refs["body"]:
-        html_el = ui.html(_build_cards_html(refs["ts_df"], labels), sanitize=False).classes("w-full")
-        _attach_grid_click_handler(
-            html_el, labels, full_df, ts_data, refresh_stats, project_path, refs["ts_df"], refs["bad_lbl"]
-        )
-
-
 # ── Tilt-series group ────────────────────────────────────────────────────────
 
 
-def _render_ts_group(
-    ts_name, pos, beam, ts_df, labels, full_df, ts_data, refresh_stats, project_path, start_expanded=False
-):
+def _render_ts_group(ts_name, pos, beam, ts_df, populate, start_expanded=False):
     n_total = len(ts_df)
     n_bad = int((ts_df["cryoBoostDlLabel"] == "bad").sum())
     expanded = {"v": start_expanded}
@@ -819,9 +844,8 @@ def _render_ts_group(
 
             ui.space()
             ui.label(f"{n_total}").style(f"{MONO} font-size: 9px; color: {CLR_LABEL};")
-            bad_lbl = ui.label(f"\u2212{n_bad}").style(
-                f"{MONO} font-size: 9px; font-weight: 600; color: {CLR_ERROR}; {'display: none' if n_bad == 0 else ''};"
-            )
+            bad_lbl = ui.label("")
+            _set_bad_count(bad_lbl, n_bad)
 
         refs = {
             "body": body,
@@ -836,7 +860,7 @@ def _render_ts_group(
         # Render cards immediately only if starting expanded
         if start_expanded:
             rendered["v"] = True
-            _populate_group_body(refs, labels, full_df, ts_data, refresh_stats, project_path)
+            populate(refs)
 
         def _toggle():
             expanded["v"] = not expanded["v"]
@@ -848,7 +872,7 @@ def _render_ts_group(
             # Deferred render on first expand
             if expanded["v"] and not rendered["v"]:
                 rendered["v"] = True
-                _populate_group_body(refs, labels, full_df, ts_data, refresh_stats, project_path)
+                populate(refs)
 
         hdr.on("click", _toggle)
 
