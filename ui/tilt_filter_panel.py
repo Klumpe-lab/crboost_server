@@ -182,9 +182,7 @@ def render_tilt_filter_job_panel(job_type, instance_id, job_model, backend, ui_m
                     _build_gallery(source_star, project_path, png_dir, gallery_c, stats_c, job_model=job_model)
 
             # ── DL config (collapsed) ──
-            _render_dl_config(
-                job_model, backend, project_path, instance_id, save_handler, on_predictions=_reload_gallery
-            )
+            _render_dl_config(job_model, backend, project_path, instance_id, on_predictions=_reload_gallery)
 
             # ── Stats + Gallery ──
             stats_c = ui.element("div").classes("w-full")
@@ -207,7 +205,7 @@ def _render_waiting():
         )
 
 
-def _render_dl_config(job_model, backend, project_path, instance_id, save_handler, on_predictions) -> None:
+def _render_dl_config(job_model, backend, project_path, instance_id, on_predictions) -> None:
     """The DL section: the model, Run DL, and the latest prediction run's status.
     The run is a SLURM job that the server monitor settles; this view only observes
     `job_model.predict_run`, so closing the tab changes nothing. `on_predictions` runs
@@ -227,10 +225,10 @@ def _render_dl_config(job_model, backend, project_path, instance_id, save_handle
                 if chosen and chosen not in options:
                     options.append(chosen)  # gone from conf.yaml: still shown, and the marker says so
 
-                def _pick(e) -> None:
+                async def _pick(e) -> None:
                     job_model.model = e.value
-                    save_handler()
                     _check_model()
+                    await get_backend().save_project(project_path, force=True, debounce_s=1.0)
 
                 model_sel = house_select("Model", options, value=chosen, width="w-40", on_change=_pick)
                 with ui.icon("error", size="14px").style(f"color: {CLR_ERROR};") as model_marker:
