@@ -144,6 +144,13 @@ job_resource_profiles:
     cpus_per_task: 8
     time: "8:00:00"
 
+  # DL tilt-filter prediction run: one GPU job over every tilt of the project.
+  tiltFilter:
+    gres: "gpu:1"
+    mem: "16G"
+    cpus_per_task: 4
+    time: "0:30:00"
+
 processing_defaults:
   reconstruction_binning: 4
 
@@ -176,6 +183,19 @@ curation:
 # Import and publish both COPY (a snapshot, like species values on a job); there is no live
 # sync in either direction. Leave empty to switch the feature off entirely.
 species_catalog_root: ""
+
+# Tilt classifiers for the tilt-filter job's DL review. Each entry names a weights file,
+# the network class it was trained as (filterTilts/deepLearning/model_architectures.py) and
+# the input normalisation it was trained with ("half": 1 channel, mean 0.5 / std 0.5). The
+# job's model selector lists these keys; default_model is what a job runs until the user
+# picks another. Leave `models` empty to run the filter by hand only.
+tilt_filter:
+  models:
+    tiltnet_260212:
+      path: "/path/to/model260212.pth"   # something like /groups/<name_of_group>/software/Models/model260212.pth
+      arch: "SmallSimpleCNN"
+      normalisation: "half"
+  default_model: tiltnet_260212
 
 
 # Tool execution configuration
