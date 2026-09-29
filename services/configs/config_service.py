@@ -18,7 +18,9 @@ import yaml
 from enum import StrEnum
 from pathlib import Path
 from pydantic import BaseModel, Field
-from typing import Any, Literal
+from typing import Any, Literal, get_args, get_origin
+
+from services.models_base import JobType
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +81,7 @@ def check_path_exists(path: str | None) -> bool:
 class SlurmDefaultsConfig(BaseModel):
     """SLURM submission defaults from conf.yaml"""
 
-    partition: str = "g"
+    partition: str = ""
     constraint: str = ""
     nodes: int = 1
     ntasks_per_node: int = 1
@@ -98,8 +100,8 @@ class SupervisorSlurmConfig(BaseModel):
     by the supervisor when it submits the child array job, NOT by the supervisor's own sbatch.
     """
 
-    partition: str = "g"
-    constraint: str = "g2|g3|g4"
+    partition: str = ""
+    constraint: str = ""
     nodes: int = 1
     ntasks_per_node: int = 1
     cpus_per_task: int = 1
@@ -161,7 +163,7 @@ class CurationConfig(BaseModel):
     """
 
     sif_path: str | None = None
-    partition: str = "c"  # CPU partition; software GL is enough for slice-based picking
+    partition: str = ""  # a CPU partition will do: software GL is enough for slice-based picking
     gres: str | None = None  # SLURM --gres, e.g. "gpu:1" on partition 'g'; None on CPU partitions
     vgl: bool = False  # render ChimeraX via VirtualGL (vglrun -d egl) on the GPU — needs the _GL.sif + gres
     cpus: int = 4
@@ -223,6 +225,40 @@ class Config(BaseModel):
         extra = "ignore"
 
 
+def _unread_keys(model: Any, data: Any, prefix: str = "") -> list[str]:
+    """Dotted paths of the keys in `data` that the config model `model` does not read, recursing
+    into nested models and into name-keyed model maps (`tools:`, `job_resource_profiles:`)."""
+    # get_origin first: a parametrised generic (list[str]) can pass as a type but not issubclass.
+    is_model = isinstance(model, type) and get_origin(model) is None and issubclass(model, BaseModel)
+    if not (is_model and isinstance(data, dict)):
+        return []
+    found = []
+    for key, value in data.items():
+        field = model.model_fields.get(key)
+        if field is None:
+            found.append(f"{prefix}{key}")
+        elif get_origin(field.annotation) is dict and isinstance(value, dict):
+            entry_model = get_args(field.annotation)[1]
+            for name, entry in value.items():
+                found += _unread_keys(entry_model, entry, f"{prefix}{key}.{name}.")
+        else:
+            found += _unread_keys(field.annotation, value, f"{prefix}{key}.")
+    return found
+
+
+def _config_warnings(source: Path, layer: dict) -> list[str]:
+    """What one config layer sets that this version never reads: unknown keys (misspelled or left
+    over) and resource profiles named after no job type."""
+    warnings = [f"{source}: unknown key {path}" for path in _unread_keys(Config, layer)]
+    job_types = {jt.value for jt in JobType}
+    warnings += [
+        f"{source}: job_resource_profiles.{name} is not a job type"
+        for name in layer.get("job_resource_profiles") or {}
+        if name not in job_types
+    ]
+    return warnings
+
+
 class ConfigService:
     """Loads and provides access to static configuration"""
 
@@ -262,6 +298,13 @@ class ConfigService:
 
         self._effective_data: dict = data
         self._config = Config(**data)
+
+        # Shown on the landing status strip and by preflight, not only logged.
+        self.load_warnings: list[str] = _config_warnings(config_path, base_data) + _config_warnings(
+            self._override_path, override
+        )
+        for warning in self.load_warnings:
+            logger.warning("%s", warning)
 
     @property
     def config(self) -> Config:

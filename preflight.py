@@ -98,11 +98,23 @@ def check_config():
     try:
         from services.configs.config_service import get_config_service
 
-        cfg = get_config_service().config
+        service = get_config_service()
     except Exception as e:  # any load or validation error is the finding; report it and skip dependent checks
         fail(f"config does not load: {e}")
         return None
+    cfg = service.config
     ok("config loads and validates")
+    for warning in service.load_warnings:
+        warn(warning)
+
+    for key, value in (
+        ("slurm_defaults.partition", cfg.slurm_defaults.partition),
+        ("supervisor_slurm.partition", cfg.supervisor_slurm.partition),
+    ):
+        if not value:
+            fail(f"{key} is not set")
+    if cfg.curation.sif_path and not cfg.curation.partition:
+        warn("curation.partition is not set; curation sessions cannot start")
 
     if not cfg.crboost_python:
         ok(f"drivers run {sys.executable} (this interpreter; start main.py with it too)")
@@ -173,6 +185,8 @@ def check_slurm(cfg) -> None:
         if profile.partition:
             wanted.append((f"job_resource_profiles.{job_type}.partition", profile.partition, True))
     for key, value, required in wanted:
+        if not value:  # an unset partition is check_config's finding
+            continue
         unknown = [p for p in value.split(",") if p not in available]
         if not unknown:
             ok(f"{key} = {value}")

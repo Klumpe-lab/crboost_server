@@ -4,8 +4,9 @@ CryoBoost landing-page status strip.
 A thin band mounted above the project setup on the landing page. Left: the
 CryoBoost wordmark. Middle: live status dots for the things that tell you at
 a glance whether this server instance is healthy — SLURM reachability, the
-user it runs as, host:port, and whether every configured container/tool
-resolves on disk. Right: a gear that opens the config settings editor.
+user it runs as, host:port, whether every configured container/tool
+resolves on disk, and (only when there are any) conf keys this version never
+reads. Right: a gear that opens the config settings editor.
 
 The live parts (SLURM probe, container existence) are refreshed on a 15 s
 timer but only rebuild the DOM when a value actually changes (FingerprintedView),
@@ -110,6 +111,7 @@ class _StatusState:
         self.cont_n_ok = 0
         self.cont_n_total = 0
         self.cont_missing: list[str] = []
+        self.config_warnings: tuple = ()  # ConfigService.load_warnings: keys this version never reads
         self.has_override = False
         # Cluster layout (sinfo): per partition -> (name, max_time, nodes, cpu_only, gpu_groups)
         # where gpu_groups = ((gpus_per_node, gpu_type, feature, node_count), ...). Hashable for signature().
@@ -139,6 +141,7 @@ class LandingStatusStrip(FingerprintedView):
             s.cont_all_ok,
             s.cont_n_ok,
             s.cont_n_total,
+            s.config_warnings,
             s.has_override,
         )
 
@@ -220,6 +223,7 @@ class LandingStatusStrip(FingerprintedView):
             s.cont_n_ok = stat["n_ok"]
             s.cont_n_total = stat["n_total"]
             s.cont_missing = [t["name"] for t in stat["tools"] if not t["exists"]]
+            s.config_warnings = tuple(cs.load_warnings)
             s.has_override = cs.has_user_override
         except Exception as e:
             logger.info("Container status probe failed: %s", e)
@@ -274,6 +278,13 @@ class LandingStatusStrip(FingerprintedView):
                     "containers",
                     f"{s.cont_n_ok}/{s.cont_n_total}",
                     f"Missing on disk: {missing}",
+                )
+
+            # Config keys this version never reads: only shown when there are some.
+            if s.config_warnings:
+                n = len(s.config_warnings)
+                self._dot_item(
+                    CLR_WARN, "config", f"{n} warning{'s' if n != 1 else ''}", "", popover=self._config_popover
                 )
 
             ui.element("div").style("flex: 1;")
@@ -364,6 +375,13 @@ class LandingStatusStrip(FingerprintedView):
             ui.label("Already on the cluster network? Browse to the machine's address directly.").style(
                 _POP_DESC + " margin-top: 4px;"
             )
+
+    def _config_popover(self) -> None:
+        with ui.column().style("gap: 3px; min-width: 340px; max-width: 560px;"):
+            ui.label("Config warnings").style(_POP_TITLE)
+            ui.label("These settings have no effect: fix the spelling or delete them.").style(_POP_DESC)
+            for warning in self.state.config_warnings:
+                ui.label(warning).style(_POP_PATH)
 
     def _slurm_popover(self) -> None:
         s = self.state
