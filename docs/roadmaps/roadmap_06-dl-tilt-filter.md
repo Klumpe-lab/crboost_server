@@ -205,7 +205,8 @@ added; **(3)** retrain on our own labels. The registry's per-model `arch`/`norma
   re-run; closing the tab mid-run changes nothing; with the current weights the banner appears.
 
 ### Stage 2 — Modes on the row + parking
-- §3 mode + `review_hold`; §4 deploy/`submit_parked`/lock/Stop/Re-open; §5 row controls. Defects a, 2, 4.
+- §3 mode + `review_hold`; §4 deploy/`submit_parked`/lock/Stop/Re-open; §5 row controls. Defects a, 4
+  (defect 2 was fixed in stage 1, §12 commit 6; `mode` stays editable after a commit the same way).
 - *Success:* Manual → Run submits upstream only, the row says "Waiting for review", the builder stays usable;
   Approve → alignment starts and logs "K kept, D dropped"; a server restart before Approve changes nothing;
   a double Run submits once.
@@ -262,8 +263,18 @@ Only after DL auto has run on real data.
 | 4 | tilt filter: predict-only DL runs write P(bad) per tilt from the registered model | params `model` / `threshold` (on P(bad), 0.5) / `dl_batch_size`; `resolve_model` + `prediction_liveness` in `services/jobs/tilt_filter.py`; `ModelLoader(path, arch, normalisation)` GPU-only with `predict_p_bad`; `SmallSimpleCNN.input_size = 384`; `registry.set_frame_prediction`; driver predicts from the gallery PNGs, converts the rest, never writes the verdict; `statistics_calculator.py` deleted; panel model select from the registry with a red marker, threshold with an "uncalibrated" marker; dashboard rows model / threshold |
 | 5 | tilt filter: review gallery shows P(bad), keeps only the labels a human set, and commits on Approve | gallery reads `p_bad` from the registry; effective label = human label → prediction at the job's threshold → good; worst-first sort, dashed/ring = predicted, solid/filled = human; clicks write `tilt_labels` with a 1 s debounced save; threshold field in the gallery row, labels re-derive live; Approve (refused while a run is in flight) replaces Save; liveness banner; `apply_labels` / `filter_good_tilts` / `write_tilt_series` deleted |
 
+| 6 | tilt filter: model, threshold and batch size stay editable after a commit | `TiltFilterParams.USER_PARAMS` is empty: that set freezes a field once the job leaves SCHEDULED/FAILED, and this job's SUCCEEDED only means a verdict is committed; the model select and the threshold force their own debounced saves |
+
 Defects fixed so far: h and 1 (commit 3); g in part (commits no longer stamp a probability, commit 2);
-b, d, e, i (commit 4); f, g (commit 5). Stage 1's defect list is closed.
+b, d, e, i (commit 4); f, g (commit 5); 2 (commit 6). Stage 1's defect list is closed.
+
+### Stage 1 runtime pass
+- **2026-09-29, `agg_20260311_412_Grid3`** (17 TS, 697 tilts, 57 human labels, filter committed earlier):
+  run 001 on a Quadro RTX 6000 read the gallery PNGs and wrote P(bad) = 0.443 for every tilt; the log and
+  the panel both raised the liveness warning. The dead-weights diagnosis (§7) holds on real data. With the
+  threshold at 0.5 nothing is predicted bad, and the committed filter pinned the threshold field at 0.50
+  (defect 2) → commit 6. Still to check: labels surviving a re-run, a closed tab mid-run, a moved threshold
+  relabelling, Approve.
 
 ### Refinements to §3 / §6 made while building
 - Predicted-bad is derived from `p_bad` and the job's current threshold, not stored (§3).
@@ -359,9 +370,7 @@ Files: `ui/tilt_filter_panel.py`, `services/tilt_series_service.py`.
   possibly `services/scheduling_and_orchestration/pipeline_runner.py`. The DL submit launches through
   `driver_invocation`, so roadmap 20's interpreter change reaches it unchanged.
 - Noticed, not fixed: `_hdr` in `ui/tilt_filter_panel.py` is dead; the dashboard's registry-gap marker reads
-  "Job is running" for an unapproved (SCHEDULED) filter; defect 2 (params frozen after Approve) waits for
-  stage 2 — until then the panel's model select and threshold still move after an Approve while the job
-  keeps its values; `TiltFilterParams.get_output_assets` names `filtered/tiltseries_*.star`, which no run
+  "Job is running" for an unapproved (SCHEDULED) filter; `TiltFilterParams.get_output_assets` names `filtered/tiltseries_*.star`, which no run
   writes any more (its only caller, `ProjectService.resolve_job_paths`, is itself uncalled); the roster's
   downstream check in `_remove_interactive_job` (a job path containing `tiltseries_filtered`) can no longer
   match — stage 2's Re-open/commit rules are where "who consumed this verdict" gets answered (alignment).

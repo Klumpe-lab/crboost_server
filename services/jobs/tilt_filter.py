@@ -49,7 +49,12 @@ class TiltFilterParams(AbstractJobParams):
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
     IS_INTERACTIVE: ClassVar[bool] = True
 
-    USER_PARAMS: ClassVar[set[str]] = {"model", "threshold", "dl_batch_size"}
+    # Empty on purpose: USER_PARAMS freezes a field once the job leaves SCHEDULED/FAILED, and
+    # this job's SUCCEEDED only means a verdict is committed. `model`, `threshold` and
+    # `dl_batch_size` steer the next prediction run and the review, so they stay editable after
+    # a commit (a committed project is exactly where the predictions get compared with the
+    # human labels). Their writes are saved explicitly, since nothing marks the project dirty.
+    USER_PARAMS: ClassVar[set[str]] = set()
 
     # The DL reads the motion-corrected averages via the fs-motion star; that is this
     # job's only input. The verdict is a per-frame `is_filtered_out` stamp in the
