@@ -32,9 +32,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 def frame_id_to_warp_key(frame_id: str) -> str:
@@ -252,17 +252,26 @@ class Frame(BaseModel):
     # Per-job artifacts, keyed by job instance_id
     outputs: dict[str, FrameOutput] = Field(default_factory=dict)
 
-    # Tilt-filter verdict (per-tilt), stamped by the tiltFilter job. The functional
-    # cut is the trimmed tomostar it writes; this is the authoritative *record* in the
-    # registry (re-stamped on every filter re-run). This is the real frame-level
-    # "filtered out" concept — distinct from TS-level TiltSeries.is_excluded (user
-    # mute) and from the mislabeled TS-level TiltSeries.is_filtered_out placeholder.
+    # Tilt-filter verdict (per-tilt), written only by the filter's commit and re-stamped
+    # on every commit. Alignment drops these tilts when it snapshots the tomostars; CTF
+    # and reconstruction inherit that snapshot. This is the real frame-level "filtered
+    # out" concept — distinct from TS-level TiltSeries.is_excluded (user mute) and from
+    # the mislabeled TS-level TiltSeries.is_filtered_out placeholder.
     is_filtered_out: bool = False
     filter_reason: str | None = None
-    # The DL classifier's `cryoBoostDlProbability` for this tilt (verbatim from the
-    # filter pass; lower ⇒ more likely to be dropped). Persisted alongside the boolean
-    # verdict so the dashboard/keep-drop panel can read the score from the registry.
-    filter_probability: float | None = None
+    # The DL classifier's probability that this tilt is bad, from the latest prediction
+    # run. A prediction, not a verdict: nothing downstream reads it until a commit turns
+    # it into is_filtered_out.
+    p_bad: float | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_filter_probability(cls, data: Any) -> Any:
+        # Older registries carry `filter_probability`: the winning class's probability,
+        # 1.0 on every tilt after a manual commit. It is not a P(bad) and is dropped.
+        if isinstance(data, dict) and "filter_probability" in data:
+            return {k: v for k, v in data.items() if k != "filter_probability"}
+        return data
 
 
 class Tomogram(BaseModel):

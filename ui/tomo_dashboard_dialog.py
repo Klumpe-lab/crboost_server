@@ -49,6 +49,7 @@ from services.dashboard_data import (
     read_tomograms_table,
     recon_mrc_map,
     resolve_volume_for_3dmod,
+    tilt_filter_committed,
     tilt_thumb_urls,
     ts_output_from_registry,
     tsctf_registry_df,
@@ -1643,10 +1644,12 @@ def _render_ts_ctf_section(ts_name: str, project_state, project_path: Path, refr
                 )
             )
 
-        # Tilt-filter per-tilt verdict (keep/drop + DL probability): summarised as a tile
-        # and surfaced on each plot point's hover below. Silent no-op if the tilt-filter
-        # job hasn't stamped this TS.
-        dl_by_frame = filter_verdicts_from_registry(project_path, ts_name)
+        # Tilt-filter per-tilt verdict (keep/drop + DL P(bad)): summarised as a tile
+        # and surfaced on each plot point's hover below. Empty when no verdict covers
+        # this TS.
+        dl_by_frame = filter_verdicts_from_registry(
+            project_path, ts_name, committed=tilt_filter_committed(project_state)
+        )
         if dl_by_frame:
             n_keep = sum(1 for v in dl_by_frame.values() if v.startswith("keep"))
             tiles.append(("Tilts kept by the filter", f"{n_keep} of {len(dl_by_frame)}"))
@@ -1811,7 +1814,7 @@ def _render_tilt_filter_section(ts_name: str, project_state, project_path: Path,
     (stamped by both the DL and manual filter paths). Renders when a
     TILT_FILTER job exists or when this TS carries stamped verdicts; a run
     that predates verdict stamping shows the registry-gap marker."""
-    info = filter_kept_dropped_from_registry(project_path, ts_name)
+    info = filter_kept_dropped_from_registry(project_path, ts_name, committed=tilt_filter_committed(project_state))
 
     job_found = find_job_by_type(project_state, JobType.TILT_FILTER)
     if job_found is None and info is None:

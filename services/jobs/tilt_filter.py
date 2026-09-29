@@ -102,17 +102,11 @@ async def finalize_pipeline_output(state, job_model, ts_data, project_path: Path
     if not registry.tilt_series_ids():
         return err("Cannot commit: the TiltSeries registry is empty. Reload the project to backfill it from mdocs.")
 
-    probs = df["cryoBoostDlProbability"] if "cryoBoostDlProbability" in df.columns else [None] * len(df)
     kept = dropped = 0
     unknown: list[str] = []
-    for stem, is_filt, prob in zip(df["cryoBoostKey"], (df["cryoBoostDlLabel"] != "good"), probs, strict=False):
+    for stem, is_filt in zip(df["cryoBoostKey"], (df["cryoBoostDlLabel"] != "good"), strict=True):
         try:
-            registry.set_frame_filtered(
-                str(stem),
-                bool(is_filt),
-                reason="tilt-filter" if is_filt else None,
-                probability=float(prob) if prob is not None else None,
-            )
+            registry.set_frame_filtered(str(stem), bool(is_filt), reason="tilt-filter" if is_filt else None)
         except KeyError:
             # A labelled tilt the registry has never heard of means the verdict for it
             # would be lost silently -- report it rather than quietly under-filtering.
