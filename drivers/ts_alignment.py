@@ -31,7 +31,7 @@ about and dropped from aggregation; only a total wipeout fails the job. Dropped
 TS are absent downstream.
 
 The mode dispatch, both bootstraps, manifest lookup, exclusions, tally and exit
-markers all live in ArrayDriver; this file is the alignment-specific hooks.
+code all live in ArrayDriver; this file is the alignment-specific hooks.
 """
 
 import shutil

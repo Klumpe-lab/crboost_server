@@ -21,9 +21,6 @@ def main():
         print(f"[DRIVER] BOOTSTRAP ERROR: {e}", file=sys.stderr)
         sys.exit(1)
 
-    success_file = job_dir / "RELION_JOB_EXIT_SUCCESS"
-    failure_file = job_dir / "RELION_JOB_EXIT_FAILURE"
-
     try:
         paths = {k: Path(v) for k, v in context["paths"].items()}
         additional_binds = list(context.get("additional_binds", []))
@@ -132,13 +129,11 @@ def main():
         else:
             print("[DRIVER] WARN: No class volumes found", flush=True)
 
-        success_file.touch()
         print("--- SLURM JOB END (Exit Code: 0) ---", flush=True)
 
     except Exception as e:
         print(f"[DRIVER] FATAL: {e}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
-        failure_file.touch()
         sys.exit(1)
 
 

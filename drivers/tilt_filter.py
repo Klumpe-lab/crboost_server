@@ -35,13 +35,9 @@ def main():
     print(f"Node: {os.uname().nodename}", flush=True)
     print(f"CWD: {job_dir}", flush=True)
 
-    success_file = job_dir / "RELION_JOB_EXIT_SUCCESS"
-    failure_file = job_dir / "RELION_JOB_EXIT_FAILURE"
-
     input_star = job_model.paths.get("input_star", "")
     if not input_star:
         print("[DRIVER] ERROR: No input star file resolved", file=sys.stderr, flush=True)
-        failure_file.touch()
         sys.exit(1)
 
     input_star_abs = Path(input_star)
@@ -50,7 +46,6 @@ def main():
 
     if not input_star_abs.exists():
         print(f"[DRIVER] ERROR: Input star file does not exist: {input_star_abs}", file=sys.stderr, flush=True)
-        failure_file.touch()
         sys.exit(1)
 
     try:
@@ -147,13 +142,11 @@ def main():
         registry.save()
         print(f"[DRIVER] Stamped tilt-filter verdict on {stamped} registry frames", flush=True)
 
-        success_file.touch()
         print("--- SLURM JOB END (Exit Code: 0) ---", flush=True)
 
     except Exception as e:
         print(f"[DRIVER] FATAL: {e}", file=sys.stderr, flush=True)
         traceback.print_exc(file=sys.stderr)
-        failure_file.touch()
         print("--- SLURM JOB END (Exit Code: 1) ---", file=sys.stderr, flush=True)
         sys.exit(1)
 

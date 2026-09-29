@@ -16,7 +16,7 @@ Mode is determined by the SLURM_ARRAY_TASK_ID env var:
           warp_frameseries/ output directory.
 
 The mode dispatch, both bootstraps, manifest lookup, exclusions, tally and exit
-markers all live in ArrayDriver; this file is the fs_motion-specific hooks.
+code all live in ArrayDriver; this file is the fs_motion-specific hooks.
 """
 
 import shutil

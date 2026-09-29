@@ -14,8 +14,8 @@ Empty-upstream guard: if the upstream tmextractcand step produced zero
 candidates across every tomogram, running this job has nothing to do.
 We mirror the per-TS .skip pattern at the whole-job level — banner
 here so the user knows before they touch Run, and the driver writes a
-.skipped_no_candidates.json sidecar + RELION_JOB_EXIT_SUCCESS rather
-than a hard fail (see drivers/subtomo_extraction.py).
+.skipped_no_candidates.json sidecar and exits 0 rather than failing
+hard (see drivers/subtomo_extraction.py).
 
 Layout: one species line on top (pill + "open in Species"),
 the two sanity checks as one-line chips (same rules + text, less chrome — the

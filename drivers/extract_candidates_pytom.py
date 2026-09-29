@@ -26,7 +26,7 @@ so there is nothing to isolate. The `target.exists(): continue` skip means a re-
 never re-patches a changed upstream file.
 
 The mode dispatch, both bootstraps, manifest lookup, exclusions, tally and exit
-markers all live in ArrayDriver; this file is the extraction-specific hooks.
+code all live in ArrayDriver; this file is the extraction-specific hooks.
 """
 
 import json

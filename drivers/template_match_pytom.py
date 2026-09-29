@@ -29,7 +29,7 @@ Tomograms are 1:1 with tilt-series (Tomogram.tilt_series_id == ts_id), so
 the manifest keys off ts_names / tilt_series_ids() directly.
 
 The mode dispatch, both bootstraps, manifest lookup, exclusions, tally and exit
-markers all live in ArrayDriver; this file is the template-match-specific hooks.
+code all live in ArrayDriver; this file is the template-match-specific hooks.
 """
 
 import os

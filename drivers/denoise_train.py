@@ -306,9 +306,6 @@ def main():
     print(f"Node: {os.uname().nodename}", flush=True)
     print(f"CWD: {job_dir}", flush=True)
 
-    success_file = job_dir / "RELION_JOB_EXIT_SUCCESS"
-    failure_file = job_dir / "RELION_JOB_EXIT_FAILURE"
-
     try:
         paths = {k: Path(v) for k, v in local_params_data["paths"].items()}
         additional_binds = local_params_data["additional_binds"]
@@ -322,7 +319,6 @@ def main():
         # prepare_star -> [deconv] -> make_mask -> refine.
         if params.denoise_method == DenoiseMethod.ISONET:
             run_isonet_train(params, paths, job_dir, project_path, additional_binds)
-            success_file.touch()
             print("--- SLURM JOB END (Exit Code: 0) ---", flush=True)
             sys.exit(0)
 
@@ -462,7 +458,6 @@ def main():
             print(f"[ERROR] Model directory not found at expected path: {model_output_dir}", file=sys.stderr)
             raise RuntimeError("Training failed to produce a model directory.")
 
-        success_file.touch()
         print("--- SLURM JOB END (Exit Code: 0) ---", flush=True)
         sys.exit(0)
 
@@ -470,7 +465,6 @@ def main():
         print("[DRIVER] FATAL ERROR: Job failed.", file=sys.stderr, flush=True)
         print(f"{type(e).__name__}: {e}", file=sys.stderr, flush=True)
         traceback.print_exc(file=sys.stderr)
-        failure_file.touch()
         print("--- SLURM JOB END (Exit Code: 1) ---", file=sys.stderr, flush=True)
         sys.exit(1)
 
