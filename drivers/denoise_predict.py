@@ -9,8 +9,8 @@ that dispatches on the SLURM_ARRAY_TASK_ID env var.
           supervisor sbatch. Enumerates tomograms from the reconstruct tomograms.star,
           pre-skips those filtered out by denoising_tomo_name, submits a child SLURM array
           (one tomogram per task) with PER-TASK GPU resources, polls squeue until the array
-          drains, then aggregates the denoised tomograms.star. Writes
-          RELION_JOB_EXIT_{SUCCESS,FAILURE} (the array tasks never do).
+          drains, then aggregates the denoised tomograms.star. Its exit code becomes
+          RELION_JOB_EXIT_{SUCCESS,FAILURE} (the array tasks never write one).
 
 - Set:    TASK mode. One tomogram per array index. Reads the manifest, resolves this
           tomogram's even/odd halves, idempotently skips if the denoised MRC already exists,
@@ -21,7 +21,7 @@ Denoise method (cryoCARE | IsoNet) is selected per-job via params.denoise_method
 affects the per-task work (the `execute` override dispatches the IsoNet multi-command path).
 
 The mode dispatch, both bootstraps, manifest lookup, exclusions, tally and exit
-markers all live in ArrayDriver; this file is the denoise-specific hooks.
+code all live in ArrayDriver; this file is the denoise-specific hooks.
 """
 
 import json

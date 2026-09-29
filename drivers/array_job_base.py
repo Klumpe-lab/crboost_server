@@ -640,15 +640,17 @@ def cancel_previous_array(job_dir: Path) -> str | None:
     return prev_id
 
 
-def install_cancel_handler(array_job_id: str, job_dir: Path) -> None:
-    """Install SIGTERM/SIGINT handlers that scancel the array job on supervisor kill."""
+def install_cancel_handler(array_job_id: str) -> None:
+    """Install SIGTERM/SIGINT handlers that scancel the array job on supervisor kill.
+
+    No exit marker here: the batch shell that writes it gets the same signal, and the
+    reconciler reads the kill from sacct instead."""
 
     def _cancel(signum, frame):
         print(f"[SUPERVISOR] Caught signal {signum}; scancelling array job {array_job_id}", flush=True)
         try:
             subprocess.run(["scancel", str(array_job_id)], check=False)
         finally:
-            (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
             sys.exit(130)
 
     signal.signal(signal.SIGTERM, _cancel)
@@ -665,8 +667,8 @@ class ArrayDriver(ABC):
 
     The base owns the shared skeleton: dispatch on SLURM_ARRAY_TASK_ID, bootstrap,
     the manifest index lookup, exclusion pre-marking, the results tally, the
-    RELION_JOB_EXIT_* markers, and the fail-status handler. A subclass supplies
-    only what is per-job.
+    exit code (qsub.sh turns it into RELION_JOB_EXIT_*), and the fail-status
+    handler. A subclass supplies only what is per-job.
 
     Required hooks: `enumerate_items`, `build_command`, `aggregate`.
     Optional hooks cover the per-driver differences — a supervisor-side compute
@@ -703,7 +705,7 @@ class ArrayDriver(ABC):
     def whole_job_short_circuit(self, ctx: DriverContext) -> bool:
         """Return True to end the job SUCCESSFULLY without enumerating or
         dispatching (subtomo_extraction's merge_only and zero-picks paths).
-        The hook does its own work; the base writes the success marker."""
+        The hook does its own work; the base then exits 0."""
         return False
 
     @abstractmethod
@@ -806,8 +808,6 @@ class ArrayDriver(ABC):
         try:
             ctx = DriverContext.load(self.params_class)
         except Exception as e:
-            # No context yet, so the failure marker goes to the cwd qsub.sh cd'd into.
-            (Path.cwd() / "RELION_JOB_EXIT_FAILURE").touch()
             print(f"[SUPERVISOR] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
             traceback.print_exc(file=sys.stderr)
             sys.exit(1)
@@ -817,7 +817,6 @@ class ArrayDriver(ABC):
         try:
             self.post_bootstrap(ctx)
             if self.whole_job_short_circuit(ctx):
-                (ctx.job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
                 print("[SUPERVISOR] Job finished successfully.", flush=True)
                 sys.exit(0)
             items = self.enumerate_items(ctx)
@@ -854,7 +853,7 @@ class ArrayDriver(ABC):
             )
 
             if array_job_id is not None:
-                install_cancel_handler(array_job_id, ctx.job_dir)
+                install_cancel_handler(array_job_id)
                 wait_for_array_completion(array_job_id, poll_secs=self.poll_secs)
             else:
                 print("[SUPERVISOR] No array submitted (all tasks previously succeeded)", flush=True)
@@ -867,14 +866,12 @@ class ArrayDriver(ABC):
                 print(f"[SUPERVISOR] MISSING tilt-series: {results.missing}", flush=True)
 
             if not self.tally_acceptable(ctx, results):
-                (ctx.job_dir / "RELION_JOB_EXIT_FAILURE").touch()
                 print("[SUPERVISOR] Marking job as FAILED (some tilt-series did not succeed)", flush=True)
                 sys.exit(1)
 
             print("[SUPERVISOR] All tasks succeeded; aggregating metadata...", flush=True)
             self.aggregate(ctx, results)
 
-            (ctx.job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
             print("[SUPERVISOR] Job finished successfully.", flush=True)
             sys.exit(0)
 
@@ -882,7 +879,6 @@ class ArrayDriver(ABC):
         except Exception as e:
             print(f"[SUPERVISOR] FATAL ERROR: {e}", file=sys.stderr, flush=True)
             traceback.print_exc(file=sys.stderr)
-            (ctx.job_dir / "RELION_JOB_EXIT_FAILURE").touch()
             sys.exit(1)
 
     def run_task(self, array_idx: int) -> None:

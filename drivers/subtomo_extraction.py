@@ -39,7 +39,7 @@ Output layout after the supervisor merge:
     .task_status/{ts}.{ok,fail}
 
 The mode dispatch, both bootstraps, manifest lookup, exclusions, tally and exit
-markers all live in ArrayDriver; this file is the subtomo-specific hooks.
+code all live in ArrayDriver; this file is the subtomo-specific hooks.
 """
 
 import json
