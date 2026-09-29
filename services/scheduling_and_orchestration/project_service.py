@@ -333,7 +333,7 @@ class ProjectService:
 
     async def _setup_qsub_templates(self, project_dir: Path):
         """Copy qsub.sh to project root for relion_schemer to find."""
-        source_qsub = Path.cwd() / "config" / "qsub.sh"
+        source_qsub = self.backend.server_dir / "config" / "qsub.sh"
         dest_qsub = project_dir / "qsub.sh"
 
         if source_qsub.exists():

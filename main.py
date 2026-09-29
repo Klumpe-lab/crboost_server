@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from nicegui import ui
 
 from backend import CryoBoostBackend
+from services.configs.config_service import REPO_ROOT
 from services.event_log import EVENTS_LOGGER_NAME
 import logging
 
@@ -134,10 +135,10 @@ def setup_app():
             cache_header = "public, max-age=300"
         return FileResponse(resolved, media_type=media, headers={"Cache-Control": cache_header})
 
-    app.mount("/static", StaticFiles(directory="static"), name="static")
+    app.mount("/static", StaticFiles(directory=REPO_ROOT / "static"), name="static")
     # mtime-based cache-buster: the browser refetches main.css whenever we edit it,
     # so dev iteration doesn't require Cmd-Shift-R after every CSS change.
-    css_path = Path("static/main.css")
+    css_path = REPO_ROOT / "static" / "main.css"
     css_version = int(css_path.stat().st_mtime) if css_path.exists() else 0
     ui.add_head_html(f'''
         <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -147,7 +148,7 @@ def setup_app():
         <link rel="stylesheet" href="/static/main.css?v={css_version}">
     ''')
     
-    backend = CryoBoostBackend(Path.cwd())
+    backend = CryoBoostBackend(REPO_ROOT)
     create_ui_router(backend)
 
     # Single server-side pipeline observer: runs sync_all_jobs centrally

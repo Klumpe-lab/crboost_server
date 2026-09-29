@@ -10,9 +10,10 @@ muted states.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
-_ICON_DIR = Path("static/icons")
+from services.configs.config_service import REPO_ROOT
+
+_ICON_DIR = REPO_ROOT / "static" / "icons"
 _MISSING = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"/>'
 _SIZE_ATTR = re.compile(r'\b(width|height)="\d+(?:\.\d+)?"')
 

@@ -186,6 +186,16 @@ class CryoBoostBackend:
         except Exception as e:
             return err(f"Path resolution failed: {e}")
 
+        try:
+            driver_cmd = driver_invocation(
+                server_dir=self.server_dir,
+                driver_script=self.server_dir / "drivers" / "tilt_filter.py",
+                instance_id=instance_id,
+                project_path=project_path,
+            )
+        except FileNotFoundError as e:
+            return err(str(e))
+
         # Create job directory and clean up stale markers from previous runs
         job_dir = project_path / "TiltFilter" / "dl_run"
         job_dir.mkdir(parents=True, exist_ok=True)
@@ -196,18 +206,6 @@ class CryoBoostBackend:
         job_model.execution_status = JobStatus.RUNNING
         state.mark_dirty()
         await self.state_service.save_project(project_path=project_path, force=True)
-
-        # Build driver command
-        python_exe = self.server_dir / "venv" / "bin" / "python3"
-        if not python_exe.exists():
-            python_exe = "python3"
-        script_path = self.server_dir / "drivers" / "tilt_filter.py"
-        driver_cmd = (
-            f"export PYTHONPATH={self.server_dir}:${{PYTHONPATH}}; "
-            f"{python_exe} {script_path} "
-            f"--instance_id {instance_id} "
-            f"--project_path {project_path}"
-        )
 
         # Build sbatch script from template
         qsub_template = self.server_dir / "config" / "qsub.sh"
@@ -349,6 +347,19 @@ class CryoBoostBackend:
         jm.paths["job_dir"] = str(out_dir)
         await self.state_service.save_project(project_path=project_path, force=True)
 
+        # The driver reads every one of those values off the instance, so the launch is the
+        # standard instance form: --instance_id/--project_path, and qsub cd's into out_dir,
+        # which is what the driver takes as its job dir.
+        try:
+            driver_cmd = driver_invocation(
+                server_dir=self.server_dir,
+                driver_script=self.server_dir / "drivers" / "extract_pick_list.py",
+                instance_id=instance_id,
+                project_path=project_path,
+            )
+        except FileNotFoundError as e:
+            return err(str(e))
+
         # A user-initiated (re-)extract must re-cut from scratch: clear any prior
         # extraction output so drivers/extract_pick_list.py does NOT hit its idempotency
         # skip (out/particles.star + out/Subtomograms/) and silently reuse stale
@@ -368,16 +379,6 @@ class CryoBoostBackend:
             shutil.rmtree(out_dir / "out", ignore_errors=True)
 
         await asyncio.to_thread(_clear_previous_output)
-
-        # The driver reads every one of those values off the instance, so the launch is the
-        # standard instance form: --instance_id/--project_path, and qsub cd's into out_dir,
-        # which is what the driver takes as its job dir.
-        driver_cmd = driver_invocation(
-            server_dir=self.server_dir,
-            driver_script=self.server_dir / "drivers" / "extract_pick_list.py",
-            instance_id=instance_id,
-            project_path=project_path,
-        )
 
         # SLURM resources = the project's defaults (proven to run relion_tomo_subtomo;
         # over-provisioned for one tomo but consistent with the pipeline extraction).

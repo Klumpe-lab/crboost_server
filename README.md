@@ -33,11 +33,12 @@ Then from your laptop: `ssh -f -N -L 8081:localhost:8081 $USER@$HEADNODE` and op
 ---
 
 <details>
-<summary><b>Python environment — why it must be <code>&lt;repo&gt;/venv</code></b></summary>
+<summary><b>Python environment — venv, conda or uv</b></summary>
 
-Pipeline drivers running inside SLURM jobs are launched as exactly `<repo>/venv/bin/python3`. So the
-venv must live in the repository root, the repo must be on a shared filesystem, and that interpreter
-must start on a compute node with the same modules loaded in `config/qsub.sh`.
+Pipeline drivers running inside SLURM jobs are launched with the interpreter that runs `main.py`
+(or `crboost_python` in `config/conf.yaml`, if you set it). Any environment works — a venv, a
+conda/mamba env, uv — as long as it and the repo are on a shared filesystem and that interpreter
+starts on a compute node with the modules loaded in `config/qsub.sh`.
 
 If your cluster's Python ships its own packages and versions conflict, prefer the cluster's modules.
 
@@ -150,7 +151,7 @@ Per-job resources come from the UI via RELION-style placeholders (`XXXextra1XXX`
 partition, constraint, nodes, ntasks-per-node, cpus-per-task, gres, mem, time), so you only define
 the cluster environment once:
 
-- **SLURM HEADER** — the module loads (or equivalent) that make `<repo>/venv/bin/python3` start on a
+- **SLURM HEADER** — the module loads (or equivalent) that make the server's Python start on a
   compute node and put `apptainer` on PATH. Our Lmod lines are in the template as a commented example.
 - **Optional** — `#SBATCH --account` / `--qos` / `--exclude` lines your cluster needs.
 - **Leave untouched** — every `XXX...XXX` placeholder, the `RELION_JOB_EXIT_*` marker block (matched

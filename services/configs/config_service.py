@@ -23,27 +23,10 @@ from typing import Any, Literal
 logger = logging.getLogger(__name__)
 
 
-def find_repo_root() -> Path:
-    """
-    Robustly find the repository root by looking for 'config/conf.yaml'
-    starting from the current directory and moving up.
-    """
-    current = Path.cwd()
-    # Check current directory first (most likely when running main.py)
-    if (current / "config" / "conf.yaml").exists():
-        return current
-
-    # Fallback: check parents (in case we are running a script from a subfolder)
-    for parent in current.parents:
-        if (parent / "config" / "conf.yaml").exists():
-            return parent
-
-    # Last resort: derive the root from this file's location (services/configs/)
-    return Path(__file__).resolve().parent.parent.parent
-
-
-_REPO_ROOT = find_repo_root()
-DEFAULT_CONFIG_PATH = _REPO_ROOT / "config" / "conf.yaml"
+# The checkout this code runs from — never the working directory, which is a job dir on a
+# compute node and whatever the user happened to be in on the headnode.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_CONFIG_PATH = REPO_ROOT / "config" / "conf.yaml"
 
 # Per-user override lives alongside ~/.crboost/prefs.json
 # (see services/configs/user_prefs_service.py). Home-scoped, so each user's
@@ -214,8 +197,9 @@ class CurationConfig(BaseModel):
 class Config(BaseModel):
     """Root configuration model"""
 
-    crboost_root: str = Field(default_factory=lambda: str(_REPO_ROOT))
-    venv_path: str | None = None
+    # Interpreter the pipeline drivers run with. Empty = the one running this server (a venv,
+    # conda or uv environment alike); it must also start on the compute nodes.
+    crboost_python: str = ""
     local: LocalConfig = Field(default_factory=LocalConfig)
     slurm_defaults: SlurmDefaultsConfig = Field(default_factory=SlurmDefaultsConfig)
     # Accepts both new key "supervisor_slurm" and legacy "tsreconstruct_supervisor_slurm"
@@ -259,7 +243,7 @@ class ConfigService:
             # Diagnostic info to help debug future path shifts
             raise FileNotFoundError(
                 f"Configuration file not found at: {config_path}\n"
-                f"Repo Root identified as: {_REPO_ROOT}\n"
+                f"Repo root: {REPO_ROOT}\n"
                 f"Run 'python preflight.py' to create one from the template."
             )
 
@@ -295,10 +279,6 @@ class ConfigService:
         return self._config
 
     @property
-    def crboost_root(self) -> Path:
-        return Path(self._config.crboost_root)
-
-    @property
     def processing_defaults(self) -> ProcessingDefaultsConfig:
         return self._config.processing_defaults
 
@@ -318,18 +298,6 @@ class ConfigService:
         silent "feature off"."""
         raw = (self._config.species_catalog_root or "").strip()
         return Path(raw).expanduser() if raw else None
-
-    @property
-    def venv_path(self) -> Path | None:
-        if self._config.venv_path:
-            return Path(self._config.venv_path)
-        return None
-
-    @property
-    def venv_python(self) -> Path | None:
-        if self.venv_path:
-            return self.venv_path / "bin" / "python3"
-        return None
 
     @property
     def slurm_defaults(self) -> SlurmDefaultsConfig:

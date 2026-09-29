@@ -1,12 +1,9 @@
 # CryoBoost Server Configuration
 # Copy this file to conf.yaml and fill in your values
 
-# Root directory of the crboost_server installation
-# Used by various services to locate resources
-crboost_root: "/path/to/crboost_server"
-
-# Path to Python virtual environment/conda executable
-crboost_python: "/path/to/crboost_server/venv"
+# Python interpreter the pipeline drivers run with on the compute nodes. Leave empty to use
+# the interpreter that runs the server (your venv, conda or uv environment).
+crboost_python: ""
 
 # DEV TOGGLE (temporary): true => every project uses the afterok orchestrator (schemer-free
 # submit + inline import) instead of relion_schemer, without per-project project_params.json
