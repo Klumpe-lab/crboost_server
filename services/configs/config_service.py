@@ -202,6 +202,22 @@ class CurationConfig(BaseModel):
     rest_enabled: bool = True
 
 
+class TiltFilterModelConfig(BaseModel):
+    """One tilt-classifier weights file the tilt-filter job can run."""
+
+    path: str
+    arch: str  # network class name in filterTilts/deepLearning/model_architectures.py
+    normalisation: str  # input transform the weights were trained with (filterTilts model_loader)
+
+
+class TiltFilterConfig(BaseModel):
+    """The tilt classifiers this site offers. The job's model selector lists the keys of
+    `models`; a job that never picked one runs `default_model`."""
+
+    models: dict[str, TiltFilterModelConfig] = Field(default_factory=dict)
+    default_model: str | None = None
+
+
 class Config(BaseModel):
     """Root configuration model"""
 
@@ -215,6 +231,7 @@ class Config(BaseModel):
     job_resource_profiles: dict[str, JobResourceProfile] = Field(default_factory=dict)
     processing_defaults: ProcessingDefaultsConfig = Field(default_factory=ProcessingDefaultsConfig)
     curation: CurationConfig = Field(default_factory=CurationConfig)
+    tilt_filter: TiltFilterConfig = Field(default_factory=TiltFilterConfig)
     tools: dict[str, ToolConfig] = Field(default_factory=dict)
     containers: dict[str, str] | None = None
     # Lab-level species catalog root. Cross-project species definitions live here — name,
@@ -291,6 +308,10 @@ class ConfigService:
     @property
     def curation(self) -> CurationConfig:
         return self._config.curation
+
+    @property
+    def tilt_filter(self) -> TiltFilterConfig:
+        return self._config.tilt_filter
 
     @property
     def species_catalog_root(self) -> Path | None:
