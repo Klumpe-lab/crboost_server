@@ -25,7 +25,7 @@ from typing import Any
 
 from nicegui import ui
 
-from services.configs.config_service import get_config_service
+from services.configs.config_service import REPO_ROOT, get_config_service
 from ui.components.buttons import house_button
 from ui.components.copyable import copy_button
 from ui.components.reactive import FingerprintedView
@@ -367,10 +367,7 @@ class LandingStatusStrip(FingerprintedView):
 
     def _slurm_popover(self) -> None:
         s = self.state
-        try:
-            qsub = str(get_config_service().crboost_root / "config" / "qsub.sh")
-        except Exception:
-            qsub = "config/qsub.sh"
+        qsub = str(REPO_ROOT / "config" / "qsub.sh")
         divider = "height: 1px; background: #e2e8f0; margin: 8px 0 2px; width: 100%;"
         # Hide the GPUS/JOB column when no QOS actually caps GPUs per job (all "—") — else it's noise.
         show_gpu_col = any(r[3] != "—" for r in s.qos_rows)

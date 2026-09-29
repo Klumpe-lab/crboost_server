@@ -15,9 +15,9 @@
 
 
 # ------------ SLURM HEADER  -----------
-# CLUSTER-SPECIFIC: make the compute node's environment match the one the venv was built with,
-# so that <crboost_root>/venv/bin/python3 starts and finds its packages, and `apptainer` is on PATH.
-# Ours, for reference (an Lmod cluster; the venv was built on the module python below):
+# CLUSTER-SPECIFIC: make the compute node's environment match the headnode's, so that the Python
+# running the server (venv, conda or uv) starts and finds its packages, and `apptainer` is on PATH.
+# Ours, for reference (an Lmod cluster; our venv was built on the module python below):
 #
 #   export MODULEPATH=/software/system/modules/core
 #   . /opt/ohpc/admin/lmod/lmod/init/bash
@@ -30,13 +30,6 @@
 which python3
 python3 --version
 # ------------ ------------  -----------
-
-# ------------ ENV PATHS  --------------
-# Filled by preflight.py when it creates config/qsub.sh from this template.
-export CRBOOST_SERVER_DIR="XXXcrboost_rootXXX"
-export CRBOOST_PYTHON="XXXcrboost_pythonXXX"
-export PYTHONPATH="${CRBOOST_SERVER_DIR}:${PYTHONPATH}"
-# ------------ ---------  --------------
 
 echo "--- SLURM JOB BEGAN ---"
 echo "Node: $(hostname)"

@@ -11,8 +11,7 @@ Design notes
   (green = resolves, red = missing) that updates as you type — so a moved or
   mistyped container/venv path is obvious immediately.
 * The editor is driven off ``effective_dict()`` (the raw merged yaml), not the
-  pydantic Config, so keys the model ignores (e.g. ``crboost_python``) still
-  round-trip faithfully.
+  pydantic Config, so keys the model ignores still round-trip faithfully.
 """
 
 from __future__ import annotations
@@ -92,7 +91,6 @@ def open_config_settings(on_saved: Callable[[], None] | None = None) -> None:
 
     # Working copy the inputs mutate in place; saved as-is (diffed vs default).
     nv: dict[str, Any] = {
-        "crboost_root": eff.get("crboost_root", "") or "",
         "crboost_python": eff.get("crboost_python", "") or "",
         "local": dict(eff.get("local") or {}),
         "slurm_defaults": dict(eff.get("slurm_defaults") or {}),
@@ -243,7 +241,7 @@ def _section_header(title: str, subtitle: str = "") -> None:
 
 
 def _path_field(label: str, initial: str, setter: Callable[[str], None], kind: str, note: str = "") -> None:
-    """Row: label + live existence dot + path input. `kind` ∈ {tool, dir, glob}.
+    """Row: label + live existence dot + path input. `kind` ∈ {tool, dir, glob, python}.
     `setter(value)` writes the new value into the working config dict."""
 
     def _exists(v: str) -> bool:
@@ -251,6 +249,8 @@ def _path_field(label: str, initial: str, setter: Callable[[str], None], kind: s
             return _glob_target_exists(v)
         if kind == "dir":
             return bool(v) and Path(v).is_dir()
+        if kind == "python":
+            return not v or check_path_exists(v)  # empty = the server's own interpreter
         return check_path_exists(v)  # tool: file-or-PATH
 
     with ui.element("div").style(f"{_ROW_BOX} padding: 5px 16px;"):
@@ -283,21 +283,17 @@ def _path_field(label: str, initial: str, setter: Callable[[str], None], kind: s
 
 
 def _section_environment(nv: dict[str, Any]) -> None:
-    _section_header("Environment", "Server install dir and the Python used inside SLURM jobs")
-
-    def set_root(v):
-        nv["crboost_root"] = v
+    _section_header("Environment", "The Python used inside SLURM jobs")
 
     def set_py(v):
         nv["crboost_python"] = v
 
-    _path_field("crboost root", nv["crboost_root"], set_root, kind="dir")
     _path_field(
         "job Python",
         nv["crboost_python"],
         set_py,
-        kind="tool",
-        note="Informational: drivers run <crboost root>/venv/bin/python3 (the venv must work on compute nodes).",
+        kind="python",
+        note="Empty = the interpreter running this server. Either way it must start on the compute nodes.",
     )
 
 

@@ -2,9 +2,10 @@
 """CryoBoost Server preflight.
 
 Creates config/conf.yaml and config/qsub.sh from their templates when they are missing, then checks
-the things that break a fresh install. Run it with the interpreter that runs the server and drivers:
+the things that break a fresh install. Run it with the interpreter that runs the server (and, unless
+conf.yaml sets crboost_python, the drivers):
 
-    venv/bin/python3 preflight.py
+    python preflight.py
 
 Never edits an existing config file. Exits 1 when any check fails.
 """
@@ -20,8 +21,6 @@ ROOT = Path(__file__).resolve().parent
 CONFIG_DIR = ROOT / "config"
 CONF_FILE = CONFIG_DIR / "conf.yaml"
 QSUB_FILE = CONFIG_DIR / "qsub.sh"
-VENV_DIR = ROOT / "venv"
-VENV_PYTHON = VENV_DIR / "bin" / "python3"
 
 # Import names of the packages requirements.txt installs that the server or the drivers import.
 REQUIRED_MODULES = [
@@ -74,14 +73,11 @@ def create_from_templates() -> bool:
     """Copy missing config files from their templates. True when anything was created."""
     created = False
     if not CONF_FILE.exists():
-        text = (CONFIG_DIR / "conf.template.yaml").read_text()
-        CONF_FILE.write_text(text.replace("/path/to/crboost_server", str(ROOT)))
+        shutil.copy(CONFIG_DIR / "conf.template.yaml", CONF_FILE)
         print("  created config/conf.yaml from the template")
         created = True
     if not QSUB_FILE.exists():
-        text = (CONFIG_DIR / "qsub.template.sh").read_text()
-        text = text.replace("XXXcrboost_rootXXX", str(ROOT)).replace("XXXcrboost_pythonXXX", str(VENV_PYTHON))
-        QSUB_FILE.write_text(text)
+        shutil.copy(CONFIG_DIR / "qsub.template.sh", QSUB_FILE)
         print("  created config/qsub.sh from the template")
         created = True
     return created
@@ -94,11 +90,6 @@ def check_python() -> None:
         fail(f"Python {version}; 3.11+ required")
     else:
         ok(f"Python {version} ({sys.executable})")
-
-    if not VENV_PYTHON.exists():
-        fail(f"{VENV_PYTHON} not found; drivers on compute nodes run exactly this interpreter")
-    elif Path(sys.prefix).resolve() != VENV_DIR.resolve():
-        warn(f"not running inside {VENV_DIR}; the imports below were checked in a different environment")
 
     missing = []
     for name in REQUIRED_MODULES:
@@ -123,6 +114,13 @@ def check_config():
         fail(f"config does not load: {e}")
         return None
     ok("config loads and validates")
+
+    if not cfg.crboost_python:
+        ok(f"drivers run {sys.executable} (this interpreter; start main.py with it too)")
+    elif os.access(cfg.crboost_python, os.X_OK):
+        ok(f"drivers run crboost_python = {cfg.crboost_python}")
+    else:
+        fail(f"crboost_python = {cfg.crboost_python} is not an executable interpreter; set it or leave it empty")
 
     base = cfg.local.DefaultProjectBase
     if not base:
@@ -204,9 +202,6 @@ def check_qsub() -> None:
     for placeholder in ("XXXcommandXXX", "XXXoutfileXXX", "XXXerrfileXXX", "XXXextra1XXX"):
         if placeholder not in text:
             fail(f"{placeholder} is gone; crboost fills it per job")
-    for leftover in ("XXXcrboost_rootXXX", "XXXcrboost_pythonXXX"):
-        if leftover in text:
-            fail(f"{leftover} was never filled in")
     if MARKER_BLOCK not in text:
         fail("exit-marker block differs from qsub.template.sh; array child tasks would write RELION_JOB_EXIT_*")
     if "exit $EXIT_CODE" not in text:
@@ -232,7 +227,7 @@ def main() -> int:
     if failures:
         print(f"{len(failures)} check(s) failed.")
         return 1
-    print("All checks passed. Start the server with: venv/bin/python3 main.py --port 8081")
+    print(f"All checks passed. Start the server with: {sys.executable} main.py --port 8081")
     return 0
 
 
