@@ -173,7 +173,12 @@ class CryoBoostBackend:
         and SLURM (`PipelineRunnerService.reconcile_tilt_filter_predict`), so neither a
         closed tab nor a server restart loses it. The job's execution_status says whether a
         verdict is committed and is left alone."""
-        from services.jobs.tilt_filter import TiltFilterPredictRun, next_predict_run_dir, resolve_model
+        from services.jobs.tilt_filter import (
+            TiltFilterPredictRun,
+            calibrated_threshold,
+            next_predict_run_dir,
+            resolve_model,
+        )
         from services.path_resolution_service import PathResolutionError, PathResolutionService
 
         project_path = Path(project_path)
@@ -199,6 +204,14 @@ class CryoBoostBackend:
         if input_star is None or not (project_path / input_star).exists():
             return err("The motion-correction output star is not on disk yet; run fsMotion first.")
         job_model.paths.update({k: str(v) for k, v in io_paths.items() if v is not None})
+
+        # The first run of a model moves the job's threshold to that model's recorded cut. Its
+        # predictions replace the previous model's, which the old threshold was set against;
+        # re-running the same model keeps a threshold the user has tuned.
+        previous = job_model.predict_run
+        cut = calibrated_threshold(model_key)
+        if cut is not None and (previous is None or previous.model != model_key):
+            job_model.threshold = cut
 
         # Recorded before the first await, so a second click finds this run in flight.
         run_dir = next_predict_run_dir(project_path)

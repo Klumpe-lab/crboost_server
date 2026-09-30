@@ -30,7 +30,7 @@ def _named(keys: list[str]) -> str:
 
 
 def _is_model_input(png: Path, size: int) -> bool:
-    """True when `png` is an 8-bit grayscale size x size image, usable by the model as it is."""
+    """True when `png` is an 8-bit grayscale size x size image: a gallery thumbnail the model can read."""
     from PIL import Image
 
     try:
@@ -41,7 +41,7 @@ def _is_model_input(png: Path, size: int) -> bool:
 
 
 def predict(state, job_model: TiltFilterParams, job_dir: Path, project_path: Path) -> None:
-    from filterTilts.deepLearning.model_loader import ModelLoader
+    from filterTilts.deepLearning.model_loader import GALLERY_PNG_SIZE, ModelLoader
     from filterTilts.image_processor import ImageProcessor
     from services.tilt_series import get_registry_for
     from services.tilt_series_service import get_tilt_image_paths, load_tilt_series
@@ -55,10 +55,11 @@ def predict(state, job_model: TiltFilterParams, job_dir: Path, project_path: Pat
     # The model first, so a missing weights file or GPU fails the run before any conversion.
     loader = ModelLoader(entry.path, entry.arch, entry.normalisation, gpu=0, num_workers=workers)
     loader.load_model()
-    size = loader.input_size
+    size = GALLERY_PNG_SIZE
+    tta = ", averaged over 8 rotations/flips" if loader.tta else ""
     print(
-        f"[DRIVER] Model {model_key}: {entry.arch}, '{entry.normalisation}' normalisation, {entry.path}, "
-        f"on {loader.device_name}",
+        f"[DRIVER] Model {model_key}: {entry.arch} at {loader.input_size} px, '{entry.normalisation}' "
+        f"normalisation, temperature {loader.temperature:.3f}{tta}, {entry.path}, on {loader.device_name}",
         flush=True,
     )
 
@@ -75,9 +76,9 @@ def predict(state, job_model: TiltFilterParams, job_dir: Path, project_path: Pat
     tilt_keys = [str(k) for k in df["cryoBoostKey"]]
     print(f"[DRIVER] {len(df)} tilts in {ts_data.num_tomograms} tilt series from {input_star}", flush=True)
 
-    # The gallery thumbnails are the model's input byte for byte (ImageProcessor at the
-    # network's size, named after the MRC). A tilt without a usable one is converted from its
-    # MRC into this run's directory.
+    # Every model reads the gallery thumbnails (ImageProcessor at GALLERY_PNG_SIZE, named after
+    # the MRC); one trained at another size resizes them (ModelLoader). A tilt without a usable
+    # thumbnail is converted from its MRC the same way, into this run's directory.
     png_dir = Path(state.tilt_filter_png_dir or project_path / "TiltFilter" / "png")
     mrc_paths = get_tilt_image_paths(ts_data, project_path)
     inputs = [png_dir / f"{Path(m).stem}.png" for m in mrc_paths]

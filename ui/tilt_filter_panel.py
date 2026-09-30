@@ -28,7 +28,14 @@ from ui.components.fields import house_number, house_select
 from ui.components.reactive import SingleFlight
 from ui.current_project import current_project_state
 from ui.pipeline_builder.tilt_filter_row import notify_resume
-from services.jobs.tilt_filter import FilterMode, effective_label, prediction_liveness, predictions_for, resolve_model
+from services.jobs.tilt_filter import (
+    FilterMode,
+    calibrated_threshold,
+    effective_label,
+    prediction_liveness,
+    predictions_for,
+    resolve_model,
+)
 from services.tilt_series_service import fs_motion_star, generate_tilt_thumbnails, get_label_summary, load_tilt_series
 from ui.status_indicator import _running_spinner_html
 from ui.styles import MONO
@@ -509,6 +516,12 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
 
         if has_predictions:
             ui.element("div").style("width: 1px; height: 16px; background: #e2e8f0; margin: 0 2px;")
+            # The cut belongs to the model whose predictions the gallery shows.
+            shown_model = job_model.predict_run.model if job_model.predict_run is not None else job_model.model
+            cut = calibrated_threshold(shown_model)
+            hint = "A tilt with P(bad) at or above this is predicted bad."
+            if cut is not None:
+                hint += f" conf.yaml records {cut:.2f} as the cut for {shown_model or 'the default model'}."
             house_number(
                 "Threshold",
                 model=job_model,
@@ -518,13 +531,14 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
                 step=0.05,
                 format="%.2f",
                 width="w-20",
-                hint="A tilt with P(bad) at or above this is predicted bad.",
+                hint=hint,
                 on_change=_on_threshold,
             )
-            ui.label("uncalibrated").style(f"{FONT} font-size: 8px; color: {CLR_WARN};").tooltip(
-                "Not calibrated on labelled tilts for this model: the default 0.5 is the network's own "
-                "decision boundary, not a validated cut."
-            )
+            if cut is None:
+                ui.label("uncalibrated").style(f"{FONT} font-size: 8px; color: {CLR_WARN};").tooltip(
+                    "Not calibrated on labelled tilts for this model: the default 0.5 is the network's own "
+                    "decision boundary, not a validated cut."
+                )
 
         ui.space()
         bad_only = ui.checkbox("Show only removed").style(f"{FONT} font-size: 10px; color: {CLR_LABEL};")
