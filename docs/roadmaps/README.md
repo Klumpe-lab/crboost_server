@@ -12,7 +12,7 @@ their stage logs intact.
 | # | Roadmap | Theme | Status |
 |---|---|---|---|
 | 05 | [per-ts-top-up](roadmap_05-per-ts-top-up.md) | Re-run one failed/skipped tilt-series without recomputing the job or its downstream chain | stage 0 partial 2026-08-13; no code. **File deleted in `bc2b41b` — restore pending** |
-| 06 | [dl-tilt-filter](roadmap_06-dl-tilt-filter.md) | DL tilt filter as always-interactive first-class method; hard approval barrier | scoped 2026-08-11; not started |
+| 06 | [dl-tilt-filter](roadmap_06-dl-tilt-filter.md) | DL tilt filter: Manual / DL review / DL auto on the job row; the pipeline parks until Approve | rev 4; stages 0–1 done on `dl_filter`, stage 2 in progress; shipped weights dead |
 | 13 | [roster-staged-vs-queued](roadmap_13-roster-staged-vs-queued.md) | The roster paints a just-added job with the same amber "Scheduled" dot as one queued on the cluster; derive the split from `pipeline_active` + `pipeline_order` | scoped 2026-08-23; not started |
 | 15 | [job-dir-ownership](roadmap_15-job-dir-ownership.md) | On-disk ownership lock for `External/jobNNN/` so a retry cannot sbatch a second supervisor into a live job dir (reproduced 2026-08-28, 62/114 TS lost) | scoped 2026-08-28; not started |
 | 19 | [ctf-fit-outlier-check](roadmap_19-ctf-fit-outlier-check.md) | Per-tilt CTF-fit outlier check: fail loudly when Warp's defocus fit diverges (was numbered 18, which collided with k3-stack-ingest) | scoped 2026-09-09; not started |

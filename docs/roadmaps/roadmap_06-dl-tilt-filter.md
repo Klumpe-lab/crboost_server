@@ -1,9 +1,9 @@
 # Roadmap 06 — DL tilt filter: three modes on the job row, a parked pipeline, and working weights
 
 **Status:** rev 4, approved 2026-09-29 (rev 1 2026-08-11). **In progress on branch `dl_filter`:** stage 0
-done; stage 1 done (commits 1–6) and runtime-checked except two items (§12 "Stage 1 runtime pass"). The shipped
-weights are verified dead (§7.1); the requests to the model author are in §7.2. Next session: read §12, split
-stage 2 into commit-sized chunks there (as stage 1 was), then build them; the decisions below are settled.
+done; stage 1 done (commits 1–7) and runtime-checked except two items (§12 "Stage 1 runtime pass"). The shipped
+weights are verified dead (§7.1); the requests to the model author are in §7.2 (sent 2026-09-30). Stage 2 is
+split into commits 8–9 in §12 and being built; the decisions below are settled.
 
 **Maintainer's decisions (2026-09-29):**
 1. The filter has three modes, chosen **on the tilt-filter job row**: **Manual**, **DL review**, **DL auto**.
@@ -248,6 +248,7 @@ added; **(3)** retrain on our own labels. The registry's per-model `arch`/`norma
 ### Stage 2 — Modes on the row + parking
 - §3 mode + `review_hold`; §4 deploy/`submit_parked`/lock/Stop/Re-open; §5 row controls. Defects a, 4
   (defect 2 was fixed in stage 1, §12 commit 6; `mode` stays editable after a commit the same way).
+- Built as two commits (specs and refinements in §12): 8 row controls + one commit path · 9 parking.
 - *Success:* Manual → Run submits upstream only, the row says "Waiting for review", the builder stays usable;
   Approve → alignment starts and logs "K kept, D dropped"; a server restart before Approve changes nothing;
   a double Run submits once.
@@ -320,6 +321,8 @@ b, d, e, i (commit 4); f, g (commit 5); 2 (commit 6). Stage 1's defect list is c
 - **Still to check:** closing the tab mid-run (the run lands and the gallery shows it on reopen), and Approve —
   on a copy of a project, since Approve re-commits the verdict. With the current weights keep the threshold
   above 0.443: below it every untouched tilt is predicted bad, and Approve would commit all of them as bad.
+  From commit 8 on, Approve is refused once alignment has run (§4), so the copy needs alignment not yet run
+  (or its alignment job deleted); Grid3 itself now answers Approve with that reason.
 - **Weights diagnostic for the model author:** `docs/reports/dl-tilt-filter/scripts/check_tiltnet.py` —
   standalone (torch, plus Pillow for PNGs), CPU by default so two machines print the same numbers. Prints the
   checkpoint's sha256 and stored training record, P(bad) for synthetic images and given gallery PNGs, the layer
@@ -413,6 +416,85 @@ Files: `ui/tilt_filter_panel.py`, `services/tilt_series_service.py`.
   dropping those writes.
 - Liveness banner above the gallery: "The model gives every tilt P(bad) ≈ x — its verdicts are meaningless."
 - Then the stage-1 success check (§9) is the user's runtime pass.
+
+### Stage 2 — commits
+| # | Commit subject | What |
+|---|---|---|
+| 8 | tilt filter: Manual / DL review switch on the job row, one Approve path, Re-open | chunk 8 below (code-complete 2026-09-30, ruff-clean, not run) |
+| 9 | tilt filter: the pipeline parks at an unapproved filter; Approve submits the rest | chunk 9 below |
+
+### Chunk 8 — the switch on the row, one commit path, Re-open (no parking yet)
+Files: `services/jobs/tilt_filter.py`, `services/tilt_series_service.py`, `backend.py`, `ui/tilt_filter_panel.py`,
+`ui/pipeline_builder/pipeline_roster.py`, `ui/pipeline_builder/pipeline_builder_panel.py`.
+- **Params:** `FilterMode` (`StrEnum`: `manual`, `dl_review`; stage 3 adds `dl_auto`); `TiltFilterParams.mode`,
+  default `manual`. `last_commit: TiltFilterCommit | None` = `{at, mode, kept, dropped, model, threshold}`, the
+  record behind the row's "Approved · D of T dropped"; SUCCEEDED stays the one committed flag (the dashboard
+  reads it).
+- **One commit path:** `commit_verdict(state, project_path, instance_id)` in `services/jobs/tilt_filter.py`.
+  Refuses while a prediction run is in flight, and once an alignment job is RUNNING or SUCCEEDED (it has
+  consumed the verdict). Loads the fs-motion star (`fs_motion_star` in `tilt_series_service`, which the panel
+  uses too), derives each tilt's label with `effective_label` (a human label wins; in DL review the prediction
+  at the threshold; else good; manual ignores predictions), runs `finalize_pipeline_output`, sets SUCCEEDED and
+  `last_commit`. `backend.approve_tilt_filter` = that + save; the panel's and the row's Approve both call it.
+- **Re-open:** `reopen_review` / `backend.reopen_tilt_filter`: SUCCEEDED → SCHEDULED and `last_commit` cleared;
+  the registry keeps the verdict until the next Approve re-stamps it. Refused once alignment is QUEUED, RUNNING
+  or SUCCEEDED.
+- **Cancel DL:** `backend.cancel_tilt_filter_predict` scancels the in-flight run; the monitor settles it FAILED
+  from sacct ("SLURM ended the job: CANCELLED").
+- **Row:** under the tilt-filter row, a controls line that is its own `FingerprintedView` with a 3 s observer
+  (the roster only repaints on the status poller's tick, which stops when a pipeline finishes; the chip must
+  still move when a DL run lands). `Segmented` Manual · DL review, the §2 chip, and `house_button`s: Run DL
+  (DL review, fsMotion done, no run in flight), Cancel DL (run in flight), Approve (accent; fsMotion done, not
+  committed, no run in flight), Re-open (committed, alignment not started). A mode switch is refused while a run
+  is in flight and re-renders the open panel (`PipelineBuilderPanel.rerender_job`). The handlers'
+  `SingleFlight` lives on the roster, which outlives the controls line.
+- **Panel:** manual hides the DL section and ignores predictions (no P(bad) sort, threshold field, dashed cards
+  or liveness banner); Approve goes through the backend.
+- *Check (user):* Grid3 → DL review brings its predictions back; Approve there is refused with the reason
+  (alignment SUCCEEDED); on a project whose alignment has not run, Approve → "Approved · D of T dropped",
+  Re-open → "Waiting for review"; Run DL, then Cancel DL → "Prediction failed" with the reason.
+- *Built:* the controls line is `ui/pipeline_builder/tilt_filter_row.py`. The panel's own star lookup and
+  P(bad) read moved into the service (`fs_motion_star`, `predictions_for`), so the gallery and Approve read the
+  same star and predictions. Run DL on the row reports an unconfigured model when clicked (the panel's DL
+  section keeps its red marker). The "Approved" chip's tooltip says whether alignment has taken the verdict.
+
+### Chunk 9 — parking
+Files: `services/project_state.py`, `services/scheduling_and_orchestration/pipeline_orchestrator_service.py`,
+`services/scheduling_and_orchestration/pipeline_runner.py`, `backend.py`,
+`ui/pipeline_builder/pipeline_builder_panel.py`, `ui/pipeline_builder/status_poller.py`,
+`ui/pipeline_builder/pipeline_roster.py`.
+- **State:** `ProjectState.review_hold: ReviewHold | None` = `{barrier, parked, held_at}`; schema 3.9; restored
+  explicitly in `load()`.
+- **Deploy (afterok):** clears an old hold. When the run holds an unapproved tilt filter and includes alignment,
+  alignment and everything downstream of it in the run (closure over `resolve_edges`) park; the rest is
+  submitted; the hold is recorded. Nothing left to submit → ok with `waiting_for_review`, no chain. The schemer
+  path refuses such a run with the reason.
+- **`submit_parked`** (Approve): refuses unless the barrier is SUCCEEDED; drops parked ids that left the pipeline
+  or already ran; refuses, keeping the hold, when a producer of a parked job is neither done, live nor parked,
+  and names it; clears the hold; runs `_submit_chain` on the parked set. `_submit_chain` gains afterok on
+  producers outside the submitted set that are still QUEUED/RUNNING.
+- **Lock:** one `asyncio.Lock` per project around deploy and `submit_parked` (defect 4); the Run handler gets a
+  `SingleFlight`.
+- **Stop** clears the hold (both branches of `stop_and_cleanup`).
+- **Approve** calls `submit_parked` when the hold's barrier is this filter. The commit stands when the resume
+  is refused; the UI reports both.
+- **UI:** the Run handler reports a parked run; the poller says the pipeline waits for the review instead of
+  "finished", and keeps its refresher running once a pipeline winds down (it stopped, so a resume from Approve
+  went unseen until reload); the row chip adds "K waiting".
+- *Check (user):* the stage-2 success check in §9.
+
+### Refinements to §2–§5 made while planning stage 2
+- The mode switch lives on the row only; the panel follows it.
+- Default mode `manual`: it needs no model, and the shipped one is dead. DL review is one click on the row.
+- Only alignment and what depends on it park; jobs off that path (tsImport) run during the review. §2 said
+  "submit upstream of the filter; park the rest".
+- Parked jobs get their job dirs when Approve submits them, not at deploy (§4): nothing needs the numbers
+  earlier, and the roster shows a job with a dir as `name (jobNNN)`, which would read as a job that ran.
+- Parking is afterok-only; the schemer path refuses a run that would park (the shipped conf.yaml runs afterok).
+- Re-open is also refused while alignment is QUEUED: a queued alignment job starts without waiting for a review.
+- The submit lock covers deploy and `submit_parked`. Run DL keeps its own guard (the run is recorded before the
+  first await).
+- `last_commit` is a record for the chip; SUCCEEDED stays the committed flag.
 
 ### Branch notes
 - Registries saved from `dl_filter` carry `Frame.p_bad`; code without the field (`Frame` is

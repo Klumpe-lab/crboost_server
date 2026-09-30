@@ -2,8 +2,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import statistics
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar
 from pydantic import BaseModel, Field
@@ -15,6 +16,25 @@ from services.io_slots import InputSlot, OutputSlot, JobFileType
 from services.result import err, ok
 
 logger = logging.getLogger(__name__)
+
+
+class FilterMode(StrEnum):
+    """How the tilt filter reaches its verdict. Both modes wait for a human's Approve."""
+
+    MANUAL = "manual"  # hand labels only; predictions are ignored
+    DL_REVIEW = "dl_review"  # DL predictions, run on request, stand in for the labels nobody set
+
+
+class TiltFilterCommit(BaseModel):
+    """What the last Approve committed, for the job row's "Approved · D of T dropped". A record
+    only: the committed flag is execution_status SUCCEEDED, which the dashboard reads too."""
+
+    at: datetime = Field(default_factory=datetime.now)
+    mode: FilterMode
+    kept: int
+    dropped: int
+    model: str | None = None  # the model behind the predictions (DL review, when its last run succeeded)
+    threshold: float | None = None  # DL review only
 
 
 class TiltFilterPredictRun(BaseModel):
@@ -75,6 +95,9 @@ class TiltFilterParams(AbstractJobParams):
 
     OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = []
 
+    # Manual by default: it needs no model. Chosen on the job row.
+    mode: FilterMode = Field(default=FilterMode.MANUAL, description="Hand labels, or DL predictions a human reviews")
+
     # Older project files carry `model_name` / `prob_threshold` / `prob_action` / `image_size`;
     # they are ignored on load. `prob_threshold` was a cut on the winning class's probability,
     # so `threshold` must never take its value.
@@ -87,6 +110,7 @@ class TiltFilterParams(AbstractJobParams):
     dl_batch_size: int = Field(default=32, ge=1, le=256, description="Batch size for DL inference")
     tilt_labels: dict[str, str] = Field(default_factory=dict, description="Manual good/bad label overrides by tilt key")
     predict_run: TiltFilterPredictRun | None = None
+    last_commit: TiltFilterCommit | None = None
 
     @property
     def predict_in_flight(self) -> bool:
@@ -217,3 +241,125 @@ async def finalize_pipeline_output(state, job_model, ts_data, project_path: Path
         job_model.paths.pop(dead, None)
 
     return ok(kept=kept, dropped=dropped)
+
+
+# ── the review: labels, Approve, Re-open (shared by the gallery and the job row) ──
+
+
+def predictions_for(project_path: Path, keys: Iterable[str]) -> dict[str, float]:
+    """P(bad) per tilt key from the latest prediction run, as the registry holds it. Tilts
+    without a prediction, or unknown to the registry, are absent."""
+    from services.tilt_series import get_registry_for
+
+    registry = get_registry_for(Path(project_path))
+    p_bad: dict[str, float] = {}
+    for key in keys:
+        try:
+            p = registry.get_frame(key).p_bad
+        except KeyError:  # a tilt the registry does not know has no prediction to show
+            continue
+        if p is not None:
+            p_bad[key] = p
+    return p_bad
+
+
+def effective_label(
+    key: str, p_bad: float | None, labels: Mapping[str, str], threshold: float, mode: FilterMode
+) -> str:
+    """A tilt's label as Approve commits it: a human's label wins; in DL review, the prediction
+    at the threshold; otherwise good. `p_bad` is None or NaN for a tilt without a prediction
+    (NaN compares false)."""
+    human = labels.get(key)
+    if human:
+        return human
+    if mode == FilterMode.DL_REVIEW and p_bad is not None and p_bad >= threshold:
+        return "bad"
+    return "good"
+
+
+def _alignment_with_status(state, statuses: Iterable[JobStatus]) -> tuple[str, JobStatus] | None:
+    """An alignment job whose status is one of `statuses`, as (instance_id, status). Alignment
+    is where the verdict is consumed: its supervisor snapshots the tomostars with the cut."""
+    wanted = set(statuses)
+    for iid, jm in state.jobs.items():
+        if jm.job_type == JobType.TS_ALIGNMENT and jm.execution_status in wanted:
+            return iid, jm.execution_status
+    return None
+
+
+def _verdict_locked_reason(iid: str, status: JobStatus) -> str:
+    if status == JobStatus.QUEUED:
+        return f"Alignment ({iid}) is queued and will not wait for a review; stop the pipeline to review again."
+    if status == JobStatus.RUNNING:
+        return f"Alignment ({iid}) is running with the current verdict, which cannot change under it."
+    return f"Alignment ({iid}) has run with the current verdict; delete the alignment job to change it."
+
+
+async def commit_verdict(state, project_path: Path, instance_id: str) -> dict:
+    """Approve: commit the tilt filter's verdict as the review stands. The one commit path; the
+    gallery and the job row both come here.
+
+    Each tilt gets its effective label from the job's labels, mode and threshold and the
+    registry's predictions, so the verdict does not depend on the gallery being open. Sets
+    SUCCEEDED and `last_commit`; the caller saves the project. Refused while a prediction run
+    is in flight (its predictions are about to change) and once alignment is running or has run
+    (it has taken the verdict it keeps)."""
+    from services.tilt_series_service import fs_motion_star, load_tilt_series
+
+    job_model = state.jobs.get(instance_id)
+    if job_model is None:
+        return err(f"Job '{instance_id}' not found.")
+    if job_model.predict_in_flight:
+        return err("A DL prediction run is in flight; approve once its predictions have landed.")
+    locked = _alignment_with_status(state, (JobStatus.RUNNING, JobStatus.SUCCEEDED))
+    if locked:
+        return err(_verdict_locked_reason(*locked))
+    star = fs_motion_star(project_path, state)
+    if star is None:
+        return err("The motion-correction output star is not on disk yet; run fsMotion first.")
+    try:
+        ts_data = await asyncio.to_thread(load_tilt_series, star, project_path)
+    except Exception:
+        logger.exception("tilt-filter commit: could not load %s", star)
+        return err(f"Cannot commit: the tilt table {star.name} could not be read. See the server log.")
+
+    df = ts_data.all_tilts_df
+    dl = job_model.mode == FilterMode.DL_REVIEW
+    p_bad = predictions_for(project_path, df["cryoBoostKey"].unique()) if dl else {}
+    df["cryoBoostDlLabel"] = [
+        effective_label(key, p_bad.get(key), job_model.tilt_labels, job_model.threshold, job_model.mode)
+        for key in df["cryoBoostKey"]
+    ]
+    res = await finalize_pipeline_output(state, job_model, ts_data, project_path)
+    if not res["success"]:
+        return res
+
+    run = job_model.predict_run
+    job_model.execution_status = JobStatus.SUCCEEDED
+    job_model.last_commit = TiltFilterCommit(
+        mode=job_model.mode,
+        kept=res["kept"],
+        dropped=res["dropped"],
+        model=run.model if dl and run is not None and run.status == JobStatus.SUCCEEDED else None,
+        threshold=job_model.threshold if dl else None,
+    )
+    state.mark_dirty()
+    return res
+
+
+def reopen_review(state, instance_id: str) -> dict:
+    """Undo an Approve: the filter reads unapproved again, so the next Run waits for a review.
+    The registry keeps the committed verdict until the next Approve re-stamps it. Refused once
+    alignment is queued, running or has run: the review could no longer hold it back."""
+    job_model = state.jobs.get(instance_id)
+    if job_model is None:
+        return err(f"Job '{instance_id}' not found.")
+    if job_model.execution_status != JobStatus.SUCCEEDED:
+        return err("The tilt filter is not approved.")
+    locked = _alignment_with_status(state, (JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.SUCCEEDED))
+    if locked:
+        return err(_verdict_locked_reason(*locked))
+    job_model.execution_status = JobStatus.SCHEDULED
+    job_model.last_commit = None
+    state.mark_dirty()
+    return ok()

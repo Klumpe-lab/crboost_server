@@ -21,15 +21,14 @@ from nicegui import ui
 from backend import get_backend
 from services.configs.config_service import get_config_service
 from services.models_base import JobStatus
-from services.tilt_series import get_registry_for
 from services.tilt_series.build import parse_position
 from services.project_state import get_state_service
 from ui.components.buttons import house_button
 from ui.components.fields import house_number, house_select
 from ui.components.reactive import SingleFlight
 from ui.current_project import current_project_state
-from services.jobs.tilt_filter import finalize_pipeline_output, prediction_liveness, resolve_model
-from services.tilt_series_service import generate_tilt_thumbnails, get_label_summary, load_tilt_series
+from services.jobs.tilt_filter import FilterMode, effective_label, prediction_liveness, predictions_for, resolve_model
+from services.tilt_series_service import fs_motion_star, generate_tilt_thumbnails, get_label_summary, load_tilt_series
 from ui.status_indicator import _running_spinner_html
 from ui.styles import MONO
 
@@ -118,29 +117,8 @@ def _find_fs_motion_warp_dir(project_path):
     return None
 
 
-def _find_fs_motion_star(project_path):
-    """Locate the fs-motion job's output star (`fs_motion_and_ctf.star`). The tilt
-    filter runs before alignment, so this is the per-tilt star the DL classifies; it
-    lists the motion-corrected averages (rlnMicrographName)."""
-    state = current_project_state()
-    if not state:
-        return None
-    for _iid, jm in state.jobs.items():
-        if jm.job_type and jm.job_type.value == "fsMotionAndCtf" and jm.execution_status == JobStatus.SUCCEEDED:
-            star = jm.paths.get("output_star")
-            if star:
-                p = Path(star) if Path(star).is_absolute() else project_path / star
-                if p.exists():
-                    return p
-            if jm.relion_job_name:
-                p = project_path / jm.relion_job_name.rstrip("/") / "fs_motion_and_ctf.star"
-                if p.exists():
-                    return p
-    return None
-
-
 def _notify_finalize(res: dict) -> None:
-    """Surface finalize_pipeline_output's outcome."""
+    """Surface an Approve's outcome."""
     if res.get("success"):
         ui.notify(
             f"Filter committed: {res['kept']} tilts kept, {res['dropped']} dropped — "
@@ -166,23 +144,24 @@ def render_tilt_filter_job_panel(job_type, instance_id, job_model, backend, ui_m
 
     with ui.scroll_area().classes("w-full flex-1"):
         with ui.column().classes("w-full gap-2 p-3"):
-            source_star = _find_fs_motion_star(project_path)
+            state = current_project_state()
+            source_star = fs_motion_star(project_path, state)
 
             if not source_star:
                 _render_waiting()
                 return
 
-            state = current_project_state()
             pd_str = state.tilt_filter_png_dir if state else None
             png_dir = Path(pd_str) if pd_str else project_path / "TiltFilter" / "png"
 
             def _reload_gallery():
                 gallery_c.clear()
                 with gallery_c:
-                    _build_gallery(source_star, project_path, png_dir, gallery_c, stats_c, job_model=job_model)
+                    _build_gallery(source_star, project_path, png_dir, gallery_c, stats_c, job_model, instance_id)
 
-            # ── DL config (collapsed) ──
-            _render_dl_config(job_model, backend, project_path, instance_id, on_predictions=_reload_gallery)
+            # ── DL config (collapsed; DL review only, the mode is switched on the job row) ──
+            if job_model.mode == FilterMode.DL_REVIEW:
+                _render_dl_config(job_model, backend, project_path, instance_id, on_predictions=_reload_gallery)
 
             # ── Stats + Gallery ──
             stats_c = ui.element("div").classes("w-full")
@@ -191,9 +170,9 @@ def render_tilt_filter_job_panel(job_type, instance_id, job_model, backend, ui_m
 
             with gallery_c:
                 if not has_pngs:
-                    _render_generate(source_star, project_path, png_dir, gallery_c, stats_c, job_model=job_model)
+                    _render_generate(source_star, project_path, png_dir, gallery_c, stats_c, job_model, instance_id)
                 else:
-                    _build_gallery(source_star, project_path, png_dir, gallery_c, stats_c, job_model=job_model)
+                    _build_gallery(source_star, project_path, png_dir, gallery_c, stats_c, job_model, instance_id)
 
 
 def _render_waiting():
@@ -306,7 +285,7 @@ def _render_predict_status(run) -> None:
 # ── Generate ─────────────────────────────────────────────────────────────────
 
 
-def _render_generate(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job_model=None):
+def _render_generate(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job_model, instance_id):
     from ui.background_task import BackgroundTask
 
     dedup_key = f"tilt-filter-thumbnails:{project_path}:{png_dir}"
@@ -314,7 +293,7 @@ def _render_generate(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job
     def _swap_to_gallery():
         gallery_c.clear()
         with gallery_c:
-            _build_gallery(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job_model=job_model)
+            _build_gallery(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job_model, instance_id)
 
     with ui.column().classes("w-full items-center justify-center gap-3 py-10"):
         ui.icon("collections", size="48px").style(f"color: {CLR_GHOST};")
@@ -368,34 +347,13 @@ def _render_generate(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-def _build_gallery(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job_model):
+def _build_gallery(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job_model, instance_id):
     try:
         ts_data = load_tilt_series(str(ts_ctf_star), str(project_path))
     except Exception as e:
         ui.label(f"Failed to load tilt series: {e}").style(f"color: {CLR_ERROR};")
         return
-    _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, job_model)
-
-
-def _registry_p_bad(project_path, keys) -> dict[str, float]:
-    """P(bad) per tilt key from the latest prediction run, as the registry holds it. Tilts
-    without a prediction are absent."""
-    registry = get_registry_for(Path(project_path))
-    p_bad: dict[str, float] = {}
-    for key in keys:
-        try:
-            p = registry.get_frame(key).p_bad
-        except KeyError:  # a tilt the registry does not know has no prediction to show
-            continue
-        if p is not None:
-            p_bad[key] = p
-    return p_bad
-
-
-def _effective_label(key, p_bad, labels, threshold) -> str:
-    """A human's label wins; else the prediction at the threshold; else good. `p_bad` is NaN
-    for a tilt without a prediction, and NaN compares false."""
-    return labels.get(key) or ("bad" if p_bad >= threshold else "good")
+    _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, job_model, instance_id)
 
 
 def _render_liveness_banner(df) -> None:
@@ -418,15 +376,16 @@ def _render_liveness_banner(df) -> None:
         )
 
 
-def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, job_model):
-    state = current_project_state()
+def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, job_model, instance_id):
     # The tilts a human labelled. Clicks write straight into it, so a label outlives a
     # gallery rebuild, a DL re-run and the tab; every other tilt takes the prediction.
     labels = job_model.tilt_labels
     flight = SingleFlight()
 
     df = ts_data.all_tilts_df
-    df["_p_bad"] = df["cryoBoostKey"].map(_registry_p_bad(project_path, df["cryoBoostKey"].unique()))
+    # Manual mode ignores predictions: no P(bad) on the cards, no threshold, no banner.
+    dl = job_model.mode == FilterMode.DL_REVIEW
+    df["_p_bad"] = df["cryoBoostKey"].map(predictions_for(project_path, df["cryoBoostKey"].unique()) if dl else {})
     has_predictions = bool(df["_p_bad"].notna().any())
     png_map: dict[str, Path] = {f.stem: f for f in sorted(png_dir.glob("*.png"))}
     df["_png"] = df["cryoBoostKey"].map(lambda k: str(png_map.get(k, "")))
@@ -451,7 +410,7 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
         """Every tilt's effective label into cryoBoostDlLabel, which the stats, the group
         counts and the commit read."""
         df["cryoBoostDlLabel"] = [
-            _effective_label(k, p, labels, job_model.threshold)
+            effective_label(k, p, labels, job_model.threshold, job_model.mode)
             for k, p in zip(df["cryoBoostKey"], df["_p_bad"], strict=True)
         ]
 
@@ -492,17 +451,12 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
     applied = {"threshold": job_model.threshold}
 
     async def _approve():
+        # The same commit as the job row's Approve: labels are re-derived from the job and the
+        # registry, which this gallery writes through, so both commit the verdict shown here.
         async with flight("approve") as acquired:
             if not acquired:
                 return
-            if job_model.predict_in_flight:
-                ui.notify("A DL prediction run is in flight; approve once its predictions have landed.", type="warning")
-                return
-            res = await finalize_pipeline_output(state, job_model, ts_data, project_path)
-            _notify_finalize(res)
-            if res.get("success"):
-                job_model.execution_status = JobStatus.SUCCEEDED
-                await get_backend().save_project(project_path, force=True)
+            _notify_finalize(await get_backend().approve_tilt_filter(project_path, instance_id))
 
     async def _set_all_good():
         for key in df["cryoBoostKey"]:
@@ -616,9 +570,9 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
     def _populate(refs) -> None:
         """A group's cards, rendered on its first expand, with one click handler for the grid."""
         with refs["body"]:
-            grid = ui.html(_build_cards_html(refs["ts_df"], labels, job_model.threshold), sanitize=False).classes(
-                "w-full"
-            )
+            grid = ui.html(
+                _build_cards_html(refs["ts_df"], labels, job_model.threshold, job_model.mode), sanitize=False
+            ).classes("w-full")
         grid.on("click", handler=lambda e: _on_card_click(e, refs), js_handler=_CARD_CLICK_JS)
 
     rendering = {"active": False}
@@ -726,7 +680,7 @@ def _set_bad_count(bad_lbl, n_bad: int) -> None:
     )
 
 
-def _build_cards_html(ts_df, labels, threshold) -> str:
+def _build_cards_html(ts_df, labels, threshold, mode) -> str:
     """Build the entire card grid for one tilt-series group as a single HTML string. Labels
     come from `labels` and the threshold as they are now, not from `ts_df`, which is a copy
     taken when the group was laid out."""
@@ -736,7 +690,7 @@ def _build_cards_html(ts_df, labels, threshold) -> str:
         rid = row["_row_id"]
         png_path = row.get("_png", "")
         p_bad = row["_p_bad"]
-        label = _effective_label(key, p_bad, labels, threshold)
+        label = effective_label(key, p_bad, labels, threshold, mode)
         look = _card_look(label == "bad", touched=key in labels)
         angle = row.get("rlnTomoNominalStageTiltAngle", None)
         defocus_u = row.get("rlnDefocusU", None)

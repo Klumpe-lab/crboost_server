@@ -231,6 +231,21 @@ class PipelineBuilderPanel:
             for iid, c in self._job_content_containers.items():
                 c.set_visibility(iid == active)
 
+    def rerender_job(self, instance_id: str) -> None:
+        """Rebuild one job's rendered content after the roster changed a setting that shapes
+        its panel (the tilt filter's mode). A job not rendered yet is built fresh on its next
+        switch anyway."""
+        container = self._job_content_containers.pop(instance_id, None)
+        if container is None:
+            return
+        container.delete()
+        if self.ui_mgr.active_instance_id != instance_id:
+            return
+        self._ensure_job_rendered(instance_id)
+        rebuilt = self._job_content_containers.get(instance_id)
+        if rebuilt is not None:
+            rebuilt.set_visibility(True)
+
     def switch_tab(self, instance_id: str):
         if self.ensure_pipeline_mode:
             self.ensure_pipeline_mode()
