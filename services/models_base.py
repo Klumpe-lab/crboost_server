@@ -48,15 +48,17 @@ class IsoNetRefineMethod(str, Enum):
 
 
 class MissAlignSchedule(str, Enum):
-    """miss-alignment macro-iteration schedule preset. Expands (in drivers/miss_align.py)
-    to the tool's `iteration_settings` list — a coarse->fine schedule of {downsample,
-    alignment-mode} entries whose length is the number of macro-iterations. FAST = quick
-    sanity pass; DEFAULT = balanced coarse->fine->local; THOROUGH = the full 8-iteration
-    schedule from the tool docs (production, runs for hours)."""
+    """miss-alignment macro-iteration schedule preset (services/jobs/miss_align.py): a coarse->fine
+    list of (pixel size, alignment mode) entries, one per macro-iteration. FAST = quick sanity pass;
+    DEFAULT = balanced coarse->fine->local; THOROUGH = the tool's 8-iteration template; PAPER = the
+    published lamella ladder in Å (30 → 20 → 10 Å, five local [3,3] rounds); CUSTOM = the job's own
+    `custom_schedule` text."""
 
     FAST = "fast"
     DEFAULT = "default"
     THOROUGH = "thorough"
+    PAPER = "paper"
+    CUSTOM = "custom"
 
 
 class JobCategory(str, Enum):

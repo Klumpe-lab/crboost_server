@@ -125,6 +125,7 @@ class JobResourceProfile(BaseModel):
     gres: str | None = None
     mem: str | None = None
     time: str | None = None
+    qos: str | None = None
 
 
 class LocalConfig(BaseModel):
