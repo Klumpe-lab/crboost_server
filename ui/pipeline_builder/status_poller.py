@@ -36,6 +36,15 @@ class StatusPoller:
         # `None` on first tick means "no prior observation"; first tick
         # only records, doesn't fire transitions.
         self._last_active: bool | None = None
+        # The slot the builder is built in, which no rebuild clears. A timer is an element: one
+        # made inside a click handler sits in that handler's container (the run slot) and is
+        # deleted with its next rebuild.
+        self._home = ui.context.slot
+
+    def start(self) -> None:
+        """(Re)start the 3 s refresher in the builder's own slot; replaces any earlier one."""
+        with self._home:
+            self.panel.ui_mgr.status_timer = ui.timer(3.0, self.safe_status_check)
 
     async def check_and_update_statuses(self):
         """One UI tick. Reads in-memory state (already kept fresh by
@@ -68,15 +77,24 @@ class StatusPoller:
             self._last_active = current
             panel.ui_mgr.set_pipeline_running(False)
             self.stop_all_timers()
+            hold = state.review_hold
             try:
                 if overview.get("failed", 0) > 0:
                     ui.notify(f"Pipeline finished with {overview['failed']} failed job(s).", type="warning")
+                elif hold is not None:
+                    ui.notify(
+                        f"The pipeline waits for the tilt-filter review: {len(hold.parked)} job(s) start on Approve.",
+                        type="info",
+                    )
                 else:
                     ui.notify("Pipeline execution finished.", type="positive")
             except RuntimeError:
                 # Client gone — fine; nothing to notify.
                 pass
             panel.rebuild_pipeline_ui()
+            # Keep watching: an Approve that submits the parked jobs, or a Run in another tab,
+            # starts the pipeline again, and this tab has to see it.
+            self.start()
             return
 
         if not self._last_active and current:

@@ -3,7 +3,7 @@
 **Status:** rev 4, approved 2026-09-29 (rev 1 2026-08-11). **In progress on branch `dl_filter`:** stage 0
 done; stage 1 done (commits 1–7) and runtime-checked except two items (§12 "Stage 1 runtime pass"). The shipped
 weights are verified dead (§7.1); the requests to the model author are in §7.2 (sent 2026-09-30). Stage 2 is
-split into commits 8–9 in §12 and being built; the decisions below are settled.
+built as commits 8–9 (§12) and has not run; the decisions below are settled.
 
 **Maintainer's decisions (2026-09-29):**
 1. The filter has three modes, chosen **on the tilt-filter job row**: **Manual**, **DL review**, **DL auto**.
@@ -252,6 +252,7 @@ added; **(3)** retrain on our own labels. The registry's per-model `arch`/`norma
 - *Success:* Manual → Run submits upstream only, the row says "Waiting for review", the builder stays usable;
   Approve → alignment starts and logs "K kept, D dropped"; a server restart before Approve changes nothing;
   a double Run submits once.
+- *Status 2026-09-30:* built (commits 8–9, ruff-clean), not run; the runtime pass is in §12 under chunk 9.
 
 ### Stage 3 — DL auto in the chain
 - Synthetic edge, `--commit` driver mode, liveness failure fails the job, Switch to DL auto from waiting.
@@ -420,8 +421,8 @@ Files: `ui/tilt_filter_panel.py`, `services/tilt_series_service.py`.
 ### Stage 2 — commits
 | # | Commit subject | What |
 |---|---|---|
-| 8 | tilt filter: Manual / DL review switch on the job row, one Approve path, Re-open | chunk 8 below (code-complete 2026-09-30, ruff-clean, not run) |
-| 9 | tilt filter: the pipeline parks at an unapproved filter; Approve submits the rest | chunk 9 below |
+| 8 | tilt filter: Manual / DL review switch on the job row, one Approve path, Re-open | chunk 8 below (committed 2026-09-30, ruff-clean, not run) |
+| 9 | tilt filter: the pipeline parks at an unapproved filter; Approve submits the rest | chunk 9 below (2026-09-30, ruff-clean, not run) |
 
 ### Chunk 8 — the switch on the row, one commit path, Re-open (no parking yet)
 Files: `services/jobs/tilt_filter.py`, `services/tilt_series_service.py`, `backend.py`, `ui/tilt_filter_panel.py`,
@@ -481,7 +482,57 @@ Files: `services/project_state.py`, `services/scheduling_and_orchestration/pipel
 - **UI:** the Run handler reports a parked run; the poller says the pipeline waits for the review instead of
   "finished", and keeps its refresher running once a pipeline winds down (it stopped, so a resume from Approve
   went unseen until reload); the row chip adds "K waiting".
-- *Check (user):* the stage-2 success check in §9.
+- *Check (user):* the stage-2 success check in §9, on an afterok project whose alignment has not run, filter in
+  Manual and unapproved:
+  1. Run → "Pipeline started …; K job(s) wait for the tilt-filter review" (or, with everything upstream done,
+     "Nothing to start: K job(s) wait …" and nothing submitted); the row reads "… · K waiting"; alignment and
+     everything after it stay pending with no job dir. When the upstream ends: "The pipeline waits for the
+     tilt-filter review", and the builder is editable again.
+  2. Approve on the row → "Approved: …" and "K parked job(s) submitted"; within 3 s, without a reload, the run
+     slot shows Stop and alignment reads Queued. Approving while tsImport still runs: the event log's
+     "Queued <alignment> -> SLURM … (afterok=[…])" names tsImport's SLURM id.
+  3. Restart the server between Run and Approve: the chip still says "K waiting", and Approve submits them.
+  4. Double-click Run: one submit.
+  5. Stop while the upstream runs: "K waiting" goes; Approve then only commits.
+  6. A schemer project (`use_afterok_orchestrator` off) with an unapproved filter: Run is refused with the reason.
+- *Anchors (as of commit 8):*
+  - `pipeline_orchestrator_service.py`: `deploy_and_run_scheme` :139 (guard :149, interactive skip :164, afterok
+    branch :178). Wrap it as `async with lock: return await self._deploy_locked(...)` rather than re-indenting
+    it. `_submit_chain` :311 drops every edge whose producer is outside the submitted set (:449). That is where
+    the in-flight producers get their afterok (`after_ids` :465). It sets `pipeline_active` and saves (:489).
+  - `pipeline_runner.py`: `reconcile_afterok` :404 tracks every non-terminal job that has a `slurm_job_id`, so
+    jobs `submit_parked` sends are tracked with no change there; the `pipeline_active` vote is at :523.
+    `stop_and_cleanup` :1203 has two branches: the afterok one ends at :1239, the schemer one at :1331.
+  - `status_poller.py:66`: the active→inactive branch stops every timer and says "Pipeline execution finished."
+    (:75). `rebuild_pipeline_ui` (`pipeline_builder_panel.py:524`) restarts the status timer only while running
+    (:563). `handle_run_pipeline` :571 treats any success as a started run.
+  - `project_state.py`: `SCHEMA_VERSION` :51; `pipeline_active` :746; `load()` restores field by field; the
+    `protocol_origin` restore at :1342 is the pattern for `review_hold`.
+  - `backend.approve_tilt_filter` :285 gets the `submit_parked` call. `resolve_edges`
+    (`path_resolution_service.py:285`) gives the closure. A job that has not run still enters the producer index
+    through `relion_job_name` / `job_path_mapping`, so a parked alignment resolves tsImport's output while
+    tsImport runs.
+  - Row: `tilt_filter_row.py` `_review_status` :58 and `signature` :104 take the hold. The interactive-job
+    header tooltip (`job_tab_component.py:256`) still says "commit, then run/resubmit".
+  - Recovery (`pipeline_monitor._recover_one`) skips afterok projects, and the hold lives in ProjectState, so a
+    restart needs nothing new.
+- *Built:* `ReviewHold` in `project_state.py`; `review_barrier` (the unapproved filter of a run) in
+  `services/jobs/tilt_filter.py`; `_parked_behind_review` and `submit_parked` in the orchestrator.
+  - The deploy records the hold before the submit awaits anything, so an Approve that lands mid-submit finds it
+    and its `submit_parked` waits on the lock; the hold is dropped again when nothing reached SLURM. With no hold
+    (a second tab approving), `submit_parked` is ok with nothing submitted.
+  - Approve's result carries `resume` (the `submit_parked` outcome); the row and the panel report it through
+    `notify_resume` (`tilt_filter_row.py`).
+  - The refresher: the Run handler made the status timer inside the run slot, so the next run-slot rebuild
+    deleted it, and the wind-down branch never made another. `StatusPoller.start()` makes it in the slot the
+    builder is built in; the wind-down branch, the Run handler and the rebuild tail use it.
+  - The chip's "· K waiting" tooltip says since when. After a refused resume the filter reads "Approved · … · K
+    waiting", and the tooltip says to Run.
+  - Stop leaves parked jobs as they are: SCHEDULED with no SLURM id, outside the afterok branch's live set.
+  - The interactive-job header tooltip says a Run holds alignment until Approve.
+  - Not covered: with the pipeline idle and a hold in place there is no Stop button. Run (a fresh deploy),
+    Approve, or removing the parked jobs from the pipeline ends the hold. Stop and per-job Cancel still stop the
+    refresher (defect 5, stage 4).
 
 ### Refinements to §2–§5 made while planning stage 2
 - The mode switch lives on the row only; the panel follows it.
@@ -507,7 +558,9 @@ Files: `services/project_state.py`, `services/scheduling_and_orchestration/pipel
   when bisecting.
 - The merge with `bindmounts_and_auth` (roadmap 20) meets in `services/configs/config_service.py` (`Config`
   gains `tilt_filter` here, `container_runtime` / `container_binds` there), `config/conf.template.yaml`, and
-  possibly `services/scheduling_and_orchestration/pipeline_runner.py`. The DL submit launches through
+  possibly `services/scheduling_and_orchestration/pipeline_runner.py`. `SCHEMA_VERSION` is 3.9 here
+  (`review_hold`); if that branch bumps it as well, the merge renumbers one of them. Code without the field ignores
+  the `review_hold` key on load (field-by-field `load()`). The DL submit launches through
   `driver_invocation`, so roadmap 20's interpreter change reaches it unchanged.
 - Noticed, not fixed: `_hdr` in `ui/tilt_filter_panel.py` is dead; the dashboard's registry-gap marker reads
   "Job is running" for an unapproved (SCHEDULED) filter; `TiltFilterParams.get_output_assets` names

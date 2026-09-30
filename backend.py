@@ -284,15 +284,22 @@ class CryoBoostBackend:
 
     async def approve_tilt_filter(self, project_path: Path, instance_id: str) -> dict[str, Any]:
         """Approve the tilt filter's review: commit its verdict through the one commit path
-        (`commit_verdict`) and persist the project. The gallery and the job row both call this."""
+        (`commit_verdict`) and persist the project. The gallery and the job row both call this.
+
+        When a run parked jobs behind this filter, they are submitted too, and `resume` carries
+        that outcome. The commit stands when the resume is refused; the caller reports both."""
         from services.jobs.tilt_filter import commit_verdict
 
         project_path = Path(project_path)
         state = self.state_service.state_for(project_path)
         res = await commit_verdict(state, project_path, instance_id)
-        if res["success"]:
-            await self.state_service.save_project(project_path=project_path, force=True)
-            events.info("Tilt filter approved: %d kept, %d dropped", res["kept"], res["dropped"])
+        if not res["success"]:
+            return res
+        await self.state_service.save_project(project_path=project_path, force=True)
+        events.info("Tilt filter approved: %d kept, %d dropped", res["kept"], res["dropped"])
+        hold = state.review_hold
+        if hold is not None and hold.barrier == instance_id:
+            res["resume"] = await self.pipeline_orchestrator.submit_parked(project_path)
         return res
 
     async def reopen_tilt_filter(self, project_path: Path, instance_id: str) -> dict[str, Any]:

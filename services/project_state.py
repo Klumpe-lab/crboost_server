@@ -48,7 +48,8 @@ logger = logging.getLogger(__name__)
 # 3.6: -authoritative_pick_lists (merges name their own sources)
 # 3.7: +protocol_origin (which protocol bundle a project was created from)
 # 3.8: +import_source_kind + acquisition.dose_per_tilt_source (SerialEM stack ingest)
-SCHEMA_VERSION: tuple[int, int] = (3, 8)
+# 3.9: +review_hold (the jobs a run parked behind an unapproved tilt filter)
+SCHEMA_VERSION: tuple[int, int] = (3, 9)
 
 
 def _afterok_global_default() -> bool:
@@ -681,6 +682,17 @@ class ProtocolOrigin(BaseModel):
     applied_at: str = ""  # ISO seconds
 
 
+class ReviewHold(BaseModel):
+    """The jobs of a run that wait for the tilt filter's review: alignment, which applies the
+    verdict, and everything downstream of it. Recorded by the afterok deploy, submitted by
+    Approve (`PipelineOrchestratorService.submit_parked`), dropped by Stop and by the next
+    deploy. Parked jobs have no job dir until they are submitted."""
+
+    barrier: str  # the tilt filter's instance_id
+    parked: list[str]  # instance_ids, in run order
+    held_at: datetime = Field(default_factory=datetime.now)
+
+
 class ProjectState(BaseModel):
     """Complete project state with direct global parameter access"""
 
@@ -744,6 +756,9 @@ class ProjectState(BaseModel):
     # / services/tomogram_import.py. None ⇒ no import committed.
     imported_tomograms: ImportedTomograms | None = None
     pipeline_active: bool = Field(default=False)
+    # Jobs parked behind an unapproved tilt filter; None when nothing waits for a review.
+    # Restored explicitly in load() (field-by-field).
+    review_hold: ReviewHold | None = None
 
     # Per-project opt-in to the SLURM afterok submit path (submit_chain) instead of
     # relion_schemer. Off unless set here or by the conf.yaml global toggle, so existing
@@ -1345,6 +1360,15 @@ class ProjectState(BaseModel):
                 project_state.protocol_origin = ProtocolOrigin.model_validate(_po)
             except ValidationError as e:
                 project_state.load_warnings.append(f"protocol_origin could not be restored and was dropped: {e}")
+
+        # The review hold: explicit restore, same reason. A server restart must not release
+        # the jobs parked behind an unapproved tilt filter, nor forget them.
+        _rh = data.get("review_hold")
+        if _rh:
+            try:
+                project_state.review_hold = ReviewHold.model_validate(_rh)
+            except ValidationError as e:
+                project_state.load_warnings.append(f"review_hold could not be restored and was dropped: {e}")
 
         return project_state
 

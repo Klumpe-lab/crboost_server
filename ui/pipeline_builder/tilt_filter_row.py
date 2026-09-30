@@ -84,6 +84,31 @@ def _review_status(state, jm, project_path: Path) -> tuple[str, str, str]:
     return "Waiting for review", _AMBER, "Label the tilts in the panel (click the row), then Approve."
 
 
+def _parked(state, instance_id: str):
+    """The run's hold when it is this filter's, else None."""
+    hold = state.review_hold
+    return hold if hold is not None and hold.barrier == instance_id else None
+
+
+def _waiting_tip(jm, hold) -> str:
+    n, since = len(hold.parked), hold.held_at.strftime("%H:%M")
+    if jm.execution_status == JobStatus.SUCCEEDED:
+        # Approve's resume was refused (its reason was shown then); the next Run submits them.
+        return f"{n} job(s) parked at {since} were not submitted. Run the pipeline to start them."
+    return f"{n} job(s), alignment onward, have waited since {since} and start on Approve."
+
+
+def notify_resume(res: dict) -> None:
+    """Report what Approve did with the jobs parked behind the filter, if it had any."""
+    resume = res.get("resume")
+    if resume is None:
+        return
+    if not resume["success"]:
+        _notify(f"The parked jobs were not submitted: {resume['error']}", "negative")
+    elif resume.get("submitted"):
+        _notify(f"{len(resume['submitted'])} parked job(s) submitted.", "positive")
+
+
 class TiltFilterControls(FingerprintedView):
     """The mode switch, the review status and the actions of one tilt-filter job."""
 
@@ -107,6 +132,7 @@ class TiltFilterControls(FingerprintedView):
             return None
         run = jm.predict_run
         lc = jm.last_commit
+        hold = _parked(state, self._iid)
         return (
             jm.mode,
             jm.execution_status,
@@ -115,6 +141,7 @@ class TiltFilterControls(FingerprintedView):
             None if lc is None else (lc.kept, lc.dropped),
             tuple(_statuses(state, JobType.FS_MOTION_CTF)),
             tuple(_statuses(state, JobType.TS_ALIGNMENT)),
+            None if hold is None else (tuple(hold.parked), hold.held_at),
         )
 
     def render(self):
@@ -122,6 +149,10 @@ class TiltFilterControls(FingerprintedView):
         if jm is None:
             return
         text, color, tip = _review_status(state, jm, self._panel.ui_mgr.project_path)
+        hold = _parked(state, self._iid)
+        if hold is not None:
+            text = f"{text} · {len(hold.parked)} waiting"
+            tip = f"{tip} {_waiting_tip(jm, hold)}"
         with ui.element("div").style("display: flex; align-items: center; gap: 6px; min-width: 0;"):
             render_segmented(_MODES, jm.mode.value, self._on_mode)
             ui.label(text).style(
@@ -147,6 +178,9 @@ class TiltFilterControls(FingerprintedView):
             out.append(("Run DL again" if again else "Run DL", self._run_dl, "default", hint))
         if inputs_ready and not committed and not in_flight:
             hint = "Commit the labels as the review shows them; alignment drops the bad tilts."
+            hold = _parked(state, self._iid)
+            if hold is not None:
+                hint += f" The {len(hold.parked)} parked job(s) start."
             out.append(("Approve", self._approve, "accent", hint))
         if committed and not any(s in _ALIGNMENT_STARTED for s in _statuses(state, JobType.TS_ALIGNMENT)):
             out.append(("Re-open", self._reopen, "default", "Make the next Run wait for a review again."))
@@ -196,6 +230,7 @@ class TiltFilterControls(FingerprintedView):
             res = await self._panel.backend.approve_tilt_filter(self._panel.ui_mgr.project_path, self._iid)
             if res["success"]:
                 _notify(f"Approved: {res['kept']} tilts kept, {res['dropped']} dropped.", "positive")
+                notify_resume(res)
             else:
                 _notify(res["error"], "negative")
             self.refresh()
