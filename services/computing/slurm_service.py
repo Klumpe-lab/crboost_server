@@ -53,6 +53,8 @@ class SlurmConfig(BaseModel):
     gres: str = "gpu:4"
     mem: str = "64G"
     time: str = "3:30:00"
+    # --qos; empty = the account's default QOS. Not a qsub.sh placeholder: write_sbatch_script adds it.
+    qos: str = ""
 
     # Standard Relion Tomography aliases for XXXextra1XXX through XXXextra8XXX
     QSUB_EXTRA_MAPPING: ClassVar[dict[str, str]] = {
@@ -103,8 +105,11 @@ def write_sbatch_script(script_path: Path, cfg: SlurmConfig, command: str, *, ar
     script = QSUB_TEMPLATE.read_text()
     if QSUB_EXIT_MARKERS not in script:
         raise ValueError(f"{QSUB_TEMPLATE}: the exit-marker block differs from config/qsub.template.sh")
-    if array is not None:
+    if cfg.qos.strip():
         # Straight under the shebang: sbatch stops reading #SBATCH lines at the first command.
+        shebang, body = script.split("\n", 1)
+        script = f"{shebang}\n#SBATCH --qos={cfg.qos.strip()}\n{body}"
+    if array is not None:
         shebang, body = script.split("\n", 1)
         script = f"{shebang}\n#SBATCH --array={array}\n{body}"
         script = script.replace(
@@ -187,11 +192,15 @@ class QosLimit:
 # _QOS_UNLIMITED = QOS sets no wall limit, 0 = not yet probed / query failed (callers fall back).
 _QOS_UNLIMITED = 100_000
 _qos_maxwall_cache_min = 0
+_qos_maxwall_by_name: dict[str, int] = {}
 
 
-def get_cached_qos_maxwall_minutes() -> int:
-    """The running user's effective (default-QOS) MaxWallDurationPerJob in minutes as last probed:
-    >0 a real limit, _QOS_UNLIMITED = no limit, 0 = unknown (not probed / sacctmgr unavailable)."""
+def get_cached_qos_maxwall_minutes(qos: str = "") -> int:
+    """MaxWallDurationPerJob in minutes as last probed — of the named QOS, or with no name the running
+    user's effective (default-QOS) one: >0 a real limit, _QOS_UNLIMITED = no limit, 0 = unknown (not
+    probed / sacctmgr unavailable / not one of the user's QOS)."""
+    if qos.strip():
+        return _qos_maxwall_by_name.get(qos.strip(), 0)
     return _qos_maxwall_cache_min
 
 
@@ -329,7 +338,7 @@ class SlurmService:
         the module-level `_qos_maxwall_cache_min` with the default QOS's MaxWall (the limit a job
         without an explicit --qos actually hits) so sync walltime estimators can read it. Returns []
         (and leaves the cache untouched) when sacctmgr is unavailable — never raises."""
-        global _qos_maxwall_cache_min
+        global _qos_maxwall_cache_min, _qos_maxwall_by_name
         cache_key = "qos_limits"
         if not force_refresh and self._is_cache_valid(cache_key):
             return self._cache[cache_key]
@@ -394,6 +403,7 @@ class SlurmService:
             walls = [q.max_wall_minutes for q in limits if q.max_wall_minutes > 0]
             if walls:
                 _qos_maxwall_cache_min = max(walls)
+        _qos_maxwall_by_name = {q.name: q.max_wall_minutes for q in limits if q.max_wall_minutes > 0}
 
         self._cache[cache_key] = limits
         self._cache_timestamp[cache_key] = datetime.now()
