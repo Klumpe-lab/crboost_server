@@ -191,8 +191,24 @@ def render_xz_slab_preview(
     return out_path
 
 
+def _shifted(img: np.ndarray, dy: int, dx: int) -> np.ndarray:
+    """out[y, x] = img[y + dy, x + dx]; pixels with no source are mid-grey."""
+    h, w = img.shape
+    out = np.full_like(img, 128)
+    out[max(0, -dy) : min(h, h - dy), max(0, -dx) : min(w, w - dx)] = img[
+        max(0, dy) : min(h, h + dy), max(0, dx) : min(w, w + dx)
+    ]
+    return out
+
+
 def render_xy_slab_preview(
-    mrc_path: Path, out_path: Path, *, max_dim: int = 1024, slab_byte_budget: int = 50 * 1024 * 1024
+    mrc_path: Path,
+    out_path: Path,
+    *,
+    max_dim: int = 1024,
+    slab_byte_budget: int = 50 * 1024 * 1024,
+    z_center: int | None = None,
+    shift_yx: tuple[int, int] = (0, 0),
 ) -> Path | None:
     """Render an X/Y top-down preview PNG by averaging a central Z-slab.
 
@@ -207,6 +223,11 @@ def render_xy_slab_preview(
     z-midplane, but the central Z-slab covers the cellular layer for plunge-
     frozen samples). Adapts thickness so the total bytes read stays under
     `slab_byte_budget`.
+
+    `z_center` puts the slab on another plane and `shift_yx` moves the image so
+    that output pixel (y, x) shows volume (y + dy, x + dx); both serve putting
+    two reconstructions of one tilt-series on the same physical plane
+    (`services/visualization/recon_register.py`).
     """
     try:
         import mrcfile
@@ -232,8 +253,9 @@ def render_xy_slab_preview(
             target_slices = max(3, nz // 50)
             n_slices = int(min(max_slices_by_budget, target_slices, nz))
             half = n_slices // 2
-            z_lo = max(0, (nz // 2) - half)
-            z_hi = min(nz, z_lo + n_slices)
+            zc = nz // 2 if z_center is None else z_center
+            z_lo = min(max(0, zc - half), nz - n_slices)
+            z_hi = z_lo + n_slices
             slab = np.array(data[z_lo:z_hi, :, :], dtype=np.float32, copy=True)
     except Exception as e:
         logger.warning("X/Y slab read failed for %s: %s", mrc_path, e)
@@ -246,6 +268,9 @@ def render_xy_slab_preview(
         hi = lo + 1.0
     norm = np.clip((img2d - lo) / (hi - lo), 0.0, 1.0)
     u8 = (norm * 255.0).astype(np.uint8)
+    dy, dx = shift_yx
+    if dy or dx:
+        u8 = _shifted(u8, dy, dx)
 
     # IMOD-up convention: Y=0 at the *bottom* of the displayed image (the
     # dashboard's CSS positions overlay dots with `top: (1.0 - y/y_dim)`).
