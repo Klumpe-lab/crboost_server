@@ -265,6 +265,48 @@ class CryoBoostBackend:
         events.info("Tilt filter DL run %s queued: SLURM job %s", run_dir.name, run.slurm_job_id)
         return ok(slurm_job_id=run.slurm_job_id, job_dir=str(run_dir))
 
+    async def cancel_tilt_filter_predict(self, project_path: Path, instance_id: str) -> dict[str, Any]:
+        """Cancel the tilt filter's in-flight DL prediction run. Only scancels: the monitor
+        settles the run FAILED, as it does any run SLURM ended."""
+        state = self.state_service.state_for(Path(project_path))
+        job_model = state.jobs.get(instance_id)
+        if job_model is None or not job_model.predict_in_flight:
+            return err("No DL prediction run is in flight.")
+        slurm_id = job_model.predict_run.slurm_job_id
+        if not slurm_id:
+            return err("The run has no SLURM job id yet; try again in a moment.")
+        res = await self.slurm_service.scancel_jobs([str(slurm_id)])
+        if not res.get("success"):
+            return err(f"scancel of SLURM job {slurm_id} failed: {res.get('error')}")
+        run_name = Path(job_model.predict_run.job_dir).name
+        events.info("Tilt filter DL run %s cancelled (SLURM job %s)", run_name, slurm_id)
+        return ok()
+
+    async def approve_tilt_filter(self, project_path: Path, instance_id: str) -> dict[str, Any]:
+        """Approve the tilt filter's review: commit its verdict through the one commit path
+        (`commit_verdict`) and persist the project. The gallery and the job row both call this."""
+        from services.jobs.tilt_filter import commit_verdict
+
+        project_path = Path(project_path)
+        state = self.state_service.state_for(project_path)
+        res = await commit_verdict(state, project_path, instance_id)
+        if res["success"]:
+            await self.state_service.save_project(project_path=project_path, force=True)
+            events.info("Tilt filter approved: %d kept, %d dropped", res["kept"], res["dropped"])
+        return res
+
+    async def reopen_tilt_filter(self, project_path: Path, instance_id: str) -> dict[str, Any]:
+        """Undo the tilt filter's Approve (`reopen_review`), so the next Run waits for a review."""
+        from services.jobs.tilt_filter import reopen_review
+
+        project_path = Path(project_path)
+        state = self.state_service.state_for(project_path)
+        res = reopen_review(state, instance_id)
+        if res["success"]:
+            await self.state_service.save_project(project_path=project_path, force=True)
+            events.info("Tilt filter re-opened for review")
+        return res
+
     async def extract_pick_list(
         self,
         project_path: Path,

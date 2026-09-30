@@ -274,6 +274,21 @@ def _fs_motion_output_star(project_path: Path, job_model) -> Path | None:
     return None
 
 
+def fs_motion_star(project_path: str | Path, state) -> Path | None:
+    """The succeeded fsMotionAndCtf job's output star: the per-tilt table the tilt filter's
+    gallery shows and its Approve labels. None while fsMotion has not succeeded or its star
+    is not on disk."""
+    from services.models_base import JobStatus, JobType
+
+    proj = Path(project_path)
+    for jm in (getattr(state, "jobs", None) or {}).values():
+        if getattr(jm, "job_type", None) == JobType.FS_MOTION_CTF and jm.execution_status == JobStatus.SUCCEEDED:
+            star = _fs_motion_output_star(proj, jm)
+            if star is not None:
+                return star
+    return None
+
+
 def ensure_tilt_thumbnails(project_path: str | Path, state) -> bool:
     """Render the PNG previews of fsMotion's motion-corrected averages in the
     background if this project has none yet. Returns True when a task was submitted.
