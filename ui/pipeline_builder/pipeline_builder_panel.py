@@ -562,7 +562,7 @@ class PipelineBuilderPanel:
 
         if self.ui_mgr.is_running:
             try:
-                self.ui_mgr.status_timer = ui.timer(3.0, self.poller.safe_status_check)
+                self.poller.start()
             except RuntimeError:
                 pass
 
@@ -573,29 +573,44 @@ class PipelineBuilderPanel:
             _safe_notify("Create a project first", type="warning")
             return
 
-        await self.backend.save_project(self.ui_mgr.project_path, force=True)
-
-        try:
-            result = await self.backend.start_pipeline(
-                project_path=str(self.ui_mgr.project_path),
-                scheme_name=f"run_{datetime.now().strftime('%H%M%S')}",
-                selected_jobs=self.ui_mgr.selected_jobs,
-                required_paths=[],
-            )
-            if result.get("already_complete"):
-                _safe_notify("All selected jobs already completed.", type="info")
+        # A second click while the first Run is still submitting does nothing.
+        async with self.flight("run_pipeline") as acquired:
+            if not acquired:
                 return
-            if result.get("success"):
-                self.ui_mgr.set_pipeline_running(True)
-                _safe_notify(f"Pipeline started (PID: {result.get('pid')})", type="positive")
-                self.ui_mgr.status_timer = ui.timer(3.0, self.poller.safe_status_check)
-                self.rebuild_pipeline_ui()
-            else:
-                logger.warning("start_pipeline failed: %s", result.get("error"))
-                _safe_notify(f"Failed to start: {result.get('error')}", type="negative")
-        except Exception as e:
-            logger.exception("handle_run_pipeline error")
-            _safe_notify(f"Error: {e}", type="negative")
+
+            await self.backend.save_project(self.ui_mgr.project_path, force=True)
+
+            try:
+                result = await self.backend.start_pipeline(
+                    project_path=str(self.ui_mgr.project_path),
+                    scheme_name=f"run_{datetime.now().strftime('%H%M%S')}",
+                    selected_jobs=self.ui_mgr.selected_jobs,
+                    required_paths=[],
+                )
+                if result.get("already_complete"):
+                    _safe_notify("All selected jobs already completed.", type="info")
+                    return
+                if result.get("waiting_for_review"):
+                    # Everything left is parked behind the tilt filter: nothing was submitted. The
+                    # refresher has to run to see the pipeline start when Approve submits them.
+                    _safe_notify(f"{result['message']} Approve it on its row to go on.", type="info")
+                    self.poller.start()
+                    return
+                if result.get("success"):
+                    self.ui_mgr.set_pipeline_running(True)
+                    message = f"Pipeline started (PID: {result.get('pid')})"
+                    parked = result.get("parked") or []
+                    if parked:
+                        message += f"; {len(parked)} job(s) wait for the tilt-filter review and start on Approve"
+                    _safe_notify(message, type="positive")
+                    self.poller.start()
+                    self.rebuild_pipeline_ui()
+                else:
+                    logger.warning("start_pipeline failed: %s", result.get("error"))
+                    _safe_notify(f"Failed to start: {result.get('error')}", type="negative")
+            except Exception as e:
+                logger.exception("handle_run_pipeline error")
+                _safe_notify(f"Error: {e}", type="negative")
 
     async def handle_stop_pipeline(self):
         project_path = self.ui_mgr.project_path

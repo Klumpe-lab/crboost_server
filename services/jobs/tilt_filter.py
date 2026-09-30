@@ -363,3 +363,13 @@ def reopen_review(state, instance_id: str) -> dict:
     job_model.last_commit = None
     state.mark_dirty()
     return ok()
+
+
+def review_barrier(state, run_ids: Iterable[str]) -> str | None:
+    """The tilt filter a run has to wait for: one in `run_ids` whose verdict is not committed.
+    None when the run holds no tilt filter or its filter is approved."""
+    for iid in run_ids:
+        jm = state.jobs.get(iid)
+        if jm is not None and jm.job_type == JobType.TILT_FILTER and jm.execution_status != JobStatus.SUCCEEDED:
+            return iid
+    return None
