@@ -27,6 +27,7 @@ from ui.components.buttons import house_button
 from ui.components.fields import house_number, house_select
 from ui.components.reactive import SingleFlight
 from ui.current_project import current_project_state
+from ui.pipeline_builder.tilt_filter_row import notify_resume
 from services.jobs.tilt_filter import FilterMode, effective_label, prediction_liveness, predictions_for, resolve_model
 from services.tilt_series_service import fs_motion_star, generate_tilt_thumbnails, get_label_summary, load_tilt_series
 from ui.status_indicator import _running_spinner_html
@@ -118,7 +119,7 @@ def _find_fs_motion_warp_dir(project_path):
 
 
 def _notify_finalize(res: dict) -> None:
-    """Surface an Approve's outcome."""
+    """Surface an Approve's outcome, and what it did with the jobs parked behind the filter."""
     if res.get("success"):
         ui.notify(
             f"Filter committed: {res['kept']} tilts kept, {res['dropped']} dropped — "
@@ -126,6 +127,7 @@ def _notify_finalize(res: dict) -> None:
             type="positive",
             timeout=5000,
         )
+        notify_resume(res)
     else:
         ui.notify(res.get("error") or "Filter commit failed.", type="negative")
 

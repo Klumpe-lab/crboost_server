@@ -1237,6 +1237,9 @@ class PipelineRunnerService:
             for jm in live:
                 jm.execution_status = JobStatus.FAILED
             afterok_state.pipeline_active = False
+            # A stopped run has nothing left to resume: jobs parked behind a review stay as they
+            # are, and Approve no longer submits them.
+            afterok_state.review_hold = None
             await self.backend.state_service.save_project(project_path=project_dir, force=True)
             if errors:
                 return err("; ".join(errors), cancelled_slurm_jobs=len(cancelled), errors=errors)
@@ -1329,6 +1332,7 @@ class PipelineRunnerService:
                 job_model.execution_status = JobStatus.FAILED
 
         state.pipeline_active = False
+        state.review_hold = None
         await self.backend.state_service.save_project(project_path=project_dir, force=True)
 
         if errors:
