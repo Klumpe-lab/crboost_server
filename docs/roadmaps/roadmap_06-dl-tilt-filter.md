@@ -1,8 +1,9 @@
 # Roadmap 06 — DL tilt filter: three modes on the job row, a parked pipeline, and working weights
 
 **Status:** rev 4, approved 2026-09-29 (rev 1 2026-08-11). **In progress on branch `dl_filter`:** stage 0
-done; stage 1 code-complete (chunks 1–5), its runtime check (§9, §10 item 1) owed. Next session: read §12
-(implementation log) and start stage 2; the decisions below are settled.
+done; stage 1 done (commits 1–6) and runtime-checked except two items (§12 "Stage 1 runtime pass"). The shipped
+weights are verified dead (§7.1); the requests to the model author are in §7.2. Next session: read §12, split
+stage 2 into commit-sized chunks there (as stage 1 was), then build them; the decisions below are settled.
 
 **Maintainer's decisions (2026-09-29):**
 1. The filter has three modes, chosen **on the tilt-filter job row**: **Manual**, **DL review**, **DL auto**.
@@ -147,12 +148,50 @@ run is tracked separately (§3). In DL auto the filter is an ordinary chain job 
   the banner; in DL auto the job FAILS with that message instead of committing a meaningless verdict.
 
 ## 7. Weights and calibration (parallel track)
-**The current file is a collapsed training run.** Its own record: accuracy peaks at 0.925 in epoch 11, the
-learning rate blows up in epoch 12 (val loss 14.78, peak LR 0.0196), and from epoch 14 accuracy sits at
-exactly 0.5294 with both losses ≈ ln 2. The saved weights are epoch 49 (BN `num_batches_tracked` = 15,500 =
-50 × 310). A forward pass outside torch gave P(good) = 0.557 for every input tried — black, white, noise, a
-human-"bad" −50° tilt and the 0° tilt. Expect the liveness banner (§5) until new weights arrive.
 
+### 7.1 Diagnosis of `model260212.pth` — verified 2026-09-29
+**The file is the last epoch of a training run that diverged; it answers P(bad) 0.4427 for any input, and no
+threshold, recalibration or BatchNorm recomputation can recover it.** A different checkpoint is the only fix.
+
+Evidence: `docs/reports/dl-tilt-filter/scripts/check_tiltnet.py` (standalone, torch only, CPU so two machines
+print the same numbers); full output of the run in `docs/reports/dl-tilt-filter/check_tiltnet_model260212.txt`.
+Epochs are counted from 1 (an earlier version of this section counted from 0).
+
+| What | Finding |
+|---|---|
+| File | 536,430,306 bytes, sha256 `88cada4274fc5cb8cb0b07b4bae06ebf9c646d58072e8fbdc11e3067096362bd`; keys `accuracies, model_architecture, model_state_dict, optimizer_state_dict, train_losses, val_losses`; `SmallSimpleCNN`, 44,698,050 parameters; no NaN/Inf |
+| Optimizer | Adam-type param group on a one-cycle schedule: max_lr 0.01957 (start 7.8e-4 = max/25, end 7.9e-8), momentum 0.85–0.95, weight decay 0.0781 |
+| Training record | epochs 1–12 healthy (val accuracy 0.85–0.925; best **0.925 at epoch 12**, val loss 0.34) · **epoch 13: val loss 14.78**, accuracy 0.70 · epoch 14: train loss 0.697 · **from epoch 15: accuracy exactly 0.5294** (epoch 21 alone reads 0.64) **and both losses ≈ ln 2** (0.691–0.694; train loss 0.79, 0.81, 1.20 at epochs 15, 20, 21) · epochs 22–50 identical |
+| Which weights | 15,500 optimizer steps = 50 epochs × 310: the weights after epoch 50, not the best epoch |
+| Weight magnitudes | every tensor tiny: conv/fc weights mean \|w\| 1.5e-5 to 6e-4, BN gammas 1e-4 to 8e-4, BN running variances 1.2e-5 (bn1) down to 6e-11 (bn3, bn4); only `fc4.bias` = [−0.1151, +0.1151] is sizeable |
+| Forward pass (eval) | black, grey, white, uniform noise, Gaussian noise, a 32 px checkerboard, a ramp, and two gallery tilts of `agg_20260311_412_Grid3` (Position 9 at 0° and a near-blank −70°): every one gives logits exactly `fc4.bias` → P(bad) 0.4427, P(good) 0.5573; spread 0 |
+| Where it dies | spread across inputs falls layer by layer — 3.8e-4 after conv1, 6.5e-7 after conv3, 2.3e-12 after conv6 — and **fc3+ReLU is 100 % zeros for every input**, so the logits are `fc4.bias` |
+| BatchNorm | with batch statistics (train mode, dropout off) the output is identical: the learned weights are the cause, not the stored running statistics |
+| In our pipeline | DL run 001 on the same project (697 tilts, Quadro RTX 6000): P(bad) 0.443 for every tilt, liveness banner shown |
+
+Reading (inference from the above, not recorded in the file): the one-cycle learning rate, climbing toward
+0.0196, blew the run up at epoch 13; the ReLUs died, so no gradient reached the weights, and weight decay then
+shrank them through the remaining 36 epochs — which fits the ~1e-4 magnitudes (the checkpoint cannot tell AdamW from
+Adam + L2). What is left is a bias-only classifier: `fc4.bias` encodes a class prior of P(good) 0.557, and 0.5294
+is what answering "good" for everything scores on the validation set. Expect the liveness banner (§5) until
+other weights are registered.
+
+### 7.2 Requests to the model author
+Drafted 2026-09-29, to go with the script and its output:
+1. Run `check_tiltnet.py` on their copy of the file (same sha256?) and send the output.
+2. The epoch-12 checkpoint if it was kept; otherwise one from a run that did not diverge (lower max_lr, saved at
+   the best validation loss), checked with the script first — its verdict must read "The output depends on the
+   input."
+3. Confirm the inference contract: 384×384 Fourier-cropped, min-max scaled to 8 bits, one channel, ToTensor then
+   Normalize(0.5, 0.5), class 0 = bad and 1 = good.
+4. How the validation split was made (whole tilt series held out, or random tilts), and the training data:
+   pixel size, detector, sample types, bad/good ratio.
+
+**Accepting new weights:** run `check_tiltnet.py` on the file (verdict "The output depends on the input."),
+register it in `conf.yaml` (`tilt_filter.models`, §6), Run DL on `agg_20260311_412_Grid3` — the banner must be
+gone and its 56 human-bad tilts should sit near the top of the worst-first sort — then stage 5 calibration.
+
+### 7.3 Routes and calibration
 Routes, in order: **(1)** upgraded or best-epoch weights from the model author (the maintainer is asking);
 **(2)** v1's model — 3 channels, ImageNet normalisation, recorded val accuracy 0.955 — converted once from
 its fastai pickle (`CryoBoost/data/models/model.pkl`) into a plain state dict, with its architecture class
@@ -203,6 +242,8 @@ added; **(3)** retrain on our own labels. The registry's per-model `arch`/`norma
   lifecycle ✓ · 4 predict-only inference ✓ · 5 review gallery ✓.
 - *Success:* Run DL on a labelled 412 project → predictions for every tilt, worst first; edits survive a
   re-run; closing the tab mid-run changes nothing; with the current weights the banner appears.
+- *Status 2026-09-29:* met on `agg_20260311_412_Grid3` except "closing the tab mid-run" and an Approve, both
+  still to run (§12).
 
 ### Stage 2 — Modes on the row + parking
 - §3 mode + `review_hold`; §4 deploy/`submit_parked`/lock/Stop/Re-open; §5 row controls. Defects a, 4
@@ -234,7 +275,8 @@ Only after DL auto has run on real data.
 4. Waiting in DL review → Switch to DL auto → DL job + remainder submitted.
 
 ## 11. Risks
-1. Weights: until route 1, 2 or 3 lands the filter can only be exercised, not trusted.
+1. Weights: until route 1, 2 or 3 lands the filter can only be exercised, not trusted — the shipped file is
+   verified dead (§7.1).
 2. Preprocessing parity with training rests on one comment in the author's code; calibration would expose a
    mismatch as poor agreement.
 3. Labels: only 16.5 Å/px Falcon data; lamellae thin; implicit-good labels contain misses; annotators
@@ -262,8 +304,8 @@ Only after DL auto has run on real data.
 | 3 | tilt filter: DL prediction runs in their own job dir, settled by the monitor | `TiltFilterPredictRun`, `predict_run`, `predict_in_flight`, `next_predict_run_dir`; `backend.submit_tilt_filter_predict` replaces `submit_tilt_filter_dl` (leaves execution_status alone, refuses while a run is in flight); `PipelineRunnerService.reconcile_tilt_filter_predict`; the monitor tick covers projects with an in-flight run; panel DL section above the gallery with a 3 s observer; the unused standalone panel entry is gone |
 | 4 | tilt filter: predict-only DL runs write P(bad) per tilt from the registered model | params `model` / `threshold` (on P(bad), 0.5) / `dl_batch_size`; `resolve_model` + `prediction_liveness` in `services/jobs/tilt_filter.py`; `ModelLoader(path, arch, normalisation)` GPU-only with `predict_p_bad`; `SmallSimpleCNN.input_size = 384`; `registry.set_frame_prediction`; driver predicts from the gallery PNGs, converts the rest, never writes the verdict; `statistics_calculator.py` deleted; panel model select from the registry with a red marker, threshold with an "uncalibrated" marker; dashboard rows model / threshold |
 | 5 | tilt filter: review gallery shows P(bad), keeps only the labels a human set, and commits on Approve | gallery reads `p_bad` from the registry; effective label = human label → prediction at the job's threshold → good; worst-first sort, dashed/ring = predicted, solid/filled = human; clicks write `tilt_labels` with a 1 s debounced save; threshold field in the gallery row, labels re-derive live; Approve (refused while a run is in flight) replaces Save; liveness banner; `apply_labels` / `filter_good_tilts` / `write_tilt_series` deleted |
-
 | 6 | tilt filter: model, threshold and batch size stay editable after a commit | `TiltFilterParams.USER_PARAMS` is empty: that set freezes a field once the job leaves SCHEDULED/FAILED, and this job's SUCCEEDED only means a verdict is committed; the model select and the threshold force their own debounced saves |
+| 7 | tilt filter: checkpoint diagnostic script and the verified weights diagnosis | `docs/reports/dl-tilt-filter/scripts/check_tiltnet.py` + its output on `model260212.pth`; §7 rewritten around it |
 
 Defects fixed so far: h and 1 (commit 3); g in part (commits no longer stamp a probability, commit 2);
 b, d, e, i (commit 4); f, g (commit 5); 2 (commit 6). Stage 1's defect list is closed.
@@ -273,8 +315,19 @@ b, d, e, i (commit 4); f, g (commit 5); 2 (commit 6). Stage 1's defect list is c
   run 001 on a Quadro RTX 6000 read the gallery PNGs and wrote P(bad) = 0.443 for every tilt; the log and
   the panel both raised the liveness warning. The dead-weights diagnosis (§7) holds on real data. With the
   threshold at 0.5 nothing is predicted bad, and the committed filter pinned the threshold field at 0.50
-  (defect 2) → commit 6. Still to check: labels surviving a re-run, a closed tab mid-run, a moved threshold
-  relabelling, Approve.
+  (defect 2) → commit 6. After it (user-confirmed): threshold 0.40 turns every card dashed, 0.50 restores
+  them; a click turns a card solid; a DL re-run keeps the clicks.
+- **Still to check:** closing the tab mid-run (the run lands and the gallery shows it on reopen), and Approve —
+  on a copy of a project, since Approve re-commits the verdict. With the current weights keep the threshold
+  above 0.443: below it every untouched tilt is predicted bad, and Approve would commit all of them as bad.
+- **Weights diagnostic for the model author:** `docs/reports/dl-tilt-filter/scripts/check_tiltnet.py` —
+  standalone (torch, plus Pillow for PNGs), CPU by default so two machines print the same numbers. Prints the
+  checkpoint's sha256 and stored training record, P(bad) for synthetic images and given gallery PNGs, the layer
+  where different inputs stop differing, and the same pass with BatchNorm on batch statistics (running stats
+  vs weights). Run 2026-09-29 (CPU, torch 2.6.0) on `model260212.pth` with the 0° and −70° Position 9 tilts of
+  `agg_20260311_412_Grid3`: output in `docs/reports/dl-tilt-filter/check_tiltnet_model260212.txt`, diagnosis
+  in §7.1, requests to the model author in §7.2. Usage:
+  `python check_tiltnet.py <weights.pth> [384x384 grayscale tilt PNGs …] > out.txt`.
 
 ### Refinements to §3 / §6 made while building
 - Predicted-bad is derived from `p_bad` and the job's current threshold, not stored (§3).
@@ -364,13 +417,18 @@ Files: `ui/tilt_filter_panel.py`, `services/tilt_series_service.py`.
 ### Branch notes
 - Registries saved from `dl_filter` carry `Frame.p_bad`; code without the field (`Frame` is
   `extra="forbid"`) skips those tilt-series sidecars with a warning. Until the merge, don't open one project
-  from a `dl_filter` server and a server on another branch.
+  from a `dl_filter` server and a server on another branch. `agg_20260311_412_Grid3` already carries `p_bad`
+  (DL run 001), so a server on another branch skips all 17 of its tilt series until the merge.
+- History: chunk 3 landed as two commits with the same subject, 13 s apart — a split, not a duplicate:
+  `7ecc924` (`backend.py`, `services/jobs/tilt_filter.py`, `pipeline_runner.py`) and `b1bd2e7`
+  (`pipeline_monitor.py`, `ui/tilt_filter_panel.py`). `7ecc924` alone is an incomplete state, which matters only
+  when bisecting.
 - The merge with `bindmounts_and_auth` (roadmap 20) meets in `services/configs/config_service.py` (`Config`
   gains `tilt_filter` here, `container_runtime` / `container_binds` there), `config/conf.template.yaml`, and
   possibly `services/scheduling_and_orchestration/pipeline_runner.py`. The DL submit launches through
   `driver_invocation`, so roadmap 20's interpreter change reaches it unchanged.
 - Noticed, not fixed: `_hdr` in `ui/tilt_filter_panel.py` is dead; the dashboard's registry-gap marker reads
-  "Job is running" for an unapproved (SCHEDULED) filter; `TiltFilterParams.get_output_assets` names `filtered/tiltseries_*.star`, which no run
-  writes any more (its only caller, `ProjectService.resolve_job_paths`, is itself uncalled); the roster's
+  "Job is running" for an unapproved (SCHEDULED) filter; `TiltFilterParams.get_output_assets` names
+  `filtered/tiltseries_*.star`, which no run writes any more (its only caller, `ProjectService.resolve_job_paths`, is itself uncalled); the roster's
   downstream check in `_remove_interactive_job` (a job path containing `tiltseries_filtered`) can no longer
   match — stage 2's Re-open/commit rules are where "who consumed this verdict" gets answered (alignment).
