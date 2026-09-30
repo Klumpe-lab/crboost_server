@@ -3,7 +3,9 @@
 **Status:** rev 4, approved 2026-09-29 (rev 1 2026-08-11). **In progress on branch `dl_filter`:** stage 0
 done; stage 1 done (commits 1–7) and runtime-checked except two items (§12 "Stage 1 runtime pass"). The shipped
 weights are verified dead (§7.1); the requests to the model author are in §7.2 (sent 2026-09-30). Stage 2 is
-built as commits 8–9 (§12) and has not run; the decisions below are settled.
+built as commits 8–9 (§12) and has not run. Route 1 weights arrived 2026-09-30 — the model author's ResNet-18
+(§7.4), converted and registered by commit 10, not yet checked on our data. Commits 11–13 (stages 3–5) are
+specced in §12. The decisions below are settled.
 
 **Maintainer's decisions (2026-09-29):**
 1. The filter has three modes, chosen **on the tilt-filter job row**: **Manual**, **DL review**, **DL auto**.
@@ -190,6 +192,9 @@ Drafted 2026-09-29, to go with the script and its output:
 **Accepting new weights:** run `check_tiltnet.py` on the file (verdict "The output depends on the input."),
 register it in `conf.yaml` (`tilt_filter.models`, §6), Run DL on `agg_20260311_412_Grid3` — the banner must be
 gone and its 56 human-bad tilts should sit near the top of the worst-first sort — then stage 5 calibration.
+A checkpoint from the author's `trainTiltCNN_ResNet18` scripts is converted first
+(`python -m filterTilts.deepLearning.convert_checkpoint <in> <out>`, which prints the conf.yaml entry) and checked
+with `check_resnet_tiltnet.py`, which reproduces the author's inference, instead of `check_tiltnet.py`.
 
 ### 7.3 Routes and calibration
 Routes, in order: **(1)** upgraded or best-epoch weights from the model author (the maintainer is asking);
@@ -209,6 +214,26 @@ added; **(3)** retrain on our own labels. The registry's per-model `arch`/`norma
   with bad-recall ≥ 0.9. Never maximise accuracy (88 % of tilts are good).
 - Sanity per run: 0° tilt predicted good in ≥ 95 % of series; predicted-bad tilts sit at higher |angle|
   than predicted-good; per-session bad fraction within 4–30 %.
+
+### 7.4 Route 1: the model author's ResNet-18 — received 2026-09-30
+In `new_weights/` (untracked; the checkpoint stays out of git): the author's `trainTiltCNN_ResNet18_Optuna1034.py`,
+`predictTiltCNN.py`, `submit_inference_ResNet_optuna1034.sh` and `run_best.pth` (sha256 `52a860e9…3cf25d`).
+
+| What | Finding |
+|---|---|
+| Weights (decoded, not run) | ResNet-18 with a one-channel stem and a two-class head, 11.18 M parameters. Magnitudes of a trained network: first conv mean \|w\| 0.17, BatchNorm scales 0.26–1.85, running variances 0.02–2.6; the final layer's weights matter as much as its bias; 8 of 64 first-layer channels dead. The file is the best epoch (8), not the last. None of §7.1's signs of a dead run |
+| Inference contract (stored in the checkpoint) | grayscale PNG resized to 224 px, standardised per image and clipped at ±7.2146σ; logits averaged over the 8 rotations/flips and divided by temperature 0.739; softmax, bad = 0. The author's cut: P(good) ≥ 0.699 is good, i.e. P(bad) ≥ 0.301 is bad |
+| Validation | `split_mode=provided`: the validation datasets are also training datasets, and the script's own docstring says only a dataset-level holdout answers "does it work on the next grid". Model choice, cut and temperature were fitted on that same set. Reported balanced accuracy 0.976 and AUROC 0.998 are within-dataset numbers |
+| Training data | 10 datasets (GroEL, two C. elegans, Chlamy, Drosophila, five K3), none of ours; 93 % of the validation bad tilts come from two of them; bad-tilt recall 0.42 on one K3 set and 0.69 on Drosophila |
+
+Converted with `convert_checkpoint.py` to `/groups/klumpe/software/Models/tiltnet_resnet18_o1034.pth` and
+registered as `tiltnet_resnet18_o1034` (`threshold: 0.301`) in the dev `conf.yaml` (chunk 10). The check on our
+data, on a GPU node:
+```
+srun -p g --gres=gpu:1 --constraint="g2|g3|g4" --cpus-per-task=4 --mem=16G --time=0:20:00 venv/bin/python docs/reports/dl-tilt-filter/scripts/check_resnet_tiltnet.py new_weights/run_best.pth --project /groups/klumpe/crboost_data/agg_20260311_412_Grid3 --device cuda --csv docs/reports/dl-tilt-filter/grid3_resnet_run_best.csv > docs/reports/dl-tilt-filter/check_resnet_run_best.txt
+```
+It passes when it prints "The output depends on the input.", ranks Grid3's 56 committed-bad tilts near the top (high
+AUROC), gives P(bad) rising with |angle| and the 0° tilts good. Then the in-app check under chunk 10 in §12.
 
 ## 8. Defects fixed along the way
 
@@ -256,15 +281,17 @@ added; **(3)** retrain on our own labels. The registry's per-model `arch`/`norma
 
 ### Stage 3 — DL auto in the chain
 - Synthetic edge, `--commit` driver mode, liveness failure fails the job, Switch to DL auto from waiting.
+- One commit (11), specced in §12.
 - *Success:* with a live model the chain reaches tsReconstruct with the browser closed; with the current
   weights the DL job fails with the liveness message and downstream is cancelled, visibly.
 
 ### Stage 4 — Remaining UI defects
-- Defects 3, 5.
+- Defects 3, 5. One commit (12), specced in §12. Chunk 9 already keeps the refresher alive past a pipeline's end.
 
 ### Stage 5 — Calibration + weights decision
 - After new weights (route 1) or the fallback routes: §7 calibration; thresholds recorded here and in the
   registry; the "uncalibrated" marker goes.
+- Route 1 arrived (§7.4) and runs since commit 10; the calibration is one commit (13), specced in §12.
 
 ### Later — out-of-distribution banner / `on_ood` auto mode
 Only after DL auto has run on real data.
@@ -547,6 +574,93 @@ Files: `services/project_state.py`, `services/scheduling_and_orchestration/pipel
   first await).
 - `last_commit` is a record for the chip; SUCCEEDED stays the committed flag.
 
+### Stages 3–5 and the route-1 weights — commits
+| # | Commit subject | What |
+|---|---|---|
+| 10 | tilt filter: run the model author's ResNet-18 (converter, per-model input transform and threshold) | chunk 10 below (2026-09-30, ruff-clean, not run) |
+| 11 | tilt filter: DL auto runs the filter as a chain job that commits its own verdict | chunk 11 below (spec) |
+| 12 | pipeline builder: Stop and per-job Cancel keep the status refresher | chunk 12 below (spec) |
+| 13 | tilt filter: calibrate the P(bad) cuts on our labelled projects | chunk 13 below (spec) |
+
+### Chunk 10 — the route-1 ResNet weights
+Files: `filterTilts/deepLearning/{model_architectures,model_loader,convert_checkpoint}.py`, `drivers/tilt_filter.py`,
+`services/configs/config_service.py`, `config/conf.template.yaml`, `services/jobs/tilt_filter.py`, `backend.py`,
+`ui/tilt_filter_panel.py`.
+- `ResNet18Gray`: torchvision's ResNet-18 with a one-channel stem and `fc = Sequential(Dropout, Linear(512, 2))`,
+  the author's layout, so the state dict loads unchanged; `input_size = 224`.
+- `convert_checkpoint.py`: the author's checkpoint → ours: `model_architecture`, `model_state_dict`, `clip_sigma`,
+  `temperature`, `tta`, and `source` {file, sha256, threshold_p_good}. It loads the source with
+  `weights_only=False` (its config holds numpy scalars), refuses another architecture, input size or a missing
+  clip, re-loads its output with `weights_only=True`, and prints the conf.yaml entry with the cut as P(bad).
+- `ModelLoader`: every model reads the 384² gallery PNG (`GALLERY_PNG_SIZE`), resized when the network was trained
+  at another size; normalisation `half` or `per_image` (clipped at the checkpoint's `clip_sigma`); temperature and
+  the 8-fold rotation/flip averaging come from the checkpoint (defaults 1 and off, so `model260212.pth` runs as
+  before).
+- Driver: its inputs are the gallery PNGs, and a missing one is converted at `GALLERY_PNG_SIZE`; the log names the
+  input size, temperature and averaging.
+- `TiltFilterModelConfig.threshold`: the optional P(bad) cut of a model. A new job starts from the default model's
+  cut. The first run of another model moves the job's threshold to that model's cut, at Run DL rather than at the
+  select, because picking a model leaves the old model's predictions on screen; re-running the same model keeps a
+  tuned threshold. The gallery's "uncalibrated" marker shows only when the predictions' model records no cut; the
+  field's hint names a recorded one.
+- Done by hand 2026-09-30: `run_best.pth` converted to `/groups/klumpe/software/Models/tiltnet_resnet18_o1034.pth`
+  (clip 7.2146, temperature 0.739, averaging on, cut 0.301); the dev `conf.yaml` registers it. `default_model`
+  stays `tiltnet_260212` until chunk 13 decides.
+- *Check (user):* the §7.4 command. Then Grid3 → DL review → model `tiltnet_resnet18_o1034` → Run DL: the threshold
+  reads 0.30 after the run is submitted, the liveness banner is gone, and the human-bad tilts sort to the top.
+
+### Chunk 11 — DL auto (stage 3), spec
+Files: `services/jobs/tilt_filter.py`, `drivers/tilt_filter.py`,
+`services/scheduling_and_orchestration/{pipeline_orchestrator_service,pipeline_runner}.py`,
+`ui/pipeline_builder/tilt_filter_row.py`, `ui/tilt_filter_panel.py`.
+- `FilterMode.DL_AUTO`; the row's switch gains "DL auto"; `effective_label` takes predictions in DL auto as in DL
+  review (human labels still win).
+- The filter is a chain job only in DL auto. Make `IS_INTERACTIVE` mode-dependent on `TiltFilterParams` (an instance
+  property, False in DL auto), so the deploy skip, reconcile_afterok's Pass-4 vote and Stop treat a DL-auto filter
+  as a chain job with no per-site change; the class-level read in `_find_existing_interactive` keeps the singleton.
+  Check first that every other read is instance-level.
+- Deploy (afterok only; the schemer path refuses DL auto with the reason): an unapproved DL-auto filter is
+  submitted like any job (`External/jobNNN`, supervisor `drivers/tilt_filter.py --commit`, afterok on fsMotion
+  through its data edge), plus a synthetic edge filter → every alignment in the submit set, since no data edge
+  exists (the verdict lives in the registry). Nothing parks in DL auto.
+- Driver `--commit`: the model is `job_model.model` or the default (no `predict_run`); it predicts into the
+  registry as now. A dead model (the liveness test) fails the job with the §6 message and writes no verdict.
+  Otherwise it commits: effective labels at the job's threshold → `finalize_pipeline_output` (asyncio.run) →
+  `commit.json` {kept, dropped, model, threshold} in the job dir → the SUCCESS marker. It still never writes
+  project_params.json.
+- reconcile_afterok: on a tilt filter's SUCCEEDED transition, `last_commit` from its `commit.json` (a side effect
+  like Pass 5's thumbnails).
+- Switch to DL auto while parked: with a hold on this filter, the switch calls `submit_parked` with the filter
+  included (the synthetic edge puts it ahead of the parked jobs; afterok on in-flight upstream).
+  `submit_parked` accepts a DL-auto filter as the barrier.
+- Row: "Auto · queued / running / failed (reason in the tooltip) / done · D of T dropped"; no Approve in DL auto;
+  Re-open as now, while alignment has not started.
+- *Check (user):* §9 stage 3's success line; with `model260212.pth` the failure path, with the ResNet the chain.
+
+### Chunk 12 — the refresher survives Stop and per-job Cancel (stage 4, defects 3 and 5), spec
+Files: `ui/pipeline_builder/pipeline_builder_panel.py`, `ui/pipeline_builder/job_tab_component.py`.
+- Stop: `poller.start()` after the rebuild, so a Run in another tab or an Approve shows here.
+- Per-job Cancel (`job_tab_component.py` `_handle_cancel`): no `stop_all_timers()` and no
+  `set_pipeline_running(False)`. On the afterok path the rest of the chain goes on (`cancel_job` leaves
+  `pipeline_active` to reconcile_afterok), and the poller's wind-down branch flips the tab when the pipeline
+  really ends; on the schemer path `cancel_job` clears `pipeline_active` itself, which the poller sees within 3 s.
+- *Check (user):* cancel one job of a running chain → the rest keeps updating; Stop, then Run in another tab →
+  this tab shows it running without a reload.
+
+### Chunk 13 — calibration and the weights decision (stage 5), spec
+Files: `docs/reports/dl-tilt-filter/scripts/calibrate_tiltnet.py` (new), `config/conf.template.yaml`, this roadmap.
+- Offline on a GPU node, for one registered model: find the labelled projects under a base dir (a committed
+  verdict in `registry/tilt_series/*.json`), dedupe tilt series across projects by the mdoc key, set dim exposures
+  aside (mdoc counts below 10 % of the series mean: a physics label, not the model's job), predict through
+  `ModelLoader` (production preprocessing, byte for byte), and pick the cuts per §7.3, cross-validated by session:
+  DL review, bad-recall ≥ 0.9; DL auto, the smallest cut with bad-precision ≥ 0.90 pooled and ≥ 0.8 per sample
+  type. Print §7.3's sanity checks; write `docs/reports/dl-tilt-filter/calibration_<model>.txt` with the project
+  list (the inventory behind §7.3's counts was never recorded).
+- Registry: one cut per mode (`threshold` for review, `threshold_auto` for DL auto), decided with the numbers in
+  hand.
+- The weights decision: if the ResNet holds up, `default_model: tiltnet_resnet18_o1034` in the template and the
+  cluster conf.yaml, where the model and torch also need installing (§12 stage 0).
+
 ### Branch notes
 - Registries saved from `dl_filter` carry `Frame.p_bad`; code without the field (`Frame` is
   `extra="forbid"`) skips those tilt-series sidecars with a warning. Until the merge, don't open one project
@@ -555,7 +669,8 @@ Files: `services/project_state.py`, `services/scheduling_and_orchestration/pipel
 - History: chunk 3 landed as two commits with the same subject, 13 s apart — a split, not a duplicate:
   `7ecc924` (`backend.py`, `services/jobs/tilt_filter.py`, `pipeline_runner.py`) and `b1bd2e7`
   (`pipeline_monitor.py`, `ui/tilt_filter_panel.py`). `7ecc924` alone is an incomplete state, which matters only
-  when bisecting.
+  when bisecting. Commit 9 landed the same way: two commits with the same subject, 11 s apart; every chunk-9 file
+  was staged.
 - The merge with `bindmounts_and_auth` (roadmap 20) meets in `services/configs/config_service.py` (`Config`
   gains `tilt_filter` here, `container_runtime` / `container_binds` there), `config/conf.template.yaml`, and
   possibly `services/scheduling_and_orchestration/pipeline_runner.py`. `SCHEMA_VERSION` is 3.9 here

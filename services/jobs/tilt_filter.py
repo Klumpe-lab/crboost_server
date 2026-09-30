@@ -62,6 +62,20 @@ def next_predict_run_dir(project_path: Path) -> Path:
     return run_dir
 
 
+def calibrated_threshold(key: str | None) -> float | None:
+    """The P(bad) cut conf.yaml records for a model (`key`, or the default model when None);
+    None when it records none or the model is not registered."""
+    registry = get_config_service().tilt_filter
+    entry = registry.models.get(key or registry.default_model or "")
+    return None if entry is None else entry.threshold
+
+
+def _default_threshold() -> float:
+    """A new job's threshold: the default model's recorded cut, else 0.5 (marked uncalibrated)."""
+    cut = calibrated_threshold(None)
+    return 0.5 if cut is None else cut
+
+
 class TiltFilterParams(AbstractJobParams):
     job_type: JobType = Field(default=JobType.TILT_FILTER)
 
@@ -104,8 +118,13 @@ class TiltFilterParams(AbstractJobParams):
     model: str | None = Field(
         default=None, description="Tilt classifier: a key of conf.yaml's tilt_filter.models; None runs the default"
     )
+    # Starts from the default model's recorded cut; the first run of another model moves it to that
+    # model's cut (backend.submit_tilt_filter_predict).
     threshold: float = Field(
-        default=0.5, ge=0.0, le=1.0, description="A tilt with P(bad) at or above this is predicted bad"
+        default_factory=_default_threshold,
+        ge=0.0,
+        le=1.0,
+        description="A tilt with P(bad) at or above this is predicted bad",
     )
     dl_batch_size: int = Field(default=32, ge=1, le=256, description="Batch size for DL inference")
     tilt_labels: dict[str, str] = Field(default_factory=dict, description="Manual good/bad label overrides by tilt key")
