@@ -55,7 +55,8 @@ class FsMotionCtfParams(AbstractJobParams):
     m_range_min_max   : str        = Field(default="500:10", description="Motion estimation range min:max in Angstroms")
     m_bfac            : int        = Field(default=-500, description="B-factor for motion estimation (negative = more smoothing)")
     m_grid            : str        = Field(default="1x1x3", description="Motion estimation grid XxYxZ")
-    c_range_min_max   : str        = Field(default="30:6.0", description="CTF fitting resolution range min:max in Angstroms")
+    # High end at 10 Å: on low-dose tilts the Thon rings are noise beyond it and the 2D fit runs to wrong minima.
+    c_range_min_max   : str        = Field(default="30:10", description="CTF fitting resolution range min:max in Angstroms")
     c_defocus_min_max : str        = Field(default="1.1:8", description="Defocus search range min:max in microns")
     c_grid            : str        = Field(default="2x2x1", description="CTF estimation grid XxYxZ")
     c_use_sum         : bool       = Field(default=False, description="Use frame sum for CTF estimation instead of individual frames")
