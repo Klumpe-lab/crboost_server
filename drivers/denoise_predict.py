@@ -35,6 +35,7 @@ import starfile
 
 from drivers.array_job_base import ArrayDriver, ArrayResults, read_manifest, write_skip_status, STATUS_DIR_NAME
 from drivers.driver_base import DriverContext, ToolCommand, run_tool, require_producer_input
+from drivers.isonet_star import annotate_prep_star, log_facts, read_tomo_facts
 from services.job_models import DenoisePredictParams
 from services.models_base import DenoiseMethod
 from services.tilt_series import DenoisePredictTomogramOutput, get_registry_for
@@ -415,14 +416,21 @@ class DenoisePredictDriver(ArrayDriver):
             .opt_path("--star_name", prep, quote=True)
             .opt("--pixel_size", "auto")
         )
+        # Defocus, tilt range and optics as measured, not prepare_star's defaults (see denoise_train).
+        facts = read_tomo_facts(ctx.paths["input_star"], ctx.project_path, {staged["full"].name})
+        annotate_prep_star(prep, facts)
+        log_facts(facts, self.log)
         input_col = "rlnTomoName"
         if ctx.params.isonet_deconv:
-            isonet(
-                ToolCommand("isonet.py deconv")
-                .opt_path("--star_file", prep, quote=True)
-                .opt_path("--output_dir", stage / "deconv", quote=True)
-            )
             input_col = "rlnDeconvTomoName"
+            if facts[staged["full"].name].warp_deconv is None:
+                # Warp reconstructs with CTF phase flipping, so IsoNet must not flip again.
+                isonet(
+                    ToolCommand("isonet.py deconv")
+                    .opt_path("--star_file", prep, quote=True)
+                    .opt_path("--output_dir", stage / "deconv", quote=True)
+                    .opt("--phaseflipped", True)
+                )
         isonet(
             ToolCommand("isonet.py predict")
             .opt_path("--star_file", prep, quote=True)

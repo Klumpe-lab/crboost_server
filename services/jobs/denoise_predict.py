@@ -58,9 +58,10 @@ class DenoisePredictParams(AbstractJobParams):
     # IsoNet-only (ignored when denoise_method == cryoCARE):
     isonet_deconv: bool = Field(
         default=False,
-        description="Whether IsoNet's CTF deconvolution was applied. MUST match the denoise-train "
-        "setting (the model expects the same input). OFF by default — tsReconstruct already "
-        "deconvolves. Only used when denoise_method = IsoNet.",
+        description="Whether IsoNet's CTF deconvolution was applied at training — set it the same as the "
+        "denoise-train job that made the model. A noise2noise model (method auto / isonet2-n2n) reads the raw "
+        "even/odd halves either way, so it only matters for an isonet2 (single-map) model. Only used when "
+        "denoise_method = IsoNet.",
     )
 
     def __init__(self, **data):

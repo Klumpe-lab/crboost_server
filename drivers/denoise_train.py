@@ -20,6 +20,7 @@ except ImportError:
 
 try:
     from drivers.driver_base import ToolCommand, derive_watchdog_timeout, get_driver_context, run_command, run_tool
+    from drivers.isonet_star import annotate_prep_star, log_facts, read_tomo_facts
     from services.job_models import DenoiseTrainParams
     from services.models_base import DenoiseMethod, IsoNetRefineMethod
 except ImportError:
@@ -68,6 +69,7 @@ def run_isonet_train(params, paths, job_dir, project_path, additional_binds):
     # "train on everything" is unallocatable on any real dataset (see isonet_work_minutes).
     cap = params.isonet_max_training_tomograms
     n = 0
+    staged_names: set[str] = set()
     for _, row in tomo_df.iterrows():
         if cap and n >= cap:
             break
@@ -84,19 +86,16 @@ def run_isonet_train(params, paths, job_dir, project_path, additional_binds):
             if link.exists() or link.is_symlink():
                 link.unlink()
             link.symlink_to(src.resolve())
+        staged_names.add(full.name)
         n += 1
     if n == 0:
         raise ValueError(f"No tomograms matched tomograms_for_training={filter_str!r} for IsoNet training.")
     capped = " (isonet_max_training_tomograms cap reached)" if cap and n >= cap else ""
     print(f"[ISONET] Staged {n} even/odd pair(s) for training{capped}", flush=True)
 
-    first = tomo_df.iloc[0]
-    cs = float(first.get("rlnSphericalAberration", 2.7))
-    voltage = float(first.get("rlnVoltage", 300.0))
-    ac = float(first.get("rlnAmplitudeContrast", 0.1))
-
     prep = "isonet_prep.star"
-    # 2. prepare_star — build the IsoNet registry from the staged full + even/odd dirs.
+    # 2. prepare_star — build the IsoNet registry from the staged full + even/odd dirs, then
+    # overwrite its defaults (defocus, tilt range, optics) with what this project measured.
     isonet(
         ToolCommand("isonet.py prepare_star")
         .opt_path("--full", full_dir, quote=True)
@@ -104,17 +103,25 @@ def run_isonet_train(params, paths, job_dir, project_path, additional_binds):
         .opt_path("--odd", odd_dir, quote=True)
         .opt("--star_name", prep)
         .opt("--pixel_size", "auto")
-        .opt("--cs", cs)
-        .opt("--voltage", voltage)
-        .opt("--ac", ac)
     )
+    facts = read_tomo_facts(Path(input_star), Path(project_path), staged_names)
+    annotate_prep_star(job_dir / prep, facts)
+    log_facts(facts, lambda msg: print(msg, flush=True))
 
-    # input_column threads through: rlnDeconvTomoName if we deconv, else rlnTomoName (Warp already
-    # deconvolved -- deconv OFF by default, params.isonet_deconv).
+    # input_column threads through: rlnDeconvTomoName if we deconv, else rlnTomoName (the raw
+    # reconstruction). tsReconstruct's own deconvolved maps are used when it wrote one for every
+    # tomogram -- Warp deconvolves with each tilt's fitted defocus; otherwise IsoNet deconvolves.
     input_col = "rlnTomoName"
     if params.isonet_deconv:
-        isonet(ToolCommand("isonet.py deconv").opt("--star_file", prep).opt("--output_dir", "deconv"))
         input_col = "rlnDeconvTomoName"
+        if not all(f.warp_deconv for f in facts.values()):
+            # Warp reconstructs with CTF phase flipping, so IsoNet must not flip again.
+            isonet(
+                ToolCommand("isonet.py deconv")
+                .opt("--star_file", prep)
+                .opt("--output_dir", "deconv")
+                .opt("--phaseflipped", True)
+            )
 
     # 3. make_mask — focus training on specimen regions.
     isonet(
