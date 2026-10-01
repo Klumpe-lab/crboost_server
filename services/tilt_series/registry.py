@@ -515,6 +515,28 @@ def get_registry_for(project_path: Path) -> TiltSeriesRegistry:
     return reg
 
 
+async def reload_registry(project_path: Path) -> TiltSeriesRegistry:
+    """Re-read a project's registry from its files, whatever the index's mtime says, and
+    install it in the cache.
+
+    For a caller that knows another process has just replaced the registry files (a SLURM job
+    that has landed). get_registry_for re-syncs only when the index's mtime moves, and the
+    headnode's NFS client can report a file that a compute node replaced with its old mtime for
+    up to a minute; opening the file revalidates it, so a fresh parse reads the new contents.
+    The files are parsed off the event loop and the cache entry is swapped on it, so no reader
+    sees a half-loaded registry. A cached instance with unsaved changes is kept, as in
+    get_registry_for."""
+    resolved = project_path.resolve()
+    fresh = TiltSeriesRegistry(resolved)
+    await asyncio.to_thread(fresh.load)
+    cached = _registries.get(resolved)
+    if cached is not None and cached.has_unsaved_changes():
+        logger.warning("Registry %s has unsaved changes; kept instead of the copy re-read from disk", resolved)
+        return cached
+    _registries[resolved] = fresh
+    return fresh
+
+
 def set_registry_for(project_path: Path, registry: TiltSeriesRegistry) -> None:
     """Install or replace a registry in the path-keyed cache. Used by the
     project-initialization flow when a registry is built from a fresh

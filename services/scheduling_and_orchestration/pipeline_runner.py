@@ -13,6 +13,7 @@ from services.project_state import JobStatus
 from services.event_log import events
 from services.result import err, ok
 from services.scheduling_and_orchestration.pipeline_orchestrator_service import JobTypeResolver
+from services.tilt_series import reload_registry
 from services.tilt_series_service import ensure_tilt_thumbnails
 
 if TYPE_CHECKING:
@@ -562,9 +563,14 @@ class PipelineRunnerService:
         if not runs:
             return False
 
-        def settle(run, new: JobStatus, error: str = "") -> bool:
+        async def settle(run, new: JobStatus, error: str = "") -> bool:
             if new == run.status:
                 return False
+            if new == JobStatus.SUCCEEDED:
+                # The run's predictions must be in the server's registry before its status says they
+                # landed: the gallery and the job row re-read on that status, and get_registry_for can
+                # miss the job's write for up to a minute (see reload_registry).
+                await reload_registry(proj)
             events.info("Tilt filter DL run %s: %s -> %s", Path(run.job_dir).name, run.status.value, new.value)
             run.status = new
             run.error = error
@@ -575,9 +581,9 @@ class PipelineRunnerService:
         for run in runs:
             run_dir = Path(run.job_dir)
             if (run_dir / "RELION_JOB_EXIT_SUCCESS").exists():
-                changed |= settle(run, JobStatus.SUCCEEDED)
+                changed |= await settle(run, JobStatus.SUCCEEDED)
             elif (run_dir / "RELION_JOB_EXIT_FAILURE").exists():
-                changed |= settle(run, JobStatus.FAILED, await asyncio.to_thread(_driver_fatal_line, run_dir))
+                changed |= await settle(run, JobStatus.FAILED, await asyncio.to_thread(_driver_fatal_line, run_dir))
             elif run.slurm_job_id:
                 pending[str(run.slurm_job_id)] = run
             # No SLURM id yet: the submit is between persisting the run and sbatch returning.
@@ -594,17 +600,17 @@ class PipelineRunnerService:
                     if sid in queued:
                         self._predict_absent_since.pop(sid, None)
                         new = _afterok_state_to_status(queued[sid][0])
-                        changed |= settle(run, JobStatus.QUEUED if new == JobStatus.UNKNOWN else new)
+                        changed |= await settle(run, JobStatus.QUEUED if new == JobStatus.UNKNOWN else new)
                     elif sid in terminal:
                         self._predict_absent_since.pop(sid, None)
                         new = _afterok_state_to_status(terminal[sid][0])
                         if new != JobStatus.UNKNOWN:
                             error = f"SLURM ended the job: {terminal[sid][0]}" if new == JobStatus.FAILED else ""
-                            changed |= settle(run, new, error)
+                            changed |= await settle(run, new, error)
                     elif now - self._predict_absent_since.setdefault(sid, now) >= _AFTEROK_ABSENT_GRACE_SEC:
                         self._predict_absent_since.pop(sid, None)
                         reason = "left the queue without an exit marker (killed, node failure or scancel)"
-                        changed |= settle(run, JobStatus.FAILED, reason)
+                        changed |= await settle(run, JobStatus.FAILED, reason)
 
         if changed:
             try:
