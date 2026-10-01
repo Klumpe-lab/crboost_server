@@ -178,17 +178,18 @@ def resolve_model(key: str | None) -> tuple[str, TiltFilterModelConfig]:
     return name, entry
 
 
-# A series whose P(bad) spread stays below this has predictions that do not depend on the image.
-LIVENESS_MIN_STD = 0.05
+# A series whose P(bad) spread stays below this got the same number for every tilt, which is how a
+# network that diverged answers. A live, decisive model is nearly flat on a series with no bad tilt
+# (spreads of 1e-3 to 1e-2), so the cut sits far below that.
+LIVENESS_MIN_STD = 1e-6
 
 
 def prediction_liveness(p_bad_by_series: Mapping[str, Sequence[float]]) -> tuple[bool, float] | None:
     """Whether a run's predictions carry information, and their mean P(bad).
 
     Dead means every series with 2+ predictions has a P(bad) spread below LIVENESS_MIN_STD:
-    the network answers the same whatever the image. One clean series under a live model can
-    have a narrow spread, so a single varying series is enough to count as live. None when no
-    series has 2 predictions to compare."""
+    the network gives every tilt the same number, whatever the image. A single varying series
+    is enough to count as live. None when no series has 2 predictions to compare."""
     spreads = [statistics.pstdev(v) for v in p_bad_by_series.values() if len(v) >= 2]
     if not spreads:
         return None

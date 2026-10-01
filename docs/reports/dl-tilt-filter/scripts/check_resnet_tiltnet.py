@@ -37,7 +37,7 @@ from torchvision import models, transforms
 
 BAD, GOOD = 0, 1
 SIZE = 384  # the filterTilts gallery PNG size, used for the synthetic inputs
-LIVENESS_MIN_STD = 0.05  # services/jobs/tilt_filter.py
+LIVENESS_MIN_STD = 1e-6  # services/jobs/tilt_filter.py
 
 # predictTiltCNN.py, unchanged
 D4_OPS = [

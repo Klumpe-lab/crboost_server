@@ -5,8 +5,9 @@ done; stage 1 done (commits 1–7) and runtime-checked except two items (§12 "S
 weights are verified dead (§7.1); the requests to the model author are in §7.2 (sent 2026-09-30). Stage 2 is
 built as commits 8–9 (§12) and has not run. Route 1 weights arrived 2026-09-30 — the model author's ResNet-18
 (§7.4), converted and registered by commit 10. On Grid3 it agrees with the human labels per tilt (precision 1.00,
-recall 0.84 at its cut, in the app), so it replaced the dead CNN as the only registered model (10b). Commits 10c–13
-are specced in §12; the liveness test needs a decision before 11. The review's UI/UX and the Journey are open
+recall 0.84 at its cut, in the app), so it replaced the dead CNN as the only registered model (10b). 10c (a landed
+run's predictions reach the gallery without a reload) and 10d (Clear labels; only identical predictions read as a dead
+model) are built and have not run; 11–13 are specced in §12. The review's UI/UX and the Journey are open
 design, recorded in §13 for the next session; its first build, U1 (a Tilts tab beside Tomograms and each tomogram's
 tilts in place), is specced in §13.2, and where things stand is §13.9. The decisions below are settled.
 
@@ -123,8 +124,9 @@ run is tracked separately (§3). In DL auto the filter is an ordinary chain job 
   with a tooltip until fsMotion has succeeded. The roster's `signature()` includes mode, review sub-state,
   `predict_run.status` and `committed`.
 - **Panel** (`ui/tilt_filter_panel.py`): the same actions; the gallery shows P(bad), worst first, with
-  predicted vs overridden styling. **Liveness banner** when predictions do not vary (std of P(bad) < 0.05
-  within series): "the model gives every tilt P(bad) ≈ x — its verdicts are meaningless".
+  predicted vs overridden styling. **Liveness banner** when the model gives every tilt the same number (P(bad)
+  spread below 1e-6 in every series, defect k): "The model gives every tilt the same P(bad), x: its verdicts are
+  meaningless."
 
 ## 6. The DL job (assuming the weights work)
 - **Plumbing:** torch in the cluster install's venv (the dev venv's torch 2.6.0+cu124 needs glibc ≤ 2.16,
@@ -616,7 +618,8 @@ Files: `services/project_state.py`, `services/scheduling_and_orchestration/pipel
 |---|---|---|
 | 10 | tilt filter: run the model author's ResNet-18 (converter, per-model input transform and threshold) | chunk 10 below (committed 2026-09-30, ruff-clean; the standalone check ran, §7.4; run in the app 2026-09-30) |
 | 10b | tilt filter: the ResNet replaces the dead CNN as the only registered model | chunk 10b below (2026-09-30, ruff-clean, not run) |
-| 10c | tilt filter: a landed DL run's predictions reach the gallery without a reload | chunk 10c below (spec) |
+| 10c | tilt filter: a landed DL run's predictions reach the gallery without a reload | chunk 10c below (built 2026-10-01, ruff-clean, not run) |
+| 10d | tilt filter: Clear labels replaces Set all good; only identical predictions read as a dead model | chunk 10d below (built 2026-10-01, ruff-clean, not run) |
 | 11 | tilt filter: DL auto runs the filter as a chain job that commits its own verdict | chunk 11 below (spec) |
 | 12 | pipeline builder: Stop and per-job Cancel keep the status refresher | chunk 12 below (spec) |
 | 13 | tilt filter: calibrate the P(bad) cuts on our labelled projects | chunk 13 below (spec) |
@@ -680,7 +683,7 @@ the dev `config/conf.yaml` (untracked), this roadmap.
 - *Check (user):* Run DL; the run log's model line ends in `…/filterTilts/tiltnet_resnet18_o1034.pth`. A wrong path
   shows the model select's red marker ("weights file not found at <absolute path>").
 
-### Chunk 10c — the gallery shows a landed run's predictions (defect j), spec
+### Chunk 10c — the gallery shows a landed run's predictions (defect j) (built)
 Files: `services/tilt_series/registry.py`, `services/scheduling_and_orchestration/pipeline_runner.py`.
 - *Cause:* the driver replaces the registry files on a compute node; the server re-syncs its cached registry only
   when `stat(index.json)` shows a new mtime (`get_registry_for` → `is_stale_on_disk`). `/groups/klumpe/crboost_data`
@@ -699,8 +702,33 @@ Files: `services/tilt_series/registry.py`, `services/scheduling_and_orchestratio
   driver's.
 - Not covered: other drivers' registry writes still reach the server through the mtime test, with the same up-to-a-
   minute lag; their readers poll, so it heals on its own.
-- *Check (user):* Run DL on Grid3 again, leave the panel open: within ~3 s of "DL predictions ready." the gallery
-  and the row's "N flagged" show the new run without a reload.
+- *Check (user):* a re-run of the same model on Grid3 writes the same numbers, so stale and fresh look alike. Use a
+  project whose filter has never run DL: row → DL review → Run DL, panel open. Within ~3 s of "DL predictions
+  ready." the cards show P(bad), sorted worst first, and the row reads "Predictions ready · N flagged", without a
+  reload.
+- *Built:* as specced, with two refinements.
+  - `reload_registry` is a coroutine: the sidecars are parsed into a new instance in a worker thread, and the cache
+    entry is swapped on the event loop. No reader iterates a registry a thread is filling, and no UI mutation can
+    land between the unsaved-changes check and the swap. (The spec had it blocking, run with `asyncio.to_thread`.)
+  - It runs on every transition to SUCCEEDED, not only on the exit marker: the marker's existence check goes through
+    the same attribute cache, so squeue or sacct can report the job COMPLETED first.
+
+### Chunk 10d — Clear labels, and the liveness rule (defects l and k) (built)
+Files: `ui/tilt_filter_panel.py`, `services/jobs/tilt_filter.py`, `drivers/tilt_filter.py`,
+`docs/reports/dl-tilt-filter/scripts/check_resnet_tiltnet.py`.
+- **l:** "Set all good" is gone. "Clear labels" empties the job's `tilt_labels` behind a confirmation
+  (`dialog_host`; Cancel, then "Clear N labels" in the danger variant). The dialog counts the bad and good labels and
+  says what the tilts read afterwards: the prediction at the threshold (DL review) or good (Manual). The gallery
+  re-derives its labels, re-renders the groups (their expand state kept) and saves. With no labels it says so. If a
+  landed DL run rebuilt the gallery while the dialog was open, nothing is cleared and the notice says so.
+- **k, decided 2026-10-01:** dead = P(bad) spread below 1e-6 (`LIVENESS_MIN_STD`) in every series with 2+
+  predictions, so only a network that gives every tilt the same number reads dead. Banner and driver log: "The model
+  gives every tilt the same P(bad), x: its verdicts are meaningless". The diagnostic script's copy of the constant
+  follows; its recorded output (§7.4, "14 of 17 series live") used 0.05.
+- *Check (user):* label two tilts, one bad and one good, then Clear labels. The dialog reads "Clear 2 labels? 1 bad
+  and 1 good, set by hand. …". Cancel leaves both. Clear sends the cards back to the prediction (DL review) or to good
+  (Manual), the counts follow, and a page reload keeps them cleared. No project under the ResNet shows the liveness
+  banner; the dead-model path is checked with chunk 11's zeroed copy.
 
 ### Chunk 11 — DL auto (stage 3), spec
 Files: `services/jobs/tilt_filter.py`, `drivers/tilt_filter.py`,
@@ -723,13 +751,10 @@ Files: `services/jobs/tilt_filter.py`, `drivers/tilt_filter.py`,
   project_params.json.
 - reconcile_afterok: on a tilt filter's SUCCEEDED transition, `last_commit` from its `commit.json` (a side effect
   like Pass 5's thumbnails), after `reload_registry` (10c): the job wrote predictions and the verdict.
-- **To decide before building (defect k):** the liveness test that fails a DL-auto job misreads a live model on clean
-  data. Grid3 under the ResNet: the 3 series with no flagged tilt spread 0.0004, 0.006 and 0.015, below 0.05; a
-  project with no bad tilts would read dead. The dead CNN's predictions were identical (0.4426923990249634 for all
-  697 tilts, spread 0). Proposed: dead = spread below 1e-6 in every series with 2+ predictions, i.e. predictions that do
-  not move at all, which is how a diverged network ends (§7.1); the banner then says "the same P(bad) for every tilt".
-  The alternative, probing each run with synthetic images (blank, noise), fails a model that calls every non-tilt
-  image bad.
+- **Defect k, decided 2026-10-01 and built in 10d:** dead = P(bad) spread below 1e-6 in every series with 2+
+  predictions, i.e. predictions that do not move at all, which is how a diverged network ends (§7.1; the dead CNN gave
+  0.4426923990249634 for all 697 tilts). The 0.05 cut read a live model as dead on clean data: Grid3's 3 series with
+  no flagged tilt spread 0.0004, 0.006 and 0.015 under the ResNet. The DL-auto job fails on the same rule.
 - Switch to DL auto while parked: with a hold on this filter, the switch calls `submit_parked` with the filter
   included (the synthetic edge puts it ahead of the parked jobs; afterok on in-flight upstream).
   `submit_parked` accepts a DL-auto filter as the barrier.
@@ -892,9 +917,9 @@ and must be robust and navigable.
   removed" (a bare `ui.checkbox`).
 - *To decide.* One home per action (Run DL and Approve exist on the row and in the panel); the expansion with its
   icon and the bare select/checkbox are outside CLAUDE.md's control vocabulary; DL auto's controls (chunk 11).
-- *Defect l.* Replace "Set all good" with "Clear labels" behind a confirmation that names the count: in Manual every
-  tilt then reads good, in DL review every tilt goes back to its prediction. Every bulk action gets a confirmation or
-  an undo (13.6).
+- *Defect l (fixed in 10d).* "Clear labels" replaces "Set all good", behind a confirmation that names the count: in
+  Manual every tilt then reads good, in DL review every tilt goes back to its prediction. Every bulk action gets a
+  confirmation or an undo (13.6).
 
 ### 13.4 The barrier's flags
 - *Now.* The §2 chips, "· K waiting" with its since-when tooltip, the poller's "The pipeline waits for the
@@ -943,8 +968,8 @@ The maintainer's phrase is "caching of labels per set"; two readings, possibly b
 - Next build: U1 (13.2), as its own commit; then the rest of §13 topic by topic. The PNGs stay post-fsMotion (13.1).
 - 10b committed (`98a57c6`). The weights moved into the checkout (§12, Weights location), and `main` (roadmaps 20
   and 24) merged into `dl_filter` (§12, Branch notes).
-- 10c specced (defect j). Defect k needs the maintainer's decision before chunk 11 (proposed: dead = spread below
-  1e-6). Defect l: "Clear labels", in 10c or its own commit (maintainer to choose).
+- 10c (defect j) and 10d (defects l and k; k decided: dead = P(bad) spread below 1e-6) built 2026-10-01,
+  ruff-clean, not run; their checks are in §12.
 - Label restores, pending the maintainer's go-ahead, with the server stopped (a running server writes its in-memory
   labels back over the file); back up `project_params.json` first:
   - Grid3 (now 697 labels: 687 good from "Set all good", 10 bad clicked since): the 56 May drops as bad, plus good
