@@ -49,3 +49,6 @@ promptbuilder.py
 .abacusai/*
 
 **.sif
+
+# Model weights (tilt classifier: filterTilts/, registered in conf.yaml tilt_filter)
+*.pth

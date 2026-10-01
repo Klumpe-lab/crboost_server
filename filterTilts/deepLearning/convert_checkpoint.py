@@ -8,7 +8,7 @@ plus the source file's name, sha256 and decision threshold. The source is loaded
 weights_only=False because its config holds numpy scalars, so convert only files that come from
 the model author. Prints the conf.yaml entry that registers the result. CPU only.
 
-    python -m filterTilts.deepLearning.convert_checkpoint run_best.pth <Models dir>/tiltnet_resnet18_o1034.pth
+    python -m filterTilts.deepLearning.convert_checkpoint run_best.pth filterTilts/tiltnet_resnet18_o1034.pth
 """
 
 import argparse
