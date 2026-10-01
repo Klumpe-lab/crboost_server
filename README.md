@@ -24,6 +24,7 @@ python3 -m venv venv && venv/bin/pip install -r requirements.txt
 venv/bin/python3 preflight.py        # 1st run writes config/conf.yaml + config/qsub.sh, then stops
 $EDITOR config/conf.yaml config/qsub.sh
 venv/bin/python3 preflight.py        # must exit 0
+venv/bin/python3 -m pytest -m cluster   # one short SLURM job per tool (minutes); must pass
 venv/bin/python3 main.py --port 8081 --host 0.0.0.0
 ```
 
@@ -33,28 +34,37 @@ Then from your laptop: `ssh -f -N -L 8081:localhost:8081 $USER@$HEADNODE` and op
 ---
 
 <details>
-<summary><b>Python environment — why it must be <code>&lt;repo&gt;/venv</code></b></summary>
+<summary><b>Python environment — venv, conda or uv</b></summary>
 
-Pipeline drivers running inside SLURM jobs are launched as exactly `<repo>/venv/bin/python3`. So the
-venv must live in the repository root, the repo must be on a shared filesystem, and that interpreter
-must start on a compute node with the same modules loaded in `config/qsub.sh`.
+Pipeline drivers running inside SLURM jobs are launched with the interpreter that runs `main.py`
+(or `crboost_python` in `config/conf.yaml`, if you set it). Any environment works — a venv, a
+conda/mamba env, uv — as long as it and the repo are on a shared filesystem and that interpreter
+starts on a compute node with the modules loaded in `config/qsub.sh`.
 
 If your cluster's Python ships its own packages and versions conflict, prefer the cluster's modules.
 
 </details>
 
 <details>
-<summary><b>Preflight checks</b></summary>
+<summary><b>Preflight checks and self-test</b></summary>
 
 `venv/bin/python3 preflight.py` creates `config/conf.yaml` and `config/qsub.sh` from their templates on
 the first run and stops. Every later run only verifies (it never edits):
 
 - Python version, and that every package in `requirements.txt` imports
-- `config/conf.yaml` loads, `DefaultProjectBase` is writable, every `tools:` path exists
+- `config/conf.yaml` loads, `DefaultProjectBase` is writable, every `tools:` path and `container_binds`
+  entry exists, the partitions are set; a key no setting reads (a misspelling) is a warning
 - `sbatch`/`squeue`/`sacct`/`sinfo` and `apptainer` are on PATH, and every configured partition exists
 - `config/qsub.sh` still has its placeholders, exit-marker block and `exit $EXIT_CODE`
 
 It exits non-zero and lists each failed check.
+
+**Self-test.** `venv/bin/python3 -m pytest` runs the same checks as tests, plus a render of
+`config/qsub.sh` (headnode, seconds). `venv/bin/python3 -m pytest -m cluster` submits one short job
+per configured tool, run the way a pipeline driver runs it, and waits for all of them (minutes,
+mostly queue): each proves the tool starts in its container on a compute node with the site's binds
+and sees the GPU where it needs one. Job directories are under `~/.crboost/selftest/`; a failure
+prints the command and the job's log paths.
 
 </details>
 
@@ -90,9 +100,14 @@ confine jobs to nodes with particular hardware.
 ### Tools
 
 Each external tool is either an Apptainer image (`exec_mode: "container"` + `container_path`) or a
-native executable (`exec_mode: "binary"` + `bin_path`):
+native executable (`exec_mode: "binary"` + `bin_path`, the directory holding it — crboost puts it first
+on `PATH`). A tool without an entry fails the job that needs it. Container calls bind `/tmp`, the
+project directory, the raw-data directories and the gain reference; list the other places your data
+and software live under `container_binds`:
 
 ```yaml
+container_runtime: apptainer        # or singularity
+container_binds: [/groups, /scratch]
 tools:
   warp_aretomo:
     exec_mode: "container"
@@ -118,8 +133,7 @@ tools:
 | `cistem` | template simulation (`simulate`), native binary | — |
 
 The ChimeraX/ArtiaX curation image (`chimerax_artiax_GL.def`) is configured separately under
-`curation.sif_path`. The legacy top-level `containers:` map is still read, but `tools:` is the format
-to use.
+`curation.sif_path`.
 
 </details>
 
@@ -142,15 +156,15 @@ apptainer build --fakeroot --nv warp_aretomo.sif   container_defs/warp_2.0.0dev3
 
 Every job CryoBoost queues is built from this one script (created from `config/qsub.template.sh`).
 Per-job resources come from the UI via RELION-style placeholders (`XXXextra1XXX` … `XXXextra8XXX` =
-partition, constraint, nodes, ntasks-per-node, cpus-per-task, gres, mem, time), so you only define
-the cluster environment once:
+partition, constraint, nodes, ntasks-per-node, cpus-per-task, gres, mem, time; an empty constraint
+drops the `--constraint` line), so you only define the cluster environment once:
 
-- **SLURM HEADER** — the module loads (or equivalent) that make `<repo>/venv/bin/python3` start on a
+- **SLURM HEADER** — the module loads (or equivalent) that make the server's Python start on a
   compute node and put `apptainer` on PATH. Our Lmod lines are in the template as a commented example.
 - **Optional** — `#SBATCH --account` / `--qos` / `--exclude` lines your cluster needs.
 - **Leave untouched** — every `XXX...XXX` placeholder, the `RELION_JOB_EXIT_*` marker block (matched
-  verbatim by `drivers/array_job_base.py`), and the final `exit $EXIT_CODE` (job dependencies chain on
-  it). `preflight.py` checks all three.
+  verbatim; CryoBoost refuses to submit without it), and the final `exit $EXIT_CODE` (job dependencies
+  chain on it). `preflight.py` checks all three.
 
 If you already have a working RELION/Warp SLURM script, its module lines are the right starting point.
 

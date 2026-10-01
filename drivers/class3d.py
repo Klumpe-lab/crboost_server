@@ -8,9 +8,6 @@ import sys
 import traceback
 from pathlib import Path
 
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
-
 from drivers.driver_base import ToolCommand, get_driver_context, run_tool
 from services.job_models import Class3DParams
 
@@ -23,9 +20,6 @@ def main():
     except Exception as e:
         print(f"[DRIVER] BOOTSTRAP ERROR: {e}", file=sys.stderr)
         sys.exit(1)
-
-    success_file = job_dir / "RELION_JOB_EXIT_SUCCESS"
-    failure_file = job_dir / "RELION_JOB_EXIT_FAILURE"
 
     try:
         paths = {k: Path(v) for k, v in context["paths"].items()}
@@ -135,13 +129,11 @@ def main():
         else:
             print("[DRIVER] WARN: No class volumes found", flush=True)
 
-        success_file.touch()
         print("--- SLURM JOB END (Exit Code: 0) ---", flush=True)
 
     except Exception as e:
         print(f"[DRIVER] FATAL: {e}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
-        failure_file.touch()
         sys.exit(1)
 
 

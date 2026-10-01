@@ -49,7 +49,7 @@ class TsCtfParams(AbstractJobParams):
 
     do_phase: bool = Field(default=False, description="Estimate phase shifts (CTF phase plate or spurious phase)")
     window: int = Field(default=512, ge=128, le=2048)
-    range_min_max: str = Field(default="30:6.0")
+    range_min_max: str = Field(default="30:10")  # same band as fsMotionAndCtf; ts_ctf only refines its defoci
     defocus_hand: str = Field(default="set_flip")
     defocus_min_max: str = Field(default="1.1:8")
     perdevice: int = Field(default=1, ge=0, le=8)
@@ -82,7 +82,7 @@ class TsCtfParams(AbstractJobParams):
         return True
 
     def get_tool_name(self) -> str:
-        return "warptools"
+        return "warp_aretomo"
 
     @property
     def range_min(self) -> float:

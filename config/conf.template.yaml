@@ -1,12 +1,9 @@
 # CryoBoost Server Configuration
 # Copy this file to conf.yaml and fill in your values
 
-# Root directory of the crboost_server installation
-# Used by various services to locate resources
-crboost_root: "/path/to/crboost_server"
-
-# Path to Python virtual environment/conda executable
-crboost_python: "/path/to/crboost_server/venv"
+# Python interpreter the pipeline drivers run with on the compute nodes. Leave empty to use
+# the interpreter that runs the server (your venv, conda or uv environment).
+crboost_python: ""
 
 # DEV TOGGLE (temporary): true => every project uses the afterok orchestrator (schemer-free
 # submit + inline import) instead of relion_schemer, without per-project project_params.json
@@ -155,9 +152,9 @@ processing_defaults:
   reconstruction_binning: 4
 
 # ChimeraX + ArtiaX remote manual-picking session (launched from the UI as a
-# SLURM job that serves a VNC desktop). sif_path is the only required field;
-# the CX_SIF env var, if set, overrides it. login_host defaults to the
-# headnode's own FQDN (what you SSH into to reach crboost).
+# SLURM job that serves a VNC desktop). sif_path and partition are required;
+# login_host defaults to the headnode's own FQDN (what you SSH into to reach
+# crboost). The session binds container_binds (below) and the project.
 curation:
   sif_path: "/path/to/chimerax_artiax.sif"
   partition: "c"   # CPU partition, software GL. For fluid 3-D: point sif_path at chimerax_artiax_GL.sif,
@@ -202,10 +199,19 @@ tilt_filter:
   default_model: tiltnet_resnet18_o1034
 
 
+# Container runtime on the headnode and the compute nodes: apptainer or singularity.
+container_runtime: apptainer
+
+# Host directories bound into every container call, at the same path: where your data and
+# software live (e.g. [/groups, /scratch]). The project directory, the raw-data directories
+# and the gain reference are bound per job on top of these; /tmp is always bound.
+container_binds: []
+
 # Tool execution configuration
 # exec_mode: 'container' or 'binary'
 # container_path: path to .sif file (required if exec_mode is container)
-# bin_path: path to executable or wrapper (required if exec_mode is binary)
+# bin_path: directory holding the tool's executables, put first on PATH (required if exec_mode is binary)
+# A tool with no entry here fails the job that needs it; nothing falls back to a guessed binary.
 tools:
   warp_aretomo:
     exec_mode: "container"
@@ -235,11 +241,11 @@ tools:
   cistem:
     exec_mode: "binary"
     container_path: ""
-    bin_path: "/path/to/cisTEM/bin/simulate"   # something like /groups/<name_of_group>/software/cisTEM/bin/simulate
+    bin_path: "/path/to/cisTEM/bin"   # the directory holding `simulate`, e.g. /groups/<name_of_group>/software/cisTEM/bin
   pymol:
     exec_mode: "container"
     container_path: "/path/to/pymol.sif"
-    bin_path: "pymol"
+    bin_path: ""
   # warpem miss-alignment: learned tilt-series alignment refinement (Warp-native).
   miss_alignment:
     exec_mode: "container"

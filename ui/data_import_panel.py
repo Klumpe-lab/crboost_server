@@ -108,7 +108,10 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             prefs_service.save_to_app_storage(app.storage.user)
             local_refs["save_timer"] = None
 
-        local_refs["save_timer"] = ui.timer(0.5, do_save, once=True)
+        # The change handlers also re-enter from detached tasks (the scan adopting `.mrc`, the
+        # mdocs depth flip), which have no slot to create the timer in.
+        with local_refs["client"]:
+            local_refs["save_timer"] = ui.timer(0.5, do_save, once=True)
 
     # =========================================================================
     # VALIDATION
@@ -338,8 +341,9 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         return ov is not None and ov.selected_acquisition_summary().dose_missing > 0
 
     # Form behaviour: Create is always clickable; a click with gaps reddens the
-    # gap fields (like any form) instead of listing them in a status line. A
-    # reddened field clears itself the moment it stops being missing.
+    # gap fields (like any form) and names them in a toast, because the 16 px
+    # fields clip Quasar's error-message to nothing. A reddened field clears
+    # itself the moment it stops being missing.
     _FIELD_FOR_REQUIREMENT = {
         "Project Name": "project_name_input",
         "Project Path": "project_path_input",
@@ -660,6 +664,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         missing = get_missing_requirements()
         if missing:
             _mark_missing(missing)
+            ui.notify(f"Missing: {', '.join(missing)}", type="warning")
             return
         btn = ui_mgr.panel_refs.create_button
         # mdocs_valid is set True the instant the glob count passes, but the

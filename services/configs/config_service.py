@@ -15,34 +15,20 @@ import copy
 import logging
 import shutil
 import yaml
+from enum import StrEnum
 from pathlib import Path
 from pydantic import BaseModel, Field
-from typing import Any, Literal
+from typing import Any, Literal, get_args, get_origin
+
+from services.models_base import JobType
 
 logger = logging.getLogger(__name__)
 
 
-def find_repo_root() -> Path:
-    """
-    Robustly find the repository root by looking for 'config/conf.yaml'
-    starting from the current directory and moving up.
-    """
-    current = Path.cwd()
-    # Check current directory first (most likely when running main.py)
-    if (current / "config" / "conf.yaml").exists():
-        return current
-
-    # Fallback: check parents (in case we are running a script from a subfolder)
-    for parent in current.parents:
-        if (parent / "config" / "conf.yaml").exists():
-            return parent
-
-    # Last resort: derive the root from this file's location (services/configs/)
-    return Path(__file__).resolve().parent.parent.parent
-
-
-_REPO_ROOT = find_repo_root()
-DEFAULT_CONFIG_PATH = _REPO_ROOT / "config" / "conf.yaml"
+# The checkout this code runs from — never the working directory, which is a job dir on a
+# compute node and whatever the user happened to be in on the headnode.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_CONFIG_PATH = REPO_ROOT / "config" / "conf.yaml"
 
 # Per-user override lives alongside ~/.crboost/prefs.json
 # (see services/configs/user_prefs_service.py). Home-scoped, so each user's
@@ -95,7 +81,7 @@ def check_path_exists(path: str | None) -> bool:
 class SlurmDefaultsConfig(BaseModel):
     """SLURM submission defaults from conf.yaml"""
 
-    partition: str = "g"
+    partition: str = ""
     constraint: str = ""
     nodes: int = 1
     ntasks_per_node: int = 1
@@ -114,8 +100,8 @@ class SupervisorSlurmConfig(BaseModel):
     by the supervisor when it submits the child array job, NOT by the supervisor's own sbatch.
     """
 
-    partition: str = "g"
-    constraint: str = "g2|g3|g4"
+    partition: str = ""
+    constraint: str = ""
     nodes: int = 1
     ntasks_per_node: int = 1
     cpus_per_task: int = 1
@@ -139,10 +125,7 @@ class JobResourceProfile(BaseModel):
     gres: str | None = None
     mem: str | None = None
     time: str | None = None
-
-
-# Backward compat alias
-TsReconstructSupervisorSlurmConfig = SupervisorSlurmConfig
+    qos: str | None = None
 
 
 class LocalConfig(BaseModel):
@@ -152,11 +135,19 @@ class LocalConfig(BaseModel):
 
 
 class ToolConfig(BaseModel):
-    """Configuration for a specific external tool"""
+    """Configuration for a specific external tool.
+
+    `container_path` is the image a container tool runs in; `bin_path` is the directory
+    holding a binary tool's executables, put first on PATH for its calls."""
 
     exec_mode: Literal["container", "binary"] = "container"
     container_path: str | None = None
     bin_path: str | None = None
+
+
+class ContainerRuntime(StrEnum):
+    APPTAINER = "apptainer"
+    SINGULARITY = "singularity"
 
 
 class ProcessingDefaultsConfig(BaseModel):
@@ -167,13 +158,13 @@ class CurationConfig(BaseModel):
     """ChimeraX+ArtiaX remote manual-picking session (VNC over a SLURM job).
 
     The SIF location is intentionally NOT hardcoded — every cluster keeps its
-    containers somewhere different, so it is set here (or via the CX_SIF env var,
-    which takes precedence). login_host defaults to the server's own FQDN, i.e.
-    the headnode the user already SSHes into to reach the crboost UI.
+    containers somewhere different, so it is set here. login_host defaults to
+    the server's own FQDN, i.e. the headnode the user already SSHes into to
+    reach the crboost UI.
     """
 
     sif_path: str | None = None
-    partition: str = "c"  # CPU partition; software GL is enough for slice-based picking
+    partition: str = ""  # a CPU partition will do: software GL is enough for slice-based picking
     gres: str | None = None  # SLURM --gres, e.g. "gpu:1" on partition 'g'; None on CPU partitions
     vgl: bool = False  # render ChimeraX via VirtualGL (vglrun -d egl) on the GPU — needs the _GL.sif + gres
     cpus: int = 4
@@ -216,7 +207,7 @@ class TiltFilterModelConfig(BaseModel):
     def weights_path(self) -> Path:
         """The weights file: `path` itself when absolute, else inside the checkout this code runs from."""
         # Joining an absolute path replaces the root.
-        return _REPO_ROOT / Path(self.path).expanduser()
+        return REPO_ROOT / Path(self.path).expanduser()
 
 
 class TiltFilterConfig(BaseModel):
@@ -230,19 +221,22 @@ class TiltFilterConfig(BaseModel):
 class Config(BaseModel):
     """Root configuration model"""
 
-    crboost_root: str = Field(default_factory=lambda: str(_REPO_ROOT))
-    venv_path: str | None = None
+    # Interpreter the pipeline drivers run with. Empty = the one running this server (a venv,
+    # conda or uv environment alike); it must also start on the compute nodes.
+    crboost_python: str = ""
     local: LocalConfig = Field(default_factory=LocalConfig)
     slurm_defaults: SlurmDefaultsConfig = Field(default_factory=SlurmDefaultsConfig)
-    # Accepts both new key "supervisor_slurm" and legacy "tsreconstruct_supervisor_slurm"
     supervisor_slurm: SupervisorSlurmConfig = Field(default_factory=SupervisorSlurmConfig)
-    tsreconstruct_supervisor_slurm: SupervisorSlurmConfig | None = None
     job_resource_profiles: dict[str, JobResourceProfile] = Field(default_factory=dict)
     processing_defaults: ProcessingDefaultsConfig = Field(default_factory=ProcessingDefaultsConfig)
     curation: CurationConfig = Field(default_factory=CurationConfig)
     tilt_filter: TiltFilterConfig = Field(default_factory=TiltFilterConfig)
     tools: dict[str, ToolConfig] = Field(default_factory=dict)
-    containers: dict[str, str] | None = None
+    container_runtime: ContainerRuntime = ContainerRuntime.APPTAINER
+    # Host directories bound into every container call, at the same path: the site's data
+    # and software roots. The project tree, the raw-data directories and the gain reference
+    # are bound per job on top of these.
+    container_binds: list[str] = Field(default_factory=list)
     # Lab-level species catalog root. Cross-project species definitions live here — name,
     # diameter, symmetry, notes, templates + masks with their provenance; picks, filters,
     # merges and extractions stay project-bound. Empty or absent = the feature is off: no
@@ -258,6 +252,40 @@ class Config(BaseModel):
         extra = "ignore"
 
 
+def _unread_keys(model: Any, data: Any, prefix: str = "") -> list[str]:
+    """Dotted paths of the keys in `data` that the config model `model` does not read, recursing
+    into nested models and into name-keyed model maps (`tools:`, `job_resource_profiles:`)."""
+    # get_origin first: a parametrised generic (list[str]) can pass as a type but not issubclass.
+    is_model = isinstance(model, type) and get_origin(model) is None and issubclass(model, BaseModel)
+    if not (is_model and isinstance(data, dict)):
+        return []
+    found = []
+    for key, value in data.items():
+        field = model.model_fields.get(key)
+        if field is None:
+            found.append(f"{prefix}{key}")
+        elif get_origin(field.annotation) is dict and isinstance(value, dict):
+            entry_model = get_args(field.annotation)[1]
+            for name, entry in value.items():
+                found += _unread_keys(entry_model, entry, f"{prefix}{key}.{name}.")
+        else:
+            found += _unread_keys(field.annotation, value, f"{prefix}{key}.")
+    return found
+
+
+def _config_warnings(source: Path, layer: dict) -> list[str]:
+    """What one config layer sets that this version never reads: unknown keys (misspelled or left
+    over) and resource profiles named after no job type."""
+    warnings = [f"{source}: unknown key {path}" for path in _unread_keys(Config, layer)]
+    job_types = {jt.value for jt in JobType}
+    warnings += [
+        f"{source}: job_resource_profiles.{name} is not a job type"
+        for name in layer.get("job_resource_profiles") or {}
+        if name not in job_types
+    ]
+    return warnings
+
+
 class ConfigService:
     """Loads and provides access to static configuration"""
 
@@ -271,7 +299,7 @@ class ConfigService:
             # Diagnostic info to help debug future path shifts
             raise FileNotFoundError(
                 f"Configuration file not found at: {config_path}\n"
-                f"Repo Root identified as: {_REPO_ROOT}\n"
+                f"Repo root: {REPO_ROOT}\n"
                 f"Run 'python preflight.py' to create one from the template."
             )
 
@@ -295,20 +323,19 @@ class ConfigService:
 
         data = _deep_merge(base_data, override) if override else dict(base_data)
 
-        # Migrate legacy key: tsreconstruct_supervisor_slurm → supervisor_slurm
-        if "tsreconstruct_supervisor_slurm" in data and "supervisor_slurm" not in data:
-            data["supervisor_slurm"] = data.pop("tsreconstruct_supervisor_slurm")
-
         self._effective_data: dict = data
         self._config = Config(**data)
+
+        # Shown on the landing status strip and by preflight, not only logged.
+        self.load_warnings: list[str] = _config_warnings(config_path, base_data) + _config_warnings(
+            self._override_path, override
+        )
+        for warning in self.load_warnings:
+            logger.warning("%s", warning)
 
     @property
     def config(self) -> Config:
         return self._config
-
-    @property
-    def crboost_root(self) -> Path:
-        return Path(self._config.crboost_root)
 
     @property
     def processing_defaults(self) -> ProcessingDefaultsConfig:
@@ -336,29 +363,12 @@ class ConfigService:
         return Path(raw).expanduser() if raw else None
 
     @property
-    def venv_path(self) -> Path | None:
-        if self._config.venv_path:
-            return Path(self._config.venv_path)
-        return None
-
-    @property
-    def venv_python(self) -> Path | None:
-        if self.venv_path:
-            return self.venv_path / "bin" / "python3"
-        return None
-
-    @property
     def slurm_defaults(self) -> SlurmDefaultsConfig:
         return self._config.slurm_defaults
 
     @property
     def supervisor_slurm_defaults(self) -> SupervisorSlurmConfig:
         return self._config.supervisor_slurm
-
-    @property
-    def tsreconstruct_supervisor_slurm_defaults(self) -> SupervisorSlurmConfig:
-        """Backward compat alias."""
-        return self.supervisor_slurm_defaults
 
     @property
     def default_project_base(self) -> str | None:
@@ -375,44 +385,12 @@ class ConfigService:
     def get_tool_config(self, tool_name: str) -> ToolConfig:
         if tool_name in self._config.tools:
             return self._config.tools[tool_name]
-
-        legacy_mapping = {
-            "warptools": "warp_aretomo",
-            "aretomo": "warp_aretomo",
-            "relion_import": "relion",
-            "relion_schemer": "relion",
-        }
-        lookup_name = legacy_mapping.get(tool_name, tool_name)
-
-        if lookup_name in self._config.tools:
-            return self._config.tools[lookup_name]
-
-        if self._config.containers and lookup_name in self._config.containers:
-            return ToolConfig(exec_mode="container", container_path=self._config.containers[lookup_name])
-
-        return ToolConfig(exec_mode="binary", bin_path=tool_name)
+        raise LookupError(f"Tool '{tool_name}' is not configured: add tools.{tool_name} to config/conf.yaml")
 
     def is_tool_configured(self, tool_name: str) -> bool:
-        """True when `tool_name` (or its legacy alias) has an entry under `tools:` /
-        `containers:`. `get_tool_config`'s last fallback — a bare-binary guess named after
-        the tool — is not counted: a protocol pinning a tool must find it configured, not
-        assumed."""
-        legacy_mapping = {
-            "warptools": "warp_aretomo",
-            "aretomo": "warp_aretomo",
-            "relion_import": "relion",
-            "relion_schemer": "relion",
-        }
-        name = legacy_mapping.get(tool_name, tool_name)
-        if tool_name in self._config.tools or name in self._config.tools:
-            return True
-        return bool(self._config.containers and name in self._config.containers)
-
-    def get_tool_path(self, tool_name: str) -> str | None:
-        config = self.get_tool_config(tool_name)
-        if config.exec_mode == "container":
-            return config.container_path
-        return config.bin_path
+        """True when `tool_name` has an entry under `tools:` — i.e. when `get_tool_config`
+        would not raise."""
+        return tool_name in self._config.tools
 
     # ── Per-user override management (settings UI) ────────────────────────
 

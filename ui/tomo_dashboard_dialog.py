@@ -64,6 +64,8 @@ from services.pixel_chain import apply_sanity_rules, compute_pixel_chain
 from services.visualization.preview_orchestrator import _find_warp_tomo_preview
 from services.visualization.preview_render import is_output_stale, render_xy_slab_preview
 from ui.components.chip import render_chip
+from ui.components.buttons import house_button
+from ui.components.recon_compare import matched_slabs, recon_versions_for_ts, retry_match
 from ui.components.segmented import Segmented
 from ui.current_project import current_project_state
 from ui.dashboard.css import ensure_assets_loaded
@@ -2093,18 +2095,27 @@ def _render_recon_big_preview(ts_name: str, project_state, project_path: Path, m
         ui.label("No tomogram preview on disk for this TS yet.").classes("cb-section-placeholder")
         return
 
+    # Several reconstruct jobs of this TS (e.g. aligntiltsWarp vs a missAlign refinement):
+    # one pane each, all on the first job's plane, captioned with the alignment each
+    # traces back to.
+    versions = recon_versions_for_ts(project_state, ts_name) if project_state is not None else []
+
     with ui.element("div").classes("cb-recon-compare"):
-        # ── recon (left): clean WarpTools PNG ──
-        with ui.element("div").classes("cb-recon-compare-pane"):
-            ui.label("recon").classes("cb-recon-pane-tag")
-            if png_path and png_path.exists():
-                with ui.element("div").classes("cb-recon-preview"):
-                    ui.html(
-                        f"<img src='{vis_asset_url(str(png_path))}' alt='{ts_name} WarpTools recon' />", sanitize=False
-                    )
-                ui.label(f"WarpTools · {png_path.name}").classes("cb-recon-preview-caption")
-            else:
-                ui.label("No WarpTools preview PNG on disk.").classes("cb-section-placeholder")
+        if len(versions) > 1:
+            _render_recon_versions(versions, ts_name, project_path, refresh)
+        else:
+            # ── recon (left): clean WarpTools PNG ──
+            with ui.element("div").classes("cb-recon-compare-pane"):
+                ui.label("recon").classes("cb-recon-pane-tag")
+                if png_path and png_path.exists():
+                    with ui.element("div").classes("cb-recon-preview"):
+                        ui.html(
+                            f"<img src='{vis_asset_url(str(png_path))}' alt='{ts_name} WarpTools recon' />",
+                            sanitize=False,
+                        )
+                    ui.label(f"WarpTools · {png_path.name}").classes("cb-recon-preview-caption")
+                else:
+                    ui.label("No WarpTools preview PNG on disk.").classes("cb-section-placeholder")
         # ── denoised (right): X/Y slab for the selected method ──
         if has_denoise:
             with ui.element("div").classes("cb-recon-compare-pane"):
@@ -2133,6 +2144,55 @@ def _render_recon_big_preview(ts_name: str, project_state, project_path: Path, m
                     ui.label(f"{selected} · denoised X/Y slab · {dn_mrc.name}").classes("cb-recon-preview-caption")
                 else:
                     ui.label("rendering denoised slab…").classes("cb-section-placeholder")
+
+
+_PLANE_TIP = (
+    "Mean of the X/Y slices around the stated z. Each reconstruction is registered to the "
+    "first one (cross-correlation of 4×-binned volumes) and its slab moved by the offset "
+    "found, so a feature sits at the same pixel in every pane. r is the correlation at that "
+    "offset; a low r means the match itself is doubtful."
+)
+
+
+def _plane_caption(plane: dict, ref_job: str) -> str:
+    if "dz" not in plane:
+        return f"X/Y slab · z {plane['z']} · reference plane"
+    return (
+        f"X/Y slab · z {plane['z']} · on {ref_job}'s plane: Δz {plane['dz']:+.0f} Δy {plane['dy']:+.0f} "
+        f"Δx {plane['dx']:+.0f} px · r {plane['r']:.2f}"
+    )
+
+
+def _render_recon_versions(versions: list[dict], ts_name: str, project_path: Path, refresh) -> None:
+    """One pane per reconstruct job of this TS, every slab on the first job's plane. Until the
+    registration lands the panes wait; if it fails they fall back to each job's own WarpTools
+    PNG (its central slice, so NOT the same plane) and say why."""
+    state, error = matched_slabs(versions, ts_name, project_path, refresh)
+    for v in versions:
+        with ui.element("div").classes("cb-recon-compare-pane"):
+            ui.label(f"recon · {v['job']}").classes("cb-recon-pane-tag")
+            if state == "fresh":
+                with ui.element("div").classes("cb-recon-preview").tooltip(_PLANE_TIP):
+                    ui.html(f"<img src='{vis_asset_url(str(v['slab']))}' alt='{ts_name} {v['job']}' />", sanitize=False)
+                ui.label(_plane_caption(v["plane"], versions[0]["job"])).classes("cb-recon-preview-caption")
+            elif state == "failed":
+                warp_png = v["mrc"].with_suffix(".png")
+                if warp_png.exists():
+                    with ui.element("div").classes("cb-recon-preview"):
+                        ui.html(
+                            f"<img src='{vis_asset_url(str(warp_png))}' alt='{ts_name} {v['job']}' />", sanitize=False
+                        )
+                ui.label(f"own central slice, planes NOT matched — {error}").classes("text-[10px] text-red-600")
+                if v is versions[0]:
+
+                    def _retry(_e=None) -> None:
+                        retry_match(versions, ts_name)
+                        refresh()
+
+                    house_button("Retry", _retry, tooltip="Register the reconstructions again")
+            else:
+                ui.label("matching planes across reconstructions…").classes("cb-section-placeholder")
+            ui.label(f"{v['iid']} ← {v['lineage']}").classes("cb-recon-preview-caption")
 
 
 # ── Denoised tomogram preview (shown side-by-side with the recon in the Reconstruct

@@ -67,8 +67,8 @@ class CurationSessionService:
     async def launch_curation_session(
         self, project_path: Path | None = None, cxc_path: Path | None = None, scope: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        """Submit a ChimeraX+ArtiaX VNC desktop as a SLURM job (partition 'c' by
-        default — software GL is enough for slice-based picking).
+        """Submit a ChimeraX+ArtiaX VNC desktop as a SLURM job on `curation.partition`
+        (a CPU partition will do — software GL is enough for slice-based picking).
 
         `cxc_path`, when given, is a crboost-generated `.cxc` (see
         services/visualization/artiax_bridge.prepare_curation_bundle) passed to the
@@ -87,13 +87,14 @@ class CurationSessionService:
         See containers/chimerax_artiax/curation_session.sh.
         """
         cur = self.config_service.curation
-        sif = os.environ.get("CX_SIF") or cur.sif_path
+        sif = cur.sif_path
         if not sif or not Path(sif).exists():
             return err(
-                f"ChimeraX SIF not found (curation.sif_path={cur.sif_path!r}, "
-                f"CX_SIF={os.environ.get('CX_SIF')!r}). Build it under "
+                f"ChimeraX SIF not found (curation.sif_path={sif!r}). Build it under "
                 "containers/chimerax_artiax/ and set curation.sif_path in conf.yaml."
             )
+        if not cur.partition:
+            return err("curation.partition is not set in conf.yaml.")
 
         worker = self.server_dir / "containers" / "chimerax_artiax" / "curation_session.sh"
         if not worker.exists():
@@ -135,6 +136,8 @@ class CurationSessionService:
         # Opt-in only: the desktop then runs `-SecurityTypes None`, so anyone who can reach the rfb
         # port on that node drives it. Off by default; the control center states the risk.
         nopass_export = "export CX_VNC_NOPASS=1\n" if cur.passwordless_vnc else ""
+        # The worker binds /tmp and $HOME itself; the site's roots and the project come from here.
+        binds = [*self.config_service.config.container_binds, *([str(project_path)] if project_path else [])]
         sbatch_script.write_text(
             "#!/usr/bin/env bash\n"
             f"#SBATCH -p {cur.partition}\n"
@@ -146,6 +149,7 @@ class CurationSessionService:
             f"#SBATCH -o {session_dir / 'slurm.log'}\n"
             f"#SBATCH -e {session_dir / 'slurm.log'}\n"
             f"export CX_SIF={shlex.quote(str(sif))}\n"
+            f"export CX_BINDS={shlex.quote(':'.join(binds))}\n"
             f"export CX_BIN={shlex.quote(cur.chimerax_bin)}\n"
             f"export CX_GEOMETRY={shlex.quote(cur.geometry)}\n"
             f"export CX_DISPLAY={display_num}\n"

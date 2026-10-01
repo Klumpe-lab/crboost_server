@@ -18,14 +18,10 @@ Mode is determined by the SLURM_ARRAY_TASK_ID env var:
           `.task_status/{ts_name}.{ok|fail}`.
 
 The mode dispatch, both bootstraps, manifest lookup, exclusions, tally and exit
-markers all live in ArrayDriver; this file is the ts_reconstruct-specific hooks.
+code all live in ArrayDriver; this file is the ts_reconstruct-specific hooks.
 """
 
-import sys
 from pathlib import Path
-
-server_dir = Path(__file__).parent.parent
-sys.path.insert(0, str(server_dir))
 
 from drivers.array_job_base import (
     ArrayDriver,
@@ -60,6 +56,8 @@ def build_reconstruct_command(
     # half-averages"). Emit each only when the parameter is 1.
     if params.halfmap_frames == 1:
         cmd.flag("--halfmap_frames")
+    if params.halfmap_tilts == 1:
+        cmd.flag("--halfmap_tilts")
     if params.deconv == 1:
         cmd.flag("--deconv")
     return cmd.opt("--perdevice", params.perdevice).flag("--dont_invert")
@@ -101,6 +99,11 @@ class TsReconstructDriver(ArrayDriver):
     # ---------------- supervisor ----------------
 
     def enumerate_items(self, ctx: DriverContext[TsReconstructParams]) -> list[str]:
+        if ctx.params.halfmap_frames == 1 and ctx.params.halfmap_tilts == 1:
+            raise ValueError(
+                "halfmap_frames and halfmap_tilts are both 1; Warp writes either kind of half-tomogram to the "
+                "same even/odd folders and refuses both. Set one of them to 0."
+            )
         input_star = ctx.paths["input_star"]
         require_producer_input(input_star, "Input STAR")
         ts_names = read_tilt_series_names_from_input_star(input_star)

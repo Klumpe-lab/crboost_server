@@ -22,7 +22,7 @@ from services.particles.list_ref import extract_pick_list_instance_id
 from services.project_state import get_state_service
 from services.event_log import events
 from services.result import err, ok
-from services.computing.slurm_service import SlurmService
+from services.computing.slurm_service import SlurmService, write_sbatch_script
 from services.configs.config_service import get_config_service
 from services.curation.session_service import CurationSessionService
 from services.curation.watcher import CurationWatcher
@@ -203,6 +203,25 @@ class CryoBoostBackend:
         input_star = io_paths.get("input_star")
         if input_star is None or not (project_path / input_star).exists():
             return err("The motion-correction output star is not on disk yet; run fsMotion first.")
+        try:
+            driver_cmd = driver_invocation(
+                server_dir=self.server_dir,
+                driver_script=self.server_dir / "drivers" / "tilt_filter.py",
+                instance_id=instance_id,
+                project_path=project_path,
+            )
+        except FileNotFoundError as e:
+            return err(str(e))
+
+        # Rendered before the run is recorded, so a broken qsub.sh leaves the job as it was.
+        run_dir = next_predict_run_dir(project_path)
+        try:
+            sbatch_path = write_sbatch_script(
+                run_dir / "run_tilt_filter.sh", job_model.get_effective_slurm_config(), driver_cmd
+            )
+        except (OSError, ValueError) as e:
+            logger.exception("Tilt filter DL: sbatch script render failed")
+            return err(str(e))
         job_model.paths.update({k: str(v) for k, v in io_paths.items() if v is not None})
 
         # The first run of a model moves the job's threshold to that model's recorded cut. Its
@@ -214,41 +233,11 @@ class CryoBoostBackend:
             job_model.threshold = cut
 
         # Recorded before the first await, so a second click finds this run in flight.
-        run_dir = next_predict_run_dir(project_path)
         run = TiltFilterPredictRun(job_dir=str(run_dir), model=model_key)
         job_model.predict_run = run
         state.mark_dirty()
         # The driver reads the run off project_params.json, so it must be on disk before sbatch.
         await self.state_service.save_project(project_path=project_path, force=True)
-
-        driver_cmd = driver_invocation(
-            server_dir=self.server_dir,
-            driver_script=self.server_dir / "drivers" / "tilt_filter.py",
-            instance_id=instance_id,
-            project_path=project_path,
-        )
-        slurm_cfg = job_model.get_effective_slurm_config()
-        # Strip surrounding quotes that may be stored in config values
-        constraint = slurm_cfg.constraint.strip("'\"")
-        replacements = {
-            "XXXextra1XXX": slurm_cfg.partition,
-            "XXXextra2XXX": constraint,
-            "XXXextra3XXX": str(slurm_cfg.nodes),
-            "XXXextra4XXX": str(slurm_cfg.ntasks_per_node),
-            "XXXextra5XXX": str(slurm_cfg.cpus_per_task),
-            "XXXextra6XXX": slurm_cfg.gres,
-            "XXXextra7XXX": slurm_cfg.mem,
-            "XXXextra8XXX": slurm_cfg.time,
-            "XXXoutfileXXX": str(run_dir / "run.out"),
-            "XXXerrfileXXX": str(run_dir / "run.err"),
-            "XXXcommandXXX": driver_cmd,
-        }
-        script = (self.server_dir / "config" / "qsub.sh").read_text()
-        for placeholder, value in replacements.items():
-            script = script.replace(placeholder, value)
-        sbatch_path = run_dir / "run_tilt_filter.sh"
-        sbatch_path.write_text(script)
-        sbatch_path.chmod(0o755)
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -407,6 +396,19 @@ class CryoBoostBackend:
         jm.paths["job_dir"] = str(out_dir)
         await self.state_service.save_project(project_path=project_path, force=True)
 
+        # The driver reads every one of those values off the instance, so the launch is the
+        # standard instance form: --instance_id/--project_path, and qsub cd's into out_dir,
+        # which is what the driver takes as its job dir.
+        try:
+            driver_cmd = driver_invocation(
+                server_dir=self.server_dir,
+                driver_script=self.server_dir / "drivers" / "extract_pick_list.py",
+                instance_id=instance_id,
+                project_path=project_path,
+            )
+        except FileNotFoundError as e:
+            return err(str(e))
+
         # A user-initiated (re-)extract must re-cut from scratch: clear any prior
         # extraction output so drivers/extract_pick_list.py does NOT hit its idempotency
         # skip (out/particles.star + out/Subtomograms/) and silently reuse stale
@@ -427,42 +429,10 @@ class CryoBoostBackend:
 
         await asyncio.to_thread(_clear_previous_output)
 
-        # The driver reads every one of those values off the instance, so the launch is the
-        # standard instance form: --instance_id/--project_path, and qsub cd's into out_dir,
-        # which is what the driver takes as its job dir.
-        driver_cmd = driver_invocation(
-            server_dir=self.server_dir,
-            driver_script=self.server_dir / "drivers" / "extract_pick_list.py",
-            instance_id=instance_id,
-            project_path=project_path,
-        )
-
-        # SLURM resources = the project's defaults (proven to run relion_tomo_subtomo;
-        # over-provisioned for one tomo but consistent with the pipeline extraction).
-        slurm_cfg = self.state_service.state_for(project_path).slurm_defaults
-        constraint = slurm_cfg.constraint.strip("'\"")
-        template_text = (self.server_dir / "config" / "qsub.sh").read_text()
-        replacements = {
-            "XXXextra1XXX": slurm_cfg.partition,
-            "XXXextra2XXX": constraint,
-            "XXXextra3XXX": str(slurm_cfg.nodes),
-            "XXXextra4XXX": str(slurm_cfg.ntasks_per_node),
-            "XXXextra5XXX": str(slurm_cfg.cpus_per_task),
-            "XXXextra6XXX": slurm_cfg.gres,
-            "XXXextra7XXX": slurm_cfg.mem,
-            "XXXextra8XXX": slurm_cfg.time,
-            "XXXoutfileXXX": str(out_dir / "run.out"),
-            "XXXerrfileXXX": str(out_dir / "run.err"),
-            "XXXcommandXXX": driver_cmd,
-        }
-        script = template_text
-        for placeholder, value in replacements.items():
-            script = script.replace(placeholder, value)
-        sbatch_path = out_dir / "run_extract.sh"
-        sbatch_path.write_text(script)
-        sbatch_path.chmod(0o755)
-
         try:
+            # SLURM resources = the project's defaults (proven to run relion_tomo_subtomo;
+            # over-provisioned for one tomo but consistent with the pipeline extraction).
+            sbatch_path = write_sbatch_script(out_dir / "run_extract.sh", state.slurm_defaults, driver_cmd)
             proc = await asyncio.create_subprocess_exec(
                 "sbatch",
                 str(sbatch_path),

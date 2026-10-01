@@ -22,3 +22,6 @@ tifffile==2025.12.20
 # CentOS 7 compute nodes; check the nodes' glibc before moving to a newer torch.
 torch==2.6.0
 torchvision==0.21.0
+
+# Self-test: `pytest` (headnode, seconds) and `pytest -m cluster` (one job per tool)
+pytest>=7

@@ -14,8 +14,8 @@ Empty-upstream guard: if the upstream tmextractcand step produced zero
 candidates across every tomogram, running this job has nothing to do.
 We mirror the per-TS .skip pattern at the whole-job level — banner
 here so the user knows before they touch Run, and the driver writes a
-.skipped_no_candidates.json sidecar + RELION_JOB_EXIT_SUCCESS rather
-than a hard fail (see drivers/subtomo_extraction.py).
+.skipped_no_candidates.json sidecar and exits 0 rather than failing
+hard (see drivers/subtomo_extraction.py).
 
 Layout: one species line on top (pill + "open in Species"),
 the two sanity checks as one-line chips (same rules + text, less chrome — the
@@ -29,6 +29,7 @@ from pathlib import Path
 
 from nicegui import ui
 
+from services.jobs.miss_align import local_warps_upstream
 from services.models_base import JobType
 from services.project_state import get_project_state_for
 from services.models_base import resolve_species
@@ -55,6 +56,8 @@ def render_subtomo_extraction_params(job_type, job_model, is_frozen, save_handle
     # Top-of-panel chip if upstream picks are empty across the board — the user
     # shouldn't be tweaking box_size for a job that has nothing to extract.
     _render_empty_upstream_banner(job_model)
+    if state is not None and instance_id:
+        _render_local_warp_chip(state, instance_id)
 
     # Inline box-vs-diameter chip. Mirrors the dashboard's sanity rule so a
     # user editing box_size sees the same advice before submission.
@@ -88,11 +91,7 @@ def _render_empty_upstream_banner(job_model) -> None:
     # Post-run state wins over pre-run state — the job actually ran and
     # produced the explicit sidecar, so quote it verbatim.
     if sentinel_msg is not None:
-        _draw_banner(
-            title="Skipped — no candidates upstream",
-            body=sentinel_msg,
-            ran_already=True,
-        )
+        _draw_banner(title="Skipped — no candidates upstream", body=sentinel_msg, ran_already=True)
         return
 
     if upstream_status == "empty":
@@ -105,6 +104,32 @@ def _render_empty_upstream_banner(job_model) -> None:
                 "every tilt-series as SKIP and exit immediately."
             ),
             ran_already=False,
+        )
+
+
+def _render_local_warp_chip(state, instance_id: str) -> None:
+    """Amber chip when the tomograms these particles come from were reconstructed from a miss-alignment
+    refinement that wrote local image warps: Warp applied them, RELION extraction cannot."""
+    found = local_warps_upstream(state, instance_id)
+    if found is None:
+        return
+    source, worst = found
+    tooltip = (
+        f"{source} refined the tilt-series alignment with local [N,N] image-warp grids (largest node "
+        f"{worst:.1f} Å; per series in its missalign_changes.json). The tomograms, template matching and "
+        "the picks include them; the RELION star this extraction reads holds rigid per-tilt geometry only, "
+        "so each particle is cut off by the local warp at each tilt."
+    )
+    with (
+        ui.row()
+        .classes("w-full items-center gap-2")
+        .style(f"background: #fffbeb; border: 1px solid #fde68a; {_CHIP_STYLE}")
+        .tooltip(tooltip)
+    ):
+        ui.icon("warning", size="14px").classes("text-amber-600")
+        ui.label("Local deformations").classes("text-[11px] font-semibold text-amber-800")
+        ui.label(f"up to {worst:.1f} Å from {source} — RELION extraction ignores them").classes(
+            "text-[11px] text-amber-800"
         )
 
 
@@ -231,15 +256,11 @@ def _render_box_vs_diameter_warning(container, state, species, job_model) -> Non
     if ratio < 1.5:
         level = "error"
         msg = (
-            f"Box {box_ang:g} Å is {ratio:.2f}× particle diameter {diameter:g} Å — "
-            "particle won't fit. Aim for 1.5–3×."
+            f"Box {box_ang:g} Å is {ratio:.2f}× particle diameter {diameter:g} Å — particle won't fit. Aim for 1.5–3×."
         )
     elif ratio > 3.0:
         level = "warn"
-        msg = (
-            f"Box {box_ang:g} Å is {ratio:.2f}× particle diameter {diameter:g} Å — "
-            "wasted compute. Aim for 1.5–3×."
-        )
+        msg = f"Box {box_ang:g} Å is {ratio:.2f}× particle diameter {diameter:g} Å — wasted compute. Aim for 1.5–3×."
 
     if level is None:
         return

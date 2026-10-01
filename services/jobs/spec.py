@@ -12,12 +12,16 @@ module is imported by the package `__init__`.
 
 from __future__ import annotations
 
+import os
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import Final
 
+from services.configs.config_service import get_config_service
+from services.io_slots import JobFileType
 from services.jobs._base import AbstractJobParams
 from services.jobs.candidate_extract import CandidateExtractPytomParams
 from services.jobs.class3d import Class3DParams
@@ -68,6 +72,11 @@ class JobSpec:
     # job touched, used when `.task_manifest.json` is absent (pre-array-tracker
     # projects) to show real per-TS pills instead of a stuck "pending".
     array_output_star: str | None = None
+    # Output types this job refines in place of its own input of the same type: a consumer
+    # auto-bound to that input follows it here when this job is in the pipeline ahead of the
+    # consumer (PathResolutionService._follow_refinements). Never inferred from the schemas -
+    # several jobs consume and produce one type without being a drop-in refinement.
+    refines: tuple[JobFileType, ...] = ()
 
 
 JOB_SPECS: Final[tuple[JobSpec, ...]] = (
@@ -130,6 +139,8 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         PHASE_PREPROCESSING,
         dependencies=(JobType.TS_ALIGNMENT,),
         driver="miss_align.py",
+        plugins=("miss_align",),
+        refines=(JobFileType.ALIGNED_TILT_SERIES_STAR, JobFileType.WARP_TILTSERIES_DIR),
     ),
     JobSpec(
         JobType.TS_CTF,
@@ -252,11 +263,16 @@ def driver_launch_prefix(*, server_dir: Path, driver_script: Path) -> str:
     its own argument set instead of `--instance_id`; that job now has a real instance,
     so it goes through `driver_invocation` like everything else.)
 
-    The venv interpreter is used when the repo has one, else bare `python3` from PATH.
+    The interpreter is conf.yaml's `crboost_python` when set, else the one running this
+    process — the server's own venv/conda/uv environment on the headnode, and the same
+    interpreter again when a driver re-invokes itself on a compute node.
     """
-    python_exe = server_dir / "venv" / "bin" / "python3"
-    if not python_exe.exists():
-        python_exe = Path("python3")
+    python_exe = get_config_service().config.crboost_python or sys.executable
+    if not os.access(python_exe, os.X_OK):
+        raise FileNotFoundError(
+            f"Driver interpreter {python_exe!r} is not executable (crboost_python in config/conf.yaml; "
+            f"empty = the interpreter running the server)"
+        )
     return f"export PYTHONPATH={server_dir}:${{PYTHONPATH}}; {python_exe} {driver_script}"
 
 

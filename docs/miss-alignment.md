@@ -50,14 +50,14 @@ apptainer's `sh` — cosmetic, the container is fine.
 
 ## 3. Runtime / invocation contract
 
-crboost runs tools as `apptainer exec --nv --cleanenv --no-home` (see
+crboost runs tools as `apptainer exec --nv --cleanenv` (see
 `services/computing/container_service.py`). For miss-alignment specifically:
 
 - **`--nv`** — required (GPU).
 - **`--cleanenv`** wipes host env → any env the tool needs must be set *inside* the
-  inner command string or baked into the def `%environment`.
-- **`--no-home`** → set a **faux writable HOME** so torch/matplotlib/triton caches
-  have somewhere to go: `env HOME=<jobtmp> MPLCONFIGDIR=<jobtmp>/mpl`. (A plain
+  inner command string or baked into the def `%environment`. The wrapper already sets
+  the torch/matplotlib/triton cache dirs (`TORCHINDUCTOR_CACHE_DIR`, `MPLCONFIGDIR`,
+  `TRITON_CACHE_DIR`, …) to `${TMPDIR:-/tmp}/crboost-$USER` on the node. (A plain
   `import miss_alignment` is clean; matplotlib/fontconfig noise only appears when it
   *plots* — training thumbnails/tensorboard.)
 - **`OMP_NUM_THREADS=1 MKL_NUM_THREADS=1`** recommended (the tool sets torch threads
@@ -67,11 +67,15 @@ crboost runs tools as `apptainer exec --nv --cleanenv --no-home` (see
   repeat an index for multiple recon workers on that GPU, e.g. `0,0,1,1`). The
   alignment phase auto-spreads over all visible GPUs.
 - **`--pool-size` constraint:** `pool_size // n_partitions >= 2 * batch_size`, where
-  `n_partitions = dataloaders_per_trainer` (× training devices). If violated it
+  `n_partitions = training devices × dataloaders_per_trainer`. If violated it
   raises at datamodule construction. (Smoke used `--pool-size 128
   --dataloaders-per-trainer 1` with `batch_size 16`.)
+- **Several training devices** run DDP: each epoch is split across them
+  (`steps_per_epoch / n` steps per device, each with the full batch) and the learning
+  rate is multiplied by n. On multi-switch PCIe nodes NCCL's peer-to-peer path can hang;
+  the tool's docs prescribe `NCCL_P2P_DISABLE=1` (the crboost driver sets it).
 - **`--prepare-stacks <apix>`** — optional; rebuilds tilt stacks at a target pixel
-  size from source images before aligning. See §6/§7 for when it's needed.
+  size from the frame averages before aligning, on every invocation. See §7.
 - **`--preprocess`** — optional; runs an XCF coarse alignment + pretilt estimation
   first (backs up XMLs to `pre-iter/`). Only valid with `--start-at-iteration 0`.
 
@@ -182,28 +186,33 @@ ValueError: XML metadata at <...>.xml has zero values in 'ImageDimensionsAngstro
 Key facts learned:
 - `warpylib.TiltSeries(path)` reads the **XML only** — the `warp_tiltseries.settings`
   sibling is **ignored**. Copying the settings next to the XML does nothing.
-- The thin XML also lacks `tilt_movie_paths`, so `--prepare-stacks` /
-  `load_image_dimensions()` **cannot** auto-fill the dims (they need a movie path to
-  read an average from).
+- `--prepare-stacks` sets the image dimensions in memory only (`load_images` does,
+  `save_meta` is never called), so the stamp is needed with it too.
 - `image_dimensions_physical` / `volume_dimensions_physical` are **plain settable
   instance attributes** (not read-only properties), and `save_meta` **persists**
   them to the XML (verified across a fresh reload).
 
-**The fix (proven, ~6 lines) — this is a required driver pre-step**, sourcing values
-from `warp_tiltseries.settings`:
+**The fix — a required driver pre-step.** Pixel size and tomogram dimensions come from
+`warp_tiltseries.settings`; the **image extent comes from each tilt stack's MRC cell**
+(`cella`, Å), the stack the tool actually reads:
 
 ```python
 import torch
 from warpylib import TiltSeries
-apix       = 1.55           # settings: PixelSize
-W, H       = 7676, 7420     # settings: HeaderlessWidth, HeaderlessHeight
-VX, VY, VZ = 4096, 4096, 2048  # settings: Tomo DimensionsX/Y/Z
+apix       = 1.55                 # settings: PixelSize
+VX, VY, VZ = 4096, 4096, 2048     # settings: Tomo DimensionsX/Y/Z
+img_x, img_y = 6348.8, 6348.8     # tiltstack/<ts>/<ts>.st header cella (1024 px × 6.2 Å)
 ts = TiltSeries(xml_path)
-ts.image_dimensions_physical  = torch.tensor([W*apix, H*apix], dtype=torch.float32)
+ts.image_dimensions_physical  = torch.tensor([img_x, img_y], dtype=torch.float32)
 ts.volume_dimensions_physical = torch.tensor([VX*apix, VY*apix, VZ*apix], dtype=torch.float32)
 ts.ctf.pixel_size = apix
 ts.save_meta(xml_path)      # persists on reload
 ```
+
+⚠️ **Not** the settings' `HeaderlessWidth/Height`: those describe headerless raw formats
+and hold Warp's default 7676×7420 for EER/TIFF/MRC data. Stamping them (as every run up to
+2026-09-29 did) moves warpylib's image centre by thousands of Å, so every training
+subtomogram is mis-projected — the logs then show `aligned == misaligned` scores throughout.
 
 These are physical extents (Å) = pixels × apix, i.e. scale-invariant, so they stay
 correct regardless of any later downsampling.
@@ -218,10 +227,15 @@ correct regardless of any later downsampling.
   (`MicroscopeParams.pixel_size_angstrom` defaults to 1.35) — prefer the settings
   file's `PixelSize` over `ProjectState` for the true value.
 - **`--prepare-stacks <apix>`** rebuilds tilt stacks at a target pixel size from the
-  *source images* — needs `tilt_movie_paths` (from the tomostar) and the averages on
-  disk. It is **not required** if a usable `tiltstack/*.st` already exists and dims
-  are stamped: reconstruction reads `tilt_stack_path` (the `.st`), not the movies.
-  In the proven smoke run we stamped dims and ran **without** `--prepare-stacks`.
+  frame averages. Each tilt resolves to `<DataDirectory>/<MoviePath>` → `<movie
+  dir>/average/<movie stem>.mrc` (crboost XMLs carry absolute `MoviePath`s into the
+  frame-series job's `warp_frameseries/`); the original pixel size is the first
+  average's header value. `stack_tilts` then writes `tiltstack/<ts>/<ts>.st`, the
+  `.rawtlt` and PNG thumbnails, opening each for writing — through a symlink that
+  would overwrite the alignment job's own files, so the crboost driver stages no
+  stack at all when it is set (job param `prepare_stacks_apix`), checks the averages
+  first, and passes the flag on a fresh stage only. Not required otherwise:
+  reconstruction reads `tilt_stack_path` (the `.st`), not the movies.
 - Works fine on a **single** tilt-series.
 
 ---

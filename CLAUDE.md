@@ -23,11 +23,12 @@ ruff format .
 python check_boundaries.py
 ```
 
-There is no test suite.
+`tests/` is the install self-test, not unit tests: `pytest` checks the headnode setup (seconds),
+`pytest -m cluster` submits one short SLURM job per configured tool (minutes).
 
 ## Configuration
 
-- `config/conf.yaml` — main config (created from `config/conf.template.yaml` by `preflight.py`). Contains: `crboost_root`, `crboost_python`, local paths, SLURM defaults, and per-tool execution config (container vs binary).
+- `config/conf.yaml` — main config (created from `config/conf.template.yaml` by `preflight.py`). Contains: `crboost_python` (optional driver-interpreter override; empty = the interpreter running the server), local paths, SLURM defaults, `container_runtime` + `container_binds`, and per-tool execution config (container vs binary).
 - `config/qsub.sh` — SLURM job submission template. Uses RELION-style `XXXextra1XXX`..`XXXextra8XXX` placeholders that get substituted with `SlurmConfig` fields at submission time.
 - `config/protocols/<name>/` — Protocol bundles (`protocol.yaml` + `assets/`): the shape of a pipeline with its parameters, applied at project creation to make a REGULAR project (`services/protocols/`). A project created from one carries `ProjectState.protocol_origin` and a frozen `<project>/protocol/protocol.yaml`; the workspace Protocols view (foot-of-rail light, `ui/protocols_view.py`) shows protocol vs current parameters. Nothing about results lives in protocols. How to write one: `docs/protocols.md`. Job instances take their code defaults; there are no per-job template files.
 

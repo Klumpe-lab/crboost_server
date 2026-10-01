@@ -13,9 +13,6 @@ import sys
 import traceback
 from pathlib import Path
 
-server_dir = Path(__file__).parent.parent
-sys.path.insert(0, str(server_dir))
-
 from drivers.driver_base import ToolCommand, add_gain_options, get_driver_context, run_tool
 from services.jobs.ts_import import TsImportParams
 
@@ -85,14 +82,9 @@ def main():
             TsImportParams
         )
     except Exception as e:
-        job_dir = Path.cwd()
-        (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
         print(f"[DRIVER] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
         traceback.print_exc(file=sys.stderr)
         sys.exit(1)
-
-    success_file = job_dir / "RELION_JOB_EXIT_SUCCESS"
-    failure_file = job_dir / "RELION_JOB_EXIT_FAILURE"
 
     try:
         print(f"[DRIVER] Params loaded for job type {job_type} in {job_dir}", flush=True)
@@ -118,7 +110,6 @@ def main():
 
         print(f"[DRIVER] Created {len(tomostar_files)} tomostar files", flush=True)
 
-        success_file.touch()
         print("[DRIVER] Job finished successfully.", flush=True)
         sys.exit(0)
 
@@ -126,7 +117,6 @@ def main():
         print("[DRIVER] FATAL ERROR: Job failed.", file=sys.stderr, flush=True)
         print(str(e), file=sys.stderr, flush=True)
         traceback.print_exc(file=sys.stderr)
-        failure_file.touch()
         print("[DRIVER] Job failed.", flush=True)
         sys.exit(1)
 

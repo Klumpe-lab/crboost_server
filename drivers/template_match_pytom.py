@@ -29,19 +29,15 @@ Tomograms are 1:1 with tilt-series (Tomogram.tilt_series_id == ts_id), so
 the manifest keys off ts_names / tilt_series_ids() directly.
 
 The mode dispatch, both bootstraps, manifest lookup, exclusions, tally and exit
-markers all live in ArrayDriver; this file is the template-match-specific hooks.
+code all live in ArrayDriver; this file is the template-match-specific hooks.
 """
 
 import os
 import shutil
-import sys
 from pathlib import Path
 
 import pandas as pd
 import starfile
-
-server_dir = Path(__file__).parent.parent
-sys.path.insert(0, str(server_dir))
 
 from drivers.array_job_base import ArrayDriver, ArrayResults, read_manifest
 from drivers.driver_base import DriverContext, ToolCommand, require_producer_input
@@ -433,5 +429,4 @@ class TemplateMatchPytomDriver(ArrayDriver):
 
 
 if __name__ == "__main__":
-    os.environ["TQDM_DISABLE"] = "1"
     TemplateMatchPytomDriver().main()

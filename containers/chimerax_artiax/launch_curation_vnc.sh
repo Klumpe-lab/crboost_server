@@ -11,6 +11,9 @@
 # Preload a tomogram + picks (kills the blank session): set CB_CXC to a .cxc from
 # `python -m services.visualization.artiax_bridge bundle …`; srun --export=ALL carries it:
 #   CX_SIF=… CB_CXC=/path/open_TS_01.cxc ./launch_curation_vnc.sh
+# The worker binds only /tmp and $HOME; list anything else the session must open (data,
+# project) in CX_BINDS, colon-separated — crboost passes conf.yaml's container_binds:
+#   CX_BINDS=/groups:/scratch CX_SIF=… ./launch_curation_vnc.sh g
 set -euo pipefail
 
 PARTITION="${1:-c}"

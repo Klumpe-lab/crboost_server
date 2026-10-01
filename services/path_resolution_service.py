@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
@@ -7,7 +8,12 @@ from collections.abc import Sequence
 
 from services.io_slots import InputSlot, OutputSlot, JobFileType, ResolvedInput, ResolvedOutput, ResolvedManifest
 
-from services.models_base import JobType, JobStatus
+from services.models_base import InstanceId, JobType, JobStatus
+
+logger = logging.getLogger(__name__)
+
+# (consumer, *refiners) combinations already reported as ambiguous by _follow_refinements.
+_AMBIGUOUS_REFINEMENTS_WARNED: set[tuple[str, ...]] = set()
 
 if TYPE_CHECKING:
     from services.project_state import ProjectState
@@ -611,6 +617,20 @@ class PathResolutionService:
             if candidate.producer_job_type.value == job_type_str and candidate.instance_path == instance_path
         ]
         if not matches:
+            # An override picked before its producer was deployed names the placeholder
+            # `<category>/pending_<instance_id>`; once that instance has a job directory, its output
+            # is what the override meant.
+            _category, _, folder = instance_path.partition("/")
+            if folder.startswith("pending_"):
+                pending_id = folder.removeprefix("pending_")
+                matches = [
+                    candidate
+                    for accepted_type in slot.accepts
+                    for candidate in index.get(accepted_type, [])
+                    if candidate.producer_job_type.value == job_type_str
+                    and candidate.producer_instance_id == pending_id
+                ]
+        if not matches:
             return None
         # A producer may expose both a raw output and a curated `prefer_if_exists`
         # sibling of the same type under one source_key (e.g. optimisation_set vs
@@ -951,7 +971,96 @@ class PathResolutionService:
             filtered_pref = 1 if c.prefer_if_exists else 0
             return (species_match, pref, filtered_pref, c.relion_job_number, succeeded)
 
-        return max(candidates, key=lambda c: (score(c), c.producer_job_type.value, c.producer_output_key, c.path))
+        best = max(candidates, key=lambda c: (score(c), c.producer_job_type.value, c.producer_output_key, c.path))
+        return self._follow_refinements(best, index, consumer_instance_id)
+
+    def _follow_refinements(
+        self, chosen: OutputCandidate, index: dict[JobFileType, list[OutputCandidate]], consumer_instance_id: str | None
+    ) -> OutputCandidate:
+        """Rebind an automatically chosen input to the job that refines it.
+
+        A job R declaring `JobSpec.refines` ∋ T, in `state.pipeline_order`, before the consumer in
+        PIPELINE_ORDER, whose own effective input of type T is exactly `chosen`, takes the
+        consumer's T: the consumer gets R's T output instead. Repeats, so refinements chain. User
+        overrides never reach here. Without a consumer id there is no order to compare, so the
+        choice stands.
+
+        Several such R (refinement runs compared side by side) are ranked the way duplicate producers
+        are in _choose_candidate_for_slot: the most recently deployed one wins (highest job number,
+        then the latest in pipeline order). Deploy allocates a refiner before its consumers, so a
+        refiner and its consumers added and run together pair up; any other pairing is set in the
+        consumer's IO tab.
+        """
+        if consumer_instance_id is None:
+            return chosen
+        from services.jobs.spec import JOB_SPEC_BY_TYPE, PIPELINE_ORDER
+
+        consumer_type = InstanceId.parse(consumer_instance_id).job_type
+        if consumer_type not in PIPELINE_ORDER:
+            return chosen
+        consumer_pos = PIPELINE_ORDER.index(consumer_type)
+        t = chosen.produces
+        followed: set[str] = set()
+        while True:
+            refiners: list[tuple[str, OutputCandidate]] = []
+            for rid in self.state.pipeline_order or []:
+                r_model = self.state.jobs.get(rid)
+                if rid == consumer_instance_id or rid in followed or r_model is None:
+                    continue
+                spec = JOB_SPEC_BY_TYPE.get(r_model.job_type)
+                if spec is None or t not in spec.refines or PIPELINE_ORDER.index(spec.job_type) >= consumer_pos:
+                    continue
+                r_input = self._effective_input(rid, r_model, t, index)
+                if r_input is None or (r_input.producer_instance_id, r_input.producer_output_key) != (
+                    chosen.producer_instance_id,
+                    chosen.producer_output_key,
+                ):
+                    continue
+                r_output = next((c for c in index.get(t, []) if c.producer_instance_id == rid), None)
+                if r_output is not None:
+                    refiners.append((rid, r_output))
+            if not refiners:
+                return chosen
+            order = {rid: i for i, rid in enumerate(self.state.pipeline_order or [])}
+            rid, candidate = max(refiners, key=lambda r: (r[1].relion_job_number or 0, order.get(r[0], -1)))
+            if len(refiners) > 1:
+                key = (consumer_instance_id, *sorted(r for r, _ in refiners))
+                if key not in _AMBIGUOUS_REFINEMENTS_WARNED:  # resolution reruns on every IO-tab render
+                    _AMBIGUOUS_REFINEMENTS_WARNED.add(key)
+                    logger.warning(
+                        "%s: %s all refine %s's %s; following the most recently deployed, %s — set the IO tab "
+                        "to pair it with another",
+                        consumer_instance_id,
+                        ", ".join(r for r, _ in refiners),
+                        chosen.producer_instance_id,
+                        t.value,
+                        rid,
+                    )
+            chosen = candidate
+            followed.add(rid)
+
+    def _effective_input(
+        self,
+        instance_id: str,
+        job_model: AbstractJobParams,
+        t: JobFileType,
+        index: dict[JobFileType, list[OutputCandidate]],
+    ) -> OutputCandidate | None:
+        """The producer `instance_id` reads its input of type `t` from, chosen the way
+        resolve_inputs chooses it; None for no such slot or a manual file."""
+        slot = next((s for s in self._get_input_schema(job_model.job_type) if t in s.accepts), None)
+        if slot is None:
+            return None
+        override_key = (getattr(job_model, "source_overrides", {}) or {}).get(slot.key)
+        if override_key:
+            if override_key.startswith("manual:"):
+                return None
+            hit = self._resolve_override(slot, override_key, index)
+            if hit is not None:
+                return hit
+        return self._choose_candidate_for_slot(
+            slot, index, getattr(job_model, "species_id", None), consumer_instance_id=instance_id
+        )
 
     def _parse_preferred_source(self, preferred: str | None) -> JobType | None:
         if not preferred:
