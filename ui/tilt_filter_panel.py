@@ -24,6 +24,7 @@ from services.models_base import JobStatus
 from services.tilt_series.build import parse_position
 from services.project_state import get_state_service
 from ui.components.buttons import house_button
+from ui.components.dialogs import dialog_host
 from ui.components.fields import house_number, house_select
 from ui.components.reactive import SingleFlight
 from ui.current_project import current_project_state
@@ -123,6 +124,32 @@ def _find_fs_motion_warp_dir(project_path):
             if d.is_dir():
                 return d
     return None
+
+
+def _n_labels(n: int) -> str:
+    return f"{n} label" if n == 1 else f"{n} labels"
+
+
+async def _confirm_clear_labels(labels: dict[str, str], mode: FilterMode) -> bool:
+    """Ask before Clear labels: it removes every label set by hand on this job, with no undo."""
+    n = len(labels)
+    n_bad = sum(1 for v in labels.values() if v == "bad")
+    after = (
+        "Every tilt then reads as the model predicts it, and good where it has no prediction."
+        if mode == FilterMode.DL_REVIEW
+        else "Every tilt then reads good."
+    )
+    with dialog_host(), ui.dialog() as dlg, ui.card().classes("w-96"):
+        ui.label(f"Clear {_n_labels(n)}?").style(f"{FONT} font-size: 13px; font-weight: 600; color: {CLR_HEADING};")
+        ui.label(f"{n_bad} bad and {n - n_bad} good, set by hand. {after} This cannot be undone.").style(
+            f"{FONT} font-size: 12px; color: {CLR_LABEL}; margin-top: 4px;"
+        )
+        with ui.row().classes("w-full justify-end mt-3 gap-2"):
+            house_button("Cancel", lambda: dlg.submit(False))
+            house_button(f"Clear {_n_labels(n)}", lambda: dlg.submit(True), kind="danger")
+    go = await dlg
+    dlg.delete()
+    return bool(go)
 
 
 def _notify_finalize(res: dict) -> None:
@@ -380,7 +407,7 @@ def _render_liveness_banner(df) -> None:
         .style(f"{SEC} background: #fef2f2; border-color: #fecaca;")
     ):
         ui.icon("warning", size="14px").style(f"color: {CLR_ERROR};")
-        ui.label(f"The model gives every tilt P(bad) ≈ {liveness[1]:.2f} — its verdicts are meaningless.").style(
+        ui.label(f"The model gives every tilt the same P(bad), {liveness[1]:.2f}: its verdicts are meaningless.").style(
             f"{FONT} font-size: 10px; color: {CLR_ERROR};"
         )
 
@@ -467,21 +494,25 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
                 return
             _notify_finalize(await get_backend().approve_tilt_filter(project_path, instance_id))
 
-    async def _set_all_good():
-        for key in df["cryoBoostKey"]:
-            labels[key] = "good"
-        df["cryoBoostDlLabel"] = "good"
-        _refresh_stats()
-        # Bulk-update all visible cards via JS — no full re-render needed
-        ui.run_javascript(
-            "document.querySelectorAll('.tilt-card').forEach(card => {"
-            + _js_apply_look("card", _card_look(False, touched=True))
-            + "});"
-        )
-        for refs in group_refs:
-            _set_bad_count(refs["bad_lbl"], 0)
-        ui.notify("All tilts set to good", type="info")
-        await _persist()
+    async def _clear_labels():
+        async with flight("clear") as acquired:
+            if not acquired:
+                return
+            if not labels:
+                ui.notify("No labels to clear.", type="info")
+                return
+            if not await _confirm_clear_labels(labels, job_model.mode):
+                return
+            if group_c.is_deleted:  # a DL run landed and rebuilt the gallery while the dialog was open
+                ui.notify("The gallery reloaded while the dialog was open; nothing was cleared.", type="warning")
+                return
+            n = len(labels)
+            labels.clear()
+            _relabel()
+            _refresh_stats()
+            _render_groups()
+            ui.notify(f"{_n_labels(n)} cleared.", type="info")
+            await _persist()
 
     async def _on_threshold(_e) -> None:
         # The field refuses out-of-range and half-typed values, which leave the threshold as it was.
@@ -495,7 +526,12 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
 
     with ui.row().classes("w-full items-center gap-2 py-1 flex-wrap"):
         house_button("Approve", _approve, kind="accent", tooltip="Commit these labels; alignment drops the bad tilts.")
-        house_button("Set all good", _set_all_good)
+        house_button(
+            "Clear labels",
+            _clear_labels,
+            tooltip="Remove every label set by hand; each tilt goes back to the model's prediction (DL review) "
+            "or to good (Manual).",
+        )
 
         ui.element("div").style("width: 1px; height: 16px; background: #e2e8f0; margin: 0 2px;")
         house_button("Expand all", lambda: _expand_all(True))

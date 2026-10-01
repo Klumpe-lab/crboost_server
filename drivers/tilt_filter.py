@@ -133,8 +133,8 @@ def predict(state, job_model: TiltFilterParams, job_dir: Path, project_path: Pat
         print(f"[DRIVER] Liveness: P(bad) varies within tilt series (mean {liveness[1]:.3f})", flush=True)
     else:
         print(
-            f"[DRIVER] WARNING: the model gives every tilt P(bad) ~ {liveness[1]:.3f} (spread below "
-            f"{LIVENESS_MIN_STD} in every tilt series); its verdicts are meaningless",
+            f"[DRIVER] WARNING: the model gives every tilt the same P(bad), {liveness[1]:.3f} (spread below "
+            f"{LIVENESS_MIN_STD:g} in every tilt series); its verdicts are meaningless",
             flush=True,
         )
 
