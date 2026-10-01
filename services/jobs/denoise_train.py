@@ -131,10 +131,15 @@ class DenoiseTrainParams(AbstractJobParams):
         "job's wall-time bounded by dataset size. Only used when denoise_method = IsoNet.",
     )
     isonet_deconv: bool = Field(
-        default=False,
-        description="Run IsoNet's CTF deconvolution before training. OFF by default because "
-        "tsReconstruct already deconvolves (its 'deconv' param defaults to 1/on). Enable only if "
-        "you reconstructed with deconv=0. Only used when denoise_method = IsoNet.",
+        default=True,
+        description="Build IsoNet's training mask from a CTF-deconvolved copy of the full tomogram. Rule: ON "
+        "for defocus-contrast data — IsoNet recommends it because a mask built from the raw reconstruction "
+        "tends to be poor; OFF for phase-plate data. With even/odd halves (method auto / isonet2-n2n) refine "
+        "and predict read the raw halves either way, so this only decides where training crops are taken; "
+        "with method isonet2 (single map) it also deconvolves the training input. The copy is tsReconstruct's "
+        "own (reconstruction/deconv/, written when its 'deconv' is 1, using each tilt's fitted defocus); "
+        "without it IsoNet deconvolves at the tsCtf defocus nearest 0° tilt. Only used when denoise_method = "
+        "IsoNet.",
     )
 
     def _get_job_specific_options(self) -> list[tuple[str, str]]:

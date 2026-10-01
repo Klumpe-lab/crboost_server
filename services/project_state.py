@@ -1063,7 +1063,8 @@ class ProjectState(BaseModel):
 
         # Data facts stamped at init: the detector's frame size is what
         # the reconstruction volume must cover, and a single-frame input (SerialEM stacks
-        # split into one .mrc per tilt) has no even/odd halves to average or reconstruct.
+        # split into one .mrc per tilt) has no even/odd frame halves to average or reconstruct,
+        # so its reconstruction halves are split by tilt instead (denoising trains on them).
         # Both are facts of the data, not preferences; the user can still edit the tab.
         if hasattr(job_params, "tomo_dimensions"):
             w, h = self.acquisition.detector_dimensions
@@ -1073,6 +1074,7 @@ class ProjectState(BaseModel):
                 job_params.out_average_halves = False
             if hasattr(job_params, "halfmap_frames"):
                 job_params.halfmap_frames = 0
+                job_params.halfmap_tilts = 1
 
         self.jobs[instance_id] = job_params
         self.update_modified()
