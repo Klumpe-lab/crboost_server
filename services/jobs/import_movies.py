@@ -81,4 +81,4 @@ class ImportMoviesParams(AbstractJobParams):
         return options
 
     def get_tool_name(self) -> str:
-        return "relion_import"
+        return "relion"

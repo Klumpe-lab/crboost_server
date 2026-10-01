@@ -10,7 +10,8 @@ frequency is visible. Fixed entries stay, marked FIXED with the commit, until no
 
 **Status:** ROOT CAUSE FOUND 2026-09-08 (experiment `<project>/tutorial_sta/ctf_fit_test.sbatch`; full log and
 decision tree in `docs/reports/copia/copia-ctf-fit-investigation.md`): the frame-series fit band `c_range_min_max 30:6` is too greedy for
-2 e/Å² tilts; `30:10` fits all 28 images at 5.10–5.53 µm. Protocol fixed; driver-side guard still open. The first
+2 e/Å² tilts; `30:10` fits all 28 images at 5.10–5.53 µm. Protocols and code defaults (fsMotionAndCtf, tsCtf) now use
+`30:10`; projects created earlier keep `30:6` in their job params. Driver-side guard still open. The first
 workaround tried, a tight defocus window (`4.0:6.5`), made it WORSE: see below.
 **Seen:** `copia-empiar12580-20260906-1319` (17 of 28 tilts wrong), `copia-empiar12580-20260908-1407` (22 of 28);
 also in v1 with Warp `2.0.0dev31`: `/groups/klumpe/user/<pi>/Processing/Copia/try2` (Position_11_2, 1.55 Å/px,

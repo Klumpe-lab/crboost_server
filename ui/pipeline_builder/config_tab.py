@@ -25,12 +25,14 @@ def render_config_tab(
     save_handler: Callable,
     instance_id: str | None = None,
     callbacks: dict[str, Callable] | None = None,
-):
+) -> Callable[[], None] | None:
+    """Returns the refresh a plugin renderer hands back, if any: the job tab reruns it after an edit in
+    any of its sections."""
     # array_throttle is rendered in the SLURM section, not here
     exclude = {"array_throttle"} if "array_throttle" in getattr(job_model, "USER_PARAMS", set()) else None
     renderer = get_params_renderer(job_type)
     if renderer:
-        renderer(
+        return renderer(
             job_type,
             job_model,
             is_frozen,
@@ -41,7 +43,7 @@ def render_config_tab(
             instance_id=instance_id,
             callbacks=callbacks,
         )
-    else:
-        render_default_params_card(
-            job_type, job_model, is_frozen, save_handler, exclude=exclude, ui_mgr=ui_mgr, callbacks=callbacks
-        )
+    render_default_params_card(
+        job_type, job_model, is_frozen, save_handler, exclude=exclude, ui_mgr=ui_mgr, callbacks=callbacks
+    )
+    return None

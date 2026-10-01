@@ -765,20 +765,21 @@ Files: `docs/reports/dl-tilt-filter/scripts/calibrate_tiltnet.py` (new), `config
 
 ### Branch notes
 - Registries saved from `dl_filter` carry `Frame.p_bad`; code without the field (`Frame` is
-  `extra="forbid"`) skips those tilt-series sidecars with a warning. Until the merge, don't open one project
-  from a `dl_filter` server and a server on another branch. `agg_20260311_412_Grid3` already carries `p_bad`
-  (DL run 001), so a server on another branch skips all 17 of its tilt series until the merge.
+  `extra="forbid"`) skips those tilt-series sidecars with a warning. Until `main` has the merge below, don't open
+  one project from a `dl_filter` server and a server on another branch. `agg_20260311_412_Grid3` already carries
+  `p_bad` (DL run 001), so a server on another branch skips all 17 of its tilt series until the merge.
 - History: chunk 3 landed as two commits with the same subject, 13 s apart — a split, not a duplicate:
   `7ecc924` (`backend.py`, `services/jobs/tilt_filter.py`, `pipeline_runner.py`) and `b1bd2e7`
   (`pipeline_monitor.py`, `ui/tilt_filter_panel.py`). `7ecc924` alone is an incomplete state, which matters only
   when bisecting. Commit 9 landed the same way: two commits with the same subject, 11 s apart; every chunk-9 file
   was staged.
-- The merge with `bindmounts_and_auth` (roadmap 20) meets in `services/configs/config_service.py` (`Config`
-  gains `tilt_filter` here, `container_runtime` / `container_binds` there), `config/conf.template.yaml`, and
-  possibly `services/scheduling_and_orchestration/pipeline_runner.py`. `SCHEMA_VERSION` is 3.9 here
-  (`review_hold`); if that branch bumps it as well, the merge renumbers one of them. Code without the field ignores
-  the `review_hold` key on load (field-by-field `load()`). The DL submit launches through
-  `driver_invocation`, so roadmap 20's interpreter change reaches it unchanged.
+- `main` (roadmaps 20 and 24) merged into `dl_filter` on 2026-10-01. Conflicts: `backend.py` (the DL submit
+  renders its script with `write_sbatch_script` and refuses a non-executable driver interpreter before recording the
+  run), `drivers/tilt_filter.py` (qsub.sh's wrapper writes the exit markers, so the driver no longer does), the
+  roadmaps README row, and this file (`main` carried the superseded rev-4 copy). Schema versions did not collide:
+  only this branch bumped them (project 3.9, registry 1.5). Local configs follow roadmap 20: `crboost_root` and
+  `tsreconstruct_supervisor_slurm` are gone, so the clone's `conf.yaml` is now `main`'s plus `tilt_filter` and the
+  `tiltFilter` profile.
 - Noticed, not fixed: `_hdr` in `ui/tilt_filter_panel.py` is dead; the dashboard's registry-gap marker reads
   "Job is running" for an unapproved (SCHEDULED) filter; `TiltFilterParams.get_output_assets` names
   `filtered/tiltseries_*.star`, which no run writes any more (its only caller, `ProjectService.resolve_job_paths`, is itself uncalled); the roster's
@@ -940,8 +941,8 @@ The maintainer's phrase is "caching of labels per set"; two readings, possibly b
 
 ### 13.9 Where things stand (2026-10-01), to resume
 - Next build: U1 (13.2), as its own commit; then the rest of §13 topic by topic. The PNGs stay post-fsMotion (13.1).
-- 10b committed (`98a57c6`). The weights moved into the checkout (§12, Weights location). Then `main` (roadmaps 20
-  and 24) merges into `dl_filter` before U1.
+- 10b committed (`98a57c6`). The weights moved into the checkout (§12, Weights location), and `main` (roadmaps 20
+  and 24) merged into `dl_filter` (§12, Branch notes).
 - 10c specced (defect j). Defect k needs the maintainer's decision before chunk 11 (proposed: dead = spread below
   1e-6). Defect l: "Clear labels", in 10c or its own commit (maintainer to choose).
 - Label restores, pending the maintainer's go-ahead, with the server stopped (a running server writes its in-memory

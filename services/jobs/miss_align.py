@@ -1,5 +1,10 @@
 from __future__ import annotations
+import json
 import logging
+import re
+from dataclasses import dataclass
+from itertools import pairwise
+from pathlib import Path
 from typing import ClassVar
 from pydantic import Field
 
@@ -12,47 +17,219 @@ from services.configs.config_service import get_config_service
 logger = logging.getLogger(__name__)
 
 
-# ── Macro-iteration presets ───────────────────────────────────────────────────
-# Each preset expands to miss-alignment's `iteration_settings` list — the coarse->fine
-# schedule the driver writes into config.yaml. List length == number of macro-iterations.
-# alignment modes: "anchoring" (iterative) | "global" (single pass) | [N, N] (local
-# NxN image-warping grid). Kept here (not in the driver) so the walltime estimate below
-# and the driver's config.yaml read the same schedule. Values from the config schema in
-# docs/miss-alignment.md.
-MISS_ALIGN_SCHEDULES: dict[MissAlignSchedule, list[dict]] = {
-    MissAlignSchedule.FAST: [{"downsample": 2, "alignment": "anchoring"}, {"downsample": 1, "alignment": "global"}],
-    MissAlignSchedule.DEFAULT: [
-        {"downsample": 3, "alignment": "anchoring"},
-        {"downsample": 2, "alignment": "anchoring"},
-        {"downsample": 1, "alignment": "global"},
-        {"downsample": 1, "alignment": [3, 3]},
-    ],
-    MissAlignSchedule.THOROUGH: [
-        {"downsample": 3, "alignment": "anchoring"},
-        {"downsample": 2, "alignment": "anchoring"},
-        {"downsample": 1, "alignment": "global"},
-        {"downsample": 1, "alignment": "global"},
-        {"downsample": 1, "alignment": [3, 3]},
-        {"downsample": 1, "alignment": [3, 3]},
-        {"downsample": 1, "alignment": [3, 3]},
-        {"downsample": 1, "alignment": [3, 3]},
-    ],
+# ── Macro-iteration schedules ─────────────────────────────────────────────────
+# A schedule lists one (pixel size, alignment mode) entry per macro-iteration, coarse to fine. The
+# tool itself only knows a whole Fourier-crop factor of the stack it reads (`downsample`), so an
+# entry given in Å is converted per stack: ds = max(1, round(Å / stack Å/px)).
+#
+# Text form, used by the presets below and by `custom_schedule` — entries separated by ';', each
+#     <pixel> <alignment> [x<count>]
+# pixel: "<Å>A" or "ds<N>"; alignment: anchoring | global | spline | [Nx,Ny] (a local image-warp grid
+# per tilt) | [X,Y,Z,T] (a volume-warp grid).
+
+ALIGNMENT_MODES = ("anchoring", "global", "spline")
+
+# A conversion that lands further than this from the requested pixel size is reported.
+PIXEL_ROUNDING_TOLERANCE = 0.15
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduleEntry:
+    """One macro-iteration: an alignment mode at a pixel size given in Å or as a stack downsample."""
+
+    alignment: str | tuple[int, ...]
+    angstrom: float | None = None
+    downsample: int | None = None
+
+    def __post_init__(self):
+        if (self.angstrom is None) == (self.downsample is None):
+            raise ValueError("a schedule entry takes exactly one of a pixel size in Å or a downsample")
+        if self.angstrom is not None and self.angstrom <= 0:
+            raise ValueError(f"pixel size must be positive, got {self.angstrom}")
+        if self.downsample is not None and self.downsample < 1:
+            raise ValueError(f"downsample must be >= 1, got {self.downsample}")
+        if isinstance(self.alignment, tuple):
+            if len(self.alignment) not in (2, 4) or any(n < 1 for n in self.alignment):
+                raise ValueError(f"a grid alignment is [Nx,Ny] or [X,Y,Z,T] with positive sizes, got {self.alignment}")
+        elif self.alignment not in ALIGNMENT_MODES:
+            raise ValueError(
+                f"unknown alignment {self.alignment!r}: use anchoring, global, spline, [Nx,Ny] or [X,Y,Z,T]"
+            )
+
+    @property
+    def is_grid(self) -> bool:
+        return isinstance(self.alignment, tuple)
+
+    @property
+    def is_volume_warp(self) -> bool:
+        return isinstance(self.alignment, tuple) and len(self.alignment) == 4
+
+    def effective_downsample(self, stack_apix: float) -> int:
+        if self.downsample is not None:
+            return self.downsample
+        return max(1, round(self.angstrom / stack_apix))
+
+    def pixel_angstrom(self, stack_apix: float) -> float:
+        return stack_apix * self.effective_downsample(stack_apix)
+
+    def rounding_note(self, stack_apix: float) -> str | None:
+        """Why the pixel size used differs from the one asked for, when it does by more than the tolerance."""
+        if self.angstrom is None:
+            return None
+        used = self.pixel_angstrom(stack_apix)
+        deviation = used / self.angstrom - 1
+        if abs(deviation) <= PIXEL_ROUNDING_TOLERANCE:
+            return None
+        return (
+            f"{self.angstrom:g} Å asked, {used:.4g} Å used ({deviation:+.0%}): no whole downsample of the "
+            f"{stack_apix:.4g} Å/px stack comes closer"
+        )
+
+    def config_entry(self, stack_apix: float) -> dict:
+        """The tool's `iteration_settings` entry for a stack of `stack_apix` Å/px."""
+        alignment = list(self.alignment) if self.is_grid else self.alignment
+        return {"downsample": self.effective_downsample(stack_apix), "alignment": alignment}
+
+    def __str__(self) -> str:
+        pixel = f"ds{self.downsample}" if self.downsample is not None else f"{self.angstrom:g}A"
+        alignment = "[" + ",".join(str(n) for n in self.alignment) + "]" if self.is_grid else self.alignment
+        return f"{pixel} {alignment}"
+
+
+_ENTRY_RE = re.compile(
+    r"^(?:(?P<angstrom>\d+(?:\.\d+)?)\s*(?:A|Å)|ds\s*(?P<downsample>\d+))\s+"
+    r"(?P<alignment>[a-z]+|\[\s*\d+(?:\s*,\s*\d+)*\s*\])"
+    r"(?:\s*[x×]\s*(?P<count>\d+))?$",
+    re.IGNORECASE,
+)
+
+
+def parse_schedule(text: str) -> tuple[ScheduleEntry, ...]:
+    """Schedule text -> one entry per macro-iteration. Raises ValueError naming the entry it cannot read."""
+    entries: list[ScheduleEntry] = []
+    for raw in text.split(";"):
+        item = raw.strip()
+        if not item:
+            continue
+        m = _ENTRY_RE.match(item)
+        if m is None:
+            raise ValueError(
+                f"cannot read schedule entry {item!r}: write '<pixel> <alignment> [xN]', "
+                f"e.g. '20A anchoring', 'ds2 global', '10A [3,3] x5'"
+            )
+        alignment_text = m["alignment"].lower()
+        if alignment_text.startswith("["):
+            alignment: str | tuple[int, ...] = tuple(int(v) for v in alignment_text.strip("[] ").split(","))
+        else:
+            alignment = alignment_text
+        entry = ScheduleEntry(
+            alignment=alignment,
+            angstrom=float(m["angstrom"]) if m["angstrom"] else None,
+            downsample=int(m["downsample"]) if m["downsample"] else None,
+        )
+        count = int(m["count"] or 1)
+        if count < 1:
+            raise ValueError(f"repeat count must be >= 1 in {item!r}")
+        entries.extend([entry] * count)
+    if not entries:
+        raise ValueError("the schedule is empty")
+    return tuple(entries)
+
+
+SCHEDULE_TEXT: dict[MissAlignSchedule, str] = {
+    MissAlignSchedule.FAST: "ds2 anchoring; ds1 global",
+    MissAlignSchedule.DEFAULT: "ds3 anchoring; ds2 anchoring; ds1 global; ds1 [3,3]",
+    # The tool's config template.
+    MissAlignSchedule.THOROUGH: "ds3 anchoring; ds2 anchoring; ds1 global x2; ds1 [3,3] x4",
+    # The preprint's lamella schedule (EMPIAR-10499), on its 10 Å stacks: global-only refinement gave a
+    # modest STA gain, the local [3,3] rounds the large one.
+    MissAlignSchedule.PAPER: "30A anchoring; 20A anchoring x2; 10A global; 10A [3,3] x5",
 }
+
+MISS_ALIGN_SCHEDULES: dict[MissAlignSchedule, tuple[ScheduleEntry, ...]] = {
+    preset: parse_schedule(text) for preset, text in SCHEDULE_TEXT.items()
+}
+
+# What choosing a preset sets besides its schedule; every preset names every field, so the result does not
+# depend on the preset chosen before. thorough and paper train on the tool's own budget (1000 steps x 30
+# epochs), and paper fits the box to the lamella as the preprint advises.
+PRESET_SETTINGS: dict[MissAlignSchedule, dict[str, int | str]] = {
+    MissAlignSchedule.FAST: {
+        "steps_per_epoch": 250,
+        "max_epochs_per_iteration": 30,
+        "lr_milestones": "5,15",
+        "z_box": "full",
+    },
+    MissAlignSchedule.DEFAULT: {
+        "steps_per_epoch": 250,
+        "max_epochs_per_iteration": 30,
+        "lr_milestones": "5,15",
+        "z_box": "full",
+    },
+    MissAlignSchedule.THOROUGH: {
+        "steps_per_epoch": 1000,
+        "max_epochs_per_iteration": 30,
+        "lr_milestones": "5,15",
+        "z_box": "full",
+    },
+    MissAlignSchedule.PAPER: {
+        "steps_per_epoch": 1000,
+        "max_epochs_per_iteration": 30,
+        "lr_milestones": "5,15",
+        "z_box": "auto",
+    },
+}
+
+
+def parse_milestones(text: str) -> list[int]:
+    """'5,15' -> [5, 15]: positive, strictly increasing epochs."""
+    try:
+        values = [int(v) for v in text.replace(" ", "").split(",") if v]
+    except ValueError:
+        raise ValueError(f"lr_milestones must be comma-separated whole epochs, got {text!r}") from None
+    if not values or any(v < 1 for v in values) or any(b <= a for a, b in pairwise(values)):
+        raise ValueError(f"lr_milestones must be positive and increasing, got {text!r}")
+    return values
+
+
+def parse_z_box(text: str) -> float | str:
+    """'full' | 'auto' | a positive extent in Å."""
+    value = text.strip().lower()
+    if value in ("full", "auto"):
+        return value
+    try:
+        angstrom = float(value.removesuffix("a").removesuffix("å").strip())
+    except ValueError:
+        raise ValueError(f"z_box must be 'full', 'auto' or a size in Å, got {text!r}") from None
+    if angstrom <= 0:
+        raise ValueError(f"z_box must be positive, got {text!r}")
+    return angstrom
+
+
+def parse_device_list(text: str, n_gpus: int) -> list[int]:
+    """'1,1,2,2' -> [1, 1, 2, 2], each index within the allocated GPUs."""
+    try:
+        devices = [int(v) for v in text.replace(" ", "").split(",") if v]
+    except ValueError:
+        raise ValueError(f"reconstruction_devices must be comma-separated GPU indices, got {text!r}") from None
+    if not devices or any(d < 0 or d >= n_gpus for d in devices):
+        raise ValueError(f"reconstruction_devices {text!r} must name GPUs 0..{n_gpus - 1}")
+    return devices
 
 
 # ── Dynamic walltime ──────────────────────────────────────────────────────────
 # miss_align is a SINGLE multi-GPU-NODE job (not a per-TS SLURM array): one `miss-alignment train`
 # invocation trains + realigns ALL selected tilt-series across a coarse->fine schedule of macro-
 # iterations. Each iteration = a fixed TRAINING budget (steps_per_epoch x max_epochs training steps,
-# INDEPENDENT of n_ts — training samples one pooled dataset) + a per-TS ALIGNMENT phase. So the cost
-# driver is steps x epochs x per-step-time, NOT n_ts x iters. Per-step time is
-# card-dependent and unknowable at submit, so we use a conservative RTX-class constant: UNDER-
-# requesting is catastrophic (killed mid-iteration -> no checkpoint -> the resume restarts the same
-# iteration forever), while OVER-requesting is harmless (SLURM frees the slot when the job ends).
-_WALLTIME_BASE_MIN = 30  # fixed overhead: staging the warp_tiltseries copy, dim-stamp, I/O
-_WALLTIME_PER_STEP_SEC = 3.5  # conservative per training-step seconds (RTX-class; faster cards finish early)
-_WALLTIME_PER_TS_ALIGN_MIN = 5  # phase-2 alignment cost per (tilt-series x macro-iteration)
-_WALLTIME_CAP_MIN = 24 * 60  # never request more than the partition realistically allows
+# split across the training GPUs, INDEPENDENT of n_ts) + a per-TS ALIGNMENT phase spread over every
+# GPU. Per-step time is card-dependent and unknowable at submit, so we use a conservative RTX-class
+# constant: UNDER-requesting is catastrophic (killed mid-iteration -> the resume restarts the same
+# iteration), while OVER-requesting is harmless (SLURM frees the slot when the job ends).
+_WALLTIME_BASE_MIN = 30  # fixed overhead: staging, dim-stamp, the z-box reconstructions, I/O
+_WALLTIME_PER_STEP_SEC = 3.5  # conservative per training-step seconds (RTX-class; an A100 measured 1.34)
+_WALLTIME_PER_TS_ALIGN_MIN = 5  # alignment per (tilt-series x macro-iteration) at 6.2 Å, one GPU
+_ALIGN_REFERENCE_APIX = 6.2  # the alignment cost above scales with (this / effective Å)^3
+_WALLTIME_CAP_MIN = 24 * 60  # ceiling when the QOS limit is unknown
 
 
 def _hms_to_minutes(t: str) -> int:
@@ -72,8 +249,9 @@ def _hms_to_minutes(t: str) -> int:
 
 
 def _minutes_to_hms(minutes: int) -> str:
-    h, m = divmod(max(0, int(minutes)), 60)
-    return f"{h}:{m:02d}:00"
+    days, rest = divmod(max(0, int(minutes)), 1440)
+    h, m = divmod(rest, 60)
+    return f"{days}-{h}:{m:02d}:00" if days else f"{h}:{m:02d}:00"
 
 
 class MissAlignParams(AbstractJobParams):
@@ -81,13 +259,12 @@ class MissAlignParams(AbstractJobParams):
 
     An OPTIONAL, insertable post-alignment job: it consumes aligntiltsWarp's warp_tiltseries/
     (which supplies the required initial coarse alignment), refines the per-TS Warp XMLs, and
-    feeds tsCtf/tsReconstruct with ZERO format conversion (it is Warp-native). Runs the tool's
+    emits the same star + tilt_series/ + warp_tiltseries/ an alignment job emits. Runs the tool's
     `train` subcommand, which both trains and aligns. See docs/miss-alignment.md.
 
-    Routing note: because this job refines the multi-producer WARP_TILTSERIES_DIR in place,
-    downstream tsCtf does NOT auto-prefer it (that would break pipelines without missAlign).
-    Point tsCtf's `input_processing` at this job via the IO-tab source dropdown; nothing
-    wires it automatically.
+    Routing: JobSpec.refines makes a downstream tsCtf bound to aligntiltsWarp follow this job
+    instead; its settings input stays on aligntiltsWarp, whose settings file has the tomostar/
+    sibling tsCtf stages from.
     """
 
     job_type: JobType = Field(default=JobType.MISS_ALIGN)
@@ -100,48 +277,56 @@ class MissAlignParams(AbstractJobParams):
         "job over _all_ your tilt-series at once**, not a per-tilt-series array. It trains a small 3-D CNN to "
         "score reconstruction quality, then nudges each series' geometry to maximise that score — repeated "
         "over a coarse→fine schedule of *macro-iterations*.\n\n"
-        "**Why it can be slow.** Cost grows with **(tilt-series × macro-iterations)**, all inside a single "
-        "job. Rough rule of thumb: beyond **~10 tomograms on the _default_ schedule** the estimate approaches "
-        "a typical 8-hour queue wall-time limit (the _fast_ schedule roughly doubles that headroom). The "
-        "requested wall-time is auto-capped to your queue's limit, so a large dataset can hit the cap and "
-        "stop mid-run.\n\n"
-        "**If it runs out of wall-time, just re-run this job.** It checkpoints **once per macro-iteration** "
-        "and resumes from the last checkpoint (you lose at most one iteration's work). Automatic chained "
-        "re-submission — splitting a long run across several jobs for you — is **planned (work in progress)**; "
-        "for now the resume is manual (re-run).\n\n"
-        "**Faster on big datasets (planned, WIP): train-then-infer.** The tool can *train* a model on a small "
-        "**representative subset** of tilt-series, then **apply** it to align the rest without retraining "
-        "(`infer`) — much cheaper. **Trade-off:** the model only ever saw the subset, so on a heterogeneous "
-        "dataset a subset-trained model may align some series worse than a full joint run. Not wired up yet.\n\n"
-        "**Tuning for speed — which resource feeds which stage.** Each macro-iteration runs four stages "
-        "that bottleneck independently:\n"
-        "- **Reconstruction pool** (builds the training subtomograms) → the *extra* GPUs. `num_gpus >= 2` "
-        "dedicates GPU 0 to training and the rest to reconstruction so they stop fighting over one card.\n"
-        "- **Data loading** (hands patches to the training GPU) → CPU **workers** (`dataloader_workers`). If the "
-        "GPU sits idle waiting — the classic slowdown — raise workers; but each worker needs a CPU core, so "
-        "raise `cpus_per_task` to match, and keep `pool_size >= 2 x batch x workers` or the run won't start.\n"
-        "- **Training step** (the CNN forward/backward) → a **single GPU**; its per-step speed is set by the *card*, "
-        "not the GPU count. More GPUs will NOT make this faster — a faster card (A100) will.\n"
-        "- **Alignment** → auto-spreads over every allocated GPU.\n\n"
-        "*Rules of thumb:* wall-time per macro-iteration = **`steps_per_epoch x max_epochs_per_iteration`** steps x "
-        "per-step GPU time — so on a small dataset the biggest single win is **lowering `steps_per_epoch`** (and/or "
-        "the schedule), not more hardware. For a handful of tilt-series, `num_gpus=2` + `dataloader_workers ~ "
-        "cpus_per_task-2` + a lighter schedule is the sweet spot; reach for 4 GPUs / more workers only once "
-        "reconstruction or data loading is the *actual* bottleneck.\n\n"
-        "**Schedules:** *fast* = 2 iterations (quick sanity pass) · *default* = 4 (balanced) · "
-        "*thorough* = 8 (best quality, slowest)."
+        "**Schedules.** *fast* = 2 iterations (quick sanity pass) · *default* = 4 · *thorough* = the tool's "
+        "8-iteration template · *paper* = the preprint's lamella ladder, written in Å (30 Å anchoring, 20 Å "
+        "anchoring ×2, 10 Å global, 10 Å local `[3,3]` ×5) · *custom* = your own list in `custom_schedule`. "
+        "Entries in Å are converted to the nearest whole downsample of the stack; the summary above the "
+        "fields shows the pixel size each iteration actually uses. The local `[N,N]` rounds are where the "
+        "preprint's subtomogram-averaging gains came from.\n\n"
+        "**Choosing a preset also sets** `steps_per_epoch`, `max_epochs_per_iteration`, `lr_milestones` and "
+        "`z_box`: *fast* and *default* train 250 steps × 30 epochs, *thorough* and *paper* the tool's own "
+        "1000 × 30, and *paper* fits the box to the lamella (`z_box` auto). They stay editable. *custom* "
+        "leaves them as they are and, when `custom_schedule` is empty, starts it from the preset you were on.\n\n"
+        "**Training budget.** Per macro-iteration the model trains `steps_per_epoch × "
+        "max_epochs_per_iteration` steps. The learning rate halves at each of `lr_milestones`, and early "
+        "stopping only starts after the last one — with the epoch cap at or below it, neither happens. The "
+        "tool's own budget is 1000 steps × 30 epochs: about 11 h per iteration on an A100.\n\n"
+        "**Long runs.** The default queue limit is usually 8 h; set a longer QOS in the SLURM tab (e.g. "
+        "`g_long`) and the requested wall-time follows the estimate up to that QOS's limit. The job "
+        "checkpoints once per macro-iteration: **if it runs out of time, re-run it** and it continues from "
+        "the last finished iteration (the schedule and inputs must be unchanged).\n\n"
+        "**Volume box (`z_box`).** The tool trains and scores patches across the whole volume box; the "
+        "preprint advises fitting it to the sample, since empty patches dominate otherwise. *auto* "
+        "reconstructs each series coarsely, finds the lamella and fits the box to it; the full box is "
+        "written back to the output.\n\n"
+        "**Which resource feeds which stage.**\n"
+        "- **Training** → `training_gpus` (one by default). Several training GPUs split each epoch "
+        "between them; the tool scales the learning rate by their number.\n"
+        "- **Reconstruction pool** (builds the training subtomograms) → the other GPUs, or the "
+        "`reconstruction_devices` list (e.g. `1,1,2,2` = two workers on each of GPUs 1 and 2).\n"
+        "- **Data loading** → CPU `dataloader_workers` per training GPU; each worker needs a CPU core "
+        "(raise `cpus_per_task` to match) and `pool_size >= 2 × batch × workers × training_gpus`.\n"
+        "- **Alignment** → spreads over every allocated GPU.\n\n"
+        "**Stacks (`prepare_stacks_apix`).** 0 aligns the stacks the alignment job wrote. A value > 0 has "
+        "the tool rebuild the stacks from the frame averages at that Å/px first (the preprint used 10 Å)."
     )
 
     USER_PARAMS: ClassVar[set[str]] = {
         "iteration_preset",
+        "custom_schedule",
         "max_epochs_per_iteration",
         "steps_per_epoch",
+        "lr_milestones",
+        "seed",
         "batch_size",
         "patch_size",
         "pool_size",
         "num_gpus",
+        "training_gpus",
+        "reconstruction_devices",
         "dataloader_workers",
         "prepare_stacks_apix",
+        "z_box",
     }
 
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
@@ -163,60 +348,103 @@ class MissAlignParams(AbstractJobParams):
             path_template="warp_tiltseries/",
             is_dir=True,
         ),
-        OutputSlot(
-            key="warp_tiltseries_settings",
-            produces=JobFileType.WARP_TILTSERIES_SETTINGS,
-            path_template="warp_tiltseries.settings",
-        ),
     ]
 
     iteration_preset: MissAlignSchedule = Field(
         default=MissAlignSchedule.DEFAULT,
-        description="Macro-iteration schedule. fast = quick sanity pass; default = balanced "
-        "coarse->fine->local; thorough = the full 8-iteration schedule (production, hours).",
+        description="Macro-iteration schedule. fast = quick sanity pass; default = balanced coarse->fine->local; "
+        "thorough = the tool's 8-iteration template; paper = the preprint's lamella ladder in Å; custom = "
+        "custom_schedule. Choosing one also sets steps_per_epoch, max_epochs_per_iteration, lr_milestones and "
+        "z_box to its values; custom keeps them.",
+    )
+    custom_schedule: str = Field(
+        default="",
+        description="Used when iteration_preset is custom. Entries separated by ';', each "
+        "'<pixel> <alignment> [xN]': pixel '<Å>A' (converted to the nearest whole downsample of the stack) or "
+        "'ds<N>'; alignment anchoring | global | spline | [Nx,Ny] (local warp) | [X,Y,Z,T] (volume warp). "
+        "Example: 30A anchoring; 20A anchoring x2; 10A global; 10A [3,3] x5",
     )
     max_epochs_per_iteration: int = Field(
-        default=30, ge=1, le=200, description="Early-stopping cap on training epochs per macro-iteration."
+        default=30,
+        ge=1,
+        le=200,
+        description="Cap on training epochs per macro-iteration. Must exceed the last lr_milestone for the "
+        "second learning-rate cut and early stopping to happen.",
     )
     steps_per_epoch: int = Field(
         default=250,
         ge=10,
         le=5000,
-        description="Training steps per epoch. Total work per macro-iteration = steps_per_epoch x "
-        "max_epochs_per_iteration, so this is the single biggest wall-time lever. Default 250 suits the "
-        "small datasets crboost usually runs; the tool's own default is 1000 (raise toward it for large / "
-        "heterogeneous sets where the scoring model needs more training, lower it to fit a tight wall-time).",
+        description="Training steps per epoch (split across training_gpus). Total work per macro-iteration = "
+        "steps_per_epoch x max_epochs_per_iteration, so this is the single biggest wall-time lever. The tool's "
+        "own default is 1000.",
     )
-    batch_size: int = Field(default=32, ge=1, le=256, description="32 fits a 24 GB card at reconstruction size 128^3.")
-    patch_size: int = Field(default=96, ge=32, le=256)
+    lr_milestones: str = Field(
+        default="5,15",
+        description="Epochs at which the learning rate halves (comma-separated). Early stopping (patience 5) "
+        "only arms from the last milestone on.",
+    )
+    seed: int = Field(
+        default=45132,
+        ge=0,
+        description="Training seed. Two runs that differ only in seed measure the run-to-run noise floor.",
+    )
+    batch_size: int = Field(
+        default=32, ge=1, le=256, description="Per training GPU. 32 fits a 24 GB card at reconstruction size 128^3."
+    )
+    patch_size: int = Field(
+        default=96,
+        ge=32,
+        le=256,
+        description="Edge of the training / scoring cube in pixels at each iteration's pixel size; its field "
+        "of view in Å grows with the downsample (see the schedule summary).",
+    )
     pool_size: int = Field(
         default=1000,
         ge=16,
-        description="Subtomogram pool size. Single-trainer constraint: pool_size >= 2*batch_size "
-        "(enforced in the driver; violation raises).",
+        description="Subtomogram pool size. Must hold 2 x batch_size for every data-loading worker of every "
+        "training GPU (checked by the driver).",
     )
     num_gpus: int = Field(
         default=1,
         ge=1,
         le=4,
-        description="GPUs to allocate (single node). 1 = training and the reconstruction pool share "
-        "one card. >=2 dedicates GPU 0 to training and the remaining GPU(s) to reconstruction so they "
-        "run concurrently (roughly linear speedup) — at the cost of a longer queue, and the selected "
-        "partition node must actually have this many GPUs.",
+        description="GPUs to allocate (single node). 1 = training and the reconstruction pool share one card. "
+        "With more, the first training_gpus train and the rest reconstruct, concurrently — at the cost of a "
+        "longer queue, and the partition's nodes must have this many GPUs.",
+    )
+    training_gpus: int = Field(
+        default=1,
+        ge=1,
+        le=4,
+        description="GPUs that train the model (at most num_gpus). Each runs steps_per_epoch/training_gpus "
+        "steps per epoch with its own batch; the tool multiplies the learning rate by this count.",
+    )
+    reconstruction_devices: str = Field(
+        default="",
+        description="GPU index per reconstruction worker, e.g. '1,1,2,2' = two workers each on GPUs 1 and 2 "
+        "(indices 0..num_gpus-1; may repeat training GPUs). Empty = one worker on each GPU that does not "
+        "train, or on each training GPU when all of them train.",
     )
     dataloader_workers: int = Field(
         default=0,
         ge=0,
-        description="CPU data-loading workers feeding the training GPU. 0 = auto (recommended): "
-        "min(cpus_per_task - 2, pool_size // (2*batch_size)). Set a positive value to pin it — it is "
-        "still clamped to the pool constraint (pool_size // workers >= 2*batch_size), and a warning is "
-        "logged if it exceeds allocated CPUs (oversubscription slows loading; raise cpus_per_task too).",
+        description="CPU data-loading workers per training GPU. 0 = auto: the allocated CPUs left after the "
+        "reconstruction workers and one per trainer, within the pool limit. A positive value is still clamped "
+        "to the pool limit.",
     )
     prepare_stacks_apix: float = Field(
         default=0.0,
         ge=0.0,
-        description="If > 0, rebuild tilt stacks at this Å/px before aligning (needs raw frames + "
-        "tomostar bound). 0 = use the existing aligned tiltstack/*.st (default; the proven path).",
+        description="If > 0, the tool rebuilds the tilt stacks from the frame averages at this Å/px before "
+        "aligning, and schedule entries in Å are converted against it. 0 = align the alignment job's stacks.",
+    )
+    z_box: str = Field(
+        default="full",
+        description="Z extent of the volume box the tool trains and scores in: 'full' (the tomogram's), "
+        "'auto' (per tilt-series, the lamella's full extent in a coarse reconstruction — out to where its "
+        "contrast falls back to the quiet slices on either side), or a size in Å. The box stays centred on "
+        "the volume centre; the output XMLs get the full box back.",
     )
 
     def _get_job_specific_options(self) -> list[tuple[str, str]]:
@@ -233,79 +461,209 @@ class MissAlignParams(AbstractJobParams):
     def get_input_requirements() -> dict[str, str]:
         return {"align": "aligntiltsWarp"}
 
-    @staticmethod
-    def _qos_safe_cap_minutes() -> int:
-        """Walltime ceiling (minutes) any single missAlign job may request. Returns 0 -> no clamp.
+    # ── Resolved settings (the driver and the job tab read the same ones) ────
 
-        Prefer the user's REAL default-QOS MaxWallDurationPerJob, probed live via sacctmgr and cached
-        by SlurmService.get_user_qos_limits() (the landing-page probe populates it). That's the true
-        limit `sbatch` enforces, so a job can safely request up to it. Fall back to the conservative
-        supervisor default walltime from conf.yaml only when the QOS hasn't been probed this session;
-        that fallback can cap the estimate below one macro-iteration, so the resume never advances."""
+    def schedule(self) -> tuple[ScheduleEntry, ...]:
+        """The macro-iterations this job runs. Raises ValueError for an unreadable custom schedule."""
+        if self.iteration_preset == MissAlignSchedule.CUSTOM:
+            return parse_schedule(self.custom_schedule)
+        return MISS_ALIGN_SCHEDULES[MissAlignSchedule(self.iteration_preset)]
+
+    def apply_preset(self, previous: MissAlignSchedule) -> None:
+        """Set the fields the newly chosen iteration_preset defines (PRESET_SETTINGS). custom keeps them,
+        and an empty custom_schedule starts from the schedule of `previous`."""
+        preset = MissAlignSchedule(self.iteration_preset)
+        if preset != MissAlignSchedule.CUSTOM:
+            for name, value in PRESET_SETTINGS[preset].items():
+                setattr(self, name, value)
+        elif not self.custom_schedule.strip() and MissAlignSchedule(previous) != MissAlignSchedule.CUSTOM:
+            self.custom_schedule = SCHEDULE_TEXT[MissAlignSchedule(previous)]
+
+    def gpu_count(self) -> int:
+        """GPUs the job is allocated: num_gpus, unless the SLURM section overrides GRES — the driver reads
+        SLURM's own count. A GRES without a count means one GPU; one that names no GPU, none."""
+        gres = self.slurm_overrides.get("gres")
+        if gres is None:
+            return self.num_gpus
+        for item in str(gres).split(","):
+            parts = item.strip().split(":")  # gpu[:type][:count]
+            if parts[0] == "gpu":
+                return int(parts[-1]) if len(parts) > 1 and parts[-1].isdigit() else 1
+        return 0
+
+    def milestones(self) -> list[int]:
+        return parse_milestones(self.lr_milestones)
+
+    def epoch_cap_warning(self) -> str | None:
+        """Why this training budget never cuts the learning rate twice nor stops early, if it doesn't."""
         try:
-            real = get_cached_qos_maxwall_minutes()
-            if real > 0:
-                return real
-        except Exception:
-            pass
-        try:
-            return _hms_to_minutes(get_config_service().supervisor_slurm_defaults.time)
-        except Exception:
+            last = self.milestones()[-1]
+        except ValueError:
+            return None
+        if self.max_epochs_per_iteration > last:
+            return None
+        return (
+            f"max_epochs_per_iteration ({self.max_epochs_per_iteration}) does not exceed the last learning-rate "
+            f"milestone ({last}): the rate never drops past that milestone's cut and early stopping never "
+            f"starts, so every iteration trains the full {self.max_epochs_per_iteration} epochs."
+        )
+
+    def planned_stack_apix(self) -> float | None:
+        """Pixel size of the stacks the tool will read: prepare_stacks_apix when set, else the alignment
+        job's stack pixel size from project state. None when neither is known (the driver reads the stacks)."""
+        if self.prepare_stacks_apix > 0:
+            return self.prepare_stacks_apix
+        state = self._project_state
+        if state is None:
+            return None
+        for instance_id in state.pipeline_order or list(state.jobs):
+            job = state.jobs.get(instance_id)
+            if job is not None and job.job_type == JobType.TS_ALIGNMENT:
+                return float(getattr(job, "rescale_angpixs", 0) or 0) or None
+        return None
+
+    # ── Walltime ─────────────────────────────────────────────────────────────
+
+    def _qos_safe_cap_minutes(self, qos: str) -> int:
+        """Walltime ceiling (minutes) this job may request; 0 = no ceiling known here.
+
+        The limit `sbatch` enforces is the QOS's MaxWallDurationPerJob: the named QOS's when the job
+        asks for one, else the user's default QOS, as probed via sacctmgr (the landing-page probe fills
+        the cache). A named QOS the probe has not seen gets no ceiling — sbatch refuses a request over
+        its limit at submit. The default QOS unprobed: the conservative supervisor walltime from
+        conf.yaml, else a day."""
+        real = get_cached_qos_maxwall_minutes(qos)
+        if real > 0:
+            return real
+        if qos.strip():
             return 0
+        return _hms_to_minutes(get_config_service().supervisor_slurm_defaults.time) or _WALLTIME_CAP_MIN
 
-    def _scaled_walltime(self, base_time: str) -> str:
-        """Estimate walltime from the real cost drivers (steps_per_epoch x max_epochs x per-step
-        time, plus a per-TS alignment phase), floored at `base_time` and capped. Returns
-        `base_time` unchanged when the TS/iteration counts are unknown.
+    def _walltime_plan(self, base_time: str, qos: str) -> tuple[int, float, int, int] | None:
+        """(estimated minutes, longest macro-iteration in minutes, wall-time ceiling in minutes (0 = none),
+        iterations), or None when the TS count or the schedule is unknown.
 
-        Clamped to the partition's QOS-safe ceiling so a long run submits (else `sbatch` rejects
-        the WHOLE chain with QOSMaxWallDurationPerJobLimit and pipeline start aborts). The whole
-        run may not fit one wall-time; that's fine — the tool checkpoints per macro-iteration and
-        resumes, SO LONG AS a single iteration fits the cap. If one iteration alone exceeds it,
-        every run dies mid-iteration and the resume never advances — we warn loudly for that case
-        with the concrete levers (fewer steps/epochs, or a faster GPU)."""
+        Cost model: training steps split across the training GPUs, plus a per-TS alignment phase that
+        grows with (6.2 Å / effective Å)³ and spreads over every GPU; floored at `base_time`."""
         n_ts = getattr(self._project_state, "import_selected_tilt_series", 0) or 0
-        n_iters = len(MISS_ALIGN_SCHEDULES.get(self.iteration_preset, []))
-        if n_ts <= 0 or n_iters <= 0:
+        try:
+            entries = self.schedule()
+        except ValueError:
+            return None
+        if n_ts <= 0 or not entries:
+            return None
+        stack_apix = self.planned_stack_apix() or _ALIGN_REFERENCE_APIX
+        train_min = (
+            self.steps_per_epoch * self.max_epochs_per_iteration * _WALLTIME_PER_STEP_SEC / 60.0 / self.training_gpus
+        )
+        iteration_minutes = [
+            train_min
+            + _WALLTIME_PER_TS_ALIGN_MIN
+            * n_ts
+            * max(1.0, (_ALIGN_REFERENCE_APIX / e.pixel_angstrom(stack_apix)) ** 3)
+            / max(1, self.gpu_count())
+            for e in entries
+        ]
+        minutes = max(int(_WALLTIME_BASE_MIN + sum(iteration_minutes) + 0.999), _hms_to_minutes(base_time))
+        return minutes, max(iteration_minutes), self._qos_safe_cap_minutes(qos), len(entries)
+
+    def _scaled_walltime(self, base_time: str, qos: str) -> str:
+        """The estimated walltime, capped at the QOS limit; `base_time` unchanged when it cannot be estimated.
+
+        The whole run may not fit one wall-time; the tool checkpoints per macro-iteration and resumes, SO
+        LONG AS a single iteration fits the cap. If one iteration alone exceeds it, every run dies
+        mid-iteration and the resume never advances (walltime_warning says so in the job tab)."""
+        plan = self._walltime_plan(base_time, qos)
+        if plan is None:
             return base_time
-        train_min_per_iter = self.steps_per_epoch * self.max_epochs_per_iteration * _WALLTIME_PER_STEP_SEC / 60.0
-        min_per_iter = train_min_per_iter + _WALLTIME_PER_TS_ALIGN_MIN * n_ts
-        minutes = int(_WALLTIME_BASE_MIN + n_iters * min_per_iter + 0.999)  # ceil
-        minutes = max(minutes, _hms_to_minutes(base_time))  # never below today's profile/default
-        minutes = min(minutes, _WALLTIME_CAP_MIN)
-        qos_cap = self._qos_safe_cap_minutes()
-        if qos_cap and minutes > qos_cap:
-            if min_per_iter > qos_cap:
-                logger.warning(
-                    "missAlign: ONE macro-iteration (~%s) alone exceeds the QOS ceiling %s — the job can "
-                    "never complete an iteration within a single wall-time, so the resume will restart the "
-                    "same iteration forever. Lower steps_per_epoch/max_epochs_per_iteration or use a faster "
-                    "GPU (num_gpus>=2 / an A100 constraint).",
-                    _minutes_to_hms(int(min_per_iter)),
-                    _minutes_to_hms(qos_cap),
-                )
-            else:
-                logger.warning(
-                    "missAlign: full run ~%s (%d iters) exceeds the QOS ceiling %s; clamping. One iteration "
-                    "(~%s) still fits, so it completes ~%d iteration(s) per run and resumes from the last "
-                    "checkpoint — just re-run until done.",
-                    _minutes_to_hms(minutes),
-                    n_iters,
-                    _minutes_to_hms(qos_cap),
-                    _minutes_to_hms(int(min_per_iter)),
-                    max(1, int(qos_cap // max(1, int(min_per_iter)))),
-                )
-            minutes = qos_cap
+        minutes, longest, cap, n_iters = plan
+        if cap and minutes > cap:
+            # info, not warning: the job tab recomputes this on every edit and states it (walltime_warning).
+            logger.info(
+                "missAlign: full run ~%s (%d iterations, longest ~%s) exceeds the wall-time limit %s; clamping.",
+                _minutes_to_hms(minutes),
+                n_iters,
+                _minutes_to_hms(int(longest)),
+                _minutes_to_hms(cap),
+            )
+            minutes = cap
         return _minutes_to_hms(minutes)
+
+    def walltime_warning(self) -> str | None:
+        """Why one submission cannot finish this run, if it can't — for the job tab."""
+        cfg = super().get_effective_slurm_config()
+        plan = self._walltime_plan(cfg.time, cfg.qos)
+        if plan is None:
+            return None
+        minutes, longest, cap, n_iters = plan
+        limit = _hms_to_minutes(str(self.slurm_overrides["time"])) if "time" in self.slurm_overrides else cap
+        if not limit:
+            return None
+        where = "the time override" if "time" in self.slurm_overrides else f"QOS {cfg.qos or '(default)'}"
+        if longest > limit:
+            return (
+                f"One macro-iteration needs ~{_minutes_to_hms(int(longest))} (conservative estimate) but {where} "
+                f"allows {_minutes_to_hms(limit)} per run: the job would die inside it and every re-run restarts "
+                f"it. Set a longer QOS in the SLURM tab (e.g. g_long), or lower steps_per_epoch / epochs."
+            )
+        if minutes > limit:
+            return (
+                f"The full run (~{_minutes_to_hms(minutes)}, {n_iters} iterations) exceeds {where}'s "
+                f"{_minutes_to_hms(limit)}: re-run the job when it stops; it resumes after the last finished "
+                f"iteration."
+            )
+        return None
 
     def get_effective_slurm_config(self) -> SlurmConfig:
         # Single-job training walltime must cover ALL tilt-series across every macro-iteration;
         # scale it to the dataset size unless the user has pinned an explicit time override.
         cfg = super().get_effective_slurm_config()
         if "time" not in self.slurm_overrides:
-            cfg.time = self._scaled_walltime(cfg.time)
+            cfg.time = self._scaled_walltime(cfg.time, cfg.qos)
         # num_gpus is the single source of truth for the GPU count so the driver's train/recon
         # device split has the cards it maps to. Respect an explicit gres override (SLURM tab).
         if "gres" not in self.slurm_overrides:
             cfg.gres = f"gpu:{self.num_gpus}"
         return cfg
+
+
+# ── Local warps downstream ────────────────────────────────────────────────────
+
+# Input slots a job's data descends through, most direct first: tsCtf/tsReconstruct read the Warp XMLs
+# (input_processing), particle picking reads tomograms, extraction and averaging read optimisation sets,
+# denoising reads the reconstruction job's XMLs (reconstruct_base).
+_LINEAGE_SLOTS = ("input_processing", "input_tomograms", "input_optimisation", "reconstruct_base")
+
+
+def _owning_instance(state, path: str) -> str | None:
+    """The job whose directory holds `path` (absolute, or relative to the project)."""
+    root = Path(state.project_path).resolve()
+    target = (Path(path) if Path(path).is_absolute() else root / path).resolve()
+    for instance_id, job in state.jobs.items():
+        if job.relion_job_name and target.is_relative_to(root / job.relion_job_name.rstrip("/")):
+            return instance_id
+    return None
+
+
+def local_warps_upstream(state, instance_id: str) -> tuple[str, float] | None:
+    """(missAlign instance, largest local image-warp node in Å) when the data `instance_id` works on was
+    reconstructed from a missAlign alignment that wrote local warp grids; None otherwise. Follows the
+    jobs' recorded input paths upstream (extraction -> picking -> tsReconstruct -> tsCtf -> missAlign)
+    and reads that job's missalign_changes.json."""
+    if state.project_path is None:
+        return None
+    current: str | None = instance_id
+    for _ in range(8):
+        job = state.jobs.get(current) if current else None
+        if job is None:
+            return None
+        if job.job_type == JobType.MISS_ALIGN and current != instance_id:
+            report = Path(state.project_path) / job.relion_job_name.rstrip("/") / "missalign_changes.json"
+            if not report.is_file():
+                return None
+            rows = json.loads(report.read_text()).get("tilt_series", {}).values()
+            worst = max((r["local_warp"]["max_angstrom"] for r in rows if r.get("local_warp")), default=0.0)
+            return (current, float(worst)) if worst > 0 else None
+        upstream = next((job.paths[k] for k in _LINEAGE_SLOTS if (job.paths or {}).get(k)), None)
+        current = _owning_instance(state, upstream) if upstream else None
+    return None

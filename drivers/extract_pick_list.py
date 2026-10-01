@@ -34,9 +34,6 @@ import sys
 import traceback
 from pathlib import Path
 
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
-
 from drivers.driver_base import ToolCommand, get_driver_context, run_tool
 from services.job_models import ExtractPickListParams
 from services.particles.list_extraction import (
@@ -70,7 +67,7 @@ def _build_subtomo_cmd(optset: Path, out_run: Path, params: ExtractPickListParam
     return cmd
 
 
-def _run(params: ExtractPickListParams, job_dir: Path, project_path: Path) -> dict:
+def _run(params: ExtractPickListParams, job_dir: Path, project_binds: list[str]) -> dict:
     # 1) Per-list INPUT optimisation_set: mirror the species' candidate schema, or —
     #    for a de-novo species with no candidate-extract job — synthesize it from the
     #    tomograms.star. The submit site guarantees exactly one source is set.
@@ -100,11 +97,9 @@ def _run(params: ExtractPickListParams, job_dir: Path, project_path: Path) -> di
     else:
         cmd = _build_subtomo_cmd(input_optset, out_run, params)
         print(f"[DRIVER] Command: {cmd}", flush=True)
-        # Bind the project tree (tilt series / tomograms the optset points at), the
-        # out dir, and the tomograms.star + schema-source dirs (may sit outside it).
-        binds = sorted(
-            {str(project_path.resolve()), str(job_dir.resolve()), str(tomograms_star.parent.resolve()), str(source_dir)}
-        )
+        # The project binds cover the tilt series / tomograms the optset points at; the
+        # tomograms.star and schema-source dirs may sit outside the project.
+        binds = [*project_binds, tomograms_star.parent, source_dir]
         run_tool(cmd, tool_name=params.get_tool_name(), cwd=out_run, binds=binds)
         if not (out_run / "particles.star").exists():
             raise RuntimeError(f"relion_tomo_subtomo produced no particles.star in {out_run}")
@@ -125,7 +120,7 @@ def main() -> None:
     out_dir = Path.cwd().resolve()
     result: dict
     try:
-        (_state, params, _context, job_dir, project_path, _job_type) = get_driver_context(ExtractPickListParams)
+        (_state, params, context, job_dir, _project_path, _job_type) = get_driver_context(ExtractPickListParams)
     except SystemExit as e:
         result = {"ok": False, "error": f"driver bootstrap failed (see run.err): exit {e.code}"}
         _write_result(out_dir, result)
@@ -138,7 +133,7 @@ def main() -> None:
 
     try:
         job_dir.mkdir(parents=True, exist_ok=True)
-        result = _run(params, job_dir, project_path)
+        result = _run(params, job_dir, context["additional_binds"])
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
         result = {"ok": False, "error": str(e)}

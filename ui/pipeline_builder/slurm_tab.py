@@ -67,12 +67,38 @@ def _format_duration(minutes: float) -> str:
     return f"{days:.1f}d"
 
 
-def render_slurm_tab(job_model, is_frozen: bool, save_handler: Callable):
-    _render_slurm_content(job_model, is_frozen, save_handler)
+def render_slurm_tab(job_model, is_frozen: bool, save_handler: Callable) -> Callable[[], None]:
+    """Render the panel; returns its refresh. The job tab reruns that after an edit in any section, since
+    the effective settings can follow the job's parameters (missAlign's time limit and GRES)."""
+    shown = None
+
+    @ui.refreshable
+    def content():
+        nonlocal shown
+        shown = _signature(job_model)
+        _render_slurm_content(job_model, is_frozen, save_handler, refresh)
+
+    def refresh():
+        # A rebuild replaces every input, so only rebuild when a value it shows has changed.
+        if _signature(job_model) != shown:
+            content.refresh()
+
+    content()
+    return refresh
 
 
-@ui.refreshable
-def _render_slurm_content(job_model, is_frozen: bool, save_handler: Callable):
+def _signature(job_model) -> tuple:
+    """Everything the panel shows that can change while it is open."""
+    state = job_model._project_state
+    return (
+        job_model.get_effective_slurm_config().model_dump(),
+        dict(job_model.slurm_overrides or {}),
+        getattr(job_model, "array_throttle", None),
+        getattr(state, "import_selected_tilt_series", 0) if state is not None else 0,
+    )
+
+
+def _render_slurm_content(job_model, is_frozen: bool, save_handler: Callable, refresh: Callable[[], None]):
     effective_config = job_model.get_effective_slurm_config()
     overrides = job_model.slurm_overrides or {}
     is_array = _is_array_job(job_model)
@@ -95,7 +121,7 @@ def _render_slurm_content(job_model, is_frozen: bool, save_handler: Callable):
                     def reset_to_profile():
                         job_model.clear_slurm_overrides()
                         save_handler()
-                        _render_slurm_content.refresh()
+                        refresh()
 
                     house_button("Reset to profile", reset_to_profile)
 
@@ -125,7 +151,7 @@ def _render_slurm_content(job_model, is_frozen: bool, save_handler: Callable):
 
                         def _on_throttle_blur(_e):
                             save_handler()
-                            _render_slurm_content.refresh()
+                            refresh()
 
                         inp.on("blur", _on_throttle_blur)
 
@@ -133,11 +159,11 @@ def _render_slurm_content(job_model, is_frozen: bool, save_handler: Callable):
     if is_array:
         with field_group():
             section_header("Per-Task Resources", first=True)
-            _render_resource_fields(effective_config, job_model, is_frozen, save_handler)
+            _render_resource_fields(effective_config, job_model, is_frozen, save_handler, refresh)
             _render_walltime_estimate(job_model, effective_config)
         _render_supervisor_summary()
     else:
-        _render_resource_fields(effective_config, job_model, is_frozen, save_handler)
+        _render_resource_fields(effective_config, job_model, is_frozen, save_handler, refresh)
 
 
 _RESOURCE_FIELDS = [
@@ -149,11 +175,12 @@ _RESOURCE_FIELDS = [
     ("gres", "GRES"),
     ("mem", "Memory"),
     ("time", "Time limit"),
+    ("qos", "QOS"),
 ]
 
 
-def _render_resource_fields(effective_config, job_model, is_frozen, save_handler):
-    """Stack the eight SLURM resource fields one per row, label inline-left."""
+def _render_resource_fields(effective_config, job_model, is_frozen, save_handler, refresh):
+    """Stack the SLURM resource fields one per row, label inline-left."""
     with field_grid():
         for fname, label in _RESOURCE_FIELDS:
             # Don't bind directly to job_model -- that would write to the
@@ -176,9 +203,13 @@ def _render_resource_fields(effective_config, job_model, is_frozen, save_handler
 
                     def _make_blur(name):
                         def handler(e):
+                            # Focus passing through is not an edit: pinning the value shown would stop
+                            # it following the job's settings (a computed time limit, say).
+                            if e.sender.value == str(getattr(job_model.get_effective_slurm_config(), name)):
+                                return
                             job_model.set_slurm_override(name, e.sender.value)
                             save_handler()
-                            _render_slurm_content.refresh()
+                            refresh()
 
                         return handler
 

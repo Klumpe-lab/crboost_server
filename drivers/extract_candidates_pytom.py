@@ -26,20 +26,16 @@ so there is nothing to isolate. The `target.exists(): continue` skip means a re-
 never re-patches a changed upstream file.
 
 The mode dispatch, both bootstraps, manifest lookup, exclusions, tally and exit
-markers all live in ArrayDriver; this file is the extraction-specific hooks.
+code all live in ArrayDriver; this file is the extraction-specific hooks.
 """
 
 import json
 import os
 import shutil
-import sys
 from pathlib import Path
 
 import pandas as pd
 import starfile
-
-server_dir = Path(__file__).parent.parent
-sys.path.insert(0, str(server_dir))
 
 from drivers.array_job_base import ArrayDriver, ArrayResults, read_manifest
 from drivers.driver_base import DriverContext, ToolCommand

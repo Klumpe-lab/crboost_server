@@ -30,10 +30,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 server_dir = Path(__file__).parent.parent
-sys.path.insert(0, str(server_dir))
 
 from drivers.driver_base import PRINT_CMD_ENV, DriverContext, print_cmd_only, run_tool
-from services.computing.slurm_service import SlurmConfig
+from services.computing.slurm_service import SlurmConfig, write_sbatch_script
 from services.configs.starfile_service import StarfileService
 from services.jobs.spec import driver_invocation
 
@@ -472,72 +471,17 @@ def stage_per_ts_environment(
 
 
 def build_array_sbatch_script(
-    template_path: Path,
-    job_dir: Path,
-    project_path: Path,
-    instance_id: str,
-    per_task_cfg: SlurmConfig,
-    array_spec: str,
-    driver_script: Path,
+    job_dir: Path, project_path: Path, instance_id: str, per_task_cfg: SlurmConfig, array_spec: str, driver_script: Path
 ) -> Path:
     """
-    Read config/qsub.sh, inject `#SBATCH --array=...`, substitute the standard
-    XXXextraNXXX placeholders with PER-TASK SLURM resources, and XXXcommandXXX
-    with the driver re-invocation. The driver detects task mode via
-    SLURM_ARRAY_TASK_ID set by SLURM in the array env.
+    Write <job_dir>/run_array.sh: config/qsub.sh as a SLURM array with PER-TASK
+    resources whose command re-invokes the driver. The driver detects task mode
+    via SLURM_ARRAY_TASK_ID set by SLURM in the array env.
     """
-    template = template_path.read_text()
-
-    # Inject the array directive BEFORE substitution so we can match a stable anchor.
-    array_line = f"#SBATCH --array={array_spec}\n"
-    template = template.replace("#SBATCH --output=XXXoutfileXXX", f"{array_line}#SBATCH --output=XXXoutfileXXX")
-
-    constraint = per_task_cfg.constraint.strip("'\"")
-
     driver_cmd = driver_invocation(
         server_dir=server_dir, driver_script=driver_script, instance_id=instance_id, project_path=project_path
     )
-
-    array_outfile = job_dir / "task_%a.out"
-    array_errfile = job_dir / "task_%a.err"
-
-    replacements = {
-        "XXXextra1XXX": per_task_cfg.partition,
-        "XXXextra2XXX": constraint,
-        "XXXextra3XXX": str(per_task_cfg.nodes),
-        "XXXextra4XXX": str(per_task_cfg.ntasks_per_node),
-        "XXXextra5XXX": str(per_task_cfg.cpus_per_task),
-        "XXXextra6XXX": per_task_cfg.gres,
-        "XXXextra7XXX": per_task_cfg.mem,
-        "XXXextra8XXX": per_task_cfg.time,
-        "XXXoutfileXXX": str(array_outfile),
-        "XXXerrfileXXX": str(array_errfile),
-        "XXXcommandXXX": driver_cmd,
-    }
-    script = template
-    for placeholder, value in replacements.items():
-        script = script.replace(placeholder, value)
-
-    # Strip the RELION marker-writing block from the array script.
-    # Only the SUPERVISOR should write RELION_JOB_EXIT_{SUCCESS,FAILURE} —
-    # if a child task writes the marker first, relion_schemer sees it and
-    # thinks the entire job is done, halting the pipeline while other tasks
-    # are still queued.
-    script = script.replace(
-        "if [ $EXIT_CODE -eq 0 ]; then\n"
-        '    echo "Creating RELION_JOB_EXIT_SUCCESS"\n'
-        '    touch "./RELION_JOB_EXIT_SUCCESS"\n'
-        "else\n"
-        '    echo "Creating RELION_JOB_EXIT_FAILURE"\n'
-        '    touch "./RELION_JOB_EXIT_FAILURE"\n'
-        "fi",
-        "# [array task] RELION markers suppressed — supervisor writes them after all tasks finish",
-    )
-
-    out_path = job_dir / "run_array.sh"
-    out_path.write_text(script)
-    out_path.chmod(0o755)
-    return out_path
+    return write_sbatch_script(job_dir / "run_array.sh", per_task_cfg, driver_cmd, array=array_spec)
 
 
 def submit_array_sbatch(script_path: Path, cwd: Path) -> str:
@@ -645,7 +589,6 @@ def submit_array_job(
 
     # 6. Build and submit the array sbatch
     run_array_path = build_array_sbatch_script(
-        template_path=server_dir / "config" / "qsub.sh",
         job_dir=job_dir,
         project_path=project_path,
         instance_id=instance_id,
@@ -697,15 +640,17 @@ def cancel_previous_array(job_dir: Path) -> str | None:
     return prev_id
 
 
-def install_cancel_handler(array_job_id: str, job_dir: Path) -> None:
-    """Install SIGTERM/SIGINT handlers that scancel the array job on supervisor kill."""
+def install_cancel_handler(array_job_id: str) -> None:
+    """Install SIGTERM/SIGINT handlers that scancel the array job on supervisor kill.
+
+    No exit marker here: the batch shell that writes it gets the same signal, and the
+    reconciler reads the kill from sacct instead."""
 
     def _cancel(signum, frame):
         print(f"[SUPERVISOR] Caught signal {signum}; scancelling array job {array_job_id}", flush=True)
         try:
             subprocess.run(["scancel", str(array_job_id)], check=False)
         finally:
-            (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
             sys.exit(130)
 
     signal.signal(signal.SIGTERM, _cancel)
@@ -722,8 +667,8 @@ class ArrayDriver(ABC):
 
     The base owns the shared skeleton: dispatch on SLURM_ARRAY_TASK_ID, bootstrap,
     the manifest index lookup, exclusion pre-marking, the results tally, the
-    RELION_JOB_EXIT_* markers, and the fail-status handler. A subclass supplies
-    only what is per-job.
+    exit code (qsub.sh turns it into RELION_JOB_EXIT_*), and the fail-status
+    handler. A subclass supplies only what is per-job.
 
     Required hooks: `enumerate_items`, `build_command`, `aggregate`.
     Optional hooks cover the per-driver differences — a supervisor-side compute
@@ -760,7 +705,7 @@ class ArrayDriver(ABC):
     def whole_job_short_circuit(self, ctx: DriverContext) -> bool:
         """Return True to end the job SUCCESSFULLY without enumerating or
         dispatching (subtomo_extraction's merge_only and zero-picks paths).
-        The hook does its own work; the base writes the success marker."""
+        The hook does its own work; the base then exits 0."""
         return False
 
     @abstractmethod
@@ -863,8 +808,6 @@ class ArrayDriver(ABC):
         try:
             ctx = DriverContext.load(self.params_class)
         except Exception as e:
-            # No context yet, so the failure marker goes to the cwd qsub.sh cd'd into.
-            (Path.cwd() / "RELION_JOB_EXIT_FAILURE").touch()
             print(f"[SUPERVISOR] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
             traceback.print_exc(file=sys.stderr)
             sys.exit(1)
@@ -874,7 +817,6 @@ class ArrayDriver(ABC):
         try:
             self.post_bootstrap(ctx)
             if self.whole_job_short_circuit(ctx):
-                (ctx.job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
                 print("[SUPERVISOR] Job finished successfully.", flush=True)
                 sys.exit(0)
             items = self.enumerate_items(ctx)
@@ -911,7 +853,7 @@ class ArrayDriver(ABC):
             )
 
             if array_job_id is not None:
-                install_cancel_handler(array_job_id, ctx.job_dir)
+                install_cancel_handler(array_job_id)
                 wait_for_array_completion(array_job_id, poll_secs=self.poll_secs)
             else:
                 print("[SUPERVISOR] No array submitted (all tasks previously succeeded)", flush=True)
@@ -924,14 +866,12 @@ class ArrayDriver(ABC):
                 print(f"[SUPERVISOR] MISSING tilt-series: {results.missing}", flush=True)
 
             if not self.tally_acceptable(ctx, results):
-                (ctx.job_dir / "RELION_JOB_EXIT_FAILURE").touch()
                 print("[SUPERVISOR] Marking job as FAILED (some tilt-series did not succeed)", flush=True)
                 sys.exit(1)
 
             print("[SUPERVISOR] All tasks succeeded; aggregating metadata...", flush=True)
             self.aggregate(ctx, results)
 
-            (ctx.job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
             print("[SUPERVISOR] Job finished successfully.", flush=True)
             sys.exit(0)
 
@@ -939,7 +879,6 @@ class ArrayDriver(ABC):
         except Exception as e:
             print(f"[SUPERVISOR] FATAL ERROR: {e}", file=sys.stderr, flush=True)
             traceback.print_exc(file=sys.stderr)
-            (ctx.job_dir / "RELION_JOB_EXIT_FAILURE").touch()
             sys.exit(1)
 
     def run_task(self, array_idx: int) -> None:

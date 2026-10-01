@@ -14,7 +14,14 @@ class TsReconstructParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
-    USER_PARAMS: ClassVar[set[str]] = {"rescale_angpixs", "halfmap_frames", "deconv", "perdevice", "array_throttle"}
+    USER_PARAMS: ClassVar[set[str]] = {
+        "rescale_angpixs",
+        "halfmap_frames",
+        "halfmap_tilts",
+        "deconv",
+        "perdevice",
+        "array_throttle",
+    }
 
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         # The tilt cut propagates natively (tiltFilter trims the tomostar
@@ -45,6 +52,15 @@ class TsReconstructParams(AbstractJobParams):
 
     rescale_angpixs: float = Field(default=12.0, ge=2.0, le=50.0)
     halfmap_frames: int = Field(default=1, ge=0, le=1)
+    halfmap_tilts: int = Field(
+        default=0,
+        ge=0,
+        le=1,
+        description="1 = the even/odd half-tomograms are built from alternate tilts (by angle) instead of "
+        "frame halves: they then carry independent alignment errors, which a tilt-split FSC between them "
+        "measures. Warp writes both kinds to the same even/odd folders, so set halfmap_frames to 0; "
+        "denoise training on these halves learns from tilt halves.",
+    )
     deconv: int = Field(default=1, ge=0, le=1)
     perdevice: int = Field(default=1, ge=0, le=8)
     array_throttle: int = Field(
@@ -80,7 +96,7 @@ class TsReconstructParams(AbstractJobParams):
         return True
 
     def get_tool_name(self) -> str:
-        return "warptools"
+        return "warp_aretomo"
 
     @staticmethod
     def get_input_requirements() -> dict[str, str]:

@@ -30,8 +30,7 @@ build needs outbound HTTPS (same as the `docker://` base pull).
 apptainer build --fakeroot chimerax_artiax.sif    chimerax_artiax.def      # CPU / software GL
 apptainer build --fakeroot chimerax_artiax_GL.sif chimerax_artiax_GL.def   # GPU / VirtualGL
 ```
-Then point crboost at one: set `curation.sif_path` in `config/conf.yaml` (or the `CX_SIF` env var,
-which overrides). To change the ChimeraX version, edit `CHIMERAX_VERSION` in the def's `%post`; the
+Then point crboost at one: set `curation.sif_path` in `config/conf.yaml`. To change the ChimeraX version, edit `CHIMERAX_VERSION` in the def's `%post`; the
 GL def also pins `VGL_VERSION` (bump if the VirtualGL `.deb` URL 404s).
 
 ## Run
@@ -44,6 +43,9 @@ session as a SLURM job and shows you the exact `ssh -L` tunnel + viewer + passwo
 CX_SIF=/…/chimerax_artiax.sif    ./launch_curation_vnc.sh      # CPU node (partition c)
 CX_SIF=/…/chimerax_artiax_GL.sif ./launch_curation_vnc.sh g    # GPU node (auto: --gres=gpu:1, --nv, vglrun)
 ```
+The worker binds only `/tmp` and `$HOME`; by hand, list whatever else the session opens (data, the
+project) in `CX_BINDS`, colon-separated. crboost passes `container_binds` from `conf.yaml` plus the project.
+
 Both paths run the same worker, `curation_session.sh`. It prints a `ssh -L …` line and a VNC
 password (and writes `session.json` for crboost). On your Mac: run that tunnel, then point the
 **TurboVNC Viewer** at `localhost:5901`. In ChimeraX, `open <recon>.mrc` + `open <picks>.coords`

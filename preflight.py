@@ -2,9 +2,10 @@
 """CryoBoost Server preflight.
 
 Creates config/conf.yaml and config/qsub.sh from their templates when they are missing, then checks
-the things that break a fresh install. Run it with the interpreter that runs the server and drivers:
+the things that break a fresh install. Run it with the interpreter that runs the server (and, unless
+conf.yaml sets crboost_python, the drivers):
 
-    venv/bin/python3 preflight.py
+    python preflight.py
 
 Never edits an existing config file. Exits 1 when any check fails.
 """
@@ -20,8 +21,6 @@ ROOT = Path(__file__).resolve().parent
 CONFIG_DIR = ROOT / "config"
 CONF_FILE = CONFIG_DIR / "conf.yaml"
 QSUB_FILE = CONFIG_DIR / "qsub.sh"
-VENV_DIR = ROOT / "venv"
-VENV_PYTHON = VENV_DIR / "bin" / "python3"
 
 # Import names of the packages requirements.txt installs that the server or the drivers import.
 REQUIRED_MODULES = [
@@ -43,17 +42,6 @@ REQUIRED_MODULES = [
     "torchvision",
 ]
 
-# drivers/array_job_base.py finds this block verbatim in qsub.sh and strips it from array child tasks.
-MARKER_BLOCK = (
-    "if [ $EXIT_CODE -eq 0 ]; then\n"
-    '    echo "Creating RELION_JOB_EXIT_SUCCESS"\n'
-    '    touch "./RELION_JOB_EXIT_SUCCESS"\n'
-    "else\n"
-    '    echo "Creating RELION_JOB_EXIT_FAILURE"\n'
-    '    touch "./RELION_JOB_EXIT_FAILURE"\n'
-    "fi"
-)
-
 failures: list[str] = []
 
 
@@ -74,14 +62,11 @@ def create_from_templates() -> bool:
     """Copy missing config files from their templates. True when anything was created."""
     created = False
     if not CONF_FILE.exists():
-        text = (CONFIG_DIR / "conf.template.yaml").read_text()
-        CONF_FILE.write_text(text.replace("/path/to/crboost_server", str(ROOT)))
+        shutil.copy(CONFIG_DIR / "conf.template.yaml", CONF_FILE)
         print("  created config/conf.yaml from the template")
         created = True
     if not QSUB_FILE.exists():
-        text = (CONFIG_DIR / "qsub.template.sh").read_text()
-        text = text.replace("XXXcrboost_rootXXX", str(ROOT)).replace("XXXcrboost_pythonXXX", str(VENV_PYTHON))
-        QSUB_FILE.write_text(text)
+        shutil.copy(CONFIG_DIR / "qsub.template.sh", QSUB_FILE)
         print("  created config/qsub.sh from the template")
         created = True
     return created
@@ -94,11 +79,6 @@ def check_python() -> None:
         fail(f"Python {version}; 3.11+ required")
     else:
         ok(f"Python {version} ({sys.executable})")
-
-    if not VENV_PYTHON.exists():
-        fail(f"{VENV_PYTHON} not found; drivers on compute nodes run exactly this interpreter")
-    elif Path(sys.prefix).resolve() != VENV_DIR.resolve():
-        warn(f"not running inside {VENV_DIR}; the imports below were checked in a different environment")
 
     missing = []
     for name in REQUIRED_MODULES:
@@ -118,11 +98,30 @@ def check_config():
     try:
         from services.configs.config_service import get_config_service
 
-        cfg = get_config_service().config
+        service = get_config_service()
     except Exception as e:  # any load or validation error is the finding; report it and skip dependent checks
         fail(f"config does not load: {e}")
         return None
+    cfg = service.config
     ok("config loads and validates")
+    for warning in service.load_warnings:
+        warn(warning)
+
+    for key, value in (
+        ("slurm_defaults.partition", cfg.slurm_defaults.partition),
+        ("supervisor_slurm.partition", cfg.supervisor_slurm.partition),
+    ):
+        if not value:
+            fail(f"{key} is not set")
+    if cfg.curation.sif_path and not cfg.curation.partition:
+        warn("curation.partition is not set; curation sessions cannot start")
+
+    if not cfg.crboost_python:
+        ok(f"drivers run {sys.executable} (this interpreter; start main.py with it too)")
+    elif os.access(cfg.crboost_python, os.X_OK):
+        ok(f"drivers run crboost_python = {cfg.crboost_python}")
+    else:
+        fail(f"crboost_python = {cfg.crboost_python} is not an executable interpreter; set it or leave it empty")
 
     base = cfg.local.DefaultProjectBase
     if not base:
@@ -138,13 +137,19 @@ def check_config():
         is_container = tool.exec_mode == "container"
         path = tool.container_path if is_container else tool.bin_path
         if not path:
-            warn(f"tools.{name}: no {'container_path' if is_container else 'bin_path'} set; jobs using it will fail")
+            fail(f"tools.{name}: no {'container_path' if is_container else 'bin_path'} set; set it or delete the entry")
         elif is_container and not Path(path).is_file():
             fail(f"tools.{name}: container not found: {path}")
-        elif not is_container and not (Path(path).is_file() or shutil.which(path)):
-            fail(f"tools.{name}: binary not found: {path}")
+        elif not is_container and not Path(path).is_dir():
+            fail(f"tools.{name}: bin_path is not a directory (it goes first on PATH): {path}")
         else:
             ok(f"tools.{name}: {path}")
+
+    for bind in cfg.container_binds:
+        if Path(bind).exists():
+            ok(f"container_binds: {bind}")
+        else:
+            fail(f"container_binds: {bind} does not exist")
     return cfg
 
 
@@ -153,11 +158,14 @@ def check_slurm(cfg) -> None:
     for exe in ("sbatch", "squeue", "sacct", "sinfo"):
         if shutil.which(exe) is None:
             fail(f"{exe} not on PATH")
-    runtime = shutil.which("apptainer") or shutil.which("singularity")
-    if runtime is None:
-        fail("neither apptainer nor singularity on PATH (compute nodes need it too: load it in qsub.sh)")
-    else:
-        ok(f"container runtime: {runtime}")
+    if cfg is not None:
+        runtime = shutil.which(cfg.container_runtime)
+        if runtime is None:
+            fail(
+                f"container_runtime {cfg.container_runtime} not on PATH (compute nodes need it too: load it in qsub.sh)"
+            )
+        else:
+            ok(f"container runtime: {runtime}")
 
     if cfg is None or shutil.which("sinfo") is None:
         return
@@ -177,6 +185,8 @@ def check_slurm(cfg) -> None:
         if profile.partition:
             wanted.append((f"job_resource_profiles.{job_type}.partition", profile.partition, True))
     for key, value, required in wanted:
+        if not value:  # an unset partition is check_config's finding
+            continue
         unknown = [p for p in value.split(",") if p not in available]
         if not unknown:
             ok(f"{key} = {value}")
@@ -190,16 +200,18 @@ def check_slurm(cfg) -> None:
 
 def check_qsub() -> None:
     print("\nconfig/qsub.sh")
+    try:
+        from services.computing.slurm_service import QSUB_EXIT_MARKERS
+    except ImportError as e:  # a missing package; the imports check above already names it
+        fail(f"cannot check the exit-marker block: {e}")
+        return
     text = QSUB_FILE.read_text()
     before = len(failures)
     for placeholder in ("XXXcommandXXX", "XXXoutfileXXX", "XXXerrfileXXX", "XXXextra1XXX"):
         if placeholder not in text:
             fail(f"{placeholder} is gone; crboost fills it per job")
-    for leftover in ("XXXcrboost_rootXXX", "XXXcrboost_pythonXXX"):
-        if leftover in text:
-            fail(f"{leftover} was never filled in")
-    if MARKER_BLOCK not in text:
-        fail("exit-marker block differs from qsub.template.sh; array child tasks would write RELION_JOB_EXIT_*")
+    if QSUB_EXIT_MARKERS not in text:
+        fail("exit-marker block differs from qsub.template.sh; crboost refuses to submit jobs with it")
     if "exit $EXIT_CODE" not in text:
         fail("no `exit $EXIT_CODE`; failed jobs would exit 0 and their afterok dependents would still run")
     if len(failures) == before:
@@ -223,7 +235,7 @@ def main() -> int:
     if failures:
         print(f"{len(failures)} check(s) failed.")
         return 1
-    print("All checks passed. Start the server with: venv/bin/python3 main.py --port 8081")
+    print(f"All checks passed. Start the server with: {sys.executable} main.py --port 8081")
     return 0
 
 
