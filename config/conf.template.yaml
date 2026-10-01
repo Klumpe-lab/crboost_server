@@ -186,23 +186,19 @@ species_catalog_root: ""
 
 # Tilt classifiers for the tilt-filter job's DL review. Each entry names a weights file,
 # the network class it was trained as (filterTilts/deepLearning/model_architectures.py) and
-# the input normalisation it was trained with ("half": 1 channel, mean 0.5 / std 0.5;
-# "per_image": each image standardised, clipped as its checkpoint records). `threshold` is the
-# P(bad) cut the weights were calibrated at, which a job running them starts from (omit it for
-# uncalibrated weights). The job's model selector lists these keys; default_model is what a job
-# runs until the user picks another. Leave `models` empty to run the filter by hand only.
+# the input normalisation it was trained with ("per_image": each image standardised, clipped
+# as its checkpoint records). `threshold` is the P(bad) cut the weights were calibrated at,
+# which a job running them starts from (omit it for uncalibrated weights). The job's model
+# selector lists these keys; default_model is what a job runs until the user picks another.
+# Leave `models` empty to run the filter by hand only.
 tilt_filter:
   models:
-    tiltnet_260212:
-      path: "/path/to/model260212.pth"   # something like /groups/<name_of_group>/software/Models/model260212.pth
-      arch: "SmallSimpleCNN"
-      normalisation: "half"
     tiltnet_resnet18_o1034:             # written by: python -m filterTilts.deepLearning.convert_checkpoint run_best.pth <this path>
-      path: "/path/to/tiltnet_resnet18_o1034.pth"
+      path: "/path/to/tiltnet_resnet18_o1034.pth"   # something like /groups/<name_of_group>/software/Models/tiltnet_resnet18_o1034.pth
       arch: "ResNet18Gray"
       normalisation: "per_image"
       threshold: 0.301                  # the model author's cut on their own validation set, not calibrated on ours
-  default_model: tiltnet_260212
+  default_model: tiltnet_resnet18_o1034
 
 
 # Tool execution configuration

@@ -1,0 +1,103 @@
+$ srun -p g --gres=gpu:1 --constraint="g2|g3|g4" --cpus-per-task=4 --mem=16G --time=0:20:00 venv/bin/python docs/reports/dl-tilt-filter/scripts/check_resnet_tiltnet.py new_weights/run_best.pth --project /groups/klumpe/crboost_data/agg_20260311_412_Grid3 --device cuda
+(run 2026-09-30)
+
+== environment
+torch 2.6.0+cu124, python 3.11.5, device cuda
+
+== checkpoint
+new_weights/run_best.pth  44,768,843 bytes  sha256 52a860e94dc60563cd2197860ede99dbcd3772ee1b1550c679b3bb65373cf25d
+keys: arch, best_epoch, class_names, config, img_size, model_state_dict, per_dataset_metrics, preprocessing, temperature, threshold, tta, val_datasets, val_metrics
+arch resnet18, img_size 224, preprocessing {'grayscale': True, 'resize': [224, 224], 'per_image_standardize': True, 'clip_sigma': 7.214557474695828}
+class_names {0: 'bad', 1: 'good'}, best_epoch 8, split_mode provided, select_on auroc
+threshold 0.6994 on P(good) -> predicted bad when P(bad) > 0.3006; temperature 0.7390; TTA True
+val_datasets: 002_GroEL_240311, 003_Celegans_230104, 004_Chlamy_240222, 006_Drosophila_follicle_240327, 007_K3_data_240118_240410, 010_K3data2_250204, 011_Celegans_241022, 014_K3_250325, 015_K3_220608, 016_K3_241113
+val_metrics: n 5796, acc 0.9702, balacc 0.9757, recall_good 0.9662, recall_bad 0.9851, precision_good 0.996, auroc 0.9978, tp 4430, tn 1193, fp 18, fn 155
+  002_GroEL_240311                 n    31  bad    7  balacc 1.000  recall_bad 1.000  auroc 1.000
+  003_Celegans_230104              n   999  bad  436  balacc 0.955  recall_bad 1.000  auroc 0.995
+  004_Chlamy_240222                n  1570  bad  691  balacc 0.968  recall_bad 0.996  auroc 0.998
+  006_Drosophila_follicle_240327   n   479  bad   13  balacc 0.846  recall_bad 0.692  auroc 1.000
+  007_K3_data_240118_240410        n   154  bad    4  balacc 0.933  recall_bad 1.000  auroc 0.983
+  010_K3data2_250204               n  1008  bad    0  balacc 0.490  recall_bad 0.000  auroc nan
+  011_Celegans_241022              n   241  bad   37  balacc 0.993  recall_bad 1.000  auroc 1.000
+  014_K3_250325                    n   250  bad   19  balacc 0.695  recall_bad 0.421  auroc 0.951
+  015_K3_220608                    n   533  bad    0  balacc 0.500  recall_bad 0.000  auroc nan
+  016_K3_241113                    n   531  bad    4  balacc 0.999  recall_bad 1.000  auroc 1.000
+
+== weights
+parameters: 11,171,266
+tensors holding NaN/Inf: none
+conv1.weight               (64, 1, 7, 7)      mean|x|      0.1744  max|x|        2.32
+bn1.weight                 (64,)              mean|x|      0.2583  max|x|       0.526
+bn1.running_var            (64,)              mean|x|       2.558  max|x|       8.218
+layer4.1.conv2.weight      (512, 512, 3, 3)   mean|x|     0.01052  max|x|      0.2716
+layer4.1.bn2.running_var   (512,)             mean|x|      0.2276  max|x|       1.443
+fc.1.weight                (2, 512)           mean|x|     0.01874  max|x|      0.0447
+fc.1.bias                  (2,)               mean|x|     0.03658  max|x|      0.0476
+
+== forward pass, eval mode with D4 TTA
+input                P(bad)
+blank (constant)     1.0000
+uniform noise        0.0112
+gaussian noise       0.0107
+checkerboard 32 px   0.2412
+horizontal ramp      0.9713
+P(bad) spread over the 5 inputs (max - min): 0.989
+
+== where the inputs stop differing (eval mode, no TTA)
+zeros = share of exact zeros in the stage's output; spread = std across the inputs, averaged over features
+stage                  zeros      spread
+stem conv+bn+relu      32.7%      0.1759
+layer1                 22.6%      0.4479
+layer2                 55.3%      0.2246
+layer3                 52.6%      0.1349
+layer4                 43.1%       1.519
+avgpool                15.3%       1.458
+fc (logits)             0.0%       2.543
+
+== agg_20260311_412_Grid3: P(bad) against the committed verdict
+697 tilts with a PNG in /groups/klumpe/crboost_data/agg_20260311_412_Grid3/TiltFilter/png (0 registered tilts without one), 17 series, 0 committed bad (is_filtered_out)
+mean P(bad) 0.0783, min 0.0073, max 1.0000
+crboost liveness: 14 of 17 series have a P(bad) spread >= 0.05 -> live
+
+  |angle|  tilts  committed bad  mean P(bad)  flagged
+  0-19      221              0       0.0113        0
+ 20-39      238              0       0.0118        0
+ 40-49      102              0       0.0132        0
+ 50-59       51              0       0.0118        0
+ 60-90       85              0       0.5570       47
+lowest-|angle| tilt predicted good in 17 of 17 series
+
+== verdict
+The output depends on the input.
+
+---
+Added afterwards: Grid3's registry holds no committed drops because its filter was committed before the verdict
+moved into the registry (its TiltFilter/ still has the old tiltseries_filtered.star). The human labels are the
+tilt-filter job's tilt_labels in project_params.json: 56 bad, 2 good. By |angle| band (frames joined on the
+registry's nominal_tilt_angle_deg):
+
+  |angle|  tilts  human bad  flagged by the model
+  0-19      221          0      0
+ 20-39      238          0      0
+ 40-49      102          3      0
+ 50-59       51          0      0
+ 60-90       85         53     47
+
+---
+Added afterwards: per tilt, from the in-app DL run 003 on Grid3 (2026-09-30). Same model through ModelLoader; the
+driver logged P(bad) 0.007-1.000, mean 0.078, and 47 tilts sit at or above the cut, as above. The registry's p_bad
+against the tilt-filter job's tilt_labels (56 bad, 2 good), untouched tilts counted as good, predicted bad =
+P(bad) >= cut:
+
+   cut      flagged   TP   FP   FN   precision   recall
+  0.3006        47    47    0    9       1.000    0.839   (the same at every cut from 0.1 to 0.5)
+  0.0500        51    49    2    7       0.961    0.875
+  0.0400        52    50    2    6       0.962    0.893
+  0.0317        56    51    5    5       0.911    0.911
+  0.0200        67    53   14    3       0.791    0.946
+
+human-bad among the 56 highest P(bad): 51 of 56; AUROC, human-bad against the rest: 0.9949
+P(bad) of all 697 tilts: 630 below 0.02, 16 at 0.02-0.05, 4 at 0.05-0.1, none at 0.1-0.5, 2 at 0.5-0.99, 45 at >= 0.99
+human-bad below 0.3006: 6 at |angle| 60-70 (P(bad) 0.015-0.071), 3 at 42-46 (P(bad) 0.013-0.044)
+human-good labels: P(bad) 0.0117 (-18 deg) and 0.0115 (-57 deg)
+per-series P(bad) spread: 0.21-0.32 in the 14 series with a flagged tilt; 0.0004, 0.006 and 0.015 in the 3 without
