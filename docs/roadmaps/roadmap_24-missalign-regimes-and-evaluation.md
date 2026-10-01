@@ -63,6 +63,12 @@ roadmap 21 (integration; stages 1–3 code-complete) and absorbs its stage 4 (gr
 - Job tab: a summary above the fields (per iteration: entry, downsample, Å, patch field of view, rounding notes) and
   the settings that defeat themselves: epoch cap ≤ last milestone, unreadable schedule / milestones / z_box, more
   training GPUs than GPUs, one iteration longer than a run's wall-time.
+- Presets are regimes: choosing one sets `steps_per_epoch`, `max_epochs_per_iteration`, `lr_milestones` and `z_box`
+  (`PRESET_SETTINGS`: fast/default 250 × 30, thorough/paper 1000 × 30, milestones 5,15, paper `z_box auto`); the
+  fields stay editable. *custom* keeps them and starts an empty `custom_schedule` from the preset left. The summary and
+  the SLURM section refresh each other after every edit (QOS / time / GRES → warnings; parameters → time limit and
+  GRES), a focus passing through a SLURM field no longer pins its value as an override, and the GPU checks and the
+  walltime count a GRES override when there is one (the driver reads SLURM's count).
 - Local deformations (roadmap 21 stage 4): subtomoExtraction's tab shows an amber chip when its tomograms descend
   (recorded input paths) from a missAlign run whose `missalign_changes.json` lists local warps.
 - tsReconstruct `halfmap_tilts`: Warp splits by `i % 2` over the XML's tilt order (`TiltSeries.ReconstructFull.cs:244`),
@@ -104,8 +110,8 @@ roadmap 21 stage 6).
    one arm per Run: the new tsCtf follows the newest missAlign and the new tsReconstruct the newest tsCtf. To launch
    several arms in one Run, point each arm's tsCtf (**both** `input_star` and `input_processing`) and tsReconstruct at
    its own producers in the IO tabs first.
-3. missAlign settings — B: custom `30A anchoring; 20A anchoring x2; 10A global`; C: paper, z_box full; D: paper,
-   z_box auto; D′: D with another seed; E (only if D beats A): custom `30A anchoring; 20A anchoring x2; 10A global;
+3. missAlign settings — B: custom `30A anchoring; 20A anchoring x2; 10A global`; C: paper, then z_box back to full
+   (the preset sets auto); D: paper, z_box auto; D′: D with another seed; E (only if D beats A): custom `30A anchoring; 20A anchoring x2; 10A global;
    3.1A [3,3] x5`, prepare_stacks_apix 3.1, patch 128, z_box auto. All: steps_per_epoch 1000, epochs 30; QOS `g_long`
    in the SLURM tab; e.g. num_gpus 2 (1 trains, 1 reconstructs) with cpus_per_task ≥ 8.
 4. Score: `python scripts/align_qc.py score --arm A=External/jobAAA --arm C=External/jobCCC … --reference A
@@ -305,7 +311,9 @@ Arms on the 20 series, all refining the same aligntiltsWarp job, each followed b
 3. Stage 1 smoke runs: effective-Å log lines, Z box per TS (`zbox/fits.json` near the node-port boxes above; the
    coarse reconstructions are in `zbox/*.mrc`), upstream stack checksums unchanged, `run_submit.script` carries
    `#SBATCH --qos=`, the job tab summary renders for every preset, a resume after a cancel continues and a resume with
-   a changed schedule prefix refuses.
+   a changed schedule prefix refuses. Job tab: switching presets rewrites the four regime fields in place; a QOS,
+   time or GRES edit in the SLURM section updates the warnings at once; a parameter edit updates the SLURM time limit
+   and GRES; tabbing through the SLURM fields leaves no override behind (no "Reset to profile" button appears).
 4. tsReconstruct with `halfmap_tilts 1`: `reconstruction/even|odd/` written; with both halfmap switches on, the job
    refuses before Warp.
 5. Stage 3 controls on `bullseye_artifact_two` before any stage-5 scoring: the gauge set scores ≈ 0, along/across

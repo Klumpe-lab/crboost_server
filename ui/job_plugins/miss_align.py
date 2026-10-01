@@ -2,14 +2,18 @@
 missAlign plugin: the default parameter form with a live summary above it of what the settings
 resolve to — the pixel size and patch field of view of every macro-iteration on the stacks the job
 will read — and of the settings that defeat themselves (an epoch cap at or below the last LR
-milestone, an unreadable schedule, milestone list or z_box, more training GPUs than allocated, a
-macro-iteration longer than one run's wall-time). The driver checks the same things again before
-it spends GPU time.
+milestone, an unreadable schedule, milestone list or z_box, more training GPUs or a reconstruction
+device index beyond the GPUs allocated, a macro-iteration longer than one run's wall-time). The
+driver checks the same things again before it spends GPU time.
+
+Choosing a preset sets the fields it defines (MissAlignParams.apply_preset). The summary also reads
+the SLURM section (QOS, time limit, GRES), so its refresh goes back to the job tab, which reruns it
+after an edit in any section.
 """
 
 from nicegui import ui
 
-from services.jobs.miss_align import ScheduleEntry, parse_z_box
+from services.jobs.miss_align import ScheduleEntry, parse_device_list, parse_z_box
 from services.models_base import JobType
 from ui.job_plugins import register_params_renderer
 from ui.job_plugins._field_styles import CLR_HEADER, HELPER_STYLE, MONO
@@ -29,11 +33,17 @@ def render_miss_align_params(job_type, job_model, is_frozen, save_handler, *, ui
 
     summary()
 
-    def save_and_refresh():
-        save_handler()
-        summary.refresh()
+    preset = job_model.iteration_preset
 
-    render_default_params(job_type, job_model, is_frozen, save_and_refresh, exclude=ctx.get("exclude"))
+    def on_edit():
+        nonlocal preset
+        if job_model.iteration_preset != preset:
+            job_model.apply_preset(previous=preset)
+            preset = job_model.iteration_preset
+        save_handler()
+
+    render_default_params(job_type, job_model, is_frozen, on_edit, exclude=ctx.get("exclude"))
+    return summary.refresh
 
 
 def _groups(entries: tuple[ScheduleEntry, ...]) -> list[tuple[int, int, ScheduleEntry]]:
@@ -83,6 +93,13 @@ def _render_summary(job_model) -> None:
                     if note:
                         ui.label(note).style(_WARN_STYLE)
 
+        gpus = job_model.gpu_count()
+        gres_override = "gres" in job_model.slurm_overrides
+        if gres_override and gpus != job_model.num_gpus:
+            ui.label(
+                f"{gpus} GPU(s) from the GRES override in SLURM Resources; num_gpus ({job_model.num_gpus}) is not used."
+            ).style(HELPER_STYLE)
+
         try:
             job_model.milestones()
         except ValueError as e:
@@ -96,8 +113,14 @@ def _render_summary(job_model) -> None:
                 warnings.append("A [X,Y,Z,T] volume-warp entry needs z_box=full: that grid is laid over the box.")
         except ValueError as e:
             warnings.append(str(e))
-        if job_model.training_gpus > job_model.num_gpus:
-            warnings.append(f"training_gpus ({job_model.training_gpus}) exceeds num_gpus ({job_model.num_gpus}).")
+        if job_model.training_gpus > gpus:
+            source = "the GRES override in SLURM Resources" if gres_override else "num_gpus"
+            warnings.append(f"training_gpus ({job_model.training_gpus}) exceeds the {gpus} GPU(s) {source} allocates.")
+        elif job_model.reconstruction_devices.strip():
+            try:
+                parse_device_list(job_model.reconstruction_devices, gpus)
+            except ValueError as e:
+                warnings.append(str(e))
         walltime = job_model.walltime_warning()
         if walltime:
             warnings.append(walltime)

@@ -8,12 +8,14 @@ same module for cohesion.
 """
 
 from services.tilt_series.adapters.fs_motion_ctf import FsMotionCtfIngestAdapter
+from services.tilt_series.adapters.miss_align import MissAlignIngestAdapter
 from services.tilt_series.adapters.ts_alignment import TsAlignmentIngestAdapter
 from services.tilt_series.adapters.ts_ctf import TsCtfIngestAdapter
 from services.tilt_series.adapters.ts_reconstruct import TsReconstructIngestAdapter
 
 __all__ = [
     "FsMotionCtfIngestAdapter",
+    "MissAlignIngestAdapter",
     "TsAlignmentIngestAdapter",
     "TsCtfIngestAdapter",
     "TsReconstructIngestAdapter",

@@ -316,6 +316,10 @@ class PipelineBuilderPanel:
 
         if not self.ui_mgr.add_instance(instance_id, job_type):
             return
+        # The resolver reads pipeline membership from here (declared refinements apply only to
+        # jobs in the pipeline), so it tracks the roster rather than waiting for the next deploy.
+        state.pipeline_order = list(self.ui_mgr.selected_jobs)
+        state.mark_dirty()
 
         if instance_id not in state.jobs:
             state.ensure_job_initialized(job_type, instance_id=instance_id)
@@ -437,9 +441,9 @@ class PipelineBuilderPanel:
         if job_model and job_model.execution_status != JobStatus.SUCCEEDED:
             del state.jobs[instance_id]
             state.job_path_mapping.pop(instance_id, None)
-            # Load already filters pipeline_order to the ids still in `jobs`; this keeps the
-            # file consistent between the delete and the next load.
-            state.pipeline_order = [iid for iid in state.pipeline_order if iid != instance_id]
+        # Membership follows the roster for every status: a finished job taken off the roster is
+        # no longer in the pipeline the resolver sees.
+        state.pipeline_order = [iid for iid in state.pipeline_order if iid != instance_id]
         state.mark_dirty()
 
         if self.ui_mgr.is_project_created:

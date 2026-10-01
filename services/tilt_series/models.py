@@ -160,7 +160,7 @@ class TsAlignmentTiltSeriesOutput(_OutputBase):
 
     output_type: Literal["ts_alignment"] = "ts_alignment"
 
-    alignment_method: Literal["aretomo", "imod"]
+    alignment_method: Literal["aretomo", "imod", "miss_alignment"]
     alignment_angpix: float
     aln_file: Path | None = None  # AreTomo .st.aln
     xf_file: Path | None = None   # IMOD .xf

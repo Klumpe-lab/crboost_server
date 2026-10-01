@@ -85,6 +85,17 @@ def _render_tab_content(
         # treatment. The expansion chevron + the border provide the visual
         # hierarchy; the header text is just a label, not a heading shout.
         header_cls = "text-[12px] font-semibold text-slate-700"
+
+        # An edit in one section can change what another shows: missAlign's parameters set the time limit
+        # and GRES its SLURM section displays, and its warnings read the SLURM settings. Parameters and
+        # SLURM save through `on_edit`, which then reruns the refresh each of them hands back.
+        edit_refreshes: list[Callable[[], None]] = []
+
+        def on_edit() -> None:
+            save_handler()
+            for refresh in edit_refreshes:
+                refresh()
+
         with ui.scroll_area().classes("w-full h-full"):
             with ui.column().classes(f"w-full gap-0 {exp_content_reset}").style("padding: 4px 6px 8px;"):
                 # ── Parameters (open by default — this is the primary
@@ -94,16 +105,18 @@ def _render_tab_content(
                 ) as params_exp:
                     params_exp.props(f'header-class="{header_cls}"')
                     with ui.column().classes("w-full gap-0").style(section_pad):
-                        render_config_tab(
+                        params_refresh = render_config_tab(
                             job_type,
                             job_model,
                             is_frozen,
                             ui_mgr,
                             backend,
-                            save_handler,
+                            on_edit,
                             instance_id=instance_id,
                             callbacks=callbacks,
                         )
+                        if params_refresh is not None:
+                            edit_refreshes.append(params_refresh)
                 # ── I/O (collapsed by default) ──
                 with ui.expansion("I/O", value=False).props("dense").classes("w-full").style(section_style) as io_exp:
                     io_exp.props(f'header-class="{header_cls}"')
@@ -115,7 +128,7 @@ def _render_tab_content(
                 ) as slurm_exp:
                     slurm_exp.props(f'header-class="{header_cls}"')
                     with ui.column().classes("w-full gap-0").style(section_pad):
-                        render_slurm_tab(job_model, is_frozen, save_handler)
+                        edit_refreshes.append(render_slurm_tab(job_model, is_frozen, on_edit))
     elif tab_key == MonitorTab.LOGS.value:
         render_logs_tab(job_type, instance_id, job_model, backend, ui_mgr)
     elif tab_key == MonitorTab.FILES.value:
