@@ -12,8 +12,8 @@ from .model_architectures import get_model_class
 GALLERY_PNG_SIZE = 384
 
 # The input normalisations weights are trained with, by the registry's `normalisation` key:
-# "half" = Normalize(0.5, 0.5); "per_image" = PerImageStandardize at the checkpoint's clip_sigma.
-NORMALISATIONS = ("half", "per_image")
+# "per_image" = PerImageStandardize at the checkpoint's clip_sigma.
+NORMALISATIONS = ("per_image",)
 
 # Output column of the 'bad' class (training vocab: bad = 0, good = 1).
 BAD = 0
@@ -133,12 +133,9 @@ class ModelLoader:
         if self.input_size != GALLERY_PNG_SIZE:
             steps.append(transforms.Resize((self.input_size, self.input_size)))
         steps.append(transforms.ToTensor())
-        if self.normalisation == "half":
-            steps.append(transforms.Normalize(mean=[0.5], std=[0.5]))
-        else:
-            if "clip_sigma" not in checkpoint:
-                raise ValueError(f"{self.model_path} records no 'clip_sigma', which 'per_image' normalisation needs")
-            steps.append(PerImageStandardize(checkpoint["clip_sigma"]))
+        if "clip_sigma" not in checkpoint:
+            raise ValueError(f"{self.model_path} records no 'clip_sigma', which 'per_image' normalisation needs")
+        steps.append(PerImageStandardize(checkpoint["clip_sigma"]))
         return transforms.Compose(steps)
 
     def predict_p_bad(self, png_paths, batch_size=50) -> list[float]:

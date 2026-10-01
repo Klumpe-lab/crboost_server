@@ -207,7 +207,7 @@ class TiltFilterModelConfig(BaseModel):
 
     path: str
     arch: str  # network class name in filterTilts/deepLearning/model_architectures.py
-    normalisation: str  # input normalisation the weights were trained with: half | per_image (model_loader)
+    normalisation: str  # input normalisation the weights were trained with: per_image (model_loader)
     # The P(bad) cut these weights were calibrated at. A job running this model starts from it;
     # None leaves the job's 0.5 in place, marked uncalibrated.
     threshold: float | None = Field(default=None, ge=0.0, le=1.0)
