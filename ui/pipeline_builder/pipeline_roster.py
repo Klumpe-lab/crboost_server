@@ -10,7 +10,7 @@ from ui.current_project import current_project_state
 
 from ui.components.buttons import house_button
 from ui.components.dialogs import dialog_host
-from ui.components.reactive import FingerprintedView
+from ui.components.reactive import FingerprintedView, SingleFlight
 from ui.components.species_pill import render_species_pill
 from ui.components.svg_icon import load_icon_svg
 from ui.protocols_view import protocol_light
@@ -30,6 +30,7 @@ from ui.pipeline_builder.pipeline_constants import (
     missing_deps,
     fmt,
 )
+from ui.pipeline_builder.tilt_filter_row import render_tilt_filter_controls
 
 if TYPE_CHECKING:
     from ui.pipeline_builder.pipeline_builder_panel import PipelineBuilderPanel
@@ -214,6 +215,9 @@ class RosterWidget(FingerprintedView):
         # render(). Keyed by instance_id. Avoids redundant disk reads per tick.
         self._array_progress_cache: dict[str, TaskProgress | None] = {}
         self._array_ts_cache: dict[str, tuple[list[str], dict[str, str], dict[str, str]] | None] = {}
+        # In-flight row actions (the tilt filter's Approve / Run DL / ...). Here rather than on
+        # the row, which every repaint rebuilds.
+        self._flight = SingleFlight()
 
     def _get_container(self) -> Any:
         return self.panel.roster_panel
@@ -602,6 +606,10 @@ class RosterWidget(FingerprintedView):
                 ui.label("single-shot job (no per-TS tasks)").style(
                     f"{MONO} font-size: 8px; color: #94a3b8; font-style: italic;"
                 )
+
+        # The tilt filter's mode switch, review status and actions sit on a line under its row.
+        if job_type == JobType.TILT_FILTER and job_model is not None:
+            render_tilt_filter_controls(panel, instance_id, self._flight, indent + 12)
 
     def _render_ts_sub_rows(
         self,

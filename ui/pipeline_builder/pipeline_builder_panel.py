@@ -231,6 +231,21 @@ class PipelineBuilderPanel:
             for iid, c in self._job_content_containers.items():
                 c.set_visibility(iid == active)
 
+    def rerender_job(self, instance_id: str) -> None:
+        """Rebuild one job's rendered content after the roster changed a setting that shapes
+        its panel (the tilt filter's mode). A job not rendered yet is built fresh on its next
+        switch anyway."""
+        container = self._job_content_containers.pop(instance_id, None)
+        if container is None:
+            return
+        container.delete()
+        if self.ui_mgr.active_instance_id != instance_id:
+            return
+        self._ensure_job_rendered(instance_id)
+        rebuilt = self._job_content_containers.get(instance_id)
+        if rebuilt is not None:
+            rebuilt.set_visibility(True)
+
     def switch_tab(self, instance_id: str):
         if self.ensure_pipeline_mode:
             self.ensure_pipeline_mode()
@@ -486,7 +501,7 @@ class PipelineBuilderPanel:
     def _restore_interactive_state(job_type: JobType, instance_id: str, state):
         """Restore persisted labels/state when re-creating an interactive job.
         Labels come from the registry's per-frame filter verdicts (the last
-        filter run stamped them)."""
+        commit stamped them)."""
         if job_type != JobType.TILT_FILTER:
             return
         job_model = state.jobs.get(instance_id)
@@ -497,23 +512,16 @@ class PipelineBuilderPanel:
         try:
             reg = get_registry_for(state.project_path)
         except Exception:
+            logger.exception("Tilt filter: registry unreadable; the re-added job starts without its committed labels")
             return
-        labels = {
-            f.id: ("bad" if f.is_filtered_out else "good")
-            for ts in reg.all_tilt_series()
-            for f in ts.frames
-            if f.is_filtered_out or f.filter_probability is not None
-        }
+        # The registry stamps ARE the committed output (the filter produces no files of
+        # its own; alignment applies the cut when it snapshots the tomostars), so a
+        # dropped tilt means the user committed and the restored job may claim SUCCEEDED.
+        # A commit that dropped nothing leaves no trace; that job starts over unapproved.
+        labels = {f.id: "bad" for ts in reg.all_tilt_series() for f in ts.frames if f.is_filtered_out}
         if labels:
             job_model.tilt_labels = labels
-            # The registry stamps ARE the committed output (the filter produces no
-            # files of its own; alignment applies the cut when it snapshots the
-            # tomostars). Frames carrying a verdict therefore mean the user has
-            # committed, so the restored job may claim SUCCEEDED. Probability-only
-            # stamps come from a DL pass the user never approved, so require at
-            # least one actual drop before calling it committed.
-            if any(f.is_filtered_out for ts in reg.all_tilt_series() for f in ts.frames):
-                job_model.execution_status = JobStatus.SUCCEEDED
+            job_model.execution_status = JobStatus.SUCCEEDED
 
     # ── Full rebuild ──────────────────────────────────────────────────────────
 
@@ -558,7 +566,7 @@ class PipelineBuilderPanel:
 
         if self.ui_mgr.is_running:
             try:
-                self.ui_mgr.status_timer = ui.timer(3.0, self.poller.safe_status_check)
+                self.poller.start()
             except RuntimeError:
                 pass
 
@@ -569,29 +577,44 @@ class PipelineBuilderPanel:
             _safe_notify("Create a project first", type="warning")
             return
 
-        await self.backend.save_project(self.ui_mgr.project_path, force=True)
-
-        try:
-            result = await self.backend.start_pipeline(
-                project_path=str(self.ui_mgr.project_path),
-                scheme_name=f"run_{datetime.now().strftime('%H%M%S')}",
-                selected_jobs=self.ui_mgr.selected_jobs,
-                required_paths=[],
-            )
-            if result.get("already_complete"):
-                _safe_notify("All selected jobs already completed.", type="info")
+        # A second click while the first Run is still submitting does nothing.
+        async with self.flight("run_pipeline") as acquired:
+            if not acquired:
                 return
-            if result.get("success"):
-                self.ui_mgr.set_pipeline_running(True)
-                _safe_notify(f"Pipeline started (PID: {result.get('pid')})", type="positive")
-                self.ui_mgr.status_timer = ui.timer(3.0, self.poller.safe_status_check)
-                self.rebuild_pipeline_ui()
-            else:
-                logger.warning("start_pipeline failed: %s", result.get("error"))
-                _safe_notify(f"Failed to start: {result.get('error')}", type="negative")
-        except Exception as e:
-            logger.exception("handle_run_pipeline error")
-            _safe_notify(f"Error: {e}", type="negative")
+
+            await self.backend.save_project(self.ui_mgr.project_path, force=True)
+
+            try:
+                result = await self.backend.start_pipeline(
+                    project_path=str(self.ui_mgr.project_path),
+                    scheme_name=f"run_{datetime.now().strftime('%H%M%S')}",
+                    selected_jobs=self.ui_mgr.selected_jobs,
+                    required_paths=[],
+                )
+                if result.get("already_complete"):
+                    _safe_notify("All selected jobs already completed.", type="info")
+                    return
+                if result.get("waiting_for_review"):
+                    # Everything left is parked behind the tilt filter: nothing was submitted. The
+                    # refresher has to run to see the pipeline start when Approve submits them.
+                    _safe_notify(f"{result['message']} Approve it on its row to go on.", type="info")
+                    self.poller.start()
+                    return
+                if result.get("success"):
+                    self.ui_mgr.set_pipeline_running(True)
+                    message = f"Pipeline started (PID: {result.get('pid')})"
+                    parked = result.get("parked") or []
+                    if parked:
+                        message += f"; {len(parked)} job(s) wait for the tilt-filter review and start on Approve"
+                    _safe_notify(message, type="positive")
+                    self.poller.start()
+                    self.rebuild_pipeline_ui()
+                else:
+                    logger.warning("start_pipeline failed: %s", result.get("error"))
+                    _safe_notify(f"Failed to start: {result.get('error')}", type="negative")
+            except Exception as e:
+                logger.exception("handle_run_pipeline error")
+                _safe_notify(f"Error: {e}", type="negative")
 
     async def handle_stop_pipeline(self):
         project_path = self.ui_mgr.project_path

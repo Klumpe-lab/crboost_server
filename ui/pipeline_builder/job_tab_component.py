@@ -265,9 +265,9 @@ def _render_interactive_job(
                 "background: #dbeafe; border: 1px solid #bfdbfe; border-radius: 999px; padding: 1px 8px;"
             )
             .tooltip(
-                "Interactive — this step is driven by you: filter tilts (manually or with the DL model) and "
-                "commit, then run/resubmit so downstream jobs use your filtered set. If you don't add this job "
-                "to the pipeline, it's skipped and processing continues without tilt filtering."
+                "Interactive — this step is driven by you: label the tilts (by hand, or by reviewing DL "
+                "predictions) and Approve. A Run holds alignment and everything after it until you do. If you "
+                "don't add this job to the pipeline, processing continues without tilt filtering."
             )
         ):
             ui.label("Interactive").style(

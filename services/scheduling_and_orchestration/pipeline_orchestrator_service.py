@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import pandas as pd
@@ -10,11 +11,12 @@ from services.configs.config_service import get_config_service
 from services.configs.starfile_service import StarfileService
 from services.job_models import ImportMoviesParams
 from services.jobs.spec import JOB_SPEC_BY_TYPE, JOB_SPECS, driver_invocation
+from services.jobs.tilt_filter import review_barrier
 from services.path_resolution_service import PathResolutionError, PathResolutionService, get_context_paths
 from services.models_base import InstanceId
 from services.event_log import events
 from services.result import err, ok
-from services.project_state import AbstractJobParams, JobCategory, JobType, JobStatus
+from services.project_state import AbstractJobParams, JobCategory, JobType, JobStatus, ReviewHold
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -135,8 +137,19 @@ class PipelineOrchestratorService:
         self.star_handler = StarfileService()
         self.config_service = get_config_service()
         self.job_resolver = JobTypeResolver(self.star_handler)
+        self._submit_locks: dict[Path, asyncio.Lock] = {}
+
+    def _submit_lock(self, project_dir: Path) -> asyncio.Lock:
+        """One submit at a time per project, shared by deploy and submit_parked. Deploy's guard
+        reads pipeline_active, which a submit sets only after its sbatch awaits, so without the
+        lock two quick Runs could both pass the guard and submit the chain twice."""
+        return self._submit_locks.setdefault(project_dir.resolve(), asyncio.Lock())
 
     async def deploy_and_run_scheme(self, project_dir: Path, selected_instance_ids: list[str]) -> dict[str, Any]:
+        async with self._submit_lock(project_dir):
+            return await self._deploy_locked(project_dir, selected_instance_ids)
+
+    async def _deploy_locked(self, project_dir: Path, selected_instance_ids: list[str]) -> dict[str, Any]:
         if not selected_instance_ids:
             return err("No jobs selected.")
 
@@ -155,6 +168,8 @@ class PipelineOrchestratorService:
         # upstreams, which the afterok DAG needs as producers). The save on the
         # retry/fresh paths below persists it.
         state.pipeline_order = list(selected_instance_ids)
+        # Each run decides afresh what waits for a review; an older hold goes.
+        state.review_hold = None
         state.mark_dirty()
 
         instances_to_run: list[str] = []
@@ -169,6 +184,29 @@ class PipelineOrchestratorService:
         if not instances_to_run:
             return ok(already_complete=True, message="All selected jobs are already finished.", pid=0)
 
+        # An unapproved tilt filter in the run parks alignment, which applies its verdict, and
+        # everything downstream of it; the rest runs during the review, and Approve submits the
+        # parked jobs (submit_parked). Only the afterok path can hold jobs back, so the schemer
+        # path refuses such a run.
+        barrier = review_barrier(state, selected_instance_ids)
+        parked = self._parked_behind_review(state, instances_to_run) if barrier else []
+        if parked and not state.use_afterok_orchestrator:
+            return err(
+                f"The tilt filter ({barrier}) is not approved, and only the afterok orchestrator can hold "
+                "alignment until it is. Approve the filter first, or set use_afterok_orchestrator in conf.yaml."
+            )
+        if parked:
+            instances_to_run = [iid for iid in instances_to_run if iid not in parked]
+            events.info("%s: %s wait for the %s review", project_dir.name, ", ".join(parked), barrier)
+            if not instances_to_run:
+                state.review_hold = ReviewHold(barrier=barrier, parked=parked)
+                await self.backend.state_service.save_project(project_path=project_dir, force=True)
+                return ok(
+                    waiting_for_review=True,
+                    parked=parked,
+                    message=f"Nothing to start: {len(parked)} job(s) wait for the tilt-filter review.",
+                )
+
         events.info("Pipeline started: %s — %s", project_dir.name, ", ".join(instances_to_run))
 
         # When the project opts into the afterok DAG, submit the whole remaining set (FAILED + fresh)
@@ -176,7 +214,19 @@ class PipelineOrchestratorService:
         # afterok edges, so afterok re-runs do not use the schemer retry path below; edges to
         # already-SUCCEEDED producers are dropped (their outputs exist on disk).
         if state.use_afterok_orchestrator:
-            return await self._submit_chain(project_dir=project_dir, instances_to_run=instances_to_run, state=state)
+            if parked:
+                # Recorded before the submit awaits anything, so an Approve landing meanwhile finds
+                # the hold; its submit_parked waits on the lock for this submit to finish.
+                state.review_hold = ReviewHold(barrier=barrier, parked=parked)
+            res = await self._submit_chain(project_dir=project_dir, instances_to_run=instances_to_run, state=state)
+            if parked:
+                if res["success"]:
+                    res["parked"] = parked
+                elif not res.get("submitted"):
+                    # Nothing reached SLURM, so no run is waiting for the review either.
+                    state.review_hold = None
+                    state.mark_dirty()
+            return res
 
         # Schemer path -- Partition: jobs that FAILED with an existing External/jobNNN dir get
         # re-sbatched in place (preserves .task_status/*.ok for per-TS skip). Fresh jobs go through
@@ -308,6 +358,68 @@ class PipelineOrchestratorService:
             project_dir=project_dir, scheme_name=scheme_name, bind_paths=list(set(bind_paths))
         )
 
+    @staticmethod
+    def _parked_behind_review(state, instances_to_run: list[str]) -> list[str]:
+        """What an unapproved tilt filter holds back: the run's alignment jobs and every job of
+        the run downstream of them (a closure over resolve_edges), in run order. Empty when the
+        run does not include alignment. The rest reads no verdict and runs during the review."""
+        held = {
+            iid
+            for iid in instances_to_run
+            if (jm := state.jobs.get(iid)) is not None and jm.job_type == JobType.TS_ALIGNMENT
+        }
+        if not held:
+            return []
+        consumers: dict[str, list[str]] = {}
+        for producer, consumer in PathResolutionService(state).resolve_edges(instances_to_run):
+            consumers.setdefault(producer, []).append(consumer)
+        frontier = list(held)
+        while frontier:
+            for consumer in consumers.get(frontier.pop(), []):
+                if consumer not in held:
+                    held.add(consumer)
+                    frontier.append(consumer)
+        return [iid for iid in instances_to_run if iid in held]
+
+    async def submit_parked(self, project_dir: Path) -> dict[str, Any]:
+        """Approve's resume: submit the jobs a run parked behind the tilt filter, now approved.
+
+        Their job dirs, paths and job.star are made now, so edits made during the review apply,
+        and producers still queued or running gate them by afterok (_submit_chain). Parked jobs
+        that left the pipeline, or have run or been queued since, drop out. Refused, keeping the
+        hold, while the filter is unapproved or a producer of a parked job has neither run nor
+        been queued."""
+        async with self._submit_lock(project_dir):
+            state = self.backend.state_service.state_for(project_dir)
+            hold = state.review_hold
+            if hold is None:
+                return ok(submitted=[], message="No jobs are waiting for a review.")
+            filter_job = state.jobs.get(hold.barrier)
+            if filter_job is None or filter_job.execution_status != JobStatus.SUCCEEDED:
+                return err(f"The tilt filter ({hold.barrier}) is not approved; the parked jobs keep waiting.")
+
+            done_or_live = (JobStatus.SUCCEEDED, JobStatus.QUEUED, JobStatus.RUNNING)
+            parked = [
+                iid
+                for iid in hold.parked
+                if (jm := state.jobs.get(iid)) is not None and jm.execution_status not in done_or_live
+            ]
+            for producer, consumer in PathResolutionService(state).resolve_edges(parked):
+                status = state.jobs[producer].execution_status
+                if producer not in parked and status not in done_or_live:
+                    return err(
+                        f"{consumer} needs {producer}, which is {status.value.lower()}, so the parked jobs "
+                        f"keep waiting. Run the pipeline to start {producer} and them."
+                    )
+
+            state.review_hold = None
+            state.mark_dirty()
+            if not parked:
+                await self.backend.state_service.save_project(project_path=project_dir, force=True)
+                return ok(submitted=[], message="None of the parked jobs is left to run.")
+            events.info("%s: %s approved; submitting %s", project_dir.name, hold.barrier, ", ".join(parked))
+            return await self._submit_chain(project_dir=project_dir, instances_to_run=parked, state=state)
+
     async def _submit_chain(self, project_dir: Path, instances_to_run: list[str], state) -> dict[str, Any]:
         """Submit the pipeline as a SLURM afterok DAG instead of via relion_schemer.
 
@@ -317,7 +429,8 @@ class PipelineOrchestratorService:
         exception: it is re-submitted in place on that dir (no counter slot consumed) so its
         `.task_status/*.ok` survives and the supervisor reruns only the failed/missing items.
         Then toposort resolve_edges() and sbatch each supervisor with --dependency=afterok on
-        its producers' supervisor job ids.
+        its producers' supervisor job ids, including producers outside the submitted set that are
+        still queued or running (the upstream of jobs parked behind a review, submit_parked).
 
         This method submits and persists slurm_job_id + QUEUED + pipeline_active=True. The monitor
         dispatches afterok projects to reconcile_afterok -- which owns live status and winds
@@ -450,6 +563,14 @@ class PipelineOrchestratorService:
         edges = resolver.resolve_edges(instances_to_run)
         submit_ids = list(prepared)
         submit_set = set(submit_ids)
+        # A producer outside the submitted set that is still queued or running gates its consumers
+        # by its SLURM id (Approve submitting parked jobs while their upstream runs).
+        live_after: dict[str, list[str]] = {}
+        for p, c in edges:
+            pm = state.jobs.get(p)
+            if c in submit_set and p not in submit_set and pm is not None and pm.slurm_job_id:
+                if pm.execution_status in (JobStatus.QUEUED, JobStatus.RUNNING):
+                    live_after.setdefault(c, []).append(str(pm.slurm_job_id))
         edges = [(p, c) for (p, c) in edges if p in submit_set and c in submit_set]
         try:
             order, preds = _toposort_submit_order(submit_ids, edges)
@@ -468,6 +589,7 @@ class PipelineOrchestratorService:
             _job_dir, script_path = prepared[instance_id]
             after_ids = normalize_slurm_ids(
                 [instance_to_slurm[p] for p in preds.get(instance_id, set()) if p in instance_to_slurm]
+                + live_after.get(instance_id, [])
             )
             try:
                 slurm_id = await self.backend.pipeline_runner.submit_supervisor(

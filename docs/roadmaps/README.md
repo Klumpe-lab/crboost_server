@@ -12,7 +12,7 @@ their stage logs intact.
 | # | Roadmap | Theme | Status |
 |---|---|---|---|
 | 05 | [per-ts-top-up](roadmap_05-per-ts-top-up.md) | Re-run one failed/skipped tilt-series without recomputing the job or its downstream chain | stage 0 partial 2026-08-13; no code. **File deleted in `bc2b41b` — restore pending** |
-| 06 | [dl-tilt-filter](roadmap_06-dl-tilt-filter.md) | DL tilt filter with three modes on the job row (Manual / DL review park the pipeline until Approve; DL auto runs in the chain); weights under evaluation (the shipped file is a collapsed last epoch) | rev 4 approved 2026-09-29; not started |
+| 06 | [dl-tilt-filter](roadmap_06-dl-tilt-filter.md) | DL tilt filter: Manual / DL review on the job row; the pipeline parks until Approve; the model author's ResNet-18 replaced the dead CNN | rev 4; stages 0–2 + chunks 10/10b done (Grid3: precision 1.00, recall 0.84), stage-2 parking check owed; next: U1 tilt previews (§13.2), then 10c, 11 (DL auto) |
 | 13 | [roster-staged-vs-queued](roadmap_13-roster-staged-vs-queued.md) | The roster paints a just-added job with the same amber "Scheduled" dot as one queued on the cluster; derive the split from `pipeline_active` + `pipeline_order` | scoped 2026-08-23; not started |
 | 15 | [job-dir-ownership](roadmap_15-job-dir-ownership.md) | On-disk ownership lock for `External/jobNNN/` so a retry cannot sbatch a second supervisor into a live job dir (reproduced 2026-08-28, 62/114 TS lost) | scoped 2026-08-28; not started |
 | 19 | [ctf-fit-outlier-check](roadmap_19-ctf-fit-outlier-check.md) | Per-tilt CTF-fit outlier check: fail loudly when Warp's defocus fit diverges (was numbered 18, which collided with k3-stack-ingest) | scoped 2026-09-09; not started |
@@ -47,8 +47,7 @@ stage 0. Suggested order, by dependency:
 5. **22 blank-tilt-rays** — independent; being confirmed on its own branch.
 
 Found along the way, owned by none of them yet: candidate scoring counts a species match only for
-succeeded candidates, so a fresh multi-species run may cross-bind (21 §6); deploy has no re-entrancy lock,
-so a double Run may submit twice (06 defect 4).
+succeeded candidates, so a fresh multi-species run may cross-bind (21 §6). (Deploy's missing re-entrancy lock, 06 defect 4, is fixed by 06 chunk 9.)
 
 ## The open debt
 
