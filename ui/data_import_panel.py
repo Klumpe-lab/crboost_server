@@ -108,7 +108,10 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             prefs_service.save_to_app_storage(app.storage.user)
             local_refs["save_timer"] = None
 
-        local_refs["save_timer"] = ui.timer(0.5, do_save, once=True)
+        # The change handlers also re-enter from detached tasks (the scan adopting `.mrc`, the
+        # mdocs depth flip), which have no slot to create the timer in.
+        with local_refs["client"]:
+            local_refs["save_timer"] = ui.timer(0.5, do_save, once=True)
 
     # =========================================================================
     # VALIDATION
