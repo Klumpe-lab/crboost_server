@@ -53,13 +53,13 @@ def predict(state, job_model: TiltFilterParams, job_dir: Path, project_path: Pat
     workers = len(os.sched_getaffinity(0))
 
     # The model first, so a missing weights file or GPU fails the run before any conversion.
-    loader = ModelLoader(entry.path, entry.arch, entry.normalisation, gpu=0, num_workers=workers)
+    loader = ModelLoader(entry.weights_path, entry.arch, entry.normalisation, gpu=0, num_workers=workers)
     loader.load_model()
     size = GALLERY_PNG_SIZE
     tta = ", averaged over 8 rotations/flips" if loader.tta else ""
     print(
         f"[DRIVER] Model {model_key}: {entry.arch} at {loader.input_size} px, '{entry.normalisation}' "
-        f"normalisation, temperature {loader.temperature:.3f}{tta}, {entry.path}, on {loader.device_name}",
+        f"normalisation, temperature {loader.temperature:.3f}{tta}, {entry.weights_path}, on {loader.device_name}",
         flush=True,
     )
 

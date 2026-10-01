@@ -173,8 +173,8 @@ def resolve_model(key: str | None) -> tuple[str, TiltFilterModelConfig]:
     entry = registry.models.get(name)
     if entry is None:
         raise ValueError(f"Model '{name}' is not in conf.yaml's tilt_filter.models ({', '.join(registry.models)}).")
-    if not Path(entry.path).is_file():
-        raise ValueError(f"Model '{name}': weights file not found at {entry.path}.")
+    if not entry.weights_path.is_file():
+        raise ValueError(f"Model '{name}': weights file not found at {entry.weights_path}.")
     return name, entry
 
 

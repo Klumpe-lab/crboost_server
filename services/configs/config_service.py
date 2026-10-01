@@ -205,12 +205,18 @@ class CurationConfig(BaseModel):
 class TiltFilterModelConfig(BaseModel):
     """One tilt-classifier weights file the tilt-filter job can run."""
 
-    path: str
+    path: str  # absolute, or relative to the crboost checkout (weights_path)
     arch: str  # network class name in filterTilts/deepLearning/model_architectures.py
     normalisation: str  # input normalisation the weights were trained with: per_image (model_loader)
     # The P(bad) cut these weights were calibrated at. A job running this model starts from it;
     # None leaves the job's 0.5 in place, marked uncalibrated.
     threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+
+    @property
+    def weights_path(self) -> Path:
+        """The weights file: `path` itself when absolute, else inside the checkout this code runs from."""
+        # Joining an absolute path replaces the root.
+        return _REPO_ROOT / Path(self.path).expanduser()
 
 
 class TiltFilterConfig(BaseModel):
