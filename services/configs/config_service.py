@@ -193,6 +193,31 @@ class CurationConfig(BaseModel):
     rest_enabled: bool = True
 
 
+class TiltFilterModelConfig(BaseModel):
+    """One tilt-classifier weights file the tilt-filter job can run."""
+
+    path: str  # absolute, or relative to the crboost checkout (weights_path)
+    arch: str  # network class name in filterTilts/deepLearning/model_architectures.py
+    normalisation: str  # input normalisation the weights were trained with: per_image (model_loader)
+    # The P(bad) cut these weights were calibrated at. A job running this model starts from it;
+    # None leaves the job's 0.5 in place, marked uncalibrated.
+    threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+
+    @property
+    def weights_path(self) -> Path:
+        """The weights file: `path` itself when absolute, else inside the checkout this code runs from."""
+        # Joining an absolute path replaces the root.
+        return REPO_ROOT / Path(self.path).expanduser()
+
+
+class TiltFilterConfig(BaseModel):
+    """The tilt classifiers this site offers. The job's model selector lists the keys of
+    `models`; a job that never picked one runs `default_model`."""
+
+    models: dict[str, TiltFilterModelConfig] = Field(default_factory=dict)
+    default_model: str | None = None
+
+
 class Config(BaseModel):
     """Root configuration model"""
 
@@ -205,6 +230,7 @@ class Config(BaseModel):
     job_resource_profiles: dict[str, JobResourceProfile] = Field(default_factory=dict)
     processing_defaults: ProcessingDefaultsConfig = Field(default_factory=ProcessingDefaultsConfig)
     curation: CurationConfig = Field(default_factory=CurationConfig)
+    tilt_filter: TiltFilterConfig = Field(default_factory=TiltFilterConfig)
     tools: dict[str, ToolConfig] = Field(default_factory=dict)
     container_runtime: ContainerRuntime = ContainerRuntime.APPTAINER
     # Host directories bound into every container call, at the same path: the site's data
@@ -318,6 +344,10 @@ class ConfigService:
     @property
     def curation(self) -> CurationConfig:
         return self._config.curation
+
+    @property
+    def tilt_filter(self) -> TiltFilterConfig:
+        return self._config.tilt_filter
 
     @property
     def species_catalog_root(self) -> Path | None:

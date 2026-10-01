@@ -141,6 +141,13 @@ job_resource_profiles:
     cpus_per_task: 8
     time: "8:00:00"
 
+  # DL tilt-filter prediction run: one GPU job over every tilt of the project.
+  tiltFilter:
+    gres: "gpu:1"
+    mem: "16G"
+    cpus_per_task: 4
+    time: "0:30:00"
+
 processing_defaults:
   reconstruction_binning: 4
 
@@ -173,6 +180,23 @@ curation:
 # Import and publish both COPY (a snapshot, like species values on a job); there is no live
 # sync in either direction. Leave empty to switch the feature off entirely.
 species_catalog_root: ""
+
+# Tilt classifiers for the tilt-filter job's DL review. Each entry names a weights file
+# (absolute, or relative to this crboost_server checkout; git ignores *.pth files),
+# the network class it was trained as (filterTilts/deepLearning/model_architectures.py) and
+# the input normalisation it was trained with ("per_image": each image standardised, clipped
+# as its checkpoint records). `threshold` is the P(bad) cut the weights were calibrated at,
+# which a job running them starts from (omit it for uncalibrated weights). The job's model
+# selector lists these keys; default_model is what a job runs until the user picks another.
+# Leave `models` empty to run the filter by hand only.
+tilt_filter:
+  models:
+    tiltnet_resnet18_o1034:             # written by: python -m filterTilts.deepLearning.convert_checkpoint run_best.pth <this path>
+      path: "filterTilts/tiltnet_resnet18_o1034.pth"
+      arch: "ResNet18Gray"
+      normalisation: "per_image"
+      threshold: 0.301                  # the model author's cut on their own validation set, not calibrated on ours
+  default_model: tiltnet_resnet18_o1034
 
 
 # Container runtime on the headnode and the compute nodes: apptainer or singularity.

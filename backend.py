@@ -166,26 +166,43 @@ class CryoBoostBackend:
 
         self._pending_saves[key] = asyncio.create_task(_delayed())
 
-    async def submit_tilt_filter_dl(self, project_path: Path, instance_id: str) -> dict[str, Any]:
-        """Submit the tilt filter DL driver as a standalone SLURM job."""
-        from services.path_resolution_service import PathResolutionService
-        from services.models_base import JobStatus
+    async def submit_tilt_filter_predict(self, project_path: Path, instance_id: str) -> dict[str, Any]:
+        """Submit one DL prediction run of the tilt filter: drivers/tilt_filter.py as a
+        one-off SLURM job in its own directory (TiltFilter/dl_run/NNN). The run is recorded
+        in `job_model.predict_run`, which the PipelineMonitor settles from the exit markers
+        and SLURM (`PipelineRunnerService.reconcile_tilt_filter_predict`), so neither a
+        closed tab nor a server restart loses it. The job's execution_status says whether a
+        verdict is committed and is left alone."""
+        from services.jobs.tilt_filter import (
+            TiltFilterPredictRun,
+            calibrated_threshold,
+            next_predict_run_dir,
+            resolve_model,
+        )
+        from services.path_resolution_service import PathResolutionError, PathResolutionService
 
+        project_path = Path(project_path)
         state = self.state_service.state_for(project_path)
         job_model = state.jobs.get(instance_id)
         if not job_model:
             return err(f"Job '{instance_id}' not found")
-
-        # Resolve input paths
-        resolver = PathResolutionService(state)
+        if job_model.predict_in_flight:
+            run = job_model.predict_run
+            return err(f"A prediction run is already {run.status.value.lower()} (SLURM job {run.slurm_job_id}).")
         try:
-            io_paths = resolver.resolve_all_paths(
+            model_key, _entry = resolve_model(job_model.model)
+        except ValueError as e:
+            return err(str(e))
+
+        try:
+            io_paths = PathResolutionService(state).resolve_all_paths(
                 job_model.job_type, job_model, project_path / "TiltFilter", instance_id=instance_id
             )
-            job_model.paths.update({k: str(v) for k, v in io_paths.items() if v is not None})
-        except Exception as e:
+        except PathResolutionError as e:
             return err(f"Path resolution failed: {e}")
-
+        input_star = io_paths.get("input_star")
+        if input_star is None or not (project_path / input_star).exists():
+            return err("The motion-correction output star is not on disk yet; run fsMotion first.")
         try:
             driver_cmd = driver_invocation(
                 server_dir=self.server_dir,
@@ -196,56 +213,108 @@ class CryoBoostBackend:
         except FileNotFoundError as e:
             return err(str(e))
 
-        # Create job directory and clean up stale markers from previous runs
-        job_dir = project_path / "TiltFilter" / "dl_run"
-        job_dir.mkdir(parents=True, exist_ok=True)
-        for marker in ("RELION_JOB_EXIT_SUCCESS", "RELION_JOB_EXIT_FAILURE"):
-            (job_dir / marker).unlink(missing_ok=True)
-        # Rendered before the status flips, so a broken qsub.sh leaves the job as it was.
+        # Rendered before the run is recorded, so a broken qsub.sh leaves the job as it was.
+        run_dir = next_predict_run_dir(project_path)
         try:
             sbatch_path = write_sbatch_script(
-                job_dir / "run_tilt_filter.sh", job_model.get_effective_slurm_config(), driver_cmd
+                run_dir / "run_tilt_filter.sh", job_model.get_effective_slurm_config(), driver_cmd
             )
         except (OSError, ValueError) as e:
             logger.exception("Tilt filter DL: sbatch script render failed")
             return err(str(e))
+        job_model.paths.update({k: str(v) for k, v in io_paths.items() if v is not None})
 
-        # Save state so the driver can read it
-        job_model.execution_status = JobStatus.RUNNING
+        # The first run of a model moves the job's threshold to that model's recorded cut. Its
+        # predictions replace the previous model's, which the old threshold was set against;
+        # re-running the same model keeps a threshold the user has tuned.
+        previous = job_model.predict_run
+        cut = calibrated_threshold(model_key)
+        if cut is not None and (previous is None or previous.model != model_key):
+            job_model.threshold = cut
+
+        # Recorded before the first await, so a second click finds this run in flight.
+        run = TiltFilterPredictRun(job_dir=str(run_dir), model=model_key)
+        job_model.predict_run = run
         state.mark_dirty()
+        # The driver reads the run off project_params.json, so it must be on disk before sbatch.
         await self.state_service.save_project(project_path=project_path, force=True)
 
-        # Submit via sbatch
         try:
             proc = await asyncio.create_subprocess_exec(
                 "sbatch",
                 str(sbatch_path),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=str(job_dir),
+                cwd=str(run_dir),
             )
             stdout, stderr = await proc.communicate()
-            if proc.returncode != 0:
-                job_model.execution_status = JobStatus.FAILED
-                state.mark_dirty()
-                await self.state_service.save_project(project_path=project_path, force=True)
-                return err(f"sbatch failed: {stderr.decode().strip()}")
-
-            # Parse job ID from "Submitted batch job 12345"
-            output = stdout.decode().strip()
-            slurm_job_id = output.split()[-1] if output else None
-            job_model.slurm_job_id = slurm_job_id
-            state.mark_dirty()
+        except OSError as e:
+            logger.exception("Tilt filter DL: sbatch could not be started")
+            run.status = JobStatus.FAILED
+            run.error = f"sbatch could not be started: {e}"
             await self.state_service.save_project(project_path=project_path, force=True)
-
-            events.info("Tilt filter DL queued: SLURM job %s", slurm_job_id)
-            return ok(slurm_job_id=slurm_job_id, job_dir=str(job_dir))
-
-        except Exception as e:
-            job_model.execution_status = JobStatus.FAILED
-            state.mark_dirty()
+            return err(run.error)
+        if proc.returncode != 0:
+            run.status = JobStatus.FAILED
+            run.error = f"sbatch failed: {stderr.decode().strip()}"
             await self.state_service.save_project(project_path=project_path, force=True)
-            return err(str(e))
+            return err(run.error)
+
+        # "Submitted batch job 12345"
+        output = stdout.decode().strip()
+        run.slurm_job_id = output.split()[-1] if output else None
+        await self.state_service.save_project(project_path=project_path, force=True)
+        events.info("Tilt filter DL run %s queued: SLURM job %s", run_dir.name, run.slurm_job_id)
+        return ok(slurm_job_id=run.slurm_job_id, job_dir=str(run_dir))
+
+    async def cancel_tilt_filter_predict(self, project_path: Path, instance_id: str) -> dict[str, Any]:
+        """Cancel the tilt filter's in-flight DL prediction run. Only scancels: the monitor
+        settles the run FAILED, as it does any run SLURM ended."""
+        state = self.state_service.state_for(Path(project_path))
+        job_model = state.jobs.get(instance_id)
+        if job_model is None or not job_model.predict_in_flight:
+            return err("No DL prediction run is in flight.")
+        slurm_id = job_model.predict_run.slurm_job_id
+        if not slurm_id:
+            return err("The run has no SLURM job id yet; try again in a moment.")
+        res = await self.slurm_service.scancel_jobs([str(slurm_id)])
+        if not res.get("success"):
+            return err(f"scancel of SLURM job {slurm_id} failed: {res.get('error')}")
+        run_name = Path(job_model.predict_run.job_dir).name
+        events.info("Tilt filter DL run %s cancelled (SLURM job %s)", run_name, slurm_id)
+        return ok()
+
+    async def approve_tilt_filter(self, project_path: Path, instance_id: str) -> dict[str, Any]:
+        """Approve the tilt filter's review: commit its verdict through the one commit path
+        (`commit_verdict`) and persist the project. The gallery and the job row both call this.
+
+        When a run parked jobs behind this filter, they are submitted too, and `resume` carries
+        that outcome. The commit stands when the resume is refused; the caller reports both."""
+        from services.jobs.tilt_filter import commit_verdict
+
+        project_path = Path(project_path)
+        state = self.state_service.state_for(project_path)
+        res = await commit_verdict(state, project_path, instance_id)
+        if not res["success"]:
+            return res
+        await self.state_service.save_project(project_path=project_path, force=True)
+        events.info("Tilt filter approved: %d kept, %d dropped", res["kept"], res["dropped"])
+        hold = state.review_hold
+        if hold is not None and hold.barrier == instance_id:
+            res["resume"] = await self.pipeline_orchestrator.submit_parked(project_path)
+        return res
+
+    async def reopen_tilt_filter(self, project_path: Path, instance_id: str) -> dict[str, Any]:
+        """Undo the tilt filter's Approve (`reopen_review`), so the next Run waits for a review."""
+        from services.jobs.tilt_filter import reopen_review
+
+        project_path = Path(project_path)
+        state = self.state_service.state_for(project_path)
+        res = reopen_review(state, instance_id)
+        if res["success"]:
+            await self.state_service.save_project(project_path=project_path, force=True)
+            events.info("Tilt filter re-opened for review")
+        return res
 
     async def extract_pick_list(
         self,
@@ -267,7 +336,7 @@ class CryoBoostBackend:
     ) -> dict[str, Any]:
         """Subtomo-extract one curation pick list: submit ``drivers/extract_pick_list.py``
         as a one-off SLURM job via ``config/qsub.sh`` (same mechanism as
-        ``submit_tilt_filter_dl``). Output lands in ``<list_star dir>/<slug>/`` so lists
+        ``submit_tilt_filter_predict``). Output lands in ``<list_star dir>/<slug>/`` so lists
         extract independently. Returns the SLURM job id + the dir to watch
         (``RELION_JOB_EXIT_SUCCESS/FAILURE`` + ``result.json`` appear there; the caller
         records ``PickList.mark_extracted`` on success).
