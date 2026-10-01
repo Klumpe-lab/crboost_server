@@ -7,7 +7,8 @@ built as commits 8–9 (§12) and has not run. Route 1 weights arrived 2026-09-3
 (§7.4), converted and registered by commit 10. On Grid3 it agrees with the human labels per tilt (precision 1.00,
 recall 0.84 at its cut, in the app), so it replaced the dead CNN as the only registered model (10b). Commits 10c–13
 are specced in §12; the liveness test needs a decision before 11. The review's UI/UX and the Journey are open
-design, recorded in §13 for the next session (with where things stand, §13.8). The decisions below are settled.
+design, recorded in §13 for the next session; its first build, U1 (a Tilts tab beside Tomograms and each tomogram's
+tilts in place), is specced in §13.2, and where things stand is §13.9. The decisions below are settled.
 
 **Maintainer's decisions (2026-09-29):**
 1. The filter has three modes, chosen **on the tilt-filter job row**: **Manual**, **DL review**, **DL auto**.
@@ -671,6 +672,14 @@ the dev `config/conf.yaml` (untracked), this roadmap.
 - *Check (user):* restart the server; the model select lists only `tiltnet_resnet18_o1034`; Run DL on a project
   whose filter never picked a model runs it (the run log's "Model tiltnet_resnet18_o1034: ResNet18Gray …" line).
 
+### Weights location (done 2026-10-01)
+- A registry `path` is absolute or relative to the checkout the code runs from (`TiltFilterModelConfig.weights_path`,
+  read by `resolve_model` and the driver). The template registers `filterTilts/tiltnet_resnet18_o1034.pth`, and
+  `.gitignore` takes `*.pth`, so each install copies (or converts) its weights into `filterTilts/`. The dev conf uses
+  the relative path; the converted file there is a copy of `/groups/klumpe/software/Models/tiltnet_resnet18_o1034.pth`.
+- *Check (user):* Run DL; the run log's model line ends in `…/filterTilts/tiltnet_resnet18_o1034.pth`. A wrong path
+  shows the model select's red marker ("weights file not found at <absolute path>").
+
 ### Chunk 10c — the gallery shows a landed run's predictions (defect j), spec
 Files: `services/tilt_series/registry.py`, `services/scheduling_and_orchestration/pipeline_runner.py`.
 - *Cause:* the driver replaces the registry files on a compute node; the server re-syncs its cached registry only
@@ -794,7 +803,7 @@ built.
   image processor. A preview summed from raw frames (no gain or motion correction) is a different input; the model's
   numbers on it would need their own calibration.
 - **When, today.** One background task on the headnode for the whole project (`ensure_tilt_thumbnails`,
-  `services/tilt_series_service.py:291`, 16 processes), started on the fsMotion → SUCCEEDED edge by both reconcilers,
+  `services/tilt_series_service.py:292`, 16 processes), started on the fsMotion → SUCCEEDED edge by both reconcilers,
   by the Journey's self-heal, or by the panel's Generate button. It reads every average over NFS (~23 GB for Grid3's
   697 tilts). fsMotion itself runs one SLURM array task per tilt series, so the first series' averages exist long
   before the PNG pass starts. The gallery (`fs_motion_star`) and Run DL also wait for fsMotion SUCCEEDED.
@@ -813,8 +822,68 @@ built.
     Warp/RELION call per tilt), and gives the model an input it was not trained on. At most a human-only preview.
 - Dropping a tilt before fsMotion saves little compute (fsMotion per tilt is cheap); the gain of (a)–(c) is time to
   the first review.
+- **Decided (2026-10-01):** the PNGs stay a post-fsMotion step, made as they are now. (a) is parked.
 
-### 13.2 Buttons and controls
+### 13.2 U1 — Tilts beside Tomograms, and each tomogram's tilts in place (spec; build first)
+The maintainer's design (2026-10-01): tilt previews become a view of the project, not only the tilt filter's gallery.
+It is the canvas the later interactions, annotations, sorting and statistics (13.3–13.8) build on, so it comes first
+and must be robust and navigable.
+- **Where.** The Tomograms view (`ui/tomo_gallery.py`, `TomoGalleryPage`) gets a tab switch in its toolbar in place of
+  the "Tomograms" title: `Tomograms · Tilts`, the house `render_segmented` with each tab's count in its badge (no
+  material tabs). Tomograms keeps today's wall. Tilts shows every tilt preview, grouped by tilt series, as the
+  tilt-filter gallery lays them out now. It is there for any project whose fsMotion has run; before that the tab says
+  so. A project with tilts and no tomograms opens on Tilts. The toolbar's tab-specific controls (source and picks for
+  Tomograms; Expand all / Collapse all for Tilts) sit in their own container, so a tab switch rebuilds them and not the
+  strip that was clicked.
+- **Each tomogram's tilts, in place.** A small toggle in a tile frame's top-left corner (the pick badge holds the
+  top-right) replaces the slice with a mosaic of that tilt series' tilts, inside exactly the box the slice occupied;
+  toggled back, the slice returns. Per tile and independent, so one or two tomograms can be open at once; the open set
+  lives on the page, so a size switch, a refresh or the pending poll keeps it. Only a tile whose tomogram has tilts
+  gets the toggle (an imported tomogram has none). Re-render only the toggled tile (keep a ref per tile), not the wall.
+  - *Fit:* for n square cells in a frame of aspect a = W/H, take the cols that maximise
+    min(a/cols, 1/ceil(n/cols)); cell width = min(100/cols, 100/(a·rows)) % of W, the grid centred both ways, and a
+    1 px padding inside each cell as the gutter (a CSS gap would overflow the percentages). A frame with no known extent
+    takes the aspect cols/rows. 41 tilts in a square frame: 7 × 6.
+  - *Order:* by tilt angle, most negative first, left to right and top to bottom (acquisition order becomes a sort
+    option later). Each cell's native tooltip: angle, acquisition index, frame id.
+  - *In mosaic mode* the frame drops its own zoom click, the pick dots and the pick badge; the toggle uses
+    `click.stop`, since in slice mode it sits inside the frame's zoom click.
+- **Zoom.** A tilt, in the mosaic or on a card, opens the tilt filter's full-size viewer `_show_upsample`
+  (`ui/tilt_filter_panel.py:905`): the averaged MRC re-rendered at 512 / 1K / 2K / full, maximised, on black. Open it
+  under `dialog_host()` (`ui/components/dialogs.py`), or a re-render of the tile destroys it mid-load. The tomogram
+  zoom stays as it is; its "Journey ↗" button is this view's way to the Journey. Later: ← / → through the series'
+  tilts inside the viewer.
+- **The rows under the images** (the maintainer likes them; they are reserved for metrics, 13.5 / 13.7). The tomogram
+  tile's caption row stops being a Journey link: no click, no "↗", no hover tint (`.cb-gal-cap`, `.cb-gal-go` in
+  `ui/dashboard/css.py`); it keeps the position label with the tilt-series name in its tooltip, and the rest of the
+  row waits for the metrics. Tilt cards get the same row: angle and acquisition index now. The tilt-filter gallery's
+  card rows stay as they are.
+- **Data.** From the tilt-series registry, not the fs-motion star: per frame `id` (the PNG's stem),
+  `nominal_tilt_angle_deg`, `tilt_index`, and its fsMotion output's `averaged_mrc` (the zoom's source); the PNG dir from
+  `tilt_thumb_dir` (`services/dashboard_data.py:274`), listed once rather than one stat per tilt. A frame shows when it
+  has a PNG or an fsMotion output. Collected in the same thread pass as `collect_rows`. A registry failure is logged
+  and stated in the Tilts tab while the wall still renders. Groups ordered like the tiles (`position_label`).
+- **Rendering.** One `ui.html` per tilt series (its mosaic or its card grid) with one delegated click handler: each
+  tilt carries `data-key`, and a `js_handler` emits the key, like the tilt filter's `_CARD_CLICK_JS`
+  (`ui/tilt_filter_panel.py:647`). A project holds thousands of tilts; an element per tilt would be thousands of
+  NiceGUI elements. Tilt groups start collapsed and fill on first expand (the tilt filter's pattern), with Expand all /
+  Collapse all; images `loading="lazy"`. The wall's S / M / L switch sizes the cards too (about 90 / 130 / 190 px).
+- **Thumbnails not there yet.** The page calls `ensure_tilt_thumbnails` (`services/tilt_series_service.py:292`), as
+  the Journey does. Its 15 s pending poll also counts tilts that have an fsMotion output but no PNG, while the
+  thumbnail task runs (`BackgroundTask.existing` on its dedup key, `tilt-filter-thumbnails:<project>:<png dir>`), and
+  its signature carries the PNG count per series, so a landed batch re-renders.
+- **Also U1:** remove the rail's "Link to this view" button (`_build_link_btn`,
+  `ui/pipeline_builder/pipeline_roster.py:1880`, called at :1015). The address bar still carries the route.
+- **Not in U1:** the tab in the URL (`/p/<project>/tomograms/tilts`: `_TARGETS` and `apply_route` in `ui/routing.py`);
+  annotations, sorting, statistics (13.5–13.7); labels and the review (the tilt filter keeps its own gallery for now).
+- **Files:** `ui/tilt_previews.py` (new: the registry collection, mosaic and card HTML, the fit, the click JS),
+  `ui/tomo_gallery.py`, `ui/dashboard/css.py`, `ui/pipeline_builder/pipeline_roster.py`.
+- **Check (user):** on a project with tomograms, the Tilts tab lists every series and a card opens the full-size
+  viewer; on the wall, one tile's toggle shows its tilts in the same box while its neighbours keep their slices, and
+  toggling back restores the slice; a size switch and Refresh keep the open mosaics; a tilt in a mosaic opens the
+  viewer; a project without tomograms opens on Tilts; the rail has no link button.
+
+### 13.3 Buttons and controls
 - *Now.* Row (`ui/pipeline_builder/tilt_filter_row.py`): `Segmented` Manual · DL review, the §2 chip, `house_button`s
   Run DL / Cancel DL / Approve (accent) / Re-open, "· K waiting". Panel (`ui/tilt_filter_panel.py`): a
   `ui.expansion` "Deep Learning Auto-Filter" with a material icon (model select, Run DL), stat chips, then Approve /
@@ -824,16 +893,16 @@ built.
   icon and the bare select/checkbox are outside CLAUDE.md's control vocabulary; DL auto's controls (chunk 11).
 - *Defect l.* Replace "Set all good" with "Clear labels" behind a confirmation that names the count: in Manual every
   tilt then reads good, in DL review every tilt goes back to its prediction. Every bulk action gets a confirmation or
-  an undo (13.4).
+  an undo (13.6).
 
-### 13.3 The barrier's flags
+### 13.4 The barrier's flags
 - *Now.* The §2 chips, "· K waiting" with its since-when tooltip, the poller's "The pipeline waits for the
   tilt-filter review", the interactive-job header tooltip. Parked jobs read SCHEDULED with no job dir.
 - *To decide.* A distinct roster state for a parked job; a project-level "waiting for review" marker (rail badge,
   landing hub), since a parked project is otherwise idle; how DL auto reads when it fails on liveness and when it is
   done ("D of T dropped"); how a refused Re-open reads once alignment has run.
 
-### 13.4 Annotations on the tilt previews
+### 13.5 Annotations on the tilt previews
 - *Now.* A card shows the PNG, `pX.XX` (red at or above the threshold), a dashed border for predicted-bad, a solid
   border and filled dot for a human label, and a zoom into the MRC; each group header counts its bad tilts.
 - *Seen on Grid3.* The 47 tilts the model flagged were all human-bad, so all 47 cards were solid: the model's calls
@@ -842,7 +911,7 @@ built.
 - *Candidates.* Angle, acquisition order and accumulated dose; CTF resolution and motion from the Warp XML (the
   panel already loads `_xmlRes` / `_xmlMotion`); the mdoc dim flag (13.1 b); P(bad) as a bar rather than text.
 
-### 13.5 Label sets and their caching
+### 13.6 Label sets and their caching
 The maintainer's phrase is "caching of labels per set"; two readings, possibly both:
 - (i) *Sets that never overwrite each other*: the human edits, each DL run's predictions (only the latest survives,
   in `Frame.p_bad`), each committed verdict (only the latest, in the registry), kept as named sets with history, so a
@@ -853,7 +922,7 @@ The maintainer's phrase is "caching of labels per set"; two readings, possibly b
 - Where: per project `TiltFilter/labels/<set>.json` (small, diffable), the registry (one value per frame), or a
   lab-level store beside the species catalog (for ii).
 
-### 13.6 Statistics
+### 13.7 Statistics
 - *Now.* Total / Good / Bad / Removed % chips in the panel; the dashboard's per-series Kept / Dropped tiles and
   dropped list (`ui/tomo_dashboard_dialog.py:1813`).
 - *Wanted.* The distribution of excluded tilts: by |angle| band (as in §7.4's tables), by acquisition order or
@@ -862,15 +931,17 @@ The maintainer's phrase is "caching of labels per set"; two readings, possibly b
   roadmap computed by hand). The dashboard plot rules apply (no lines between discrete points; hovers name the tilt
   and frame).
 
-### 13.7 The Journey
+### 13.8 The Journey
 - *Now.* Per-tilt hover cards show the gallery PNGs; the per-frame verdict string "keep/drop (P(bad) x)"
   (`services/dashboard_data.py:378`); the dashboard's per-series filter section.
 - *To decide.* Dropped tilts marked in the per-tilt QC charts (defocus, resolution, motion against angle), so a
   dropped tilt reads as dropped rather than as an outlier; P(bad) as a per-tilt track; links between a Journey tilt
   and its gallery card in both directions; an addressable gallery route (`/p/<project>/…`, roadmap 17).
 
-### 13.8 Where things stand (2026-10-01), to resume
-- 10b built and ruff-clean, waiting for its commit; this section rides with it.
+### 13.9 Where things stand (2026-10-01), to resume
+- Next build: U1 (13.2), as its own commit; then the rest of §13 topic by topic. The PNGs stay post-fsMotion (13.1).
+- 10b committed (`98a57c6`). The weights moved into the checkout (§12, Weights location). Then `main` (roadmaps 20
+  and 24) merges into `dl_filter` before U1.
 - 10c specced (defect j). Defect k needs the maintainer's decision before chunk 11 (proposed: dead = spread below
   1e-6). Defect l: "Clear labels", in 10c or its own commit (maintainer to choose).
 - Label restores, pending the maintainer's go-ahead, with the server stopped (a running server writes its in-memory
