@@ -136,14 +136,48 @@ def parse_schedule(text: str) -> tuple[ScheduleEntry, ...]:
     return tuple(entries)
 
 
-MISS_ALIGN_SCHEDULES: dict[MissAlignSchedule, tuple[ScheduleEntry, ...]] = {
-    MissAlignSchedule.FAST: parse_schedule("ds2 anchoring; ds1 global"),
-    MissAlignSchedule.DEFAULT: parse_schedule("ds3 anchoring; ds2 anchoring; ds1 global; ds1 [3,3]"),
+SCHEDULE_TEXT: dict[MissAlignSchedule, str] = {
+    MissAlignSchedule.FAST: "ds2 anchoring; ds1 global",
+    MissAlignSchedule.DEFAULT: "ds3 anchoring; ds2 anchoring; ds1 global; ds1 [3,3]",
     # The tool's config template.
-    MissAlignSchedule.THOROUGH: parse_schedule("ds3 anchoring; ds2 anchoring; ds1 global x2; ds1 [3,3] x4"),
+    MissAlignSchedule.THOROUGH: "ds3 anchoring; ds2 anchoring; ds1 global x2; ds1 [3,3] x4",
     # The preprint's lamella schedule (EMPIAR-10499), on its 10 Å stacks: global-only refinement gave a
     # modest STA gain, the local [3,3] rounds the large one.
-    MissAlignSchedule.PAPER: parse_schedule("30A anchoring; 20A anchoring x2; 10A global; 10A [3,3] x5"),
+    MissAlignSchedule.PAPER: "30A anchoring; 20A anchoring x2; 10A global; 10A [3,3] x5",
+}
+
+MISS_ALIGN_SCHEDULES: dict[MissAlignSchedule, tuple[ScheduleEntry, ...]] = {
+    preset: parse_schedule(text) for preset, text in SCHEDULE_TEXT.items()
+}
+
+# What choosing a preset sets besides its schedule; every preset names every field, so the result does not
+# depend on the preset chosen before. thorough and paper train on the tool's own budget (1000 steps x 30
+# epochs), and paper fits the box to the lamella as the preprint advises.
+PRESET_SETTINGS: dict[MissAlignSchedule, dict[str, int | str]] = {
+    MissAlignSchedule.FAST: {
+        "steps_per_epoch": 250,
+        "max_epochs_per_iteration": 30,
+        "lr_milestones": "5,15",
+        "z_box": "full",
+    },
+    MissAlignSchedule.DEFAULT: {
+        "steps_per_epoch": 250,
+        "max_epochs_per_iteration": 30,
+        "lr_milestones": "5,15",
+        "z_box": "full",
+    },
+    MissAlignSchedule.THOROUGH: {
+        "steps_per_epoch": 1000,
+        "max_epochs_per_iteration": 30,
+        "lr_milestones": "5,15",
+        "z_box": "full",
+    },
+    MissAlignSchedule.PAPER: {
+        "steps_per_epoch": 1000,
+        "max_epochs_per_iteration": 30,
+        "lr_milestones": "5,15",
+        "z_box": "auto",
+    },
 }
 
 
@@ -249,6 +283,10 @@ class MissAlignParams(AbstractJobParams):
         "Entries in Å are converted to the nearest whole downsample of the stack; the summary above the "
         "fields shows the pixel size each iteration actually uses. The local `[N,N]` rounds are where the "
         "preprint's subtomogram-averaging gains came from.\n\n"
+        "**Choosing a preset also sets** `steps_per_epoch`, `max_epochs_per_iteration`, `lr_milestones` and "
+        "`z_box`: *fast* and *default* train 250 steps × 30 epochs, *thorough* and *paper* the tool's own "
+        "1000 × 30, and *paper* fits the box to the lamella (`z_box` auto). They stay editable. *custom* "
+        "leaves them as they are and, when `custom_schedule` is empty, starts it from the preset you were on.\n\n"
         "**Training budget.** Per macro-iteration the model trains `steps_per_epoch × "
         "max_epochs_per_iteration` steps. The learning rate halves at each of `lr_milestones`, and early "
         "stopping only starts after the last one — with the epoch cap at or below it, neither happens. The "
@@ -316,7 +354,8 @@ class MissAlignParams(AbstractJobParams):
         default=MissAlignSchedule.DEFAULT,
         description="Macro-iteration schedule. fast = quick sanity pass; default = balanced coarse->fine->local; "
         "thorough = the tool's 8-iteration template; paper = the preprint's lamella ladder in Å; custom = "
-        "custom_schedule.",
+        "custom_schedule. Choosing one also sets steps_per_epoch, max_epochs_per_iteration, lr_milestones and "
+        "z_box to its values; custom keeps them.",
     )
     custom_schedule: str = Field(
         default="",
@@ -430,6 +469,28 @@ class MissAlignParams(AbstractJobParams):
             return parse_schedule(self.custom_schedule)
         return MISS_ALIGN_SCHEDULES[MissAlignSchedule(self.iteration_preset)]
 
+    def apply_preset(self, previous: MissAlignSchedule) -> None:
+        """Set the fields the newly chosen iteration_preset defines (PRESET_SETTINGS). custom keeps them,
+        and an empty custom_schedule starts from the schedule of `previous`."""
+        preset = MissAlignSchedule(self.iteration_preset)
+        if preset != MissAlignSchedule.CUSTOM:
+            for name, value in PRESET_SETTINGS[preset].items():
+                setattr(self, name, value)
+        elif not self.custom_schedule.strip() and MissAlignSchedule(previous) != MissAlignSchedule.CUSTOM:
+            self.custom_schedule = SCHEDULE_TEXT[MissAlignSchedule(previous)]
+
+    def gpu_count(self) -> int:
+        """GPUs the job is allocated: num_gpus, unless the SLURM section overrides GRES — the driver reads
+        SLURM's own count. A GRES without a count means one GPU; one that names no GPU, none."""
+        gres = self.slurm_overrides.get("gres")
+        if gres is None:
+            return self.num_gpus
+        for item in str(gres).split(","):
+            parts = item.strip().split(":")  # gpu[:type][:count]
+            if parts[0] == "gpu":
+                return int(parts[-1]) if len(parts) > 1 and parts[-1].isdigit() else 1
+        return 0
+
     def milestones(self) -> list[int]:
         return parse_milestones(self.lr_milestones)
 
@@ -500,7 +561,7 @@ class MissAlignParams(AbstractJobParams):
             + _WALLTIME_PER_TS_ALIGN_MIN
             * n_ts
             * max(1.0, (_ALIGN_REFERENCE_APIX / e.pixel_angstrom(stack_apix)) ** 3)
-            / self.num_gpus
+            / max(1, self.gpu_count())
             for e in entries
         ]
         minutes = max(int(_WALLTIME_BASE_MIN + sum(iteration_minutes) + 0.999), _hms_to_minutes(base_time))
@@ -517,7 +578,8 @@ class MissAlignParams(AbstractJobParams):
             return base_time
         minutes, longest, cap, n_iters = plan
         if cap and minutes > cap:
-            logger.warning(
+            # info, not warning: the job tab recomputes this on every edit and states it (walltime_warning).
+            logger.info(
                 "missAlign: full run ~%s (%d iterations, longest ~%s) exceeds the wall-time limit %s; clamping.",
                 _minutes_to_hms(minutes),
                 n_iters,

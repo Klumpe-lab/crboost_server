@@ -521,6 +521,11 @@ class PipelineOrchestratorService:
         """
         opts = dict(job_model._get_queue_options())  # qsub_extra1..8 already routed per job type
         cfg = SlurmConfig(**{field: opts[key] for field, key in SlurmConfig.QSUB_EXTRA_MAPPING.items()})
+        # The job's QOS belongs to its own resources; a job whose queue options are the shared
+        # supervisor's (array dispatchers override _get_queue_options) keeps the default QOS here and
+        # passes its QOS to the array tasks instead.
+        if type(job_model)._get_queue_options is AbstractJobParams._get_queue_options:
+            cfg.qos = job_model.get_effective_slurm_config().qos
         return write_sbatch_script(job_dir / "run_submit.script", cfg, fn_exe)
 
     def _write_job_star(
