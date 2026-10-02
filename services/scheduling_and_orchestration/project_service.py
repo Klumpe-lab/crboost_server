@@ -10,7 +10,13 @@ import asyncio
 import json
 from typing import TYPE_CHECKING
 
-from services.configs.mdoc_service import acquisition_from_mdoc, get_mdoc_service, ts_name_from_mdoc
+from services.configs.mdoc_service import (
+    acquisition_from_mdoc,
+    describe_duplicate_ts_names,
+    duplicate_ts_names,
+    get_mdoc_service,
+    ts_name_from_mdoc,
+)
 from services.configs.starfile_service import StarfileService
 from services.stack_import import choose_source_layer, resolve_stack, split_stack
 from services.models_base import InstanceId
@@ -425,6 +431,14 @@ class ProjectService:
             # 1. Standard Setup (Dirs, Data Import)
             if project_dir.exists():
                 return err(f"Project directory '{project_dir}' already exists.")
+
+            # Refuse before anything is written: the import flattens series by name,
+            # so a collision would silently keep only one of each.
+            if selected_mdoc_paths is not None or mdocs_glob:
+                mdoc_files = selected_mdoc_paths if selected_mdoc_paths is not None else glob.glob(mdocs_glob)
+                duplicates = duplicate_ts_names(mdoc_files)
+                if duplicates:
+                    return err(describe_duplicate_ts_names(duplicates))
 
             import getpass
             from services.project_nickname import nickname_for
