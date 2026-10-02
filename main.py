@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import functools
+import io
 import os
 import socket
 import argparse
@@ -8,7 +10,7 @@ import warnings
 from ui.main_ui import create_ui_router
 import uvicorn
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from nicegui import ui
 
@@ -98,6 +100,24 @@ def _is_under(child: Path, parent) -> bool:
         return False
 
 
+@functools.lru_cache(maxsize=512)
+def _preview_thumb(path: str, mtime_ns: int) -> bytes | None:
+    """A 512 px JPEG of a WarpTools preview PNG (about 1 MB at 1024 px): the projects
+    roster's hover card fetches these, often over an SSH tunnel. Keyed on mtime so a
+    re-reconstruction is never served stale. None without Pillow."""
+    try:
+        from PIL import Image
+    except ImportError:
+        # Bare venv without Pillow: the caller serves the full PNG instead.
+        return None
+    with Image.open(path) as im:
+        small = im.convert("L")
+        small.thumbnail((512, 512))
+        buf = io.BytesIO()
+        small.save(buf, format="JPEG", quality=85)
+    return buf.getvalue()
+
+
 def setup_app():
     """Configures and returns the FastAPI app."""
     app = FastAPI()
@@ -153,7 +173,11 @@ def setup_app():
             return {"error": "not a tomogram preview"}
         if not any((p / "project_params.json").is_file() for p in resolved.parents):
             return {"error": "outside any project"}
-        return FileResponse(resolved, media_type="image/png", headers={"Cache-Control": "public, max-age=300"})
+        cache = {"Cache-Control": "public, max-age=300"}
+        thumb = _preview_thumb(str(resolved), resolved.stat().st_mtime_ns)
+        if thumb is None:
+            return FileResponse(resolved, media_type="image/png", headers=cache)
+        return Response(content=thumb, media_type="image/jpeg", headers=cache)
 
     app.mount("/static", StaticFiles(directory=REPO_ROOT / "static"), name="static")
     # mtime-based cache-buster: the browser refetches main.css whenever we edit it,
