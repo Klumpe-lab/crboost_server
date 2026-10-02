@@ -63,12 +63,12 @@ _JOB_NUMBER = re.compile(r"job(\d+)")
 
 
 def _find_tomo_preview(project_dir: Path, jobs: dict[str, Any]) -> dict[str, Any] | None:
-    """One tomogram's WarpTools preview PNG, for the projects roster's row hover.
+    """The WarpTools tomogram preview PNGs, for the projects roster's row hover.
 
     WarpTools writes `<job>/warp_tiltseries/reconstruction/<tomo>_<apix>Apx.png` next to
-    each reconstructed volume. Takes the newest tsReconstruct job that has any, and the
-    first tomogram in it by name; also counts the volumes there. None when no
-    reconstruction has a preview."""
+    each reconstructed volume. Takes the newest tsReconstruct job that has any, all of
+    its previews by name; also counts the volumes there. None when no reconstruction
+    has a preview."""
     recon_dirs = [
         job["relion_job_name"].strip("/")
         for job in jobs.values()
@@ -91,8 +91,7 @@ def _find_tomo_preview(project_dir: Path, jobs: dict[str, Any]) -> dict[str, Any
             continue
         m = _RECON_PNG_APIX.search(pngs[0])
         return {
-            "png": str(recon_dir / pngs[0]),
-            "tomo": pngs[0][: m.start()] if m else pngs[0][: -len(".png")],
+            "pngs": [str(recon_dir / n) for n in pngs],
             "apix": float(m.group(1)) if m else None,
             "n_tomos": sum(1 for n in names if n.endswith(".mrc")),
         }
@@ -1445,6 +1444,7 @@ class CryoBoostBackend:
             "executed_jobs": 0,
             "succeeded": 0,
             "running_live": 0,
+            "queued": 0,
             "failed": 0,
             "scheduled": 0,
             "live_status": "idle",
@@ -1496,6 +1496,8 @@ class CryoBoostBackend:
             elif status == "Running":
                 out["running_live"] += 1
                 out["executed_jobs"] += 1
+            elif status == "Queued":
+                out["queued"] += 1
             elif status == "Failed":
                 out["failed"] += 1
                 out["executed_jobs"] += 1
@@ -1507,7 +1509,8 @@ class CryoBoostBackend:
             out["review_parked"] = len(review_hold.get("parked") or [])
             out["review_since"] = str(review_hold.get("held_at") or "")[11:16]
 
-        if out["running_live"] > 0:
+        # A job sitting in the SLURM queue is part of a live run, not a finished one.
+        if out["running_live"] > 0 or out["queued"] > 0:
             out["live_status"] = "running"
         elif out["review_parked"] > 0:
             out["live_status"] = "review"

@@ -17,6 +17,7 @@ import getpass
 import logging
 import itertools
 import math
+import re
 import urllib.parse
 from datetime import datetime
 from pathlib import Path
@@ -63,6 +64,36 @@ SORT_MODES = (("recent", "Last opened"), ("created", "Created"))
 DEFAULT_SORT = "recent"
 ANY_SPECIES = "__any__"
 ANY_SPECIES_LABEL = "any species"
+
+# WarpTools preview names end in the reconstruction's pixel size: `<tomo>_6.20Apx.png`.
+_PREVIEW_SUFFIX = re.compile(r"_\d+(?:\.\d+)?Apx\.png$")
+
+# Row hover card, run in the browser: no server round-trip to open it, and it stays open
+# while the pointer is on it. One shared timer: entering a row or its card cancels a
+# pending close, leaving either schedules one, and opening a card closes any other.
+_HOVER_STATE = "(window.__cbHoverCard ??= {timer: 0, open: null})"
+_HOVER_STAY = f"() => {{ clearTimeout({_HOVER_STATE}.timer); }}"
+_HOVER_CLOSE = (
+    f"() => {{ const s = {_HOVER_STATE}; clearTimeout(s.timer); s.timer = setTimeout(() => "
+    "{ if (s.open !== null) runMethod(s.open, 'hide', []); s.open = null; }, 200); }"
+)
+
+
+def _hover_open_js(menu_id: int) -> str:
+    return (
+        f"() => {{ const s = {_HOVER_STATE}; clearTimeout(s.timer); s.timer = setTimeout(() => {{ "
+        f"if (s.open !== null && s.open !== {menu_id}) runMethod(s.open, 'hide', []); "
+        f"s.open = {menu_id}; runMethod({menu_id}, 'show', []); }}, 90); }}"
+    )
+
+
+def _preview_img_html(png: str, stamp: int) -> str:
+    """Fixed 260 px box, so stepping between tomograms never resizes the card."""
+    url = f"/api/project-preview?path={urllib.parse.quote(png, safe='')}&v={stamp}"
+    return (
+        f"<img src='{url}' alt='' style='width: 260px; height: 260px; object-fit: contain; "
+        "display: block; border-radius: 3px; background: #f1f5f9;' />"
+    )
 
 
 def avatar_color(key: str) -> str:
@@ -203,6 +234,9 @@ class ProjectsOverview:
         # Set while a delete is in progress -- blocks auto-refresh so the
         # greyed-out row stays visible until rmtree completes.
         self._pause_refresh = False
+        # Set while a row's hover card is open -- also holds auto-refresh, since a
+        # rebuild would destroy the card under the pointer. _render_list clears it.
+        self._preview_open = False
 
     # =====================================================================
     # PUBLIC API
@@ -249,7 +283,7 @@ class ProjectsOverview:
         if self._list_container is None:
             self.stop()
             return
-        if self._pause_refresh:
+        if self._pause_refresh or self._preview_open:
             return
         async with self._refresh_lock:
             base = (self.base_path_provider() or "").strip()
@@ -434,6 +468,8 @@ class ProjectsOverview:
         if self._list_container is None:
             return
         self._list_container.clear()
+        # Every hover card died with the rows.
+        self._preview_open = False
 
         all_projects = self._projects
         eff = self._eff_owner_of  # mutable owner, falling back to created_by
@@ -621,7 +657,7 @@ class ProjectsOverview:
         fixed = "flex-shrink: 0; white-space: nowrap;"
         with row as row_el:
             if proj.get("tomo_preview"):
-                self._render_preview_tooltip(proj)
+                self._render_preview_card(proj, row)
             if compact:
                 self._render_compact_body(proj, is_current, row_el)
                 self._render_chevron(path_str, is_current)
@@ -780,13 +816,17 @@ class ProjectsOverview:
             return "you"
         return owner
 
-    @staticmethod
-    def _render_preview_tooltip(proj: dict):
-        """Row hover: one tomogram's WarpTools preview with a few facts under it, beside
-        the row (to its left, over the page, so it never covers the list). The <img> is
-        only in the DOM while the tooltip shows, so nothing downloads until a hover."""
+    def _render_preview_card(self, proj: dict, row) -> None:
+        """Row hover: a white card beside the row (to its left, over the page, so it never
+        covers the list) with the project's WarpTools tomogram previews, stepped with
+        chevrons, and a few facts. It opens and closes in the browser (_hover_open_js) so
+        it appears at once and can be moved onto; the roster's auto-refresh holds while
+        it is open, because a rebuild would take it away from under the pointer."""
         pv = proj["tomo_preview"]
+        pngs = pv["pngs"]
         name = proj["name"]
+        # The scan's activity stamp is the cache-buster: a new reconstruction moves it.
+        stamp = int(proj.get("last_activity_ts") or 0)
         ts_count = proj.get("ts_count") or 0
         facts = [f"{pv['n_tomos']}/{ts_count} tomograms" if ts_count else f"{pv['n_tomos']} tomograms"]
         if pv["apix"]:
@@ -795,27 +835,61 @@ class ProjectsOverview:
         if usage is not None and not usage.error:
             facts.append(format_bytes(usage.total_bytes))
         species = ", ".join(s.get("name") or s["id"] for s in proj.get("species") or [])
-        # The scan's activity stamp is the cache-buster: a new reconstruction moves it.
-        url = (
-            f"/api/project-preview?path={urllib.parse.quote(pv['png'], safe='')}"
-            f"&v={int(proj.get('last_activity_ts') or 0)}"
+        shown = {"i": 0}
+
+        def caption(i: int) -> str:
+            label = _PREVIEW_SUFFIX.sub("", Path(pngs[i]).name).removeprefix(f"{name}_")
+            return f"{label} · {i + 1}/{len(pngs)}" if len(pngs) > 1 else label
+
+        def step(delta: int) -> None:
+            shown["i"] = (shown["i"] + delta) % len(pngs)
+            image.set_content(_preview_img_html(pngs[shown["i"]], stamp))
+            caption_label.set_text(caption(shown["i"]))
+
+        menu = (
+            ui.menu()
+            .props(
+                'no-parent-event no-focus no-refocus anchor="center left" self="center right" '
+                ':offset="[4, 0]" transition-show="fade" transition-hide="fade" :transition-duration="80"'
+            )
+            .style(
+                f"background: white; border: 1px solid {CLR_BORDER}; border-radius: 6px; "
+                "box-shadow: 0 8px 24px rgba(15,23,42,0.16);"
+            )
         )
-        with (
-            ui.tooltip()
-            .props('anchor="center left" self="center right" :offset="[10, 0]" :delay="350"')
-            .style("padding: 6px; max-width: none; background: #0f172a;")
-        ):
-            ui.html(
-                f"<img src='{url}' alt='' style='width: 260px; height: auto; max-height: 340px; "
-                "display: block; border-radius: 3px; background: #1e293b;' />",
-                sanitize=False,
-            )
-            ui.label(pv["tomo"].removeprefix(f"{name}_")).style(
-                f"{MONO} font-size: 10px; color: #e2e8f0; margin-top: 5px;"
-            )
-            ui.label(" · ".join(facts)).style(f"{MONO} font-size: 9px; color: #94a3b8;")
-            if species:
-                ui.label(f"species: {species}").style(f"{MONO} font-size: 9px; color: #94a3b8;")
+        menu.on_value_change(self._on_preview_toggle)
+        with menu:
+            card = ui.element("div").style("padding: 8px; width: 276px;")
+            card.on("mouseenter", js_handler=_HOVER_STAY)
+            card.on("mouseleave", js_handler=_HOVER_CLOSE)
+            with card:
+                image = ui.html(_preview_img_html(pngs[0], stamp), sanitize=False)
+                with ui.element("div").style("display: flex; align-items: center; gap: 2px; margin-top: 6px;"):
+                    nav = "flat dense round size=sm"
+                    if len(pngs) > 1:
+                        ui.button(icon="chevron_left", on_click=lambda: step(-1)).props(nav).style(
+                            f"color: {CLR_LABEL};"
+                        ).tooltip("Previous tomogram")
+                    caption_label = ui.label(caption(0)).style(
+                        f"{MONO} font-size: 10px; color: {CLR_HEADING}; flex: 1 1 0; min-width: 0; "
+                        "text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                    )
+                    if len(pngs) > 1:
+                        ui.button(icon="chevron_right", on_click=lambda: step(1)).props(nav).style(
+                            f"color: {CLR_LABEL};"
+                        ).tooltip("Next tomogram")
+                ui.label(" · ".join(facts)).style(
+                    f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; text-align: center; margin-top: 2px;"
+                )
+                if species:
+                    ui.label(f"species: {species}").style(
+                        f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; text-align: center;"
+                    )
+        row.on("mouseenter", js_handler=_hover_open_js(menu.id))
+        row.on("mouseleave", js_handler=_HOVER_CLOSE)
+
+    def _on_preview_toggle(self, e):
+        self._preview_open = bool(e.value)
 
     @staticmethod
     def _render_path_line(path: str, *, color: str, what: str):
@@ -842,6 +916,8 @@ class ProjectsOverview:
             counts.insert(0, f"Waits for the tilt-filter review: {proj['review_parked']} job(s) parked{since}")
         if proj.get("running_live"):
             counts.append(f"{proj['running_live']} running")
+        if proj.get("queued"):
+            counts.append(f"{proj['queued']} queued")
         if proj.get("failed"):
             counts.append(f"{proj['failed']} failed")
         with (
