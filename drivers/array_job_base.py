@@ -864,6 +864,12 @@ class ArrayDriver(ABC):
                 print(f"[SUPERVISOR] FAILED tilt-series: {results.failed}", flush=True)
             if results.missing:
                 print(f"[SUPERVISOR] MISSING tilt-series: {results.missing}", flush=True)
+                # The array has left the queue, so a missing item's task died without reporting
+                # (OOM kill, node loss, scancel). Without a marker the task_N.out it left behind
+                # reads as "running" forever on a job that has already failed.
+                print("[SUPERVISOR] Marking missing tilt-series failed (task_N.err has the kill reason)", flush=True)
+                for item in results.missing:
+                    write_status_atomic(ctx.job_dir / STATUS_DIR_NAME, item, ok=False)
 
             if not self.tally_acceptable(ctx, results):
                 print("[SUPERVISOR] Marking job as FAILED (some tilt-series did not succeed)", flush=True)
