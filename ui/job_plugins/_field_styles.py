@@ -34,7 +34,9 @@ LABEL_STYLE = (
     f"width: {LABEL_W}px;"
 )
 VALUE_WRAP_STYLE = f"{MONO} font-size: 11px; color: {CLR_VALUE}; flex: 1 1 0; min-width: 0;"
-VALUE_WRAP_NARROW = f"{MONO} font-size: 11px; color: {CLR_VALUE}; flex: 0 0 auto; max-width: 96px;"
+# A fixed width, not max-width: a width-less q-input in a flex row shrink-wraps to a couple of
+# characters. 120 px holds ~16 monospace digits.
+VALUE_WRAP_NARROW = f"{MONO} font-size: 11px; color: {CLR_VALUE}; flex: 0 0 auto; width: 120px;"
 HELPER_STYLE = f"{SANS} font-size: 9px; color: {CLR_SUBLABEL};"
 SUFFIX_STYLE = f"{SANS} font-size: 9px; color: {CLR_SUBLABEL}; flex-shrink: 0;"
 
@@ -124,6 +126,9 @@ _INPUT_INNER_FROZEN = _INPUT_INNER_STYLE.replace("color: #1e293b", "color: #94a3
 
 
 def _attach_input(inp, *, is_frozen: bool, narrow: bool):
+    # .cb-select (ui/dashboard/css.py) draws the same 1px box the enum selects have, so an
+    # input's extent is visible and a number can't look cut off or rounded when it isn't.
+    inp.classes("cb-select")
     inp.props(_INPUT_PROPS_BASE)
     inp.props(f'input-style="{_INPUT_INNER_FROZEN if is_frozen else _INPUT_INNER_STYLE}"')
     inp.style(VALUE_WRAP_NARROW if narrow else VALUE_WRAP_STYLE)
@@ -228,6 +233,29 @@ def numeric_forward(job_model, attr: str) -> Callable:
     return _forward
 
 
+def bind_numeric(inp, job_model, attr: str):
+    """Two-way bind a `ui.number` to a numeric model field without fighting the person typing.
+
+    NiceGUI re-asserts a plain attribute's value onto its bound element every refresh tick. Each
+    time `numeric_forward` refuses a partial entry -- "1" on the way to "11.06" in a field with
+    ge=2, or the empty value a browser reports for "11." -- the model keeps its old value and the
+    next tick writes that back into the box mid-keystroke, eating the dot or replacing the digits.
+    While the box has focus, the element's own value is reported back instead, so nothing is
+    written into it. On blur, ui.number clamps to min/max, the valid value lands, and anything
+    still invalid (a cleared required field) snaps back to the model's value."""
+    editing = False
+
+    def _set_editing(flag: bool) -> None:
+        nonlocal editing
+        editing = flag
+
+    inp.on("focus", lambda _e: _set_editing(True))
+    inp.on("blur", lambda _e: _set_editing(False))
+    return inp.bind_value(
+        job_model, attr, forward=numeric_forward(job_model, attr), backward=lambda v: inp.value if editing else v
+    )
+
+
 def numeric_field(
     label: str,
     job_model,
@@ -237,7 +265,7 @@ def numeric_field(
     save_handler: Callable,
     hint: str | None = None,
     suffix: str = "",
-    fmt: str = "%.4g",
+    fmt: str | None = None,
     narrow: bool = True,
     on_change: bool = True,
 ):
@@ -251,8 +279,10 @@ def numeric_field(
         lo, hi = _numeric_bounds(job_model, attr)
         # min/max are the widget's own affordance (spinner stops, browser validation);
         # numeric_forward is what guarantees the model never takes an out-of-range value.
+        # No display format by default: ui.number re-applies it on blur, and "%.4g" turned 12345 into 12340
+        # and 11.065 into 11.06.
         inp = ui.number(value=val, format=fmt, precision=0 if is_int else None, min=lo, max=hi)
-        inp.bind_value(job_model, attr, forward=numeric_forward(job_model, attr))
+        bind_numeric(inp, job_model, attr)
         _attach_input(inp, is_frozen=is_frozen, narrow=narrow)
         if not is_frozen:
             if on_change:

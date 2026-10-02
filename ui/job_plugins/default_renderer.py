@@ -203,7 +203,7 @@ def render_default_params(
         with ui.column().classes("w-full gap-1").style("margin-bottom: 8px;"):
             for name in groups["paths"]:
                 path_row(
-                    _label_for(name),
+                    _label_for(job_model, name),
                     job_model,
                     name,
                     is_frozen=is_frozen,
@@ -223,7 +223,7 @@ def render_default_params(
 
                 if is_enum_type(field_type):
                     enum_field(
-                        _label_for(name),
+                        _label_for(job_model, name),
                         job_model,
                         name,
                         field_type,
@@ -233,11 +233,21 @@ def render_default_params(
                     )
                 elif isinstance(value, (int, float)) or value is None:
                     numeric_field(
-                        _label_for(name), job_model, name, is_frozen=is_frozen, save_handler=save_handler, hint=hint
+                        _label_for(job_model, name),
+                        job_model,
+                        name,
+                        is_frozen=is_frozen,
+                        save_handler=save_handler,
+                        hint=hint,
                     )
                 else:
                     text_field(
-                        _label_for(name), job_model, name, is_frozen=is_frozen, save_handler=save_handler, hint=hint
+                        _label_for(job_model, name),
+                        job_model,
+                        name,
+                        is_frozen=is_frozen,
+                        save_handler=save_handler,
+                        hint=hint,
                     )
 
     # Toggles wrap into their own row beneath.
@@ -246,7 +256,7 @@ def render_default_params(
             with toggle_row():
                 for name in groups["toggle"]:
                     toggle_field(
-                        _label_for(name),
+                        _label_for(job_model, name),
                         job_model,
                         name,
                         is_frozen=is_frozen,
@@ -275,7 +285,9 @@ def render_default_params_card(
     render_default_params(job_type, job_model, is_frozen, save_handler, exclude=exclude)
 
 
-def _label_for(name: str) -> str:
+def _label_for(job_model, name: str) -> str:
+    """The field's declared `title` (a readable name with its unit), else the title-cased field name."""
     from ui.utils import snake_to_title
 
-    return snake_to_title(name)
+    field_info = job_model.model_fields.get(name)
+    return (field_info.title if field_info and field_info.title else None) or snake_to_title(name)

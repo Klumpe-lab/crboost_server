@@ -23,7 +23,7 @@ from ui.components.buttons import house_button
 from ui.job_plugins._field_styles import (
     field_grid,
     field_group,
-    numeric_forward,
+    bind_numeric,
     section_header,
     LABEL_STYLE,
     ROW_STYLE,
@@ -107,8 +107,7 @@ def _render_slurm_content(job_model, is_frozen: bool, save_handler: Callable, re
     # ── Top bar: profile badge + reset link + (array-only) throttle ────────
     if has_profile or is_array:
         with ui.element("div").style(
-            "display: flex; align-items: center; gap: 12px; width: 100%; "
-            "min-height: 22px; margin-bottom: 4px;"
+            "display: flex; align-items: center; gap: 12px; width: 100%; min-height: 22px; margin-bottom: 4px;"
         ):
             if has_profile:
                 job_type_val = job_model.job_type.value if job_model.job_type else "?"
@@ -128,23 +127,23 @@ def _render_slurm_content(job_model, is_frozen: bool, save_handler: Callable, re
             if is_array:
                 if has_profile:
                     ui.element("div").style("width: 1px; height: 12px; background: #e2e8f0;")
-                with ui.element("div").style(
-                    "display: flex; align-items: baseline; gap: 6px; flex-shrink: 0;"
-                ):
+                with ui.element("div").style("display: flex; align-items: baseline; gap: 6px; flex-shrink: 0;"):
                     lbl = ui.label("Max concurrent").style(LABEL_STYLE)
                     lbl.tooltip("SLURM --array throttle: max tasks running simultaneously")
                     # precision=0 + numeric_forward: array_throttle is an `int` and the
                     # model does not validate on assignment, so a fractional entry here
                     # would only surface as a load failure that drops the whole instance.
-                    inp = ui.number(
-                        value=getattr(job_model, "array_throttle", 20), format="%d", precision=0
-                    ).bind_value(job_model, "array_throttle", forward=numeric_forward(job_model, "array_throttle"))
+                    inp = bind_numeric(
+                        ui.number(value=getattr(job_model, "array_throttle", 20), format="%d", precision=0),
+                        job_model,
+                        "array_throttle",
+                    )
                     inp.props(
                         "dense borderless hide-bottom-space "
-                        'input-style="font-family: \'IBM Plex Mono\', monospace; font-size: 11px; '
-                        "color: #1e293b; padding: 1px 2px; min-height: 0;\""
+                        "input-style=\"font-family: 'IBM Plex Mono', monospace; font-size: 11px; "
+                        'color: #1e293b; padding: 1px 2px; min-height: 0;"'
                     )
-                    inp.style(VALUE_WRAP_NARROW)
+                    inp.style(VALUE_WRAP_NARROW).classes("cb-select")
                     if is_frozen:
                         inp.props("readonly")
                     else:
@@ -193,10 +192,10 @@ def _render_resource_fields(effective_config, job_model, is_frozen, save_handler
                 inp = ui.input(value=str(current))
                 inp.props(
                     "dense borderless hide-bottom-space "
-                    'input-style="font-family: \'IBM Plex Mono\', monospace; font-size: 11px; '
-                    "color: #1e293b; padding: 1px 2px; min-height: 0;\""
+                    "input-style=\"font-family: 'IBM Plex Mono', monospace; font-size: 11px; "
+                    'color: #1e293b; padding: 1px 2px; min-height: 0;"'
                 )
-                inp.style(VALUE_WRAP_NARROW)
+                inp.style(VALUE_WRAP_NARROW).classes("cb-select")
                 if is_frozen:
                     inp.props("readonly")
                 else:
@@ -269,6 +268,5 @@ def _render_supervisor_summary():
                 with ui.element("div").style(ROW_STYLE):
                     ui.label(label).style(LABEL_STYLE)
                     ui.label(str(val)).style(
-                        f"{MONO} font-size: 11px; color: {CLR_SUBLABEL}; "
-                        "font-style: italic; flex: 1 1 0;"
+                        f"{MONO} font-size: 11px; color: {CLR_SUBLABEL}; font-style: italic; flex: 1 1 0;"
                     )
