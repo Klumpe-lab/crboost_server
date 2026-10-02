@@ -13,6 +13,7 @@ from collections.abc import Callable
 from nicegui import ui, app
 
 from backend import CryoBoostBackend
+from services.configs.mdoc_service import describe_duplicate_ts_names
 from services.configs.user_prefs_service import get_prefs_service
 
 from ui.components.buttons import house_button
@@ -330,11 +331,22 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             missing.append("Mdocs Pattern")
         elif not di.mdocs_valid:
             missing.append("Valid Mdocs")
+        if _duplicate_names_message():
+            missing.append(_UNIQUE_NAMES)
         # The dose row is only in play when the mdocs record no dose; then it must hold a
         # number (the estimate prefills it, the user may clear it — never a silent 3.0).
         if _dose_row_needed() and di.dose_per_tilt_override is None:
             missing.append("Dose per tilt")
         return missing
+
+    _UNIQUE_NAMES = "Unique tilt-series names"
+
+    def _duplicate_names_message() -> str | None:
+        """Why Create is blocked when selected series from different folders share a name
+        (the import would keep one of each); None when the selection is clean."""
+        ov = _current_overview()
+        duplicates = ov.duplicate_selected_names() if ov is not None else {}
+        return describe_duplicate_ts_names(duplicates) if duplicates else None
 
     def _dose_row_needed() -> bool:
         ov = _current_overview()
@@ -355,7 +367,9 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
     }
 
     def _field_el(req: str):
-        name = _FIELD_FOR_REQUIREMENT[req]
+        name = _FIELD_FOR_REQUIREMENT.get(req)
+        if name is None:
+            return None
         if name == "dose_input":
             return local_refs.get("dose_input")
         return getattr(ui_mgr.panel_refs, name, None)
@@ -394,7 +408,11 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         btn.classes(remove="opacity-50 cursor-not-allowed")
         if not status_label:
             return
-        if missing:
+        duplicates_msg = _duplicate_names_message() if _UNIQUE_NAMES in missing else None
+        if duplicates_msg:
+            status_label.set_text(duplicates_msg)
+            status_label.style(f"{FONT} font-size: 10px; color: {CLR_ERROR};")
+        elif missing:
             status_label.set_text("Enter details to begin…")
             status_label.style(f"{FONT} font-size: 10px; color: {CLR_SUBLABEL};")
         elif is_dataless():

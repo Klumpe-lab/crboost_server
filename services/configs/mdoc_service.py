@@ -74,6 +74,31 @@ def ts_name_from_mdoc(mdoc_name: str) -> str:
     return name
 
 
+def duplicate_ts_names(mdoc_paths) -> dict[str, list[Path]]:
+    """Series names that more than one of `mdoc_paths` maps to, with the colliding mdocs.
+
+    The import flattens every series into `mdoc/<prefix><ts_name>.mdoc`, so two folders
+    that both hold `Position_1.mdoc` would overwrite each other; a non-empty result
+    means the selection cannot be imported as one project."""
+    by_name: dict[str, list[Path]] = {}
+    for p in mdoc_paths:
+        path = Path(p)
+        by_name.setdefault(ts_name_from_mdoc(path.name), []).append(path)
+    return {name: paths for name, paths in by_name.items() if len(paths) > 1}
+
+
+def describe_duplicate_ts_names(duplicates: dict[str, list[Path]]) -> str:
+    """One line naming the collision for the user: count, the folders involved, and the
+    two ways out."""
+    folders = sorted({p.parent.name for paths in duplicates.values() for p in paths})
+    examples = ", ".join(sorted(duplicates)[:3]) + (", …" if len(duplicates) > 3 else "")
+    return (
+        f"{len(duplicates)} tilt-series names ({examples}) occur in more than one folder "
+        f"({', '.join(folders)}); one project holds each name once — import one folder per "
+        f"project, or deselect one of each pair"
+    )
+
+
 _T_LINE_RE = re.compile(r"^\[T\s*=\s*(.*?)\]?$")
 _SERIALEM_VERSION_RE = re.compile(r"SerialEM Version\s+(\S+)")
 _TOMO5_VERSION_RE = re.compile(r"Tomography[_ ]v?(\d+(?:\.\d+)*)")

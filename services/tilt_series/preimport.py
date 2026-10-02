@@ -27,7 +27,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from services.configs.mdoc_service import DoseEstimate
+from services.configs.mdoc_service import DoseEstimate, duplicate_ts_names
 
 SourceKind = Literal["movies", "stack", "missing"]
 
@@ -282,6 +282,10 @@ class DatasetOverview(BaseModel):
 
     def get_selected_tilt_series(self) -> list[TiltSeriesInfo]:
         return [ts for p in self.positions for ts in p.tilt_series if ts.selected]
+
+    def duplicate_selected_names(self) -> dict[str, list[Path]]:
+        """Selected series whose names collide on import (see `duplicate_ts_names`)."""
+        return duplicate_ts_names(ts.mdoc_path for ts in self.get_selected_tilt_series())
 
     def selected_acquisition_summary(self) -> AcquisitionSummary:
         """Compute summary only from selected tilt-series."""
