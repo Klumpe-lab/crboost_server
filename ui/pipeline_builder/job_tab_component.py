@@ -250,6 +250,16 @@ def _render_interactive_job(
     full_renderer: Callable,
 ):
     """Lightweight chrome for interactive tool-type jobs (no tab strip)."""
+    # The tilt filter in DL auto is a chain job, which its IS_INTERACTIVE says.
+    interactive = getattr(job_model, "IS_INTERACTIVE", True)
+    pill_tip = (
+        "Interactive — this step is driven by you: label the tilts (by hand, or by reviewing DL "
+        "predictions) and Approve. A Run holds alignment and everything after it until you do. If you "
+        "don't add this job to the pipeline, processing continues without tilt filtering."
+        if interactive
+        else "Automatic — a Run submits this step as a chain job after fsMotion: it predicts every tilt and "
+        "drops those at or above the threshold (labels you set still win), and alignment follows without a review."
+    )
     # --- Compact header ---
     with (
         ui.row()
@@ -264,13 +274,9 @@ def _render_interactive_job(
                 "display: inline-flex; align-items: center; flex-shrink: 0; "
                 "background: #dbeafe; border: 1px solid #bfdbfe; border-radius: 999px; padding: 1px 8px;"
             )
-            .tooltip(
-                "Interactive — this step is driven by you: label the tilts (by hand, or by reviewing DL "
-                "predictions) and Approve. A Run holds alignment and everything after it until you do. If you "
-                "don't add this job to the pipeline, processing continues without tilt filtering."
-            )
+            .tooltip(pill_tip)
         ):
-            ui.label("Interactive").style(
+            ui.label("Interactive" if interactive else "Automatic").style(
                 "font-size: 9px; color: #1e40af; font-weight: 700; letter-spacing: 0.3px; white-space: nowrap;"
             )
         if job_model.relion_job_name and ui_mgr.project_path:

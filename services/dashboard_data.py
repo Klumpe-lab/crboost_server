@@ -235,7 +235,7 @@ def fsm_motion_tracks(project_path: Path, instance_id: str, ts_name: str) -> lis
     """Per-tilt beam-induced motion tracks from the fsMotion registry outputs:
     [{tilt, index, frame, x, y, source}] for the frames that carry one. `index`
     is the tilt's number on every surface (tilt_index + 1). Empty when the
-    registry holds no tracks for this run (re-ingest with `crboost_reingest.py`)."""
+    registry holds no tracks for this run."""
     ts = registry_ts_for(project_path, ts_name)
     if ts is None:
         return []

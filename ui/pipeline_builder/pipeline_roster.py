@@ -30,7 +30,7 @@ from ui.pipeline_builder.pipeline_constants import (
     missing_deps,
     fmt,
 )
-from ui.pipeline_builder.tilt_filter_row import render_tilt_filter_controls
+from ui.pipeline_builder.tilt_filter_row import render_tilt_filter_controls, render_tilt_filter_status
 
 if TYPE_CHECKING:
     from ui.pipeline_builder.pipeline_builder_panel import PipelineBuilderPanel
@@ -63,6 +63,11 @@ _SB_BADGE_STYLE = (
     "padding: 0 3px; border-radius: 7px; background: #e2e8f0; color: #475569; "
     f"{FONT} font-size: 8px; font-weight: 700; line-height: 13px; text-align: center; "
     "pointer-events: none; box-shadow: 0 0 0 1.5px #f8fafc; display: none;"
+)
+# The Jobs button's amber dot while a run waits for the tilt-filter review.
+_SB_DOT_STYLE = (
+    "position: absolute; right: 0; top: 0; width: 7px; height: 7px; border-radius: 50%; "
+    "background: #f59e0b; box-shadow: 0 0 0 1.5px #f8fafc; pointer-events: none; display: none;"
 )
 
 _JOBS_TIP = (
@@ -215,7 +220,7 @@ class RosterWidget(FingerprintedView):
         # render(). Keyed by instance_id. Avoids redundant disk reads per tick.
         self._array_progress_cache: dict[str, TaskProgress | None] = {}
         self._array_ts_cache: dict[str, tuple[list[str], dict[str, str], dict[str, str]] | None] = {}
-        # In-flight row actions (the tilt filter's Approve / Run DL / ...). Here rather than on
+        # In-flight row actions (the tilt filter's mode switch). Here rather than on
         # the row, which every repaint rebuilds.
         self._flight = SingleFlight()
 
@@ -245,7 +250,11 @@ class RosterWidget(FingerprintedView):
                 status, is_orphaned=jm.is_orphaned, parked_since=hold.held_at.strftime("%H:%M") if parked else None
             )
 
-        ui.html("", sanitize=False, tag="span").bind_content_from(job_model, "execution_status", backward=_content)
+        # Fixed 14 px box, content centered: the 8 px dot and the 14 px running spinner
+        # then share one center, so the column lines up across rows.
+        ui.html("", sanitize=False, tag="span").style(
+            "display: flex; align-items: center; justify-content: center; width: 14px; height: 14px;"
+        ).bind_content_from(job_model, "execution_status", backward=_content)
 
     # ── Roster ────────────────────────────────────────────────────────────────
 
@@ -314,7 +323,16 @@ class RosterWidget(FingerprintedView):
             # been imported. Without this input the dot only appeared on the NEXT unrelated
             # change, so a successful import looked like it had done nothing.
             self._imported_tomograms_fingerprint(),
+            # Jobs a run parked behind the tilt-filter review draw an amber ring.
+            self._review_hold_fingerprint(),
+            # Every chevron, the tilt filter's settings included (array jobs fold theirs in above too).
+            tuple(sorted(self._expanded_instances.items())),
         )
+
+    @staticmethod
+    def _review_hold_fingerprint() -> tuple:
+        hold = current_project_state().review_hold
+        return () if hold is None else (hold.barrier, tuple(hold.parked), hold.held_at)
 
     @staticmethod
     def _imported_tomograms_fingerprint() -> tuple:
@@ -482,6 +500,10 @@ class RosterWidget(FingerprintedView):
             # Species badge
             if species:
                 render_species_pill(species, compact=True)
+            # The tilt filter says where it is where an array job shows its progress.
+            is_filter = job_type == JobType.TILT_FILTER and job_model is not None
+            if is_filter and panel.ui_mgr.project_path is not None:
+                render_tilt_filter_status(panel.ui_mgr.project_path, instance_id)
             # Inline array progress (e.g., "17/18" green, or "17/18 1!" red).
             # Read from the per-tick cache populated by signature() so render and
             # signature can't disagree on what's being painted.
@@ -549,6 +571,15 @@ class RosterWidget(FingerprintedView):
                         .style("flex-shrink: 0;")
                         .tooltip("Toggle tilt-series list")
                     )
+                elif is_filter:
+                    # The same chevron opens the filter's settings; collapsed by default.
+                    chevron = "expand_more" if self._expanded_instances.get(instance_id) else "chevron_right"
+                    (
+                        ui.button(icon=chevron, on_click=lambda iid=instance_id: self._toggle_ts_expansion(iid))
+                        .props("flat dense round size=xs color=grey-7")
+                        .style("flex-shrink: 0;")
+                        .tooltip("The filter's settings")
+                    )
                 # Extra tabs other than "tasks" still render as on-row nav buttons.
                 # ("tasks" is the toggle above and stays reachable from the top bar.)
                 for et in get_extra_tabs(job_type):
@@ -596,28 +627,10 @@ class RosterWidget(FingerprintedView):
             self._render_ts_sub_rows(
                 instance_id, items, statuses, display_names, indent + 8, expanded=expanded, job_dir=job_dir
             )
-        elif (
-            job_model is not None
-            and not getattr(job_model, "IS_INTERACTIVE", False)
-            and getattr(job_model, "relion_job_name", None)
-        ):
-            # Non-array jobs that have already been deployed: surface a
-            # small "single-shot" hint so users don't think a per-TS
-            # collapsible row is missing/broken. e.g. SUBTOMO_EXTRACTION
-            # is one `relion_tomo_subtomo` invocation across all TS at
-            # once — there is no per-TS subtask to expand into.
-            with ui.element("div").style(
-                f"display: flex; align-items: center; gap: 5px; "
-                f"padding: 0 4px 0 {indent + 12}px; height: 12px; background: transparent;"
-            ):
-                ui.icon("horizontal_rule", size="9px").style("color: #cbd5e1; flex-shrink: 0;")
-                ui.label("single-shot job (no per-TS tasks)").style(
-                    f"{MONO} font-size: 8px; color: #94a3b8; font-style: italic;"
-                )
-
-        # The tilt filter's mode switch, review status and actions sit on a line under its row.
-        if job_type == JobType.TILT_FILTER and job_model is not None:
-            render_tilt_filter_controls(panel, instance_id, self._flight, indent + 12)
+        elif is_filter:
+            # Expanded, the filter's settings sit under its row; collapsed, the row alone says where it is.
+            if self._expanded_instances.get(instance_id):
+                render_tilt_filter_controls(panel, instance_id, self._flight, indent + 12)
 
     def _render_ts_sub_rows(
         self,
@@ -694,7 +707,7 @@ class RosterWidget(FingerprintedView):
                     )
 
     def _toggle_ts_expansion(self, instance_id: str) -> None:
-        """Flip the persisted expansion state for an array job's per-TS sub-rows."""
+        """Flip a row's persisted chevron state: an array job's per-TS sub-rows, the tilt filter's settings."""
         self._expanded_instances[instance_id] = not self._expanded_instances.get(instance_id, False)
         self.refresh()
 
@@ -981,7 +994,13 @@ class RosterWidget(FingerprintedView):
             ui.element("div").style("height: 4px;")
 
             self._sb_svg_btn(
-                "layers.svg", _JOBS_TIP, self._on_pipeline_icon, ref_key="pipeline_btn", active=True, badge=True
+                "layers.svg",
+                _JOBS_TIP,
+                self._on_pipeline_icon,
+                ref_key="pipeline_btn",
+                active=True,
+                badge=True,
+                dot=True,
             )
 
             if panel.toggle_workbench is not None:
@@ -1061,20 +1080,30 @@ class RosterWidget(FingerprintedView):
             # one that never appeared, and the traceback names which reader broke.
             logger.exception("Could not recount project data for the rail badges")
             return
-        self._paint_counts(tomo, ts)
+        hold = get_project_state_for(project_path).review_hold
+        waiting = None if hold is None else (len(hold.parked), hold.held_at.strftime("%H:%M"))
+        self._paint_counts(tomo, ts, waiting)
 
     def refresh_counts(self):
         """Repaint the rail badges NOW rather than at the next tick — for the moments the
         user is watching for the number to move (an import just committed)."""
         asyncio.create_task(self._tick_counts())
 
-    def _paint_counts(self, tomo, ts):
+    def _paint_counts(self, tomo, ts, waiting=None):
         """Gated on the counts it last painted: this runs on a timer, and re-sending
-        identical text every 15 s is churn the client processes for nothing."""
-        if (tomo, ts) == self._counts_paint:
+        identical text every 15 s is churn the client processes for nothing. `waiting` is
+        (parked jobs, since HH:MM) while a run waits for the tilt-filter review: the Jobs
+        button then carries an amber dot."""
+        if (tomo, ts, waiting) == self._counts_paint:
             return
-        self._counts_paint = (tomo, ts)
-        self._set_badge("pipeline_btn", ts.total, _ts_badge_tip(ts))
+        self._counts_paint = (tomo, ts, waiting)
+        tip = _ts_badge_tip(ts)
+        if waiting is not None:
+            tip += f"\nThe pipeline waits for the tilt-filter review: {waiting[0]} job(s) parked since {waiting[1]}."
+        self._set_badge("pipeline_btn", ts.total, tip)
+        dot = self._refs.get("pipeline_btn_dot")
+        if dot is not None:
+            dot.style("display: block;" if waiting is not None else "display: none;")
         self._set_badge("gallery_btn", tomo.total, _tomo_badge_tip(tomo))
 
     def _set_badge(self, ref_key: str, n: int, tooltip: str):
@@ -1872,7 +1901,9 @@ class RosterWidget(FingerprintedView):
         icon.classes(add="cb-protocol-live" if live else "", remove="" if live else "cb-protocol-live")
         tip.set_text(text)
 
-    def _sb_svg_btn(self, svg_name, tooltip, on_click, active=False, ref_key=None, color_override=None, badge=False):
+    def _sb_svg_btn(
+        self, svg_name, tooltip, on_click, active=False, ref_key=None, color_override=None, badge=False, dot=False
+    ):
         bg = SB_ABG if active else "transparent"
         color = color_override or (SB_ACT if active else SB_MUTE)
 
@@ -1896,6 +1927,7 @@ class RosterWidget(FingerprintedView):
             # default `white-space: normal` collapses the newline into a run-on sentence.
             tip = ui.tooltip(tooltip).style("white-space: pre-line;")
             badge_el = ui.label("").style(_SB_BADGE_STYLE) if badge else None
+            dot_el = ui.element("div").style(_SB_DOT_STYLE) if dot else None
         if ref_key:
             self._refs[ref_key] = container
             # The icon separately, so a re-colour can set its markup in place instead of
@@ -1904,6 +1936,8 @@ class RosterWidget(FingerprintedView):
             self._refs[f"{ref_key}_tip"] = tip
             if badge_el is not None:
                 self._refs[f"{ref_key}_badge"] = badge_el
+            if dot_el is not None:
+                self._refs[f"{ref_key}_dot"] = dot_el
         return container
 
     def _info_popup_btn(self, icon_name: str, title: str, rows: list, icon_color: str | None = None):

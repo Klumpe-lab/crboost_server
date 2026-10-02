@@ -10,16 +10,18 @@ element.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from typing import Any
 
 from nicegui import ui
 
 
 class Segmented:
     """One `.cb-seg` strip. `tabs` = ``[(key, label), ...]``; `on_switch(key)` fires on a
-    click of a non-active segment (the caller flips its content and calls `set_active`)."""
+    click of a non-active segment (the caller flips its content and calls `set_active`). It may
+    be a coroutine function: NiceGUI awaits what a click handler returns, in the click's slot."""
 
     def __init__(
-        self, tabs: Sequence[tuple[str, str]], active: str, on_switch: Callable[[str], None], classes: str = ""
+        self, tabs: Sequence[tuple[str, str]], active: str, on_switch: Callable[[str], Any], classes: str = ""
     ) -> None:
         self._on_switch = on_switch
         self._active = active
@@ -38,10 +40,10 @@ class Segmented:
                 seg.on("click", lambda _e, k=key: self._click(k))
                 self._segments[key] = seg
 
-    def _click(self, key: str) -> None:
+    def _click(self, key: str) -> Any:
         if key == self._active:
-            return
-        self._on_switch(key)
+            return None
+        return self._on_switch(key)
 
     @property
     def active(self) -> str:
@@ -68,7 +70,7 @@ class Segmented:
 
 
 def render_segmented(
-    tabs: Sequence[tuple[str, str]], active: str, on_switch: Callable[[str], None], classes: str = ""
+    tabs: Sequence[tuple[str, str]], active: str, on_switch: Callable[[str], Any], classes: str = ""
 ) -> Segmented:
     """Render a segmented control into the current slot and return its handle. `classes`
     adds modifiers to the strip, e.g. `cb-seg-sm` for a control row of 16 px fields."""

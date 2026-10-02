@@ -1310,6 +1310,28 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 .cb-tk-out::before { background: #cbd5e1; }
 .cb-tk-flag::before { left: 0; width: 4px; box-sizing: border-box; background: transparent; border: 1px solid #ef4444; }
 .cb-tk-dark::before { background: #f59e0b; }
+/* A card's metric tokens (ui/tilt_previews.py): every card carries every token, and the
+ * gallery's chooser shows the chosen ones by a class on its root, so a toggle re-renders
+ * nothing. Red: an outlier among the project's tilts at the same |tilt|, or P(bad) at or above
+ * the threshold. */
+.cb-tm { display: none; }
+.cb-tg-m-num .cb-tm-num, .cb-tg-m-pbad .cb-tm-pbad, .cb-tg-m-exp .cb-tm-exp, .cb-tg-m-ctf .cb-tm-ctf,
+.cb-tg-m-mot .cb-tm-mot, .cb-tg-m-ddf .cb-tm-ddf, .cb-tg-m-ast .cb-tm-ast, .cb-tg-m-dose .cb-tm-dose,
+.cb-tg-m-shift .cb-tm-shift { display: inline; }
+.cb-tm-pbad { color: #94a3b8; }
+.cb-tm-hot, .cb-tm-out { color: #be4343; font-weight: 600; }
+.cb-tp-card .cb-tp-cap { cursor: help; }
+/* The label flag (review mode), in the image's top-right corner: drawn on hover for an
+ * untouched tilt, always for a labelled one; red = your bad, slate = your good. */
+.cb-tp-flag {
+    position: absolute; top: 3px; right: 3px; z-index: 2; width: 14px; height: 14px;
+    box-sizing: border-box; border-radius: 3px; border: 1.5px solid rgba(255,255,255,0.9);
+    background: rgba(15,23,42,0.35); cursor: pointer; display: none;
+}
+.cb-tp-card:hover .cb-tp-flag, .cb-tp-flag.bad, .cb-tp-flag.good { display: block; }
+.cb-tp-flag.bad { background: #ef4444; }
+.cb-tp-flag.good { background: #475569; }
+.cb-tp-flag:hover { box-shadow: 0 0 0 2px #93c5fd; }
 /* Zoom: one tile at viewport scale. Sized here (not maximized) so the tomogram keeps
  * its aspect and the wall behind stays visible as context. */
 .cb-gal-zoom {

@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 """
-SLURM driver for one DL prediction run of the tilt filter.
+SLURM driver of the tilt filter's DL model, in two roles.
 
-Runs on a GPU node in the run's own directory (TiltFilter/dl_run/NNN). Classifies every
-tilt listed in the fs-motion star and writes P(bad) per tilt into the TiltSeries registry.
-It writes no verdict (Frame.is_filtered_out) and does not save project_params.json: the
-server settles the run from this directory's exit markers.
+A prediction run (no flag): a one-off job in its own directory (TiltFilter/dl_run/NNN) that
+classifies every tilt listed in the fs-motion star and writes P(bad) per tilt into the
+TiltSeries registry. It writes no verdict (Frame.is_filtered_out).
+
+The DL-auto chain job (--commit): the same prediction in the job's External/jobNNN, with the
+job's model, then the verdict: every tilt's effective label at the job's threshold is stamped
+into the registry and the counts go to commit.json beside the log. A model that gives every
+tilt the same P(bad) fails the job and commits nothing.
+
+Neither role saves project_params.json: the server settles both from the exit markers.
 """
 
+import argparse
+import asyncio
 import os
 import sys
 import traceback
@@ -15,7 +23,17 @@ from pathlib import Path
 
 try:
     from drivers.driver_base import get_driver_context
-    from services.jobs.tilt_filter import LIVENESS_MIN_STD, TiltFilterParams, prediction_liveness, resolve_model
+    from services.jobs.tilt_filter import (
+        COMMIT_RECORD,
+        LIVENESS_MIN_STD,
+        FilterMode,
+        TiltFilterCommit,
+        TiltFilterParams,
+        prediction_liveness,
+        resolve_model,
+        stamp_verdict,
+        verdict_labels,
+    )
 except ImportError as e:
     print("FATAL: Could not import services. Check PYTHONPATH.", file=sys.stderr)
     print(f"Error: {e}", file=sys.stderr)
@@ -37,16 +55,16 @@ def _is_model_input(png: Path, size: int) -> bool:
         return False
 
 
-def predict(state, job_model: TiltFilterParams, job_dir: Path, project_path: Path) -> None:
+def predict(state, job_model: TiltFilterParams, job_dir: Path, project_path: Path, model: str | None):
+    """Predict P(bad) for every tilt of the fs-motion star with `model` (None: the default) and
+    save it into the registry. Returns the model's key and the predictions' liveness
+    (prediction_liveness)."""
     from filterTilts.deepLearning.model_loader import GALLERY_PNG_SIZE, ModelLoader
     from filterTilts.image_processor import ImageProcessor
     from services.tilt_series import get_registry_for
     from services.tilt_series_service import get_tilt_image_paths, load_tilt_series
 
-    run = job_model.predict_run
-    if run is None:
-        raise RuntimeError("project_params.json records no prediction run for this job")
-    model_key, entry = resolve_model(run.model)
+    model_key, entry = resolve_model(model)
     workers = len(os.sched_getaffinity(0))
 
     # The model first, so a missing weights file or GPU fails the run before any conversion.
@@ -137,11 +155,40 @@ def predict(state, job_model: TiltFilterParams, job_dir: Path, project_path: Pat
             f"{LIVENESS_MIN_STD:g} in every tilt series); its verdicts are meaningless",
             flush=True,
         )
+    return model_key, liveness
+
+
+def commit(job_model: TiltFilterParams, job_dir: Path, project_path: Path, model_key: str) -> None:
+    """Stamp the verdict the predictions just written give at the job's threshold (a human's
+    label still wins), and record its counts in COMMIT_RECORD for the server."""
+    from services.tilt_series import get_registry_for
+
+    registry = get_registry_for(project_path)
+    res = asyncio.run(stamp_verdict(registry, verdict_labels(registry, job_model)))
+    if not res["success"]:
+        raise RuntimeError(res["error"])
+    record = TiltFilterCommit(
+        mode=FilterMode.DL_AUTO,
+        kept=res["kept"],
+        dropped=res["dropped"],
+        model=model_key,
+        threshold=job_model.threshold,
+    )
+    (job_dir / COMMIT_RECORD).write_text(record.model_dump_json(indent=2))
+    print(
+        f"[DRIVER] Verdict committed at P(bad) >= {job_model.threshold:.2f}: {record.kept} tilts kept, "
+        f"{record.dropped} dropped",
+        flush=True,
+    )
 
 
 def main():
     print("Python", sys.version, flush=True)
     print("--- SLURM JOB START (tilt_filter) ---", flush=True)
+
+    parser = argparse.ArgumentParser(allow_abbrev=False)
+    parser.add_argument("--commit", action="store_true", help="DL auto: commit the verdict after predicting")
+    args, _ = parser.parse_known_args()
 
     try:
         state, job_model, _context_data, job_dir, project_path, _job_type = get_driver_context(TiltFilterParams)
@@ -153,7 +200,19 @@ def main():
     print(f"CWD: {job_dir}", flush=True)
 
     try:
-        predict(state, job_model, job_dir, project_path)
+        if args.commit:
+            model_key, liveness = predict(state, job_model, job_dir, project_path, job_model.model)
+            if liveness is not None and not liveness[0]:
+                raise RuntimeError(
+                    f"The model gives every tilt the same P(bad), {liveness[1]:.3f}: its verdicts are meaningless. "
+                    "No verdict was committed."
+                )
+            commit(job_model, job_dir, project_path, model_key)
+        else:
+            run = job_model.predict_run
+            if run is None:
+                raise RuntimeError("project_params.json records no prediction run for this job")
+            predict(state, job_model, job_dir, project_path, run.model)
     except Exception as e:
         print(f"[DRIVER] FATAL: {e}", file=sys.stderr, flush=True)
         traceback.print_exc(file=sys.stderr)

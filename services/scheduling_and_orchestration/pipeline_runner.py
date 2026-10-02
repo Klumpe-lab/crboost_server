@@ -8,6 +8,7 @@ from typing import Any
 from typing import TYPE_CHECKING
 
 from services.array_tasks import any_task_started, manifest_array_job_id, mark_stopped_tasks_failed
+from services.jobs.tilt_filter import COMMIT_RECORD, TiltFilterCommit
 from services.models_base import InstanceId, JobType
 from services.project_state import JobStatus
 from services.event_log import events
@@ -442,10 +443,12 @@ class PipelineRunnerService:
                 continue
             if (job_dir / "RELION_JOB_EXIT_SUCCESS").exists():
                 if jm.execution_status != JobStatus.SUCCEEDED:
+                    await self._land_tilt_filter_job(proj, jm, JobStatus.SUCCEEDED)
                     jm.execution_status = JobStatus.SUCCEEDED
                     changes[iid] = True
             elif (job_dir / "RELION_JOB_EXIT_FAILURE").exists():
                 if jm.execution_status != JobStatus.FAILED:
+                    await self._land_tilt_filter_job(proj, jm, JobStatus.FAILED)
                     jm.execution_status = JobStatus.FAILED
                     changes[iid] = True
             else:
@@ -495,6 +498,7 @@ class PipelineRunnerService:
                             new = JobStatus.FAILED if expired else jm.execution_status
                         if new != JobStatus.UNKNOWN and jm.execution_status != new:
                             events.info("%s: %s -> %s", iid, jm.execution_status.value, new.value)
+                            await self._land_tilt_filter_job(proj, jm, new)
                             jm.execution_status = new
                             changes[iid] = True
         # Drop grace timers for ids no longer pending this tick (resolved / left tracked / none pending).
@@ -548,6 +552,31 @@ class PipelineRunnerService:
                 break
 
         return {k: v for k, v in changes.items() if not k.startswith("__")}
+
+    async def _land_tilt_filter_job(self, proj: Path, jm, new: JobStatus) -> None:
+        """A DL-auto tilt filter's job ends, and its status is about to say so. Succeeded: the
+        job replaced the registry files (predictions and verdict) and wrote its counts into
+        COMMIT_RECORD; both reach the server first, since the job row, its page and the Tilts tab
+        re-read on the status, and get_registry_for can miss the job's write for up to a minute
+        (see reload_registry). Failed: its driver's FATAL line, for the row's tooltip."""
+        if jm.job_type != JobType.TILT_FILTER or new not in (JobStatus.SUCCEEDED, JobStatus.FAILED):
+            return
+        job_dir = self._resolve_afterok_job_dir(jm, proj)
+        if new == JobStatus.FAILED:
+            jm.auto_error = (
+                await asyncio.to_thread(_driver_fatal_line, job_dir) if job_dir else "failed; no job directory recorded"
+            )
+            return
+        await reload_registry(proj)
+        jm.auto_error = ""
+        record = job_dir / COMMIT_RECORD if job_dir else None
+        try:
+            text = await asyncio.to_thread(record.read_text) if record else None
+            jm.last_commit = TiltFilterCommit.model_validate_json(text) if text else None
+        except (OSError, ValueError):
+            # The verdict is in the registry either way; the row then reads done without counts.
+            logger.exception("DL-auto tilt filter: unreadable %s", record)
+            jm.last_commit = None
 
     async def reconcile_tilt_filter_predict(self, project_path: str) -> bool:
         """Settle the tilt filter's in-flight DL prediction run (`TiltFilterParams.predict_run`).

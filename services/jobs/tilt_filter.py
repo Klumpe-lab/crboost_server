@@ -19,22 +19,32 @@ logger = logging.getLogger(__name__)
 
 
 class FilterMode(StrEnum):
-    """How the tilt filter reaches its verdict. Both modes wait for a human's Approve."""
+    """How the tilt filter reaches its verdict. Manual and DL review wait for a human's Approve;
+    DL auto runs the model as a chain job that commits its own verdict."""
 
     MANUAL = "manual"  # hand labels only; predictions are ignored
     DL_REVIEW = "dl_review"  # DL predictions, run on request, stand in for the labels nobody set
+    DL_AUTO = "dl_auto"  # a chain job predicts after fsMotion and commits; alignment follows it
+
+
+# The modes in which a prediction stands in for a tilt nobody labelled.
+DL_MODES = (FilterMode.DL_REVIEW, FilterMode.DL_AUTO)
+
+# What a DL-auto job committed, written into its job dir for the server to read.
+COMMIT_RECORD = "commit.json"
 
 
 class TiltFilterCommit(BaseModel):
-    """What the last Approve committed, for the job row's "Approved · D of T dropped". A record
-    only: the committed flag is execution_status SUCCEEDED, which the dashboard reads too."""
+    """What the last commit stamped, for the job row's "D of T dropped". A record only: the
+    committed flag is execution_status SUCCEEDED, which the dashboard reads too. Approve writes
+    it, and a DL-auto job writes it as COMMIT_RECORD for the reconciler to load."""
 
     at: datetime = Field(default_factory=datetime.now)
     mode: FilterMode
     kept: int
     dropped: int
-    model: str | None = None  # the model behind the predictions (DL review, when its last run succeeded)
-    threshold: float | None = None  # DL review only
+    model: str | None = None  # the model behind the predictions (DL modes, when its run succeeded)
+    threshold: float | None = None  # DL modes only
 
 
 class TiltFilterPredictRun(BaseModel):
@@ -81,7 +91,6 @@ class TiltFilterParams(AbstractJobParams):
 
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
-    IS_INTERACTIVE: ClassVar[bool] = True
 
     # Empty on purpose: USER_PARAMS freezes a field once the job leaves SCHEDULED/FAILED, and
     # this job's SUCCEEDED only means a verdict is committed. `model`, `threshold` and
@@ -130,10 +139,25 @@ class TiltFilterParams(AbstractJobParams):
     tilt_labels: dict[str, str] = Field(default_factory=dict, description="Manual good/bad label overrides by tilt key")
     predict_run: TiltFilterPredictRun | None = None
     last_commit: TiltFilterCommit | None = None
+    # Why the last DL-auto job failed: its driver's FATAL line, recorded when the reconciler settles it.
+    auto_error: str = ""
+
+    @property
+    def IS_INTERACTIVE(self) -> bool:
+        """The base class's flag, per instance. A review mode keeps the filter out of the chain:
+        deploy skips it, Stop and the pipeline_active vote ignore it, and Approve commits. In DL
+        auto it is a chain job like any other. Read on the class (the builder's singleton check),
+        this is the property object, which is truthy: one tilt filter per project in every mode."""
+        return self.mode != FilterMode.DL_AUTO
 
     @property
     def predict_in_flight(self) -> bool:
         return self.predict_run is not None and self.predict_run.status in (JobStatus.QUEUED, JobStatus.RUNNING)
+
+    @property
+    def auto_in_flight(self) -> bool:
+        """The DL-auto chain job is queued or running. Only that job gives the filter these statuses."""
+        return self.execution_status in (JobStatus.QUEUED, JobStatus.RUNNING)
 
     def _get_job_specific_options(self) -> list[tuple[str, str]]:
         input_star = self.paths.get("input_star", "")
@@ -246,35 +270,28 @@ async def stamp_verdict(registry, labels: Mapping[str, str]) -> dict:
 # ── the review: labels, Approve, Re-open (shared by the gallery and the job row) ──
 
 
-def predictions_for(project_path: Path, keys: Iterable[str]) -> dict[str, float]:
-    """P(bad) per tilt key from the latest prediction run, as the registry holds it. Tilts
-    without a prediction, or unknown to the registry, are absent."""
-    from services.tilt_series import get_registry_for
-
-    registry = get_registry_for(Path(project_path))
-    p_bad: dict[str, float] = {}
-    for key in keys:
-        try:
-            p = registry.get_frame(key).p_bad
-        except KeyError:  # a tilt the registry does not know has no prediction to show
-            continue
-        if p is not None:
-            p_bad[key] = p
-    return p_bad
-
-
 def effective_label(
     key: str, p_bad: float | None, labels: Mapping[str, str], threshold: float, mode: FilterMode
 ) -> str:
-    """A tilt's label as Approve commits it: a human's label wins; in DL review, the prediction
-    at the threshold; otherwise good. `p_bad` is None or NaN for a tilt without a prediction
-    (NaN compares false)."""
+    """A tilt's label as a commit stamps it: a human's label wins; in the DL modes, the
+    prediction at the threshold; otherwise good. `p_bad` is None or NaN for a tilt without a
+    prediction (NaN compares false)."""
     human = labels.get(key)
     if human:
         return human
-    if mode == FilterMode.DL_REVIEW and p_bad is not None and p_bad >= threshold:
+    if mode in DL_MODES and p_bad is not None and p_bad >= threshold:
         return "bad"
     return "good"
+
+
+def verdict_labels(registry, job_model: TiltFilterParams) -> dict[str, str]:
+    """Every registry frame's effective label, as a commit stamps it, plus the human labels of
+    tilts the registry lacks, which stamp_verdict then refuses by name."""
+    labels = dict(job_model.tilt_labels)
+    for ts in registry.all_tilt_series():
+        for f in ts.frames:
+            labels[f.id] = effective_label(f.id, f.p_bad, job_model.tilt_labels, job_model.threshold, job_model.mode)
+    return labels
 
 
 def _alignment_with_status(state, statuses: Iterable[JobStatus]) -> tuple[str, JobStatus] | None:
@@ -311,6 +328,8 @@ async def commit_verdict(state, project_path: Path, instance_id: str) -> dict:
     job_model = state.jobs.get(instance_id)
     if job_model is None:
         return err(f"Job '{instance_id}' not found.")
+    if job_model.mode == FilterMode.DL_AUTO:
+        return err("In DL auto the filter's own job commits the verdict; switch to DL review to approve by hand.")
     if not any(
         jm.job_type == JobType.FS_MOTION_CTF and jm.execution_status == JobStatus.SUCCEEDED
         for jm in state.jobs.values()
@@ -327,12 +346,7 @@ async def commit_verdict(state, project_path: Path, instance_id: str) -> dict:
         logger.exception("tilt-filter commit: registry unavailable")
         return err("Cannot commit: the TiltSeries registry could not be loaded. Reload the project and retry.")
 
-    # A human label for a tilt the registry lacks stays in, so stamp_verdict refuses it by name.
-    labels = dict(job_model.tilt_labels)
-    for ts in registry.all_tilt_series():
-        for f in ts.frames:
-            labels[f.id] = effective_label(f.id, f.p_bad, job_model.tilt_labels, job_model.threshold, job_model.mode)
-    res = await stamp_verdict(registry, labels)
+    res = await stamp_verdict(registry, verdict_labels(registry, job_model))
     if not res["success"]:
         return res
 
@@ -340,7 +354,7 @@ async def commit_verdict(state, project_path: Path, instance_id: str) -> dict:
     for dead in ("output_tomostar", "output_star", "output_processing"):
         job_model.paths.pop(dead, None)
 
-    dl = job_model.mode == FilterMode.DL_REVIEW
+    dl = job_model.mode in DL_MODES
     run = job_model.predict_run
     job_model.execution_status = JobStatus.SUCCEEDED
     job_model.last_commit = TiltFilterCommit(
@@ -354,29 +368,65 @@ async def commit_verdict(state, project_path: Path, instance_id: str) -> dict:
     return res
 
 
+def reopen_lock(state) -> str | None:
+    """Why a committed verdict can no longer be re-opened, or None: alignment is queued (it will
+    not wait for a review), running or has run (it has taken the verdict)."""
+    locked = _alignment_with_status(state, (JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.SUCCEEDED))
+    return _verdict_locked_reason(*locked) if locked else None
+
+
 def reopen_review(state, instance_id: str) -> dict:
-    """Undo an Approve: the filter reads unapproved again, so the next Run waits for a review.
-    The registry keeps the committed verdict until the next Approve re-stamps it. Refused once
-    alignment is queued, running or has run: the review could no longer hold it back."""
+    """Undo a commit: the filter reads uncommitted again, so the next Run waits for a review (or,
+    in DL auto, runs the filter's job again). The registry keeps the committed verdict until the
+    next commit re-stamps it. Refused once alignment is queued, running or has run: the review
+    could no longer hold it back."""
     job_model = state.jobs.get(instance_id)
     if job_model is None:
         return err(f"Job '{instance_id}' not found.")
     if job_model.execution_status != JobStatus.SUCCEEDED:
         return err("The tilt filter is not approved.")
-    locked = _alignment_with_status(state, (JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.SUCCEEDED))
-    if locked:
-        return err(_verdict_locked_reason(*locked))
+    lock = reopen_lock(state)
+    if lock:
+        return err(lock)
     job_model.execution_status = JobStatus.SCHEDULED
+    # A DL-auto job's SLURM id goes too: the reconciler tracks a non-terminal job with one, and
+    # would read its old exit marker back into SUCCEEDED.
+    job_model.slurm_job_id = None
     job_model.last_commit = None
     state.mark_dirty()
     return ok()
 
 
 def review_barrier(state, run_ids: Iterable[str]) -> str | None:
-    """The tilt filter a run has to wait for: one in `run_ids` whose verdict is not committed.
-    None when the run holds no tilt filter or its filter is approved."""
+    """The tilt filter a run has to wait for: one in `run_ids` whose verdict is not committed
+    and that waits for a human (Manual or DL review). None when the run holds no such filter."""
     for iid in run_ids:
         jm = state.jobs.get(iid)
-        if jm is not None and jm.job_type == JobType.TILT_FILTER and jm.execution_status != JobStatus.SUCCEEDED:
+        if (
+            jm is not None
+            and jm.job_type == JobType.TILT_FILTER
+            and jm.mode != FilterMode.DL_AUTO
+            and jm.execution_status != JobStatus.SUCCEEDED
+        ):
             return iid
     return None
+
+
+def dl_auto_filters(state, run_ids: Iterable[str]) -> list[str]:
+    """The DL-auto tilt filters among `run_ids`."""
+    return [
+        iid
+        for iid in run_ids
+        if (jm := state.jobs.get(iid)) is not None
+        and jm.job_type == JobType.TILT_FILTER
+        and jm.mode == FilterMode.DL_AUTO
+    ]
+
+
+def verdict_edges(state, run_ids: Iterable[str]) -> list[tuple[str, str]]:
+    """(filter, alignment) for each DL-auto tilt filter and alignment job among `run_ids`. The
+    filter commits its verdict into the registry, which alignment reads; no output slot joins
+    them, so the chain needs this edge to start alignment after the filter."""
+    ids = list(run_ids)
+    alignments = [i for i in ids if (jm := state.jobs.get(i)) is not None and jm.job_type == JobType.TS_ALIGNMENT]
+    return [(f, a) for f in dl_auto_filters(state, ids) for a in alignments]
