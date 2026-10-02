@@ -475,21 +475,6 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         if overview is not None:
             await overview.refresh()
 
-    async def _delete_project_on_disk(project_dir: Path, _name: str):
-        """Just the rmtree side of the delete -- ProjectsOverview owns the
-        confirmation dialog, the grey-out, and the post-delete refresh."""
-        import shutil
-        from services.project_state import remove_project_state
-
-        await asyncio.to_thread(shutil.rmtree, project_dir)
-        remove_project_state(project_dir)
-
-    async def _transfer_project_owner(project_dir: Path, new_owner):
-        """Just the metadata side of an ownership transfer -- ProjectsOverview
-        owns the dialog and the post-transfer refresh (mirrors
-        _delete_project_on_disk). No disk move; only `owner` changes."""
-        await backend.transfer_project_ownership(project_dir, new_owner)
-
     # =========================================================================
     # FILE PICKERS
     # =========================================================================
@@ -1497,8 +1482,6 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             overview = ProjectsOverview(
                 backend,
                 on_open=_open_from_overview,
-                on_delete=_delete_project_on_disk,
-                on_transfer=_transfer_project_owner,
                 base_path_provider=lambda: ui_mgr.data_import.project_base_path or "",
                 auto_refresh_sec=15.0,
                 show_filter=True,

@@ -6,8 +6,8 @@ projects with live, disk-derived status. Used in two places:
 
 Status fields come from backend.scan_for_projects (see _scan_for_projects_sync
 + _derive_live_status in backend.py). The component owns the 15-second
-auto-refresh timer and the "Only mine" filter; both mount points get the
-same behaviour.
+auto-refresh timer, the "Only mine" filter and project deletion; both mount
+points get the same behaviour.
 """
 
 from __future__ import annotations
@@ -15,15 +15,19 @@ from __future__ import annotations
 import asyncio
 import getpass
 import logging
+import itertools
+import math
+from datetime import datetime
 from pathlib import Path
 from collections.abc import Awaitable, Callable
 
 from nicegui import ui, app
 
 from services.configs.user_prefs_service import get_prefs_service
+from services.project_disk_usage import BUCKET_OTHER, BUCKET_PARTICLES, BUCKET_PREPROCESSING, BUCKET_TRASH, DiskUsage
 from services.project_state import SHARED_OWNER
 from ui.components.buttons import house_button
-from ui.components.copyable import copy_button
+from ui.components.copyable import copy_on_click
 from ui.components.fields import house_select
 from ui.components.segmented import render_segmented
 from ui.routing import Route, route_to_path
@@ -45,7 +49,6 @@ CLR_META = "#64748b"
 CLR_RUNNING = "#3b82f6"
 CLR_FAILED = "#dc2626"
 CLR_DONE = "#0d9488"
-CLR_IDLE = "#94a3b8"
 
 CURRENT_USER = getpass.getuser()
 DEFAULT_REFRESH_SEC = 15.0
@@ -63,12 +66,49 @@ def avatar_color(key: str) -> str:
     return _AVATAR_PALETTE[hash(key) % len(_AVATAR_PALETTE)]
 
 
+# Only these three statuses get a badge; an idle project renders none.
 _STATUS_STYLES = {
-    "running": {"color": CLR_RUNNING, "bg": "#eff6ff", "border": "#bfdbfe", "label": "live"},
-    "failed": {"color": CLR_FAILED, "bg": "#fef2f2", "border": "#fecaca", "label": "failed"},
-    "done": {"color": CLR_DONE, "bg": "#ecfdf5", "border": "#a7f3d0", "label": "done"},
-    "idle": {"color": CLR_IDLE, "bg": "#f1f5f9", "border": "#e2e8f0", "label": "idle"},
+    "running": {"color": CLR_RUNNING, "label": "live"},
+    "failed": {"color": CLR_FAILED, "label": "failed"},
+    "done": {"color": CLR_DONE, "label": "done"},
 }
+
+# Disk size: quiet up to _SIZE_QUIET, warming on a log scale to full strength at
+# _SIZE_HEAVY. No red anywhere on the ramp: red is FAILED on the same row.
+_GIB = 1024**3
+_SIZE_QUIET = 50 * _GIB
+_SIZE_HEAVY = 1024 * _GIB
+_SIZE_RAMP = ((0.0, (0x94, 0xA3, 0xB8)), (0.5, (0xD9, 0x77, 0x06)), (1.0, (0xC2, 0x41, 0x0C)))
+
+_BUCKET_LABELS = (
+    (BUCKET_PREPROCESSING, "Preprocessing"),
+    (BUCKET_PARTICLES, "Particles/STA"),
+    (BUCKET_TRASH, "Trash"),
+    (BUCKET_OTHER, "Other"),
+)
+
+
+def format_bytes(n: int) -> str:
+    """du-style binary units, written GB/TB: 572 GB, 2.9 TB, 640 MB."""
+    if n >= 1024 * _GIB:
+        return f"{n / (1024 * _GIB):.1f} TB"
+    if n >= 10 * _GIB:
+        return f"{n / _GIB:.0f} GB"
+    if n >= _GIB:
+        return f"{n / _GIB:.1f} GB"
+    return f"{n / 1024**2:.0f} MB"
+
+
+def size_color(n: int) -> str:
+    if n <= _SIZE_QUIET:
+        return CLR_SUBLABEL
+    t = min(1.0, math.log(n / _SIZE_QUIET) / math.log(_SIZE_HEAVY / _SIZE_QUIET))
+    for (t0, c0), (t1, c1) in itertools.pairwise(_SIZE_RAMP):
+        if t <= t1:
+            f = (t - t0) / (t1 - t0)
+            r, g, b = (round(a + (z - a) * f) for a, z in zip(c0, c1, strict=True))
+            return f"#{r:02x}{g:02x}{b:02x}"
+    return "#{:02x}{:02x}{:02x}".format(*_SIZE_RAMP[-1][1])
 
 
 class ProjectsOverview:
@@ -80,16 +120,6 @@ class ProjectsOverview:
     on_open : async callback (path: Path) -> None
         Called when the user clicks a row's open button. The component does
         not navigate or load anything itself -- the caller decides.
-    on_delete : optional async callback (path: Path) -> None
-        If provided, a delete button is rendered on hover; the callback owns
-        the confirm-and-delete dialog. If omitted, the delete button is
-        hidden (e.g. inside the in-workspace switcher we don't want users
-        nuking projects mid-session).
-    on_transfer : optional async callback (path: Path, new_owner: Optional[str]) -> None
-        If provided, a "transfer ownership" button is rendered on hover; the
-        component owns the picker dialog and the post-transfer refresh, the
-        callback just writes the new owner (SHARED_OWNER for the lab area, or a
-        username). No disk move — purely attribution metadata.
     base_path_provider : callable () -> str
         Returns the directory to scan. Re-evaluated on every refresh so
         external base-path changes (Browse button, Recent Locations clicks)
@@ -99,8 +129,9 @@ class ProjectsOverview:
     current_path : optional str
         Project directory currently loaded by the caller. Renders that row
         with a "current" highlight, no click handler, and no delete button
-        (so the switcher keeps continuity but won't reload the project the
-        user is already in).
+        (so the switcher keeps continuity but won't reload -- or delete --
+        the project the user is already in). Every other row can be deleted
+        (hover button; the component owns the confirm dialog).
     show_filter : bool
         Whether to render the "Only mine" toggle in the header.
     height_px : int
@@ -113,8 +144,6 @@ class ProjectsOverview:
         *,
         on_open: Callable[[Path], Awaitable[None]],
         base_path_provider: Callable[[], str],
-        on_delete: Callable[[Path, str], Awaitable[None]] | None = None,
-        on_transfer: Callable[[Path, str | None], Awaitable[None]] | None = None,
         on_select: Callable[[Path], Awaitable[None]] | None = None,
         auto_refresh_sec: float = DEFAULT_REFRESH_SEC,
         current_path: str | None = None,
@@ -126,8 +155,6 @@ class ProjectsOverview:
     ):
         self.backend = backend
         self.on_open = on_open
-        self.on_delete = on_delete
-        self.on_transfer = on_transfer
         # When set, a row click *previews* the project (on_select) instead of
         # opening it, and an explicit travel arrow (on_open) is rendered per
         # row. The landing page leaves this None → click still opens directly.
@@ -182,14 +209,17 @@ class ProjectsOverview:
             .style(
                 "background: white; border-radius: 8px; "
                 f"border: 1px solid {CLR_BORDER}; "
-                "box-shadow: 0 1px 3px rgba(15,23,42,0.06);"
+                "box-shadow: 0 1px 3px rgba(15,23,42,0.06); "
+                # Never wider than the pane it sits in: a narrow landing page clips
+                # here rather than scrolling the whole roster sideways.
+                "min-width: 0; max-width: 100%; overflow: hidden;"
             )
         )
         self._outer_container = outer
         _scroll_h = self.height_css or f"{self.height_px}px"
         with outer:
             self._build_header()
-            with ui.scroll_area().classes("w-full").style(f"height: {_scroll_h}; padding: 0;"):
+            with ui.scroll_area().classes("w-full cb-scroll-noh").style(f"height: {_scroll_h}; padding: 0;"):
                 self._list_container = ui.column().classes("w-full").style("gap: 0; padding: 0;")
                 with self._list_container:
                     self._render_loading_skeleton()
@@ -252,13 +282,15 @@ class ProjectsOverview:
     # =====================================================================
 
     def _build_header(self):
-        with ui.row().classes("w-full items-center px-3 pt-2 pb-1").style("gap: 8px; flex-wrap: nowrap;"):
+        with ui.row().classes("w-full items-center px-3 pt-2 pb-1").style("gap: 4px 8px; flex-wrap: wrap;"):
             ui.label(self.title).style(
                 f"{FONT} font-size: 12px; font-weight: 600; color: {CLR_HEADING}; "
                 "letter-spacing: -0.01em; flex-shrink: 0;"
             )
+            # flex-basis 140 px, not 0: when the header is too narrow this label wraps
+            # onto its own line instead of shrinking to an invisible sliver.
             self._counts_label = ui.label("").style(
-                f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; flex: 1 1 0; min-width: 0; "
+                f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; flex: 1 1 140px; min-width: 0; "
                 "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
             )
 
@@ -275,7 +307,7 @@ class ProjectsOverview:
     def _build_sorter_bar(self):
         """Order + species filter. Sorting happens inside each owner section, so the
         Lab/Shared grouping is unaffected by it."""
-        with ui.row().classes("w-full items-center px-3 pb-2").style("gap: 8px; flex-wrap: nowrap;"):
+        with ui.row().classes("w-full items-center px-3 pb-2").style("gap: 4px 8px; flex-wrap: wrap;"):
             ui.label("ORDER").style(
                 f"{FONT} font-size: 9px; font-weight: 700; color: {CLR_SUBLABEL}; "
                 "letter-spacing: 0.06em; flex-shrink: 0;"
@@ -410,9 +442,21 @@ class ProjectsOverview:
                 counts += f" · {live_n} live"
             if failed_n:
                 counts += f" · {failed_n} failed"
+            measured = [p["disk_usage"] for p in visible if p.get("disk_usage") and not p["disk_usage"].error]
+            unmeasured_n = len(visible) - len(measured)
+            if measured:
+                total = format_bytes(sum(u.total_bytes for u in measured))
+                counts += f" · {'≥ ' if unmeasured_n else ''}{total}"
             if base_short:
                 counts += f"  in  {base_short}/"
             self._counts_label.set_text(counts)
+            # A native title, not .tooltip(): that would add a new tooltip element on every refresh.
+            if measured and unmeasured_n:
+                s = "s" if unmeasured_n != 1 else ""
+                note = f"{unmeasured_n} project{s} not measured yet: the size is a lower bound"
+                self._counts_label.props(f'title="{note}"')
+            else:
+                self._counts_label.props(remove="title")
 
         if self._mine_label is not None:
             mine_count = sum(1 for p in all_projects if eff(p) == CURRENT_USER)
@@ -495,32 +539,17 @@ class ProjectsOverview:
     # ROW
     # =====================================================================
 
-    # Fixed column widths (px). Every row uses the same template so items land at
-    # identical x-offsets regardless of name/path length -- the name (line 1), the
-    # project path (line 1) and the source path (line 2) are the only flexible cells
-    # and absorb all slack, so nothing else ever shifts.
-    _W_AVATAR = 18
-    _W_PILL = 46
+    # Fixed widths (px) for the cells that must line up from row to row. The name and
+    # the two paths are the flexible cells and absorb all slack.
     _W_CHEVRON = 30
-    _W_TS = 44
-    _W_JOBS = 40
-    _W_RUNFAIL = 40
+    _W_DELETE = 20
 
     def _render_row(self, proj: dict):
         path_str = proj["path"]
         name = proj["name"]
-        proj_color = avatar_color(name)
-        initials = name[:3].upper()
         ts_count = proj.get("ts_count") or 0
-        total_planned = proj.get("total_jobs_planned") or 0
-        succeeded = proj.get("succeeded") or 0
-        failed = proj.get("failed") or 0
-        running_live = proj.get("running_live") or 0
-        executed = proj.get("executed_jobs") or 0
-        live_status = proj.get("live_status") or "idle"
         last_activity = proj.get("last_activity") or proj.get("modified") or ""
         source_dir = proj.get("source_directory") or ""
-        species = proj.get("species") or []
         # The generated mnemonic ("icy-majestic-darwin") gets no column: it would compete
         # with the project's real name for the eye. It is one hover away on the name.
         mnemonic = proj.get("mnemonic") or ""
@@ -561,9 +590,8 @@ class ProjectsOverview:
         # The row is a two-column flex: the text stack, and a full-height chevron.
         # `overflow: hidden` is load-bearing, not cosmetic: this widget lives inside a
         # QScrollArea, which scrolls both ways — a row wider than the pane would grow a
-        # horizontal scrollbar and take the status pill and the travel affordance off
-        # screen at 100 % zoom. Clipping means the roster degrades by dropping meta from
-        # the right of line 2 instead of hiding its own controls.
+        # horizontal pan and take the status and the travel affordance off screen.
+        # Clipping means the roster degrades by ellipsising paths instead.
         base_style = (
             "display: flex; flex-direction: row; align-items: stretch; gap: 0; "
             f"overflow: hidden; border-bottom: 1px solid {CLR_BORDER};"
@@ -587,22 +615,13 @@ class ProjectsOverview:
         fixed = "flex-shrink: 0; white-space: nowrap;"
         with row as row_el:
             with ui.element("div").style(
-                "flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 5px 4px 6px 10px;"
+                "flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 3px; "
+                "padding: 9px 8px 10px 14px;"
             ):
-                # ---- Line 1: avatar + NAME + full path (copyable) | status ----
+                # ---- Line 1: NAME | status ----
                 with ui.element("div").style(
-                    "display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; min-width: 0;"
+                    "display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; min-width: 0;"
                 ):
-                    with ui.element("div").style(
-                        f"width: {self._W_AVATAR}px; height: {self._W_AVATAR}px; border-radius: 50%; "
-                        f"flex-shrink: 0; background: {proj_color}1a; border: 1px solid {proj_color}55; "
-                        "display: flex; align-items: center; justify-content: center;"
-                    ):
-                        ui.label(initials).style(
-                            f"font-size: 6px; font-weight: 600; color: {proj_color}; "
-                            "letter-spacing: 0.03em; line-height: 1; pointer-events: none;"
-                        )
-
                     # The name is the one thing in this widget with weight. Everything
                     # else on the row is 8-9 px meta, so 12/600 reads as the title
                     # without needing a rule or a background to say so.
@@ -620,95 +639,49 @@ class ProjectsOverview:
                             "border-radius: 3px; padding: 0 4px; flex-shrink: 0; "
                             "letter-spacing: 0.05em;"
                         )
-
-                    # The project's own absolute path, on the title line. Truncates at the
-                    # tail: the leaf directory is the project name already bolded to its
-                    # left, so what this cell is really carrying is which base it lives
-                    # under. (No `direction: rtl` head-truncation trick — bidi moves the
-                    # leading "/" to the far end and the path reads wrong.) Full path in
-                    # the hover and one click away on the copy icon.
-                    ui.label(path_str).style(
-                        f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; flex: 1 1 0; min-width: 0; "
-                        "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                    ).tooltip(path_str)
-                    with ui.element("div").style("display: flex; flex-shrink: 0;").on("click.stop", lambda _e: None):
-                        copy_button(path_str, tooltip=f"Copy project path\n{path_str}", color=CLR_GHOST)
-
-                    with ui.element("div").style(f"width: {self._W_PILL}px; {fixed} display: flex;"):
-                        self._render_status_pill(live_status)
-
-                # ---- Line 2: TS count · date · jobs · progress | species | actions ----
-                with ui.element("div").style(
-                    f"display: flex; align-items: center; gap: 7px; flex-wrap: nowrap; "
-                    f"min-width: 0; padding-left: {self._W_AVATAR + 6}px;"
-                ):
-                    ui.label(f"{ts_count} TS" if ts_count else "— TS").style(
-                        f"{MONO} font-size: 9px; color: {CLR_LABEL if ts_count else CLR_GHOST}; "
-                        f"width: {self._W_TS}px; {fixed}"
-                    )
-                    # The date is the first thing allowed to go when the pane is narrow:
-                    # it shrinks and ellipsises rather than pushing the columns after it
-                    # (and the chevron) out of the row.
-                    ui.label(last_activity).style(
-                        f"{MONO} font-size: 9px; color: {CLR_GHOST}; min-width: 0; flex: 0 1 auto; "
-                        "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                    )
-                    ui.label(f"{succeeded}/{total_planned}" if total_planned else "—").style(
-                        f"{MONO} font-size: 9px; color: {CLR_LABEL if total_planned else CLR_GHOST}; "
-                        f"width: {self._W_JOBS}px; text-align: right; {fixed}"
-                    )
-                    self._render_progress_bar(succeeded, failed, running_live, executed, total_planned)
-
-                    with ui.element("div").style(f"width: {self._W_RUNFAIL}px; {fixed} display: flex;"):
-                        if running_live:
-                            ui.label(f"{running_live} run").style(
-                                f"{FONT} font-size: 8px; font-weight: 600; color: {CLR_RUNNING};"
-                            )
-                        elif failed:
-                            ui.label(f"{failed} fail").style(
-                                f"{FONT} font-size: 8px; font-weight: 600; color: {CLR_FAILED};"
-                            )
-
-                    self._render_species_dots(species)
-
-                    # Absorbs the slack so the hover actions sit on the right edge and
-                    # the meta above never stretches.
                     ui.element("div").style("flex: 1 1 0; min-width: 0;")
+                    self._render_status(proj)
 
-                    if source_dir:
-                        ui.icon("folder_open", size="10px").style(f"color: {CLR_GHOST}; flex-shrink: 0;").tooltip(
-                            f"Raw data\n{source_dir}"
-                        )
+                # ---- Lines 2-3: where the project lives, where its data came from ----
+                self._render_path_line(path_str, color=CLR_LABEL, what="Project directory")
+                if source_dir:
+                    self._render_path_line(source_dir, color=CLR_SUBLABEL, what="Raw data the project was created from")
+                else:
+                    ui.label("no raw-data path recorded").style(
+                        f"{MONO} font-size: 9px; color: {CLR_GHOST}; font-style: italic;"
+                    )
 
-                    if self.on_transfer is not None and not is_current:
+                # ---- Line 4: delete | TS · last activity · size ----
+                # Wraps rather than overflows on a narrow pane.
+                with ui.element("div").style(
+                    "display: flex; align-items: center; flex-wrap: wrap; column-gap: 18px; row-gap: 2px; "
+                    "min-width: 0; margin-top: 2px;"
+                ):
+                    # Always the same slot, empty on the open project's row, so the meta
+                    # after it lines up from row to row.
+                    with ui.element("div").style(f"width: {self._W_DELETE}px; {fixed} display: flex;"):
+                        if not is_current:
 
-                        async def _xfer(p=path_str, n=name):
-                            await self._handle_transfer(Path(p), n)
+                            async def _del(p=path_str, n=name, r=row_el):
+                                await self._handle_delete(Path(p), n, r)
 
-                        (
-                            ui.button(icon="swap_horiz", on_click=_xfer)
-                            .props("flat dense round size=xs")
-                            .classes(
-                                "text-slate-200 hover:text-blue-500 opacity-0 "
-                                "group-hover:opacity-100 transition-opacity"
+                            (
+                                ui.button(icon="delete_outline", on_click=_del)
+                                .props("flat dense round size=xs")
+                                .classes(
+                                    "text-slate-300 hover:text-red-400 opacity-0 "
+                                    "group-hover:opacity-100 transition-opacity"
+                                )
+                                .on("click.stop", lambda: None)
+                                .tooltip("Delete project")
                             )
-                            .on("click.stop", lambda: None)
-                            .tooltip("Transfer ownership")
-                        )
-
-                    if self.on_delete is not None and not is_current:
-
-                        async def _del(p=path_str, n=name, r=row_el):
-                            await self._handle_delete(Path(p), n, r)
-
-                        (
-                            ui.button(icon="delete_outline", on_click=_del)
-                            .props("flat dense round size=xs")
-                            .classes(
-                                "text-slate-200 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
-                            )
-                            .on("click.stop", lambda: None)
-                        )
+                    ui.label(f"{ts_count} TS" if ts_count else "— TS").style(
+                        f"{MONO} font-size: 9px; color: {CLR_LABEL if ts_count else CLR_GHOST}; {fixed}"
+                    )
+                    ui.label(last_activity).style(f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; {fixed}").tooltip(
+                        "Last activity"
+                    )
+                    self._render_size(proj)
 
             # ---- Travel chevron: full row height, its own hit area ----
             # A full-height column on the right edge, so "go there" is the easiest
@@ -752,93 +725,112 @@ class ProjectsOverview:
         p = Path(path_str)
         return route_to_path(Route(project=p.name, base=str(p.parent)))
 
-    def _render_species_dots(self, species: list[dict]):
-        """The species this project's registry holds -- the same colour token the
-        Species page and the roster chips use. Three at most; the rest is a count, and
-        the full list is in the hover. Absent species render nothing (a project with no
-        particles is the common case, not a gap to flag)."""
-        if not species:
+    @staticmethod
+    def _render_path_line(path: str, *, color: str, what: str):
+        """One absolute path on its own line: tail-truncated, full text in the hover, and
+        the text itself copies on click (no icon)."""
+        label = ui.label(path).style(
+            f"{MONO} font-size: 9px; color: {color}; min-width: 0; max-width: 100%; align-self: flex-start; "
+            "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+        )
+        label.tooltip(f"{what}\n{path}\nClick to copy")
+        copy_on_click(label, path)
+
+    @staticmethod
+    def _render_status(proj: dict):
+        """done / failed / live; an idle project gets no badge. The live dot ripples
+        (`.cb-live-pulse`, ui/dashboard/css.py). The job counts live in the hover."""
+        status = proj.get("live_status") or "idle"
+        s = _STATUS_STYLES.get(status)
+        if s is None:
             return
-        names = ", ".join(s.get("name") or s["id"] for s in species)
+        counts = [f"{proj.get('succeeded') or 0}/{proj.get('total_jobs_planned') or 0} jobs succeeded"]
+        if proj.get("running_live"):
+            counts.append(f"{proj['running_live']} running")
+        if proj.get("failed"):
+            counts.append(f"{proj['failed']} failed")
         with (
             ui.element("div")
-            .style("display: flex; align-items: center; gap: 2px; flex-shrink: 0;")
-            .tooltip(f"Species: {names}")
+            .style("display: flex; align-items: center; gap: 4px; flex-shrink: 0;")
+            .tooltip(" · ".join(counts))
         ):
-            for sp in species[:3]:
-                ui.element("div").style(
-                    f"width: 6px; height: 6px; border-radius: 50%; background: {sp.get('color') or CLR_RUNNING};"
-                )
-            if len(species) > 3:
-                ui.label(f"+{len(species) - 3}").style(f"{MONO} font-size: 8px; color: {CLR_SUBLABEL};")
-
-    def _render_status_pill(self, status: str):
-        s = _STATUS_STYLES.get(status, _STATUS_STYLES["idle"])
-        # Compact dot+label so the pill stays under ~46 px wide and doesn't
-        # bleed past the idx column.
-        with ui.element("div").style("display: flex; align-items: center; gap: 3px; flex-shrink: 0;"):
-            ui.element("div").style(
-                f"width: 5px; height: 5px; border-radius: 50%; background: {s['color']}; flex-shrink: 0;"
+            dot = ui.element("div").style(
+                f"width: 6px; height: 6px; border-radius: 50%; background: {s['color']}; flex-shrink: 0;"
             )
+            if status == "running":
+                dot.classes("cb-live-pulse")
             ui.label(s["label"]).style(
                 f"{FONT} font-size: 8px; color: {s['color']}; font-weight: 700; "
                 "letter-spacing: 0.04em; line-height: 1; text-transform: uppercase;"
             )
 
-    def _render_progress_bar(self, succeeded: int, failed: int, running_live: int, executed: int, total_planned: int):
-        # Width is the planned total. Anything beyond `executed` is shown as
-        # the "remaining/scheduled" portion (light grey).
-        total = max(total_planned, executed, 1)
-        succ_pct = (succeeded / total) * 100
-        fail_pct = (failed / total) * 100
-        run_pct = (running_live / total) * 100
-        # Cap to 100% in case state is briefly inconsistent.
-        used = min(100.0, succ_pct + fail_pct + run_pct)
-        rest_pct = max(0.0, 100.0 - used)
-
-        with ui.element("div").style(
-            "width: 70px; height: 5px; border-radius: 3px; overflow: hidden; "
-            "display: flex; background: #f1f5f9; flex-shrink: 0;"
-        ):
-            if succ_pct > 0:
-                ui.element("div").style(f"width: {succ_pct:.1f}%; background: {CLR_DONE};")
-            if run_pct > 0:
-                ui.element("div").style(f"width: {run_pct:.1f}%; background: {CLR_RUNNING};")
-            if fail_pct > 0:
-                ui.element("div").style(f"width: {fail_pct:.1f}%; background: {CLR_FAILED};")
-            if rest_pct > 0:
-                ui.element("div").style(f"width: {rest_pct:.1f}%; background: transparent;")
+    @staticmethod
+    def _render_size(proj: dict):
+        """On-disk size, coloured on the 50 GB -> 1 TB ramp, with the bucket breakdown in
+        the hover. Never measured, failed and partly-unreadable each say so."""
+        usage: DiskUsage | None = proj.get("disk_usage")
+        cell = f"{MONO} font-size: 9px; flex-shrink: 0; white-space: nowrap;"
+        if usage is None:
+            ui.label("— GB").style(f"{cell} color: {CLR_GHOST};").tooltip(
+                "Not measured yet: queued for a background size scan"
+            )
+            return
+        if usage.error:
+            ui.label("? GB").style(f"{cell} color: {CLR_FAILED};").tooltip(f"Size measurement failed: {usage.error}")
+            return
+        total = usage.total_bytes
+        weight = 600 if total >= _SIZE_HEAVY else 400
+        label = ui.label(("≥" if usage.unreadable_dirs else "") + format_bytes(total)).style(
+            f"{cell} color: {size_color(total)}; font-weight: {weight};"
+        )
+        measured = datetime.fromtimestamp(usage.measured_at).strftime("%Y-%m-%d %H:%M")
+        with label, ui.tooltip().style(f"{MONO} font-size: 10px; padding: 6px 8px;"):
+            ui.label(f"{format_bytes(total)} on disk · measured {measured}")
+            with ui.element("div").style(
+                "display: grid; grid-template-columns: auto auto 1fr; column-gap: 12px; margin-top: 4px;"
+            ):
+                for bucket, title in _BUCKET_LABELS:
+                    n = usage.buckets.get(bucket, 0)
+                    if not n:
+                        continue
+                    top = sorted(usage.parts.get(bucket, {}).items(), key=lambda kv: -kv[1])
+                    biggest = " · ".join(f"{lbl} {format_bytes(b)}" for lbl, b in top[:3] if b >= n / 100)
+                    ui.label(title)
+                    ui.label(format_bytes(n)).style("text-align: right;")
+                    ui.label(biggest).style("opacity: 0.75;")
+            if usage.unreadable_dirs:
+                ui.label(
+                    f"{usage.unreadable_dirs} director{'ies' if usage.unreadable_dirs != 1 else 'y'} unreadable "
+                    "(permissions): the size is a lower bound"
+                ).style("margin-top: 4px;")
 
     async def _handle_delete(self, project_dir: Path, name: str, row_el):
         """Full delete lifecycle owned by the component:
         1. show confirm dialog (anchored to outer container so it's not
            destroyed by row re-renders)
         2. on confirm, pause auto-refresh + grey out the row
-        3. await on_delete (just the rmtree)
-        4. resume auto-refresh and refresh the list
-        on_delete is intentionally only the rmtree -- the consumer doesn't
-        need to know about the confirmation flow or the visual state."""
-        if self.on_delete is None or self._outer_container is None:
+        3. backend.delete_project (the rmtree)
+        4. if that was the previewed project, preview the open one again
+        5. resume auto-refresh and refresh the list"""
+        if self._outer_container is None:
             return
         with self._outer_container:
             confirmed = await self._show_delete_confirm(project_dir, name)
         if not confirmed:
             return
 
+        was_selected = self._selected_resolved is not None and str(project_dir.resolve()) == self._selected_resolved
         self._pause_refresh = True
         try:
             self._mark_row_deleting(row_el, name)
-            try:
-                await self.on_delete(project_dir, name)
-                ui.notify(f"Deleted '{name}'", type="positive")
-            except Exception as e:
-                logger.info("Delete failed for %s: %s", project_dir, e)
-                # Try to notify, but the client context may be gone after
-                # an error in the rmtree pathway -- swallow if so.
-                try:
-                    ui.notify(f"Failed to delete: {e}", type="negative")
-                except Exception:
-                    pass
+            result = await self.backend.delete_project(project_dir)
+            if not result["success"]:
+                ui.notify(f"Failed to delete: {result['error']}", type="negative")
+                return
+            ui.notify(f"Deleted '{name}'", type="positive")
+            if was_selected and self.on_select is not None and self.current_path:
+                self.set_selected(self.current_path)
+                await self.on_select(Path(self.current_path))
         finally:
             self._pause_refresh = False
             await self.refresh()
@@ -859,65 +851,6 @@ class ProjectsOverview:
                 house_button("Delete permanently", lambda: dialog.submit(True), kind="danger")
         result = await dialog
         return bool(result)
-
-    async def _handle_transfer(self, project_dir: Path, name: str):
-        """Transfer lifecycle owned by the component (mirrors _handle_delete):
-        show the picker dialog, pause auto-refresh, call on_transfer with the
-        chosen owner, then refresh so the row jumps to its new section.
-        on_transfer is just the metadata write -- no disk move."""
-        if self.on_transfer is None or self._outer_container is None:
-            return
-        with self._outer_container:
-            new_owner = await self._show_transfer_dialog(name)
-        if not new_owner:  # cancelled or empty input
-            return
-        self._pause_refresh = True
-        try:
-            await self.on_transfer(project_dir, new_owner)
-            dest = "Lab / Shared" if new_owner == SHARED_OWNER else new_owner
-            ui.notify(f"'{name}' → {dest}", type="positive")
-        except Exception as e:
-            logger.info("Transfer failed for %s: %s", project_dir, e)
-            try:
-                ui.notify(f"Transfer failed: {e}", type="negative")
-            except Exception:
-                pass
-        finally:
-            self._pause_refresh = False
-            await self.refresh()
-
-    async def _show_transfer_dialog(self, name: str) -> str | None:
-        """Returns the new owner (SHARED_OWNER or a username) or None on cancel.
-        Username candidates come from owners/creators already seen in the scan
-        (there's no user directory to enumerate); free text is allowed too."""
-        candidates = sorted({self._eff_owner_of(p) for p in self._projects} - {"", "unknown", SHARED_OWNER})
-        with ui.dialog() as dialog, ui.card().classes("w-96"):
-            ui.label(f"Transfer '{name}'").style(f"{FONT} font-size: 13px; font-weight: 600; color: {CLR_HEADING};")
-            ui.label("Reassigns ownership for grouping only -- the project is not moved on disk.").style(
-                f"{FONT} font-size: 11px; color: {CLR_SUBLABEL}; margin-top: 2px;"
-            )
-            username_input = (
-                ui.input(label="Transfer to user", placeholder="username")
-                .props("dense outlined")
-                .classes("w-full")
-                .style("margin-top: 10px;")
-            )
-            if candidates:
-                with ui.row().classes("w-full items-center").style("gap: 4px; flex-wrap: wrap; margin-top: 4px;"):
-                    ui.label("known:").style(f"{MONO} font-size: 9px; color: {CLR_GHOST};")
-                    for cand in candidates:
-                        ui.button(cand, on_click=lambda c=cand: username_input.set_value(c)).props(
-                            "flat dense no-caps size=sm"
-                        ).style(f"{MONO} font-size: 9px; color: {CLR_LABEL}; padding: 0 6px;")
-            with ui.row().classes("w-full justify-between items-center mt-3 gap-2"):
-                house_button("Move to Lab / Shared", lambda: dialog.submit(SHARED_OWNER))
-                with ui.row().classes("items-center gap-2"):
-                    house_button("Cancel", lambda: dialog.submit(None))
-                    house_button(
-                        "Transfer", lambda: dialog.submit((username_input.value or "").strip() or None), kind="accent"
-                    )
-        result = await dialog
-        return result
 
     @staticmethod
     def _eff_owner_of(p: dict) -> str:
