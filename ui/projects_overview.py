@@ -60,6 +60,7 @@ DEFAULT_REFRESH_SEC = 15.0
 SORT_MODES = (("recent", "Last opened"), ("created", "Created"))
 DEFAULT_SORT = "recent"
 ANY_SPECIES = "__any__"
+ANY_SPECIES_LABEL = "any species"
 
 
 def avatar_color(key: str) -> str:
@@ -124,6 +125,9 @@ class ProjectsOverview:
         Returns the directory to scan. Re-evaluated on every refresh so
         external base-path changes (Browse button, Recent Locations clicks)
         are picked up automatically.
+    on_browse : optional async callback () -> None
+        If provided, a folder icon in the control row lets the user pick
+        another base location (the caller owns the picker).
     auto_refresh_sec : float
         Polling interval in seconds. Set to 0 to disable.
     current_path : optional str
@@ -145,6 +149,7 @@ class ProjectsOverview:
         on_open: Callable[[Path], Awaitable[None]],
         base_path_provider: Callable[[], str],
         on_select: Callable[[Path], Awaitable[None]] | None = None,
+        on_browse: Callable[[], Awaitable[None]] | None = None,
         auto_refresh_sec: float = DEFAULT_REFRESH_SEC,
         current_path: str | None = None,
         selected_path: str | None = None,
@@ -159,6 +164,7 @@ class ProjectsOverview:
         # opening it, and an explicit travel arrow (on_open) is rendered per
         # row. The landing page leaves this None → click still opens directly.
         self.on_select = on_select
+        self.on_browse = on_browse
         self.base_path_provider = base_path_provider
         self.auto_refresh_sec = auto_refresh_sec
         self.current_path = current_path
@@ -181,8 +187,7 @@ class ProjectsOverview:
         self._projects: list[dict] = []
         self._outer_container = None
         self._list_container = None
-        self._counts_label = None
-        self._mine_label = None
+        self._size_label = None
         self._sort_seg = None
         self._species_select = None
         self._sort_mode = DEFAULT_SORT
@@ -282,51 +287,81 @@ class ProjectsOverview:
     # =====================================================================
 
     def _build_header(self):
-        with ui.row().classes("w-full items-center px-3 pt-2 pb-1").style("gap: 4px 8px; flex-wrap: wrap;"):
+        """One control row: the title and the total size on the left, every control on
+        the right. It wraps on a narrow pane instead of pushing controls off the edge."""
+        with (
+            ui.row()
+            .classes("w-full items-center px-3 py-2")
+            .style(f"gap: 6px 10px; flex-wrap: wrap; border-bottom: 1px solid {CLR_BORDER};")
+        ):
             ui.label(self.title).style(
                 f"{FONT} font-size: 12px; font-weight: 600; color: {CLR_HEADING}; "
                 "letter-spacing: -0.01em; flex-shrink: 0;"
             )
-            # flex-basis 140 px, not 0: when the header is too narrow this label wraps
-            # onto its own line instead of shrinking to an invisible sliver.
-            self._counts_label = ui.label("").style(
-                f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; flex: 1 1 140px; min-width: 0; "
-                "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-            )
-
-            # Refresh button -- explicit re-scan in addition to the timer.
-            ui.button(icon="refresh", on_click=self.refresh).props("flat dense round size=xs").classes(
-                "text-slate-400 hover:text-blue-600 shrink-0"
-            ).tooltip(f"Rescan now (auto every {int(self.auto_refresh_sec)}s)")
-
-            if self.show_filter:
-                self._build_mine_toggle()
-
-        self._build_sorter_bar()
-
-    def _build_sorter_bar(self):
-        """Order + species filter. Sorting happens inside each owner section, so the
-        Lab/Shared grouping is unaffected by it."""
-        with ui.row().classes("w-full items-center px-3 pb-2").style("gap: 4px 8px; flex-wrap: wrap;"):
-            ui.label("ORDER").style(
-                f"{FONT} font-size: 9px; font-weight: 700; color: {CLR_SUBLABEL}; "
-                "letter-spacing: 0.06em; flex-shrink: 0;"
-            )
-            self._sort_seg = render_segmented(list(SORT_MODES), self._sort_mode, self._on_sort)
-
+            self._size_label = ui.label("").style(f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; flex-shrink: 0;")
             ui.element("div").style("flex: 1 1 0; min-width: 0;")
+
+            # In the full view sorting happens inside each owner section, so the
+            # Lab/Shared grouping is unaffected by it.
+            self._sort_seg = render_segmented(list(SORT_MODES), self._sort_mode, self._on_sort, classes="cb-seg-sm")
 
             # Species index across the scanned projects. Options are refreshed on every
             # scan (_render_list); a species that no project registers is simply not
             # offered rather than silently matching nothing.
             self._species_select = house_select(
-                "SPECIES",
-                {ANY_SPECIES: "any"},
+                "",
+                {ANY_SPECIES: ANY_SPECIES_LABEL},
                 value=ANY_SPECIES,
                 width="w-28",
                 hint="Show only projects whose registry holds this particle species",
                 on_change=self._on_species_filter,
             )
+
+            if self.show_filter:
+                self._labelled_switch(
+                    "Only mine",
+                    self.prefs.prefs.show_only_mine,
+                    self._on_only_mine,
+                    hint=f"Filter to projects created by {CURRENT_USER}",
+                )
+            self._labelled_switch(
+                "Compact",
+                self.prefs.prefs.projects_compact,
+                self._on_compact,
+                hint="One line per project: name, owner, TS, size and status",
+            )
+
+            if self.on_browse is not None:
+                ui.button(icon="folder_open", on_click=self.on_browse).props("flat dense round size=xs").classes(
+                    "text-slate-400 hover:text-blue-600 shrink-0"
+                ).tooltip("Browse for another base location")
+            # Refresh button -- explicit re-scan in addition to the timer.
+            ui.button(icon="refresh", on_click=self.refresh).props("flat dense round size=xs").classes(
+                "text-slate-400 hover:text-blue-600 shrink-0"
+            ).tooltip(f"Rescan now (auto every {int(self.auto_refresh_sec)}s)")
+
+    @staticmethod
+    def _labelled_switch(text: str, value: bool, on_change: Callable, *, hint: str):
+        """A small switch and its clickable label, kept together when the row wraps."""
+        with ui.element("div").style("display: flex; align-items: center; flex-shrink: 0;"):
+            switch = (
+                ui.switch(value=value, on_change=on_change)
+                .props("dense color=blue")
+                .style("transform: scale(0.65);")
+                .tooltip(hint)
+            )
+            label = ui.label(text).style(f"{FONT} font-size: 9px; color: {CLR_LABEL}; cursor: pointer;")
+            label.on("click", lambda: switch.set_value(not switch.value))
+
+    def _on_only_mine(self, e):
+        self.prefs.prefs.show_only_mine = bool(e.value)
+        self.prefs.save_to_app_storage(app.storage.user)
+        self._render_list()
+
+    def _on_compact(self, e):
+        self.prefs.prefs.projects_compact = bool(e.value)
+        self.prefs.save_to_app_storage(app.storage.user)
+        self._render_list()
 
     def _on_sort(self, key: str):
         self._sort_mode = key
@@ -353,7 +388,9 @@ class ProjectsOverview:
         for proj in projects:
             for sp in proj.get("species") or []:
                 names.setdefault(sp["id"], sp.get("name") or sp["id"])
-        options = {ANY_SPECIES: "any"} | {sid: names[sid] for sid in sorted(names, key=lambda k: names[k].lower())}
+        options = {ANY_SPECIES: ANY_SPECIES_LABEL} | {
+            sid: names[sid] for sid in sorted(names, key=lambda k: names[k].lower())
+        }
         if options == self._species_select.options:
             return
         self._syncing_species = True
@@ -381,23 +418,6 @@ class ProjectsOverview:
             # Dangling/unreachable mount mid-scan: the unresolved path still keys the
             # MRU correctly for anything opened from this same base.
             return proj.get("path", "")
-
-    def _build_mine_toggle(self):
-        def on_toggle(e):
-            self.prefs.prefs.show_only_mine = bool(e.value)
-            self.prefs.save_to_app_storage(app.storage.user)
-            self._render_list()
-
-        switch = (
-            ui.switch(value=self.prefs.prefs.show_only_mine, on_change=on_toggle)
-            .props("dense color=blue")
-            .style("transform: scale(0.65);")
-        )
-        switch.tooltip(f"Filter to projects created by {CURRENT_USER}")
-        self._mine_label = ui.label("Only mine").style(
-            f"{FONT} font-size: 9px; color: {CLR_LABEL}; cursor: pointer; flex-shrink: 0;"
-        )
-        self._mine_label.on("click", lambda: switch.set_value(not switch.value))
 
     # =====================================================================
     # LIST
@@ -431,36 +451,19 @@ class ProjectsOverview:
         if species_filter != ANY_SPECIES:
             visible = [p for p in visible if any(s["id"] == species_filter for s in (p.get("species") or []))]
 
-        # Header counts: live / failed / total visible.
-        live_n = sum(1 for p in visible if p.get("live_status") == "running")
-        failed_n = sum(1 for p in visible if p.get("live_status") == "failed")
-        if self._counts_label is not None:
-            base = self._last_scanned_base or ""
-            base_short = base.rsplit("/", 1)[-1] if base else ""
-            counts = f"{len(visible)} project{'s' if len(visible) != 1 else ''}"
-            if live_n:
-                counts += f" · {live_n} live"
-            if failed_n:
-                counts += f" · {failed_n} failed"
+        # The header carries one number: what the visible projects weigh on disk.
+        if self._size_label is not None:
             measured = [p["disk_usage"] for p in visible if p.get("disk_usage") and not p["disk_usage"].error]
             unmeasured_n = len(visible) - len(measured)
-            if measured:
-                total = format_bytes(sum(u.total_bytes for u in measured))
-                counts += f" · {'≥ ' if unmeasured_n else ''}{total}"
-            if base_short:
-                counts += f"  in  {base_short}/"
-            self._counts_label.set_text(counts)
+            total = format_bytes(sum(u.total_bytes for u in measured)) if measured else ""
+            self._size_label.set_text(f"{'≥ ' if measured and unmeasured_n else ''}{total}")
             # A native title, not .tooltip(): that would add a new tooltip element on every refresh.
             if measured and unmeasured_n:
                 s = "s" if unmeasured_n != 1 else ""
                 note = f"{unmeasured_n} project{s} not measured yet: the size is a lower bound"
-                self._counts_label.props(f'title="{note}"')
+                self._size_label.props(f'title="{note}"')
             else:
-                self._counts_label.props(remove="title")
-
-        if self._mine_label is not None:
-            mine_count = sum(1 for p in all_projects if eff(p) == CURRENT_USER)
-            self._mine_label.set_text(f"Only mine ({mine_count}/{len(all_projects)})")
+                self._size_label.props(remove="title")
 
         with self._list_container:
             if not visible:
@@ -479,6 +482,12 @@ class ProjectsOverview:
                     f"{FONT} font-size: 11px; color: {CLR_GHOST}; "
                     "font-style: italic; padding: 24px 16px; text-align: center;"
                 )
+                return
+
+            if self.prefs.prefs.projects_compact:
+                # One flat list: the owner moves into each row, so no section breaks.
+                for proj in sorted(visible, key=self._sort_key):
+                    self._render_row(proj, compact=True)
                 return
 
             # Group by effective owner -- it lives in a section header rather
@@ -543,8 +552,13 @@ class ProjectsOverview:
     # the two paths are the flexible cells and absorb all slack.
     _W_CHEVRON = 30
     _W_DELETE = 20
+    # Compact view columns.
+    _W_OWNER = 84
+    _W_TS = 44
+    _W_SIZE = 56
+    _W_STATUS = 46
 
-    def _render_row(self, proj: dict):
+    def _render_row(self, proj: dict, *, compact: bool = False):
         path_str = proj["path"]
         name = proj["name"]
         ts_count = proj.get("ts_count") or 0
@@ -614,6 +628,10 @@ class ProjectsOverview:
 
         fixed = "flex-shrink: 0; white-space: nowrap;"
         with row as row_el:
+            if compact:
+                self._render_compact_body(proj)
+                self._render_chevron(path_str, is_current)
+                return
             with ui.element("div").style(
                 "flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 3px; "
                 "padding: 9px 8px 10px 14px;"
@@ -724,6 +742,43 @@ class ProjectsOverview:
         redundant."""
         p = Path(path_str)
         return route_to_path(Route(project=p.name, base=str(p.parent)))
+
+    def _render_compact_body(self, proj: dict):
+        """Compact view: one line -- name, owner, TS, size, status. The owner sits in the
+        row because the compact list has no owner sections."""
+        name = proj["name"]
+        ts_count = proj.get("ts_count") or 0
+        mnemonic = proj.get("mnemonic") or ""
+        fixed = "flex-shrink: 0; white-space: nowrap;"
+        with ui.element("div").style(
+            "flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 6px 8px 6px 14px;"
+        ):
+            name_lbl = ui.label(name).style(
+                f"{FONT} font-size: 11px; font-weight: 600; color: {CLR_HEADING}; letter-spacing: -0.01em; "
+                "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1 1 auto;"
+            )
+            if mnemonic:
+                name_lbl.tooltip(f"{name}\n{mnemonic}")
+            ui.label(self._owner_label(self._eff_owner_of(proj))).style(
+                f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; width: {self._W_OWNER}px; {fixed} "
+                "overflow: hidden; text-overflow: ellipsis;"
+            )
+            ui.label(f"{ts_count} TS" if ts_count else "— TS").style(
+                f"{MONO} font-size: 9px; color: {CLR_LABEL if ts_count else CLR_GHOST}; "
+                f"width: {self._W_TS}px; text-align: right; {fixed}"
+            )
+            with ui.element("div").style(f"width: {self._W_SIZE}px; {fixed} display: flex; justify-content: flex-end;"):
+                self._render_size(proj)
+            with ui.element("div").style(f"width: {self._W_STATUS}px; {fixed} display: flex;"):
+                self._render_status(proj)
+
+    @staticmethod
+    def _owner_label(owner: str) -> str:
+        if owner == SHARED_OWNER:
+            return "Lab / Shared"
+        if owner == CURRENT_USER:
+            return "you"
+        return owner
 
     @staticmethod
     def _render_path_line(path: str, *, color: str, what: str):

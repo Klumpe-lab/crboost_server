@@ -1003,6 +1003,8 @@ _CB_CSS = """
 .cb-seg-btn.active .cb-seg-badge { color: #64748b; }
 .cb-seg-btn:hover { background: #f8fafc; }
 .cb-seg-btn.active { background: #f1f5f9; color: #1e293b; font-weight: 600; }
+/* Small strip: as tall as a 16 px `.cb-field`, for control rows (projects roster). */
+.cb-seg-sm .cb-seg-btn { line-height: 14px; padding: 0 6px; }
 /* Projects roster travel chevron (ui/projects_overview.py): a full-row-height column on
  * the right edge, so "open this project" is the easiest target on the row rather than an
  * 18 px round arrow. Lights up on its own hover AND on the row's, so it reads as part of

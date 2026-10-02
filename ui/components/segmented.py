@@ -18,12 +18,14 @@ class Segmented:
     """One `.cb-seg` strip. `tabs` = ``[(key, label), ...]``; `on_switch(key)` fires on a
     click of a non-active segment (the caller flips its content and calls `set_active`)."""
 
-    def __init__(self, tabs: Sequence[tuple[str, str]], active: str, on_switch: Callable[[str], None]) -> None:
+    def __init__(
+        self, tabs: Sequence[tuple[str, str]], active: str, on_switch: Callable[[str], None], classes: str = ""
+    ) -> None:
         self._on_switch = on_switch
         self._active = active
         self._segments: dict[str, ui.element] = {}
         self._badges: dict[str, ui.label] = {}
-        with ui.element("div").classes("cb-seg"):
+        with ui.element("div").classes(f"cb-seg {classes}".strip()):
             for key, label in tabs:
                 seg = ui.element("div").classes("cb-seg-btn" + (" active" if key == active else ""))
                 with seg:
@@ -65,6 +67,9 @@ class Segmented:
                 seg.classes(remove="active")
 
 
-def render_segmented(tabs: Sequence[tuple[str, str]], active: str, on_switch: Callable[[str], None]) -> Segmented:
-    """Render a segmented control into the current slot and return its handle."""
-    return Segmented(tabs, active, on_switch)
+def render_segmented(
+    tabs: Sequence[tuple[str, str]], active: str, on_switch: Callable[[str], None], classes: str = ""
+) -> Segmented:
+    """Render a segmented control into the current slot and return its handle. `classes`
+    adds modifiers to the strip, e.g. `cb-seg-sm` for a control row of 16 px fields."""
+    return Segmented(tabs, active, on_switch, classes)

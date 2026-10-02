@@ -1483,26 +1483,17 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                 backend,
                 on_open=_open_from_overview,
                 base_path_provider=lambda: ui_mgr.data_import.project_base_path or "",
+                on_browse=handle_load_project_click,
                 auto_refresh_sec=15.0,
                 show_filter=True,
-                height_px=460,
+                # The roster runs to the bottom of the viewport: what is above it is the
+                # page's 12 px padding, the status strip and the roster's own control row.
+                height_css="calc(100vh - 104px)",
                 title="Projects Overview",
             )
             local_refs["projects_overview"] = overview
             with ui.element("div").classes("w-full"):
                 overview.build()
-
-            with ui.row().classes("w-full items-center px-1").style("gap: 6px;"):
-                with (
-                    ui.button(on_click=handle_load_project_click)
-                    .props("flat dense no-caps")
-                    .classes("text-slate-400 hover:text-blue-600")
-                ):
-                    with ui.row().classes("items-center gap-1"):
-                        ui.icon("folder_open", size="11px")
-                        ui.label("Browse for another base location").style(
-                            f"{FONT} font-size: {SZ_META}; font-weight: 500;"
-                        )
 
     # =========================================================================
     # WIRING
