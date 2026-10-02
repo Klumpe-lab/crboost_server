@@ -47,6 +47,15 @@ class IsoNetRefineMethod(str, Enum):
     ISONET2_N2N = "isonet2-n2n"  # even/odd: missing-wedge correction + denoising
 
 
+class IsoNetCTFMode(str, Enum):
+    """IsoNet `refine --CTF_mode`. Values match the CLI strings; the trained model carries it into predict."""
+
+    NONE = "None"  # no CTF correction
+    PHASE_ONLY = "phase_only"
+    WIENER = "wiener"  # Wiener filter on the network target
+    NETWORK = "network"  # CTF-shaped filter on the network input (IsoNet2's recommendation)
+
+
 class MissAlignSchedule(str, Enum):
     """miss-alignment macro-iteration schedule preset (services/jobs/miss_align.py): a coarse->fine
     list of (pixel size, alignment mode) entries, one per macro-iteration. FAST = quick sanity pass;

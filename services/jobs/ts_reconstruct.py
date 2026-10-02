@@ -50,7 +50,16 @@ class TsReconstructParams(AbstractJobParams):
         ),
     ]
 
-    rescale_angpixs: float = Field(default=12.0, ge=2.0, le=50.0)
+    rescale_angpixs: float = Field(
+        default=12.0,
+        ge=2.0,
+        le=50.0,
+        title="Pixel size (Å/px)",
+        description="Voxel size of the reconstructed tomogram in Å (Warp --angpix); decimals are fine. The tilt "
+        "images are Fourier-binned from the acquisition pixel size down to this, so doubling it gives 8× fewer "
+        "voxels and drops everything finer than 2× this value (Nyquist). Set at project creation to the "
+        "acquisition pixel size × the configured reconstruction binning.",
+    )
     halfmap_frames: int = Field(default=1, ge=0, le=1)
     halfmap_tilts: int = Field(
         default=0,
@@ -61,7 +70,14 @@ class TsReconstructParams(AbstractJobParams):
         "measures. Warp writes both kinds to the same even/odd folders, so set halfmap_frames to 0; "
         "denoise training on these halves learns from tilt halves.",
     )
-    deconv: int = Field(default=1, ge=0, le=1)
+    deconv: int = Field(
+        default=0,
+        ge=0,
+        le=1,
+        description="1 = also write a CTF-deconvolved copy (reconstruction/deconv/). Warp's --deconv deconvolves "
+        "the even/odd half-tomograms too, and those are what cryoCARE and IsoNet train and predict on, so keep "
+        "it 0 when the pipeline denoises: IsoNet refuses deconvolved halves and makes its own deconvolved mask copy.",
+    )
     perdevice: int = Field(default=1, ge=0, le=8)
     array_throttle: int = Field(
         default=20, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series reconstruction"

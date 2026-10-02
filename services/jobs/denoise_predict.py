@@ -66,11 +66,12 @@ class DenoisePredictParams(AbstractJobParams):
 
     def __init__(self, **data):
         super().__init__(**data)
-        # Set cryoCARE-specific SLURM defaults
+        # Per-tomogram GPU defaults. 128G: IsoNet predict holds both denoised halves of the volume in
+        # host RAM while averaging them, and a 1440x1022x512 tomogram was OOM-killed at 64G.
         if "slurm_overrides" not in data:
             self.slurm_overrides = {
                 "gres": "gpu:1",
-                "mem": "64G",
+                "mem": "128G",
                 "cpus_per_task": 4,
                 "time": "4:00:00",
                 "preset": SlurmPreset.CUSTOM.value,

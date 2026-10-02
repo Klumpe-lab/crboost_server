@@ -21,13 +21,14 @@ from ui.job_plugins.default_renderer import render_default_params_card
 def render_reconstruct_params(job_type, job_model, is_frozen, save_handler, *, ui_mgr=None, backend=None, **ctx):
     # A project imported from SerialEM tilt stacks has one frame per tilt, so the
     # frame-series job wrote no even/odd half-averages: halfmap_frames is stamped 0
-    # at init and turning it back on fails before Warp runs. The hint sits beside the
-    # field it explains.
+    # at init (turning it back on fails before Warp runs) and halfmap_tilts 1, so the
+    # denoisers still get even/odd halves, split by tilt. The hint sits beside the
+    # fields it explains.
     state = getattr(job_model, "_project_state", None)
     if state is not None and getattr(state, "import_source_kind", "") == "stacks":
         ui.label(
-            "stack input has no even/odd halves — halfmap_frames is 0 by construction "
-            "(CryoCARE / IsoNet training is unavailable on this project)"
+            "single-frame stack input: no frame halves, so halfmap_frames stays 0 — the even/odd halves "
+            "CryoCARE / IsoNet train on are split by tilt instead (halfmap_tilts = 1)"
         ).style(HELPER_STYLE + " margin-bottom: 4px;")
     render_default_params_card(job_type, job_model, is_frozen, save_handler, ui_mgr=ui_mgr, backend=backend, **ctx)
 

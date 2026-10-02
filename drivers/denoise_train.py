@@ -19,7 +19,14 @@ except ImportError:
     print("[WARN] Could not import cryocare/mrcfile/numpy. Validation will be skipped.", file=sys.stderr)
 
 try:
-    from drivers.driver_base import ToolCommand, derive_watchdog_timeout, get_driver_context, run_command, run_tool
+    from drivers.driver_base import (
+        ToolCommand,
+        allocated_gpu_count,
+        derive_watchdog_timeout,
+        get_driver_context,
+        run_command,
+        run_tool,
+    )
     from drivers.isonet_star import annotate_prep_star, log_facts, read_tomo_facts
     from services.job_models import DenoiseTrainParams
     from services.models_base import DenoiseMethod, IsoNetRefineMethod
@@ -108,6 +115,26 @@ def run_isonet_train(params, paths, job_dir, project_path, additional_binds):
     annotate_prep_star(job_dir / prep, facts)
     log_facts(facts, lambda msg: print(msg, flush=True))
 
+    # IsoNet `refine` rejects --method auto when the prep star carries BOTH the full volume and
+    # even/odd halves (it can't tell self-supervised isonet2 from noise2noise isonet2-n2n). Train
+    # always stages even/odd, so 'auto' resolves to isonet2-n2n (missing-wedge + denoising), matching
+    # the isonet_method field doc; an explicitly chosen method is passed through unchanged.
+    refine_method = params.isonet_method.value
+    if params.isonet_method == IsoNetRefineMethod.AUTO:
+        refine_method = IsoNetRefineMethod.ISONET2_N2N.value
+
+    # Warp's --deconv deconvolves the even/odd half-maps as well as the full map, and the even/odd
+    # methods train and predict on those halves. A Wiener-filtered input yields a model that bakes the
+    # filter in (over-smoothed, low-frequency-boosted output), so refuse rather than train on it.
+    if refine_method in (IsoNetRefineMethod.ISONET2_N2N.value, IsoNetRefineMethod.N2N.value):
+        deconvolved = sorted(name for name, f in facts.items() if f.warp_deconv)
+        if deconvolved:
+            raise ValueError(
+                f"tsReconstruct ran with deconv=1, which also deconvolves the even/odd half-maps that "
+                f"IsoNet {refine_method} trains on ({len(deconvolved)} tomogram(s), e.g. {deconvolved[0]}). "
+                f"Re-run tsReconstruct with deconv=0; IsoNet then deconvolves its own mask copy."
+            )
+
     # input_column threads through: rlnDeconvTomoName if we deconv, else rlnTomoName (the raw
     # reconstruction). tsReconstruct's own deconvolved maps are used when it wrote one for every
     # tomogram -- Warp deconvolves with each tilt's fitted defocus; otherwise IsoNet deconvolves.
@@ -132,18 +159,16 @@ def run_isonet_train(params, paths, job_dir, project_path, additional_binds):
     )
 
     # 4. refine — the training. Writes .pt checkpoint(s) into isonet_maps/.
-    # IsoNet `refine` rejects --method auto when the prep star carries BOTH the full volume and
-    # even/odd halves (it can't tell self-supervised isonet2 from noise2noise isonet2-n2n). Train
-    # always stages even/odd, so 'auto' resolves to isonet2-n2n (missing-wedge + denoising), matching
-    # the isonet_method field doc; an explicitly chosen method is passed through unchanged.
-    refine_method = params.isonet_method.value
-    if params.isonet_method == IsoNetRefineMethod.AUTO:
-        refine_method = IsoNetRefineMethod.ISONET2_N2N.value
-
-    # --epochs must be explicit: the container defaults to 50, which no walltime we request
-    # covers past a couple of tomograms. --ncpus must be explicit too -- it defaults to a flat
-    # 16 regardless of the allocation, so a 4-core job spawns 16 dataloader workers and thrashes
-    # (torch itself warns "suggested max worker in current system is 8").
+    # --epochs must be explicit: the container defaults to 50 regardless of what the job asked for.
+    # --ncpus must be explicit too -- it defaults to a flat 16 regardless of the allocation, so a
+    # 4-core job spawns 16 dataloader workers and thrashes (torch itself warns "suggested max worker
+    # in current system is 8"). IsoNet trains on every GPU the container sees (SLURM's allocation,
+    # renumbered 0..N-1); its auto batch size halves the per-GPU batch on multi-GPU runs, so the
+    # batch is set to 4 per GPU to keep each card as busy as the single-GPU run. --with_preview
+    # False skips the full-tomogram predict IsoNet otherwise runs every 10 epochs (~17 min each on a
+    # 1440x1022x512 tomogram); checkpoints are still written every epoch. --isCTFflipped: Warp
+    # reconstructs CTF-corrected (its 3D CTF volumes are non-negative), so IsoNet must not flip again.
+    n_gpus = allocated_gpu_count(default=1)
     refine = (
         ToolCommand("isonet.py refine")
         .opt("--star_file", prep)
@@ -151,6 +176,13 @@ def run_isonet_train(params, paths, job_dir, project_path, additional_binds):
         .opt("--method", refine_method)
         .opt("--input_column", input_col)
         .opt("--epochs", params.isonet_epochs)
+        .opt("--cube_size", params.isonet_cube_size)
+        .opt("--CTF_mode", params.isonet_ctf_mode.value)
+        .opt("--isCTFflipped", True)
+        .opt("--mw_weight", params.isonet_mw_weight)
+        .opt("--bfactor", params.isonet_bfactor)
+        .opt("--batch_size", 4 * n_gpus)
+        .opt("--with_preview", False)
     )
     ncpus = int(os.environ.get("SLURM_CPUS_PER_TASK", "0") or 0)
     if ncpus > 0:
@@ -159,17 +191,19 @@ def run_isonet_train(params, paths, job_dir, project_path, additional_binds):
     # Say up front whether the budget covers the requested training, so an under-allocated run
     # says so at minute 3 instead of at hour 3. `n` is the actual staged count after
     # tomograms_for_training; the deploy-time estimate only has the project's tilt-series count.
-    need_min = params.isonet_work_minutes(n)
+    need_min = params.isonet_work_minutes(n, n_gpus)
     have_min = int(derive_watchdog_timeout() / 60)
     print(
-        f"[ISONET] {params.isonet_epochs} epochs x {n} tomogram(s) ≈ {need_min} min; budget {have_min} min", flush=True
+        f"[ISONET] {params.isonet_epochs} epochs, cube {params.isonet_cube_size}, {n} tomogram(s), {n_gpus} GPU(s) "
+        f"≈ {need_min} min; budget {have_min} min",
+        flush=True,
     )
     if need_min > have_min:
         print(
             f"[ISONET] WARNING: budget is short. Training will stop around epoch "
             f"{max(1, int(params.isonet_epochs * have_min / need_min))} and the last checkpoint "
-            f"will be archived instead. Raise this job's SLURM time, or lower isonet_epochs / "
-            f"isonet_max_training_tomograms.",
+            f"will be archived instead. Raise this job's SLURM time (and QOS), add GPUs, or lower "
+            f"isonet_epochs / isonet_cube_size.",
             flush=True,
         )
 

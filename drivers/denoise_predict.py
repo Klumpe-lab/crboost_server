@@ -32,6 +32,7 @@ import tarfile
 from pathlib import Path
 
 import starfile
+from pydantic import BaseModel
 
 from drivers.array_job_base import ArrayDriver, ArrayResults, read_manifest, write_skip_status, STATUS_DIR_NAME
 from drivers.driver_base import DriverContext, ToolCommand, run_tool, require_producer_input
@@ -190,7 +191,11 @@ def stamp_denoise_registry(
 def _apply_inherited_method(project_state, params, tag: str) -> None:
     """Override denoise_method + isonet_deconv from the denoisetrain job that produced the
     model, so predict always runs what the model was trained as (never a stale/default that
-    disagrees). Best-effort; prepare_isonet_model's tar-structure check stays the final guard."""
+    disagrees). Best-effort; prepare_isonet_model's tar-structure check stays the final guard.
+
+    Both fields are USER_PARAMS, which AbstractJobParams.__setattr__ freezes on a RUNNING job --
+    and a driver always sees its job as RUNNING. This is a run-time override, not a user edit,
+    so it writes through BaseModel.__setattr__ past that guard."""
     try:
         method, deconv = params.inherited_from_train(project_state)
     except Exception as e:
@@ -201,9 +206,9 @@ def _apply_inherited_method(project_state, params, tag: str) -> None:
             f"{tag} Inheriting denoise_method={method.value} from denoise-train (was {params.denoise_method.value})",
             flush=True,
         )
-        params.denoise_method = method
+        BaseModel.__setattr__(params, "denoise_method", method)
     if deconv is not None:
-        params.isonet_deconv = deconv
+        BaseModel.__setattr__(params, "isonet_deconv", deconv)
 
 
 class DenoisePredictDriver(ArrayDriver):
@@ -437,6 +442,9 @@ class DenoisePredictDriver(ArrayDriver):
             .opt_path("--model", Path(staged["isonet_model_pt"]), quote=True)
             .opt("--input_column", input_col)
             .opt_path("--output_dir", corrected, quote=True)
+            # Warp's reconstructions are CTF-corrected already; a model trained with a CTF_mode
+            # would otherwise phase-flip the input again (see denoise_train's refine call).
+            .opt("--isCTFflipped", True)
         )
 
         mrcs = list(corrected.glob("*.mrc"))
@@ -447,7 +455,15 @@ class DenoisePredictDriver(ArrayDriver):
         produced = max(mrcs, key=lambda p: p.stat().st_size)
         out_mrc.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(produced), str(out_mrc))
-        self.log(f"IsoNet corrected -> {out_mrc}")
+        # IsoNet writes its output with a 1 Å voxel size; carry the reconstruction's over so viewers
+        # and downstream jobs reading the header see the real scale.
+        import mrcfile
+
+        with mrcfile.open(staged["full"], header_only=True, permissive=True) as src:
+            apix = src.voxel_size
+        with mrcfile.mmap(out_mrc, mode="r+") as dst:
+            dst.voxel_size = apix
+        self.log(f"IsoNet corrected -> {out_mrc} (voxel size {float(apix.x):g} Å)")
 
     def verify_outputs(self, ctx: DriverContext[DenoisePredictParams], item: str, staged) -> None:
         if not staged["out_mrc"].exists():

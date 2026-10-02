@@ -3,9 +3,9 @@ from typing import ClassVar
 from pydantic import Field
 
 from services.jobs._base import AbstractJobParams
-from services.models_base import JobType, JobCategory, DenoiseMethod, IsoNetRefineMethod
+from services.models_base import JobType, JobCategory, DenoiseMethod, IsoNetCTFMode, IsoNetRefineMethod
 from services.io_slots import InputSlot, OutputSlot, JobFileType
-from services.computing.slurm_service import SlurmConfig
+from services.computing.slurm_service import SlurmConfig, get_cached_qos_maxwall_minutes
 
 
 # ── Dynamic training walltime ─────────────────────────────────────────────────
@@ -26,24 +26,18 @@ _TRAIN_WALLTIME_BASE_MIN = 30  # fixed overhead: prepare_star / make_mask / extr
 _TRAIN_WALLTIME_PER_TS_MIN = 5  # marginal training cost per tilt-series
 _TRAIN_WALLTIME_CAP_MIN = 8 * 60  # never request more than the partition realistically allows
 
-# IsoNet2 `refine` cost model, measured on copia_demo (clip-g4, 1 tomogram at 11.8 A/px,
-# cube_size 96, unet-medium, batch_size 4). Two things are easy to get wrong:
-#
-#   * Epochs. `--epochs` defaults to 50, and `--save_interval` (10) only controls the
-#     checkpoint/preview cadence -- the "Training for 20 to 30 epochs" log lines are intervals,
-#     not the whole schedule.
-#   * Scaling. An epoch is one full pass over every crop of every training tomogram: IsoNet2
-#     sets steps_per_epoch to a 2e8 sentinel and trains min(len(train_loader), steps_per_epoch)
-#     (IsoNet2 models/train.py), so nothing caps it. Epoch cost is linear in the tomogram
-#     count -- 750 batches = 6.4 min for one tomogram, ~2 h for twenty.
-#
-# The preview after each save_interval is constant, not linear: `--prev_tomo_idx` defaults to 1,
-# so only the first tomogram is predicted (~6.2 min) however many are being trained on.
+# IsoNet2 `refine` cost model. An epoch is a fixed 3000 subtomograms however many tomograms
+# train: prepare_star writes rlnNumberSubtomo = 3000 / n_tomograms, so adding tomograms adds
+# variety, not time. 750 batches of 4 at cube_size 96 took 12.1 min on clip-g3 (Quadro RTX 6000,
+# 5.53 A/px) and 6.4 min on clip-g4. Cost grows with the cube volume. DDP splits the epoch across
+# GPUs; the speed-up is taken as 75 % efficient per added GPU because the 4-core-per-GPU
+# dataloaders may not keep up. Training runs with --with_preview False, so there is no
+# per-save_interval preview predict (~17 min each on a 1440x1022x512 tomogram).
 _ISONET_SETUP_MIN = 3  # prepare_star + preprocess
-_ISONET_MASK_MIN_PER_TOMO = 1  # make_mask, measured at 53 s/tomogram
-_ISONET_EPOCH_MIN_PER_TOMO = 6.4
-_ISONET_PREVIEW_MIN = 6.2
-_ISONET_SAVE_INTERVAL = 10  # container default; checkpoints + previews land on this cadence
+_ISONET_MASK_MIN_PER_TOMO = 2  # deconv + make_mask; make_mask alone measured at 53 s/tomogram
+_ISONET_EPOCH_MIN = 12.1  # cube_size 96, one GPU, slowest measured node
+_ISONET_CUBE_REF = 96
+_ISONET_GPU_EFFICIENCY = 0.75
 
 
 def _hms_to_minutes(t: str) -> int:
@@ -60,6 +54,16 @@ def _hms_to_minutes(t: str) -> int:
         return int(days) * 1440 + h * 60 + m + (1 if s else 0)
     except (ValueError, IndexError):
         return 0
+
+
+def gres_gpu_count(gres: str) -> int:
+    """GPUs a SLURM --gres string asks for: 'gpu:4' or 'gpu:a100:2' -> the count, a bare 'gpu' -> 1,
+    no GPU entry -> 1 (IsoNet always runs on at least one)."""
+    for item in (gres or "").split(","):
+        parts = item.strip().split(":")  # gpu[:type][:count]
+        if parts[0] == "gpu":
+            return int(parts[-1]) if len(parts) > 1 and parts[-1].isdigit() else 1
+    return 1
 
 
 def _minutes_to_hms(minutes: int) -> str:
@@ -83,6 +87,10 @@ class DenoiseTrainParams(AbstractJobParams):
         "isonet_epochs",
         "isonet_max_training_tomograms",
         "isonet_deconv",
+        "isonet_ctf_mode",
+        "isonet_mw_weight",
+        "isonet_cube_size",
+        "isonet_bfactor",
     }
 
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
@@ -109,26 +117,53 @@ class DenoiseTrainParams(AbstractJobParams):
         "(missing-wedge correction + denoising). Only used when denoise_method = IsoNet.",
     )
     isonet_epochs: int = Field(
-        default=20,
+        default=50,
         ge=1,
         le=200,
-        description="IsoNet refine training epochs. The single biggest wall-time lever: an epoch is "
-        "a full pass over every crop of every training tomogram, so cost is epochs × tomograms "
-        "(≈6.4 min per epoch per tomogram). The container's own default is 50; 20 is used here "
-        "because on copia_demo the specimen-region loss was flat from epoch ~10 (0.223 → 0.222 by "
-        "epoch 20) and everything after that was background fitting. Keep it a multiple of 10 — "
-        "IsoNet checkpoints and writes a preview every 10 epochs. Only used when "
-        "denoise_method = IsoNet.",
+        description="IsoNet refine training epochs. IsoNet2 advises against fewer than 50 (its isonet2-n2n "
+        "example uses 70); the noise2noise loss stays noise-dominated, so a flat loss curve is not a sign "
+        "of convergence. An epoch is a fixed 3000 subtomograms (≈12 min at cube 96 on one RTX 6000), so "
+        "cost is epochs × cube volume ÷ GPUs — more GPUs in the SLURM tab is the way to buy speed. Keep it "
+        "a multiple of 10: IsoNet keeps an epoch checkpoint every 10. Only used when denoise_method = IsoNet.",
     )
     isonet_max_training_tomograms: int = Field(
-        default=2,
+        default=0,
         ge=0,
         le=100,
-        description="Hard cap on how many tomograms IsoNet trains on (0 = no cap, use every "
-        "tomogram that passes tomograms_for_training). A denoiser generalises from a couple of "
-        "tomograms, but IsoNet's epoch cost is LINEAR in the count — uncapped, a 40-tomogram "
-        "project needs ~4 h per epoch and no allocation can cover it. The cap is what keeps the "
-        "job's wall-time bounded by dataset size. Only used when denoise_method = IsoNet.",
+        description="Cap on how many tomograms IsoNet trains on (0 = every tomogram that passes "
+        "tomograms_for_training). An epoch is 3000 subtomograms split across the training tomograms, so "
+        "more tomograms cost no training time — only ~2 min each of deconv/mask prep — and give the "
+        "network more variety. Only used when denoise_method = IsoNet.",
+    )
+    isonet_ctf_mode: IsoNetCTFMode = Field(
+        default=IsoNetCTFMode.NETWORK,
+        description="IsoNet refine --CTF_mode: how the network handles the CTF. 'network' (IsoNet2's "
+        "recommendation) applies a CTF-shaped filter to the network input so it learns CTF correction "
+        "along with denoising; 'wiener' filters the target instead and needs snrfalloff/deconvstrength "
+        "tuning; 'None' leaves the CTF uncorrected. The model carries it into predict. Only used when "
+        "denoise_method = IsoNet.",
+    )
+    isonet_mw_weight: float = Field(
+        default=200.0,
+        ge=-1,
+        description="IsoNet refine --mw_weight: weight of the loss inside the missing wedge relative to "
+        "denoising. IsoNet2 recommends 20–200 to make the network actually fill the wedge; -1 or 0 "
+        "disables the split loss (IsoNet's default), and the network then mostly denoises. Only used "
+        "when denoise_method = IsoNet.",
+    )
+    isonet_cube_size: int = Field(
+        default=96,
+        ge=32,
+        le=256,
+        description="IsoNet refine --cube_size: training subtomogram edge in voxels (IsoNet's default 96; "
+        "its isonet2-n2n example uses 128). Training time grows with the cube "
+        "volume — 128 costs ≈2.4× 96 per epoch. Only used when denoise_method = IsoNet.",
+    )
+    isonet_bfactor: float = Field(
+        default=0.0,
+        ge=0,
+        description="IsoNet refine --bfactor: high-frequency boost for the CTF correction. IsoNet2 recommends "
+        "0 for cellular tomograms and 200–300 for isolated samples. Only used when denoise_method = IsoNet.",
     )
     isonet_deconv: bool = Field(
         default=True,
@@ -136,10 +171,10 @@ class DenoiseTrainParams(AbstractJobParams):
         "for defocus-contrast data — IsoNet recommends it because a mask built from the raw reconstruction "
         "tends to be poor; OFF for phase-plate data. With even/odd halves (method auto / isonet2-n2n) refine "
         "and predict read the raw halves either way, so this only decides where training crops are taken; "
-        "with method isonet2 (single map) it also deconvolves the training input. The copy is tsReconstruct's "
-        "own (reconstruction/deconv/, written when its 'deconv' is 1, using each tilt's fitted defocus); "
-        "without it IsoNet deconvolves at the tsCtf defocus nearest 0° tilt. Only used when denoise_method = "
-        "IsoNet.",
+        "with method isonet2 (single map) it also deconvolves the training input. The even/odd methods need "
+        "tsReconstruct run with deconv 0 (Warp's --deconv deconvolves the half-maps too), so IsoNet makes the "
+        "copy itself at the tsCtf defocus nearest 0° tilt; single-map isonet2 uses tsReconstruct's "
+        "reconstruction/deconv/ copy when it exists. Only used when denoise_method = IsoNet.",
     )
 
     def _get_job_specific_options(self) -> list[tuple[str, str]]:
@@ -156,39 +191,38 @@ class DenoiseTrainParams(AbstractJobParams):
     def get_input_requirements() -> dict[str, str]:
         return {"reconstruct": "tsReconstruct"}
 
-    def isonet_work_minutes(self, n_tomograms: int) -> int:
-        """Minutes of actual work IsoNet refine needs for `n_tomograms`. Also called by the
-        driver, which knows the REAL staged count (post-`tomograms_for_training`) and warns
-        when the watchdog budget can't cover it."""
+    def isonet_work_minutes(self, n_tomograms: int, n_gpus: int = 1) -> int:
+        """Minutes of actual work IsoNet refine needs for `n_tomograms` on `n_gpus`. Also called by
+        the driver, which knows the REAL staged count (post-`tomograms_for_training`) and GPU count
+        and warns when the watchdog budget can't cover it."""
         n = max(n_tomograms, 1)
         if self.isonet_max_training_tomograms:
             n = min(n, self.isonet_max_training_tomograms)
-        previews = max(1, self.isonet_epochs // _ISONET_SAVE_INTERVAL)
-        return int(
-            _ISONET_SETUP_MIN
-            + _ISONET_MASK_MIN_PER_TOMO * n
-            + _ISONET_EPOCH_MIN_PER_TOMO * self.isonet_epochs * n
-            + _ISONET_PREVIEW_MIN * previews
-        )
+        speedup = 1 + _ISONET_GPU_EFFICIENCY * (max(n_gpus, 1) - 1)
+        epoch_min = _ISONET_EPOCH_MIN * (self.isonet_cube_size / _ISONET_CUBE_REF) ** 3 / speedup
+        return int(_ISONET_SETUP_MIN + _ISONET_MASK_MIN_PER_TOMO * n + epoch_min * self.isonet_epochs)
 
-    def _scaled_train_walltime(self, base_time: str) -> str:
+    def _scaled_train_walltime(self, base_time: str, gres: str, qos: str) -> str:
         """Scale `base_time` to the tilt-series count, floored at `base_time` and capped.
 
         The count is ProjectState's in-memory `import_selected_tilt_series` — no disk I/O, and
         known at deploy time before the upstream tomograms.star exists. A narrowing
         `tomograms_for_training` filter makes this an OVER-estimate, which is the safe direction
-        (the job just finishes early); the driver logs the real count once it has staged."""
+        (the job just finishes early); the driver logs the real count once it has staged. IsoNet's
+        cap is the QOS's wall limit when the sacctmgr probe knows it, so a longer QOS buys a longer run."""
         is_isonet = self.denoise_method == DenoiseMethod.ISONET
         n_ts = getattr(self._project_state, "import_selected_tilt_series", 0) or 0
+        cap = _TRAIN_WALLTIME_CAP_MIN
         if is_isonet:
             # /0.9: run_command's watchdog only lets the job spend 90% of --time.
-            minutes = int(self.isonet_work_minutes(n_ts) / 0.9) + 1
+            minutes = int(self.isonet_work_minutes(n_ts, gres_gpu_count(gres)) / 0.9) + 1
+            cap = get_cached_qos_maxwall_minutes(qos) or cap
         elif n_ts <= 0:
             return base_time  # cryoCARE can't be estimated without a count -> profile default
         else:
             minutes = _TRAIN_WALLTIME_BASE_MIN + _TRAIN_WALLTIME_PER_TS_MIN * n_ts
         minutes = max(minutes, _hms_to_minutes(base_time))  # never below the profile/default
-        minutes = min(minutes, _TRAIN_WALLTIME_CAP_MIN)
+        minutes = min(minutes, cap)
         return _minutes_to_hms(minutes)
 
     def get_effective_slurm_config(self) -> SlurmConfig:
@@ -196,5 +230,5 @@ class DenoiseTrainParams(AbstractJobParams):
         # dataset size unless the user has pinned an explicit time override.
         cfg = super().get_effective_slurm_config()
         if "time" not in self.slurm_overrides:
-            cfg.time = self._scaled_train_walltime(cfg.time)
+            cfg.time = self._scaled_train_walltime(cfg.time, cfg.gres, cfg.qos)
         return cfg

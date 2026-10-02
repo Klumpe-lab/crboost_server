@@ -195,6 +195,24 @@ class DriverContext(Generic[T]):
 IDLE_TIMEOUT_DEFAULT = 45 * 60
 
 
+def allocated_gpu_count(default: int) -> int:
+    """GPUs SLURM actually gave this job (renumbered 0..N-1 inside the --nv container).
+
+    Read from SLURM's own count first so a manual `--gres` override still maps correctly; fall
+    back to CUDA_VISIBLE_DEVICES, then the declared num_gpus, then 1. Never returns < 1. Unset
+    inside the container by the wrapper, but the driver runs natively where SLURM sets them.
+    """
+    v = os.environ.get("SLURM_GPUS_ON_NODE", "")
+    if v.isdigit() and int(v) > 0:
+        return int(v)
+    cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+    if cvd:
+        n = len([x for x in cvd.split(",") if x.strip()])
+        if n > 0:
+            return n
+    return max(1, default)
+
+
 def derive_watchdog_timeout() -> int:
     """
     Seconds of wall-clock budget for run_command's watchdog.
