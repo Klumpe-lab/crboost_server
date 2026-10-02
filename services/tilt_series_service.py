@@ -74,8 +74,7 @@ def load_tilt_series(star_path: str | Path, project_root: str | Path) -> TiltSer
     tilt_series_df = tilt_series_df.drop_duplicates(subset=["rlnTomoName"], keep="first").reset_index(drop=True)
     if len(tilt_series_df) < n_before:
         logger.warning(
-            "Deduplicated %d → %d tilt series by rlnTomoName in %s",
-            n_before, len(tilt_series_df), star_path.name,
+            "Deduplicated %d → %d tilt series by rlnTomoName in %s", n_before, len(tilt_series_df), star_path.name
         )
 
     num_ts_cols = len(tilt_series_df.columns)
@@ -214,19 +213,6 @@ def drop_tilts_from_tomostar(src_dir: str | Path, out_dir: str | Path, bad_movie
     return total_kept, total_dropped
 
 
-def get_label_summary(ts_data: TiltSeriesData) -> dict[str, int]:
-    """Return counts of good/bad/unlabeled tilts."""
-    df = ts_data.all_tilts_df
-    total = len(df)
-    if "cryoBoostDlLabel" not in df.columns:
-        return {"total": total, "good": total, "bad": 0, "unlabeled": 0}
-
-    good = int((df["cryoBoostDlLabel"] == "good").sum())
-    bad = int((df["cryoBoostDlLabel"] == "bad").sum())
-    unlabeled = total - good - bad
-    return {"total": total, "good": good, "bad": bad, "unlabeled": unlabeled}
-
-
 def generate_tilt_thumbnails(
     ts_ctf_star: str | Path, project_path: str | Path, png_dir: str | Path, progress_cb=None, target_size: int = 384
 ) -> int:
@@ -274,21 +260,6 @@ def _fs_motion_output_star(project_path: Path, job_model) -> Path | None:
     return None
 
 
-def fs_motion_star(project_path: str | Path, state) -> Path | None:
-    """The succeeded fsMotionAndCtf job's output star: the per-tilt table the tilt filter's
-    gallery shows and its Approve labels. None while fsMotion has not succeeded or its star
-    is not on disk."""
-    from services.models_base import JobStatus, JobType
-
-    proj = Path(project_path)
-    for jm in (getattr(state, "jobs", None) or {}).values():
-        if getattr(jm, "job_type", None) == JobType.FS_MOTION_CTF and jm.execution_status == JobStatus.SUCCEEDED:
-            star = _fs_motion_output_star(proj, jm)
-            if star is not None:
-                return star
-    return None
-
-
 def ensure_tilt_thumbnails(project_path: str | Path, state) -> bool:
     """Render the PNG previews of fsMotion's motion-corrected averages in the
     background if this project has none yet. Returns True when a task was submitted.
@@ -298,8 +269,8 @@ def ensure_tilt_thumbnails(project_path: str | Path, state) -> bool:
     tilt-filter job in the pipeline. Callers: both status reconcilers, on the
     fsMotion -> SUCCEEDED edge, and the Journey, which self-heals a run whose edge
     no server was around to observe. No-op when the PNGs already exist, when
-    fsMotion hasn't succeeded, or when its output star isn't on disk. dedup_key
-    matches ui/tilt_filter_panel.py so a manual click cannot double up with this.
+    fsMotion hasn't succeeded, or when its output star isn't on disk. dedup_key is
+    thumbnail_task_key's (ui/tilt_previews.py), which the tilt pages read to tell while it runs.
     """
     from services.background_tasks import get_background_task_registry
     from services.models_base import JobStatus, JobType

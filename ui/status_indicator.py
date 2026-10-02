@@ -6,30 +6,29 @@ from ui.current_project import current_project_state
 
 _DOT_COLORS = {
     JobStatus.SCHEDULED: "#fbbf24",
-    JobStatus.QUEUED:    "#a855f7",
-    JobStatus.RUNNING:   "#3b82f6",
+    JobStatus.QUEUED: "#a855f7",
+    JobStatus.RUNNING: "#3b82f6",
     JobStatus.SUCCEEDED: "#10b981",
-    JobStatus.FAILED:    "#ef4444",
-    JobStatus.UNKNOWN:   "#9ca3af",
+    JobStatus.FAILED: "#ef4444",
+    JobStatus.UNKNOWN: "#9ca3af",
 }
 
 
 _DOT_PULSES = {
-    JobStatus.RUNNING:   "pulse-running",
-    JobStatus.QUEUED:    "pulse-running",
+    JobStatus.RUNNING: "pulse-running",
+    JobStatus.QUEUED: "pulse-running",
     JobStatus.SUCCEEDED: "pulse-success",
-    JobStatus.FAILED:    "pulse-failed",
+    JobStatus.FAILED: "pulse-failed",
 }
-
 
 
 _BADGE_STYLES = {
     JobStatus.SCHEDULED: ("background:#fef3c7;", "color:#92400e;"),
-    JobStatus.QUEUED:    ("background:#f3e8ff;", "color:#6b21a8;"),
-    JobStatus.RUNNING:   ("background:#dbeafe;", "color:#1e40af;"),
+    JobStatus.QUEUED: ("background:#f3e8ff;", "color:#6b21a8;"),
+    JobStatus.RUNNING: ("background:#dbeafe;", "color:#1e40af;"),
     JobStatus.SUCCEEDED: ("background:#d1fae5;", "color:#065f46;"),
-    JobStatus.FAILED:    ("background:#fee2e2;", "color:#991b1b;"),
-    JobStatus.UNKNOWN:   ("background:#f3f4f6;", "color:#1f2937;"),
+    JobStatus.FAILED: ("background:#fee2e2;", "color:#991b1b;"),
+    JobStatus.UNKNOWN: ("background:#f3f4f6;", "color:#1f2937;"),
 }
 
 
@@ -52,7 +51,16 @@ def _running_spinner_html(size_px: int = 14, color: str = "#3b82f6") -> str:
     )
 
 
-def _dot_html(status: JobStatus, is_orphaned: bool = False) -> str:
+def _dot_html(status: JobStatus, is_orphaned: bool = False, parked_since: str | None = None) -> str:
+    """The job's status dot. `parked_since` (HH:MM) draws a scheduled job that a run parked
+    behind the tilt-filter review: an amber ring instead of the filled dot."""
+    if parked_since is not None and status == JobStatus.SCHEDULED and not is_orphaned:
+        tip = f"Parked: waits for the tilt-filter review since {parked_since}; Approve submits it."
+        return (
+            '<span class="status-dot" '
+            'style="width:8px;height:8px;border-radius:50%;display:inline-block;box-sizing:border-box;'
+            f'border:2px solid #f59e0b;background:transparent;" title="{tip}"></span>'
+        )
     if is_orphaned:
         color = "#f97316"
         pulse = "pulse-orphaned"
@@ -69,10 +77,7 @@ def _dot_html(status: JobStatus, is_orphaned: bool = False) -> str:
 
 
 def _badge_html(
-    status: JobStatus,
-    is_orphaned: bool = False,
-    missing_inputs: list | None = None,
-    slurm_job_id: str | None = None,
+    status: JobStatus, is_orphaned: bool = False, missing_inputs: list | None = None, slurm_job_id: str | None = None
 ) -> str:
     bg, txt = _BADGE_STYLES.get(status, ("background:#f3f4f6;", "color:#1f2937;"))
     label = status.value
@@ -98,6 +103,7 @@ def _badge_html(
 
 class BoundStatusBadge:
     """Status badge bound to a job instance by instance_id."""
+
     def __init__(self, instance_id: str):
         state = current_project_state()
         job_model = state.jobs.get(instance_id)
@@ -130,8 +136,6 @@ class BoundStatusDot:
         ui.html("", sanitize=False, tag="span").bind_content_from(
             job_model, "execution_status", backward=lambda s, jm=job_model: _dot_html(s, is_orphaned=jm.is_orphaned)
         )
-
-
 
 
 ReactiveStatusDot = BoundStatusDot

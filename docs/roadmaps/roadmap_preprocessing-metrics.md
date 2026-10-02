@@ -29,9 +29,9 @@ who explicitly wanted honesty about what each number means and what's real vs pl
   (GridCTF tiles max−min) + `motion_track_x/y/source` (Warp's `average/<frame>_motion.json`, else the
   `<GridMovementX/Y>` nodes); alignment per-frame `average_intensity` / `masked_fraction` (tomostar) +
   `fov_fraction` (per-TS XML `<FOVFraction>`, joined by `<MoviePath>`); tsCtf TS output `ctf_resolution`
-  (root `CTFResolutionEstimate`) + `plane_normal`. **Existing projects re-earn these without recompute:**
-  `venv/bin/python3 crboost_reingest.py <project> [--job tsCtf]` (re-runs the adapters' `ingest()` over the
-  job dirs' `.ok` items, saves the registry).
+  (root `CTFResolutionEstimate`) + `plane_normal`. Registries written before these fields read "not recorded" for
+  them: the re-ingest script that backfilled them was a prototyping stopgap, deleted 2026-10-02 (roadmap 26 F4);
+  test data is re-run through the current code instead.
 - **Curves** (`services/tilt_series/warp_curves.py`, new, pure Python, memoized by mtime): frameseries
   `PS1D` / `SimulatedScale` / `SimulatedBackground` and tiltseries `TiltPS1D` / `TiltSimulatedScale` per Z,
   plus the CTF² model computed from the same XML's `<CTF>` (Defocus, Cs, kV, amplitude, phase) — Warp's

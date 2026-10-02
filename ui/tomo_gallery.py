@@ -42,7 +42,6 @@ from typing import Any
 from nicegui import ui
 
 from services.dashboard_data import position_label, tilt_thumb_dir, vis_asset_url
-from services.models_base import JobType
 from services.project_state import get_project_state_for
 from services.tilt_series_service import ensure_tilt_thumbnails
 from services.visualization.preview_orchestrator import _find_warp_tomo_preview, read_preview_manifest
@@ -54,12 +53,9 @@ from ui.components.reactive import SingleFlight
 from ui.components.segmented import render_segmented
 from ui.dashboard.css import ensure_assets_loaded
 from ui.tilt_previews import (
-    STRIP_CLICK_JS,
     TILT_CLICK_JS,
-    card_grid_html,
+    TiltGallery,
     collect_tilt_groups,
-    group_header_html,
-    legend_html,
     mosaic_html,
     open_tilt_viewer,
     registry_tilt_series,
@@ -74,8 +70,6 @@ TOMOGRAMS_TAB, TILTS_TAB = "tomograms", "tilts"
 # Tile column width per size step (CSS grid minmax floor).
 _SIZES: tuple[tuple[str, str, int], ...] = (("s", "S", 150), ("m", "M", 240), ("l", "L", 380))
 DEFAULT_SIZE = "m"
-# Tilt card column width per size step, for the Tilts tab.
-_TILT_CARD_PX = {"s": 90, "m": 130, "l": 190}
 
 # The mosaic toggle's glyph: four squares, in currentColor.
 _MOSAIC_ICON = (
@@ -315,11 +309,11 @@ class TomoGalleryPage:
         self._group_by_ts: dict[str, dict] = {}
         self._tilt_by_key: dict[str, dict] = {}  # tilts that show: a preview or an average
         self._frame_keys: set[str] = set()  # every tilt, as the header strips draw them
+        # The Tilts tab's gallery; it keeps its open groups, sort, show and metrics across renders.
+        self.tilt_gallery = TiltGallery(self.project_path, size=self.size)
         # Kept on the page, so a size switch, a Refresh or the pending poll keeps them.
         self.open_mosaics: set[str] = set()  # tiles showing their tilts instead of the slice
-        self.expanded: set[str] = set()  # tilt groups open in the Tilts tab
         self._tiles: dict[str, Any] = {}
-        self._groups_ui: dict[str, dict] = {}
         self._flight = SingleFlight()
         self._refs: dict[str, Any] = {}
         self._collected = False
@@ -369,6 +363,7 @@ class TomoGalleryPage:
         self._group_by_ts = {g["ts"]: g for g in self.tilt_groups}
         self._tilt_by_key = {t["key"]: t for g in self.tilt_groups for t in g["tilts"]}
         self._frame_keys = {s.frame_id for g in self.tilt_groups for s, _title in g["ticks"]}
+        self.tilt_gallery.set_data(self.tilt_groups, self.tilt_facts)
         self.tilt_awaiting = sum(1 for t in self._tilt_by_key.values() if t["png"] is None and t["mrc"])
         if self.tilt_awaiting and not any(g["n_png"] for g in self.tilt_groups):
             # No previews at all: the pass that makes them normally starts when fsMotion lands.
@@ -504,8 +499,7 @@ class TomoGalleryPage:
     def _render_tab_controls(self) -> None:
         if self.tab == TILTS_TAB:
             if self.tilt_groups:
-                house_button("Expand all", lambda: self._expand_all(True))
-                house_button("Collapse all", lambda: self._expand_all(False))
+                self.tilt_gallery.render_controls()
             return
         sources = self._source_options()
         species = self._all_species()
@@ -677,110 +671,16 @@ class TomoGalleryPage:
     # ── Tilts tab ─────────────────────────────────────────────────────────────
 
     def _render_tilts(self) -> None:
-        """Every tilt preview, one collapsible group per tilt series. A group's cards are
-        built on its first expand: a project holds thousands of tilts."""
-        self._groups_ui = {}
+        """Every tilt preview, one collapsible group per tilt series (TiltGallery), under the
+        notes only this page knows: the registry error and the previews still being made."""
+        notes: list[tuple[str, str, bool]] = []
         if self.tilt_error:
-            self._render_tilts_note(self.tilt_error, color="#b45309")
-        if not self.tilt_groups:
-            if not self.tilt_error:
-                with ui.element("div").classes("cb-empty"):
-                    ui.icon("collections", size="40px").classes("text-gray-400")
-                    ui.label("No tilts yet.").classes("text-sm text-gray-500")
-                    ui.label("A tilt appears here once motion correction (fsMotion) has made its average.").classes(
-                        "text-[11px] italic text-gray-400 text-center"
-                    ).style("max-width: 460px;")
-            return
+            notes.append((self.tilt_error, "#b45309", False))
         if self.tilt_awaiting:
             running = self._thumbs_running()
             tail = "; they are being rendered in the background." if running else "."
-            self._render_tilts_note(f"{self.tilt_awaiting} tilts have no preview image yet{tail}", spinner=running)
-        for note in self._lacking_notes():
-            self._render_tilts_note(note)
-        looks = self.tilt_facts.get("looks") or set()
-        if looks:
-            with ui.element("div").style("padding: 8px 10px 0;"):
-                ui.html(legend_html(looks), sanitize=False)
-        card_px = _TILT_CARD_PX[self.size]
-        with ui.element("div").style("display: flex; flex-direction: column; gap: 6px; padding: 10px;"):
-            for group in self.tilt_groups:
-                self._render_tilt_group(group, card_px)
-
-    def _lacking_notes(self) -> list[str]:
-        """One line per field family some tilt series lack, naming the backfill that fills it."""
-        lacking = self.tilt_facts.get("lacking") or {}
-        n = self.tilt_facts.get("n_series", 0)
-        cmd = f"venv/bin/python3 crboost_reingest.py {self.project_path}"
-        notes = []
-        if lacking.get("counts"):
-            notes.append(
-                f"{lacking['counts']} of {n} tilt series have no mdoc exposure counts in the registry, so their dark "
-                f"exposures are not marked. To fill them, with the server stopped: {cmd} --mdoc"
-            )
-        if lacking.get("alignment"):
-            notes.append(
-                f"{lacking['alignment']} of {n} tilt series have an alignment run without a per-tilt list in the "
-                "registry, so which of their tilts are in the tomogram is unknown. To fill it, with the server "
-                f"stopped: {cmd} --job {JobType.TS_ALIGNMENT.value}"
-            )
-        if lacking.get("qc"):
-            notes.append(
-                f"{lacking['qc']} of {n} tilt series have no per-tilt CTF fit or motion in the registry. To fill "
-                f"them, with the server stopped: {cmd}"
-            )
-        return notes
-
-    def _render_tilts_note(self, text: str, *, color: str = "#94a3b8", spinner: bool = False) -> None:
-        with ui.element("div").style("display: flex; align-items: center; gap: 6px; padding: 8px 10px 0;"):
-            if spinner:
-                ui.spinner(size="14px", color="indigo-400")
-            ui.label(text).style(f"font-size: 10px; color: {color};")
-
-    def _render_tilt_group(self, group: dict, card_px: int) -> None:
-        ts = group["ts"]
-        with ui.element("div").classes("cb-tp-group"):
-            head = ui.element("div").classes("cb-tp-head")
-            with head:
-                chevron = ui.label("▸").classes("cb-tp-chev")
-                ui.label(group["label"]).classes("cb-tp-name")
-                ui.label(ts).classes("cb-tp-ts")
-                ui.label(str(len(group["tilts"]))).classes("cb-tp-n").tooltip("Tilts with a preview or an average")
-                # What the tilts are, and the strip: a tick opens its tilt, the rest of the header toggles.
-                summary = ui.html(group_header_html(group, self.tilt_facts.get("span")), sanitize=False)
-                summary.style("flex: 0 0 auto;").on("click", handler=self._on_tilt_click, js_handler=STRIP_CLICK_JS)
-            body = ui.element("div").style("padding: 4px; display: none;")
-        ref = {"body": body, "chevron": chevron, "group": group, "card_px": card_px, "filled": False}
-        self._groups_ui[ts] = ref
-        head.on("click", lambda _e, t=ts: self._set_group_open(t, t not in self.expanded))
-        if ts in self.expanded:
-            self._show_group(ref, True)
-
-    def _set_group_open(self, ts: str, on: bool) -> None:
-        if on:
-            self.expanded.add(ts)
-        else:
-            self.expanded.discard(ts)
-        ref = self._groups_ui.get(ts)
-        if ref is not None:
-            self._show_group(ref, on)
-
-    def _show_group(self, ref: dict, on: bool) -> None:
-        # Display written in full each time: .style() merges, and a left-out display would
-        # keep the earlier `none`.
-        ref["body"].style(f"padding: 4px; display: {'block' if on else 'none'};")
-        if on:
-            ref["chevron"].classes(add="open")
-        else:
-            ref["chevron"].classes(remove="open")
-        if on and not ref["filled"]:
-            ref["filled"] = True
-            with ref["body"]:
-                cards = ui.html(card_grid_html(ref["group"]["tilts"], ref["card_px"]), sanitize=False)
-            cards.on("click", handler=self._on_tilt_click, js_handler=TILT_CLICK_JS)
-
-    def _expand_all(self, on: bool) -> None:
-        for ts in list(self._groups_ui):
-            self._set_group_open(ts, on)
+            notes.append((f"{self.tilt_awaiting} tilts have no preview image yet{tail}", "#94a3b8", running))
+        self.tilt_gallery.render(notes)
 
     # ── Actions ───────────────────────────────────────────────────────────────
 
@@ -794,7 +694,10 @@ class TomoGalleryPage:
     def _select_size(self, key: str) -> None:
         self.size = key
         self._refs["seg_size"].set_active(key)
-        self._rerender_body()
+        # The tilt cards follow by one CSS variable; only the wall re-renders.
+        self.tilt_gallery.set_size(key)
+        if self.tab != TILTS_TAB:
+            self._rerender_body()
 
     def _select_tab(self, key: str) -> None:
         self.tab = key

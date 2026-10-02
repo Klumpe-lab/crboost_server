@@ -768,3 +768,158 @@ def build_ctf_fit_chart(
         "tooltip": _tooltip(_FIT_TOOLTIP_JS),
         "series": series,
     }
+
+
+# ── The tilt filter's distributions (ui/tilt_filter_panel.py) ──
+
+# Why a tilt is out of its tomogram or about to be, bottom of the stack first, then the dark
+# tilts kept (in the tomogram, or to be) on top. A tilt counts once, under the first that
+# applies. The colours passed the palette validator in this order (every adjacent pair
+# ΔE ≥ 13 under colour-vision deficiency, ≥ 15 with full colour vision); the legend and the
+# hover carry each count as text.
+TILT_CAUSES = (
+    ("dropped", "dropped by the verdict", "#e34948"),
+    ("model", "flagged by the model", "#4a3aa7"),
+    ("yours", "flagged by you", "#e87ba4"),
+    ("warp", "left out by Warp's import", "#2a78d6"),
+    ("dark", "dark, kept", "#eda100"),
+)
+# The P(bad) histogram's series, left to right in a bin; validated in this order too.
+P_BAD_LABELS = (
+    ("good", "your label: good", "#1baf7a"),
+    ("untouched", "untouched", "#2a78d6"),
+    ("bad", "your label: bad", "#e34948"),
+)
+_LINE_KEY = (
+    "'<span style=\"display:inline-block;width:10px;height:2px;background:' + p.color + "
+    "';vertical-align:middle;margin-right:6px\"></span>'"
+)
+_BAND_TOOLTIP_JS = r"""
+(ps) => {
+  if (!Array.isArray(ps)) ps = [ps];
+  let h = __OPEN__ + '<div style="font-weight:600">' + ps[0].axisValueLabel + ' |stage tilt|</div>';
+  let total = 0;
+  for (const p of ps) {
+    const v = p.value;
+    if (!v) continue;
+    total += v;
+    h += '<div>' + __KEY__ + '<span style="font-family:IBM Plex Mono,monospace;font-weight:600">' + v
+      + '</span> ' + p.seriesName + '</div>';
+  }
+  if (!total) h += '<div style="color:#94a3b8">nothing out, flagged or dark</div>';
+  return h + '</div>';
+}
+""".replace("__OPEN__", _TOOLTIP_CARD_OPEN).replace("__KEY__", _LINE_KEY)
+_HIST_TOOLTIP_JS = r"""
+(p) => {
+  const d = p.data || [];
+  const lo = (d[0] - __HALF__).toFixed(2), hi = (d[0] + __HALF__).toFixed(2);
+  return __OPEN__ + '<div style="font-weight:600">P(bad) ' + lo + '–' + hi + '</div><div>' + __KEY__
+    + '<span style="font-family:IBM Plex Mono,monospace;font-weight:600">' + d[1] + '</span> ' + p.seriesName
+    + '</div></div>';
+}
+"""
+
+
+def _count_axis(name: str) -> dict:
+    """A count axis from zero, whole numbers only."""
+    axis = _axis(name, horizontal=False)
+    axis.update({"scale": False, "min": 0, "minInterval": 1})
+    return axis
+
+
+def build_tilt_band_chart(bands: list[str], counts: dict[str, list[int]]) -> dict:
+    """Tilts out of the tomograms or flagged, per band of |stage tilt| (`bands`, the axis
+    labels), stacked by cause (TILT_CAUSES; `counts` per cause key, one per band), with the
+    dark tilts in use as the top segment. Each band's top segment gets the rounded end; a 1 px
+    surface border on every segment makes the 2 px gap between them."""
+    tops = [next((k for k, _n, _c in reversed(TILT_CAUSES) if counts[k][i]), None) for i in range(len(bands))]
+    series = []
+    for key, name, color in TILT_CAUSES:
+        data = []
+        for i, n in enumerate(counts[key]):
+            item: dict = {"value": n}
+            if n and tops[i] == key:
+                item["itemStyle"] = {"borderRadius": [4, 4, 0, 0]}
+            data.append(item)
+        series.append(
+            {
+                "type": "bar",
+                "name": name,
+                "stack": "causes",
+                "data": data,
+                "barMaxWidth": 24,
+                "itemStyle": {"color": color, "borderColor": "#ffffff", "borderWidth": 1},
+                "emphasis": {"focus": "series"},
+            }
+        )
+    tooltip = _tooltip(_BAND_TOOLTIP_JS)
+    tooltip["axisPointer"] = {"type": "shadow", "shadowStyle": {"color": "rgba(148,163,184,0.12)"}}
+    x_axis = _axis("|stage tilt|", horizontal=True)
+    x_axis.update({"type": "category", "data": bands})
+    return {
+        "animation": False,
+        "grid": _grid(True),
+        "legend": _legend(True),
+        "tooltip": tooltip,
+        "xAxis": x_axis,
+        "yAxis": _count_axis("tilts"),
+        "series": series,
+    }
+
+
+def build_p_bad_histogram(counts: dict[str, list[int]], threshold: float | None) -> dict:
+    """The P(bad) histogram: equal bins over 0–1 (`counts` per P_BAD_LABELS key, one per bin),
+    a bar per label side by side in each bin on a log count axis, and the threshold as a dashed
+    line. Side by side, not stacked: on a log axis a stacked segment's length does not encode
+    its count."""
+    n_bins = len(next(iter(counts.values())))
+    half = 0.5 / n_bins
+    centers = [(i + 0.5) / n_bins for i in range(n_bins)]
+    series = []
+    for key, name, color in P_BAD_LABELS:
+        series.append(
+            {
+                "type": "bar",
+                "name": name,
+                "data": [[round(c, 4), n if n > 0 else None] for c, n in zip(centers, counts[key], strict=True)],
+                "barMaxWidth": 24,
+                "barGap": "10%",
+                "itemStyle": {"color": color, "borderRadius": [4, 4, 0, 0]},
+            }
+        )
+    if threshold is not None:
+        series[0]["markLine"] = {
+            "silent": True,
+            "symbol": "none",
+            "animation": False,
+            "lineStyle": {"type": "dashed", "color": "#334155", "width": 1},
+            "label": {
+                "formatter": f"threshold {threshold:.2f}",
+                "position": "insideEndTop",
+                "fontFamily": _MONO,
+                "fontSize": 9,
+                "color": "#334155",
+            },
+            "data": [{"xAxis": round(threshold, 4)}],
+        }
+    x_axis = _axis("P(bad)", horizontal=True)
+    x_axis.update({"min": 0, "max": 1, "interval": 0.1})
+    y_axis = _axis("tilts (log)", horizontal=False)
+    # Below 1, so a bin of one tilt still has height; the labels stay on whole numbers.
+    y_axis.update({"type": "log", "logBase": 10, "scale": False, "min": 0.6})
+    y_axis["axisLabel"] = {**y_axis["axisLabel"], ":formatter": "(v) => (v >= 1 ? v : '')"}
+    tooltip_js = (
+        _HIST_TOOLTIP_JS.replace("__OPEN__", _TOOLTIP_CARD_OPEN)
+        .replace("__KEY__", _LINE_KEY)
+        .replace("__HALF__", f"{half:.4f}")
+    )
+    return {
+        "animation": False,
+        "grid": _grid(True),
+        "legend": _legend(True),
+        "tooltip": _tooltip(tooltip_js, trigger="item"),
+        "xAxis": x_axis,
+        "yAxis": y_axis,
+        "series": series,
+    }

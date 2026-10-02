@@ -11,7 +11,7 @@ from services.configs.config_service import get_config_service
 from services.configs.starfile_service import StarfileService
 from services.job_models import ImportMoviesParams
 from services.jobs.spec import JOB_SPEC_BY_TYPE, JOB_SPECS, driver_invocation
-from services.jobs.tilt_filter import review_barrier
+from services.jobs.tilt_filter import FilterMode, dl_auto_filters, review_barrier, verdict_edges
 from services.path_resolution_service import PathResolutionError, PathResolutionService, get_context_paths
 from services.models_base import InstanceId
 from services.event_log import events
@@ -183,6 +183,20 @@ class PipelineOrchestratorService:
 
         if not instances_to_run:
             return ok(already_complete=True, message="All selected jobs are already finished.", pid=0)
+
+        # A DL-auto tilt filter is a chain job that alignment waits for by afterok, which only the
+        # afterok path has; and it rewrites the predictions a prediction run in flight is writing.
+        for iid in dl_auto_filters(state, instances_to_run):
+            if not state.use_afterok_orchestrator:
+                return err(
+                    f"The tilt filter ({iid}) is in DL auto, which runs as a chain job under the afterok "
+                    "orchestrator only. Switch it to Manual or DL review, or set use_afterok_orchestrator in conf.yaml."
+                )
+            if state.jobs[iid].predict_in_flight:
+                return err(
+                    f"A DL prediction run of the tilt filter ({iid}) is in flight; run the pipeline once it has "
+                    "landed or been cancelled."
+                )
 
         # An unapproved tilt filter in the run parks alignment, which applies its verdict, and
         # everything downstream of it; the rest runs during the review, and Approve submits the
@@ -383,19 +397,22 @@ class PipelineOrchestratorService:
 
     async def submit_parked(self, project_dir: Path) -> dict[str, Any]:
         """Approve's resume: submit the jobs a run parked behind the tilt filter, now approved.
+        A switch of the filter to DL auto resumes the same way, with the filter's own job
+        submitted ahead of them (_submit_chain's verdict edge), unless it has committed already.
 
         Their job dirs, paths and job.star are made now, so edits made during the review apply,
         and producers still queued or running gate them by afterok (_submit_chain). Parked jobs
         that left the pipeline, or have run or been queued since, drop out. Refused, keeping the
-        hold, while the filter is unapproved or a producer of a parked job has neither run nor
-        been queued."""
+        hold, while the filter is unapproved in a review mode or a producer of a parked job has
+        neither run nor been queued."""
         async with self._submit_lock(project_dir):
             state = self.backend.state_service.state_for(project_dir)
             hold = state.review_hold
             if hold is None:
                 return ok(submitted=[], message="No jobs are waiting for a review.")
             filter_job = state.jobs.get(hold.barrier)
-            if filter_job is None or filter_job.execution_status != JobStatus.SUCCEEDED:
+            auto = filter_job is not None and filter_job.mode == FilterMode.DL_AUTO
+            if filter_job is None or (filter_job.execution_status != JobStatus.SUCCEEDED and not auto):
                 return err(f"The tilt filter ({hold.barrier}) is not approved; the parked jobs keep waiting.")
 
             done_or_live = (JobStatus.SUCCEEDED, JobStatus.QUEUED, JobStatus.RUNNING)
@@ -404,6 +421,8 @@ class PipelineOrchestratorService:
                 for iid in hold.parked
                 if (jm := state.jobs.get(iid)) is not None and jm.execution_status not in done_or_live
             ]
+            if auto and filter_job.execution_status not in done_or_live:
+                parked.insert(0, hold.barrier)
             for producer, consumer in PathResolutionService(state).resolve_edges(parked):
                 status = state.jobs[producer].execution_status
                 if producer not in parked and status not in done_or_live:
@@ -417,7 +436,8 @@ class PipelineOrchestratorService:
             if not parked:
                 await self.backend.state_service.save_project(project_path=project_dir, force=True)
                 return ok(submitted=[], message="None of the parked jobs is left to run.")
-            events.info("%s: %s approved; submitting %s", project_dir.name, hold.barrier, ", ".join(parked))
+            why = "runs in DL auto" if auto else "approved"
+            events.info("%s: %s %s; submitting %s", project_dir.name, hold.barrier, why, ", ".join(parked))
             return await self._submit_chain(project_dir=project_dir, instances_to_run=parked, state=state)
 
     async def _submit_chain(self, project_dir: Path, instances_to_run: list[str], state) -> dict[str, Any]:
@@ -560,7 +580,7 @@ class PipelineOrchestratorService:
         # submitted consumer drops out here, so the consumer submits with no afterok dep -- correct,
         # since the producer's output is already on disk.
         resolver.invalidate_cache()
-        edges = resolver.resolve_edges(instances_to_run)
+        edges = resolver.resolve_edges(instances_to_run) + verdict_edges(state, instances_to_run)
         submit_ids = list(prepared)
         submit_set = set(submit_ids)
         # A producer outside the submitted set that is still queued or running gates its consumers
@@ -674,12 +694,15 @@ class PipelineOrchestratorService:
         if not script:
             return "echo 'Unknown Driver'; exit 1"
 
-        return driver_invocation(
+        cmd = driver_invocation(
             server_dir=server_dir,
             driver_script=server_dir / "drivers" / script,
             instance_id=instance_id,
             project_path=project_dir,
         )
+        # The tilt filter reaches the chain only in DL auto, where its job commits the verdict; a
+        # prediction run (backend.submit_tilt_filter_predict) starts the same driver without the flag.
+        return f"{cmd} --commit" if job_type == JobType.TILT_FILTER else cmd
 
     def _get_current_relion_counter(self, project_dir: Path) -> int:
         """

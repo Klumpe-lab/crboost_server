@@ -23,14 +23,7 @@ import tempfile
 from pathlib import Path
 from collections.abc import Iterable
 
-from services.tilt_series.models import (
-    Frame,
-    FrameOutput,
-    TiltSeries,
-    TiltSeriesOutput,
-    Tomogram,
-    TomogramOutput,
-)
+from services.tilt_series.models import Frame, FrameOutput, TiltSeries, TiltSeriesOutput, Tomogram, TomogramOutput
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +41,7 @@ logger = logging.getLogger(__name__)
 #         defocus_spread_um + motion_track_x/y/source; TsAlignmentPerFrame
 #         average_intensity / masked_fraction / fov_fraction; TsCtfTiltSeriesOutput
 #         ctf_resolution / plane_normal. Older registries read fine (fields
-#         default to None) and are backfilled by `crboost_reingest.py`.
+#         default to None).
 # (1, 5): additive Frame.p_bad (the DL classifier's P(bad), kept apart from the
 #         verdict). Frame.filter_probability is dropped on load: it held the winning
 #         class's probability (1.0 after a manual commit), not a P(bad).
@@ -71,8 +64,8 @@ class TiltSeriesRegistry:
         self._tilt_series: dict[str, TiltSeries] = {}
         # Fast reverse indexes rebuilt on mutation/load. Kept in sync with
         # _tilt_series; never set directly from outside.
-        self._frame_index: dict[str, TiltSeries] = {}       # frame_id → TS
-        self._filename_index: dict[str, Frame] = {}         # raw_filename → Frame
+        self._frame_index: dict[str, TiltSeries] = {}  # frame_id → TS
+        self._filename_index: dict[str, Frame] = {}  # raw_filename → Frame
         self._dirty_ts: set[str] = set()
         self._dirty_index: bool = False
         # Sidecar mtime observed when each TS was last parsed, so refresh_from_disk() can
@@ -220,22 +213,6 @@ class TiltSeriesRegistry:
         ts.frame_by_id(frame_id).p_bad = p_bad
         self._dirty_ts.add(ts.id)
 
-    def fill_frame_acquisition(self, frame_id: str, fields: dict) -> list[str]:
-        """Fill a frame's mdoc acquisition fields that are unset (None) from `fields`, as
-        import would have written them; a recorded value is never replaced. Returns the names
-        filled. Mutates in memory + marks the parent TS dirty when anything was filled; the
-        caller persists via save(). Raises KeyError if the frame is unknown."""
-        ts = self._frame_index.get(frame_id)
-        if ts is None:
-            raise KeyError(f"No frame with id {frame_id!r} in registry")
-        frame = ts.frame_by_id(frame_id)
-        filled = [k for k, v in fields.items() if v is not None and getattr(frame, k) is None]
-        for k in filled:
-            setattr(frame, k, fields[k])
-        if filled:
-            self._dirty_ts.add(ts.id)
-        return filled
-
     def filtered_out_frame_ids(self) -> set[str]:
         """The set of frame ids the tilt-filter has marked filtered-out."""
         return {f.id for ts in self._tilt_series.values() for f in ts.frames if f.is_filtered_out}
@@ -254,9 +231,7 @@ class TiltSeriesRegistry:
                 continue
             ts = self._tilt_series[ts_id]
             has_ts_output = job_instance_id in ts.outputs
-            has_tomo_output = (
-                ts.tomogram is not None and job_instance_id in ts.tomogram.outputs
-            )
+            has_tomo_output = ts.tomogram is not None and job_instance_id in ts.tomogram.outputs
             if has_ts_output or has_tomo_output:
                 continue
             # Otherwise every frame must carry the output
@@ -271,8 +246,7 @@ class TiltSeriesRegistry:
             problems.append("Incomplete per-frame outputs:\n  - " + "\n  - ".join(missing_frames))
         if problems:
             raise RuntimeError(
-                f"Registry job-completion check failed for job {job_instance_id!r}:\n  "
-                + "\n  ".join(problems)
+                f"Registry job-completion check failed for job {job_instance_id!r}:\n  " + "\n  ".join(problems)
             )
 
     # ── Persistence ────────────────────────────────────────────────────────
@@ -306,7 +280,8 @@ class TiltSeriesRegistry:
         if version[0] > REGISTRY_SCHEMA_VERSION[0]:
             logger.warning(
                 "Registry schema version %s is newer than code (%s); proceeding with caution",
-                version, REGISTRY_SCHEMA_VERSION,
+                version,
+                REGISTRY_SCHEMA_VERSION,
             )
 
         ts_ids = index.get("tilt_series", [])
@@ -480,25 +455,17 @@ class TiltSeriesRegistry:
         seen_frame_ids: set[str] = set()
         for ts in self._tilt_series.values():
             if ts.id != ts.mdoc_filename.rsplit(".", 1)[0]:
-                problems.append(
-                    f"TS {ts.id!r} id does not match mdoc stem {ts.mdoc_filename!r}"
-                )
+                problems.append(f"TS {ts.id!r} id does not match mdoc stem {ts.mdoc_filename!r}")
             for i, f in enumerate(ts.frames):
                 if f.tilt_index != i:
-                    problems.append(
-                        f"TS {ts.id!r}: frame at position {i} has tilt_index={f.tilt_index}"
-                    )
+                    problems.append(f"TS {ts.id!r}: frame at position {i} has tilt_index={f.tilt_index}")
                 if f.tilt_series_id != ts.id:
-                    problems.append(
-                        f"Frame {f.id!r} tilt_series_id={f.tilt_series_id!r} != parent {ts.id!r}"
-                    )
+                    problems.append(f"Frame {f.id!r} tilt_series_id={f.tilt_series_id!r} != parent {ts.id!r}")
                 if f.id in seen_frame_ids:
                     problems.append(f"Duplicate frame id across TS: {f.id!r}")
                 seen_frame_ids.add(f.id)
             if ts.tomogram is not None and ts.tomogram.tilt_series_id != ts.id:
-                problems.append(
-                    f"Tomogram {ts.tomogram.id!r} tilt_series_id does not match parent TS {ts.id!r}"
-                )
+                problems.append(f"Tomogram {ts.tomogram.id!r} tilt_series_id does not match parent TS {ts.id!r}")
         return problems
 
 

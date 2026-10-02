@@ -620,7 +620,7 @@ Files: `services/project_state.py`, `services/scheduling_and_orchestration/pipel
 | 10b | tilt filter: the ResNet replaces the dead CNN as the only registered model | chunk 10b below (2026-09-30, ruff-clean, not run) |
 | 10c | tilt filter: a landed DL run's predictions reach the gallery without a reload | chunk 10c below (built 2026-10-01, ruff-clean, not run) |
 | 10d | tilt filter: Clear labels replaces Set all good; only identical predictions read as a dead model | chunk 10d below (built 2026-10-01, ruff-clean, not run) |
-| 11 | tilt filter: DL auto runs the filter as a chain job that commits its own verdict | chunk 11 below (spec) |
+| 11 | tilt filter: DL auto runs the filter as a chain job that commits its own verdict | chunk 11 below; built 2026-10-02 as roadmap 26 F2 (ruff-clean, not run) |
 | 12 | pipeline builder: Stop and per-job Cancel keep the status refresher | chunk 12 below (spec) |
 | 13 | tilt filter: calibrate the P(bad) cuts on our labelled projects | chunk 13 below (spec) |
 
@@ -730,7 +730,7 @@ Files: `ui/tilt_filter_panel.py`, `services/jobs/tilt_filter.py`, `drivers/tilt_
   (Manual), the counts follow, and a page reload keeps them cleared. No project under the ResNet shows the liveness
   banner; the dead-model path is checked with chunk 11's zeroed copy.
 
-### Chunk 11 — DL auto (stage 3), spec
+### Chunk 11 — DL auto (stage 3), spec (built as roadmap 26 F2, 2026-10-02; refinements there)
 Files: `services/jobs/tilt_filter.py`, `drivers/tilt_filter.py`,
 `services/scheduling_and_orchestration/{pipeline_orchestrator_service,pipeline_runner}.py`,
 `ui/pipeline_builder/tilt_filter_row.py`, `ui/tilt_filter_panel.py`.
@@ -823,6 +823,8 @@ annotations, label sets, statistics, the Journey) moved on 2026-10-02 to
   Chunks 11–13 follow F.
 - **2026-10-02 (later):** stage F is specced in roadmap 26 §9 (F1–F5). Chunk 11 (DL auto) is built there as F2, on
   F1's registry-based commit; the row's DL auto choice sits in F3's settings dropdown. Chunks 12–13 still follow F.
+- **2026-10-02 (build):** stage F is built (F1–F5, ruff-clean, not run), chunk 11 as F2. Next: F's runtime pass, then
+  chunks 12–13.
 - U1 (13.2) built 2026-10-01 as its own commit, ruff-clean, not run. Next: the rest of §13, topic by topic. The PNGs
   stay post-fsMotion (13.1).
 - **2026-10-02:** 10c, 10d and U1 are committed on `main`, none run. §13 moved to roadmap 26, which proposes its first

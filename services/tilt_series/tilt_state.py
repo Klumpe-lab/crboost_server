@@ -7,12 +7,15 @@ caption read this one derivation, so a tilt reads the same wherever it appears:
   reconstruction use. None until alignment has recorded one for the series.
 - ``drop``: the committed tilt-filter verdict's reason, when the verdict drops the tilt.
 - ``review``: what the uncommitted review says, by the rule Approve commits with: a human's
-  label, else in DL review the model's call at the job's threshold.
-- ``p_bad``: the model's P(bad), in DL review only, as the filter panel shows it.
+  label, else in the DL modes the model's call at the job's threshold.
+- ``p_bad``: the model's P(bad), in the DL modes only, as the filter panel shows it.
 - ``exposure``: the tilt's mdoc mean counts over its series' median, and its class.
 
-Dark exposures are marked, never dropped here; dropping stays with the review and Approve.
-Pure: no I/O.
+And, per metric, the tilts whose value is an outlier among the project's tilts at the same
+|stage tilt| (``band_outliers``).
+
+Dark exposures and outliers are marked, never dropped here; dropping stays with the review and
+Approve. Pure: no I/O.
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from services.jobs.tilt_filter import FilterMode, effective_label
+from services.jobs.tilt_filter import DL_MODES, FilterMode, effective_label
 from services.tilt_series.models import TiltSeries
 
 # A tilt is dark when its mdoc mean counts fall under a fraction of its series' median. Raw
@@ -34,6 +37,20 @@ from services.tilt_series.models import TiltSeries
 BLANK_EXPOSURE_FRACTION = 0.01
 # Dim: under a tenth of the median. Reviewers label nearly every such tilt bad.
 DIM_EXPOSURE_FRACTION = 0.10
+
+# A metric's value is an outlier when it lies past the median of the project's tilts in the same
+# |stage tilt| band by more than this many robust SDs, on the metric's bad side. A normal spread
+# puts about 1 value in 740 past 3 SDs, so a few red values on a project of thousands of tilts
+# are noise, and a cluster of them is a finding.
+OUTLIER_ROBUST_SDS = 3.0
+# Band width in |stage tilt|: CTF fit, motion and alignment shift all worsen with tilt (the beam
+# path through the lamella lengthens), so a tilt is judged against tilts at its own tilt.
+OUTLIER_BAND_DEG = 10.0
+# A band with fewer values has a median and MAD too noisy to call anything an outlier.
+OUTLIER_MIN_BAND = 10
+# 1.4826 × the median absolute deviation estimates the SD of a normal spread, and a few wild
+# values (the ones being looked for) barely move it.
+_MAD_TO_SD = 1.4826
 
 Exposure = Literal["blank", "dim", "normal"]
 Review = Literal["human_bad", "human_good", "model_bad"]
@@ -123,7 +140,7 @@ def tilt_states(
     project has no tilt filter; `committed`, `labels` and `threshold` are its job's."""
     in_tomo = tomogram_frame_ids(ts, alignment_instance)
     ratios = exposure_ratios(ts)
-    dl = mode == FilterMode.DL_REVIEW
+    dl = mode in DL_MODES
     states = []
     for f in ts.frames:
         p_bad = f.p_bad if dl else None
@@ -165,3 +182,55 @@ def series_summary(states: Sequence[TiltState]) -> SeriesSummary:
         dropped=tuple(s for s in states if s.drop is not None),
         left_out=tuple(s for s in states if s.in_tomogram is False and s.drop is None),
     )
+
+
+@dataclass(frozen=True)
+class BandStat:
+    """One metric over the project's tilts in one |stage tilt| band."""
+
+    lo: float  # |stage tilt|, degrees, from
+    hi: float  # to
+    n: int
+    median: float
+    robust_sd: float  # 1.4826 × MAD; 0 when the band has no spread
+
+    @property
+    def judges(self) -> bool:
+        """Whether the band can call a value an outlier: enough values, and some spread."""
+        return self.n >= OUTLIER_MIN_BAND and self.robust_sd > 0
+
+    @property
+    def cut(self) -> float:
+        """Values above this are outliers (when the band judges)."""
+        return self.median + OUTLIER_ROBUST_SDS * self.robust_sd
+
+
+def band_outliers(points: Sequence[tuple[str, float, float]]) -> tuple[dict[str, BandStat], set[str]]:
+    """Each point's band, and the points that are outliers in it.
+
+    `points` are (key, stage tilt, value) for every tilt of the project that has the metric,
+    oriented so that higher is worse (a two-sided metric passes its absolute value). A point is
+    an outlier when its value exceeds its band's median by more than OUTLIER_ROBUST_SDS robust
+    SDs; a band that cannot judge (fewer than OUTLIER_MIN_BAND values, or no spread) marks
+    nothing."""
+    by_band: dict[int, list[tuple[str, float]]] = {}
+    for key, angle, value in points:
+        by_band.setdefault(int(abs(angle) // OUTLIER_BAND_DEG), []).append((key, value))
+    stats: dict[str, BandStat] = {}
+    outliers: set[str] = set()
+    for band, members in by_band.items():
+        values = [v for _key, v in members]
+        median = statistics.median(values)
+        mad = statistics.median(abs(v - median) for v in values)
+        stat = BandStat(
+            lo=band * OUTLIER_BAND_DEG,
+            hi=(band + 1) * OUTLIER_BAND_DEG,
+            n=len(values),
+            median=median,
+            robust_sd=_MAD_TO_SD * mad,
+        )
+        for key, value in members:
+            stats[key] = stat
+            if stat.judges and value > stat.cut:
+                outliers.add(key)
+    return stats, outliers
