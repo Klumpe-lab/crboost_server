@@ -1223,15 +1223,43 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 .cb-gal-badge-warn { background: rgba(180, 83, 9, 0.88); }
 .cb-gal-cap {
     display: flex; align-items: center; gap: 4px; padding: 3px 6px;
-    border-top: 1px solid #f1f5f9; cursor: pointer; min-width: 0;
+    border-top: 1px solid #f1f5f9; min-width: 0;
 }
-.cb-gal-cap:hover { background: #eef2ff; }
-.cb-gal-cap:hover .cb-gal-go { color: #4f46e5; }
 .cb-gal-name {
     font-size: 10px; color: #334155; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1;
 }
-.cb-gal-go { font-size: 10px; color: #cbd5e1; flex: 0 0 auto; }
+/* The top-left switch between a tile's slice and a mosaic of its tilt series. */
+.cb-gal-mosaic-toggle { background: rgba(15,23,42,0.62); color: #e2e8f0; }
+.cb-gal-mosaic-toggle:hover, .cb-gal-mosaic-toggle.on { background: rgba(37,99,235,0.88); color: #ffffff; }
+/* Tilt previews (ui/tilt_previews.py): the Tilts tab's groups and cards, and a tile's
+ * mosaic cells. A series is one HTML string; its sizes and layout are inline there. */
+.cb-tp-group { border: 1px solid #e5e7eb; border-radius: 5px; background: #ffffff; overflow: hidden; }
+.cb-tp-head {
+    display: flex; align-items: center; gap: 6px; padding: 3px 8px; min-width: 0;
+    background: #f8fafc; cursor: pointer; user-select: none;
+}
+.cb-tp-head:hover { background: #f1f5f9; }
+.cb-tp-chev { font-size: 9px; color: #94a3b8; transition: transform 0.15s; }
+.cb-tp-chev.open { transform: rotate(90deg); }
+.cb-tp-name { font-size: 10px; font-weight: 600; color: #334155; white-space: nowrap; }
+.cb-tp-ts {
+    font-family: ui-monospace, monospace; font-size: 9px; color: #94a3b8;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1;
+}
+.cb-tp-n { font-family: ui-monospace, monospace; font-size: 9px; color: #64748b; }
+.cb-tp-card {
+    border: 1px solid #e5e7eb; border-radius: 4px; overflow: hidden;
+    background: #ffffff; cursor: zoom-in;
+}
+.cb-tp-card:hover { border-color: #93c5fd; }
+.cb-tp-cap {
+    display: flex; gap: 6px; padding: 1px 5px; white-space: nowrap; overflow: hidden;
+    font-family: ui-monospace, monospace; font-size: 8px; color: #64748b; background: #fafafa;
+}
+.cb-tp-cap b { font-weight: 600; color: #0f172a; }
+.cb-tp-cell { cursor: zoom-in; }
+.cb-tp-cell:hover > * { outline: 1px solid #93c5fd; outline-offset: -1px; }
 /* Zoom: one tile at viewport scale. Sized here (not maximized) so the tomogram keeps
  * its aspect and the wall behind stays visible as context. */
 .cb-gal-zoom {

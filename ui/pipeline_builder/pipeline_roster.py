@@ -1012,8 +1012,6 @@ class RosterWidget(FingerprintedView):
             )
             self._refs["run_slot"] = run_slot
 
-            self._build_link_btn()
-
             self._sb_svg_btn("cross.svg", "Close project", lambda: ui.navigate.to("/"))
 
             ui.element("div").style("flex: 1;")
@@ -1876,65 +1874,6 @@ class RosterWidget(FingerprintedView):
         live = kind == "live"
         icon.classes(add="cb-protocol-live" if live else "", remove="" if live else "cb-protocol-live")
         tip.set_text(text)
-
-    def _build_link_btn(self):
-        """Copy-link: the URL that reproduces exactly where the user is.
-
-        A menu rather than a bare copy button on purpose — `navigator.clipboard` is a
-        secure-context API and this server is reached over plain http on the cluster, so
-        the write can quietly do nothing. Showing the URL (selectable) means the button
-        always works, with the copy icon as the fast path when the context allows it."""
-        from ui.components.copyable import copy_button
-        from ui.routing import route_to_path
-
-        writer = self.panel.callbacks.get("route_writer")
-        if writer is None:
-            return
-
-        def _absolute() -> str:
-            path = route_to_path(writer.current)
-            try:
-                origin = str(ui.context.client.request.base_url).rstrip("/")
-            except RuntimeError:
-                return path
-            return f"{origin}{path}"
-
-        btn = (
-            ui.button(icon="link")
-            .props("flat dense")
-            .style(
-                f"width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
-                f"color: {SB_MUTE}; background: transparent; min-width: 0;"
-            )
-        )
-        btn.tooltip("Link to this view — copy it, or send it to a colleague")
-        with btn:
-            menu = (
-                ui.menu()
-                .props('anchor="center right" self="center left" :offset="[8,0]"')
-                .style(
-                    "background: #ffffff; border: 1px solid #e2e8f0; border-radius: 5px; "
-                    "padding: 8px 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); max-width: 460px;"
-                )
-            )
-            with menu:
-                row = ui.element("div").style("display: flex; align-items: center; gap: 6px;")
-
-        def _fill() -> None:
-            # Rebuilt on every open: the route moves with each click, and a menu built
-            # once at rail time would hand out the URL of whatever view loaded first.
-            url = _absolute()
-            row.clear()
-            with row:
-                ui.label(url).style(
-                    "font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #475569; "
-                    "word-break: break-all; user-select: all;"
-                )
-                copy_button(url, tooltip="Copy link")
-
-        # The QMenu nested in the button opens on its own click; `before-show` fills it
-        # so the content is current without a flash of the previous route's URL.
-        menu.on("before-show", _fill)
 
     def _sb_svg_btn(self, svg_name, tooltip, on_click, active=False, ref_key=None, color_override=None, badge=False):
         bg = SB_ABG if active else "transparent"

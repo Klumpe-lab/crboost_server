@@ -1,4 +1,4 @@
-"""Tomograms — the birds-eye wall of reconstructions.
+"""Tomograms — the birds-eye wall of reconstructions, and every tilt beside it.
 
 One tile per tomogram the project knows about (the reconstruct job's
 ``tomograms.star`` first, then imported volumes — see
@@ -6,6 +6,9 @@ One tile per tomogram the project knows about (the reconstruct job's
 way the tilt-filter overview lays out tilts: everything at once, nothing selected.
 The Journey answers "how did THIS tilt-series go"; this answers "how do they all
 look", which is the question you ask before you pick one.
+
+Two tabs: Tomograms (the wall) and Tilts (every tilt preview, grouped by tilt series;
+``ui/tilt_previews.py``). A project with tilts and no tomograms opens on Tilts.
 
 Three switches, all of them just re-render from the already-collected rows:
 
@@ -15,10 +18,14 @@ Three switches, all of them just re-render from the already-collected rows:
   · **picks** — one toggle per species with picks on any tomogram; its dots are
     projected onto every tile that has them. Nothing picked yet ⇒ no toggles and
     plain slices, which is the de-novo project's normal state.
-  · **size** — how many tiles fit across.
+  · **size** — how many tiles (and tilt cards) fit across.
 
-A tile's image opens the zoom view; its caption opens that tomogram in the
-Journey. Images come from the same renderers the Journey uses (the WarpTools PNG
+A tile's image opens the zoom view, whose Journey button opens that tomogram in the
+Journey. The toggle in a tile's top-left corner swaps the slice for a mosaic of that
+series' tilts, in the same box; a tilt opens the full-size tilt viewer. The caption row
+under a tile is kept for metrics.
+
+Images come from the same renderers the Journey uses (the WarpTools PNG
 written by ts_reconstruct, else an X/Y slab we render and cache), so a tile and
 the Journey's Reconstruct card can never show different pictures — and a missing
 slab is auto-kicked here exactly as it is there, capped per render so opening the
@@ -33,8 +40,9 @@ from typing import Any
 
 from nicegui import ui
 
-from services.dashboard_data import position_label, vis_asset_url
+from services.dashboard_data import position_label, tilt_thumb_dir, vis_asset_url
 from services.project_state import get_project_state_for
+from services.tilt_series_service import ensure_tilt_thumbnails
 from services.visualization.preview_orchestrator import _find_warp_tomo_preview, read_preview_manifest
 from services.visualization.preview_render import is_output_stale
 from services.visualization.tomo_geometry import SOURCE_IMPORTED, TomoGeometry, all_geometries
@@ -43,12 +51,31 @@ from ui.components.dialogs import dialog_host
 from ui.components.reactive import SingleFlight
 from ui.components.segmented import render_segmented
 from ui.dashboard.css import ensure_assets_loaded
+from ui.tilt_previews import (
+    TILT_CLICK_JS,
+    card_grid_html,
+    collect_tilt_groups,
+    mosaic_html,
+    open_tilt_viewer,
+    registry_tilt_series,
+    thumbnail_task_key,
+)
 
 RECON_SOURCE = "recon"
+TOMOGRAMS_TAB, TILTS_TAB = "tomograms", "tilts"
 
 # Tile column width per size step (CSS grid minmax floor).
 _SIZES: tuple[tuple[str, str, int], ...] = (("s", "S", 150), ("m", "M", 240), ("l", "L", 380))
 DEFAULT_SIZE = "m"
+# Tilt card column width per size step, for the Tilts tab.
+_TILT_CARD_PX = {"s": 90, "m": 130, "l": 190}
+
+# The mosaic toggle's glyph: four squares, in currentColor.
+_MOSAIC_ICON = (
+    '<svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor" style="display: block;">'
+    '<rect width="4" height="4"/><rect x="6" width="4" height="4"/>'
+    '<rect y="6" width="4" height="4"/><rect x="6" y="6" width="4" height="4"/></svg>'
+)
 
 # Dots kept per (tomogram, species). picks.json is sorted score-descending, so the
 # stride sample the wall draws from this is spread across the whole score range
@@ -269,6 +296,21 @@ class TomoGalleryPage:
         self.source: str = RECON_SOURCE
         self.size: str = DEFAULT_SIZE
         self.species_on: dict[str, bool] = {}
+        self.tab: str = TOMOGRAMS_TAB
+        self._tab_chosen = False
+        # Tilt previews (ui/tilt_previews.py): one group per tilt series.
+        self.tilt_groups: list[dict] = []
+        self.tilt_error: str | None = None
+        self.tilt_awaiting = 0  # tilts with an average but no preview PNG yet
+        self._png_dir: Path | None = None
+        self._thumbs_live = False  # the thumbnail pass was running at the last collection
+        self._group_by_ts: dict[str, dict] = {}
+        self._tilt_by_key: dict[str, dict] = {}
+        # Kept on the page, so a size switch, a Refresh or the pending poll keeps them.
+        self.open_mosaics: set[str] = set()  # tiles showing their tilts instead of the slice
+        self.expanded: set[str] = set()  # tilt groups open in the Tilts tab
+        self._tiles: dict[str, Any] = {}
+        self._groups_ui: dict[str, dict] = {}
         self._flight = SingleFlight()
         self._refs: dict[str, Any] = {}
         self._collected = False
@@ -305,10 +347,25 @@ class TomoGalleryPage:
         # Explicit-path resolution, not the tab accessor: this also runs from a timer
         # tick, where a bare lookup can hand back a blank throwaway state.
         state = get_project_state_for(self.project_path)
-        self.rows = await asyncio.to_thread(collect_rows, state, self.project_path)
+        tilt_series, self.tilt_error = registry_tilt_series(self.project_path)
+        png_dir = self._png_dir = tilt_thumb_dir(state, self.project_path)
+        self.rows, self.tilt_groups = await asyncio.to_thread(
+            lambda: (collect_rows(state, self.project_path), collect_tilt_groups(tilt_series, png_dir))
+        )
         self._collected = True
         for sp in self._all_species():
             self.species_on.setdefault(sp["id"], True)
+        self._group_by_ts = {g["ts"]: g for g in self.tilt_groups}
+        self._tilt_by_key = {t["key"]: t for g in self.tilt_groups for t in g["tilts"]}
+        self.tilt_awaiting = sum(1 for t in self._tilt_by_key.values() if t["png"] is None and t["mrc"])
+        if self.tilt_awaiting and not any(g["n_png"] for g in self.tilt_groups):
+            # No previews at all: the pass that makes them normally starts when fsMotion lands.
+            ensure_tilt_thumbnails(self.project_path, state)
+        self._thumbs_live = self._thumbs_running()
+        if not self._tab_chosen:
+            self._tab_chosen = True
+            if not self.rows and self.tilt_groups:
+                self.tab = TILTS_TAB
 
     async def _tick(self) -> None:
         if not self._active or not self._collected or not self._pending_count():
@@ -348,21 +405,37 @@ class TomoGalleryPage:
         return list(seen.values())
 
     def _pending_count(self) -> int:
-        """Tiles whose current source has no PNG yet but has a volume to render from."""
-        return sum(
+        """Tiles whose current source has no PNG yet but has a volume to render from (a
+        tile showing its tilts kicks no render), plus tilts waiting for a preview while
+        the thumbnail pass runs, or ran at the last collection (its last batch)."""
+        slabs = sum(
             1
             for row in self.rows
-            if (src := row["sources"].get(self.source)) and src["png"] is None and src["kick"] is not None
+            if row["ts"] not in self.open_mosaics
+            and (src := row["sources"].get(self.source))
+            and src["png"] is None
+            and src["kick"] is not None
         )
+        tilts = self.tilt_awaiting if self._thumbs_live or self._thumbs_running() else 0
+        return slabs + tilts
+
+    def _thumbs_running(self) -> bool:
+        from ui.background_task import BackgroundTask
+
+        if self._png_dir is None:
+            return False
+        return BackgroundTask.existing(thumbnail_task_key(self.project_path, self._png_dir)) is not None
 
     def _grid_signature(self) -> tuple:
         """What the wall draws, cheaply: which tiles have an image and how many picks
-        each carries. A poll that doesn't move this must not rebuild the DOM."""
+        each carries, and how many tilts each series shows and has previews for. A poll
+        that doesn't move this must not rebuild the DOM."""
         sig = []
         for row in self.rows:
             src = row["sources"].get(self.source)
             sig.append((row["ts"], src is not None and src["png"] is not None, tuple(sp["n"] for sp in row["species"])))
-        return tuple(sig)
+        tilts = tuple((g["ts"], len(g["tilts"]), g["n_png"]) for g in self.tilt_groups)
+        return tuple(sig), tilts, self.tilt_error
 
     def _source_options(self) -> list[tuple[str, str]]:
         """(key, label) for every source at least one tomogram can show."""
@@ -384,37 +457,55 @@ class TomoGalleryPage:
             body = ui.element("div").classes("cb-gal-body")
             self._refs["body"] = body
             with body:
-                self._render_grid()
+                self._render_body()
 
-    def _rerender_grid(self) -> None:
+    def _render_body(self) -> None:
+        if self.tab == TILTS_TAB:
+            self._render_tilts()
+        else:
+            self._render_grid()
+
+    def _rerender_body(self) -> None:
         body = self._refs.get("body")
         if body is None:
             return
         body.clear()
         with body:
-            self._render_grid()
+            self._render_body()
 
     def _render_toolbar(self) -> None:
-        sources = self._source_options()
-        species = self._all_species()
         with ui.element("div").classes("cb-gal-toolbar"):
-            ui.label("Tomograms").classes("cb-gal-title")
-            ui.label(f"{len(self.rows)}").classes("cb-gal-count").tooltip(
-                "Tomograms described by the reconstruct job's tomograms.star or imported into this project"
-            )
-            if len(sources) > 1:
-                ui.label("source").classes("cb-gal-toolbar-label")
-                if self.source not in dict(sources):
-                    self.source = sources[0][0]
-                self._refs["seg_source"] = render_segmented(sources, self.source, self._select_source)
-            if species:
-                ui.label("picks").classes("cb-gal-toolbar-label")
-                for sp in species:
-                    self._render_species_toggle(sp)
+            tabs = render_segmented([(TOMOGRAMS_TAB, "Tomograms"), (TILTS_TAB, "Tilts")], self.tab, self._select_tab)
+            tabs.set_badge(TOMOGRAMS_TAB, str(len(self.rows)))
+            tabs.set_badge(TILTS_TAB, str(len(self._tilt_by_key)))
+            self._refs["seg_tab"] = tabs
+            # The active tab's own controls: a tab switch rebuilds them, never the strip that was clicked.
+            controls = ui.element("div").style("display: flex; align-items: center; gap: 8px; flex-wrap: wrap;")
+            self._refs["tab_controls"] = controls
+            with controls:
+                self._render_tab_controls()
             ui.element("div").style("flex: 1;")
             ui.label("size").classes("cb-gal-toolbar-label")
             self._refs["seg_size"] = render_segmented([(k, lbl) for k, lbl, _w in _SIZES], self.size, self._select_size)
-            house_button("Refresh", self._reload_click, tooltip="Re-read the tomograms and previews from disk")
+            house_button("Refresh", self._reload_click, tooltip="Re-read the tomograms, tilts and previews from disk")
+
+    def _render_tab_controls(self) -> None:
+        if self.tab == TILTS_TAB:
+            if self.tilt_groups:
+                house_button("Expand all", lambda: self._expand_all(True))
+                house_button("Collapse all", lambda: self._expand_all(False))
+            return
+        sources = self._source_options()
+        species = self._all_species()
+        if len(sources) > 1:
+            ui.label("source").classes("cb-gal-toolbar-label")
+            if self.source not in dict(sources):
+                self.source = sources[0][0]
+            self._refs["seg_source"] = render_segmented(sources, self.source, self._select_source)
+        if species:
+            ui.label("picks").classes("cb-gal-toolbar-label")
+            for sp in species:
+                self._render_species_toggle(sp)
 
     def _render_species_toggle(self, sp: dict) -> None:
         on = self.species_on.get(sp["id"], True)
@@ -431,6 +522,7 @@ class TomoGalleryPage:
             return
         width = next(w for k, _lbl, w in _SIZES if k == self.size)
         kicks = 0
+        self._tiles = {}
         with (
             ui.element("div")
             .classes("cb-gal-grid")
@@ -451,35 +543,83 @@ class TomoGalleryPage:
     def _render_tile(self, row: dict, *, kicked: bool) -> int:
         """One tile. Returns 1 when it submitted a slab render, so the caller can cap
         how many a single pass kicks off."""
+        tile = ui.element("div").classes("cb-gal-tile")
+        self._tiles[row["ts"]] = tile
+        with tile:
+            return self._fill_tile(row, kicked=kicked)
+
+    def _fill_tile(self, row: dict, *, kicked: bool) -> int:
+        """A tile's frame and caption row: the slice, or, toggled, a mosaic of the series'
+        tilts in the same box. The caption row has the position label; the rest of it is
+        kept for metrics."""
+        group = self._group_by_ts.get(row["ts"])
+        spent = 0
+        if group is not None and row["ts"] in self.open_mosaics:
+            self._render_mosaic_frame(row, group)
+        else:
+            spent = self._render_slice_frame(row, group, kicked=kicked)
+        cap = ui.element("div").classes("cb-gal-cap")
+        cap.tooltip(row["ts"])
+        with cap:
+            ui.label(row["label"]).classes("cb-gal-name")
+        return spent
+
+    def _render_slice_frame(self, row: dict, group: dict | None, *, kicked: bool) -> int:
         src = row["sources"].get(self.source)
         spent = 0
-        with ui.element("div").classes("cb-gal-tile"):
-            frame = ui.element("div").classes("cb-gal-frame" + ("" if row["aspect"] else " cb-gal-frame-auto"))
-            if row["aspect"]:
-                frame.style(f"aspect-ratio: {row['aspect'][0]}/{row['aspect'][1]};")
-            frame.on("click", lambda _e, r=row: self._zoom(r))
-            frame.tooltip("Click to zoom")
-            with frame:
-                if src is None:
-                    self._render_frame_note("not produced by this source")
-                elif src["png"] is not None:
-                    ui.html(f"<img src='{vis_asset_url(str(src['png']))}' alt='{row['ts']}' />", sanitize=False)
-                    self._render_dot_layers(row, _DOT_R_WALL)
-                elif src["kick"] is not None:
-                    if kicked:
-                        spent = 1
-                        self._kick_slab(row, src)
-                    self._render_frame_note("rendering slice…", spinner=True)
-                else:
-                    self._render_frame_note("no volume on disk")
-                self._render_pick_badge(row)
-            cap = ui.element("div").classes("cb-gal-cap")
-            cap.on("click", lambda _e, ts=row["ts"]: self._open_journey(ts))
-            cap.tooltip(f"{row['ts']} — open in the Journey")
-            with cap:
-                ui.label(row["label"]).classes("cb-gal-name")
-                ui.label("↗").classes("cb-gal-go")
+        frame = ui.element("div").classes("cb-gal-frame" + ("" if row["aspect"] else " cb-gal-frame-auto"))
+        if row["aspect"]:
+            frame.style(f"aspect-ratio: {row['aspect'][0]}/{row['aspect'][1]};")
+        frame.on("click", lambda _e, r=row: self._zoom(r))
+        frame.tooltip("Click to zoom")
+        with frame:
+            if src is None:
+                self._render_frame_note("not produced by this source")
+            elif src["png"] is not None:
+                ui.html(f"<img src='{vis_asset_url(str(src['png']))}' alt='{row['ts']}' />", sanitize=False)
+                self._render_dot_layers(row, _DOT_R_WALL)
+            elif src["kick"] is not None:
+                if kicked:
+                    spent = 1
+                    self._kick_slab(row, src)
+                self._render_frame_note("rendering slice…", spinner=True)
+            else:
+                self._render_frame_note("no volume on disk")
+            self._render_pick_badge(row)
+            if group is not None:
+                self._render_mosaic_toggle(row["ts"], len(group["tilts"]), on=False)
         return spent
+
+    def _render_mosaic_frame(self, row: dict, group: dict) -> None:
+        """The series' tilts in the box the slice occupies, with no zoom click, dots or pick
+        badge. A tilt opens the full-size tilt viewer."""
+        aspect = row["aspect"]
+        cells, own_aspect = mosaic_html(group["tilts"], aspect[0] / max(aspect[1], 1) if aspect else None)
+        ratio = f"{aspect[0]}/{aspect[1]}" if aspect else own_aspect
+        frame = ui.element("div").classes("cb-gal-frame").style(f"aspect-ratio: {ratio}; cursor: default;")
+        with frame:
+            mosaic = ui.html(cells, sanitize=False).style("position: absolute; inset: 0;")
+            mosaic.on("click", handler=self._on_tilt_click, js_handler=TILT_CLICK_JS)
+            self._render_mosaic_toggle(row["ts"], len(group["tilts"]), on=True)
+
+    def _render_mosaic_toggle(self, ts: str, n: int, *, on: bool) -> None:
+        """The top-left corner switch between a tile's slice and its tilts (the pick badge
+        holds the top-right)."""
+        toggle = (
+            ui.element("div")
+            .classes("cb-gal-mosaic-toggle" + (" on" if on else ""))
+            .style(
+                "position: absolute; top: 3px; left: 3px; z-index: 2; width: 18px; height: 18px; "
+                "border-radius: 3px; display: flex; align-items: center; justify-content: center; cursor: pointer;"
+            )
+        )
+        # .stop: in slice mode the toggle sits inside the frame, whose click zooms.
+        toggle.on("click.stop", lambda _e, t=ts: self._toggle_mosaic(t))
+        toggle.tooltip(
+            "Back to the tomogram's slice" if on else f"Show this tilt series' {n} tilts in place of the slice"
+        )
+        with toggle:
+            ui.html(_MOSAIC_ICON, sanitize=False)
 
     def _render_pick_badge(self, row: dict) -> None:
         """Pick count in the tile's corner. Counted-but-not-drawn is stated, not
@@ -522,6 +662,81 @@ class TomoGalleryPage:
                 continue
             ui.html(_dots_svg(dots, sp["color"], radius), sanitize=False).classes("cb-gal-dotlayer")
 
+    # ── Tilts tab ─────────────────────────────────────────────────────────────
+
+    def _render_tilts(self) -> None:
+        """Every tilt preview, one collapsible group per tilt series. A group's cards are
+        built on its first expand: a project holds thousands of tilts."""
+        self._groups_ui = {}
+        if self.tilt_error:
+            self._render_tilts_note(self.tilt_error, color="#b45309")
+        if not self.tilt_groups:
+            if not self.tilt_error:
+                with ui.element("div").classes("cb-empty"):
+                    ui.icon("collections", size="40px").classes("text-gray-400")
+                    ui.label("No tilts yet.").classes("text-sm text-gray-500")
+                    ui.label("A tilt appears here once motion correction (fsMotion) has made its average.").classes(
+                        "text-[11px] italic text-gray-400 text-center"
+                    ).style("max-width: 460px;")
+            return
+        if self.tilt_awaiting:
+            running = self._thumbs_running()
+            tail = "; they are being rendered in the background." if running else "."
+            self._render_tilts_note(f"{self.tilt_awaiting} tilts have no preview image yet{tail}", spinner=running)
+        card_px = _TILT_CARD_PX[self.size]
+        with ui.element("div").style("display: flex; flex-direction: column; gap: 6px; padding: 10px;"):
+            for group in self.tilt_groups:
+                self._render_tilt_group(group, card_px)
+
+    def _render_tilts_note(self, text: str, *, color: str = "#94a3b8", spinner: bool = False) -> None:
+        with ui.element("div").style("display: flex; align-items: center; gap: 6px; padding: 8px 10px 0;"):
+            if spinner:
+                ui.spinner(size="14px", color="indigo-400")
+            ui.label(text).style(f"font-size: 10px; color: {color};")
+
+    def _render_tilt_group(self, group: dict, card_px: int) -> None:
+        ts = group["ts"]
+        with ui.element("div").classes("cb-tp-group"):
+            head = ui.element("div").classes("cb-tp-head")
+            with head:
+                chevron = ui.label("▸").classes("cb-tp-chev")
+                ui.label(group["label"]).classes("cb-tp-name")
+                ui.label(ts).classes("cb-tp-ts")
+                ui.label(str(len(group["tilts"]))).classes("cb-tp-n").tooltip("Tilts with a preview or an average")
+            body = ui.element("div").style("padding: 4px; display: none;")
+        ref = {"body": body, "chevron": chevron, "group": group, "card_px": card_px, "filled": False}
+        self._groups_ui[ts] = ref
+        head.on("click", lambda _e, t=ts: self._set_group_open(t, t not in self.expanded))
+        if ts in self.expanded:
+            self._show_group(ref, True)
+
+    def _set_group_open(self, ts: str, on: bool) -> None:
+        if on:
+            self.expanded.add(ts)
+        else:
+            self.expanded.discard(ts)
+        ref = self._groups_ui.get(ts)
+        if ref is not None:
+            self._show_group(ref, on)
+
+    def _show_group(self, ref: dict, on: bool) -> None:
+        # Display written in full each time: .style() merges, and a left-out display would
+        # keep the earlier `none`.
+        ref["body"].style(f"padding: 4px; display: {'block' if on else 'none'};")
+        if on:
+            ref["chevron"].classes(add="open")
+        else:
+            ref["chevron"].classes(remove="open")
+        if on and not ref["filled"]:
+            ref["filled"] = True
+            with ref["body"]:
+                cards = ui.html(card_grid_html(ref["group"]["tilts"], ref["card_px"]), sanitize=False)
+            cards.on("click", handler=self._on_tilt_click, js_handler=TILT_CLICK_JS)
+
+    def _expand_all(self, on: bool) -> None:
+        for ts in list(self._groups_ui):
+            self._set_group_open(ts, on)
+
     # ── Actions ───────────────────────────────────────────────────────────────
 
     def _select_source(self, key: str) -> None:
@@ -529,12 +744,42 @@ class TomoGalleryPage:
         # rebuilds itself), and only the grid below it needs re-rendering.
         self.source = key
         self._refs["seg_source"].set_active(key)
-        self._rerender_grid()
+        self._rerender_body()
 
     def _select_size(self, key: str) -> None:
         self.size = key
         self._refs["seg_size"].set_active(key)
-        self._rerender_grid()
+        self._rerender_body()
+
+    def _select_tab(self, key: str) -> None:
+        self.tab = key
+        self._refs["seg_tab"].set_active(key)
+        controls = self._refs["tab_controls"]
+        controls.clear()
+        with controls:
+            self._render_tab_controls()
+        self._rerender_body()
+
+    def _toggle_mosaic(self, ts: str) -> None:
+        """Swap one tile between its slice and its tilts; the rest of the wall stays as it is."""
+        if ts in self.open_mosaics:
+            self.open_mosaics.discard(ts)
+        else:
+            self.open_mosaics.add(ts)
+        tile = self._tiles.get(ts)
+        row = next((r for r in self.rows if r["ts"] == ts), None)
+        if tile is None or tile.is_deleted or row is None:
+            return
+        tile.clear()
+        with tile:
+            self._fill_tile(row, kicked=True)
+
+    def _on_tilt_click(self, e) -> None:
+        tilt = self._tilt_by_key.get((e.args or {}).get("key", ""))
+        if tilt is None:
+            ui.notify("That tilt is no longer in the registry; Refresh the view.", type="warning")
+            return
+        open_tilt_viewer(tilt, self.project_path)
 
     def _toggle_species(self, species_id: str) -> None:
         self.species_on[species_id] = not self.species_on.get(species_id, True)
