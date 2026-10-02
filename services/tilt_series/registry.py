@@ -220,6 +220,22 @@ class TiltSeriesRegistry:
         ts.frame_by_id(frame_id).p_bad = p_bad
         self._dirty_ts.add(ts.id)
 
+    def fill_frame_acquisition(self, frame_id: str, fields: dict) -> list[str]:
+        """Fill a frame's mdoc acquisition fields that are unset (None) from `fields`, as
+        import would have written them; a recorded value is never replaced. Returns the names
+        filled. Mutates in memory + marks the parent TS dirty when anything was filled; the
+        caller persists via save(). Raises KeyError if the frame is unknown."""
+        ts = self._frame_index.get(frame_id)
+        if ts is None:
+            raise KeyError(f"No frame with id {frame_id!r} in registry")
+        frame = ts.frame_by_id(frame_id)
+        filled = [k for k, v in fields.items() if v is not None and getattr(frame, k) is None]
+        for k in filled:
+            setattr(frame, k, fields[k])
+        if filled:
+            self._dirty_ts.add(ts.id)
+        return filled
+
     def filtered_out_frame_ids(self) -> set[str]:
         """The set of frame ids the tilt-filter has marked filtered-out."""
         return {f.id for ts in self._tilt_series.values() for f in ts.frames if f.is_filtered_out}

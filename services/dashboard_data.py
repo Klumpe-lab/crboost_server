@@ -204,7 +204,8 @@ def fsm_registry_df(project_path: Path, instance_id: str, ts_name: str) -> pd.Da
     column names the per-tilt star carried (so the plot helpers are unchanged) —
     plus the real per-tilt QC values as `cbCtfResolution`/`cbMeanFrameMovement`
     (registry ingests them from the Warp XML; the star columns for these are
-    1e-6 placeholders). None when the registry has no output for this job+TS."""
+    1e-6 placeholders), and `cbTiltNumber`, the tilt's number on every surface
+    (tilt_index + 1). None when the registry has no output for this job+TS."""
     ts = registry_ts_for(project_path, ts_name)
     if ts is None:
         return None
@@ -217,6 +218,7 @@ def fsm_registry_df(project_path: Path, instance_id: str, ts_name: str) -> pd.Da
             {
                 "rlnTomoNominalStageTiltAngle": f.nominal_tilt_angle_deg,
                 "rlnMicrographMovieName": f.raw_filename,
+                "cbTiltNumber": f.tilt_index + 1,
                 "rlnDefocusU": out.defocus_u_angstrom,
                 "rlnDefocusV": out.defocus_v_angstrom,
                 "rlnCtfAstigmatism": out.ctf_astigmatism,
@@ -232,26 +234,23 @@ def fsm_registry_df(project_path: Path, instance_id: str, ts_name: str) -> pd.Da
 def fsm_motion_tracks(project_path: Path, instance_id: str, ts_name: str) -> list[dict]:
     """Per-tilt beam-induced motion tracks from the fsMotion registry outputs:
     [{tilt, index, frame, x, y, source}] for the frames that carry one. `index`
-    counts frames WITH an fsMotion output, so it matches the row numbers of
-    `fsm_registry_df`. Empty when the registry holds no tracks for this run
-    (re-ingest with `crboost_reingest.py`)."""
+    is the tilt's number on every surface (tilt_index + 1). Empty when the
+    registry holds no tracks for this run (re-ingest with `crboost_reingest.py`)."""
     ts = registry_ts_for(project_path, ts_name)
     if ts is None:
         return []
     tracks: list[dict] = []
-    index = 0
     for f in ts.frames:
         out = f.outputs.get(instance_id)
         if out is None:
             continue
-        index += 1
         xs = getattr(out, "motion_track_x", None)
         if not xs:
             continue
         tracks.append(
             {
                 "tilt": f.nominal_tilt_angle_deg,
-                "index": index,
+                "index": f.tilt_index + 1,
                 "frame": f.raw_filename,
                 "x": list(xs),
                 "y": list(out.motion_track_y),
@@ -294,8 +293,9 @@ def tilt_thumb_urls(state, project_path: Path, frame_names) -> dict[str, str]:
 
 def _per_frame_entries_df(ts, instance_id: str, output_type: str, attr_cols: dict[str, str]) -> pd.DataFrame | None:
     """Shared tsCtf/alignment builder: TS-scoped output's per_frame entries →
-    per-tilt DataFrame in z order. Dropped tilts simply have no entry — the
-    registry never carries the ghost rows the emitted stars do."""
+    per-tilt DataFrame in z order, with `cbTiltNumber` (tilt_index + 1). Dropped
+    tilts simply have no entry — the registry never carries the ghost rows the
+    emitted stars do."""
     out = ts.outputs.get(instance_id)
     if out is None or getattr(out, "output_type", "") != output_type or not getattr(out, "per_frame", None):
         return None
@@ -306,6 +306,7 @@ def _per_frame_entries_df(ts, instance_id: str, output_type: str, attr_cols: dic
         row = {
             "rlnTomoNominalStageTiltAngle": f.nominal_tilt_angle_deg if f else None,
             "rlnMicrographMovieName": f.raw_filename if f else e.frame_id,
+            "cbTiltNumber": f.tilt_index + 1 if f else None,
         }
         for col, attr in attr_cols.items():
             row[col] = getattr(e, attr)

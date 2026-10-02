@@ -1,10 +1,11 @@
 # Roadmap 26 — Tilts, Tomograms and the Journey: what each tilt is, everywhere
 
-**Status:** scoped 2026-10-02; proposed, nothing built beyond U1. Split out of roadmap 06 §13, which anticipated it:
-the design recorded there on 2026-10-01 is appendix A, verbatim (A.n = 06 §13.n). A.2 is U1, built 2026-10-01 and not
-run. The body answers A.5 (annotations), A.7 (statistics) and A.8 (the Journey); A.3 (buttons), A.4 (the barrier's
-flags) and A.6 (label sets) are not designed here. The maintainer's decisions are owed in §10; the recommended first
-build is V1 (§9).
+**Status:** scoped 2026-10-02; §10 decided the same day; V1 built 2026-10-02 (ruff-clean, not run). Split out of
+roadmap 06 §13, which anticipated it: the design recorded there on 2026-10-01 is appendix A, verbatim (A.n = 06
+§13.n). A.2 is U1, built 2026-10-01 and not run. The body answers A.5 (annotations), A.7 (statistics) and A.8 (the
+Journey); A.3 (buttons), A.4 (the barrier's flags) and A.6 (label sets) are not designed here. Next: stage F (§9,
+the tilt-filter job's row and page on the shared components), then V2; the V1 check (§9, user) whenever convenient.
+The mdoc backfill is a prototyping stopgap, removed once test data is re-run with the current code (§2).
 
 **In one line.** Every surface that shows a tilt (a Tilts card, a cell of a tomogram's mosaic, a Journey point) says
 the same three things about it, from one derivation: whether it is in the tomogram and, if not, why; what the review
@@ -36,6 +37,15 @@ per tilt, nothing else beyond angle, order, dose, the fsMotion / tsCtf defocus a
   --mdoc` (new in V1). The mdocs are on disk (`TiltSeries.mdoc_path`); Grid3's carry `MinMaxMean` for every tilt.
 
 A view states a missing field once, in a note line that names the backfill; never per card, never as 0.
+
+**The backfills are a prototyping stopgap (maintainer, 2026-10-02).** They exist only so the new views can be tried
+on registries written by older code. A project created and run with the current code records the mdoc fields at
+creation and the QC fields as each job finishes, so it never needs them. Test data is re-run through the current code
+instead (the copia protocol makes a fresh project), and the stopgap goes: `--mdoc`
+(`crboost_reingest.py`, `TiltSeriesRegistry.fill_frame_acquisition`) and the Tilts tab's note lines that print the
+command (`TomoGalleryPage._lacking_notes`). From then on a field an old registry lacks reads "not recorded", with no
+command. Users are never pointed at a shell command. Whether the older `crboost_reingest.py` (the 1.4 QC re-ingest)
+goes with it is asked in stage F.
 
 ## 3. One tilt, one identity
 - **Key:** `Frame.id` on every surface. A PNG's stem resolves through its average's stem (U1); a Journey row's frame
@@ -196,10 +206,11 @@ every chart.
 ## 9. Stages
 | Stage | What | State |
 |---|---|---|
-| V1 | What each tilt is, read-only: the state, caption rows, strips, one numbering, the mdoc backfill | proposed first build |
-| V2 | The Journey: hovers, marked charts, the filter section's charts, links, routes | outline |
+| V1 | What each tilt is, read-only: the state, caption rows, strips, one numbering, the mdoc backfill | built 2026-10-02, not run |
+| F | The tilt-filter job: the row's flags, and the job page rebuilt on the Tilts tab's components | **next** (2026-10-02); opens with the maintainer's UI/UX answers |
+| V2 | The Journey: hovers, marked charts, the filter section's charts, links, routes | outline; after F |
 | V3 | Summary charts, the metric slot, sort and show switches | outline |
-| V4 | The review moves into the Tilts view | direction; decide before V3 |
+| V4 | The review moves into the Tilts view | decided 2026-10-02: yes, after V2 |
 
 ### V1 — what each tilt is (recommended first build)
 Read-only, touches no job, and shows §1.1 on data we have. V2 and roadmap 22 build on its derivation.
@@ -228,6 +239,29 @@ Read-only, touches no job, and shows §1.1 on data we have. V2 and roadmap 22 bu
   CTF-fit readout, so a card's `#N` and a hover's "Tilt N" agree from V1 on.
 - **Not in V1:** the Journey's charts and links, routes (V2); summary charts, the metric slot, the switches (V3);
   labelling in the Tilts tab (V4).
+- **Built 2026-10-02** (ruff-clean, not run; `check_boundaries.py` not run either, the sandbox has no Python; no new
+  import crosses R1–R4 by reading), as specced, with these refinements:
+  - The dark rule is explained wherever a dark tilt is marked (§10.3): a card's tooltip, the header's and the
+    caption's `dark` tooltips, and a legend line at the top of the Tilts tab naming each look the project's tilts take
+    (`dark exposure (under 10% of its series' median counts): a marker, never a drop`), each with its explanation as a
+    tooltip. One text, `DARK_RULE` in `ui/tilt_previews.py`, built from the two constants.
+  - "Flagged" in a header counts every tilt the uncommitted review marks bad, a human's or the model's (§6.4 said the
+    model's only); its tooltip splits the two. Approve drops both, so both are what the header should warn about.
+  - Two dark counts: a header's `N dark` = dark tilts nothing drops and the review does not flag (the cards' amber);
+    a caption's `N dark` = dark tilts in alignment's output (the streaks to expect). On Grid3's six they agree.
+  - A mosaic cell shows no review, so its amber marks any dark tilt nothing drops, flagged or not.
+  - `--mdoc` fills only unset fields and never replaces a recorded value; `TiltSeriesRegistry.fill_frame_acquisition`
+    marks the series dirty. Alone it does the mdoc pass only; with `--job` it does both.
+  - The strip draws every tilt of the series, including one without a preview or average; clicking that tick says
+    so. Ticks are 4 px hit boxes around a 2 px mark; the flagged tick is a 4 px red outline (2 px reads solid).
+  - Δ defocus: CTF after alignment for the tilts it fit, else Motion & CTF, each against its own median; the tooltip
+    names the source. The tooltip lists what is not recorded (counts, CTF fit, motion, defocus, dose), never the
+    shift: a tilt not aligned has none by definition.
+  - Missing families are stated as note lines at the top of the Tilts tab, one per family with its series count and
+    the exact command: mdoc counts (`--mdoc`), alignment's per-tilt list (`--job aligntiltsWarp`), the 1.4 QC fields
+    (plain re-ingest).
+  - The Journey's numbering: the registry frames carry `cbTiltNumber` (= `tilt_index + 1`) into `fsm_registry_df` and
+    the tsCtf / alignment frames; `_per_tilt_customdata`, the CTF-fit readout and the motion-track hover read it.
 - **Check (user):**
   1. Server stopped: `venv/bin/python3 crboost_reingest.py /groups/klumpe/crboost_data/agg_20260311_412_Grid3 --mdoc`
      names no unmatched frame. Start the server.
@@ -240,6 +274,61 @@ Read-only, touches no job, and shows §1.1 on data we have. V2 and roadmap 22 bu
      `Position_19_040_-58.00_…` reads `dark <0.1%` beside a grey `p0.19`.
   6. A project without counts (agg_20251113_412) shows one note naming `--mdoc`, and no card reads `dark`.
 
+### F — the tilt-filter job: its row and its page on the shared components (next)
+Recorded 2026-10-02 at the maintainer's direction: the next session works on the tilt-filter job itself, which the
+tilt views overtook. Two parts: the row additions scoped in roadmap 06 (the Manual · DL review switch and the review's
+flags), and the job page, which is to be integrated further and rebuilt on the components the Tilts and Tomograms
+views now use, so the UI and the code stop fragmenting. The session opens with the maintainer's description of what
+the UI/UX should become; the scope below is a starting point for that conversation, not a spec.
+
+**Where it stands.** Roadmap 06 chunks 8–9 (the row's controls line `ui/pipeline_builder/tilt_filter_row.py`: the
+`Segmented` Manual · DL review switch, the §2 chip, Run DL / Cancel DL / Approve / Re-open; the parked pipeline), 10c
+and 10d are committed and have not run. U1 and V1 have not run. A.3 (buttons and controls) and A.4 (the barrier's
+flags) are open.
+
+**The fragmentation today.**
+- Two galleries of the same tilts: the job page (`ui/tilt_filter_panel.py`, `_build_cards_html`, `_card_look`,
+  `_js_apply_look`, `_render_ts_group`) and the Tilts tab (`ui/tilt_previews.py`, `card_grid_html`, `.cb-tp-card` with
+  the `cb-ts-*` looks). Each has its own card, caption, label styling (inline styles against classes), group header
+  (a `−N` bad count against counts and a strip) and tooltip.
+- Two data paths: the page reads the fs-motion star and the Warp XMLs at render (`_xmlRes`, `_xmlMotion`); the Tilts
+  tab reads the registry through `tilt_state`. They can disagree (§8.5).
+- Controls outside the house vocabulary on the page: the "Deep Learning Auto-Filter" `ui.expansion` with a material
+  icon, a bare `ui.select` (sort) and a bare `ui.checkbox` ("Show only removed"); stat chips of their own (Total /
+  Good / Bad / Removed).
+- Actions with two homes: Run DL and Approve exist on the row and on the page (A.3).
+
+**Candidate scope** (confirmed or changed by the maintainer's answers):
+1. Remove the backfill stopgap (§2).
+2. The page's gallery renders through `ui/tilt_previews.py`: the same card, caption tokens, state looks, tooltip,
+   group header with its strip, and legend as the Tilts tab, in a review mode where a click labels and a corner
+   button zooms.
+3. The page reads the registry (`tilt_states`, the tooltip metrics), not the star and the XMLs.
+4. A label click restyles the card in place by swapping the `cb-ts-*` class and updates its header's counts and
+   strip, with no group re-render.
+5. House controls replace the expansion, the bare select and the checkbox (`render_segmented`, `house_select`,
+   `house_button`); the stat chips become the header vocabulary (in the tomogram · flagged · dark).
+6. One home per action (A.3), split between the row and the page as the maintainer decides.
+7. The row's flags (A.4): a roster state of its own for a job parked at the review, a project-level "waiting for
+   review" marker (rail badge, landing hub), and readable states for a refused Re-open.
+
+**How it relates to V4.** F makes the job page and the Tilts tab draw the same components; V4 (after V2) then moves the
+labelling click into the Tilts tab and retires the page's gallery. Whether to pull that forward is one of the
+questions.
+
+**Questions the session opens with.**
+1. What bothers you most on the job page today (layout, density, the DL section, the gallery, the controls)?
+2. Which actions live on the row and which on the page, and what should the row say at a glance while the pipeline
+   is parked?
+3. In the review gallery, what does a click do (label, zoom), and should a card carry the Tilts tab's caption and
+   tooltip numbers, or fewer?
+4. Two views sharing components, or one gallery now (V4 pulled forward)?
+5. Delete `crboost_reingest.py` entirely, or only the `--mdoc` stopgap?
+
+Files: `ui/tilt_filter_panel.py`, `ui/pipeline_builder/tilt_filter_row.py`, `ui/tilt_previews.py`,
+`services/tilt_series/tilt_state.py`, `ui/tomo_gallery.py`, `ui/dashboard/css.py`, `crboost_reingest.py`,
+`services/tilt_series/registry.py`.
+
 ### V2 — the Journey (outline)
 §7.1–7.6, with §8.2's `data-section` fix. Files: `ui/tomo_dashboard_dialog.py`, `ui/dashboard/figures.py`,
 `ui/tilt_filter_panel.py` (the viewer's links), `ui/tilt_previews.py`, `ui/tomo_gallery.py`, `ui/routing.py`,
@@ -251,24 +340,27 @@ a double-click opens the viewer, whose Tilts ↗ lands on the outlined card;
 ### V3 — statistics and the metric slot (outline)
 6.5, plus a metric switch in the Tilts toolbar, `P(bad) · exposure · CTF fit · motion · Δ defocus · shift` (only those
 with data), which sets the card's last caption token and a worst-first sort; and a show switch, `all · not in the
-tomogram · flagged · disagree · dark`. Where the switches live depends on V4.
+tomogram · flagged · disagree · dark`. The switches live in the Tilts view, which reviews from V4 on (§10.7).
 
-### V4 — one gallery (direction)
+### V4 — one gallery (decided: after V2)
 The Tilts tab already has the cards, the state, the viewer and (with V2) the routes. A click that labels there, as in
 the filter gallery, leaves the filter panel its DL section and Approve, and answers A.3's "one home per action":
-labelling in Tilts; Approve and Run DL on the job row. Not scheduled; decide before V3, whose switches belong to the
-gallery that reviews. Label sets (A.6) are designed with it.
+labelling in Tilts; Approve and Run DL on the job row. Scheduled after V2 (§10.7). Label sets (A.6) are designed with
+it.
 
-## 10. Decisions owed
-1. **Tilt number:** `tilt_index + 1` (proposed), or 0-based like ZValue and Warp's Z.
-2. **"In the tomogram"** = in the alignment output (proposed).
+## 10. Decisions (maintainer, 2026-10-02)
+1. **Tilt number:** `tilt_index + 1` everywhere.
+2. **"In the tomogram"** = in the alignment output.
 3. **Dark exposure:** blank under 1 % and dim under 10 % of the series' median mdoc counts, constants shared with
-   roadmap 22; shown here, never excluding here (proposed). 06 chunk 13 restates §7.3's 595 of 599 against the median.
-4. **Backfill:** `crboost_reingest.py --mdoc` (proposed), or the registry fills missing acquisition fields from the
-   mdoc when it loads.
-5. **P(bad) on Tilts cards:** in DL review only, as the panel (proposed), or whenever recorded.
-6. **The strips as the project's tilt scheme** (proposed), or a separate chart in the summary.
-7. **V4:** does the review move into the Tilts view?
+   roadmap 22; shown here, never excluding here. The maintainer is wary of dropping anything by a rule: every surface
+   that marks a dark tilt says what the rule is and that it drops nothing (V1's tooltips and legend line). 06 chunk 13
+   restates §7.3's 595 of 599 against the median.
+4. **Backfill:** `crboost_reingest.py --mdoc`, run by hand; the registry does not fill itself on load. Amended the
+   same day: a prototyping stopgap for registries written by older code, removed once test data is re-run through
+   the current code (§2); users are never pointed at a command.
+5. **P(bad) on Tilts cards:** in DL review only, as the panel.
+6. **The strips are the project's tilt scheme**; no separate chart.
+7. **V4:** yes, the review moves into the Tilts view, after V2. V3's switches belong there.
 
 ## Appendix A — roadmap 06 §13.1–13.8, as recorded 2026-10-01
 Moved verbatim on 2026-10-02. A.n is 06 §13.n; every other § reference below is roadmap 06's. §§5–7 above answer A.5,

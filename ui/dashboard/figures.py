@@ -350,8 +350,8 @@ def _grid(show_legend: bool) -> dict:
     return grid
 
 
-# Hover card for the per-tilt charts. Every data row is [x, y, tilt_index, frame_basename,
-# verdict, thumb_url] (see tomo_dashboard_dialog._per_tilt_customdata): tilt index + stage
+# Hover card for the per-tilt charts. Every data row is [x, y, tilt_number, frame_basename,
+# verdict, thumb_url] (see tomo_dashboard_dialog._per_tilt_customdata): tilt number + stage
 # angle (the frame name is carried for the select hook, not shown — it would set the card's
 # width), the tilt-filter verdict when stamped, one line per series at that x,
 # and — when fsMotion has run and its thumbnails exist — the motion-corrected tilt image
@@ -384,7 +384,7 @@ _TOOLTIP_FORMATTER_JS = r"""
 }
 """.replace("__OPEN__", _TOOLTIP_CARD_OPEN).replace("__IMG__", _TOOLTIP_IMG_JS.replace("__SRC__", "d[5]"))
 
-# Motion-track hover: rows are [x, y, tilt_index, frame_basename, tilt_deg, thumb_url]
+# Motion-track hover: rows are [x, y, tilt_number, frame_basename, tilt_deg, thumb_url]
 # (frame at slot 3 like the per-tilt charts, so one select hook serves both).
 _TRACK_TOOLTIP_JS = r"""
 (p) => {
@@ -552,7 +552,7 @@ def build_per_tilt_chart(
     Default mode is `markers` — discrete per-tilt estimates connect badly with lines
     (zigzag or tangled), so a caller opts in with `mode='lines+markers'` / `'lines'`
     for metrics that vary continuously across tilts; line series are drawn in tilt
-    order. `customdata`: parallel list of [tilt_index, frame_basename, (verdict)]
+    order. `customdata`: parallel list of [tilt_number, frame_basename, (verdict)]
     rows surfaced in the hover card. `y_unit`: suffix for hover values (" µm", " Å").
     `y_range`: fixed y-axis [min, max] so the same metric is visually comparable
     across tilt series; auto-extended (never clipped) when the data exceeds it.
@@ -657,7 +657,7 @@ def build_motion_track_chart(tracks: list[dict], *, unit_label: str = "Warp unit
     series: one thin polyline per tilt (x/y shift per time step of the movie, all
     starting near the origin) on the signed-tilt diverging scale (`tilt_color`),
     high tilts drawn last. `tracks`: [{tilt, index, frame, x, y, thumb?}]. Data rows
-    are [x, y, tilt_index, frame_basename, tilt_deg, thumb_url] — frame at slot 3,
+    are [x, y, tilt_number, frame_basename, tilt_deg, thumb_url] — frame at slot 3,
     like the per-tilt charts, so one select hook serves both. Both axes share one
     symmetric range so a path's direction reads true."""
     max_abs_tilt = max((abs(float(t["tilt"])) for t in tracks), default=0.0)

@@ -818,6 +818,9 @@ annotations, label sets, statistics, the Journey) moved on 2026-10-02 to
 13.7 and 13.8; 13.3, 13.4 and 13.6 stay open there. What stays here is where this roadmap stands.
 
 ### 13.9 Where things stand (2026-10-01), to resume
+- **2026-10-02, next session:** roadmap 26 stage F, the job's row (the Manual · DL review switch and the review's
+  flags, A.4) and its page rebuilt on the Tilts tab's components (A.3), opening with the maintainer's UI/UX answers.
+  Chunks 11–13 follow F.
 - U1 (13.2) built 2026-10-01 as its own commit, ruff-clean, not run. Next: the rest of §13, topic by topic. The PNGs
   stay post-fsMotion (13.1).
 - **2026-10-02:** 10c, 10d and U1 are committed on `main`, none run. §13 moved to roadmap 26, which proposes its first
