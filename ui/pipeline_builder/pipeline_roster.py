@@ -225,7 +225,8 @@ class RosterWidget(FingerprintedView):
     def _status_widget(self, instance_id: str):
         from ui.status_indicator import _dot_html, _running_spinner_html
 
-        job_model = current_project_state().jobs.get(instance_id)
+        state = current_project_state()
+        job_model = state.jobs.get(instance_id)
         if not job_model:
             BoundStatusDot(instance_id)
             return
@@ -235,7 +236,14 @@ class RosterWidget(FingerprintedView):
                 # Pulsating dot for RUNNING jobs — self-contained inline SVG/SMIL
                 # (no stylesheet dependency; see _running_spinner_html).
                 return _running_spinner_html(14, "#3b82f6")
-            return _dot_html(status, is_orphaned=jm.is_orphaned)
+            # A job a run parked behind the tilt-filter review: derived from the hold, which
+            # signature() reads, so a resume repaints the row. The binding runs outside the
+            # tab's context, hence the state captured above.
+            hold = state.review_hold
+            parked = hold is not None and instance_id in hold.parked
+            return _dot_html(
+                status, is_orphaned=jm.is_orphaned, parked_since=hold.held_at.strftime("%H:%M") if parked else None
+            )
 
         ui.html("", sanitize=False, tag="span").bind_content_from(job_model, "execution_status", backward=_content)
 
@@ -1301,9 +1309,7 @@ class RosterWidget(FingerprintedView):
 
     async def _open_project_hub(self):
         from nicegui import app as ng_app
-        from services.project_state import get_project_state_for
         from services.configs.user_prefs_service import get_prefs_service
-        from ui.open_project import remember_project_opened
         from ui.projects_overview import ProjectsOverview
 
         panel = self.panel
@@ -1321,21 +1327,6 @@ class RosterWidget(FingerprintedView):
         current_base = {"path": base_path}
         history_refs: dict = {"container": None, "visible": False, "dropdown": None, "path_input": None}
         overview_ref: dict = {"comp": None}
-
-        # ── switch handler ────────────────────────────────────────────────────
-
-        async def _switch_project(target: Path):
-            dialog.close()
-            comp = overview_ref.get("comp")
-            if comp is not None:
-                comp.stop()
-            await panel.backend.load_existing_project(str(target))
-            loaded_state = get_project_state_for(target)
-            panel.ui_mgr.load_from_project(
-                project_path=target, scheme_name="loaded", jobs=list(loaded_state.jobs.keys())
-            )
-            remember_project_opened(target, label=loaded_state.project_name)
-            ui.navigate.to("/workspace")
 
         # ── history helpers ───────────────────────────────────────────────────
 
@@ -1456,12 +1447,13 @@ class RosterWidget(FingerprintedView):
 
         # ── dialog ────────────────────────────────────────────────────────────
 
+        # Full screen: the parameter pane and the roster both carry absolute paths, and
+        # any narrower window wraps one or the other.
         with (
-            ui.dialog() as dialog,
+            ui.dialog().props("maximized") as dialog,
             ui.card().style(
-                "width: 96vw; max-width: 1440px; height: 88vh; padding: 0; overflow: hidden; "
-                "border-radius: 8px; box-shadow: 0 12px 32px rgba(0,0,0,0.18); "
-                "display: flex; flex-direction: column;"
+                "width: 100vw; max-width: 100vw; height: 100vh; padding: 0; overflow: hidden; "
+                "border-radius: 0; display: flex; flex-direction: column;"
             ),
         ):
             # Base path bar. Width fix: the inner flex row + input carry an
@@ -1507,17 +1499,25 @@ class RosterWidget(FingerprintedView):
                     with history_dropdown:
                         history_refs["container"] = ui.element("div").style("width: 100%;")
 
+                # A maximized dialog has no backdrop to click away on.
+                (
+                    ui.button(icon="close", on_click=dialog.close)
+                    .props("flat dense round size=sm")
+                    .style("color: #64748b; flex-shrink: 0;")
+                    .tooltip("Close (Esc)")
+                )
+
             # Two-column body: left = selected project's params, right = the
             # all-projects roster (single-click previews here; arrow opens).
             with ui.element("div").style(
                 "display: flex; flex-direction: row; align-items: stretch; width: 100%; flex: 1 1 auto; min-height: 0;"
             ):
-                # LEFT — parameter panel for the previewed project. 480 px, not 380: the
+                # LEFT — parameter panel for the previewed project. 560 px, not 380: the
                 # Project section is four absolute paths and globs, and at 380 every one
                 # of them wrapped to three lines, which is what made this pane read as a
                 # ransom note rather than a table.
                 with ui.element("div").style(
-                    "flex: 0 0 480px; max-width: 44%; border-right: 1px solid #e5e7eb; "
+                    "flex: 0 0 560px; max-width: 40%; border-right: 1px solid #e5e7eb; "
                     "display: flex; flex-direction: column; min-height: 0; background: #ffffff;"
                 ):
                     with ui.element("div").style(
@@ -1538,15 +1538,13 @@ class RosterWidget(FingerprintedView):
                 ):
                     overview = ProjectsOverview(
                         panel.backend,
-                        on_open=_switch_project,
                         on_select=_on_select,
-                        on_delete=None,
                         base_path_provider=lambda: current_base["path"],
                         auto_refresh_sec=15.0,
                         current_path=current_path_str,
                         selected_path=current_path_str,
                         show_filter=True,
-                        height_css="calc(88vh - 148px)",
+                        height_css="calc(100vh - 118px)",
                         title="Projects Overview",
                     )
                     overview_ref["comp"] = overview
@@ -1557,8 +1555,7 @@ class RosterWidget(FingerprintedView):
 
         # Cancel auto-refresh on any dismissal path. `hide` covers backdrop
         # click / escape / programmatic close; `before-hide` is a Quasar
-        # safety net. _switch_project also calls stop() before navigate.to
-        # so closures don't outlive the dialog.
+        # safety net.
         dialog.on("hide", lambda: overview.stop())
         dialog.on("before-hide", lambda: overview.stop())
         dialog.open()

@@ -17,6 +17,7 @@ import getpass
 import logging
 import itertools
 import math
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 from collections.abc import Awaitable, Callable
@@ -49,6 +50,7 @@ CLR_META = "#64748b"
 CLR_RUNNING = "#3b82f6"
 CLR_FAILED = "#dc2626"
 CLR_DONE = "#0d9488"
+CLR_REVIEW = "#d97706"
 
 CURRENT_USER = getpass.getuser()
 DEFAULT_REFRESH_SEC = 15.0
@@ -67,9 +69,11 @@ def avatar_color(key: str) -> str:
     return _AVATAR_PALETTE[hash(key) % len(_AVATAR_PALETTE)]
 
 
-# Only these three statuses get a badge; an idle project renders none.
+# Only these statuses get a badge; an idle project renders none. "review": the pipeline
+# waits for the tilt-filter review (backend._derive_live_status).
 _STATUS_STYLES = {
     "running": {"color": CLR_RUNNING, "label": "live"},
+    "review": {"color": CLR_REVIEW, "label": "review"},
     "failed": {"color": CLR_FAILED, "label": "failed"},
     "done": {"color": CLR_DONE, "label": "done"},
 }
@@ -118,9 +122,9 @@ class ProjectsOverview:
     Parameters
     ----------
     backend : CryoBoostBackend
-    on_open : async callback (path: Path) -> None
-        Called when the user clicks a row's open button. The component does
-        not navigate or load anything itself -- the caller decides.
+        Entering a project is only ever the row's chevron: a link to the
+        project's routed URL, which loads it. A click on the row itself never
+        enters (it previews, when on_select is given).
     base_path_provider : callable () -> str
         Returns the directory to scan. Re-evaluated on every refresh so
         external base-path changes (Browse button, Recent Locations clicks)
@@ -146,7 +150,6 @@ class ProjectsOverview:
         self,
         backend,
         *,
-        on_open: Callable[[Path], Awaitable[None]],
         base_path_provider: Callable[[], str],
         on_select: Callable[[Path], Awaitable[None]] | None = None,
         on_browse: Callable[[], Awaitable[None]] | None = None,
@@ -159,10 +162,8 @@ class ProjectsOverview:
         title: str = "Projects Overview",
     ):
         self.backend = backend
-        self.on_open = on_open
-        # When set, a row click *previews* the project (on_select) instead of
-        # opening it, and an explicit travel arrow (on_open) is rendered per
-        # row. The landing page leaves this None → click still opens directly.
+        # When set, a row click *previews* the project (on_select). The landing page
+        # leaves this None: there the row is not clickable at all.
         self.on_select = on_select
         self.on_browse = on_browse
         self.base_path_provider = base_path_provider
@@ -189,6 +190,8 @@ class ProjectsOverview:
         self._list_container = None
         self._size_label = None
         self._sort_seg = None
+        self._owner_seg = None
+        self._view_seg = None
         self._species_select = None
         self._sort_mode = DEFAULT_SORT
         self._species_filter = ANY_SPECIES
@@ -301,9 +304,13 @@ class ProjectsOverview:
             self._size_label = ui.label("").style(f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; flex-shrink: 0;")
             ui.element("div").style("flex: 1 1 0; min-width: 0;")
 
+            # Every choice in this row is the same small two-way strip, so the row reads as
+            # one set of controls and each state is named rather than implied by a knob.
             # In the full view sorting happens inside each owner section, so the
             # Lab/Shared grouping is unaffected by it.
-            self._sort_seg = render_segmented(list(SORT_MODES), self._sort_mode, self._on_sort, classes="cb-seg-sm")
+            self._sort_seg = self._small_segmented(
+                SORT_MODES, self._sort_mode, self._on_sort, hint="Order: last opened by you, or created"
+            )
 
             # Species index across the scanned projects. Options are refreshed on every
             # scan (_render_list); a species that no project registers is simply not
@@ -318,17 +325,17 @@ class ProjectsOverview:
             )
 
             if self.show_filter:
-                self._labelled_switch(
-                    "Only mine",
-                    self.prefs.prefs.show_only_mine,
-                    self._on_only_mine,
-                    hint=f"Filter to projects created by {CURRENT_USER}",
+                self._owner_seg = self._small_segmented(
+                    (("all", "All"), ("mine", "Mine")),
+                    "mine" if self.prefs.prefs.show_only_mine else "all",
+                    self._on_owner_filter,
+                    hint=f"Mine: projects created by {CURRENT_USER}, plus Lab / Shared",
                 )
-            self._labelled_switch(
-                "Compact",
-                self.prefs.prefs.projects_compact,
-                self._on_compact,
-                hint="One line per project: name, owner, TS, size and status",
+            self._view_seg = self._small_segmented(
+                (("compact", "Compact"), ("full", "Full")),
+                "compact" if self.prefs.prefs.projects_compact_view else "full",
+                self._on_view,
+                hint="Compact: one line per project. Full: paths, last activity and delete",
             )
 
             if self.on_browse is not None:
@@ -341,25 +348,20 @@ class ProjectsOverview:
             ).tooltip(f"Rescan now (auto every {int(self.auto_refresh_sec)}s)")
 
     @staticmethod
-    def _labelled_switch(text: str, value: bool, on_change: Callable, *, hint: str):
-        """A small switch and its clickable label, kept together when the row wraps."""
-        with ui.element("div").style("display: flex; align-items: center; flex-shrink: 0;"):
-            switch = (
-                ui.switch(value=value, on_change=on_change)
-                .props("dense color=blue")
-                .style("transform: scale(0.65);")
-                .tooltip(hint)
-            )
-            label = ui.label(text).style(f"{FONT} font-size: 9px; color: {CLR_LABEL}; cursor: pointer;")
-            label.on("click", lambda: switch.set_value(not switch.value))
+    def _small_segmented(tabs, active: str, on_switch: Callable[[str], None], *, hint: str):
+        """A 16 px segmented strip (`cb-seg-sm`) with a hover hint."""
+        with ui.element("div").style("display: flex; flex-shrink: 0;").tooltip(hint):
+            return render_segmented(list(tabs), active, on_switch, classes="cb-seg-sm")
 
-    def _on_only_mine(self, e):
-        self.prefs.prefs.show_only_mine = bool(e.value)
+    def _on_owner_filter(self, key: str):
+        self._owner_seg.set_active(key)
+        self.prefs.prefs.show_only_mine = key == "mine"
         self.prefs.save_to_app_storage(app.storage.user)
         self._render_list()
 
-    def _on_compact(self, e):
-        self.prefs.prefs.projects_compact = bool(e.value)
+    def _on_view(self, key: str):
+        self._view_seg.set_active(key)
+        self.prefs.prefs.projects_compact_view = key == "compact"
         self.prefs.save_to_app_storage(app.storage.user)
         self._render_list()
 
@@ -484,7 +486,7 @@ class ProjectsOverview:
                 )
                 return
 
-            if self.prefs.prefs.projects_compact:
+            if self.prefs.prefs.projects_compact_view:
                 # One flat list: the owner moves into each row, so no section breaks.
                 for proj in sorted(visible, key=self._sort_key):
                     self._render_row(proj, compact=True)
@@ -575,13 +577,6 @@ class ProjectsOverview:
             except Exception:
                 is_current = False
 
-        async def _open():
-            try:
-                await self.on_open(Path(path_str))
-            except Exception as e:
-                logger.info("Open project failed: %s", e)
-                ui.notify(f"Failed to open project: {e}", type="negative")
-
         async def _select():
             self.set_selected(path_str)
             if self.on_select is not None:
@@ -590,9 +585,9 @@ class ProjectsOverview:
                 except Exception as e:
                     logger.info("Preview project failed: %s", e)
 
-        # Preview mode (on_select set): a click previews the project; the chevron is
-        # what travels. Otherwise a click anywhere on the row opens it, and the
-        # chevron just makes that obvious (and gives a big target on the right edge).
+        # Only the chevron enters a project. In preview mode (on_select set) a row click
+        # previews it; otherwise the row is not a click target at all, so a stray click
+        # never drops the user into a project.
         preview_mode = self.on_select is not None
         is_selected = False
         if self._selected_resolved:
@@ -611,25 +606,24 @@ class ProjectsOverview:
             f"overflow: hidden; border-bottom: 1px solid {CLR_BORDER};"
         )
         outline = " box-shadow: inset 0 0 0 1.5px #93c5fd;" if is_selected else ""
+        cursor = " cursor: pointer;" if preview_mode else " cursor: default;"
         if is_current:
             row_classes = "w-full group"
-            cur = " background: #eff6ff; border-left: 3px solid #3b82f6;"
-            cur += " cursor: pointer;" if preview_mode else " cursor: default;"
-            row_style = base_style + cur + outline
-            row_click = _select if preview_mode else None
+            row_style = base_style + " background: #eff6ff; border-left: 3px solid #3b82f6;" + cursor + outline
         else:
-            row_classes = "w-full hover:bg-slate-50 transition-colors cursor-pointer group"
-            row_style = base_style + outline
-            row_click = _select if preview_mode else _open
+            row_classes = "w-full hover:bg-slate-50 transition-colors group"
+            row_style = base_style + cursor + outline
 
         row = ui.element("div").classes(row_classes).style(row_style)
-        if row_click is not None:
-            row.on("click", row_click)
+        if preview_mode:
+            row.on("click", _select)
 
         fixed = "flex-shrink: 0; white-space: nowrap;"
         with row as row_el:
+            if proj.get("tomo_preview"):
+                self._render_preview_tooltip(proj)
             if compact:
-                self._render_compact_body(proj)
+                self._render_compact_body(proj, is_current, row_el)
                 self._render_chevron(path_str, is_current)
                 return
             with ui.element("div").style(
@@ -669,30 +663,13 @@ class ProjectsOverview:
                         f"{MONO} font-size: 9px; color: {CLR_GHOST}; font-style: italic;"
                     )
 
-                # ---- Line 4: delete | TS · last activity · size ----
-                # Wraps rather than overflows on a narrow pane.
+                # ---- Line 4: TS · last activity · size | delete ----
+                # Starts flush with the paths above; delete sits at the right edge. Wraps
+                # rather than overflows on a narrow pane.
                 with ui.element("div").style(
                     "display: flex; align-items: center; flex-wrap: wrap; column-gap: 18px; row-gap: 2px; "
                     "min-width: 0; margin-top: 2px;"
                 ):
-                    # Always the same slot, empty on the open project's row, so the meta
-                    # after it lines up from row to row.
-                    with ui.element("div").style(f"width: {self._W_DELETE}px; {fixed} display: flex;"):
-                        if not is_current:
-
-                            async def _del(p=path_str, n=name, r=row_el):
-                                await self._handle_delete(Path(p), n, r)
-
-                            (
-                                ui.button(icon="delete_outline", on_click=_del)
-                                .props("flat dense round size=xs")
-                                .classes(
-                                    "text-slate-300 hover:text-red-400 opacity-0 "
-                                    "group-hover:opacity-100 transition-opacity"
-                                )
-                                .on("click.stop", lambda: None)
-                                .tooltip("Delete project")
-                            )
                     ui.label(f"{ts_count} TS" if ts_count else "— TS").style(
                         f"{MONO} font-size: 9px; color: {CLR_LABEL if ts_count else CLR_GHOST}; {fixed}"
                     )
@@ -700,6 +677,8 @@ class ProjectsOverview:
                         "Last activity"
                     )
                     self._render_size(proj)
+                    ui.element("div").style("flex: 1 1 0; min-width: 0;")
+                    self._render_delete(path_str, name, row_el, is_current)
 
             # ---- Travel chevron: full row height, its own hit area ----
             # A full-height column on the right edge, so "go there" is the easiest
@@ -719,19 +698,21 @@ class ProjectsOverview:
         # "copy link address" works. A plain click is the browser's own navigation to
         # the routed page, which loads the project, lands in the workspace, and reports
         # a missing project itself rather than through a toast on a page the user is leaving.
+        # Its own tinted column that lights only on its own hover, never the row's: it
+        # is the one control on the row that leaves this page.
         chev = (
             ui.link(target=self._project_url(path_str))
             .classes("cb-proj-chevron")
             .style(
                 f"width: {self._W_CHEVRON}px; flex-shrink: 0; display: flex; "
                 "align-items: center; justify-content: center; cursor: pointer; "
-                f"border-left: 1px solid {CLR_BORDER}; text-decoration: none; "
+                f"border-left: 1px solid {CLR_BORDER}; background: #f8fafc; text-decoration: none; "
                 "align-self: stretch; padding: 0;"
             )
-            .tooltip("Open this project")
+            .tooltip("Enter this project")
         )
         with chev:
-            ui.icon("chevron_right", size="20px").style(f"color: {CLR_GHOST}; pointer-events: none;")
+            ui.icon("chevron_right", size="20px").style(f"color: {CLR_SUBLABEL}; pointer-events: none;")
 
     @staticmethod
     def _project_url(path_str: str) -> str:
@@ -743,9 +724,27 @@ class ProjectsOverview:
         p = Path(path_str)
         return route_to_path(Route(project=p.name, base=str(p.parent)))
 
-    def _render_compact_body(self, proj: dict):
-        """Compact view: one line -- name, owner, TS, size, status. The owner sits in the
-        row because the compact list has no owner sections."""
+    def _render_delete(self, path_str: str, name: str, row_el, is_current: bool):
+        """The hover-revealed delete button in a fixed slot -- empty on the open project's
+        row, which can never be deleted from here -- so cells line up from row to row."""
+        with ui.element("div").style(f"width: {self._W_DELETE}px; flex-shrink: 0; display: flex;"):
+            if is_current:
+                return
+
+            async def _del():
+                await self._handle_delete(Path(path_str), name, row_el)
+
+            (
+                ui.button(icon="delete_outline", on_click=_del)
+                .props("flat dense round size=xs")
+                .classes("text-slate-300 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity")
+                .on("click.stop", lambda: None)
+                .tooltip("Delete project")
+            )
+
+    def _render_compact_body(self, proj: dict, is_current: bool, row_el):
+        """Compact view: one line -- name, owner, TS, size, status, delete. The owner sits
+        in the row because the compact list has no owner sections."""
         name = proj["name"]
         ts_count = proj.get("ts_count") or 0
         mnemonic = proj.get("mnemonic") or ""
@@ -771,6 +770,7 @@ class ProjectsOverview:
                 self._render_size(proj)
             with ui.element("div").style(f"width: {self._W_STATUS}px; {fixed} display: flex;"):
                 self._render_status(proj)
+            self._render_delete(proj["path"], name, row_el, is_current)
 
     @staticmethod
     def _owner_label(owner: str) -> str:
@@ -779,6 +779,43 @@ class ProjectsOverview:
         if owner == CURRENT_USER:
             return "you"
         return owner
+
+    @staticmethod
+    def _render_preview_tooltip(proj: dict):
+        """Row hover: one tomogram's WarpTools preview with a few facts under it, beside
+        the row (to its left, over the page, so it never covers the list). The <img> is
+        only in the DOM while the tooltip shows, so nothing downloads until a hover."""
+        pv = proj["tomo_preview"]
+        name = proj["name"]
+        ts_count = proj.get("ts_count") or 0
+        facts = [f"{pv['n_tomos']}/{ts_count} tomograms" if ts_count else f"{pv['n_tomos']} tomograms"]
+        if pv["apix"]:
+            facts.append(f"{pv['apix']:.2f} Å/px")
+        usage = proj.get("disk_usage")
+        if usage is not None and not usage.error:
+            facts.append(format_bytes(usage.total_bytes))
+        species = ", ".join(s.get("name") or s["id"] for s in proj.get("species") or [])
+        # The scan's activity stamp is the cache-buster: a new reconstruction moves it.
+        url = (
+            f"/api/project-preview?path={urllib.parse.quote(pv['png'], safe='')}"
+            f"&v={int(proj.get('last_activity_ts') or 0)}"
+        )
+        with (
+            ui.tooltip()
+            .props('anchor="center left" self="center right" :offset="[10, 0]" :delay="350"')
+            .style("padding: 6px; max-width: none; background: #0f172a;")
+        ):
+            ui.html(
+                f"<img src='{url}' alt='' style='width: 260px; height: auto; max-height: 340px; "
+                "display: block; border-radius: 3px; background: #1e293b;' />",
+                sanitize=False,
+            )
+            ui.label(pv["tomo"].removeprefix(f"{name}_")).style(
+                f"{MONO} font-size: 10px; color: #e2e8f0; margin-top: 5px;"
+            )
+            ui.label(" · ".join(facts)).style(f"{MONO} font-size: 9px; color: #94a3b8;")
+            if species:
+                ui.label(f"species: {species}").style(f"{MONO} font-size: 9px; color: #94a3b8;")
 
     @staticmethod
     def _render_path_line(path: str, *, color: str, what: str):
@@ -793,13 +830,16 @@ class ProjectsOverview:
 
     @staticmethod
     def _render_status(proj: dict):
-        """done / failed / live; an idle project gets no badge. The live dot ripples
+        """done / failed / review / live; an idle project gets no badge. The live dot ripples
         (`.cb-live-pulse`, ui/dashboard/css.py). The job counts live in the hover."""
         status = proj.get("live_status") or "idle"
         s = _STATUS_STYLES.get(status)
         if s is None:
             return
         counts = [f"{proj.get('succeeded') or 0}/{proj.get('total_jobs_planned') or 0} jobs succeeded"]
+        if status == "review":
+            since = f" since {proj['review_since']}" if proj.get("review_since") else ""
+            counts.insert(0, f"Waits for the tilt-filter review: {proj['review_parked']} job(s) parked{since}")
         if proj.get("running_live"):
             counts.append(f"{proj['running_live']} running")
         if proj.get("failed"):

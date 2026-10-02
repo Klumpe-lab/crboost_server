@@ -3,7 +3,9 @@ import asyncio
 import getpass
 import json
 import logging
+import os
 import pwd
+import re
 import shutil
 import time
 from pathlib import Path
@@ -18,6 +20,7 @@ from services.computing.container_service import get_container_service
 from services.scheduling_and_orchestration.pipeline_runner import PipelineRunnerService
 from services.scheduling_and_orchestration.pipeline_monitor import PipelineMonitor
 from services.jobs.spec import driver_invocation
+from services.jobs.tilt_filter import FilterMode
 from services.models_base import JobStatus, JobType
 from services.particles.list_ref import extract_pick_list_instance_id
 from services.project_state import get_state_service, remove_project_state
@@ -53,6 +56,47 @@ def _is_pipeline_job_dict(job: Any) -> bool:
     The scan reads json and cannot see ``IS_INTERACTIVE``, so the job type is the filter.
     ``tiltFilter`` stays counted: interactive to launch, but pipeline work."""
     return not (isinstance(job, dict) and job.get("job_type") == JobType.EXTRACT_PICK_LIST.value)
+
+
+_RECON_PNG_APIX = re.compile(r"_(\d+(?:\.\d+)?)Apx\.png$")
+_JOB_NUMBER = re.compile(r"job(\d+)")
+
+
+def _find_tomo_preview(project_dir: Path, jobs: dict[str, Any]) -> dict[str, Any] | None:
+    """One tomogram's WarpTools preview PNG, for the projects roster's row hover.
+
+    WarpTools writes `<job>/warp_tiltseries/reconstruction/<tomo>_<apix>Apx.png` next to
+    each reconstructed volume. Takes the newest tsReconstruct job that has any, and the
+    first tomogram in it by name; also counts the volumes there. None when no
+    reconstruction has a preview."""
+    recon_dirs = [
+        job["relion_job_name"].strip("/")
+        for job in jobs.values()
+        if isinstance(job, dict) and job.get("job_type") == JobType.TS_RECONSTRUCT.value and job.get("relion_job_name")
+    ]
+
+    def job_number(rel: str) -> int:
+        m = _JOB_NUMBER.search(rel)
+        return int(m.group(1)) if m else -1
+
+    for rel in sorted(recon_dirs, key=job_number, reverse=True):
+        recon_dir = project_dir / rel / "warp_tiltseries" / "reconstruction"
+        try:
+            names = sorted(e.name for e in os.scandir(recon_dir))
+        except FileNotFoundError:
+            # Planned or deleted job: nothing reconstructed here.
+            continue
+        pngs = [n for n in names if n.endswith(".png")]
+        if not pngs:
+            continue
+        m = _RECON_PNG_APIX.search(pngs[0])
+        return {
+            "png": str(recon_dir / pngs[0]),
+            "tomo": pngs[0][: m.start()] if m else pngs[0][: -len(".png")],
+            "apix": float(m.group(1)) if m else None,
+            "n_tomos": sum(1 for n in names if n.endswith(".mrc")),
+        }
+    return None
 
 
 def _read_extraction_outdir(out_dir: Path) -> tuple[str, dict]:
@@ -111,6 +155,8 @@ class CryoBoostBackend:
         self.curation_watcher = CurationWatcher(self)
         # Pending debounced saves, keyed by project path — see save_project().
         self._pending_saves: dict[str, asyncio.Task] = {}
+        # Projects-roster hover previews: project path -> (activity ts it was found at, preview).
+        self._tomo_preview_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
 
     def registry_for(self, project_path: Path) -> TiltSeriesRegistry:
         """TiltSeriesRegistry for a project. Lazily loaded from sidecar JSON
@@ -191,6 +237,8 @@ class CryoBoostBackend:
         if job_model.predict_in_flight:
             run = job_model.predict_run
             return err(f"A prediction run is already {run.status.value.lower()} (SLURM job {run.slurm_job_id}).")
+        if job_model.auto_in_flight:
+            return err("The DL-auto job is in flight and predicts every tilt itself; run DL once it has finished.")
         try:
             model_key, _entry = resolve_model(job_model.model)
         except ValueError as e:
@@ -285,6 +333,38 @@ class CryoBoostBackend:
         run_name = Path(job_model.predict_run.job_dir).name
         events.info("Tilt filter DL run %s cancelled (SLURM job %s)", run_name, slurm_id)
         return ok()
+
+    async def set_tilt_filter_mode(self, project_path: Path, instance_id: str, mode: FilterMode) -> dict[str, Any]:
+        """Set the tilt filter's mode (its job row). Refused while a prediction run or the DL-auto
+        job is in flight: both write the predictions the mode reads. Leaving DL auto after its job
+        failed sets the filter back to uncommitted, which is what the review modes' status means.
+        A switch to DL auto while a run's jobs wait for this filter's review submits the filter's
+        job ahead of them (submit_parked), and `resume` carries that outcome."""
+        project_path = Path(project_path)
+        state = self.state_service.state_for(project_path)
+        job_model = state.jobs.get(instance_id)
+        if job_model is None:
+            return err(f"Job '{instance_id}' not found.")
+        if mode == job_model.mode:
+            return ok()
+        if job_model.predict_in_flight:
+            return err("A DL prediction run is in flight; switch once it has landed or been cancelled.")
+        if job_model.auto_in_flight:
+            return err("The DL-auto job is in flight; switch once it has finished, or stop the pipeline.")
+        if job_model.mode == FilterMode.DL_AUTO and job_model.execution_status == JobStatus.FAILED:
+            job_model.execution_status = JobStatus.SCHEDULED
+            # Else the reconciler tracks the job again and reads its failure marker back.
+            job_model.slurm_job_id = None
+        job_model.mode = mode
+        state.mark_dirty()
+        # Not a USER_PARAMS field, so nothing marks the project dirty on its own: force the save.
+        await self.state_service.save_project(project_path=project_path, force=True)
+        events.info("Tilt filter %s: mode %s", instance_id, mode.value)
+        res = ok()
+        hold = state.review_hold
+        if mode == FilterMode.DL_AUTO and hold is not None and hold.barrier == instance_id:
+            res["resume"] = await self.pipeline_orchestrator.submit_parked(project_path)
+        return res
 
     async def approve_tilt_filter(self, project_path: Path, instance_id: str) -> dict[str, Any]:
         """Approve the tilt filter's review: commit its verdict through the one commit path
@@ -1224,6 +1304,7 @@ class CryoBoostBackend:
                     mnemonic = ""
                     source_directory = ""
                     species: list[dict[str, str]] = []
+                    review_hold: dict[str, Any] | None = None
                     try:
                         with open(params_file) as f:
                             data = json.load(f)
@@ -1238,6 +1319,7 @@ class CryoBoostBackend:
                         creator = data.get("created_by")
                         owner_raw = data.get("owner")
                         pipeline_active = bool(data.get("pipeline_active", False))
+                        review_hold = data.get("review_hold")
                         jobs_dict = {
                             iid: job for iid, job in (data.get("jobs") or {}).items() if _is_pipeline_job_dict(job)
                         }
@@ -1289,10 +1371,17 @@ class CryoBoostBackend:
                             # Directory vanished/unstat-able mid-scan -- fall back to the scan-time mtime.
                             created_ts = stats.st_mtime
 
-                    derived = self._derive_live_status(item, jobs_dict)
+                    derived = self._derive_live_status(item, jobs_dict, review_hold)
                     derived["pipeline_active_flag"] = pipeline_active
 
                     last_activity_ts = max(stats.st_mtime, derived.get("last_activity_ts", 0.0))
+                    # A directory listing, so only redone when the project shows new activity.
+                    cached_preview = self._tomo_preview_cache.get(str(item))
+                    if cached_preview is not None and cached_preview[0] == last_activity_ts:
+                        tomo_preview = cached_preview[1]
+                    else:
+                        tomo_preview = _find_tomo_preview(item, jobs_dict)
+                        self._tomo_preview_cache[str(item)] = (last_activity_ts, tomo_preview)
                     disk_usage = get_disk_usage_service().cached(item)
                     disk_usage_stale = is_disk_usage_stale(
                         disk_usage,
@@ -1321,6 +1410,7 @@ class CryoBoostBackend:
                             "last_activity": datetime.fromtimestamp(last_activity_ts).strftime("%Y-%m-%d %H:%M"),
                             "disk_usage": disk_usage,
                             "disk_usage_stale": disk_usage_stale,
+                            "tomo_preview": tomo_preview,
                             **derived,
                         }
                     )
@@ -1341,13 +1431,16 @@ class CryoBoostBackend:
         return projects
 
     @staticmethod
-    def _derive_live_status(project_dir: Path, jobs_dict: dict[str, Any]) -> dict[str, Any]:
+    def _derive_live_status(
+        project_dir: Path, jobs_dict: dict[str, Any], review_hold: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Derive pipeline status for the roster from project_params.json's
         `jobs` dict (canonical: includes tiltFilter and other non-RELION
         jobs that aren't in default_pipeline.star). Disk RELION_JOB_EXIT_*
         markers are only used to reconcile in-memory `Running` statuses
         that the schemer crashed before persisting -- otherwise the project
-        state is the source of truth."""
+        state is the source of truth. A stored `review_hold` with nothing
+        running reads "review": the pipeline waits for the tilt-filter review."""
         out: dict[str, Any] = {
             "executed_jobs": 0,
             "succeeded": 0,
@@ -1356,6 +1449,8 @@ class CryoBoostBackend:
             "scheduled": 0,
             "live_status": "idle",
             "last_activity_ts": 0.0,
+            "review_parked": 0,
+            "review_since": "",
         }
         pipeline_star = project_dir / "default_pipeline.star"
         if pipeline_star.exists():
@@ -1408,8 +1503,14 @@ class CryoBoostBackend:
                 out["scheduled"] += 1
             # Anything else (Idle / Pending / unknown) is ignored.
 
+        if isinstance(review_hold, dict):
+            out["review_parked"] = len(review_hold.get("parked") or [])
+            out["review_since"] = str(review_hold.get("held_at") or "")[11:16]
+
         if out["running_live"] > 0:
             out["live_status"] = "running"
+        elif out["review_parked"] > 0:
+            out["live_status"] = "review"
         elif out["failed"] > 0:
             out["live_status"] = "failed"
         elif out["succeeded"] > 0 and out["scheduled"] == 0 and out["failed"] == 0 and out["running_live"] == 0:
