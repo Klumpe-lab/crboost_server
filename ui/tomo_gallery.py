@@ -23,7 +23,8 @@ Three switches, all of them just re-render from the already-collected rows:
 A tile's image opens the zoom view, whose Journey button opens that tomogram in the
 Journey. The toggle in a tile's top-left corner swaps the slice for a mosaic of that
 series' tilts, in the same box; a tilt opens the full-size tilt viewer. The caption row
-under a tile is kept for metrics.
+under a tile sums its tilts up: how many are in the tomogram, the stage-tilt range in use,
+the series' CTF fit, and the dark exposures in use.
 
 Images come from the same renderers the Journey uses (the WarpTools PNG
 written by ts_reconstruct, else an X/Y slab we render and cache), so a tile and
@@ -41,6 +42,7 @@ from typing import Any
 from nicegui import ui
 
 from services.dashboard_data import position_label, tilt_thumb_dir, vis_asset_url
+from services.models_base import JobType
 from services.project_state import get_project_state_for
 from services.tilt_series_service import ensure_tilt_thumbnails
 from services.visualization.preview_orchestrator import _find_warp_tomo_preview, read_preview_manifest
@@ -52,13 +54,18 @@ from ui.components.reactive import SingleFlight
 from ui.components.segmented import render_segmented
 from ui.dashboard.css import ensure_assets_loaded
 from ui.tilt_previews import (
+    STRIP_CLICK_JS,
     TILT_CLICK_JS,
     card_grid_html,
     collect_tilt_groups,
+    group_header_html,
+    legend_html,
     mosaic_html,
     open_tilt_viewer,
     registry_tilt_series,
     thumbnail_task_key,
+    tilt_context,
+    tomogram_caption_html,
 )
 
 RECON_SOURCE = "recon"
@@ -300,12 +307,14 @@ class TomoGalleryPage:
         self._tab_chosen = False
         # Tilt previews (ui/tilt_previews.py): one group per tilt series.
         self.tilt_groups: list[dict] = []
+        self.tilt_facts: dict = {}  # the project-wide facts collect_tilt_groups returns
         self.tilt_error: str | None = None
         self.tilt_awaiting = 0  # tilts with an average but no preview PNG yet
         self._png_dir: Path | None = None
         self._thumbs_live = False  # the thumbnail pass was running at the last collection
         self._group_by_ts: dict[str, dict] = {}
-        self._tilt_by_key: dict[str, dict] = {}
+        self._tilt_by_key: dict[str, dict] = {}  # tilts that show: a preview or an average
+        self._frame_keys: set[str] = set()  # every tilt, as the header strips draw them
         # Kept on the page, so a size switch, a Refresh or the pending poll keeps them.
         self.open_mosaics: set[str] = set()  # tiles showing their tilts instead of the slice
         self.expanded: set[str] = set()  # tilt groups open in the Tilts tab
@@ -348,15 +357,18 @@ class TomoGalleryPage:
         # tick, where a bare lookup can hand back a blank throwaway state.
         state = get_project_state_for(self.project_path)
         tilt_series, self.tilt_error = registry_tilt_series(self.project_path)
+        # The tilt filter's review is live job state: snapshot it here, derive in the thread.
+        ctx = tilt_context(state)
         png_dir = self._png_dir = tilt_thumb_dir(state, self.project_path)
-        self.rows, self.tilt_groups = await asyncio.to_thread(
-            lambda: (collect_rows(state, self.project_path), collect_tilt_groups(tilt_series, png_dir))
+        self.rows, (self.tilt_groups, self.tilt_facts) = await asyncio.to_thread(
+            lambda: (collect_rows(state, self.project_path), collect_tilt_groups(tilt_series, png_dir, ctx))
         )
         self._collected = True
         for sp in self._all_species():
             self.species_on.setdefault(sp["id"], True)
         self._group_by_ts = {g["ts"]: g for g in self.tilt_groups}
         self._tilt_by_key = {t["key"]: t for g in self.tilt_groups for t in g["tilts"]}
+        self._frame_keys = {s.frame_id for g in self.tilt_groups for s, _title in g["ticks"]}
         self.tilt_awaiting = sum(1 for t in self._tilt_by_key.values() if t["png"] is None and t["mrc"])
         if self.tilt_awaiting and not any(g["n_png"] for g in self.tilt_groups):
             # No previews at all: the pass that makes them normally starts when fsMotion lands.
@@ -550,18 +562,18 @@ class TomoGalleryPage:
 
     def _fill_tile(self, row: dict, *, kicked: bool) -> int:
         """A tile's frame and caption row: the slice, or, toggled, a mosaic of the series'
-        tilts in the same box. The caption row has the position label; the rest of it is
-        kept for metrics."""
+        tilts in the same box. The caption row has the position label and, for a tomogram
+        with tilts (an imported one has none), its tilts summed up."""
         group = self._group_by_ts.get(row["ts"])
         spent = 0
         if group is not None and row["ts"] in self.open_mosaics:
             self._render_mosaic_frame(row, group)
         else:
             spent = self._render_slice_frame(row, group, kicked=kicked)
-        cap = ui.element("div").classes("cb-gal-cap")
-        cap.tooltip(row["ts"])
-        with cap:
-            ui.label(row["label"]).classes("cb-gal-name")
+        with ui.element("div").classes("cb-gal-cap"):
+            ui.label(row["label"]).classes("cb-gal-name").tooltip(row["ts"])
+            if group is not None:
+                ui.html(tomogram_caption_html(group, compact=self.size == "s"), sanitize=False).style("flex: 0 0 auto;")
         return spent
 
     def _render_slice_frame(self, row: dict, group: dict | None, *, kicked: bool) -> int:
@@ -683,10 +695,40 @@ class TomoGalleryPage:
             running = self._thumbs_running()
             tail = "; they are being rendered in the background." if running else "."
             self._render_tilts_note(f"{self.tilt_awaiting} tilts have no preview image yet{tail}", spinner=running)
+        for note in self._lacking_notes():
+            self._render_tilts_note(note)
+        looks = self.tilt_facts.get("looks") or set()
+        if looks:
+            with ui.element("div").style("padding: 8px 10px 0;"):
+                ui.html(legend_html(looks), sanitize=False)
         card_px = _TILT_CARD_PX[self.size]
         with ui.element("div").style("display: flex; flex-direction: column; gap: 6px; padding: 10px;"):
             for group in self.tilt_groups:
                 self._render_tilt_group(group, card_px)
+
+    def _lacking_notes(self) -> list[str]:
+        """One line per field family some tilt series lack, naming the backfill that fills it."""
+        lacking = self.tilt_facts.get("lacking") or {}
+        n = self.tilt_facts.get("n_series", 0)
+        cmd = f"venv/bin/python3 crboost_reingest.py {self.project_path}"
+        notes = []
+        if lacking.get("counts"):
+            notes.append(
+                f"{lacking['counts']} of {n} tilt series have no mdoc exposure counts in the registry, so their dark "
+                f"exposures are not marked. To fill them, with the server stopped: {cmd} --mdoc"
+            )
+        if lacking.get("alignment"):
+            notes.append(
+                f"{lacking['alignment']} of {n} tilt series have an alignment run without a per-tilt list in the "
+                "registry, so which of their tilts are in the tomogram is unknown. To fill it, with the server "
+                f"stopped: {cmd} --job {JobType.TS_ALIGNMENT.value}"
+            )
+        if lacking.get("qc"):
+            notes.append(
+                f"{lacking['qc']} of {n} tilt series have no per-tilt CTF fit or motion in the registry. To fill "
+                f"them, with the server stopped: {cmd}"
+            )
+        return notes
 
     def _render_tilts_note(self, text: str, *, color: str = "#94a3b8", spinner: bool = False) -> None:
         with ui.element("div").style("display: flex; align-items: center; gap: 6px; padding: 8px 10px 0;"):
@@ -703,6 +745,9 @@ class TomoGalleryPage:
                 ui.label(group["label"]).classes("cb-tp-name")
                 ui.label(ts).classes("cb-tp-ts")
                 ui.label(str(len(group["tilts"]))).classes("cb-tp-n").tooltip("Tilts with a preview or an average")
+                # What the tilts are, and the strip: a tick opens its tilt, the rest of the header toggles.
+                summary = ui.html(group_header_html(group, self.tilt_facts.get("span")), sanitize=False)
+                summary.style("flex: 0 0 auto;").on("click", handler=self._on_tilt_click, js_handler=STRIP_CLICK_JS)
             body = ui.element("div").style("padding: 4px; display: none;")
         ref = {"body": body, "chevron": chevron, "group": group, "card_px": card_px, "filled": False}
         self._groups_ui[ts] = ref
@@ -775,9 +820,13 @@ class TomoGalleryPage:
             self._fill_tile(row, kicked=True)
 
     def _on_tilt_click(self, e) -> None:
-        tilt = self._tilt_by_key.get((e.args or {}).get("key", ""))
+        key = (e.args or {}).get("key", "")
+        tilt = self._tilt_by_key.get(key)
         if tilt is None:
-            ui.notify("That tilt is no longer in the registry; Refresh the view.", type="warning")
+            if key in self._frame_keys:
+                ui.notify("That tilt has no motion-corrected average to show yet.", type="warning")
+            else:
+                ui.notify("That tilt is no longer in the registry; Refresh the view.", type="warning")
             return
         open_tilt_viewer(tilt, self.project_path)
 

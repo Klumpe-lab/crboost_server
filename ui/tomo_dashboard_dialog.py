@@ -1073,17 +1073,29 @@ def _tilt_thumbs(project_state, project_path: Path, names: list) -> dict[str, st
 def _per_tilt_customdata(
     df: pd.DataFrame, *, verdicts: dict[str, str] | None = None, thumbs: dict[str, str] | None = None
 ) -> list[list]:
-    """[[tilt_index, frame_basename, verdict, thumb_url], …] — the hover card's slots
-    (the chart prepends x, y). `verdicts` {frame basename: "keep (p=…)"} from the
-    tilt filter, `thumbs` {frame basename: url} of the motion-corrected tilt images
-    (`tilt_thumb_urls`) — "" where absent, and the card skips the line."""
+    """[[tilt_number, frame_basename, verdict, thumb_url], …] — the hover card's slots
+    (the chart prepends x, y). `tilt_number` is the registry's tilt_index + 1 (the df's
+    `cbTiltNumber`), the number a tilt carries on every surface; None where the registry
+    has no frame for the row, and the card leaves it out. `verdicts` {frame basename:
+    "keep (p=…)"} from the tilt filter, `thumbs` {frame basename: url} of the
+    motion-corrected tilt images (`tilt_thumb_urls`) — "" where absent, and the card
+    skips the line."""
     if "rlnMicrographMovieName" in df.columns:
         bases = [Path(str(v)).name for v in df["rlnMicrographMovieName"].tolist()]
     else:
         bases = [""] * len(df)
+    numbers = _tilt_numbers(df)
     verdicts = verdicts or {}
     thumbs = thumbs or {}
-    return [[i + 1, b, verdicts.get(b, ""), thumbs.get(b, "")] for i, b in enumerate(bases)]
+    return [[n, b, verdicts.get(b, ""), thumbs.get(b, "")] for n, b in zip(numbers, bases, strict=True)]
+
+
+def _tilt_numbers(df: pd.DataFrame) -> list[int | None]:
+    """The registry's tilt number per row (`cbTiltNumber`), as ints: the column turns float
+    when a row has none."""
+    if "cbTiltNumber" not in df.columns:
+        return [None] * len(df)
+    return [None if pd.isna(v) else int(v) for v in df["cbTiltNumber"].tolist()]
 
 
 def _frame_names(df: pd.DataFrame) -> list[str]:
@@ -1311,10 +1323,12 @@ class _CtfFitPanel:
     """The "CTF fit" tile: Warp's measured 1-D power spectrum vs the CTF model for one
     tilt, with a scrubber over the tilt-series (sorted by stage angle) and
     `select_frame(frame)` for the section's other charts to call on click / hover,
-    so the fit follows the tilt under the cursor. `entries`: [(tilt_deg, tilt_index,
+    so the fit follows the tilt under the cursor. `entries`: [(tilt_deg, tilt_number,
     frame_basename, loader)] with loader() → CtfFit1D | None (memoized XML reads)."""
 
-    def __init__(self, entries: list[tuple[float, int, str, Callable[[], CtfFit1D | None]]], *, hint: str) -> None:
+    def __init__(
+        self, entries: list[tuple[float, int | None, str, Callable[[], CtfFit1D | None]]], *, hint: str
+    ) -> None:
         self._entries = sorted(entries, key=lambda e: e[0])
         self._pos_by_frame = {frame: i for i, (_t, _i, frame, _l) in enumerate(self._entries)}
         # Start at the tilt nearest 0° — the best-fit reference of the series.
@@ -1354,9 +1368,9 @@ class _CtfFitPanel:
         self._chart.update()
 
     def _options(self) -> dict:
-        tilt, index, _frame, load = self._entries[self._pos]
+        tilt, number, _frame, load = self._entries[self._pos]
         fit = load()
-        readout = f"{tilt:+.2f}° · tilt {index}"
+        readout = f"{tilt:+.2f}°" + (f" · tilt {number}" if number is not None else "")
         if fit is None:
             self._readout.text = readout
             return build_empty_chart("No CTF-fit curves in the Warp XML for this tilt")
@@ -1479,8 +1493,10 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
         # the defocus ramp across the frame. Entries key on the XML the registry
         # recorded for each frame; the curves are read lazily from it.
         entries = [
-            (t, i + 1, Path(str(name)).name, partial(read_frameseries_fit, xml))
-            for i, (t, name, xml) in enumerate(zip(tilts, _frame_names(df), df["cbWarpXml"].tolist(), strict=True))
+            (t, n, Path(str(name)).name, partial(read_frameseries_fit, xml))
+            for t, n, name, xml in zip(
+                tilts, _tilt_numbers(df), _frame_names(df), df["cbWarpXml"].tolist(), strict=True
+            )
             if t is not None and xml
         ]
         if _is_meaningful_series(spread_series, threshold=1e-4) or entries:

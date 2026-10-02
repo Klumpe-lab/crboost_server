@@ -1252,7 +1252,7 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
     border: 1px solid #e5e7eb; border-radius: 4px; overflow: hidden;
     background: #ffffff; cursor: zoom-in;
 }
-.cb-tp-card:hover { border-color: #93c5fd; }
+.cb-tp-card:hover { box-shadow: 0 0 0 1px #93c5fd; }
 .cb-tp-cap {
     display: flex; gap: 6px; padding: 1px 5px; white-space: nowrap; overflow: hidden;
     font-family: ui-monospace, monospace; font-size: 8px; color: #64748b; background: #fafafa;
@@ -1260,6 +1260,36 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 .cb-tp-cap b { font-weight: 600; color: #0f172a; }
 .cb-tp-cell { cursor: zoom-in; }
 .cb-tp-cell:hover > * { outline: 1px solid #93c5fd; outline-offset: -1px; }
+/* A tilt's state (services/tilt_series/tilt_state.py) on cards and mosaic cells: red stripes =
+ * dropped by the committed tilt filter, grey stripes = not in alignment's output, solid /
+ * dashed red = the uncommitted review's bad (a human's / the model's), amber = a dark exposure
+ * nothing drops. The stripes lie over the image only, so a card's caption stays legible. */
+.cb-tp-img { position: relative; }
+.cb-ts-drop .cb-tp-img::after, .cb-ts-out .cb-tp-img::after {
+    content: ''; position: absolute; inset: 0; pointer-events: none;
+}
+.cb-ts-drop .cb-tp-img::after {
+    background: repeating-linear-gradient(135deg, rgba(239,68,68,0) 0 6px, rgba(239,68,68,0.55) 6px 7px);
+}
+.cb-ts-out .cb-tp-img::after {
+    background: repeating-linear-gradient(135deg, rgba(148,163,184,0) 0 6px, rgba(148,163,184,0.75) 6px 7px);
+}
+.cb-tp-card.cb-ts-drop, .cb-tp-card.cb-ts-hbad { border: 1.5px solid #ef4444; }
+.cb-tp-card.cb-ts-mbad { border: 1.5px dashed #ef4444; }
+.cb-tp-card.cb-ts-dark { border: 1.5px solid #f59e0b; }
+.cb-tp-cell.cb-ts-drop > .cb-tp-img { outline: 1px solid #ef4444; outline-offset: -1px; }
+.cb-tp-cell.cb-ts-dark > .cb-tp-img { outline: 2px solid #f59e0b; outline-offset: -2px; }
+/* A group header's strip: one tick per tilt at its stage tilt, coloured like its card. The
+ * span is a 4 px hit box; the visible tick is its 2 px ::before. */
+.cb-tp-tick { position: absolute; top: 0; bottom: 0; width: 4px; margin-left: -2px; cursor: zoom-in; }
+.cb-tp-tick::before {
+    content: ''; position: absolute; left: 1px; width: 2px; top: 2px; bottom: 2px; background: #64748b;
+}
+.cb-tp-tick:hover::before { top: 0; bottom: 0; }
+.cb-tk-drop::before { background: #ef4444; }
+.cb-tk-out::before { background: #cbd5e1; }
+.cb-tk-flag::before { left: 0; width: 4px; box-sizing: border-box; background: transparent; border: 1px solid #ef4444; }
+.cb-tk-dark::before { background: #f59e0b; }
 /* Zoom: one tile at viewport scale. Sized here (not maximized) so the tomogram keeps
  * its aspect and the wall behind stays visible as context. */
 .cb-gal-zoom {
