@@ -3,9 +3,10 @@
 **Status:** scoped 2026-10-02; §10 decided the same day; V1 built 2026-10-02 (ruff-clean, not run). Split out of
 roadmap 06 §13, which anticipated it: the design recorded there on 2026-10-01 is appendix A, verbatim (A.n = 06
 §13.n). A.2 is U1, built 2026-10-01 and not run. The body answers A.5 (annotations), A.7 (statistics) and A.8 (the
-Journey); A.3 (buttons), A.4 (the barrier's flags) and A.6 (label sets) are not designed here. Next: stage F (§9,
-the tilt-filter job's row and page on the shared components), then V2; the V1 check (§9, user) whenever convenient.
-The mdoc backfill is a prototyping stopgap, removed once test data is re-run with the current code (§2).
+Journey); stage F answers A.3 (buttons) and A.4 (the barrier's flags); A.6 (label sets) is not designed here. Next:
+stage F (§9), specced 2026-10-02 from the maintainer's answers (§10.8–10.14) as commits F1–F5, then V2; the V1 check
+(§9, user) whenever convenient. `crboost_reingest.py`, the mdoc backfill included, is a prototyping stopgap that F4
+deletes (§2).
 
 **In one line.** Every surface that shows a tilt (a Tilts card, a cell of a tomogram's mosaic, a Journey point) says
 the same three things about it, from one derivation: whether it is in the tomogram and, if not, why; what the review
@@ -44,8 +45,9 @@ creation and the QC fields as each job finishes, so it never needs them. Test da
 instead (the copia protocol makes a fresh project), and the stopgap goes: `--mdoc`
 (`crboost_reingest.py`, `TiltSeriesRegistry.fill_frame_acquisition`) and the Tilts tab's note lines that print the
 command (`TomoGalleryPage._lacking_notes`). From then on a field an old registry lacks reads "not recorded", with no
-command. Users are never pointed at a shell command. Whether the older `crboost_reingest.py` (the 1.4 QC re-ingest)
-goes with it is asked in stage F.
+command. Users are never pointed at a shell command. The rest of `crboost_reingest.py` (the 1.4 QC re-ingest) goes
+with it (decided 2026-10-02, §10.13): F4 deletes the script, and an old registry reads "not recorded" for the QC fields
+too.
 
 ## 3. One tilt, one identity
 - **Key:** `Frame.id` on every surface. A PNG's stem resolves through its average's stem (U1); a Journey row's frame
@@ -207,9 +209,9 @@ every chart.
 | Stage | What | State |
 |---|---|---|
 | V1 | What each tilt is, read-only: the state, caption rows, strips, one numbering, the mdoc backfill | built 2026-10-02, not run |
-| F | The tilt-filter job: the row's flags, and the job page rebuilt on the Tilts tab's components | **next** (2026-10-02); opens with the maintainer's UI/UX answers |
+| F | The tilt-filter job: the row as a dropdown of settings, the job page as a review panel over the shared gallery, one card with a metric chooser, a popover, outliers and a label flag; DL auto (06 chunk 11) | specced 2026-10-02 as F1–F5; **next** |
 | V2 | The Journey: hovers, marked charts, the filter section's charts, links, routes | outline; after F |
-| V3 | Summary charts, the metric slot, sort and show switches | outline |
+| V3 | Summary charts, the metric slot, sort and show switches | mostly built by F; what is left is outlined below |
 | V4 | The review moves into the Tilts view | decided 2026-10-02: yes, after V2 |
 
 ### V1 — what each tilt is (recommended first build)
@@ -274,60 +276,212 @@ Read-only, touches no job, and shows §1.1 on data we have. V2 and roadmap 22 bu
      `Position_19_040_-58.00_…` reads `dark <0.1%` beside a grey `p0.19`.
   6. A project without counts (agg_20251113_412) shows one note naming `--mdoc`, and no card reads `dark`.
 
-### F — the tilt-filter job: its row and its page on the shared components (next)
-Recorded 2026-10-02 at the maintainer's direction: the next session works on the tilt-filter job itself, which the
-tilt views overtook. Two parts: the row additions scoped in roadmap 06 (the Manual · DL review switch and the review's
-flags), and the job page, which is to be integrated further and rebuilt on the components the Tilts and Tomograms
-views now use, so the UI and the code stop fragmenting. The session opens with the maintainer's description of what
-the UI/UX should become; the scope below is a starting point for that conversation, not a spec.
+### F — the tilt-filter job: its row and its page on the shared components (specced 2026-10-02, next)
+The maintainer's design (2026-10-02), from the answers to the five questions and four forks recorded as §10.8–10.14.
+Three parts: the job row becomes a dropdown holding the filter's settings; the job page becomes a review panel over the
+Tilts tab's gallery; the card gains a metric chooser, a caption popover, red outliers and a label flag. Five commits,
+F1–F5, built back to back, one runtime pass at the end.
 
-**Where it stands.** Roadmap 06 chunks 8–9 (the row's controls line `ui/pipeline_builder/tilt_filter_row.py`: the
-`Segmented` Manual · DL review switch, the §2 chip, Run DL / Cancel DL / Approve / Re-open; the parked pipeline), 10c
-and 10d are committed and have not run. U1 and V1 have not run. A.3 (buttons and controls) and A.4 (the barrier's
-flags) are open.
+**Where it stands.** Roadmap 06 chunks 8–9 (the row's switch, the parked pipeline), 10c, 10d, U1 and V1 are committed
+and have not run. F builds on them. 06 chunk 11 (DL auto) is F2.
 
-**The fragmentation today.**
-- Two galleries of the same tilts: the job page (`ui/tilt_filter_panel.py`, `_build_cards_html`, `_card_look`,
-  `_js_apply_look`, `_render_ts_group`) and the Tilts tab (`ui/tilt_previews.py`, `card_grid_html`, `.cb-tp-card` with
-  the `cb-ts-*` looks). Each has its own card, caption, label styling (inline styles against classes), group header
-  (a `−N` bad count against counts and a strip) and tooltip.
-- Two data paths: the page reads the fs-motion star and the Warp XMLs at render (`_xmlRes`, `_xmlMotion`); the Tilts
-  tab reads the registry through `tilt_state`. They can disagree (§8.5).
-- Controls outside the house vocabulary on the page: the "Deep Learning Auto-Filter" `ui.expansion` with a material
-  icon, a bare `ui.select` (sort) and a bare `ui.checkbox` ("Show only removed"); stat chips of their own (Total /
-  Good / Bad / Removed).
-- Actions with two homes: Run DL and Approve exist on the row and on the page (A.3).
+**Decided (§10.8–10.14).**
+- The row is a dropdown, like an array job's tilt-series list, holding the settings: `Manual · DL`; for DL,
+  `Stop for review · Apply automatically`; the model; the threshold when applying automatically. Manual always stops.
+  Collapsed, the row says where the filter is.
+- Every action lives once, on the page: Run DL, Cancel DL, Clear labels, Approve, Re-open. The dropdown links to the
+  page and carries no other action.
+- The page: a top panel (the review's state and actions, the DL run, the numbers, the distributions of excluded
+  tilts), then the gallery with its own controls row (S/M/L, sort, show, metrics).
+- A click on the image zooms, a corner flag labels, and the caption's hover or click shows every metric. Red marks an
+  outlier: more than 3 robust SDs worse than the project's tilts in the same 10° |tilt| band.
+- `crboost_reingest.py` is deleted entirely (§2).
 
-**Candidate scope** (confirmed or changed by the maintainer's answers):
-1. Remove the backfill stopgap (§2).
-2. The page's gallery renders through `ui/tilt_previews.py`: the same card, caption tokens, state looks, tooltip,
-   group header with its strip, and legend as the Tilts tab, in a review mode where a click labels and a corner
-   button zooms.
-3. The page reads the registry (`tilt_states`, the tooltip metrics), not the star and the XMLs.
-4. A label click restyles the card in place by swapping the `cb-ts-*` class and updates its header's counts and
-   strip, with no group re-render.
-5. House controls replace the expansion, the bare select and the checkbox (`render_segmented`, `house_select`,
-   `house_button`); the stat chips become the header vocabulary (in the tomogram · flagged · dark).
-6. One home per action (A.3), split between the row and the page as the maintainer decides.
-7. The row's flags (A.4): a roster state of its own for a job parked at the review, a project-level "waiting for
-   review" marker (rail badge, landing hub), and readable states for a refused Re-open.
+#### F1 — Approve reads the registry
+Files: `services/jobs/tilt_filter.py`.
+- `commit_verdict` (`:318`) labels every registry frame with `effective_label(f.id, f.p_bad, …)` (`:286`) instead of
+  reading the fs-motion star, so the page, the Tilts tab and the commit read one source. It refuses until fsMotion has
+  succeeded; the star's existence was the gate.
+- `finalize_pipeline_output` (`:203`) becomes `stamp_verdict(registry, labels)` → `ok(kept, dropped)`: stamp and
+  save. The old-slot cleanup stays in `commit_verdict`. A label naming a frame the registry lacks still refuses the
+  commit and names the tilts. F2's DL-auto job commits through the same function.
+- Counts run over the registry's frames, so a tilt series fsMotion skipped counts as kept (the star left it out).
+- *Check (user):* on a project whose alignment has not run, label two tilts bad and Approve: "2 dropped"; Re-open and
+  Approve again: the same. Before fsMotion has succeeded, Approve is refused with the reason.
 
-**How it relates to V4.** F makes the job page and the Tilts tab draw the same components; V4 (after V2) then moves the
-labelling click into the Tilts tab and retires the page's gallery. Whether to pull that forward is one of the
-questions.
+#### F2 — DL auto (roadmap 06 chunk 11)
+As specced in roadmap 06 §12 chunk 11, with these additions:
+- The driver's `--commit` loads the registry on the node and commits through F1's `stamp_verdict`, then writes
+  `commit.json`.
+- The mode write moves into the backend (`set_tilt_filter_mode`): it refuses while a prediction run or an auto job is
+  in flight, and a switch to DL auto while a hold names this filter submits it with the parked jobs (chunk 11's
+  "switch while parked"). The row (now, and F3's dropdown) calls it.
+- `tilt_states` (`services/tilt_series/tilt_state.py:113`) shows P(bad) and the model's call in DL auto as in DL
+  review.
+- Until F3, the row's switch gains a third segment, `DL auto`, and `_review_status`
+  (`ui/pipeline_builder/tilt_filter_row.py:58`) the auto states: `Auto · queued`, `running`, `failed` (the reason in
+  the tooltip), `done · D of T dropped`.
+- *Check (user):* chunk 11's.
 
-**Questions the session opens with.**
-1. What bothers you most on the job page today (layout, density, the DL section, the gallery, the controls)?
-2. Which actions live on the row and which on the page, and what should the row say at a glance while the pipeline
-   is parked?
-3. In the review gallery, what does a click do (label, zoom), and should a card carry the Tilts tab's caption and
-   tooltip numbers, or fewer?
-4. Two views sharing components, or one gallery now (V4 pulled forward)?
-5. Delete `crboost_reingest.py` entirely, or only the `--mdoc` stopgap?
+#### F3 — The row: a dropdown with the settings, the parked look, the waiting markers
+Files: `ui/pipeline_builder/pipeline_roster.py`, `ui/pipeline_builder/tilt_filter_row.py`, `ui/status_indicator.py`,
+`ui/projects_overview.py`, `backend.py`.
+- **Chevron.** The tilt filter's row gets the array jobs' chevron (`pipeline_roster.py:531-543`, state in
+  `_expanded_instances` `:213`, toggled by `_toggle_ts_expansion` `:688`). Expanded, the line under the row
+  (`:610-612`) shows the dropdown; collapsed, nothing. Collapsed by default.
+- **The collapsed row** says where the filter is, in mono 9 px where an array job shows its progress (`:480-515`),
+  coloured and tooltipped as today's chip (`_review_status`, `_waiting_tip` `:93`): `manual`, `DL review` or
+  `DL auto 0.30` before anything ran; `waiting for fsMotion`; `review`; `predicting…`; `47 flagged`; `DL failed`
+  (red); `12/697 dropped` once committed; `auto · queued`, `auto · running`, `auto · failed` (red); `· K parked`
+  appended while a hold names this filter.
+- **The dropdown** is `TiltFilterControls` (`tilt_filter_row.py:112`), still its own FingerprintedView on a 3 s
+  tick, with a label column as in `house_field`:
+  - `method`: `render_segmented` Manual · DL.
+  - `when DL` (DL only): Stop for review · Apply automatically. Manual → DL selects Stop for review.
+  - `model` (DL only): `house_select` over conf.yaml's `tilt_filter.models`, with the red marker (the
+    `resolve_model` reason) when the model cannot run. It moves here from the page's DL section
+    (`ui/tilt_filter_panel.py:223`).
+  - `threshold` (Apply automatically only): `house_number` through `numeric_forward`, 0–1 in steps of 0.05,
+    "uncalibrated" when conf.yaml records no cut for the model. DL review's threshold stays on the page, where it
+    moves the labels live.
+  - The state line (today's chip and tooltip) and `Review →` (`panel.switch_tab`).
+  - Writes go through F2's `set_tilt_filter_mode`, saved with `force=True` (none is a USER_PARAMS field); an open
+    page re-renders (`rerender_job`).
+  - No actions: `_actions` (`:168`) and its handlers move to the page (F5).
+- **Parked.** A job in `review_hold.parked` (`services/project_state.py:685`) draws an amber ring instead of the
+  SCHEDULED dot (`_dot_html` `ui/status_indicator.py:55` gets the variant; `_status_widget` `pipeline_roster.py:225`
+  passes it), with the tooltip "Parked: waits for the tilt-filter review since HH:MM; Approve submits it." The
+  roster's `signature()` (`:244`) takes the hold. Roadmap 13 splits SCHEDULED into staged and queued from
+  `pipeline_active` and `pipeline_order`; parked is a third derived state, drawn the same way.
+- **Project-level marker.** Rail: an amber dot on the Jobs button (`:976`) beside its count badge while a hold exists,
+  with the tooltip "The pipeline waits for the tilt-filter review: K jobs parked since HH:MM", painted on the rail's
+  count tick (`_paint_counts` `:1063`). Landing: a `review` pill (amber) in `ProjectsOverview` (`_STATUS_STYLES`
+  `ui/projects_overview.py:66`) when the project file carries a `review_hold` and nothing runs;
+  `_derive_live_status` (`backend.py:1330`) reads the hold beside `jobs`. Roadmap 25 restyles the rows later and
+  keeps the state.
+- *Check (user):*
+  1. A new tilt filter's row reads `manual`, collapsed; the chevron opens the settings; DL adds `when DL` and
+     `model`; Apply automatically adds `threshold`.
+  2. Run with Manual: the row reads `review · K parked`; alignment onward draw amber rings; the rail's Jobs button
+     carries the amber dot; the landing lists the project as `review`.
+  3. A mode switch while a DL run is in flight is refused with the reason.
 
-Files: `ui/tilt_filter_panel.py`, `ui/pipeline_builder/tilt_filter_row.py`, `ui/tilt_previews.py`,
-`services/tilt_series/tilt_state.py`, `ui/tomo_gallery.py`, `ui/dashboard/css.py`, `crboost_reingest.py`,
-`services/tilt_series/registry.py`.
+#### F4 — One card: the gallery component, metrics, the popover, outliers, the flag; the stopgap goes
+Files: `ui/tilt_previews.py`, `services/tilt_series/tilt_state.py`, `ui/tomo_gallery.py`, `ui/dashboard/css.py`;
+`crboost_reingest.py` (deleted), `services/tilt_series/registry.py`, `services/dashboard_data.py`,
+`docs/roadmaps/roadmap_preprocessing-metrics.md`.
+- **`TiltGallery`** (`ui/tilt_previews.py`): the Tilts tab's group code moves into one class that both hosts mount
+  (`_render_tilts`, `_render_tilt_group`, `_set_group_open`, `_show_group`, `_expand_all`, `_on_tilt_click`;
+  `ui/tomo_gallery.py:679-831`). Groups start collapsed and fill on first expand, one `ui.html` per series with one
+  delegated click. It owns the controls row and a review mode that only the job page passes (F5). The Tilts tab
+  keeps its toolbar (tabs, S/M/L, Refresh) and puts the gallery's other controls in its tab-controls slot
+  (`_render_tab_controls` `:504`).
+- **Controls row:**
+  - S/M/L (90 / 130 / 190 px, `_TILT_CARD_PX` `ui/tomo_gallery.py:78`), on the job page; the Tilts tab has it in
+    its toolbar.
+  - `sort` (`house_select`): angle (default), acquisition order, P(bad) worst first where shown, and each chosen
+    metric worst first.
+  - `show` (`render_segmented`): all · flagged · not in the tomogram · dark · outliers, plus disagree in DL review
+    (your label against the model's call). A group with nothing to show is hidden; header counts stay whole-series.
+  - `metrics`: toggle chips in the wall's species-chip look (`.cb-gal-sp`).
+  - Expand all · Collapse all.
+  - Sort and show re-render the open grids only.
+- **Metrics** per tilt (`_tilt_metrics` `:253` gains astigmatism): #N, P(bad) where the mode shows it, exposure (% of
+  the series' median counts), CTF fit, motion, Δ defocus, astigmatism (fsMotion, or CTF after alignment where it fit,
+  as Δ defocus), dose before, alignment shift. The angle is always on; #N and P(bad) are on by default. Every card
+  carries every token and the chooser toggles a class on the gallery's root, so CSS shows the chosen tokens and a
+  toggle never re-renders. The dark token stays as now, amber, whatever is chosen: it is state.
+- **Popover.** A card's caption carries a hidden block with every metric (the value, its band's median and robust
+  SD, red when an outlier), `tilt_tip`'s state sentences (`:359`), `DARK_RULE` where dark, and "Not recorded: …".
+  A client-side handler on the grid (NiceGUI 3.0.3's `.on(..., js_handler=...)` without a Python handler, so no
+  server round trip) copies it into one fixed-position popover per gallery, placed at the caption
+  (`getBoundingClientRect`, so a group's `overflow: hidden` cannot clip it). Hover shows it; a caption click pins
+  it until the next click elsewhere or Escape. The card's multi-line native title goes; the image keeps a one-line
+  title (`+42.0° · tilt 13 · click to view`). Mosaic cells and strip ticks keep their titles.
+- **Outliers** (`services/tilt_series/tilt_state.py`, pure): `OUTLIER_ROBUST_SDS = 3.0`, `OUTLIER_BAND_DEG = 10.0`
+  and `OUTLIER_MIN_BAND = 10`, each with its reason, and `band_outliers(points, worse)`. Per metric, over every tilt
+  of the project that has a value, banded by |stage tilt|: robust SD = 1.4826 × MAD, and a value is red when it lies
+  past the band's median by more than 3 robust SDs on its bad side (higher for CTF fit, motion, astigmatism and
+  shift; larger |value| for Δ defocus). No rule for the angle, #N and dose; exposure keeps the dark rule (amber) and
+  P(bad) the threshold (red, as now). A band with fewer than 10 values, or no spread, marks nothing, and the popover
+  says so. The popover's red line names the rule, the band, its median, robust SD and tilt count. The legend gains
+  one line: "red number: more than 3 robust SDs worse than the project's tilts at the same |tilt|; a marker, never a
+  drop".
+- **The flag** (review mode only): a 14 px box in the image's top-right corner (`.cb-tp-flag`), drawn on hover for an
+  untouched tilt and always for a labelled one: filled red = your bad, filled slate = your good. A click toggles bad ↔
+  good as the page's card click does now (the effective label flips and the tilt counts as labelled). Elsewhere, the
+  image zooms and the caption opens the popover. The legend gains "your label: good" (the slate flag).
+- **The stopgap goes** (§10.13): `crboost_reingest.py`; `TiltSeriesRegistry.fill_frame_acquisition`
+  (`services/tilt_series/registry.py:223`); the commands in the Tilts tab's notes (`_lacking_notes`
+  `ui/tomo_gallery.py:709`), which then read, e.g., "4 of 17 tilt series have no mdoc exposure counts recorded, so
+  their dark exposures are not marked."; the script's mentions in the registry's schema comment (`:51`),
+  `fsm_motion_tracks`' docstring (`services/dashboard_data.py:238`) and `roadmap_preprocessing-metrics.md:33`. V1's
+  check step 1 is void.
+- *Check (user):*
+  1. Tilts tab: its controls row; turning metrics on and off changes every caption at once, with no flicker; sort by
+     CTF fit puts the red values first; show · outliers hides the rest.
+  2. Hover a caption: the popover lists every metric; on Grid3 a red value names its band, median and the rule; a
+     click pins it; a group's edge does not clip it.
+  3. No note names a command; `crboost_reingest.py` is gone.
+
+#### F5 — The job page: a review panel over the shared gallery
+Files: `ui/tilt_filter_panel.py` (rewritten), `ui/tilt_previews.py`, `ui/dashboard/figures.py`, `ui/dashboard/css.py`,
+`ui/pipeline_builder/tilt_filter_row.py`.
+- **Data** as the Tilts tab: `registry_tilt_series` and `tilt_context` on the loop, `collect_tilt_groups` in a
+  thread. No fs-motion star, no Warp XMLs: `_find_fs_motion_warp_dir`, `load_tilt_series` and `get_label_summary`
+  leave the page, and `get_label_summary` (`services/tilt_series_service.py:217`) goes with its last caller. The page
+  observes `predict_run` and the job's status on today's 3 s tick (`_observe` `:283`); a landed run re-collects and
+  re-renders the groups, keeping their open state. Previews as the Tilts tab: `ensure_tilt_thumbnails` when none
+  exist, and the "N tilts have no preview yet" note with a 15 s poll. The Generate screen (`_render_generate`
+  `:324`) goes. Before fsMotion: the Tilts tab's empty state.
+- **Top panel**, its blocks separated by whitespace:
+  1. *Review:* the state line (shared with the row through `_review_status`) and the actions as `house_button`s:
+     Run DL / Run DL again / Cancel DL (DL modes); Clear labels, behind its confirmation (10d); Approve (accent,
+     with `notify_resume`; not in DL auto, whose job commits); Re-open, drawn disabled with
+     `_verdict_locked_reason` (`services/jobs/tilt_filter.py:310`) as its tooltip once alignment has started. In DL
+     review the threshold sits here (`house_number`, live relabel, the "uncalibrated" marker); in DL auto it reads
+     "threshold 0.30, set on the job row".
+  2. *DL run* (DL modes): a card with the model as chosen on the row, run NNN, its state (the braille spinner while
+     queued or running), SLURM id, submitted at and elapsed, then "N predictions · K at or above 0.30" or the failure
+     reason; the liveness banner under it when the model is dead. It replaces `_render_dl_config` and
+     `_render_predict_status` (`:223`, `:301`).
+  3. *Numbers:* `.cb-stats` tiles as in the Journey (`_stat_tiles` `ui/tomo_dashboard_dialog.py:998`): tilts (and
+     series), in the tomogram (where alignment ran), flagged (yours · the model's), dropped (committed), dark,
+     outliers. In DL review, the agreement line: "the model flags 47 · your labels say 56 bad · both 47 · only yours
+     9 · only the model's 0 (untouched tilts count as good)".
+  4. *Distributions* (`ui.echart`; builders beside `build_per_tilt_chart` in `ui/dashboard/figures.py`, on its
+     `_grid` / `_tooltip` / `_axis` helpers; read the dataviz skill before writing them): tilts out of the tomograms
+     or flagged, by |stage tilt| in 10° bands, stacked by cause (dropped by the verdict · flagged by you · flagged by
+     the model · left out by Warp's import), with dark tilts in use as an amber segment; in DL modes, the P(bad)
+     histogram (20 bins, log counts) stacked by your label (bad · good · untouched), with the threshold as a dashed
+     line.
+- **Gallery:** `TiltGallery` in review mode under the panel, with its controls row (S/M/L included), the legend and
+  the group headers with their strips.
+- **Live updates, no re-render.** A flag click writes the job's `tilt_labels` (saved debounced, as now), recomputes
+  that series' states and summary, and runs one JavaScript call scoped to the gallery's root element that swaps the
+  card's look class, flag class and caption tokens. (The Tilts tab can hold the same tilt in the same page, so the
+  call never queries the whole document.) The group's header HTML is replaced, and the tiles and charts update
+  (`chart.update()`). A threshold move or Clear labels recomputes every series and sends every changed card in one
+  call.
+- **What goes** from `ui/tilt_filter_panel.py`: `_hdr`, `_chip`, `_parse_pos_beam`, `_find_ts_ctf_star`,
+  `_find_fs_motion_warp_dir`, `_render_dl_config`, `_render_generate`, `_build_gallery`, `_render_gallery_content`,
+  `_CARD_CLICK_JS`, `_card_look`, `_js_apply_look`, `_set_bad_count`, `_build_cards_html`, `_render_ts_group` and the
+  palette they use. The viewer (`_render_mrc_preview` `:889`, `_show_upsample` `:941`) moves beside
+  `open_tilt_viewer` in `ui/tilt_previews.py`, its only other caller, which ends that module's lazy import of the
+  panel. `_confirm_clear_labels` and `_notify_finalize` stay.
+- *Check (user):*
+  1. Grid3 in DL review: the panel shows the state, Run DL again, Clear labels, Approve (refused with the reason:
+     alignment has run), the DL card naming its run and model, the tiles and both charts; the gallery below.
+  2. A flag click restyles the card at once; its header counts, its strip tick, the tiles and the bar chart follow;
+     nothing flickers; a reload keeps the label.
+  3. Threshold 0.30 → 0.50: dashed borders and red `p` tokens change in place; the histogram's line moves; the
+     agreement line follows.
+  4. A project whose alignment has not run: Approve → the dropped cards take red stripes and the row reads
+     `D/T dropped`; Re-open → the review again.
+  5. A label set on the page shows in the Tilts tab after its Refresh.
+
+**Not in F:** the Journey (V2); labelling in the Tilts tab (V4); label sets (A.6); 06 chunks 12–13; roadmap 22's
+blank-exposure exclusion.
 
 ### V2 — the Journey (outline)
 §7.1–7.6, with §8.2's `data-section` fix. Files: `ui/tomo_dashboard_dialog.py`, `ui/dashboard/figures.py`,
@@ -341,12 +495,17 @@ a double-click opens the viewer, whose Tilts ↗ lands on the outlined card;
 6.5, plus a metric switch in the Tilts toolbar, `P(bad) · exposure · CTF fit · motion · Δ defocus · shift` (only those
 with data), which sets the card's last caption token and a worst-first sort; and a show switch, `all · not in the
 tomogram · flagged · disagree · dark`. The switches live in the Tilts view, which reviews from V4 on (§10.7).
+**Mostly built by F (2026-10-02):** F4's controls row gives both hosts the sort, the show switch (with outliers) and a
+metric chooser, which replaces the single metric slot; F5 puts 6.5's charts on the job page's panel. What is left is
+6.5 at the top of the Tilts tab, decided with V4.
 
 ### V4 — one gallery (decided: after V2)
 The Tilts tab already has the cards, the state, the viewer and (with V2) the routes. A click that labels there, as in
 the filter gallery, leaves the filter panel its DL section and Approve, and answers A.3's "one home per action":
 labelling in Tilts; Approve and Run DL on the job row. Scheduled after V2 (§10.7). Label sets (A.6) are designed with
-it.
+it. **After F:** both hosts mount one `TiltGallery`, so V4 is the Tilts tab passing the review mode (the flag). The
+actions stay on the job page's panel (§10.9), not on the row; whether the page keeps its own gallery then is decided
+with V4.
 
 ## 10. Decisions (maintainer, 2026-10-02)
 1. **Tilt number:** `tilt_index + 1` everywhere.
@@ -358,9 +517,27 @@ it.
 4. **Backfill:** `crboost_reingest.py --mdoc`, run by hand; the registry does not fill itself on load. Amended the
    same day: a prototyping stopgap for registries written by older code, removed once test data is re-run through
    the current code (§2); users are never pointed at a command.
-5. **P(bad) on Tilts cards:** in DL review only, as the panel.
+5. **P(bad) on Tilts cards:** in DL review only, as the panel. With F2, in DL auto too.
 6. **The strips are the project's tilt scheme**; no separate chart.
 7. **V4:** yes, the review moves into the Tilts view, after V2. V3's switches belong there.
+
+Stage F (maintainer, 2026-10-02; the answers to F's questions and forks):
+
+8. **The row is a dropdown** (the array jobs' chevron) holding the settings: Manual, which always stops the pipeline,
+   or DL; for DL, stop for review or apply automatically, with the threshold for the latter; the model. Collapsed,
+   the row says where the filter is.
+9. **Every action lives on the job page only:** Run DL, Cancel DL, Clear labels, Approve, Re-open. The dropdown links
+   to the page.
+10. **The page** is a top panel (the review's state and actions, the DL run "dressed up", the numbers, the
+    distributions of excluded tilts) over the shared gallery with its own controls row: S/M/L, sort, show filters and
+    a chooser of the metrics every caption shows.
+11. **Clicks:** a click on the image zooms; a corner flag labels (red = your bad, slate = your good, which also marks
+    "your label: good"); the caption's hover or click reveals every metric.
+12. **Outliers are red:** more than 3 robust SDs (1.4826 × MAD) worse than the project's tilts in the same 10° |tilt|
+    band. A marker, never a drop.
+13. **`crboost_reingest.py` is deleted entirely**, the 1.4 QC re-ingest with the mdoc backfill.
+14. **DL auto (06 chunk 11) is built in F** as F2, since the row offers it (in the plan of 2026-10-02, not objected
+    to). Approve reads the registry first (F1), so the DL-auto job commits through the same function.
 
 ## Appendix A — roadmap 06 §13.1–13.8, as recorded 2026-10-01
 Moved verbatim on 2026-10-02. A.n is 06 §13.n; every other § reference below is roadmap 06's. §§5–7 above answer A.5,

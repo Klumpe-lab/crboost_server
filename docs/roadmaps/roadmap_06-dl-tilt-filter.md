@@ -821,6 +821,8 @@ annotations, label sets, statistics, the Journey) moved on 2026-10-02 to
 - **2026-10-02, next session:** roadmap 26 stage F, the job's row (the Manual · DL review switch and the review's
   flags, A.4) and its page rebuilt on the Tilts tab's components (A.3), opening with the maintainer's UI/UX answers.
   Chunks 11–13 follow F.
+- **2026-10-02 (later):** stage F is specced in roadmap 26 §9 (F1–F5). Chunk 11 (DL auto) is built there as F2, on
+  F1's registry-based commit; the row's DL auto choice sits in F3's settings dropdown. Chunks 12–13 still follow F.
 - U1 (13.2) built 2026-10-01 as its own commit, ruff-clean, not run. Next: the rest of §13, topic by topic. The PNGs
   stay post-fsMotion (13.1).
 - **2026-10-02:** 10c, 10d and U1 are committed on `main`, none run. §13 moved to roadmap 26, which proposes its first
