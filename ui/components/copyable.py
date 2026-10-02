@@ -4,7 +4,8 @@ Reusable copy-to-clipboard affordances.
 App-wide rule: wherever an absolute path (or a shell command) is shown, render
 it with a small copy button so the user never has to hand-select truncated text.
 Use `copyable_path` for inline path rows and `copy_button` to bolt a copy icon
-onto anything else (including inside popovers/tooltips).
+onto anything else (including inside popovers/tooltips). `copy_on_click` makes the
+path text itself the affordance where an extra icon per row is too much chrome.
 """
 
 from __future__ import annotations
@@ -39,6 +40,17 @@ def copy_button(text: str, *, tooltip: str = "Copy to clipboard", color: str = "
         .style(f"color: {color}; flex-shrink: 0;")
         .tooltip(tooltip)
     )
+
+
+def copy_on_click(element, text: str):
+    """Make `element` copy `text` when clicked; it turns blue and underlines on hover
+    (`.cb-copy-path`, ui/dashboard/css.py). `click.stop` so a clickable parent (a roster
+    row that opens or previews its project) does not also fire."""
+
+    async def _do():
+        await _write_clipboard(text)
+
+    return element.classes("cb-copy-path").on("click.stop", _do)
 
 
 def copyable_path(

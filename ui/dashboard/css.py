@@ -1010,6 +1010,22 @@ _CB_CSS = """
 .cb-proj-chevron:hover { background: #eff6ff; }
 .cb-proj-chevron:hover .q-icon { color: #2563eb !important; }
 .group:hover .cb-proj-chevron .q-icon { color: #64748b; }
+/* Click-to-copy text (ui/components/copyable.copy_on_click): the path itself is the
+ * control, so it has to say so on hover. */
+.cb-copy-path { cursor: pointer; }
+.cb-copy-path:hover { color: #2563eb !important; text-decoration: underline; }
+/* A live project's status dot in the roster: a ring that ripples out, so a running
+ * project is findable in a long list without anything else on the row being loud. */
+@keyframes cb-live-pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.6); }
+    70%  { box-shadow: 0 0 0 5px rgba(59, 130, 246, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+}
+.cb-live-pulse { animation: cb-live-pulse 1.6s ease-out infinite; }
+/* Scroll area that must never scroll sideways (projects roster): content is pinned to
+ * the viewport width, so an over-wide child clips instead of growing a horizontal pan. */
+.cb-scroll-noh .q-scrollarea__container { overflow-x: hidden !important; }
+.cb-scroll-noh .q-scrollarea__content { width: 100%; max-width: 100%; }
 /* Template workbench lists: table rows, so the per-row facts (apix / box / lp, sigma
  * stats, size, polarity) sit in columns sized to their content. Only the file column flexes.
  * The accent is a custom property set per list on the container (indigo for templates,
@@ -1129,6 +1145,10 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
     font-family: 'IBM Plex Sans', sans-serif; font-size: 11px;
     color: #1e293b; padding: 0; line-height: 18px; min-height: 0;
 }
+/* Number inputs: no browser spin buttons. They ate a third of a narrow box and stepped by 1. */
+.cb-select input[type=number]::-webkit-inner-spin-button,
+.cb-select input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.cb-select input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 .cb-select .q-field__marginal,
 .cb-select .q-field__append,
 .cb-field .q-field__marginal,

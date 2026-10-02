@@ -5,6 +5,7 @@ import json
 import logging
 import pwd
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 from datetime import datetime
@@ -19,7 +20,8 @@ from services.scheduling_and_orchestration.pipeline_monitor import PipelineMonit
 from services.jobs.spec import driver_invocation
 from services.models_base import JobStatus, JobType
 from services.particles.list_ref import extract_pick_list_instance_id
-from services.project_state import get_state_service
+from services.project_state import get_state_service, remove_project_state
+from services.project_disk_usage import get_disk_usage_service, is_stale as is_disk_usage_stale
 from services.event_log import events
 from services.result import err, ok
 from services.computing.slurm_service import SlurmService, write_sbatch_script
@@ -1167,7 +1169,10 @@ class CryoBoostBackend:
         return str(Path.home())
 
     async def scan_for_projects(self, base_path: str) -> list[dict[str, Any]]:
-        return await asyncio.to_thread(self._scan_for_projects_sync, base_path)
+        projects = await asyncio.to_thread(self._scan_for_projects_sync, base_path)
+        # Sizes are measured in the background; a later scan picks the results up.
+        get_disk_usage_service().request([p["path"] for p in projects if p["disk_usage_stale"]])
+        return projects
 
     async def read_project_state_detached(self, project_path: str):
         """Load a project's ProjectState from disk for read-only preview WITHOUT
@@ -1288,6 +1293,13 @@ class CryoBoostBackend:
                     derived["pipeline_active_flag"] = pipeline_active
 
                     last_activity_ts = max(stats.st_mtime, derived.get("last_activity_ts", 0.0))
+                    disk_usage = get_disk_usage_service().cached(item)
+                    disk_usage_stale = is_disk_usage_stale(
+                        disk_usage,
+                        last_activity_ts=last_activity_ts,
+                        running=derived["live_status"] == "running",
+                        now=time.time(),
+                    )
 
                     projects.append(
                         {
@@ -1307,6 +1319,8 @@ class CryoBoostBackend:
                             "source_directory": source_directory,
                             "last_activity_ts": last_activity_ts,
                             "last_activity": datetime.fromtimestamp(last_activity_ts).strftime("%Y-%m-%d %H:%M"),
+                            "disk_usage": disk_usage,
+                            "disk_usage_stale": disk_usage_stale,
                             **derived,
                         }
                     )
@@ -1430,6 +1444,16 @@ class CryoBoostBackend:
             shared=shared,
             progress_cb=progress_cb,
         )
+
+    async def delete_project(self, project_path: Path) -> dict[str, Any]:
+        """Remove a project directory from disk and drop its in-memory state."""
+        try:
+            await asyncio.to_thread(shutil.rmtree, project_path)
+        except OSError as e:
+            logger.exception("Failed to delete project %s", project_path)
+            return err(str(e))
+        remove_project_state(project_path)
+        return ok()
 
     async def transfer_project_ownership(self, project_path: Path, new_owner: str | None) -> dict[str, Any]:
         """Reassign a project's owner WITHOUT moving it on disk.
