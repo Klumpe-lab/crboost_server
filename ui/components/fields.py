@@ -28,7 +28,7 @@ from collections.abc import Callable
 
 from nicegui import ui
 
-from ui.job_plugins._field_styles import _numeric_kind, numeric_forward
+from ui.job_plugins._field_styles import _numeric_kind, bind_numeric
 
 # Same voice as the workbench creation forms and the table heads.
 HOUSE_LABEL_CLS = "text-[9px] font-bold text-gray-400 uppercase tracking-wide"
@@ -74,7 +74,7 @@ def house_number(
             is_int, _ = _numeric_kind(model, attr)
             kwargs.setdefault("precision", 0 if is_int else None)
             inp = ui.number(**kwargs)
-            inp.bind_value(model, attr, forward=numeric_forward(model, attr))
+            bind_numeric(inp, model, attr)
         else:
             inp = ui.number(**kwargs)
         if on_change is not None:
