@@ -197,69 +197,49 @@ def prediction_liveness(p_bad_by_series: Mapping[str, Sequence[float]]) -> tuple
     return any(s >= LIVENESS_MIN_STD for s in spreads), mean
 
 
-# ── commit-time verdict (shared by the DL and manual-label paths) ──
+# ── commit-time verdict (shared by Approve and the DL-auto job) ──
 
 
-async def finalize_pipeline_output(state, job_model, ts_data, project_path: Path) -> dict:
-    """Commit the tilt-filter verdict: stamp every tilt's keep/drop decision into the
-    TiltSeries registry, which is what alignment reads when it snapshots the tomostar
-    dir. Runs at commit for both the DL-assisted and manual-labelling paths (the SLURM
-    driver only runs for the DL pass; manual labelling never dispatches it).
+async def stamp_verdict(registry, labels: Mapping[str, str]) -> dict:
+    """Commit a tilt-filter verdict: stamp each frame's keep/drop decision (`labels`, frame id →
+    "good" / "bad"; anything but "good" drops) into the TiltSeries registry and save it.
+    Alignment applies the stamps when it snapshots the tomostar dir. Approve and the DL-auto
+    job both commit through here.
 
-    Has no upstream dependency: the registry exists from import onward, so
-    the user can commit before, after, or without tsImport having run. Re-stamps in both
-    directions on every commit, so un-labelling a tilt restores it. Downstream jobs pick
-    the new verdict up when they are (re)queued -- the forward-only staleness convention.
+    Re-stamps in both directions on every commit, so a tilt labelled good again is restored.
+    Downstream jobs pick the new verdict up when they are (re)queued -- the forward-only
+    staleness convention. A label naming a frame the registry lacks refuses the commit before
+    anything is stamped: its verdict would be lost.
 
-    Returns ok(kept=..., dropped=...) or err(...); the UI caller surfaces the outcome.
-    A failure here means the cut was not recorded, so the caller must not mark the job
-    succeeded."""
-    from services.tilt_series import get_registry_for
-
-    df = ts_data.all_tilts_df
-    if "cryoBoostDlLabel" not in df.columns or "cryoBoostKey" not in df.columns:
-        return err("Cannot commit: the tilt table has no labels (expected cryoBoostKey + cryoBoostDlLabel columns).")
-
-    try:
-        registry = get_registry_for(project_path)
-    except Exception:
-        logger.exception("tilt-filter commit: registry unavailable")
-        return err("Cannot commit: the TiltSeries registry could not be loaded. Reload the project and retry.")
-
+    Returns ok(kept=..., dropped=...) or err(...). A failure means the verdict was not
+    recorded, so the caller must not mark the job succeeded."""
     if not registry.tilt_series_ids():
         return err("Cannot commit: the TiltSeries registry is empty. Reload the project to backfill it from mdocs.")
 
-    kept = dropped = 0
     unknown: list[str] = []
-    for stem, is_filt in zip(df["cryoBoostKey"], (df["cryoBoostDlLabel"] != "good"), strict=True):
+    for key in labels:
         try:
-            registry.set_frame_filtered(str(stem), bool(is_filt), reason="tilt-filter" if is_filt else None)
-        except KeyError:
-            # A labelled tilt the registry has never heard of means the verdict for it
-            # would be lost silently -- report it rather than quietly under-filtering.
-            unknown.append(str(stem))
-            continue
-        if is_filt:
-            dropped += 1
-        else:
-            kept += 1
-
+            registry.get_frame(key)
+        except KeyError:  # named in the refusal below
+            unknown.append(key)
     if unknown:
         shown = ", ".join(unknown[:3]) + (f" (+{len(unknown) - 3} more)" if len(unknown) > 3 else "")
         return err(
             f"Cannot commit: {len(unknown)} labelled tilts are not in the registry ({shown}). Reload the project."
         )
 
+    kept = dropped = 0
+    for key, label in labels.items():
+        bad = label != "good"
+        registry.set_frame_filtered(key, bad, reason="tilt-filter" if bad else None)
+        dropped += bad
+        kept += not bad
+
     try:
         await asyncio.to_thread(registry.save)
     except Exception:
         logger.exception("tilt-filter commit: registry save failed")
         return err("Cannot commit: writing the tilt verdict to the registry failed. See the server log.")
-
-    # Older projects carry output slots from when this job produced its own tomostar.
-    for dead in ("output_tomostar", "output_star", "output_processing"):
-        job_model.paths.pop(dead, None)
-
     return ok(kept=kept, dropped=dropped)
 
 
@@ -319,41 +299,48 @@ async def commit_verdict(state, project_path: Path, instance_id: str) -> dict:
     """Approve: commit the tilt filter's verdict as the review stands. The one commit path; the
     gallery and the job row both come here.
 
-    Each tilt gets its effective label from the job's labels, mode and threshold and the
-    registry's predictions, so the verdict does not depend on the gallery being open. Sets
-    SUCCEEDED and `last_commit`; the caller saves the project. Refused while a prediction run
-    is in flight (its predictions are about to change) and once alignment is running or has run
-    (it has taken the verdict it keeps)."""
-    from services.tilt_series_service import fs_motion_star, load_tilt_series
+    Every registry frame gets its effective label from the job's labels, mode and threshold and
+    the frame's prediction, so the commit reads what the review and the Tilts tab show, whether
+    the gallery is open or not. A tilt series fsMotion left out has no prediction and counts as
+    kept. Sets SUCCEEDED and `last_commit`; the caller saves the project. Refused until fsMotion
+    has succeeded (there is nothing to review before), while a prediction run is in flight (its
+    predictions are about to change) and once alignment is running or has run (it has taken
+    the verdict it keeps)."""
+    from services.tilt_series import get_registry_for
 
     job_model = state.jobs.get(instance_id)
     if job_model is None:
         return err(f"Job '{instance_id}' not found.")
+    if not any(
+        jm.job_type == JobType.FS_MOTION_CTF and jm.execution_status == JobStatus.SUCCEEDED
+        for jm in state.jobs.values()
+    ):
+        return err("fsMotion has not succeeded yet; the review needs its motion-corrected tilts.")
     if job_model.predict_in_flight:
         return err("A DL prediction run is in flight; approve once its predictions have landed.")
     locked = _alignment_with_status(state, (JobStatus.RUNNING, JobStatus.SUCCEEDED))
     if locked:
         return err(_verdict_locked_reason(*locked))
-    star = fs_motion_star(project_path, state)
-    if star is None:
-        return err("The motion-correction output star is not on disk yet; run fsMotion first.")
     try:
-        ts_data = await asyncio.to_thread(load_tilt_series, star, project_path)
+        registry = get_registry_for(project_path)
     except Exception:
-        logger.exception("tilt-filter commit: could not load %s", star)
-        return err(f"Cannot commit: the tilt table {star.name} could not be read. See the server log.")
+        logger.exception("tilt-filter commit: registry unavailable")
+        return err("Cannot commit: the TiltSeries registry could not be loaded. Reload the project and retry.")
 
-    df = ts_data.all_tilts_df
-    dl = job_model.mode == FilterMode.DL_REVIEW
-    p_bad = predictions_for(project_path, df["cryoBoostKey"].unique()) if dl else {}
-    df["cryoBoostDlLabel"] = [
-        effective_label(key, p_bad.get(key), job_model.tilt_labels, job_model.threshold, job_model.mode)
-        for key in df["cryoBoostKey"]
-    ]
-    res = await finalize_pipeline_output(state, job_model, ts_data, project_path)
+    # A human label for a tilt the registry lacks stays in, so stamp_verdict refuses it by name.
+    labels = dict(job_model.tilt_labels)
+    for ts in registry.all_tilt_series():
+        for f in ts.frames:
+            labels[f.id] = effective_label(f.id, f.p_bad, job_model.tilt_labels, job_model.threshold, job_model.mode)
+    res = await stamp_verdict(registry, labels)
     if not res["success"]:
         return res
 
+    # Older projects carry output slots from when this job produced its own tomostar.
+    for dead in ("output_tomostar", "output_star", "output_processing"):
+        job_model.paths.pop(dead, None)
+
+    dl = job_model.mode == FilterMode.DL_REVIEW
     run = job_model.predict_run
     job_model.execution_status = JobStatus.SUCCEEDED
     job_model.last_commit = TiltFilterCommit(

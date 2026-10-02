@@ -209,7 +209,7 @@ every chart.
 | Stage | What | State |
 |---|---|---|
 | V1 | What each tilt is, read-only: the state, caption rows, strips, one numbering, the mdoc backfill | built 2026-10-02, not run |
-| F | The tilt-filter job: the row as a dropdown of settings, the job page as a review panel over the shared gallery, one card with a metric chooser, a popover, outliers and a label flag; DL auto (06 chunk 11) | specced 2026-10-02 as F1–F5; **next** |
+| F | The tilt-filter job: the row as a dropdown of settings, the job page as a review panel over the shared gallery, one card with a metric chooser, a popover, outliers and a label flag; DL auto (06 chunk 11) | specced 2026-10-02 as F1–F5; F1 built 2026-10-02, not run; **building** |
 | V2 | The Journey: hovers, marked charts, the filter section's charts, links, routes | outline; after F |
 | V3 | Summary charts, the metric slot, sort and show switches | mostly built by F; what is left is outlined below |
 | V4 | The review moves into the Tilts view | decided 2026-10-02: yes, after V2 |
@@ -308,6 +308,12 @@ Files: `services/jobs/tilt_filter.py`.
 - Counts run over the registry's frames, so a tilt series fsMotion skipped counts as kept (the star left it out).
 - *Check (user):* on a project whose alignment has not run, label two tilts bad and Approve: "2 dropped"; Re-open and
   Approve again: the same. Before fsMotion has succeeded, Approve is refused with the reason.
+- **Built 2026-10-02** (ruff-clean, not run), as specced, with these refinements:
+  - `stamp_verdict` checks every label against the registry before it stamps anything. The old function stamped as it
+    went and refused at the end, which left the refused commit's stamps in memory, unsaved, for the next save to write.
+  - `commit_verdict` passes the job's human labels for tilts the registry lacks along with the registry frames' labels,
+    so the refusal names them, as before.
+  - `predictions_for` stays until F5: the panel reads it.
 
 #### F2 — DL auto (roadmap 06 chunk 11)
 As specced in roadmap 06 §12 chunk 11, with these additions:
