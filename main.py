@@ -18,11 +18,14 @@ from services.event_log import EVENTS_LOGGER_NAME
 import logging
 
 import sys
+
 sys.dont_write_bytecode = True
+
 
 class SuppressPruneStorageError(logging.Filter):
     def filter(self, record):
         return "Request is not set" not in record.getMessage()
+
 
 warnings.filterwarnings("ignore", message="Pydantic serializer warnings")
 
@@ -135,19 +138,36 @@ def setup_app():
             cache_header = "public, max-age=300"
         return FileResponse(resolved, media_type=media, headers={"Cache-Control": cache_header})
 
+    @app.get("/api/project-preview")
+    def serve_project_preview(path: str):
+        # Projects-roster hover: the roster lists projects nobody has loaded, so
+        # vis-asset's loaded-roots guard cannot apply. Narrower instead: only a WarpTools
+        # reconstruction PNG, and only inside a directory tree that holds a project.
+        try:
+            resolved = Path(path).resolve(strict=True)
+        except (FileNotFoundError, RuntimeError):
+            return {"error": "not found"}
+        recon_dir = resolved.parent
+        is_recon_png = recon_dir.name == "reconstruction" and recon_dir.parent.name == "warp_tiltseries"
+        if resolved.suffix != ".png" or not is_recon_png:
+            return {"error": "not a tomogram preview"}
+        if not any((p / "project_params.json").is_file() for p in resolved.parents):
+            return {"error": "outside any project"}
+        return FileResponse(resolved, media_type="image/png", headers={"Cache-Control": "public, max-age=300"})
+
     app.mount("/static", StaticFiles(directory=REPO_ROOT / "static"), name="static")
     # mtime-based cache-buster: the browser refetches main.css whenever we edit it,
     # so dev iteration doesn't require Cmd-Shift-R after every CSS change.
     css_path = REPO_ROOT / "static" / "main.css"
     css_version = int(css_path.stat().st_mtime) if css_path.exists() else 0
-    ui.add_head_html(f'''
+    ui.add_head_html(f"""
         <link rel="preconnect" href="https://fonts.googleapis.com">
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
         <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap"
               rel="stylesheet">
         <link rel="stylesheet" href="/static/main.css?v={css_version}">
-    ''')
-    
+    """)
+
     backend = CryoBoostBackend(REPO_ROOT)
     create_ui_router(backend)
 
@@ -175,29 +195,23 @@ def setup_app():
     # 2s pong deadline → socket drops → client teardown after 3s → full rebuild.
     # 30s is generous for tunneled sessions and still catches real disconnects.
     reconnect_timeout = float(os.environ.get("CRBOOST_RECONNECT_TIMEOUT", "30"))
-    ui.run_with(
-        app,
-        title="CryoBoost Server",
-        storage_secret=storage_secret,
-        reconnect_timeout=reconnect_timeout,
-    )
+    ui.run_with(app, title="CryoBoost Server", storage_secret=storage_secret, reconnect_timeout=reconnect_timeout)
     return app
 
 
 if __name__ in {"__main__", "__mp_main__"}:
-    
-    parser = argparse.ArgumentParser(description='CryoBoost Server')
-    parser.add_argument('--port', type=int, default=8081, help='Port to run server on')
-    parser.add_argument('--host', type=str, default='0.0.0.0', help='Host to bind to')
-    parser.add_argument('--debug', action='store_true', help='Enable DEBUG-level logging')
+    parser = argparse.ArgumentParser(description="CryoBoost Server")
+    parser.add_argument("--port", type=int, default=8081, help="Port to run server on")
+    parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to bind to")
+    parser.add_argument("--debug", action="store_true", help="Enable DEBUG-level logging")
 
-    args     = parser.parse_args()
+    args = parser.parse_args()
     setup_logging(debug=args.debug)
     # Expose the bind port to the running app (the status strip on the landing
     # page surfaces it); setup_app() runs before uvicorn so an env var is the
     # simplest single source of truth.
     os.environ["CRBOOST_PORT"] = str(args.port)
-    app      = setup_app()
+    app = setup_app()
     install_sticky_banner(banner_lines(args.port, socket.gethostname()))
 
     # log_config=None: uvicorn otherwise reinstalls its own logging config at

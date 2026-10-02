@@ -1005,13 +1005,11 @@ _CB_CSS = """
 .cb-seg-btn.active { background: #f1f5f9; color: #1e293b; font-weight: 600; }
 /* Small strip: as tall as a 16 px `.cb-field`, for control rows (projects roster). */
 .cb-seg-sm .cb-seg-btn { line-height: 14px; padding: 0 6px; }
-/* Projects roster travel chevron (ui/projects_overview.py): a full-row-height column on
- * the right edge, so "open this project" is the easiest target on the row rather than an
- * 18 px round arrow. Lights up on its own hover AND on the row's, so it reads as part of
- * the row rather than a separate control that happens to sit there. */
-.cb-proj-chevron:hover { background: #eff6ff; }
+/* Projects roster travel chevron (ui/projects_overview.py): a full-row-height tinted
+ * column on the right edge, the only control that enters a project. It lights on its own
+ * hover only, never the row's, so the row and "enter" read as two different targets. */
+.cb-proj-chevron:hover { background: #dbeafe !important; }
 .cb-proj-chevron:hover .q-icon { color: #2563eb !important; }
-.group:hover .cb-proj-chevron .q-icon { color: #64748b; }
 /* Click-to-copy text (ui/components/copyable.copy_on_click): the path itself is the
  * control, so it has to say so on hover. */
 .cb-copy-path { cursor: pointer; }

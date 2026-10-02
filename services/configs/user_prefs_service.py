@@ -36,8 +36,8 @@ class UserPreferences(BaseModel):
     movies_glob: str = ""
     mdocs_glob: str = ""
     show_only_mine: bool = True
-    # Projects roster: one line per project instead of the full four-line row.
-    projects_compact: bool = False
+    # Projects roster: one line per project (default) or the full four-line row.
+    projects_compact_view: bool = True
     recent_project_roots: list[RecentPath] = Field(default_factory=list)
     recent_data_paths: list[RecentPath] = Field(default_factory=list)
     # Individual projects (not their base directories), most-recently-opened first.

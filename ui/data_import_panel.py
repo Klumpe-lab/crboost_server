@@ -805,66 +805,6 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             ui_mgr.panel_refs.project_path_input.value = dir_path
         await commit_project_path(dir_path)
 
-    async def handle_load_project(project_dir: Path):
-        params_file = project_dir / "project_params.json"
-        if not params_file.exists():
-            ui.notify("No project_params.json found in directory", type="warning")
-            return
-        try:
-            load_result = await backend.load_existing_project(str(project_dir))
-            if load_result.get("success"):
-                await backend.pipeline_runner.sync_all_jobs(str(project_dir))
-                state = backend.state_service.state_for(project_dir)
-                ui_mgr.load_from_project(
-                    project_path=state.project_path,
-                    scheme_name=f"scheme_{state.project_name}",
-                    jobs=list(state.jobs.keys()),
-                )
-                ui_mgr.update_data_import(
-                    project_name=state.project_name,
-                    project_base_path=str(state.project_path.parent) if state.project_path else "",
-                    movies_glob=state.movies_glob,
-                    mdocs_glob=state.mdocs_glob,
-                )
-                prefs_service.update_fields(
-                    project_base_path=str(state.project_path.parent) if state.project_path else "",
-                    movies_glob=state.movies_glob,
-                    mdocs_glob=state.mdocs_glob,
-                )
-                prefs_service.prefs.add_recent_root(
-                    str(state.project_path.parent) if state.project_path else "", label=state.project_name
-                )
-                prefs_service.prefs.add_recent_project(str(state.project_path or project_dir), label=state.project_name)
-                prefs_service.save_to_app_storage(app.storage.user)
-
-                # Load report: anything load() had to drop or
-                # reset is surfaced once here instead of dying in the server log.
-                if state.load_warnings:
-                    n = len(state.load_warnings)
-                    shown = "; ".join(state.load_warnings[:3])
-                    more = f" (+{n - 3} more, see server log)" if n > 3 else ""
-                    ui.notify(f"Project loaded with {n} warning(s): {shown}{more}", type="warning", timeout=10000)
-
-                if state.pipeline_active:
-                    ui_mgr.set_pipeline_running(True)
-                    ui.notify(
-                        f"Project '{state.project_name}' loaded -- pipeline was running, resuming monitoring.",
-                        type="warning",
-                        timeout=6000,
-                    )
-                else:
-                    ui.notify(f"Project '{state.project_name}' loaded", type="positive")
-
-                await asyncio.sleep(0.1)
-                ui.navigate.to("/workspace")
-            else:
-                ui.notify(f"Failed to load: {load_result.get('error')}", type="negative")
-        except Exception as e:
-            import traceback
-
-            traceback.print_exc()
-            ui.notify(f"Error loading project: {e}", type="negative")
-
     # =========================================================================
     # INIT
     # =========================================================================
@@ -1476,12 +1416,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         # =================================================================
         with ui.column().classes("gap-2").style("flex: 1.45 1 0; min-width: 0;"):
             # ----- Projects Overview -----
-            async def _open_from_overview(p: Path):
-                await handle_load_project(p)
-
             overview = ProjectsOverview(
                 backend,
-                on_open=_open_from_overview,
                 base_path_provider=lambda: ui_mgr.data_import.project_base_path or "",
                 on_browse=handle_load_project_click,
                 auto_refresh_sec=15.0,
