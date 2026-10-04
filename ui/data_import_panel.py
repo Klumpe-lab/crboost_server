@@ -13,7 +13,7 @@ from collections.abc import Callable
 from nicegui import ui, app
 
 from backend import CryoBoostBackend
-from services.configs.mdoc_service import describe_duplicate_ts_names
+from services.configs.mdoc_service import describe_duplicate_ts_names, describe_long_ts_names
 from services.configs.user_prefs_service import get_prefs_service
 
 from ui.components.buttons import house_button
@@ -333,6 +333,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             missing.append("Valid Mdocs")
         if _duplicate_names_message():
             missing.append(_UNIQUE_NAMES)
+        if _long_names_message():
+            missing.append(_SHORT_NAME)
         # The dose row is only in play when the mdocs record no dose; then it must hold a
         # number (the estimate prefills it, the user may clear it — never a silent 3.0).
         if _dose_row_needed() and di.dose_per_tilt_override is None:
@@ -348,6 +350,17 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         duplicates = ov.duplicate_selected_names() if ov is not None else {}
         return describe_duplicate_ts_names(duplicates) if duplicates else None
 
+    _SHORT_NAME = "Shorter project name"
+
+    def _long_names_message() -> str | None:
+        """Why Create is blocked when `<project name>_<series name>` would be longer than
+        AreTomo can align (docs/known_bugs.md #3); None when every selected series fits."""
+        ov = _current_overview()
+        name = (ui_mgr.data_import.project_name or "").strip()
+        if ov is None or not name:
+            return None
+        return describe_long_ts_names(name, (ts.ts_label for ts in ov.get_selected_tilt_series()))
+
     def _dose_row_needed() -> bool:
         ov = _current_overview()
         return ov is not None and ov.selected_acquisition_summary().dose_missing > 0
@@ -358,6 +371,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
     # itself the moment it stops being missing.
     _FIELD_FOR_REQUIREMENT = {
         "Project Name": "project_name_input",
+        _SHORT_NAME: "project_name_input",
         "Project Path": "project_path_input",
         "Data Path": "movies_input",
         "Valid Frames": "movies_input",
@@ -409,8 +423,12 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         if not status_label:
             return
         duplicates_msg = _duplicate_names_message() if _UNIQUE_NAMES in missing else None
+        long_names_msg = _long_names_message() if _SHORT_NAME in missing else None
         if duplicates_msg:
             status_label.set_text(duplicates_msg)
+            status_label.style(f"{FONT} font-size: 10px; color: {CLR_ERROR};")
+        elif long_names_msg:
+            status_label.set_text(long_names_msg)
             status_label.style(f"{FONT} font-size: 10px; color: {CLR_ERROR};")
         elif missing:
             status_label.set_text("Enter details to begin…")

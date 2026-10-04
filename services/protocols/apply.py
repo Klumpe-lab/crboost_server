@@ -20,6 +20,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from services import species_admin
 from services.configs.config_service import get_config_service
+from services.configs.mdoc_service import describe_long_ts_names, ts_name_from_mdoc
 from services.jobs.spec import JOB_SPEC_BY_TYPE
 from services.models_base import JobType, SpeciesOrigin
 from services.project_state import ExtractionParams, ProjectState, ProtocolOrigin, TemplateMask
@@ -217,21 +218,10 @@ async def apply_protocol(
     )
 
 
-# Longest tilt-series basename (`<project dirname>_<mdoc stem>`) known to survive AreTomo 1.0's IMOD output
-# writer; at 51 the `.tlt` name is mangled, Warp drops the series, and the pipeline runs on nominal tilt
-# angles (docs/known_bugs.md #3). The exact limit is not known.
-ARETOMO_TS_NAME_MAX_KNOWN_GOOD = 42
-
-
 def long_tilt_series_name_warnings(project_name: str, mdoc_files: list[str]) -> list[str]:
-    longest = max((f"{project_name}_{Path(m).stem}" for m in mdoc_files), key=len, default="")
-    if len(longest) <= ARETOMO_TS_NAME_MAX_KNOWN_GOOD:
-        return []
-    return [
-        f"tilt-series names reach {len(longest)} characters ('{longest}'); AreTomo's IMOD output broke at 51 "
-        f"and {ARETOMO_TS_NAME_MAX_KNOWN_GOOD} is the longest known to work — the alignment job will refuse such "
-        f"series (docs/known_bugs.md #3). Use a shorter project name."
-    ]
+    # The create dialog refuses such a name before this runs; this covers other callers.
+    msg = describe_long_ts_names(project_name, (ts_name_from_mdoc(Path(m).name) for m in mdoc_files))
+    return [msg] if msg else []
 
 
 def register_protocol_species(
