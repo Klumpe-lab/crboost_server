@@ -59,6 +59,23 @@ def _is_pipeline_job_dict(job: Any) -> bool:
     return not (isinstance(job, dict) and job.get("job_type") == JobType.EXTRACT_PICK_LIST.value)
 
 
+def _registry_ts_count(project_dir: Path) -> int:
+    """Tilt-series listed in the registry index, for the project-hub scan.
+
+    A project created without a dataset scan records no import counts in
+    ``project_params.json``; the registry is the store and still lists every series.
+    Reads only ``index.json`` — the per-series sidecars are not opened."""
+    index_path = project_dir / "registry" / "index.json"
+    try:
+        with open(index_path) as f:
+            return len(json.load(f).get("tilt_series") or [])
+    except FileNotFoundError:  # data-less or pre-registry project: no series to count
+        return 0
+    except (OSError, ValueError, AttributeError) as e:
+        logger.warning("Unreadable registry index %s -- TS count unknown: %s", index_path, e)
+        return 0
+
+
 _RECON_PNG_APIX = re.compile(r"_(\d+(?:\.\d+)?)Apx\.png$")
 _JOB_NUMBER = re.compile(r"job(\d+)")
 
@@ -1444,6 +1461,9 @@ class CryoBoostBackend:
                                 source_directory = str(Path(mg).parent) if "*" in mg else mg
                     except Exception as e:
                         logger.warning("Unreadable project_params.json for %s -- using fallbacks: %s", item.name, e)
+
+                    if not ts_count:
+                        ts_count = _registry_ts_count(item)
 
                     # Legacy projects (no `mnemonic` persisted) get a
                     # deterministic fallback so the UI always has something
