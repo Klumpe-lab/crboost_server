@@ -570,9 +570,14 @@ class ProjectService:
             # register — gate on the mdocs glob, not a project-type flag.
             if mdocs_glob:
                 try:
-                    self._build_and_persist_registry(
+                    n_registered = self._build_and_persist_registry(
                         project_dir, mdocs_glob, dose_per_tilt_fallback=state.acquisition.dose_per_tilt
                     )
+                    # Created without a dataset scan: no summary came in, and every
+                    # matched mdoc was imported — the registry is the count.
+                    if not import_summary:
+                        state.import_total_tilt_series = n_registered
+                        state.import_selected_tilt_series = n_registered
                 except Exception as e:
                     logger.warning("Registry construction failed for %s: %s", project_dir, e)
 
