@@ -125,7 +125,9 @@ class TsReconstructDriver(ArrayDriver):
             registry=registry, job_dir=ctx.job_dir, job_instance_id=ctx.instance_id, warp_folder="warp_tiltseries"
         )
         adapter.ingest(results.ok, rescale_angpixs=ctx.params.rescale_angpixs, frame_pixel_size=ctx.params.pixel_size)
-        adapter.emit_star(ctx.paths["input_star"], ctx.paths["output_star"], excluded_ids=set(results.skipped))
+        adapter.emit_star(
+            ctx.paths["input_star"], ctx.paths["output_star"], excluded_ids=set(results.skipped) | set(results.dropped)
+        )
         registry.save()
 
     # ---------------- task ----------------

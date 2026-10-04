@@ -407,8 +407,10 @@ class SubtomoExtractionDriver(ArrayDriver):
     def aggregate(self, ctx: DriverContext[SubtomoExtractionParams], results: ArrayResults) -> None:
         # Merge per-TS outputs into job_dir's canonical particles.star /
         # Subtomograms/ tree. Only the TS with picks produced outputs;
-        # skipped TS never staged or wrote anything.
-        _merge_per_ts_outputs(ctx.job_dir, self._ts_with_picks, self._general_kv, self._upstream_tomograms_star)
+        # skipped TS never staged or wrote anything, and dropped TS failed.
+        dropped = set(results.dropped)
+        extracted = [ts for ts in self._ts_with_picks if ts not in dropped]
+        _merge_per_ts_outputs(ctx.job_dir, extracted, self._general_kv, self._upstream_tomograms_star)
 
         # Aggregation merge (additional_sources) — opt-in, runs only if the
         # job model has sources configured.

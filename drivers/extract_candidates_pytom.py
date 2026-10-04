@@ -238,10 +238,10 @@ class ExtractCandidatesPytomDriver(ArrayDriver):
         # ---- Aggregate per-tomogram particle lists ----
         candidates_star = job_dir / "candidates.star"
         star_files = sorted(local_tm_results.glob("*_particles.star"))
-        # Drop any per-TS particle files for excluded tilt-series (a prior run
-        # may have left them on disk; the muted TS must not re-enter the merge).
-        if results.skipped:
-            excluded_set = set(results.skipped)
+        # Drop any per-TS particle files for excluded or dropped tilt-series (a prior
+        # run may have left them on disk; they must not re-enter the merge).
+        if results.skipped or results.dropped:
+            excluded_set = set(results.skipped) | set(results.dropped)
             star_files = [f for f in star_files if f.name[: -len("_particles.star")] not in excluded_set]
         if not star_files:
             # Stricter than all_succeeded: an empty candidates.star breaks
