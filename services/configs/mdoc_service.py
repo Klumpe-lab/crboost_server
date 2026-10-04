@@ -99,6 +99,32 @@ def describe_duplicate_ts_names(duplicates: dict[str, list[Path]]) -> str:
     )
 
 
+# AreTomo 1.0, the aligner in our Warp container, writes no IMOD `.tlt` for a tilt-series name
+# longer than this, and WarpTools then drops the series as unselected (docs/known_bugs.md #3).
+# Every 44-character name in the AGG412 projects aligned and no 45+ one did (2026-10-04).
+ARETOMO_TS_NAME_MAX = 44
+
+
+def describe_long_ts_names(project_name: str, ts_names) -> str | None:
+    """Why `project_name` makes tilt-series names too long for AreTomo; None when all fit.
+
+    The import prefixes every series with the project name (`<project>_<series>`), so the
+    project name spends the budget of every series at once."""
+    longest = max((f"{project_name}_{n}" for n in ts_names), key=len, default="")
+    if len(longest) <= ARETOMO_TS_NAME_MAX:
+        return None
+    budget = ARETOMO_TS_NAME_MAX - (len(longest) - len(project_name))
+    fix = (
+        f"shorten the project name to {budget} characters or fewer"
+        if budget > 0
+        else "the series names alone are too long, so rename the mdocs"
+    )
+    return (
+        f"Tilt-series names would reach {len(longest)} characters, and AreTomo cannot align a name "
+        f"over {ARETOMO_TS_NAME_MAX} (docs/known_bugs.md #3): {fix}"
+    )
+
+
 _T_LINE_RE = re.compile(r"^\[T\s*=\s*(.*?)\]?$")
 _SERIALEM_VERSION_RE = re.compile(r"SerialEM Version\s+(\S+)")
 _TOMO5_VERSION_RE = re.compile(r"Tomography[_ ]v?(\d+(?:\.\d+)*)")

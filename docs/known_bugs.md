@@ -84,11 +84,19 @@ description and the UI label in GUI terms (order + 1 at oversampling 1); correct
 
 ## 3. Long tilt-series names break AreTomo's IMOD output; Warp drops the series and the pipeline runs on unaligned angles
 
-**Status:** DRIVER GUARD + CREATION WARNING added 2026-09-09 (`drivers/ts_alignment.py` `warp_marked_unselected`,
-`services/protocols/apply.py` `long_tilt_series_name_warnings`). The AreTomo bug itself is not ours.
+**Status:** WORKED AROUND 2026-10-04, NOT RUN. Alignment runs a name over 44 characters under a short alias
+(`drivers/ts_alignment.py` `staged_ts_name`, `rename_alias_files`). Project creation refuses names that would need
+it: the landing form and the protocol create dialog check `describe_long_ts_names` against
+`ARETOMO_TS_NAME_MAX = 44` (`services/configs/mdoc_service.py`). Earlier: driver guard + creation warning
+2026-09-09 (`warp_marked_unselected`). The AreTomo bug itself is not ours.
 **Seen:** `/groups/klumpe/crboost_data/copia-empiar12580-tutorial-20260909-1414` (2026-09-09), tilt-series name
 `copia-empiar12580-tutorial-20260909-1414_Position_1` (51 chars). The 42-char name of
 `copia-empiar12580-20260908-1447_Position_1` works.
+`/groups/klumpe/crboost_data/AGG412_20251031_412_FCIsolation` (2026-10-04): 84 of 163 series failed with
+`Could not find <ts>.tlt`, every one with a 45-character name; the 44-character names aligned.
+`/groups/klumpe/crboost_data/AGG412_20260205_412_FCIso_unmilled2` (2026-10-04): names of 46–49 characters,
+0 of 176 aligned, so the alignment job failed outright. Across all eight AGG412 projects no name of 45 or more
+characters aligned.
 
 **How it shows.** The tomogram preview (Warp's `<ts>_11.80Apx.png`, Journey, Tomograms view) shows the particle
 layer as a diagonal band instead of filling the field: the sample plane is inclined in the volume. Template
@@ -99,15 +107,22 @@ matching still finds ~1000 picks, so nothing downstream complains. The alignment
 `UnselectManual="True"`, `<Angles>` = the nominal stage angles (the good run has AreTomo's tilt-offset applied,
 −44.01 for nominal −32), `<AxisAngle>` unrefined. `tiltstack/<ts>/<ts>_Imod/`: the `.tlt` is there under a
 mangled name (`20260909-1414_Position_1.st`, 252 bytes = the 28 angles) instead of `<ts>_st.tlt`; `.xf` and
-`.xtilt` are fine. tsCtf then fits `PlaneNormal` ≈ 12° off z to absorb the missing tilt offset.
+`.xtilt` are fine. tsCtf then fits `PlaneNormal` ≈ 12° off z to absorb the missing tilt offset. At 45–49
+characters (AGG412) the `.tlt` was not written anywhere; `<ts>_Imod/` held only `_st.xf` and `_st.xtilt`. Since
+the 2026-09-09 driver guard such a series fails visibly: the alignment job drops it, its job log groups it
+under `WarpTools marked <ts> unselected`, and when no name is short enough the job fails.
 
-**Why.** Our tilt-series id is `<project dirname>_<mdoc stem>`, and protocol projects are named
-`<protocol>-<YYYYMMDD-HHMM>`, so a 9-char longer protocol name pushed the basename from 42 to 51. AreTomo 1.0's
-`-OutImod` writer mangles the `.tlt` file name at that length (exact limit unknown: 42 good, 51 bad); WarpTools
-`ts_aretomo` needs that `.tlt` to import the alignment, gives up on the series, flags it `UnselectManual`, and
-exits 0. Our driver's success check only looked for the `.st.aln`, which AreTomo had written.
+**Why.** Our tilt-series id is `<project dirname>_<mdoc stem>`, so the project name is spent on every series. Protocol
+projects are named `<protocol>-<YYYYMMDD-HHMM>`, and a 9-char longer protocol name pushed the basename from 42 to 51;
+descriptive names like `AGG412_<date>_412_<sample>` reach 45–49 with `_Position_NN_N`. AreTomo 1.0's `-OutImod`
+writer loses the `.tlt` above 44 characters (every 44 aligned, no 45+ did; whether the limit is on the name or on
+a path built from it is not known, and the alias shortens both). WarpTools `ts_aretomo` needs that `.tlt` to
+import the alignment, gives up on the series, flags it `UnselectManual`, and exits 0.
 
-**What to do.** Keep project names short (`copia-tutorial`, not `copia-empiar12580-tutorial`). A project that hit
-this must be recreated: every job from alignment on ran with the wrong geometry. The driver now fails the series
-when the XML says `UnselectManual="True"`, and protocol creation warns when a tilt-series name would exceed 42
-characters. Open: the same warning for non-protocol project creation, and pinning the exact AreTomo limit.
+**What to do.** New projects: nothing. Create refuses a project name that would push any series name over 44
+(red status line under Create, or a warning in the protocol dialog) and says how short it must be. A project
+that already hit it keeps its motion correction and tilt filter; only alignment and what follows re-run, now
+under the alias. Alignment FAILED (no name was short enough): press Run, it retries in place. Alignment
+SUCCEEDED with series dropped: delete the alignment job and every job after it, re-add them, Run. A project
+from before 2026-09-09 whose alignment "succeeded" on nominal angles must re-run from alignment on. Open: does
+IMOD (`ts_etomo_patches`), which is not aliased, have a limit of its own?

@@ -23,19 +23,20 @@ Enumeration and staging:
   filter) and shields a running array from changes in the producer.
 - A live (non-muted) registry TS missing from the tomostar dir or the input
   star is drift: it stays in the manifest and its task fails fast with the
-  reason (the others proceed, the job ends FAILED). Extra files the registry
+  reason (the others proceed; it is dropped). Extra files the registry
   doesn't know are warned about and never dispatched.
+- A name longer than AreTomo can take (ARETOMO_TS_NAME_MAX) runs under a short
+  alias inside its staging dir and is renamed back on collect.
 
-Per-TS alignment failure is normal in cryo-ET: failed or missing TS are warned
-about and dropped from aggregation; only a total wipeout fails the job. Dropped
-TS are absent downstream.
+Per-TS alignment failure is normal in cryo-ET: failed or missing TS are dropped
+from aggregation by ArrayDriver's tolerant tally; only a total wipeout fails the
+job. Dropped TS are absent downstream.
 
 The mode dispatch, both bootstraps, manifest lookup, exclusions, tally and exit
 code all live in ArrayDriver; this file is the alignment-specific hooks.
 """
 
 import shutil
-import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -47,6 +48,7 @@ from drivers.array_job_base import (
     stage_per_ts_environment,
 )
 from drivers.driver_base import DriverContext, ToolCommand, require_producer_input
+from services.configs.mdoc_service import ARETOMO_TS_NAME_MAX
 from services.jobs.ts_alignment import TsAlignmentParams
 from services.models_base import AlignmentMethod
 from services.tilt_series import get_registry_for
@@ -88,11 +90,28 @@ def build_alignment_command(params: TsAlignmentParams) -> ToolCommand | str:
     return f"echo 'ERROR: Alignment method {params.alignment_method} not implemented'; exit 1;"
 
 
-def collect_per_ts_outputs(job_dir: Path, ts_name: str) -> None:
+# The name a tilt-series runs under in its staging dir when its own name is longer than
+# AreTomo can take: AreTomo 1.0 writes no IMOD `.tlt` past ARETOMO_TS_NAME_MAX characters,
+# and WarpTools then drops the series as unselected (docs/known_bugs.md #3). A staging dir
+# holds exactly one series, so one fixed alias cannot collide; WarpTools names every output
+# after the tomostar, and collect renames them back.
+ARETOMO_ALIAS = "crbalias"
+
+
+def staged_ts_name(ts_name: str, method: AlignmentMethod) -> str:
+    """The name `ts_name` runs under inside its staging dir: the alias when AreTomo would
+    fail on the real name, else the name itself."""
+    if method == AlignmentMethod.ARETOMO and len(ts_name) > ARETOMO_TS_NAME_MAX:
+        return ARETOMO_ALIAS
+    return ts_name
+
+
+def collect_per_ts_outputs(job_dir: Path, ts_name: str, staged_name: str) -> None:
     """
-    Copy alignment outputs from the per-TS staging dir into the shared job dir.
-    - warp_tiltseries/{ts_name}.xml → job_dir/warp_tiltseries/{ts_name}.xml
-    - warp_tiltseries/tiltstack/{ts_name}/ → job_dir/warp_tiltseries/tiltstack/{ts_name}/
+    Copy alignment outputs from the per-TS staging dir into the shared job dir, under the
+    real name when the series ran under ARETOMO_ALIAS.
+    - warp_tiltseries/{staged_name}.xml → job_dir/warp_tiltseries/{ts_name}.xml
+    - warp_tiltseries/tiltstack/{staged_name}/ → job_dir/warp_tiltseries/tiltstack/{ts_name}/
     """
     stage_root = job_dir / ".staging" / f"task_{ts_name}"
     staged_warp = stage_root / "warp_tiltseries"
@@ -101,17 +120,30 @@ def collect_per_ts_outputs(job_dir: Path, ts_name: str) -> None:
     shared_warp.mkdir(parents=True, exist_ok=True)
 
     # Copy XML
-    src_xml = staged_warp / f"{ts_name}.xml"
+    src_xml = staged_warp / f"{staged_name}.xml"
     if src_xml.exists():
         shutil.copy2(str(src_xml), str(shared_warp / f"{ts_name}.xml"))
 
     # Copy tiltstack directory
-    src_tiltstack = staged_warp / "tiltstack" / ts_name
+    src_tiltstack = staged_warp / "tiltstack" / staged_name
     if src_tiltstack.exists():
         dst_tiltstack = shared_warp / "tiltstack" / ts_name
         if dst_tiltstack.exists():
             shutil.rmtree(str(dst_tiltstack))
         shutil.copytree(str(src_tiltstack), str(dst_tiltstack))
+        if staged_name != ts_name:
+            rename_alias_files(dst_tiltstack, staged_name, ts_name)
+
+
+def rename_alias_files(root: Path, alias: str, ts_name: str) -> None:
+    """Rename every `<alias>.*` / `<alias>_*` under `root` to the series name: the stack,
+    .rawtlt, .st.aln, _aligned.mrc, the _Imod dir and its _st.xf/_st.tlt/_st.xtilt. Deepest
+    first, so a dir is renamed after its contents. Thumbnails are named after the movies and
+    keep their names; newst.com/tilt.com still name the alias inside (nothing reads them)."""
+    for path in sorted(root.rglob(f"{alias}*"), key=lambda p: len(p.parts), reverse=True):
+        rest = path.name[len(alias) :]
+        if rest[:1] in (".", "_"):
+            path.rename(path.with_name(ts_name + rest))
 
 
 def has_alignment_output(warp_dir: Path, ts_name: str, method: AlignmentMethod) -> bool:
@@ -231,26 +263,6 @@ class TsAlignmentDriver(ArrayDriver):
     def manifest_extras(self, ctx: DriverContext[TsAlignmentParams], items: list[str]) -> dict | None:
         return {"drift_ts": self._drift} if self._drift else None
 
-    def tally_acceptable(self, ctx: DriverContext[TsAlignmentParams], results: ArrayResults) -> bool:
-        # Per-TS alignment failure is normal in cryo-ET — AreTomo simply can't
-        # solve every tilt-series. One bad TS must NOT abort the whole job and
-        # halt the pipeline: drop the failed/missing tilt-series and carry the
-        # rest forward. Only a total wipeout (nothing aligned) is fatal.
-        if not results.ok:
-            self.log("No tilt-series aligned successfully — failing the job")
-            return False
-        excluded_ts = sorted(results.failed + results.missing)
-        if excluded_ts:
-            n_total = len(results.ok) + len(results.skipped) + len(excluded_ts)
-            print(
-                f"[SUPERVISOR] WARNING: excluding {len(excluded_ts)}/{n_total} tilt-series "
-                f"that failed to align: {excluded_ts}",
-                file=sys.stderr,
-                flush=True,
-            )
-            self.log(f"Continuing with {len(results.ok)} aligned tilt-series.")
-        return True
-
     def aggregate(self, ctx: DriverContext[TsAlignmentParams], results: ArrayResults) -> None:
         aligned_ts = results.ok
 
@@ -308,10 +320,21 @@ class TsAlignmentDriver(ArrayDriver):
             raise FileNotFoundError(f"Cannot align '{item}': {drift[item]}")
 
         local_settings = ctx.job_dir / "warp_tiltseries.settings"
-        staged_settings, _staged_processing = stage_per_ts_environment(
+        staged_settings, staged_processing = stage_per_ts_environment(
             ctx.job_dir, item, input_processing=None, settings_file=local_settings
         )
         stage_root = staged_settings.parent
+        name = staged_ts_name(item, ctx.params.alignment_method)
+        if name != item:
+            # WarpTools names everything after the tomostar, so the staged tomostar takes the
+            # alias. It also reads an existing XML back as the series' previous metadata, so
+            # an earlier attempt's result under the alias is cleared first.
+            tomostar_dir = stage_root / "tomostar"
+            (tomostar_dir / f"{item}.tomostar").replace(tomostar_dir / f"{name}.tomostar")
+            (staged_processing / f"{name}.xml").unlink(missing_ok=True)
+            if (staged_processing / "tiltstack" / name).exists():
+                shutil.rmtree(staged_processing / "tiltstack" / name)
+            self.log(f"{len(item)}-character name is over AreTomo's {ARETOMO_TS_NAME_MAX}: runs as '{name}'")
         self.log(f"Staged at: {stage_root}")
         return stage_root
 
@@ -325,27 +348,26 @@ class TsAlignmentDriver(ArrayDriver):
         # Verify real alignment output landed in the staged dir. WarpTools
         # exits 0 and still writes {ts}.xml even when AreTomo fails to align
         # this tilt-series, so the XML is not a success signal — check the
-        # alignment matrices.
+        # alignment matrices. In the staging dir the series may run under the alias.
+        name = staged_ts_name(item, ctx.params.alignment_method)
         staged_warp = staged / "warp_tiltseries"
-        staged_xml = staged_warp / f"{item}.xml"
+        staged_xml = staged_warp / f"{name}.xml"
         if not staged_xml.exists():
             raise FileNotFoundError(f"Alignment produced no XML for {item} (expected {staged_xml})")
         if warp_marked_unselected(staged_xml):
             raise RuntimeError(
                 f"WarpTools marked {item} unselected: it could not import the alignment "
-                f"(see 'Failed to process ... Exception details' in the container output above). "
-                f"With a {len(item)}-character tilt-series name this is usually AreTomo's IMOD "
-                f"output writer mangling the .tlt name (docs/known_bugs.md #3)."
+                f"(see 'Failed to process ... Exception details' in the container output above)."
             )
-        if not has_alignment_output(staged_warp, item, ctx.params.alignment_method):
+        if not has_alignment_output(staged_warp, name, ctx.params.alignment_method):
             raise RuntimeError(
                 f"No alignment output for {item}: WarpTools produced no .st.aln/.xf in "
-                f"warp_tiltseries/tiltstack/{item}/. AreTomo likely failed to align this "
+                f"warp_tiltseries/tiltstack/{name}/. AreTomo likely failed to align this "
                 f"tilt-series (see container output above)."
             )
 
     def collect(self, ctx: DriverContext[TsAlignmentParams], item: str, staged) -> None:
-        collect_per_ts_outputs(ctx.job_dir, item)
+        collect_per_ts_outputs(ctx.job_dir, item, staged_ts_name(item, ctx.params.alignment_method))
 
 
 if __name__ == "__main__":

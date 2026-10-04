@@ -18,6 +18,7 @@ from pathlib import Path
 
 from nicegui import app, ui
 
+from services.configs.mdoc_service import describe_long_ts_names, ts_name_from_mdoc
 from services.configs.user_prefs_service import get_prefs_service
 from services.protocols.apply import apply_protocol
 from services.protocols.discovery import ProtocolInfo, list_protocols
@@ -198,8 +199,13 @@ async def _open_create_dialog(backend, parent_dialog, info: ProtocolInfo) -> Non
                     if not (name and base and movies and mdocs):
                         ui.notify("Name, base, movies and mdocs are required.", type="warning")
                         return
-                    if not await asyncio.to_thread(glob.glob, mdocs):
+                    mdoc_files = await asyncio.to_thread(glob.glob, mdocs)
+                    if not mdoc_files:
                         ui.notify(f"No mdoc matches {mdocs}", type="warning")
+                        return
+                    too_long = describe_long_ts_names(name, (ts_name_from_mdoc(Path(m).name) for m in mdoc_files))
+                    if too_long:
+                        ui.notify(too_long, type="warning", timeout=10000)
                         return
                     ui.notify(f"Creating {name}…", timeout=3000)
                     res = await apply_protocol(
