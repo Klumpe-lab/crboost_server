@@ -19,7 +19,8 @@ from services.scheduling_and_orchestration.pipeline_orchestrator_service import 
 from services.computing.container_service import get_container_service
 from services.scheduling_and_orchestration.pipeline_runner import PipelineRunnerService
 from services.scheduling_and_orchestration.pipeline_monitor import PipelineMonitor
-from services.jobs.spec import driver_invocation
+from services.array_tasks import manifest_items, progress as task_progress
+from services.jobs.spec import display_name, driver_invocation
 from services.jobs.tilt_filter import FilterMode
 from services.models_base import JobStatus, JobType
 from services.particles.list_ref import extract_pick_list_instance_id
@@ -96,6 +97,67 @@ def _find_tomo_preview(project_dir: Path, jobs: dict[str, Any]) -> dict[str, Any
             "n_tomos": sum(1 for n in names if n.endswith(".mrc")),
         }
     return None
+
+
+def _live_progress(project_dir: Path, jobs: dict[str, Any]) -> dict[str, Any] | None:
+    """A live run at a glance, for the projects roster: the job at work (the running one
+    furthest upstream, else the queued one), its tilt-series done out of those in scope,
+    and the tilt-series the run's jobs have failed so far. None when nothing runs or queues.
+
+    Per-TS facts come from each job's `.task_manifest.json` + `.task_status/` markers
+    (services.array_tasks), read only for live projects. A failed TS is dropped from
+    everything downstream, so the per-job fail counts add up to the TS the run has lost."""
+    current: tuple | None = None  # (queued?, job number, label, state, job_dir)
+    failed: list[tuple[int, str, int]] = []  # (job number, label, failed TS)
+    counts_by_dir: dict[Path, Any] = {}
+    for iid, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        rel = (job.get("relion_job_name") or "").strip("/")
+        if not rel:
+            continue
+        job_dir = project_dir / rel
+        status = (job.get("execution_status") or "").strip()
+        # Same reconcile as _derive_live_status: a dead schemer can leave Running persisted.
+        if status == "Running":
+            if (job_dir / "RELION_JOB_EXIT_SUCCESS").exists():
+                status = "Succeeded"
+            elif (job_dir / "RELION_JOB_EXIT_FAILURE").exists():
+                status = "Failed"
+        try:
+            label = display_name(JobType(job.get("job_type")))
+        except ValueError:  # a job type this server no longer knows: its instance id still names it
+            label = iid
+        m = _JOB_NUMBER.search(rel)
+        number = int(m.group(1)) if m else 0
+        if status in ("Running", "Queued") and (current is None or (status == "Queued", number) < current[:2]):
+            current = (status == "Queued", number, label, status.lower(), job_dir)
+        # Queued / Scheduled jobs have not run in this run; their markers are an earlier attempt's.
+        if status not in ("Succeeded", "Running", "Failed"):
+            continue
+        items = manifest_items(job_dir)
+        if not items:
+            continue
+        counts = counts_by_dir[job_dir] = task_progress(job_dir, items)
+        if counts.n_fail:
+            failed.append((number, label, counts.n_fail))
+    if current is None:
+        return None
+    out: dict[str, Any] = {
+        "stage": current[2],
+        "state": current[3],
+        "ok": None,
+        "total": None,
+        "running": None,
+        "failed": sum(n for _, _, n in failed),
+        "failed_by_stage": [(label, n) for _, label, n in sorted(failed)],
+    }
+    counts = counts_by_dir.get(current[4])
+    if current[3] == "running" and counts is not None:
+        out["ok"] = counts.n_ok
+        out["total"] = counts.total - counts.n_skip
+        out["running"] = counts.n_running
+    return out
 
 
 def _read_extraction_outdir(out_dir: Path) -> tuple[str, dict]:
@@ -1413,6 +1475,12 @@ class CryoBoostBackend:
 
                     derived = self._derive_live_status(item, jobs_dict, review_hold)
                     derived["pipeline_active_flag"] = pipeline_active
+                    live_progress = None
+                    if derived["live_status"] == "running":
+                        try:
+                            live_progress = _live_progress(item, jobs_dict)
+                        except OSError:  # a job dir changing under the scan: the row shows, just without it
+                            live_progress = None
 
                     last_activity_ts = max(stats.st_mtime, derived.get("last_activity_ts", 0.0))
                     # A directory listing, so only redone when the project shows new activity.
@@ -1451,6 +1519,7 @@ class CryoBoostBackend:
                             "disk_usage": disk_usage,
                             "disk_usage_stale": disk_usage_stale,
                             "tomo_preview": tomo_preview,
+                            "live_progress": live_progress,
                             **derived,
                         }
                     )

@@ -688,6 +688,7 @@ class ProjectsOverview:
                             "letter-spacing: 0.05em;"
                         )
                     ui.element("div").style("flex: 1 1 0; min-width: 0;")
+                    self._render_live_progress(proj)
                     self._render_status(proj)
 
                 # ---- Lines 2-3: where the project lives, where its data came from ----
@@ -779,8 +780,8 @@ class ProjectsOverview:
             )
 
     def _render_compact_body(self, proj: dict, is_current: bool, row_el):
-        """Compact view: one line -- name, owner, TS, size, status, delete. The owner sits
-        in the row because the compact list has no owner sections."""
+        """Compact view: one line -- name, live progress, owner, TS, size, status, delete. The
+        owner sits in the row because the compact list has no owner sections."""
         name = proj["name"]
         ts_count = proj.get("ts_count") or 0
         mnemonic = proj.get("mnemonic") or ""
@@ -794,6 +795,7 @@ class ProjectsOverview:
             )
             if mnemonic:
                 name_lbl.tooltip(f"{name}\n{mnemonic}")
+            self._render_live_progress(proj)
             ui.label(self._owner_label(self._eff_owner_of(proj))).style(
                 f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; width: {self._W_OWNER}px; {fixed} "
                 "overflow: hidden; text-overflow: ellipsis;"
@@ -901,6 +903,38 @@ class ProjectsOverview:
         )
         label.tooltip(f"{what}\n{path}\nClick to copy")
         copy_on_click(label, path)
+
+    @staticmethod
+    def _render_live_progress(proj: dict):
+        """A live run at a glance (backend._live_progress): the job at work, its tilt-series
+        done out of those in scope, and how many the run has failed so far, in red, since each
+        is dropped from every job after it. Live projects only; the hover breaks it down."""
+        lp = proj.get("live_progress")
+        if not lp or proj.get("live_status") != "running":
+            return
+        if lp["state"] == "queued":
+            lines = [f"{lp['stage']}: queued on the cluster"]
+        elif lp["total"]:
+            lines = [f"{lp['stage']}: {lp['ok']} of {lp['total']} tilt-series done, {lp['running']} running"]
+        else:
+            lines = [f"{lp['stage']}: running"]
+        if lp["failed_by_stage"]:
+            lines.append("Failed so far: " + ", ".join(f"{stage} {n}" for stage, n in lp["failed_by_stage"]))
+        n_tomos = (proj.get("tomo_preview") or {}).get("n_tomos")
+        if n_tomos:
+            lines.append(f"{n_tomos} tomograms reconstructed")
+        cell = f"{MONO} font-size: 9px; white-space: nowrap;"
+        with ui.element("div").style("display: flex; align-items: baseline; gap: 5px; flex-shrink: 0;"):
+            ui.label(lp["stage"]).style(
+                f"{FONT} font-size: 9px; font-weight: 600; color: {CLR_RUNNING}; white-space: nowrap;"
+            )
+            if lp["state"] == "queued":
+                ui.label("queued").style(f"{cell} color: {CLR_SUBLABEL};")
+            elif lp["total"]:
+                ui.label(f"{lp['ok']}/{lp['total']}").style(f"{cell} color: {CLR_LABEL};")
+            if lp["failed"]:
+                ui.label(f"· {lp['failed']} failed").style(f"{cell} color: {CLR_FAILED};")
+            ui.tooltip("\n".join(lines)).style("white-space: pre-line;")
 
     @staticmethod
     def _render_status(proj: dict):
