@@ -139,7 +139,8 @@ class TiltFilterParams(AbstractJobParams):
     tilt_labels: dict[str, str] = Field(default_factory=dict, description="Manual good/bad label overrides by tilt key")
     predict_run: TiltFilterPredictRun | None = None
     last_commit: TiltFilterCommit | None = None
-    # Why the last DL-auto job failed: its driver's FATAL line, recorded when the reconciler settles it.
+    # Why the last automatic DL step failed: a DL-auto job's FATAL line, recorded when the reconciler
+    # settles it, or why DL review's automatic prediction run could not be submitted.
     auto_error: str = ""
 
     @property

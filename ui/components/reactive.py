@@ -46,9 +46,36 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from typing import Any
-from collections.abc import Hashable
+from collections.abc import Callable, Hashable
+
+from nicegui import ui
+
+from ui.components.dialogs import dialog_host
 
 logger = logging.getLogger(__name__)
+
+
+def owned_timer(interval: float, callback: Callable[[], Any], owner: Any, *, once: bool = False) -> ui.timer:
+    """A ui.timer for a view whose container a rebuild can delete (a roster row, a job page).
+
+    It is parented at the page layout, which no rebuild clears, and cancels itself on its first
+    tick after `owner` (the view's container) is deleted. A timer created inside the container
+    dies with it instead, and when that happens before its first tick (a page build renders the
+    view twice before the browser connects), NiceGUI logs "The parent slot of the element has
+    been deleted": it reads the timer's parent slot before it checks whether the timer was
+    deleted."""
+    timer: ui.timer | None = None
+
+    def tick() -> Any:
+        if owner.is_deleted:
+            if timer is not None:
+                timer.cancel()
+            return None
+        return callback()
+
+    with dialog_host():
+        timer = ui.timer(interval, tick, once=once)
+    return timer
 
 
 class FingerprintedView:

@@ -284,6 +284,8 @@ class CryoBoostBackend:
         # Recorded before the first await, so a second click finds this run in flight.
         run = TiltFilterPredictRun(job_dir=str(run_dir), model=model_key)
         job_model.predict_run = run
+        # A run that starts supersedes the reason an automatic one could not be submitted.
+        job_model.auto_error = ""
         state.mark_dirty()
         # The driver reads the run off project_params.json, so it must be on disk before sbatch.
         await self.state_service.save_project(project_path=project_path, force=True)
@@ -315,6 +317,41 @@ class CryoBoostBackend:
         await self.state_service.save_project(project_path=project_path, force=True)
         events.info("Tilt filter DL run %s queued: SLURM job %s", run_dir.name, run.slurm_job_id)
         return ok(slurm_job_id=run.slurm_job_id, job_dir=str(run_dir))
+
+    async def autostart_tilt_filter_predict(self, project_path: Path, *, fresh: bool = False) -> None:
+        """DL review's prediction run, submitted without a click: only for a filter a Run includes
+        (the run's hold names it), in DL review, uncommitted, with fsMotion succeeded and no run in
+        flight. `fresh`: fsMotion has just made new averages, so a run that succeeded before does
+        not count. Callers: deploy (fsMotion already done), the afterok reconciler's fsMotion
+        SUCCEEDED edge, and a switch to DL review. A refused submit is recorded in the job's
+        `auto_error`, which its row shows, and logged."""
+        project_path = Path(project_path)
+        state = self.state_service.state_for(project_path)
+        hold = state.review_hold
+        job_model = state.jobs.get(hold.barrier) if hold is not None else None
+        if (
+            job_model is None
+            or job_model.job_type != JobType.TILT_FILTER
+            or job_model.mode != FilterMode.DL_REVIEW
+            or job_model.execution_status == JobStatus.SUCCEEDED
+            or job_model.predict_in_flight
+        ):
+            return
+        if not any(
+            jm.job_type == JobType.FS_MOTION_CTF and jm.execution_status == JobStatus.SUCCEEDED
+            for jm in state.jobs.values()
+        ):
+            return
+        run = job_model.predict_run
+        if not fresh and run is not None and run.status == JobStatus.SUCCEEDED:
+            return
+        res = await self.submit_tilt_filter_predict(project_path, hold.barrier)
+        if res["success"]:
+            return
+        job_model.auto_error = f"The automatic DL run could not be submitted: {res['error']}"
+        state.mark_dirty()
+        await self.state_service.save_project(project_path=project_path, force=True)
+        events.warning("%s: %s", project_path.name, job_model.auto_error)
 
     async def cancel_tilt_filter_predict(self, project_path: Path, instance_id: str) -> dict[str, Any]:
         """Cancel the tilt filter's in-flight DL prediction run. Only scancels: the monitor
@@ -355,6 +392,8 @@ class CryoBoostBackend:
             # Else the reconciler tracks the job again and reads its failure marker back.
             job_model.slurm_job_id = None
         job_model.mode = mode
+        # The reason belonged to the mode left behind (a DL-auto job, or DL review's automatic run).
+        job_model.auto_error = ""
         state.mark_dirty()
         # Not a USER_PARAMS field, so nothing marks the project dirty on its own: force the save.
         await self.state_service.save_project(project_path=project_path, force=True)
@@ -363,6 +402,8 @@ class CryoBoostBackend:
         hold = state.review_hold
         if mode == FilterMode.DL_AUTO and hold is not None and hold.barrier == instance_id:
             res["resume"] = await self.pipeline_orchestrator.submit_parked(project_path)
+        elif mode == FilterMode.DL_REVIEW:
+            await self.autostart_tilt_filter_predict(project_path)
         return res
 
     async def approve_tilt_filter(self, project_path: Path, instance_id: str) -> dict[str, Any]:
