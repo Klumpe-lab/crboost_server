@@ -137,7 +137,8 @@ def predict(state, job_model: TiltFilterParams, job_dir: Path, project_path: Pat
         raise RuntimeError(f"{len(unknown)} tilts are not in the TiltSeries registry: {_named(unknown)}")
     registry.save()
     print(
-        f"[DRIVER] Wrote P(bad) for {len(p_bad)} tilts to the registry (min {min(p_bad):.3f}, max {max(p_bad):.3f})",
+        f"[DRIVER] Wrote the confidence score of {len(p_bad)} tilts to the registry "
+        f"(min {min(p_bad):.3f}, max {max(p_bad):.3f})",
         flush=True,
     )
 
@@ -148,11 +149,11 @@ def predict(state, job_model: TiltFilterParams, job_dir: Path, project_path: Pat
     if liveness is None:
         print("[DRIVER] Liveness not assessed: no tilt series has two predictions", flush=True)
     elif liveness[0]:
-        print(f"[DRIVER] Liveness: P(bad) varies within tilt series (mean {liveness[1]:.3f})", flush=True)
+        print(f"[DRIVER] Liveness: the confidence score varies within tilt series (mean {liveness[1]:.3f})", flush=True)
     else:
         print(
-            f"[DRIVER] WARNING: the model gives every tilt the same P(bad), {liveness[1]:.3f} (spread below "
-            f"{LIVENESS_MIN_STD:g} in every tilt series); its verdicts are meaningless",
+            f"[DRIVER] WARNING: the model gives every tilt the same confidence score, {liveness[1]:.3f} (spread "
+            f"below {LIVENESS_MIN_STD:g} in every tilt series); its verdicts are meaningless",
             flush=True,
         )
     return model_key, liveness
@@ -176,8 +177,8 @@ def commit(job_model: TiltFilterParams, job_dir: Path, project_path: Path, model
     )
     (job_dir / COMMIT_RECORD).write_text(record.model_dump_json(indent=2))
     print(
-        f"[DRIVER] Verdict committed at P(bad) >= {job_model.threshold:.2f}: {record.kept} tilts kept, "
-        f"{record.dropped} dropped",
+        f"[DRIVER] Verdict committed at confidence score >= {job_model.threshold:.2f}: {record.kept} tilts kept, "
+        f"{record.dropped} excluded",
         flush=True,
     )
 
@@ -204,8 +205,8 @@ def main():
             model_key, liveness = predict(state, job_model, job_dir, project_path, job_model.model)
             if liveness is not None and not liveness[0]:
                 raise RuntimeError(
-                    f"The model gives every tilt the same P(bad), {liveness[1]:.3f}: its verdicts are meaningless. "
-                    "No verdict was committed."
+                    f"The model gives every tilt the same confidence score, {liveness[1]:.3f}: its verdicts are "
+                    "meaningless. No verdict was committed."
                 )
             commit(job_model, job_dir, project_path, model_key)
         else:
