@@ -9,6 +9,9 @@ so these depend on no plotting package.
 
 from __future__ import annotations
 
+import math
+from collections.abc import Sequence
+
 
 def _empty_fig(message: str) -> dict:
     return {
@@ -772,51 +775,40 @@ def build_ctf_fit_chart(
 
 # ── The tilt filter's distributions (ui/tilt_filter_panel.py) ──
 
-# Why a tilt is out of its tomogram or about to be, bottom of the stack first, then the dark
-# tilts kept (in the tomogram, or to be) on top. A tilt counts once, under the first that
-# applies. The colours passed the palette validator in this order (every adjacent pair
-# ΔE ≥ 13 under colour-vision deficiency, ≥ 15 with full colour vision); the legend and the
-# hover carry each count as text.
-TILT_CAUSES = (
-    ("dropped", "dropped by the verdict", "#e34948"),
-    ("model", "flagged by the model", "#4a3aa7"),
-    ("yours", "flagged by you", "#e87ba4"),
-    ("warp", "left out by Warp's import", "#2a78d6"),
+# What a tilt is, in every chart of the tilt filter's page: one colour per state and the same in
+# each chart, so the page carries one legend above its charts. A tilt counts once, under the
+# first state that applies. The four colours passed the palette validator as a set (every pair
+# ΔE ≥ 13 under colour-vision deficiency, ≥ 16 with full colour vision); the amber sits under
+# 3:1 against the surface, so the legend and the hover carry every count as text.
+TILT_STATES = (
+    ("excluded", "excluded", "#e34948"),
+    ("out", "not in alignment's output", "#4a3aa7"),
     ("dark", "dark, kept", "#eda100"),
+    ("kept", "kept", "#2a78d6"),
 )
-# The P(bad) histogram's series, left to right in a bin; validated in this order too.
-P_BAD_LABELS = (
-    ("good", "your label: good", "#1baf7a"),
-    ("untouched", "untouched", "#2a78d6"),
-    ("bad", "your label: bad", "#e34948"),
-)
-_LINE_KEY = (
-    "'<span style=\"display:inline-block;width:10px;height:2px;background:' + p.color + "
-    "';vertical-align:middle;margin-right:6px\"></span>'"
-)
-_BAND_TOOLTIP_JS = r"""
+_STATE = {key: (name, color) for key, name, color in TILT_STATES}
+# The charts' one height, so they line up side by side as small multiples.
+SMALL_CHART_PX = 130
+# The score histogram tops its axis at the second-largest bin when one bin outgrows it this much,
+# and prints the clipped bin's count: a linear axis that the untouched majority would flatten.
+_CLIP_RATIO = 5.0
+
+# One hover card for every bar chart of the page: a title (`__TITLE__`, a JS expression over
+# `ps`), then each state's count at that bar.
+_COUNTS_TOOLTIP_JS = r"""
 (ps) => {
   if (!Array.isArray(ps)) ps = [ps];
-  let h = __OPEN__ + '<div style="font-weight:600">' + ps[0].axisValueLabel + ' |stage tilt|</div>';
+  let h = __OPEN__ + '<div style="font-weight:600">' + (__TITLE__) + '</div>';
   let total = 0;
   for (const p of ps) {
-    const v = p.value;
+    const v = Array.isArray(p.value) ? p.value[1] : p.value;
     if (!v) continue;
     total += v;
-    h += '<div>' + __KEY__ + '<span style="font-family:IBM Plex Mono,monospace;font-weight:600">' + v
+    h += '<div>' + p.marker + '<span style="font-family:IBM Plex Mono,monospace;font-weight:600">' + v
       + '</span> ' + p.seriesName + '</div>';
   }
-  if (!total) h += '<div style="color:#94a3b8">nothing out, flagged or dark</div>';
+  if (!total) h += '<div style="color:#94a3b8">none</div>';
   return h + '</div>';
-}
-""".replace("__OPEN__", _TOOLTIP_CARD_OPEN).replace("__KEY__", _LINE_KEY)
-_HIST_TOOLTIP_JS = r"""
-(p) => {
-  const d = p.data || [];
-  const lo = (d[0] - __HALF__).toFixed(2), hi = (d[0] + __HALF__).toFixed(2);
-  return __OPEN__ + '<div style="font-weight:600">P(bad) ' + lo + '–' + hi + '</div><div>' + __KEY__
-    + '<span style="font-family:IBM Plex Mono,monospace;font-weight:600">' + d[1] + '</span> ' + p.seriesName
-    + '</div></div>';
 }
 """
 
@@ -828,66 +820,86 @@ def _count_axis(name: str) -> dict:
     return axis
 
 
-def build_tilt_band_chart(bands: list[str], counts: dict[str, list[int]]) -> dict:
-    """Tilts out of the tomograms or flagged, per band of |stage tilt| (`bands`, the axis
-    labels), stacked by cause (TILT_CAUSES; `counts` per cause key, one per band), with the
-    dark tilts in use as the top segment. Each band's top segment gets the rounded end; a 1 px
-    surface border on every segment makes the 2 px gap between them."""
-    tops = [next((k for k, _n, _c in reversed(TILT_CAUSES) if counts[k][i]), None) for i in range(len(bands))]
+def _counts_tooltip(title_js: str) -> dict:
+    tooltip = _tooltip(_COUNTS_TOOLTIP_JS.replace("__OPEN__", _TOOLTIP_CARD_OPEN).replace("__TITLE__", title_js))
+    tooltip["axisPointer"] = {"type": "shadow", "shadowStyle": {"color": "rgba(148,163,184,0.12)"}}
+    return tooltip
+
+
+def _stacked_bars(keys: Sequence[str], counts: dict[str, list], *, xs: list | None = None, bar_px: int) -> list[dict]:
+    """One stacked bar series per state in `keys` (bottom first), `counts` per key and per bar. Each
+    bar's top segment gets the rounded end; a 1 px surface border on every segment makes the 2 px
+    gap between them. `xs` puts the bars on a value axis instead of a category axis."""
+    n = len(next(iter(counts.values())))
+    tops = [next((k for k in reversed(keys) if counts[k][i]), None) for i in range(n)]
     series = []
-    for key, name, color in TILT_CAUSES:
+    for key in keys:
+        name, color = _STATE[key]
         data = []
-        for i, n in enumerate(counts[key]):
-            item: dict = {"value": n}
-            if n and tops[i] == key:
+        for i, value in enumerate(counts[key]):
+            item: dict = {"value": [xs[i], value] if xs is not None else value}
+            if value and tops[i] == key:
                 item["itemStyle"] = {"borderRadius": [4, 4, 0, 0]}
             data.append(item)
         series.append(
             {
                 "type": "bar",
                 "name": name,
-                "stack": "causes",
+                "stack": "states",
                 "data": data,
-                "barMaxWidth": 24,
+                "barMaxWidth": bar_px,
                 "itemStyle": {"color": color, "borderColor": "#ffffff", "borderWidth": 1},
                 "emphasis": {"focus": "series"},
             }
         )
-    tooltip = _tooltip(_BAND_TOOLTIP_JS)
-    tooltip["axisPointer"] = {"type": "shadow", "shadowStyle": {"color": "rgba(148,163,184,0.12)"}}
-    x_axis = _axis("|stage tilt|", horizontal=True)
-    x_axis.update({"type": "category", "data": bands})
+    return series
+
+
+def build_excluded_by_tilt_chart(bins: list[str], counts: dict[str, list[int]]) -> dict:
+    """Tilts excluded, not in alignment's output, or dark and kept, per 10° bin of signed stage
+    tilt (`bins` like "−60…−50", `counts` per state key, one per bin), stacked."""
+    x_axis = _axis("stage tilt", horizontal=True)
+    x_axis.update({"type": "category", "data": bins})
+    x_axis["axisLabel"] = {**x_axis["axisLabel"], ":formatter": "(v) => v.split('…')[0] + '°'"}
     return {
         "animation": False,
-        "grid": _grid(True),
-        "legend": _legend(True),
-        "tooltip": tooltip,
+        "grid": _grid(False),
+        "tooltip": _counts_tooltip("'stage tilt ' + ps[0].axisValueLabel.replace('…', '° to ') + '°'"),
         "xAxis": x_axis,
         "yAxis": _count_axis("tilts"),
-        "series": series,
+        "series": _stacked_bars(("excluded", "out", "dark"), counts, bar_px=16),
     }
 
 
-def build_p_bad_histogram(counts: dict[str, list[int]], threshold: float | None) -> dict:
-    """The P(bad) histogram: equal bins over 0–1 (`counts` per P_BAD_LABELS key, one per bin),
-    a bar per label side by side in each bin on a log count axis, and the threshold as a dashed
-    line. Side by side, not stacked: on a log axis a stacked segment's length does not encode
-    its count."""
-    n_bins = len(next(iter(counts.values())))
+def build_score_histogram(counts: dict[str, list[int]], threshold: float | None) -> dict:
+    """The confidence score's histogram: equal bins over 0–1 (`counts` per state key, excluded
+    and kept, one per bin), stacked, with the threshold as a dashed line. A linear count axis:
+    when one bin holds more than _CLIP_RATIO times the next-largest, the axis tops out a little
+    above that one and the clipped bin prints its count."""
+    n_bins = len(counts["excluded"])
     half = 0.5 / n_bins
-    centers = [(i + 0.5) / n_bins for i in range(n_bins)]
-    series = []
-    for key, name, color in P_BAD_LABELS:
-        series.append(
-            {
-                "type": "bar",
-                "name": name,
-                "data": [[round(c, 4), n if n > 0 else None] for c, n in zip(centers, counts[key], strict=True)],
-                "barMaxWidth": 24,
-                "barGap": "10%",
-                "itemStyle": {"color": color, "borderRadius": [4, 4, 0, 0]},
-            }
-        )
+    centers = [round((i + 0.5) / n_bins, 4) for i in range(n_bins)]
+    series = _stacked_bars(("excluded", "kept"), counts, xs=centers, bar_px=12)
+    totals = [counts["excluded"][i] + counts["kept"][i] for i in range(n_bins)]
+    ranked = sorted(range(n_bins), key=lambda i: totals[i], reverse=True)
+    y_axis = _count_axis("tilts")
+    top, second = totals[ranked[0]], totals[ranked[1]] if n_bins > 1 else 0
+    if second and top > _CLIP_RATIO * second:
+        y_max = math.ceil(second * 1.2)
+        y_axis["max"] = y_max
+        series[-1]["markPoint"] = {
+            "silent": True,
+            "symbolSize": 0,
+            "label": {
+                "show": True,
+                "position": "top",
+                "formatter": str(top),
+                "fontFamily": _MONO,
+                "fontSize": 9,
+                "color": "#334155",
+            },
+            "data": [{"coord": [centers[ranked[0]], y_max]}],
+        }
     if threshold is not None:
         series[0]["markLine"] = {
             "silent": True,
@@ -903,23 +915,35 @@ def build_p_bad_histogram(counts: dict[str, list[int]], threshold: float | None)
             },
             "data": [{"xAxis": round(threshold, 4)}],
         }
-    x_axis = _axis("P(bad)", horizontal=True)
-    x_axis.update({"min": 0, "max": 1, "interval": 0.1})
-    y_axis = _axis("tilts (log)", horizontal=False)
-    # Below 1, so a bin of one tilt still has height; the labels stay on whole numbers.
-    y_axis.update({"type": "log", "logBase": 10, "scale": False, "min": 0.6})
-    y_axis["axisLabel"] = {**y_axis["axisLabel"], ":formatter": "(v) => (v >= 1 ? v : '')"}
-    tooltip_js = (
-        _HIST_TOOLTIP_JS.replace("__OPEN__", _TOOLTIP_CARD_OPEN)
-        .replace("__KEY__", _LINE_KEY)
-        .replace("__HALF__", f"{half:.4f}")
+    x_axis = _axis("confidence score", horizontal=True)
+    x_axis.update({"min": 0, "max": 1, "interval": 0.2})
+    title = (
+        f"'confidence score ' + (ps[0].value[0] - {half:.4f}).toFixed(2) + '–' + "
+        f"(ps[0].value[0] + {half:.4f}).toFixed(2)"
     )
+    tooltip = _counts_tooltip(title)
+    tooltip["axisPointer"] = {"type": "line", "snap": True, "lineStyle": {"color": "#cbd5e1", "type": "dashed"}}
     return {
         "animation": False,
-        "grid": _grid(True),
-        "legend": _legend(True),
-        "tooltip": _tooltip(tooltip_js, trigger="item"),
+        "grid": _grid(False),
+        "tooltip": tooltip,
         "xAxis": x_axis,
         "yAxis": y_axis,
         "series": series,
+    }
+
+
+def build_excluded_per_series_chart(names: list[str], counts: dict[str, list[int]]) -> dict:
+    """Tilts excluded and not in alignment's output per tilt series (`names`, in position
+    order), stacked, one thin bar each; the hover names the series."""
+    x_axis = _axis("tilt series", horizontal=True)
+    x_axis.update({"type": "category", "data": names})
+    x_axis["axisLabel"] = {**x_axis["axisLabel"], "show": False}
+    return {
+        "animation": False,
+        "grid": _grid(False),
+        "tooltip": _counts_tooltip("ps[0].axisValueLabel"),
+        "xAxis": x_axis,
+        "yAxis": _count_axis("tilts"),
+        "series": _stacked_bars(("excluded", "out"), counts, bar_px=6),
     }

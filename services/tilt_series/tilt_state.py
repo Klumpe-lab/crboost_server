@@ -5,9 +5,12 @@ caption read this one derivation, so a tilt reads the same wherever it appears:
 
 - ``in_tomogram``: the tilt is in alignment's per-frame output, the set CTF and
   reconstruction use. None until alignment has recorded one for the series.
-- ``drop``: the committed tilt-filter verdict's reason, when the verdict drops the tilt.
-- ``review``: what the uncommitted review says, by the rule Approve commits with: a human's
+- ``drop``: the committed tilt-filter verdict's reason, when the verdict excludes the tilt. While a
+  review is open (the filter is uncommitted) the stamps are the previous commit's and are not read.
+- ``review``: what the uncommitted review says, by the rule Approve commits with: a manual
   label, else in the DL modes the model's call at the job's threshold.
+- ``excluded``: the one exclusion the views draw, whoever set it: the review's bad while it is
+  open, else the committed verdict's.
 - ``p_bad``: the model's P(bad), in the DL modes only, as the filter panel shows it.
 - ``exposure``: the tilt's mdoc mean counts over its series' median, and its class.
 
@@ -78,6 +81,12 @@ class TiltState:
         return self.review in ("human_bad", "model_bad")
 
     @property
+    def excluded(self) -> bool:
+        """The filter takes the tilt out: the open review marks it bad, or the committed verdict
+        excludes it (`drop` is None while a review is open, `review` None once it is committed)."""
+        return self.flagged or self.drop is not None
+
+    @property
     def kept(self) -> bool:
         """Nothing has taken the tilt out: no verdict drops it and alignment did not leave it
         out. It is in the tomogram, or will be."""
@@ -90,9 +99,8 @@ class SeriesSummary:
     used: int | None  # tilts in alignment's output; None until it has recorded one
     kept_range: tuple[float, float] | None  # stage tilts of the used tilts, min and max
     dark_in_use: tuple[TiltState, ...]  # dark exposures in the tomogram
-    dark_unflagged: tuple[TiltState, ...]  # dark exposures nothing drops and the review does not flag
-    flagged: tuple[TiltState, ...]  # the uncommitted review marks bad
-    dropped: tuple[TiltState, ...]  # the committed verdict drops
+    dark_kept: tuple[TiltState, ...]  # dark exposures nothing excludes, in the tomogram or to be
+    excluded: tuple[TiltState, ...]  # the filter takes out (the open review, else the committed verdict)
     left_out: tuple[TiltState, ...]  # not in alignment's output, and no verdict drops them
 
 
@@ -141,6 +149,9 @@ def tilt_states(
     in_tomo = tomogram_frame_ids(ts, alignment_instance)
     ratios = exposure_ratios(ts)
     dl = mode in DL_MODES
+    # While a review is open the stamps are the previous commit's: the review is what the next
+    # Approve stamps, so a tilt labelled included again does not still read excluded.
+    reviewing = mode is not None and not committed
     states = []
     for f in ts.frames:
         p_bad = f.p_bad if dl else None
@@ -159,7 +170,7 @@ def tilt_states(
                 number=f.tilt_index + 1,
                 angle=f.nominal_tilt_angle_deg,
                 in_tomogram=None if in_tomo is None else f.id in in_tomo,
-                drop=(f.filter_reason or "tilt-filter") if f.is_filtered_out else None,
+                drop=(f.filter_reason or "tilt-filter") if f.is_filtered_out and not reviewing else None,
                 review=review,
                 p_bad=p_bad,
                 exposure_ratio=ratio,
@@ -177,9 +188,8 @@ def series_summary(states: Sequence[TiltState]) -> SeriesSummary:
         used=len(used) if known else None,
         kept_range=(min(s.angle for s in used), max(s.angle for s in used)) if used else None,
         dark_in_use=tuple(s for s in used if s.is_dark),
-        dark_unflagged=tuple(s for s in states if s.is_dark and s.kept and not s.flagged),
-        flagged=tuple(s for s in states if s.flagged),
-        dropped=tuple(s for s in states if s.drop is not None),
+        dark_kept=tuple(s for s in states if s.is_dark and s.kept and not s.excluded),
+        excluded=tuple(s for s in states if s.excluded),
         left_out=tuple(s for s in states if s.in_tomogram is False and s.drop is None),
     )
 
