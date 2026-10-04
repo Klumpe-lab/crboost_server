@@ -292,7 +292,7 @@ class FsMotionCtfDriver(ArrayDriver):
             ctx.paths["input_star"],
             ctx.paths["output_star"],
             project_root=ctx.project_path,
-            excluded_ids=set(results.skipped),
+            excluded_ids=set(results.skipped) | set(results.dropped),
         )
         registry.save()
         self.log("Metadata processing successful.")

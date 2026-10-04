@@ -113,8 +113,11 @@ def is_superseded_task(job_dir: Path) -> bool:
         return False
 
 
-def write_status_atomic(status_dir: Path, item_name: str, ok: bool) -> None:
+def write_status_atomic(status_dir: Path, item_name: str, ok: bool, reason: str = "") -> None:
     """Atomically write a per-item status file (.ok or .fail).
+
+    `reason` becomes the marker's content (readers only look at the suffix), so a
+    `.fail` says why the item was dropped and the supervisor can group the drops.
 
     An item must end up carrying exactly ONE terminal marker, because the roster
     tallies `.ok` and `.fail` independently: a stale `.fail` left behind by an
@@ -142,8 +145,19 @@ def write_status_atomic(status_dir: Path, item_name: str, ok: bool) -> None:
             stale.unlink()
     target = status_dir / f"{item_name}.{suffix}"
     tmp = status_dir / f".{item_name}.{suffix}.tmp"
-    tmp.write_text("")
+    tmp.write_text(reason)
     os.replace(tmp, target)
+
+
+def failure_reason(exc: BaseException) -> str:
+    """One line saying why an item failed, for its `.fail` marker.
+
+    A failed tool call's message is the whole container command line, which says
+    nothing; its exit status does (the tool's own output is in task_N.out)."""
+    if isinstance(exc, subprocess.CalledProcessError):
+        return f"tool exited with status {exc.returncode} (tool output in task_N.out)"
+    lines = str(exc).strip().splitlines()
+    return lines[0][:500] if lines else type(exc).__name__
 
 
 def write_skip_status(status_dir: Path, item_name: str, reason: str = "") -> None:
@@ -213,6 +227,12 @@ class ArrayResults:
     all_succeeded: bool
 
     @property
+    def dropped(self) -> list[str]:
+        """Items that ran and did not succeed. Tolerant jobs leave them out of their
+        output, so they are absent from everything downstream."""
+        return sorted(self.failed + self.missing)
+
+    @property
     def summary(self) -> str:
         parts = [f"{len(self.ok)} ok"]
         if self.skipped:
@@ -244,15 +264,44 @@ def collect_task_results(job_dir: Path, ts_names: list[str]) -> ArrayResults:
 
     `.skip` files (intentional non-runs) are NOT failures and NOT missing —
     they count toward `all_succeeded` together with `.ok` files.
+
+    Only markers of this run's items count: a stale `.ok` of a tilt-series that is
+    no longer in the input would otherwise pass the tolerant tally and be ingested.
     """
     status_dir = job_dir / STATUS_DIR_NAME
-    ok_files = sorted(p.stem for p in status_dir.glob("*.ok"))
-    fail_files = sorted(p.stem for p in status_dir.glob("*.fail"))
-    skip_files = sorted(p.stem for p in status_dir.glob("*.skip"))
+    names = set(ts_names)
+    ok_files = sorted(p.stem for p in status_dir.glob("*.ok") if p.stem in names)
+    fail_files = sorted(p.stem for p in status_dir.glob("*.fail") if p.stem in names)
+    skip_files = sorted(p.stem for p in status_dir.glob("*.skip") if p.stem in names)
     accounted = set(ok_files) | set(fail_files) | set(skip_files)
     missing = sorted(set(ts_names) - accounted)
     all_ok = (len(ok_files) + len(skip_files)) == len(ts_names) and not fail_files and not missing
     return ArrayResults(ok=ok_files, failed=fail_files, missing=missing, skipped=skip_files, all_succeeded=all_ok)
+
+
+MISSING_TASK_REASON = "task ended without reporting (OOM, time limit, node failure or scancel; see task_N.err)"
+
+
+def log_dropped(job_dir: Path, results: ArrayResults, n_items: int) -> None:
+    """Print the dropped items grouped by the reason in their `.fail` marker.
+
+    A tolerant job carries on without them, so this summary is what makes a
+    systematic cause visible: '84 × <one error>' reads as a bug, not as bad data."""
+    status_dir = job_dir / STATUS_DIR_NAME
+    by_reason: dict[str, list[str]] = {}
+    for item in results.dropped:
+        try:
+            reason = (status_dir / f"{item}.fail").read_text().strip()
+        except OSError:  # a marker that vanished mid-read only loses its reason in this summary
+            reason = ""
+        by_reason.setdefault(reason.replace(item, "<ts>") or "no reason recorded", []).append(item)
+    print(
+        f"[SUPERVISOR] DROPPED {len(results.dropped)}/{n_items} tilt-series: they are left out of this "
+        f"job's output and of every job downstream. By reason:",
+        flush=True,
+    )
+    for reason, names in sorted(by_reason.items(), key=lambda kv: -len(kv[1])):
+        print(f"[SUPERVISOR]   {len(names):4d} × {reason}", flush=True)
 
 
 # ----------------------------------------------------------------------
@@ -735,14 +784,17 @@ class ArrayDriver(ABC):
         return ctx.params.get_effective_slurm_config()
 
     def tally_acceptable(self, ctx: DriverContext, results: ArrayResults) -> bool:
-        """False → job FAILED before aggregation. Default: strict (every item
-        must be `.ok`/`.skip`). ts_alignment overrides with a tolerant policy
-        (per-TS alignment failure is normal; only a total wipeout is fatal)."""
-        return results.all_succeeded
+        """False → job FAILED before aggregation. Default: tolerant. A tilt-series
+        that failed is dropped (`results.dropped`) and the rest carry on, so one bad
+        TS cannot halt the pipeline for the whole dataset; only a run where nothing
+        succeeded and something failed is fatal. All-skipped (everything muted or
+        nothing to do) stays a success, as it was under the strict policy."""
+        return bool(results.ok) or not results.dropped
 
     @abstractmethod
     def aggregate(self, ctx: DriverContext, results: ArrayResults) -> None:
-        """Post-array metadata aggregation. Runs only when the tally is acceptable."""
+        """Post-array metadata aggregation. Runs only when the tally is acceptable.
+        Must leave `results.dropped` out of the job's output, like `results.skipped`."""
 
     # ---------------- task hooks ----------------
 
@@ -869,13 +921,18 @@ class ArrayDriver(ABC):
                 # reads as "running" forever on a job that has already failed.
                 print("[SUPERVISOR] Marking missing tilt-series failed (task_N.err has the kill reason)", flush=True)
                 for item in results.missing:
-                    write_status_atomic(ctx.job_dir / STATUS_DIR_NAME, item, ok=False)
+                    write_status_atomic(ctx.job_dir / STATUS_DIR_NAME, item, ok=False, reason=MISSING_TASK_REASON)
+            if results.dropped:
+                log_dropped(ctx.job_dir, results, len(items))
 
             if not self.tally_acceptable(ctx, results):
-                print("[SUPERVISOR] Marking job as FAILED (some tilt-series did not succeed)", flush=True)
+                print(f"[SUPERVISOR] Marking job as FAILED ({results.summary})", flush=True)
                 sys.exit(1)
 
-            print("[SUPERVISOR] All tasks succeeded; aggregating metadata...", flush=True)
+            if results.dropped:
+                print(f"[SUPERVISOR] Aggregating metadata for the {len(results.ok)} that succeeded...", flush=True)
+            else:
+                print("[SUPERVISOR] All tasks succeeded; aggregating metadata...", flush=True)
             self.aggregate(ctx, results)
 
             print("[SUPERVISOR] Job finished successfully.", flush=True)
@@ -924,7 +981,7 @@ class ArrayDriver(ABC):
             print(f"[TASK {array_idx}] FATAL ERROR for ts={label}: {e}", file=sys.stderr, flush=True)
             traceback.print_exc(file=sys.stderr)
             try:
-                write_status_atomic(status_dir, label, ok=False)
+                write_status_atomic(status_dir, label, ok=False, reason=failure_reason(e))
             except Exception as inner:
                 # Broad and last-ditch: we are already on the failure path, and a
                 # status-write error must not mask the real error.

@@ -21,6 +21,7 @@ from drivers.array_job_base import (
     ArrayResults,
     copy_tomostar_with_absolute_paths,
     get_previously_succeeded,
+    load_excluded_ts,
     read_tilt_series_names_from_input_star,
 )
 from drivers.driver_base import DriverContext, ToolCommand, run_tool, require_producer_input
@@ -77,10 +78,14 @@ def run_defocus_hand_globally(
             f"  {set_noflip_cmd}; "
             f"fi"
         )
-    elif params.defocus_hand == "set_flip":
-        hand_cmd = " && ".join([check_cmd, set_flip_cmd])
     else:
-        hand_cmd = " && ".join([check_cmd, set_noflip_cmd])
+        # The hand is set explicitly, so --check is only a diagnostic (its verdict lands in
+        # the log) and must not fail the job: Warp aborts the whole check when one series
+        # breaks it (one tilt left after the tilt filter gives a NaN gradient,
+        # DefocusHandTiltseries.cs:120), while --set_flip/--set_noflip only set a flag.
+        set_cmd = set_flip_cmd if params.defocus_hand == "set_flip" else set_noflip_cmd
+        warn = f"[WARN] ts_defocus_hand --check failed; the explicit {params.defocus_hand} is applied anyway"
+        hand_cmd = f'{check_cmd} || echo "{warn}"; {set_cmd}'
 
     # Retried like every other tool invocation in these drivers: --check and
     # set_flip/set_noflip are idempotent, so a transient GPU-worker crash self-heals.
@@ -191,7 +196,7 @@ class TsCtfDriver(ArrayDriver):
         return ts_names
 
     def pre_dispatch(self, ctx: DriverContext[TsCtfParams], items: list[str]) -> None:
-        """Stage the shared inputs, then run ts_defocus_hand across ALL tilt-series.
+        """Stage the shared inputs, then run ts_defocus_hand across all in-scope tilt-series.
 
         Handedness is a global decision (it needs statistics over many TS), so unlike
         every other per-TS job this supervisor runs real compute before dispatch.
@@ -202,14 +207,14 @@ class TsCtfDriver(ArrayDriver):
         # so resolution either produced this key or already aborted the bootstrap —
         # a local default here could only ever mask a resolver change.
         output_processing = ctx.paths["output_processing"]
-        in_scope = set(items)
+        # Muted TS leave scope here as well: the base pre-marks them skip only after this
+        # hook, and the global ts_defocus_hand below must not see them.
+        in_scope = set(items) - load_excluded_ts(ctx.project_path)
 
-        # Copy alignment XMLs into our output dir — but only for the in-scope TS.
-        # Excluded XMLs would also poison the global defocus-hand step (it operates on
-        # every XML in output_processing). TS already holding `.ok` are also excluded
-        # from the copy: they are never re-dispatched (submit_array_job skips them), so
-        # their XMLs in output_processing carry task-written CTF results that a re-copy
-        # would silently clobber.
+        # Copy alignment XMLs into our output dir — but only for the in-scope TS. TS
+        # already holding `.ok` are also excluded from the copy: they are never re-dispatched
+        # (submit_array_job skips them), so their XMLs in output_processing carry
+        # task-written CTF results that a re-copy would silently clobber.
         output_processing.mkdir(parents=True, exist_ok=True)
         already_ok = get_previously_succeeded(ctx.job_dir)
         copied = 0
@@ -227,7 +232,7 @@ class TsCtfDriver(ArrayDriver):
         if preserved:
             msg += f" (preserved {preserved} CTF-updated XMLs of already-succeeded TS)"
         if skipped:
-            msg += f" (skipped {skipped} excluded by alignment output STAR)"
+            msg += f" (skipped {skipped} not in scope: dropped by alignment or excluded)"
         self.log(msg)
 
         # Copy settings into job dir for staging
@@ -235,11 +240,25 @@ class TsCtfDriver(ArrayDriver):
         if not local_settings.exists():
             shutil.copy2(str(settings_file), str(local_settings))
 
-        # Find tomostar dir (from the alignment job or tsImport)
+        # Rebuild the local tomostar dir on every run with ONLY the in-scope TS. It is the
+        # settings' DataFolder, and ts_defocus_hand parses every *.tomostar in it, so the
+        # alignment job's full dir would bring back the TS alignment dropped: one empty
+        # tomostar (every tilt filtered out) aborts the global step and with it the job.
+        # A source tomostar that is absent fails only that TS's task, at staging.
         tomostar_dir = settings_file.parent / LOCAL_TOMOSTAR_NAME
         local_tomostar = ctx.job_dir / LOCAL_TOMOSTAR_NAME
-        if not local_tomostar.exists() and tomostar_dir.exists():
-            shutil.copytree(str(tomostar_dir), str(local_tomostar))
+        if local_tomostar.exists():
+            shutil.rmtree(local_tomostar)
+        local_tomostar.mkdir()
+        n_staged = 0
+        for ts in sorted(in_scope):
+            src = tomostar_dir / f"{ts}.tomostar"
+            if src.exists():
+                shutil.copy2(src, local_tomostar / src.name)
+                n_staged += 1
+        if n_staged == 0:
+            raise FileNotFoundError(f"None of the {len(in_scope)} in-scope tomostars found in {tomostar_dir}")
+        self.log(f"Staged {n_staged}/{len(in_scope)} in-scope tomostars from {tomostar_dir}")
 
         self.log("Running ts_defocus_hand globally...")
         run_defocus_hand_globally(ctx.params, local_settings, output_processing, ctx.job_dir, ctx.additional_binds)
@@ -260,7 +279,9 @@ class TsCtfDriver(ArrayDriver):
             registry=registry, job_dir=ctx.job_dir, job_instance_id=ctx.instance_id, warp_folder="warp_tiltseries"
         )
         adapter.ingest(results.ok)
-        adapter.emit_star(ctx.paths["input_star"], ctx.paths["output_star"], excluded_ids=set(results.skipped))
+        adapter.emit_star(
+            ctx.paths["input_star"], ctx.paths["output_star"], excluded_ids=set(results.skipped) | set(results.dropped)
+        )
         registry.save()
 
     # ---------------- task ----------------
