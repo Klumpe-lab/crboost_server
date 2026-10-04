@@ -368,15 +368,15 @@ def _verdict_covers(ts, committed: bool) -> bool:
 
 
 def filter_verdicts_from_registry(project_path: Path, ts_name: str, *, committed: bool) -> dict[str, str]:
-    """{frame_basename: "keep" | "drop (P(bad) 0.83)"} from the registry's per-frame
-    verdicts, for per-tilt plot hovers; the P(bad) suffix appears where the DL predicted
-    the tilt. Empty when no verdict covers this TS (see `tilt_filter_committed`)."""
+    """{frame_basename: "keep" | "drop (confidence 0.83)"} from the registry's per-frame
+    verdicts, for per-tilt plot hovers; the confidence-score suffix appears where the DL
+    scored the tilt. Empty when no verdict covers this TS (see `tilt_filter_committed`)."""
     ts = registry_ts_for(project_path, ts_name)
     if ts is None or not _verdict_covers(ts, committed):
         return {}
     out: dict[str, str] = {}
     for f in ts.frames:
-        p = f" (P(bad) {f.p_bad:.2f})" if f.p_bad is not None else ""
+        p = f" (confidence {f.p_bad:.2f})" if f.p_bad is not None else ""
         out[f.raw_filename] = ("drop" if f.is_filtered_out else "keep") + p
     return out
 

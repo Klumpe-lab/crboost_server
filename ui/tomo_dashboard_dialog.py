@@ -1848,7 +1848,7 @@ def _render_tilt_filter_section(ts_name: str, project_state, project_path: Path,
         default_model = get_config_service().tilt_filter.default_model
         param_rows = [
             ("model", jm.model or f"{default_model or 'none configured'} (default)"),
-            ("threshold on P(bad)", f"{jm.threshold:g}"),
+            ("confidence threshold", f"{jm.threshold:g}"),
         ]
 
     with ui.element("div").classes("cb-section-card w-full") as card:

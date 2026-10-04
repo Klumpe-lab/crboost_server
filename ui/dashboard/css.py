@@ -1272,6 +1272,8 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
     border: 1px solid #e5e7eb; border-radius: 4px; overflow: hidden;
     background: #ffffff; cursor: zoom-in;
 }
+/* In the review a click on a card toggles the tilt's exclusion; the magnifier opens it. */
+.cb-tg-review .cb-tp-card { cursor: pointer; }
 .cb-tp-card:hover { box-shadow: 0 0 0 1px #93c5fd; }
 .cb-tp-cap {
     display: flex; gap: 6px; padding: 1px 5px; white-space: nowrap; overflow: hidden;
@@ -1280,58 +1282,96 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 .cb-tp-cap b { font-weight: 600; color: #0f172a; }
 .cb-tp-cell { cursor: zoom-in; }
 .cb-tp-cell:hover > * { outline: 1px solid #93c5fd; outline-offset: -1px; }
-/* A tilt's state (services/tilt_series/tilt_state.py) on cards and mosaic cells: red stripes =
- * dropped by the committed tilt filter, grey stripes = not in alignment's output, solid /
- * dashed red = the uncommitted review's bad (a human's / the model's), amber = a dark exposure
- * nothing drops. The stripes lie over the image only, so a card's caption stays legible. */
+/* A tilt's exclusion (services/tilt_series/tilt_state.py `excluded`): one red border, whoever
+ * excluded it (a manual label, the confidence score at the threshold, the committed verdict).
+ * A mosaic cell outlines what the committed verdict excluded. Information is never red. */
 .cb-tp-img { position: relative; }
-.cb-ts-drop .cb-tp-img::after, .cb-ts-out .cb-tp-img::after {
-    content: ''; position: absolute; inset: 0; pointer-events: none;
+.cb-tp-card.cb-ts-x { border: 1.5px solid #ef4444; }
+.cb-tp-cell.cb-ts-x > .cb-tp-img { outline: 1px solid #ef4444; outline-offset: -1px; }
+/* Info icons over a card's image, bottom left, each with its popover: a dark exposure (dim: a
+ * crescent, blank: a disc), a tilt alignment's output lacks with no verdict against it (a
+ * slashed circle), an outlier (!). The outlier icon carries a cb-to-<metric> class per outlying
+ * metric and shows only while the root ticks one of them (cb-tg-m-<metric>). */
+.cb-ti-row { position: absolute; left: 3px; bottom: 3px; z-index: 2; display: flex; gap: 2px; }
+.cb-ti {
+    display: inline-block; width: 12px; height: 12px; border-radius: 50%; cursor: help;
+    background: rgba(15,23,42,0.55) center / 8px 8px no-repeat;
 }
-.cb-ts-drop .cb-tp-img::after {
-    background: repeating-linear-gradient(135deg, rgba(239,68,68,0) 0 6px, rgba(239,68,68,0.55) 6px 7px);
+.cb-ti-dim {
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'>\
+<path d='M6.6 1.3a3.9 3.9 0 1 0 2.2 6.4A3.2 3.2 0 0 1 6.6 1.3z' fill='%23fbbf24'/></svg>");
 }
-.cb-ts-out .cb-tp-img::after {
-    background: repeating-linear-gradient(135deg, rgba(148,163,184,0) 0 6px, rgba(148,163,184,0.75) 6px 7px);
+.cb-ti-blank {
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'>\
+<circle cx='5' cy='5' r='3.6' fill='%23fbbf24'/></svg>");
 }
-.cb-tp-card.cb-ts-drop, .cb-tp-card.cb-ts-hbad { border: 1.5px solid #ef4444; }
-.cb-tp-card.cb-ts-mbad { border: 1.5px dashed #ef4444; }
-.cb-tp-card.cb-ts-dark { border: 1.5px solid #f59e0b; }
-.cb-tp-cell.cb-ts-drop > .cb-tp-img { outline: 1px solid #ef4444; outline-offset: -1px; }
-.cb-tp-cell.cb-ts-dark > .cb-tp-img { outline: 2px solid #f59e0b; outline-offset: -2px; }
-/* A group header's strip: one tick per tilt at its stage tilt, coloured like its card. The
+.cb-ti-out {
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' \
+viewBox='0 0 10 10' fill='none' stroke='%23a5b4fc' stroke-width='1.4'>\
+<circle cx='5' cy='5' r='3.5'/><path d='M2.6 7.4 7.4 2.6'/></svg>");
+}
+.cb-ti-outl, .cb-ti-outl-lg {
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' \
+viewBox='0 0 10 10' fill='%23c4b5fd'>\
+<rect x='4.2' y='1.4' width='1.6' height='4.8' rx='0.8'/><circle cx='5' cy='8.1' r='0.95'/></svg>");
+}
+.cb-ti-outl { display: none; }
+.cb-tg-m-ctf .cb-ti-outl.cb-to-ctf, .cb-tg-m-mot .cb-ti-outl.cb-to-mot, .cb-tg-m-ddf .cb-ti-outl.cb-to-ddf,
+.cb-tg-m-ast .cb-ti-outl.cb-to-ast, .cb-tg-m-shift .cb-ti-outl.cb-to-shift { display: inline-block; }
+/* In the popovers (inside the root, so the same classes reach them): an outlying value is violet
+ * only while its metric is ticked, and the outlier icon's popover lists the ticked metrics only. */
+.cb-to-row { display: none; }
+.cb-tg-m-ctf .cb-to-row.cb-to-ctf, .cb-tg-m-mot .cb-to-row.cb-to-mot, .cb-tg-m-ddf .cb-to-row.cb-to-ddf,
+.cb-tg-m-ast .cb-to-row.cb-to-ast, .cb-tg-m-shift .cb-to-row.cb-to-shift { display: block; }
+.cb-tg-m-ctf .cb-to-v-ctf, .cb-tg-m-mot .cb-to-v-mot, .cb-tg-m-ddf .cb-to-v-ddf,
+.cb-tg-m-ast .cb-to-v-ast, .cb-tg-m-shift .cb-to-v-shift { color: #6d28d9; font-weight: 600; }
+/* The magnifier, top right over a card's image, drawn on hover: the full-size viewer. */
+.cb-tp-zoom {
+    position: absolute; top: 3px; right: 3px; z-index: 2; width: 16px; height: 16px; border-radius: 3px;
+    background: rgba(15,23,42,0.55) url("data:image/svg+xml;utf8,\
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10' \
+fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
+<circle cx='4.2' cy='4.2' r='2.9'/><path d='M6.4 6.4 8.9 8.9'/></svg>")\
+    center / 10px 10px no-repeat;
+    display: none; cursor: zoom-in;
+}
+.cb-tp-card:hover .cb-tp-zoom { display: block; }
+.cb-tp-zoom:hover { background-color: rgba(37,99,235,0.88); }
+/* A mosaic cell's information: 4 px dots at its bottom left (amber dark, indigo not in alignment's output). */
+.cb-tc-dots { position: absolute; left: 2px; bottom: 2px; display: flex; gap: 1px; pointer-events: none; }
+.cb-tc-dot { width: 4px; height: 4px; border-radius: 50%; }
+.cb-tc-dark { background: #f59e0b; }
+.cb-tc-out { background: #818cf8; }
+/* The legend's red-border swatch. */
+.cb-lg-x {
+    width: 12px; height: 12px; box-sizing: border-box; border: 1.5px solid #ef4444; border-radius: 2px;
+    background: #f1f5f9;
+}
+/* A group header's strip: one tick per tilt at its stage tilt, coloured like its tilt. The
  * span is a 4 px hit box; the visible tick is its 2 px ::before. */
 .cb-tp-tick { position: absolute; top: 0; bottom: 0; width: 4px; margin-left: -2px; cursor: zoom-in; }
 .cb-tp-tick::before {
     content: ''; position: absolute; left: 1px; width: 2px; top: 2px; bottom: 2px; background: #64748b;
 }
 .cb-tp-tick:hover::before { top: 0; bottom: 0; }
-.cb-tk-drop::before { background: #ef4444; }
-.cb-tk-out::before { background: #cbd5e1; }
-.cb-tk-flag::before { left: 0; width: 4px; box-sizing: border-box; background: transparent; border: 1px solid #ef4444; }
+.cb-tk-x::before { background: #ef4444; }
+.cb-tk-out::before { background: #818cf8; }
 .cb-tk-dark::before { background: #f59e0b; }
 /* A card's metric tokens (ui/tilt_previews.py): every card carries every token, and the
- * gallery's chooser shows the chosen ones by a class on its root, so a toggle re-renders
- * nothing. Red: an outlier among the project's tilts at the same |tilt|, or P(bad) at or above
- * the threshold. */
+ * gallery's metrics menu shows the ticked ones by a class on its root, so a toggle re-renders
+ * nothing. Violet: an outlier among the project's tilts at the same stage tilt. */
 .cb-tm { display: none; }
 .cb-tg-m-num .cb-tm-num, .cb-tg-m-pbad .cb-tm-pbad, .cb-tg-m-exp .cb-tm-exp, .cb-tg-m-ctf .cb-tm-ctf,
 .cb-tg-m-mot .cb-tm-mot, .cb-tg-m-ddf .cb-tm-ddf, .cb-tg-m-ast .cb-tm-ast, .cb-tg-m-dose .cb-tm-dose,
 .cb-tg-m-shift .cb-tm-shift { display: inline; }
-.cb-tm-pbad { color: #94a3b8; }
-.cb-tm-hot, .cb-tm-out { color: #be4343; font-weight: 600; }
+.cb-tm-out { color: #6d28d9; font-weight: 600; }
 .cb-tp-card .cb-tp-cap { cursor: help; }
-/* The label flag (review mode), in the image's top-right corner: drawn on hover for an
- * untouched tilt, always for a labelled one; red = your bad, slate = your good. */
-.cb-tp-flag {
-    position: absolute; top: 3px; right: 3px; z-index: 2; width: 14px; height: 14px;
-    box-sizing: border-box; border-radius: 3px; border: 1.5px solid rgba(255,255,255,0.9);
-    background: rgba(15,23,42,0.35); cursor: pointer; display: none;
-}
-.cb-tp-card:hover .cb-tp-flag, .cb-tp-flag.bad, .cb-tp-flag.good { display: block; }
-.cb-tp-flag.bad { background: #ef4444; }
-.cb-tp-flag.good { background: #475569; }
-.cb-tp-flag:hover { box-shadow: 0 0 0 2px #93c5fd; }
+/* Grouped by position: a beam's slim line inside its position's box, flush left. */
+.cb-tp-beam { display: flex; align-items: center; gap: 6px; padding: 2px 2px 3px; min-width: 0; }
+.cb-tp-beam:not(:first-child) { margin-top: 6px; }
+/* The gallery's metrics menu: one checkbox per metric. */
+.cb-tg-menu { padding: 4px 8px 4px 4px; }
+.cb-tg-menu .q-checkbox__label { font-family: 'IBM Plex Sans', sans-serif; font-size: 10px; color: #334155; }
 /* Zoom: one tile at viewport scale. Sized here (not maximized) so the tomogram keeps
  * its aspect and the wall behind stays visible as context. */
 .cb-gal-zoom {

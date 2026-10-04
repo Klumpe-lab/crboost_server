@@ -9,16 +9,20 @@ here: the collection (the registry plus one listing of the PNG directory), the g
 scripts.
 
 Every tilt carries its state (``services/tilt_series/tilt_state.py``): whether it is in the
-tomogram and, if not, why; what the uncommitted review says; the model's P(bad) in the DL
-modes; whether its exposure was dark. A card shows it as its border, stripes and caption, a
-mosaic cell as stripes and an amber border, a header strip as one tick per tilt, and a
-tomogram's caption sums its series up. A card's caption also carries the tilt's recorded
-numbers, shown as the gallery's metric chooser says, red where the number is an outlier among
-the project's tilts at the same |stage tilt|. A dark exposure and an outlier are markers only:
-nothing here drops a tilt.
+tomogram and, if not, why; what the uncommitted review says; the model's confidence score in
+the DL modes; whether its exposure was dark. The action and the information look different:
+a red border is the one exclusion, whoever set it (a manual label, the confidence score at the
+threshold, the committed verdict), and what only informs sits over the image as small icons
+(dark exposure, not in alignment's output, an outlier in a ticked metric), each explained on
+hover. A mosaic cell shows the committed exclusion and dots for the same information, a header
+strip one tick per tilt, and a tomogram's caption sums its series up. A card's caption carries
+the tilt's recorded numbers, shown as the gallery's metrics menu says, violet where the number
+is an outlier among the project's tilts at the same stage tilt. A dark exposure and an outlier
+are markers only: nothing here excludes a tilt.
 
 A project holds thousands of tilts, so a series is one HTML string with one delegated click
-handler rather than an element per tilt. A tilt opens the tilt filter's full-size viewer,
+handler rather than an element per tilt. In the review a click on a card toggles the tilt's
+exclusion; its magnifier, and a card click elsewhere, open the tilt filter's full-size viewer,
 which re-renders the averaged MRC.
 """
 
@@ -70,28 +74,29 @@ TILT_CLICK_JS = """(event) => {
 }"""
 
 # The strip sits in a group header, whose click opens and closes the group: a tick keeps its
-# click to itself, anywhere else on the header still toggles.
+# click to itself, anywhere else on the header still toggles. A tick opens the viewer.
 STRIP_CLICK_JS = """(event) => {
     const tick = event.target.closest('[data-key]');
     if (!tick) return;
     event.stopPropagation();
-    emit({key: tick.dataset.key});
+    emit({key: tick.dataset.key, zoom: true});
 }"""
 
 # A card grid's handlers. The popover is the gallery's own (a direct child of its root), found
 # from the grid, never by a document-wide query: the Tilts tab and the job page can both be in
-# the page, holding the same tilts. Fixed-positioned at the caption, so a group's
+# the page, holding the same tilts. Its anchor is a caption or an info icon, each carrying the
+# popover's content as a hidden child. Fixed-positioned at the anchor, so a group's
 # `overflow: hidden` cannot clip it. Hover and pinning run in the browser alone.
-_POPOVER_AT_CAPTION = """
+_POPOVER_AT_ANCHOR = """
     const root = event.currentTarget.closest('.cb-tg-root');
     const pop = root && root.querySelector(':scope > .cb-tp-popover');
-    const src = cap.querySelector('.cb-tp-popsrc');
+    const src = anchor.querySelector(':scope > .cb-tp-popsrc');
     if (!pop || !src) return;
     if (pinning && pop._unpin) pop._unpin();
     if (pop.dataset.pinned && !pinning) return;
     pop.innerHTML = src.innerHTML;
     pop.style.display = 'block';
-    const r = cap.getBoundingClientRect();
+    const r = anchor.getBoundingClientRect();
     const w = pop.offsetWidth, h = pop.offsetHeight;
     const below = r.bottom + 4 + h <= window.innerHeight - 8;
     pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + 'px';
@@ -100,32 +105,36 @@ _POPOVER_AT_CAPTION = """
 
 GRID_HOVER_JS = (
     """(event) => {
-    const cap = event.target.closest('.cb-tp-cap');
-    if (!cap) return;
+    const anchor = event.target.closest('.cb-tp-cap, .cb-ti');
+    if (!anchor) return;
     const pinning = false;"""
-    + _POPOVER_AT_CAPTION
+    + _POPOVER_AT_ANCHOR
     + "}"
 )
 
 GRID_OUT_JS = """(event) => {
-    const cap = event.target.closest('.cb-tp-cap');
-    if (!cap || cap.contains(event.relatedTarget)) return;
+    const anchor = event.target.closest('.cb-tp-cap, .cb-ti');
+    if (!anchor || anchor.contains(event.relatedTarget)) return;
     const root = event.currentTarget.closest('.cb-tg-root');
     const pop = root && root.querySelector(':scope > .cb-tp-popover');
     if (pop && !pop.dataset.pinned) pop.style.display = 'none';
 }"""
 
-# The flag labels (review mode), the caption pins its popover until the next click elsewhere or
-# Escape, the rest of the card opens the viewer.
+# A strip tick (a beam's line, grouped by position) and the magnifier open the viewer; a caption
+# or an info icon pins its popover until the next click elsewhere or Escape; the rest of a card
+# is the card's own click (in the review it toggles the tilt's exclusion, elsewhere it opens the
+# viewer).
 GRID_CLICK_JS = (
     """(event) => {
-    const card = event.target.closest('[data-key]');
+    const tick = event.target.closest('.cb-tp-tick');
+    if (tick) { emit({key: tick.dataset.key, zoom: true}); return; }
+    const card = event.target.closest('.cb-tp-card');
     if (!card) return;
-    if (event.target.closest('.cb-tp-flag')) { emit({key: card.dataset.key, flag: true}); return; }
-    const cap = event.target.closest('.cb-tp-cap');
-    if (!cap) { emit({key: card.dataset.key}); return; }
+    if (event.target.closest('.cb-tp-zoom')) { emit({key: card.dataset.key, zoom: true}); return; }
+    const anchor = event.target.closest('.cb-tp-cap, .cb-ti');
+    if (!anchor) { emit({key: card.dataset.key}); return; }
     const pinning = true;"""
-    + _POPOVER_AT_CAPTION
+    + _POPOVER_AT_ANCHOR
     + """
     pop.dataset.pinned = '1';
     const unpin = () => {
@@ -150,71 +159,45 @@ STRIP_PX = 200
 TILT_CARD_PX = {"s": 90, "m": 130, "l": 190}
 _AMBER_TEXT = "#b45309"
 _RED_TEXT = "#be4343"
+_VIOLET_TEXT = "#6d28d9"
+_INDIGO_TEXT = "#4a3aa7"
 _MUTED = "#94a3b8"
+_LABEL = "#64748b"
+
+CONFIDENCE_TIP = "Confidence that this particular tilt should be excluded."
+
+EXCLUDED_RULE = (
+    "Red border: excluded from alignment, CTF and reconstruction, by a manual label or by the confidence score at "
+    "the threshold; Approve labels on the tilt filter's page makes it final. On that page a click on a tilt "
+    "toggles it."
+)
 
 DARK_RULE = (
     f"Dark exposure: the tilt's mdoc mean counts are under {DIM_EXPOSURE_FRACTION:.0%} of its tilt series' "
-    f"median; under {BLANK_EXPOSURE_FRACTION:.0%} it is blank (the beam was blocked, by a grid bar or the "
-    "lamella edge). A blank exposure in a tomogram back-projects as straight streaks. This is a marker "
-    "only: nothing is dropped because of it. The tilt filter's review decides."
+    f"median (dim); under {BLANK_EXPOSURE_FRACTION:.0%} it is blank (the beam was blocked, by a grid bar or the "
+    "lamella edge). A blank exposure in a tomogram back-projects as straight streaks. A marker only: it excludes "
+    "nothing; the tilt filter's review decides."
+)
+
+OUT_RULE = (
+    "Not in alignment's output, and no verdict of the tilt filter excluded it: Warp's import leaves dark tilts at "
+    "the end of a series out. A label does not bring it back."
 )
 
 OUTLIER_RULE = (
-    f"Red number: more than {OUTLIER_ROBUST_SDS:g} robust SDs (1.4826 × the median absolute deviation) worse than "
-    f"the project's tilts in the same {OUTLIER_BAND_DEG:g}° band of |stage tilt|. A band with fewer than "
-    f"{OUTLIER_MIN_BAND} values, or no spread, marks nothing. A marker, never a drop."
+    f"Outlier: more than {OUTLIER_ROBUST_SDS:g} robust SDs (1.4826 × the median absolute deviation) worse than the "
+    f"project's tilts in the same {OUTLIER_BAND_DEG:g}° stage-tilt band, both signs together. A band with fewer "
+    f"than {OUTLIER_MIN_BAND} values, or no spread, marks none. Marked only for the metrics ticked in the metrics "
+    "menu. A marker only: it excludes nothing."
 )
 
-# Card look → (legend text, legend tooltip, swatch background, swatch border), strongest first.
+# The gallery's legend, icons only: (mark, swatch class, explanation).
 _LEGEND = (
-    (
-        "cb-ts-drop",
-        "dropped by the tilt filter",
-        "The committed tilt-filter verdict drops this tilt, so alignment leaves it out of the tomogram.",
-        "repeating-linear-gradient(135deg, transparent 0 3px, rgba(239,68,68,0.8) 3px 4px)",
-        "1.5px solid #ef4444",
-    ),
-    (
-        "cb-ts-out",
-        "not in alignment's output",
-        "Not in alignment's output although no verdict drops it: Warp's import drops dark tilts at the end of "
-        "a series, or the verdict predates the registry.",
-        "repeating-linear-gradient(135deg, transparent 0 3px, rgba(148,163,184,0.9) 3px 4px)",
-        "1px solid #cbd5e1",
-    ),
-    (
-        "cb-ts-hbad",
-        "your label: bad",
-        "You labelled it bad and the review is not approved yet; Approve drops it.",
-        "transparent",
-        "1.5px solid #ef4444",
-    ),
-    (
-        "cb-ts-mbad",
-        "the model's call: bad",
-        "The model's P(bad) is at or above the threshold and the review is not approved yet; Approve drops it "
-        "unless you label it good.",
-        "transparent",
-        "1.5px dashed #ef4444",
-    ),
-    (
-        "cb-ts-dark",
-        f"dark exposure (under {DIM_EXPOSURE_FRACTION:.0%} of its series' median counts): a marker, never a drop",
-        DARK_RULE,
-        "transparent",
-        "1.5px solid #f59e0b",
-    ),
+    ("excluded", "cb-lg-x", EXCLUDED_RULE),
+    ("dark", "cb-ti cb-ti-dim", DARK_RULE),
+    ("out", "cb-ti cb-ti-out", OUT_RULE),
+    ("outlier", "cb-ti cb-ti-outl-lg", OUTLIER_RULE),
 )
-
-# A tick on the header strip takes its card's look.
-_TICK_CLASS = {
-    "cb-ts-drop": "cb-tk-drop",
-    "cb-ts-out": "cb-tk-out",
-    "cb-ts-hbad": "cb-tk-flag",
-    "cb-ts-mbad": "cb-tk-flag",
-    "cb-ts-dark": "cb-tk-dark",
-    "": "",
-}
 
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
@@ -223,23 +206,22 @@ _TICK_CLASS = {
 @dataclass(frozen=True)
 class _Metric:
     key: str
-    label: str  # the chooser's chip, the sort option, the popover's row
-    tip: str  # the chip's tooltip: what the number tells
-    token: Callable[[float], str]  # the caption's short form
-    unit: str = ""
+    label: str  # the metrics menu, the sort option, the popover's row
+    tip: str  # the menu's tooltip: what the number tells
+    short: str  # the caption's word before the value ("#" for the tilt number)
+    fmt: Callable[[float], str]  # the value with its unit
     judged: bool = False  # band outliers apply
-    two_sided: bool = False  # judged and sorted on |value|
+    two_sided: bool = False  # judged and sorted on its absolute value
     low_is_worse: bool = False  # worst first sorts ascending
+
+    def token(self, value: float) -> str:
+        """The caption's form: `#13`, `CTF 7.1 Å`."""
+        return f"#{self.fmt(value)}" if self.short == "#" else f"{self.short} {self.fmt(value)}"
 
 
 def _signed(value: float, digits: int) -> str:
     """A signed number with a true minus sign: +42.0, −12.0."""
     return f"{value:+.{digits}f}".replace("-", "−")
-
-
-def _pct_short(ratio: float) -> str:
-    pct = ratio * 100
-    return "<0.1%" if pct < 0.1 else f"{pct:.1f}%"
 
 
 def _pct_fine(ratio: float) -> str:
@@ -253,71 +235,69 @@ def _pct_fine(ratio: float) -> str:
 
 _METRICS = (
     _Metric(
-        "num", "#N", "The tilt's number: its place in the acquisition, i.e. the dose order.", lambda v: f"#{v:.0f}"
+        "num", "Tilt number", "The tilt's place in the acquisition, i.e. the dose order.", "#", lambda v: f"{v:.0f}"
     ),
-    _Metric(
-        "pbad",
-        "P(bad)",
-        "The model's P(bad) from the latest DL run: a ranking, not a calibrated probability. Red at or above the "
-        "threshold.",
-        lambda v: f"p{v:.2f}",
-    ),
+    _Metric("pbad", "Confidence score", CONFIDENCE_TIP, "score", lambda v: f"{v:.2f}"),
     _Metric(
         "exp",
+        "Exposure",
+        "The tilt's mdoc mean counts as a share of its tilt series' median.",
         "exposure",
-        "The tilt's mdoc mean counts as a share of its series' median. A dark tilt shows its amber token anyway.",
-        lambda v: f"exp {_pct_short(v)}",
+        _pct_fine,
         low_is_worse=True,
     ),
     _Metric(
         "ctf",
         "CTF fit",
         "How far out Warp fit the Thon rings (CTFResolutionEstimate); worse with tilt and thickness.",
-        lambda v: f"ctf {v:.1f}Å",
-        unit=" Å",
+        "CTF",
+        lambda v: f"{v:.1f} Å",
         judged=True,
     ),
     _Metric(
         "mot",
-        "motion",
+        "Motion",
         "Beam-induced motion during the exposure (MeanFrameMovement, Warp's units).",
-        lambda v: f"mot {v:.2f}",
+        "motion",
+        lambda v: f"{v:.2f}",
         judged=True,
     ),
     _Metric(
         "ddf",
-        "Δ defocus",
-        "The tilt's fitted defocus minus its series' median: a collapsed or diverged CTF fit stands out.",
-        lambda v: f"Δdf {_signed(v, 2)}",
-        unit=" µm",
+        "Defocus vs series median",
+        "The tilt's fitted defocus minus its tilt series' median: a collapsed or diverged CTF fit stands out.",
+        "defocus",
+        lambda v: f"{_signed(v, 2)} µm",
         judged=True,
         two_sided=True,
     ),
     _Metric(
         "ast",
-        "astigmatism",
+        "Astigmatism",
         "The difference between the fitted defocus along the two axes.",
-        lambda v: f"ast {v:.2f}",
-        unit=" µm",
+        "astigmatism",
+        lambda v: f"{v:.2f} µm",
         judged=True,
     ),
     _Metric(
         "dose",
-        "dose before",
+        "Dose before",
         "Electron dose accumulated before this tilt, from the scope's calibration.",
-        lambda v: f"dose {v:.0f}",
-        unit=" e⁻/Å²",
+        "dose",
+        lambda v: f"{v:.0f} e⁻/Å²",
     ),
     _Metric(
         "shift",
-        "alignment shift",
+        "Alignment shift",
         "How far alignment moved the tilt: a proxy for how hard it was to align.",
-        lambda v: f"sh {v:.0f}Å",
-        unit=" Å",
+        "shift",
+        lambda v: f"{v:.0f} Å",
         judged=True,
     ),
 )
 _METRIC = {m.key: m for m in _METRICS}
+METRIC_LABELS = {m.key: m.label for m in _METRICS}
+JUDGED_METRICS = tuple(m.key for m in _METRICS if m.judged)
 DEFAULT_METRICS = frozenset({"num", "pbad"})
 # The tilt-metrics dict's name for each judged metric's number.
 _METRIC_FIELD = {"ctf": "ctf_res", "mot": "motion", "ddf": "ddefocus", "ast": "astig", "shift": "shift"}
@@ -397,10 +377,11 @@ def collect_tilt_groups(tilt_series: Iterable, png_dir: Path, ctx: dict) -> tupl
     series, metrics}``: ``tilts`` are the tilts that show (see ``_tilt``); ``ticks`` is every
     tilt of the series as ``(state, title)`` for the header strip; ``summary`` the series'
     ``SeriesSummary``; ``ctf_fit`` its tsCtf fit resolution (Å) or None; ``series`` and
-    ``metrics`` what ``restate_group`` re-derives from. The facts are ``{span, looks, lacking,
-    n_series, present, dl, any_outlier, bands}``: the range of every stage tilt, the card looks
-    present, per field family the number of series without it, the metrics some tilt has,
-    whether P(bad) shows and any number is an outlier, and the project's outlier bands.
+    ``metrics`` what ``restate_group`` re-derives from. The facts are ``{span, marks, lacking,
+    n_series, present, dl, any_outlier, bands}``: the range of every stage tilt, the marks the
+    legend shows (excluded, dark, out, outlier), per field family the number of series without
+    it, the metrics some tilt has, whether the confidence score shows and any number is an
+    outlier, and the project's outlier bands.
 
     A tilt shows when it has a preview PNG or a motion-corrected average, the full-size
     viewer's source. Its PNG is named after that average (the thumbnail pass converts the
@@ -414,7 +395,7 @@ def collect_tilt_groups(tilt_series: Iterable, png_dir: Path, ctx: dict) -> tupl
     review = {k: ctx[k] for k in ("alignment_instance", "committed", "labels", "threshold", "mode")}
     groups: list[dict] = []
     angles: list[float] = []
-    looks: set[str] = set()
+    marks: set[str] = set()
     present: set[str] = set()
     lacking = {"counts": 0, "qc": 0, "alignment": 0}
     for ts, metrics in per_series:
@@ -435,7 +416,7 @@ def collect_tilt_groups(tilt_series: Iterable, png_dir: Path, ctx: dict) -> tupl
         tilts.sort(key=lambda t: (t["angle"], t["number"]))
         ordered = sorted(states.values(), key=lambda s: (s.angle, s.number))
         angles.extend(s.angle for s in ordered)
-        looks.update(_look(s) for s in ordered)
+        marks.update(m for s in ordered for m in _marks(s))
         ctf_out = ts.outputs.get(ctx["ts_ctf_instance"]) if ctx["ts_ctf_instance"] else None
         counts_known = any(f.mean_intensity is not None for f in ts.frames)
         lacking["counts"] += not counts_known
@@ -460,15 +441,17 @@ def collect_tilt_groups(tilt_series: Iterable, png_dir: Path, ctx: dict) -> tupl
             }
         )
     groups.sort(key=lambda g: (g["order"], g["ts"]))
-    looks.discard("")
+    any_outlier = any(t["outliers"] for g in groups for t in g["tilts"])
+    if any_outlier:
+        marks.add("outlier")
     facts = {
         "span": (min(angles), max(angles)) if angles else None,
-        "looks": looks,
+        "marks": marks,
         "lacking": lacking,
         "n_series": len(groups),
         "present": present,
         "dl": ctx["mode"] in DL_MODES and "pbad" in present,
-        "any_outlier": any(t["outliers"] for g in groups for t in g["tilts"]),
+        "any_outlier": any_outlier,
         "bands": bands,
     }
     return groups, facts
@@ -476,11 +459,11 @@ def collect_tilt_groups(tilt_series: Iterable, png_dir: Path, ctx: dict) -> tupl
 
 def _tilt(key: str, s: TiltState, m: dict, bands: dict, ctx: dict) -> dict:
     """One tilt as the views show it: ``{key, angle, number, state, label, vals, outliers,
-    disagree, tip, title, look, cell_look, tokens, pop}``. ``label`` is a human's label (the
-    review mode's flag); ``vals`` every metric's number; ``outliers`` the metrics whose number is
-    an outlier; ``disagree`` whether a human's label and the model's call differ; ``tip`` the
-    mosaic cell's multi-line title; ``title`` the card image's one line; ``tokens`` the card
-    caption; ``pop`` its popover."""
+    disagree, tip, look, cell_look, tokens, pop, icons}``. ``label`` is a manual label;
+    ``vals`` every metric's number; ``outliers`` the metrics whose number is an outlier;
+    ``disagree`` whether a manual label and the model's call differ; ``tip`` the mosaic cell's
+    multi-line title; ``tokens`` the card caption; ``pop`` its popover; ``icons`` the info icons
+    over the card's image."""
     threshold = ctx["threshold"]
     vals = _values(s, m)
     outliers = {k for k, (_stats, out) in bands.items() if key in out}
@@ -501,18 +484,18 @@ def _tilt(key: str, s: TiltState, m: dict, bands: dict, ctx: dict) -> dict:
         "outliers": outliers,
         "disagree": disagree,
         "tip": tilt_tip(s, m, threshold),
-        "title": f"{_signed(s.angle, 1)}° · tilt {s.number} · click to view",
         "look": _look(s),
         "cell_look": _look(s, review=False),
-        "tokens": _tokens_html(s, vals, outliers, threshold),
+        "tokens": _tokens_html(s, vals, outliers),
         "pop": _popover_html(s, m, vals, outliers, bands, threshold),
+        "icons": _icons_html(s, m, vals, outliers, bands),
     }
 
 
 def restate_group(group: dict, ctx: dict, bands: dict) -> list[dict]:
     """Re-derive a group's tilts after the review changed (a label, the threshold, cleared
-    labels): their states, looks, flags, captions and popovers, its summary and strip ticks.
-    The metrics and outliers stay as collected. Returns the tilts whose card changed."""
+    labels): their states, looks, captions and popovers, its summary and strip ticks. The
+    metrics and outliers stay as collected. Returns the tilts whose card changed."""
     review = {k: ctx[k] for k in ("alignment_instance", "committed", "labels", "threshold", "mode")}
     states = {s.frame_id: s for s in tilt_states(group["series"], **review)}
     changed = []
@@ -601,31 +584,40 @@ def _angles(states: Sequence[TiltState], limit: int = 8) -> str:
     return shown + (f" and {len(states) - limit} more" if len(states) > limit else "")
 
 
+def _band_label(angle: float) -> str:
+    """The stage-tilt band a tilt is judged in, both signs together: `±40–50°`."""
+    lo = int(abs(angle) // OUTLIER_BAND_DEG) * OUTLIER_BAND_DEG
+    return f"±{lo:g}–{lo + OUTLIER_BAND_DEG:g}°"
+
+
 def where_sentence(s: TiltState) -> str:
     """Whether the tilt is in the tomogram and, if not, why, as one sentence."""
     if s.drop is not None:
         why = "" if s.drop == "tilt-filter" else f" ({s.drop})"
         if s.in_tomogram:
-            return f"Dropped by the tilt filter{why}, yet in alignment's output: alignment ran before this verdict."
+            return f"Excluded by the approved verdict{why}, yet in alignment's output: alignment ran before it."
         if s.in_tomogram is None:
-            return f"Dropped by the tilt filter{why}; alignment has not run for this series."
-        return f"Dropped by the tilt filter{why}: not in the tomogram."
+            return f"Excluded by the approved verdict{why}; alignment has not run for this tilt series."
+        return f"Excluded by the approved verdict{why}: not in the tomogram."
     if s.in_tomogram is False:
-        return (
-            "Not in alignment's output, and no verdict drops it: Warp's import drops dark tilts at the end of a "
-            "series, or the verdict predates the registry."
-        )
+        return "Not in alignment's output: Warp's import left it out (it drops dark tilts at the end of a series)."
     if s.in_tomogram:
         return "In the tomogram."
-    return "Alignment has not recorded this series yet."
+    return "Alignment has not run for this tilt series."
 
 
-def _review_sentence(s: TiltState) -> str | None:
-    return {
-        "human_bad": "Your label: bad, not approved yet. Approve drops it.",
-        "human_good": "Your label: good.",
-        "model_bad": "The model's call: bad, not approved yet. Approve drops it unless you label it good.",
-    }.get(s.review or "")
+def _status_line(s: TiltState, threshold: float | None) -> tuple[str, str] | None:
+    """What the open review does with the tilt, and the line's colour: excluded and by what, or
+    kept by a manual label. None for a tilt the review leaves alone."""
+    if s.review == "human_bad":
+        return "Excluded: manual label", _RED_TEXT
+    if s.review == "model_bad":
+        cut = f", threshold {threshold:.2f}" if threshold is not None else ""
+        return f"Excluded: confidence score {s.p_bad:.2f}{cut}", _RED_TEXT
+    if s.review == "human_good":
+        over = s.p_bad is not None and threshold is not None and s.p_bad >= threshold
+        return "Included: manual label" + (f", confidence score {s.p_bad:.2f}" if over else ""), _LABEL
+    return None
 
 
 def _missing(s: TiltState, m: dict) -> list[str]:
@@ -644,39 +636,33 @@ def _missing(s: TiltState, m: dict) -> list[str]:
     return missing
 
 
-def _exposure_line(s: TiltState, m: dict) -> str | None:
-    if s.exposure_ratio is None:
-        return None
-    counts = f"{m['counts']:.3g} against {m['median_counts']:.3g}"
-    ratio = f"{_pct_fine(s.exposure_ratio)} of the series' median mdoc counts ({counts})"
-    return f"Dark exposure ({s.exposure}): {ratio}." if s.is_dark else f"Exposure: {ratio}."
+def _exposure_ratio_words(s: TiltState, m: dict) -> str:
+    return (
+        f"{_pct_fine(s.exposure_ratio)} of its tilt series' median mdoc counts "
+        f"({m['counts']:.3g} against {m['median_counts']:.3g})"
+    )
 
 
 def tilt_tip(s: TiltState, m: dict, threshold: float | None) -> str:
-    """A tilt's native tooltip (a mosaic cell's), one fact per line: what it is, then its
-    recorded numbers, then what is not recorded."""
+    """A tilt's native tooltip (a mosaic cell's), one fact per line: what it is, what the review
+    does with it, its exposure, then its recorded numbers and what is not recorded."""
     lines = [f"{_signed(s.angle, 1)}° · tilt {s.number} · {s.frame_id}", where_sentence(s)]
-    review = _review_sentence(s)
-    if review:
-        lines.append(review)
-    if s.p_bad is not None:
-        cut = f" against the threshold {threshold:.2f}" if threshold is not None else ""
-        lines.append(f"P(bad) {s.p_bad:.2f}{cut}: the model's ranking, not a calibrated probability.")
-    exposure = _exposure_line(s, m)
-    if exposure:
-        lines.append(exposure)
+    status = _status_line(s, threshold)
+    if status is not None:
+        lines.append(status[0])
+    if s.exposure_ratio is not None:
         if s.is_dark:
-            lines.append(DARK_RULE)
-    numbers: list[str] = []
-    for value, shown in (
-        (m["ctf_res"], lambda v: f"CTF fit {v:.1f} Å"),
-        (m["motion"], lambda v: f"motion {v:.2f}"),
-        (m["ddefocus"], lambda v: f"Δ defocus {v:+.2f} µm ({m['defocus_source']})"),
-        (m["dose"], lambda v: f"{v:.1f} e⁻/Å² before"),
-        (m["shift"], lambda v: f"alignment shift {v:.0f} Å"),
-    ):
-        if value is not None:
-            numbers.append(shown(value))
+            lines.append(f"Dark exposure ({s.exposure}): {_exposure_ratio_words(s, m)}. A marker only.")
+        else:
+            lines.append(f"Exposure: {_exposure_ratio_words(s, m)}.")
+    vals = _values(s, m)
+    numbers = []
+    for metric in _METRICS:
+        value = vals[metric.key]
+        if metric.key in ("num", "exp") or value is None:
+            continue
+        source = f" ({m['defocus_source']})" if metric.key == "ddf" and m["defocus_source"] else ""
+        numbers.append(f"{metric.label} {metric.fmt(value)}{source}")
     if numbers:
         lines.append(" · ".join(numbers))
     missing = _missing(s, m)
@@ -686,14 +672,12 @@ def tilt_tip(s: TiltState, m: dict, threshold: float | None) -> str:
 
 
 def _tick_title(s: TiltState) -> str:
-    if s.drop is not None:
-        what = "dropped by the tilt filter"
+    if s.excluded:
+        what = "excluded"
     elif s.in_tomogram is False:
-        what = "not in alignment's output"
-    elif s.flagged:
-        what = "marked bad, not approved yet"
+        what = "not in alignment's output (Warp's import)"
     elif s.is_dark:
-        what = f"dark exposure, {_pct_fine(s.exposure_ratio)} of the series' median counts"
+        what = f"dark exposure, {_pct_fine(s.exposure_ratio)} of its tilt series' median counts"
     elif s.in_tomogram:
         what = "in the tomogram"
     else:
@@ -701,116 +685,138 @@ def _tick_title(s: TiltState) -> str:
     return f"{_signed(s.angle, 1)}° · tilt {s.number}: {what}"
 
 
-def _band_words(metric: _Metric, stat: BandStat) -> str:
-    unit = metric.unit
-    what = f"|{metric.label}|" if metric.two_sided else metric.label
-    band = f"{stat.lo:.0f}–{stat.hi:.0f}° |tilt|"
-    if stat.n < OUTLIER_MIN_BAND:
-        return f"{band}: {stat.n} tilts with a {what}, too few to judge"
-    if stat.robust_sd <= 0:
-        return f"{band}: {stat.n} tilts, no spread in {what}, nothing judged"
-    return f"{band}: median {stat.median:.3g}{unit}, robust SD {stat.robust_sd:.2g}{unit}, {stat.n} tilts"
+def _typical(metric: _Metric, value: float) -> str:
+    """A band's median or cut as the popovers state it; a two-sided metric's is of the absolute value."""
+    return "±" + metric.fmt(value).lstrip("+") if metric.two_sided else metric.fmt(value)
+
+
+_TH = f"padding:0 0 2px 10px;font-weight:400;color:{_MUTED};text-align:right;white-space:nowrap;"
 
 
 def _popover_html(s: TiltState, m: dict, vals: dict, outliers: set, bands: dict, threshold: float | None) -> str:
-    """Everything recorded about a tilt, for its caption's popover: what it is, the review, then
-    every metric with its band's median and robust SD (red where it is an outlier, with the
-    rule), and what is not recorded."""
+    """Everything recorded about a tilt, for its caption's popover, in one type scale: the tilt,
+    what the review does with it and where it is, then a table of each metric's value against
+    the typical value at its stage tilt (violet where it is an outlier in a ticked metric), then
+    what is not recorded. The rules live in the icons' and the legend's hovers."""
     esc = html.escape
     rows = [
-        f"<div><b>{_signed(s.angle, 1)}° · tilt {s.number}</b> "
-        f'<span style="color:{_MUTED};font-family:ui-monospace,monospace;font-size:9px;">'
-        f"{esc(s.frame_id)}</span></div>",
-        f"<div>{esc(where_sentence(s))}</div>",
+        f'<div style="font-weight:600;color:#0f172a;">{_signed(s.angle, 1)}° · tilt {s.number} '
+        f'<span style="{MONO} font-weight:400;color:{_MUTED};">{esc(s.frame_id)}</span></div>'
     ]
-    review = _review_sentence(s)
-    if review:
-        rows.append(f"<div>{esc(review)}</div>")
-    if s.p_bad is not None:
-        hot = threshold is not None and s.p_bad >= threshold
-        cut = f" against the threshold {threshold:.2f}" if threshold is not None else ""
-        color = _RED_TEXT if hot else "inherit"
-        rows.append(
-            f'<div><span style="color:{color};font-weight:600;">P(bad) {s.p_bad:.2f}</span>{cut}: the model\'s '
-            "ranking, not a calibrated probability.</div>"
-        )
-    exposure = _exposure_line(s, m)
-    if exposure:
-        color = _AMBER_TEXT if s.is_dark else "inherit"
-        rows.append(f'<div style="color:{color};">{esc(exposure)}</div>')
-        if s.is_dark:
-            rows.append(f'<div style="color:{_MUTED};">{esc(DARK_RULE)}</div>')
-    table = []
+    status = _status_line(s, threshold)
+    if status is not None:
+        rows.append(f'<div style="color:{status[1]};">{esc(status[0])}</div>')
+    rows.append(f'<div style="color:{_LABEL};">{esc(where_sentence(s))}</div>')
+    body = []
     for metric in _METRICS:
-        if metric.key in ("num", "pbad", "exp"):
-            continue
         value = vals[metric.key]
-        if value is None:
+        if metric.key == "num" or value is None:
             continue
-        shown = _signed(value, 2) if metric.key == "ddf" else f"{value:.3g}"
-        out = metric.key in outliers
-        cell = f'<span style="color:{_RED_TEXT if out else "inherit"};font-weight:{600 if out else 400};">'
-        cell += f"{esc(shown)}{esc(metric.unit)}</span>"
         stat = bands[metric.key][0].get(s.frame_id) if metric.judged else None
-        band = esc(_band_words(metric, stat)) if stat is not None else ""
-        if metric.key == "ddf" and m["defocus_source"]:
-            band = f"{esc(m['defocus_source'])}; {band}"
-        table.append(
-            f'<tr><td style="padding:0 8px 0 0;color:{_MUTED};white-space:nowrap;">{esc(metric.label)}</td>'
-            f'<td style="padding:0 8px 0 0;white-space:nowrap;">{cell}</td>'
-            f'<td style="color:{_MUTED};">{band}</td></tr>'
+        typical = _typical(metric, stat.median) if stat is not None else ""
+        value_cls = f' class="cb-to-v-{metric.key}"' if metric.key in outliers else ""
+        dark = f"color:{_AMBER_TEXT};font-weight:600;" if metric.key == "exp" and s.is_dark else ""
+        body.append(
+            f'<tr><td style="padding:1px 0;color:{_LABEL};white-space:nowrap;">{esc(metric.label)}</td>'
+            f'<td{value_cls} style="padding:1px 0 1px 10px;{MONO} text-align:right;white-space:nowrap;{dark}">'
+            f"{esc(metric.fmt(value))}</td>"
+            f'<td style="padding:1px 0 1px 10px;{MONO} color:{_MUTED};text-align:right;white-space:nowrap;">'
+            f"{esc(typical)}</td></tr>"
         )
-    if table:
-        rows.append(f'<table style="border-collapse:collapse;margin:3px 0;">{"".join(table)}</table>')
-    for key in sorted(outliers, key=lambda k: [m_.key for m_ in _METRICS].index(k)):
-        metric, stat = _METRIC[key], bands[key][0][s.frame_id]
-        rows.append(
-            f'<div style="color:{_RED_TEXT};">{esc(metric.label)}: more than {OUTLIER_ROBUST_SDS:g} robust SDs worse '
-            f"than the project's {stat.n} tilts at {stat.lo:.0f}–{stat.hi:.0f}° |tilt| (cut "
-            f"{stat.cut:.3g}{esc(metric.unit)}). A marker, never a drop.</div>"
-        )
+    if body:
+        head = f'<tr><th></th><th style="{_TH}">value</th><th style="{_TH}">typical at {_band_label(s.angle)}</th></tr>'
+        rows.append(f'<table style="border-collapse:collapse;margin-top:4px;">{head}{"".join(body)}</table>')
     missing = _missing(s, m)
     if missing:
-        rows.append(f'<div style="color:{_MUTED};">Not recorded: {esc(", ".join(missing))}.</div>')
+        rows.append(f'<div style="color:{_MUTED};margin-top:3px;">Not recorded: {esc(", ".join(missing))}.</div>')
     return "".join(rows)
+
+
+def _icon(cls: str, pop: str) -> str:
+    return f'<span class="cb-ti {cls}"><span class="cb-tp-popsrc" style="display:none;">{pop}</span></span>'
+
+
+def _icons_html(s: TiltState, m: dict, vals: dict, outliers: set, bands: dict) -> str:
+    """The info icons over a card's image, bottom left: a dark exposure, a tilt alignment's
+    output lacks with no verdict against it, an outlier (drawn only while one of its metrics is
+    ticked). Each carries its popover: what it means, the value against the cut, the source."""
+    esc = html.escape
+    muted = f'<div style="color:{_MUTED};margin-top:3px;">'
+    icons = []
+    if s.is_dark:
+        icons.append(
+            _icon(
+                "cb-ti-blank" if s.exposure == "blank" else "cb-ti-dim",
+                f'<div style="font-weight:600;color:{_AMBER_TEXT};">Dark exposure ({s.exposure})</div>'
+                f"<div>{esc(_exposure_ratio_words(s, m))}, from the mdoc's MinMaxMean.</div>"
+                f"{muted}{esc(DARK_RULE)}</div>",
+            )
+        )
+    if s.in_tomogram is False and s.drop is None:
+        icons.append(
+            _icon(
+                "cb-ti-out",
+                f'<div style="font-weight:600;color:{_INDIGO_TEXT};">Not in alignment\'s output</div>'
+                f"<div>{esc(OUT_RULE)}</div>",
+            )
+        )
+    if outliers:
+        keys = [k for k in _METRIC if k in outliers]
+        rows = [f'<div style="font-weight:600;color:{_VIOLET_TEXT};">Outlier</div>']
+        for key in keys:
+            metric, stat = _METRIC[key], bands[key][0][s.frame_id]
+            rows.append(
+                f'<div class="cb-to-row cb-to-{key}">{esc(metric.label)} {esc(metric.fmt(vals[key]))}: typical at '
+                f"{_band_label(s.angle)} {esc(_typical(metric, stat.median))}, cut {esc(_typical(metric, stat.cut))}."
+                "</div>"
+            )
+        rows.append(f"{muted}{esc(OUTLIER_RULE)}</div>")
+        icons.append(_icon("cb-ti-outl " + " ".join(f"cb-to-{k}" for k in keys), "".join(rows)))
+    return f'<span class="cb-ti-row">{"".join(icons)}</span>' if icons else ""
 
 
 # ── HTML ──────────────────────────────────────────────────────────────────────
 
 
-def _look(s: TiltState, *, review: bool = True) -> str:
-    """The one state class a card (``review``) or a mosaic cell takes, strongest first: the
-    stripes, then the review's border, then amber for a dark exposure."""
-    if s.drop is not None:
-        return "cb-ts-drop"
-    if s.in_tomogram is False:
-        return "cb-ts-out"
-    if review and s.review == "human_bad":
-        return "cb-ts-hbad"
-    if review and s.review == "model_bad":
-        return "cb-ts-mbad"
+def _marks(s: TiltState) -> list[str]:
+    """The legend's marks a tilt carries; the outlier mark comes from the metrics."""
+    marks = []
+    if s.excluded:
+        marks.append("excluded")
     if s.is_dark:
-        return "cb-ts-dark"
+        marks.append("dark")
+    if s.in_tomogram is False and s.drop is None:
+        marks.append("out")
+    return marks
+
+
+def _look(s: TiltState, *, review: bool = True) -> str:
+    """The exclusion's class on a card (``review``: the open review's call, else the committed
+    verdict) or a mosaic cell (the committed verdict alone: what went into the tomogram)."""
+    return "cb-ts-x" if s.drop is not None or (review and s.flagged) else ""
+
+
+def _tick_class(s: TiltState) -> str:
+    """A strip tick's colour: red excluded, indigo not in alignment's output, amber dark and kept."""
+    if s.excluded:
+        return "cb-tk-x"
+    if s.in_tomogram is False:
+        return "cb-tk-out"
+    if s.is_dark:
+        return "cb-tk-dark"
     return ""
 
 
-def _tokens_html(s: TiltState, vals: dict, outliers: set, threshold: float | None) -> str:
-    """A card's caption: the angle, the dark token when dark (state, always shown), then every
-    metric's token, which the gallery's chooser shows or hides by a class on its root. Red where
-    the number is an outlier; P(bad) red at or above the threshold. The row clips from the right,
-    so the angle and the state survive the smallest card."""
+def _tokens_html(s: TiltState, vals: dict, outliers: set) -> str:
+    """A card's caption: the angle, then every metric's token, which the gallery's metrics menu
+    shows or hides by a class on its root; violet where the number is an outlier. The row clips
+    from the right, so the angle survives the smallest card."""
     parts = [f"<b>{_signed(s.angle, 1)}°</b>"]
-    if s.is_dark:
-        parts.append(f'<span style="color:{_AMBER_TEXT};font-weight:600;">dark {_pct_short(s.exposure_ratio)}</span>')
     for metric in _METRICS:
         value = vals[metric.key]
-        if value is None or (metric.key == "exp" and s.is_dark):
+        if value is None:
             continue
-        cls = f"cb-tm cb-tm-{metric.key}"
-        if metric.key in outliers:
-            cls += " cb-tm-out"
-        if metric.key == "pbad" and threshold is not None and value >= threshold:
-            cls += " cb-tm-hot"
+        cls = f"cb-tm cb-tm-{metric.key}" + (" cb-tm-out" if metric.key in outliers else "")
         parts.append(f'<span class="{cls}">{html.escape(metric.token(value))}</span>')
     return "".join(parts)
 
@@ -825,18 +831,8 @@ def _image(tilt: dict) -> str:
     return '<div style="width:100%;aspect-ratio:1;background:#1e293b;"></div>'
 
 
-def flag_class(label: str | None) -> str:
-    """The label flag's class: filled red for your bad, filled slate for your good, else drawn
-    only while the card is hovered."""
-    return {"bad": "cb-tp-flag bad", "good": "cb-tp-flag good"}.get(label or "", "cb-tp-flag")
-
-
-def _flag_title(label: str | None) -> str:
-    if label == "bad":
-        return "Your label: bad. Click for good."
-    if label == "good":
-        return "Your label: good. Click for bad."
-    return "Label this tilt: a click sets the opposite of what the review says now."
+# The magnifier over a card's image, drawn on hover: the full-size viewer.
+_ZOOM = '<span class="cb-tp-zoom" title="Open full size"></span>'
 
 
 def _caption_html(t: dict) -> str:
@@ -844,25 +840,22 @@ def _caption_html(t: dict) -> str:
     return f'{t["tokens"]}<div class="cb-tp-popsrc" style="display:none;">{t["pop"]}</div>'
 
 
-def card_html(t: dict, *, review: bool) -> str:
-    """One tilt as a card: the preview, with the tilt's state as its border and stripes and, in
-    review mode, the label flag in its corner; under it the caption, carrying the hidden block
-    its popover copies."""
-    flag = ""
-    if review:
-        flag = f'<span class="{flag_class(t["label"])}" title="{html.escape(_flag_title(t["label"]))}"></span>'
+def card_html(t: dict) -> str:
+    """One tilt as a card: the preview with its info icons and the magnifier over it, the
+    exclusion as its border; under it the caption, carrying the hidden block its popover
+    copies."""
     return (
         f'<div class="cb-tp-card {t["look"]}" data-key="{html.escape(t["key"])}">'
-        f'<div class="cb-tp-img" title="{html.escape(t["title"])}">{_image(t)}{flag}</div>'
+        f'<div class="cb-tp-img">{_image(t)}{t["icons"]}{_ZOOM}</div>'
         f'<div class="cb-tp-cap">{_caption_html(t)}</div>'
         "</div>"
     )
 
 
-def grid_html(tilts: Sequence[dict], *, review: bool) -> str:
+def grid_html(tilts: Sequence[dict]) -> str:
     """A series' cards. The column width is the gallery root's `--cb-tp-card`, so a size switch
     changes one variable and re-renders nothing."""
-    cards = "".join(card_html(t, review=review) for t in tilts)
+    cards = "".join(card_html(t) for t in tilts)
     return (
         '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--cb-tp-card,130px),1fr));'
         f'gap:4px;">{cards}</div>'
@@ -881,12 +874,23 @@ def mosaic_layout(n: int, aspect: float) -> tuple[int, int]:
     return best
 
 
+def _cell_dots(s: TiltState) -> str:
+    """A mosaic cell's information, as 4 px dots at its bottom left: amber for a dark exposure,
+    indigo for a tilt alignment's output lacks with no verdict against it."""
+    dots = []
+    if s.is_dark:
+        dots.append('<span class="cb-tc-dot cb-tc-dark"></span>')
+    if s.in_tomogram is False and s.drop is None:
+        dots.append('<span class="cb-tc-dot cb-tc-out"></span>')
+    return f'<span class="cb-tc-dots">{"".join(dots)}</span>' if dots else ""
+
+
 def mosaic_html(tilts: list[dict], aspect: float | None) -> tuple[str, str | None]:
     """A series' tilts as square cells fitted into a tile's frame of aspect W/H, centred both
-    ways, in angle order from the top left; a cell shows what went into the tomogram (the
-    stripes) and whether something dark did (amber). Returns the HTML and, for a frame with
-    no known extent (``aspect`` None), the CSS aspect-ratio the frame takes so the grid fills
-    it.
+    ways, in angle order from the top left; a cell shows what the committed verdict excluded (a
+    red outline) and, as dots, a dark exposure or a tilt Warp's import left out. Returns the HTML
+    and, for a frame with no known extent (``aspect`` None), the CSS aspect-ratio the frame takes
+    so the grid fills it.
 
     The grid sits in a box placed absolutely over the frame, so its size is a percentage of
     the frame and follows the tile size with no re-render. Each cell's 1 px padding is the
@@ -897,7 +901,7 @@ def mosaic_html(tilts: list[dict], aspect: float | None) -> tuple[str, str | Non
     cells = "".join(
         f'<div class="cb-tp-cell {t["cell_look"]}" data-key="{html.escape(t["key"])}" '
         f'title="{html.escape(t["tip"])}" style="padding:1px;box-sizing:border-box;min-width:0;">'
-        f'<div class="cb-tp-img">{_image(t)}</div></div>'
+        f'<div class="cb-tp-img">{_image(t)}{_cell_dots(t["state"])}</div></div>'
         for t in tilts
     )
     grid = (
@@ -910,7 +914,7 @@ def mosaic_html(tilts: list[dict], aspect: float | None) -> tuple[str, str | Non
 
 def _strip_html(ticks: list[tuple[TiltState, str]], span: tuple[float, float]) -> str:
     """One tick per tilt at its stage tilt, on the axis every header shares, with a faint 0°
-    mark. A tick takes its card's look; its title names the tilt."""
+    mark. A tick takes its tilt's colour (_tick_class); its title names the tilt."""
     lo, hi = span
     width = (hi - lo) or 1.0
 
@@ -923,14 +927,14 @@ def _strip_html(ticks: list[tuple[TiltState, str]], span: tuple[float, float]) -
         else ""
     )
     marks = "".join(
-        f'<span class="cb-tp-tick {_TICK_CLASS[_look(s)]}" data-key="{html.escape(s.frame_id)}" '
+        f'<span class="cb-tp-tick {_tick_class(s)}" data-key="{html.escape(s.frame_id)}" '
         f'title="{html.escape(title)}" style="left:{x(s.angle)};"></span>'
         for s, title in ticks
     )
     legend = (
-        f"Every tilt at its stage tilt, {_signed(lo, 0)}° to {_signed(hi, 0)}° across the project. Red: dropped "
-        "by the tilt filter. Pale grey: not in alignment's output. Red outline: marked bad, not approved yet. "
-        "Amber: dark exposure (a marker, never a drop). Click a tick to view the tilt."
+        f"Every tilt at its stage tilt, {_signed(lo, 0)}° to {_signed(hi, 0)}° across the project. Red: excluded. "
+        "Indigo: not in alignment's output (Warp's import). Amber: dark exposure (a marker only). Click a tick to view "
+        "the tilt."
     )
     return (
         f'<div class="cb-tp-strip" title="{html.escape(legend)}" '
@@ -938,42 +942,105 @@ def _strip_html(ticks: list[tuple[TiltState, str]], span: tuple[float, float]) -
     )
 
 
+def _words_html(words: Sequence[tuple[str, str, str]]) -> str:
+    """(word, colour, title) parts, dot-separated."""
+    return ' <span style="color:#cbd5e1;">·</span> '.join(
+        f'<span style="color:{color};" title="{html.escape(title)}">{html.escape(word)}</span>'
+        for word, color, title in words
+    )
+
+
+def _excluded_title(states: Sequence[TiltState]) -> str:
+    n_model = sum(1 for t in states if t.review == "model_bad")
+    n_manual = sum(1 for t in states if t.review == "human_bad")
+    if n_model or n_manual:
+        text = (
+            f"{len(states)} excluded, not approved yet: {n_model} by the confidence score at the threshold, "
+            f"{n_manual} by a manual label. Approve labels makes it final."
+        )
+    else:
+        text = f"{len(states)} excluded by the approved verdict."
+    return f"{text} {_angles(states)}."
+
+
 def group_header_html(group: dict, span: tuple[float, float] | None) -> str:
     """What a group's tilts are, after its tilt count: how many are in the tomogram, how many
-    the uncommitted review flags, how many are dark with nothing dropping them; then the strip.
+    the filter excludes, how many are dark with nothing excluding them; then the strip.
     Collapsed, the headers read as the project's tilt scheme: where each series loses tilts,
     and its missing wedge."""
     s: SeriesSummary = group["summary"]
     words: list[tuple[str, str, str]] = []
     if s.used:
-        words.append((f"{s.used} in the tomogram", "#64748b", _used_title(s)))
-    if s.flagged:
-        n_model = sum(1 for t in s.flagged if t.review == "model_bad")
+        words.append((f"{s.used} in the tomogram", _LABEL, _used_title(s)))
+    if s.excluded:
+        words.append((f"{len(s.excluded)} excluded", _RED_TEXT, _excluded_title(s.excluded)))
+    if s.dark_kept:
         words.append(
             (
-                f"{len(s.flagged)} flagged",
-                _RED_TEXT,
-                f"Marked bad in the review, not approved yet: {n_model} by the model, "
-                f"{len(s.flagged) - n_model} by your labels. Approve drops them. {_angles(s.flagged)}.",
-            )
-        )
-    if s.dark_unflagged:
-        words.append(
-            (
-                f"{len(s.dark_unflagged)} dark",
+                f"{len(s.dark_kept)} dark",
                 _AMBER_TEXT,
-                f"{len(s.dark_unflagged)} dark exposures that nothing drops and the review does not flag: "
-                f"{_dark_list(s.dark_unflagged)}.\n{DARK_RULE}",
+                f"{len(s.dark_kept)} dark exposures nothing excludes: {_dark_list(s.dark_kept)}.\n{DARK_RULE}",
             )
         )
-    text = ' <span style="color:#cbd5e1;">·</span> '.join(
-        f'<span style="color:{color};" title="{html.escape(title)}">{html.escape(word)}</span>'
-        for word, color, title in words
-    )
     strip = _strip_html(group["ticks"], span) if span else ""
     return (
         '<div style="display:flex;align-items:center;gap:10px;font-family:ui-monospace,monospace;font-size:9px;'
-        f'white-space:nowrap;"><span>{text}</span>{strip}</div>'
+        f'white-space:nowrap;"><span>{_words_html(words)}</span>{strip}</div>'
+    )
+
+
+def _position_key(group: dict) -> str:
+    """The position a group belongs to: its stage number, or the series itself when its name
+    carries none."""
+    stage = group["order"][0]
+    return f"pos:{stage}" if stage else f"ts:{group['ts']}"
+
+
+def positions(groups: Sequence[dict]) -> list[dict]:
+    """The groups by stage position (Pos 13 holds 13, 13_2, 13_3, …), in their order:
+    ``{key, label, groups}``."""
+    out: list[dict] = []
+    by_key: dict[str, dict] = {}
+    for g in groups:
+        key = _position_key(g)
+        pos = by_key.get(key)
+        if pos is None:
+            stage = g["order"][0]
+            pos = by_key[key] = {"key": key, "label": f"Pos {stage}" if stage else g["label"], "groups": []}
+            out.append(pos)
+        pos["groups"].append(g)
+    return out
+
+
+def position_header_html(pos: dict) -> str:
+    """A position box's header words: its beams, tilts, the tilts excluded and the dark ones kept."""
+    summaries = [g["summary"] for g in pos["groups"]]
+    n = len(summaries)
+    n_excluded = sum(len(s.excluded) for s in summaries)
+    n_dark = sum(len(s.dark_kept) for s in summaries)
+    words = [
+        (f"{n} beam" if n == 1 else f"{n} beams", _LABEL, "Tilt series acquired at this stage position"),
+        (f"{sum(s.total for s in summaries)} tilts", _LABEL, "Every tilt of these tilt series"),
+    ]
+    if n_excluded:
+        words.append((f"{n_excluded} excluded", _RED_TEXT, EXCLUDED_RULE))
+    if n_dark:
+        words.append((f"{n_dark} dark", _AMBER_TEXT, f"{n_dark} dark exposures nothing excludes.\n{DARK_RULE}"))
+    return (
+        f'<div style="font-family:ui-monospace,monospace;font-size:9px;white-space:nowrap;">{_words_html(words)}</div>'
+    )
+
+
+def beam_line_html(group: dict, span: tuple[float, float] | None) -> str:
+    """A beam's slim line inside its position's box: the beam, the series id, its tilt count,
+    then its header words and strip."""
+    stage, beam = group["order"]
+    name = f"Beam {beam}" if stage else group["label"]
+    return (
+        f'<span class="cb-tp-name">{html.escape(name)}</span>'
+        f'<span class="cb-tp-ts">{html.escape(group["ts"])}</span>'
+        f'<span class="cb-tp-n" title="Tilts with a preview or an average">{len(group["tilts"])}</span>'
+        f"{group_header_html(group, span)}"
     )
 
 
@@ -983,8 +1050,9 @@ def _dark_list(states: Sequence[TiltState]) -> str:
 
 def _used_title(s: SeriesSummary) -> str:
     lines = [f"{s.used} of {s.total} tilts are in the tomogram (alignment's output)."]
-    if s.dropped:
-        lines.append(f"{len(s.dropped)} dropped by the tilt filter: {_angles(s.dropped)}.")
+    approved = [t for t in s.excluded if t.drop is not None]
+    if approved:
+        lines.append(f"{len(approved)} excluded by the approved verdict: {_angles(approved)}.")
     if s.left_out:
         lines.append(
             f"{len(s.left_out)} not in alignment's output with no verdict against them (Warp's import drops dark "
@@ -1034,98 +1102,75 @@ def _caption_title(group: dict) -> str:
     return "\n".join(lines)
 
 
-def legend_html(looks: set[str], *, outliers: bool = False, review: bool = False) -> str:
-    """One line naming each look the project's tilts take, each with its explanation as a
-    tooltip; then the red number when any is red, and the slate flag in review mode."""
-    item = (
-        '<span title="{title}" style="display:inline-flex;align-items:center;gap:4px;">'
-        '<span style="width:10px;height:10px;box-sizing:border-box;border:{border};background:{bg};'
-        'border-radius:2px;"></span>{text}</span>'
-    )
-    items = [
-        item.format(title=html.escape(title), border=border, bg=bg, text=html.escape(text))
-        for look, text, title, bg, border in _LEGEND
-        if look in looks
-    ]
-    if outliers:
-        items.append(
-            f'<span title="{html.escape(OUTLIER_RULE)}" style="display:inline-flex;align-items:center;gap:4px;">'
-            f'<span style="color:{_RED_TEXT};font-weight:600;font-family:ui-monospace,monospace;">1.0</span>'
-            "red number: more than 3 robust SDs worse than the project's tilts at the same |tilt|; a marker, "
-            "never a drop</span>"
-        )
-    if review:
-        items.append(
-            item.format(
-                title=html.escape("You labelled it good; Approve keeps it whatever the model says."),
-                border="1.5px solid #ffffff",
-                bg="#475569",
-                text="your label: good",
-            )
-        )
-    return f'<div style="display:flex;flex-wrap:wrap;gap:4px 14px;font-size:9px;color:#64748b;">{"".join(items)}</div>'
-
-
 # ── The gallery ───────────────────────────────────────────────────────────────
 
 _SHOW = (
     ("all", "all"),
-    ("flagged", "flagged"),
+    ("excluded", "excluded"),
     ("out", "not in the tomogram"),
     ("dark", "dark"),
     ("outliers", "outliers"),
 )
+_GROUPINGS = (("series", "series"), ("position", "position"))
 _POPOVER_STYLE = (
-    "position: fixed; z-index: 6000; display: none; max-width: 380px; background: #ffffff; "
+    "position: fixed; z-index: 6000; display: none; max-width: 400px; background: #ffffff; "
     "border: 1px solid #e2e8f0; border-radius: 5px; box-shadow: 0 6px 18px rgba(15,23,42,0.16); "
-    "padding: 6px 8px; font-size: 10px; line-height: 1.45; color: #334155; white-space: normal;"
+    "padding: 6px 8px; font-family: 'IBM Plex Sans', sans-serif; font-size: 10px; line-height: 1.45; "
+    "color: #334155; white-space: normal;"
 )
 
 
 class TiltGallery:
-    """Every tilt of the project as a card, grouped by tilt series: the Tilts tab's gallery and
-    the tilt-filter job page's, one component.
+    """Every tilt of the project as a card, grouped by tilt series or by stage position: the
+    Tilts tab's gallery and the tilt-filter job page's, one component.
 
     The host collects (``collect_tilt_groups``), hands the result over with ``set_data`` and
-    places the two parts: ``render_controls`` (S/M/L when the host has none, sort, show, the
-    metric chooser, expand and collapse) and ``render`` (notes, the legend, the groups). Groups
+    places the two parts: ``render_controls`` (S/M/L when the host has none, sort, show, group,
+    the metrics menu, expand and collapse, the legend) and ``render`` (notes, the groups). Groups
     start collapsed and a group's cards are built on its first expand, one HTML string with one
-    delegated click per series. Sort and show re-render the open grids only; the size and the
-    metric chooser set a CSS variable and classes on the gallery's root, so neither re-renders.
+    delegated click (per series, or per position when grouped by position). Sort and show
+    re-render the open grids only; the size and the metrics menu set a CSS variable and classes
+    on the gallery's root, so neither re-renders.
 
-    Review mode (the job page) draws a label flag in each image's corner, and a click on it calls
-    ``on_flag(key)``. A click elsewhere on the image opens the full-size viewer; hovering a
-    caption shows its popover of every metric, and a click on the caption pins it."""
+    Review mode (the job page): a click on a card calls ``on_toggle(key)`` and the magnifier
+    opens the full-size viewer; elsewhere a card click opens the viewer too. Hovering a caption or
+    an info icon shows its popover, and a click pins it. ``on_metrics`` hears the metrics menu."""
 
     def __init__(
         self,
         project_path: Path,
         *,
         review: bool = False,
-        on_flag: Callable[[str], Any] | None = None,
+        on_toggle: Callable[[str], Any] | None = None,
+        on_metrics: Callable[[], Any] | None = None,
         size: str = "m",
         size_control: bool = False,
     ) -> None:
         self.project_path = Path(project_path)
         self.review = review
-        self.on_flag = on_flag
+        self.on_toggle = on_toggle
+        self.on_metrics = on_metrics
         self.size = size
         self.size_control = size_control
         self.groups: list[dict] = []
         self.facts: dict = {}
         # Kept on the gallery, so a re-render, a Refresh or a host's poll keeps them.
-        self.expanded: set[str] = set()
+        self.grouping = "series"
+        self.expanded: set[str] = set()  # series open, grouped by series
+        self.expanded_pos: set[str] = set()  # positions open, grouped by position
         self.sort = "angle"
         self.show = "all"
         self.metrics_on: set[str] = set(DEFAULT_METRICS)
         self.root: Any = None
+        self._list: Any = None
         self._groups_ui: dict[str, dict] = {}
+        self._pos_ui: dict[str, dict] = {}
         self._tilt_by_key: dict[str, dict] = {}
         self._frame_keys: set[str] = set()
         self._sort_select: Any = None
         self._show_seg: Any = None
         self._size_seg: Any = None
-        self._chips: dict[str, Any] = {}
+        self._group_seg: Any = None
 
     # ── Data ──
 
@@ -1139,7 +1184,7 @@ class TiltGallery:
             self.show = "all"
 
     def _metric_keys(self) -> list[str]:
-        """The metrics the chooser offers: those some tilt has, P(bad) only where it shows."""
+        """The metrics the menu offers: those some tilt has, the confidence score only where it shows."""
         present = self.facts.get("present") or set()
         return [
             m.key
@@ -1151,7 +1196,7 @@ class TiltGallery:
         opts = {"angle": "stage tilt", "order": "acquisition order"}
         offered = self._metric_keys()
         if "pbad" in offered:
-            opts["pbad"] = "P(bad), worst first"
+            opts["pbad"] = "confidence score, worst first"
         for key in offered:
             if key not in ("num", "pbad") and key in self.metrics_on:
                 opts[key] = f"{_METRIC[key].label}, worst first"
@@ -1163,9 +1208,8 @@ class TiltGallery:
     # ── Controls ──
 
     def render_controls(self) -> None:
-        """S/M/L (when the host has none), sort, show, the metric chooser, Expand all and
-        Collapse all, in the current slot."""
-        self._chips = {}
+        """S/M/L (when the host has none), sort, show, group, the metrics menu, Expand all and
+        Collapse all, then the legend, in the current slot."""
         with ui.element("div").style("display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0;"):
             if self.size_control:
                 ui.label("size").classes("cb-gal-toolbar-label")
@@ -1178,23 +1222,43 @@ class TiltGallery:
             )
             ui.label("show").classes("cb-gal-toolbar-label")
             self._show_seg = render_segmented(self._show_options(), self.show, self._select_show)
+            ui.label("group").classes("cb-gal-toolbar-label")
+            self._group_seg = render_segmented(list(_GROUPINGS), self.grouping, self._select_grouping)
             offered = self._metric_keys()
             if offered:
-                ui.label("metrics").classes("cb-gal-toolbar-label")
-                for key in offered:
-                    self._render_chip(key)
+                self._render_metrics_menu(offered)
             house_button("Expand all", lambda: self.expand_all(True))
             house_button("Collapse all", lambda: self.expand_all(False))
+            self._render_legend()
 
-    def _render_chip(self, key: str) -> None:
-        metric = _METRIC[key]
-        chip = ui.element("div").classes("cb-gal-sp" + ("" if key in self.metrics_on else " off"))
-        chip.on("click", lambda _e, k=key: self._toggle_metric(k))
-        chip.tooltip(f"{metric.tip} Click to show or hide it on every card.")
-        with chip:
-            ui.element("div").classes("cb-gal-sp-dot").style("background: #64748b;")
-            ui.label(metric.label).classes("cb-gal-sp-name")
-        self._chips[key] = chip
+    def _render_metrics_menu(self, offered: list[str]) -> None:
+        """The metrics every caption shows, and the only ones whose outliers are marked: a menu of
+        checkboxes."""
+        tip = "The numbers every caption shows; outliers are marked only in a ticked metric."
+        with house_button("metrics ▾", tooltip=tip):
+            with ui.menu().classes("cb-tg-menu"):
+                for key in offered:
+                    metric = _METRIC[key]
+                    ui.checkbox(
+                        metric.label,
+                        value=key in self.metrics_on,
+                        on_change=lambda e, k=key: self._set_metric(k, bool(e.value)),
+                    ).props("dense size=xs").tooltip(metric.tip)
+
+    def _render_legend(self) -> None:
+        """The legend, icons only, each explained on hover: the marks the project's tilts carry,
+        and in the review always the red border, which a click sets."""
+        marks = set(self.facts.get("marks") or ())
+        if self.review:
+            marks.add("excluded")
+        items = [(cls, tip) for mark, cls, tip in _LEGEND if mark in marks]
+        if not items:
+            return
+        ui.label("legend").classes("cb-gal-toolbar-label")
+        for cls, tip in items:
+            ui.html(
+                f'<span class="{cls}" style="display:inline-block;vertical-align:middle;"></span>', sanitize=False
+            ).tooltip(tip)
 
     def _select_size(self, key: str) -> None:
         if self._size_seg is not None:
@@ -1217,8 +1281,18 @@ class TiltGallery:
             self._show_seg.set_active(key)
         self._rerender_open()
 
-    def _toggle_metric(self, key: str) -> None:
-        on = key not in self.metrics_on
+    def _select_grouping(self, key: str) -> None:
+        self.grouping = key
+        if self._group_seg is not None:
+            self._group_seg.set_active(key)
+        if self._list is not None and not self._list.is_deleted:
+            self._list.clear()
+            with self._list:
+                self._render_list()
+
+    def _set_metric(self, key: str, on: bool) -> None:
+        if on == (key in self.metrics_on):
+            return
         if on:
             self.metrics_on.add(key)
         else:
@@ -1228,31 +1302,34 @@ class TiltGallery:
                 self.root.classes(add=f"cb-tg-m-{key}")
             else:
                 self.root.classes(remove=f"cb-tg-m-{key}")
-        chip = self._chips.get(key)
-        if chip is not None:
-            if on:
-                chip.classes(remove="off")
-            else:
-                chip.classes(add="off")
         opts = self._sort_options()
         resort = self.sort not in opts
         if resort:
             self.sort = "angle"
         if self._sort_select is not None and not self._sort_select.is_deleted:
             self._sort_select.set_options(opts, value=self.sort)
-        if resort:
+        # show · outliers follows the ticked metrics.
+        if resort or self.show == "outliers":
             self._rerender_open()
+        if self.on_metrics is not None:
+            self.on_metrics()
 
     # ── Body ──
 
     def render(self, notes: Sequence[tuple[str, str, bool]] = ()) -> None:
         """The gallery in the current slot: `notes` (text, colour, spinner) from the host, the
-        project's own notes, the legend and the groups."""
-        classes = " ".join(["cb-tg-root", *(f"cb-tg-m-{k}" for k in sorted(self.metrics_on))])
+        project's own notes and the groups."""
+        classes = ["cb-tg-root", *(f"cb-tg-m-{k}" for k in sorted(self.metrics_on))]
+        if self.review:
+            classes.append("cb-tg-review")
         self.root = (
-            ui.element("div").classes(classes).style(f"--cb-tp-card: {TILT_CARD_PX[self.size]}px; min-width: 0;")
+            ui.element("div")
+            .classes(" ".join(classes))
+            .style(f"--cb-tp-card: {TILT_CARD_PX[self.size]}px; min-width: 0;")
         )
         self._groups_ui = {}
+        self._pos_ui = {}
+        self._list = None
         with self.root:
             ui.element("div").classes("cb-tp-popover").style(_POPOVER_STYLE)
             for text, color, spinner in notes:
@@ -1268,16 +1345,19 @@ class TiltGallery:
                 return
             for text in self._lacking_notes():
                 self._note(text)
-            looks = self.facts.get("looks") or set()
-            if looks or self.facts.get("any_outlier") or self.review:
-                with ui.element("div").style("padding: 8px 10px 0;"):
-                    ui.html(
-                        legend_html(looks, outliers=bool(self.facts.get("any_outlier")), review=self.review),
-                        sanitize=False,
-                    )
-            with ui.element("div").style("display: flex; flex-direction: column; gap: 6px; padding: 10px;"):
-                for group in self.groups:
-                    self._render_group(group)
+            self._list = ui.element("div").style("display: flex; flex-direction: column; gap: 6px; padding: 10px;")
+            with self._list:
+                self._render_list()
+
+    def _render_list(self) -> None:
+        self._groups_ui = {}
+        self._pos_ui = {}
+        if self.grouping == "position":
+            for pos in positions(self.groups):
+                self._render_position(pos)
+        else:
+            for group in self.groups:
+                self._render_group(group)
 
     def _note(self, text: str, *, color: str = "#94a3b8", spinner: bool = False) -> None:
         with ui.element("div").style("display: flex; align-items: center; gap: 6px; padding: 8px 10px 0;"):
@@ -1324,7 +1404,27 @@ class TiltGallery:
         if not self._shown(group):
             box.set_visibility(False)
         if ts in self.expanded:
-            self._show_group(ref, True)
+            self._show_body(ref, True, lambda: self._grid(group))
+
+    def _render_position(self, pos: dict) -> None:
+        """One box per stage position: the header, and when open each beam's slim line followed
+        by its cards, flush with the box's left edge."""
+        key = pos["key"]
+        box = ui.element("div").classes("cb-tp-group")
+        with box:
+            head = ui.element("div").classes("cb-tp-head")
+            with head:
+                chevron = ui.label("▸").classes("cb-tp-chev")
+                ui.label(pos["label"]).classes("cb-tp-name")
+                summary = ui.html(position_header_html(pos), sanitize=False).style("flex: 0 0 auto;")
+            body = ui.element("div").style("padding: 4px; display: none;")
+        ref = {"box": box, "body": body, "chevron": chevron, "summary": summary, "pos": pos, "grid": None}
+        self._pos_ui[key] = ref
+        head.on("click", lambda _e, k=key: self._set_pos_open(k, k not in self.expanded_pos))
+        if not self._pos_shown(pos):
+            box.set_visibility(False)
+        if key in self.expanded_pos:
+            self._show_body(ref, True, lambda: self._pos_html(pos))
 
     def _set_group_open(self, ts: str, on: bool) -> None:
         if on:
@@ -1333,9 +1433,18 @@ class TiltGallery:
             self.expanded.discard(ts)
         ref = self._groups_ui.get(ts)
         if ref is not None:
-            self._show_group(ref, on)
+            self._show_body(ref, on, lambda: self._grid(ref["group"]))
 
-    def _show_group(self, ref: dict, on: bool) -> None:
+    def _set_pos_open(self, key: str, on: bool) -> None:
+        if on:
+            self.expanded_pos.add(key)
+        else:
+            self.expanded_pos.discard(key)
+        ref = self._pos_ui.get(key)
+        if ref is not None:
+            self._show_body(ref, on, lambda: self._pos_html(ref["pos"]))
+
+    def _show_body(self, ref: dict, on: bool, content: Callable[[], str]) -> None:
         # Display written in full each time: .style() merges, and a left-out display would
         # keep the earlier `none`.
         ref["body"].style(f"padding: 4px; display: {'block' if on else 'none'};")
@@ -1345,23 +1454,45 @@ class TiltGallery:
             ref["chevron"].classes(remove="open")
         if on and ref["grid"] is None:
             with ref["body"]:
-                grid = ui.html(self._grid(ref["group"]), sanitize=False)
+                grid = ui.html(content(), sanitize=False)
             grid.on("click", handler=self._on_click, js_handler=GRID_CLICK_JS)
             grid.on("mouseover", js_handler=GRID_HOVER_JS)
             grid.on("mouseout", js_handler=GRID_OUT_JS)
             ref["grid"] = grid
 
     def expand_all(self, on: bool) -> None:
+        if self.grouping == "position":
+            for key, ref in self._pos_ui.items():
+                if not on or self._pos_shown(ref["pos"]):
+                    self._set_pos_open(key, on)
+            return
         for ts, ref in self._groups_ui.items():
             if not on or self._shown(ref["group"]):
                 self._set_group_open(ts, on)
 
     def _grid(self, group: dict) -> str:
-        return grid_html(self._ordered([t for t in group["tilts"] if self._passes(t)]), review=self.review)
+        return grid_html(self._ordered([t for t in group["tilts"] if self._passes(t)]))
+
+    def _pos_html(self, pos: dict) -> str:
+        """A position's body: per beam with something to show, its slim line, then its cards."""
+        span = self.facts.get("span")
+        parts = []
+        for g in pos["groups"]:
+            if not self._shown(g):
+                continue
+            parts.append(f'<div class="cb-tp-beam" data-ts="{html.escape(g["ts"])}">{beam_line_html(g, span)}</div>')
+            parts.append(self._grid(g))
+        return "".join(parts)
 
     def _rerender_open(self) -> None:
-        """After a sort or show switch: the open grids re-render, and a group with nothing to
-        show hides. Header counts stay whole-series."""
+        """After a sort or show switch: the open grids re-render, and a group (a position) with
+        nothing to show hides. Header counts stay whole-series."""
+        if self.grouping == "position":
+            for ref in self._pos_ui.values():
+                ref["box"].set_visibility(self._pos_shown(ref["pos"]))
+                if ref["grid"] is not None:
+                    ref["grid"].set_content(self._pos_html(ref["pos"]))
+            return
         for ref in self._groups_ui.values():
             ref["box"].set_visibility(self._shown(ref["group"]))
             if ref["grid"] is not None:
@@ -1370,16 +1501,19 @@ class TiltGallery:
     def _shown(self, group: dict) -> bool:
         return self.show == "all" or any(self._passes(t) for t in group["tilts"])
 
+    def _pos_shown(self, pos: dict) -> bool:
+        return any(self._shown(g) for g in pos["groups"])
+
     def _passes(self, t: dict) -> bool:
         s: TiltState = t["state"]
-        if self.show == "flagged":
-            return s.flagged
+        if self.show == "excluded":
+            return s.excluded
         if self.show == "out":
             return s.drop is not None or s.in_tomogram is False
         if self.show == "dark":
             return s.is_dark
         if self.show == "outliers":
-            return bool(t["outliers"])
+            return bool(t["outliers"] & self.metrics_on)
         if self.show == "disagree":
             return t["disagree"]
         return True
@@ -1407,37 +1541,62 @@ class TiltGallery:
 
     def restate(self, ctx: dict, ts_ids: Iterable[str] | None = None) -> None:
         """After a label or threshold change: re-derive the tilts of `ts_ids` (every series when
-        None, restate_group), replace those groups' headers, and patch the changed cards in place
-        with one JavaScript call scoped to the gallery's root: the look, the flag and the caption.
-        A grid whose membership depends on the review (show · flagged or disagree) re-renders
-        instead."""
+        None, restate_group), replace their headers (a beam's line and its position's header,
+        grouped by position), and patch the changed cards in place with one JavaScript call scoped
+        to the gallery's root: the look and the caption. A grid whose membership depends on the
+        review (show · excluded or disagree) re-renders instead."""
         bands = self.facts.get("bands") or {}
+        span = self.facts.get("span")
         wanted = None if ts_ids is None else set(ts_ids)
+        rebuild = self.show in ("excluded", "disagree")
         patches: list[dict] = []
+        beams: list[dict] = []
+        touched: dict[str, dict] = {}
         for group in self.groups:
             if wanted is not None and group["ts"] not in wanted:
                 continue
             changed = restate_group(group, ctx, bands)
             for t in group["tilts"]:
                 self._tilt_by_key[t["key"]] = t
+            if self.grouping == "position":
+                ref = self._pos_ui.get(_position_key(group))
+                if ref is None:
+                    continue
+                touched[ref["pos"]["key"]] = ref
+                if ref["grid"] is not None and not rebuild and self._shown(group):
+                    beams.append({"ts": group["ts"], "html": beam_line_html(group, span)})
+                    patches.extend(_card_patch(t) for t in changed)
+                continue
             ref = self._groups_ui.get(group["ts"])
             if ref is None:
                 continue
-            ref["summary"].set_content(group_header_html(group, self.facts.get("span")))
+            ref["summary"].set_content(group_header_html(group, span))
             ref["box"].set_visibility(self._shown(group))
             grid = ref["grid"]
             if grid is None or not changed:
                 continue
-            if self.show in ("flagged", "disagree"):
+            if rebuild:
                 grid.set_content(self._grid(group))
                 continue
             # The cards are patched in the browser; the element holds the same HTML on the
             # server, so a later update of it cannot bring the old looks back.
             grid._props[grid.CONTENT_PROP] = self._grid(group)
             patches.extend(_card_patch(t) for t in changed)
-        if patches and self.root is not None and not self.root.is_deleted:
+        for ref in touched.values():
+            ref["summary"].set_content(position_header_html(ref["pos"]))
+            ref["box"].set_visibility(self._pos_shown(ref["pos"]))
+            grid = ref["grid"]
+            if grid is None:
+                continue
+            if rebuild:
+                grid.set_content(self._pos_html(ref["pos"]))
+            else:
+                grid._props[grid.CONTENT_PROP] = self._pos_html(ref["pos"])
+        if (patches or beams) and self.root is not None and not self.root.is_deleted:
             ui.run_javascript(
-                _PATCH_JS.replace("__ROOT__", str(self.root.id)).replace("__PATCHES__", json.dumps(patches))
+                _PATCH_JS.replace("__ROOT__", str(self.root.id))
+                .replace("__PATCHES__", json.dumps(patches))
+                .replace("__BEAMS__", json.dumps(beams))
             )
 
     # ── Clicks ──
@@ -1445,10 +1604,8 @@ class TiltGallery:
     def _on_click(self, e) -> None:
         args = e.args or {}
         key = args.get("key", "")
-        if args.get("flag"):
-            if self.review and self.on_flag is not None:
-                return self.on_flag(key)
-            return None
+        if self.review and not args.get("zoom"):
+            return self.on_toggle(key) if self.on_toggle is not None else None
         tilt = self._tilt_by_key.get(key)
         if tilt is None:
             if key in self._frame_keys:
@@ -1460,7 +1617,7 @@ class TiltGallery:
         return None
 
 
-# One card's new look, flag and caption, as restate sends it.
+# The changed cards' look and caption, and grouped by position the beams' lines, as restate sends them.
 _PATCH_JS = """(() => {
     const root = getHtmlElement(__ROOT__);
     if (!root) return;
@@ -1468,22 +1625,18 @@ _PATCH_JS = """(() => {
         const card = root.querySelector('.cb-tp-card[data-key="' + CSS.escape(p.k) + '"]');
         if (!card) continue;
         card.className = p.look;
-        const flag = card.querySelector('.cb-tp-flag');
-        if (flag) { flag.className = p.flag; flag.title = p.ftitle; }
         const cap = card.querySelector('.cb-tp-cap');
         if (cap) cap.innerHTML = p.cap;
+    }
+    for (const b of __BEAMS__) {
+        const line = root.querySelector('.cb-tp-beam[data-ts="' + CSS.escape(b.ts) + '"]');
+        if (line) line.innerHTML = b.html;
     }
 })()"""
 
 
 def _card_patch(t: dict) -> dict:
-    return {
-        "k": t["key"],
-        "look": f"cb-tp-card {t['look']}".strip(),
-        "flag": flag_class(t["label"]),
-        "ftitle": _flag_title(t["label"]),
-        "cap": _caption_html(t),
-    }
+    return {"k": t["key"], "look": f"cb-tp-card {t['look']}".strip(), "cap": _caption_html(t)}
 
 
 # ── The viewer ────────────────────────────────────────────────────────────────

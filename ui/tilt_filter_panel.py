@@ -2,19 +2,23 @@
 """
 The tilt-filter job page (full-panel job plugin): a review panel over the shared tilt gallery.
 
-The panel on top holds the review's state and every action (the job row holds the settings
-only), the DL run, the numbers and the distributions of the tilts out of the tomograms or
-flagged. Under it, the Tilts tab's gallery (``ui/tilt_previews.py``) in review mode: a flag in
-each image's corner labels the tilt. A label, a threshold move or Clear labels re-derives the
-states and updates the cards, the header strips, the tiles and the charts in place; nothing
-re-renders. A landed DL run or a commit re-collects. The page reads what the Tilts tab reads:
-the registry and the job's review, collected off the event loop.
+On top, the numbers of the review (the same in every mode), then the review's state and every
+action (the job row holds the settings only), with the DL run in one line, then the
+distributions, collapsed under one toggle. Under it, the Tilts tab's gallery
+(``ui/tilt_previews.py``) in review mode: a click on a tilt toggles its exclusion, and a red
+border is every exclusion, whoever set it. A label, a threshold move or Clear labels re-derives
+the states and updates the cards, the header strips, the numbers and the charts in place;
+nothing re-renders. A landed DL run or a commit re-collects. The page reads what the Tilts tab
+reads: the registry and the job's review, collected off the event loop.
 """
 
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
+import math
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -31,14 +35,23 @@ from ui.background_task import BackgroundTask
 from ui.components.buttons import house_button
 from ui.components.dialogs import dialog_host
 from ui.components.fields import house_number
-from ui.components.reactive import FingerprintedView, SingleFlight
+from ui.components.reactive import FingerprintedView, SingleFlight, owned_timer
 from ui.dashboard.css import ensure_assets_loaded
-from ui.dashboard.figures import P_BAD_LABELS, TILT_CAUSES, build_p_bad_histogram, build_tilt_band_chart
+from ui.dashboard.figures import (
+    SMALL_CHART_PX,
+    TILT_STATES,
+    build_excluded_by_tilt_chart,
+    build_excluded_per_series_chart,
+    build_score_histogram,
+)
 from ui.pipeline_builder.tilt_filter_row import render_tilt_filter_review
 from ui.status_indicator import _running_spinner_html
 from ui.styles import MONO, SANS
 from ui.tilt_previews import (
+    CONFIDENCE_TIP,
     DARK_RULE,
+    JUDGED_METRICS,
+    METRIC_LABELS,
     OUTLIER_RULE,
     TiltGallery,
     collect_tilt_groups,
@@ -50,27 +63,37 @@ from ui.tilt_previews import (
 logger = logging.getLogger(__name__)
 
 _INK, _LABEL, _MUTED, _RED, _AMBER = "#0f172a", "#475569", "#94a3b8", "#be4343", "#b45309"
-# The distributions' |stage tilt| bands and P(bad) bins.
-_BAND_DEG = 10
-_P_BAD_BINS = 20
+# The distributions' stage-tilt bins and confidence-score bins.
+_BIN_DEG = 10
+_SCORE_BINS = 20
+
+# The numbers on top: (key, label, tooltip; empty where the tooltip follows the review).
+_TILES = (
+    ("tilts", "tilts", "Every tilt of the project."),
+    ("series", "series", "Tilt series with a tilt to show."),
+    ("excluded", "to exclude", ""),
+    ("used", "in tomograms", "Tilts in alignment's output, over the tilt series alignment has run on."),
+    ("dark", "dark", DARK_RULE),
+    ("outliers", "outliers", ""),
+)
 
 
 def _n_labels(n: int) -> str:
-    return f"{n} label" if n == 1 else f"{n} labels"
+    return f"{n} manual label" if n == 1 else f"{n} manual labels"
 
 
 async def _confirm_clear_labels(labels: dict[str, str], mode: FilterMode) -> bool:
-    """Ask before Clear labels: it removes every label set by hand on this job, with no undo."""
+    """Ask before Clear labels: it removes every manual label on this job, with no undo."""
     n = len(labels)
     n_bad = sum(1 for v in labels.values() if v == "bad")
     after = (
-        "Every tilt then reads as the model predicts it, and good where it has no prediction."
+        "Every tilt then follows its confidence score, and stays included where it has none."
         if mode in DL_MODES
-        else "Every tilt then reads good."
+        else "Every tilt is then included."
     )
     with dialog_host(), ui.dialog() as dlg, ui.card().classes("w-96"):
         ui.label(f"Clear {_n_labels(n)}?").style(f"{SANS} font-size: 13px; font-weight: 600; color: {_INK};")
-        ui.label(f"{n_bad} bad and {n - n_bad} good, set by hand. {after} This cannot be undone.").style(
+        ui.label(f"{n_bad} exclude and {n - n_bad} keep a tilt. {after} This cannot be undone.").style(
             f"{SANS} font-size: 12px; color: {_LABEL}; margin-top: 4px;"
         )
         with ui.row().classes("w-full justify-end mt-3 gap-2"):
@@ -97,7 +120,9 @@ class TiltFilterPage:
         self.backend = backend
         self.project_path = project_path
         self.iid = instance_id
-        self.gallery = TiltGallery(project_path, review=True, on_flag=self._on_flag, size_control=True)
+        self.gallery = TiltGallery(
+            project_path, review=True, on_toggle=self._on_toggle, on_metrics=self._update_numbers, size_control=True
+        )
         self.groups: list[dict] = []
         self.facts: dict = {}
         self.error: str | None = None
@@ -108,10 +133,14 @@ class TiltFilterPage:
         self._applied_threshold: float | None = None
         self._flight = SingleFlight()
         self._tiles: dict[str, Any] = {}
-        self._agreement: Any = None
-        self._band_chart: Any = None
-        self._hist_chart: Any = None
-        self._dl_card: _DlRunCard | None = None
+        self._tile_labels: dict[str, Any] = {}
+        self._tile_tips: dict[str, Any] = {}
+        self._charts: dict[str, Any] = {}
+        self._charts_box: Any = None
+        self._charts_chev: Any = None
+        self._charts_open = False
+        self._agreement_box: Any = None
+        self._dl_line: _DlRunLine | None = None
         self._controls: Any = None
         self._body: Any = None
 
@@ -134,48 +163,60 @@ class TiltFilterPage:
             ui.label(f"Job '{self.iid}' not found.").classes("text-red-500 p-4")
             return
         self._applied_threshold = jm.threshold
-        with ui.element("div").style("width: 100%; flex: 1 1 0; min-height: 0; overflow-y: auto; overflow-x: hidden;"):
-            with ui.element("div").style("display: flex; flex-direction: column; gap: 22px; padding: 12px 14px 6px;"):
+        page = ui.element("div").style("width: 100%; flex: 1 1 0; min-height: 0; overflow-y: auto; overflow-x: hidden;")
+        with page:
+            with ui.element("div").style("display: flex; flex-direction: column; gap: 10px; padding: 10px 14px 4px;"):
+                self._render_numbers()
                 self._render_review(jm)
-                if jm.mode in DL_MODES:
-                    box = ui.element("div").style("min-width: 0;")
-                    self._dl_card = _DlRunCard(self, box)
-                    self._dl_card.refresh()
-                    ui.timer(3.0, self._dl_card.refresh)
-                self._render_numbers(jm)
-                self._render_charts(jm)
+                self._render_charts_toggle()
             self._controls = ui.element("div").style("padding: 4px 14px 0; min-width: 0;")
             self._body = ui.element("div").style("min-width: 0;")
             with self._body, ui.element("div").classes("cb-empty"):
                 ui.spinner(size="lg", color="indigo")
                 ui.label("Reading tilts…").classes("text-xs")
-        ui.timer(3.0, self._observe)
-        ui.timer(15.0, self._poll_previews)
-        ui.timer(0.05, self._reload, once=True)
+        # Owned timers: a mode switch rebuilds the page.
+        owned_timer(3.0, self._observe, page)
+        owned_timer(15.0, self._poll_previews, page)
+        owned_timer(0.05, self._reload, page, once=True)
+
+    def _render_numbers(self) -> None:
+        """The review's numbers, the same in every mode; the hovers break them down. Built once;
+        updates set their text."""
+        with ui.element("div").classes("cb-stats cb-stats-inline").style("margin: 0; gap: 18px;"):
+            for key, label, tip in _TILES:
+                with ui.element("div").classes("cb-stat"):
+                    self._tile_labels[key] = ui.label(label).classes("cb-stat-label")
+                    self._tiles[key] = ui.label("—").classes("cb-stat-value")
+                    self._tile_tips[key] = ui.tooltip(tip).style("white-space: pre-line; max-width: 420px;")
 
     def _render_review(self, jm) -> None:
-        """The review's state and actions, Clear labels, and the threshold: editable here in DL
-        review, where it moves the labels live; set on the job row in DL auto."""
-        with ui.element("div").style("display: flex; align-items: center; gap: 14px; flex-wrap: wrap; min-width: 0;"):
+        """The review's state and actions, Clear labels, the threshold (editable in DL review,
+        where it moves the red borders live; set on the job row in DL auto) and the DL run."""
+        with ui.element("div").style("display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-width: 0;"):
             render_tilt_filter_review(self.backend, self.project_path, self.iid)
             house_button(
                 "Clear labels",
                 self._clear_labels,
-                tooltip="Remove every label set by hand; each tilt goes back to the model's call (DL modes) or to "
-                "good (Manual).",
+                tooltip="Remove every manual label: each tilt goes back to its confidence score (DL) or to "
+                "included (Manual).",
             )
             if jm.mode == FilterMode.DL_REVIEW:
                 self._render_threshold(jm)
             elif jm.mode == FilterMode.DL_AUTO:
                 ui.label().bind_text_from(
                     jm, "threshold", backward=lambda v: f"threshold {v:.2f}, set on the job row"
-                ).style(f"{MONO} font-size: 10px; color: {_LABEL};")
+                ).style(f"{MONO} font-size: 9px; color: {_LABEL};")
+            if jm.mode in DL_MODES:
+                box = ui.element("div").style("min-width: 0;")
+                self._dl_line = _DlRunLine(self, box)
+                self._dl_line.refresh()
+                owned_timer(3.0, self._dl_line.refresh, box)
 
     def _render_threshold(self, jm) -> None:
-        # The cut belongs to the model whose predictions the page shows.
+        # The cut belongs to the model whose scores the page shows.
         shown_model = jm.predict_run.model if jm.predict_run is not None else jm.model
         cut = calibrated_threshold(shown_model)
-        hint = "A tilt with P(bad) at or above this is the model's bad; your labels win."
+        hint = "Tilts with a confidence score at or above this are excluded, unless a manual label keeps them."
         if cut is not None:
             hint += f" conf.yaml records {cut:.2f} as the cut for {shown_model or 'the default model'}."
         with ui.element("div").style("display: flex; align-items: center; gap: 6px;"):
@@ -193,53 +234,83 @@ class TiltFilterPage:
             )
             if cut is None:
                 ui.label("uncalibrated").style(f"{SANS} font-size: 9px; color: {_AMBER};").tooltip(
-                    "No P(bad) cut is recorded for this model in conf.yaml, so this threshold has not been measured "
-                    "on labelled tilts."
+                    "No confidence-score cut is recorded for this model in conf.yaml, so this threshold has not "
+                    "been measured on labelled tilts."
                 )
 
-    def _render_numbers(self, jm) -> None:
-        """The tiles, and in DL review the agreement line. Built once; updates set their text."""
-        with ui.element("div").style("display: flex; flex-direction: column; gap: 4px; min-width: 0;"):
-            with ui.element("div").classes("cb-stats").style("margin-bottom: 0;"):
-                for key, label, tip in (
-                    ("tilts", "tilts", "Every tilt of the project, and its tilt series."),
-                    ("used", "in the tomogram", "Tilts in alignment's output, over the series alignment has run on."),
-                    (
-                        "flagged",
-                        "flagged · yours · the model's",
-                        "Marked bad and not approved yet: Approve drops them.",
-                    ),
-                    ("dropped", "dropped", "Dropped by the committed verdict."),
-                    ("dark", "dark", DARK_RULE),
-                    ("outliers", "outliers", OUTLIER_RULE),
-                ):
-                    with ui.element("div").classes("cb-stat").tooltip(tip):
-                        ui.label(label).classes("cb-stat-label")
-                        self._tiles[key] = ui.label("—").classes("cb-stat-value")
-            if jm.mode == FilterMode.DL_REVIEW:
-                self._agreement = ui.label("").style(f"{MONO} font-size: 10px; color: {_LABEL};")
+    def _render_charts_toggle(self) -> None:
+        """The distributions, collapsed by default under one toggle and built on the first open."""
+        head = ui.element("div").style(
+            "display: inline-flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; "
+            "width: fit-content;"
+        )
+        with head:
+            self._charts_chev = ui.label("▸").classes("cb-tp-chev")
+            ui.label("charts").style(f"{SANS} font-size: 10px; font-weight: 600; color: #334155;")
+        head.on("click", self._toggle_charts)
+        self._charts_box = ui.element("div").style("display: none; min-width: 0;")
 
-    def _render_charts(self, jm) -> None:
-        with ui.element("div").style("display: flex; gap: 18px; flex-wrap: wrap; min-width: 0;"):
-            with ui.element("div").style("flex: 1 1 360px; min-width: 0;"):
-                self._chart_title(
-                    "out of the tomograms, or flagged, by |stage tilt|",
-                    "Per 10° band of |stage tilt|: the tilts the verdict drops, the review flags or Warp's import "
-                    "left out, and the dark tilts kept. A tilt counts once, under the first that applies.",
+    def _toggle_charts(self) -> None:
+        self._charts_open = not self._charts_open
+        self._charts_box.style(f"display: {'block' if self._charts_open else 'none'}; min-width: 0;")
+        if self._charts_open:
+            self._charts_chev.classes(add="open")
+        else:
+            self._charts_chev.classes(remove="open")
+        if not self._charts_open:
+            return
+        if not self._charts:
+            with self._charts_box:
+                self._build_charts()
+            self._update_charts()
+            return
+        # Hidden, a chart keeps its old size; it measures its box again once shown.
+        for chart in self._charts.values():
+            if not chart.is_deleted:
+                chart.run_chart_method("resize")
+
+    def _build_charts(self) -> None:
+        _state, jm = self._state_and_job()
+        dl = jm is not None and jm.mode in DL_MODES
+        # One legend for every chart: each state keeps its colour across them.
+        items = "".join(
+            '<span style="display:inline-flex;align-items:center;gap:4px;">'
+            f'<span style="width:8px;height:8px;border-radius:50%;background:{color};"></span>'
+            f"{html.escape(name)}</span>"
+            for key, name, color in TILT_STATES
+            if dl or key != "kept"
+        )
+        ui.html(
+            '<div style="display:flex;flex-wrap:wrap;gap:4px 14px;font-family:IBM Plex Sans,sans-serif;font-size:9px;'
+            f'color:#475569;padding:4px 0 2px;">{items}</div>',
+            sanitize=False,
+        )
+        with ui.element("div").style("display: flex; gap: 14px; flex-wrap: wrap; min-width: 0;"):
+            self._charts["tilt"] = self._small_chart(
+                "excluded by stage tilt",
+                "Per 10° of stage tilt: the tilts excluded, those alignment's output lacks with no verdict against "
+                "them (Warp's import), and the dark exposures kept. A tilt counts once, under the first that "
+                "applies.",
+            )
+            if dl:
+                self._charts["score"] = self._small_chart(
+                    "confidence score",
+                    f"{CONFIDENCE_TIP} How many tilts score in each bin, excluded or kept as the review stands (a "
+                    "manual label can keep a high score or exclude a low one); the dashed line is the threshold.",
                 )
-                self._band_chart = ui.echart(_empty_options()).style("height: 210px; width: 100%;")
-            if jm.mode in DL_MODES:
-                with ui.element("div").style("flex: 1 1 360px; min-width: 0;"):
-                    self._chart_title(
-                        "P(bad), by your label",
-                        "How many tilts the model puts in each P(bad) bin, by your label; the dashed line is the "
-                        "threshold. Log counts: the untouched tilts outnumber the labelled ones.",
-                    )
-                    self._hist_chart = ui.echart(_empty_options()).style("height: 210px; width: 100%;")
+            self._charts["series"] = self._small_chart(
+                "excluded per tilt series",
+                "Each tilt series' excluded tilts and those alignment's output lacks, in position order; hover a bar "
+                "for its name.",
+            )
+            if dl:
+                self._agreement_box = ui.element("div").style("flex: 0 0 auto; min-width: 0;")
 
     @staticmethod
-    def _chart_title(text: str, tip: str) -> None:
-        ui.label(text).style(f"{SANS} font-size: 10px; font-weight: 600; color: #334155;").tooltip(tip)
+    def _small_chart(title: str, tip: str):
+        with ui.element("div").style("flex: 1 1 240px; min-width: 0;"):
+            ui.label(title).style(f"{SANS} font-size: 9px; font-weight: 600; color: #334155;").tooltip(tip)
+            return ui.echart(_empty_options()).style(f"height: {SMALL_CHART_PX}px; width: 100%;")
 
     # ── Collection ──
 
@@ -316,17 +387,20 @@ class TiltFilterPage:
 
     def _restate(self, ts_ids=None) -> None:
         """Re-derive the tilts after a label or threshold change, and update the cards, the
-        headers, the tiles and the charts in place."""
+        headers, the numbers and the charts in place."""
         state, _jm = self._state_and_job()
         self.gallery.restate(tilt_context(state), ts_ids)
         self._update_numbers()
 
-    async def _on_flag(self, key: str) -> None:
-        """The flag flips the tilt's label: bad where the review says good, good where it says
-        bad. The tilt counts as labelled from then on."""
+    async def _on_toggle(self, key: str) -> None:
+        """A click on a tilt flips it between excluded and included: a manual label saying the
+        opposite of what the review says now. Refused once the review is approved."""
         _state, jm = self._state_and_job()
         tilt = self.gallery.tilt(key)
         if jm is None or tilt is None:
+            return
+        if jm.execution_status == JobStatus.SUCCEEDED:
+            ui.notify("Approved: Re-open to change labels.", type="info")
             return
         s = tilt["state"]
         current = effective_label(key, s.p_bad, jm.tilt_labels, jm.threshold, jm.mode)
@@ -353,7 +427,7 @@ class TiltFilterPage:
                 return
             labels = jm.tilt_labels
             if not labels:
-                ui.notify("No labels to clear.", type="info")
+                ui.notify("No manual labels to clear.", type="info")
                 return
             if not await _confirm_clear_labels(labels, jm.mode):
                 return
@@ -373,42 +447,71 @@ class TiltFilterPage:
             return
         _state, jm = self._state_and_job()
         states = self._states()
+        committed = jm is not None and jm.execution_status == JobStatus.SUCCEEDED
         aligned = [g["summary"] for g in self.groups if g["summary"].used is not None]
-        yours = sum(1 for s in states if s.review == "human_bad")
-        model = sum(1 for s in states if s.review == "model_bad")
+        ticked = self.gallery.metrics_on & set(JUDGED_METRICS)
+        per_metric = Counter(k for g in self.groups for t in g["tilts"] for k in t["outliers"])
         values = {
-            "tilts": f"{len(states)} · {len(self.groups)} series",
+            "tilts": str(len(states)),
+            "series": str(len(self.groups)),
+            "excluded": str(sum(1 for s in states if s.excluded)),
             "used": str(sum(s.used for s in aligned)) if aligned else "—",
-            "flagged": f"{yours + model} · {yours} · {model}",
-            "dropped": str(sum(1 for s in states if s.drop is not None)),
             "dark": str(sum(1 for s in states if s.is_dark)),
-            "outliers": str(sum(1 for g in self.groups for t in g["tilts"] if t["outliers"])),
+            "outliers": str(sum(1 for g in self.groups for t in g["tilts"] if t["outliers"] & ticked))
+            if ticked
+            else "—",
         }
         for key, text in values.items():
             self._tiles[key].set_text(text)
-        if self._agreement is not None and jm is not None:
-            self._agreement.set_text(self._agreement_text(jm, states))
-        self._update_charts(jm, states)
+        self._tile_labels["excluded"].set_text("excluded" if committed else "to exclude")
+        self._tile_tips["excluded"].set_text(_excluded_tip(jm, states, committed))
+        self._tile_tips["outliers"].set_text(_outliers_tip(per_metric, ticked))
+        self._update_charts()
 
-    @staticmethod
-    def _agreement_text(jm, states) -> str:
-        predicted = [s for s in states if s.p_bad is not None]
-        if not predicted:
-            return ""
-        model_bad = {s.frame_id for s in predicted if s.p_bad >= jm.threshold}
-        frames = {s.frame_id for s in states}
-        yours = {k for k, v in jm.tilt_labels.items() if v == "bad" and k in frames}
-        return (
-            f"the model flags {len(model_bad)} · your labels say {len(yours)} bad · both {len(model_bad & yours)} · "
-            f"only yours {len(yours - model_bad)} · only the model's {len(model_bad - yours)} "
-            "(untouched tilts count as good)"
+    def _update_charts(self) -> None:
+        if not self._charts:
+            return
+        _state, jm = self._state_and_job()
+        states = self._states()
+        builders = {
+            "tilt": lambda: _tilt_options(states),
+            "score": lambda: _score_options(states, jm.threshold if jm is not None else None),
+            "series": lambda: _series_options(self.groups),
+        }
+        for key, chart in self._charts.items():
+            if not chart.is_deleted:
+                _set_options(chart, builders[key]())
+        if self._agreement_box is not None and not self._agreement_box.is_deleted and jm is not None:
+            self._agreement_box.clear()
+            with self._agreement_box:
+                _render_agreement(states, jm)
+
+
+def _excluded_tip(jm, states, committed: bool) -> str:
+    if committed:
+        return "Excluded by the approved verdict: alignment, CTF and reconstruction leave them out."
+    n_manual = sum(1 for s in states if s.review == "human_bad")
+    lines = ["Approve labels excludes them from alignment, CTF and reconstruction."]
+    if jm is not None and jm.mode in DL_MODES:
+        n_model = sum(1 for s in states if s.review == "model_bad")
+        n_keep = sum(1 for s in states if s.review == "human_good" and s.p_bad is not None and s.p_bad >= jm.threshold)
+        lines.append(
+            f"{n_model} by the confidence score at or above {jm.threshold:.2f} · {n_manual} by a manual label · "
+            f"{n_keep} manual labels keep a tilt the score would exclude."
         )
+    else:
+        lines.append(f"{n_manual} by a manual label.")
+    return "\n".join(lines)
 
-    def _update_charts(self, jm, states) -> None:
-        if self._band_chart is not None and not self._band_chart.is_deleted:
-            _set_options(self._band_chart, _band_options(states))
-        if self._hist_chart is not None and not self._hist_chart.is_deleted and jm is not None:
-            _set_options(self._hist_chart, _hist_options(states, jm))
+
+def _outliers_tip(per_metric: Counter, ticked: set[str]) -> str:
+    head = (
+        "Tilts with an outlier in a ticked metric."
+        if ticked
+        else "No metric with outliers is ticked: tick one in the gallery's metrics menu to mark its outliers."
+    )
+    every = " · ".join(f"{METRIC_LABELS[k]} {per_metric[k]}" for k in JUDGED_METRICS if per_metric.get(k))
+    return "\n".join([head, f"Every metric: {every}." if every else "No metric has outliers.", OUTLIER_RULE])
 
 
 def _empty_options() -> dict:
@@ -421,47 +524,94 @@ def _set_options(chart, options: dict) -> None:
     chart.update()
 
 
-def _band_options(states) -> dict:
-    """Per |stage tilt| band, each tilt under the first cause that applies (TILT_CAUSES)."""
+def _deg(value: int) -> str:
+    return f"−{-value}" if value < 0 else str(value)
+
+
+def _state_key(s) -> str | None:
+    """The chart state a tilt counts under: the first of excluded, not in alignment's output and
+    dark (kept); None for the rest."""
+    if s.excluded:
+        return "excluded"
+    if s.in_tomogram is False:
+        return "out"
+    if s.is_dark:
+        return "dark"
+    return None
+
+
+def _tilt_options(states) -> dict:
+    """Per 10° bin of signed stage tilt, each tilt under the first state that applies."""
     if not states:
         return _empty_options()
-    n_bands = max(int(abs(s.angle) // _BAND_DEG) for s in states) + 1
-    counts = {key: [0] * n_bands for key, _name, _color in TILT_CAUSES}
+    lo = math.floor(min(s.angle for s in states) / _BIN_DEG)
+    hi = math.floor(max(s.angle for s in states) / _BIN_DEG)
+    counts = {key: [0] * (hi - lo + 1) for key in ("excluded", "out", "dark")}
     for s in states:
-        if s.drop is not None:
-            cause = "dropped"
-        elif s.review == "model_bad":
-            cause = "model"
-        elif s.review == "human_bad":
-            cause = "yours"
-        elif s.in_tomogram is False:
-            cause = "warp"
-        elif s.is_dark:
-            cause = "dark"
-        else:
-            continue
-        counts[cause][int(abs(s.angle) // _BAND_DEG)] += 1
-    bands = [f"{i * _BAND_DEG}–{(i + 1) * _BAND_DEG}°" for i in range(n_bands)]
-    return build_tilt_band_chart(bands, counts)
+        key = _state_key(s)
+        if key is not None:
+            counts[key][math.floor(s.angle / _BIN_DEG) - lo] += 1
+    bins = [f"{_deg(b * _BIN_DEG)}…{_deg((b + 1) * _BIN_DEG)}" for b in range(lo, hi + 1)]
+    return build_excluded_by_tilt_chart(bins, counts)
 
 
-def _hist_options(states, jm) -> dict:
-    """The P(bad) histogram by your label, with the job's threshold."""
-    predicted = [s for s in states if s.p_bad is not None]
-    if not predicted:
+def _score_options(states, threshold: float | None) -> dict:
+    """The confidence score's histogram, excluded or kept as the review stands."""
+    scored = [s for s in states if s.p_bad is not None]
+    if not scored:
         return _empty_options()
-    counts = {key: [0] * _P_BAD_BINS for key, _name, _color in P_BAD_LABELS}
-    for s in predicted:
-        label = jm.tilt_labels.get(s.frame_id)
-        key = "bad" if label == "bad" else "good" if label == "good" else "untouched"
-        counts[key][min(_P_BAD_BINS - 1, int(s.p_bad * _P_BAD_BINS))] += 1
-    return build_p_bad_histogram(counts, jm.threshold)
+    counts = {"excluded": [0] * _SCORE_BINS, "kept": [0] * _SCORE_BINS}
+    for s in scored:
+        counts["excluded" if s.excluded else "kept"][min(_SCORE_BINS - 1, int(s.p_bad * _SCORE_BINS))] += 1
+    return build_score_histogram(counts, threshold)
 
 
-class _DlRunCard(FingerprintedView):
-    """The DL run, dressed up: the model as chosen on the row, the latest run's number, state,
-    SLURM id, when it was submitted and for how long it has run, then what it predicted or why
-    it failed; the liveness banner under it when the model gives every tilt the same P(bad)."""
+def _series_options(groups) -> dict:
+    """Per tilt series, in position order: its excluded tilts and those alignment's output lacks."""
+    if not groups:
+        return _empty_options()
+    counts = {
+        "excluded": [len(g["summary"].excluded) for g in groups],
+        "out": [sum(1 for s in g["summary"].left_out if not s.excluded) for g in groups],
+    }
+    return build_excluded_per_series_chart([g["label"] for g in groups], counts)
+
+
+def _render_agreement(states, jm) -> None:
+    """Manual labels against the DL calls, as a count table: shown once both exist."""
+    scored = [s for s in states if s.p_bad is not None]
+    labels = jm.tilt_labels
+    if not scored or not labels:
+        return
+    rows = {"exclude": [0, 0, 0], "keep": [0, 0, 0]}
+    for s in scored:
+        label = labels.get(s.frame_id)
+        column = 0 if label == "bad" else 1 if label == "good" else 2
+        rows["exclude" if s.p_bad >= jm.threshold else "keep"][column] += 1
+    th = f"padding:0 0 2px 10px;font-weight:400;color:{_MUTED};text-align:right;white-space:nowrap;"
+    td = f"padding:1px 0 1px 10px;{MONO} text-align:right;color:#334155;"
+    body = "".join(
+        f'<tr><td style="color:{_LABEL};white-space:nowrap;">DL {call}</td>'
+        + "".join(f'<td style="{td}">{n}</td>' for n in rows[call])
+        + "</tr>"
+        for call in ("exclude", "keep")
+    )
+    ui.label("manual labels vs DL calls").style(f"{SANS} font-size: 9px; font-weight: 600; color: #334155;").tooltip(
+        f"Scored tilts by the DL call at the threshold {jm.threshold:.2f} (rows) and the manual label (columns). "
+        "At Approve a manual label wins."
+    )
+    ui.html(
+        '<table style="border-collapse:collapse;margin-top:6px;font-family:IBM Plex Sans,sans-serif;font-size:9px;">'
+        f'<tr><th></th><th style="{th}">manual exclude</th><th style="{th}">manual keep</th>'
+        f'<th style="{th}">no label</th></tr>{body}</table>',
+        sanitize=False,
+    )
+
+
+class _DlRunLine(FingerprintedView):
+    """The DL run in one line beside the actions: run NNN and its state (the moving dot and the
+    minutes while it is queued or running), its details in the tooltip; red when it failed or
+    when the model gives every tilt the same confidence score."""
 
     def __init__(self, page: TiltFilterPage, container: Any) -> None:
         super().__init__(container)
@@ -472,14 +622,18 @@ class _DlRunCard(FingerprintedView):
         p = [s.p_bad for s in self.page._states() if s.p_bad is not None]
         return len(p), sum(1 for v in p if jm is not None and v >= jm.threshold)
 
+    def _liveness(self) -> tuple[bool, float] | None:
+        by_series = {g["ts"]: [s.p_bad for s, _t in g["ticks"] if s.p_bad is not None] for g in self.page.groups}
+        return prediction_liveness({k: v for k, v in by_series.items() if v})
+
     def signature(self):
         _state, jm = self.page._state_and_job()
         if jm is None:
             return None
         run = jm.predict_run
-        # While a run is in flight, the elapsed time moves the card every 10 s.
+        # While a run is in flight, the elapsed minutes move the line.
         ticking = run is not None and jm.predict_in_flight
-        elapsed = int((datetime.now() - run.submitted_at).total_seconds() // 10) if ticking else None
+        elapsed = int((datetime.now() - run.submitted_at).total_seconds() // 60) if ticking else None
         key = None if run is None else (run.job_dir, run.model, run.status, run.slurm_job_id, run.error)
         return (jm.model, jm.threshold, key, elapsed, self._predictions(), id(self.page.groups))
 
@@ -489,60 +643,37 @@ class _DlRunCard(FingerprintedView):
             return
         run = jm.predict_run
         model = jm.model or get_config_service().tilt_filter.default_model or "no model"
-        with ui.element("div").style(
-            "display: flex; flex-direction: column; gap: 3px; padding: 7px 10px; border: 1px solid #e2e8f0; "
-            "border-radius: 5px; background: #f8fafc; max-width: 760px;"
-        ):
-            with ui.element("div").style("display: flex; align-items: center; gap: 8px; flex-wrap: wrap;"):
-                ui.label("DL run").style(f"{SANS} font-size: 10px; font-weight: 600; color: #334155;")
-                ui.label(model).style(f"{MONO} font-size: 10px; color: {_LABEL};").tooltip(
-                    "The model as chosen on the job row; a run keeps the one it started with."
-                )
-                if run is not None:
-                    self._render_run_line(run, jm.predict_in_flight)
-            if run is None:
-                tail = " The DL-auto job predicts when the pipeline runs." if jm.mode == FilterMode.DL_AUTO else ""
-                ui.label(f"No DL run yet: Run DL predicts P(bad) for every tilt.{tail}").style(
-                    f"{SANS} font-size: 10px; color: {_MUTED};"
-                )
-            elif run.status == JobStatus.FAILED:
-                ui.label(run.error or f"No reason recorded; see {run.job_dir}/run.err.").style(
-                    f"{SANS} font-size: 10px; color: {_RED}; word-break: break-word;"
-                )
-            elif run.status == JobStatus.SUCCEEDED:
-                n, k = self._predictions()
-                ui.label(f"{n} predictions · {k} at or above {jm.threshold:.2f}").style(
-                    f"{MONO} font-size: 10px; color: {_LABEL};"
-                )
-        self._render_liveness()
-
-    @staticmethod
-    def _render_run_line(run, in_flight: bool) -> None:
-        name = Path(run.job_dir).name
-        with ui.element("div").style("display: flex; align-items: center; gap: 6px;"):
-            if in_flight:
-                ui.html(_running_spinner_html(12, "#2563eb"), sanitize=False)
-            parts = [f"run {name}", run.status.value.lower()]
-            if run.slurm_job_id:
-                parts.append(f"SLURM {run.slurm_job_id}")
-            parts.append(f"submitted {run.submitted_at:%H:%M}")
-            if in_flight:
-                minutes = int((datetime.now() - run.submitted_at).total_seconds() // 60)
-                parts.append(f"{minutes} min")
-            if run.model:
-                parts.append(run.model)
-            ui.label(" · ".join(parts)).style(f"{MONO} font-size: 10px; color: {_LABEL};")
-
-    def _render_liveness(self) -> None:
-        by_series = {g["ts"]: [s.p_bad for s, _t in g["ticks"] if s.p_bad is not None] for g in self.page.groups}
-        liveness = prediction_liveness({k: v for k, v in by_series.items() if v})
-        if liveness is None or liveness[0]:
+        style = f"{MONO} font-size: 9px; white-space: nowrap;"
+        if run is None:
+            tail = "; the DL-auto job scores the tilts on Run" if jm.mode == FilterMode.DL_AUTO else ""
+            ui.label(f"no DL run yet{tail}").style(f"{style} color: {_MUTED};").tooltip(
+                f"Run DL scores every tilt with {model}."
+            )
             return
-        with ui.element("div").style(
-            "display: flex; align-items: center; gap: 6px; margin-top: 4px; padding: 5px 8px; max-width: 760px; "
-            "border: 1px solid #fecaca; border-radius: 5px; background: #fef2f2;"
-        ):
-            ui.icon("warning", size="14px").style(f"color: {_RED};")
-            ui.label(
-                f"The model gives every tilt the same P(bad), {liveness[1]:.2f}: its verdicts are meaningless."
-            ).style(f"{SANS} font-size: 10px; color: {_RED};")
+        name = Path(run.job_dir).name
+        in_flight = jm.predict_in_flight
+        liveness = self._liveness()
+        if run.status == JobStatus.FAILED:
+            text, color = f"DL run {name} failed", _RED
+        elif liveness is not None and not liveness[0]:
+            text, color = f"DL run {name}: every tilt scores {liveness[1]:.2f}, so its calls mean nothing", _RED
+        elif in_flight:
+            minutes = int((datetime.now() - run.submitted_at).total_seconds() // 60)
+            text, color = f"DL run {name} {run.status.value.lower()} · {minutes} min", _LABEL
+        else:
+            text, color = f"DL run {name} · {run.status.value.lower()} {run.submitted_at:%H:%M}", _MUTED
+        with ui.element("div").style("display: flex; align-items: center; gap: 5px; min-width: 0;"):
+            if in_flight:
+                ui.html(_running_spinner_html(10, "#2563eb"), sanitize=False)
+            with ui.label(text).style(f"{style} color: {color};"):
+                ui.tooltip(self._details(jm, run, model)).style("white-space: pre-line;")
+
+    def _details(self, jm, run, model: str) -> str:
+        slurm = f" · SLURM job {run.slurm_job_id}" if run.slurm_job_id else ""
+        lines = [f"Model: {run.model or model}", f"Submitted {run.submitted_at:%Y-%m-%d %H:%M}{slurm}", run.job_dir]
+        if run.status == JobStatus.FAILED:
+            lines.append(run.error or f"No reason recorded; see {run.job_dir}/run.err.")
+        elif run.status == JobStatus.SUCCEEDED:
+            n, k = self._predictions()
+            lines.append(f"{n} tilts scored · {k} at or above {jm.threshold:.2f}")
+        return "\n".join(lines)
