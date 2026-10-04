@@ -27,7 +27,7 @@ A.2: built, not run); where this roadmap stands is §13.9. The decisions below a
 |---|---|---|---|---|
 | *(filter not in the pipeline)* | passes through | — | — | right away; only roadmap 22's blank-exposure rule applies |
 | **Manual** | parks | — | a human: **Approve** | on Approve |
-| **DL review** | parks | on request: **Run DL** (row or panel), predict-only | a human: **Approve** — predictions pre-filled, edits win | on Approve |
+| **DL review** | parks | on request: **Run DL** (row or panel), predict-only; also by itself once fsMotion has run when the filter is in a Run (roadmap 26 G2, decided 2026-10-04) | a human: **Approve** — predictions pre-filled, edits win | on Approve |
 | **DL auto** | does not park | automatically, as a chain job after its inputs | the DL job itself | when the DL job succeeds |
 
 ## 2. The state machine

@@ -7,6 +7,9 @@ Journey); stage F answers A.3 (buttons) and A.4 (the barrier's flags); A.6 (labe
 (§9), specced 2026-10-02 from the maintainer's answers (§10.8–10.14), was built the same day as commits F1–F5
 (ruff-clean, not run; each F subsection lists its refinements). Next: F's runtime pass (the checks under F1–F5, with
 V1's), then V2. `crboost_reingest.py`, the mdoc backfill included, was a prototyping stopgap; F4 deleted it (§2).
+Stage G (§9), scoped 2026-10-04 from the maintainer's review of F in use (DL review on 8 projects of one dataset;
+decisions §10.15–10.23), revises F's annotations, clicks, page and row: built the same day as G1–G5 (ruff-clean,
+not run).
 
 **In one line.** Every surface that shows a tilt (a Tilts card, a cell of a tomogram's mosaic, a Journey point) says
 the same three things about it, from one derivation: whether it is in the tomogram and, if not, why; what the review
@@ -204,12 +207,31 @@ every chart.
 8. Grid3's CTF after alignment: 43 tilts sit more than 0.5 µm from their series' median defocus. Position_13 at +45°
    and +46° reads 1.53 and 1.36 µm against 4.98; Position_2 has 17, from 1.07 to 7.31 µm against 4.71. Roadmap 19's
    question, on a second dataset.
+9. **The outlier rule marks 31 % of the tilts of a 126-series project** (the page's `outliers` tile: 1555 of 5007,
+   2026-10-04). Three robust SDs on the bad side, over five metrics, should mark about 1 %. Either a metric's values
+   cluster so tightly within a band that its MAD, and with it the cut, collapses (`BandStat.judges` refuses only a
+   spread of exactly 0, `services/tilt_series/tilt_state.py:198`), or a heavy-tailed metric (alignment shift, motion)
+   needs a log scale or a higher cut. G5's per-metric breakdown names the metric; the fix follows it. Until then
+   outliers mark only the metrics ticked in the metrics menu (§10.21).
+10. **After Re-open, the old verdict shows through the review.** `tilt_states` reads `is_filtered_out` whether or not
+    the filter is committed (`services/tilt_series/tilt_state.py:162`) and `_look` puts the drop first
+    (`ui/tilt_previews.py:784`), so a tilt the previous commit excluded keeps its stripes after it is labelled
+    included again, until the next Approve re-stamps it. G3 takes the border from the review while it is uncommitted.
+11. **"The parent slot of the element has been deleted" (fixed 2026-10-04).** The server log printed this traceback
+    from NiceGUI's timer loop. `render_tilt_filter_status` made a 3 s `ui.timer` inside every roster render, and a page
+    load renders the roster twice before the browser connects, so the first render's timer was deleted before its
+    first tick; NiceGUI 3.0.3 reads a timer's parent slot before it checks whether the timer was deleted. The
+    filter's views and page now use `owned_timer` (`ui/components/reactive.py`): parented at the page layout,
+    cancelled on its first tick after its view's container is deleted. Other timers made inside rebuilt containers
+    (the array-task tracker, the logs tab) follow the old pattern; they are the next suspects if the traceback
+    returns.
 
 ## 9. Stages
 | Stage | What | State |
 |---|---|---|
 | V1 | What each tilt is, read-only: the state, caption rows, strips, one numbering, the mdoc backfill | built 2026-10-02, not run |
-| F | The tilt-filter job: the row as a dropdown of settings, the job page as a review panel over the shared gallery, one card with a metric chooser, a popover, outliers and a label flag; DL auto (06 chunk 11) | built 2026-10-02 as F1–F5, not run; **runtime pass next** |
+| F | The tilt-filter job: the row as a dropdown of settings, the job page as a review panel over the shared gallery, one card with a metric chooser, a popover, outliers and a label flag; DL auto (06 chunk 11) | built 2026-10-02 as F1–F5; the review page in use on 8 projects 2026-10-04 (no formal runtime pass); G revises it |
+| G | One exclusion signal (red border) for the model and manual labels, info as icons, a click toggles and a magnifier zooms, a table on hover, a metrics menu, group by position, a quieter page (stats first, small charts tucked away), a flat row, Approve labels; DL review predicts by itself in a Run | scoped 2026-10-04 (§10.15–10.23); built 2026-10-04 as G1–G5, not run |
 | V2 | The Journey: hovers, marked charts, the filter section's charts, links, routes | outline; after F |
 | V3 | Summary charts, the metric slot, sort and show switches | mostly built by F; what is left is outlined below |
 | V4 | The review moves into the Tilts view | decided 2026-10-02: yes, after V2 |
@@ -415,7 +437,8 @@ Files: `ui/pipeline_builder/pipeline_roster.py`, `ui/pipeline_builder/tilt_filte
   - The landing's `review` outranks `failed`, as specced (a hold and nothing running); its tooltip leads with the
     parked count and since when.
   - `ruff format` reflowed `ui/status_indicator.py`'s aligned dicts (formatting only).
-: the gallery component, metrics, the popover, outliers, the flag; the stopgap goes
+
+#### F4 — The card: the gallery component, metrics, the popover, outliers, the flag; the stopgap goes
 Files: `ui/tilt_previews.py`, `services/tilt_series/tilt_state.py`, `ui/tomo_gallery.py`, `ui/dashboard/css.py`;
 `crboost_reingest.py` (deleted), `services/tilt_series/registry.py`, `services/dashboard_data.py`,
 `docs/roadmaps/roadmap_preprocessing-metrics.md`.
@@ -578,6 +601,236 @@ Files: `ui/tilt_filter_panel.py` (rewritten), `ui/tilt_previews.py`, `ui/dashboa
 **Not in F:** the Journey (V2); labelling in the Tilts tab (V4); label sets (A.6); 06 chunks 12–13; roadmap 22's
 blank-exposure exclusion.
 
+### G — one exclusion signal, info as icons, a quieter page (scoped and built 2026-10-04, not run)
+The maintainer's review of F in use: DL review run on 8 projects of one dataset, the page read on a 126-series,
+5007-tilt project. Decisions §10.15–10.23. Five commits, G1–G5, built back to back, one runtime pass at the end.
+
+**Why.** F's annotations blur information with the action. A card edge can say six things: a solid red border (a
+manual bad), a dashed one (the model's call), red stripes (committed), grey stripes (Warp's import), amber (dark), and
+red numbers mark outliers. The page top spells the manual / DL split out on every line, and the outlier marker covers a
+third of the tilts (§8.9).
+
+**Approve, confirmed (2026-10-04).** At Approve every registry frame takes `effective_label`
+(`services/jobs/tilt_filter.py:273`): a manual label, else in the DL modes "bad" at a confidence score at or above the
+threshold. `stamp_verdict` (`:227`) writes the same `is_filtered_out` for both and keeps no source. Alignment drops
+the stamped frames from its tomostar snapshot (`drivers/ts_alignment.py:188`), tsCtf and reconstruction stage from
+that snapshot, and the alignment and CTF star writers skip them (`services/tilt_series/adapters/ts_alignment.py:567`,
+`services/tilt_series/adapters/ts_ctf.py:286`). A tilt the model flags is already the same citizen as a manually
+labelled one; G removes the visual difference.
+
+**Decided** (§10.15–10.23). Also assumed, stated in the session and not objected to: Warp's left-outs become an
+icon, not grey stripes; the amber `dark` caption token goes (the icon carries it); outliers take a violet accent and
+the confidence score is never coloured; the metrics chooser becomes a menu of checkboxes and the legend icons only at
+the end of the controls row; the DL run card shrinks to one line; a click on an approved filter's card is refused
+with a pointer to Re-open; the model select shows only when conf.yaml registers more than one model.
+
+#### G1 — The row: flat settings, Approve labels
+Files: `ui/pipeline_builder/tilt_filter_row.py`, `services/jobs/tilt_filter.py` (messages), `drivers/tilt_filter.py`
+(messages).
+- `TiltFilterControls.render` (`:256`) always shows three lines: `method` (Manual · DL); `when DL` (Stop for review ·
+  Apply automatically), drawn disabled in Manual; `threshold` (`house_number`, bound as now), editable only in Apply
+  automatically, otherwise disabled with the tooltip "Set on the job page while reviewing". The amber `uncalibrated`
+  stays; the grey `cut 0.30` note moves into the tooltip. `model` (`_render_model` `:279`) shows only when
+  conf.yaml's `tilt_filter.models` holds more than one entry; with one, its name is in the method switch's tooltip,
+  and `resolve_model`'s red marker sits beside the method switch whenever DL is chosen.
+- The dropdown's state line and `Review →` go (`:275-277`); the collapsed row's words (`TiltFilterStatus`) are the one
+  state readout, and a click on the row opens the page as for any job.
+- Words (`_committed_status` `:79`, `_auto_status` `:100`, `_review_status` `:114`): `N flagged` → `N to exclude`,
+  `D/T dropped` → `D/T excluded`, "P(bad) ≥ 0.30" → "confidence score ≥ 0.30", "your labels win" → "manual labels
+  win".
+- `TiltFilterReview._actions` (`:393`): `Approve` → **`Approve labels`**, tooltip "Exclude the N red tilts from
+  alignment, CTF and reconstruction, and start the K parked jobs" (N from the review as it stands, K from the hold).
+  The notify: "Approved: K kept, D excluded."
+- The driver's liveness FATAL (`drivers/tilt_filter.py:207`), which the row shows through `auto_error`, and its commit
+  line (`:179`) say "confidence score".
+- *Check (user):* a new filter's dropdown shows method, when DL (greyed in Manual) and threshold (greyed unless Apply
+  automatically); no Review →; one registered model, no model select; the page's button reads Approve labels and its
+  tooltip counts the red tilts and the parked jobs.
+- **Built 2026-10-04** (ruff-clean, not run), as specced, with these refinements:
+  - The row's `N to exclude` counts what Approve labels would exclude (`_to_exclude`: manual labels and the model's
+    calls, by `effective_label`) in either review mode, not only after a DL run; the status fingerprint takes the
+    labels, so a toggle on the page moves the row.
+  - The greyed `when DL` strip sits in a wrapper that carries its "Only for DL" tooltip (a strip without pointer events
+    shows none).
+  - The three views' 3 s observers are `owned_timer`s (§8.11).
+
+#### G2 — DL review predicts by itself when the filter is in a Run
+Files: `backend.py`, `services/scheduling_and_orchestration/pipeline_orchestrator_service.py`,
+`services/scheduling_and_orchestration/pipeline_runner.py`, `filterTilts/image_processor.py`,
+`services/jobs/tilt_filter.py`, `ui/pipeline_builder/tilt_filter_row.py`.
+- **When.** A filter in DL review that a Run includes, i.e. the run's hold names it (`state.review_hold.barrier`; the
+  maintainer's "only if the job is queued"), not committed, no prediction in flight:
+  1. at deploy, once the hold is recorded (`_deploy_locked`, `pipeline_orchestrator_service.py:205-246`, both the
+     parked-only return and the chain branch), when fsMotion has already succeeded and the filter has no successful
+     prediction run;
+  2. on fsMotion's SUCCEEDED edge in `reconcile_afterok` (pass 5, `pipeline_runner.py:545`, beside
+     `_kickoff_tilt_thumbnails`): fresh averages, fresh predictions, whatever ran before;
+  3. on a switch to DL review (`backend.set_tilt_filter_mode`, `backend.py:336`) while a hold names the filter and
+     fsMotion has succeeded, with no successful prediction run.
+
+  A filter that only sits in the roster never predicts by itself; Run DL on the page stays for re-runs. One backend
+  helper holds the conditions and calls `submit_tilt_filter_predict` (`backend.py:216`); the three sites call it. The
+  schemer path parks nothing (it refuses a parked run), so it never auto-predicts.
+- **A refused auto-submit is stated, never swallowed.** The reason (no model, weights missing, no fs-motion star) goes
+  to `auto_error` (`services/jobs/tilt_filter.py:143`, from now on "why the last automatic DL step failed") and the row
+  reads `DL failed`, red, with the reason as its tooltip; `events.warning` logs it.
+- **The PNG race.** The thumbnail pass starts on the same fsMotion edge and writes the gallery PNGs the driver reads
+  (`drivers/tilt_filter.py:97-119`). `_is_model_input` (`:47`) checks the header only, so a half-written PNG passes.
+  `filterTilts/image_processor.py:96` writes each PNG under a temporary name outside the `*.png` glob (with
+  `format="PNG"`) and `os.replace`s it, so the driver sees a complete PNG or none and converts the missing ones itself,
+  as now.
+- *Check (user):* a fresh copia project with the filter in DL · Stop for review, Run: the row reads `waiting for
+  fsMotion · K parked`, then `predicting…`, then `N to exclude`, with no click. The same filter in the roster but left
+  out of the Run predicts nothing. With the weights file renamed, the row reads `DL failed` with the reason.
+- **Built 2026-10-04** (ruff-clean, not run), as specced, with these refinements:
+  - The helper is `backend.autostart_tilt_filter_predict(project_path, *, fresh=False)`; the deploy hook runs after
+    the chain submit whenever a hold stands (fsMotion already done: at once; else pass 5 does it).
+  - A run that starts clears `auto_error` (`submit_tilt_filter_predict`), and so does any mode switch: the reason
+    belonged to the mode left behind.
+  - The temporary PNG is `<name>.png.part`, saved with `format='PNG'` and `os.replace`d.
+
+#### G3 — The card: one exclusion signal, info as icons, a table on hover
+Files: `ui/tilt_previews.py`, `ui/dashboard/css.py`, `services/tilt_series/tilt_state.py`, `ui/tomo_gallery.py`.
+- **One exclusion signal.** `_look` (`ui/tilt_previews.py:781`) gives one look or none: excluded = a 1.5 px solid red
+  border on a card, a red outline on a mosaic cell. While the review is uncommitted, excluded is what the review marks
+  bad (a manual label or the model's call); otherwise it is the committed stamp. The dashed and striped variants, the
+  grey stripes and the amber border go (`ui/dashboard/css.py:1287-1301`), and an old commit's stamp no longer shows
+  through a review (§8.10).
+- **Info icons**, bottom-left inside the image, side by side: 12 px translucent discs (`rgba(15,23,42,0.55)`) with a
+  small glyph (inline SVG), each only when it applies:
+  - dark exposure: an amber glyph, filled when blank, outlined when dim;
+  - not in alignment's output while nothing excludes it (Warp's import left it out): a grey slashed circle;
+  - outlier: a violet glyph, for the metrics ticked in the metrics menu only (§10.21).
+
+  Hovering an icon shows the gallery's popover: what the icon means, the tilt's value against the cut, where the
+  number comes from (the mdoc's `MinMaxMean`, Warp's XML, alignment's per-tilt output) and "A marker only; it excludes
+  nothing." Red is never an information colour: outlier numbers turn violet bold (`.cb-tm-out`, `css.py:1322`), and
+  the confidence score is never coloured.
+- **Clicks** (`GRID_CLICK_JS` `:120`, `_on_click` `:1445`). In review mode a click on a card toggles exclusion
+  (`on_flag` becomes `on_toggle`; the page's handler keeps its logic); a magnifier, 16 px in the image's top-right
+  corner and drawn on hover, opens the viewer; a strip tick or an icon never toggles. Approved: a toggle is refused
+  with "Approved: Re-open to change labels" (F5 recorded the label silently). The Tilts tab has no review, so its click
+  still zooms. The flag goes (`flag_class` `:828`, `.cb-tp-flag` `css.py:1326-1334`).
+- **The popover** (`_popover_html` `:715`) becomes a table in one type scale (10 px IBM Plex Sans; numbers in 10 px
+  IBM Plex Mono):
+  - a title line, `−42.0° · tilt 31`, the frame id muted;
+  - a status line: "Excluded: confidence score 0.92, threshold 0.30" / "Excluded: manual label" / "Included: manual
+    label, confidence score 0.92" / "Included"; then where it is: "In the tomogram" / "Not in alignment's output
+    (Warp's import)" / "Alignment has not run";
+  - rows of `metric · value · typical at ±40–50°` (the band's median; violet bold for an outlier): confidence score,
+    exposure, CTF fit, motion, defocus vs series median, astigmatism, dose before, alignment shift;
+  - one muted line, "Not recorded: …".
+
+  No prose rules inside it: they live in the icon and legend hovers. Full metric names: `Δ defocus` becomes "defocus
+  vs series median", `P(bad)` "confidence score".
+- **Captions** (`_tokens_html` `:797`): `−42.0°`, `#31`, `score 0.92`, `exposure 3.2 %`, `CTF 7.1 Å`, `motion 1.20`,
+  `defocus +0.31 µm`, `astigmatism 0.12 µm`, `dose 42 e⁻/Å²`, `shift 130 Å`. The amber `dark` token goes.
+- **Controls row** (`render_controls` `:1165`). The metric chips (`_render_chip` `:1189`) become a `metrics ▾` menu
+  of checkboxes, one per offered metric ("Confidence score" with its tooltip, §10.18), toggling through
+  `_toggle_metric` (`:1220`) as now. The legend moves to the end of the row as the word `legend` and icons only (a
+  red-bordered square and the icons the data holds), each explained on hover; the legend line above the groups goes
+  (`legend_html` `:1037`, `render` `:1271-1277`). Show: `flagged` becomes `excluded`.
+- **Headers, strips, cells.** Group header words: `N in the tomogram · K excluded · D dark` (`group_header_html`
+  `:941`). Strip ticks: red = excluded, grey = not in alignment's output, amber = dark and kept, slate otherwise; the
+  red-outline tick goes. Mosaic cells (`mosaic_html` `:884`): the red outline, plus a 4 px amber or grey dot at the
+  bottom left.
+- **Texts:** `DARK_RULE` and `OUTLIER_RULE` (`:155`, `:162`), `_LEGEND` (`:169`), `where_sentence`, `_review_sentence`,
+  `_tick_title`, `_used_title`: no "you / your", no "P(bad)", no `|tilt|` ("at ±40–50°", "the same stage-tilt band").
+- *Check (user):*
+  1. Job page in DL review with predictions: every tilt the review excludes has the same red border, whether the model
+     or a manual label excluded it; no dashes, no stripes. A dark tilt carries an amber icon and a tilt Warp left out
+     a grey one; hovering an icon explains it.
+  2. A click on a card toggles red ↔ none at once; the magnifier opens the viewer; after Approve a click points to
+     Re-open.
+  3. A caption's hover: a table in one font, with no `|tilt|`, `Δ`, `sh`, `mot`, `P(bad)` or "you".
+  4. Ticking CTF fit in the metrics menu adds its token to every caption, and violet icons where it is an outlier;
+     unticking removes both.
+  5. The Tilts tab: the same borders and icons; a click zooms.
+- **Built 2026-10-04** (ruff-clean, not run), as specced, with these refinements:
+  - `TiltState.excluded` (`flagged or drop`) is the one exclusion; `tilt_states` leaves `drop` unset while a review is
+    open, and `SeriesSummary` trades `flagged` / `dropped` / `dark_unflagged` for `excluded` / `dark_kept`.
+  - The icons and the magnifier are CSS background images (data-URI SVGs in `ui/dashboard/css.py`), so a card carries
+    one short span per icon; each icon holds its popover's content as a hidden child, and the caption and the icons
+    share one popover handler (`_POPOVER_AT_ANCHOR`).
+  - **Not in alignment's output is indigo, not grey**, on the icon, the mosaic dot and the strip tick: G5's charts
+    need a validated hue for it (grey fails the palette validator's chroma floor), and the card and the charts keep
+    one colour per state.
+  - The outlier marks follow the ticked metrics through CSS alone: the icon carries a `cb-to-<metric>` class per
+    outlying metric, the popover's rows and values likewise, toggled by the root's `cb-tg-m-<metric>`; nothing
+    re-renders on a tick. The legend's outlier icon shows whenever any metric has outliers (the legend sits outside
+    the root); its hover says only ticked metrics are marked.
+  - A mosaic cell outlines what the committed verdict excluded only (what went into the tomogram), with the dots.
+  - The image's native title goes; the magnifier carries "Open full size". `show · outliers` counts ticked metrics.
+
+#### G4 — Group by position
+Files: `ui/tilt_previews.py`, `ui/dashboard/css.py`.
+- A `group: series · position` switch in the controls row; series (today's view) is the default.
+- Position mode: one box per position, keyed by the stage number of `position_label`
+  (`services/dashboard_data.py:146`); a series whose name carries none is a box of its own. The header holds the
+  chevron, `Pos 13` and `4 beams · 160 tilts · 12 excluded · 9 dark`. Expanded, each beam is a slim line (`Beam 1`, the
+  series id muted, its header words and strip) followed by its cards, all flush with the box's left edge: no nested
+  boxes, no indent. One `ui.html` per position, filled on first expand, with one delegated click.
+- Show hides the beams, then the positions, with nothing to show; sort applies within a beam; Expand / Collapse all
+  act on positions; the open state is kept per mode.
+- Live updates: a beam line carries `data-ts`, and `restate` patches it in the same JavaScript call as the cards
+  (`_PATCH_JS` `:1464`).
+- *Check (user):* on a multi-beam dataset, group · position shows one box per position; Pos 13 opens on Beam 1's line
+  and cards, then Beam 2's, flush left. show · excluded hides the positions with nothing excluded; a toggle updates its
+  beam line's counts.
+- **Built 2026-10-04** (ruff-clean, not run), as specced. A grouping switch rebuilds the gallery's list (collapsed,
+  but for what was open in that mode); a toggle also replaces the position's header words, and with show · excluded or
+  disagree re-renders the open position.
+
+#### G5 — The job page: stats first, actions, charts tucked away
+Files: `ui/tilt_filter_panel.py`, `ui/dashboard/figures.py`, `ui/dashboard/css.py`, `services/dashboard_data.py`,
+`ui/tomo_dashboard_dialog.py`.
+- **Order:** the stats, the actions line, `charts ▸` (collapsed), the gallery. The top section's text drops a notch:
+  the stats in `.cb-stats-inline` (9 px labels, 10 px values, `css.py:588`), the state words at 10 px (11 today,
+  `ui/pipeline_builder/tilt_filter_row.py:382`), chart text at 9 px.
+- **Stats** (`_render_numbers` `:200`), the same in every mode: `tilts`, `series`, `to exclude` (`excluded` once
+  approved), `in tomograms` (alignment's output, where it has run), `dark`, `outliers`. The manual / DL split lives in
+  the hovers only: `to exclude` → "346 by confidence score ≥ 0.30 · 0 by manual label · 2 manual labels keep a tilt the
+  score would exclude". `outliers` counts tilts with an outlier in a ticked metric ("—" while none is ticked), so the
+  page agrees with the cards; its hover gives the count per metric over every metric (§8.9). The agreement line
+  (`_agreement_text` `:394`) moves into the charts.
+- **Actions line:** the state words, the threshold (DL review), Run DL / Cancel DL, Clear labels, Approve labels,
+  Re-open. The DL run card (`_DlRunCard` `:461`) shrinks to one muted line after them (`DL run 003 · done 14:02`;
+  while running, the moving dot and the minutes), with the model, SLURM id, submit time, the tilts scored and how many
+  sit at or above the threshold, or a failure's reason, in its tooltip. The liveness warning stays a red line.
+- **Charts**, collapsed by default (`ui/dashboard/figures.py`; load the dataviz skill first): small multiples of one
+  height (about 120 px), one grid, axis and tooltip style, linear tilt counts, colours from the card vocabulary (red
+  excluded, grey not in alignment's output, amber dark):
+  1. *Excluded by stage tilt*: signed 10° bins (−70…+70), stacked excluded · not in alignment's output · dark and
+     kept. Replaces `build_tilt_band_chart`'s cause split (`TILT_CAUSES` `:780`: no model / manual split).
+  2. *Confidence score* (DL modes): 20 bins, stacked excluded · kept by the effective label (so manual overrides
+     show), the threshold as a dashed line; when one bin outnumbers the next-largest more than 5×, the axis tops out at
+     1.2× the next-largest and the clipped bar prints its count. Replaces the log histogram (`build_p_bad_histogram`
+     `:871`, `P_BAD_LABELS` `:788`).
+  3. *Excluded per tilt series*: one thin bar per series in position order, excluded · not in alignment's output
+     stacked; the hover names the series.
+  4. *Manual labels vs DL calls* (only when both exist): a 2 × 3 count table, rows DL exclude / keep, columns manual
+     exclude / keep / none.
+- **Toggles** (`_on_flag` `:324`): refused once approved (G3), otherwise as now: flip the effective label, save
+  debounced, restate.
+- **The Journey's words:** the hover suffix `(P(bad) 0.83)` (`services/dashboard_data.py:379`) → `(confidence 0.83)`;
+  `threshold on P(bad)` (`ui/tomo_dashboard_dialog.py:1851`) → `confidence threshold`.
+- *Check (user):*
+  1. The 126-series project: the stats on one line at the top; the `to exclude` hover splits the sources; `outliers`
+     reads "—" until a metric is ticked, and its hover names the metric behind the 1555 (§8.9).
+  2. `charts ▸` opens four small blocks with matching axes; the score histogram's clipped bin prints its count;
+     threshold 0.30 → 0.50 moves the line and the excluded / kept split.
+  3. No "P(bad)", "you" or "your" anywhere on the page, the row or the Tilts tab.
+- **Built 2026-10-04** (ruff-clean, not run), as specced, with these refinements:
+  - The charts share one height (`SMALL_CHART_PX` = 130) and one legend line above them; their palette passed the
+    validator as a set of four, every pair: excluded `#e34948`, not in alignment's output `#4a3aa7`, dark kept
+    `#eda100`, kept `#2a78d6` (the amber's contrast warning is relieved by the legend and the hover counts). The charts
+    are built on the first open and resized on a re-open.
+  - The DL run's line also carries the dead-model warning, in red, instead of a banner of its own.
+  - The page's timers are `owned_timer`s (§8.11).
+
+**Not in G:** fixing the outlier rule itself (§8.9, after G5's breakdown); labelling in the Tilts tab (V4); the
+Journey's charts (V2).
+
 ### V2 — the Journey (outline)
 §7.1–7.6, with §8.2's `data-section` fix. Files: `ui/tomo_dashboard_dialog.py`, `ui/dashboard/figures.py`,
 `ui/tilt_filter_panel.py` (the viewer's links), `ui/tilt_previews.py`, `ui/tomo_gallery.py`, `ui/routing.py`,
@@ -633,6 +886,32 @@ Stage F (maintainer, 2026-10-02; the answers to F's questions and forks):
 13. **`crboost_reingest.py` is deleted entirely**, the 1.4 QC re-ingest with the mdoc backfill.
 14. **DL auto (06 chunk 11) is built in F** as F2, since the row offers it (in the plan of 2026-10-02, not objected
     to). Approve reads the registry first (F1), so the DL-auto job commits through the same function.
+
+Stage G (maintainer, 2026-10-04; the review of F in use and the answers to four questions):
+
+15. **Approve labels.** A tilt the model flags and a manually labelled one are the same citizen: the commit stamps
+    both identically (§9 G, "Approve, confirmed") and the UI shows them identically. The button reads "Approve labels"
+    and means only this: exclude every red tilt from alignment onward and start the parked jobs. Manual and DL · Stop
+    for review never advance without it; DL · Apply automatically never waits for it.
+16. **Action versus information.** The border is the action: red = excluded (the model or a manual label, pending or
+    approved), none = included. Whatever only informs (dark exposure, not in alignment's output, metric outliers) is a
+    small translucent icon at the image's bottom left, several side by side, explained on hover (meaning, value,
+    source). Red marks exclusion only.
+17. **Clicks** (supersedes 11): in the review a click on the image toggles exclusion; a magnifier in the top-right
+    corner, drawn on hover, zooms; the caption's hover shows a table and a click pins it.
+18. **Words.** "P(bad)" becomes **"Confidence score"**, with the tooltip "Confidence that this particular tilt should
+    be excluded" (the maintainer's wording). No "you / your" anywhere: "manual label". No shorthand in a table or a
+    tooltip (`|tilt|`, `Δdf`, `sh`, `mot`): full metric names, one type scale.
+19. **DL · Stop for review predicts by itself, only when the filter is in a Run** ("only if the job is queued"): after
+    fsMotion, or at once when fsMotion has run. A filter that only sits in the roster never does. Supersedes roadmap
+    06 rev 4's "on request" for this case; Run DL stays for re-runs.
+20. **Group by position:** one box per position, its beams as slim lines each followed by its cards at full width,
+    never indented; in addition to the per-series view, not instead of it.
+21. **Outliers mark only the metrics ticked in the metrics menu** (none by default) until §8.9 is explained.
+22. **The page:** stats first and the same in every mode, the manual / DL split in hovers only; charts small, in one
+    style, on linear tilt counts, collapsed by default; the top section's text one notch smaller.
+23. **The row:** method and "when DL" always shown; the threshold always shown, editable only for Apply automatically;
+    no Review → button.
 
 ## Appendix A — roadmap 06 §13.1–13.8, as recorded 2026-10-01
 Moved verbatim on 2026-10-02. A.n is 06 §13.n; every other § reference below is roadmap 06's. §§5–7 above answer A.5,
