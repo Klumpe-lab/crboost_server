@@ -31,7 +31,8 @@ class OutputCandidate:
     instance_path: str  # e.g., "External/job005"
     producer_instance_id: str  # e.g., "tsReconstruct" or "templatematching__ribosome"
 
-    # metadata for scoring
+    # Shown in the I/O menu and ordering it (the job number also ranks side-by-side refiners);
+    # automatic selection between producers uses neither.
     execution_status: JobStatus
     relion_job_number: int  # 0 if unknown
 
@@ -46,6 +47,11 @@ class OutputCandidate:
     # <name>". When set, the UI dropdown shows this verbatim instead of the
     # derived "instance_path (jobtype)" form. None for ordinary job producers.
     label: str | None = None
+
+    # False for a candidate offered to an explicit choice in the I/O section only, never to
+    # automatic selection: a pick list extracted before another list of the same species on
+    # the same tomogram.
+    auto_eligible: bool = True
 
     @property
     def source_key(self) -> str:
@@ -79,6 +85,34 @@ class InputSlotValidation:
     file_exists: bool = False
     is_user_override: bool = False
     awaiting_upstream: bool = False
+    # Two or more equally good producers and no override: the slot stays ambiguous until one
+    # is picked. One output per producer instance.
+    tied: tuple[OutputCandidate, ...] = ()
+
+
+@dataclass(frozen=True)
+class AutoChoice:
+    """Automatic selection for one input slot: the chosen producer output, or none. `tied` holds
+    one output per producer instance when two or more instances are equally good, and then
+    nothing is chosen."""
+
+    candidate: OutputCandidate | None = None
+    tied: tuple[OutputCandidate, ...] = ()
+
+
+@dataclass(frozen=True)
+class SlotSource:
+    """Where one input slot reads from: a producer output, a manual file, or nothing, with the
+    reason when there is one. Path resolution, the DAG's edges, the I/O section's validation and
+    refinement following all take their answer from here, so they cannot disagree."""
+
+    candidate: OutputCandidate | None = None
+    manual_path: str | None = None
+    # The override that decided the source; None for automatic selection.
+    override_key: str | None = None
+    # Why no source was chosen: an override that no longer resolves, or a tie.
+    problem: str | None = None
+    tied: tuple[OutputCandidate, ...] = ()
 
 
 class PathResolutionError(ValueError):
@@ -118,6 +152,26 @@ def is_synthetic_producer(producer_instance_id: str) -> bool:
     return producer_instance_id in ("mergedSources", IMPORTED_TOMOGRAMS_PRODUCER_ID) or producer_instance_id.startswith(
         PICK_LIST_PRODUCER_PREFIX
     )
+
+
+def auto_exclusion(consumer_type: JobType, consumer_species_id: str | None, candidate: OutputCandidate) -> str | None:
+    """Why automatic selection never wires `candidate` into a consumer of `consumer_type` bound
+    to `consumer_species_id`, or None when it may. A job producer has to run at an earlier stage
+    than its consumer (PIPELINE_ORDER), which keeps automatic wiring acyclic; a producer bound to
+    another species never feeds a species-bound consumer. Synthetic producers have no stage. An
+    explicit override may name either kind."""
+    from services.jobs.spec import PIPELINE_ORDER
+
+    if (
+        not is_synthetic_producer(candidate.producer_instance_id)
+        and consumer_type in PIPELINE_ORDER
+        and candidate.producer_job_type in PIPELINE_ORDER
+        and PIPELINE_ORDER.index(candidate.producer_job_type) >= PIPELINE_ORDER.index(consumer_type)
+    ):
+        return "not upstream"
+    if consumer_species_id and candidate.species_id and candidate.species_id != consumer_species_id:
+        return "other species"
+    return None
 
 
 def _synthetic_override_target(override_key: str) -> str:
@@ -193,75 +247,44 @@ class PathResolutionService:
         self, job_type: JobType, job_model: AbstractJobParams, consumer_instance_id: str | None = None
     ) -> list[ResolvedInput]:
         """
-        Resolve inputs for target job. Checks source_overrides first, then falls
-        back to species-aware automatic selection.
+        Resolve inputs for target job: each slot's override when it resolves, otherwise
+        automatic selection (`_select_source`). An ambiguous slot or an override that no
+        longer resolves is a missing input, named in the error.
 
         consumer_instance_id excludes the consumer from its own candidate pool
         (a job's OUTPUT slot is never a valid source for its own INPUT slot).
         """
         input_schema = self._get_input_schema(job_type)
         index = self._build_output_index()
-        overrides = getattr(job_model, "source_overrides", {}) or {}
-        consumer_species_id = getattr(job_model, "species_id", None)
 
         resolved_inputs: list[ResolvedInput] = []
         missing_required: list[str] = []
 
         for slot in input_schema:
-            chosen = None
+            src = self._select_source(job_type, job_model, slot, index, consumer_instance_id)
 
-            # 1. Check for user override first
-            override_key = overrides.get(slot.key)
-            if override_key:
-                chosen = self._resolve_override(slot, override_key, index)
-
-                # Manual overrides (manual:/abs/path) are never resolvable via
-                # the producer index. Materialize them directly into a
-                # ResolvedInput so they actually populate job_model.paths.
-                if chosen is None and override_key.startswith("manual:"):
-                    manual_path = override_key[len("manual:") :]
-                    resolved_inputs.append(
-                        ResolvedInput(
-                            input_key=slot.key,
-                            chosen_type=slot.accepts[0],
-                            source_job_type="manual",
-                            source_instance_id=None,
-                            source_output_key="manual",
-                            path=manual_path,
-                        )
+            # A manual override is a file path, not a producer: it goes into the paths as given.
+            if src.manual_path is not None:
+                resolved_inputs.append(
+                    ResolvedInput(
+                        input_key=slot.key,
+                        chosen_type=slot.accepts[0],
+                        source_job_type="manual",
+                        source_instance_id=None,
+                        source_output_key="manual",
+                        path=src.manual_path,
                     )
-                    continue
-
-                # A synthetic-producer override that no longer resolves (the active
-                # merge's optimisation_set.star was deleted/moved, the active merge
-                # switched to a slug whose file is absent, or a consumed pick list
-                # went stale) must SURFACE, not silently fall through to some other
-                # optset producer (e.g. a downstream Class3D output). Mirrored in
-                # validate_input_slot.
-                if chosen is None:
-                    target = _synthetic_override_target(override_key)
-                    if target == "pick_list":
-                        if slot.required:
-                            missing_required.append(f"{slot.key}: {self._dangling_pick_list_message(override_key)}")
-                        continue
-                    if target == "imported":
-                        if slot.required:
-                            missing_required.append(f"{slot.key}: {self._dangling_imported_message()}")
-                        continue
-                    if target:
-                        if slot.required:
-                            missing_required.append(f"{slot.key} (merged-sources optimisation_set not found)")
-                        continue
-
-            # 2. Fall back to species-aware automatic selection
-            if chosen is None:
-                chosen = self._choose_candidate_for_slot(
-                    slot, index, consumer_species_id, consumer_instance_id=consumer_instance_id
                 )
+                continue
 
+            chosen = src.candidate
             if chosen is None:
                 if slot.required:
-                    missing_required.append(f"{slot.key} accepts={[t.value for t in slot.accepts]}")
+                    missing_required.append(
+                        f"{slot.key}: {src.problem}"
+                        if src.problem
+                        else f"{slot.key} accepts={[t.value for t in slot.accepts]}"
+                    )
                 continue
 
             gap = self._interactive_producer_gap(chosen)
@@ -293,9 +316,8 @@ class PathResolutionService:
         Derive the producer->consumer dependency edges of the pipeline DAG.
 
         For every consumer job (restricted to ``instance_ids`` if given, else all
-        jobs in state) each input slot is resolved exactly the way
-        :meth:`resolve_inputs` selects a source -- user ``source_overrides`` first,
-        then species-aware automatic selection -- but the chosen producer's *clean*
+        jobs in state) each input slot takes its source from :meth:`_select_source`,
+        exactly as :meth:`resolve_inputs` does, but the chosen producer's *clean*
         ``instance_id`` is recorded instead of a path. Returns deduplicated
         ``(producer_instance_id, consumer_instance_id)`` pairs, suitable for a SLURM
         ``--dependency=afterok`` topological submit.
@@ -305,13 +327,11 @@ class PathResolutionService:
         (``is_synthetic_producer`` -- the aggregation merge, imported tomograms, and
         per-pick-list extractions) -- an ``afterok`` on any of them would never be
         satisfiable.
-        Slots that cannot be resolved yet are skipped silently (no exception), so
-        this is safe on a partially-configured pipeline.
-
-        Selection mirrors :meth:`resolve_inputs` but is kept separate so edge
-        derivation tolerates unresolved slots and never resolves paths. The caller
-        restricts producers to the jobs actually being submitted and drops
-        already-SUCCEEDED producers (a finished upstream needs no dependency).
+        Slots without a source (unresolved, ambiguous, a dangling override) add no
+        edge and raise nothing, so this is safe on a partially-configured pipeline;
+        resolve_inputs is what reports them. The caller restricts producers to the
+        jobs actually being submitted and drops already-SUCCEEDED producers (a
+        finished upstream needs no dependency).
         """
         consumers = list(instance_ids) if instance_ids is not None else list(self.state.jobs.keys())
         index = self._build_output_index()
@@ -323,20 +343,8 @@ class PathResolutionService:
             if job_model is None or job_model.job_type is None:
                 continue
 
-            overrides = getattr(job_model, "source_overrides", {}) or {}
-            consumer_species_id = getattr(job_model, "species_id", None)
-
             for slot in self._get_input_schema(job_model.job_type):
-                chosen = None
-                override_key = overrides.get(slot.key)
-                if override_key:
-                    if override_key.startswith("manual:"):
-                        continue  # user-picked file -- no producing job, no edge
-                    chosen = self._resolve_override(slot, override_key, index)
-                if chosen is None:
-                    chosen = self._choose_candidate_for_slot(
-                        slot, index, consumer_species_id, consumer_instance_id=consumer_id
-                    )
+                chosen = self._select_source(job_model.job_type, job_model, slot, index, consumer_id).candidate
                 if chosen is None:
                     continue
 
@@ -365,9 +373,13 @@ class PathResolutionService:
         consumer_instance_id: str | None = None,
     ) -> list[OutputCandidate]:
         """
-        Get all valid candidates for a specific input slot, sorted with
-        species-matched candidates first. Unmatched candidates are included
-        but ranked lower -- the UI can dim them to signal the mismatch.
+        Every candidate for one input slot, for the I/O section's menu, in the order
+        automatic selection ranks them: what it may choose first (the consumer's own
+        species, then the slot's preferred source type, then jobs before synthetic
+        producers, then roster jobs before ones taken off it), then what only an explicit
+        choice can wire (`auto_exclusion`: later-stage jobs, other species; older pick
+        lists). Within a rank, finished jobs first, then the newest -- display order only,
+        never a selection.
 
         consumer_instance_id, if provided, excludes the consumer from its own
         pool so the UI doesn't offer a job's own output as a source for itself.
@@ -382,17 +394,29 @@ class PathResolutionService:
         candidates = [c for t in slot.accepts for c in index.get(t, [])]
         if consumer_instance_id is not None:
             candidates = [c for c in candidates if c.producer_instance_id != consumer_instance_id]
+        preferred = self._parse_preferred_source(slot.preferred_source)
+        roster = set(self.state.pipeline_order or ())
 
-        def sort_key(c: OutputCandidate) -> tuple[int, int, int, str]:
+        def sort_key(c: OutputCandidate) -> tuple[bool, bool, bool, bool, bool, int, int, str]:
             # Lower value = sorted earlier
-            species_rank = 0 if (consumer_species_id and c.species_id == consumer_species_id) else 1
+            manual_only = not c.auto_eligible or auto_exclusion(job_type, consumer_species_id, c) is not None
+            species_match = bool(consumer_species_id) and c.species_id == consumer_species_id
             status_order = {
                 JobStatus.SUCCEEDED: 0,
                 JobStatus.RUNNING: 1,
                 JobStatus.SCHEDULED: 2,
                 JobStatus.FAILED: 3,
             }.get(c.execution_status, 4)
-            return (species_rank, status_order, -c.relion_job_number, c.instance_path)
+            return (
+                manual_only,
+                not species_match,
+                c.producer_job_type != preferred,
+                is_synthetic_producer(c.producer_instance_id),
+                bool(roster) and c.producer_instance_id not in roster,
+                status_order,
+                -c.relion_job_number,
+                c.instance_path,
+            )
 
         ordered = sorted(candidates, key=sort_key)
 
@@ -403,7 +427,7 @@ class PathResolutionService:
         # so listing both as separate rows produces confusing duplicate entries
         # with identical labels ("Subtomo Extraction #2 (job017)" twice). Keep one
         # row per source_key, preferring the `prefer_if_exists` (curated) sibling
-        # so it matches what _resolve_override / the auto-scorer actually pick.
+        # so it matches what _resolve_override / _auto_select actually pick.
         deduped: list[OutputCandidate] = []
         pos_by_key: dict[str, int] = {}
         for c in ordered:
@@ -433,8 +457,8 @@ class PathResolutionService:
     ) -> InputSlotValidation:
         """
         Validate a single input slot's current configuration.
-        Returns detailed validation result for UI feedback.
-        Uses species-aware candidate selection.
+        Returns detailed validation result for UI feedback; the source is the one
+        resolve_inputs would use (`_select_source`).
         """
         input_schema = self._get_input_schema(job_type)
         slot = next((s for s in input_schema if s.key == slot_key), None)
@@ -449,52 +473,37 @@ class PathResolutionService:
             )
 
         overrides = getattr(job_model, "source_overrides", {}) or {}
-        override_key = overrides.get(slot_key)
-        is_user_override = override_key is not None
-        consumer_species_id = getattr(job_model, "species_id", None)
+        is_user_override = overrides.get(slot_key) is not None
 
         index = self._build_output_index()
-        chosen = None
+        src = self._select_source(job_type, job_model, slot, index, consumer_instance_id)
 
-        if override_key:
-            chosen = self._resolve_override(slot, override_key, index)
-            if chosen is None and override_key.startswith("manual:"):
-                manual_path = override_key[7:]
-                file_exists = Path(manual_path).exists() if check_filesystem else True
-                return InputSlotValidation(
-                    slot_key=slot_key,
-                    is_valid=file_exists or not slot.required,
-                    source_key=override_key,
-                    resolved_path=manual_path,
-                    file_exists=file_exists,
-                    is_user_override=True,
-                    error_message=None if file_exists else f"File not found: {manual_path}",
-                )
+        if src.manual_path is not None:
+            manual_path = src.manual_path
+            file_exists = Path(manual_path).exists() if check_filesystem else True
+            return InputSlotValidation(
+                slot_key=slot_key,
+                is_valid=file_exists or not slot.required,
+                source_key=src.override_key,
+                resolved_path=manual_path,
+                file_exists=file_exists,
+                is_user_override=True,
+                error_message=None if file_exists else f"File not found: {manual_path}",
+            )
 
-            # Dangling synthetic-producer override (its optset is gone) -> surface red,
-            # don't silently auto-pick a foreign optset producer. Mirrors resolve_inputs.
-            if chosen is None:
-                target = _synthetic_override_target(override_key)
-                if target:
-                    return InputSlotValidation(
-                        slot_key=slot_key,
-                        is_valid=not slot.required,
-                        source_key=override_key,
-                        resolved_path=None,
-                        file_exists=False,
-                        is_user_override=True,
-                        error_message=(
-                            self._dangling_pick_list_message(override_key)
-                            if target == "pick_list"
-                            else self._dangling_imported_message()
-                            if target == "imported"
-                            else "Merged-sources optimisation_set not found (merge deleted or active merge switched?)"
-                        ),
-                    )
-
-        if chosen is None:
-            chosen = self._choose_candidate_for_slot(
-                slot, index, consumer_species_id, consumer_instance_id=consumer_instance_id
+        chosen = src.candidate
+        if chosen is None and src.problem:
+            # A tie, or an override that no longer resolves: surfaced, never replaced by some
+            # other producer.
+            return InputSlotValidation(
+                slot_key=slot_key,
+                is_valid=not slot.required,
+                source_key=src.override_key,
+                resolved_path=None,
+                file_exists=False,
+                is_user_override=is_user_override,
+                error_message=src.problem,
+                tied=src.tied,
             )
 
         if chosen is None:
@@ -561,6 +570,49 @@ class PathResolutionService:
     # -------------------------------------------------------------------------
     # Override resolution
     # -------------------------------------------------------------------------
+
+    def _select_source(
+        self,
+        consumer_type: JobType,
+        job_model: AbstractJobParams,
+        slot: InputSlot,
+        index: dict[JobFileType, list[OutputCandidate]],
+        consumer_instance_id: str | None,
+    ) -> SlotSource:
+        """The source of one input slot: the user's override when it resolves, otherwise
+        automatic selection (`_auto_select`). A `manual:` override is a file path with no
+        producer. An override naming a synthetic producer that is gone (a deleted merge, a
+        stale pick list, a removed import) is reported, never replaced by some other producer
+        such as a downstream Class3D output; so is a tie."""
+        override_key = (getattr(job_model, "source_overrides", {}) or {}).get(slot.key)
+        if override_key:
+            if override_key.startswith("manual:"):
+                return SlotSource(manual_path=override_key[len("manual:") :], override_key=override_key)
+            hit = self._resolve_override(slot, override_key, index)
+            if hit is not None:
+                return SlotSource(candidate=hit, override_key=override_key)
+            target = _synthetic_override_target(override_key)
+            if target:
+                return SlotSource(
+                    override_key=override_key, problem=self._dangling_synthetic_message(target, override_key)
+                )
+
+        choice = self._auto_select(
+            slot, index, consumer_type, getattr(job_model, "species_id", None), consumer_instance_id
+        )
+        if choice.tied:
+            names = ", ".join(c.producer_instance_id for c in choice.tied)
+            return SlotSource(problem=f"ambiguous between {names}; pick one in the job's I/O section", tied=choice.tied)
+        return SlotSource(candidate=choice.candidate)
+
+    def _dangling_synthetic_message(self, target: str, override_key: str) -> str:
+        """Why an override naming a synthetic producer stopped resolving (`target` as
+        `_synthetic_override_target` returns it)."""
+        if target == "pick_list":
+            return self._dangling_pick_list_message(override_key)
+        if target == "imported":
+            return self._dangling_imported_message()
+        return "merged-sources optimisation_set not found (merge deleted or active merge switched?)"
 
     def _dangling_pick_list_message(self, override_key: str) -> str:
         """Why a pick-list override stopped resolving, in the user's terms. The candidate
@@ -634,8 +686,8 @@ class PathResolutionService:
             return None
         # A producer may expose both a raw output and a curated `prefer_if_exists`
         # sibling of the same type under one source_key (e.g. optimisation_set vs
-        # optimisation_set_filtered). Honor the curated one — matches the auto
-        # scorer (_choose_candidate_for_slot) and the UI dropdown's collapsed row.
+        # optimisation_set_filtered). Honor the curated one — matches automatic
+        # selection (_auto_select) and the UI dropdown's collapsed row.
         return next((m for m in matches if m.prefer_if_exists), matches[0])
 
     # -------------------------------------------------------------------------
@@ -794,12 +846,13 @@ class PathResolutionService:
         (`extraction_state()`), so a re-curated list drops out of the pool by itself.
 
         Multiple EXTRACTED lists can exist for one (species, tomo). All are injected so
-        the user can override to any of them, but auto-selection must be deterministic:
-        `relion_job_number` — a free integer for synthetic producers, and already the
-        scorer's preference rank — is assigned so the most recent extraction outranks the
-        older ones. The winner says so in its label, which the UI dropdown renders verbatim,
-        so the choice is never silent. A specific list is chosen by overriding the slot, or
-        by naming it as a source in the Aggregate-candidates flow.
+        the user can override to any of them; automatic selection considers only the most
+        recently extracted one per (species, tomo), and its label says so when there are
+        several (the UI dropdown renders labels verbatim). Lists on different tomograms are
+        different particle sets: two of them leave a slot ambiguous rather than guessed.
+        `relion_job_number`, a free integer for synthetic producers, holds the rank, which
+        only orders the menu. A specific list is chosen by overriding the slot, or by naming
+        it as a source in the Aggregate-candidates flow.
         """
         from services.models_base import ListExtractionState
 
@@ -816,15 +869,13 @@ class PathResolutionService:
             by_tomo.setdefault((pl.species_id, pl.tomo_name), []).append(pl)
 
         for (_species_id, tomo_name), group in by_tomo.items():
-            # Ascending, so the LAST entry is the winner and rank == list position.
-            # Ranks start at 0 so a lone pick list ties the other synthetic producers
-            # (mergedSources / importedTomograms); only a genuine multi-list tie spends
-            # rank to break itself.
+            # Ascending, so the LAST entry is the latest and rank == list position.
             ranked = sorted(group, key=lambda pl: pl.extracted_at.timestamp() if pl.extracted_at is not None else 0.0)
             for rank, pl in enumerate(ranked):
+                latest = rank == len(ranked) - 1
                 label = f"Pick list — {pl.label or pl.slug} · {tomo_name}"
-                if len(ranked) > 1 and rank == len(ranked) - 1:
-                    label = f"{label} [auto-selected: most recently extracted]"
+                if len(ranked) > 1 and latest:
+                    label = f"{label} [latest on this tomogram]"
                 producer_id = pick_list_producer_id(pl)
                 index[JobFileType.OPTIMISATION_SET_STAR].append(
                     OutputCandidate(
@@ -838,6 +889,7 @@ class PathResolutionService:
                         relion_job_number=rank,
                         species_id=pl.species_id or None,
                         label=label,
+                        auto_eligible=latest,
                     )
                 )
 
@@ -921,58 +973,60 @@ class PathResolutionService:
     # Candidate selection / scoring
     # -------------------------------------------------------------------------
 
-    def _choose_candidate_for_slot(
+    def _auto_select(
         self,
         slot: InputSlot,
         index: dict[JobFileType, list[OutputCandidate]],
+        consumer_type: JobType,
         consumer_species_id: str | None = None,
         consumer_instance_id: str | None = None,
-    ) -> OutputCandidate | None:
+    ) -> AutoChoice:
         """
-        Find best candidate among accepted types using deterministic scoring.
+        Automatic choice of the producer for one input slot.
 
-        Priority order (highest to lowest):
-          1. Species match -- candidate produced by a job tagged with the same species_id
-          2. Preferred source job type (from slot.preferred_source)
-          3. Most recent job number
-          4. Succeeded status
-
-        The consumer is always excluded from its own candidate pool: a job whose
-        INPUT and OUTPUT schemas share a JobFileType (e.g. templatematching both
-        consuming and producing TOMOGRAMS_STAR) would otherwise pick its own
-        in-flight output once sync_all_jobs has set its relion_job_name, because
-        the scoring prefers higher job numbers before SUCCEEDED status.
+        The pool is every output of an accepted type that `auto_exclusion` allows (an
+        earlier stage, not another species), minus the consumer itself. It is ranked by
+        species match (the consumer's own species over species-neutral producers, whether
+        or not they have run), then by the slot's preferred source type, then a pipeline
+        job over a synthetic producer (imported tomograms, a merge, a pick list), then a
+        job on the roster (`state.pipeline_order`) over a finished one taken off it, which
+        stays in the project. When the best rank holds one producer instance, that
+        producer's output is chosen, its curated `prefer_if_exists` sibling over the raw
+        one (the index only admits a curated file that exists). When it holds two or more,
+        nothing is chosen and they are returned as tied: an A/B pair is the user's call.
+        Status and job numbers never rank, so the choice does not depend on what has run or
+        on the order Start allocates job dirs.
         """
-        candidates: list[OutputCandidate] = []
-        for t in slot.accepts:
-            candidates.extend(index.get(t, []))
+        pool = [
+            c
+            for t in slot.accepts
+            for c in index.get(t, [])
+            if c.auto_eligible
+            and c.producer_instance_id != consumer_instance_id
+            and auto_exclusion(consumer_type, consumer_species_id, c) is None
+        ]
+        if not pool:
+            return AutoChoice()
+        preferred = self._parse_preferred_source(slot.preferred_source)
+        roster = set(self.state.pipeline_order or ())
 
-        if consumer_instance_id is not None:
-            candidates = [c for c in candidates if c.producer_instance_id != consumer_instance_id]
+        def rank(c: OutputCandidate) -> tuple[bool, bool, bool, bool]:
+            return (
+                bool(consumer_species_id) and c.species_id == consumer_species_id,
+                c.producer_job_type == preferred,
+                not is_synthetic_producer(c.producer_instance_id),
+                not roster or c.producer_instance_id in roster,
+            )
 
-        if not candidates:
-            return None
-
-        preferred_job_type = self._parse_preferred_source(slot.preferred_source)
-
-        def score(c: OutputCandidate) -> tuple[int, int, int, int, int]:
-            succeeded = 1 if c.execution_status == JobStatus.SUCCEEDED else 0
-            # Species match only counts if the candidate has actually run.
-            # This prevents a job's own pending output from circularly winning
-            # over a real succeeded upstream (e.g. TM output TOMOGRAMS_STAR
-            # outranking tsReconstruct's TOMOGRAMS_STAR as TM's own input).
-            species_match = 1 if (consumer_species_id and c.species_id == consumer_species_id and succeeded) else 0
-            pref = 1 if (preferred_job_type and c.producer_job_type == preferred_job_type) else 0
-            # prefer_if_exists ranks below cross-producer signals (species/pref)
-            # but above relion_job_number, so a curated filtered file from
-            # producer X beats producer X's original output even when X has the
-            # latest job number for its sibling. Build-index already gated on
-            # file existence, so a prefer_if_exists=True candidate here is real.
-            filtered_pref = 1 if c.prefer_if_exists else 0
-            return (species_match, pref, filtered_pref, c.relion_job_number, succeeded)
-
-        best = max(candidates, key=lambda c: (score(c), c.producer_job_type.value, c.producer_output_key, c.path))
-        return self._follow_refinements(best, index, consumer_instance_id)
+        best = max(rank(c) for c in pool)
+        per_producer: dict[str, OutputCandidate] = {}
+        for c in sorted(pool, key=lambda c: (c.prefer_if_exists, c.producer_output_key, c.path), reverse=True):
+            if rank(c) == best:
+                per_producer.setdefault(c.producer_instance_id, c)
+        if len(per_producer) > 1:
+            return AutoChoice(tied=tuple(per_producer[p] for p in sorted(per_producer)))
+        (chosen,) = per_producer.values()
+        return AutoChoice(candidate=self._follow_refinements(chosen, index, consumer_instance_id))
 
     def _follow_refinements(
         self, chosen: OutputCandidate, index: dict[JobFileType, list[OutputCandidate]], consumer_instance_id: str | None
@@ -985,11 +1039,10 @@ class PathResolutionService:
         overrides never reach here. Without a consumer id there is no order to compare, so the
         choice stands.
 
-        Several such R (refinement runs compared side by side) are ranked the way duplicate producers
-        are in _choose_candidate_for_slot: the most recently deployed one wins (highest job number,
-        then the latest in pipeline order). Deploy allocates a refiner before its consumers, so a
-        refiner and its consumers added and run together pair up; any other pairing is set in the
-        consumer's IO tab.
+        Several such R (refinement runs compared side by side): the most recently deployed one wins
+        (highest job number, then the latest in pipeline order), with a logged warning. Deploy
+        allocates a refiner before its consumers, so a refiner and its consumers added and run
+        together pair up; any other pairing is set in the consumer's IO tab.
         """
         if consumer_instance_id is None:
             return chosen
@@ -1047,20 +1100,11 @@ class PathResolutionService:
         index: dict[JobFileType, list[OutputCandidate]],
     ) -> OutputCandidate | None:
         """The producer `instance_id` reads its input of type `t` from, chosen the way
-        resolve_inputs chooses it; None for no such slot or a manual file."""
+        resolve_inputs chooses it; None for no such slot, a manual file, or no source."""
         slot = next((s for s in self._get_input_schema(job_model.job_type) if t in s.accepts), None)
         if slot is None:
             return None
-        override_key = (getattr(job_model, "source_overrides", {}) or {}).get(slot.key)
-        if override_key:
-            if override_key.startswith("manual:"):
-                return None
-            hit = self._resolve_override(slot, override_key, index)
-            if hit is not None:
-                return hit
-        return self._choose_candidate_for_slot(
-            slot, index, getattr(job_model, "species_id", None), consumer_instance_id=instance_id
-        )
+        return self._select_source(job_model.job_type, job_model, slot, index, instance_id).candidate
 
     def _parse_preferred_source(self, preferred: str | None) -> JobType | None:
         if not preferred:

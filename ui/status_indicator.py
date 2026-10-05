@@ -1,5 +1,6 @@
 # ui/status_indicator.py
-from pathlib import Path
+from html import escape
+
 from nicegui import ui
 from services.project_state import JobStatus
 from ui.current_project import current_project_state
@@ -89,15 +90,15 @@ def _badge_html(
         f"{label}</span>"
     )
     if is_orphaned:
+        # The entries are path-resolution messages (which slot, and why), shown whole.
         missing = missing_inputs or []
         if missing:
-            items = [Path(p).name for p in missing[:3]]
-            tip = "Missing: " + ", ".join(items)
+            tip = "Missing: " + "; ".join(str(m) for m in missing[:3])
             if len(missing) > 3:
                 tip += f" +{len(missing) - 3} more"
         else:
             tip = "Orphaned: missing input dependencies"
-        html += f' <span style="color:#f97316;cursor:help;font-size:14px;" title="{tip}">&#9888;</span>'
+        html += f' <span style="color:#f97316;cursor:help;font-size:14px;" title="{escape(tip)}">&#9888;</span>'
     return html
 
 
