@@ -549,6 +549,8 @@ class PipelineRunnerService:
             jm = tracked.get(iid)
             if jm is not None and jm.execution_status == JobStatus.SUCCEEDED and jm.job_type == JobType.FS_MOTION_CTF:
                 self._kickoff_tilt_thumbnails(proj, state)
+                # A tilt filter in DL review that this run waits for scores the new averages by itself.
+                await self.backend.autostart_tilt_filter_predict(proj, fresh=True)
                 break
 
         return {k: v for k, v in changes.items() if not k.startswith("__")}
