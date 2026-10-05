@@ -215,6 +215,8 @@ class PipelineOrchestratorService:
             if not instances_to_run:
                 state.review_hold = ReviewHold(barrier=barrier, parked=parked)
                 await self.backend.state_service.save_project(project_path=project_dir, force=True)
+                # DL review scores the tilts by itself once fsMotion has run.
+                await self.backend.autostart_tilt_filter_predict(project_dir)
                 return ok(
                     waiting_for_review=True,
                     parked=parked,
@@ -240,6 +242,9 @@ class PipelineOrchestratorService:
                     # Nothing reached SLURM, so no run is waiting for the review either.
                     state.review_hold = None
                     state.mark_dirty()
+            if state.review_hold is not None:
+                # DL review scores the tilts by itself: now when fsMotion has run, else on its SUCCEEDED edge.
+                await self.backend.autostart_tilt_filter_predict(project_dir)
             return res
 
         # Schemer path -- Partition: jobs that FAILED with an existing External/jobNNN dir get

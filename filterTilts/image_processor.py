@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import mrcfile
 from pathlib import Path
@@ -93,7 +94,11 @@ class ImageProcessor:
                 if save_png_path:
                     save_png_path = Path(save_png_path)
                     save_png_path.parent.mkdir(parents=True, exist_ok=True)
-                    pil_image.save(save_png_path)
+                    # Written under a name outside the *.png glob, then renamed into place: a reader (the
+                    # DL run that starts on the same fsMotion edge) sees a complete PNG or none.
+                    part_path = save_png_path.with_name(save_png_path.name + '.part')
+                    pil_image.save(part_path, format='PNG')
+                    os.replace(part_path, save_png_path)
                 
                 return pil_image
                 
