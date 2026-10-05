@@ -49,8 +49,9 @@ stage 0. Suggested order, by dependency:
 4. **21 miss-alignment** — plumbing and drop-in output first; real runs once defaults are picked from the paper.
 5. **22 blank-tilt-rays** — independent; being confirmed on its own branch.
 
-Found along the way, owned by none of them yet: candidate scoring counts a species match only for
-succeeded candidates, so a fresh multi-species run may cross-bind (21 §6). (Deploy's missing re-entrancy lock, 06 defect 4, is fixed by 06 chunk 9.)
+Found along the way: candidate scoring counted a species match only for succeeded candidates, so a fresh
+multi-species run cross-bound (21 §6) — reproduced 2026-10-05 and fixed by
+[28](completed/roadmap_28-species-aware-io-wiring.md) (built, not run). (Deploy's missing re-entrancy lock, 06 defect 4, is fixed by 06 chunk 9.)
 
 ## The open debt
 

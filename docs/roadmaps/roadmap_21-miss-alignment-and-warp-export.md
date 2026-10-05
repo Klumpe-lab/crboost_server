@@ -230,6 +230,8 @@ Species match in candidate scoring only counts for **succeeded** candidates
 (`path_resolution_service.py:944`). In a fresh multi-species afterok run nothing has succeeded yet, so
 e.g. `tmextractcand__A` could bind `templatematching__B` when B has the higher job number — unless
 species instances pin their inputs by override at creation. Worth one check on a two-species project.
+**Reproduced 2026-10-05 and fixed by roadmap 28** (`completed/roadmap_28-species-aware-io-wiring.md`):
+species and stage order are hard filters, ties are stated, and job numbers no longer rank.
 
 **Modern-Python weave-in:** `refines` as a `tuple[JobFileType, ...]` on the frozen `JobSpec`;
 `_follow_refinements` as a small pure function (candidate, pipeline, specs) → candidate, trivially testable.
