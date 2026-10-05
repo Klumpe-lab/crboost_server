@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from pathlib import Path
 from collections.abc import Callable
 
@@ -315,7 +316,9 @@ def generate_candidate_previews(
                 "zero_picks": zero_picks,
             },
         }
-        tmp_path = manifest_path.with_name(manifest_path.name + ".tmp")
+        # One tmp name per write: two passes over the same job (an auto-render and a button
+        # click, or the driver) sharing one name fail on replace once the other has moved it.
+        tmp_path = manifest_path.with_name(f".{manifest_path.name}.tmp{uuid.uuid4().hex[:8]}")
         tmp_path.write_text(json.dumps(manifest, indent=2))
         tmp_path.replace(manifest_path)
 

@@ -167,10 +167,12 @@ class ProjectsOverview:
         Polling interval in seconds. Set to 0 to disable.
     current_path : optional str
         Project directory currently loaded by the caller. Renders that row
-        with a "current" highlight, no click handler, and no delete button
-        (so the switcher keeps continuity but won't reload -- or delete --
-        the project the user is already in). Every other row can be deleted
-        (hover button; the component owns the confirm dialog).
+        with a "current" highlight and no click handler, and it can't be
+        deleted (so the switcher keeps continuity but won't reload -- or
+        delete -- the project the user is already in). Every other row can be
+        deleted in deletion mode: the trash toggle in the header arms it, the
+        whole roster outlines red, and a row click opens the confirm dialog
+        (owned by the component). One deletion disarms it.
     show_filter : bool
         Whether to render the "Only mine" toggle in the header.
     height_px : int
@@ -237,6 +239,10 @@ class ProjectsOverview:
         # Set while a row's hover card is open -- also holds auto-refresh, since a
         # rebuild would destroy the card under the pointer. _render_list clears it.
         self._preview_open = False
+        # Deletion mode: armed by the header's trash toggle, a row click deletes.
+        self._delete_mode = False
+        self._delete_btn = None
+        self._delete_hint = None
 
     # =====================================================================
     # PUBLIC API
@@ -336,6 +342,10 @@ class ProjectsOverview:
                 "letter-spacing: -0.01em; flex-shrink: 0;"
             )
             self._size_label = ui.label("").style(f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; flex-shrink: 0;")
+            self._delete_hint = ui.label("Deletion mode · click a project to delete it").style(
+                f"{FONT} font-size: 9px; font-weight: 600; color: {CLR_FAILED}; letter-spacing: 0.02em; "
+                "flex-shrink: 0; white-space: nowrap;"
+            )
             ui.element("div").style("flex: 1 1 0; min-width: 0;")
 
             # Every choice in this row is the same small two-way strip, so the row reads as
@@ -369,13 +379,22 @@ class ProjectsOverview:
                 (("compact", "Compact"), ("full", "Full")),
                 "compact" if self.prefs.prefs.projects_compact_view else "full",
                 self._on_view,
-                hint="Compact: one line per project. Full: paths, last activity and delete",
+                hint="Compact: one line per project. Full: paths and last activity",
             )
 
             if self.on_browse is not None:
                 ui.button(icon="folder_open", on_click=self.on_browse).props("flat dense round size=xs").classes(
                     "text-slate-400 hover:text-blue-600 shrink-0"
                 ).tooltip("Browse for another base location")
+            # color=None: a Quasar color would paint the glyph with an !important class
+            # and the armed/idle colors below could never show.
+            self._delete_btn = (
+                ui.button(icon="delete_outline", on_click=self._toggle_delete_mode, color=None)
+                .props("flat dense round size=xs")
+                .classes("shrink-0")
+                .tooltip("Deletion mode: arm it, then click the project to delete. Click again to disarm.")
+            )
+            self._style_delete_mode()
             # Refresh button -- explicit re-scan in addition to the timer.
             ui.button(icon="refresh", on_click=self.refresh).props("flat dense round size=xs").classes(
                 "text-slate-400 hover:text-blue-600 shrink-0"
@@ -386,6 +405,35 @@ class ProjectsOverview:
         """A 16 px segmented strip (`cb-seg-sm`) with a hover hint."""
         with ui.element("div").style("display: flex; flex-shrink: 0;").tooltip(hint):
             return render_segmented(list(tabs), active, on_switch, classes="cb-seg-sm")
+
+    def _toggle_delete_mode(self):
+        self._set_delete_mode(not self._delete_mode)
+
+    def _set_delete_mode(self, on: bool, *, rerender: bool = True):
+        """Arm or disarm deletion mode. Armed, the rows re-render as delete targets: a click
+        opens the confirm dialog, nothing previews, and the travel chevron is a trash glyph,
+        so no click on a row leaves the page."""
+        self._delete_mode = on
+        self._style_delete_mode()
+        if rerender:
+            self._render_list()
+
+    def _style_delete_mode(self):
+        """The header toggle, its hint and the roster's outline, for the current mode. The
+        armed outline breathes (`.cb-proj-delmode`, ui/dashboard/css.py)."""
+        on = self._delete_mode
+        if self._delete_btn is not None:
+            self._delete_btn.props(f"icon={'delete' if on else 'delete_outline'}")
+            self._delete_btn.classes(remove="text-slate-400 hover:text-red-500 text-red-600 bg-red-50")
+            self._delete_btn.classes(add="text-red-600 bg-red-50" if on else "text-slate-400 hover:text-red-500")
+        if self._delete_hint is not None:
+            self._delete_hint.set_visibility(on)
+        if self._outer_container is not None:
+            self._outer_container.style(f"border: 1px solid {CLR_FAILED if on else CLR_BORDER};")
+            if on:
+                self._outer_container.classes(add="cb-proj-delmode")
+            else:
+                self._outer_container.classes(remove="cb-proj-delmode")
 
     def _on_owner_filter(self, key: str):
         self._owner_seg.set_active(key)
@@ -465,7 +513,8 @@ class ProjectsOverview:
             ui.label("Scanning…").style(f"{FONT} font-size: 11px; color: {CLR_SUBLABEL}; margin-left: 8px;")
 
     def _render_list(self):
-        if self._list_container is None:
+        # Deleted when the tab closed while refresh() awaited the scan.
+        if self._list_container is None or self._list_container.is_deleted:
             return
         self._list_container.clear()
         # Every hover card died with the rows.
@@ -589,7 +638,6 @@ class ProjectsOverview:
     # Fixed widths (px) for the cells that must line up from row to row. The name and
     # the two paths are the flexible cells and absorb all slack.
     _W_CHEVRON = 30
-    _W_DELETE = 20
     # Compact view columns.
     _W_OWNER = 84
     _W_TS = 44
@@ -642,24 +690,40 @@ class ProjectsOverview:
             f"overflow: hidden; border-bottom: 1px solid {CLR_BORDER};"
         )
         outline = " box-shadow: inset 0 0 0 1.5px #93c5fd;" if is_selected else ""
-        cursor = " cursor: pointer;" if preview_mode else " cursor: default;"
+        deleting = self._delete_mode
+        cursor = " cursor: pointer;" if preview_mode or deleting else " cursor: default;"
         if is_current:
             row_classes = "w-full group"
             row_style = base_style + " background: #eff6ff; border-left: 3px solid #3b82f6;" + cursor + outline
+            if deleting:
+                row_style += " opacity: 0.5; cursor: not-allowed;"
+        elif deleting:
+            row_classes = "w-full group cb-proj-delrow"
+            row_style = base_style + cursor + outline
         else:
             row_classes = "w-full hover:bg-slate-50 transition-colors group"
             row_style = base_style + cursor + outline
 
         row = ui.element("div").classes(row_classes).style(row_style)
-        if preview_mode:
+        if deleting:
+            # Deletion mode: the row is the trigger and nothing else on it acts.
+            if is_current:
+                row.tooltip("The open project can't be deleted from here")
+            else:
+
+                async def _delete():
+                    await self._handle_delete(Path(path_str), name, row)
+
+                row.on("click", _delete)
+        elif preview_mode:
             row.on("click", _select)
 
         fixed = "flex-shrink: 0; white-space: nowrap;"
-        with row as row_el:
+        with row:
             if proj.get("tomo_preview"):
                 self._render_preview_card(proj, row)
             if compact:
-                self._render_compact_body(proj, is_current, row_el)
+                self._render_compact_body(proj)
                 self._render_chevron(path_str, is_current)
                 return
             with ui.element("div").style(
@@ -700,9 +764,9 @@ class ProjectsOverview:
                         f"{MONO} font-size: 9px; color: {CLR_GHOST}; font-style: italic;"
                     )
 
-                # ---- Line 4: TS · last activity · size | delete ----
-                # Starts flush with the paths above; delete sits at the right edge. Wraps
-                # rather than overflows on a narrow pane.
+                # ---- Line 4: TS · last activity · size ----
+                # Starts flush with the paths above. Wraps rather than overflows on a
+                # narrow pane.
                 with ui.element("div").style(
                     "display: flex; align-items: center; flex-wrap: wrap; column-gap: 18px; row-gap: 2px; "
                     "min-width: 0; margin-top: 2px;"
@@ -714,8 +778,6 @@ class ProjectsOverview:
                         "Last activity"
                     )
                     self._render_size(proj)
-                    ui.element("div").style("flex: 1 1 0; min-width: 0;")
-                    self._render_delete(path_str, name, row_el, is_current)
 
             # ---- Travel chevron: full row height, its own hit area ----
             # A full-height column on the right edge, so "go there" is the easiest
@@ -729,6 +791,19 @@ class ProjectsOverview:
                 "align-items: center; justify-content: center;"
             ):
                 ui.icon("check", size="14px").style(f"color: {CLR_RUNNING};").tooltip("Currently open")
+            return
+        if self._delete_mode:
+            # Armed: the travel column becomes a trash glyph that lights with the row
+            # (`.cb-proj-deltrash`), so the one control that leaves the page is gone.
+            with (
+                ui.element("div")
+                .classes("cb-proj-deltrash")
+                .style(
+                    f"width: {self._W_CHEVRON}px; flex-shrink: 0; display: flex; align-items: center; "
+                    f"justify-content: center; align-self: stretch; border-left: 1px solid {CLR_BORDER};"
+                )
+            ):
+                ui.icon("delete_outline", size="16px")
             return
         # A real <a href>, not a click handler: the travel arrow carries the project's
         # addressable URL, so ⌘-click / middle-click opens it in a new browser tab and
@@ -761,27 +836,9 @@ class ProjectsOverview:
         p = Path(path_str)
         return route_to_path(Route(project=p.name, base=str(p.parent)))
 
-    def _render_delete(self, path_str: str, name: str, row_el, is_current: bool):
-        """The hover-revealed delete button in a fixed slot -- empty on the open project's
-        row, which can never be deleted from here -- so cells line up from row to row."""
-        with ui.element("div").style(f"width: {self._W_DELETE}px; flex-shrink: 0; display: flex;"):
-            if is_current:
-                return
-
-            async def _del():
-                await self._handle_delete(Path(path_str), name, row_el)
-
-            (
-                ui.button(icon="delete_outline", on_click=_del)
-                .props("flat dense round size=xs")
-                .classes("text-slate-300 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity")
-                .on("click.stop", lambda: None)
-                .tooltip("Delete project")
-            )
-
-    def _render_compact_body(self, proj: dict, is_current: bool, row_el):
-        """Compact view: one line -- name, live progress, owner, TS, size, status, delete. The
-        owner sits in the row because the compact list has no owner sections."""
+    def _render_compact_body(self, proj: dict):
+        """Compact view: one line -- name, live progress, owner, TS, size, status. The owner
+        sits in the row because the compact list has no owner sections."""
         name = proj["name"]
         ts_count = proj.get("ts_count") or 0
         mnemonic = proj.get("mnemonic") or ""
@@ -808,7 +865,6 @@ class ProjectsOverview:
                 self._render_size(proj)
             with ui.element("div").style(f"width: {self._W_STATUS}px; {fixed} display: flex;"):
                 self._render_status(proj)
-            self._render_delete(proj["path"], name, row_el, is_current)
 
     @staticmethod
     def _owner_label(owner: str) -> str:
@@ -1015,7 +1071,8 @@ class ProjectsOverview:
            destroyed by row re-renders)
         2. on confirm, pause auto-refresh + grey out the row
         3. backend.delete_project (the rmtree)
-        4. if that was the previewed project, preview the open one again
+        4. disarm deletion mode, and if that was the previewed project, preview the
+           open one again
         5. resume auto-refresh and refresh the list"""
         if self._outer_container is None:
             return
@@ -1033,6 +1090,8 @@ class ProjectsOverview:
                 ui.notify(f"Failed to delete: {result['error']}", type="negative")
                 return
             ui.notify(f"Deleted '{name}'", type="positive")
+            # One deletion per arming: the next one needs the toggle again.
+            self._set_delete_mode(False, rerender=False)
             if was_selected and self.on_select is not None and self.current_path:
                 self.set_selected(self.current_path)
                 await self.on_select(Path(self.current_path))

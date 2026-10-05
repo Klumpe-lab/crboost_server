@@ -30,17 +30,21 @@ logger = logging.getLogger(__name__)
 _EXPERIMENTAL_JOB_TYPES = {JobType.MISS_ALIGN}
 
 
-def create_save_handler() -> Callable:
+def create_save_handler(ui_mgr: UIStateManager) -> Callable:
     """Debounced save for config-field handlers: each call re-arms a 1 s
-    trailing-edge save of the current project via the facade (which coalesces
-    per project path)."""
+    trailing-edge save of the tab's project via the facade (which coalesces
+    per project path).
+
+    The project comes from the tab's `ui_mgr`, not a tab-context lookup: the handler
+    also fires from tasks with no client context (the I/O section's save-and-refresh),
+    where that lookup yields a blank state and the save is dropped."""
 
     def _trigger() -> None:
         bk = get_backend()
         if bk is None:
             return
         try:
-            asyncio.create_task(bk.save_project(current_project_state().project_path, debounce_s=1.0))
+            asyncio.create_task(bk.save_project(ui_mgr.project_path, debounce_s=1.0))
         except RuntimeError:
             logger.info("Debounced save skipped — no running event loop")
 
@@ -232,7 +236,7 @@ def render_job_tab(
     content_container = ui.column().classes("w-full overflow-hidden").style("flex: 1 1 0%; min-height: 0;")
     widget_refs.content_container = content_container
 
-    save_handler = create_save_handler()
+    save_handler = create_save_handler(ui_mgr)
 
     with content_container:
         _render_tab_content(
@@ -290,7 +294,7 @@ def _render_interactive_job(
             ).props("flat round dense color=red").tooltip("Delete this job")
 
     # --- Full panel content ---
-    save_handler = create_save_handler()
+    save_handler = create_save_handler(ui_mgr)
     with ui.column().classes("w-full overflow-hidden").style("flex: 1 1 0%; min-height: 0;"):
         full_renderer(job_type, instance_id, job_model, backend, ui_mgr, save_handler)
 
@@ -350,7 +354,7 @@ def _handle_tab_switch(
         if job_model is None:
             return
         frozen = is_job_frozen(instance_id)
-        save_handler = create_save_handler()
+        save_handler = create_save_handler(ui_mgr)
         content_container.clear()
         with content_container:
             _render_tab_content(

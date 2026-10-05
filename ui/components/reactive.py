@@ -133,7 +133,9 @@ class FingerprintedView:
 
     def refresh(self) -> None:
         container = self._get_container()
-        if container is None:
+        # Deleted along with its client (tab closed) after this tick was scheduled: clearing it
+        # only makes NiceGUI warn "Client has been deleted but is still being used".
+        if container is None or container.is_deleted:
             return
         try:
             sig = self.signature()
