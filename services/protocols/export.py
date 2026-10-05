@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 from services.models_base import InstanceId, JobType
-from services.path_resolution_service import PathResolutionService
+from services.path_resolution_service import PathResolutionService, override_instance_id
 from services.project_state import ProjectState
 from services.protocols.schema import (
     ASSETS_DIRNAME,
@@ -96,16 +96,22 @@ def _bound_species(state: ProjectState, iid: str, jm) -> str | None:
 
 
 def _portable_inputs(state: ProjectState, resolver: PathResolutionService, iid: str, jm, warnings: list[str]) -> dict:
-    """`source_overrides` ("jobtype:External/job005") rewritten as stage references."""
+    """`source_overrides` ("jobtype:instance:<id>", or "jobtype:External/job005" from older files)
+    rewritten as stage references."""
     inputs: dict[str, str] = {}
     for slot, ref in (getattr(jm, "source_overrides", None) or {}).items():
         if ref.startswith("manual:"):
             warnings.append(f"{iid}.{slot}: manual path override is not portable — NOT exported ({ref})")
             continue
-        _, _, instance_path = ref.partition(":")
-        producer = next(
-            (p for p, pm in state.jobs.items() if resolver._get_instance_path(p, pm) == instance_path.rstrip("/")), None
-        )
+        named = override_instance_id(ref)
+        if named is not None:
+            producer = named if named in state.jobs else None
+        else:
+            _, _, instance_path = ref.partition(":")
+            producer = next(
+                (p for p, pm in state.jobs.items() if resolver._get_instance_path(p, pm) == instance_path.rstrip("/")),
+                None,
+            )
         if producer is None:
             warnings.append(f"{iid}.{slot}: override '{ref}' names no job in this project — NOT exported")
             continue

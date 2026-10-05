@@ -324,10 +324,10 @@ def instantiate_stages(state: ProjectState, protocol: Protocol, assets: dict[str
             warnings.append(f"{iid}: not covered by the protocol, code defaults in effect: {', '.join(uncovered)}")
 
         for slot, producer in st.inputs.items():
-            # The resolver's override keys embed the producer's job directory, which a fresh
-            # project has not allocated yet; a key written now would silently stop matching
-            # once the producer is deployed. The resolver does not accept instance ids, so
-            # explicit wiring is reported and automatic (species-aware) selection is used.
+            # A stage reference names an instance of the project the protocol was exported from,
+            # which need not match the instance ids created here, so explicit wiring is reported
+            # and automatic selection is used: it wires each stage to its own species' upstream
+            # and reports a tie instead of guessing.
             warnings.append(f"{iid}.{slot}: explicit wiring to '{producer}' NOT applied (automatic selection used)")
     return warnings
 
