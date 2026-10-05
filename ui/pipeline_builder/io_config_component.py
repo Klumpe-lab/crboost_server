@@ -680,6 +680,15 @@ class IOConfigComponent:
             return
         if not hasattr(job_model, "source_overrides") or job_model.source_overrides is None:
             job_model.source_overrides = {}
+        if value and value != "manual":
+            loop = PathResolutionService(state).cycle_with_override(self.instance_id, slot.key, value)
+            if loop:
+                ui.notify(
+                    "Not set: this source would close a loop — " + "; ".join(w.describe() for w in loop),
+                    type="negative",
+                    timeout=8000,
+                )
+                return
         if value == "manual":
             job_model.source_overrides[slot.key] = "manual:"
         elif value:

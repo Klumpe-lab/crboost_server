@@ -1339,6 +1339,15 @@ class ProjectState(BaseModel):
         if renamed or relabelled:
             project_state.mark_dirty()
 
+        # Input overrides name the producing job's instance; older files name its job directory,
+        # which a later Start can hand to another job. Rewritten before anything allocates.
+        from services.path_resolution_service import migrate_override_keys
+
+        rekeyed = migrate_override_keys(project_state)
+        if rekeyed:
+            logger.info("Rewrote %d input override(s) in %s to name job instances", rekeyed, path.parent.name)
+            project_state.mark_dirty()
+
         # pipeline_order: use the persisted value; for projects without the field,
         # backfill from the loaded job set in file order (every initialized job is part
         # of the pipeline). The authoritative value is the write-through at deploy.

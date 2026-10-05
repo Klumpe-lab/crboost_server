@@ -56,8 +56,12 @@ class OutputCandidate:
 
     @property
     def source_key(self) -> str:
-        """Key format for source_overrides: 'jobtype:instance_path'"""
-        return f"{self.producer_job_type.value}:{self.instance_path}"
+        """Key format for source_overrides: 'jobtype:instance:<instance_id>' for a job, which holds
+        however job dirs are allocated; 'jobtype:instance_path' for a synthetic producer (merge,
+        imported tomograms, pick list), whose instance path is its identity."""
+        if is_synthetic_producer(self.producer_instance_id):
+            return f"{self.producer_job_type.value}:{self.instance_path}"
+        return instance_override_key(self.producer_job_type, self.producer_instance_id)
 
     @property
     def display_name(self) -> str:
@@ -176,6 +180,26 @@ class PathResolutionError(ValueError):
 PICK_LIST_PRODUCER_PREFIX = "pick_list__"
 IMPORTED_TOMOGRAMS_INSTANCE_PATH = "Tomograms"
 IMPORTED_TOMOGRAMS_PRODUCER_ID = "importedTomograms"
+
+
+# An override naming a job names its instance: "<jobtype>:instance:<instance_id>". Older project
+# files name the job's directory instead ("templatematching:External/job007"), which a later
+# allocation can hand to another job; ProjectState.load rewrites those (migrate_override_keys),
+# and the form is still read.
+INSTANCE_REF = "instance:"
+
+
+def instance_override_key(job_type: JobType, instance_id: str) -> str:
+    """The override key naming producer instance `instance_id`."""
+    return f"{job_type.value}:{INSTANCE_REF}{instance_id}"
+
+
+def override_instance_id(override_key: str) -> str | None:
+    """The producer instance an override key names, or None for any other kind of key."""
+    if override_key.startswith("manual:"):
+        return None
+    _, _, ref = override_key.partition(":")
+    return ref[len(INSTANCE_REF) :] if ref.startswith(INSTANCE_REF) else None
 
 
 def pick_list_producer_id(pick_list) -> str:
@@ -420,6 +444,52 @@ class PathResolutionService:
 
         return edges
 
+    def cycle_with_override(self, consumer_id: str, slot_key: str, override_key: str) -> list[SlotEdge]:
+        """The wires of the loop that setting `override_key` on `consumer_id`'s input `slot_key`
+        would close, the new wire first, or [] when it closes none. Automatic wiring only looks
+        upstream, so a loop always runs through an override. The job's overrides are left as
+        they were."""
+        job_model = self.state.jobs.get(consumer_id)
+        if job_model is None:
+            return []
+        if job_model.source_overrides is None:
+            job_model.source_overrides = {}
+        overrides = job_model.source_overrides
+        before = overrides.get(slot_key)
+        overrides[slot_key] = override_key
+        try:
+            edges = self.resolve_slot_edges()
+        finally:
+            if before is None:
+                overrides.pop(slot_key, None)
+            else:
+                overrides[slot_key] = before
+        wire = next((e for e in edges if e.consumer == consumer_id and e.slot == slot_key), None)
+        if wire is None:
+            return []
+        back = _path_between(edges, wire.consumer, wire.producer)
+        return [wire, *back] if back is not None else []
+
+    def automatic_sources(self) -> dict[tuple[str, str], OutputCandidate]:
+        """What automatic selection wires now: `{(instance_id, slot_key): candidate}` for every
+        job's input slot that has no override and one source (unresolved and tied slots are
+        absent)."""
+        index = self._build_output_index()
+        sources: dict[tuple[str, str], OutputCandidate] = {}
+        for instance_id, job_model in self.state.jobs.items():
+            if job_model.job_type is None:
+                continue
+            overrides = getattr(job_model, "source_overrides", {}) or {}
+            for slot in self._get_input_schema(job_model.job_type):
+                if overrides.get(slot.key):
+                    continue
+                choice = self._auto_select(
+                    slot, index, job_model.job_type, getattr(job_model, "species_id", None), instance_id
+                )
+                if choice.candidate is not None:
+                    sources[(instance_id, slot.key)] = choice.candidate
+        return sources
+
     # -------------------------------------------------------------------------
     # Candidate enumeration for UI
     # -------------------------------------------------------------------------
@@ -482,7 +552,7 @@ class PathResolutionService:
         # Collapse candidates that share a source_key. A single producing job can
         # expose several outputs of the SAME JobFileType — e.g. subtomo extraction
         # emits both a raw optimisation_set.star and its curated `_filtered`
-        # sibling. They map to the identical override key (jobtype:instance_path),
+        # sibling. They map to the identical override key (source_key),
         # so listing both as separate rows produces confusing duplicate entries
         # with identical labels ("Subtomo Extraction #2 (job017)" twice). Keep one
         # row per source_key, preferring the `prefer_if_exists` (curated) sibling
@@ -638,11 +708,11 @@ class PathResolutionService:
         index: dict[JobFileType, list[OutputCandidate]],
         consumer_instance_id: str | None,
     ) -> SlotSource:
-        """The source of one input slot: the user's override when it resolves, otherwise
+        """The source of one input slot: the user's override when it is set, otherwise
         automatic selection (`_auto_select`). A `manual:` override is a file path with no
-        producer. An override naming a synthetic producer that is gone (a deleted merge, a
-        stale pick list, a removed import) is reported, never replaced by some other producer
-        such as a downstream Class3D output; so is a tie."""
+        producer. An override that no longer resolves (a deleted job or merge, a stale pick
+        list, a removed import) is reported, never replaced by some other producer such as a
+        downstream Class3D output: the user chose that source. So is a tie."""
         override_key = (getattr(job_model, "source_overrides", {}) or {}).get(slot.key)
         if override_key:
             if override_key.startswith("manual:"):
@@ -651,10 +721,12 @@ class PathResolutionService:
             if hit is not None:
                 return SlotSource(candidate=hit, override_key=override_key)
             target = _synthetic_override_target(override_key)
-            if target:
-                return SlotSource(
-                    override_key=override_key, problem=self._dangling_synthetic_message(target, override_key)
-                )
+            problem = (
+                self._dangling_synthetic_message(target, override_key)
+                if target
+                else self._dangling_job_message(override_key)
+            )
+            return SlotSource(override_key=override_key, problem=problem)
 
         choice = self._auto_select(
             slot, index, consumer_type, getattr(job_model, "species_id", None), consumer_instance_id
@@ -672,6 +744,17 @@ class PathResolutionService:
         if target == "imported":
             return self._dangling_imported_message()
         return "merged-sources optimisation_set not found (merge deleted or active merge switched?)"
+
+    def _dangling_job_message(self, override_key: str) -> str:
+        """Why an override naming a job stopped resolving: the job is gone, or offers nothing
+        this input accepts."""
+        instance_id = override_instance_id(override_key)
+        if instance_id is None:
+            ref = override_key.partition(":")[2]
+            return f"the job directory this input was set to ({ref}) belongs to no job now; pick a source or reset"
+        if instance_id not in self.state.jobs:
+            return f"the job this input was set to, {instance_id}, is no longer in the project; pick a source or reset"
+        return f"{instance_id} offers no output this input accepts; pick a source or reset"
 
     def _dangling_pick_list_message(self, override_key: str) -> str:
         """Why a pick-list override stopped resolving, in the user's terms. The candidate
@@ -704,7 +787,9 @@ class PathResolutionService:
         Resolve a user override to a candidate.
 
         override_key format:
-          - "jobtype:instance_path" e.g., "tsReconstruct:External/job005"
+          - "jobtype:instance:<instance_id>" for a job, e.g. "templatematching:instance:templatematching__2"
+          - "jobtype:instance_path" for a synthetic producer, e.g. "mergedSources:MergedSources/<slug>",
+            and for a job in older project files, e.g. "tsReconstruct:External/job005"
           - "manual:/path/to/file" for manual paths (handled separately)
         """
         if override_key.startswith("manual:"):
@@ -714,6 +799,16 @@ class PathResolutionService:
             return None
 
         job_type_str, instance_path = override_key.split(":", 1)
+        instance_id = override_instance_id(override_key)
+        if instance_id is not None:
+            matches = [
+                candidate
+                for accepted_type in slot.accepts
+                for candidate in index.get(accepted_type, [])
+                if candidate.producer_job_type.value == job_type_str and candidate.producer_instance_id == instance_id
+            ]
+            return next((m for m in matches if m.prefer_if_exists), matches[0]) if matches else None
+
         if job_type_str == JobType.MERGED_SOURCES.value and instance_path == IMPORTED_TOMOGRAMS_INSTANCE_PATH:
             # Legacy key: older projects persist imported-tomogram overrides under
             # MERGED_SOURCES. Rewritten at read time rather than migrated on load — the
@@ -1195,6 +1290,75 @@ class PathResolutionService:
         if not self.state.project_path:
             raise PathResolutionError("ProjectState.project_path is not set")
         return Path(self.state.project_path).resolve()
+
+
+def migrate_override_keys(state: ProjectState) -> int:
+    """Rewrite overrides that name a job by its directory ("templatematching:External/job007", or
+    the "<category>/pending_<instance_id>" placeholder) to name its instance, mapped through the
+    directory each job holds now; a later Start that allocates dirs afresh can then never move an
+    override onto another job. Keys of synthetic producers and manual files stay as they are, and
+    so does a key whose directory belongs to no job (path resolution reports it). Returns how many
+    keys were rewritten."""
+    resolver = PathResolutionService(state)
+    owner: dict[tuple[str, str], str] = {}
+    for instance_id, job_model in state.jobs.items():
+        if job_model.job_type is not None:
+            owner[(job_model.job_type.value, resolver._get_instance_path(instance_id, job_model))] = instance_id
+
+    rewritten = 0
+    for job_model in state.jobs.values():
+        overrides = getattr(job_model, "source_overrides", None) or {}
+        for slot_key, key in list(overrides.items()):
+            if (
+                key.startswith("manual:")
+                or ":" not in key
+                or _synthetic_override_target(key)
+                or override_instance_id(key) is not None
+            ):
+                continue
+            job_type_str, _, ref = key.partition(":")
+            ref = ref.rstrip("/")
+            instance_id = owner.get((job_type_str, ref))
+            if instance_id is None:
+                folder = ref.partition("/")[2]
+                pending_id = folder.removeprefix("pending_") if folder.startswith("pending_") else None
+                producer = state.jobs.get(pending_id) if pending_id else None
+                if producer is not None and producer.job_type is not None and producer.job_type.value == job_type_str:
+                    instance_id = pending_id
+            if instance_id is not None:
+                overrides[slot_key] = instance_override_key(state.jobs[instance_id].job_type, instance_id)
+                rewritten += 1
+    return rewritten
+
+
+def pin_sources_made_ambiguous(
+    state: ProjectState, before: dict[tuple[str, str], OutputCandidate]
+) -> list[tuple[str, str, str]]:
+    """Keep jobs on the sources they read before a job was added. `before` is
+    `automatic_sources()` from just before the addition; every slot of it that is now ambiguous
+    (the new job ties with its source, an A/B copy) gets that source as an explicit override.
+    Returns (instance_id, slot_key, producer instance_id) per pin."""
+    resolver = PathResolutionService(state)
+    index = resolver._build_output_index()
+    pinned: list[tuple[str, str, str]] = []
+    for (instance_id, slot_key), source in before.items():
+        job_model = state.jobs.get(instance_id)
+        if job_model is None or job_model.job_type is None:
+            continue
+        if job_model.source_overrides is None:
+            job_model.source_overrides = {}
+        if job_model.source_overrides.get(slot_key):
+            continue
+        slot = next((s for s in resolver._get_input_schema(job_model.job_type) if s.key == slot_key), None)
+        if slot is None:
+            continue
+        choice = resolver._auto_select(
+            slot, index, job_model.job_type, getattr(job_model, "species_id", None), instance_id
+        )
+        if choice.tied:
+            job_model.source_overrides[slot_key] = source.source_key
+            pinned.append((instance_id, slot_key, source.producer_instance_id))
+    return pinned
 
 
 # -----------------------------------------------------------------------------

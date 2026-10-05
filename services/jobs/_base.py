@@ -114,7 +114,8 @@ class AbstractJobParams(BaseModel):
 
     # User overrides for input slot sources
     # Maps input_slot_key -> source specification
-    # Format: "jobtype:instance_path" e.g. "tsReconstruct:External/job005"
+    # Format: "jobtype:instance:<instance_id>" for a job, e.g. "tsReconstruct:instance:tsReconstruct",
+    #         "jobtype:instance_path" for a synthetic producer, e.g. "mergedSources:MergedSources/<slug>",
     #         or "manual:/absolute/path/to/file.star"
     source_overrides: dict[str, str] = Field(default_factory=dict)
     job_type: JobType | None = None
