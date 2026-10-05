@@ -4016,7 +4016,9 @@ def _auto_kick_preview_generation(instance_id: str, job_model, job_dir: Path, pr
         title=f"Auto-render previews · {instance_id}",
         subtitle="Filling missing tomogram entries",
         project_path=str(project_path),
-        dedup_key=f"render-previews:{job_dir}:no-force",
+        # The "Render missing" button's key: it is the same pass, so a click during an
+        # auto-render joins it instead of racing it on manifest.json.
+        dedup_key=f"preview-render:{job_dir}:force=False",
     ).submit(_run, on_complete=lambda _t: refresh(), show_start_toast=False)
     return ""
 
