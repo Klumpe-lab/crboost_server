@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
@@ -113,6 +114,55 @@ class SlotSource:
     # Why no source was chosen: an override that no longer resolves, or a tie.
     problem: str | None = None
     tied: tuple[OutputCandidate, ...] = ()
+
+
+@dataclass(frozen=True)
+class SlotEdge:
+    """One wire of the pipeline DAG: `consumer`'s input `slot` reads `output` (a file name) of
+    `producer`. `explicit` when an override set it rather than automatic selection."""
+
+    producer: str
+    consumer: str
+    slot: str
+    output: str
+    explicit: bool
+
+    def describe(self) -> str:
+        how = "set by hand" if self.explicit else "automatic"
+        return f"{self.consumer}.{self.slot} ← {self.producer} ({self.output}, {how})"
+
+
+def find_cycle(edges: Sequence[SlotEdge]) -> list[SlotEdge]:
+    """One loop among `edges`, as its wires in order (each wire's consumer is the next one's
+    producer), or [] when they form none."""
+    for e in edges:
+        back = _path_between(edges, e.consumer, e.producer)
+        if back is not None:
+            return [e, *back]
+    return []
+
+
+def _path_between(edges: Sequence[SlotEdge], start: str, goal: str) -> list[SlotEdge] | None:
+    """The shortest run of wires leading from job `start` to job `goal` (producer to consumer),
+    or None when there is none."""
+    by_producer: dict[str, list[SlotEdge]] = {}
+    for e in edges:
+        by_producer.setdefault(e.producer, []).append(e)
+    reached_by: dict[str, SlotEdge | None] = {start: None}
+    queue = deque([start])
+    while queue:
+        node = queue.popleft()
+        if node == goal:
+            path: list[SlotEdge] = []
+            while (wire := reached_by[node]) is not None:
+                path.append(wire)
+                node = wire.producer
+            return path[::-1]
+        for e in by_producer.get(node, []):
+            if e.consumer not in reached_by:
+                reached_by[e.consumer] = e
+                queue.append(e.consumer)
+    return None
 
 
 class PathResolutionError(ValueError):
@@ -312,15 +362,19 @@ class PathResolutionService:
         return resolved_inputs
 
     def resolve_edges(self, instance_ids: Sequence[str] | None = None) -> list[tuple[str, str]]:
+        """The producer->consumer dependency edges of the pipeline DAG: :meth:`resolve_slot_edges`
+        as deduplicated ``(producer_instance_id, consumer_instance_id)`` pairs, suitable for a
+        SLURM ``--dependency=afterok`` topological submit."""
+        return list(dict.fromkeys((e.producer, e.consumer) for e in self.resolve_slot_edges(instance_ids)))
+
+    def resolve_slot_edges(self, instance_ids: Sequence[str] | None = None) -> list[SlotEdge]:
         """
-        Derive the producer->consumer dependency edges of the pipeline DAG.
+        Derive the wires of the pipeline DAG, one per input slot fed by another job.
 
         For every consumer job (restricted to ``instance_ids`` if given, else all
         jobs in state) each input slot takes its source from :meth:`_select_source`,
         exactly as :meth:`resolve_inputs` does, but the chosen producer's *clean*
-        ``instance_id`` is recorded instead of a path. Returns deduplicated
-        ``(producer_instance_id, consumer_instance_id)`` pairs, suitable for a SLURM
-        ``--dependency=afterok`` topological submit.
+        ``instance_id`` is recorded instead of a path.
 
         Producers with no SLURM job are excluded: a ``manual:`` file override
         (user-picked file, no producing job) and every synthetic producer
@@ -335,8 +389,7 @@ class PathResolutionService:
         """
         consumers = list(instance_ids) if instance_ids is not None else list(self.state.jobs.keys())
         index = self._build_output_index()
-        edges: list[tuple[str, str]] = []
-        seen: set = set()
+        edges: list[SlotEdge] = []
 
         for consumer_id in consumers:
             job_model = self.state.jobs.get(consumer_id)
@@ -344,7 +397,8 @@ class PathResolutionService:
                 continue
 
             for slot in self._get_input_schema(job_model.job_type):
-                chosen = self._select_source(job_model.job_type, job_model, slot, index, consumer_id).candidate
+                src = self._select_source(job_model.job_type, job_model, slot, index, consumer_id)
+                chosen = src.candidate
                 if chosen is None:
                     continue
 
@@ -354,10 +408,15 @@ class PathResolutionService:
                     # override (the override path, unlike auto-selection, does not
                     # exclude the consumer) -- neither is a valid afterok dependency.
                     continue
-                edge = (producer_id, consumer_id)
-                if edge not in seen:
-                    seen.add(edge)
-                    edges.append(edge)
+                edges.append(
+                    SlotEdge(
+                        producer=producer_id,
+                        consumer=consumer_id,
+                        slot=slot.key,
+                        output=Path(chosen.path).name,
+                        explicit=src.override_key is not None,
+                    )
+                )
 
         return edges
 

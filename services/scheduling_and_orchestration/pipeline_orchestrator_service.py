@@ -12,7 +12,7 @@ from services.configs.starfile_service import StarfileService
 from services.job_models import ImportMoviesParams
 from services.jobs.spec import JOB_SPEC_BY_TYPE, JOB_SPECS, driver_invocation
 from services.jobs.tilt_filter import FilterMode, dl_auto_filters, review_barrier, verdict_edges
-from services.path_resolution_service import PathResolutionError, PathResolutionService, get_context_paths
+from services.path_resolution_service import PathResolutionError, PathResolutionService, find_cycle, get_context_paths
 from services.models_base import InstanceId
 from services.event_log import events
 from services.result import err, ok
@@ -61,6 +61,19 @@ def _toposort_submit_order(nodes: list[str], edges: list[tuple]) -> tuple:
         stuck = nodeset - set(order)
         raise ValueError(f"cycle among {sorted(stuck)}")
     return order, preds
+
+
+def _restore_allocation(state, previous: dict[str, tuple]) -> None:
+    """Hand each job back the dir it held before a refused submit: `previous` maps instance_id to
+    its (relion_job_name, relion_job_number, job_path_mapping entry) from before allocation."""
+    for instance_id, (relion_job_name, relion_job_number, mapped) in previous.items():
+        job_model = state.jobs[instance_id]
+        job_model.relion_job_name = relion_job_name
+        job_model.relion_job_number = relion_job_number
+        if mapped is None:
+            state.job_path_mapping.pop(instance_id, None)
+        else:
+            state.job_path_mapping[instance_id] = mapped
 
 
 def write_scheme_star(star_handler: StarfileService, scheme_dir: Path, scheme_name: str, job_names: list[str]) -> None:
@@ -281,6 +294,8 @@ class PipelineOrchestratorService:
         resolver = PathResolutionService(state, active_instance_ids=set(instances_to_run))
 
         report_lines = [f"Scheme: {scheme_name}", f"Instances_to_run: {instances_to_run}", ""]
+        previous_mapping = {iid: state.job_path_mapping.get(iid) for iid in instances_to_run}
+        unresolved: list[str] = []
 
         next_job_num = current_counter
         for _i, instance_id in enumerate(instances_to_run):
@@ -320,6 +335,7 @@ class PipelineOrchestratorService:
                 report_lines.append(f"[{instance_id}] RESOLUTION FAILED: {e}")
                 report_lines.append("")
                 logger.info("Resolution failed for %s: %s", instance_id, e)
+                unresolved.append(f"{instance_id}: {e}")
                 continue
 
             job_model.paths = {k: str(v) for k, v in resolved_paths.items() if v is not None}
@@ -355,6 +371,16 @@ class PipelineOrchestratorService:
         report_path = scheme_dir / "resolution_report.txt"
         report_path.write_text("\n".join(report_lines))
         logger.info("Wrote %s", report_path)
+
+        # A job whose inputs did not resolve has no job.star, so the scheme would stop on it: the
+        # run is refused instead, naming every such job, and the predicted dirs are handed back.
+        if unresolved:
+            for iid, mapped in previous_mapping.items():
+                if mapped is None:
+                    state.job_path_mapping.pop(iid, None)
+                else:
+                    state.job_path_mapping[iid] = mapped
+            return err("Path resolution failed for " + "; for ".join(unresolved))
 
         self._write_scheme_star(scheme_dir, scheme_name, instances_to_run)
 
@@ -448,50 +474,60 @@ class PipelineOrchestratorService:
     async def _submit_chain(self, project_dir: Path, instances_to_run: list[str], state) -> dict[str, Any]:
         """Submit the pipeline as a SLURM afterok DAG instead of via relion_schemer.
 
-        For each fresh job: allocate a stable External/jobNNN dir from the ProjectState
-        counter (monotonic, no reuse -> no off-by-one), resolve paths, write the RELION-compat
-        job.star, and render run_submit.script. A FAILED job that already owns a dir is the one
-        exception: it is re-submitted in place on that dir (no counter slot consumed) so its
-        `.task_status/*.ok` survives and the supervisor reruns only the failed/missing items.
-        Then toposort resolve_edges() and sbatch each supervisor with --dependency=afterok on
-        its producers' supervisor job ids, including producers outside the submitted set that are
-        still queued or running (the upstream of jobs parked behind a review, submit_parked).
+        Three passes, so a refused Start leaves nothing behind:
+
+        1. Allocate. Each fresh job takes a stable External/jobNNN dir from the ProjectState
+           counter (monotonic, no reuse -> no off-by-one). A FAILED job that already owns a dir is
+           the one exception: it is re-submitted in place on that dir (no counter slot consumed) so
+           its `.task_status/*.ok` survives and the supervisor reruns only the failed/missing
+           items. Every job of the run holds its dir before anything is resolved.
+        2. Resolve, from that one snapshot: every job's paths and the DAG's wires come from the
+           same resolver, so they cannot disagree. All unresolved or ambiguous inputs are reported
+           together, and a loop as the wires that form it; either refusal hands every job back its
+           previous dir, and nothing has touched the disk.
+        3. Write each job dir with its RELION-compat job.star and run_submit.script (or the inline
+           output), then sbatch each supervisor in topological order with --dependency=afterok on
+           its producers' supervisor job ids, including producers outside the submitted set that
+           are still queued or running (the upstream of jobs parked behind a review, submit_parked).
 
         This method submits and persists slurm_job_id + QUEUED + pipeline_active=True. The monitor
         dispatches afterok projects to reconcile_afterok -- which owns live status and winds
         pipeline_active back down on completion -- while sync_all_jobs stays guarded off for them.
         The chain executes in SLURM regardless of the headnode process.
 
-        Failure handling: job-dir allocation uses a local counter committed to ProjectState only
-        after a clean prepare + toposort, so an early failure leaks neither the counter nor a
-        persisted dir number; whatever reaches SLURM is always persisted, so no slurm_job_id handle
-        is lost on a mid-chain sbatch error.
+        Failure handling: the counter is committed once pass 3 starts, however it ends, because a
+        job dir may then exist on disk and its number must never be handed out again; whatever
+        reaches SLURM is always persisted, so no slurm_job_id handle is lost on a mid-chain sbatch
+        error.
         """
         server_dir = Path(__file__).parent.parent.parent.resolve()
 
         # Seed the sole job-dir allocator once from the existing RELION counter, then own it.
         if not state.job_dir_counter:
             state.job_dir_counter = max(self._get_current_relion_counter(project_dir), 1)
-        # Allocate from a local counter during prepare; commit to state.job_dir_counter only after
-        # the whole prepare + toposort succeeds, so an early failure leaks neither the counter nor a
-        # persisted dir number (mirrors the schemer path's discardable local next_job_num).
+        # Allocate from a local counter; it reaches state.job_dir_counter only in pass 3.
         next_job_num = state.job_dir_counter
 
-        resolver = PathResolutionService(state, active_instance_ids=set(instances_to_run))
-
-        prepared: dict[str, tuple] = {}  # instance_id -> (job_dir, script_path)
+        # 1. Allocate.
+        previous: dict[str, tuple] = {}  # instance_id -> (relion_job_name, relion_job_number, job_path_mapping)
+        job_dirs: dict[str, Path] = {}
         for instance_id in instances_to_run:
             job_model = state.jobs.get(instance_id)
             if not job_model:
                 try:
                     job_type = InstanceId.parse(instance_id).job_type
                 except ValueError:
+                    _restore_allocation(state, previous)
                     return err(f"Unknown job type for instance '{instance_id}'")
                 state.ensure_job_initialized(job_type, instance_id=instance_id)
                 job_model = state.jobs.get(instance_id)
 
-            job_type = job_model.job_type
-            category = JobCategory.IMPORT if job_type == JobType.IMPORT_MOVIES else JobCategory.EXTERNAL
+            previous[instance_id] = (
+                job_model.relion_job_name,
+                job_model.relion_job_number,
+                state.job_path_mapping.get(instance_id),
+            )
+            category = JobCategory.IMPORT if job_model.job_type == JobType.IMPORT_MOVIES else JobCategory.EXTERNAL
 
             # Dir allocation. Fresh jobs consume a slot from the sole monotonic allocator
             # (job_dir_counter), never reused -- so crboost's numbers can't drift off-by-one.
@@ -511,82 +547,46 @@ class PipelineOrchestratorService:
             if reuse_dir:
                 rel = existing_rel
                 job_num = job_model.relion_job_number
-                job_dir = project_dir / rel
                 logger.info("Reusing FAILED job dir %s for in-place retry of %s", rel, instance_id)
             else:
                 job_num = next_job_num
                 next_job_num += 1
                 rel = f"{category.value}/job{job_num:03d}"
-                job_dir = project_dir / rel
-            job_dir.mkdir(parents=True, exist_ok=True)
-            # Clear stale exit sentinels so the reconciler's pass-1 can't latch a prior run's
-            # terminal status. On a reused FAILED dir this is what lets the rerun proceed;
-            # `.task_status/*.ok` is left intact so the supervisor (clean_status_dir
-            # keep_ok=True) skips already-done items and resubmits only what failed.
-            for _marker in ("RELION_JOB_EXIT_SUCCESS", "RELION_JOB_EXIT_FAILURE"):
-                (job_dir / _marker).unlink(missing_ok=True)
-
-            try:
-                io_paths = resolver.resolve_all_paths(job_type, job_model, job_dir, instance_id=instance_id)
-                context_paths = get_context_paths(job_type, job_model, job_dir)
-                resolved_paths = {**context_paths, **io_paths}
-            except PathResolutionError as e:
-                job_model.is_orphaned = True
-                job_model.missing_inputs = [str(e)]
-                return err(f"Path resolution failed for {instance_id}: {e}")
-
-            job_model.paths = {k: str(v) for k, v in resolved_paths.items() if v is not None}
-            job_model.is_orphaned = False
-            job_model.missing_inputs = []
             job_model.relion_job_name = rel + "/"
             job_model.relion_job_number = job_num
             state.job_path_mapping[instance_id] = rel
-            resolver.invalidate_cache()
+            job_dirs[instance_id] = project_dir / rel
 
-            # RELION-compat job.star into the real job dir.
-            self._write_job_star(
-                scheme_job_dir=job_dir,
-                instance_id=instance_id,
-                job_type=job_type,
-                job_model=job_model,
-                server_dir=server_dir,
-                project_dir=project_dir,
-            )
-
-            # Inline-completed providers (RUNS_INLINE): metadata-only jobs whose output star is
-            # written here in-process -- no relion binary, no supervisor, no afterok SLURM job.
-            # Mark Succeeded + drop the exit sentinel so the roster/DAG show them and their consumers
-            # submit with no afterok producer (the star is on disk before the chain runs). Excluded
-            # from `prepared`, hence from the submit set/DAG below. Currently: ImportMovies
-            # (tilt_series.star from the registry).
-            if getattr(job_model, "RUNS_INLINE", False):
-                try:
-                    if job_type == JobType.IMPORT_MOVIES:
-                        self._write_import_stars_inline(job_model, job_dir, project_dir)
-                    else:
-                        raise ValueError(f"RUNS_INLINE set but no inline writer for {job_type}")
-                except Exception as e:
-                    logger.exception("inline writer failed for %s", instance_id)
-                    return err(f"Inline writer failed for {instance_id}: {e}")
-                (job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
-                job_model.execution_status = JobStatus.SUCCEEDED
-                job_model.slurm_job_id = None
-            else:
-                fn_exe = self._build_fn_exe(instance_id, job_type, job_model, project_dir, server_dir)
-                try:
-                    script_path = self._render_supervisor_script(job_dir, job_model, fn_exe)
-                except (OSError, ValueError) as e:
-                    logger.exception("sbatch script render failed for %s", instance_id)
-                    return err(f"Could not write the sbatch script for {instance_id}: {e}")
-                prepared[instance_id] = (job_dir, script_path)
+        # 2. Resolve. One resolver, built after every dir above is held, gives both the paths and
+        # the wires.
+        resolver = PathResolutionService(state, active_instance_ids=set(instances_to_run))
+        resolved: dict[str, dict[str, str]] = {}
+        unresolved: list[str] = []
+        for instance_id in instances_to_run:
+            job_model = state.jobs[instance_id]
+            job_dir = job_dirs[instance_id]
+            try:
+                io_paths = resolver.resolve_all_paths(job_model.job_type, job_model, job_dir, instance_id=instance_id)
+            except PathResolutionError as e:
+                job_model.is_orphaned = True
+                job_model.missing_inputs = [str(e)]
+                unresolved.append(f"{instance_id}: {e}")
+                continue
+            job_model.is_orphaned = False
+            job_model.missing_inputs = []
+            context_paths = get_context_paths(job_model.job_type, job_model, job_dir)
+            resolved[instance_id] = {k: str(v) for k, v in {**context_paths, **io_paths}.items() if v is not None}
+        if unresolved:
+            _restore_allocation(state, previous)
+            return err("Path resolution failed for " + "; for ".join(unresolved))
 
         # Derive the dependency DAG, restrict to the SUBMITTED set, toposort (cycle-checked).
-        # `prepared` excludes inline-completed jobs (e.g. IMPORT); an edge from such a producer to a
-        # submitted consumer drops out here, so the consumer submits with no afterok dep -- correct,
-        # since the producer's output is already on disk.
-        resolver.invalidate_cache()
-        edges = resolver.resolve_edges(instances_to_run) + verdict_edges(state, instances_to_run)
-        submit_ids = list(prepared)
+        # Inline-completed providers (RUNS_INLINE, e.g. IMPORT) are never submitted; an edge from
+        # one to a submitted consumer drops out here, so the consumer submits with no afterok dep --
+        # correct, since pass 3 writes the producer's output before the chain runs.
+        slot_edges = resolver.resolve_slot_edges(instances_to_run)
+        edges = [(e.producer, e.consumer) for e in slot_edges] + verdict_edges(state, instances_to_run)
+        submit_ids = [iid for iid in instances_to_run if not getattr(state.jobs[iid], "RUNS_INLINE", False)]
         submit_set = set(submit_ids)
         # A producer outside the submitted set that is still queued or running gates its consumers
         # by its SLURM id (Approve submitting parked jobs while their upstream runs).
@@ -600,10 +600,70 @@ class PipelineOrchestratorService:
         try:
             order, preds = _toposort_submit_order(submit_ids, edges)
         except ValueError as e:
-            return err(f"Pipeline DAG is not acyclic ({e}); cannot submit afterok chain.")
+            _restore_allocation(state, previous)
+            loop = find_cycle([w for w in slot_edges if w.producer in submit_set and w.consumer in submit_set])
+            if not loop:
+                return err(f"Pipeline DAG is not acyclic ({e}); cannot submit afterok chain.")
+            return err(
+                "These inputs form a loop, so the chain cannot be ordered: "
+                + "; ".join(w.describe() for w in loop)
+                + ". Change one of them in its job's I/O section."
+            )
 
-        # Prepare + toposort succeeded -> commit the allocator (these job dirs are now owned).
-        state.job_dir_counter = next_job_num
+        # 3. Write the job dirs. Once one may exist on disk its number is spent, so the counter is
+        # committed however this pass ends.
+        prepared: dict[str, Path] = {}  # instance_id -> run_submit.script
+        try:
+            for instance_id in instances_to_run:
+                job_model = state.jobs[instance_id]
+                job_type = job_model.job_type
+                job_dir = job_dirs[instance_id]
+                job_dir.mkdir(parents=True, exist_ok=True)
+                # Clear stale exit sentinels so the reconciler's pass-1 can't latch a prior run's
+                # terminal status. On a reused FAILED dir this is what lets the rerun proceed;
+                # `.task_status/*.ok` is left intact so the supervisor (clean_status_dir
+                # keep_ok=True) skips already-done items and resubmits only what failed.
+                for _marker in ("RELION_JOB_EXIT_SUCCESS", "RELION_JOB_EXIT_FAILURE"):
+                    (job_dir / _marker).unlink(missing_ok=True)
+                job_model.paths = resolved[instance_id]
+
+                # RELION-compat job.star into the real job dir.
+                self._write_job_star(
+                    scheme_job_dir=job_dir,
+                    instance_id=instance_id,
+                    job_type=job_type,
+                    job_model=job_model,
+                    server_dir=server_dir,
+                    project_dir=project_dir,
+                )
+
+                # Inline-completed providers (RUNS_INLINE): metadata-only jobs whose output star is
+                # written here in-process -- no relion binary, no supervisor, no afterok SLURM job.
+                # Mark Succeeded + drop the exit sentinel so the roster/DAG show them and their
+                # consumers submit with no afterok producer (the star is on disk before the chain
+                # runs). Currently: ImportMovies (tilt_series.star from the registry).
+                if getattr(job_model, "RUNS_INLINE", False):
+                    try:
+                        if job_type == JobType.IMPORT_MOVIES:
+                            self._write_import_stars_inline(job_model, job_dir, project_dir)
+                        else:
+                            raise ValueError(f"RUNS_INLINE set but no inline writer for {job_type}")
+                    except Exception as e:
+                        logger.exception("inline writer failed for %s", instance_id)
+                        return err(f"Inline writer failed for {instance_id}: {e}")
+                    (job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
+                    job_model.execution_status = JobStatus.SUCCEEDED
+                    job_model.slurm_job_id = None
+                else:
+                    fn_exe = self._build_fn_exe(instance_id, job_type, job_model, project_dir, server_dir)
+                    try:
+                        script_path = self._render_supervisor_script(job_dir, job_model, fn_exe)
+                    except (OSError, ValueError) as e:
+                        logger.exception("sbatch script render failed for %s", instance_id)
+                        return err(f"Could not write the sbatch script for {instance_id}: {e}")
+                    prepared[instance_id] = script_path
+        finally:
+            state.job_dir_counter = next_job_num
 
         # Submit each supervisor in topo order, gating on its producers' supervisor ids. On a
         # mid-chain sbatch error, stop the loop but still persist what already reached SLURM below.
@@ -611,7 +671,7 @@ class PipelineOrchestratorService:
         submitted: list[dict[str, Any]] = []
         submit_error: tuple | None = None
         for instance_id in order:
-            _job_dir, script_path = prepared[instance_id]
+            script_path = prepared[instance_id]
             after_ids = normalize_slurm_ids(
                 [instance_to_slurm[p] for p in preds.get(instance_id, set()) if p in instance_to_slurm]
                 + live_after.get(instance_id, [])
