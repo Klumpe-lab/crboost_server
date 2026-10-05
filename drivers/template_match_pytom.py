@@ -82,9 +82,9 @@ def _resolve_star_path(base_dir: Path, p: str) -> Path:
 
 def generate_legacy_text_files(tiltseries_global_star: Path, output_dir: Path) -> dict[str, dict[str, Path]]:
     """
-    Replicate old CryoBoost's generatePytomInputFiles: extract tilt angles,
-    defocus (in um), and dose from per-tilt star files into plain text files
-    that pytom 0.10 expects.
+    Replicate old CryoBoost's generatePytomInputFiles: extract aligned tilt
+    angles, defocus (in um), and dose from per-tilt star files into plain text
+    files that pytom 0.10 expects.
 
     Returns: {tomo_name: {"tlt": Path, "defocus": Path, "dose": Path}}
     """
@@ -106,17 +106,28 @@ def generate_legacy_text_files(tiltseries_global_star: Path, output_dir: Path) -
 
         tilt_df = _get_df_from_star(ts_star)
 
+        # Rows without an aligned angle are tilts the reconstruction does not contain;
+        # PyTOM's per-tilt weighting has to cover exactly the tilts in the tomogram.
+        aligned = tilt_df[tilt_df["rlnTomoYTilt"].notna()]
+        if aligned.empty:
+            raise ValueError(f"No aligned tilts (rlnTomoYTilt) in {ts_star}")
+        if len(aligned) < len(tilt_df):
+            print(f"  [LEGACY] {name}: {len(tilt_df) - len(aligned)} tilts without alignment left out", flush=True)
+
+        # The angles the tomogram was reconstructed with (hand flip and alignment tilt
+        # offset included), not the stage angles: PyTOM builds the wedge and per-tilt
+        # CTF from these.
         tlt_path = tlt_dir / f"{name}.tlt"
-        tilt_df["rlnTomoNominalStageTiltAngle"].to_csv(tlt_path, index=False, header=False)
+        aligned["rlnTomoYTilt"].to_csv(tlt_path, index=False, header=False)
 
         def_path = def_dir / f"{name}.txt"
-        (tilt_df["rlnDefocusU"] / 10000).to_csv(def_path, index=False, header=False)
+        (aligned["rlnDefocusU"] / 10000).to_csv(def_path, index=False, header=False)
 
         dose_path = dose_dir / f"{name}.txt"
-        tilt_df["rlnMicrographPreExposure"].to_csv(dose_path, index=False, header=False)
+        aligned["rlnMicrographPreExposure"].to_csv(dose_path, index=False, header=False)
 
         result[name] = {"tlt": tlt_path, "defocus": def_path, "dose": dose_path}
-        print(f"  [LEGACY] {name}: {len(tilt_df)} tilts written", flush=True)
+        print(f"  [LEGACY] {name}: {len(aligned)} tilts written", flush=True)
 
     return result
 
@@ -211,6 +222,8 @@ def build_pytom_base_cmd(
         .opt("--voltage", state.microscope.acceleration_voltage_kv)
         .opt("--spherical-aberration", state.microscope.spherical_aberration_mm)
         .opt("--amplitude-contrast", state.microscope.amplitude_contrast)
+        # Warp reconstructs with phase flipping; the template's CTF weighting has to match.
+        .opt("--tomogram-ctf-model", "phase-flip")
         .flag("--per-tilt-weighting")
         .opt("--log", "debug")
         .raw(" ".join(["-g", *gpu_ids]))

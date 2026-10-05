@@ -37,7 +37,7 @@ from pathlib import Path
 import pandas as pd
 import starfile
 
-from drivers.array_job_base import ArrayDriver, ArrayResults, read_manifest
+from drivers.array_job_base import ArrayDriver, ArrayResults
 from drivers.driver_base import DriverContext, ToolCommand
 from services.subtomo_merge import write_optimisation_set
 from services.job_models import CandidateExtractPytomParams, ExtractionCutoffMethod
@@ -93,11 +93,12 @@ def cleanup_tomo_names(candidates_star: Path, apix_fallback: float) -> int:
     return len(df)
 
 
-def build_extract_base_cmd(params: CandidateExtractPytomParams, apix: float) -> ToolCommand:
+def build_extract_base_cmd(params: CandidateExtractPytomParams) -> ToolCommand:
     base_cmd = (
         ToolCommand("pytom_extract_candidates.py")
         .opt("-n", params.max_num_particles)
-        .opt("--particle-diameter", int(params.particle_diameter_ang / 2.0 / apix) * apix)
+        # The full diameter: PyTOM halves it itself and keeps peaks at least diameter/2 apart.
+        .opt("--particle-diameter", params.particle_diameter_ang)
         .flag("--relion5-compat")
         .opt("--log", "debug")
     )
@@ -340,8 +341,7 @@ class ExtractCandidatesPytomDriver(ArrayDriver):
         return job_json
 
     def build_command(self, ctx: DriverContext[CandidateExtractPytomParams], item: str, staged) -> ToolCommand:
-        apix = float(read_manifest(ctx.job_dir)["apix"])
-        return build_extract_base_cmd(ctx.params, apix).opt_path("-j", staged, quote=False)
+        return build_extract_base_cmd(ctx.params).opt_path("-j", staged, quote=False)
 
     def verify_outputs(self, ctx: DriverContext[CandidateExtractPytomParams], item: str, staged) -> None:
         out_star = tomo_particles_star_path(ctx.job_dir / "tmResults", item)
