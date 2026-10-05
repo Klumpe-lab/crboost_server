@@ -23,7 +23,7 @@ from nicegui import ui
 
 from services.io_slots import JobFileType
 from services.models_base import InstanceId, JobType, JobStatus
-from services.path_resolution_service import PathResolutionService, InputSlotValidation
+from services.path_resolution_service import PathResolutionService, InputSlotValidation, auto_exclusion
 from backend import get_backend
 from services.project_state import get_project_state_for
 from ui.current_project import current_project_state
@@ -47,6 +47,17 @@ STATUS_STYLE = {
     JobStatus.QUEUED: {"color": "#a855f7", "label": "queued"},
     JobStatus.FAILED: {"color": "#ef4444", "label": "failed"},
     JobStatus.UNKNOWN: {"color": "#94a3b8", "label": "pending"},
+}
+
+# An ambiguous slot (two equally good sources) and a hand-picked source automatic wiring would skip.
+_AMBER = "#d97706"
+
+# Why automatic wiring skips a source (services.path_resolution_service.auto_exclusion), as hover text.
+_EXCLUSION_TIPS = {
+    "other species": "Bound to another species. Automatic wiring never picks it; only an explicit choice does.",
+    "not upstream": (
+        "Runs at the same or a later pipeline stage. Automatic wiring never picks it; only an explicit choice does."
+    ),
 }
 
 # Human name + one-line meaning per artifact type, for the input-slot hover.
@@ -328,8 +339,13 @@ class IOConfigComponent:
     def _render_input_slot_row(self, resolver, slot, job_model):
         overrides = getattr(job_model, "source_overrides", {}) or {}
         current_override = overrides.get(slot.key)
+        species_id = getattr(job_model, "species_id", None)
 
-        candidates = resolver.get_candidates_for_slot(self.job_type, slot.key, consumer_instance_id=self.instance_id)
+        candidates = resolver.get_candidates_for_slot(
+            self.job_type, slot.key, consumer_species_id=species_id, consumer_instance_id=self.instance_id
+        )
+        # Sources automatic wiring would skip; an explicit choice may still name them.
+        skipped = {c.source_key: auto_exclusion(self.job_type, species_id, c) for c in candidates}
         validation = resolver.validate_input_slot(
             self.job_type, job_model, slot.key, check_filesystem=True, consumer_instance_id=self.instance_id
         )
@@ -345,10 +361,13 @@ class IOConfigComponent:
             current_value = None
             manual_path = ""
 
-        # Row status dot: blue while an upstream is still producing, green when
-        # resolved, red when required-but-missing, muted when optional & empty.
+        # Row status dot: blue while an upstream is still producing, amber while two
+        # sources tie, green when resolved, red when required-but-missing, muted when
+        # optional & empty.
         if validation.awaiting_upstream:
             dot_color = STATUS_STYLE[JobStatus.RUNNING]["color"]
+        elif validation.tied:
+            dot_color = _AMBER
         elif validation.is_valid:
             dot_color = STATUS_STYLE[JobStatus.SUCCEEDED]["color"]
         elif not slot.required and current_value is None:
@@ -362,9 +381,9 @@ class IOConfigComponent:
             )
             self._input_name_label(slot)
             if self.read_only:
-                self._render_static_source(slot, candidates, current_value)
+                self._render_static_source(slot, candidates, current_value, validation, skipped)
             else:
-                self._render_source_selector(slot, candidates, current_value)
+                self._render_source_selector(slot, candidates, current_value, validation, skipped)
                 if not slot.required:
                     ui.label("opt").style(
                         f"{FONT} font-size: 8px; color: #94a3b8; background: #f1f5f9; "
@@ -411,22 +430,42 @@ class IOConfigComponent:
                 with ui.row().classes("w-full").style("padding-left: 20px;"):
                     ui.label(note).style(f"{FONT} font-size: 8px; color: #94a3b8; font-style: italic;")
 
-    def _render_static_source(self, slot, candidates, current_value):
+        # Why there is no source: a tie, or an override that stopped resolving.
+        if validation.tied:
+            names = ", ".join(_candidate_name(c) for c in validation.tied)
+            problem, color = f"{len(validation.tied)} equally good sources: {names}. Pick one.", _AMBER
+        elif validation.is_user_override and validation.error_message and not validation.resolved_path:
+            problem, color = validation.error_message, STATUS_STYLE[JobStatus.FAILED]["color"]
+        else:
+            problem = None
+        if problem:
+            with ui.row().classes("w-full").style("padding-left: 20px;"):
+                ui.label(problem).style(f"{FONT} font-size: 8px; color: {color};")
+
+    def _render_current_face(self, candidates, current_value, validation, skipped, empty_name):
+        """The chosen source, a tie, or nothing, as one face (shared by the editable selector
+        and the read-only view). A hand-picked source automatic wiring would skip carries the
+        reason as an amber tag."""
+        cur = next((c for c in candidates if c.source_key == current_value), None)
+        if current_value == "manual":
+            self._selector_face("#94a3b8", "Manual path", "custom file")
+        elif cur is not None:
+            st = STATUS_STYLE.get(cur.execution_status, STATUS_STYLE[JobStatus.UNKNOWN])
+            self._selector_face(st["color"], _candidate_name(cur), st["label"], tag=skipped.get(cur.source_key))
+        elif validation.tied:
+            self._selector_face(_AMBER, "Ambiguous — pick a source", f"{len(validation.tied)} candidates")
+        elif current_value:
+            self._selector_face("#f59e0b", current_value, "unresolved")
+        else:
+            self._selector_face("#cbd5e1", empty_name, "")
+
+    def _render_static_source(self, slot, candidates, current_value, validation, skipped):
         """Read-only counterpart of the source selector: the chosen source shown
         as a static face (no menu), for completed/frozen jobs."""
-        cur = next((c for c in candidates if c.source_key == current_value), None)
         with ui.element("div").style(
             "flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 0 6px; height: 24px;"
         ):
-            if current_value == "manual":
-                self._selector_face("#94a3b8", "Manual path", "custom file")
-            elif cur is not None:
-                st = STATUS_STYLE.get(cur.execution_status, STATUS_STYLE[JobStatus.UNKNOWN])
-                self._selector_face(st["color"], _candidate_name(cur), st["label"])
-            elif current_value:
-                self._selector_face("#f59e0b", current_value, "unresolved")
-            else:
-                self._selector_face("#cbd5e1", "—", "")
+            self._render_current_face(candidates, current_value, validation, skipped, "—")
 
     def _input_name_label(self, slot):
         # Explains the artifact type only. The concrete resolved path is shown
@@ -453,9 +492,7 @@ class IOConfigComponent:
                 ui.label("Optional — leave unset to skip this input.").style(_TIP_LEAD)
         return name
 
-    def _render_source_selector(self, slot, candidates, current_value):
-        cur = next((c for c in candidates if c.source_key == current_value), None)
-
+    def _render_source_selector(self, slot, candidates, current_value, validation, skipped):
         selector = (
             ui.element("div")
             .classes("cb-io-src")
@@ -466,15 +503,7 @@ class IOConfigComponent:
             )
         )
         with selector:
-            if current_value == "manual":
-                self._selector_face("#94a3b8", "Manual path", "custom file")
-            elif cur is not None:
-                st = STATUS_STYLE.get(cur.execution_status, STATUS_STYLE[JobStatus.UNKNOWN])
-                self._selector_face(st["color"], _candidate_name(cur), st["label"])
-            elif current_value:
-                self._selector_face("#f59e0b", current_value, "unresolved")
-            else:
-                self._selector_face("#cbd5e1", "Select source…", "")
+            self._render_current_face(candidates, current_value, validation, skipped, "Select source…")
             ui.element("div").style("flex: 1 1 0; min-width: 4px;")
             ui.icon("expand_more", size="16px").style("color: #94a3b8; flex-shrink: 0;")
 
@@ -496,7 +525,9 @@ class IOConfigComponent:
                         f"{FONT} font-size: 10px; color: #94a3b8; padding: 6px 10px; font-style: italic;"
                     )
                 for c in candidates:
-                    self._render_menu_candidate(slot, c, menu, selected=(c.source_key == current_value))
+                    self._render_menu_candidate(
+                        slot, c, menu, selected=(c.source_key == current_value), skipped=skipped.get(c.source_key)
+                    )
                 ui.element("div").style("height: 1px; background: #eef2f6; margin: 2px 0;")
                 self._render_menu_row(
                     slot,
@@ -510,7 +541,7 @@ class IOConfigComponent:
 
         selector.on("click", lambda _e, m=menu: m.open())
 
-    def _selector_face(self, color: str, name: str, status_word: str):
+    def _selector_face(self, color: str, name: str, status_word: str, tag: str | None = None):
         ui.element("div").style(f"width: 7px; height: 7px; border-radius: 50%; background: {color}; flex-shrink: 0;")
         ui.label(name).style(
             f"{FONT} font-size: 10px; color: #334155; min-width: 0; "
@@ -518,17 +549,26 @@ class IOConfigComponent:
         )
         if status_word:
             ui.label(status_word).style(f"{FONT} font-size: 8px; color: #94a3b8; flex-shrink: 0;")
+        if tag:
+            ui.label(tag).style(f"{FONT} font-size: 8px; font-weight: 600; color: {_AMBER}; flex-shrink: 0;").tooltip(
+                _EXCLUSION_TIPS.get(tag, tag)
+            )
 
-    def _render_menu_candidate(self, slot, c, menu, selected: bool):
+    def _render_menu_candidate(self, slot, c, menu, selected: bool, skipped: str | None = None):
         st = STATUS_STYLE.get(c.execution_status, STATUS_STYLE[JobStatus.UNKNOWN])
-        self._render_menu_row(slot, menu, c.source_key, st["color"], _candidate_name(c), st["label"], selected=selected)
+        self._render_menu_row(
+            slot, menu, c.source_key, st["color"], _candidate_name(c), st["label"], selected=selected, skipped=skipped
+        )
 
-    def _render_menu_row(self, slot, menu, value, color, name, status_word, selected: bool):
+    def _render_menu_row(self, slot, menu, value, color, name, status_word, selected: bool, skipped: str | None = None):
+        """One menu option. `skipped` (an `auto_exclusion` reason) dims a source automatic
+        wiring never picks; it stays selectable."""
         bg = "background: #eef2f6;" if selected else ""
+        dim = "opacity: 0.55;" if skipped else ""
         row = (
             ui.element("div")
             .classes("cb-io-menu-item")
-            .style(f"display: flex; align-items: center; gap: 8px; padding: 5px 10px; cursor: pointer; {bg}")
+            .style(f"display: flex; align-items: center; gap: 8px; padding: 5px 10px; cursor: pointer; {bg}{dim}")
         )
         row.on("click", lambda _e, s=slot, v=value, m=menu: self._select_source(s, v, m))
         with row:
@@ -539,6 +579,10 @@ class IOConfigComponent:
                 f"{FONT} font-size: 11px; color: #1e293b; flex: 1 1 0; min-width: 0; "
                 "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
             )
+            if skipped:
+                ui.label(skipped).style(f"{FONT} font-size: 8px; color: #64748b; flex-shrink: 0;").tooltip(
+                    _EXCLUSION_TIPS.get(skipped, skipped)
+                )
             if status_word:
                 ui.label(status_word).style(
                     f"{FONT} font-size: 8px; font-weight: 600; color: {color}; "
