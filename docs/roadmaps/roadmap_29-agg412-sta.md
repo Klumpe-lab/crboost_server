@@ -210,6 +210,8 @@ rigid refinement; the per-run changes report (`missalign_changes.json`); particl
 | C5 | Particle re-homing between two alignments of the same series (§6). | A/B | medium |
 | C6 | Warp export path; missAlign `infer`. | A/B phase 2, scale-out | roadmap 24 stages 4, 6 |
 
+C3 and C4 are now stages 2 and 4 of roadmap 30 (particle analytics and set tools, 2026-10-10).
+
 Refine3D, PostProcess, Polish, CtfRefine, symmetry expansion and M stay external scripts; a crboost Refine3D
 job is worth it only once the scripted protocol has settled.
 
