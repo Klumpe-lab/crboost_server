@@ -199,6 +199,66 @@ rigid refinement; the per-run changes report (`missalign_changes.json`); particl
   aligntiltsWarp's output); C5 before any scoring; phase 2 after roadmap 24 stage 4; scale-out (train on 30–60 TS
   per session, infer the rest) only after a phase-1 or phase-2 "go", costed by roadmap 24 stage 2 first.
 
+### 6.1 Running it on all eight projects (how; 2026-10-10)
+
+missAlign is one GPU job per project over all its tilt series (not an array), training a model and then
+aligning every series, once per macro-iteration. With the current code each project trains its own model;
+`infer` (one model, many projects) is not built.
+
+**Cost** (the job's own estimator: 1.34 s/step on an A100, ~3.5 on RTX nodes; 5 min of alignment per TS per
+iteration, spread over the GPUs — **that 5 min is a guess, the pilot run measures it**). 2 GPUs (1 trains, 1
+reconstructs), A100:
+
+| Schedule | Pilot (23 TS) | 95–162 TS | All 8 projects | QOS |
+|---|---|---|---|---|
+| Rigid `30A anchoring; 20A anchoring x2; 10A global`, 250 × 30 steps | ~16 h | 28–39 h | ~240 h wall, ~480 GPU-h | g_medium (2 d) |
+| PAPER, 1000 × 30 steps | ~4.6 d | 5.5–7 d | ~1,130 h wall, ~2,300 GPU-h | g_long (14 d) |
+
+On RTX nodes, training adds ~18 h per project to the rigid numbers. Each arm then needs tsCtf + tsReconstruct (~1 h per project) and a
+second set of tomograms (the baseline tsReconstruct is ~3 GB per tilt series, ~2.6 TB for all 867). PAPER's
+`[3,3]` rounds reach particles only through Warp export (roadmap 24 stage 4), so running PAPER everywhere
+before that exists buys nothing for STA. With `infer`, training once and aligning the rest would save ~1,400
+GPU-h of PAPER training.
+
+**Particles in the new tomograms:** re-home the existing picks with the per-TS rigid translation (C5) and
+re-run only subtomo extraction (minutes per project). Re-running TM instead costs ~440 GPU-h and another
+~7.5 TB of score maps across the eight projects, and it changes the particle set, so A/B comparisons are lost.
+
+**Order — decided 2026-10-10 (maintainer):** no rigid-only arm and no staged verification ladder.
+1. The maintainer builds the Warp export job (roadmap 24 stage 4 = roadmap 21 stage 6) in a separate worktree.
+2. Then PAPER (or a better schedule if one is known by then) on all eight projects, upstream budget,
+   `g_long`, all projects in parallel.
+3. Particles reach the new geometry by C5 re-homing (built in roadmap 30) → Warp export → RELION.
+
+Terms used above:
+- **Rigid schedule:** anchoring/global iterations only. They change each tilt's whole-image shift, which
+  RELION's star can hold, so RELION extraction would see the change today. No `[3,3]` rounds.
+- **The pilot:** `AGG412_20260204_412`, the 23-tomogram project processed first (2026-10-04/05) to set the
+  picking parameters before the rollout to the other seven.
+
+**Per project, in the app** (from the dev server: this checkout has the regimes; finish stage 0's Run
+first):
+1. Pilot only, for the score: add a tsReconstruct on the existing tsCtf with `halfmap_tilts 1`,
+   `halfmap_frames 0`, `deconv 0`, and run it alone. This is arm A's half-map set, and it must come before
+   step 2, because afterwards a new tsReconstruct binds to the newest tsCtf.
+2. Add three jobs: missAlign, tsCtf (becomes `tsCtf__2`), tsReconstruct (`tsReconstruct__2`, same settings as
+   step 1 in the pilot, or as the baseline elsewhere). The IO tabs should show missAlign ← aligntiltsWarp;
+   `tsCtf__2` star and processing ← missAlign, settings ← aligntiltsWarp; `tsReconstruct__2` ← `tsCtf__2`.
+3. missAlign tab:
+   - preset `paper` (it sets 1000 × 30 steps, milestones 5,15 and `z_box` auto);
+   - `num_gpus` 2, `training_gpus` 1, `cpus_per_task` ≥ 8;
+   - SLURM tab: QOS `g_long`.
+4. Run with only those three selected. If missAlign hits its time limit, Run it again; it resumes from the
+   last finished iteration as long as the schedule and inputs are unchanged.
+5. Read-outs:
+   - `python scripts/align_qc.py changes <aligntiltsWarp>/warp_tiltseries <missAlign>/warp_tiltseries` gives the
+     per-TS changes after the rigid shift is removed;
+   - `python scripts/align_qc.py score --arm A=<step 1 job> --arm C=<tsReconstruct__2> --reference A
+     --out <dir outside /groups>`.
+
+**Don't:** re-run the baseline tsCtf after adding a missAlign. It shows the newest missAlign as its source and
+would rebind to it, overwriting the baseline.
+
 ## 7. Code this needs (proposed; nothing built)
 
 | # | What | For | Size |

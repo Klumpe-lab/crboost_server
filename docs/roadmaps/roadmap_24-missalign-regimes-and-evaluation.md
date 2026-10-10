@@ -7,6 +7,9 @@ roadmap 21 (integration; stages 1–3 code-complete) and absorbs its stage 4 (gr
 "visibly better" criterion. Stage 6 of roadmap 21 (Warp particle export) becomes a dependency of stage 4 here.
 **2026-10-08:** roadmap 29 §6 proposes the AGG412 pilot (23 TS, current code, ribosomes already picked) in place
 of stage 0's `post_handedness_fix` re-processing, with a rigid-only phase that needs no Warp export.
+**2026-10-10 (maintainer):** no rigid-only phase and no staged arms. Stage 4 (Warp export) is being built by the
+maintainer in its own worktree; then PAPER on all eight AGG412 projects (roadmap 29 §6.1). Particle re-homing is
+roadmap 30 S8.
 
 **Progress 2026-09-30.** Sources checked against the container's exact versions (miss-alignment 0.2.0, warpylib
 1.0.1, both from PyPI) and WarpTools `main`; nothing below has run.

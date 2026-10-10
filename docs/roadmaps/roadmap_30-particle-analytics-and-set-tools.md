@@ -1,6 +1,7 @@
 # Roadmap 30 — Particle-stage analytics, controls and set tools
 
-**Status:** scoped 2026-10-10; nothing built. Origin: the AGG412 campaign (roadmap 29). Every particle question
+**Status:** scoped 2026-10-10; approved for build the same day with the decisions in §10; nothing built yet.
+Origin: the AGG412 campaign (roadmap 29). Every particle question
 there was answered with throwaway scripts (`cutoff.js`, `tmpeek.js`, `ribohealth.js`, the σ ladders, the cap
 survey). This roadmap moves those answers into the app, adds the statistical controls the scripts lacked, and
 gives users the tools to cut, split and merge particle sets. It absorbs roadmap 29's C3 (σ subset) and C4
@@ -68,9 +69,21 @@ what §5 is for.**
 - **σ is the score users see.** LCC moves to the tooltip.
 - **Rules mark; they never drop.** A filter makes a new set with its parent and recipe recorded; the parent
   is untouched. Flags (cap bound, edge pick, σ outlier) are markers that a human acts on.
-- **Heavy numbers come from drivers.** Score maps are 2 GB each. Peak statistics are computed on the compute
-  node by the TM or extraction driver and written to a small per-tomogram sidecar. The UI reads only sidecars
-  and stars; a backfill reader covers existing jobs from `job.json` and star columns.
+- **Heavy numbers come from drivers.** Score maps are 2 GB each. Whatever can be computed when a job runs and
+  never needs recomputing (σ, cutoff, peaks, ladders, slab fits) is computed on the compute node by that job's
+  driver and written to a small sidecar. The UI reads only sidecars and stars; a backfill reader covers jobs
+  that finished before the sidecars existed, from `job.json` and star columns. Anything that depends on a
+  user choice (the cut, a class pick) is computed on demand from those records, never stored as truth.
+- **Data layer apart from the representation.** Every analytic is a record with its provenance: source files
+  (path + mtime), the job and instance that produced them, the code that computed it (module + schema
+  version), and when. Every derived set is a recipe (parent + operation + parameters) with the same
+  provenance, and every set operation is logged as an event. The UI only renders records. Changing a chart,
+  moving a panel or replacing the Journey must never require re-wiring or recomputing, and nothing is lost when
+  a view goes away.
+- **Not in the Journey.** The Journey's particle side (cutout galleries streamed per pick) is already slow and
+  cluttered at 500–1,000 picks and will be revamped. New features live in a Species **Analytics** tab and
+  read the same records the revamped Journey will; at most the Journey links to it. One style for the tab, using
+  the house controls and `ui/dashboard/figures.py`, so a later Journey revamp can reuse its parts.
 - **Volumes are images, not 3D.** Class and reconstruction maps are shown as central slices plus "open in
   ChimeraX / 3dmod".
 - **Stats first, small charts.** Discrete points get no connecting lines.
@@ -150,16 +163,16 @@ can do better than a script.
 |---|---|---|
 | S1 | **Rule filter → FILTERED set.** σ ≥ x, LCC ≥ x, top-N per tomogram, depth band, distance from the volume faces, NN ≥ d, tomogram include/exclude, away from another species' picks | Live count preview before commit. If the parent is extracted, the output is a row subset of its optimisation set and needs no re-extraction (roadmap 29 C3). |
 | S2 | **Class subset → set.** Choose classes from a Class3D iteration | Class table alongside: counts, σ mix, tomogram spread (roadmap 29 C4). |
-| S3 | **Split.** Random halves; by tomogram; by project; by condition tag; by σ bin; by class | Writes sibling sets. Condition tags (milled/unmilled, grid, date) need a small per-tomogram or per-project label. |
+| S3 | **Split.** Random halves; by tomogram; by project; by σ bin; by class | Writes sibling sets. Condition tags (milled/unmilled, grid, date) deferred (decision 5). |
 | S4 | **Merge across projects** | Exists for extracted sets (merge card); check optics groups and pixel-size agreement on 8 projects. |
 | S5 | **Set algebra.** A − B; A ∩ B by proximity | Reuses the clash statistics from `pick_merge`. |
 | S6 | **Boundary curation.** Gallery of the picks nearest the cut (sorted by \|σ − cut\|) | Puts human time where the decision is uncertain; the labels feed K5's precision estimate at the cut. A learned scorer over σ, depth and NN is parked. |
+| S8 | **Re-homing** (roadmap 29 C5). Move a particle set from one alignment of the same tilt series to another (e.g. baseline → missAlign) by the per-TS rigid translation (tx, ty, tz), fitted in `services/analysis/alignment_changes.py` and cross-checked with `recon_register` | Output is a new set with the source alignment in its recipe; feeds subtomo extraction or the Warp export job (built separately). Needed for every missAlign rollout without re-running TM. |
 | S7 | **Lineage.** A set tree with counts and recipes | The funnel (§5 E) reads from it; a recipe can be replayed, or stored in a protocol. |
 
 ## 8. Where it shows
 
-- **Journey, Particles section (per tomogram):** σ histogram with the cutoff and cut lines, the ladder
-  numbers, the cap flag, a slab-depth strip and the TM-health row.
+- **Journey:** nothing new for now (decision 4); a link to the tomogram's row in the Analytics tab at most.
 - **Species page, new Analytics tab (per project, per species):**
   - TM-health table;
   - pooled survival curve with the null and decoy curves;
@@ -174,25 +187,30 @@ can do better than a script.
 | # | Stage | Success on AGG412 |
 |---|---|---|
 | 0 | Gather: `rlnSearchStd` / `rlnCutOff` present in every AGG412 candidates star; `job.json` fields; the sidecar format; the cost of K2′ on two pilot tomograms | a table of what each job dir holds |
-| 1 | σ first-class: σ score in `picks.json`, histogram + ladder + cap flags in the Journey; TM-health table (driver sidecar + backfill) | numbers match the 2026-10-08 survey (412 ≥ 10σ: 929 in 255 tomograms; six all-≥ 9σ capped tomograms) |
+| 1 | σ first-class: analytics records with provenance (driver sidecars + backfill); the Species Analytics tab with the TM-health table, σ ladder, histogram, survival curve with K1, and cap flags; σ in the existing score tooltips | numbers match the 2026-10-08 survey (412 ≥ 10σ: 929 in 255 tomograms; six all-≥ 9σ capped tomograms) |
 | 2 | S1 filters → FILTERED sets as optimisation sets, plus the funnel | a ≥ 9σ 412 set per project without re-extraction; Class3D accepts it |
 | 3 | Spatial QC and yield against quality | reproduces `ribohealth.js` on the pilot (slab fit, mid-slab score peak, NN median ~280 Å) |
 | 4 | Class3D / ReconstructParticle readouts; S2; class × σ table; half-map FSC | roadmap 29 R1's class-by-σ table comes from the app |
 | 5 | Controls K2–K6 | an FDR-at-cut number for the ribosome pilot; decoy share in the good classes |
 | 6 | S3 splits, S5 algebra, S6 boundary curation, S7 lineage | the miss-alignment A/B particle sets (roadmap 29 §6) built in the app |
 
-Stages 1–2 serve roadmap 29 directly; build them first.
+Build order (2026-10-10): stages 1–2, then S8 re-homing (the missAlign rollout needs it), then 3–6. Stages 1–2 serve roadmap 29 directly. The Warp export job is built separately by the maintainer (roadmap 24 stage 4).
 
-## 10. Decisions owed
+## 10. Decisions (maintainer, 2026-10-10)
 
-1. σ as the default score in every view, with LCC in the tooltip (proposed yes).
-2. Statistics computed by drivers into sidecars (proposed), or by on-demand readers.
-3. Decoy control: K2 (a separate decoy TM; scores unchanged; gives an FDR), K2′ (built-in correction; changes
-   scores), or both on the pilot (proposed).
-4. A Species Analytics tab (proposed), or everything in the Journey.
-5. Condition tags for S3: per tomogram, per project, or both.
-6. Cross-project views (AGG412 is 8 projects): through merged sets only (proposed), or a multi-project page
-   (roadmap 23 territory).
+1. **σ is the default score** in every view; LCC in the tooltip.
+2. **Drivers compute** whatever can be computed when the job runs and never needs recomputing, into
+   sidecars; jobs that finished earlier get a backfill reader.
+3. **Decoy control:** left to the build. K2 (separate decoy TM on a subset) is the default, because it leaves
+   the scores alone and gives an FDR; K2′ stays a TM toggle the user can try.
+4. **A separate Species Analytics tab.** The Journey gets a revamp later that will either link here or reuse
+   these parts; nothing new goes into it now.
+5. **Condition tags: not now.** Too early and too experimental.
+6. **Cross-project views come with merged sets:** when a set spans projects (an Aggregation merge), its
+   analytics show per-project breakdowns. No multi-project page.
+
+The maintainer will comment on the UI/UX once stage 1 is visible; the Journey's particle side is known to be
+laggy and cluttered at 500–1,000 picks (§4).
 
 **Modern-Python weave-in:** statistics as pure functions over star DataFrames in `services/particles/`
 (`analytics.py`, `set_ops.py`), sidecar records as frozen dataclasses, and set recipes as Pydantic models
