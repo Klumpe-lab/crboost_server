@@ -14,9 +14,21 @@ from services.io_slots import InputSlot, OutputSlot, JobFileType
 # `--angular-search <file>`. Either way, the symmetry is honored during the
 # search. C1 means full SO(3) search (no symmetry exploitation).
 TM_SYMMETRY_CHOICES: list[str] = [
-    "C1", "C2", "C3", "C4", "C5", "C6",
-    "D2", "D3", "D4", "D5", "D6",
-    "T", "O", "I1", "I2",
+    "C1",
+    "C2",
+    "C3",
+    "C4",
+    "C5",
+    "C6",
+    "D2",
+    "D3",
+    "D4",
+    "D5",
+    "D6",
+    "T",
+    "O",
+    "I1",
+    "I2",
 ]
 
 
@@ -40,6 +52,7 @@ class TemplateMatchPytomParams(AbstractJobParams):
         "gpu_split",
         "perdevice",
         "array_throttle",
+        "every_nth_tomogram",
     }
 
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
@@ -91,6 +104,12 @@ class TemplateMatchPytomParams(AbstractJobParams):
     perdevice: int = Field(default=1)
     array_throttle: int = Field(
         default=4, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tomogram template matching"
+    )
+    every_nth_tomogram: int = Field(
+        default=1,
+        ge=1,
+        description="Match every Nth tomogram (in name order) instead of all of them, e.g. 10 for a decoy or mirror "
+        "control on a tenth of the data. 1 = all.",
     )
 
     def _get_job_specific_options(self) -> list[tuple[str, str]]:

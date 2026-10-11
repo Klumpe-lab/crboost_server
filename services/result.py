@@ -35,6 +35,9 @@ class ErrorCode(StrEnum):
     PROJECT_NOT_FOUND = auto()
     PROJECT_AMBIGUOUS = auto()
 
+    # A job's readout was asked for before the job wrote its outputs: shown as a hint, not an error.
+    NOT_WRITTEN_YET = auto()
+
 
 def ok(**data: Any) -> dict[str, Any]:
     """Successful outcome; payload keys stay ad-hoc by design."""

@@ -32,6 +32,7 @@ code all live in ArrayDriver; this file is the extraction-specific hooks.
 import json
 import os
 import shutil
+import traceback
 from pathlib import Path
 
 import pandas as pd
@@ -323,6 +324,31 @@ class ExtractCandidatesPytomDriver(ArrayDriver):
             job_dir / "optimisation_set.star", particles_star=candidates_star, tomograms_star=output_tomograms
         )
         self.log("Created optimisation_set.star with absolute paths")
+        self._write_analytics_sidecar(ctx)
+
+    def _write_analytics_sidecar(self, ctx: DriverContext[CandidateExtractPytomParams]) -> None:
+        """The candidate set in σ, per tomogram (counts, cutoff, ladder, cap, every score), as the
+        job's analytics sidecar. A readout of outputs that are already complete: its failure —
+        including an import failure of the analytics code — is reported and never fails the job."""
+        try:
+            from services.particles.analytics_store import candidates_sidecar_path, compute_candidates_record
+            from services.particles.records import write_record
+
+            record = compute_candidates_record(
+                ctx.job_dir,
+                ctx.params,
+                instance_id=ctx.instance_id,
+                diameter_ang=float(ctx.params.particle_diameter_ang),
+                computed_by="driver",
+            )
+            write_record(candidates_sidecar_path(ctx.job_dir), record)
+            self.log(
+                f"Analytics sidecar: {record.data['n_total']} candidates in {record.data['n_with_picks']} of "
+                f"{record.data['n_tomograms']} tomograms"
+            )
+        except Exception as e:
+            print(f"[SUPERVISOR WARN] Analytics sidecar failed (the extraction itself succeeded): {e}", flush=True)
+            traceback.print_exc()
 
     # ---------------- task ----------------
 

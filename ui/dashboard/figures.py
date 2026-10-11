@@ -947,3 +947,411 @@ def build_excluded_per_series_chart(names: list[str], counts: dict[str, list[int
         "yAxis": _count_axis("tilts"),
         "series": _stacked_bars(("excluded", "out"), counts, bar_px=6),
     }
+
+
+# ── Particle analytics (Species page · Analytics tab) ──
+
+# Hover card of the σ charts: the hovered σ (or bin), then each series' value at it. Values are
+# counts; a fractional one (the Gaussian expectation) keeps two significant digits.
+_SIGMA_TOOLTIP_JS = r"""
+(ps) => {
+  if (!Array.isArray(ps)) ps = [ps];
+  const x = ps[0].value ? ps[0].value[0] : null;
+  let h = __OPEN__ + '<div style="font-weight:600">' + (__TITLE__) + '</div>';
+  for (const p of ps) {
+    const v = Array.isArray(p.value) ? p.value[1] : p.value;
+    if (v === null || v === undefined) continue;
+    const t = Number.isInteger(v) ? v.toLocaleString()
+      : (v >= 100 ? Math.round(v).toLocaleString() : Number(v).toPrecision(2));
+    h += '<div>' + p.marker + p.seriesName
+      + ' <span style="font-family:IBM Plex Mono,monospace;font-weight:600">' + t + '</span></div>';
+  }
+  return h + '</div>';
+}
+"""
+
+
+def _sigma_tooltip(title_js: str) -> dict:
+    return _tooltip(_SIGMA_TOOLTIP_JS.replace("__OPEN__", _TOOLTIP_CARD_OPEN).replace("__TITLE__", title_js))
+
+
+def _sigma_mark_lines(lines: Sequence[tuple[float, str, str]]) -> dict:
+    """Dashed vertical marks at σ positions: (x, label, color) each."""
+    return {
+        "silent": True,
+        "symbol": "none",
+        "animation": False,
+        "data": [
+            {
+                "xAxis": round(float(x), 4),
+                "lineStyle": {"type": "dashed", "color": color, "width": 1},
+                "label": {
+                    "formatter": label,
+                    "position": "insideEndTop",
+                    "fontFamily": _MONO,
+                    "fontSize": 9,
+                    "color": color,
+                },
+            }
+            for x, label, color in lines
+        ],
+    }
+
+
+def build_sigma_histogram(
+    edges: Sequence[float], counts: Sequence[int], *, width: float, fp1: float | None = None, cut: float | None = None
+) -> dict:
+    """Picks per σ bin (`edges` = left edges, `width` σ wide), with the FP=1 cutoff (muted) and
+    the chosen cut (ink) as dashed lines."""
+    if not counts:
+        return build_empty_chart("no scores")
+    centers = [round(e + width / 2, 4) for e in edges]
+    series: dict = {
+        "type": "bar",
+        "name": "picks",
+        "data": [[c, n] for c, n in zip(centers, counts, strict=True)],
+        "barMaxWidth": 10,
+        "itemStyle": {"color": SERIES_PALETTE[0], "borderRadius": [2, 2, 0, 0]},
+    }
+    marks = []
+    if fp1 is not None:
+        marks.append((fp1, f"FP=1 {fp1:.2f}σ", SERIES_PALETTE[2]))
+    if cut is not None:
+        marks.append((cut, f"cut {cut:.1f}σ", SERIES_PALETTE[1]))
+    if marks:
+        series["markLine"] = _sigma_mark_lines(marks)
+    x_axis = _axis("score (σ)", horizontal=True)
+    x_axis.update({"min": round(edges[0], 4), "max": round(edges[-1] + width, 4)})
+    half = width / 2
+    tooltip = _sigma_tooltip(f"(x - {half}).toFixed(2) + '–' + (x + {half}).toFixed(2) + 'σ'")
+    tooltip["axisPointer"] = {"type": "line", "snap": True, "lineStyle": {"color": "#cbd5e1", "type": "dashed"}}
+    return {
+        "animation": False,
+        "grid": _grid(False),
+        "tooltip": tooltip,
+        "xAxis": x_axis,
+        "yAxis": _count_axis("picks"),
+        "series": [series],
+    }
+
+
+# The Gaussian null falls off a cliff past the cutoff; below this many expected noise peaks the
+# curve stops (a log axis has no zero).
+_NULL_FLOOR = 0.01
+
+
+def build_survival_chart(
+    z: Sequence[float],
+    observed: Sequence[int],
+    null: Sequence[float],
+    *,
+    cut: float | None = None,
+    extra: Sequence[dict] = (),
+) -> dict:
+    """Picks scoring at or above z, against z, on a log count axis: the observed curve, the
+    Gaussian expectation N·Q(z) summed over tomograms (dashed), and any `extra` curves (each
+    {name, y, color}; a decoy run's survival curve). The gap between observed and the null is
+    what the data hold beyond pure noise."""
+    if not z:
+        return build_empty_chart("no scores")
+
+    def positive(values, floor: float = 0.0):
+        return [
+            [x, float(v)] if v is not None and float(v) > floor else [x, None] for x, v in zip(z, values, strict=True)
+        ]
+
+    series: list[dict] = [
+        {
+            "type": "line",
+            "name": "observed",
+            "data": positive(observed),
+            "showSymbol": False,
+            "connectNulls": False,
+            "step": "end",
+            "lineStyle": {"color": SERIES_PALETTE[0], "width": 1.4},
+            "itemStyle": {"color": SERIES_PALETTE[0]},
+        }
+    ]
+    if null:
+        series.append(
+            {
+                "type": "line",
+                "name": "Gaussian noise N·Q(z)",
+                "data": positive(null, _NULL_FLOOR),
+                "showSymbol": False,
+                "connectNulls": False,
+                "lineStyle": {"color": SERIES_PALETTE[2], "width": 1.2, "type": "dashed"},
+                "itemStyle": {"color": SERIES_PALETTE[2]},
+            }
+        )
+    for e in extra:
+        color = e.get("color") or SERIES_PALETTE[1]
+        series.append(
+            {
+                "type": "line",
+                "name": e["name"],
+                "data": positive(e["y"]),
+                "showSymbol": False,
+                "connectNulls": False,
+                "step": "end",
+                "lineStyle": {"color": color, "width": 1.2},
+                "itemStyle": {"color": color},
+            }
+        )
+    if cut is not None:
+        series[0]["markLine"] = _sigma_mark_lines([(cut, f"cut {cut:.1f}σ", SERIES_PALETTE[1])])
+    x_axis = _axis("score z (σ)", horizontal=True)
+    x_axis.update({"min": round(z[0], 4), "max": round(z[-1], 4)})
+    y_axis = _axis("picks ≥ z", horizontal=False)
+    y_axis.update({"type": "log", "logBase": 10, "scale": False})
+    show_legend = len(series) > 1
+    return {
+        "animation": False,
+        "grid": _grid(show_legend),
+        "legend": _legend(show_legend),
+        "tooltip": _sigma_tooltip("'≥ ' + Number(x).toFixed(1) + 'σ'"),
+        "xAxis": x_axis,
+        "yAxis": y_axis,
+        "series": series,
+    }
+
+
+def build_depth_profile_chart(n: Sequence[int], at_cut: Sequence[int], *, cut: float) -> dict:
+    """Picks per depth bin through the pick slab (bars; bins between the slab's 5th and 95th
+    percentile, the outer two holding everything beyond), and the share of each bin scoring at or
+    above the cut (points, right axis). Real particles peak mid-slab; surface artefacts do not."""
+    if not any(n):
+        return build_empty_chart("no tomogram has enough picks for a pick plane")
+    k = len(n)
+    labels = [f"{round(100 * i / k)}–{round(100 * (i + 1) / k)}%" for i in range(k)]
+    share = [round(100.0 * c / t, 1) if t else None for c, t in zip(at_cut, n, strict=True)]
+    x_axis = _axis("depth through the pick slab", horizontal=True)
+    x_axis.update({"type": "category", "data": labels})
+    y_left = _count_axis("picks")
+    y_right = _axis(f"% ≥ {cut:.1f}σ", horizontal=False)
+    y_right.update({"min": 0, "max": 100, "scale": False, "position": "right", "splitLine": {"show": False}})
+    y_right["nameTextStyle"] = {**y_right["nameTextStyle"], "align": "right"}
+    tooltip = _counts_tooltip("'depth ' + ps[0].axisValueLabel")
+    return {
+        "animation": False,
+        "grid": _grid(True),
+        "legend": _legend(True),
+        "tooltip": tooltip,
+        "xAxis": x_axis,
+        "yAxis": [y_left, y_right],
+        "series": [
+            {
+                "type": "bar",
+                "name": "picks",
+                "data": list(n),
+                "barMaxWidth": 18,
+                "itemStyle": {"color": SERIES_PALETTE[2], "borderRadius": [2, 2, 0, 0]},
+            },
+            {
+                "type": "scatter",
+                "name": f"% ≥ {cut:.1f}σ",
+                "yAxisIndex": 1,
+                "data": share,
+                "symbolSize": 7,
+                "itemStyle": {"color": SERIES_PALETTE[0]},
+            },
+        ],
+    }
+
+
+# Hover card of the yield-against-quality scatter: the tomogram, then x and y.
+_YIELD_TOOLTIP_JS = r"""
+(p) => {
+  const d = p.data || [];
+  return __OPEN__ + '<div style="font-weight:600">' + d[2] + '</div>'
+    + '<div>__X__ <span style="font-family:IBM Plex Mono,monospace;font-weight:600">' + d[0] + '</span></div>'
+    + '<div>__Y__ <span style="font-family:IBM Plex Mono,monospace;font-weight:600">' + d[1] + '</span></div></div>';
+}
+"""
+
+
+def build_yield_scatter(points: Sequence[tuple[float, float, str]], *, x_name: str, y_name: str) -> dict:
+    """One point per tomogram: a data-quality fact (x) against its picks at or above the cut (y),
+    the tomogram named on hover. Low yield at normal quality reads as little content, not bad data."""
+    if not points:
+        return build_empty_chart("no tomogram has both numbers")
+    x_axis = _axis(x_name, horizontal=True)
+    x_axis["scale"] = True
+    y_axis = _count_axis(y_name)
+    js = _YIELD_TOOLTIP_JS.replace("__OPEN__", _TOOLTIP_CARD_OPEN).replace("__X__", x_name).replace("__Y__", y_name)
+    return {
+        "animation": False,
+        "grid": _grid(False),
+        "tooltip": _tooltip(js, trigger="item"),
+        "xAxis": x_axis,
+        "yAxis": y_axis,
+        "series": [
+            {
+                "type": "scatter",
+                "data": [[x, y, name] for x, y, name in points],
+                "symbolSize": 6,
+                "itemStyle": {"color": SERIES_PALETTE[0], "opacity": 0.75},
+                "emphasis": {"scale": 1.6},
+            }
+        ],
+    }
+
+
+def build_category_bars(labels: Sequence[str], counts: Sequence[int], *, x_name: str, y_name: str) -> dict:
+    """A plain count per category (a histogram over whole numbers), one bar each."""
+    if not counts:
+        return build_empty_chart("nothing to count")
+    x_axis = _axis(x_name, horizontal=True)
+    x_axis.update({"type": "category", "data": list(labels)})
+    return {
+        "animation": False,
+        "grid": _grid(False),
+        "tooltip": _counts_tooltip(f"'{x_name} ' + ps[0].axisValueLabel"),
+        "xAxis": x_axis,
+        "yAxis": _count_axis(y_name),
+        "series": [
+            {
+                "type": "bar",
+                "name": y_name,
+                "data": list(counts),
+                "barMaxWidth": 12,
+                "itemStyle": {"color": SERIES_PALETTE[0], "borderRadius": [2, 2, 0, 0]},
+            }
+        ],
+    }
+
+
+# A categorical set for classes: the house accent, ink and slate first, then distinct hues that hold
+# up in both themes. Classes beyond its length repeat it.
+CLASS_PALETTE = (
+    "#4f46e5",
+    "#0f172a",
+    "#94a3b8",
+    "#0e7490",
+    "#b45309",
+    "#be123c",
+    "#15803d",
+    "#7c3aed",
+    "#a16207",
+    "#475569",
+)
+
+
+def class_color(k: int) -> str:
+    return CLASS_PALETTE[(int(k) - 1) % len(CLASS_PALETTE)]
+
+
+def build_class_convergence_chart(iterations: Sequence[int], per_class: dict[int, Sequence[float]]) -> dict:
+    """Class distribution at each iteration, one stacked bar per iteration summing to 100 %: a
+    classification has converged when the stacks stop changing."""
+    if not iterations or not per_class:
+        return build_empty_chart("no model.star per iteration")
+    x_axis = _axis("iteration", horizontal=True)
+    x_axis.update({"type": "category", "data": [str(i) for i in iterations]})
+    y_axis = _count_axis("% of particles")
+    y_axis["max"] = 100
+    y_axis.pop("minInterval", None)
+    series = [
+        {
+            "type": "bar",
+            "name": f"class {k}",
+            "stack": "classes",
+            "data": [round(100.0 * v, 1) for v in per_class[k]],
+            "barMaxWidth": 14,
+            "itemStyle": {"color": class_color(k), "borderColor": "#ffffff", "borderWidth": 1},
+        }
+        for k in sorted(per_class)
+    ]
+    return {
+        "animation": False,
+        "grid": _grid(len(series) > 1),
+        "legend": _legend(len(series) > 1),
+        "tooltip": _counts_tooltip("'iteration ' + ps[0].axisValueLabel"),
+        "xAxis": x_axis,
+        "yAxis": y_axis,
+        "series": series,
+    }
+
+
+def build_fsc_chart(curves: dict[str, dict], *, thresholds: Sequence[float] = (0.143, 0.5)) -> dict:
+    """Half-map FSC against spatial frequency (1/Å), one line per curve ({name: {freq, fsc}}), with
+    the thresholds dashed. The FSC is a continuous function of frequency, so it is drawn as lines."""
+    if not curves:
+        return build_empty_chart("no half maps")
+    series = []
+    for i, (name, c) in enumerate(curves.items()):
+        color = SERIES_PALETTE[i % len(SERIES_PALETTE)]
+        series.append(
+            {
+                "type": "line",
+                "name": name,
+                "data": [[f, v] for f, v in zip(c["freq"], c["fsc"], strict=True)],
+                "showSymbol": False,
+                "lineStyle": {"color": color, "width": 1.4},
+                "itemStyle": {"color": color},
+            }
+        )
+    series[0]["markLine"] = {
+        "silent": True,
+        "symbol": "none",
+        "lineStyle": {"type": "dashed", "color": "#94a3b8", "width": 1},
+        "label": {"fontFamily": _MONO, "fontSize": 9, "color": "#64748b", "position": "insideEndTop"},
+        "data": [{"yAxis": t, "label": {"formatter": f"{t:g}"}} for t in thresholds],
+    }
+    x_axis = _axis("spatial frequency (1/Å)", horizontal=True)
+    x_axis.update({"min": 0})
+    y_axis = _axis("FSC", horizontal=False)
+    y_axis.update({"min": -0.1, "max": 1.0, "scale": False})
+    return {
+        "animation": False,
+        "grid": _grid(len(series) > 1),
+        "legend": _legend(len(series) > 1),
+        "tooltip": _tooltip(_FIT_TOOLTIP_JS),
+        "xAxis": x_axis,
+        "yAxis": y_axis,
+        "series": series,
+    }
+
+
+def build_curves_chart(
+    x: Sequence[float],
+    series: Sequence[dict],
+    *,
+    x_name: str,
+    y_name: str,
+    y_max: float | None = None,
+    cut: float | None = None,
+) -> dict:
+    """Continuous curves over one x (each {name, y, color?}; None leaves a gap), the cut dashed."""
+    if not x or not series:
+        return build_empty_chart("nothing to draw")
+    out = []
+    for i, s in enumerate(series):
+        color = s.get("color") or SERIES_PALETTE[i % len(SERIES_PALETTE)]
+        out.append(
+            {
+                "type": "line",
+                "name": s["name"],
+                "data": [[a, b] for a, b in zip(x, s["y"], strict=True)],
+                "showSymbol": False,
+                "connectNulls": False,
+                "lineStyle": {"color": color, "width": 1.4},
+                "itemStyle": {"color": color},
+            }
+        )
+    if cut is not None:
+        out[0]["markLine"] = _sigma_mark_lines([(cut, f"cut {cut:.1f}σ", SERIES_PALETTE[1])])
+    x_axis = _axis(x_name, horizontal=True)
+    x_axis.update({"min": round(x[0], 4), "max": round(x[-1], 4)})
+    y_axis = _axis(y_name, horizontal=False)
+    if y_max is not None:
+        y_axis.update({"min": 0, "max": y_max, "scale": False})
+    return {
+        "animation": False,
+        "grid": _grid(len(out) > 1),
+        "legend": _legend(len(out) > 1),
+        "tooltip": _sigma_tooltip("Number(x).toFixed(2)"),
+        "xAxis": x_axis,
+        "yAxis": y_axis,
+        "series": out,
+    }

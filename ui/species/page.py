@@ -3,7 +3,8 @@
 Detail = header row (active species' pill + segmented tabs) + one container per
 (species, tab), built lazily on first selection and cached; a switch only flips
 visibility. Tabs: Overview (identity editor, status, sanity, delete) · Templates &
-masks (the mounted workbench) · Picks & curation · Jobs. The page
+masks (the mounted workbench) · Picks & curation · Analytics (scores in σ, TM health, particle
+sets) · Jobs. The page
 owns the 3-s registry observe (species created / deleted elsewhere — roster "+", another
 browser tab, the Overview's delete) and the `on_workbench_active` / `workbench_select_species`
 hooks the workspace registers (`workspace_page._switch_to` / `_open_species`); the
@@ -28,6 +29,7 @@ from ui.components.species_pill import render_species_pill
 from ui.components.svg_icon import load_icon_svg
 from ui.dashboard.css import ensure_assets_loaded
 from ui.routing import View
+from ui.species.analytics_tab import AnalyticsTab
 from ui.species.catalog import import_from_catalog
 from ui.species.jobs_tab import JobsTab
 from ui.species.overview_tab import OverviewTab
@@ -44,6 +46,7 @@ TABS: tuple[tuple[str, str], ...] = (
     ("overview", "Overview"),
     ("templates", "Templates & masks"),
     ("picks", "Picks & curation"),
+    ("analytics", "Analytics"),
     ("jobs", "Jobs"),
 )
 DEFAULT_TAB = "overview"
@@ -206,6 +209,8 @@ class SpeciesPage:
                 return OverviewTab(ctx)
             case "picks":
                 return PicksTab(ctx)
+            case "analytics":
+                return AnalyticsTab(ctx)
             case "jobs":
                 return JobsTab(ctx)
         raise KeyError(f"unknown Species tab {key!r}")

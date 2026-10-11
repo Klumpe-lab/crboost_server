@@ -219,6 +219,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         PHASE_PARTICLES,
         dependencies=(JobType.SUBTOMO_EXTRACTION,),
         driver="reconstruct_particle.py",
+        plugins=("particle_results",),
     ),
     JobSpec(
         JobType.CLASS3D,
@@ -227,6 +228,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         PHASE_PARTICLES,
         dependencies=(JobType.RECONSTRUCT_PARTICLE,),
         driver="class3d.py",
+        plugins=("particle_results",),
     ),
 )
 

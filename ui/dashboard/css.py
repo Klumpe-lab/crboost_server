@@ -1022,6 +1022,17 @@ _CB_CSS = """
     100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
 }
 .cb-live-pulse { animation: cb-live-pulse 1.6s ease-out infinite; }
+/* Projects roster deletion mode (ui/projects_overview.py): the armed roster breathes a
+ * red outline; under the pointer a row tints red and its trash column turns solid. */
+@keyframes cb-delmode-breathe {
+    0%, 100% { box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.12); }
+    50%      { box-shadow: 0 0 0 4px rgba(220, 38, 38, 0.28); }
+}
+.cb-proj-delmode { animation: cb-delmode-breathe 2.4s ease-in-out infinite; }
+.cb-proj-delrow { transition: background-color 0.12s; }
+.cb-proj-delrow:hover { background: #fef2f2; }
+.cb-proj-deltrash { color: #fca5a5; background: #fffafa; transition: color 0.12s, background-color 0.12s; }
+.cb-proj-delrow:hover .cb-proj-deltrash { color: #dc2626; background: #fee2e2; }
 /* Scroll area that must never scroll sideways (projects roster): content is pinned to
  * the viewport width, so an over-wide child clips instead of growing a horizontal pan. */
 .cb-scroll-noh .q-scrollarea__container { overflow-x: hidden !important; }
@@ -1372,25 +1383,28 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 /* The gallery's metrics menu: one checkbox per metric. */
 .cb-tg-menu { padding: 4px 8px 4px 4px; }
 .cb-tg-menu .q-checkbox__label { font-family: 'IBM Plex Sans', sans-serif; font-size: 10px; color: #334155; }
-/* Zoom: one tile at viewport scale. Sized here (not maximized) so the tomogram keeps
- * its aspect and the wall behind stays visible as context. */
+/* Zoom: one tile at viewport scale, in a translucent slate card that hugs the slice
+ * (the card is as wide as the frame; the frame's height and width are set inline from
+ * the tomogram's aspect, ~90 vh tall). Quasar's minimized-dialog padding and 560 px cap
+ * are lifted for this dialog only. */
+.cb-gal-zoom-dialog .q-dialog__inner--minimized { padding: 4px; }
+.cb-gal-zoom-dialog .q-dialog__inner--minimized > div { max-width: none; max-height: none; }
 .cb-gal-zoom {
-    background: #ffffff; border-radius: 6px; padding: 8px;
-    display: flex; flex-direction: column; gap: 6px;
-    width: 92vw; max-width: 1500px;
+    background: rgba(51, 65, 85, 0.55); backdrop-filter: blur(3px);
+    border-radius: 8px; padding: 6px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.35);
+    display: flex; flex-direction: column; gap: 6px; width: fit-content; max-width: 98vw;
 }
 .cb-gal-zoom-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.cb-gal-zoom-title { font-size: 12px; font-weight: 600; color: #0f172a; }
-.cb-gal-zoom-ts { font-family: ui-monospace, monospace; font-size: 10px; color: #64748b; }
+.cb-gal-zoom-title { font-size: 12px; font-weight: 600; color: #f8fafc; }
+.cb-gal-zoom-ts { font-family: ui-monospace, monospace; font-size: 10px; color: #cbd5e1; }
 .cb-gal-zoom-src { font-family: ui-monospace, monospace; font-size: 10px; color: #94a3b8; }
-/* Height is bounded by capping the WIDTH against the aspect (inline, where the dims
- * are known) — a max-height would clamp the box out of ratio and object-fit:fill
- * would then squash the slice. */
-.cb-gal-zoom-frame { cursor: default; border-radius: 4px; margin: 0 auto; }
-.cb-gal-zoom-path {
-    font-family: ui-monospace, monospace; font-size: 9px; color: #94a3b8;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
+.cb-gal-zoom-frame { cursor: default; border-radius: 4px; }
+/* The zoom's previous / next chevrons: dim over the slice, solid under the pointer. */
+.cb-gal-zoom-chev { color: rgba(255, 255, 255, 0.4); background: rgba(15, 23, 42, 0.12); }
+.cb-gal-zoom-chev:hover { color: rgba(255, 255, 255, 0.95); background: rgba(15, 23, 42, 0.5); }
+/* The `3dmod` copy chip in a tomogram preview's corner (ui/components/copyable.py). */
+.cb-3dmod-chip { background: rgba(15, 23, 42, 0.62); color: #e2e8f0; }
+.cb-3dmod-chip:hover { background: rgba(37, 99, 235, 0.88); color: #ffffff; }
 /* ── Live-session marker ─────────────────────────────────────────────────────── */
 /* The 7 px green dot beside `Curate picks` on the tomogram the running ChimeraX + ArtiaX
  * session has open (Picks & curation tab). It breathes: a CSS animation, never a server
@@ -1419,6 +1433,25 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 .cb-scroll-tight .q-expansion-item__content { align-items: stretch; padding: 0; gap: 0; }
 /* Log views (job Logs tab): wrap long lines instead of scrolling sideways. */
 .cb-log .q-scrollarea__content { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* ── Species page · Analytics: the per-tomogram table and the set list ───── */
+.cb-atable-wrap { max-height: 440px; overflow: auto; width: 100%; border-top: 1px solid #e2e8f0; }
+.cb-atable { border-collapse: collapse; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #1e293b; }
+.cb-atable th {
+    position: sticky; top: 0; background: #ffffff; z-index: 1; cursor: help;
+    font-family: 'IBM Plex Sans', sans-serif; font-size: 9px; font-weight: 700; color: #94a3b8;
+    text-transform: uppercase; letter-spacing: 0.3px; text-align: left;
+    padding: 4px 8px 3px; border-bottom: 1px solid #e2e8f0; white-space: nowrap;
+}
+.cb-atable td { padding: 2px 8px; border-bottom: 1px solid #f1f5f9; white-space: nowrap; }
+.cb-atable tbody tr:hover td { background: #f8fafc; }
+.cb-atable .n { text-align: right; }
+.cb-atable .nm { font-family: 'IBM Plex Sans', sans-serif; color: #334155; cursor: help; }
+.cb-atable .dim { color: #94a3b8; }
+.cb-atable .mk { color: #b45309; cursor: help; }
+.cb-atable .err { color: #b91c1c; font-weight: 700; cursor: help; }
+.cb-atable td[title] { cursor: help; }
+.cb-atable tr.sel td { background: #eef2ff; }
+.cb-atable .act { color: #6366f1; cursor: pointer; text-decoration: underline dotted; }
 """
 
 

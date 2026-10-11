@@ -22,7 +22,7 @@ def main():
     print("--- SLURM JOB START (Reconstruct Particle) ---", flush=True)
 
     try:
-        (_state, params, context, job_dir, _project_path, _job_type) = get_driver_context(ReconstructParticleParams)
+        (state, params, context, job_dir, _project_path, _job_type) = get_driver_context(ReconstructParticleParams)
     except Exception as e:
         print(f"[DRIVER] BOOTSTRAP ERROR: {e}", file=sys.stderr)
         sys.exit(1)
@@ -44,7 +44,7 @@ def main():
             .opt_path("--i", input_optimisation, quote=False)
             .opt_path("--o", f"{job_dir}/", quote=False)
             .opt("--b", params.box_size)
-            .opt("--sym", params.symmetry.value if hasattr(params.symmetry, 'value') else params.symmetry)
+            .opt("--sym", params.symmetry.value if hasattr(params.symmetry, "value") else params.symmetry)
             .opt("--j", params.threads)
             .opt("--j_in", params.threads_in)
             .opt("--j_out", params.threads_out)
@@ -116,12 +116,38 @@ def main():
             else:
                 print(f"[DRIVER] WARN: {hm} not found (may use different naming)", flush=True)
 
+        _write_readout_sidecar(job_dir, state, params, context["instance_id"])
+
         print("--- SLURM JOB END (Exit Code: 0) ---", flush=True)
 
     except Exception as e:
         print(f"[DRIVER] FATAL: {e}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         sys.exit(1)
+
+
+def _write_readout_sidecar(job_dir: Path, state, params: ReconstructParticleParams, instance_id: str) -> None:
+    """Central slices of the map and the half-map FSC (unmasked, and inside a soft sphere of the
+    species diameter), as the job's analytics sidecar. A readout of a finished reconstruction: its
+    failure — including an import failure of the analytics code — is reported and never fails the
+    job."""
+    try:
+        from services.models_base import resolve_species
+        from services.particles.class_readout import RECONSTRUCT_KIND, compute_reconstruct_record, sidecar_paths
+        from services.particles.records import write_record
+
+        species, _sid = resolve_species(state, params, instance_id)
+        diameter = getattr(species, "diameter_ang", None) if species is not None else None
+        record_path, assets = sidecar_paths(job_dir, RECONSTRUCT_KIND)
+        rec = compute_reconstruct_record(
+            job_dir, instance_id=instance_id, diameter_ang=diameter, assets_dir=assets, computed_by="driver"
+        )
+        write_record(record_path, rec)
+        res = ((rec.data.get("fsc") or {}).get("unmasked") or {}).get("resolution") or {}
+        print(f"[DRIVER] Analytics sidecar: half-map FSC 0.143 at {res.get('0.143')} Å (unmasked)", flush=True)
+    except Exception as e:
+        print(f"[DRIVER WARN] Analytics sidecar failed (the reconstruction itself succeeded): {e}", flush=True)
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
