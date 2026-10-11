@@ -34,6 +34,8 @@ code all live in ArrayDriver; this file is the template-match-specific hooks.
 
 import os
 import shutil
+import time
+import traceback
 from pathlib import Path
 
 import pandas as pd
@@ -279,7 +281,12 @@ class TemplateMatchPytomDriver(ArrayDriver):
             raise KeyError(f"tomograms.star missing columns {missing}. Have: {list(tomo_df.columns)}")
 
         self._tomo_df = tomo_df
-        return sorted(tomo_df["rlnTomoName"].astype(str).tolist())
+        names = sorted(tomo_df["rlnTomoName"].astype(str).tolist())
+        step = int(getattr(ctx.params, "every_nth_tomogram", 1) or 1)
+        if step > 1:
+            names = names[::step]
+            self.log(f"every_nth_tomogram={step}: matching {len(names)} of {len(tomo_df)} tomograms")
+        return names
 
     def pre_dispatch(self, ctx: DriverContext[TemplateMatchPytomParams], items: list[str]) -> None:
         job_dir = ctx.job_dir
@@ -371,6 +378,7 @@ class TemplateMatchPytomDriver(ArrayDriver):
         out_scores = scores_mrc_path(ctx.job_dir, item)
         if out_scores.exists() and out_scores.stat().st_size > 0:
             self.log(f"Scores already exist, skipping: {out_scores}")
+            self._write_analytics_sidecar(ctx, item, started_at=None, only_if_missing=True)
             return True
         return False
 
@@ -405,6 +413,7 @@ class TemplateMatchPytomDriver(ArrayDriver):
             "use_legacy": bool(manifest.get("legacy_text_input", True)),
             "patched_tomograms_star": manifest.get("patched_tomograms_star"),
             "angle_list_path": manifest.get("angle_list_path"),
+            "started_at": time.time(),
         }
 
     def build_command(self, ctx: DriverContext[TemplateMatchPytomParams], item: str, staged) -> ToolCommand:
@@ -439,6 +448,40 @@ class TemplateMatchPytomDriver(ArrayDriver):
         out_scores = scores_mrc_path(ctx.job_dir, item)
         if not out_scores.exists():
             raise FileNotFoundError(f"pytom_match_template reported success but expected output missing: {out_scores}")
+
+    def collect(self, ctx: DriverContext[TemplateMatchPytomParams], item: str, staged) -> None:
+        self._write_analytics_sidecar(ctx, item, started_at=staged.get("started_at"))
+
+    def _write_analytics_sidecar(
+        self, ctx: DriverContext[TemplateMatchPytomParams], item: str, started_at, *, only_if_missing: bool = False
+    ) -> None:
+        """The per-tomogram analytics sidecar (σ, search space, peaks of the score map). A readout of
+        a match that already succeeded: its failure — including an import failure of the analytics
+        code — is reported in the task log and never fails the task."""
+        try:
+            from services.models_base import resolve_species
+            from services.particles.analytics_store import tm_sidecar_path, write_tm_tomogram_sidecar
+
+            if only_if_missing and tm_sidecar_path(ctx.job_dir, item).exists():
+                return
+            species, _sid = resolve_species(ctx.state, ctx.params, ctx.instance_id)
+            diameter = getattr(species, "diameter_ang", None) if species is not None else None
+            record = write_tm_tomogram_sidecar(
+                ctx.job_dir,
+                item,
+                instance_id=ctx.instance_id,
+                diameter_ang=float(diameter) if diameter else None,
+                started_at=started_at,
+            )
+            scan = record.data.get("scan") or {}
+            self.log(
+                f"Analytics sidecar: σ {record.data.get('sigma')}, top {scan.get('top_sigma')}σ, "
+                f"{scan.get('n_peaks')} peaks ≥ FP=1 ({scan.get('seconds')} s)"
+                + (f"; {record.data['error']}" if record.data.get("error") else "")
+            )
+        except Exception as e:
+            print(f"[TASK WARN] analytics sidecar for {item} failed (the match itself succeeded): {e}", flush=True)
+            traceback.print_exc()
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from services.io_slots import InputSlot, OutputSlot, JobFileType, ResolvedInput, ResolvedOutput, ResolvedManifest
 
 from services.models_base import InstanceId, JobType, JobStatus
+from services.particles.particle_sets import SET_PRODUCER_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -221,10 +222,11 @@ def pick_list_producer_prefix_for_species(species_id: str) -> str:
 
 def is_synthetic_producer(producer_instance_id: str) -> bool:
     """True for a producer that has no SLURM job — so it can never be an afterok
-    dependency. The aggregation merge, imported tomograms, and per-pick-list
-    extractions (which run as their own one-off job, outside the pipeline graph)."""
+    dependency. The aggregation merge, imported tomograms, per-pick-list
+    extractions (which run as their own one-off job, outside the pipeline graph) and
+    particle sets."""
     return producer_instance_id in ("mergedSources", IMPORTED_TOMOGRAMS_PRODUCER_ID) or producer_instance_id.startswith(
-        PICK_LIST_PRODUCER_PREFIX
+        (PICK_LIST_PRODUCER_PREFIX, SET_PRODUCER_PREFIX)
     )
 
 
@@ -249,7 +251,7 @@ def auto_exclusion(consumer_type: JobType, consumer_species_id: str | None, cand
 
 
 def _synthetic_override_target(override_key: str) -> str:
-    """Which synthetic producer an override names: "merged" | "pick_list" | "imported" | "".
+    """Which synthetic producer an override names: "merged" | "pick_list" | "particle_set" | "imported" | "".
 
     The merge and the per-pick-list extractions have no JobType of their own, so both wear
     the ``mergedSources:`` prefix and are told apart by instance path — routing a dangling
@@ -265,6 +267,8 @@ def _synthetic_override_target(override_key: str) -> str:
     instance_path = override_key[len(prefix) :]
     if instance_path.startswith(PICK_LIST_PRODUCER_PREFIX):
         return "pick_list"
+    if instance_path.startswith(SET_PRODUCER_PREFIX):
+        return "particle_set"
     if instance_path == IMPORTED_TOMOGRAMS_INSTANCE_PATH:
         return "imported"  # legacy key, minted before IMPORTED_TOMOGRAMS existed
     return "merged"
@@ -743,6 +747,9 @@ class PathResolutionService:
             return self._dangling_pick_list_message(override_key)
         if target == "imported":
             return self._dangling_imported_message()
+        if target == "particle_set":
+            set_id = override_key.split(":", 1)[1][len(SET_PRODUCER_PREFIX) :]
+            return f"the particle set {set_id} this input was set to no longer exists — pick another source"
         return "merged-sources optimisation_set not found (merge deleted or active merge switched?)"
 
     def _dangling_job_message(self, override_key: str) -> str:
@@ -808,6 +815,16 @@ class PathResolutionService:
                 if candidate.producer_job_type.value == job_type_str and candidate.producer_instance_id == instance_id
             ]
             return next((m for m in matches if m.prefer_if_exists), matches[0]) if matches else None
+
+        if job_type_str == JobType.MERGED_SOURCES.value and instance_path.startswith(SET_PRODUCER_PREFIX):
+            # From the index, else read directly: a set made moments before a driver starts on another
+            # node can be missing from that node's cached directory listing while open() already sees it.
+            hit = next(
+                (c for c in index.get(JobFileType.OPTIMISATION_SET_STAR, []) if c.instance_path == instance_path), None
+            )
+            if hit is None and JobFileType.OPTIMISATION_SET_STAR in slot.accepts:
+                hit = self._particle_set_candidate(instance_path[len(SET_PRODUCER_PREFIX) :], rank=0)
+            return hit if hit is not None and hit.produces in slot.accepts else None
 
         if job_type_str == JobType.MERGED_SOURCES.value and instance_path == IMPORTED_TOMOGRAMS_INSTANCE_PATH:
             # Legacy key: older projects persist imported-tomogram overrides under
@@ -916,6 +933,7 @@ class PathResolutionService:
         self._add_merged_sources_candidates(index, project_root)
         self._add_imported_tomograms_candidates(index, project_root)
         self._add_pick_list_optset_candidates(index)
+        self._add_particle_set_candidates(index)
 
         for t, lst in index.items():
             index[t] = sorted(lst, key=lambda c: (c.producer_job_type.value, c.instance_path, c.producer_output_key))
@@ -1046,6 +1064,43 @@ class PathResolutionService:
                         auto_eligible=latest,
                     )
                 )
+
+    def _add_particle_set_candidates(self, index: dict[JobFileType, list[OutputCandidate]]) -> None:
+        """Every particle set of the project (services/particles/particle_sets.py) as a synthetic
+        OPTIMISATION_SET_STAR producer, offered to an explicit choice only: a set is something the
+        user made for one purpose, and automatic wiring must never swap it in for a job's output.
+        The label states the level, since a coordinates set needs subtomo extraction first."""
+        from services.particles.particle_sets import list_sets
+
+        if self.state.project_path is None:
+            return
+        for rank, ps in enumerate(list_sets(Path(self.state.project_path))):
+            candidate = self._particle_set_candidate(ps.id, rank=rank, pset=ps)
+            if candidate is not None:
+                index[JobFileType.OPTIMISATION_SET_STAR].append(candidate)
+
+    def _particle_set_candidate(self, set_id: str, *, rank: int, pset=None) -> OutputCandidate | None:
+        from services.particles.particle_sets import get_set
+
+        if pset is None:
+            if self.state.project_path is None:
+                return None
+            pset = get_set(Path(self.state.project_path), set_id)
+        if pset is None or not Path(pset.optimisation_set).exists():
+            return None
+        return OutputCandidate(
+            produces=JobFileType.OPTIMISATION_SET_STAR,
+            producer_job_type=JobType.MERGED_SOURCES,
+            producer_output_key="output_optimisation",
+            path=pset.optimisation_set,
+            instance_path=pset.producer_id,
+            producer_instance_id=pset.producer_id,
+            execution_status=JobStatus.SUCCEEDED,
+            relion_job_number=rank,
+            species_id=pset.species_id or None,
+            label=f"Particle set — {pset.name} · {pset.n_particles:,} {pset.level.value}",
+            auto_eligible=False,
+        )
 
     def _get_instance_path(self, instance_id: str, job_model: AbstractJobParams) -> str:
         relion_job_name = getattr(job_model, "relion_job_name", None)

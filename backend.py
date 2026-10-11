@@ -23,11 +23,13 @@ from services.array_tasks import manifest_items, progress as task_progress
 from services.jobs.spec import display_name, driver_invocation
 from services.jobs.tilt_filter import FilterMode
 from services.models_base import JobStatus, JobType
+from services.particles import class_readout, particle_sets, set_ops
 from services.particles.list_ref import extract_pick_list_instance_id
+from services.particles.particle_sets import ParentRef, Rule
 from services.project_state import get_state_service, remove_project_state
 from services.project_disk_usage import get_disk_usage_service, is_stale as is_disk_usage_stale
 from services.event_log import events
-from services.result import err, ok
+from services.result import ErrorCode, err, ok
 from services.computing.slurm_service import SlurmService, write_sbatch_script
 from services.configs.config_service import get_config_service
 from services.curation.session_service import CurationSessionService
@@ -1350,6 +1352,194 @@ class CryoBoostBackend:
         # create_task can be GC'd before it runs.
         await self.state_service.save_project(project_path=project_path, force=True)
         return res
+
+    # ── Particle sets (services/particles/particle_sets.py) ──────────────────────────
+
+    async def preview_particle_set(self, parent: ParentRef, rules: list[Rule]) -> dict[str, Any]:
+        """The funnel `rules` would give on `parent`; nothing is written."""
+        try:
+            steps = await asyncio.to_thread(set_ops.preview_rule_filter, parent, rules)
+        except (ValueError, FileNotFoundError) as e:  # a rule the table cannot answer, or a parent gone from disk
+            return err(str(e))
+        except Exception as e:
+            logger.exception("Rule-filter preview failed for %s", parent.particles_star)
+            return err(f"{type(e).__name__}: {e}")
+        return ok(funnel=steps)
+
+    async def particle_overlap(
+        self, a: ParentRef, cut_a: float | None, b: ParentRef, min_sigma_b: float | None, radius: float
+    ) -> dict[str, Any]:
+        """How many of `a`'s picks lie within `radius` Å of `b`'s (set_ops.overlap_counts)."""
+        try:
+            counts = await asyncio.to_thread(set_ops.overlap_counts, a, cut_a, b, min_sigma_b, radius)
+        except (ValueError, FileNotFoundError) as e:
+            return err(str(e))
+        except Exception as e:
+            logger.exception("Overlap of %s with %s failed", a.label, b.label)
+            return err(f"{type(e).__name__}: {e}")
+        return ok(**counts)
+
+    async def create_particle_set(
+        self, project_path: Path, *, parent: ParentRef, rules: list[Rule], name: str, species_id: str
+    ) -> dict[str, Any]:
+        """A new set of `parent`'s rows that pass `rules`, published under the project's
+        Analytics/sets/ and logged; the parent is not touched."""
+        try:
+            pset = await asyncio.to_thread(
+                set_ops.create_rule_filter_set,
+                Path(project_path),
+                parent=parent,
+                rules=rules,
+                name=name,
+                species_id=species_id,
+            )
+        except (ValueError, FileExistsError, FileNotFoundError) as e:
+            return err(str(e))
+        except Exception as e:
+            logger.exception("Creating particle set %r in %s failed", name, project_path)
+            return err(f"{type(e).__name__}: {e}")
+        self.state_service.state_for(Path(project_path)).bump_registry_rev()
+        return ok(set=pset)
+
+    async def particle_readout(self, project_path: Path, instance_id: str) -> dict[str, Any]:
+        """The Class 3D or Reconstruct particle readout of one job (services/particles/class_readout.py);
+        the first read of a job that predates its sidecar renders its images."""
+        project_path = Path(project_path)
+        state = self.state_service.state_for(project_path)
+        try:
+            rec = await asyncio.to_thread(class_readout.readout_record, project_path, state, instance_id)
+            decoys = {}
+            if rec.provenance.kind == class_readout.CLASS3D_KIND:
+                keys = await asyncio.to_thread(set_ops.decoy_keys, project_path)
+                decoys = await asyncio.to_thread(set_ops.decoy_class_counts, Path(rec.data["data_star"]), keys)
+        except FileNotFoundError as e:
+            return err(str(e), code=ErrorCode.NOT_WRITTEN_YET)
+        except Exception as e:
+            logger.exception("Readout of %s failed", instance_id)
+            return err(f"{type(e).__name__}: {e}")
+        return ok(record=rec, decoys=decoys)
+
+    async def create_class_subset(
+        self, project_path: Path, *, class3d_instance: str, classes: list[int], name: str, species_id: str
+    ) -> dict[str, Any]:
+        """A new set of the chosen classes' members (set_ops.create_class_subset_set)."""
+        project_path = Path(project_path)
+        state = self.state_service.state_for(project_path)
+        try:
+            pset = await asyncio.to_thread(
+                set_ops.create_class_subset_set,
+                project_path,
+                state,
+                class3d_instance=class3d_instance,
+                classes=classes,
+                name=name,
+                species_id=species_id,
+            )
+        except (ValueError, FileNotFoundError, FileExistsError) as e:
+            return err(str(e))
+        except Exception as e:
+            logger.exception("Class subset of %s failed", class3d_instance)
+            return err(f"{type(e).__name__}: {e}")
+        state.bump_registry_rev()
+        return ok(set=pset)
+
+    # ── Controls (services/templating/control_templates.py, services/particles/set_ops.py) ──
+
+    async def make_control_template(
+        self, project_path: Path, species_id: str, template_id: str, kind: str, *, seed: int = 1
+    ) -> dict[str, Any]:
+        """A decoy (phase-randomised) or mirrored copy of one of the species' templates, written beside
+        its templates and registered on it (never selected). Matched by a template-match job of its
+        own, it is a control for the real one."""
+        from services import species_admin
+        from services.templating import control_templates
+
+        project_path = Path(project_path)
+        state = self.state_service.state_for(project_path)
+        sp = state.get_species(species_id)
+        tpl = sp.get_template_by_id(template_id) if sp else None
+        if tpl is None or not Path(tpl.template_path).exists():
+            return err("that template is not on disk")
+        src = Path(tpl.template_path)
+        folder = project_path / "templates" / species_id
+        if kind == "decoy":
+            out = folder / f"{src.stem}_decoy_seed{seed}.mrc"
+            source, note = f"decoy:phase_randomised:{tpl.id}:seed{seed}", "phase-randomised decoy of"
+        elif kind == "mirror":
+            out = folder / f"{src.stem}_mirror.mrc"
+            source, note = f"mirror:{tpl.id}", "Z-flipped (other hand) copy of"
+        else:
+            return err(f"unknown control template kind {kind!r}")
+        try:
+            if kind == "decoy":
+                await asyncio.to_thread(control_templates.phase_randomised, src, out, seed=seed)
+            else:
+                await asyncio.to_thread(control_templates.mirrored, src, out)
+        except (OSError, ValueError) as e:
+            logger.exception("Making the %s of %s failed", kind, src)
+            return err(f"{type(e).__name__}: {e}")
+        res = species_admin.register_template(
+            state, species_id, str(out), polarity=tpl.polarity, source=source, notes=f"{note} {src.name}"
+        )
+        if not res["success"]:
+            return res
+        await self.state_service.save_project(project_path=project_path, force=True)
+        return ok(template_id=res["template_id"], path=str(out))
+
+    async def create_decoy_set(
+        self,
+        project_path: Path,
+        *,
+        parent: ParentRef,
+        fraction: float,
+        min_distance_ang: float,
+        seed: int,
+        name: str,
+        species_id: str,
+    ) -> dict[str, Any]:
+        """Random in-slab decoy positions added to `parent`'s picks, as a new set."""
+        try:
+            pset = await asyncio.to_thread(
+                set_ops.create_decoy_position_set,
+                Path(project_path),
+                parent=parent,
+                fraction=fraction,
+                min_distance_ang=min_distance_ang,
+                seed=seed,
+                name=name,
+                species_id=species_id,
+            )
+        except (ValueError, FileNotFoundError, FileExistsError) as e:
+            return err(str(e))
+        except Exception as e:
+            logger.exception("Decoy positions for %s failed", parent.label)
+            return err(f"{type(e).__name__}: {e}")
+        self.state_service.state_for(Path(project_path)).bump_registry_rev()
+        return ok(set=pset)
+
+    async def particle_control(self, fn, *args, **kwargs) -> dict[str, Any]:
+        """Run one of set_ops' read-only controls (recall_curve, half_set_check, class_agreement,
+        reference_table chains) off the event loop, as ok(result=…) / err."""
+        try:
+            result = await asyncio.to_thread(fn, *args, **kwargs)
+        except (ValueError, FileNotFoundError) as e:
+            return err(str(e))
+        except Exception as e:
+            logger.exception("Control %s failed", getattr(fn, "__name__", fn))
+            return err(f"{type(e).__name__}: {e}")
+        return ok(result=result)
+
+    async def delete_particle_set(self, project_path: Path, set_id: str, *, reason: str = "") -> dict[str, Any]:
+        """Remove a set (the operation log keeps its recipe)."""
+        try:
+            await asyncio.to_thread(particle_sets.delete_set, Path(project_path), set_id, reason=reason)
+        except FileNotFoundError as e:
+            return err(str(e))
+        except OSError as e:
+            logger.exception("Deleting particle set %s in %s failed", set_id, project_path)
+            return err(f"{type(e).__name__}: {e}")
+        self.state_service.state_for(Path(project_path)).bump_registry_rev()
+        return ok()
 
     async def get_default_data_globs(self) -> dict[str, str]:
         """Get default glob patterns from config."""

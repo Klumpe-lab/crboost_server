@@ -224,10 +224,45 @@ def _read_picks_json(path: Path) -> dict:
     if not path or not Path(path).exists():
         return {"picks": [], "tomo_dims_xyz_px": [0, 0, 0], "score_field": None, "n": 0}
     try:
-        return json.loads(Path(path).read_text())
+        data = json.loads(Path(path).read_text())
     except Exception as e:
         logger.warning("Failed to load picks.json %s: %s", path, e)
         return {"picks": [], "tomo_dims_xyz_px": [0, 0, 0], "score_field": None, "n": 0}
+    _annotate_sigma(data, Path(path))
+    return data
+
+
+def _annotate_sigma(data: dict, picks_json: Path) -> None:
+    """Add each pick's score in σ (LCC ÷ the tomogram's noise level) as `sigma_score`, and the
+    tomogram's σ as `sigma`. picks.json sits at <extraction job>/vis/preview/<tomogram>/; σ comes
+    from that job's candidates (its analytics sidecar when current). Scores without a σ stay LCC."""
+    from services.particles.analytics_store import tomo_sigma_map
+
+    try:
+        sigma = tomo_sigma_map(picks_json.parents[3]).get(picks_json.parent.name)
+    except (OSError, ValueError, KeyError, IndexError) as e:
+        logger.warning("No σ for %s; scores stay in LCC: %s", picks_json, e)
+        return
+    if not sigma:
+        return
+    data["sigma"] = sigma
+    for pick in data.get("picks") or []:
+        if pick.get("score") is not None:
+            pick["sigma_score"] = float(pick["score"]) / sigma
+
+
+def _score_label(pick: dict) -> str:
+    """A pick's score as shown on a tile: in σ when the tomogram's σ is known, else the raw LCC."""
+    if pick.get("sigma_score") is not None:
+        return f"{pick['sigma_score']:.1f}σ"
+    return f"{pick['score']:.3f}"
+
+
+def _score_detail(pick: dict) -> str:
+    """σ and the raw LCC behind it, for hovers."""
+    if pick.get("sigma_score") is not None:
+        return f"{pick['sigma_score']:.2f}σ (LCC {pick['score']:.4f})"
+    return f"LCC {pick['score']:.4f}"
 
 
 # Atlas-index parse cache: path -> (mtime, meta). The cutout sheet re-reads the same
@@ -2321,6 +2356,9 @@ def _attach_auto_chip_tooltip(el, sp: dict, tm_info: dict) -> None:
             ui.label("Auto pick set (PyTOM)").classes("cb-tt-head")
             ui.label(f"{row['position_label']} · {row['tomo_name']}").classes("cb-tt-line")
             stat = f"N = {row['n_picks']}"
+            sigma_scores = [p["sigma_score"] for p in sp.get("picks") or [] if p.get("sigma_score") is not None]
+            if sigma_scores:
+                stat += f" · {min(sigma_scores):.1f}–{max(sigma_scores):.1f}σ"
             if row.get("score_range"):
                 stat += f" · CC {row['score_range'][0]:.3f}–{row['score_range'][1]:.3f}"
             if entry.get("score_mean") is not None:
@@ -2721,12 +2759,12 @@ def _render_anchor_tiles(
             )
             tip = [f"#{pick_idx} ({note})"]
             if pick and pick.get("score") is not None:
-                tip.append(f"score={pick['score']:.4f}")
+                tip.append(_score_detail(pick))
             tile._props["title"] = " · ".join(tip)
             with tile:
                 ui.html(f"{tag}{n + 1}", sanitize=False).classes("cb-tile-rank")
                 if pick and pick.get("score") is not None:
-                    ui.html(f"{pick['score']:.3f}", sanitize=False).classes("cb-tile-score")
+                    ui.html(_score_label(pick), sanitize=False).classes("cb-tile-score")
 
 
 def _render_reference_strip(
@@ -3431,7 +3469,7 @@ def _render_gallery_body(
                     # The tile's own tooltip carries the pick's numbers (score, coords).
                     parts = [f"#{pick_idx}"]
                     if pick.get("score") is not None:
-                        parts.append(f"score={pick['score']:.4f}")
+                        parts.append(_score_detail(pick))
                     parts.append(f"x={int(pick.get('x', 0))}")
                     parts.append(f"y={int(pick.get('y', 0))}")
                     parts.append(f"z={int(pick.get('z', 0))}")
@@ -3451,7 +3489,7 @@ def _render_gallery_body(
                     if pick is not None and pick.get("z") is not None:
                         ui.html(f"z{int(pick['z'])}", sanitize=False).classes("cb-tile-z")
                     if pick and pick.get("score") is not None:
-                        ui.html(f"{pick['score']:.3f}", sanitize=False).classes("cb-tile-score")
+                        ui.html(_score_label(pick), sanitize=False).classes("cb-tile-score")
 
             # Degenerate tiles at the end: candidates that produced no cutout.
             # Greyed + non-interactive, index + reason in tooltip — so it's clear
@@ -3802,7 +3840,7 @@ def _update_hover_card(e, picks: list, pixel_size_ang, labels: dict) -> None:
     else:
         labels["ang"].set_text("(no pixel size)")
     if pick.get("score") is not None:
-        labels["score"].set_text(f"{pick['score']:.4f}")
+        labels["score"].set_text(_score_detail(pick))
     else:
         labels["score"].set_text("—")
     if pick.get("z_pct") is not None:

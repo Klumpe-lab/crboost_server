@@ -112,8 +112,7 @@ def main():
         expected_optset = job_dir / "run_optimisation_set.star"
         if not final_optset.exists():
             raise RuntimeError(
-                f"Expected output {final_optset.name} not found in {job_dir}. "
-                f"Check run.out for relion_refine errors."
+                f"Expected output {final_optset.name} not found in {job_dir}. Check run.out for relion_refine errors."
             )
         if not expected_optset.exists():
             shutil.copy2(final_optset, expected_optset)
@@ -129,12 +128,35 @@ def main():
         else:
             print("[DRIVER] WARN: No class volumes found", flush=True)
 
+        _write_readout_sidecar(job_dir, params, context["instance_id"])
+
         print("--- SLURM JOB END (Exit Code: 0) ---", flush=True)
 
     except Exception as e:
         print(f"[DRIVER] FATAL: {e}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         sys.exit(1)
+
+
+def _write_readout_sidecar(job_dir: Path, params: Class3DParams, instance_id: str) -> None:
+    """Class distribution per iteration, classes against score, tomogram and project, class slices
+    and member galleries, as the job's analytics sidecar. A readout of a finished classification:
+    its failure — including an import failure of the analytics code — is reported and never fails
+    the job."""
+    try:
+        from services.particles.class_readout import CLASS3D_KIND, compute_class3d_record, sidecar_paths
+        from services.particles.records import write_record
+
+        record_path, assets = sidecar_paths(job_dir, CLASS3D_KIND)
+        rec = compute_class3d_record(job_dir, params, instance_id=instance_id, assets_dir=assets, computed_by="driver")
+        write_record(record_path, rec)
+        print(
+            f"[DRIVER] Analytics sidecar: {rec.data['n_classes']} classes, {rec.data['n_particles']} particles",
+            flush=True,
+        )
+    except Exception as e:
+        print(f"[DRIVER WARN] Analytics sidecar failed (the classification itself succeeded): {e}", flush=True)
+        traceback.print_exc()
 
 
 if __name__ == "__main__":

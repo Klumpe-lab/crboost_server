@@ -44,6 +44,7 @@ code all live in ArrayDriver; this file is the subtomo-specific hooks.
 
 import json
 import shutil
+import traceback
 from pathlib import Path
 
 import pandas as pd
@@ -417,6 +418,22 @@ class SubtomoExtractionDriver(ArrayDriver):
         if ctx.params.additional_sources:
             self.log(f"Merging {len(ctx.params.additional_sources)} additional source(s) on top of extraction...")
             _run_additional_sources_merge(ctx.params, ctx.job_dir)
+        self._write_analytics_sidecar(ctx)
+
+    def _write_analytics_sidecar(self, ctx: DriverContext[SubtomoExtractionParams]) -> None:
+        """Candidates in, particles out per tomogram and the visible-tilt counts, as the job's
+        analytics sidecar. A readout of outputs that are already complete: its failure — including
+        an import failure of the analytics code — is reported and never fails the job."""
+        try:
+            from services.particles.analytics_store import compute_subtomo_record, subtomo_sidecar_path
+            from services.particles.records import write_record
+
+            record = compute_subtomo_record(ctx.job_dir, ctx.params, instance_id=ctx.instance_id, computed_by="driver")
+            write_record(subtomo_sidecar_path(ctx.job_dir), record)
+            self.log(f"Analytics sidecar: {record.data['n_out']} particles from {record.data['n_in']} candidates")
+        except Exception as e:
+            print(f"[SUPERVISOR WARN] Analytics sidecar failed (the extraction itself succeeded): {e}", flush=True)
+            traceback.print_exc()
 
     # ---------------- task ----------------
 

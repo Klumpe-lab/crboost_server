@@ -1,6 +1,6 @@
 # Roadmap 30 — Particle-stage analytics, controls and set tools
 
-**Status:** scoped 2026-10-10; approved for build the same day with the decisions in §10; nothing built yet.
+**Status:** scoped and approved 2026-10-10 (decisions §10). Built the same day, ruff-clean, **not run**: stages 1, 2, 3, 4 and 5 code-complete; stage 6 services built (splits, algebra, replay, boundary labels), its UI in progress. Build record §11, runtime checklist §12.
 Origin: the AGG412 campaign (roadmap 29). Every particle question
 there was answered with throwaway scripts (`cutoff.js`, `tmpeek.js`, `ribohealth.js`, the σ ladders, the cap
 survey). This roadmap moves those answers into the app, adds the statistical controls the scripts lacked, and
@@ -167,7 +167,6 @@ can do better than a script.
 | S4 | **Merge across projects** | Exists for extracted sets (merge card); check optics groups and pixel-size agreement on 8 projects. |
 | S5 | **Set algebra.** A − B; A ∩ B by proximity | Reuses the clash statistics from `pick_merge`. |
 | S6 | **Boundary curation.** Gallery of the picks nearest the cut (sorted by \|σ − cut\|) | Puts human time where the decision is uncertain; the labels feed K5's precision estimate at the cut. A learned scorer over σ, depth and NN is parked. |
-| S8 | **Re-homing** (roadmap 29 C5). Move a particle set from one alignment of the same tilt series to another (e.g. baseline → missAlign) by the per-TS rigid translation (tx, ty, tz), fitted in `services/analysis/alignment_changes.py` and cross-checked with `recon_register` | Output is a new set with the source alignment in its recipe; feeds subtomo extraction or the Warp export job (built separately). Needed for every missAlign rollout without re-running TM. |
 | S7 | **Lineage.** A set tree with counts and recipes | The funnel (§5 E) reads from it; a recipe can be replayed, or stored in a protocol. |
 
 ## 8. Where it shows
@@ -194,7 +193,7 @@ can do better than a script.
 | 5 | Controls K2–K6 | an FDR-at-cut number for the ribosome pilot; decoy share in the good classes |
 | 6 | S3 splits, S5 algebra, S6 boundary curation, S7 lineage | the miss-alignment A/B particle sets (roadmap 29 §6) built in the app |
 
-Build order (2026-10-10): stages 1–2, then S8 re-homing (the missAlign rollout needs it), then 3–6. Stages 1–2 serve roadmap 29 directly. The Warp export job is built separately by the maintainer (roadmap 24 stage 4).
+Build order (2026-10-10): stages 1–2, then 3–6. Stages 1–2 serve roadmap 29 directly. The Warp export job is built separately by the maintainer (roadmap 24 stage 4).
 
 ## 10. Decisions (maintainer, 2026-10-10)
 
@@ -215,3 +214,94 @@ laggy and cluttered at 500–1,000 picks (§4).
 **Modern-Python weave-in:** statistics as pure functions over star DataFrames in `services/particles/`
 (`analytics.py`, `set_ops.py`), sidecar records as frozen dataclasses, and set recipes as Pydantic models
 stored on `PickList`.
+
+## 11. Build record (2026-10-10, ruff-clean, not run)
+
+Snapshots of each stage's files: `notes/30-stage-snap/<stage>/` (git-ignored).
+
+### Re-scopes
+- **Sets are project-level, not `PickList` rows.** A σ cut spans every tomogram of a species; `PickList` is per
+  (species, tomogram). Sets live in a directory store, `<project>/Analytics/sets/<id>/` (`set.json` + `particles.star`
+  + `optimisation_set.star`), not in `project_params.json`: self-describing on disk, readable by a driver by path,
+  and safe from an older server saving the project. `PickListType.FILTERED` stays unused.
+- **No angle-map angles for random positions** (K4's template-bias half): reading PyTOM's angle map needs its
+  angle-list → RELION Euler conversion, which was not reproduced; random-position decoys get uniform random
+  orientations, and the set's record says so. K4's σ-bin reconstructions are an S3 σ-bin split plus one
+  Reconstruct particle job per set.
+- **Recipes in protocols**: not built (protocols are parameter shapes).
+- **Re-homing (S8) dropped**: picks are never moved between alignments; tomograms rebuilt from another alignment
+  (e.g. after missAlign) get their own template match.
+
+### Data layer (all stages)
+- `services/particles/records.py`: the envelope. `Provenance` = kind, schema, module, computed_by (driver / server /
+  user), computed_at, producer (job type, instance, job dir), sources (path + mtime), fingerprint, note.
+  Project records under `Analytics/records/<kind>/<instance>.json`, recomputed when the fingerprint moves.
+- `services/particles/sigma.py` (σ math, stdlib only), `analytics.py` (pure statistics), `analytics_store.py`
+  (read side: driver sidecar → stored backfill → backfill now; memoised by fingerprint), `particle_sets.py`
+  (set models, store, `operations.jsonl` log), `set_ops.py` (operations), `class_readout.py`,
+  `boundary.py`. UI panels in `ui/analytics/`, rendered by `ui/species/analytics_tab.py`; panels take records only.
+
+### Stage 1 — σ first-class
+- TM driver task writes `<tm_job>/analytics/tm_tomo/<tomo>.json`: job.json facts (σ, N, FP=1 in σ, rotations,
+  tilts, defocus, dose, phase flip), node, runtime, and a streamed score-map scan (top peak in σ and whether it sits
+  within 32/16 px of a face; local maxima ≥ FP=1 thinned at the species radius). Also on the re-run path when
+  missing. Extraction supervisor writes `<ce_job>/analytics/candidates.json` (per tomogram: n, σ, cutoff in σ,
+  top/last σ, ladder 7/8/9/10/12, cap bound, every score). Both are readouts: failures (imports included) are
+  logged and never fail the job — the dev tree is live for queued AGG412 drivers.
+- Backfill for finished jobs: TM from job.json, `task_N.out`'s "Node:" line and the tomogram-link → score-map
+  mtimes; no peak scan (top peak then comes from the extraction, marked `*`). Candidates from the star + the staged
+  job.jsons — the same function the driver uses.
+- Species page → **Analytics** tab: source selector (extraction ← TM; sets; merges), provenance line, stat tiles,
+  σ ladder, cut field with live counts and the capped-above-cut flag, σ histogram (FP=1 + cut lines, click a bar to
+  cut), survival vs N·Q(z) (K1), marker summary, per-tomogram table (sort, marked-only, hover details).
+  Markers: σ outlier (robust z > 3), no peak (top within 1σ of FP=1), slow (> 2× node-family median), edge max, cap.
+- Journey: tiles and hovers show σ (LCC in the hover) via `pick_viewer._annotate_sigma`; display only.
+
+### Stage 2 — rule filters → sets, funnel
+- Rules (`set_ops.apply_rules`, in order): exclude tomograms, faces, depth band about the pick plane, away from
+  another set, σ ≥, LCC ≥, nearest-neighbour thinning (higher score kept), top N per tomogram. Live funnel preview.
+  An extracted parent gives a row subset with its optics/general blocks — no re-extraction.
+- Resolver: every set is a synthetic `OPTIMISATION_SET_STAR` producer (`particle_set__<id>`), explicit choice only,
+  label states coordinates/extracted; an override naming a set is read by path (NFS listing lag). Aggregation
+  discovery offers extracted sets as merge sources. Funnel line: TM tomograms → candidates → ≥ cut → extracted →
+  curated → class-kept → refined. Sets panel: lineage tree, stale-parent chip, readers, delete (log keeps recipe).
+  Set and merge sources show their own σ picture; a merge adds per-project rows (decision 6).
+
+### Stage 3 — spatial QC, yield vs quality
+- Candidates record schema 2 adds per-tomogram pick geometry (plane tilt, slab p5–p95 thickness, surface share,
+  depth bins, picks within 100 Å of faces, NN median, pairs < 0.65 Ø). Subtomo record + driver sidecar (candidates
+  in, particles out, visible-tilt histogram). Registry facts per tomogram (CTF fit, tilts used, blank/dim tilts).
+- UI: depth profile with share ≥ cut, yield-vs-quality scatter (x selectable), visible tilts, table columns,
+  cross-species overlap on request.
+
+### Stage 4 — Class 3D / Reconstruct particle
+- `class_readout.py`: per-iteration class shares, class × σ bins (and each bin's class shares), class × tomogram with
+  a concentration marker, class × project for merges, class-map central slices, best/worst member galleries from the
+  2D stacks; Reconstruct: slices + half-map FSC (unmasked and soft sphere at the species Ø). Driver sidecars from
+  `class3d.py` / `reconstruct_particle.py`; backfill on first view. S2 class subset → extracted set (refined poses).
+- UI: "Classes and maps" in Analytics, and a **Results** tab on both job pages (`ui/job_plugins/particle_results.py`).
+
+### Stage 5 — controls
+- K2/K7: decoy (phase-randomised) and mirrored templates registered on the species (never selected); TM gains
+  `every_nth_tomogram`; Analytics recognises control runs by template source and shows FDR at the cut on common
+  tomograms (decoy ≥ cut ÷ real ≥ cut) with both curves, and template-vs-mirror top peaks. K2′ is the existing TM
+  toggle (shown per tomogram). K3: random in-slab decoy positions (+ `decoys.star`); Class 3D results count decoys
+  per class. K5: recall/precision vs hand-placed/imported lists or any set. K6: cross-half pairs closer than Ø.
+  K8: membership agreement of two Class 3D runs.
+
+### Stage 6 — set tools (in progress)
+- Built (services): S3 splits (halves, tomogram halves, projects, σ bins, classes → sibling sets), S5 A − B / A ∩ B
+  by proximity, S7 recipe replay, S6 boundary picks from the extraction's cutout atlases + a labels record under
+  `Analytics/reviews/`.
+- Owed: their UI (split / algebra / replay actions, the operation-log view, the boundary gallery).
+
+## 12. Runtime checklist (once, after stage 6)
+1. `python -c "import main"`, `python check_boundaries.py`; restart the server.
+2. Pilot → Species → `412_particle` → Analytics: σ 0.0073–0.0094, FP=1 ≈ 7.12σ; per project read ≥ 10σ; the seven
+   completed 412 extractions sum to 929 picks in 255 of 744 tomograms; at cut 9.0 the capped-above-cut flags across
+   projects total six (SK Position_11_2 among them).
+3. Make subset σ ≥ 9 from a subtomo job (all) → the set shows in Class 3D's I/O; Class 3D runs on it.
+4. Ribosome pilot, stage 3: slab ~1500–2000 Å, the depth profile's share ≥ 10σ peaks mid-slab, NN median ~264–301 Å.
+5. A Class 3D job's Results tab: convergence, class × σ table, slices, galleries; make a class subset.
+6. Decoy template → TM with `every_nth_tomogram` 10 → extraction → FDR at the cut appears in Controls.
+7. New runs write `analytics/` sidecars (task logs: "Analytics sidecar: …").

@@ -152,6 +152,44 @@ def _scan_project(proj_dir: Path, seen_optsets: set) -> list[SubtomoCandidate]:
                 catalog_id=catalog_id,
             )
         )
+    out.extend(_set_candidates(proj_dir, project_name, mnemonic, species_by_id, seen_optsets))
+    return out
+
+
+def _set_candidates(
+    proj_dir: Path, project_name: str, mnemonic: str, species_by_id: dict, seen_optsets: set
+) -> list[SubtomoCandidate]:
+    """The project's extracted particle sets (Analytics/sets/) as merge sources: a per-project
+    subset, such as a σ cut or a class subset, merges across projects like a subtomo job's
+    particles. Coordinate sets are left out; they have no particles to merge until extracted."""
+    from services.particles.particle_sets import SetLevel, list_sets
+
+    out: list[SubtomoCandidate] = []
+    for ps in list_sets(proj_dir):
+        optset = Path(ps.optimisation_set)
+        if ps.level != SetLevel.EXTRACTED or not optset.exists():
+            continue
+        key = str(optset.resolve())
+        if key in seen_optsets:
+            continue
+        seen_optsets.add(key)
+        sp = species_by_id.get(ps.species_id) or {}
+        out.append(
+            SubtomoCandidate(
+                project_name=project_name,
+                project_path=str(proj_dir),
+                instance_id=f"set {ps.id}",
+                job_dir=str(optset.parent),
+                optset_path=key,
+                species_label=sp.get("name") or ps.species_id or None,
+                n_tomograms=ps.n_tomograms,
+                species_id=ps.species_id or None,
+                species_color=sp.get("color"),
+                mnemonic=mnemonic,
+                has_filter=False,
+                catalog_id=sp.get("catalog_id"),
+            )
+        )
     return out
 
 
