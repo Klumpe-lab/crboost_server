@@ -24,6 +24,8 @@ from services.jobs.spec import driver_launch_prefix
 # pipeline calls it; the GPU tools also check that they see the GPU.
 PROBES = {
     "warp_aretomo": "nvidia-smi && WarpTools --help",
+    # dev40+ only: the flag proves the image is not an older Warp.
+    "warp_export": "nvidia-smi && WarpTools ts_export_particles --help 2>&1 | grep -q -- --dont_premultiply",
     "relion": "relion_refine --version",
     "pytom": "pytom_match_template.py --help && python -c 'import cupy; assert int(cupy.arange(8).sum()) == 28'",
     "cryocare": "python -c 'import cryocare, tensorflow as tf; assert tf.config.list_physical_devices(\"GPU\")'",
