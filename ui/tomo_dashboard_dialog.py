@@ -65,6 +65,7 @@ from services.visualization.preview_orchestrator import _find_warp_tomo_preview
 from services.visualization.preview_render import is_output_stale, render_xy_slab_preview
 from ui.components.chip import render_chip
 from ui.components.buttons import house_button
+from ui.components.copyable import copy_3dmod_chip
 from ui.components.recon_compare import matched_slabs, recon_versions_for_ts, retry_match
 from ui.components.segmented import Segmented
 from ui.current_project import current_project_state
@@ -2124,11 +2125,13 @@ def _render_recon_big_preview(ts_name: str, project_state, project_path: Path, m
             with ui.element("div").classes("cb-recon-compare-pane"):
                 ui.label("recon").classes("cb-recon-pane-tag")
                 if png_path and png_path.exists():
-                    with ui.element("div").classes("cb-recon-preview"):
+                    with ui.element("div").classes("cb-recon-preview").style("position: relative;"):
                         ui.html(
                             f"<img src='{vis_asset_url(str(png_path))}' alt='{ts_name} WarpTools recon' />",
                             sanitize=False,
                         )
+                        if mrc_path:
+                            copy_3dmod_chip(mrc_path)
                     ui.label(f"WarpTools · {png_path.name}").classes("cb-recon-preview-caption")
                 else:
                     ui.label("No WarpTools preview PNG on disk.").classes("cb-section-placeholder")
@@ -2152,11 +2155,12 @@ def _render_recon_big_preview(ts_name: str, project_state, project_path: Path, m
                     else:
                         ui.label(selected).classes("cb-recon-pane-method")
                 if dn_png is not None:
-                    with ui.element("div").classes("cb-recon-preview"):
+                    with ui.element("div").classes("cb-recon-preview").style("position: relative;"):
                         ui.html(
                             f"<img src='{vis_asset_url(str(dn_png))}' alt='{ts_name} {selected} denoised' />",
                             sanitize=False,
                         )
+                        copy_3dmod_chip(dn_mrc)
                     ui.label(f"{selected} · denoised X/Y slab · {dn_mrc.name}").classes("cb-recon-preview-caption")
                 else:
                     ui.label("rendering denoised slab…").classes("cb-section-placeholder")
@@ -2188,16 +2192,18 @@ def _render_recon_versions(versions: list[dict], ts_name: str, project_path: Pat
         with ui.element("div").classes("cb-recon-compare-pane"):
             ui.label(f"recon · {v['job']}").classes("cb-recon-pane-tag")
             if state == "fresh":
-                with ui.element("div").classes("cb-recon-preview").tooltip(_PLANE_TIP):
+                with ui.element("div").classes("cb-recon-preview").style("position: relative;").tooltip(_PLANE_TIP):
                     ui.html(f"<img src='{vis_asset_url(str(v['slab']))}' alt='{ts_name} {v['job']}' />", sanitize=False)
+                    copy_3dmod_chip(v["mrc"])
                 ui.label(_plane_caption(v["plane"], versions[0]["job"])).classes("cb-recon-preview-caption")
             elif state == "failed":
                 warp_png = v["mrc"].with_suffix(".png")
                 if warp_png.exists():
-                    with ui.element("div").classes("cb-recon-preview"):
+                    with ui.element("div").classes("cb-recon-preview").style("position: relative;"):
                         ui.html(
                             f"<img src='{vis_asset_url(str(warp_png))}' alt='{ts_name} {v['job']}' />", sanitize=False
                         )
+                        copy_3dmod_chip(v["mrc"])
                 ui.label(f"own central slice, planes NOT matched — {error}").classes("text-[10px] text-red-600")
                 if v is versions[0]:
 

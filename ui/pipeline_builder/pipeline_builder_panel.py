@@ -8,6 +8,7 @@ from nicegui import ui
 from backend import CryoBoostBackend
 from services.jobs.spec import JOB_SPEC_BY_TYPE
 from services.models_base import JobStatus
+from services.path_resolution_service import PathResolutionService, override_instance_id, pin_sources_made_ambiguous
 from services.project_state import JobType
 
 from ui.components.buttons import house_button
@@ -325,6 +326,10 @@ class PipelineBuilderPanel:
             )
             return
 
+        # What automatic selection wires before the addition: a job added beside an existing
+        # producer (an A/B copy) must leave the jobs reading that producer where they are.
+        sources_before = PathResolutionService(state).automatic_sources()
+
         # Auto-add prerequisite jobs that this job type depends on.
         # e.g. alignment requires tsImport to exist in the pipeline.
         self._ensure_prerequisites(job_type, state)
@@ -396,6 +401,16 @@ class PipelineBuilderPanel:
 
         apply_aggregation_overrides(state)
 
+        pinned = pin_sources_made_ambiguous(state, sources_before)
+        if pinned:
+            state.mark_dirty()
+            ui.notify(
+                "Kept on their current source, now set in their I/O section: "
+                + "; ".join(f"{iid}.{slot} ← {producer}" for iid, slot, producer in pinned),
+                type="info",
+                timeout=8000,
+            )
+
         if self.ui_mgr.is_project_created:
             asyncio.create_task(self.backend.save_project(self.ui_mgr.project_path))
 
@@ -418,7 +433,7 @@ class PipelineBuilderPanel:
             overrides = getattr(job_model, "source_overrides", None)
             if not overrides:
                 continue
-            stale = [k for k, v in overrides.items() if v in refs_to_clean]
+            stale = [k for k, v in overrides.items() if v in refs_to_clean or override_instance_id(v) == instance_id]
             for k in stale:
                 del overrides[k]
 
