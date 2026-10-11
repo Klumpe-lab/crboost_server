@@ -39,6 +39,7 @@ from services.jobs.ts_alignment import TsAlignmentParams
 from services.jobs.ts_ctf import TsCtfParams
 from services.jobs.ts_import import TsImportParams
 from services.jobs.ts_reconstruct import TsReconstructParams
+from services.jobs.warp_export import WarpExportParams
 from services.models_base import JobType
 
 PHASE_PREPROCESSING: Final = "preprocessing"
@@ -205,6 +206,18 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         dependencies=(JobType.TEMPLATE_EXTRACT_PYTOM,),
         driver="subtomo_extraction.py",
         plugins=("subtomo_extraction",),
+    ),
+    # Alternative producer of the particle optimisation set: WarpTools cuts the 2D particle
+    # series with the full Warp model (local image warps included), which RELION extraction
+    # cannot read. Same input and output envelope as SUBTOMO_EXTRACTION.
+    JobSpec(
+        JobType.WARP_EXPORT,
+        WarpExportParams,
+        "Warp Export",
+        PHASE_PARTICLES,
+        dependencies=(JobType.TEMPLATE_EXTRACT_PYTOM,),
+        driver="warp_export.py",
+        plugins=("warp_export", "array_tasks"),
     ),
     # Per-pick-list extraction. phase=None: this is NOT a roster job --
     # one instance exists per pick list and its home is the Species page's Picks tab,
