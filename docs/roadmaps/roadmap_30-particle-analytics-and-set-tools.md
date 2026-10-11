@@ -167,7 +167,6 @@ can do better than a script.
 | S4 | **Merge across projects** | Exists for extracted sets (merge card); check optics groups and pixel-size agreement on 8 projects. |
 | S5 | **Set algebra.** A − B; A ∩ B by proximity | Reuses the clash statistics from `pick_merge`. |
 | S6 | **Boundary curation.** Gallery of the picks nearest the cut (sorted by \|σ − cut\|) | Puts human time where the decision is uncertain; the labels feed K5's precision estimate at the cut. A learned scorer over σ, depth and NN is parked. |
-| S8 | **Re-homing** (roadmap 29 C5). Move a particle set from one alignment of the same tilt series to another (e.g. baseline → missAlign) by the per-TS rigid translation (tx, ty, tz), fitted in `services/analysis/alignment_changes.py` and cross-checked with `recon_register` | Output is a new set with the source alignment in its recipe; feeds subtomo extraction or the Warp export job (built separately). Needed for every missAlign rollout without re-running TM. |
 | S7 | **Lineage.** A set tree with counts and recipes | The funnel (§5 E) reads from it; a recipe can be replayed, or stored in a protocol. |
 
 ## 8. Where it shows
@@ -194,7 +193,7 @@ can do better than a script.
 | 5 | Controls K2–K6 | an FDR-at-cut number for the ribosome pilot; decoy share in the good classes |
 | 6 | S3 splits, S5 algebra, S6 boundary curation, S7 lineage | the miss-alignment A/B particle sets (roadmap 29 §6) built in the app |
 
-Build order (2026-10-10): stages 1–2, then S8 re-homing (the missAlign rollout needs it), then 3–6. Stages 1–2 serve roadmap 29 directly. The Warp export job is built separately by the maintainer (roadmap 24 stage 4).
+Build order (2026-10-10): stages 1–2, then 3–6. Re-homing (moving a set between alignments, once S8) is dropped: picks are never moved between alignments; refined tomograms are re-picked by template matching. Stages 1–2 serve roadmap 29 directly. The Warp export job is built separately by the maintainer (roadmap 24 stage 4).
 
 ## 10. Decisions (maintainer, 2026-10-10)
 
