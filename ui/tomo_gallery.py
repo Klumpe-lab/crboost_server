@@ -48,6 +48,7 @@ from services.visualization.preview_orchestrator import _find_warp_tomo_preview,
 from services.visualization.preview_render import is_output_stale
 from services.visualization.tomo_geometry import SOURCE_IMPORTED, TomoGeometry, all_geometries
 from ui.components.buttons import house_button
+from ui.components.copyable import copy_3dmod_chip
 from ui.components.dialogs import dialog_host
 from ui.components.reactive import SingleFlight
 from ui.components.segmented import render_segmented
@@ -90,6 +91,13 @@ _DOT_R_ZOOM = 2.8
 # once; each render reads ~50 MB of MRC, so submit a few and let the next refresh
 # (or the completion callback) take the rest.
 _MAX_KICKS_PER_RENDER = 6
+
+# The zoom dialog's step keys, filtered in the browser so no other key is sent.
+_ZOOM_KEYS_JS = """(event) => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    event.preventDefault();
+    emit({key: event.key});
+}"""
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +220,8 @@ def _sources_for(project_state, project_path: Path, geom: TomoGeometry) -> dict[
     back to the X/Y slab we render ourselves (the only option for an imported
     tomogram, which has no WarpTools output). Each denoisepredict job with a volume
     for this tomogram adds one entry under its method label. ``kick`` carries the
-    (cache dir, source MRC) the renderer needs when the PNG isn't on disk yet.
+    (cache dir, source MRC) the renderer needs when the PNG isn't on disk yet;
+    ``mrc`` is the volume the picture shows, for the 3dmod chip.
     """
     from ui.particles.pick_viewer import _recon_slab_paths
     from ui.tomo_dashboard_dialog import _available_denoise_methods_for_ts, _denoise_slab_path
@@ -231,6 +240,7 @@ def _sources_for(project_state, project_path: Path, geom: TomoGeometry) -> dict[
             "kick": (slab_dir, geom.recon_mrc) if geom.recon_mrc else None,
             "caption": "X/Y slab",
         }
+    out[RECON_SOURCE]["mrc"] = geom.recon_mrc
 
     for label, job_dir, mrc in _available_denoise_methods_for_ts(project_state, project_path, geom.tomo_name):
         png = _denoise_slab_path(job_dir, geom.tomo_name)
@@ -239,6 +249,7 @@ def _sources_for(project_state, project_path: Path, geom: TomoGeometry) -> dict[
             "png": png if fresh else None,
             "kick": None if fresh else (job_dir, mrc),
             "caption": f"{label} · denoised X/Y slab",
+            "mrc": mrc,
         }
     return out
 
@@ -314,6 +325,7 @@ class TomoGalleryPage:
         # Kept on the page, so a size switch, a Refresh or the pending poll keeps them.
         self.open_mosaics: set[str] = set()  # tiles showing their tilts instead of the slice
         self._tiles: dict[str, Any] = {}
+        self._zoom_ts: str | None = None  # the tomogram the zoom dialog shows
         self._flight = SingleFlight()
         self._refs: dict[str, Any] = {}
         self._collected = False
@@ -592,6 +604,8 @@ class TomoGalleryPage:
             else:
                 self._render_frame_note("no volume on disk")
             self._render_pick_badge(row)
+            if src is not None and src.get("mrc"):
+                copy_3dmod_chip(src["mrc"])
             if group is not None:
                 self._render_mosaic_toggle(row["ts"], len(group["tilts"]), on=False)
         return spent
@@ -781,12 +795,50 @@ class TomoGalleryPage:
                 await show(ts, section="reconstruct")
 
     def _zoom(self, row: dict) -> None:
-        """Full-size view of one tile — same image, same dots, bigger. A dialog and not
-        a mode: zooming is a look, and the routes onward (Journey) are one click away
-        in the header either way."""
+        """Full-size view of one tile — same image, same dots, as tall as the screen allows —
+        stepping through the wall in its order with ←/→ or the side chevrons. A dialog and not
+        a mode: zooming is a look, and the routes onward (Journey, 3dmod) are one click away
+        either way. One dialog per page, re-filled per tomogram, so a step never closes it."""
+        dlg = self._refs.get("zoom")
+        if dlg is None or dlg.is_deleted:
+            with dialog_host():
+                dlg = ui.dialog().classes("cb-gal-zoom-dialog")
+                with dlg:
+                    self._refs["zoom_body"] = ui.element("div").classes("cb-gal-zoom")
+            # On the dialog's own root, which exists only while it shows: the arrows step the
+            # zoom and nothing else, and no other key crosses the socket.
+            dlg.on("keydown", self._on_zoom_key, js_handler=_ZOOM_KEYS_JS)
+            self._refs["zoom"] = dlg
+        self._zoom_ts = row["ts"]
+        self._fill_zoom()
+        dlg.open()
+
+    def _step_zoom(self, delta: int) -> None:
+        order = [r["ts"] for r in self.rows]
+        if self._zoom_ts not in order:
+            return
+        i = order.index(self._zoom_ts) + delta
+        if 0 <= i < len(order):
+            self._zoom_ts = order[i]
+            self._fill_zoom()
+
+    def _on_zoom_key(self, e) -> None:
+        self._step_zoom(-1 if (e.args or {}).get("key") == "ArrowLeft" else 1)
+
+    def _fill_zoom(self) -> None:
+        body = self._refs.get("zoom_body")
+        dlg = self._refs.get("zoom")
+        order = [r["ts"] for r in self.rows]
+        if body is None or dlg is None or self._zoom_ts not in order:
+            return
+        i = order.index(self._zoom_ts)
+        row = self.rows[i]
         src = row["sources"].get(self.source)
-        with dialog_host(), ui.dialog() as dlg, ui.element("div").classes("cb-gal-zoom"):
-            with ui.element("div").classes("cb-gal-zoom-head"):
+        body.clear()
+        with body:
+            # `width: 0; min-width: 100%`: the header wraps inside the slice's width instead
+            # of widening the card past it.
+            with ui.element("div").classes("cb-gal-zoom-head").style("width: 0; min-width: 100%;"):
                 ui.label(row["label"]).classes("cb-gal-zoom-title")
                 ui.label(row["ts"]).classes("cb-gal-zoom-ts")
                 if row["source_label"] == SOURCE_IMPORTED:
@@ -795,6 +847,7 @@ class TomoGalleryPage:
                     )
                 if src is not None:
                     ui.label(src["caption"]).classes("cb-gal-zoom-src")
+                ui.label(f"{i + 1} / {len(order)}").classes("cb-gal-zoom-src").tooltip("← → step through the wall")
                 ui.element("div").style("flex: 1;")
                 for sp in self._visible_species(row):
                     with ui.element("div").classes("cb-gal-sp"):
@@ -811,23 +864,48 @@ class TomoGalleryPage:
                     tooltip="This tomogram's whole pipeline — motion, CTF, alignment, reconstruction, picks",
                 )
                 house_button("Close", dlg.close)
-            frame = ui.element("div").classes(
-                "cb-gal-frame cb-gal-zoom-frame" + ("" if row["aspect"] else " cb-gal-frame-auto")
-            )
+            frame = ui.element("div").classes("cb-gal-frame cb-gal-zoom-frame")
             if row["aspect"]:
                 x, y = row["aspect"]
-                # Cap the WIDTH so the height lands under the viewport at the tomogram's
-                # own ratio (see .cb-gal-zoom-frame).
-                frame.style(f"aspect-ratio: {x}/{y}; max-width: calc(74vh * {x} / {y});")
+                height = f"min(90vh, calc(100vh - 80px), calc(96vw * {y} / {x}))"
+                frame.style(f"height: {height}; width: calc({height} * {x} / {y});")
+                img_style = "position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill;"
+            else:
+                # Unknown extent: the image sizes the frame, so no dots can be placed on it.
+                frame.style("width: fit-content;")
+                img_style = "height: min(90vh, calc(100vh - 80px)); width: auto; max-width: 96vw; object-fit: contain;"
             with frame:
                 if src is not None and src["png"] is not None:
-                    ui.html(f"<img src='{vis_asset_url(str(src['png']))}' alt='{row['ts']}' />", sanitize=False)
+                    ui.html(
+                        f"<img src='{vis_asset_url(str(src['png']))}' alt='{row['ts']}' "
+                        f"style='display: block; {img_style}' />",
+                        sanitize=False,
+                    )
                     self._render_dot_layers(row, _DOT_R_ZOOM, cap=None)
                 else:
+                    if not row["aspect"]:
+                        frame.style("width: 60vw; height: 60vh;")
                     self._render_frame_note("no preview on disk for this source yet")
-            if row["volume"]:
-                ui.label(row["volume"]).classes("cb-gal-zoom-path").tooltip("Reconstructed volume on disk")
-        dlg.open()
+                if src is not None and src.get("mrc"):
+                    copy_3dmod_chip(src["mrc"])
+                if i > 0:
+                    self._render_zoom_chevron("left")
+                if i < len(order) - 1:
+                    self._render_zoom_chevron("right")
+
+    def _render_zoom_chevron(self, side: str) -> None:
+        chev = (
+            ui.element("div")
+            .classes("cb-gal-zoom-chev")
+            .style(
+                f"position: absolute; top: 50%; {side}: 6px; transform: translateY(-50%); z-index: 3; "
+                "width: 36px; height: 72px; border-radius: 6px; display: flex; align-items: center; "
+                "justify-content: center; cursor: pointer;"
+            )
+        )
+        chev.on("click.stop", lambda: self._step_zoom(-1 if side == "left" else 1))
+        with chev:
+            ui.icon(f"chevron_{side}", size="34px")
 
 
 def _dots_svg(dots: list[tuple[float, float]], color: str, radius: float) -> str:
