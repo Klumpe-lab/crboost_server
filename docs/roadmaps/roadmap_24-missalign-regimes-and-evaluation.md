@@ -275,8 +275,8 @@ check.
 map was `relion_tomo_reconstruct_particle` re-extracting from the 2×2×2 dummy tilt series Warp names in its
 tomograms star; that program never reads particle stacks. What dev36 does get wrong (stack slices paired with
 the wrong tilts, depth-defocus scale, a fixed `rlnTomoHand`) is fixed upstream in Warp 2.0.0dev40 (commit
-7ad2dcc), so the job runs its own container, `warp_2.0.0dev41_cuda12.9.def` (`tools.warp_export`); every other
-Warp job stays on dev36.
+7ad2dcc), so the Warp + AreTomo container moves to Warp 2.0.0dev41
+(`warp_2.0.0dev41_aretomo1.0.0_cuda12.9.def`, `tools.warp_aretomo`) for every Warp job.
 
 *Design:*
 - Input and output as subtomoExtraction: reads the candidates' optimisation set, writes `particles.star`,
