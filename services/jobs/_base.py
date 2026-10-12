@@ -80,6 +80,10 @@ class AbstractJobParams(BaseModel):
     # is non-obvious. Empty = no panel.
     CONFIG_PREAMBLE: ClassVar[str] = ""
 
+    # Optional (one-line note, tooltip detail) shown under the SLURM resource fields, for jobs
+    # where how resources are spent is non-obvious. Empty = no note.
+    SLURM_NOTE: ClassVar[tuple[str, ...]] = ()
+
     # ------------------------------------------------------------------
     # USER_PARAMS whitelist.
     #

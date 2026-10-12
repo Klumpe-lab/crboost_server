@@ -163,6 +163,19 @@ def _render_slurm_content(job_model, is_frozen: bool, save_handler: Callable, re
         _render_supervisor_summary()
     else:
         _render_resource_fields(effective_config, job_model, is_frozen, save_handler, refresh)
+    _render_slurm_note(job_model)
+
+
+def _render_slurm_note(job_model):
+    """The job class's SLURM_NOTE: one muted line, the detail in its tooltip."""
+    note = getattr(job_model, "SLURM_NOTE", ())
+    if not note:
+        return
+    line, detail = note
+    with ui.row().classes("w-full items-center gap-1").style("margin-top: 6px; cursor: help;"):
+        ui.icon("info_outline", size="11px").style(f"color: {CLR_SUBLABEL};")
+        ui.label(line).style(f"font-size: 10px; color: {CLR_SUBLABEL};")
+        ui.tooltip(detail).style("white-space: pre-line; max-width: 420px; font-size: 11px; line-height: 1.45;")
 
 
 _RESOURCE_FIELDS = [

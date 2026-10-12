@@ -311,6 +311,22 @@ class MissAlignParams(AbstractJobParams):
         "the tool rebuild the stacks from the frame averages at that Å/px first (the preprint used 10 Å)."
     )
 
+    SLURM_NOTE: ClassVar[tuple[str, str]] = (
+        "Only training GPUs shorten the run · constraint g4 keeps it on A100s",
+        "Training is most of each macro-iteration: 1000 × 30 steps ≈ 11 h on one A100, ~2.6× that on an RTX "
+        "node. Alignment is ~5 min per tilt series, spread over every GPU.\n\n"
+        "• Constraint g4 = A100 nodes. The default g2|g3|g4 can land on RTX cards.\n"
+        "• Extra GPUs pay off when they train: 4 GPUs as 3 training + 1 reconstructing cut training ~3× "
+        "against 1 + 1 (a bit less in practice: gradient sync goes through host memory, and one GPU builds "
+        "the subtomograms for all three trainers). Pilot (23 TS, paper): ~4.6 d → ~2 d.\n"
+        "• Don't let every GPU train: the reconstruction pool then shares cards with training, which is what "
+        "made single-GPU runs slow.\n"
+        "• On 100+ tilt series alignment grows to hours per iteration, and every extra GPU shortens it.\n"
+        "• Set num_gpus and training_gpus in Parameters (GRES follows). Give ~8 CPUs per GPU (~32 for 4); "
+        "data-loading workers take what is left.\n"
+        "• One node only (num_gpus ≤ 4). A full node queues longer; total GPU-hours stay about the same.",
+    )
+
     USER_PARAMS: ClassVar[set[str]] = {
         "iteration_preset",
         "custom_schedule",

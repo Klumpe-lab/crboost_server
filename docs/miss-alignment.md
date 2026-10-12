@@ -250,6 +250,40 @@ correct regardless of any later downsampling.
 ⇒ the crboost job needs **dynamic walltime** (scale by n_TS × iterations, like
 `denoise_train`) and a **multi-GPU** SLURM profile.
 
+### 8.1 Spending GPUs: training vs alignment
+
+Each macro-iteration is a training phase plus an alignment phase. Training is a fixed step budget
+(`steps_per_epoch × max_epochs_per_iteration`, independent of the number of tilt series) split across the
+**training** GPUs; alignment is ~5 min per tilt series (an estimate, not yet measured) spread over **every**
+allocated GPU. At the tool's budget (1000 × 30 steps, 1.34 s/step on an A100) training is ~11 h per iteration,
+so on small projects it is most of the run.
+
+- **Card first.** An RTX node (~3.5 s/step) takes ~2.6× an A100. The default constraint `g2|g3|g4` can land on
+  RTX; constraint `g4` keeps the job on A100s. This is the biggest single lever.
+- **Then training GPUs.** Several training GPUs run DDP: each does `steps / n` with its own batch and the tool
+  multiplies the learning rate by n (same total samples). 4 GPUs as 3 training + 1 reconstructing cut training
+  ~3× against 1 + 1, somewhat less in practice: `NCCL_P2P_DISABLE=1` routes the gradient sync through host
+  memory, and one GPU builds the training subtomograms for all trainers.
+- **Don't let every GPU train.** The reconstruction pool then shares cards with training, which is what made
+  the single-GPU RTX runs slow (2026-07-30).
+- **Alignment matters on big projects.** At 100+ tilt series it reaches hours per iteration, and every extra
+  GPU shortens it.
+- **CPUs.** ~8 per GPU (~32 for 4); the auto data-loader count takes what the reconstruction workers and
+  trainers leave.
+- **Limits.** One node (`num_gpus ≤ 4`). A full node queues longer on `g_long`; total GPU-hours stay about the
+  same, so for many projects at once, bigger jobs mostly trade against how many run in parallel.
+
+Pilot (`AGG412_20260204_412`, 23 TS, PAPER = 9 iterations), estimated:
+
+| Layout (A100, `g4`) | Per iteration | Run |
+|---|---|---|
+| 2 GPUs: 1 training, 1 reconstructing | ~12 h | ~4.6 d |
+| 4 GPUs: 3 training, 1 reconstructing | ~4–5 h | ~1.6 d ideal, ~2 d realistic |
+| Same as row 1 on RTX | ~30 h | ~11 d |
+
+The multi-trainer path has not run in crboost yet. The SLURM tab of a missAlign job carries this as a note
+(`MissAlignParams.SLURM_NOTE`).
+
 ---
 
 ## 9. Proven-working setup (smoke test, 2026-07-02)
