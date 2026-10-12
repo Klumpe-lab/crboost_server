@@ -25,7 +25,8 @@ from services.jobs.spec import driver_launch_prefix
 PROBES = {
     # --dont_premultiply exists from Warp 2.0.0dev40 on; the Warp Export job needs it.
     "warp_aretomo": "nvidia-smi && WarpTools ts_export_particles --help 2>&1 | grep -q -- --dont_premultiply",
-    "relion": "relion_refine --version",
+    # Refine 3D runs relion_refine_mpi under the container's own mpirun.
+    "relion": "relion_refine --version && command -v mpirun && command -v relion_refine_mpi",
     "pytom": "pytom_match_template.py --help && python -c 'import cupy; assert int(cupy.arange(8).sum()) == 28'",
     "cryocare": "python -c 'import cryocare, tensorflow as tf; assert tf.config.list_physical_devices(\"GPU\")'",
     "isonet": "isonet.py --help",
