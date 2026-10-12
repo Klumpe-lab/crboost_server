@@ -23,7 +23,8 @@ from services.jobs.spec import driver_launch_prefix
 # The quickest call that proves each tool starts in its container on a compute node, the way the
 # pipeline calls it; the GPU tools also check that they see the GPU.
 PROBES = {
-    "warp_aretomo": "nvidia-smi && WarpTools --help",
+    # --dont_premultiply exists from Warp 2.0.0dev40 on; the Warp Export job needs it.
+    "warp_aretomo": "nvidia-smi && WarpTools ts_export_particles --help 2>&1 | grep -q -- --dont_premultiply",
     "relion": "relion_refine --version",
     "pytom": "pytom_match_template.py --help && python -c 'import cupy; assert int(cupy.arange(8).sum()) == 28'",
     "cryocare": "python -c 'import cryocare, tensorflow as tf; assert tf.config.list_physical_devices(\"GPU\")'",

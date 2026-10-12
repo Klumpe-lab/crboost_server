@@ -157,8 +157,10 @@ presumably write real 3×3 `GridMovement` grids.
 (`particles.star`, `tomograms.star`, `optimisation_set.star`) as subtomoExtraction, so reconstructParticle
 and Class3D take either. With rigid-only geometry — every project today — both paths cut the same
 particles and there is nothing to gain. It only earns its place once alignments carry non-trivial grids,
-i.e. once miss-alignment's grid iterations (or later M) prove useful. It would also need the dev36 →
-RELION 5 star converter, or RELION silently reconstructs an all-zero map.
+i.e. once miss-alignment's grid iterations (or later M) prove useful. *(Corrected 2026-10-11: the all-zero
+map was relion_tomo_reconstruct_particle re-extracting from Warp's dummy tilt series, not a star-format
+problem. What dev36 does get wrong is fixed upstream in Warp 2.0.0dev40; the job runs dev41. See roadmap 24
+stage 4.)*
 
 **Until then:** when a project's refined XMLs carry non-trivial grids and RELION particle jobs are
 downstream, those jobs show a warning ("local deformations present — RELION extraction ignores them"),
@@ -223,7 +225,8 @@ miss-alignment), including the stamp step.
 
 ### Stage 6 — Warp export job (only if stage 5 keeps grid iterations and stage 4 shows non-trivial grids)
 - New producer of the optimisation-set outputs next to subtomoExtraction; `ts_export_particles --2d` +
-  the dev36 → RELION 5 converter; A/B against RELION extraction on the same particles (gold-standard FSC).
+  a RELION 5 star built around Warp's particle stacks; compared with RELION extraction on the same particles
+  (gold-standard FSC). **Built 2026-10-11 as roadmap 24 stage 4 (NOT RUN).**
 
 ## 6. Side finding (outside this roadmap — verify)
 Species match in candidate scoring only counts for **succeeded** candidates

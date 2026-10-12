@@ -1,15 +1,15 @@
 # Roadmap 24 — miss-alignment: paper-grade regimes, and a verdict that doesn't rely on the eye
 
 **Status:** stages 1 and 3 **code-complete, NOT RUN** (2026-09-30, branch `missalignmnet`); stage 0 and 2 are
-user runs; stage 4 not started. Companion: `docs/reports/miss-alignment/settings-and-evaluation.md`
+user runs; stage 4 **built 2026-10-11, NOT RUN** (worktree `crboost_server_warp_export`). Companion: `docs/reports/miss-alignment/settings-and-evaluation.md`
 (every tool setting, the paper's guidance, the metrics survey; referred to below as *the settings page*). Builds on
 roadmap 21 (integration; stages 1–3 code-complete) and absorbs its stage 4 (grid visibility) and its stage 5
 "visibly better" criterion. Stage 6 of roadmap 21 (Warp particle export) becomes a dependency of stage 4 here.
 **2026-10-08:** roadmap 29 §6 proposes the AGG412 pilot (23 TS, current code, ribosomes already picked) in place
 of stage 0's `post_handedness_fix` re-processing, with a rigid-only phase that needs no Warp export.
 **2026-10-10 (maintainer):** no rigid-only phase and no staged arms. Stage 4 (Warp export) is being built by the
-maintainer in its own worktree; then PAPER on all eight AGG412 projects (roadmap 29 §6.1). Particle re-homing is
-roadmap 30 S8.
+maintainer in its own worktree; then PAPER on all eight AGG412 projects (roadmap 29 §6.1). Picks are never moved between
+alignments: particles in refined tomograms come from template matching re-run on them.
 
 **Progress 2026-09-30.** Sources checked against the container's exact versions (miss-alignment 0.2.0, warpylib
 1.0.1, both from PyPI) and WarpTools `main`; nothing below has run.
@@ -105,8 +105,7 @@ controls used a mirrored image frame for the tilt axis (along is (−sin a, cos 
 fit (the correction above). Also: the FSC cache is keyed by tile and tilt step, the controls array binds the project,
 the changes report is written atomically, the local-warp chip follows denoised tomograms too.
 
-*Not started:* stage 4 (Warp export path; needs a `ts_export_particles` job and the dev36 → RELION 5 star converter,
-roadmap 21 stage 6).
+*Stage 4 — built 2026-10-11, not run:* the Warp Export job (design under Stage 4 below).
 
 **Queueing the arms (stage 5 layout, in the project that holds the baseline chain).**
 1. Baseline halves: a tsReconstruct on the baseline tsCtf with `halfmap_frames 0`, `halfmap_tilts 1`, `deconv 0`,
@@ -230,12 +229,11 @@ check.
 ### 3.7 Ribosome STA — the definitive verdict on this dataset
 - Species "80S ribosome" with a species-matched EMDB map if one exists for the 412 organism, else any eukaryotic
   80S, low-passed to 30 Å; template matching on arm A (baseline) tomograms; candidates cleaned once.
-- The **same** particles in every arm: coordinates mapped into each arm's volume frame by the per-TS rigid
-  translation from `recon_register` (the Journey's plane matching already computes it).
+- Each arm is picked on its own tomograms (template matching re-run); picks are never moved between alignments
+  (maintainer, 2026-10-10).
 - Extraction through Warp `ts_export_particles` for **all** arms (it applies `GridMovement`; RELION extraction does
-  not, roadmap 21 §3) → the dev36 → RELION 5 star converter (memory: legacy embedded-matrix star → silent all-zero
-  reconstruct) → RELION Refine3D with one fixed protocol: same initial reference (arm A reconstruction, low-passed
-  to 40 Å), same mask, same parameters, **no Polish, no CtfRefine** (both re-estimate per-tilt geometry and erase
+  not, roadmap 21 §3) → the Warp Export job's RELION 5 optimisation set (stage 4) → RELION Refine3D with one
+  fixed protocol: same initial reference (arm A reconstruction, low-passed to 40 Å), same mask, same parameters, **no Polish, no CtfRefine** (both re-estimate per-tilt geometry and erase
   the difference). Two random half-set seeds per arm for the noise floor.
 - Report FSC curves, FSC 0.143, and a resolution-vs-particle-count (B-factor) plot per arm.
 
@@ -270,8 +268,43 @@ check.
   every series.
 
 ### Stage 4 — Ribosome STA path (§3.7; includes roadmap 21 stage 6)
-- *Success:* arm A (baseline) alone reaches a sub-15 Å gold-standard ribosome map through the Warp-export path;
-  the same particle list maps into a second arm with ≥ 95 % of particles inside the volume.
+**Built 2026-10-11, NOT RUN:** the Warp Export job (`warpExport`; `services/jobs/warp_export.py`,
+`drivers/warp_export.py`, `services/particles/warp_export.py`).
+
+*The premise changed.* Roadmap 21 assumed a "dev36 → RELION 5 star converter, else an all-zero map". The all-zero
+map was `relion_tomo_reconstruct_particle` re-extracting from the 2×2×2 dummy tilt series Warp names in its
+tomograms star; that program never reads particle stacks. What dev36 does get wrong (stack slices paired with
+the wrong tilts, depth-defocus scale, a fixed `rlnTomoHand`) is fixed upstream in Warp 2.0.0dev40 (commit
+7ad2dcc), so the job runs its own container, `warp_2.0.0dev41_cuda12.9.def` (`tools.warp_export`); every other
+Warp job stays on dev36.
+
+*Design:*
+- Input and output as subtomoExtraction: reads the candidates' optimisation set, writes `particles.star`,
+  `tomograms.star`, `optimisation_set.star`. Per-TS SLURM array (supervisor stages, tasks run Warp).
+- Warp inputs per TS come from the tsCtf job behind the particle's tomogram row
+  (`rlnTomoTiltSeriesStarFile` → `<tsCtf>/warp_tiltseries/<ts>.xml`, its settings copy, its tomostar), so a
+  project with a second chain (missAlign → tsCtf__2 → tsReconstruct__2) exports each pick set with its own XMLs,
+  no wiring. The XML is staged as a copy (the export re-saves it).
+- Warp input: centred Å → corner-origin unbinned pixels of the volume in the settings (`--coords_angpix` = the
+  settings pixel size); the settings volume must match `tomograms.star` (pixel size, size ±1 px) or the job stops.
+  All other columns ride through Warp (dev38+), the centred coordinates among them.
+- `--dont_premultiply` by default: RELION applies CTF and dose with crboost's hand, as on the RELION path.
+  `--max_missing_tilts 999` by default: every particle visible in at least one tilt is kept (`min_frames 1`).
+  `binning` / `box_size` / `diameter_ang` are snapshot from the species at creation (extraction voxel size, its
+  output box, Ø).
+- Output: Warp's stacks and `rlnTomoVisibleFrames`, the carried centred coordinates (Warp's output-pixel
+  `rlnCoordinateX/Y/Z` dropped, zero origins written), optics groups built from the tomogram rows (only groups
+  with particles). Warp's own tomograms star (virtual tomogram, RELION-4 matrices, dummy tilt series) is not used:
+  `tomograms.star` is the upstream rows with each per-tilt star re-pointed at `tilt_series/<ts>.star`, the tsCtf
+  rows reordered into Warp's frame order (tomostar rows, matched by movie name), so the frame count equals the
+  length of `rlnTomoVisibleFrames` and each frame still names its own micrograph (reconstructParticle can cut the
+  same particles rigidly from them for a starting reference).
+- Checks that stop the job: carried coordinates vs Warp's positions (> 0.1 Å = rows out of step), visible-frame
+  vector length vs frame count, Warp optics vs tomogram CTF constants, a TS Warp skipped, a stack missing.
+- Open: defocus hand (crboost writes −1 for `AreAnglesInverted`, Warp dev40+ +1); the same particles refined with
+  each sign settle it, and the answer applies to the RELION path too. #508 (stripes at high tilt in Warp's 2D
+  average) to watch on the first run.
+- *Success:* arm A (baseline) alone reaches a sub-15 Å gold-standard ribosome map through the Warp-export path.
 
 ### Stage 5 — The experiment
 Arms on the 20 series, all refining the same aligntiltsWarp job, each followed by tsCtf + tsReconstruct

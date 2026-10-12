@@ -158,11 +158,9 @@ rigid refinement; the per-run changes report (`missalign_changes.json`); particl
 `scripts/align_qc.py`, tsReconstruct `halfmap_tilts`).
 
 **What's missing:**
-- **Same particles across arms.** Each arm moves every volume by a rigid translation (the Z gauge reached
-  ±250–290 Å on the first run), so coordinates have to move by the per-TS (tx, ty, tz).
-  `services/analysis/alignment_changes.py` fits that translation but doesn't expose it in RELION's coordinate
-  frame; `recon_register` can cross-check it on the two reconstructions. (C5)
-- **Warp particle export** (`ts_export_particles` + the dev36 → RELION 5 star converter; roadmap 24 stage 4).
+- **Picks in the refined tomograms:** template matching re-run on each new set of tomograms. Picks are never moved
+  between alignments (maintainer, 2026-10-10).
+- **Warp particle export** (`ts_export_particles` on Warp 2.0.0dev41; roadmap 24 stage 4, built 2026-10-11, not run).
   RELION extraction applies only rigid per-tilt geometry; the local `[3,3]` grids, where the paper's gains come
   from, reach particles only through Warp.
 - **`infer` mode** (train on a subset, align the rest; roadmap 24 stage 6) — the only affordable way to 922 series.
@@ -174,17 +172,16 @@ rigid refinement; the per-run changes report (`missalign_changes.json`); particl
   `miss_alignment` (roadmap 21, open items), never from an older lab install.
 - **Probe:** the ribosome, with R1's protocol. Not the 412: its consensus is limited by the sample, so an
   alignment gain can't show before V4.
-- **Fixed particles:** R1's cleaned ribosome set re-homed into each arm; the same reference (arm A's map at 40 Å),
+- **Particles:** each arm picked by its own TM run on its own tomograms; the same reference (arm A's map at 40 Å),
   mask and Refine3D parameters; no Polish or CtfRefine (they re-estimate geometry and would erase the
   difference); two half-set seeds per arm, and a repeat of one arm with another missAlign seed for the tool's own
-  spread. Cheap addition on the pilot: re-pick on arm B's tomograms (~20 min TM per tomogram) for the end-to-end
-  number.
+  spread.
 
 | Phase | Arm | missAlign | Particles reach the arm via | Needs |
 |---|---|---|---|---|
 | 1 | A | none | RELION extraction | R1 |
-| 1 | B | `30A anchoring; 20A anchoring x2; 10A global` (rigid only) | RELION extraction | C5 |
-| 1 | B′ | B with another seed | RELION extraction | C5 |
+| 1 | B | `30A anchoring; 20A anchoring x2; 10A global` (rigid only) | RELION extraction | TM re-run |
+| 1 | B′ | B with another seed | RELION extraction | TM re-run |
 | 2 | C | PAPER (+ five `10A [3,3]` rounds), z_box auto | Warp export | roadmap 24 stage 4 |
 | 2 | E | C with the `[3,3]` rounds on 3.1 Å stacks | Warp export | only if C beats A |
 
@@ -196,7 +193,7 @@ rigid refinement; the per-run changes report (`missalign_changes.json`); particl
   upstream one (1000 × 30; QOS `g_long`), resumable per iteration. Arm C (9 iterations) ≈ 2–5 days. Then tsCtf__2
   + tsReconstruct__2 (~1 h) and the refines (hours each).
 - **Order:** R1 first (it is arm A and fixes the protocol); arm B can start in parallel (it needs only
-  aligntiltsWarp's output); C5 before any scoring; phase 2 after roadmap 24 stage 4; scale-out (train on 30–60 TS
+  aligntiltsWarp's output); phase 2 after roadmap 24 stage 4; scale-out (train on 30–60 TS
   per session, infer the rest) only after a phase-1 or phase-2 "go", costed by roadmap 24 stage 2 first.
 
 ### 6.1 Running it on all eight projects (how; 2026-10-10)
@@ -220,15 +217,14 @@ second set of tomograms (the baseline tsReconstruct is ~3 GB per tilt series, ~2
 before that exists buys nothing for STA. With `infer`, training once and aligning the rest would save ~1,400
 GPU-h of PAPER training.
 
-**Particles in the new tomograms:** re-home the existing picks with the per-TS rigid translation (C5) and
-re-run only subtomo extraction (minutes per project). Re-running TM instead costs ~440 GPU-h and another
-~7.5 TB of score maps across the eight projects, and it changes the particle set, so A/B comparisons are lost.
+**Particles in the new tomograms:** template matching re-run on them (~440 GPU-h and ~7.5 TB of score maps across
+the eight projects), then extraction. Picks are never moved between alignments (maintainer, 2026-10-10).
 
 **Order — decided 2026-10-10 (maintainer):** no rigid-only arm and no staged verification ladder.
 1. The maintainer builds the Warp export job (roadmap 24 stage 4 = roadmap 21 stage 6) in a separate worktree.
 2. Then PAPER (or a better schedule if one is known by then) on all eight projects, upstream budget,
    `g_long`, all projects in parallel.
-3. Particles reach the new geometry by C5 re-homing (built in roadmap 30) → Warp export → RELION.
+3. Particles: template matching re-run on the refined tomograms → Warp export → RELION.
 
 Terms used above:
 - **Rigid schedule:** anchoring/global iterations only. They change each tilt's whole-image shift, which
@@ -267,7 +263,6 @@ would rebind to it, overwriting the baseline.
 | C2 | Upstream-input checks retry for ~60 s before failing: `require_producer_input` and subtomo's own `.exists()` (`drivers/subtomo_extraction.py:269`). | W20 | small |
 | C3 | σ subset of a candidate or particle set (per-tomogram σ from the TM `job.json`) → a filtered optimisation set. Without code, a new extraction job with a smaller FP is an exact σ cut, because every tomogram of a TM job has the same search space (412: FP 1e-4 ≈ 8.3σ, 1e-8 ≈ 9.3σ, 1e-12 ≈ 10.3σ; the ribosome's ~0.1σ higher), but it repeats subtomo extraction. | R1, R2, V1 | small |
 | C4 | Class subset → optimisation set (a Class3D `run_itNNN_data.star` plus the chosen classes). | R1, R2, V2 | small |
-| C5 | Particle re-homing between two alignments of the same series (§6). | A/B | medium |
 | C6 | Warp export path; missAlign `infer`. | A/B phase 2, scale-out | roadmap 24 stages 4, 6 |
 
 C3 and C4 are now stages 2 and 4 of roadmap 30 (particle analytics and set tools, 2026-10-10).
@@ -294,8 +289,7 @@ job is worth it only once the scripted protocol has settled.
 2. R1: the class-by-σ table; the `fitmap` correlations for 6XU8 and its mirror; FSC 0.143 at bin 4 and bin 2;
    both defocus-hand refines.
 3. V1: curated counts per project and the SK recall numbers.
-4. A/B: ≥ 95 % of re-homed particles inside arm B's volumes; the B vs B′ spread recorded before A is compared.
+4. A/B: the B vs B′ spread recorded before A is compared.
 
-**Modern-Python weave-in:** C3–C5 as pure functions over star DataFrames in `services/particles/`, the per-TS
-re-homing translation as a frozen dataclass; checked on the pilot's files rather than in `tests/` (the install
+**Modern-Python weave-in:** C3 and C4 as pure functions over star DataFrames in `services/particles/`; checked on the pilot's files rather than in `tests/` (the install
 self-test).

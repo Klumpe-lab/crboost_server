@@ -129,6 +129,12 @@ job_resource_profiles:
     cpus_per_task: 4
     time: "0:30:00"
 
+  warpExport:
+    gres: "gpu:1"
+    mem: "32G"
+    cpus_per_task: 4
+    time: "0:30:00"
+
   reconstructParticle:
     gres: "gpu:1"
     mem: "32G"
