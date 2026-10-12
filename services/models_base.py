@@ -98,6 +98,7 @@ class JobType(str, Enum):
     RECONSTRUCT_PARTICLE = "reconstructParticle"
 
     CLASS3D = "class3d"
+    REFINE3D = "refine3d"
 
     # Synthetic source: not a real pipeline job. Used by PathResolutionService to
     # surface <project>/MergedSources/optimisation_set.star as a producer candidate
