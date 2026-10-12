@@ -147,6 +147,14 @@ job_resource_profiles:
     cpus_per_task: 8
     time: "8:00:00"
 
+  # mpirun -n 3: a leader and one follower per half-set, each follower on its own GPU. With preread_images
+  # every follower holds the whole particle set in RAM.
+  refine3d:
+    gres: "gpu:2"
+    mem: "96G"
+    cpus_per_task: 8
+    time: "8:00:00"
+
   # DL tilt-filter prediction run: one GPU job over every tilt of the project.
   tiltFilter:
     gres: "gpu:1"

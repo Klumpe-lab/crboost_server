@@ -32,6 +32,7 @@ from services.jobs.fs_motion_ctf import FsMotionCtfParams
 from services.jobs.import_movies import ImportMoviesParams
 from services.jobs.miss_align import MissAlignParams
 from services.jobs.reconstruct_particle import ReconstructParticleParams
+from services.jobs.refine3d import Refine3DParams
 from services.jobs.subtomo_extraction import SubtomoExtractionParams
 from services.jobs.template_match import TemplateMatchPytomParams
 from services.jobs.tilt_filter import TiltFilterParams
@@ -242,6 +243,14 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         dependencies=(JobType.RECONSTRUCT_PARTICLE,),
         driver="class3d.py",
         plugins=("particle_results",),
+    ),
+    JobSpec(
+        JobType.REFINE3D,
+        Refine3DParams,
+        "Refine 3D",
+        PHASE_PARTICLES,
+        dependencies=(JobType.RECONSTRUCT_PARTICLE,),
+        driver="refine3d.py",
     ),
 )
 
