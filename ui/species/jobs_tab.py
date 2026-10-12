@@ -61,7 +61,7 @@ def _drift(sp: ParticleSpecies, jm) -> list[tuple[str, str]]:
                 job_d = float(getattr(jm, "particle_diameter_ang", 0.0) or 0.0)
                 if abs(job_d - float(sp.diameter_ang)) > 1e-6:
                     out.append(("Ø", f"job {job_d:g} Å ≠ species {sp.diameter_ang:g} Å"))
-        case JobType.RECONSTRUCT_PARTICLE | JobType.CLASS3D:
+        case JobType.RECONSTRUCT_PARTICLE | JobType.CLASS3D | JobType.REFINE3D:
             job_sym = _sym(getattr(jm, "symmetry", None))
             if job_sym != species_sym:
                 out.append(("sym", f"job {job_sym} ≠ species {species_sym}"))
