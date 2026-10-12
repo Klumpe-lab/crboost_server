@@ -117,7 +117,7 @@ class WarpExportParams(AbstractJobParams):
         return True
 
     def get_tool_name(self) -> str:
-        return "warp_export"
+        return "warp_aretomo"
 
     @staticmethod
     def get_input_requirements() -> dict[str, str]:
