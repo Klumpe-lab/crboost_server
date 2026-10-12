@@ -91,6 +91,7 @@ class JobType(str, Enum):
     TEMPLATE_MATCH_PYTOM = "templatematching"
     TEMPLATE_EXTRACT_PYTOM = "tmextractcand"
     SUBTOMO_EXTRACTION = "subtomoExtraction"
+    WARP_EXPORT = "warpExport"
     # Per-pick-list extraction. One instance per (species, tomogram, slug)
     # triple; not a scheme/roster job -- see services/jobs/extract_pick_list.py.
     EXTRACT_PICK_LIST = "extractPickList"

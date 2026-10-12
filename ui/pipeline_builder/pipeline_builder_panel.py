@@ -392,6 +392,16 @@ class PipelineBuilderPanel:
                                 job_model.box_size = ep.box_size
                                 job_model.binning = ep.binning
                                 job_model.crop_size = ep.crop_size
+                        # Warp export cuts at the species' extraction voxel size, its output box
+                        # (crop, else box) and the species diameter, so both extraction paths
+                        # can cut the same particles alike. Only what the species has set.
+                        elif job_type == JobType.WARP_EXPORT:
+                            ep = getattr(sp, "extraction_params", None)
+                            if ep is not None:
+                                job_model.binning = ep.binning
+                                job_model.box_size = ep.crop_size if ep.crop_size > 0 else ep.box_size
+                            if getattr(sp, "diameter_ang", None):
+                                job_model.diameter_ang = float(sp.diameter_ang)
 
         # If a merge is active, wire this new consumer's input_optimisation slot to the
         # active merge's synthetic `mergedSources` producer (source_overrides key) so the

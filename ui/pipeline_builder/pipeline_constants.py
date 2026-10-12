@@ -37,6 +37,10 @@ def missing_deps(job_type: JobType, selected_instance_ids: set[str]) -> list[Job
             return []
         return [JobType.TS_RECONSTRUCT]
 
+    # Either extraction path feeds reconstruction.
+    if job_type == JobType.RECONSTRUCT_PARTICLE and type_present(JobType.WARP_EXPORT):
+        return []
+
     spec = JOB_SPEC_BY_TYPE.get(job_type)
     deps = spec.dependencies if spec else ()
     return [d for d in deps if not type_present(d)]
