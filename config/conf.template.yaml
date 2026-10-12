@@ -223,12 +223,6 @@ tools:
     exec_mode: "container"
     container_path: "/path/to/warp_aretomo.sif"
     bin_path: ""
-  # WarpTools 2.0.0dev40+ for the warpExport job only (`ts_export_particles --2d`; dev36's export
-  # pairs particle-stack slices with the wrong tilts in RELION 5). Every other Warp job uses warp_aretomo.
-  warp_export:
-    exec_mode: "container"
-    container_path: "/path/to/warp_export.sif"
-    bin_path: ""
   cryocare:
     exec_mode: "container"
     container_path: "/path/to/cryocare.sif"

@@ -117,13 +117,12 @@ tools:
     exec_mode: "container"
     container_path: "/path/to/containers/relion5.0_tomo.sif"
     bin_path: ""
-  # ... likewise warp_export, cryocare, isonet, pytom, imod, pymol, miss_alignment, cistem
+  # ... likewise cryocare, isonet, pytom, imod, pymol, miss_alignment, cistem
 ```
 
 | `tools:` key | used for | definition file in `container_defs/` |
 |---|---|---|
-| `warp_aretomo` | WarpTools motion/CTF, tilt-series alignment (AreTomo / IMOD patch), CTF, reconstruction | `warp_2.0.0dev36_aretomo1.0.0_cuda11.8_glibc2.31.def` |
-| `warp_export` | Warp particle export (`ts_export_particles --2d`, Warp Export job only; needs Warp 2.0.0dev40+) | `warp_2.0.0dev41_cuda12.9.def` |
+| `warp_aretomo` | WarpTools motion/CTF, tilt-series alignment (AreTomo / IMOD patch), CTF, reconstruction, particle export (needs Warp 2.0.0dev40+) | `warp_2.0.0dev41_aretomo1.0.0_cuda12.9.def` |
 | `relion` | subtomogram extraction, particle reconstruction, Class3D, template/mask preparation | `relion5.0_tomo.def` |
 | `pytom` | template matching + candidate extraction | `pytom_match_pick_0.10.0.def` |
 | `cryocare` | cryoCARE denoising | `cryocare.def` |
@@ -147,8 +146,7 @@ matter as long as `conf.yaml` points at them.
 ```bash
 apptainer build --fakeroot --nv relion5.0_tomo.sif container_defs/relion5.0_tomo.def
 apptainer build --fakeroot --nv cryocare.sif       container_defs/cryocare.def
-apptainer build --fakeroot --nv warp_aretomo.sif   container_defs/warp_2.0.0dev36_aretomo1.0.0_cuda11.8_glibc2.31.def
-apptainer build --fakeroot --nv warp_export.sif    container_defs/warp_2.0.0dev41_cuda12.9.def
+apptainer build --fakeroot --nv warp_aretomo.sif   container_defs/warp_2.0.0dev41_aretomo1.0.0_cuda12.9.def
 ```
 
 </details>

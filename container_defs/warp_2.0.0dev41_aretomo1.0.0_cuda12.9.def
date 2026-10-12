@@ -1,0 +1,83 @@
+Bootstrap: docker
+From: nvcr.io/nvidia/cuda:12.9.1-devel-ubuntu22.04
+
+# WarpTools 2.0.0dev41 + AreTomo2 v1.0.0: every Warp job, particle export included.
+#
+# dev40 (commit 7ad2dcc) fixed the RELION particle-series export that dev36 gets wrong and added
+# ts_export_particles --dont_premultiply. The conda package brings its own CUDA 12.9 runtime, pytorch
+# (cuda129) and dotnet 10; the CUDA 12.9 devel base is there to compile AreTomo2 (its makefile11 is written
+# for CUDA 12). The host GPU driver comes in through `apptainer exec --nv` and must support CUDA 12.9.
+
+%environment
+    export PATH="/opt/aretomo2/bin:/opt/miniforge3/envs/warp/bin:$PATH"
+    export LD_LIBRARY_PATH="/opt/miniforge3/envs/warp/lib:/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
+    export CUDA_PATH="/usr/local/cuda"
+    export CUDA_HOME="/usr/local/cuda"
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    export TZ=Europe/Vienna
+    ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+    apt-get update && apt-get install -y --no-install-recommends \
+        wget \
+        git \
+        build-essential \
+        ca-certificates \
+        libfontconfig1 \
+        && rm -rf /var/lib/apt/lists/*
+
+    nvcc --version
+    gcc --version
+
+    #----- Warp -----#
+    cd /opt
+    wget -q https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O miniforge.sh
+    bash miniforge.sh -b -p /opt/miniforge3
+    rm miniforge.sh
+    export PATH="/opt/miniforge3/bin:$PATH"
+
+    # Upstream install line (docs/user_guide/warptools/installation.md):
+    #   conda create -n warp warp -c warpem -c nvidia/label/cuda-12.9.0 -c conda-forge --channel-priority flexible
+    # conda 26 no longer takes `--channel-priority <value>` on the command line, so it goes in the config. The
+    # build host has no GPU, so conda sees no __cuda virtual package and would refuse pytorch's cuda129 build.
+    conda config --system --set channel_priority flexible
+    CONDA_OVERRIDE_CUDA=12.9 conda create -n warp -y warp=2.0.0dev41 \
+        -c warpem -c nvidia/label/cuda-12.9.0 -c conda-forge
+    conda clean --all -y
+
+    #----- AreTomo2 v1.0.0 from source -----#
+    mkdir -p /opt/aretomo2/bin
+    cd /tmp
+    rm -rf AreTomo2
+    git clone https://github.com/czimaginginstitute/AreTomo2.git
+    cd AreTomo2
+    git checkout v1.0.0
+    sed -i 's|-o AreTomo2|-no-pie -o AreTomo2|' makefile11
+    make exe -f makefile11 CUDAHOME=/usr/local/cuda PRJLIB=./Lib
+    mv AreTomo2 /opt/aretomo2/bin/
+    chmod +x /opt/aretomo2/bin/AreTomo2
+    ln -s /opt/aretomo2/bin/AreTomo2 /usr/local/bin/AreTomo
+    cd /
+    rm -rf /tmp/AreTomo2
+    apt-get clean
+
+%test
+    # dev40+ only: proves the solver did not fall back to an older Warp.
+    /opt/miniforge3/envs/warp/bin/WarpTools ts_export_particles --help 2>&1 | grep -q -- "--dont_premultiply"
+    test -x /opt/aretomo2/bin/AreTomo2
+
+%labels
+    Tool WarpTools+AreTomo2
+    Version 2.0.0dev41+1.0.0
+    CUDA 12.9
+
+%help
+    WarpTools 2.0.0dev41 and AreTomo2 v1.0.0 (CUDA 12.9) for every crboost Warp job.
+
+    Usage:
+      apptainer exec --nv <image>.sif WarpTools --help
+      apptainer exec --nv <image>.sif AreTomo2
+
+    CUDA 12.9 needs a recent host NVIDIA driver; a driver/forward-compat error on the first run means
+    the GPU node's driver is too old.
