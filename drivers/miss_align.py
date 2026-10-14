@@ -120,6 +120,7 @@ class StackInfo:
     extent_x: float  # Å, from the MRC cell
     extent_y: float
     apix: float
+    n_tilts: int
 
 
 def read_stacks(upstream_processing: Path, ts_names: list[str]) -> dict[str, StackInfo]:
@@ -132,10 +133,23 @@ def read_stacks(upstream_processing: Path, ts_names: list[str]) -> dict[str, Sta
         with mrcfile.open(st, header_only=True, permissive=True) as mrc:
             x, y = float(mrc.header.cella.x), float(mrc.header.cella.y)
             apix = float(mrc.voxel_size.x)
+            n_tilts = int(mrc.header.nz)
         if x <= 0 or y <= 0 or apix <= 0:
             raise ValueError(f"{st}: MRC cell {x} x {y} Å at {apix} Å/px — cannot stamp the image dimensions.")
-        stacks[ts] = StackInfo(path=st, extent_x=x, extent_y=y, apix=apix)
+        stacks[ts] = StackInfo(path=st, extent_x=x, extent_y=y, apix=apix, n_tilts=n_tilts)
     return stacks
+
+
+def check_tilt_counts(stacks: dict[str, StackInfo]) -> None:
+    """One training run covers every series, so a series that cannot be reconstructed fails the whole job
+    hours in. A single-image stack is caught here, before any GPU time, for the user to exclude."""
+    single = sorted(ts for ts, s in stacks.items() if s.n_tilts < 2)
+    if single:
+        raise ValueError(
+            f"{len(single)} tilt-series have fewer than 2 tilts in their stack and cannot be reconstructed: "
+            f"{single}. Exclude them from processing (Journey: select the series, then the block icon on its "
+            f"strip) and run this job again."
+        )
 
 
 def common_stack_apix(stacks: dict[str, StackInfo]) -> float:
@@ -481,7 +495,7 @@ def preflight_conversion(
     adapter = MissAlignIngestAdapter(
         registry=get_registry_for(project_path), job_dir=job_dir, job_instance_id=instance_id
     )
-    worst, compared = adapter.star_reproduction_error(input_star, project_path)
+    worst, compared = adapter.star_reproduction_error(input_star, project_path, ts_names)
     if compared == 0:
         raise RuntimeError(f"No tilt of {input_star} matched a staged XML by movie name — cannot convert back.")
     summary = ", ".join(f"{col} {worst[col]:.3f}" for col in worst)
@@ -593,6 +607,10 @@ def main():
                 f"backfill the registry from mdocs, then restart this job."
             )
         ts_names = read_tilt_series_names_from_input_star(input_star)
+        excluded = sorted(set(ts_names) & registry.excluded_ids())
+        if excluded:
+            ts_names = [ts for ts in ts_names if ts not in excluded]
+            print(f"[DRIVER] Excluded from processing, not refined: {excluded}", flush=True)
         if not ts_names:
             raise ValueError(f"No tilt-series in input star {input_star}")
         n_iters = len(entries)
@@ -605,6 +623,7 @@ def main():
         dims = read_settings_dims(settings_src)
         print(f"[DRIVER] Settings dims: {dims}", flush=True)
         stacks = read_stacks(upstream_processing, ts_names)
+        check_tilt_counts(stacks)
         input_apix = common_stack_apix(stacks)
         stack_apix = params.prepare_stacks_apix if params.prepare_stacks_apix > 0 else input_apix
         if params.prepare_stacks_apix > 0:
