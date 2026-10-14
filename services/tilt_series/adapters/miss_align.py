@@ -134,8 +134,10 @@ class MissAlignIngestAdapter(TsAlignmentIngestAdapter):
             raise RuntimeError(f"missAlign ingest failed for ALL {len(expected)} tilt-series:\n  - {detail}")
         return ingested
 
-    def star_reproduction_error(self, input_star_path: Path, project_root: Path) -> tuple[dict[str, float], int]:
-        """Largest |XML-derived - star value| per alignment column, over every tilt of every TS in
+    def star_reproduction_error(
+        self, input_star_path: Path, project_root: Path, ts_ids: Iterable[str]
+    ) -> tuple[dict[str, float], int]:
+        """Largest |XML-derived - star value| per alignment column, over every tilt of each of `ts_ids` in
         `input_star_path`, matched by movie basename; plus the number of tilts compared. Run on the
         unrefined XMLs of the alignment job that wrote the star, it measures the mapping itself."""
         in_df = self.starfile_service.read(input_star_path).get("global")
@@ -143,8 +145,11 @@ class MissAlignIngestAdapter(TsAlignmentIngestAdapter):
             raise ValueError(f"No 'global' block in {input_star_path}")
         worst = dict.fromkeys(STAR_COLUMNS, 0.0)
         compared = 0
+        wanted = set(ts_ids)
         for _, ts_row in in_df.iterrows():
             ts_id = str(ts_row["rlnTomoName"])
+            if ts_id not in wanted:
+                continue
             per_ts = self._resolve_per_ts_path(
                 ts_row["rlnTomoTiltSeriesStarFile"], input_star_path.parent, project_root
             )
