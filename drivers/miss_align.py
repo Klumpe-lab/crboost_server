@@ -140,16 +140,11 @@ def read_stacks(upstream_processing: Path, ts_names: list[str]) -> dict[str, Sta
     return stacks
 
 
-def check_tilt_counts(stacks: dict[str, StackInfo]) -> None:
-    """One training run covers every series, so a series that cannot be reconstructed fails the whole job
-    hours in. A single-image stack is caught here, before any GPU time, for the user to exclude."""
-    single = sorted(ts for ts, s in stacks.items() if s.n_tilts < 2)
-    if single:
-        raise ValueError(
-            f"{len(single)} tilt-series have fewer than 2 tilts in their stack and cannot be reconstructed: "
-            f"{single}. Exclude them from processing (Journey: select the series, then the block icon on its "
-            f"strip) and run this job again."
-        )
+def unreconstructable(stacks: dict[str, StackInfo]) -> dict[str, str]:
+    """Series whose stack holds fewer than 2 tilts, with the reason. One training run covers every series,
+    so one that cannot be reconstructed would fail all of them; it is left out instead, the way an array
+    job fails that series alone and carries on."""
+    return {ts: f"{s.n_tilts} tilt(s) in {s.path.name}" for ts, s in sorted(stacks.items()) if s.n_tilts < 2}
 
 
 def common_stack_apix(stacks: dict[str, StackInfo]) -> float:
@@ -519,13 +514,17 @@ def preflight_conversion(
     print(f"[DRIVER] Pre-flight emit OK for {len(ingested)}/{len(ts_names)} tilt-series", flush=True)
 
 
-def write_changes_report(job_dir: Path, staged: Path, ts_names: list[str], stack_apix: float) -> None:
+def write_changes_report(
+    job_dir: Path, staged: Path, ts_names: list[str], stack_apix: float, left_out: dict[str, str]
+) -> None:
     """missalign_changes.json + one log line per series: the per-tilt shift change against iter0/ (the
     input as the tool saw it) with the rigid volume shift removed, the size of that rigid part, and any
-    local image-warp grid. Warp reconstructions apply the grids; the RELION star cannot hold them."""
+    local image-warp grid. Warp reconstructions apply the grids; the RELION star cannot hold them. Series
+    left out before training are listed with their reason."""
     threshold = 2 * stack_apix
     report: dict = {
         "threshold": f"tilts changed by more than 2 px of the {stack_apix:.4g} Å/px input stacks ({threshold:.4g} Å)",
+        "left_out": left_out,
         "tilt_series": {},
     }
     for ts in ts_names:
@@ -611,8 +610,14 @@ def main():
         if excluded:
             ts_names = [ts for ts in ts_names if ts not in excluded]
             print(f"[DRIVER] Excluded from processing, not refined: {excluded}", flush=True)
+        stacks = read_stacks(upstream_processing, ts_names)
+        left_out = unreconstructable(stacks)
+        for ts, reason in left_out.items():
+            print(f"[DRIVER] WARNING: {ts} left out, cannot be reconstructed: {reason}", flush=True)
+            del stacks[ts]
+        ts_names = [ts for ts in ts_names if ts not in left_out]
         if not ts_names:
-            raise ValueError(f"No tilt-series in input star {input_star}")
+            raise ValueError(f"No tilt-series to refine in input star {input_star}")
         n_iters = len(entries)
         print(
             f"[DRIVER] {len(ts_names)} tilt-series, {n_iters} macro-iteration(s) ({params.iteration_preset.value}), "
@@ -622,8 +627,6 @@ def main():
 
         dims = read_settings_dims(settings_src)
         print(f"[DRIVER] Settings dims: {dims}", flush=True)
-        stacks = read_stacks(upstream_processing, ts_names)
-        check_tilt_counts(stacks)
         input_apix = common_stack_apix(stacks)
         stack_apix = params.prepare_stacks_apix if params.prepare_stacks_apix > 0 else input_apix
         if params.prepare_stacks_apix > 0:
@@ -762,7 +765,7 @@ def main():
 
         # 7. Report the change, emit the drop-in star + tilt_series/ from the refined XMLs, and record
         #    the alignment.
-        write_changes_report(job_dir, staged_processing, ts_names, input_apix)
+        write_changes_report(job_dir, staged_processing, ts_names, input_apix, left_out)
         registry = get_registry_for(project_path)
         adapter = MissAlignIngestAdapter(registry=registry, job_dir=job_dir, job_instance_id=instance_id)
         ingested = adapter.ingest(ts_names, stack_angpix=stack_apix)
