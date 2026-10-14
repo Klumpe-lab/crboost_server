@@ -250,39 +250,60 @@ correct regardless of any later downsampling.
 ⇒ the crboost job needs **dynamic walltime** (scale by n_TS × iterations, like
 `denoise_train`) and a **multi-GPU** SLURM profile.
 
-### 8.1 Spending GPUs: training vs alignment
+### 8.1 Spending GPUs and CPUs
 
-Each macro-iteration is a training phase plus an alignment phase. Training is a fixed step budget
-(`steps_per_epoch × max_epochs_per_iteration`, independent of the number of tilt series) split across the
-**training** GPUs; alignment is ~5 min per tilt series (an estimate, not yet measured) spread over **every**
-allocated GPU. At the tool's budget (1000 × 30 steps, 1.34 s/step on an A100) training is ~11 h per iteration,
-so on small projects it is most of the run.
+Each macro-iteration is a training phase plus an alignment phase. Training is a fixed budget of
+`steps_per_epoch × max_epochs_per_iteration × batch_size` cubes, independent of the number of tilt series.
+Three kinds of process run during it, each on its own CPU core (miss-alignment 0.2.0,
+`data/_reconstruction_worker.py`, `training_dataset.py`, `models.py`):
 
-- **Card first.** An RTX node (~3.5 s/step) takes ~2.6× an A100. The default constraint `g2|g3|g4` can land on
-  RTX; constraint `g4` keeps the job on A100s. This is the biggest single lever.
-- **Then training GPUs.** Several training GPUs run DDP: each does `steps / n` with its own batch and the tool
-  multiplies the learning rate by n (same total samples). 4 GPUs as 3 training + 1 reconstructing cut training
-  ~3× against 1 + 1, somewhat less in practice: `NCCL_P2P_DISABLE=1` routes the gradient sync through host
-  memory, and one GPU builds the training subtomograms for all trainers.
-- **Don't let every GPU train.** The reconstruction pool then shares cards with training, which is what made
-  the single-GPU RTX runs slow (2026-07-30).
-- **Alignment matters on big projects.** At 100+ tilt series it reaches hours per iteration, and every extra
-  GPU shortens it.
-- **CPUs.** ~8 per GPU (~32 for 4); the auto data-loader count takes what the reconstruction workers and
-  trainers leave.
-- **Limits.** One node (`num_gpus ≤ 4`). A full node queues longer on `g_long`; total GPU-hours stay about the
-  same, so for many projects at once, bigger jobs mostly trade against how many run in parallel.
+```
+  tilt stacks (the alignment job's, read through the job dir's symlinks)
+      │
+  ┌───▼──────────────────────────────┐   patch builders (--reconstruction-devices, one entry each):
+  │ builder   builder   builder   …  │   load a stack, shrink it on the CPU, reconstruct 2 aligned
+  └───┬──────────────────────────────┘   + 2 shifted 96³ cubes on a GPU (~1 GB), next stack after 80
+      ▼
+  [ pool: $TMPDIR/recon_pool_*, up to pool_size files ]   each cube is used once, then deleted
+      │
+  ┌───▼─────┐ ┌─────────┐ ┌─────────┐    loaders (--dataloaders-per-trainer): read + normalise
+  │ loaders │ │ loaders │ │ loaders │    cubes; each waits until its share of the pool holds
+  └───┬─────┘ └───┬─────┘ └───┬─────┘    batch_size files
+  ┌───▼─────┐ ┌───▼─────┐ ┌───▼─────┐    trainers (--training-devices): DDP, batch_size cubes per
+  │  GPU 0  │ │  GPU 1  │ │  GPU 2  │    step each, gradients synced every step; LR × n trainers
+  └─────────┘ └─────────┘ └─────────┘
+```
 
-Pilot (`AGG412_20260204_412`, 23 TS, PAPER = 9 iterations), estimated:
+The trainers can only consume what the builders produce, and a builder is single-threaded Python
+(`torch.set_num_threads(1)`), mostly CPU work. One builder delivered ~14 cubes/s on an A100 node with
+1024² stacks (AGG412 Grid2, 2026-10-14): three A100 trainers sat at 0 % GPU, CPU 97 % idle, the pool
+half full (15 partitions × 31 files), 6.65 s per step of 3 × 32 cubes. The tool's own examples run three
+builders per training GPU (`--training-devices 0,1 --reconstruction-devices 2,2,2,3,3,3`).
 
-| Layout (A100, `g4`) | Per iteration | Run |
-|---|---|---|
-| 2 GPUs: 1 training, 1 reconstructing | ~12 h | ~4.6 d |
-| 4 GPUs: 3 training, 1 reconstructing | ~4–5 h | ~1.6 d ideal, ~2 d realistic |
-| Same as row 1 on RTX | ~30 h | ~11 d |
+In crboost the layout comes from three numbers (`services/jobs/miss_align.py::worker_plan`, used by the
+driver and shown in the job tab):
 
-The multi-trainer path has not run in crboost yet. The SLURM tab of a missAlign job carries this as a note
-(`MissAlignParams.SLURM_NOTE`).
+- `training_gpus` — the first that many GPUs train.
+- `dataloader_workers` — loaders per trainer; auto = up to 4, at most half the CPUs the trainers leave, and
+  `pool_size // (training_gpus × loaders) ≥ 2 × batch_size`.
+- `patch_builders` — auto = every CPU left after the trainers and loaders. They are spread round the
+  non-training GPUs first, then the training ones (a builder needs ~1 GB; a trainer ~6.4 GB of 40).
+
+So **CPUs/task is the speed lever**: 4 GPUs (3 training) with 32 CPUs → 3 trainers, 4 loaders each,
+17 builders. The job tab warns below 3 builders per training GPU and when the processes outnumber the CPUs.
+
+- **Card.** Constraint `g4` keeps the job on A100s; the default `g2|g3|g4` can land on RTX.
+- **Alignment** starts one process per GPU and pulls tilt series from a queue; at 100+ tilt series it
+  reaches hours per iteration, and every extra GPU shortens it.
+- **Limits.** One node (`num_gpus ≤ 4`). A full node queues longer on `g_long`.
+- **Checkpoints.** Lightning keeps the best three per-epoch checkpoints, but nothing resumes inside a
+  macro-iteration (`trainer.fit` gets no `ckpt_path`): a run killed mid-iteration repeats it. Each finished
+  iteration writes `iter{N}/` (XMLs, `model.ckpt`), and a re-run resumes after the last one
+  (`--start-at-iteration`). The worker layout is not part of the resume check, so it may change between runs.
+
+The wall-time estimate (`_walltime_plan`) trains at the slower of builders × 12 cubes/s and
+trainers × `batch_size` / 3.5 s, both conservative until a fully fed A100 trainer has been measured.
+The SLURM tab of a missAlign job carries a short form of this as a note (`MissAlignParams.SLURM_NOTE`).
 
 ---
 

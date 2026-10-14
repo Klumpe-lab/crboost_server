@@ -1,19 +1,19 @@
 """
 missAlign plugin: the default parameter form with a live summary above it of what the settings
 resolve to — the pixel size and patch field of view of every macro-iteration on the stacks the job
-will read — and of the settings that defeat themselves (an epoch cap at or below the last LR
-milestone, an unreadable schedule, milestone list or z_box, more training GPUs or a reconstruction
-device index beyond the GPUs allocated, a macro-iteration longer than one run's wall-time). The
-driver checks the same things again before it spends GPU time.
+will read, and which process runs on which GPU and CPU — and of the settings that defeat themselves
+(an epoch cap at or below the last LR milestone, an unreadable schedule, milestone list or z_box, more
+training GPUs than allocated, too few patch builders or more processes than CPUs, a macro-iteration
+longer than one run's wall-time). The driver checks the same things again before it spends GPU time.
 
 Choosing a preset sets the fields it defines (MissAlignParams.apply_preset). The summary also reads
-the SLURM section (QOS, time limit, GRES), so its refresh goes back to the job tab, which reruns it
+the SLURM section (QOS, time limit, GRES, CPUs), so its refresh goes back to the job tab, which reruns it
 after an edit in any section.
 """
 
 from nicegui import ui
 
-from services.jobs.miss_align import ScheduleEntry, parse_device_list, parse_z_box
+from services.jobs.miss_align import ScheduleEntry, parse_z_box, worker_plan
 from services.models_base import JobType
 from ui.job_plugins import register_params_renderer
 from ui.job_plugins._field_styles import CLR_HEADER, HELPER_STYLE, MONO
@@ -116,13 +116,44 @@ def _render_summary(job_model) -> None:
         if job_model.training_gpus > gpus:
             source = "the GRES override in SLURM Resources" if gres_override else "num_gpus"
             warnings.append(f"training_gpus ({job_model.training_gpus}) exceeds the {gpus} GPU(s) {source} allocates.")
-        elif job_model.reconstruction_devices.strip():
+        else:
             try:
-                parse_device_list(job_model.reconstruction_devices, gpus)
+                workers = worker_plan(job_model, gpus, job_model.get_effective_slurm_config().cpus_per_task)
             except ValueError as e:
                 warnings.append(str(e))
+            else:
+                _render_workers(workers)
+                warnings.extend(workers.warnings())
         walltime = job_model.walltime_warning()
         if walltime:
             warnings.append(walltime)
         for text in warnings:
             ui.label(text).style(_WARN_STYLE)
+
+
+def _render_workers(workers) -> None:
+    """Which process runs where during training, as the driver will start them."""
+    trainers = ",".join(str(g) for g in workers.training)
+    builders = f"{len(workers.builders):>3}  on {workers.builders_by_gpu()}" + (
+        "  (auto: the CPUs left)" if workers.builders_auto else ""
+    )
+    loaders = f"{workers.loaders_per_trainer:>3}  per trainer" + ("  (auto)" if workers.loaders_auto else "")
+    ui.label(f"Training processes: {workers.cpus_needed} of {workers.cpus} CPUs (SLURM tab)").style(
+        HELPER_STYLE + " margin-top: 4px;"
+    )
+    rows = (
+        (
+            "trainers",
+            f"{len(workers.training):>3}  on GPU {trainers}",
+            "One per training GPU; each step takes batch_size cubes from its loaders.",
+        ),
+        (
+            "patch builders",
+            builders,
+            "Make the training cubes (one CPU core and ~1 GB of a GPU each). Training "
+            "runs only as fast as they deliver; on auto, each extra CPU in the SLURM tab becomes one more builder.",
+        ),
+        ("loaders", loaders, "Read cubes from the pool and batch them for their trainer (light work, one CPU each)."),
+    )
+    for name, text, tip in rows:
+        ui.label(f"{name:>16}  {text}").style(_ROW_STYLE).tooltip(tip)

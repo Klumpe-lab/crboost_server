@@ -49,7 +49,7 @@ try:
     from services.analysis.alignment_changes import compare_alignments
     from services.analysis.lamella_slab import centred_box_z, fit_slab, z_profile
     from services.configs.starfile_service import StarfileService
-    from services.jobs.miss_align import MissAlignParams, ScheduleEntry, parse_device_list, parse_z_box
+    from services.jobs.miss_align import MissAlignParams, ScheduleEntry, parse_z_box, worker_plan
     from services.tilt_series import clear_registry, get_registry_for
     from services.tilt_series.adapters import MissAlignIngestAdapter
 except ImportError as e:
@@ -153,54 +153,6 @@ def common_stack_apix(stacks: dict[str, StackInfo]) -> float:
     if len(values) != 1:
         raise ValueError(f"the tilt stacks differ in pixel size ({values} Å/px); one downsample cannot serve them all")
     return values[0]
-
-
-def device_plan(params: MissAlignParams, n_gpus: int) -> tuple[list[int], list[int]]:
-    """(training GPUs, one GPU index per reconstruction worker). The first training_gpus cards train;
-    the reconstruction workers go where reconstruction_devices says, else on every other card, else
-    (all cards train) one per training card."""
-    n_train = params.training_gpus
-    if n_train > n_gpus:
-        raise ValueError(f"training_gpus={n_train} but only {n_gpus} GPU(s) are allocated; raise num_gpus")
-    training = list(range(n_train))
-    if params.reconstruction_devices.strip():
-        return training, parse_device_list(params.reconstruction_devices, n_gpus)
-    if n_gpus > n_train:
-        return training, list(range(n_train, n_gpus))
-    return training, list(training)
-
-
-def dataloaders_per_trainer(params: MissAlignParams, n_train: int, n_recon: int) -> int:
-    """CPU data-loading workers per training GPU, within the tool's pool constraint
-    pool_size // (training GPUs x workers) >= 2 x batch_size. Auto: the allocated CPUs left after the
-    reconstruction workers and one main process per trainer."""
-    cpus = int(os.environ.get("SLURM_CPUS_PER_TASK") or 1)
-    cap = params.pool_size // (2 * params.batch_size * n_train)
-    if cap < 1:
-        raise ValueError(
-            f"pool_size ({params.pool_size}) must be >= 2 x batch_size x training_gpus "
-            f"({2 * params.batch_size * n_train}); raise pool_size or lower batch_size."
-        )
-    if params.dataloader_workers > 0:
-        n = min(params.dataloader_workers, cap)
-        if params.dataloader_workers > cap:
-            print(
-                f"[DRIVER] WARNING: dataloader_workers={params.dataloader_workers} exceeds the pool cap {cap} "
-                f"(pool_size // (2 x batch_size x training_gpus)); clamped to {n}. Raise pool_size for more.",
-                flush=True,
-            )
-        if n * n_train + n_recon > cpus:
-            print(
-                f"[DRIVER] WARNING: {n * n_train} data-loading + {n_recon} reconstruction workers > {cpus} "
-                f"allocated CPUs — oversubscription slows loading. Raise cpus_per_task to match.",
-                flush=True,
-            )
-        mode = "pinned"
-    else:
-        n = max(1, min((cpus - n_recon - n_train) // n_train, cap))
-        mode = "auto"
-    print(f"[DRIVER] dataloaders per trainer={n} ({mode}, cpus={cpus}, pool cap={cap})", flush=True)
-    return n
 
 
 def read_settings_dims(settings_path: Path) -> dict:
@@ -595,8 +547,12 @@ def main():
         if warning:
             print(f"[DRIVER] WARNING: {warning}", flush=True)
         n_gpus = allocated_gpu_count(default=params.num_gpus)
-        training_devices, recon_devices = device_plan(params, n_gpus)
-        n_dataloaders = dataloaders_per_trainer(params, len(training_devices), len(recon_devices))
+        workers = worker_plan(params, n_gpus, int(os.environ.get("SLURM_CPUS_PER_TASK") or 1))
+        print(f"[DRIVER] Workers: {workers.describe()}", flush=True)
+        for warning in workers.warnings():
+            print(f"[DRIVER] WARNING: {warning}", flush=True)
+        training_devices, recon_devices = list(workers.training), list(workers.builders)
+        n_dataloaders = workers.loaders_per_trainer
 
         # Before any GPU time: the emit at the end needs the registry, and the star is the scope.
         registry = get_registry_for(project_path)
@@ -718,7 +674,10 @@ def main():
         #    hours of training and the only thing keeping run_command's idle watchdog from killing
         #    it, so they are switched back on here. Several training GPUs rendezvous over NCCL, whose
         #    peer-to-peer path can stall across PCIe switches on datacenter nodes; the tool's docs
-        #    prescribe NCCL_P2P_DISABLE=1 (shared memory instead, negligible cost).
+        #    prescribe NCCL_P2P_DISABLE=1 (shared memory instead, negligible cost). Each of those ranks
+        #    also torch.compiles the same model into the one kernel cache, and Inductor's async compile
+        #    pools race on its files (pytorch/pytorch#134384; a rank died on a missing Triton .json):
+        #    TORCHINDUCTOR_COMPILE_THREADS=1 compiles in-process instead.
         if resume_from >= n_iters:
             print(f"[DRIVER] All {n_iters} macro-iterations already checkpointed; skipping training.", flush=True)
         else:
@@ -729,7 +688,7 @@ def main():
             )
             env = f"env -u TQDM_DISABLE USER={username} LOGNAME={username} OMP_NUM_THREADS=1 MKL_NUM_THREADS=1"
             if len(training_devices) > 1:
-                env += " NCCL_P2P_DISABLE=1"
+                env += " NCCL_P2P_DISABLE=1 TORCHINDUCTOR_COMPILE_THREADS=1"
             train_cmd = (
                 ToolCommand(env)
                 .raw("miss-alignment train")
