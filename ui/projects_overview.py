@@ -282,8 +282,9 @@ class ProjectsOverview:
             self._timer = ui.timer(self.auto_refresh_sec, self.refresh)
         return outer
 
-    async def refresh(self):
-        """Re-scan the base path and re-render. Re-entrant-safe via lock.
+    async def refresh(self, force: bool = False):
+        """Re-scan the base path and re-render (a timer tick only when something changed; `force`
+        always). Re-entrant-safe via lock.
         Self-cancels if the underlying container has been destroyed —
         guards against a stale tick firing after the dialog/page is gone."""
         if self._list_container is None:
@@ -294,12 +295,20 @@ class ProjectsOverview:
         async with self._refresh_lock:
             base = (self.base_path_provider() or "").strip()
             try:
-                if not base:
-                    self._projects = []
-                else:
-                    self._projects = await self.backend.scan_for_projects(base)
+                projects = await self.backend.scan_for_projects(base) if base else []
+                # The timer rescans every tick; rebuild the rows (and their hover menus) only when
+                # the scan or the MRU order moved. Filter, sort and selection changes re-render
+                # through their own handlers.
+                unchanged = (
+                    not force
+                    and base == self._last_scanned_base
+                    and projects == self._projects
+                    and self.prefs.prefs.recent_project_rank() == self._mru_rank
+                )
+                self._projects = projects
                 self._last_scanned_base = base
-                self._render_list()
+                if not unchanged:
+                    self._render_list()
             except RuntimeError as e:
                 # Client gone (tab closed / navigation race) — stop ticking.
                 logger.info("ProjectsOverview: client gone, stopping (%s)", e)
@@ -1097,7 +1106,7 @@ class ProjectsOverview:
                 await self.on_select(Path(self.current_path))
         finally:
             self._pause_refresh = False
-            await self.refresh()
+            await self.refresh(force=True)
 
     async def _show_delete_confirm(self, project_dir: Path, name: str) -> bool:
         with ui.dialog() as dialog, ui.card().classes("w-96"):

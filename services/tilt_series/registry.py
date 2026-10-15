@@ -498,6 +498,18 @@ def get_registry_for(project_path: Path) -> TiltSeriesRegistry:
     return reg
 
 
+async def preload_registry(project_path: Path) -> None:
+    """First access to a project's registry: parse its sidecars off the event loop (tens of MB of
+    pydantic on a large project) and install it, unless another caller cached one meanwhile. A no-op
+    when the registry is already cached; get_registry_for keeps owning re-syncs."""
+    resolved = project_path.resolve()
+    if resolved in _registries:
+        return
+    fresh = TiltSeriesRegistry(resolved)
+    await asyncio.to_thread(fresh.load)
+    _registries.setdefault(resolved, fresh)
+
+
 async def reload_registry(project_path: Path) -> TiltSeriesRegistry:
     """Re-read a project's registry from its files, whatever the index's mtime says, and
     install it in the cache.

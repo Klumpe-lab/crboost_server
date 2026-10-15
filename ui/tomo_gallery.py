@@ -594,7 +594,10 @@ class TomoGalleryPage:
             if src is None:
                 self._render_frame_note("not produced by this source")
             elif src["png"] is not None:
-                ui.html(f"<img src='{vis_asset_url(str(src['png']))}' alt='{row['ts']}' />", sanitize=False)
+                ui.html(
+                    f"<img src='{vis_asset_url(str(src['png']))}' alt='{row['ts']}' loading='lazy' decoding='async' />",
+                    sanitize=False,
+                )
                 self._render_dot_layers(row, _DOT_R_WALL)
             elif src["kick"] is not None:
                 if kicked:

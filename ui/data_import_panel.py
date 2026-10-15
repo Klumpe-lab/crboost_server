@@ -509,7 +509,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         # base_path_provider, so we just need to trigger it.
         overview = local_refs.get("projects_overview")
         if overview is not None:
-            await overview.refresh()
+            await overview.refresh(force=True)
 
     # =========================================================================
     # FILE PICKERS

@@ -8,6 +8,7 @@ the per-TS strip all read from. No NiceGUI, no client context — callers pass
 
 from __future__ import annotations
 
+import functools
 import logging
 import urllib.parse
 from pathlib import Path
@@ -135,9 +136,10 @@ def resolve_volume_for_3dmod(tomo_row: pd.Series, project_path: Path) -> Path | 
 def vis_asset_url(asset_path: str) -> str:
     # mtime-keyed cache-buster: when the atlas/manifest regenerates, the URL
     # changes, so the browser doesn't serve a stale copy from disk cache
-    # against an unchanged path.
+    # against an unchanged path. Nanoseconds: the route caches a versioned PNG for good, so a rewrite
+    # within the same second must still change the URL.
     try:
-        v = int(Path(asset_path).stat().st_mtime)
+        v = Path(asset_path).stat().st_mtime_ns
     except OSError:
         v = 0
     return f"/api/vis-asset?path={urllib.parse.quote(asset_path, safe='')}&v={v}"
@@ -603,10 +605,21 @@ def _candidate_extract_status_per_ts(job_dir: Path, jm, manifest: dict | None = 
 def _read_subtomo_extracted_ts(job_dir: Path) -> set[str]:
     """Read job_dir/particles.star and return the set of TS that had at
     least one row of extracted particles. Tolerant of missing files /
-    parse errors."""
+    parse errors.
+
+    The Journey asks for this several times per click and the star can hold tens of thousands of
+    rows, so the parse is memoized on the file's (mtime, size)."""
     particles_star = job_dir / "particles.star"
-    if not particles_star.exists():
+    try:
+        st = particles_star.stat()
+    except FileNotFoundError:
         return set()
+    return set(_extracted_ts_cached(str(particles_star), st.st_mtime_ns, st.st_size))
+
+
+@functools.lru_cache(maxsize=64)
+def _extracted_ts_cached(path: str, _mtime_ns: int, _size: int) -> frozenset[str]:
+    particles_star = Path(path)
     try:
         import starfile
 
@@ -618,11 +631,11 @@ def _read_subtomo_extracted_ts(job_dir: Path) -> set[str]:
                     df = v
                     break
         if df is None or "rlnTomoName" not in df.columns:
-            return set()
-        return {str(t) for t in df["rlnTomoName"].astype(str).unique()}
+            return frozenset()
+        return frozenset(str(t) for t in df["rlnTomoName"].astype(str).unique())
     except Exception as e:
         logger.warning("Could not parse subtomo particles.star %s: %s", particles_star, e)
-        return set()
+        return frozenset()
 
 
 def _subtomo_extract_status_per_ts(job_dir: Path, jm, expected_ts: set[str] | None = None) -> dict[str, str]:

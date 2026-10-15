@@ -415,8 +415,11 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         await asyncio.sleep(0.02)
         if mine != _sel_gen["n"]:
             return  # superseded by a newer click during the flush
-        render_main(force=True)  # selection changed — always rebuild
-        render_strip()
+        # One collect for both renders, as in refresh_all.
+        journey_data = collect_dashboard_journey(state, project_path)
+        species_data = collect_species_journey(state, project_path)
+        render_main(force=True, journey_data=journey_data, species_data=species_data)  # selection changed
+        render_strip(journey_data, species_data)
 
     def refresh_all(force_main: bool = False) -> None:
         # One collect per pass. `render_strip` needs both unfiltered and `_main_signature`
