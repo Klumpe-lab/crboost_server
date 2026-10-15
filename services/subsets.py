@@ -64,12 +64,10 @@ def jobs_after(cut_type: JobFileType) -> list[JobType]:
 
 
 def add_refusal(state: ProjectState, job_type: JobType, after: str | None, clone_of: str | None) -> str | None:
-    """Why a job of `job_type` cannot be added after `after`, or None when it can. A Subset needs
-    the afterok orchestrator and is either cloned (`clone_of`) or made after a finished job that
-    has an output to cut; a job after a Subset must take its tilt series from what that cuts."""
+    """Why a job of `job_type` cannot be added after `after`, or None when it can. A Subset is
+    either cloned (`clone_of`) or made after a finished job that has an output to cut; a job after
+    a Subset must take its tilt series from what that cuts."""
     if job_type == JobType.SUBSET:
-        if not state.use_afterok_orchestrator:
-            return "A Subset runs under the afterok orchestrator only (use_afterok_orchestrator in conf.yaml)."
         if clone_of is not None:
             return None
         source = state.jobs.get(after) if after else None

@@ -116,9 +116,9 @@ def get_driver_context(expected_type: type[T] | None = None) -> tuple[ProjectSta
 
     # A job the afterok chain submitted runs on the paths resolved at its submit, from the inputs
     # recorded with them, in the dir allocated then: what it reads cannot move between Run and
-    # its start. Any other launch -- the schemer, which allocates the real job dir itself and so
-    # can disagree with the predicted one, or a launcher running this instance in another dir --
-    # resolves here. Path.cwd() is the authoritative job dir: qsub.sh cd's into it.
+    # its start. Any other launch -- a job submitted before inputs were recorded, or a launcher
+    # running this instance in another dir -- resolves here. Path.cwd() is the authoritative job
+    # dir: qsub.sh cd's into it.
     submitted_dir = (job_model.paths or {}).get("job_dir")
     if job_model.inputs_fixed and submitted_dir and Path(submitted_dir).resolve() == job_dir:
         local_paths = dict(job_model.paths)
@@ -138,7 +138,7 @@ def get_driver_context(expected_type: type[T] | None = None) -> tuple[ProjectSta
         local_paths = {k: str(v) for k, v in fresh_paths.items() if v is not None}
         # Mirror the resolver output into the model so any code path that still reads
         # job_model.paths in-process (e.g. _get_job_specific_options) sees fresh values.
-        # Not persisted to disk — sync_all_jobs owns project_params.json writes.
+        # Not persisted to disk — the server owns project_params.json writes.
         job_model.paths = dict(local_paths)
 
     context_data = {

@@ -6,7 +6,7 @@ display-name helpers. Owns the on-disk protocol names (`MANIFEST_FILENAME`,
 `STATUS_DIR_NAME`); the task-side writers live in `drivers/array_job_base.py`,
 which re-imports them from here so the two ends can't drift. The one
 control-plane writer, `mark_stopped_tasks_failed`, lives here because only
-`pipeline_runner.stop_and_cleanup` may call it (post-scancel).
+`pipeline_runner`'s Stop and Cancel may call it (post-scancel).
 """
 
 import json

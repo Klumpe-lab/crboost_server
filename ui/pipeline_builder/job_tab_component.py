@@ -386,8 +386,6 @@ async def _handle_stop_job(
         ui.label(
             "The SLURM job will be cancelled and this job marked Failed; jobs that wait for it fail too, "
             "the rest keep running."
-            if current_project_state().use_afterok_orchestrator
-            else "The SLURM job will be cancelled, this job marked Failed, and the pipeline stopped."
         ).classes("text-sm text-gray-600 mt-2")
         with ui.row().classes("mt-4 gap-2 justify-end w-full"):
             house_button("Cancel", lambda: dialog.submit(False))
@@ -398,10 +396,9 @@ async def _handle_stop_job(
         return
 
     result = await backend.pipeline_runner.cancel_job(project_path, instance_id)
-    await backend.pipeline_runner.sync_all_jobs(str(project_path))
 
-    # Under afterok the other jobs keep running, and so does the pipeline (pipeline_active stays
-    # until every job has ended): the tab keeps polling while it is active.
+    # The other jobs keep running, and so does the pipeline (pipeline_active stays until every
+    # job has ended): the tab keeps polling while it is active.
     active = bool(current_project_state().pipeline_active)
     if not active and "stop_all_timers" in callbacks:
         callbacks["stop_all_timers"]()

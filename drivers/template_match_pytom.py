@@ -4,7 +4,7 @@ template_match_pytom driver — supervisor + per-tomogram SLURM array task.
 
 Mode is determined by the SLURM_ARRAY_TASK_ID env var:
 
-- Unset:  SUPERVISOR mode. Submitted by relion_schemer via the standard qsub.sh.
+- Unset:  SUPERVISOR mode. Submitted by the afterok chain via the standard qsub.sh.
           Reads the tomograms STAR, preflight-checks the registry, writes the
           per-tomogram text inputs (tilt angles / defocus / dose) once, persists
           a task manifest with per-tomogram metadata, builds run_array.sh, and
