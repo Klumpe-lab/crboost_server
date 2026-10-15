@@ -370,11 +370,15 @@ class LandingStatusStrip(FingerprintedView):
         with ui.column().style("gap: 3px; min-width: 340px; max-width: 560px;"):
             ui.label("Reach this server from your machine").style(_POP_TITLE)
             ui.label(f"Running as {CURRENT_USER} on {HOSTNAME}, port {port}.").style(_POP_DESC)
-            ui.label(f"Run this in a LOCAL terminal, then open http://localhost:{port}").style(_POP_DESC)
+            ui.label(
+                f"Run this in a LOCAL terminal, then open the http://localhost:{port}/?token=… link "
+                "the server printed when it started."
+            ).style(_POP_DESC)
             _pop_copy_row(cmd)
-            ui.label("Already on the cluster network? Browse to the machine's address directly.").style(
-                _POP_DESC + " margin-top: 4px;"
-            )
+            ui.label(
+                "Already on the cluster network? Open the first printed link, which names the machine directly. "
+                "A browser without the token gets 401; the token is in ~/.crboost/token of the user running the server."
+            ).style(_POP_DESC + " margin-top: 4px;")
 
     def _config_popover(self) -> None:
         with ui.column().style("gap: 3px; min-width: 340px; max-width: 560px;"):

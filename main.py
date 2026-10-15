@@ -12,11 +12,21 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from nicegui import ui
+from nicegui import app as ng_app, ui
+from nicegui.storage import Storage
+from starlette.middleware.sessions import SessionMiddleware
 
 from backend import CryoBoostBackend
 from services.configs.config_service import REPO_ROOT
 from services.event_log import EVENTS_LOGGER_NAME
+from services.server_auth import (
+    NICEGUI_STORAGE_DIR,
+    STORAGE_SECRET_FILE,
+    TOKEN_FILE,
+    TokenGate,
+    read_or_create_secret,
+    session_cookie_name,
+)
 import logging
 
 import sys
@@ -56,11 +66,12 @@ def setup_logging(debug: bool = False):
 _BOLD, _CYAN, _RESET = "\x1b[1m", "\x1b[1;36m", "\x1b[0m"
 
 
-def banner_lines(port: int, hostname: str) -> list[str]:
+def banner_lines(port: int, hostname: str, token: str) -> list[str]:
     return [
-        f"{_BOLD}CryoBoost running on{_RESET} {_CYAN}http://localhost:{port}{_RESET}",
+        f"{_BOLD}CryoBoost running on{_RESET} {_CYAN}http://{hostname}:{port}/?token={token}{_RESET}",
         f"{_BOLD}Tunnel from your local machine:{_RESET} "
         f"{_CYAN}ssh -f -N -L {port}:localhost:{port} $USER@{hostname}{_RESET}",
+        f"{_BOLD}then open:{_RESET} {_CYAN}http://localhost:{port}/?token={token}{_RESET}",
     ]
 
 
@@ -118,7 +129,7 @@ def _preview_thumb(path: str, mtime_ns: int) -> bytes | None:
     return buf.getvalue()
 
 
-def setup_app():
+def setup_app(port: int):
     """Configures and returns the FastAPI app."""
     app = FastAPI()
 
@@ -217,7 +228,13 @@ def setup_app():
     app.add_event_handler("startup", _start_pipeline_monitor)
     app.add_event_handler("shutdown", _stop_pipeline_monitor)
 
-    storage_secret = os.environ.get("CRBOOST_STORAGE_SECRET", "crboost-change-me")
+    # Browser storage belongs to the user running the server, not to the install: files under ~/.crboost,
+    # and a session cookie named per port. NiceGUI only adds its own SessionMiddleware (cookie "session")
+    # when none is registered on its app, so ours must be in place before ui.run_with.
+    NICEGUI_STORAGE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    Storage.path = NICEGUI_STORAGE_DIR
+    storage_secret = os.environ.get("CRBOOST_STORAGE_SECRET") or read_or_create_secret(STORAGE_SECRET_FILE)
+    ng_app.add_middleware(SessionMiddleware, secret_key=storage_secret, session_cookie=session_cookie_name(port))
 
     # Default reconnect_timeout is 3s, which sets ping_interval=4s / ping_timeout=2s
     # (nicegui/nicegui.py:129-130). Over an SSH tunnel any latency blip trips the
@@ -240,10 +257,11 @@ if __name__ in {"__main__", "__mp_main__"}:
     # page surfaces it); setup_app() runs before uvicorn so an env var is the
     # simplest single source of truth.
     os.environ["CRBOOST_PORT"] = str(args.port)
-    app = setup_app()
-    install_sticky_banner(banner_lines(args.port, socket.gethostname()))
+    token = read_or_create_secret(TOKEN_FILE)
+    app = setup_app(args.port)
+    install_sticky_banner(banner_lines(args.port, socket.gethostname(), token))
 
     # log_config=None: uvicorn otherwise reinstalls its own logging config at
     # run() time, undoing setup_logging() and re-enabling the per-request
     # access log ("GET / 200 OK", "connection open", ...).
-    uvicorn.run(app, host=args.host, port=args.port, log_config=None)
+    uvicorn.run(TokenGate(app, token, args.port), host=args.host, port=args.port, log_config=None)
