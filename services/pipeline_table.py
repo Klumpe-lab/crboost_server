@@ -17,6 +17,7 @@ from pathlib import Path
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
+from services.jobs.spec import JOB_SPEC_BY_TYPE
 from services.path_resolution_service import PathResolutionService, SlotEdge
 
 if TYPE_CHECKING:
@@ -63,8 +64,15 @@ class RunTimes:
 
 
 def pipeline_rows(state: ProjectState) -> list[TableRow]:
-    """The table of the jobs on the roster (`pipeline_order`)."""
-    jobs = [iid for iid in (state.pipeline_order or []) if iid in state.jobs]
+    """The table of the jobs on the roster (`pipeline_order`). tsImport is in `pipeline_order` as
+    alignment's prerequisite but has no roster phase; as a row it would take the chain's lane."""
+    jobs = [
+        iid
+        for iid in (state.pipeline_order or [])
+        if (jm := state.jobs.get(iid)) is not None
+        and (spec := JOB_SPEC_BY_TYPE.get(jm.job_type)) is not None
+        and spec.phase is not None
+    ]
     included = set(jobs)
     by_consumer: dict[str, list[SlotEdge]] = {}
     for e in PathResolutionService(state).resolve_slot_edges(jobs):
@@ -104,10 +112,12 @@ def _dependency_order(jobs: list[str], by_consumer: dict[str, list]) -> list[str
 def assign_lanes(order: list[str], parent: dict[str, str | None], explicit: dict[str, bool]) -> list[TableRow]:
     """Lanes for `order` (producers first), each job drawn under its `parent`.
 
-    A job's first consumer in the order continues straight down its lane; each further consumer
-    gets a lane forked off at the job's own row, the first free one to its right, so a branch never
-    crosses the lines to its left. A job with no producer in the table starts in the leftmost free
-    lane. A lane is free again once the consumer it was held for has its dot."""
+    A job's first consumer in the order that has consumers of its own continues straight down its
+    lane (its first consumer when none has), so a leaf such as the tilt filter or denoise training
+    forks off rather than pushing the chain to the right; each further consumer gets a lane forked
+    off at the job's own row, the first free one to its right, so a branch never crosses the lines
+    to its left. A job with no producer in the table starts in the leftmost free lane. A lane is
+    free again once the consumer it was held for has its dot."""
     consumers: dict[str, list[str]] = {}
     placed: set[str] = set()
     for iid in order:
@@ -132,7 +142,7 @@ def assign_lanes(order: list[str], parent: dict[str, str | None], explicit: dict
         lane = awaiting.index(iid) if arrives else free_lane()
         awaiting[lane] = None
         through = tuple(i for i, c in enumerate(awaiting) if c is not None)
-        kids = consumers.get(iid, [])
+        kids = sorted(consumers.get(iid, []), key=lambda k: k not in consumers)
         if kids:
             awaiting[lane] = kids[0]
         forks: list[int] = []
