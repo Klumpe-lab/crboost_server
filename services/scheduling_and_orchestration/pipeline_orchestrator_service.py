@@ -18,6 +18,7 @@ from services.models_base import InstanceId
 from services.event_log import events
 from services.result import err, ok
 from services.project_state import AbstractJobParams, JobCategory, JobType, JobStatus, ReviewHold
+from services.subsets import subset_problem, write_subset_star
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -283,6 +284,14 @@ class PipelineOrchestratorService:
                 await self.backend.autostart_tilt_filter_predict(project_dir)
             return res
 
+        # A Subset is written at submit by _submit_chain, which only the afterok path has.
+        subsets = [iid for iid in instances_to_run if (jm := state.jobs.get(iid)) and jm.job_type == JobType.SUBSET]
+        if subsets:
+            return err(
+                f"{', '.join(subsets)}: a Subset runs under the afterok orchestrator only "
+                "(use_afterok_orchestrator in conf.yaml)."
+            )
+
         # The schemer path re-resolves inputs when each job starts, so nothing it runs keeps a record.
         for iid in instances_to_run:
             if (jm := state.jobs.get(iid)) is not None:
@@ -530,6 +539,19 @@ class PipelineOrchestratorService:
         """
         server_dir = Path(__file__).parent.parent.parent.resolve()
 
+        # A Subset is written in pass 3 from its cut's star; whatever stops that is said now, before
+        # anything is allocated.
+        check = PathResolutionService(state)
+        not_ready = [
+            problem
+            for iid in instances_to_run
+            if (jm := state.jobs.get(iid)) is not None
+            and jm.job_type == JobType.SUBSET
+            and (problem := subset_problem(state, check, iid))
+        ]
+        if not_ready:
+            return err("Subset not ready: " + "; ".join(not_ready))
+
         # Seed the sole job-dir allocator once from the existing RELION counter, then own it.
         if not state.job_dir_counter:
             state.job_dir_counter = max(self._get_current_relion_counter(project_dir), 1)
@@ -673,6 +695,7 @@ class PipelineOrchestratorService:
         # 3. Write the job dirs. Once one may exist on disk its number is spent, so the counter is
         # committed however this pass ends.
         prepared: dict[str, Path] = {}  # instance_id -> run_submit.script
+        failed: str | None = None  # why this pass stopped
         try:
             for instance_id in instances_to_run:
                 job_model = state.jobs[instance_id]
@@ -702,16 +725,20 @@ class PipelineOrchestratorService:
                 # written here in-process -- no relion binary, no supervisor, no afterok SLURM job.
                 # Mark Succeeded + drop the exit sentinel so the roster/DAG show them and their
                 # consumers submit with no afterok producer (the star is on disk before the chain
-                # runs). Currently: ImportMovies (tilt_series.star from the registry).
+                # runs). ImportMovies (tilt_series.star from the registry) and Subset (the rows of
+                # the star it cuts).
                 if getattr(job_model, "RUNS_INLINE", False):
                     try:
                         if job_type == JobType.IMPORT_MOVIES:
                             self._write_import_stars_inline(job_model, job_dir, project_dir)
+                        elif job_type == JobType.SUBSET:
+                            self._write_subset_inline(job_model, job_dir, project_dir)
                         else:
                             raise ValueError(f"RUNS_INLINE set but no inline writer for {job_type}")
                     except Exception as e:
                         logger.exception("inline writer failed for %s", instance_id)
-                        return err(f"Inline writer failed for {instance_id}: {e}")
+                        failed = f"Inline writer failed for {instance_id}: {e}"
+                        break
                     (job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
                     job_model.execution_status = JobStatus.SUCCEEDED
                     job_model.slurm_job_id = None
@@ -721,10 +748,17 @@ class PipelineOrchestratorService:
                         script_path = self._render_supervisor_script(job_dir, job_model, fn_exe)
                     except (OSError, ValueError) as e:
                         logger.exception("sbatch script render failed for %s", instance_id)
-                        return err(f"Could not write the sbatch script for {instance_id}: {e}")
+                        failed = f"Could not write the sbatch script for {instance_id}: {e}"
+                        break
                     prepared[instance_id] = script_path
         finally:
             state.job_dir_counter = next_job_num
+        if failed is not None:
+            # Nothing reached SLURM, but the counter has moved past dirs that may exist now: it is
+            # saved here, or a restart would hand their numbers out again.
+            state.mark_dirty()
+            await self.backend.state_service.save_project(project_path=project_dir, force=True)
+            return err(failed)
 
         # Submit each supervisor in topo order, gating on its producers' supervisor ids. On a
         # mid-chain sbatch error, stop the loop but still persist what already reached SLURM below.
@@ -771,12 +805,12 @@ class PipelineOrchestratorService:
                 submitted=submitted,
             )
 
-        return ok(
-            message=f"Submitted {len(submitted)} job(s) as a SLURM afterok DAG (schemer-free).",
-            pid=0,
-            afterok=True,
-            submitted=submitted,
-        )
+        if submitted:
+            message = f"Submitted {len(submitted)} job(s) as a SLURM afterok DAG (schemer-free)."
+        else:
+            written = [iid for iid in instances_to_run if getattr(state.jobs[iid], "RUNS_INLINE", False)]
+            message = f"{', '.join(written)} written at submit; nothing to queue."
+        return ok(message=message, pid=0, afterok=True, submitted=submitted)
 
     def _render_supervisor_script(self, job_dir: Path, job_model: AbstractJobParams, fn_exe: str) -> Path:
         """Render config/qsub.sh -> <job_dir>/run_submit.script for a direct (schemer-free)
@@ -818,6 +852,8 @@ class PipelineOrchestratorService:
         spec = JOB_SPEC_BY_TYPE.get(job_type)
         script = spec.driver if spec else None
         if not script:
+            if getattr(job_model, "RUNS_INLINE", False):
+                return "true  # written inline at submit; nothing runs"
             return "echo 'Unknown Driver'; exit 1"
 
         cmd = driver_invocation(
@@ -927,6 +963,14 @@ class PipelineOrchestratorService:
 
         self.star_handler.write({"global": pd.DataFrame(global_rows)}, job_dir / "tilt_series.star")
         logger.info("import writer: wrote tilt_series.star + %d per-TS stars into %s", len(global_rows), job_dir)
+
+    def _write_subset_inline(self, job_model: AbstractJobParams, job_dir: Path, project_dir: Path) -> None:
+        """A Subset's star (services.subsets.write_subset_star) and a run.out saying what it kept."""
+        src, dst = Path(job_model.paths["input_star"]), Path(job_model.paths["output_star"])
+        n = write_subset_star(src, dst, job_model.ts_names, project_dir)
+        lines = [f"Cut: {src}", f"Kept {n} tilt series:", *job_model.ts_names, f"Wrote: {dst}"]
+        (job_dir / "run.out").write_text("\n".join(lines) + "\n")
+        logger.info("Subset written: %d tilt series of %s into %s", n, src, dst)
 
     def _build_import_command(self, params: ImportMoviesParams) -> str:
         # IMPORT is written inline by _write_import_stars_inline. This fn_exe is never
