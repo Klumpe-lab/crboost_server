@@ -45,7 +45,7 @@ STATUS_STYLE = {
     JobStatus.SUCCEEDED: {"color": "#10b981", "label": "done"},
     JobStatus.RUNNING: {"color": "#3b82f6", "label": "running"},
     JobStatus.SCHEDULED: {"color": "#f59e0b", "label": "scheduled"},
-    JobStatus.QUEUED: {"color": "#a855f7", "label": "queued"},
+    JobStatus.QUEUED: {"color": "#60a5fa", "label": "queued"},
     JobStatus.FAILED: {"color": "#ef4444", "label": "failed"},
     JobStatus.UNKNOWN: {"color": "#94a3b8", "label": "pending"},
 }
