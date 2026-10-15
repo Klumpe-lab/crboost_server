@@ -34,7 +34,7 @@ from services.protocols.schema import PROJECT_PROTOCOL_DIRNAME, Protocol, dump_p
 from ui.components.buttons import house_button
 from ui.components.chip import render_chip
 from ui.components.fields import house_text
-from ui.components.reactive import FingerprintedView, SingleFlight
+from ui.components.reactive import FingerprintedView, SingleFlight, owned_timer
 from ui.dashboard.css import ensure_assets_loaded
 from ui.job_plugins._field_styles import PAGE_SECTION_STYLE
 from ui.protocols_blocks import KEY, LABEL, TEXT, VAL, fmt_value, kv_grid, species_block, stage_block, stage_title
@@ -98,7 +98,7 @@ class ProtocolsPage:
         self._active = False
         self.params_view: _ParamsView | None = None
         self.protocol_view: _ProtocolView | None = None
-        self._timer = ui.timer(_TICK_S, self._tick)
+        self._timer = owned_timer(_TICK_S, self._tick, container)
         self._timer.deactivate()
 
     # ── state accessors ───────────────────────────────────────────────────────
