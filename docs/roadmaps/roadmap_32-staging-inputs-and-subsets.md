@@ -268,7 +268,9 @@ Built under §9.2 (live jobs and their upstream locked) and §9.3 (one Run butto
     two waiters crossing the stale age together could both remove the dead lock and both hold the new one.
     `save()` works on a snapshot of the dirty set and pops each tilt series' changes before re-reading it, so a
     change made while a save runs stays for the next save. The verdict commit saves through `save_async`, under
-    the same asyncio lock as the exclusion toggles.
+    the same asyncio lock as the exclusion toggles. A save that fails partway marks the tilt series it wrote before
+    the failure clean; they stayed dirty with their changes spent, and the next save wrote them from memory over
+    what another process had written since.
   - `project_service.delete_job` and `species_admin.delete_species` refuse jobs in use themselves; the dialogs'
     checks alone missed a Run landing while a dialog was open.
   - Schemer path: while a scheme runs every job counts as in use (`jobs_in_use`), since the jobs it has yet to
@@ -369,9 +371,11 @@ cuts are a later stage.
   row keeps or leaves out that tilt series; chosen names the star lacks are flagged. **Add <job>** for each job whose
   `items_from` input accepts the cut type (`jobs_after`): tsCtf and missAlign after aligned TS, tsReconstruct after
   CTF'd TS, denoise train / predict and TM after tomograms, TM after denoised tomograms. The added job's
-  `items_from` input is set to the Subset, every other input to the job the Subset cuts when that job offers it
-  (warp dir, settings), the rest stays automatic (`add_after_pins`). After an aligned-TS cut the tab says that a
-  tsCtf with `defocus_hand = auto` decides the hand from these tilt series only.
+  `items_from` input is set to the Subset; every other input to the job the Subset cuts when that job offers it
+  (warp dir; settings after an alignment cut), else to the job that job's chain read it from (`_read_up_chain`: the
+  settings after a later cut, and the CTF'd tilt series TM reads beside a tomogram Subset, which would otherwise tie
+  between tsCtf and a clone of it); the rest stays automatic (`add_after_pins`). After an aligned-TS cut the tab says
+  that a tsCtf with `defocus_hand = auto` decides the hand from these tilt series only.
 - **Output from the instance**: `_get_output_schema(job_type, job_model)` gives a Subset one `output_star` of its
   cut's type, named as the cut star; `subset_cut` reads the cut from the record once submitted, else from the
   hand setting. The output index, `resolve_outputs` and the I/O tab use it.
@@ -508,6 +512,10 @@ queued job waits for), TS ok/total (`_get_array_progress`), elapsed. Click opens
   timeline column still needs them.
 - Polling: statuses in memory every 3 s; rows, TS tallies and markers re-read off the loop when those move, else
   every 15 s; the elapsed labels are set in place, the rest is a `FingerprintedView`.
+- Fixed after a read-through review (2026-10-15, NOT RUN): tsImport is in `pipeline_order` (alignment's prerequisite)
+  but has no roster phase; as a row it took the chain's lane and pushed the chain into lane 1. Rows are now the
+  roster's jobs only, and the straight lane goes to a consumer that has consumers of its own, so a leaf (the tilt
+  filter beside alignment, denoise training beside predict) forks off instead.
 
 Also later: read-side views follow a chosen chain instead of "the first job of each type" (survey §1.5,
 `find_job_by_type`, `services/dashboard_data.py:59-67`, ~20 readers incl. the Journey).
@@ -594,7 +602,8 @@ Also later: read-side views follow a chosen chain instead of "the first job of e
     chosen"; its I/O input is read-only, "set by hand" to tsCtf.
   - Run with 0 chosen: refused, "Subset not ready: subset: no tilt series chosen", nothing allocated.
   - Click 5 rows (All / None work), **Add Reconstruct**: tsReconstruct__2 reads input_star ← subset, input_processing
-    ← tsCtf (a notice says so; its I/O tab agrees, both "set by hand"); the original tsReconstruct is unchanged.
+    ← tsCtf, warp_tiltseries_settings ← the alignment (a notice says so; its I/O tab agrees, all "set by hand"); the
+    original tsReconstruct is unchanged.
   - Run: the Subset is Succeeded at once (its Logs tab's run.out lists the 5); its star has 5 rows whose
     `rlnTomoTiltSeriesStarFile` are absolute paths into tsCtf's `tilt_series/`; tsReconstruct__2 finishes 5/5 and
     the original tsReconstruct is untouched. The Subset's tab is read-only now; its Clone copies the 5 and the cut.
@@ -602,8 +611,9 @@ Also later: read-side views follow a chosen chain instead of "the first job of e
   - Table (§8): tsCtf → subset → tsReconstruct__2, solid.
   - A Subset of the alignment + **Add Miss Align** on it: an automatic tsCtf (Scheduled) stays on the alignment's
     warp dir (no "follows missAlign").
-  - A tomogram Subset of tsReconstruct + **Add Template Match** (asks for the species): TM processes exactly the 5;
-    a Subtomo extraction after it still shows the missAlign local-warp hint when the chain has one.
+  - A tomogram Subset of tsReconstruct + **Add Template Match** (asks for the species): its input_tiltseries is set to
+    the tsCtf that tsReconstruct read (no tie with tsCtf__2); TM processes exactly the 5; a Subtomo extraction after it
+    still shows the missAlign local-warp hint when the chain has one.
   - Remove a Subset (× on a Scheduled one, or Delete on a finished one) with a Scheduled job after it: that job's
     input_star turns red ("no longer in the project") and Run refuses it saying so; it never falls back to tsCtf.
   - Protocols → export: warns that the Subset is not a stage and that tsReconstruct__2's input is exported as
