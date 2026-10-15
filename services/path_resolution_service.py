@@ -1601,9 +1601,11 @@ def pin_sources_made_ambiguous(
 
 def add_after_pins(state: ProjectState, new_iid: str, subset_iid: str) -> dict[str, str]:
     """Wire `new_iid`, just added after the Subset `subset_iid`: the input it takes its tilt series
-    from (`JobSpec.items_from`) reads the Subset, and each other input reads the job the Subset cuts
-    when that job offers what the input accepts (its warp dir and settings); the rest stays
-    automatic. Returns {slot: producer} as set; empty when the job cannot follow this Subset."""
+    from (`JobSpec.items_from`) reads the Subset; each other input reads the job the Subset cuts
+    when that job offers what the input accepts (its warp dir, an alignment's settings), else the
+    job that job's chain read it from (`_read_up_chain`: the settings after a later cut, the CTF'd
+    tilt series TM reads beside a tomogram Subset); the rest stays automatic. Returns
+    {slot: producer} as set; empty when the job cannot follow this Subset."""
     from services.jobs.spec import JOB_SPEC_BY_TYPE
 
     new_model, subset = state.jobs.get(new_iid), state.jobs.get(subset_iid)
@@ -1620,10 +1622,46 @@ def add_after_pins(state: ProjectState, new_iid: str, subset_iid: str) -> dict[s
     new_model.source_overrides[spec.items_from] = instance_override_key(JobType.SUBSET, subset_iid)
     pins = {spec.items_from: subset_iid}
     for slot in resolver._get_input_schema(new_model.job_type):
-        if slot.key != spec.items_from and offered.intersection(slot.accepts):
-            new_model.source_overrides[slot.key] = instance_override_key(source_type, source_iid)
-            pins[slot.key] = source_iid
+        if slot.key == spec.items_from:
+            continue
+        if offered.intersection(slot.accepts):
+            producer = source_iid
+        else:
+            producer = _read_up_chain(resolver, source_iid, slot.accepts)
+        if producer is not None:
+            new_model.source_overrides[slot.key] = instance_override_key(state.jobs[producer].job_type, producer)
+            pins[slot.key] = producer
     return pins
+
+
+def _read_up_chain(resolver: PathResolutionService, start: str, accepts: Sequence[JobFileType]) -> str | None:
+    """The job `start` reads an input of a type in `accepts` from; when `start` has no such input,
+    the job the nearest job up its chain that has one reads it from. None when that input reads no
+    job (a manual file, a synthetic producer), no job up the chain has one, or two jobs at the same
+    distance read it from different jobs."""
+    wanted = set(accepts)
+    frontier, seen = [start], {start}
+    while frontier:
+        reads: set[str] = set()
+        matched = False
+        upstream: list[str] = []
+        for iid in frontier:
+            job_model = resolver.state.jobs.get(iid)
+            if job_model is None or job_model.job_type is None:
+                continue
+            for slot in resolver._get_input_schema(job_model.job_type):
+                producer = resolver.source_of(iid, slot.key)
+                if wanted.intersection(slot.accepts):
+                    matched = True
+                    if producer is not None:
+                        reads.add(producer)
+                elif producer is not None and producer not in seen:
+                    seen.add(producer)
+                    upstream.append(producer)
+        if matched:
+            return reads.pop() if len(reads) == 1 else None
+        frontier = upstream
+    return None
 
 
 def consumers_of(state: ProjectState, instance_id: str) -> list[str]:

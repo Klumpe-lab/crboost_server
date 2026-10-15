@@ -189,7 +189,8 @@ def render_subset_params(job_type, job_model, is_frozen, save_handler, *, ui_mgr
                     f"Add {display_name(jt)}",
                     lambda jt=jt: add(jt, after=instance_id),
                     tooltip=f"A new {display_name(jt)} that reads this Subset's tilt series, and the rest of "
-                    f"its inputs from {source_id} where {source_id} has them.",
+                    f"its inputs from {source_id} where {source_id} has them, else from where {source_id} "
+                    "read them.",
                 )
     return None
 
