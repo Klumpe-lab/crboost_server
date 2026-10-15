@@ -19,6 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 from services.models_base import InstanceId
+from services.path_resolution_service import jobs_in_use
 from services.project_state import ParticleTemplate, TemplateMask, get_project_state_for, sidecar_ensure
 from services.result import err, ok
 
@@ -47,13 +48,20 @@ def delete_file_with_sidecar(file_path: str) -> str | None:
 
 async def delete_species(backend, project_path: Path, species_id: str) -> dict:
     """The cascade. `ok(deleted_jobs=[iid, ...], deleted_files=n, errors=[text, ...])`
-    (errors non-empty = partial success, the registry entry IS gone); `err(...)` only
-    when the species is unknown."""
+    (errors non-empty = partial success, the registry entry IS gone); `err(...)` when the
+    species is unknown, or when one of its jobs is queued or running or feeds one that is."""
     project_path = Path(project_path)
     state = get_project_state_for(project_path)
     sp = state.get_species(species_id)
     if sp is None:
         return err(f"Unknown species '{species_id}'")
+    in_use = jobs_in_use(state)
+    busy = [iid for iid in state.species_references(species_id)["jobs"] if iid in in_use]
+    if busy:
+        return err(
+            f"{', '.join(busy)} of this species are in use by queued or running jobs; "
+            "delete the species once those have finished or been cancelled."
+        )
 
     errors: list[str] = []
     deleted_jobs: list[str] = []

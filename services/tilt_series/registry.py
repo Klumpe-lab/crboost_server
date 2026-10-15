@@ -9,8 +9,13 @@ Persistence layout (per project):
 The registry is loaded eagerly (all TS are read into memory at project load);
 the per-TS sidecars allow partial loads and per-TS atomic writes.
 
-Concurrency: a single asyncio.Lock per registry serializes saves. Mutations
-are in-memory and lock-free; `save()` flushes dirty TS to disk in one pass.
+Concurrency: several processes write one registry, each from its own copy:
+supervisors ingesting on compute nodes (two chains can aggregate at once) and the
+server (exclusion toggles, tilt verdicts). Mutations are in memory and also kept
+as changes to replay; `save()` takes the project's registry lock (`registry_lock`),
+re-reads each sidecar it writes and replays this copy's changes onto it, so nothing
+another process wrote in the meantime is lost. Within the server, an asyncio.Lock
+per registry serializes `save_async()`.
 """
 
 from __future__ import annotations
@@ -19,13 +24,24 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import tempfile
+import time
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from collections.abc import Iterable
 
 from services.tilt_series.models import Frame, FrameOutput, TiltSeries, TiltSeriesOutput, Tomogram, TomogramOutput
 
 logger = logging.getLogger(__name__)
+
+# The registry lock (`registry/.lock`) is held for the length of one save, seconds. A lock older
+# than _LOCK_STALE_S was left by a process that died holding it; a waiter gives up after
+# _LOCK_WAIT_S, which leaves time to take a stale lock over first.
+_LOCK_NAME = ".lock"
+_LOCK_STALE_S = 600.0
+_LOCK_WAIT_S = 900.0
+_LOCK_POLL_S = 0.5
 
 
 # Schema version for the on-disk registry files. Bump MINOR for additive
@@ -68,6 +84,10 @@ class TiltSeriesRegistry:
         self._filename_index: dict[str, Frame] = {}  # raw_filename → Frame
         self._dirty_ts: set[str] = set()
         self._dirty_index: bool = False
+        # Per TS, the changes made since the last save, each a function that makes it on a TS;
+        # save() replays them onto the sidecar as it is on disk then. A dirty TS without any
+        # (one added here) is written as it is in memory.
+        self._pending: dict[str, list[Callable[[TiltSeries], None]]] = {}
         # Sidecar mtime observed when each TS was last parsed, so refresh_from_disk() can
         # re-parse only what a driver actually rewrote instead of the whole project.
         self._ts_mtime_ns: dict[str, int] = {}
@@ -145,6 +165,7 @@ class TiltSeriesRegistry:
         self._tilt_series[ts.id] = ts
         self._reindex_ts(ts)
         self._dirty_ts.add(ts.id)
+        self._pending.pop(ts.id, None)  # written whole
         self._dirty_index = True
 
     def remove_tilt_series(self, ts_id: str) -> None:
@@ -157,22 +178,24 @@ class TiltSeriesRegistry:
             path.unlink()
 
     def attach_frame_output(self, frame_id: str, output: FrameOutput) -> None:
-        frame = self.get_frame(frame_id)
-        frame.outputs[output.job_instance_id] = output
-        ts = self._frame_index[frame_id]
-        self._dirty_ts.add(ts.id)
+        def attach(ts: TiltSeries) -> None:
+            ts.frame_by_id(frame_id).outputs[output.job_instance_id] = output
+
+        self._change(self._ts_of_frame(frame_id).id, attach)
 
     def attach_ts_output(self, ts_id: str, output: TiltSeriesOutput) -> None:
-        ts = self.get_tilt_series(ts_id)
-        ts.outputs[output.job_instance_id] = output
-        self._dirty_ts.add(ts_id)
+        def attach(ts: TiltSeries) -> None:
+            ts.outputs[output.job_instance_id] = output
+
+        self._change(ts_id, attach)
 
     def attach_tomogram_output(self, ts_id: str, output: TomogramOutput) -> None:
-        ts = self.get_tilt_series(ts_id)
-        if ts.tomogram is None:
-            ts.tomogram = Tomogram(id=ts_id, tilt_series_id=ts_id)
-        ts.tomogram.outputs[output.job_instance_id] = output
-        self._dirty_ts.add(ts_id)
+        def attach(ts: TiltSeries) -> None:
+            if ts.tomogram is None:
+                ts.tomogram = Tomogram(id=ts.id, tilt_series_id=ts.id)
+            ts.tomogram.outputs[output.job_instance_id] = output
+
+        self._change(ts_id, attach)
 
     def set_excluded(self, ts_id: str, excluded: bool, *, reason: str | None = None) -> None:
         """Mark/unmark a tilt-series as excluded from processing (forward-only).
@@ -180,10 +203,12 @@ class TiltSeriesRegistry:
         Mutates in memory + marks dirty; the caller persists via
         save()/save_async(). Undo is just `set_excluded(ts_id, False)`.
         """
-        ts = self.get_tilt_series(ts_id)
-        ts.is_excluded = excluded
-        ts.exclusion_reason = reason if excluded else None
-        self._dirty_ts.add(ts_id)
+
+        def mark(ts: TiltSeries) -> None:
+            ts.is_excluded = excluded
+            ts.exclusion_reason = reason if excluded else None
+
+        self._change(ts_id, mark)
 
     def excluded_ids(self) -> set[str]:
         """The set of TS ids the user has excluded from processing."""
@@ -195,23 +220,35 @@ class TiltSeriesRegistry:
         prediction (`Frame.p_bad`) is left as it is. Mutates in memory + marks the parent
         TS dirty; the caller persists via save()/save_async(). Raises KeyError if the
         frame is unknown (caller decides whether that's fatal)."""
-        ts = self._frame_index.get(frame_id)
-        if ts is None:
-            raise KeyError(f"No frame with id {frame_id!r} in registry")
-        frame = ts.frame_by_id(frame_id)
-        frame.is_filtered_out = filtered
-        frame.filter_reason = reason if filtered else None
-        self._dirty_ts.add(ts.id)
+
+        def stamp(ts: TiltSeries) -> None:
+            frame = ts.frame_by_id(frame_id)
+            frame.is_filtered_out = filtered
+            frame.filter_reason = reason if filtered else None
+
+        self._change(self._ts_of_frame(frame_id).id, stamp)
 
     def set_frame_prediction(self, frame_id: str, p_bad: float) -> None:
         """Record the DL classifier's P(bad) for one frame. A prediction only: the verdict
         (`is_filtered_out`) is left as it is. Mutates in memory + marks the parent TS dirty;
         the caller persists via save(). Raises KeyError if the frame is unknown."""
+
+        def predict(ts: TiltSeries) -> None:
+            ts.frame_by_id(frame_id).p_bad = p_bad
+
+        self._change(self._ts_of_frame(frame_id).id, predict)
+
+    def _ts_of_frame(self, frame_id: str) -> TiltSeries:
         ts = self._frame_index.get(frame_id)
         if ts is None:
             raise KeyError(f"No frame with id {frame_id!r} in registry")
-        ts.frame_by_id(frame_id).p_bad = p_bad
-        self._dirty_ts.add(ts.id)
+        return ts
+
+    def _change(self, ts_id: str, change: Callable[[TiltSeries], None]) -> None:
+        """Make `change` on a TS now, and keep it for save() to replay onto the sidecar on disk."""
+        change(self.get_tilt_series(ts_id))
+        self._pending.setdefault(ts_id, []).append(change)
+        self._dirty_ts.add(ts_id)
 
     def filtered_out_frame_ids(self) -> set[str]:
         """The set of frame ids the tilt-filter has marked filtered-out."""
@@ -303,6 +340,7 @@ class TiltSeriesRegistry:
         except FileNotFoundError:
             self._loaded_index_mtime_ns = None
         self._dirty_ts.clear()
+        self._pending.clear()
         self._dirty_index = False
 
     def refresh_from_disk(self) -> None:
@@ -351,37 +389,77 @@ class TiltSeriesRegistry:
             self._loaded_index_mtime_ns = None
 
     def save(self, *, force: bool = False) -> None:
-        """Flush dirty TS + index to disk atomically (per-file rename)."""
+        """Flush dirty TS + index to disk atomically (per-file rename), under the registry lock.
+
+        A sidecar this copy changed is read again under the lock and the changes replayed onto
+        it, so what another process wrote since this copy loaded it is kept. Read, not compared
+        by mtime: on the shared mount stat() can report the old mtime of a sidecar another node
+        replaced for up to a minute, while open() reads what is there. The index lists every
+        tilt-series this copy holds plus any another process added; `force` writes this copy as
+        the whole registry (a rebuild from the mdocs)."""
+        if not (self._dirty_ts or self._dirty_index or force):
+            return
         self.registry_dir.mkdir(parents=True, exist_ok=True)
         self.ts_dir.mkdir(parents=True, exist_ok=True)
 
-        dirty = self._dirty_ts if not force else set(self._tilt_series)
-        for ts_id in sorted(dirty):
-            ts = self._tilt_series.get(ts_id)
-            if ts is None:
-                continue
-            ts_path = self._ts_path(ts_id)
-            self._atomic_write(ts_path, ts.model_dump_json(indent=2))
-            # Our own write is not a change to re-parse on the next refresh.
-            try:
-                self._ts_mtime_ns[ts_id] = ts_path.stat().st_mtime_ns
-            except OSError:
-                self._ts_mtime_ns.pop(ts_id, None)
+        with registry_lock(self.registry_dir):
+            # A snapshot: the server saves off the event loop, and a change made meanwhile stays
+            # dirty and pending for the next save.
+            dirty = set(self._tilt_series) if force else set(self._dirty_ts)
+            written: set[str] = set()
+            for ts_id in sorted(dirty):
+                if ts_id not in self._tilt_series:
+                    continue
+                ts_path = self._ts_path(ts_id)
+                changes = self._pending.pop(ts_id, [])
+                try:
+                    if changes and ts_path.exists():
+                        self._load_sidecar(ts_id, ts_path, replacing=True)
+                        for change in changes:
+                            change(self._tilt_series[ts_id])
+                    self._atomic_write(ts_path, self._tilt_series[ts_id].model_dump_json(indent=2))
+                except BaseException:
+                    # Not written: the changes wait for the next save, ahead of any made since.
+                    self._pending[ts_id] = changes + self._pending.get(ts_id, [])
+                    raise
+                written.add(ts_id)
+                # Our own write is not a change to re-parse on the next refresh.
+                try:
+                    self._ts_mtime_ns[ts_id] = ts_path.stat().st_mtime_ns
+                except OSError:
+                    self._ts_mtime_ns.pop(ts_id, None)
 
-        if dirty or self._dirty_index or force:
+            on_disk, disk_mtime = self._read_index()
+            listed = set(self._tilt_series)
+            if not force:
+                listed |= {i for i in on_disk if i not in self._tilt_series and self._ts_path(i).exists()}
             index = {
                 "schema_version": list(REGISTRY_SCHEMA_VERSION),
-                "tilt_series": sorted(self._tilt_series),
+                "tilt_series": sorted(listed),
                 "frame_count": self.frame_count(),
             }
             self._atomic_write(self.index_path, json.dumps(index, indent=2))
-            try:
-                self._loaded_index_mtime_ns = self.index_path.stat().st_mtime_ns
-            except FileNotFoundError:
-                pass
+            # When another process wrote since this copy loaded, the old mark stays, so the next
+            # get_registry_for() re-reads the sidecars it changed.
+            if disk_mtime == self._loaded_index_mtime_ns:
+                try:
+                    self._loaded_index_mtime_ns = self.index_path.stat().st_mtime_ns
+                except FileNotFoundError:
+                    pass
 
-        self._dirty_ts.clear()
+        # In place: a change made meanwhile on the event loop adds to this set concurrently.
+        done = {i for i in dirty if i not in self._tilt_series or (i in written and not self._pending.get(i))}
+        self._dirty_ts -= done
         self._dirty_index = False
+
+    def _read_index(self) -> tuple[list[str], int | None]:
+        """The on-disk index's tilt-series ids and mtime, read fresh (open, then fstat)."""
+        try:
+            with open(self.index_path) as f:
+                mtime = os.fstat(f.fileno()).st_mtime_ns
+                return json.load(f).get("tilt_series", []), mtime
+        except FileNotFoundError:
+            return [], None
 
     async def save_async(self, *, force: bool = False) -> None:
         async with self._save_lock:
@@ -406,6 +484,7 @@ class TiltSeriesRegistry:
         or was removed by another process. `remove_tilt_series` is the user-facing delete."""
         ts = self._tilt_series.pop(ts_id, None)
         self._ts_mtime_ns.pop(ts_id, None)
+        self._pending.pop(ts_id, None)
         if ts is None:
             return
         for f in ts.frames:
@@ -467,6 +546,110 @@ class TiltSeriesRegistry:
             if ts.tomogram is not None and ts.tomogram.tilt_series_id != ts.id:
                 problems.append(f"Tomogram {ts.tomogram.id!r} tilt_series_id does not match parent TS {ts.id!r}")
         return problems
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cross-process lock
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@contextmanager
+def registry_lock(registry_dir: Path) -> Iterator[None]:
+    """Hold the project's registry lock for the block: `registry/.lock`, created with O_EXCL and
+    naming its holder. O_EXCL rather than flock, which does not reach across the nodes of the
+    shared mount. A lock whose holder died is taken over: on this host when its process is gone,
+    anywhere once it is older than _LOCK_STALE_S. Raises TimeoutError, naming the holder, after
+    _LOCK_WAIT_S."""
+    path = registry_dir / _LOCK_NAME
+    me = {
+        "host": socket.gethostname(),
+        "pid": os.getpid(),
+        "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
+        "since": time.time(),
+    }
+    deadline = time.monotonic() + _LOCK_WAIT_S
+    while True:
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o664)
+        except FileExistsError:
+            holder = _lock_holder(path)
+            if holder is None:
+                continue  # released meanwhile
+            if _lock_is_stale(holder) and _take_over(path, holder):
+                continue
+            if time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"The tilt-series registry is locked by {holder} (lock file {path}); gave up after "
+                    f"{_LOCK_WAIT_S:.0f} s. Delete the lock file if that process is gone."
+                ) from None
+            time.sleep(_LOCK_POLL_S)
+            continue
+        with os.fdopen(fd, "w") as f:
+            json.dump(me, f)
+        break
+    try:
+        yield
+    finally:
+        _unlink_lock_of(path, me)
+
+
+def _lock_holder(path: Path) -> dict | None:
+    """Who holds the lock, as its file says; None when there is no lock file any more. A lock
+    whose holder has not written its name yet reads as held since the file's mtime."""
+    try:
+        with open(path) as f:
+            text = f.read()
+        mtime = path.stat().st_mtime
+    except FileNotFoundError:
+        return None
+    try:
+        holder = json.loads(text)
+    except json.JSONDecodeError:
+        holder = {}
+    holder.setdefault("since", mtime)
+    return holder
+
+
+def _lock_is_stale(holder: dict) -> bool:
+    if holder.get("host") == socket.gethostname() and isinstance(holder.get("pid"), int):
+        try:
+            os.kill(holder["pid"], 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            pass  # alive, under another user
+    return time.time() - float(holder.get("since", 0)) > _LOCK_STALE_S
+
+
+def _unlink_lock_of(path: Path, holder: dict) -> None:
+    """Remove the lock if it is still `holder`'s, not one another process took meanwhile."""
+    current = _lock_holder(path)
+    if current is not None and all(current.get(k) == holder.get(k) for k in ("host", "pid", "since")):
+        path.unlink(missing_ok=True)
+
+
+def _take_over(path: Path, holder: dict) -> bool:
+    """Remove a dead holder's lock, one waiter at a time; False when another waiter is at it.
+    Waiters cross the stale age together, and two that both read the dead lock would both remove
+    it, the second removing the lock the first had just taken; a second O_EXCL file serializes the
+    read-and-remove. One left behind by a waiter that died within those few lines goes by age."""
+    guard = path.with_name(path.name + ".takeover")
+    try:
+        fd = os.open(guard, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o664)
+    except FileExistsError:
+        try:
+            if time.time() - guard.stat().st_mtime > _LOCK_STALE_S:
+                guard.unlink(missing_ok=True)
+        except FileNotFoundError:
+            pass  # the other waiter finished its takeover
+        return False
+    os.close(fd)
+    try:
+        logger.warning("Registry lock %s: taking it over from %s, which no longer holds it", path, holder)
+        _unlink_lock_of(path, holder)
+    finally:
+        guard.unlink(missing_ok=True)
+    return True
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -10,6 +10,7 @@ from services.computing.slurm_service import SlurmConfig, normalize_slurm_ids, w
 from services.configs.config_service import get_config_service
 from services.configs.starfile_service import StarfileService
 from services.job_models import ImportMoviesParams
+from services.jobs._base import SubmittedInput
 from services.jobs.spec import JOB_SPEC_BY_TYPE, JOB_SPECS, driver_invocation
 from services.jobs.tilt_filter import FilterMode, dl_auto_filters, review_barrier, verdict_edges
 from services.path_resolution_service import PathResolutionError, PathResolutionService, find_cycle, get_context_paths
@@ -74,6 +75,13 @@ def _restore_allocation(state, previous: dict[str, tuple]) -> None:
             state.job_path_mapping.pop(instance_id, None)
         else:
             state.job_path_mapping[instance_id] = mapped
+
+
+def _inputs_moved(job_model: AbstractJobParams, resolved: dict[str, str]) -> bool:
+    """Whether `resolved` reads other input files than the job's last attempt did (its paths).
+    Only input slots count; its own outputs and context paths stay with its dir."""
+    before = job_model.paths or {}
+    return any(before.get(s.key) != resolved.get(s.key) for s in getattr(type(job_model), "INPUT_SCHEMA", None) or [])
 
 
 def write_scheme_star(star_handler: StarfileService, scheme_dir: Path, scheme_name: str, job_names: list[str]) -> None:
@@ -172,30 +180,45 @@ class PipelineOrchestratorService:
         # _run_relion_schemer has the same guard but it fires too late:
         # by the time it's reached, relion_job_name and job_path_mapping
         # have already been clobbered, which breaks sync_all_jobs path resolution.
-        if state.pipeline_active:
+        # The afterok path needs none: a run starts what is not live, around what is.
+        if state.pipeline_active and not state.use_afterok_orchestrator:
             return err("Pipeline is already running. Wait for it to complete or cancel it first.")
 
-        # Persist the participating set + order for this run so a tab-less
-        # submitter/reconciler has the pipeline membership without UIState.
-        # The full selected set, in UI order (incl. already-finished
-        # upstreams, which the afterok DAG needs as producers). The save on the
-        # retry/fresh paths below persists it.
-        state.pipeline_order = list(selected_instance_ids)
-        # Each run decides afresh what waits for a review; an older hold goes.
-        state.review_hold = None
-        state.mark_dirty()
+        # Membership and order are the roster's, which add and remove keep in pipeline_order. A run
+        # only adds what it is given and pipeline_order lacks (a job the tab restored at load), so a
+        # run beside live jobs never reorders or drops one.
+        missing = [iid for iid in selected_instance_ids if iid not in state.pipeline_order]
+        if missing:
+            state.pipeline_order = [*state.pipeline_order, *missing]
+            state.mark_dirty()
 
         instances_to_run: list[str] = []
+        live: list[str] = []
         for instance_id in selected_instance_ids:
             job_model = state.jobs.get(instance_id)
-            if not job_model or job_model.execution_status != JobStatus.SUCCEEDED:
+            status = job_model.execution_status if job_model else None
+            if status in (JobStatus.QUEUED, JobStatus.RUNNING):
+                # Left as it is; a job of this run that reads it waits for its SLURM id (_submit_chain).
+                live.append(instance_id)
+            elif status != JobStatus.SUCCEEDED:
                 # Interactive jobs are never dispatched to the cluster.
                 if job_model and getattr(job_model, "IS_INTERACTIVE", False):
                     continue
                 instances_to_run.append(instance_id)
 
         if not instances_to_run:
-            return ok(already_complete=True, message="All selected jobs are already finished.", pid=0)
+            if live:
+                message = "Nothing to start: every job is finished, queued or running."
+            else:
+                message = "All selected jobs are already finished."
+            return ok(already_complete=True, message=message, pid=0)
+
+        # A run that includes a job the review parked decides afresh what waits for it; a run beside
+        # the review leaves the hold to Approve.
+        hold = state.review_hold
+        if hold is not None and set(hold.parked) & set(instances_to_run):
+            state.review_hold = None
+            state.mark_dirty()
 
         # A DL-auto tilt filter is a chain job that alignment waits for by afterok, which only the
         # afterok path has; and it rewrites the predictions a prediction run in flight is writing.
@@ -259,6 +282,11 @@ class PipelineOrchestratorService:
                 # DL review scores the tilts by itself: now when fsMotion has run, else on its SUCCEEDED edge.
                 await self.backend.autostart_tilt_filter_predict(project_dir)
             return res
+
+        # The schemer path re-resolves inputs when each job starts, so nothing it runs keeps a record.
+        for iid in instances_to_run:
+            if (jm := state.jobs.get(iid)) is not None:
+                jm.submitted_inputs = None
 
         # Schemer path -- Partition: jobs that FAILED with an existing External/jobNNN dir get
         # re-sbatched in place (preserves .task_status/*.ok for per-TS skip). Fresh jobs go through
@@ -488,7 +516,7 @@ class PipelineOrchestratorService:
         3. Write each job dir with its RELION-compat job.star and run_submit.script (or the inline
            output), then sbatch each supervisor in topological order with --dependency=afterok on
            its producers' supervisor job ids, including producers outside the submitted set that
-           are still queued or running (the upstream of jobs parked behind a review, submit_parked).
+           are still queued or running (an earlier run's, or the upstream of parked jobs, submit_parked).
 
         This method submits and persists slurm_job_id + QUEUED + pipeline_active=True. The monitor
         dispatches afterok projects to reconcile_afterok -- which owns live status and winds
@@ -505,91 +533,123 @@ class PipelineOrchestratorService:
         # Seed the sole job-dir allocator once from the existing RELION counter, then own it.
         if not state.job_dir_counter:
             state.job_dir_counter = max(self._get_current_relion_counter(project_dir), 1)
-        # Allocate from a local counter; it reaches state.job_dir_counter only in pass 3.
-        next_job_num = state.job_dir_counter
+        # Passes 1 and 2 repeat when a FAILED job cannot be retried in place: its dir keeps the items
+        # its last attempt finished, so it is reused only while its inputs are the ones that attempt
+        # read. One whose inputs changed (inputs reset, or an upstream that starts over in a new dir)
+        # takes a fresh dir instead, which moves its consumers' inputs in turn; each round sends at
+        # least one more job to a fresh dir, so this ends.
+        start_over: set[str] = set()
+        while True:
+            # Allocate from a local counter; it reaches state.job_dir_counter only in pass 3.
+            next_job_num = state.job_dir_counter
 
-        # 1. Allocate.
-        previous: dict[str, tuple] = {}  # instance_id -> (relion_job_name, relion_job_number, job_path_mapping)
-        job_dirs: dict[str, Path] = {}
-        for instance_id in instances_to_run:
-            job_model = state.jobs.get(instance_id)
-            if not job_model:
-                try:
-                    job_type = InstanceId.parse(instance_id).job_type
-                except ValueError:
-                    _restore_allocation(state, previous)
-                    return err(f"Unknown job type for instance '{instance_id}'")
-                state.ensure_job_initialized(job_type, instance_id=instance_id)
+            # 1. Allocate.
+            previous: dict[str, tuple] = {}  # instance_id -> (relion_job_name, relion_job_number, job_path_mapping)
+            job_dirs: dict[str, Path] = {}
+            reused: list[str] = []
+            for instance_id in instances_to_run:
                 job_model = state.jobs.get(instance_id)
+                if not job_model:
+                    try:
+                        job_type = InstanceId.parse(instance_id).job_type
+                    except ValueError:
+                        _restore_allocation(state, previous)
+                        return err(f"Unknown job type for instance '{instance_id}'")
+                    state.ensure_job_initialized(job_type, instance_id=instance_id)
+                    job_model = state.jobs.get(instance_id)
 
-            previous[instance_id] = (
-                job_model.relion_job_name,
-                job_model.relion_job_number,
-                state.job_path_mapping.get(instance_id),
-            )
-            category = JobCategory.IMPORT if job_model.job_type == JobType.IMPORT_MOVIES else JobCategory.EXTERNAL
+                previous[instance_id] = (
+                    job_model.relion_job_name,
+                    job_model.relion_job_number,
+                    state.job_path_mapping.get(instance_id),
+                )
+                category = JobCategory.IMPORT if job_model.job_type == JobType.IMPORT_MOVIES else JobCategory.EXTERNAL
 
-            # Dir allocation. Fresh jobs consume a slot from the sole monotonic allocator
-            # (job_dir_counter), never reused -- so crboost's numbers can't drift off-by-one.
-            # The one exception: a FAILED job that already owns a dir is re-submitted in place on
-            # that same dir, so the supervisor's submit_array_job sees the prior `.task_status/*.ok`
-            # and reruns only the failed/missing tilt-series instead of all of them. This reuses a
-            # dir crboost itself allocated and recorded (relion_job_number) and consumes no counter
-            # slot. An off-by-one needs a second allocator (RELION's schemer) assigning the next
-            # number while a stale one is reused; the afterok path has none, so reuse here is safe.
-            existing_rel = (job_model.relion_job_name or "").rstrip("/")
-            reuse_dir = (
-                job_model.execution_status == JobStatus.FAILED
-                and bool(existing_rel)
-                and job_model.relion_job_number is not None
-                and (project_dir / existing_rel).is_dir()
-            )
-            if reuse_dir:
-                rel = existing_rel
-                job_num = job_model.relion_job_number
-                logger.info("Reusing FAILED job dir %s for in-place retry of %s", rel, instance_id)
-            else:
-                job_num = next_job_num
-                next_job_num += 1
-                rel = f"{category.value}/job{job_num:03d}"
-            job_model.relion_job_name = rel + "/"
-            job_model.relion_job_number = job_num
-            state.job_path_mapping[instance_id] = rel
-            job_dirs[instance_id] = project_dir / rel
+                # Dir allocation. Fresh jobs consume a slot from the sole monotonic allocator
+                # (job_dir_counter), never reused -- so crboost's numbers can't drift off-by-one.
+                # The one exception: a FAILED job that already owns a dir is re-submitted in place on
+                # that same dir, so the supervisor's submit_array_job sees the prior `.task_status/*.ok`
+                # and reruns only the failed/missing tilt-series instead of all of them. This reuses a
+                # dir crboost itself allocated and recorded (relion_job_number) and consumes no counter
+                # slot. An off-by-one needs a second allocator (RELION's schemer) assigning the next
+                # number while a stale one is reused; the afterok path has none, so reuse here is safe.
+                existing_rel = (job_model.relion_job_name or "").rstrip("/")
+                reuse_dir = (
+                    job_model.execution_status == JobStatus.FAILED
+                    and instance_id not in start_over
+                    and bool(existing_rel)
+                    and job_model.relion_job_number is not None
+                    and (project_dir / existing_rel).is_dir()
+                )
+                if reuse_dir:
+                    rel = existing_rel
+                    job_num = job_model.relion_job_number
+                    reused.append(instance_id)
+                else:
+                    job_num = next_job_num
+                    next_job_num += 1
+                    rel = f"{category.value}/job{job_num:03d}"
+                job_model.relion_job_name = rel + "/"
+                job_model.relion_job_number = job_num
+                state.job_path_mapping[instance_id] = rel
+                job_dirs[instance_id] = project_dir / rel
 
-        # 2. Resolve. One resolver, built after every dir above is held, gives both the paths and
-        # the wires.
-        resolver = PathResolutionService(state, active_instance_ids=set(instances_to_run))
-        resolved: dict[str, dict[str, str]] = {}
-        unresolved: list[str] = []
-        for instance_id in instances_to_run:
-            job_model = state.jobs[instance_id]
-            job_dir = job_dirs[instance_id]
-            try:
-                io_paths = resolver.resolve_all_paths(job_model.job_type, job_model, job_dir, instance_id=instance_id)
-            except PathResolutionError as e:
-                job_model.is_orphaned = True
-                job_model.missing_inputs = [str(e)]
-                unresolved.append(f"{instance_id}: {e}")
-                continue
-            job_model.is_orphaned = False
-            job_model.missing_inputs = []
-            context_paths = get_context_paths(job_model.job_type, job_model, job_dir)
-            resolved[instance_id] = {k: str(v) for k, v in {**context_paths, **io_paths}.items() if v is not None}
-        if unresolved:
+            # 2. Resolve. One resolver, built after every dir above is held, gives the paths, the
+            # recorded inputs and the wires.
+            resolver = PathResolutionService(state, active_instance_ids=set(instances_to_run))
+            resolved: dict[str, dict[str, str]] = {}
+            recorded: dict[str, dict[str, SubmittedInput]] = {}
+            unresolved: list[str] = []
+            for instance_id in instances_to_run:
+                job_model = state.jobs[instance_id]
+                job_dir = job_dirs[instance_id]
+                try:
+                    io_paths = resolver.resolve_all_paths(
+                        job_model.job_type, job_model, job_dir, instance_id=instance_id
+                    )
+                except PathResolutionError as e:
+                    job_model.is_orphaned = True
+                    job_model.missing_inputs = [str(e)]
+                    unresolved.append(f"{instance_id}: {e}")
+                    continue
+                job_model.is_orphaned = False
+                job_model.missing_inputs = []
+                context_paths = get_context_paths(job_model.job_type, job_model, job_dir)
+                resolved[instance_id] = {k: str(v) for k, v in {**context_paths, **io_paths}.items() if v is not None}
+                recorded[instance_id] = resolver.record_inputs(instance_id)
+            if unresolved:
+                _restore_allocation(state, previous)
+                return err("Path resolution failed for " + "; for ".join(unresolved))
+
+            changed = [iid for iid in reused if _inputs_moved(state.jobs[iid], resolved[iid])]
+            if not changed:
+                break
             _restore_allocation(state, previous)
-            return err("Path resolution failed for " + "; for ".join(unresolved))
+            start_over.update(changed)
+            for iid in changed:
+                events.info("%s: inputs differ from its last attempt; it starts over in a new job dir", iid)
+        for iid in reused:
+            logger.info("Reusing FAILED job dir %s for in-place retry of %s", job_dirs[iid], iid)
 
         # Derive the dependency DAG, restrict to the SUBMITTED set, toposort (cycle-checked).
         # Inline-completed providers (RUNS_INLINE, e.g. IMPORT) are never submitted; an edge from
         # one to a submitted consumer drops out here, so the consumer submits with no afterok dep --
         # correct, since pass 3 writes the producer's output before the chain runs.
         slot_edges = resolver.resolve_slot_edges(instances_to_run)
-        edges = [(e.producer, e.consumer) for e in slot_edges] + verdict_edges(state, instances_to_run)
+        # A DL-auto filter already queued or running is not in the run, yet the alignments of the run
+        # read the verdict it has not committed yet: they wait for it too (live_after below).
+        live_filters = [
+            iid
+            for iid in dl_auto_filters(state, state.jobs)
+            if state.jobs[iid].execution_status in (JobStatus.QUEUED, JobStatus.RUNNING)
+        ]
+        edges = [(e.producer, e.consumer) for e in slot_edges] + verdict_edges(
+            state, [*instances_to_run, *live_filters]
+        )
         submit_ids = [iid for iid in instances_to_run if not getattr(state.jobs[iid], "RUNS_INLINE", False)]
         submit_set = set(submit_ids)
         # A producer outside the submitted set that is still queued or running gates its consumers
-        # by its SLURM id (Approve submitting parked jobs while their upstream runs).
+        # by its SLURM id (a Run beside live jobs, or Approve submitting parked jobs while their upstream runs).
         live_after: dict[str, list[str]] = {}
         for p, c in edges:
             pm = state.jobs.get(p)
@@ -626,6 +686,7 @@ class PipelineOrchestratorService:
                 for _marker in ("RELION_JOB_EXIT_SUCCESS", "RELION_JOB_EXIT_FAILURE"):
                     (job_dir / _marker).unlink(missing_ok=True)
                 job_model.paths = resolved[instance_id]
+                job_model.submitted_inputs = recorded[instance_id]
 
                 # RELION-compat job.star into the real job dir.
                 self._write_job_star(
