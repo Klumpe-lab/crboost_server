@@ -7,7 +7,7 @@ from ui.current_project import current_project_state
 
 _DOT_COLORS = {
     JobStatus.SCHEDULED: "#fbbf24",
-    JobStatus.QUEUED: "#a855f7",
+    JobStatus.QUEUED: "#60a5fa",
     JobStatus.RUNNING: "#3b82f6",
     JobStatus.SUCCEEDED: "#10b981",
     JobStatus.FAILED: "#ef4444",
@@ -17,7 +17,7 @@ _DOT_COLORS = {
 
 _BADGE_STYLES = {
     JobStatus.SCHEDULED: ("background:#fef3c7;", "color:#92400e;"),
-    JobStatus.QUEUED: ("background:#f3e8ff;", "color:#6b21a8;"),
+    JobStatus.QUEUED: ("background:#eff6ff;", "color:#2563eb;"),
     JobStatus.RUNNING: ("background:#dbeafe;", "color:#1e40af;"),
     JobStatus.SUCCEEDED: ("background:#d1fae5;", "color:#065f46;"),
     JobStatus.FAILED: ("background:#fee2e2;", "color:#991b1b;"),
@@ -44,17 +44,18 @@ def _running_spinner_html(size_px: int = 14, color: str = "#3b82f6") -> str:
     )
 
 
+def _halo(color: str) -> str:
+    """The soft glow around a status light, in its own color (a box-shadow value)."""
+    return f"0 0 2px {color}b3, 0 0 5px 1px {color}4d"
+
+
 def _led_style(color: str, size_px: int, *, lit: bool = True) -> str:
-    """Inline style of a status light: its color under a specular glint, shaded toward the
-    rim, and, when lit, a soft halo of its own color, so it reads as a lamp on a panel rather
-    than a flat disc. Inline because the light is v-html content: no stylesheet involved."""
-    shadow = "inset 0 -1px 1px rgba(15,23,42,0.25)"
-    if lit:
-        shadow += f", 0 0 2px {color}b3, 0 0 5px 1px {color}4d"
+    """Inline style of a status light: a flat dot and, when lit, its halo. Inline because
+    the light is v-html content: no stylesheet involved."""
+    glow = f"box-shadow:{_halo(color)};" if lit else ""
     return (
         f"width:{size_px}px;height:{size_px}px;border-radius:50%;display:inline-block;flex-shrink:0;"
-        "background:radial-gradient(circle at 35% 30%, rgba(255,255,255,0.9) 0, "
-        f"rgba(255,255,255,0.35) 18%, rgba(255,255,255,0) 42%), {color};box-shadow:{shadow};"
+        f"background:{color};{glow}"
     )
 
 
@@ -76,18 +77,28 @@ def _running_led_html(size_px: int = 8, color: str = _DOT_COLORS[JobStatus.RUNNI
     )
 
 
+def _ring_html(color: str, size_px: int, tip: str) -> str:
+    """A status light drawn as a ring, with its halo: a job that waits rather than works."""
+    return (
+        '<span class="status-dot" '
+        f'style="width:{size_px}px;height:{size_px}px;border-radius:50%;display:inline-block;flex-shrink:0;'
+        f"box-sizing:border-box;border:{size_px / 4:g}px solid {color};background:transparent;"
+        f'box-shadow:{_halo(color)};" title="{tip}"></span>'
+    )
+
+
 def _dot_html(status: JobStatus, is_orphaned: bool = False, parked_since: str | None = None, size_px: int = 8) -> str:
-    """The job's status light. `parked_since` (HH:MM) draws a scheduled job that a run parked
-    behind the tilt-filter review: an amber ring instead of the filled light. Grey (unknown)
-    is the one light that is off."""
+    """The job's status light, for every status. RUNNING is the light with a breathing halo
+    (_running_led_html). A ring is a job that waits: light blue while queued on the cluster,
+    amber when a run parked it behind the tilt-filter review (`parked_since`, HH:MM). Grey
+    (unknown) is the one light without a halo."""
+    if status == JobStatus.RUNNING:
+        return _running_led_html(size_px)
     if parked_since is not None and status == JobStatus.SCHEDULED and not is_orphaned:
         tip = f"Parked: waits for the tilt-filter review since {parked_since}; Approve submits it."
-        return (
-            '<span class="status-dot" '
-            f'style="width:{size_px}px;height:{size_px}px;border-radius:50%;display:inline-block;'
-            f"box-sizing:border-box;border:{size_px / 4:g}px solid #f59e0b;background:transparent;"
-            f'box-shadow:0 0 3px #f59e0b80, inset 0 0 2px #f59e0b80;" title="{tip}"></span>'
-        )
+        return _ring_html("#f59e0b", size_px, tip)
+    if status == JobStatus.QUEUED and not is_orphaned:
+        return _ring_html(_DOT_COLORS[JobStatus.QUEUED], size_px, status.value)
     if is_orphaned:
         color = "#f97316"
         tip = "Orphaned: missing input dependencies"

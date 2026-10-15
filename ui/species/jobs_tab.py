@@ -27,7 +27,7 @@ from services.templating.template_metadata import get_effective_mask_path, get_e
 from ui.components.chip import render_chip
 from ui.components.reactive import FingerprintedView
 from ui.species.tab import TabContext
-from ui.status_indicator import _dot_html, _running_spinner_html
+from ui.status_indicator import _dot_html
 from ui.styles import MONO, SANS
 from ui.ui_state import get_ui_state_manager
 
@@ -111,11 +111,7 @@ class _JobsView(FingerprintedView):
             ui.label("No jobs for this species yet — add one below.").classes(_HINT_CLS + " px-1")
         for iid, jm in rows:
             status = getattr(jm, "execution_status", JobStatus.UNKNOWN)
-            dot = (
-                _running_spinner_html(14, "#3b82f6")
-                if status == JobStatus.RUNNING
-                else _dot_html(status, is_orphaned=bool(getattr(jm, "is_orphaned", False)))
-            )
+            dot = _dot_html(status, is_orphaned=bool(getattr(jm, "is_orphaned", False)))
             with (
                 ui.row()
                 .classes("w-full items-center gap-2 px-1")

@@ -361,7 +361,7 @@ _CB_CSS = """
 /* The per-list extraction job glyph, in the `job` column next to `ext`:
  * queued/failed take the same two hues the roster's status dot uses for those states
  * (ui/status_indicator._DOT_COLORS), so one job state reads the same colour everywhere. */
-.cb-badge-queued { color: #a855f7; }
+.cb-badge-queued { color: #60a5fa; }
 .cb-badge-err { color: #dc2626; }
 /* That mark opens the job's logs, so the whole cell (and the glyph inside it, which
  * .cb-ltable-badge otherwise gives a help cursor) has to read as clickable. */

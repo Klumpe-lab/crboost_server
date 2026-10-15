@@ -15,7 +15,7 @@ from ui.components.reactive import FingerprintedView, SingleFlight
 from ui.components.svg_icon import load_icon_svg
 from ui.protocols_view import protocol_light
 from ui.styles import MONO, SANS as FONT
-from ui.status_indicator import BoundStatusDot, _running_spinner_html
+from ui.status_indicator import BoundStatusDot, _dot_html, _running_led_html
 from services.models_base import InstanceId, instance_id_to_job_type
 from ui.ui_state import get_job_display_name, get_instance_display_name
 from ui.pipeline_builder.pipeline_constants import (
@@ -241,8 +241,6 @@ class RosterWidget(FingerprintedView):
         return self.panel.roster_panel
 
     def _status_widget(self, instance_id: str):
-        from ui.status_indicator import _dot_html, _running_led_html
-
         state = current_project_state()
         job_model = state.jobs.get(instance_id)
         if not job_model:
@@ -250,10 +248,6 @@ class RosterWidget(FingerprintedView):
             return
 
         def _content(status, jm=job_model):
-            if status == JobStatus.RUNNING:
-                # The light with a breathing halo — self-contained inline SVG/SMIL
-                # (no stylesheet dependency; see _running_led_html).
-                return _running_led_html(_LED_PX)
             # A job a run parked behind the tilt-filter review: derived from the hold, which
             # signature() reads, so a resume repaints the row. The binding runs outside the
             # tab's context, hence the state captured above.
@@ -1655,10 +1649,14 @@ class RosterWidget(FingerprintedView):
                         "width: 16px; height: 16px; display: flex; pointer-events: none;"
                     )
 
-                # Pulsating dot (self-contained inline SVG/SMIL; see _running_spinner_html).
-                # Progress and SLURM queue waits are its hover text, not a label under it.
-                with ui.element("div").style("width: 100%; margin-top: 4px; display: flex; justify-content: center;"):
-                    ui.html(_running_spinner_html(20, "#3b82f6"), sanitize=False)
+                # The pipeline's own status light, the same as a running job's (self-contained
+                # inline SVG/SMIL; see _running_led_html). Progress and SLURM queue waits are its
+                # hover text, not a label under it.
+                with ui.element("div").style(
+                    "width: 100%; height: 20px; margin-top: 4px; "
+                    "display: flex; align-items: center; justify-content: center;"
+                ):
+                    ui.html(_running_led_html(8), sanitize=False).style("display: flex;")
                     status_tip = ui.tooltip("Running").style("white-space: pre-line;")
                 self._refs["status_label"] = status_tip
             else:
@@ -1680,8 +1678,7 @@ class RosterWidget(FingerprintedView):
     # ── Status label ──────────────────────────────────────────────────────────
 
     # Row + sidebar "working" indicators are self-contained inline SVG/SMIL
-    # (_running_spinner_html); there is no server-driven advance() loop. The
-    # previous 0.17 s ui.timer + ui.run_javascript broadcast lived here.
+    # (_running_led_html); there is no server-driven advance() loop.
 
     def update_status_label(self, overview: dict):
         el = self._refs.get("status_label")
