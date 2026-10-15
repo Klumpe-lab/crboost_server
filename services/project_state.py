@@ -1415,6 +1415,18 @@ def get_project_state_for(project_path: Path) -> ProjectState:
     return _project_states[resolved]
 
 
+async def preload_project_state(project_path: Path) -> None:
+    """First open of a project: parse project_params.json off the event loop and install it, unless
+    another caller registered an instance meanwhile (one ProjectState per path). A no-op when the
+    project is already in memory, which stays authoritative."""
+    resolved = project_path.resolve()
+    params_file = resolved / "project_params.json"
+    if resolved in _project_states or not params_file.exists():
+        return
+    loaded = await asyncio.to_thread(ProjectState.load, params_file)
+    _project_states.setdefault(resolved, loaded)
+
+
 def set_project_state_for(project_path: Path, state: ProjectState):
     """Insert or replace a ProjectState in the registry."""
     _project_states[project_path.resolve()] = state

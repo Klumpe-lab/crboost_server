@@ -24,6 +24,7 @@ from services.tilt_series.registry import (
     TiltSeriesRegistry,
     clear_registry,
     get_registry_for,
+    preload_registry,
     reload_registry,
     set_registry_for,
 )
@@ -44,6 +45,7 @@ __all__ = [
     "TsReconstructTomogramOutput",
     "clear_registry",
     "get_registry_for",
+    "preload_registry",
     "reload_registry",
     "set_registry_for",
 ]

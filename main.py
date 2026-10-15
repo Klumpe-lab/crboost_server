@@ -122,15 +122,21 @@ def setup_app():
     """Configures and returns the FastAPI app."""
     app = FastAPI()
 
+    # PNG/JPEG bytes don't shrink under gzip, and NiceGUI's GZipMiddleware (level 9) would compress every
+    # image response on the event loop for nothing. A set Content-Encoding makes it pass the body through.
+    no_gzip = {"Content-Encoding": "identity"}
+
     @app.get("/api/tilt-thumb")
     def serve_tilt_thumb(path: str):
         p = Path(path)
         if p.exists() and p.is_file() and p.suffix == ".png":
-            return FileResponse(p, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+            return FileResponse(
+                p, media_type="image/png", headers={"Cache-Control": "public, max-age=86400", **no_gzip}
+            )
         return {"error": "not found"}
 
     @app.get("/api/vis-asset")
-    def serve_vis_asset(path: str):
+    def serve_vis_asset(path: str, v: str = ""):
         # Path-traversal guard: resolve and require the file to live under a
         # currently-loaded project root. The project-state registry is the
         # authoritative list of roots a user has opened in this session.
@@ -149,14 +155,13 @@ def setup_app():
         roots = [pr for pr in _project_states.keys() if pr is not None]
         if not any(_is_under(resolved, root) for root in roots):
             return {"error": "outside project roots"}
-        # JSON manifests change on every regen — never cache them. PNGs (atlas,
-        # tomo previews) are addressed by mtime-keyed URLs from the UI, so a
-        # short TTL is fine and keeps unbusted accesses self-correcting.
+        # JSON manifests change on every regen — never cache them. A PNG URL carrying the file's mtime
+        # (`v`, from vis_asset_url) names one version of the file, so the browser may keep it for good:
+        # a rewrite changes the URL. Without `v`, a short TTL keeps the copy self-correcting.
         if resolved.suffix == ".json":
-            cache_header = "no-cache"
-        else:
-            cache_header = "public, max-age=300"
-        return FileResponse(resolved, media_type=media, headers={"Cache-Control": cache_header})
+            return FileResponse(resolved, media_type=media, headers={"Cache-Control": "no-cache"})
+        cache_header = "public, max-age=31536000, immutable" if v not in ("", "0") else "public, max-age=300"
+        return FileResponse(resolved, media_type=media, headers={"Cache-Control": cache_header, **no_gzip})
 
     @app.get("/api/project-preview")
     def serve_project_preview(path: str):
@@ -173,7 +178,7 @@ def setup_app():
             return {"error": "not a tomogram preview"}
         if not any((p / "project_params.json").is_file() for p in resolved.parents):
             return {"error": "outside any project"}
-        cache = {"Cache-Control": "public, max-age=300"}
+        cache = {"Cache-Control": "public, max-age=300", **no_gzip}
         thumb = _preview_thumb(str(resolved), resolved.stat().st_mtime_ns)
         if thumb is None:
             return FileResponse(resolved, media_type="image/png", headers=cache)

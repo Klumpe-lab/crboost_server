@@ -24,8 +24,10 @@ from services.project_state import (
     JobType,
     get_state_service,
     jobtype_paramclass,
+    preload_project_state,
     set_project_state_for,
 )
+from services.tilt_series import preload_registry
 from services.result import err, ok
 from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
 
@@ -33,6 +35,11 @@ if TYPE_CHECKING:
     from backend import CryoBoostBackend
 
 logger = logging.getLogger(__name__)
+
+
+def _read_json(path: Path) -> dict:
+    with open(path) as f:
+        return json.load(f)
 
 
 class DataImportService:
@@ -630,8 +637,7 @@ class ProjectService:
             movies_glob = ""
             mdocs_glob = ""
             try:
-                with open(params_file) as f:
-                    raw_params_data = json.load(f)
+                raw_params_data = await asyncio.to_thread(_read_json, params_file)
 
                 data_sources = raw_params_data.get("data_sources", {})
                 if data_sources:
@@ -645,6 +651,11 @@ class ProjectService:
 
             except Exception as e:
                 logger.info("Warning: could not parse raw JSON for data_sources: %s", e)
+
+            # First open: parse the state and the TS registry off the event loop; the
+            # in-memory instances stay authoritative on every later open.
+            await preload_project_state(project_dir)
+            await preload_registry(project_dir)
 
             # Load via StateService (this registers into the path-keyed registry)
             load_success = await self.backend.state_service.load_project(params_file)
@@ -664,7 +675,7 @@ class ProjectService:
             try:
                 registry = self.backend.registry_for(project_dir)
                 reg_ids = set(registry.tilt_series_ids())
-                mdoc_stems = {p.stem for p in (project_dir / "mdoc").glob("*.mdoc")}
+                mdoc_stems = await asyncio.to_thread(lambda: {p.stem for p in (project_dir / "mdoc").glob("*.mdoc")})
                 drift = bool(reg_ids) and bool(mdoc_stems) and reg_ids.isdisjoint(mdoc_stems)
                 if (not reg_ids or drift) and (mdocs_glob or mdoc_stems):
                     reason = "absent" if not reg_ids else "drifted from project mdocs"
