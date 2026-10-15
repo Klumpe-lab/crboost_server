@@ -16,17 +16,22 @@ from nicegui import ui
 from ui.styles import SANS
 
 
-def render_species_pill(species, *, tooltip: str | None = None):
-    """Read-only species capsule, header / Config-tab size (9 px text)."""
+def render_species_pill(species, *, compact: bool = False, tooltip: str | None = None):
+    """Read-only species capsule. `compact` is the table-row size (8 px text);
+    the default is the header / Config-tab size (9 px)."""
+    font_px = 8 if compact else 9
+    pad = "1px 6px" if compact else "1px 8px"
     pill = ui.element("div").style(
         f"display: inline-flex; align-items: center; flex-shrink: 0; "
         f"background: {species.color}18; border: 1px solid {species.color}55; "
-        f"border-radius: 999px; padding: 1px 8px;"
+        f"border-radius: 999px; padding: {pad};"
     )
     if tooltip:
         pill.tooltip(tooltip)
     with pill:
-        ui.label(species.name).style(f"font-size: 9px; color: {species.color}; font-weight: 600; white-space: nowrap;")
+        ui.label(species.name).style(
+            f"font-size: {font_px}px; color: {species.color}; font-weight: 600; white-space: nowrap;"
+        )
     return pill
 
 
