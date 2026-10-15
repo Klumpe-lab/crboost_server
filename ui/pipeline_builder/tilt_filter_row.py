@@ -235,7 +235,7 @@ class TiltFilterStatus(FingerprintedView):
             return
         text, color, tip = filter_status(state, jm, self._iid, self._project_path)
         ui.label(text).style(
-            f"{MONO} font-size: 9px; font-weight: 600; color: {color}; min-width: 0; "
+            f"{MONO} font-size: 8px; font-weight: 600; color: {color}; min-width: 0; "
             "white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
         ).tooltip(tip)
 
