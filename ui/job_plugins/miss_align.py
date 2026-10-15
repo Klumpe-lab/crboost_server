@@ -132,12 +132,16 @@ def _render_summary(job_model) -> None:
 
 
 def _render_workers(workers) -> None:
-    """Which process runs where during training, as the driver will start them."""
+    """Which process runs where during training, as the driver will start them, with the cube rates the
+    builders and the loaders manage at their measured per-process speeds."""
     trainers = ",".join(str(g) for g in workers.training)
-    builders = f"{len(workers.builders):>3}  on {workers.builders_by_gpu()}" + (
-        "  (auto: the CPUs left)" if workers.builders_auto else ""
+    auto = "  (auto)"
+    builders = f"{len(workers.builders):>3}  on {workers.builders_by_gpu()} · ~{workers.builder_rate:.0f} cubes/s" + (
+        auto if workers.builders_auto else ""
     )
-    loaders = f"{workers.loaders_per_trainer:>3}  per trainer" + ("  (auto)" if workers.loaders_auto else "")
+    loaders = f"{workers.loaders_per_trainer:>3}  per trainer · ~{workers.loader_rate:.0f} cubes/s" + (
+        auto if workers.loaders_auto else ""
+    )
     ui.label(f"Training processes: {workers.cpus_needed} of {workers.cpus} CPUs (SLURM tab)").style(
         HELPER_STYLE + " margin-top: 4px;"
     )
@@ -145,15 +149,20 @@ def _render_workers(workers) -> None:
         (
             "trainers",
             f"{len(workers.training):>3}  on GPU {trainers}",
-            "One per training GPU; each step takes batch_size cubes from its loaders.",
+            "One per training GPU; each step takes batch_size cubes from its loaders. A trainer runs at the "
+            "slower of the two rates below.",
         ),
         (
             "patch builders",
             builders,
-            "Make the training cubes (one CPU core and ~1 GB of a GPU each). Training "
-            "runs only as fast as they deliver; on auto, each extra CPU in the SLURM tab becomes one more builder.",
+            "Make the training cubes into the pool (one CPU core and ~1 GB of a GPU each, ~14 cubes/s). On auto, "
+            "the CPUs the trainers leave are split between builders and loaders so the two rates match.",
         ),
-        ("loaders", loaders, "Read cubes from the pool and batch them for their trainer (light work, one CPU each)."),
+        (
+            "loaders",
+            loaders,
+            "Unpickle, normalise, mask and batch cubes from the pool for their trainer (one CPU each, ~5.5 cubes/s).",
+        ),
     )
     for name, text, tip in rows:
         ui.label(f"{name:>16}  {text}").style(_ROW_STYLE).tooltip(tip)

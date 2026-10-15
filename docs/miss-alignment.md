@@ -274,25 +274,36 @@ Three kinds of process run during it, each on its own CPU core (miss-alignment 0
   └─────────┘ └─────────┘ └─────────┘
 ```
 
-The trainers can only consume what the builders produce, and a builder is single-threaded Python
-(`torch.set_num_threads(1)`), mostly CPU work. One builder delivered ~14 cubes/s on an A100 node with
-1024² stacks (AGG412 Grid2, 2026-10-14): three A100 trainers sat at 0 % GPU, CPU 97 % idle, the pool
-half full (15 partitions × 31 files), 6.65 s per step of 3 × 32 cubes. The tool's own examples run three
-builders per training GPU (`--training-devices 0,1 --reconstruction-devices 2,2,2,3,3,3`).
+The trainers can only consume what the builders produce and the loaders deliver, and both are
+single-threaded Python (`torch.set_num_threads(1)`), mostly CPU work. Measured on AGG412 Grid2 (A100 nodes,
+1024² stacks, 2026-10-14/15):
+
+| Layout | Pool | Trainer GPU | Per step | Limit |
+|---|---|---|---|---|
+| 3 trainers, 1 builder, 4 loaders each | half full (15 × 31) | 0 % | 6.65 s / 96 cubes | builders: ~14 cubes/s per builder |
+| 1 trainer, 11 builders, 4 loaders | full (~1000) | bursts, mostly 0 % | 1.45 s / 32 cubes | loaders: a loader builds a whole 32-cube batch, ~5.5 cubes/s each |
+
+The tool's own examples run three builders per training GPU (`--training-devices 0,1
+--reconstruction-devices 2,2,2,3,3,3`) and do not mention loader counts.
 
 In crboost the layout comes from three numbers (`services/jobs/miss_align.py::worker_plan`, used by the
-driver and shown in the job tab):
+driver and shown in the job tab with both rates):
 
 - `training_gpus` — the first that many GPUs train.
-- `dataloader_workers` — loaders per trainer; auto = up to 4, at most half the CPUs the trainers leave, and
-  `pool_size // (training_gpus × loaders) ≥ 2 × batch_size`.
-- `patch_builders` — auto = every CPU left after the trainers and loaders. They are spread round the
-  non-training GPUs first, then the training ones (a builder needs ~1 GB; a trainer ~6.4 GB of 40).
+- `patch_builders` and `dataloader_workers` (loaders per trainer) — pinned values are kept; on auto the
+  CPUs the trainers leave are split so `builders × 12` and `loaders × 5` cubes/s (the measured rates,
+  rounded down) are as high and as even as possible. Loaders are capped by
+  `pool_size // (training_gpus × loaders) ≥ 2 × batch_size`. Builders are spread round the non-training GPUs
+  first, then the training ones (a builder needs ~1 GB; a trainer ~6.4 GB of 40).
 
-So **CPUs/task is the speed lever**: 4 GPUs (3 training) with 32 CPUs → 3 trainers, 4 loaders each,
-17 builders. The job tab warns below 3 builders per training GPU and when the processes outnumber the CPUs.
+So **CPUs/task is the speed lever**: 2 GPUs (1 training) with 16 CPUs → 1 trainer, 10 loaders, 5 builders
+(~60 cubes/s built, ~50 loaded). The job tab warns when one side outruns the other by 1.5× (naming the fix,
+e.g. raise `pool_size` when it caps the loaders) and when the processes outnumber the CPUs.
 
-- **Card.** Constraint `g4` keeps the job on A100s; the default `g2|g3|g4` can land on RTX.
+- **Queue.** GPUs on the CBE `g` partition are mostly taken one at a time by 1-GPU jobs, so a 4-GPU request
+  waits for a whole node to empty (`squeue --start` said 6 days on 2026-10-15) while a 2-GPU request on
+  `g2|g3|g4` started within minutes. V100, Quadro RTX 6000 and A100 run the container; P100 (g1, sm_60) does not.
+- **Card.** Constraint `g4` keeps the job on A100s at the cost of the queue; a fed trainer's speed per card is not measured yet.
 - **Alignment** starts one process per GPU and pulls tilt series from a queue; at 100+ tilt series it
   reaches hours per iteration, and every extra GPU shortens it.
 - **Limits.** One node (`num_gpus ≤ 4`). A full node queues longer on `g_long`.
@@ -306,8 +317,8 @@ So **CPUs/task is the speed lever**: 4 GPUs (3 training) with 32 CPUs → 3 trai
   iteration writes `iter{N}/` (XMLs, `model.ckpt`), and a re-run resumes after the last one
   (`--start-at-iteration`). The worker layout is not part of the resume check, so it may change between runs.
 
-The wall-time estimate (`_walltime_plan`) trains at the slower of builders × 12 cubes/s and
-trainers × `batch_size` / 3.5 s, both conservative until a fully fed A100 trainer has been measured.
+The wall-time estimate (`_walltime_plan`) trains at the slowest of the builders, the loaders and
+trainers × `batch_size` / 3.5 s; the trainer term stays conservative until a fully fed trainer has been measured.
 The SLURM tab of a missAlign job carries a short form of this as a note (`MissAlignParams.SLURM_NOTE`).
 
 ---
