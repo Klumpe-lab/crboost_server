@@ -50,7 +50,7 @@ from services.visualization.tomo_geometry import SOURCE_IMPORTED, TomoGeometry, 
 from ui.components.buttons import house_button
 from ui.components.copyable import copy_3dmod_chip
 from ui.components.dialogs import dialog_host
-from ui.components.reactive import SingleFlight
+from ui.components.reactive import SingleFlight, owned_timer
 from ui.components.segmented import render_segmented
 from ui.dashboard.css import ensure_assets_loaded
 from ui.tilt_previews import (
@@ -333,7 +333,7 @@ class TomoGalleryPage:
         # Slabs kicked off by this page land minutes later. Poll while the wall is the
         # visible view AND something is still pending — disk work, so 15 s (CLAUDE.md),
         # gated on a signature so a tick that changes nothing never touches the DOM.
-        self._timer = ui.timer(15.0, self._tick)
+        self._timer = owned_timer(15.0, self._tick, container)
         self._timer.deactivate()
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
