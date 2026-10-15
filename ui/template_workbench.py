@@ -43,7 +43,14 @@ from fastapi.responses import FileResponse, HTMLResponse
 from nicegui import app, context, ui
 
 from services import species_admin
-from services.project_state import ParticleSpecies, ParticleTemplate, TemplateMask, get_project_state_for
+from services.project_state import (
+    ParticleSpecies,
+    ParticleTemplate,
+    TemplateMask,
+    get_project_state_for,
+    is_in_loaded_project,
+    is_registered_volume,
+)
 from services.species_admin import delete_file_with_sidecar
 from services.templating.template_metadata import read_template_header
 from ui.components.chip import render_method_chip, render_polarity_chip
@@ -99,12 +106,21 @@ def molstar_workbench_viewer():
     return HTMLResponse(_build_molstar_embed_html())
 
 
+_VOLUME_SUFFIXES = (".mrc", ".map", ".rec", ".ccp4")
+
+
 @app.get("/api/file")
 def serve_file(path: str):
-    p = Path(path)
-    if p.exists() and p.is_file():
-        return FileResponse(p, media_type="application/octet-stream")
-    return {"error": "not found"}
+    # Only what the viewer loads: a volume inside a loaded project, or a registered template/mask.
+    try:
+        p = Path(path).resolve(strict=True)
+    except (FileNotFoundError, RuntimeError):
+        return {"error": "not found"}
+    if p.suffix.lower() not in _VOLUME_SUFFIXES or not p.is_file():
+        return {"error": "not a volume"}
+    if not (is_in_loaded_project(p) or is_registered_volume(p)):
+        return {"error": "outside project roots"}
+    return FileResponse(p, media_type="application/octet-stream")
 
 
 COLOR_PALETTE = [

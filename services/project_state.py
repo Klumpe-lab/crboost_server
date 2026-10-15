@@ -1437,6 +1437,23 @@ def remove_project_state(project_path: Path):
     _project_states.pop(project_path.resolve(), None)
 
 
+def is_in_loaded_project(path: Path) -> bool:
+    """True when `path` (already resolved) lies inside a project this process has loaded. The raw
+    file routes serve only such paths, so a leaked link cannot read the rest of the owner's files."""
+    return any(path.is_relative_to(root) for root in list(_project_states))
+
+
+def is_registered_volume(path: Path) -> bool:
+    """True when `path` (already resolved) is a template or mask registered on a species of a loaded
+    project. Imported masks are registered where they were picked, which can be outside the project."""
+    for root, state in list(_project_states.items()):
+        for sp in state.species_registry:
+            for p in [t.template_path for t in sp.templates] + [m.mask_path for m in sp.masks]:
+                if p and (root / p).resolve() == path:
+                    return True
+    return False
+
+
 class StateService:
     """Manages persistence of ProjectState to disk.
 

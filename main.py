@@ -19,6 +19,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from backend import CryoBoostBackend
 from services.configs.config_service import REPO_ROOT
 from services.event_log import EVENTS_LOGGER_NAME
+from services.project_state import is_in_loaded_project
 from services.server_auth import (
     NICEGUI_STORAGE_DIR,
     STORAGE_SECRET_FILE,
@@ -100,17 +101,6 @@ def install_sticky_banner(lines: list[str]) -> None:
     atexit.register(_restore)
 
 
-def _is_under(child: Path, parent) -> bool:
-    """True if `child` resolves to a path under `parent`. Tolerates parent
-    being either a Path or a string — _project_states keys are sometimes one,
-    sometimes the other depending on how the project was opened."""
-    try:
-        child.resolve().relative_to(Path(parent).resolve())
-        return True
-    except (ValueError, TypeError, OSError):
-        return False
-
-
 @functools.lru_cache(maxsize=512)
 def _preview_thumb(path: str, mtime_ns: int) -> bytes | None:
     """A 512 px JPEG of a WarpTools preview PNG (about 1 MB at 1024 px): the projects
@@ -139,12 +129,15 @@ def setup_app(port: int):
 
     @app.get("/api/tilt-thumb")
     def serve_tilt_thumb(path: str):
-        p = Path(path)
-        if p.exists() and p.is_file() and p.suffix == ".png":
-            return FileResponse(
-                p, media_type="image/png", headers={"Cache-Control": "public, max-age=86400", **no_gzip}
-            )
-        return {"error": "not found"}
+        try:
+            p = Path(path).resolve(strict=True)
+        except (FileNotFoundError, RuntimeError):
+            return {"error": "not found"}
+        if p.suffix != ".png" or not p.is_file():
+            return {"error": "not found"}
+        if not is_in_loaded_project(p):
+            return {"error": "outside project roots"}
+        return FileResponse(p, media_type="image/png", headers={"Cache-Control": "public, max-age=86400", **no_gzip})
 
     @app.get("/api/vis-asset")
     def serve_vis_asset(path: str, v: str = ""):
@@ -153,8 +146,6 @@ def setup_app(port: int):
         # authoritative list of roots a user has opened in this session.
         # Serves both PNG (panel/atlas images) and JSON (stamps_index, manifests)
         # from the same endpoint, since the candidate-preview UI needs both.
-        from services.project_state import _project_states
-
         try:
             resolved = Path(path).resolve(strict=True)
         except (FileNotFoundError, RuntimeError):
@@ -163,8 +154,7 @@ def setup_app(port: int):
         media = media_by_suffix.get(resolved.suffix)
         if media is None:
             return {"error": "unsupported asset type"}
-        roots = [pr for pr in _project_states.keys() if pr is not None]
-        if not any(_is_under(resolved, root) for root in roots):
+        if not is_in_loaded_project(resolved):
             return {"error": "outside project roots"}
         # JSON manifests change on every regen — never cache them. A PNG URL carrying the file's mtime
         # (`v`, from vis_asset_url) names one version of the file, so the browser may keep it for good:
