@@ -296,6 +296,11 @@ So **CPUs/task is the speed lever**: 4 GPUs (3 training) with 32 CPUs → 3 trai
 - **Alignment** starts one process per GPU and pulls tilt series from a queue; at 100+ tilt series it
   reaches hours per iteration, and every extra GPU shortens it.
 - **Limits.** One node (`num_gpus ≤ 4`). A full node queues longer on `g_long`.
+- **No torch.compile.** Every trainer would compile the same model into one Triton cache, and the ranks race on
+  its files (pytorch/pytorch#134384): two 3-trainer runs died a minute into training on a missing `.json`, the
+  second with `TORCHINDUCTOR_COMPILE_THREADS=1`. The driver sets `TORCHDYNAMO_DISABLE=1` for every run (a
+  compiled model's checkpoint keys differ from an eager one's, so the setting must not change between resumes).
+  The tool hangs after a rank dies (the builders keep it alive) until the 45-min no-output watchdog fires.
 - **Checkpoints.** Lightning keeps the best three per-epoch checkpoints, but nothing resumes inside a
   macro-iteration (`trainer.fit` gets no `ckpt_path`): a run killed mid-iteration repeats it. Each finished
   iteration writes `iter{N}/` (XMLs, `model.ckpt`), and a re-run resumes after the last one

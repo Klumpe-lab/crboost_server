@@ -675,9 +675,11 @@ def main():
         #    it, so they are switched back on here. Several training GPUs rendezvous over NCCL, whose
         #    peer-to-peer path can stall across PCIe switches on datacenter nodes; the tool's docs
         #    prescribe NCCL_P2P_DISABLE=1 (shared memory instead, negligible cost). Each of those ranks
-        #    also torch.compiles the same model into the one kernel cache, and Inductor's async compile
-        #    pools race on its files (pytorch/pytorch#134384; a rank died on a missing Triton .json):
-        #    TORCHINDUCTOR_COMPILE_THREADS=1 compiles in-process instead.
+        #    would also torch.compile the same model into the one kernel cache, and they race on its
+        #    files (pytorch/pytorch#134384; a rank dies on a missing Triton .json, with or without the
+        #    async compile pool). TORCHDYNAMO_DISABLE=1 trains the model eagerly. It is set for every
+        #    run, not only multi-GPU ones, because a compiled model's checkpoint keys differ from an
+        #    eager one's, and a resume may change the number of training GPUs.
         if resume_from >= n_iters:
             print(f"[DRIVER] All {n_iters} macro-iterations already checkpointed; skipping training.", flush=True)
         else:
@@ -686,9 +688,12 @@ def main():
                 f"[DRIVER] GPUs={n_gpus}: training-devices={training_devices} reconstruction-devices={recon_devices}",
                 flush=True,
             )
-            env = f"env -u TQDM_DISABLE USER={username} LOGNAME={username} OMP_NUM_THREADS=1 MKL_NUM_THREADS=1"
+            env = (
+                f"env -u TQDM_DISABLE USER={username} LOGNAME={username} OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 "
+                f"TORCHDYNAMO_DISABLE=1"
+            )
             if len(training_devices) > 1:
-                env += " NCCL_P2P_DISABLE=1 TORCHINDUCTOR_COMPILE_THREADS=1"
+                env += " NCCL_P2P_DISABLE=1"
             train_cmd = (
                 ToolCommand(env)
                 .raw("miss-alignment train")
