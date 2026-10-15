@@ -1,6 +1,9 @@
 # Roadmap 26 — Tilts, Tomograms and the Journey: what each tilt is, everywhere
 
-**Status:** scoped 2026-10-02; §10 decided the same day; V1 built 2026-10-02 (ruff-clean, not run). Split out of
+**Closed 2026-10-15.** The maintainer: the tilt views work well enough. Stages F and G are on main. G's runtime pass
+and V2 are dropped, not deferred; a new need gets a new roadmap.
+
+**Status at close:** scoped 2026-10-02; §10 decided the same day; V1 built 2026-10-02 (ruff-clean, not run). Split out of
 roadmap 06 §13, which anticipated it: the design recorded there on 2026-10-01 is appendix A, verbatim (A.n = 06
 §13.n). A.2 is U1, built 2026-10-01 and not run. The body answers A.5 (annotations), A.7 (statistics) and A.8 (the
 Journey); stage F answers A.3 (buttons) and A.4 (the barrier's flags); A.6 (label sets) is not designed here. Stage F

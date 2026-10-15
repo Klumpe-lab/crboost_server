@@ -292,8 +292,8 @@ Seven driver files changed; nothing outside `drivers/` was touched.
      already dispatches only unsettled items.
    - The cost is a second array round on a bad-node day; maintainer's call.
 9. **The tsCtf tomostar rebuild mutates a shared input in place** (`rmtree` then copy, `drivers/ts_ctf.py:250-258`).
-   - This is the hazard roadmap 15 S2 names for alignment's identical rebuild.
-   - Fold it into 15 S2's atomic-swap sweep.
+   - This is the hazard roadmap 33 S2 (was 15 S2) names for alignment's identical rebuild.
+   - Listed in 33 S2's atomic-swap sweep (§1.5 there).
 10. **Restoring an excluded TS does not bring it back** (§6.3).
 
 ---
@@ -426,12 +426,12 @@ Both are right for "run the pipeline". Neither can say "re-open a succeeded job 
   exclude toggle.
 - **Project:** one line when a run left TS behind: "12 tilt-series dropped across 3 jobs — Catch up".
 
-### 6.6 Interaction with roadmap 15
+### 6.6 Interaction with roadmap 33 (was 15)
 
 - Catch-up turns in-place reruns of succeeded jobs from an exception into a button.
-- A second click while a top-up is running would put two supervisors in one dir: exactly roadmap 15's incident.
-- So 15 S1 (the ownership lock) is a prerequisite of stage 2.
-- 15 S4 (the submit-side pre-flight) gives the button its "already running as slurm N" refusal.
+- A second click while a top-up is running would put two supervisors in one dir: exactly the incident in 33 §1.1.
+- So 33 S1 (the ownership lock) is a prerequisite of stage 2.
+- 33 S4 (the submit-side pre-flight) gives the button its "already running as slurm N" refusal.
 
 ### 6.7 Commits
 
@@ -572,7 +572,7 @@ What it costs:
 ## 8. Dependencies
 
 - **task-status-state-machine §5:** stage 2b (or the append-only manifest), and stage 3c.
-- **Roadmap 15:**
+- **Roadmap 33 (was 15; same stage numbers):**
   - S1 (ownership lock) and S4 (submit-side pre-flight) before stage 2e.
   - S2 (atomic rebuilds) covers §4.4 item 9.
 - **registry-consolidation phase 4:** stage 3b.

@@ -1,6 +1,11 @@
 # Roadmap 13 — Roster: staged vs queued
 
-**Status:** scoped 2026-08-23 with the maintainer, **not implemented**. Comes from the roster/queue
+**Superseded 2026-10-15 by [roadmap 33](../roadmap_33-job-liveness.md)**, never built. On the afterok path the
+complaint below is already fixed (`JobStatus.QUEUED` paints purple, staged stays amber); the predicate in §2 no
+longer holds (`pipeline_order` is roster membership now). What survives is 33 S5. Anchors below are as of
+2026-08-23.
+
+**Status at supersession:** scoped 2026-08-23 with the maintainer, **not implemented**. Comes from the roster/queue
 walkthrough slot that `roadmap_particles-ux-peeves.md` has been holding open since 2026-08-16 ("still
 pending — the 2026-08-18 walkthrough covered Particles / Species / job tabs, not the roster").
 

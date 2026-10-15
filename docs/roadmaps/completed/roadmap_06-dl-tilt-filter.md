@@ -1,6 +1,9 @@
 # Roadmap 06 — DL tilt filter: three modes on the job row, a parked pipeline, and working weights
 
-**Status:** rev 4, approved 2026-09-29 (rev 1 2026-08-11). **In progress on branch `dl_filter`:** stage 0
+**Closed 2026-10-15.** The maintainer: the tilt filter works well enough. It is on main and in use. Anything below
+that is unbuilt or still waiting for a runtime pass is dropped, not deferred; a new need gets a new roadmap.
+
+**Status at close:** rev 4, approved 2026-09-29 (rev 1 2026-08-11). **In progress on branch `dl_filter`:** stage 0
 done; stage 1 done (commits 1–7) and runtime-checked except two items (§12 "Stage 1 runtime pass"). The shipped
 weights are verified dead (§7.1); the requests to the model author are in §7.2 (sent 2026-09-30). Stage 2 is
 built as commits 8–9 (§12) and has not run. Route 1 weights arrived 2026-09-30 — the model author's ResNet-18

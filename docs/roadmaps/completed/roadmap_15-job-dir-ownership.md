@@ -1,6 +1,10 @@
 # Roadmap 15 — Job-dir ownership: no two supervisors in one directory
 
-**Status:** scoped 2026-08-28 from a reproduced production failure in
+**Superseded 2026-10-15 by [roadmap 33](../roadmap_33-job-liveness.md)**, never built. 33 keeps this roadmap's
+stage numbers (S1 owner file, S2 atomic rebuilds, S3 markers, S4 pre-flight) re-stated for the afterok path, and
+carries A1–A3 as its S6. Anchors below are as of 2026-08-28 and point at the schemer path.
+
+**Status at supersession:** scoped 2026-08-28 from a reproduced production failure in
 `/groups/klumpe/crboost_data/<user>_Aug27` (a user's 114-TS run). **Not implemented.**
 
 Not from the 2026-08-10 audit. It closes a **safety** gap: an `External/jobNNN/` directory is shared

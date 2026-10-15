@@ -1,6 +1,8 @@
 # Roadmap 25 — Projects Overview: calmer rows + disk usage per project
 
-**Status:** scoped and **built 2026-10-02 (A + B), NOT RUN**. Verification so far: ruff only (no interpreter in the assistant sandbox); `python -c "import main"`, `python check_boundaries.py` and the user check below are owed. Two parts, one widget:
+**Closed 2026-10-15.** The maintainer: done.
+
+**Status at close:** scoped and **built 2026-10-02 (A + B), NOT RUN**. Verification so far: ruff only (no interpreter in the assistant sandbox); `python -c "import main"`, `python check_boundaries.py` and the user check below are owed. Two parts, one widget:
 
 - **Part A — the row redesign.** The maintainer's walkthrough: the list is "too colorful and motley,
   too much going on in buttons, info and metadata". It also differs between its two mounts for no
