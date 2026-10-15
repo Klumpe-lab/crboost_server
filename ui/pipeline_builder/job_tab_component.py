@@ -6,6 +6,7 @@ from collections.abc import Callable
 from nicegui import ui
 
 from backend import get_backend
+from services.path_resolution_service import cut_output
 from services.project_state import JobStatus, JobType
 from ui.components.buttons import house_button
 from ui.current_project import current_project_state
@@ -217,6 +218,14 @@ def render_job_tab(
 
         ui.space()
 
+        if cut_output(job_type) is not None:
+            house_button(
+                "Subset",
+                lambda: _handle_subset(instance_id, callbacks),
+                tooltip="A new Subset job: this job's output cut down to the tilt series you choose, for jobs "
+                "added after it. Needs this job finished.",
+            )
+
         if is_running:
             house_button(
                 "Cancel", lambda: _handle_stop_job(job_type, instance_id, job_model, backend, ui_mgr, callbacks)
@@ -404,6 +413,18 @@ async def _handle_stop_job(
         ui.notify(result.get("message", "Job cancelled."), type="warning", timeout=5000)
     else:
         ui.notify(f"Cancel failed: {result.get('error')}", type="negative", timeout=8000)
+
+
+def _handle_subset(instance_id: str, callbacks: dict[str, Callable]) -> None:
+    """The Subset button: a Subset of this job's output, refused until the job has finished (the
+    header is not re-rendered when its status moves, so the status is read here)."""
+    job_model = current_project_state().jobs.get(instance_id)
+    if job_model is None or job_model.execution_status != JobStatus.SUCCEEDED:
+        ui.notify("A Subset cuts a finished output: wait for this job to succeed.", type="warning")
+        return
+    add = callbacks.get("add_instance_to_pipeline")
+    if add is not None:
+        add(JobType.SUBSET, after=instance_id)
 
 
 def _handle_delete(

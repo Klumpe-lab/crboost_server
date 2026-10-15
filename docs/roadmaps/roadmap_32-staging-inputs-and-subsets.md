@@ -1,9 +1,9 @@
 # Roadmap 32 — Staging while running, inputs fixed at submit, subsets and forks
 
 **Status:** scoped 2026-10-14 from the branching survey
-(`docs/reports/pipeline-graph/branching-survey-2026-10-12.md`). Stage 0 answered; stage 1, the §8 table and
-stage 2 (without S2.3) built 2026-10-15, all NOT RUN (records §3.1, §8, §4.1; runtime checks §11). Next: stage 3
-once §9.4 is answered. §9.4–9.7 open.
+(`docs/reports/pipeline-graph/branching-survey-2026-10-12.md`). Stage 0 answered; stage 1, the §8 table,
+stage 2 (without S2.3) and stage 3 (the Subset job) built 2026-10-15, all NOT RUN (records §3.1, §8, §4.1, §6.1;
+runtime checks §11). Next: the §11 runtime checks; stage 4 once §9.5–9.6 are answered. §9.5–9.7 open.
 
 **In one line.** Jobs can be added and started while others run; a submitted job's inputs never move; and a
 "fork" is one defined thing, a subset of some job's output, used either inside the project or as the start of a
@@ -336,15 +336,75 @@ migrates into it on load.
 - Input: one per-TS star of any level (`FS_MOTION_CTF_STAR`, `ALIGNED_TILT_SERIES_STAR`, `TS_CTF_TILT_SERIES_STAR`,
   `TOMOGRAMS_STAR`, `DENOISED_TOMOGRAMS_STAR`). Output: the same file type, rows restricted to the selection.
   Companion directories (warp dirs, settings, tomostars) keep coming from the original producer; per-TS drivers
-  only process rows of their input star (§2.2).
+  only process rows of their input star (§2.2). *Amended (§6.1): aligned tilt series onward, no `FS_MOTION_CTF_STAR`.*
 - The output type follows the input: the resolver reads the output schema from the job instance rather than the
   class (`_get_output_schema`, `path_resolution_service.py:1337`) — a small change, needed only for this job.
 - Selection UI: a table of the cut point's tilt series with the per-TS readouts the Journey already has, plus
   "save as rule". The Subset job's star is rewritten at each submit, so an edited selection applies to the next Run
-  of its consumers (consumers that already ran keep what they read — stage 1).
+  of its consumers (consumers that already ran keep what they read — stage 1). *Amended (§6.1): no rules (§9.4);
+  written once, frozen once run, another choice is a Clone.*
 - Consumers are added with **Add after this job** (pinned to the Subset); existing consumers of the cut point are
   untouched.
 - Size: ~250 lines.
+
+### 6.1 Stage 3 record — built 2026-10-15, NOT RUN
+
+Decided with the maintainer before building (2026-10-15): §9.4 = a list of tilt series, no saved rules. Cut
+points = aligned tilt series onward: alignment takes its tilt series from the registry (`drivers/ts_alignment.py`
+enumerates the registry's, not its input star's), so a cut before it would fail every tilt series left out. Earlier
+cuts are a later stage.
+
+- **The job** (`services/jobs/subset.py`, `JobType.SUBSET`): `RUNS_INLINE`, `USER_PARAMS = {"ts_names"}`, one input
+  `input_star` accepting `CUT_TYPES` (aligned TS, CTF'd TS, tomograms, denoised tomograms), class
+  `OUTPUT_SCHEMA = []`. Spec row after denoise predict: no driver, plugin `subset`, `roster_add=False`.
+  `JobSpec.items_from` names the input a job takes its tilt series from (`input_star` for tsCtf, missAlign,
+  tsReconstruct, denoise train / predict; `input_tomograms` for TM).
+- **Made from the job it cuts.** A "Subset" button in the header of the alignment, missAlign, tsCtf, tsReconstruct
+  and denoise predict tabs (`cut_output`: the job's `output_star` when it is a cut type); refused until that job has
+  succeeded, in a schemer project, and on a Subset (no Subset of a Subset: clone it and untick). Never from the
+  roster's add rows or "+". The new Subset's input is set by hand to that job (`add_instance_to_pipeline(after=)`,
+  `services/subsets.add_refusal`); its I/O input is read-only.
+- **Its tab** (`ui/job_plugins/subset.py`): what it cuts, "k of n chosen", All / None, one table of the cut star's
+  tilt series (position, tilts used, CTF fit with its source job in the hover, blank · dim, excluded); a click on a
+  row keeps or leaves out that tilt series; chosen names the star lacks are flagged. **Add <job>** for each job whose
+  `items_from` input accepts the cut type (`jobs_after`): tsCtf and missAlign after aligned TS, tsReconstruct after
+  CTF'd TS, denoise train / predict and TM after tomograms, TM after denoised tomograms. The added job's
+  `items_from` input is set to the Subset, every other input to the job the Subset cuts when that job offers it
+  (warp dir, settings), the rest stays automatic (`add_after_pins`). After an aligned-TS cut the tab says that a
+  tsCtf with `defocus_hand = auto` decides the hand from these tilt series only.
+- **Output from the instance**: `_get_output_schema(job_type, job_model)` gives a Subset one `output_star` of its
+  cut's type, named as the cut star; `subset_cut` reads the cut from the record once submitted, else from the
+  hand setting. The output index, `resolve_outputs` and the I/O tab use it.
+- **Opt-in**: Subset outputs are `auto_eligible=False`; `auto_exclusion` gives a Subset no stage, so a tsCtf set
+  to a Subset of the alignment reads it without a "not upstream" tag; `_select_source` and `automatic_sources`
+  never choose a Subset's own input.
+- **Run** writes it in `_submit_chain` pass 3 (`services/subsets.write_subset_star`): the cut star's global rows of
+  the chosen tilt series in the star's order, every `…File` / `…FileName` / `…Dir` / `rlnTomoReconstructedTomogram*`
+  path made absolute (against the star's folder, else the project root; a relative path found in neither stops the
+  write), other blocks unchanged, and a `run.out` listing what it kept. The per-TS stars stay the cut job's own
+  files, so Warp export still finds the tsCtf job behind a tomogram. Before anything is allocated (Run and Approve),
+  `subset_problem` refuses, with the reason, a Subset with no tilt series chosen, nothing to cut, an unfinished cut,
+  a missing cut star or chosen names that star lacks. The schemer path refuses a run with a Subset. A run that only
+  writes at submit says "… written at submit; nothing to queue" and the spinner follows `pipeline_active`.
+- **Frozen once run**, like any job; another choice is a Clone, which copies the list and the cut. This replaces
+  "rewritten at each submit": one job dir holds one set of inputs, and `_inputs_moved` compares paths, not lists.
+- **Removing** a Subset, or the job it cuts, leaves the inputs set to it as they are
+  (`_cleanup_stale_overrides_for_instance` skips them): the input turns red ("no longer in the project"), never
+  widens to every tilt series.
+- **Refinement following**: a refiner takes over the chosen job's output only when it reads everything it refines
+  from that job (`_follow_refinements`), so a missAlign on a Subset of the alignment no longer moves the full chain
+  onto its warp dir. A missAlign on the alignment is followed as before; one whose star and warp dir are set by hand
+  to two different jobs is not followed any more.
+- **Fold-ins**: missAlign's `planned_stack_apix` follows a Subset to the alignment it cuts; `local_warps_upstream`
+  follows `input_star` last, so the extraction hint survives a tomogram Subset; protocol export skips Subsets and
+  exports an input reading one as reading what it cuts, with a warning for each; `_submit_chain` saves the advanced
+  job-dir counter when pass 3 stops on an inline-write or sbatch-render error (it stayed in memory only); the
+  roster's Clone shows on every row except the tilt filter and Import (it was hidden on every inline job).
+- **Drivers unchanged**: every consumer joins a per-TS star or volume path to the star's folder or the project root
+  with pathlib, which keeps an absolute path (the alignment, tsCtf and tsReconstruct `emit_star`, missAlign's star
+  check, TM, denoise train / predict), and takes its companion folders from its own inputs.
+- Not built: saved rules (§9.4), cuts before alignment, particle-level Subsets (particle sets, roadmap 30).
+- Checked: `ruff check` / `ruff format` on the touched files. Not run (no Python in the sandbox); runtime check §11.
 
 ### Stage 4 — Fork… (either destination) and the imported output
 
@@ -464,8 +524,8 @@ Also later: read-side views follow a chosen chain instead of "the first job of e
 3. **Run verbs (S2.3).** DECIDED 2026-10-15: no Run to here / Run from here for now; one Run button (everything
    unfinished, around what is live). Revisit once the pipeline table (§8) shows the branches, where a per-row
    verb reads more obviously.
-4. **Subset selection:** list only, or list + saved rules (recommended: list first, rules once the per-TS readouts
-   it would filter on are settled).
+4. **Subset selection.** DECIDED 2026-10-15: a list of tilt series only; saved rules once the per-TS readouts they
+   would filter on are settled. Cut points from the aligned tilt series onward (§6.1).
 5. **Fork destination rule of thumb (§5):** accept as the dialog's default hint?
 6. **Unify Import tomograms and aggregation sources into imported outputs (§5)** — recommended; it is a migration
    of two records.
@@ -528,8 +588,26 @@ Also later: read-side views follow a chosen chain instead of "the first job of e
 - Stage 2 registry: two supervisors aggregating together (tsCtf and a clone tsCtf__2 finishing at once) both land
   in the registry (Journey shows both); toggle a TS exclusion during an aggregation; `registry/.lock` is gone
   after.
-- Stage 3: Subset of 5 TS on a tsCtf output, tsReconstruct after it; only those 5 are reconstructed; the original
-  tsReconstruct is untouched.
+- Stage 3 (§6.1), on a project whose preprocessing chain has run:
+  - The roster has no Subset add row. A tsCtf tab's header has **Subset**; on a tsCtf that has not succeeded it
+    refuses with the reason. On the finished tsCtf it adds a Subset whose tab says what it cuts and "0 of N
+    chosen"; its I/O input is read-only, "set by hand" to tsCtf.
+  - Run with 0 chosen: refused, "Subset not ready: subset: no tilt series chosen", nothing allocated.
+  - Click 5 rows (All / None work), **Add Reconstruct**: tsReconstruct__2 reads input_star ← subset, input_processing
+    ← tsCtf (a notice says so; its I/O tab agrees, both "set by hand"); the original tsReconstruct is unchanged.
+  - Run: the Subset is Succeeded at once (its Logs tab's run.out lists the 5); its star has 5 rows whose
+    `rlnTomoTiltSeriesStarFile` are absolute paths into tsCtf's `tilt_series/`; tsReconstruct__2 finishes 5/5 and
+    the original tsReconstruct is untouched. The Subset's tab is read-only now; its Clone copies the 5 and the cut.
+  - A Run whose only unfinished job is a Subset: "… written at submit; nothing to queue", no spinner left on.
+  - Table (§8): tsCtf → subset → tsReconstruct__2, solid.
+  - A Subset of the alignment + **Add Miss Align** on it: an automatic tsCtf (Scheduled) stays on the alignment's
+    warp dir (no "follows missAlign").
+  - A tomogram Subset of tsReconstruct + **Add Template Match** (asks for the species): TM processes exactly the 5;
+    a Subtomo extraction after it still shows the missAlign local-warp hint when the chain has one.
+  - Remove a Subset (× on a Scheduled one, or Delete on a finished one) with a Scheduled job after it: that job's
+    input_star turns red ("no longer in the project") and Run refuses it saying so; it never falls back to tsCtf.
+  - Protocols → export: warns that the Subset is not a stage and that tsReconstruct__2's input is exported as
+    reading tsCtf; the bundle applies to a fresh project.
 - Stage 4: Fork the same tsCtf output to a new project; it opens with 5 TS in its Journey; reconstruct there;
   exclude a TS in the new project and check the original still has it.
 

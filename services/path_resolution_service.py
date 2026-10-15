@@ -258,12 +258,14 @@ def auto_exclusion(consumer_type: JobType, consumer_species_id: str | None, cand
     """Why automatic selection never wires `candidate` into a consumer of `consumer_type` bound
     to `consumer_species_id`, or None when it may. A job producer has to run at an earlier stage
     than its consumer (PIPELINE_ORDER), which keeps automatic wiring acyclic; a producer bound to
-    another species never feeds a species-bound consumer. Synthetic producers have no stage. An
-    explicit override may name either kind."""
+    another species never feeds a species-bound consumer. Synthetic producers have no stage, and
+    neither has a Subset: it sits wherever the output it cuts does (only an explicit choice wires
+    one, `OutputCandidate.auto_eligible`). An explicit override may name either kind."""
     from services.jobs.spec import PIPELINE_ORDER
 
     if (
         not is_synthetic_producer(candidate.producer_instance_id)
+        and candidate.producer_job_type != JobType.SUBSET
         and consumer_type in PIPELINE_ORDER
         and candidate.producer_job_type in PIPELINE_ORDER
         and PIPELINE_ORDER.index(candidate.producer_job_type) >= PIPELINE_ORDER.index(consumer_type)
@@ -272,6 +274,35 @@ def auto_exclusion(consumer_type: JobType, consumer_species_id: str | None, cand
     if consumer_species_id and candidate.species_id and candidate.species_id != consumer_species_id:
         return "other species"
     return None
+
+
+def cut_output(job_type: JobType) -> OutputSlot | None:
+    """The output of `job_type` a Subset can cut: its main star (`output_star`) when that lists
+    tilt series the jobs after it take theirs from (`CUT_TYPES`). None for every other job, a
+    Subset included: a smaller Subset of a Subset is a Clone of it with fewer tilt series."""
+    from services.jobs import jobtype_paramclass
+    from services.jobs.subset import CUT_TYPES
+
+    cls = jobtype_paramclass().get(job_type)
+    slots = (getattr(cls, "OUTPUT_SCHEMA", None) or []) if cls is not None else []
+    return next((s for s in slots if s.key == "output_star" and s.produces in CUT_TYPES), None)
+
+
+def subset_cut(state: ProjectState, job_model: AbstractJobParams) -> tuple[str, OutputSlot] | None:
+    """The job a Subset cuts and the output of it that it cuts: from what the Subset read at its
+    submit when its inputs are fixed, else from its input as set. None when that names no job of
+    the project with such an output."""
+    if job_model.inputs_fixed:
+        rec = (job_model.submitted_inputs or {}).get("input_star")
+        key = rec.source_key if rec is not None else None
+    else:
+        key = (job_model.source_overrides or {}).get("input_star")
+    instance_id = override_instance_id(key) if key else None
+    source = state.jobs.get(instance_id) if instance_id else None
+    if source is None or source.job_type is None:
+        return None
+    slot = cut_output(source.job_type)
+    return (instance_id, slot) if slot is not None else None
 
 
 def _pick_output(matches: list[OutputCandidate], output_key: str = "") -> OutputCandidate | None:
@@ -333,7 +364,7 @@ class PathResolutionService:
         Resolve inputs + outputs using schemas and return a dict compatible with job_model.paths.
         Respects source_overrides from job_model and species-aware scoring.
         """
-        outputs_manifest = self.resolve_outputs(job_type, job_dir)
+        outputs_manifest = self.resolve_outputs(job_type, job_dir, job_model)
         inputs_manifest = self.resolve_inputs(job_type, job_model, consumer_instance_id=instance_id)
 
         manifest = ResolvedManifest(
@@ -345,8 +376,10 @@ class PathResolutionService:
             return paths, manifest
         return paths
 
-    def resolve_outputs(self, job_type: JobType, job_dir: Path) -> list[ResolvedOutput]:
-        schema = self._get_output_schema(job_type)
+    def resolve_outputs(
+        self, job_type: JobType, job_dir: Path, job_model: AbstractJobParams | None = None
+    ) -> list[ResolvedOutput]:
+        schema = self._get_output_schema(job_type, job_model)
         resolved: list[ResolvedOutput] = []
         for slot in schema:
             resolved_path = str((job_dir / slot.path_template).resolve())
@@ -513,7 +546,8 @@ class PathResolutionService:
         index = self._build_output_index()
         sources: dict[tuple[str, str], OutputCandidate] = {}
         for instance_id, job_model in self.state.jobs.items():
-            if job_model.job_type is None or job_model.inputs_fixed:
+            # A Subset's input is never chosen automatically (_select_source).
+            if job_model.job_type in (None, JobType.SUBSET) or job_model.inputs_fixed:
                 continue
             overrides = getattr(job_model, "source_overrides", {}) or {}
             for slot in self._get_input_schema(job_model.job_type):
@@ -666,9 +700,11 @@ class PathResolutionService:
         """Expose input schema for UI rendering."""
         return self._get_input_schema(job_type)
 
-    def get_output_schema_for_job(self, job_type: JobType) -> list[OutputSlot]:
-        """Expose output schema for UI rendering."""
-        return self._get_output_schema(job_type)
+    def get_output_schema_for_job(
+        self, job_type: JobType, job_model: AbstractJobParams | None = None
+    ) -> list[OutputSlot]:
+        """Expose output schema for UI rendering (a Subset's from its `job_model`)."""
+        return self._get_output_schema(job_type, job_model)
 
     def validate_input_slot(
         self,
@@ -833,6 +869,10 @@ class PathResolutionService:
         override_key = (getattr(job_model, "source_overrides", {}) or {}).get(slot.key)
         if override_key:
             return self._keyed_source(slot, override_key, index)
+
+        if consumer_type == JobType.SUBSET:
+            # What a Subset cuts is set when it is made, from that job's tab; never chosen here.
+            return SlotSource(problem="it cuts nothing: a Subset is made with the Subset button of a finished job")
 
         choice = self._auto_select(
             slot, index, consumer_type, getattr(job_model, "species_id", None), consumer_instance_id
@@ -1001,7 +1041,7 @@ class PathResolutionService:
             if producer_job_type is None:
                 continue
 
-            out_schema = self._get_output_schema(producer_job_type)
+            out_schema = self._get_output_schema(producer_job_type, producer_model)
             if not out_schema:
                 continue
 
@@ -1051,6 +1091,8 @@ class PathResolutionService:
                         relion_job_number=relion_job_number,
                         species_id=species_id,
                         prefer_if_exists=slot.prefer_if_exists,
+                        # A Subset is read only by a job set to read it.
+                        auto_eligible=producer_job_type != JobType.SUBSET,
                     )
                 )
 
@@ -1404,6 +1446,12 @@ class PathResolutionService:
                     chosen.producer_output_key,
                 ):
                     continue
+                # Only a refiner of all it refines from the chosen job is a drop-in for it: a missAlign
+                # reading a Subset of the alignment's star refines those tilt series alone, so the
+                # alignment's other consumers keep the alignment's warp dir.
+                others = [self._effective_input(rid, r_model, u, index) for u in spec.refines if u != t]
+                if any(o is None or o.producer_instance_id != chosen.producer_instance_id for o in others):
+                    continue
                 r_output = next((c for c in index.get(t, []) if c.producer_instance_id == rid), None)
                 if r_output is not None:
                     refiners.append((rid, r_output))
@@ -1460,7 +1508,16 @@ class PathResolutionService:
         schema = getattr(cls, "INPUT_SCHEMA", None) if cls else None
         return list(schema) if schema else []
 
-    def _get_output_schema(self, job_type: JobType) -> list[OutputSlot]:
+    def _get_output_schema(self, job_type: JobType, job_model: AbstractJobParams | None = None) -> list[OutputSlot]:
+        """The outputs of `job_type`. A Subset's have the type of what it cuts, so they come from
+        `job_model`: its star, named as the one it cuts (none while it cuts nothing)."""
+        if job_type == JobType.SUBSET:
+            cut = subset_cut(self.state, job_model) if job_model is not None else None
+            if cut is None:
+                return []
+            return [
+                OutputSlot(key="output_star", produces=cut[1].produces, path_template=Path(cut[1].path_template).name)
+            ]
         from services.job_models import jobtype_paramclass
 
         cls = jobtype_paramclass().get(job_type)
@@ -1540,6 +1597,33 @@ def pin_sources_made_ambiguous(
             job_model.source_overrides[slot_key] = source.source_key
             pinned.append((instance_id, slot_key, source.producer_instance_id))
     return pinned
+
+
+def add_after_pins(state: ProjectState, new_iid: str, subset_iid: str) -> dict[str, str]:
+    """Wire `new_iid`, just added after the Subset `subset_iid`: the input it takes its tilt series
+    from (`JobSpec.items_from`) reads the Subset, and each other input reads the job the Subset cuts
+    when that job offers what the input accepts (its warp dir and settings); the rest stays
+    automatic. Returns {slot: producer} as set; empty when the job cannot follow this Subset."""
+    from services.jobs.spec import JOB_SPEC_BY_TYPE
+
+    new_model, subset = state.jobs.get(new_iid), state.jobs.get(subset_iid)
+    spec = JOB_SPEC_BY_TYPE.get(new_model.job_type) if new_model is not None else None
+    cut = subset_cut(state, subset) if subset is not None and subset.job_type == JobType.SUBSET else None
+    if spec is None or spec.items_from is None or cut is None:
+        return {}
+    source_iid = cut[0]
+    source_type = state.jobs[source_iid].job_type
+    resolver = PathResolutionService(state)
+    offered = {s.produces for s in resolver._get_output_schema(source_type)}
+    if new_model.source_overrides is None:
+        new_model.source_overrides = {}
+    new_model.source_overrides[spec.items_from] = instance_override_key(JobType.SUBSET, subset_iid)
+    pins = {spec.items_from: subset_iid}
+    for slot in resolver._get_input_schema(new_model.job_type):
+        if slot.key != spec.items_from and offered.intersection(slot.accepts):
+            new_model.source_overrides[slot.key] = instance_override_key(source_type, source_iid)
+            pins[slot.key] = source_iid
+    return pins
 
 
 def consumers_of(state: ProjectState, instance_id: str) -> list[str]:

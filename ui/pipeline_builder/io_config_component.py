@@ -233,11 +233,12 @@ class IOConfigComponent:
 
         resolver = PathResolutionService(state, active_instance_ids=self.active_instance_ids)
         input_schema = resolver.get_input_schema_for_job(self.job_type)
-        output_schema = resolver.get_output_schema_for_job(self.job_type)
+        output_schema = resolver.get_output_schema_for_job(self.job_type, job_model)
         wants_gain = self.job_type in GAIN_CONSUMERS
         # A job the chain submitted reads what was resolved then; only a Failed one may choose again.
         fixed = job_model.inputs_fixed
-        self._inputs_read_only = self.read_only or fixed
+        # What a Subset cuts is set when it is made; another cut is another Subset.
+        self._inputs_read_only = self.read_only or fixed or self.job_type == JobType.SUBSET
 
         if input_schema or wants_gain:
             with ui.row().classes("w-full items-center gap-2"):
