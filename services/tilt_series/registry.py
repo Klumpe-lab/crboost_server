@@ -407,27 +407,33 @@ class TiltSeriesRegistry:
             # dirty and pending for the next save.
             dirty = set(self._tilt_series) if force else set(self._dirty_ts)
             written: set[str] = set()
-            for ts_id in sorted(dirty):
-                if ts_id not in self._tilt_series:
-                    continue
-                ts_path = self._ts_path(ts_id)
-                changes = self._pending.pop(ts_id, [])
-                try:
-                    if changes and ts_path.exists():
-                        self._load_sidecar(ts_id, ts_path, replacing=True)
-                        for change in changes:
-                            change(self._tilt_series[ts_id])
-                    self._atomic_write(ts_path, self._tilt_series[ts_id].model_dump_json(indent=2))
-                except BaseException:
-                    # Not written: the changes wait for the next save, ahead of any made since.
-                    self._pending[ts_id] = changes + self._pending.get(ts_id, [])
-                    raise
-                written.add(ts_id)
-                # Our own write is not a change to re-parse on the next refresh.
-                try:
-                    self._ts_mtime_ns[ts_id] = ts_path.stat().st_mtime_ns
-                except OSError:
-                    self._ts_mtime_ns.pop(ts_id, None)
+            try:
+                for ts_id in sorted(dirty):
+                    if ts_id not in self._tilt_series:
+                        continue
+                    ts_path = self._ts_path(ts_id)
+                    changes = self._pending.pop(ts_id, [])
+                    try:
+                        if changes and ts_path.exists():
+                            self._load_sidecar(ts_id, ts_path, replacing=True)
+                            for change in changes:
+                                change(self._tilt_series[ts_id])
+                        self._atomic_write(ts_path, self._tilt_series[ts_id].model_dump_json(indent=2))
+                    except BaseException:
+                        # Not written: the changes wait for the next save, ahead of any made since.
+                        self._pending[ts_id] = changes + self._pending.get(ts_id, [])
+                        raise
+                    written.add(ts_id)
+                    # Our own write is not a change to re-parse on the next refresh.
+                    try:
+                        self._ts_mtime_ns[ts_id] = ts_path.stat().st_mtime_ns
+                    except OSError:
+                        self._ts_mtime_ns.pop(ts_id, None)
+            except BaseException:
+                # What was written before the failure is clean: left dirty with its changes spent, the
+                # next save would write it from memory, over what another process wrote since.
+                self._dirty_ts -= {i for i in written if not self._pending.get(i)}
+                raise
 
             on_disk, disk_mtime = self._read_index()
             listed = set(self._tilt_series)
@@ -492,24 +498,28 @@ class TiltSeriesRegistry:
             self._filename_index.pop(f.raw_filename, None)
 
     def _reindex_ts(self, ts: TiltSeries, *, replacing: bool = True) -> None:
-        # Wipe any stale entries for this TS, then rebuild. The wipe scans every frame in the
+        # Index this TS's frames, then drop the stale entries it no longer has. In that order: the
+        # server re-reads a sidecar in its save thread while the event loop looks frames up, and a
+        # lookup must never miss a frame the TS still has. The stale scan covers every frame in the
         # project, so it is skipped when this TS is being indexed for the first time (a fresh
         # load) — otherwise a full load is quadratic in total frame count.
-        if replacing:
-            stale_frame_ids = [fid for fid, t in self._frame_index.items() if t.id == ts.id]
-            for fid in stale_frame_ids:
-                self._frame_index.pop(fid, None)
-            stale_names = [name for name, f in self._filename_index.items() if f.tilt_series_id == ts.id]
-            for name in stale_names:
-                self._filename_index.pop(name, None)
-
         seen_ids: set[str] = set()
         for f in ts.frames:
             if f.id in seen_ids:
                 raise ValueError(f"Duplicate frame id {f.id!r} in TS {ts.id}")
             seen_ids.add(f.id)
+        for f in ts.frames:
             self._frame_index[f.id] = ts
             self._filename_index[f.raw_filename] = f
+
+        if replacing:
+            names = {f.raw_filename for f in ts.frames}
+            stale_frame_ids = [fid for fid, t in self._frame_index.items() if t.id == ts.id and fid not in seen_ids]
+            for fid in stale_frame_ids:
+                self._frame_index.pop(fid, None)
+            stale_names = [n for n, f in self._filename_index.items() if f.tilt_series_id == ts.id and n not in names]
+            for name in stale_names:
+                self._filename_index.pop(name, None)
 
     @staticmethod
     def _atomic_write(path: Path, content: str) -> None:
