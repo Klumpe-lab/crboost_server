@@ -3,7 +3,8 @@
 **Status:** scoped 2026-10-14 from the branching survey
 (`docs/reports/pipeline-graph/branching-survey-2026-10-12.md`). Stage 0 answered; stage 1, the §8 table,
 stage 2 (without S2.3) and stage 3 (the Subset job) built 2026-10-15, all NOT RUN (records §3.1, §8, §4.1, §6.1;
-runtime checks §11). Next: the §11 runtime checks; stage 4 once §9.5–9.6 are answered. §9.5–9.7 open.
+runtime checks §11). The `relion_schemer` path deleted 2026-10-15, NOT RUN (§13). Next: the §11 and §13
+runtime checks; stage 4 once §9.5–9.6 are answered. §9.5–9.7 open.
 
 **In one line.** Jobs can be added and started while others run; a submitted job's inputs never move; and a
 "fork" is one defined thing, a subset of some job's output, used either inside the project or as the start of a
@@ -628,3 +629,55 @@ Also later: read-side views follow a chosen chain instead of "the first job of e
 - `ImportedOutput` as a pydantic model with a `Literal` `origin` ("fork" | "files" | "merge") — a discriminated
   union if the three grow different fields.
 - A frozen `dataclass` `Subset(cut_instance, cut_output, ts_ids)` shared by the Subset job and the Fork dialog.
+
+## 13. Fold-in: the `relion_schemer` path deleted (2026-10-15, NOT RUN)
+
+The orchestrator roadmap's §0 items R1, R4, D4 and C8 (C5 is this roadmap's S2.6), built here because this branch
+rewrites the same code. On merge into main, mark them done in that roadmap's §0 and its row in
+`docs/roadmaps/README.md` (both are newer on main than on this branch, so they were left alone here).
+
+- **R1, afterok unconditional.** `Config.use_afterok_orchestrator` and the template's key are gone; a `conf.yaml`
+  that still has the key shows it under the amber "config" dot as unread (delete the line). Nothing reads
+  `ProjectState.use_afterok_orchestrator`: it is a plain field, always `True` and still written, so an older
+  checkout opening a newer project submits it by afterok too. The silent routes back to the schemer (a config
+  that fails to load, a conf without the key) are gone with it.
+- **R4, the schemer deleted.** `pipeline_runner.py` down to 599 lines (from 1,537): `sync_all_jobs`,
+  `is_active`, the schemer launch and monitor, the in-place retry path, `stop_pipeline`,
+  `reset_submission_failure`, the schemer log readers and the star patching. `pipeline_orchestrator_service.py`: the scheme.star writer, the schemer branch
+  of `_deploy_locked` (with its "already running" guard and the DL-auto, review-hold and Subset refusals),
+  `delete_job` via `relion_pipeliner`, the dry-run comparer. `pipeline_monitor.py`: the schemer recovery,
+  deferred re-deploy and sbatch-error teardown; recovery is load-and-tick. Gone with them: the `sync_all_jobs`
+  calls after project load, delete, Stop and Cancel; the `is_active` OR in the status poller; the schemer
+  branches of `jobs_in_use`, `in_use_notice`, `delete_job`'s refusal, the Subset add refusal and the cancel
+  dialog; `Schemes/` at project creation. Stop's `slurm_job_ids` argument went (it was ignored).
+  "Pipeline started (PID: 0)" now reads "Pipeline started: N job(s) queued".
+- **D4.** Stop and Cancel now scancel the supervisors, then the arrays named in their task manifests (a failure
+  there is ignored: the array has usually ended), then mark each task that had started and has no status
+  marker `.fail` (`mark_stopped_tasks_failed`, off the event loop). A task killed mid-run used to read
+  "running" on a Failed job.
+- **C8.** `_get_current_relion_counter` stays as the one-time seed of `job_dir_counter`, so a project whose earlier
+  jobs RELION numbered continues after them.
+- **Kept, deliberately:** the project-root `qsub.sh` copy (every `job.star` names it as `qsubscript`) and the
+  `relion --tomo --do_projdir` at project creation: both belong to RELION compatibility, the orchestrator
+  roadmap's R2 (C1–C4). So do `job.star`, the star pruning on delete for jobs RELION ran, and `JobTypeResolver`
+  (the type-wide delete fallback; every caller passes an instance id). `deploy_and_run_scheme` and the UI's
+  `scheme_name` keep their names.
+- **Risk:** a job saved as Running without a SLURM id (possible in old schemer-era projects) is never tracked;
+  Run treats it as live and skips it. Already true under afterok; roadmap 33 S4 covers it.
+- Docs: `docs/architecture.md` (monitor, recovery, file map; the "Replacing relion_schemer" section is done and
+  went), CLAUDE.md's two service lines, `config/conf.template.yaml`.
+- **On merge with `token_auth`:** its README *Upgrading an existing install* asks for `use_afterok_orchestrator:
+  true`, and its conf.template rewrote that key's comment. Resolve both by deleting: the README bullet goes, and
+  a conf with the key just gets the unread-key warning.
+- Checked: `ruff check` on the touched files (the repo's six E501s are older), `ruff format --diff` on the files
+  whose formatting was clean before. Not run: Python is absent in the sandbox.
+- **Runtime checks:**
+  1. `check_boundaries.py`; start the server with a conf that still has `use_afterok_orchestrator`: the amber
+     config dot names it.
+  2. Create a project: no `Schemes/`. Run a short chain: queued, runs, finishes, the spinner stops.
+  3. Stop during an array job: in its job dir every task that had started has a `.task_status/*.fail`, the roster
+     and Journey show those TS failed, not running, and `squeue -u $USER` has nothing of the project left.
+  4. Cancel one running array job from its tab: the same marking; jobs that wait for it fail, the rest runs on.
+  5. Restart the server while a chain runs: the chain keeps going and the statuses catch up within a tick.
+  6. Open a project last run before June and Run something: the new job dir numbers continue after the existing
+     `External/jobNNN`, none reused.

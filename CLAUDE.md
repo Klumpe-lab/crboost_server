@@ -50,8 +50,8 @@ python check_boundaries.py
 - **`configs/config_service.py`** — loads `conf.yaml` into a typed `Config` model. Singleton via `get_config_service()`. Provides `get_tool_config(tool_name)` with legacy alias support.
 - **`computing/slurm_service.py`** — `SlurmConfig` model, presets, and SLURM job submission/query.
 - **`computing/container_service.py`** — wraps shell commands with `apptainer exec` invocations based on per-tool config.
-- **`scheduling_and_orchestration/pipeline_orchestrator_service.py`** — `deploy_and_run_scheme()` creates a RELION Scheme directory, writes `job.star` files via `StarfileService`, and launches the RELION schemer process.
-- **`scheduling_and_orchestration/pipeline_runner.py`** — owns schemer process lifecycle; `sync_all_jobs()` reconciles `default_pipeline.star` with in-memory job state.
+- **`scheduling_and_orchestration/pipeline_orchestrator_service.py`** — `deploy_and_run_scheme()` → `_submit_chain()`: allocates each job's `External/jobNNN` dir, writes its `job.star` and `run_submit.script`, and sbatches the jobs as a SLURM afterok chain.
+- **`scheduling_and_orchestration/pipeline_runner.py`** — `reconcile_afterok()` (ticked by `pipeline_monitor.py`) reconciles job status from the exit markers, `squeue` and `sacct`; Stop and Cancel.
 - **`configs/starfile_service.py`** — reads/writes RELION `.star` files.
 - **`io_slots.py` / `path_resolution_service.py`** — typed I/O slot system for inter-job data flow and path resolution.
 
