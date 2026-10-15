@@ -1,6 +1,6 @@
 """The one species pill.
 
-Every surface that names a species — roster row, job-tab header, the Config tab
+Every surface that names a species — job-tab header, the Config tab
 of a particle-phase job, and the Species rail — draws the same
 capsule: species name in the species color on a tinted, bordered pill. Three
 copies of the style string used to live in the roster, the default renderer and
@@ -16,22 +16,17 @@ from nicegui import ui
 from ui.styles import SANS
 
 
-def render_species_pill(species, *, compact: bool = False, tooltip: str | None = None):
-    """Read-only species capsule. `compact` is the roster-row size (8 px text);
-    the default is the header / Config-tab size (9 px)."""
-    font_px = 8 if compact else 9
-    pad = "1px 6px" if compact else "1px 8px"
+def render_species_pill(species, *, tooltip: str | None = None):
+    """Read-only species capsule, header / Config-tab size (9 px text)."""
     pill = ui.element("div").style(
         f"display: inline-flex; align-items: center; flex-shrink: 0; "
         f"background: {species.color}18; border: 1px solid {species.color}55; "
-        f"border-radius: 999px; padding: {pad};"
+        f"border-radius: 999px; padding: 1px 8px;"
     )
     if tooltip:
         pill.tooltip(tooltip)
     with pill:
-        ui.label(species.name).style(
-            f"font-size: {font_px}px; color: {species.color}; font-weight: 600; white-space: nowrap;"
-        )
+        ui.label(species.name).style(f"font-size: 9px; color: {species.color}; font-weight: 600; white-space: nowrap;")
     return pill
 
 

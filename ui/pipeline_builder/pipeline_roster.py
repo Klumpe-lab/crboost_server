@@ -9,9 +9,9 @@ from services.project_state import JobType
 from ui.current_project import current_project_state
 
 from ui.components.buttons import house_button
+from ui.components.copyable import copy_on_click
 from ui.components.dialogs import dialog_host
 from ui.components.reactive import FingerprintedView, SingleFlight
-from ui.components.species_pill import render_species_pill
 from ui.components.svg_icon import load_icon_svg
 from ui.protocols_view import protocol_light
 from ui.styles import MONO, SANS as FONT
@@ -40,6 +40,19 @@ logger = logging.getLogger(__name__)
 # Foot-of-rail protocol light: how often it re-reads the in-memory protocol state. A tick is
 # a dict read; this cadence only decides how fast the light reacts once the answer changes.
 _RAIL_LIGHT_TICK_S = 6.0
+
+# Job-row geometry. Every row puts its status light in the same leading column and its name
+# in a column as wide as the longest job name (`ch` on a monospace label is one character),
+# so lights, names and RELION job folders line up down the roster whatever a row carries.
+_LED_PX = 6
+_LEAD_PAD = 6
+_LEAD_W = 10
+_ROW_GAP = 5
+_NAME_X = _LEAD_PAD + _LEAD_W + _ROW_GAP
+_NAME_COL_CH = max(len(get_job_display_name(jt)) for jobs in PHASE_JOBS.values() for jt in jobs)
+# What nests under a job row (the per-TS list, the filter's settings) indents to its name column.
+_NEST_INDENT = 18
+_SPECIES_GLYPH = "#94a3b8"
 
 
 def _ts_cell(text: str, color: str, extra: str = ""):
@@ -190,9 +203,9 @@ class RosterWidget(FingerprintedView):
     click target in the sidebar would be torn down and rebuilt on each
     tick, dropping in-flight clicks and resetting hover state.
 
-    Row "working" indicators for RUNNING jobs are a self-contained inline
-    SVG/SMIL pulsating dot (ui/status_indicator._running_spinner_html) — no
-    server-side spinner tick, and no stylesheet dependency.
+    Row "working" indicators for RUNNING jobs are a status light with a
+    self-contained inline SVG/SMIL halo (ui/status_indicator._running_led_html) —
+    no server-side spinner tick, and no stylesheet dependency.
     """
 
     def __init__(self, panel: "PipelineBuilderPanel"):
@@ -228,7 +241,7 @@ class RosterWidget(FingerprintedView):
         return self.panel.roster_panel
 
     def _status_widget(self, instance_id: str):
-        from ui.status_indicator import _dot_html, _running_spinner_html
+        from ui.status_indicator import _dot_html, _running_led_html
 
         state = current_project_state()
         job_model = state.jobs.get(instance_id)
@@ -238,22 +251,25 @@ class RosterWidget(FingerprintedView):
 
         def _content(status, jm=job_model):
             if status == JobStatus.RUNNING:
-                # Pulsating dot for RUNNING jobs — self-contained inline SVG/SMIL
-                # (no stylesheet dependency; see _running_spinner_html).
-                return _running_spinner_html(14, "#3b82f6")
+                # The light with a breathing halo — self-contained inline SVG/SMIL
+                # (no stylesheet dependency; see _running_led_html).
+                return _running_led_html(_LED_PX)
             # A job a run parked behind the tilt-filter review: derived from the hold, which
             # signature() reads, so a resume repaints the row. The binding runs outside the
             # tab's context, hence the state captured above.
             hold = state.review_hold
             parked = hold is not None and instance_id in hold.parked
             return _dot_html(
-                status, is_orphaned=jm.is_orphaned, parked_since=hold.held_at.strftime("%H:%M") if parked else None
+                status,
+                is_orphaned=jm.is_orphaned,
+                parked_since=hold.held_at.strftime("%H:%M") if parked else None,
+                size_px=_LED_PX,
             )
 
-        # Fixed 14 px box, content centered: the 8 px dot and the 14 px running spinner
-        # then share one center, so the column lines up across rows.
+        # Fixed box, content centered: the light and the running light's halo share one
+        # center, so the column lines up across rows. The halo and glow overflow the box.
         ui.html("", sanitize=False, tag="span").style(
-            "display: flex; align-items: center; justify-content: center; width: 14px; height: 14px;"
+            f"display: flex; align-items: center; justify-content: center; width: {_LEAD_W}px; height: {_LEAD_W}px;"
         ).bind_content_from(job_model, "execution_status", backward=_content)
 
     # ── Roster ────────────────────────────────────────────────────────────────
@@ -317,7 +333,7 @@ class RosterWidget(FingerprintedView):
             ui_mgr.is_running,
             per_job,
             array_state,
-            # Species pill draws name + color: a rename / recolor must repaint the row.
+            # The species glyph's hover names the species: a rename must repaint the row.
             current_project_state().species_identity(),
             # The PARTICLES header's import button carries a green dot once tomograms have
             # been imported. Without this input the dot only appeared on the NEXT unrelated
@@ -395,36 +411,37 @@ class RosterWidget(FingerprintedView):
                     with (
                         ui.element("div")
                         .style(
-                            f"display: flex; align-items: center; gap: 6px; "
-                            f"padding: 4px 8px 4px 10px; cursor: pointer; "
+                            f"display: flex; align-items: center; gap: {_ROW_GAP}px; "
+                            f"padding: 4px 8px 4px {_LEAD_PAD}px; cursor: pointer; "
                             f"background: {row_bg}; border-left: 2px solid {l_border};"
                         )
                         .on("click", lambda j=job_type: self._on_unselected_click(j))
                     ):
-                        ui.icon("check_box_outline_blank", size="13px").style("color: #d1d5db; flex-shrink: 0;")
+                        ui.icon("check_box_outline_blank", size=f"{_LEAD_W}px").style("color: #d1d5db; flex-shrink: 0;")
                         ui.label(get_job_display_name(job_type)).style(
-                            f"{MONO} font-size: 11px; font-weight: 400; color: {name_color}; "
+                            f"{MONO} font-size: 10px; font-weight: 400; color: {name_color}; "
                             "flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
                         )
 
                 elif len(instances) == 1:
                     # Single instance — flat row, no header/instance split
                     instance_id = instances[0]
-                    self._render_instance_row(panel, job_type, instance_id, indent=10, show_add=True)
+                    self._render_instance_row(panel, job_type, instance_id, show_add=True)
 
                 else:
-                    # Multiple instances — header + instance rows
+                    # Multiple instances — a header, then instance rows laid out exactly like a
+                    # single instance's, so their lights stay in the roster's one column.
                     missing = missing_deps(job_type, set(panel.ui_mgr.selected_jobs))
                     any_active = any(panel.ui_mgr.active_instance_id == iid for iid in instances)
                     header_border = "#3b82f6" if any_active else "#e5e7eb"
 
                     with ui.element("div").style(
                         f"display: flex; align-items: center; gap: 6px; "
-                        f"padding: 4px 8px 4px 10px; "
+                        f"padding: 4px 8px 4px {_NAME_X}px; "
                         f"background: #f8fafc; border-left: 2px solid {header_border};"
                     ):
                         ui.label(get_job_display_name(job_type)).style(
-                            f"{MONO} font-size: 11px; font-weight: 600; color: #374151; "
+                            f"{MONO} font-size: 10px; font-weight: 600; color: #374151; "
                             "flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
                         )
                         ui.label(str(len(instances))).style(
@@ -444,23 +461,23 @@ class RosterWidget(FingerprintedView):
                         )
 
                     for instance_id in instances:
-                        self._render_instance_row(panel, job_type, instance_id, indent=18)
+                        self._render_instance_row(panel, job_type, instance_id)
 
-    def _render_instance_row(self, panel, job_type, instance_id, indent=18, show_add=False):
+    def _render_instance_row(self, panel, job_type, instance_id, show_add=False):
         """Render a single job instance row — single line with icons at end."""
         job_model = current_project_state().jobs.get(instance_id)
 
         base_name = get_job_display_name(job_type)
         relion_job_name = getattr(job_model, "relion_job_name", None) if job_model else None
+        # The job's own column: its RELION job folder, or until it has one, the instance suffix.
+        full_path = None
         if relion_job_name:
-            job_folder = relion_job_name.rstrip("/").split("/")[-1]
-            display_text = f"{base_name} ({job_folder})"
+            job_tag = relion_job_name.rstrip("/").split("/")[-1]
+            if panel.ui_mgr.project_path:
+                full_path = str(panel.ui_mgr.project_path / relion_job_name.rstrip("/"))
         else:
             suffix = InstanceId.split(instance_id)[1]
-            if suffix is not None:
-                display_text = f"{base_name} #{suffix}" if suffix.isdigit() else f"{base_name} ({suffix})"
-            else:
-                display_text = base_name
+            job_tag = None if suffix is None else (f"#{suffix}" if suffix.isdigit() else suffix)
 
         species_id = getattr(job_model, "species_id", None) if job_model else None
         species = None
@@ -479,70 +496,94 @@ class RosterWidget(FingerprintedView):
             name_color, name_wt = "#1e293b", "400"
 
         with ui.element("div").style(
-            f"display: flex; align-items: center; gap: 6px; "
-            f"padding: 4px 4px 4px {indent}px; "
+            f"display: flex; align-items: center; gap: {_ROW_GAP}px; "
+            f"padding: 4px 4px 4px {_LEAD_PAD}px; "
             f"background: {row_bg}; border-left: 2px solid {l_border}; "
             f"min-width: 0;"
         ):
-            # Status dot
+            # Status light
             with ui.element("span").style("overflow: visible; line-height: 0; flex-shrink: 0;"):
                 self._status_widget(instance_id)
-            # Clickable name
+            # Clickable name, then the job's own column. The job folder copies its full path
+            # on click (click.stop, so it does not also open the job).
             with (
                 ui.element("div")
-                .style("flex: 1; min-width: 0; cursor: pointer; overflow: hidden;")
+                .style(
+                    "flex: 1; min-width: 0; cursor: pointer; overflow: hidden; "
+                    "display: flex; align-items: baseline; gap: 6px;"
+                )
                 .on("click", lambda iid=instance_id: panel.switch_tab(iid))
             ):
-                ui.label(display_text).style(
-                    f"{MONO} font-size: 11px; font-weight: {name_wt}; color: {name_color}; "
+                ui.label(base_name).style(
+                    f"{MONO} font-size: 10px; font-weight: {name_wt}; color: {name_color}; "
+                    f"flex: 0 1 {_NAME_COL_CH}ch; min-width: 0; "
                     "white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
                 )
-            # Species badge
+                if job_tag:
+                    tag = ui.label(job_tag).style(
+                        f"{MONO} font-size: 8px; color: #94a3b8; flex-shrink: 0; max-width: 10ch; "
+                        "white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
+                    )
+                    if full_path:
+                        with tag:
+                            ui.tooltip(f"{full_path}\nClick to copy").style("white-space: pre-line;")
+                        copy_on_click(tag, full_path)
+            # The species: one grey glyph, the Particles registry's own, named on hover.
             if species:
-                render_species_pill(species, compact=True)
+                with ui.element("div").style("display: flex; flex-shrink: 0;"):
+                    ui.html(load_icon_svg("particle.svg", _SPECIES_GLYPH, size=11), sanitize=False).style(
+                        "display: flex;"
+                    )
+                    ui.tooltip(f"Species: {species.name}")
             # The tilt filter says where it is where an array job shows its progress.
             is_filter = job_type == JobType.TILT_FILTER and job_model is not None
-            if is_filter and panel.ui_mgr.project_path is not None:
-                render_tilt_filter_status(panel.ui_mgr.project_path, instance_id)
+            show_filter_status = is_filter and panel.ui_mgr.project_path is not None
             # Inline array progress (e.g., "17/18" green, or "17/18 1!" red).
             # Read from the per-tick cache populated by signature() so render and
             # signature can't disagree on what's being painted.
             progress = self._array_progress_cache.get(instance_id)
-            if progress is not None:
-                n_ok, n_fail, n_skip, n_total = progress.n_ok, progress.n_fail, progress.n_skip, progress.total
-                # Live "running now" chip — shows that a parallel array is actively
-                # working even while the settled count (below) sits low between
-                # throttle-waves, so the row no longer looks frozen at 0/N.
-                if progress.n_running > 0:
-                    ui.label(f"▸{progress.n_running}").style(
-                        f"{MONO} font-size: 9px; font-weight: 700; color: #2563eb; flex-shrink: 0;"
-                    ).tooltip(f"{progress.n_running} tilt-series running now")
-                # Skipped (muted) chip — settled by design, shown apart from the
-                # ok count so "5/6 ⊘1" isn't mistaken for an incomplete run.
-                if n_skip > 0:
-                    ui.label(f"⊘{n_skip}").style(
-                        f"{MONO} font-size: 9px; font-weight: 600; color: #94a3b8; flex-shrink: 0;"
-                    ).tooltip(f"{n_skip} tilt-series skipped (muted / nothing to do)")
-                if n_fail > 0:
-                    # Show "ok/total fail!" — e.g. "17/18 1!"
-                    ui.label(f"{n_ok}/{n_total}").style(
-                        f"{MONO} font-size: 9px; font-weight: 600; color: #16a34a; flex-shrink: 0;"
-                    )
-                    ui.label(f"{n_fail}!").style(
-                        f"{MONO} font-size: 9px; font-weight: 700; color: #dc2626; flex-shrink: 0;"
-                    )
-                elif progress.n_settled == n_total:
-                    ui.label(f"{n_ok}/{n_total}").style(
-                        f"{MONO} font-size: 9px; font-weight: 600; color: #16a34a; flex-shrink: 0;"
-                    )
-                elif progress.n_settled > 0:
-                    ui.label(f"{n_ok}/{n_total}").style(
-                        f"{MONO} font-size: 9px; font-weight: 600; color: #2563eb; flex-shrink: 0;"
-                    )
-                else:
-                    ui.label(f"0/{n_total}").style(
-                        f"{MONO} font-size: 9px; font-weight: 600; color: #9ca3af; flex-shrink: 0;"
-                    )
+            # Either sits tight against the row's chevron (the first of the row actions).
+            if show_filter_status or progress is not None:
+                with ui.element("div").style(
+                    "display: flex; align-items: center; gap: 3px; min-width: 0; margin-right: -4px;"
+                ):
+                    if show_filter_status:
+                        render_tilt_filter_status(panel.ui_mgr.project_path, instance_id)
+                    if progress is not None:
+                        n_ok, n_fail, n_skip, n_total = progress.n_ok, progress.n_fail, progress.n_skip, progress.total
+                        # Live "running now" chip — shows that a parallel array is actively
+                        # working even while the settled count (below) sits low between
+                        # throttle-waves, so the row no longer looks frozen at 0/N.
+                        if progress.n_running > 0:
+                            ui.label(f"▸{progress.n_running}").style(
+                                f"{MONO} font-size: 8px; font-weight: 700; color: #2563eb; flex-shrink: 0;"
+                            ).tooltip(f"{progress.n_running} tilt-series running now")
+                        # Skipped (muted) chip — settled by design, shown apart from the
+                        # ok count so "5/6 ⊘1" isn't mistaken for an incomplete run.
+                        if n_skip > 0:
+                            ui.label(f"⊘{n_skip}").style(
+                                f"{MONO} font-size: 8px; font-weight: 600; color: #94a3b8; flex-shrink: 0;"
+                            ).tooltip(f"{n_skip} tilt-series skipped (muted / nothing to do)")
+                        if n_fail > 0:
+                            # Show "ok/total fail!" — e.g. "17/18 1!"
+                            ui.label(f"{n_ok}/{n_total}").style(
+                                f"{MONO} font-size: 8px; font-weight: 600; color: #16a34a; flex-shrink: 0;"
+                            )
+                            ui.label(f"{n_fail}!").style(
+                                f"{MONO} font-size: 8px; font-weight: 700; color: #dc2626; flex-shrink: 0;"
+                            )
+                        elif progress.n_settled == n_total:
+                            ui.label(f"{n_ok}/{n_total}").style(
+                                f"{MONO} font-size: 8px; font-weight: 600; color: #16a34a; flex-shrink: 0;"
+                            )
+                        elif progress.n_settled > 0:
+                            ui.label(f"{n_ok}/{n_total}").style(
+                                f"{MONO} font-size: 8px; font-weight: 600; color: #2563eb; flex-shrink: 0;"
+                            )
+                        else:
+                            ui.label(f"0/{n_total}").style(
+                                f"{MONO} font-size: 8px; font-weight: 600; color: #9ca3af; flex-shrink: 0;"
+                            )
             # Row actions (right-aligned, flex-shrink: 0). Config/Logs/Files are
             # deliberately NOT repeated per row — they are reachable from the
             # job's top-bar tab switcher once the job is opened by clicking its
@@ -625,12 +666,12 @@ class RosterWidget(FingerprintedView):
                 items, statuses, display_names = [], {}, {}
             job_dir = _resolve_array_job_dir(job_model, panel.ui_mgr.project_path)
             self._render_ts_sub_rows(
-                instance_id, items, statuses, display_names, indent + 8, expanded=expanded, job_dir=job_dir
+                instance_id, items, statuses, display_names, _NEST_INDENT, expanded=expanded, job_dir=job_dir
             )
         elif is_filter:
             # Expanded, the filter's settings sit under its row; collapsed, the row alone says where it is.
             if self._expanded_instances.get(instance_id):
-                render_tilt_filter_controls(panel, instance_id, self._flight, indent + 12)
+                render_tilt_filter_controls(panel, instance_id, self._flight, _NEST_INDENT + 4)
 
     def _render_ts_sub_rows(
         self,
@@ -1712,7 +1753,7 @@ class RosterWidget(FingerprintedView):
             .tooltip("New species (pick by hand — no template needed)")
         )
         with container:
-            ui.icon("add_circle_outline", size="15px").style("color: #6366f1; pointer-events: none;")
+            ui.icon("add_circle_outline", size="15px").style(f"color: {SB_ACT}; pointer-events: none;")
         return container
 
     def _build_import_tomograms_btn(self):
@@ -1762,15 +1803,14 @@ class RosterWidget(FingerprintedView):
             .style(
                 "width: 22px; height: 22px; border-radius: 4px; "
                 "display: flex; align-items: center; justify-content: center; "
-                f"cursor: {'not-allowed' if disabled else 'pointer'}; flex-shrink: 0; position: relative; "
-                f"opacity: {'0.4' if disabled else '1'};"
+                f"cursor: {'not-allowed' if disabled else 'pointer'}; flex-shrink: 0; position: relative;"
             )
             .on("click", lambda: _open())
             .tooltip(tip)
         )
         with container:
             ui.icon("library_add", size="15px").style(
-                f"color: {'#9ca3af' if disabled else '#6366f1'}; pointer-events: none;"
+                f"color: {'#cbd5e1' if disabled else SB_ACT}; pointer-events: none;"
             )
             if already and not disabled:
                 ui.element("div").style(
@@ -1814,9 +1854,7 @@ class RosterWidget(FingerprintedView):
             )
         )
         with container:
-            ui.icon("merge_type", size="14px").style(
-                "color: #9333ea; pointer-events: none;"  # purple-600
-            )
+            ui.icon("merge_type", size="14px").style(f"color: {SB_ACT}; pointer-events: none;")
             if merged:
                 ui.element("div").style(
                     "position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; "
