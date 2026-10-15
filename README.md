@@ -30,7 +30,8 @@ venv/bin/python3 main.py --port 8081 --host 0.0.0.0
 
 Then from your laptop: `ssh -f -N -L 8081:localhost:8081 $USER@$HEADNODE` and open the
 `http://localhost:8081/?token=…` link the server printed. Without the token every page answers 401
-(see *Starting the server* below).
+(see *Starting the server* below). Updating an install whose `config/` came from older templates: see
+*Upgrading an existing install* below.
 
 ---
 
@@ -168,6 +169,42 @@ drops the `--constraint` line), so you only define the cluster environment once:
   chain on it). `preflight.py` checks all three.
 
 If you already have a working RELION/Warp SLURM script, its module lines are the right starting point.
+
+</details>
+
+<details>
+<summary><b>Upgrading an existing install (older <code>conf.yaml</code> / <code>qsub.sh</code>)</b></summary>
+
+`git pull` never touches `config/conf.yaml` or `config/qsub.sh`, so an install set up from older templates
+keeps its old files. The safest route is to start both again from the current templates and carry your
+values across. If you edit the old files instead, compare them with `config/conf.template.yaml` and
+`config/qsub.template.sh`; they must have:
+
+**`config/conf.yaml`**
+- `container_runtime` and `container_binds`. A container call binds `/tmp`, the project, the raw-data
+  directories and the gain reference by itself; every other place your data, references or software live
+  goes in `container_binds`.
+- `slurm_defaults.partition` and `supervisor_slurm.partition` (there are no built-in partitions), and
+  `curation.partition` if `curation.sif_path` is set.
+- Tool entries under `tools:` with the template's key names (`warp_aretomo`, `relion`, …).
+  `tools.cistem.bin_path` is the directory holding `simulate`, not the binary.
+- No `crboost_root:` and no `use_afterok_orchestrator:` (jobs are always submitted as SLURM afterok
+  chains); `crboost_python:` is the optional interpreter override. Preflight warns about every key nothing
+  reads (a misspelling, or a key from an older template): act on those warnings.
+- `tilt_filter.models.<name>.path` pointing at a weights file that exists. Weights (`*.pth`) are not in
+  git: copy `filterTilts/tiltnet_resnet18_o1034.pth` into your checkout by hand (ask the maintainers), or
+  leave `tilt_filter.models` empty to review tilts by hand only. Preflight does not check this file.
+
+**`config/qsub.sh`**
+- The exit-marker block, byte for byte as in the template (`if [ $EXIT_CODE -eq 0 ]; then` … `fi`), and
+  the final `exit $EXIT_CODE`. Without the block crboost refuses to submit; without the exit line a
+  failed job exits 0 and the jobs after it still run. Preflight checks both.
+- The old `ENV PATHS` block (`CRBOOST_SERVER_DIR`, `CRBOOST_PYTHON`) is no longer read; delete it.
+
+**Then:** `venv/bin/pip install -r requirements.txt`, `venv/bin/python3 preflight.py` (must exit 0),
+`venv/bin/python3 -m pytest -m cluster`, and restart the server. Every browser needs the newly printed
+`?token=` link once (see *Starting the server* below). The `.nicegui/` folder in the checkout no longer
+holds sessions or browser storage; you can delete it.
 
 </details>
 
