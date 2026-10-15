@@ -1,8 +1,9 @@
 # Roadmap 23 — One server per person with Jupyter-style tokens
 
 **Status:** rev 2, 2026-10-15: every anchor re-checked against main, and the stages re-ordered so the token gate
-comes first. It is what the Munich install needs, and it does not depend on the lease. Approved 2026-09-29;
-**nothing built**. Being built in a separate worktree. **Pickup: start at stage 1.** Munich ships after stage 1;
+comes first. It is what the Munich install needs, and it does not depend on the lease. Approved 2026-09-29.
+**Stage 1 code-complete 2026-10-15, not run** (branch `token_auth`; see the stage log). **Pickup: the stage 1
+runtime pass (§4, six checks).** Munich ships after stage 1;
 stages 2–7 are the multi-user CBE work.
 
 Release item: "token-based authentication — two users on the same port interfere; per-member ports are too
@@ -316,3 +317,53 @@ Stages 3–7 (two people):
 middleware base: it must see websocket scopes. The lease as a frozen `dataclass` with
 `acquire/heartbeat/release` returning `ok()/err()`; `ReadOnlyProject(Exception)`; `ErrorCode.READ_ONLY` added to
 the existing enum.
+
+## 8. Stage log
+
+**Stage 1 (2026-10-15), code-complete, not run — token gate + raw file routes.** Branch `token_auth`.
+- **Gate.** `services/server_auth.py` (stdlib only): `TokenGate`, a plain ASGI class that `main.py` wraps around
+  the app it hands to `uvicorn.run`; http and websocket scopes are checked, lifespan passes through. A matching
+  `?token=` on a GET/HEAD sets `crboost_token_<port>` (HttpOnly, SameSite=Lax, Path=/) and 302s to the same
+  path with the rest of the query kept; on any other method it just passes (no redirect, no cookie). A
+  matching cookie passes. Otherwise http → 401 HTML page pointing at the printed link and `~/.crboost/token`;
+  websocket → `receive()` the connect, then `websocket.close` 1008 before accept (the server answers the
+  handshake with 403). Comparison with `hmac.compare_digest`.
+- **Token / secret.** `read_or_create_secret`: `~/.crboost/token` and `~/.crboost/secret`, `O_CREAT|O_EXCL`
+  mode 600, `secrets.token_urlsafe(32)`, reused across restarts; an existing but empty file raises (delete
+  and restart). `CRBOOST_STORAGE_SECRET` still overrides the storage secret; the `"crboost-change-me"`
+  fallback is gone. Rotation = delete `~/.crboost/token` + restart (README).
+- **Session cookie per port.** `ng_app.add_middleware(SessionMiddleware, …, session_cookie=crboost_session_<port>)`
+  before `ui.run_with`; `set_storage_secret` then only appends its request tracking. `setup_app(port)` takes
+  the port.
+- **Storage dir.** `Storage.path = ~/.crboost/nicegui` (made 0700) before `ui.run_with`. NiceGUI builds
+  `app.storage.general` at import time from the cwd's `.nicegui/`; CryoBoost never uses `general`
+  (only `user` and `tab`), so that is left alone.
+- **Banner.** Three lines: `http://<hostname>:<port>/?token=…`, the tunnel command, `http://localhost:<port>/?token=…`.
+  `<hostname>` is `socket.gethostname()`, as the tunnel line already used; whether that name loads from a
+  desktop is stage 2 fact 3.
+- **Landing strip host popover** points at the printed `http://localhost:<port>/?token=…` link and
+  `~/.crboost/token`; it never shows the token.
+- **Raw file routes.** `services/project_state.py` gains `is_in_loaded_project(path)` (the old
+  `main._is_under` rule; registry keys are always resolved paths, so the str/Path tolerance went) and
+  `is_registered_volume(path)`. `/api/vis-asset` uses the first; `/api/tilt-thumb` now resolves strictly,
+  requires `.png` and a loaded project root (its PNGs live in `<project>/TiltFilter/png` or the project's
+  `tilt_filter_png_dir`, which is set to that path). `/api/project-preview` unchanged.
+- **Deviation — `/api/file` rule.** The §3.1 rule "under a loaded project root" alone would break the viewer:
+  catalog imports do copy into `templates/<sid>/` (`catalog.import_species`), but **imported masks are
+  registered where they were picked** (`TemplateWorkbench._import_mask`, the species-creation prompt's mask),
+  so they can lie anywhere. The route now serves a volume (`.mrc/.map/.rec/.ccp4`, strict resolve) that is
+  inside a loaded project **or** equals a registered template/mask path of a loaded project. That is exactly
+  what the viewer's eye buttons load, and nothing else.
+- **Side effects to expect.** First start after this: every browser needs the link once (new cookie names),
+  and `app.storage.user` starts empty because it moved from the install's `.nicegui/` to `~/.crboost/nicegui/`;
+  preferences come back from the `~/.crboost/prefs.json` mirror. That mirror is per user, so a user's dev
+  and release servers still share it by design; check 4 is about sessions and `app.storage.user`, which no
+  longer cross.
+- **Verified:** `venv/bin/ruff check` + `ruff format --diff` on the touched files. Not run in the sandbox:
+  `check_boundaries.py`, the app itself.
+- **Runtime pass (owed)** — the six checks in §4. Quick probes on the server's port `P`:
+  `curl -si localhost:P/ | head -1` → 401; `curl -si "localhost:P/static/main.css" | head -1` → 401;
+  `curl -si "localhost:P/p/x?a=1&token=$(cat ~/.crboost/token)" | grep -iE '^(HTTP|location|set-cookie)'` →
+  302, `location: /p/x?a=1`, `set-cookie: crboost_token_P=…`; with
+  `-H "Cookie: crboost_token_P=$(cat ~/.crboost/token)"`: `/api/file?path=$HOME/.ssh/id_rsa` →
+  `{"error": …}`.
