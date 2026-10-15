@@ -88,6 +88,9 @@ class JobType(str, Enum):
     TS_RECONSTRUCT = "tsReconstruct"
     DENOISE_TRAIN = "denoisetrain"
     DENOISE_PREDICT = "denoisepredict"
+    # A finished per-tilt-series output cut down to chosen tilt series; written at submit, no
+    # SLURM job (services/jobs/subset.py).
+    SUBSET = "subset"
     TEMPLATE_MATCH_PYTOM = "templatematching"
     TEMPLATE_EXTRACT_PYTOM = "tmextractcand"
     SUBTOMO_EXTRACTION = "subtomoExtraction"

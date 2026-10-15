@@ -16,6 +16,7 @@ from ui.components.svg_icon import load_icon_svg
 from ui.protocols_view import protocol_light
 from ui.styles import MONO, SANS as FONT
 from ui.status_indicator import BoundStatusDot, _running_spinner_html
+from services.jobs.spec import JOB_SPEC_BY_TYPE
 from services.models_base import InstanceId, instance_id_to_job_type
 from services.path_resolution_service import jobs_in_use
 from ui.pipeline_builder.config_tab import in_use_notice
@@ -391,8 +392,12 @@ class RosterWidget(FingerprintedView):
 
             for job_type in jobs:
                 instances = panel.ui_mgr.get_instances_for_type(job_type)
+                # A type made elsewhere (a Subset, from the tab of the job it cuts) has no add row or "+".
+                addable = JOB_SPEC_BY_TYPE[job_type].roster_add
 
                 if not instances:
+                    if not addable:
+                        continue
                     # Unselected job type — single clickable row
                     if is_flashing:
                         row_bg, l_border, name_color = "#fefce8", "#fde68a", "#78716c"
@@ -417,7 +422,7 @@ class RosterWidget(FingerprintedView):
                 elif len(instances) == 1:
                     # Single instance — flat row, no header/instance split
                     instance_id = instances[0]
-                    self._render_instance_row(panel, job_type, instance_id, indent=10, show_add=True)
+                    self._render_instance_row(panel, job_type, instance_id, indent=10, show_add=addable)
 
                 else:
                     # Multiple instances — header + instance rows
@@ -443,12 +448,13 @@ class RosterWidget(FingerprintedView):
                             ui.icon("warning", size="11px").style("color: #f59e0b; flex-shrink: 0;").tooltip(
                                 "Missing: " + ", ".join(get_job_display_name(d) for d in missing)
                             )
-                        (
-                            ui.button(icon="add", on_click=lambda j=job_type: panel.prompt_species_and_add(j))
-                            .props("flat dense round size=xs")
-                            .style("color: #6b7280; flex-shrink: 0;")
-                            .tooltip(f"Add another {get_job_display_name(job_type)}")
-                        )
+                        if addable:
+                            (
+                                ui.button(icon="add", on_click=lambda j=job_type: panel.prompt_species_and_add(j))
+                                .props("flat dense round size=xs")
+                                .style("color: #6b7280; flex-shrink: 0;")
+                                .tooltip(f"Add another {get_job_display_name(job_type)}")
+                            )
 
                     for instance_id in instances:
                         self._render_instance_row(panel, job_type, instance_id, indent=18)
@@ -609,7 +615,7 @@ class RosterWidget(FingerprintedView):
                         .tooltip(f"Add {get_job_display_name(job_type)}")
                     )
                 # Not the singletons: the tilt filter, the import written at submit.
-                if job_model is not None and not is_filter and not job_model.RUNS_INLINE:
+                if job_model is not None and not is_filter and job_type != JobType.IMPORT_MOVIES:
                     (
                         ui.button(
                             icon="content_copy",

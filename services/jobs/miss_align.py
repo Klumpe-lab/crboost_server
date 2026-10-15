@@ -638,11 +638,15 @@ class MissAlignParams(AbstractJobParams):
         state = self._project_state
         if state is None:
             return None
-        from services.path_resolution_service import PathResolutionService
+        from services.path_resolution_service import PathResolutionService, subset_cut
 
         own_id = next((iid for iid, job in state.jobs.items() if job is self), None)
         producer = PathResolutionService(state).source_of(own_id, "input_star") if own_id else None
         job = state.jobs.get(producer) if producer else None
+        if job is not None and job.job_type == JobType.SUBSET:
+            # A Subset of the alignment's tilt series: the stacks are that alignment's.
+            cut = subset_cut(state, job)
+            job = state.jobs.get(cut[0]) if cut is not None else None
         if job is not None and job.job_type == JobType.TS_ALIGNMENT:
             return float(getattr(job, "rescale_angpixs", 0) or 0) or None
         return None
@@ -762,8 +766,8 @@ class MissAlignParams(AbstractJobParams):
 
 # Input slots a job's data descends through, most direct first: tsCtf/tsReconstruct read the Warp XMLs
 # (input_processing), particle picking reads tomograms, extraction and averaging read optimisation sets,
-# denoising reads the reconstruction job's XMLs (reconstruct_base).
-_LINEAGE_SLOTS = ("input_processing", "input_tomograms", "input_optimisation", "reconstruct_base")
+# denoising reads the reconstruction job's XMLs (reconstruct_base), a Subset reads the star it cuts.
+_LINEAGE_SLOTS = ("input_processing", "input_tomograms", "input_optimisation", "reconstruct_base", "input_star")
 
 
 def _owning_instance(state, path: str) -> str | None:

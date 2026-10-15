@@ -8,8 +8,15 @@ from nicegui import ui
 from backend import CryoBoostBackend
 from services.jobs.spec import JOB_SPEC_BY_TYPE
 from services.models_base import JobStatus
-from services.path_resolution_service import PathResolutionService, override_instance_id, pin_sources_made_ambiguous
-from services.project_state import JobType
+from services.path_resolution_service import (
+    PathResolutionService,
+    add_after_pins,
+    instance_override_key,
+    override_instance_id,
+    pin_sources_made_ambiguous,
+)
+from services.project_state import JobType, get_project_state_for
+from services.subsets import add_refusal
 
 from ui.components.buttons import house_button
 from ui.components.reactive import SingleFlight
@@ -85,6 +92,7 @@ class PipelineBuilderPanel:
         self.callbacks["enable_run_button"] = self.roster.rebuild_run_slot
         self.callbacks["add_job_to_pipeline"] = lambda jt: self.add_instance_to_pipeline(jt)
         self.callbacks["add_instance_to_pipeline"] = self.add_instance_to_pipeline
+        self.callbacks["prompt_species_and_add"] = self.prompt_species_and_add
         self.callbacks["remove_instance_from_pipeline"] = self.remove_instance_from_pipeline
         self.callbacks["invalidate_tm_tabs"] = self.invalidate_tm_tabs
         self.callbacks["set_active_mode"] = self.roster.set_active_mode
@@ -104,7 +112,9 @@ class PipelineBuilderPanel:
 
     # ── Species gate ──────────────────────────────────────────────────────────
 
-    async def prompt_species_and_add(self, job_type: JobType):
+    async def prompt_species_and_add(self, job_type: JobType, after: str | None = None):
+        """Add a job of `job_type`, asking for its species first when it is a per-particle job.
+        `after`: the Subset it follows (add_instance_to_pipeline)."""
         # SingleFlight: if a dialog for this job_type is already open, a
         # second click drops silently instead of stacking another dialog.
         # Required because the trigger button can be destroyed and rebuilt
@@ -115,7 +125,7 @@ class PipelineBuilderPanel:
                 return
 
             if job_type not in PHASE_JOBS[PHASE_PARTICLES]:
-                self.add_instance_to_pipeline(job_type)
+                self.add_instance_to_pipeline(job_type, after=after)
                 return
 
             project_path = self.ui_mgr.project_path
@@ -158,7 +168,7 @@ class PipelineBuilderPanel:
             confirmed = await dialog
             if not confirmed:
                 return
-            self.add_instance_to_pipeline(job_type, species_id=chosen["id"])
+            self.add_instance_to_pipeline(job_type, species_id=chosen["id"], after=after)
 
     async def add_instance_for_species(self, job_type: JobType, species_id: str) -> None:
         """One-click add from the Species page's Jobs tab: the species is known, so no
@@ -290,11 +300,18 @@ class PipelineBuilderPanel:
         instance_id: str | None = None,
         species_id: str | None = None,
         clone_of: str | None = None,
+        after: str | None = None,
     ):
         """Add a job of `job_type`; with `clone_of`, one that takes that job's parameters, SLURM
-        settings and inputs set by hand. Open while other jobs are queued or running: adding
-        changes nothing a submitted job reads."""
+        settings and inputs set by hand. With `after`: a Subset of that finished job's output, or
+        a job reading the Subset `after` (add_after_pins). Open while other jobs are queued or
+        running: adding changes nothing a submitted job reads."""
         state = current_project_state()
+
+        refusal = add_refusal(state, job_type, after, clone_of)
+        if refusal:
+            ui.notify(refusal, type="warning", timeout=6000)
+            return
 
         # Interactive jobs are singletons — if one already exists, just switch to it.
         if instance_id is None:
@@ -416,6 +433,20 @@ class PipelineBuilderPanel:
 
         apply_aggregation_overrides(state)
 
+        if after is not None and instance_id in state.jobs:
+            if job_type == JobType.SUBSET:
+                # It cuts the output of the job whose tab it was made from.
+                state.jobs[instance_id].source_overrides["input_star"] = instance_override_key(
+                    state.jobs[after].job_type, after
+                )
+            else:
+                wired = add_after_pins(state, instance_id, after)
+                ui.notify(
+                    f"{instance_id} reads " + "; ".join(f"{slot} ← {producer}" for slot, producer in wired.items()),
+                    type="info",
+                    timeout=6000,
+                )
+
         pinned = pin_sources_made_ambiguous(state, sources_before)
         if pinned:
             state.mark_dirty()
@@ -436,6 +467,10 @@ class PipelineBuilderPanel:
         state = current_project_state()
         removed_model = state.jobs.get(instance_id)
         job_type_str = InstanceId.split(instance_id)[0]
+        # Inputs set to a Subset, and a Subset's own, stay set when their job goes: they then read
+        # nothing and say so, where clearing them would widen them to every tilt series.
+        if job_type_str == JobType.SUBSET.value:
+            return
 
         refs_to_clean: set = set()
         if removed_model:
@@ -446,7 +481,7 @@ class PipelineBuilderPanel:
 
         for _, job_model in state.jobs.items():
             overrides = getattr(job_model, "source_overrides", None)
-            if not overrides:
+            if not overrides or job_model.job_type == JobType.SUBSET:
                 continue
             stale = [k for k, v in overrides.items() if v in refs_to_clean or override_instance_id(v) == instance_id]
             for k in stale:
@@ -635,13 +670,20 @@ class PipelineBuilderPanel:
                     self.poller.start()
                     return
                 if result.get("success"):
-                    self.ui_mgr.set_pipeline_running(True)
-                    message = f"Pipeline started (PID: {result.get('pid')})"
+                    # A run that only wrote jobs at submit (a Subset) queued nothing: the spinner
+                    # shows what else is live, if anything.
+                    live = bool(get_project_state_for(self.ui_mgr.project_path).pipeline_active)
+                    self.ui_mgr.set_pipeline_running(live)
+                    if result.get("afterok") and not result.get("submitted"):
+                        message = result.get("message") or "Nothing was queued."
+                    else:
+                        message = f"Pipeline started (PID: {result.get('pid')})"
                     parked = result.get("parked") or []
                     if parked:
                         message += f"; {len(parked)} job(s) wait for the tilt-filter review and start on Approve"
                     _safe_notify(message, type="positive")
-                    self.poller.start()
+                    if live or parked:
+                        self.poller.start()
                     self.rebuild_pipeline_ui()
                 else:
                     logger.warning("start_pipeline failed: %s", result.get("error"))
