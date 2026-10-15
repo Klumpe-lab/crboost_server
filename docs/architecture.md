@@ -12,19 +12,25 @@ There is exactly **one** server-side observer of pipeline status:
 It runs one async tick (3 s) in the FastAPI event loop, iterates over
 every project in `services/project_state.py:_project_states` whose
 `pipeline_active` flag is True, and calls
-`PipelineRunnerService.sync_all_jobs(project_path)` for each. That call
-is the canonical reconciler — it patches `default_pipeline.star`
-`Running` rows against on-disk `RELION_JOB_EXIT_{SUCCESS,FAILURE}`
-markers, writes the result back into in-memory
-`job_model.execution_status`, persists `project_params.json`, and on any
-failure calls `stop_and_cleanup` (which clears `pipeline_active`).
+`PipelineRunnerService.reconcile_afterok(project_path)` for each. That
+call is the canonical reconciler — it reads each submitted job's on-disk
+`RELION_JOB_EXIT_{SUCCESS,FAILURE}` markers, then `squeue` and `sacct`,
+writes the result back into in-memory `job_model.execution_status`,
+persists `project_params.json`, cancels the dependents a failure left
+waiting forever, and clears `pipeline_active` once no job is queued or
+running.
+
+Jobs are submitted by `PipelineOrchestratorService._submit_chain`: one
+`sbatch` per job, with `--dependency=afterok:` on the SLURM ids of the
+jobs it reads from. The chain runs in SLURM whether or not the server
+does.
 
 **Every UI surface reads from in-memory state.** No UI surface
 reconciles. Specifically:
 
 | Surface | Reads | Refresh mechanism |
 |---|---|---|
-| Workspace pipeline indicator | `state.pipeline_active`, `job_model.execution_status` | `StatusPoller.check_and_update_statuses` (per-tab UI tick, 3 s; no `sync_all_jobs`) |
+| Workspace pipeline indicator | `state.pipeline_active`, `job_model.execution_status` | `StatusPoller.check_and_update_statuses` (per-tab UI tick, 3 s; no reconcile) |
 | Landing-page project list (`ProjectsOverview`) | `_derive_live_status` of `project_params.json` | 15 s timer; reads what the monitor already wrote |
 | Project-hub dialog (in-workspace switcher) | same as landing | same |
 | Status dots in the roster (`BoundStatusDot`) | `job_model.execution_status` (NiceGUI binding) | NiceGUI client-side polling on the binding |
@@ -37,7 +43,7 @@ reconciles. Specifically:
    `ui_mgr.is_running` flag and notify the user when the pipeline
    finishes (or another tab finishes it).
 
-If you find yourself wanting to call `sync_all_jobs` from the UI: don't.
+If you find yourself wanting to call `reconcile_afterok` from the UI: don't.
 Either let the monitor's next tick pick it up, or add the logic to the
 monitor.
 
@@ -51,9 +57,6 @@ Before the monitor, reconciliation lived in the per-tab `StatusPoller`'s
   stuck True forever.
 - The landing-page roster never reconciled at all — it read raw
   `project_params.json` and was always stale-by-design.
-- The schemer subprocess's own `_monitor_schemer` finally-block could
-  clear `pipeline_active`, but only on normal exit; a server restart
-  (uvicorn dies → schemer dies as a child) skipped that path entirely.
 
 The monitor moves reconciliation to the server: it runs as long as the
 server runs, regardless of whether any browser tabs are open, and
@@ -64,24 +67,11 @@ handles startup recovery (see below).
 When `PipelineMonitor.start()` runs in the FastAPI `startup` event hook
 (`main.py`), it first walks the configured project base
 (`config_service.default_project_base`) looking for projects whose
-persisted `project_params.json` has `pipeline_active: true`. For each:
-
-1. Load the project state into `_project_states`.
-2. Call `sync_all_jobs` to patch up any `Running` rows whose jobs
-   actually finished while uvicorn was down (`RELION_JOB_EXIT_*` markers
-   on disk).
-3. If any job is still `RUNNING` (SLURM job still owns it), defer
-   re-deploy until that finishes — track the project in
-   `_recovered_paths` so the next tick re-checks.
-4. If only `SCHEDULED` jobs remain (the schemer died before advancing
-   to them), call `deploy_and_run_scheme` with those instance_ids.
-   The orchestrator reuses existing `External/jobNNN` dirs, so
-   `.task_status/*.ok` markers from the prior run let per-TS retries
-   skip already-succeeded tasks.
-
-`_recovered_paths` is the "deferred" set; the tick loop checks it
-periodically and resumes re-deploy once every previously-RUNNING job
-has settled.
+persisted `project_params.json` has `pipeline_active: true`, and loads
+each one into `_project_states`. That is all recovery takes: the chain
+went on running in SLURM, every job's SLURM id is persisted, and the
+next tick's `reconcile_afterok` picks up whatever finished while uvicorn
+was down from the `RELION_JOB_EXIT_*` markers and `sacct`.
 
 ## NiceGUI / async patterns to keep using (and to avoid)
 
@@ -100,10 +90,8 @@ has settled.
   skip both. `ProjectsOverview` listens to both events and also
   self-cancels on `RuntimeError` (client gone) in its refresh path.
 - **Don't hold module-level in-memory registries you can't rebuild.**
-  `PipelineRunnerService._active_processes` (subprocess handles) is
-  fundamentally unrecoverable across restart, so anything that depends
-  on it must have a separate persisted source of truth (the
-  `pipeline_active` flag, in our case).
+  Anything a restart must recover is persisted (`pipeline_active`, each
+  job's `slurm_job_id`); in-memory state is a cache over it.
 - **`__setattr__` on `AbstractJobParams` doesn't call `mark_dirty()`
   for `execution_status` writes.** Callers compensate with explicit
   `save_project(force=True)`. If you write `execution_status` from a
@@ -113,8 +101,10 @@ has settled.
 
 - `services/scheduling_and_orchestration/pipeline_monitor.py` — the
   monitor.
-- `services/scheduling_and_orchestration/pipeline_runner.py:sync_all_jobs`
+- `services/scheduling_and_orchestration/pipeline_runner.py:reconcile_afterok`
   — the reconciliation primitive.
+- `services/scheduling_and_orchestration/pipeline_orchestrator_service.py:_submit_chain`
+  — submission.
 - `services/project_state.py:_project_states` — the path-keyed registry
   shared by all tabs in this server process.
 - `ui/pipeline_builder/status_poller.py` — per-tab UI ticker (not a
@@ -122,11 +112,3 @@ has settled.
 - `ui/projects_overview.py` — shared project list widget (landing +
   project-hub dialog).
 - `main.py:setup_app` — FastAPI startup/shutdown hooks for the monitor.
-
-## Replacing `relion_schemer`
-
-See `docs/roadmaps/completed/roadmap_scheduler-proposal.md`. Short version: the monitor is the
-foundation of a homegrown scheduler. Once we replace
-`relion_schemer`-driven node advancement with an in-process loop, the
-"restart recovery" branch goes away — restart-safety becomes a property
-of the design rather than a patched-on recovery step.
