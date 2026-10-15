@@ -282,6 +282,7 @@ single-threaded Python (`torch.set_num_threads(1)`), mostly CPU work. Measured o
 |---|---|---|---|---|
 | 3 trainers, 1 builder, 4 loaders each | half full (15 × 31) | 0 % | 6.65 s / 96 cubes | builders: ~14 cubes/s per builder |
 | 1 trainer, 11 builders, 4 loaders | full (~1000) | bursts, mostly 0 % | 1.45 s / 32 cubes | loaders: a loader builds a whole 32-cube batch, ~5.5 cubes/s each |
+| 1 trainer, 5 builders, 10 loaders | ~320 = 10 partitions × 32, the level loaders wait at | ~80 %, short dips | 0.33 s / 32 cubes (~98 cubes/s) | balanced: builders just keep up (~20 cubes/s each), trainer GPU nearly full |
 
 The tool's own examples run three builders per training GPU (`--training-devices 0,1
 --reconstruction-devices 2,2,2,3,3,3`) and do not mention loader counts.
@@ -291,13 +292,13 @@ driver and shown in the job tab with both rates):
 
 - `training_gpus` — the first that many GPUs train.
 - `patch_builders` and `dataloader_workers` (loaders per trainer) — pinned values are kept; on auto the
-  CPUs the trainers leave are split so `builders × 12` and `loaders × 5` cubes/s (the measured rates,
+  CPUs the trainers leave are split so `builders × 16` and `loaders × 8` cubes/s (the measured rates,
   rounded down) are as high and as even as possible. Loaders are capped by
   `pool_size // (training_gpus × loaders) ≥ 2 × batch_size`. Builders are spread round the non-training GPUs
   first, then the training ones (a builder needs ~1 GB; a trainer ~6.4 GB of 40).
 
 So **CPUs/task is the speed lever**: 2 GPUs (1 training) with 16 CPUs → 1 trainer, 10 loaders, 5 builders
-(~60 cubes/s built, ~50 loaded). The job tab warns when one side outruns the other by 1.5× (naming the fix,
+(~80 cubes/s built and loaded by the constants; ~98 measured, iteration 1 training in ~2 h 45). The job tab warns when one side outruns the other by 1.5× (naming the fix,
 e.g. raise `pool_size` when it caps the loaders) and when the processes outnumber the CPUs.
 
 - **Queue.** GPUs on the CBE `g` partition are mostly taken one at a time by 1-GPU jobs, so a 4-GPU request
@@ -318,7 +319,7 @@ e.g. raise `pool_size` when it caps the loaders) and when the processes outnumbe
   (`--start-at-iteration`). The worker layout is not part of the resume check, so it may change between runs.
 
 The wall-time estimate (`_walltime_plan`) trains at the slowest of the builders, the loaders and
-trainers × `batch_size` / 3.5 s; the trainer term stays conservative until a fully fed trainer has been measured.
+trainers × `batch_size` / 1.0 s; an A100 trainer ran 0.33 s eager, slower cards are unmeasured.
 The SLURM tab of a missAlign job carries a short form of this as a note (`MissAlignParams.SLURM_NOTE`).
 
 ---

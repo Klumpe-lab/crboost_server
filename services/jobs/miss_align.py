@@ -216,8 +216,8 @@ def parse_z_box(text: str) -> float | str:
 # single-threaded CPU work, slower than an A100 trainer. On auto the CPUs left after the trainers are split
 # between builders and loaders so their rates match. Builders need little GPU memory (~1 GB each) and share
 # cards with the trainers.
-_BUILDER_CUBES_PER_SEC = 12.0  # one patch builder (14.4 measured on an A100 node, 1024² stacks)
-_LOADER_CUBES_PER_SEC = 5.0  # one loader (5.5 measured: 4 loaders held one A100 trainer to 1.45 s per 32 cubes)
+_BUILDER_CUBES_PER_SEC = 16.0  # one patch builder (~20 measured: 5 kept one A100 trainer at ~98 cubes/s)
+_LOADER_CUBES_PER_SEC = 8.0  # one loader (10 kept pace at ~98 cubes/s; 4 managed 5.5 each beside 11 busy builders)
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,7 +355,7 @@ def worker_plan(params: MissAlignParams, n_gpus: int, cpus: int) -> WorkerPlan:
 # (killed mid-iteration -> the resume restarts the same iteration), while OVER-requesting is harmless (SLURM
 # frees the slot when the job ends).
 _WALLTIME_BASE_MIN = 30  # fixed overhead: staging, dim-stamp, the z-box reconstructions, I/O
-_TRAINER_STEP_SEC = 3.5  # seconds per step of one fed trainer (RTX-class; conservative for an A100)
+_TRAINER_STEP_SEC = 1.0  # seconds per step of one fed trainer (an A100 ran 0.33 s eager; slower cards unmeasured)
 _WALLTIME_PER_TS_ALIGN_MIN = 5  # alignment per (tilt-series x macro-iteration) at 6.2 Å, one GPU
 _ALIGN_REFERENCE_APIX = 6.2  # the alignment cost above scales with (this / effective Å)^3
 _WALLTIME_CAP_MIN = 24 * 60  # ceiling when the QOS limit is unknown
@@ -446,8 +446,8 @@ class MissAlignParams(AbstractJobParams):
         "  └─────────┘ └─────────┘\n"
         "```\n\n"
         "A trainer goes only as fast as the **patch builders** fill the pool and its **loaders** empty it. "
-        "Both are single-threaded CPU work and slower than an A100 trainer (a builder makes ~14 cubes/s, a "
-        "loader handles ~5.5), so the number of **CPUs** in the SLURM tab is what sets the speed. On auto "
+        "Both are single-threaded CPU work and slower than an A100 trainer (a builder makes ~20 cubes/s, a "
+        "loader handles ~10), so the number of **CPUs** in the SLURM tab is what sets the speed. On auto "
         "(`patch_builders` and `dataloader_workers` 0) the CPUs the trainers leave are split so builders and "
         "loaders keep pace with each other: 2 GPUs (1 training) and 16 CPUs → 1 trainer, 10 loaders, "
         "5 builders. The summary above the fields shows the resolved layout and both rates. After training, "
@@ -586,7 +586,7 @@ class MissAlignParams(AbstractJobParams):
         ge=0,
         description="Processes that make the training cubes: each loads a tilt stack, shrinks it and "
         "reconstructs aligned and shifted cubes, using one CPU core and ~1 GB of a GPU. Training runs only as "
-        "fast as they deliver (~14 cubes/s each). 0 = auto: the CPUs the trainers leave are split between "
+        "fast as they deliver (~20 cubes/s each). 0 = auto: the CPUs the trainers leave are split between "
         "builders and loaders so their rates match (the summary above shows the result). Set a number to pin it; "
         "with dataloader_workers on auto the loaders then take the rest.",
     )
@@ -594,7 +594,7 @@ class MissAlignParams(AbstractJobParams):
         default=0,
         ge=0,
         description="Loaders per training GPU: processes that unpickle cubes from the pool, normalise and mask "
-        "them, and batch them for their trainer (one CPU each, ~5.5 cubes/s). Training runs only as fast as "
+        "them, and batch them for their trainer (one CPU each, ~10 cubes/s). Training runs only as fast as "
         "they deliver. 0 = auto: balanced against the builders (see patch_builders). Each needs 2 × batch_size "
         "cubes of pool_size, which caps the count.",
     )

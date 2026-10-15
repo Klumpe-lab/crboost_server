@@ -155,13 +155,13 @@ def _render_workers(workers) -> None:
         (
             "patch builders",
             builders,
-            "Make the training cubes into the pool (one CPU core and ~1 GB of a GPU each, ~14 cubes/s). On auto, "
+            "Make the training cubes into the pool (one CPU core and ~1 GB of a GPU each, ~20 cubes/s). On auto, "
             "the CPUs the trainers leave are split between builders and loaders so the two rates match.",
         ),
         (
             "loaders",
             loaders,
-            "Unpickle, normalise, mask and batch cubes from the pool for their trainer (one CPU each, ~5.5 cubes/s).",
+            "Unpickle, normalise, mask and batch cubes from the pool for their trainer (one CPU each, ~10 cubes/s).",
         ),
     )
     for name, text, tip in rows:
