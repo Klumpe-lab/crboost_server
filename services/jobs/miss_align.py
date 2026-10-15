@@ -210,13 +210,14 @@ def parse_z_box(text: str) -> float | str:
 # During training three kinds of process run, each on its own CPU core:
 #   patch builders  load a tilt stack, shrink it on the CPU and reconstruct small aligned / shifted
 #                   cubes on a GPU, writing them to a pool on local disk; each cube is used once
-#   loaders         per trainer, read cubes from the pool and batch them (light work)
+#   loaders         per trainer, unpickle cubes from the pool, normalise and mask them, and batch them
 #   trainers        one per training GPU, consume batch_size cubes per step
-# The trainers can go no faster than the builders fill the pool, and one builder is far too slow for an
-# A100 trainer, so every CPU the trainers and loaders do not need becomes a builder. Builders need
-# little GPU memory (~1 GB each) and share cards with the trainers.
-BUILDERS_PER_TRAINER_MIN = 3  # the tool's own examples run three builders per training GPU
-_AUTO_LOADERS_MAX = 4  # loaders per trainer on auto; more do not help a pool the builders cannot fill
+# A trainer can go no faster than its builders fill the pool and its loaders empty it, and both are
+# single-threaded CPU work, slower than an A100 trainer. On auto the CPUs left after the trainers are split
+# between builders and loaders so their rates match. Builders need little GPU memory (~1 GB each) and share
+# cards with the trainers.
+_BUILDER_CUBES_PER_SEC = 12.0  # one patch builder (14.4 measured on an A100 node, 1024² stacks)
+_LOADER_CUBES_PER_SEC = 5.0  # one loader (5.5 measured: 4 loaders held one A100 trainer to 1.45 s per 32 cubes)
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,10 +231,21 @@ class WorkerPlan:
     builders_auto: bool
     loaders_auto: bool
     loaders_requested: int
+    pool_cap: int
 
     @property
     def cpus_needed(self) -> int:
         return len(self.training) * (1 + self.loaders_per_trainer) + len(self.builders)
+
+    @property
+    def builder_rate(self) -> float:
+        """Cubes per second the builders write, at the measured per-builder rate."""
+        return len(self.builders) * _BUILDER_CUBES_PER_SEC
+
+    @property
+    def loader_rate(self) -> float:
+        """Cubes per second all loaders can hand to the trainers, at the measured per-loader rate."""
+        return len(self.training) * self.loaders_per_trainer * _LOADER_CUBES_PER_SEC
 
     def builders_by_gpu(self) -> str:
         """'GPU 3 ×5, GPU 0 ×4, …' in placement order."""
@@ -247,7 +259,8 @@ class WorkerPlan:
         return (
             f"{len(self.training)} trainer(s) on GPU {trainers} · {len(self.builders)} patch builder(s) "
             f"({self.builders_by_gpu()}{', auto' if self.builders_auto else ''}) · {self.loaders_per_trainer} "
-            f"loader(s) per trainer{' (auto)' if self.loaders_auto else ''} · {self.cpus_needed} of {self.cpus} CPUs"
+            f"loader(s) per trainer{' (auto)' if self.loaders_auto else ''} · {self.cpus_needed} of {self.cpus} CPUs "
+            f"· ~{self.builder_rate:.0f} cubes/s built, ~{self.loader_rate:.0f} loaded"
         )
 
     def warnings(self) -> list[str]:
@@ -263,21 +276,44 @@ class WorkerPlan:
                 f"{self.cpus_needed} processes on {self.cpus} CPUs: they will slow each other down. Raise CPUs/task "
                 f"in the SLURM tab, or set patch_builders / dataloader_workers to 0 (auto)."
             )
-        floor = BUILDERS_PER_TRAINER_MIN * len(self.training)
-        if len(self.builders) < floor:
+        built, loaded = self.builder_rate, self.loader_rate
+        if built > 1.5 * loaded:
+            fix = (
+                f"pool_size allows only {self.pool_cap} loader(s) per trainer: raise pool_size"
+                if self.loaders_per_trainer >= self.pool_cap
+                else "move CPUs from builders to loaders (or set both to 0, auto)"
+            )
             out.append(
-                f"{len(self.builders)} patch builder(s) for {len(self.training)} training GPU(s): the trainers will "
-                f"mostly wait for cubes. Aim for at least {floor}: each CPU added in the SLURM tab becomes one more "
-                f"builder."
+                f"The builders make ~{built:.0f} cubes/s but the loaders take only ~{loaded:.0f}: the trainers "
+                f"wait on the loaders and some builder CPUs idle. {fix[0].upper()}{fix[1:]}."
+            )
+        elif loaded > 1.5 * built:
+            out.append(
+                f"The loaders could take ~{loaded:.0f} cubes/s but the builders make only ~{built:.0f}: the "
+                f"trainers wait on the builders. Add CPUs in the SLURM tab, or move CPUs from loaders to builders "
+                f"(or set both to 0, auto)."
             )
         return out
 
 
+def _balanced_loaders(spare: int, n_train: int, pool_cap: int) -> int:
+    """Loaders per trainer that, with every other spare CPU a builder, deliver the most cubes per second."""
+    best, best_rate = 1, 0.0
+    for loaders in range(1, pool_cap + 1):
+        builders = spare - n_train * loaders
+        if builders < 1:
+            break
+        rate = min(builders * _BUILDER_CUBES_PER_SEC, n_train * loaders * _LOADER_CUBES_PER_SEC)
+        if rate > best_rate:
+            best, best_rate = loaders, rate
+    return best
+
+
 def worker_plan(params: MissAlignParams, n_gpus: int, cpus: int) -> WorkerPlan:
     """The process layout for `n_gpus` allocated GPUs and `cpus` CPUs. The first training_gpus cards train.
-    Loaders on auto take at most half the CPUs left after the trainers (and at most four per trainer); builders
-    on auto take every CPU left after that. Builders go round the non-training GPUs first, then the training
-    ones, so they spread evenly. Raises ValueError for a layout that cannot run."""
+    The CPUs left after the trainers go to builders and loaders: what is pinned is kept, and auto splits the
+    rest so the builders' and loaders' measured rates match. Builders go round the non-training GPUs first,
+    then the training ones, so they spread evenly. Raises ValueError for a layout that cannot run."""
     n_train = params.training_gpus
     if n_train > n_gpus:
         raise ValueError(f"training_gpus={n_train} but only {n_gpus} GPU(s) are allocated; raise num_gpus")
@@ -290,8 +326,10 @@ def worker_plan(params: MissAlignParams, n_gpus: int, cpus: int) -> WorkerPlan:
     spare = cpus - n_train
     if params.dataloader_workers > 0:
         loaders = min(params.dataloader_workers, pool_cap)
+    elif params.patch_builders > 0:
+        loaders = max(1, min(pool_cap, (spare - params.patch_builders) // n_train))
     else:
-        loaders = max(1, min(_AUTO_LOADERS_MAX, pool_cap, spare // (2 * n_train)))
+        loaders = _balanced_loaders(spare, n_train, pool_cap)
     n_builders = params.patch_builders if params.patch_builders > 0 else max(1, spare - n_train * loaders)
     training = tuple(range(n_train))
     order = [g for g in range(n_gpus) if g not in training] + list(training)
@@ -303,6 +341,7 @@ def worker_plan(params: MissAlignParams, n_gpus: int, cpus: int) -> WorkerPlan:
         builders_auto=params.patch_builders <= 0,
         loaders_auto=params.dataloader_workers <= 0,
         loaders_requested=params.dataloader_workers,
+        pool_cap=pool_cap,
     )
 
 
@@ -310,13 +349,13 @@ def worker_plan(params: MissAlignParams, n_gpus: int, cpus: int) -> WorkerPlan:
 # miss_align is a SINGLE multi-GPU-NODE job (not a per-TS SLURM array): one `miss-alignment train`
 # invocation trains + realigns ALL selected tilt-series across a coarse->fine schedule of macro-
 # iterations. Each iteration = a fixed TRAINING budget (steps_per_epoch x max_epochs x batch_size cubes,
-# INDEPENDENT of n_ts) + a per-TS ALIGNMENT phase spread over every GPU. Training runs at the slower of
-# what the patch builders produce and what the trainers consume; both rates are card-dependent, so the
-# constants are conservative: UNDER-requesting is catastrophic (killed mid-iteration -> the resume restarts
-# the same iteration), while OVER-requesting is harmless (SLURM frees the slot when the job ends).
+# INDEPENDENT of n_ts) + a per-TS ALIGNMENT phase spread over every GPU. Training runs at the slowest of
+# what the builders produce, the loaders deliver and the trainers consume; the trainer rate is
+# card-dependent and not yet measured fed, so its constant is conservative: UNDER-requesting is catastrophic
+# (killed mid-iteration -> the resume restarts the same iteration), while OVER-requesting is harmless (SLURM
+# frees the slot when the job ends).
 _WALLTIME_BASE_MIN = 30  # fixed overhead: staging, dim-stamp, the z-box reconstructions, I/O
 _TRAINER_STEP_SEC = 3.5  # seconds per step of one fed trainer (RTX-class; conservative for an A100)
-_BUILDER_CUBES_PER_SEC = 12.0  # cubes one patch builder writes (14.4 measured on an A100 node, 1024² stacks)
 _WALLTIME_PER_TS_ALIGN_MIN = 5  # alignment per (tilt-series x macro-iteration) at 6.2 Å, one GPU
 _ALIGN_REFERENCE_APIX = 6.2  # the alignment cost above scales with (this / effective Å)^3
 _WALLTIME_CAP_MIN = 24 * 60  # ceiling when the QOS limit is unknown
@@ -400,31 +439,33 @@ class MissAlignParams(AbstractJobParams):
         "  [ pool on local disk ]            each cube is used once\n"
         "      │\n"
         "  ┌───▼─────┐ ┌─────────┐           loaders: per trainer, 1 CPU\n"
-        "  │ loaders │ │ loaders │ …         each; batch the cubes\n"
+        "  │ loaders │ │ loaders │ …         each; unpack, mask, batch\n"
         "  └───┬─────┘ └───┬─────┘\n"
         "  ┌───▼─────┐ ┌───▼─────┐           trainers: 1 per training GPU,\n"
         "  │  GPU 0  │ │  GPU 1  │ …         batch_size cubes per step\n"
         "  └─────────┘ └─────────┘\n"
         "```\n\n"
-        "The trainers go only as fast as the **patch builders** fill the pool, and one builder cannot keep "
-        "one A100 trainer busy. So the number of **CPUs** in the SLURM tab is what sets the speed: on auto "
-        "(`patch_builders` 0) every CPU the trainers and their loaders leave becomes a builder. The summary "
-        "above the fields shows the resolved layout, e.g. 4 GPUs (3 training) and 32 CPUs → 3 trainers, "
-        "4 loaders each, 17 builders. Aim for at least 3 builders per training GPU. After training, each "
-        "macro-iteration's **alignment** phase spreads over every allocated GPU.\n\n"
+        "A trainer goes only as fast as the **patch builders** fill the pool and its **loaders** empty it. "
+        "Both are single-threaded CPU work and slower than an A100 trainer (a builder makes ~14 cubes/s, a "
+        "loader handles ~5.5), so the number of **CPUs** in the SLURM tab is what sets the speed. On auto "
+        "(`patch_builders` and `dataloader_workers` 0) the CPUs the trainers leave are split so builders and "
+        "loaders keep pace with each other: 2 GPUs (1 training) and 16 CPUs → 1 trainer, 10 loaders, "
+        "5 builders. The summary above the fields shows the resolved layout and both rates. After training, "
+        "each macro-iteration's **alignment** phase spreads over every allocated GPU.\n\n"
         "**Stacks (`prepare_stacks_apix`).** 0 aligns the stacks the alignment job wrote. A value > 0 has "
         "the tool rebuild the stacks from the frame averages at that Å/px first (the preprint used 10 Å)."
     )
 
     SLURM_NOTE: ClassVar[tuple[str, str]] = (
-        "CPUs set the speed: every spare CPU becomes a patch builder · constraint g4 keeps it on A100s",
-        "Training runs only as fast as the patch builders fill the pool. Each builder is one CPU core (plus "
-        "~1 GB of a GPU), and one builder cannot keep one A100 trainer busy. On auto, every CPU the trainers and "
-        "their loaders leave becomes a builder, so CPUs/task is the main speed lever; the Parameters tab shows "
-        "the resolved layout.\n\n"
-        "• 4 GPUs (3 training) with 32 CPUs → 3 trainers, 4 loaders each, 17 builders.\n"
-        "• Aim for at least 3 builders per training GPU; fewer leaves the trainers waiting.\n"
-        "• Constraint g4 = A100 nodes. The default g2|g3|g4 can land on RTX cards.\n"
+        "CPUs set the speed: they become patch builders and loaders · 1–2 GPUs start sooner than 4",
+        "Training runs only as fast as the patch builders fill the pool and the loaders empty it. Each is one "
+        "CPU core (a builder also takes ~1 GB of a GPU), and both are slower than one A100 trainer. On auto the "
+        "CPUs the trainers leave are split between them so their rates match, so CPUs/task is the main speed "
+        "lever; the Parameters tab shows the resolved layout and rates.\n\n"
+        "• 2 GPUs (1 training) with 16 CPUs → 1 trainer, 10 loaders, 5 builders.\n"
+        "• GPUs on the cluster are mostly taken one at a time: a 4-GPU job waits for a whole node to empty "
+        "(days), a 1–2 GPU job for any gap (often minutes).\n"
+        "• Constraint g2|g3|g4 = V100, RTX 6000 or A100. P100 (g1) does not run this container.\n"
         "• Alignment, after each iteration's training, spreads over every GPU; on 100+ tilt series it grows "
         "to hours per iteration.\n"
         "• One node only (num_gpus ≤ 4). A full node queues longer.\n"
@@ -538,22 +579,24 @@ class MissAlignParams(AbstractJobParams):
         le=4,
         description="GPUs that train the model (at most num_gpus). The steps of each epoch are split between "
         "them, each step taking batch_size cubes, and the tool scales the learning rate by this count. Each "
-        "trainer needs about 3 patch builders to stay busy.",
+        "trainer needs its own loaders and its share of builders (CPUs) to stay busy.",
     )
     patch_builders: int = Field(
         default=0,
         ge=0,
         description="Processes that make the training cubes: each loads a tilt stack, shrinks it and "
         "reconstructs aligned and shifted cubes, using one CPU core and ~1 GB of a GPU. Training runs only as "
-        "fast as they deliver. 0 = auto: every CPU left after the trainers and their loaders (the summary above "
-        "shows how many); more CPUs in the SLURM tab means more builders. Set a number only to hold CPUs back.",
+        "fast as they deliver (~14 cubes/s each). 0 = auto: the CPUs the trainers leave are split between "
+        "builders and loaders so their rates match (the summary above shows the result). Set a number to pin it; "
+        "with dataloader_workers on auto the loaders then take the rest.",
     )
     dataloader_workers: int = Field(
         default=0,
         ge=0,
-        description="Loaders per training GPU: processes that read cubes from the pool and batch them for "
-        "their trainer (light work, one CPU each). 0 = auto: up to 4 per trainer, at most half the CPUs the "
-        "trainers leave. Each needs 2 × batch_size cubes of pool_size, which caps the count.",
+        description="Loaders per training GPU: processes that unpickle cubes from the pool, normalise and mask "
+        "them, and batch them for their trainer (one CPU each, ~5.5 cubes/s). Training runs only as fast as "
+        "they deliver. 0 = auto: balanced against the builders (see patch_builders). Each needs 2 × batch_size "
+        "cubes of pool_size, which caps the count.",
     )
     prepare_stacks_apix: float = Field(
         default=0.0,
@@ -681,7 +724,7 @@ class MissAlignParams(AbstractJobParams):
             return None
         stack_apix = self.planned_stack_apix() or _ALIGN_REFERENCE_APIX
         cubes_per_sec = min(
-            len(workers.builders) * _BUILDER_CUBES_PER_SEC, len(workers.training) * self.batch_size / _TRAINER_STEP_SEC
+            workers.builder_rate, workers.loader_rate, len(workers.training) * self.batch_size / _TRAINER_STEP_SEC
         )
         train_min = self.steps_per_epoch * self.max_epochs_per_iteration * self.batch_size / cubes_per_sec / 60.0
         iteration_minutes = [
