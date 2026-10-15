@@ -870,14 +870,16 @@ def _prepopulate_subtomo(d: _AggregateDialog, summary: dict) -> None:
     from services.models_base import JobType
 
     optset = summary["outputs"]["optimisation_set"]
-    # A job already submitted keeps the inputs it was submitted with.
+    # This species' job only; a job already submitted keeps the inputs it was submitted with.
     targets = [
-        iid for iid, j in d.state.jobs.items() if j.job_type == JobType.SUBTOMO_EXTRACTION and not j.inputs_fixed
+        iid
+        for iid, j in d.state.jobs.items()
+        if j.job_type == JobType.SUBTOMO_EXTRACTION and j.species_id == d.species_id and not j.inputs_fixed
     ]
     if not targets:
         ui.notify(
-            f"No unsubmitted Subtomo extraction job in this project — add one from the roster, then set its input "
-            f"to {optset}",
+            f"No unsubmitted Subtomo extraction job of {d.species_id} in this project — add one from the roster, "
+            f"then set its input to {optset}",
             type="warning",
             timeout=9000,
         )
