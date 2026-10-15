@@ -1,4 +1,5 @@
 from __future__ import annotations
+import copy
 import logging
 from enum import Enum
 from pathlib import Path
@@ -51,6 +52,14 @@ class ExtractionCutoffMethod(str, Enum):
 
     FALSE_POSITIVES = "NumberOfFalsePositives"
     MANUAL = "ManualCutOff"
+
+
+class SubmittedInput(BaseModel):
+    """What one input slot was wired to when the job was submitted: the source, as a
+    `source_overrides` key, and which output of that producer it read (empty for a manual file)."""
+
+    source_key: str
+    output_key: str = ""
 
 
 class AbstractJobParams(BaseModel):
@@ -122,6 +131,10 @@ class AbstractJobParams(BaseModel):
     #         "jobtype:instance_path" for a synthetic producer, e.g. "mergedSources:MergedSources/<slug>",
     #         or "manual:/absolute/path/to/file.star"
     source_overrides: dict[str, str] = Field(default_factory=dict)
+    # Inputs fixed when the chain submitted this job (slot key -> source), the ones its paths were
+    # resolved from. None: never submitted that way, so the inputs are chosen afresh each time. A slot
+    # missing from the dict had no source at submit and stays without one.
+    submitted_inputs: dict[str, SubmittedInput] | None = None
     job_type: JobType | None = None
 
     # Private attribute, not a Pydantic model field.
@@ -433,6 +446,21 @@ class AbstractJobParams(BaseModel):
     @property
     def display_status(self) -> str:
         return self.execution_status.value
+
+    @property
+    def inputs_fixed(self) -> bool:
+        """It reads the inputs recorded at its submit: submitted, and not put back to Scheduled since
+        (a job back at Scheduled is chosen afresh at its next Run)."""
+        return self.submitted_inputs is not None and self.execution_status != JobStatus.SCHEDULED
+
+    def copy_settings_from(self, other: AbstractJobParams) -> None:
+        """Take `other`'s parameters, SLURM settings and inputs set by hand: a clone, of a job of the
+        same type. Its other inputs, and what it read at its submit, are not copied: the clone's
+        automatic inputs are chosen afresh."""
+        for name in self.USER_PARAMS:
+            setattr(self, name, copy.deepcopy(getattr(other, name)))
+        self.slurm_overrides = copy.deepcopy(other.slurm_overrides)
+        self.source_overrides = dict(other.source_overrides or {})
 
     @property
     def has_succeeded(self) -> bool:

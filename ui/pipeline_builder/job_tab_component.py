@@ -16,7 +16,7 @@ from ui.components.species_pill import render_species_pill
 from ui.status_indicator import BoundStatusDot
 from services.models_base import instance_id_to_job_type
 from ui.ui_state import UIStateManager, MonitorTab, get_job_display_name, get_instance_display_name
-from ui.pipeline_builder.config_tab import render_config_tab, is_job_frozen
+from ui.pipeline_builder.config_tab import render_config_tab, in_use_notice, is_job_frozen
 from ui.pipeline_builder.io_tab import render_io_tab
 from ui.pipeline_builder.slurm_tab import render_slurm_tab
 from ui.pipeline_builder.logs_tab import render_logs_tab
@@ -374,9 +374,12 @@ async def _handle_stop_job(
         )
         if job_dir:
             ui.label(str(job_dir)).classes("text-xs font-mono text-gray-500 mt-1")
-        ui.label("The SLURM job will be cancelled, this job marked Failed, and the pipeline stopped.").classes(
-            "text-sm text-gray-600 mt-2"
-        )
+        ui.label(
+            "The SLURM job will be cancelled and this job marked Failed; jobs that wait for it fail too, "
+            "the rest keep running."
+            if current_project_state().use_afterok_orchestrator
+            else "The SLURM job will be cancelled, this job marked Failed, and the pipeline stopped."
+        ).classes("text-sm text-gray-600 mt-2")
         with ui.row().classes("mt-4 gap-2 justify-end w-full"):
             house_button("Cancel", lambda: dialog.submit(False))
             house_button("Stop job", lambda: dialog.submit(True), kind="accent")
@@ -388,9 +391,12 @@ async def _handle_stop_job(
     result = await backend.pipeline_runner.cancel_job(project_path, instance_id)
     await backend.pipeline_runner.sync_all_jobs(str(project_path))
 
-    if "stop_all_timers" in callbacks:
+    # Under afterok the other jobs keep running, and so does the pipeline (pipeline_active stays
+    # until every job has ended): the tab keeps polling while it is active.
+    active = bool(current_project_state().pipeline_active)
+    if not active and "stop_all_timers" in callbacks:
         callbacks["stop_all_timers"]()
-    ui_mgr.set_pipeline_running(False)
+    ui_mgr.set_pipeline_running(active)
     if "rebuild_pipeline_ui" in callbacks:
         callbacks["rebuild_pipeline_ui"]()
 
@@ -403,6 +409,10 @@ async def _handle_stop_job(
 def _handle_delete(
     job_type: JobType, instance_id: str, job_model, backend, ui_mgr: UIStateManager, callbacks: dict[str, Callable]
 ):
+    notice = in_use_notice(current_project_state(), instance_id)
+    if notice:
+        ui.notify(notice, type="warning")
+        return
     # Interactive jobs use the roster's custom removal flow.
     if getattr(job_model, "IS_INTERACTIVE", False):
         remove_cb = callbacks.get("remove_instance_from_pipeline")
@@ -417,14 +427,7 @@ def _handle_delete(
             remove_cb(instance_id)
         return
 
-    deletion_service = get_deletion_service()
-    project_path = ui_mgr.project_path
-
-    preview = None
-    if project_path and job_model.relion_job_name:
-        preview = deletion_service.preview_deletion(
-            project_path, job_model.relion_job_name, job_resolver=backend.pipeline_orchestrator.job_resolver
-        )
+    preview = get_deletion_service().preview_deletion(current_project_state(), instance_id)
 
     with ui.dialog() as dialog, ui.card().classes("w-[28rem]"):
         ui.label(f"Delete {get_instance_display_name(instance_id, job_model)}?").classes("text-lg font-bold")

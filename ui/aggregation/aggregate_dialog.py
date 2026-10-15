@@ -870,16 +870,21 @@ def _prepopulate_subtomo(d: _AggregateDialog, summary: dict) -> None:
     from services.models_base import JobType
 
     optset = summary["outputs"]["optimisation_set"]
-    targets = [iid for iid, j in d.state.jobs.items() if j.job_type == JobType.SUBTOMO_EXTRACTION]
+    # A job already submitted keeps the inputs it was submitted with.
+    targets = [
+        iid for iid, j in d.state.jobs.items() if j.job_type == JobType.SUBTOMO_EXTRACTION and not j.inputs_fixed
+    ]
     if not targets:
         ui.notify(
-            f"No Subtomo extraction job in this project yet — add one from the roster, then set its input to {optset}",
+            f"No unsubmitted Subtomo extraction job in this project — add one from the roster, then set its input "
+            f"to {optset}",
             type="warning",
             timeout=9000,
         )
         return
     iid = targets[0]
-    d.state.jobs[iid].paths["input_optimisation"] = optset
+    # Set by hand, so Run resolves it like any other input (Run rewrites `paths` itself).
+    d.state.jobs[iid].source_overrides["input_optimisation"] = f"manual:{optset}"
     d.state.mark_dirty()
     bk = get_backend()
     if bk is not None:

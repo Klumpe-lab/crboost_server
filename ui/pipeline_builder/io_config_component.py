@@ -23,12 +23,13 @@ from nicegui import ui
 
 from services.io_slots import JobFileType
 from services.models_base import InstanceId, JobType, JobStatus
-from services.path_resolution_service import PathResolutionService, InputSlotValidation, auto_exclusion
+from services.path_resolution_service import PathResolutionService, InputSlotValidation, InputState, auto_exclusion
 from backend import get_backend
 from services.project_state import get_project_state_for
 from ui.current_project import current_project_state
 from ui.ui_state import get_job_display_name
 from ui.utils import snake_to_title
+from ui.components.buttons import house_button
 from ui.components.copyable import copyable_path, copy_button
 
 MONO = "font-family: 'IBM Plex Mono', monospace;"
@@ -213,11 +214,17 @@ class IOConfigComponent:
         # source selectors become static faces and the edit affordances (manual
         # path, reset, gain browse) are hidden.
         self.read_only = read_only
+        self._inputs_read_only = read_only
         self._validation_cache: dict[str, InputSlotValidation] = {}
         self._slot_containers: dict[str, ui.element] = {}
         self._gain_container: ui.element | None = None
 
     def render(self):
+        self._root = ui.column().classes("w-full gap-1")
+        with self._root:
+            self._render_body()
+
+    def _render_body(self):
         state = current_project_state()
         job_model = state.jobs.get(self.instance_id)
         if not job_model:
@@ -228,21 +235,51 @@ class IOConfigComponent:
         input_schema = resolver.get_input_schema_for_job(self.job_type)
         output_schema = resolver.get_output_schema_for_job(self.job_type)
         wants_gain = self.job_type in GAIN_CONSUMERS
+        # A job the chain submitted reads what was resolved then; only a Failed one may choose again.
+        fixed = job_model.inputs_fixed
+        self._inputs_read_only = self.read_only or fixed
 
-        with ui.column().classes("w-full gap-1"):
-            if input_schema or wants_gain:
+        if input_schema or wants_gain:
+            with ui.row().classes("w-full items-center gap-2"):
                 ui.label("Inputs").style(_SECTION_TITLE_STYLE)
-                if wants_gain:
-                    self._gain_container = ui.column().classes("w-full gap-0")
-                    with self._gain_container:
-                        self._render_gain_row()
-                if input_schema:
-                    self._render_input_slots(resolver, input_schema, job_model)
-            if output_schema:
-                # A little breathing room + a title to separate outputs from inputs.
-                ui.element("div").style("height: 8px;")
-                ui.label("Outputs").style(_SECTION_TITLE_STYLE)
-                self._render_output_slots(output_schema, job_model)
+                if fixed and job_model.execution_status == JobStatus.FAILED:
+                    house_button(
+                        "Reset inputs",
+                        self._reset_inputs,
+                        tooltip="Choose this job's inputs again at the next Run instead of the ones fixed at its "
+                        "last submit. If they come out different, the job starts over in a new folder; "
+                        "otherwise it resumes where it stopped.",
+                    )
+            mixed = resolver.mixed_chains(self.instance_id) if input_schema else None
+            if mixed:
+                ui.label(
+                    f"Reads from {mixed[0]} and {mixed[1]}, and neither is upstream of the other: "
+                    "its inputs come from two chains."
+                ).style(f"{FONT} font-size: 8px; color: {_AMBER};")
+            if wants_gain:
+                self._gain_container = ui.column().classes("w-full gap-0")
+                with self._gain_container:
+                    self._render_gain_row()
+            if input_schema:
+                self._render_input_slots(resolver, input_schema, job_model)
+        if output_schema:
+            # A little breathing room + a title to separate outputs from inputs.
+            ui.element("div").style("height: 8px;")
+            ui.label("Outputs").style(_SECTION_TITLE_STYLE)
+            self._render_output_slots(output_schema, job_model)
+
+    async def _reset_inputs(self):
+        state = current_project_state()
+        job_model = state.jobs.get(self.instance_id)
+        if job_model is None:
+            return
+        job_model.submitted_inputs = None
+        await get_backend().save_project(state.project_path, force=True)
+        self._root.clear()
+        with self._root:
+            self._render_body()
+        if self.on_change:
+            self.on_change()
 
     def _get_job_dir(self, job_model) -> tuple[Path | None, bool]:
         state = current_project_state()
@@ -337,8 +374,6 @@ class IOConfigComponent:
                 self._render_input_slot_row(resolver, slot, job_model)
 
     def _render_input_slot_row(self, resolver, slot, job_model):
-        overrides = getattr(job_model, "source_overrides", {}) or {}
-        current_override = overrides.get(slot.key)
         species_id = getattr(job_model, "species_id", None)
 
         candidates = resolver.get_candidates_for_slot(
@@ -351,11 +386,13 @@ class IOConfigComponent:
         )
         self._validation_cache[slot.key] = validation
 
-        if current_override and current_override.startswith("manual:"):
+        # The source the slot reads: the recorded one on a job fixed at submit, else the override.
+        key = validation.source_key
+        if key and key.startswith("manual:"):
             current_value = "manual"
-            manual_path = current_override[7:]
-        elif validation.source_key:
-            current_value = validation.source_key
+            manual_path = key[len("manual:") :]
+        elif key:
+            current_value = key
             manual_path = ""
         else:
             current_value = None
@@ -380,7 +417,7 @@ class IOConfigComponent:
                 f"width: 6px; height: 6px; border-radius: 50%; background: {dot_color}; flex-shrink: 0;"
             )
             self._input_name_label(slot)
-            if self.read_only:
+            if self._inputs_read_only:
                 self._render_static_source(slot, candidates, current_value, validation, skipped)
             else:
                 self._render_source_selector(slot, candidates, current_value, validation, skipped)
@@ -396,9 +433,11 @@ class IOConfigComponent:
                         .style("color: #94a3b8; flex-shrink: 0;")
                         .tooltip("Reset to auto")
                     )
+            if current_value is not None:
+                self._input_state_tag(validation)
 
         # Manual-path editor (editable mode only).
-        manual_editing = current_value == "manual" and not self.read_only
+        manual_editing = current_value == "manual" and not self._inputs_read_only
         if manual_editing:
             with ui.row().classes("w-full items-center gap-2").style("padding-left: 20px;"):
                 inp = ui.input(
@@ -434,13 +473,29 @@ class IOConfigComponent:
         if validation.tied:
             names = ", ".join(_candidate_name(c) for c in validation.tied)
             problem, color = f"{len(validation.tied)} equally good sources: {names}. Pick one.", _AMBER
-        elif validation.is_user_override and validation.error_message and not validation.resolved_path:
+        elif (
+            validation.input_state != InputState.AUTOMATIC and validation.error_message and not validation.resolved_path
+        ):
             problem, color = validation.error_message, STATUS_STYLE[JobStatus.FAILED]["color"]
         else:
             problem = None
         if problem:
             with ui.row().classes("w-full").style("padding-left: 20px;"):
                 ui.label(problem).style(f"{FONT} font-size: 8px; color: {color};")
+
+    def _input_state_tag(self, validation):
+        """How the source was chosen, as a quiet word beside it."""
+        tips = {
+            InputState.AUTOMATIC: "Chosen by automatic wiring. It can still change until this job is submitted.",
+            InputState.SET_BY_HAND: "Set in this section. It stays until you change it.",
+            InputState.FIXED_AT_SUBMIT: "Recorded when this job was submitted: it reads this, whatever is added "
+            "to the project since.",
+        }
+        word, tip = validation.input_state.value, tips[validation.input_state]
+        if validation.input_state == InputState.AUTOMATIC and validation.refined_by:
+            word = f"follows {validation.refined_by}"
+            tip = f"{validation.refined_by} refines the source automatic wiring found, so this input reads its output."
+        ui.label(word).style(f"{FONT} font-size: 8px; color: #94a3b8; flex-shrink: 0;").tooltip(tip)
 
     def _render_current_face(self, candidates, current_value, validation, skipped, empty_name):
         """The chosen source, a tie, or nothing, as one face (shared by the editable selector

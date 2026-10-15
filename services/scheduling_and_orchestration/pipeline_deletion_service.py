@@ -11,8 +11,9 @@ from typing import Any
 from dataclasses import dataclass, field
 import pandas as pd
 from services.configs.starfile_service import StarfileService
-from services.project_state import JobType
-from services.result import err, ok
+from services.path_resolution_service import consumers_of
+from services.project_state import JobType, ProjectState
+from services.result import ok
 
 logger = logging.getLogger(__name__)
 
@@ -320,56 +321,27 @@ class PipelineDeletionService:
         
         return orphans
 
-    def preview_deletion(
-        self,
-        project_dir: Path,
-        job_path: str,
-        job_resolver=None,  # Optional: to get human-readable job types
-    ) -> dict[str, Any]:
-        """
-        Preview what would happen if we delete this job.
-        Returns info about downstream jobs that would be orphaned.
-        
-        Does NOT modify anything.
-        """
-        job_name = job_path.rstrip("/") + "/"
-        
-        graph = self.load_pipeline_graph(project_dir)
-        if graph is None:
-            return err("Could not load pipeline")
-
-        # Check job exists
-        if graph.processes.empty:
-            return err("Pipeline has no jobs")
-
-        job_mask = graph.processes["rlnPipeLineProcessName"] == job_name
-        if not job_mask.any():
-            return err(f"Job '{job_name}' not found")
-        
-        # Get job status
-        job_status = graph.get_job_status(job_name)
-        
-        # Find downstream dependents
-        downstream_jobs = graph.get_downstream_jobs(job_name)
-        
-        # Enrich with job type info if resolver provided
-        downstream_details = []
-        for downstream_path in downstream_jobs:
-            detail = {
-                "path": downstream_path,
-                "status": graph.get_job_status(downstream_path),
-            }
-            if job_resolver:
-                job_type_str = job_resolver.get_job_type_from_path(project_dir, downstream_path)
-                detail["type"] = job_type_str
-            downstream_details.append(detail)
-        
+    def preview_deletion(self, state: ProjectState, instance_id: str) -> dict[str, Any]:
+        """What deleting `instance_id` would leave without an input: the jobs that read it, as the
+        resolver wires them (`consumers_of`), so the count holds under afterok, which does not
+        write default_pipeline.star. Does NOT modify anything."""
+        details = []
+        for iid in consumers_of(state, instance_id):
+            jm = state.jobs.get(iid)
+            if jm is None:
+                continue
+            details.append(
+                {
+                    "path": (jm.relion_job_name or iid).rstrip("/"),
+                    "type": jm.job_type.value if jm.job_type else "",
+                    "status": jm.execution_status.value,
+                }
+            )
         return ok(
-            job_path=job_name,
-            job_status=job_status,
-            downstream_count=len(downstream_jobs),
-            downstream_jobs=downstream_details,
-            warning=f"{len(downstream_jobs)} job(s) will become orphaned" if downstream_jobs else None,
+            instance_id=instance_id,
+            downstream_count=len(details),
+            downstream_jobs=details,
+            warning=f"{len(details)} job(s) will become orphaned" if details else None,
         )
 
 # Singleton instance

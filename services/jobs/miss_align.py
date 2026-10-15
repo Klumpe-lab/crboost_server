@@ -631,17 +631,20 @@ class MissAlignParams(AbstractJobParams):
         )
 
     def planned_stack_apix(self) -> float | None:
-        """Pixel size of the stacks the tool will read: prepare_stacks_apix when set, else the alignment
-        job's stack pixel size from project state. None when neither is known (the driver reads the stacks)."""
+        """Pixel size of the stacks the tool will read: prepare_stacks_apix when set, else the stack pixel
+        size of the alignment job this one reads. None when neither is known (the driver reads the stacks)."""
         if self.prepare_stacks_apix > 0:
             return self.prepare_stacks_apix
         state = self._project_state
         if state is None:
             return None
-        for instance_id in state.pipeline_order or list(state.jobs):
-            job = state.jobs.get(instance_id)
-            if job is not None and job.job_type == JobType.TS_ALIGNMENT:
-                return float(getattr(job, "rescale_angpixs", 0) or 0) or None
+        from services.path_resolution_service import PathResolutionService
+
+        own_id = next((iid for iid, job in state.jobs.items() if job is self), None)
+        producer = PathResolutionService(state).source_of(own_id, "input_star") if own_id else None
+        job = state.jobs.get(producer) if producer else None
+        if job is not None and job.job_type == JobType.TS_ALIGNMENT:
+            return float(getattr(job, "rescale_angpixs", 0) or 0) or None
         return None
 
     # ── Walltime ─────────────────────────────────────────────────────────────

@@ -1,5 +1,4 @@
 from __future__ import annotations
-import asyncio
 import logging
 import statistics
 from collections.abc import Iterable, Mapping, Sequence
@@ -261,7 +260,7 @@ async def stamp_verdict(registry, labels: Mapping[str, str]) -> dict:
         kept += not bad
 
     try:
-        await asyncio.to_thread(registry.save)
+        await registry.save_async()
     except Exception:
         logger.exception("tilt-filter commit: registry save failed")
         return err("Cannot commit: writing the tilt verdict to the registry failed. See the server log.")

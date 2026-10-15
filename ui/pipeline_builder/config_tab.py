@@ -1,11 +1,12 @@
 # ui/pipeline_builder/config_tab.py
 from collections.abc import Callable
 
+from services.path_resolution_service import jobs_in_use
 from services.project_state import JobStatus, JobType
 from ui.current_project import current_project_state
 from ui.job_plugins import get_params_renderer
 from ui.job_plugins.default_renderer import render_default_params_card
-from ui.ui_state import UIStateManager
+from ui.ui_state import UIStateManager, get_instance_display_name
 
 
 def is_job_frozen(instance_id: str) -> bool:
@@ -13,7 +14,28 @@ def is_job_frozen(instance_id: str) -> bool:
     job_model = state.jobs.get(instance_id)
     if not job_model:
         return False
-    return job_model.execution_status in (JobStatus.RUNNING, JobStatus.SUCCEEDED)
+    # Queued counts: its inputs were fixed at submit, and the model refuses parameter edits on any
+    # job that is neither Scheduled nor Failed.
+    return job_model.execution_status in (JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.SUCCEEDED)
+
+
+def in_use_notice(state, instance_id: str) -> str | None:
+    """Why `instance_id` cannot be removed or deleted now, or None when it can: it is queued or
+    running, or a queued or running job reads it, directly or further down (`jobs_in_use`)."""
+    holder = jobs_in_use(state).get(instance_id)
+    if holder is None:
+        return None
+    if state.pipeline_active and not state.use_afterok_orchestrator:
+        return "The pipeline is running; jobs can be removed once it has finished or been stopped."
+    name = get_instance_display_name(instance_id, state.jobs.get(instance_id))
+    holder_model = state.jobs[holder]
+    status = holder_model.execution_status.value.lower()
+    if holder == instance_id:
+        return f"{name} is {status}; cancel it first."
+    return (
+        f"{name} feeds {get_instance_display_name(holder, holder_model)}, which is {status}; "
+        "it can go once that has finished or been cancelled."
+    )
 
 
 def render_config_tab(

@@ -14,6 +14,7 @@ from services.project_state import JobType
 from ui.components.buttons import house_button
 from ui.components.reactive import SingleFlight
 from ui.current_project import current_project_state
+from ui.pipeline_builder.config_tab import in_use_notice
 from ui.pipeline_builder.pipeline_constants import PHASE_JOBS, PHASE_PARTICLES, missing_deps, next_instance_id
 from ui.pipeline_builder.pipeline_roster import RosterWidget
 from ui.pipeline_builder.status_poller import StatusPoller
@@ -48,6 +49,7 @@ class PipelineBuilderPanel:
         toggle_journey: Callable | None = None,
         toggle_gallery: Callable | None = None,
         toggle_protocols: Callable | None = None,
+        toggle_table: Callable | None = None,
     ):
         self.backend = backend
         self.callbacks = callbacks
@@ -58,6 +60,7 @@ class PipelineBuilderPanel:
         self.toggle_journey = toggle_journey
         self.toggle_gallery = toggle_gallery
         self.toggle_protocols = toggle_protocols
+        self.toggle_table = toggle_table
 
         self.ui_mgr = get_ui_state_manager()
 
@@ -109,9 +112,6 @@ class PipelineBuilderPanel:
         # several times before one click lands.
         async with self.flight(f"species_dialog:{job_type.value}") as acquired:
             if not acquired:
-                return
-
-            if self.ui_mgr.is_running:
                 return
 
             if job_type not in PHASE_JOBS[PHASE_PARTICLES]:
@@ -167,9 +167,6 @@ class PipelineBuilderPanel:
         dependency warning is repeated here since that surface isn't visible."""
         async with self.flight(f"add_for_species:{job_type.value}:{species_id}") as acquired:
             if not acquired:
-                return
-            if self.ui_mgr.is_running:
-                ui.notify("Pipeline is running — stop it before adding jobs.", type="warning")
                 return
             missing = missing_deps(job_type, set(self.ui_mgr.selected_jobs))
             if missing:
@@ -288,11 +285,15 @@ class PipelineBuilderPanel:
     # ── Job/instance management ───────────────────────────────────────────────
 
     def add_instance_to_pipeline(
-        self, job_type: JobType, instance_id: str | None = None, species_id: str | None = None
+        self,
+        job_type: JobType,
+        instance_id: str | None = None,
+        species_id: str | None = None,
+        clone_of: str | None = None,
     ):
-        if self.ui_mgr.is_running:
-            return
-
+        """Add a job of `job_type`; with `clone_of`, one that takes that job's parameters, SLURM
+        settings and inputs set by hand. Open while other jobs are queued or running: adding
+        changes nothing a submitted job reads."""
         state = current_project_state()
 
         # Interactive jobs are singletons — if one already exists, just switch to it.
@@ -403,6 +404,10 @@ class PipelineBuilderPanel:
                             if getattr(sp, "diameter_ang", None):
                                 job_model.diameter_ang = float(sp.diameter_ang)
 
+        source = state.jobs.get(clone_of) if clone_of else None
+        if source is not None and instance_id in state.jobs:
+            state.jobs[instance_id].copy_settings_from(source)
+
         # If a merge is active, wire this new consumer's input_optimisation slot to the
         # active merge's synthetic `mergedSources` producer (source_overrides key) so the
         # user doesn't have to configure the override by hand. No-ops when there is no
@@ -461,14 +466,9 @@ class PipelineBuilderPanel:
         The state is resolved by explicit path when there is one, not `current_project_state()`:
         the save targets `ui_mgr.project_path`, and deleting from one state while saving
         another loses the deletion.
-        """
-        if self.ui_mgr.is_running:
-            return
-        if not self.ui_mgr.remove_instance(instance_id):
-            return
-        self._cleanup_stale_overrides_for_instance(instance_id)
-        self._job_content_containers.pop(instance_id, None)
 
+        Refused, with the reason, for a job that is queued or running or that one reads.
+        """
         project_path = self.ui_mgr.project_path
         if project_path is not None:
             from services.project_state import get_project_state_for
@@ -476,6 +476,15 @@ class PipelineBuilderPanel:
             state = get_project_state_for(project_path)
         else:
             state = current_project_state()
+
+        notice = in_use_notice(state, instance_id)
+        if notice:
+            ui.notify(notice, type="warning")
+            return
+        if not self.ui_mgr.remove_instance(instance_id):
+            return
+        self._cleanup_stale_overrides_for_instance(instance_id)
+        self._job_content_containers.pop(instance_id, None)
 
         job_model = state.jobs.get(instance_id)
         if job_model and job_model.execution_status != JobStatus.SUCCEEDED:
@@ -617,7 +626,7 @@ class PipelineBuilderPanel:
                     required_paths=[],
                 )
                 if result.get("already_complete"):
-                    _safe_notify("All selected jobs already completed.", type="info")
+                    _safe_notify(result.get("message") or "All selected jobs already completed.", type="info")
                     return
                 if result.get("waiting_for_review"):
                     # Everything left is parked behind the tilt filter: nothing was submitted. The
@@ -703,6 +712,7 @@ def build_pipeline_builder_panel(
     toggle_journey: Callable | None = None,
     toggle_gallery: Callable | None = None,
     toggle_protocols: Callable | None = None,
+    toggle_table: Callable | None = None,
 ) -> None:
     panel = PipelineBuilderPanel(
         backend=backend,
@@ -714,6 +724,7 @@ def build_pipeline_builder_panel(
         toggle_journey=toggle_journey,
         toggle_gallery=toggle_gallery,
         toggle_protocols=toggle_protocols,
+        toggle_table=toggle_table,
     )
 
     # `apply_aggregation_overrides` does not run on render: it would mutate every project on

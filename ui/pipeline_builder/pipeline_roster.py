@@ -17,6 +17,8 @@ from ui.protocols_view import protocol_light
 from ui.styles import MONO, SANS as FONT
 from ui.status_indicator import BoundStatusDot, _running_spinner_html
 from services.models_base import InstanceId, instance_id_to_job_type
+from services.path_resolution_service import jobs_in_use
+from ui.pipeline_builder.config_tab import in_use_notice
 from ui.ui_state import get_job_display_name, get_instance_display_name
 from ui.pipeline_builder.pipeline_constants import (
     PHASE_JOBS,
@@ -75,6 +77,7 @@ _JOBS_TIP = (
     "roster and give an open job page the full width."
 )
 _GALLERY_TIP = "Tomograms — the wall of reconstructions, all of them at once"
+_TABLE_TIP = "Pipeline — every job in the order data flows through them: what reads what, state, tilt series, elapsed"
 
 
 def _tomo_badge_tip(counts) -> str:
@@ -223,6 +226,8 @@ class RosterWidget(FingerprintedView):
         # In-flight row actions (the tilt filter's mode switch). Here rather than on
         # the row, which every repaint rebuilds.
         self._flight = SingleFlight()
+        # Jobs a queued or running job depends on (jobs_in_use), refreshed by every render.
+        self._in_use: dict[str, str] = {}
 
     def _get_container(self) -> Any:
         return self.panel.roster_panel
@@ -352,6 +357,8 @@ class RosterWidget(FingerprintedView):
 
     def render(self):
         panel = self.panel
+        # Read by every row: which jobs a queued or running one depends on (their × is hidden).
+        self._in_use = jobs_in_use(current_project_state())
         for phase_id, jobs in PHASE_JOBS.items():
             icon_or_svg, phase_label, _ = PHASE_META[phase_id]
             is_flashing = self._flash_phase == phase_id
@@ -594,14 +601,31 @@ class RosterWidget(FingerprintedView):
                         .style("flex-shrink: 0;")
                         .tooltip(et.label)
                     )
-                if show_add and not panel.ui_mgr.is_running:
+                if show_add:
                     (
                         ui.button(icon="add", on_click=lambda j=job_type: panel.prompt_species_and_add(j))
                         .props("flat dense round size=xs color=grey-5")
                         .style("flex-shrink: 0;")
                         .tooltip(f"Add {get_job_display_name(job_type)}")
                     )
-                if not panel.ui_mgr.is_running:
+                # Not the singletons: the tilt filter, the import written at submit.
+                if job_model is not None and not is_filter and not job_model.RUNS_INLINE:
+                    (
+                        ui.button(
+                            icon="content_copy",
+                            on_click=lambda _, iid=instance_id, j=job_type, sp=job_model.species_id: (
+                                panel.add_instance_to_pipeline(j, species_id=sp, clone_of=iid)
+                            ),
+                        )
+                        .props("flat dense round size=xs color=grey-5")
+                        .style("flex-shrink: 0;")
+                        .tooltip(
+                            f"Clone: a new {get_job_display_name(job_type)} with these parameters, SLURM "
+                            "settings and inputs set by hand"
+                        )
+                    )
+                # A job in use by a queued or running one stays until that has finished or been cancelled.
+                if instance_id not in self._in_use:
                     (
                         ui.button(icon="close", on_click=lambda _, iid=instance_id: self._on_remove_click(iid))
                         .props("flat dense round size=xs color=grey-4")
@@ -715,8 +739,6 @@ class RosterWidget(FingerprintedView):
         panel = self.panel
         if panel.ensure_pipeline_mode:
             panel.ensure_pipeline_mode()
-        if panel.ui_mgr.is_running:
-            return
         missing = missing_deps(job_type, set(panel.ui_mgr.selected_jobs))
         if missing:
             ui.notify(
@@ -729,9 +751,6 @@ class RosterWidget(FingerprintedView):
 
     async def _on_remove_click(self, instance_id: str):
         panel = self.panel
-        if panel.ui_mgr.is_running:
-            return
-
         project_path = panel.ui_mgr.project_path
         if not project_path:
             panel.remove_instance_from_pipeline(instance_id)
@@ -740,6 +759,10 @@ class RosterWidget(FingerprintedView):
         from services.project_state import get_project_state_for
 
         state = get_project_state_for(project_path)
+        notice = in_use_notice(state, instance_id)
+        if notice:
+            ui.notify(notice, type="warning")
+            return
         job_model = state.jobs.get(instance_id)
         status = job_model.execution_status if job_model else None
 
@@ -754,12 +777,7 @@ class RosterWidget(FingerprintedView):
 
         from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
 
-        deletion_service = get_deletion_service()
-        preview = None
-        if project_path and job_model.relion_job_name:
-            preview = deletion_service.preview_deletion(
-                project_path, job_model.relion_job_name, job_resolver=panel.backend.pipeline_orchestrator.job_resolver
-            )
+        preview = get_deletion_service().preview_deletion(state, instance_id)
 
         # Page-slot parented: the roster is a FingerprintedView whose poll rebuilds these
         # rows, and a confirm dialog parented in a row that gets torn down takes the delete
@@ -941,6 +959,7 @@ class RosterWidget(FingerprintedView):
             ("dashboard_btn", "journey"),
             ("gallery_btn", "gallery"),
             ("protocol_btn", "protocols"),
+            ("table_btn", "table"),
         ):
             c = self._refs.get(ref_key)
             if c is not None:
@@ -975,6 +994,12 @@ class RosterWidget(FingerprintedView):
         if tp is not None:
             await tp()
 
+    async def _open_table(self):
+        """Switch to (or toggle off) the pipeline table. Lazily built like the gallery."""
+        tt = self.panel.toggle_table
+        if tt is not None:
+            await tt()
+
     # ── Sidebar ───────────────────────────────────────────────────────────────
 
     def build_sidebar(self):
@@ -1002,6 +1027,11 @@ class RosterWidget(FingerprintedView):
                 badge=True,
                 dot=True,
             )
+
+            # Pipeline table — the same jobs as rows in dependency order (ui/pipeline_table_view.py).
+            if panel.toggle_table is not None:
+                ui.element("div").style("height: 1px;")
+                self._sb_svg_btn("pipeline_table.svg", _TABLE_TIP, self._open_table, ref_key="table_btn")
 
             if panel.toggle_workbench is not None:
                 ui.element("div").style("height: 1px;")
@@ -1597,8 +1627,30 @@ class RosterWidget(FingerprintedView):
             return
         run_slot.clear()
         panel = self.panel
+        running = panel.ui_mgr.is_running
         with run_slot:
-            if panel.ui_mgr.is_running:
+            # Run stays while jobs are live: it starts what is unfinished around them, and a job
+            # that reads a live one waits for it.
+            play_div = (
+                ui.element("div")
+                .style(
+                    "width: 30px; height: 30px; border-radius: 50%; cursor: pointer; "
+                    "background: #f0fdf4; border: 1px solid #bbf7d0; color: #15803d; "
+                    "display: flex; align-items: center; justify-content: center; flex-shrink: 0;"
+                )
+                .on("click", panel.handle_run_pipeline)
+                .tooltip(
+                    "Run: start every unfinished job that is not queued or running; one that reads a running "
+                    "job waits for it"
+                    if running
+                    else "Run pipeline"
+                )
+            )
+            with play_div:
+                ui.html(self._load_svg("play.svg"), sanitize=False).style(
+                    "width: 16px; height: 16px; display: flex; pointer-events: none;"
+                )
+            if running:
                 stop_div = (
                     ui.element("div")
                     .style(
@@ -1607,7 +1659,7 @@ class RosterWidget(FingerprintedView):
                         "display: flex; align-items: center; justify-content: center; flex-shrink: 0;"
                     )
                     .on("click", panel.handle_stop_pipeline)
-                    .tooltip("Stop pipeline")
+                    .tooltip("Stop pipeline: cancel every queued and running job")
                 )
                 with stop_div:
                     ui.html(self._load_svg("stop.svg"), sanitize=False).style(
@@ -1629,21 +1681,6 @@ class RosterWidget(FingerprintedView):
                     "white-space: pre-line; display: block; width: 100%; padding: 0 3px;"
                 )
                 self._refs["status_label"] = status_lbl
-            else:
-                play_div = (
-                    ui.element("div")
-                    .style(
-                        "width: 30px; height: 30px; border-radius: 50%; cursor: pointer; "
-                        "background: #f0fdf4; border: 1px solid #bbf7d0; color: #15803d; "
-                        "display: flex; align-items: center; justify-content: center; flex-shrink: 0;"
-                    )
-                    .on("click", panel.handle_run_pipeline)
-                    .tooltip("Run pipeline")
-                )
-                with play_div:
-                    ui.html(self._load_svg("play.svg"), sanitize=False).style(
-                        "width: 16px; height: 16px; display: flex; pointer-events: none;"
-                    )
 
     # ── Status label ──────────────────────────────────────────────────────────
 

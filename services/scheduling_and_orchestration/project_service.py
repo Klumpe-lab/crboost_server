@@ -20,6 +20,7 @@ from services.configs.mdoc_service import (
 from services.configs.starfile_service import StarfileService
 from services.stack_import import choose_source_layer, resolve_stack, split_stack
 from services.models_base import InstanceId
+from services.path_resolution_service import consumers_of, jobs_in_use
 from services.project_state import (
     JobType,
     get_state_service,
@@ -181,8 +182,22 @@ class ProjectService:
             project_dir = Path(project_path)
             state = self.backend.state_service.state_for(project_dir)
 
+            # A job a queued or running one depends on stays; the dialogs check first, this holds
+            # when a Run lands while one is open.
+            holder = jobs_in_use(state).get(instance_id) if instance_id else None
+            if holder is not None:
+                if state.pipeline_active and not state.use_afterok_orchestrator:
+                    return err("The pipeline is running; delete jobs once it has finished or been stopped.")
+                status = state.jobs[holder].execution_status.value.lower()
+                if holder == instance_id:
+                    return err(f"{instance_id} is {status}; cancel it before deleting it.")
+                return err(f"{instance_id} feeds {holder}, which is {status}; delete it once that has finished.")
+
             deletion_service = get_deletion_service()
             job_resolver = self.backend.pipeline_orchestrator.job_resolver
+            # The jobs left without an input, by the same wiring the delete preview shows; asked
+            # while the job is still in the state.
+            readers = consumers_of(state, instance_id) if instance_id else None
 
             # When a specific instance is requested, only delete that one job path.
             # Otherwise fall back to deleting all instances of the type (legacy behaviour).
@@ -218,6 +233,8 @@ class ProjectService:
                     all_orphans.extend(result.orphaned_jobs)
                 else:
                     errors.append(f"{job_path}: {result.error}")
+            if readers is not None:
+                all_orphans = readers
 
             # Remove only the affected instances from state
             if instance_id:
