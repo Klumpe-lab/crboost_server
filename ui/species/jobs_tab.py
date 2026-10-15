@@ -29,7 +29,6 @@ from ui.components.reactive import FingerprintedView
 from ui.species.tab import TabContext
 from ui.status_indicator import _dot_html
 from ui.styles import MONO, SANS
-from ui.ui_state import get_ui_state_manager
 
 _LABEL_CLS = "text-[10px] font-bold text-gray-500 uppercase tracking-wider"
 _HINT_CLS = "text-[10px] text-gray-400"
@@ -72,8 +71,6 @@ class _JobsView(FingerprintedView):
     def __init__(self, container: ui.element, tab: JobsTab) -> None:
         super().__init__(container)
         self._tab = tab
-        # Captured once (page context); the tick reads it without a storage lookup.
-        self._ui_mgr = get_ui_state_manager()
 
     def _rows(self):
         state = get_project_state_for(self._tab.ctx.project_path)
@@ -92,7 +89,6 @@ class _JobsView(FingerprintedView):
                 for iid, jm in rows
             ),
             tuple(tuple(_drift(sp, jm)) for _iid, jm in rows),
-            self._ui_mgr.is_running,
         )
 
     def render(self) -> None:
@@ -128,9 +124,6 @@ class _JobsView(FingerprintedView):
                     ui.label("open ↗").style(
                         f"{SANS} font-size: 10px; color: #6366f1; cursor: pointer; text-decoration: underline dotted;"
                     ).on("click", lambda _e, i=iid: open_job(i)).tooltip("Show this job in the pipeline view")
-        if self._ui_mgr.is_running:
-            ui.label("Pipeline running — adding jobs is paused.").classes(_HINT_CLS + " px-1 mt-2")
-            return
         with ui.row().classes("w-full items-center gap-1 px-1 mt-2 flex-wrap"):
             ui.label("Add for this species:").classes(_HINT_CLS)
             for job_type in PARTICLE_JOB_TYPES:

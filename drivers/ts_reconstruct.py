@@ -4,7 +4,7 @@ ts_reconstruct driver — supervisor + per-tilt-series SLURM array task.
 
 Mode is determined by the SLURM_ARRAY_TASK_ID env var:
 
-- Unset:  SUPERVISOR mode. Submitted by relion_schemer via the standard qsub.sh.
+- Unset:  SUPERVISOR mode. Submitted by the afterok chain via the standard qsub.sh.
           Reads the input STAR, persists a task manifest, builds run_array.sh from
           config/qsub.sh with `#SBATCH --array=...` injected and per-task SLURM
           resources from job_model.get_effective_slurm_config(), sbatches it, polls

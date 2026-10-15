@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 from services.models_base import InstanceId, JobType
-from services.path_resolution_service import PathResolutionService, override_instance_id
+from services.path_resolution_service import PathResolutionService, override_instance_id, subset_cut
 from services.project_state import ProjectState
 from services.protocols.schema import (
     ASSETS_DIRNAME,
@@ -54,6 +54,10 @@ def export_protocol(
         jt = jm.job_type
         if jt is None or jt == JobType.EXTRACT_PICK_LIST:
             continue  # per-list interactive extraction is not a pipeline stage
+        if jt == JobType.SUBSET:
+            # Its tilt series are names in this project; the stages after it read its cut instead.
+            warnings.append(f"{iid}: a Subset (tilt series of this project) is not a protocol stage — NOT exported")
+            continue
         sid = _bound_species(state, iid, jm)
         params = jm.model_dump(mode="json", include=set(jm.USER_PARAMS))
         if jt == JobType.TEMPLATE_MATCH_PYTOM:
@@ -115,6 +119,13 @@ def _portable_inputs(state: ProjectState, resolver: PathResolutionService, iid: 
         if producer is None:
             warnings.append(f"{iid}.{slot}: override '{ref}' names no job in this project — NOT exported")
             continue
+        if state.jobs[producer].job_type == JobType.SUBSET:
+            cut = subset_cut(state, state.jobs[producer])
+            if cut is None:
+                warnings.append(f"{iid}.{slot}: reads the Subset {producer}, which cuts nothing — NOT exported")
+                continue
+            warnings.append(f"{iid}.{slot}: reads the Subset {producer}; exported as reading what it cuts, {cut[0]}")
+            producer = cut[0]
         inputs[slot] = producer
     return inputs
 

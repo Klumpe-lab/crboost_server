@@ -33,6 +33,7 @@ from services.jobs.import_movies import ImportMoviesParams
 from services.jobs.miss_align import MissAlignParams
 from services.jobs.reconstruct_particle import ReconstructParticleParams
 from services.jobs.refine3d import Refine3DParams
+from services.jobs.subset import SubsetParams
 from services.jobs.subtomo_extraction import SubtomoExtractionParams
 from services.jobs.template_match import TemplateMatchPytomParams
 from services.jobs.tilt_filter import TiltFilterParams
@@ -79,6 +80,13 @@ class JobSpec:
     # consumer (PathResolutionService._follow_refinements). Never inferred from the schemas -
     # several jobs consume and produce one type without being a drop-in refinement.
     refines: tuple[JobFileType, ...] = ()
+    # The input slot whose star rows are this job's tilt series, for the jobs that can follow a
+    # Subset ("Add <job>" on its tab, which sets this slot to the Subset). None: the job takes its
+    # tilt series from elsewhere (alignment reads the registry) or works per particle.
+    items_from: str | None = None
+    # False: never added from the roster's add rows; made elsewhere (a Subset, from the tab of the
+    # job it cuts).
+    roster_add: bool = True
 
 
 JOB_SPECS: Final[tuple[JobSpec, ...]] = (
@@ -143,6 +151,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         driver="miss_align.py",
         plugins=("miss_align",),
         refines=(JobFileType.ALIGNED_TILT_SERIES_STAR, JobFileType.WARP_TILTSERIES_DIR),
+        items_from="input_star",
     ),
     JobSpec(
         JobType.TS_CTF,
@@ -153,6 +162,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         driver="ts_ctf.py",
         plugins=("array_tasks",),
         array_output_star="ts_ctf_tilt_series.star",
+        items_from="input_star",
     ),
     JobSpec(
         JobType.TS_RECONSTRUCT,
@@ -163,6 +173,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         driver="ts_reconstruct.py",
         plugins=("ts_reconstruct",),
         array_output_star="tomograms.star",
+        items_from="input_star",
     ),
     JobSpec(
         JobType.DENOISE_TRAIN,
@@ -171,6 +182,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         PHASE_PREPROCESSING,
         dependencies=(JobType.TS_RECONSTRUCT,),
         driver="denoise_train.py",
+        items_from="input_star",
     ),
     JobSpec(
         JobType.DENOISE_PREDICT,
@@ -180,6 +192,11 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         dependencies=(JobType.DENOISE_TRAIN, JobType.TS_RECONSTRUCT),
         driver="denoise_predict.py",
         plugins=("array_tasks",),
+        items_from="input_star",
+    ),
+    # Made from the tab of the job whose output it cuts, never from the roster; written at submit.
+    JobSpec(
+        JobType.SUBSET, SubsetParams, "Subset", PHASE_PREPROCESSING, driver=None, plugins=("subset",), roster_add=False
     ),
     JobSpec(
         JobType.TEMPLATE_MATCH_PYTOM,
@@ -189,6 +206,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         dependencies=(JobType.TS_CTF,),
         driver="template_match_pytom.py",
         plugins=("template_match", "array_tasks"),
+        items_from="input_tomograms",
     ),
     JobSpec(
         JobType.TEMPLATE_EXTRACT_PYTOM,

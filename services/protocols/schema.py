@@ -26,7 +26,7 @@ from services.models_base import InstanceId, JobType
 PROTOCOL_FILENAME = "protocol.yaml"
 ASSETS_DIRNAME = "assets"
 # Inside a project created from a protocol: the frozen copy of the protocol.yaml it was created
-# from (what "protocol | current" compares against). Sibling of External/, Import/, Schemes/.
+# from (what "protocol | current" compares against). Sibling of External/ and Import/.
 PROJECT_PROTOCOL_DIRNAME = "protocol"
 PROTOCOL_SCHEMA_VERSION = 1
 
