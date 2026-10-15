@@ -29,7 +29,8 @@ from services.project_state import get_project_state_for
 from ui.current_project import current_project_state
 from ui.ui_state import get_job_display_name
 from ui.utils import snake_to_title
-from ui.components.copyable import copyable_path, copy_button
+from ui.components.copyable import copyable_path
+from ui.job_plugins._field_styles import LABEL_STYLE, LABEL_W, config_section
 
 MONO = "font-family: 'IBM Plex Mono', monospace;"
 FONT = "font-family: 'IBM Plex Sans', sans-serif;"
@@ -112,14 +113,17 @@ _FILETYPE_INFO: dict[JobFileType, tuple] = {
 }
 
 # ── Shared visual tokens ─────────────────────────────────────────────────────
-# Same name style for input and output slots.
-_SLOT_NAME_STYLE = (
-    f"{FONT} font-size: 10px; font-weight: 500; color: #334155; cursor: help; "
-    "flex-shrink: 0; width: 130px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
-)
-_SECTION_TITLE_STYLE = (
-    f"{FONT} font-size: 9px; font-weight: 700; color: #94a3b8; letter-spacing: 0.06em; text-transform: uppercase;"
-)
+# Slot names use the Parameters label column, so the three Config sections line up.
+# Long slot names wrap rather than truncate.
+_SLOT_NAME_STYLE = LABEL_STYLE + " white-space: normal; cursor: help;"
+# One row shape for gain, input and output rows; detail lines sit under the value column.
+_ROW_STYLE = "display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; min-height: 22px;"
+_DETAIL_STYLE = f"padding-left: {LABEL_W + 8}px; width: 100%;"
+_PATH_COLOR = "#64748b"
+_MUTED = "#94a3b8"
+# Secondary text (status words, notes, tags) is one size everywhere.
+_SMALL = f"{FONT} font-size: 9px;"
+_DOT = "width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;"
 _TIP_PANEL_STYLE = (
     "background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 8px 10px; "
     "max-width: 380px; box-shadow: 0 8px 24px rgba(0,0,0,0.28);"
@@ -138,25 +142,10 @@ def _safe_int(x) -> int | None:
         return None
 
 
-def _make_copy_handler(text: str):
-    async def handler():
-        await _copy_to_clipboard(text)
-
-    return handler
-
-
-async def _copy_to_clipboard(text: str) -> None:
-    try:
-        ui.clipboard.write(text)
-        ui.notify("Copied", type="positive", timeout=900)
-        return
-    except Exception:
-        safe = text.replace("`", "\\`")
-        try:
-            await ui.run_javascript(f"navigator.clipboard.writeText(`{safe}`)", respond=False)
-            ui.notify("Copied", type="positive", timeout=900)
-        except Exception as e:
-            ui.notify(f"Clipboard failed: {e}", type="negative", timeout=2500)
+def _detail_line(text: str, color: str = _MUTED, *, italic: bool = False) -> None:
+    """A note or problem under an input row, aligned with the value column."""
+    with ui.element("div").style(_DETAIL_STYLE):
+        ui.label(text).style(f"{_SMALL} color: {color};" + (" font-style: italic;" if italic else ""))
 
 
 def _short_instance_label(instance_path: str) -> str:
@@ -229,19 +218,17 @@ class IOConfigComponent:
         output_schema = resolver.get_output_schema_for_job(self.job_type)
         wants_gain = self.job_type in GAIN_CONSUMERS
 
-        with ui.column().classes("w-full gap-1"):
-            if input_schema or wants_gain:
-                ui.label("Inputs").style(_SECTION_TITLE_STYLE)
+        # Two Config-tab sections of their own, at the same scale as Parameters / SLURM resources.
+        if input_schema or wants_gain:
+            with config_section("Inputs"):
                 if wants_gain:
                     self._gain_container = ui.column().classes("w-full gap-0")
                     with self._gain_container:
                         self._render_gain_row()
                 if input_schema:
                     self._render_input_slots(resolver, input_schema, job_model)
-            if output_schema:
-                # A little breathing room + a title to separate outputs from inputs.
-                ui.element("div").style("height: 8px;")
-                ui.label("Outputs").style(_SECTION_TITLE_STYLE)
+        if output_schema:
+            with config_section("Outputs"):
                 self._render_output_slots(output_schema, job_model)
 
     def _get_job_dir(self, job_model) -> tuple[Path | None, bool]:
@@ -265,12 +252,8 @@ class IOConfigComponent:
         state = current_project_state()
         gain = getattr(state.acquisition, "gain_reference_path", None)
         is_set = bool(gain and str(gain).strip() and str(gain) != "None")
-        dot_color = "#10b981" if is_set else "#f59e0b"
 
-        with ui.row().classes("w-full items-center gap-2").style("min-height: 26px;"):
-            ui.element("div").style(
-                f"width: 6px; height: 6px; border-radius: 50%; background: {dot_color}; flex-shrink: 0;"
-            )
+        with ui.element("div").style(_ROW_STYLE):
             name = ui.label("Gain Reference").style(_SLOT_NAME_STYLE)
             with name, ui.tooltip().style(_TIP_PANEL_STYLE):
                 ui.label("Gain Reference").style(_TIP_TITLE)
@@ -283,22 +266,18 @@ class IOConfigComponent:
                 ).style(_TIP_DESC)
             # Value / placeholder
             if is_set:
-                ui.label(str(gain)).style(
-                    f"{MONO} font-size: 10px; color: #475569; flex: 1 1 0; min-width: 0; "
-                    "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                ).tooltip(str(gain))
-                copy_button(str(gain), tooltip="Copy gain path")
+                copyable_path(str(gain), color=_PATH_COLOR, copy_tooltip="Copy gain path")
             else:
                 ui.label("not set · optional").style(
-                    f"{FONT} font-size: 10px; color: #94a3b8; font-style: italic; flex: 1 1 0; min-width: 0;"
+                    f"{FONT} font-size: 10px; color: {_MUTED}; font-style: italic; flex: 1 1 0; min-width: 0;"
                 )
             if not self.read_only:
                 ui.button(icon="folder_open", on_click=self._pick_gain).props("flat dense round size=xs").style(
-                    "color: #64748b; flex-shrink: 0;"
+                    f"color: {_PATH_COLOR}; flex-shrink: 0;"
                 ).tooltip("Browse for gain reference…")
                 if is_set:
                     ui.button(icon="close", on_click=self._clear_gain).props("flat dense round size=xs").style(
-                        "color: #94a3b8; flex-shrink: 0;"
+                        f"color: {_MUTED}; flex-shrink: 0;"
                     ).tooltip("Clear")
 
     async def _pick_gain(self):
@@ -361,52 +340,32 @@ class IOConfigComponent:
             current_value = None
             manual_path = ""
 
-        # Row status dot: blue while an upstream is still producing, amber while two
-        # sources tie, green when resolved, red when required-but-missing, muted when
-        # optional & empty.
-        if validation.awaiting_upstream:
-            dot_color = STATUS_STYLE[JobStatus.RUNNING]["color"]
-        elif validation.tied:
-            dot_color = _AMBER
-        elif validation.is_valid:
-            dot_color = STATUS_STYLE[JobStatus.SUCCEEDED]["color"]
-        elif not slot.required and current_value is None:
-            dot_color = "#cbd5e1"
-        else:
-            dot_color = STATUS_STYLE[JobStatus.FAILED]["color"]
-
-        with ui.row().classes("w-full items-center gap-2").style("min-height: 26px;"):
-            ui.element("div").style(
-                f"width: 6px; height: 6px; border-radius: 50%; background: {dot_color}; flex-shrink: 0;"
-            )
+        with ui.element("div").style(_ROW_STYLE):
             self._input_name_label(slot)
             if self.read_only:
                 self._render_static_source(slot, candidates, current_value, validation, skipped)
             else:
                 self._render_source_selector(slot, candidates, current_value, validation, skipped)
                 if not slot.required:
-                    ui.label("opt").style(
-                        f"{FONT} font-size: 8px; color: #94a3b8; background: #f1f5f9; "
-                        "border-radius: 3px; padding: 0 4px; flex-shrink: 0;"
-                    )
+                    ui.label("optional").style(f"{_SMALL} color: {_MUTED}; flex-shrink: 0;")
                 if validation.is_user_override:
                     (
                         ui.button(icon="restart_alt", on_click=lambda s=slot: self._clear_override(s))
                         .props("flat dense round size=xs")
-                        .style("color: #94a3b8; flex-shrink: 0;")
+                        .style(f"color: {_MUTED}; flex-shrink: 0;")
                         .tooltip("Reset to auto")
                     )
 
-        # Manual-path editor (editable mode only).
+        # Manual-path editor (editable mode only), in the same box as the Parameters inputs.
         manual_editing = current_value == "manual" and not self.read_only
         if manual_editing:
-            with ui.row().classes("w-full items-center gap-2").style("padding-left: 20px;"):
+            with ui.element("div").style(_DETAIL_STYLE + " display: flex; align-items: center; gap: 4px;"):
                 inp = ui.input(
                     value=manual_path,
                     placeholder="/path/to/file",
                     on_change=lambda e, s=slot: self._handle_manual_path_change(s, e.value),
                 )
-                inp.props(
+                inp.classes("cb-select").props(
                     "dense borderless hide-bottom-space "
                     "input-style=\"font-family: 'IBM Plex Mono', monospace; font-size: 11px; "
                     'color: #1e293b; padding: 1px 2px; min-height: 0;"'
@@ -414,41 +373,32 @@ class IOConfigComponent:
                 inp.style("flex: 1 1 0; min-width: 0;")
                 ui.button(icon="folder_open", on_click=lambda s=slot: self._open_file_picker(s)).props(
                     "flat dense round size=xs"
-                ).style("color: #64748b;").tooltip("Browse…")
+                ).style(f"color: {_PATH_COLOR};").tooltip("Browse…")
 
         # Full resolved input path — always visible (wraps, never truncated) with
         # a copy icon. Skipped only while the manual editor above already shows it.
         if validation.resolved_path and not manual_editing:
-            with ui.row().classes("w-full items-start").style("padding-left: 20px; margin-bottom: 2px;"):
-                copyable_path(validation.resolved_path, copy_tooltip="Copy input path")
-            note = None
+            with ui.element("div").style(_DETAIL_STYLE + " display: flex;"):
+                copyable_path(validation.resolved_path, color=_PATH_COLOR, copy_tooltip="Copy input path")
             if validation.awaiting_upstream:
-                note = "not written yet — produced when the upstream job runs"
+                _detail_line("not written yet — produced when the upstream job runs", italic=True)
             elif not validation.file_exists:
-                note = "path resolved, file not on disk yet"
-            if note:
-                with ui.row().classes("w-full").style("padding-left: 20px;"):
-                    ui.label(note).style(f"{FONT} font-size: 8px; color: #94a3b8; font-style: italic;")
+                _detail_line("path resolved, file not on disk yet", italic=True)
 
         # Why there is no source: a tie, or an override that stopped resolving.
         if validation.tied:
             names = ", ".join(_candidate_name(c) for c in validation.tied)
-            problem, color = f"{len(validation.tied)} equally good sources: {names}. Pick one.", _AMBER
+            _detail_line(f"{len(validation.tied)} equally good sources: {names}. Pick one.", _AMBER)
         elif validation.is_user_override and validation.error_message and not validation.resolved_path:
-            problem, color = validation.error_message, STATUS_STYLE[JobStatus.FAILED]["color"]
-        else:
-            problem = None
-        if problem:
-            with ui.row().classes("w-full").style("padding-left: 20px;"):
-                ui.label(problem).style(f"{FONT} font-size: 8px; color: {color};")
+            _detail_line(validation.error_message, STATUS_STYLE[JobStatus.FAILED]["color"])
 
-    def _render_current_face(self, candidates, current_value, validation, skipped, empty_name):
+    def _render_current_face(self, slot, candidates, current_value, validation, skipped, empty_name):
         """The chosen source, a tie, or nothing, as one face (shared by the editable selector
         and the read-only view). A hand-picked source automatic wiring would skip carries the
-        reason as an amber tag."""
+        reason as an amber tag. A required slot with nothing chosen shows a red dot."""
         cur = next((c for c in candidates if c.source_key == current_value), None)
         if current_value == "manual":
-            self._selector_face("#94a3b8", "Manual path", "custom file")
+            self._selector_face(_MUTED, "Manual path", "custom file")
         elif cur is not None:
             st = STATUS_STYLE.get(cur.execution_status, STATUS_STYLE[JobStatus.UNKNOWN])
             self._selector_face(st["color"], _candidate_name(cur), st["label"], tag=skipped.get(cur.source_key))
@@ -457,15 +407,16 @@ class IOConfigComponent:
         elif current_value:
             self._selector_face("#f59e0b", current_value, "unresolved")
         else:
-            self._selector_face("#cbd5e1", empty_name, "")
+            missing = STATUS_STYLE[JobStatus.FAILED]["color"] if slot.required else "#cbd5e1"
+            self._selector_face(missing, empty_name, "")
 
     def _render_static_source(self, slot, candidates, current_value, validation, skipped):
         """Read-only counterpart of the source selector: the chosen source shown
         as a static face (no menu), for completed/frozen jobs."""
         with ui.element("div").style(
-            "flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 0 6px; height: 24px;"
+            "flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 0 5px; height: 20px;"
         ):
-            self._render_current_face(candidates, current_value, validation, skipped, "—")
+            self._render_current_face(slot, candidates, current_value, validation, skipped, "—")
 
     def _input_name_label(self, slot):
         # Explains the artifact type only. The concrete resolved path is shown
@@ -496,16 +447,17 @@ class IOConfigComponent:
         selector = (
             ui.element("div")
             .classes("cb-io-src")
+            # The .cb-select box: 20 px tall, 1 px slate border, 5 px side padding.
             .style(
                 "flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 6px; "
-                "cursor: pointer; padding: 0 6px; border: 1px solid #e2e8f0; border-radius: 4px; "
-                "background: #fff; height: 24px;"
+                "cursor: pointer; padding: 0 5px; border: 1px solid #e2e8f0; border-radius: 4px; "
+                "background: #fff; height: 20px; box-sizing: border-box;"
             )
         )
         with selector:
-            self._render_current_face(candidates, current_value, validation, skipped, "Select source…")
+            self._render_current_face(slot, candidates, current_value, validation, skipped, "Select source…")
             ui.element("div").style("flex: 1 1 0; min-width: 4px;")
-            ui.icon("expand_more", size="16px").style("color: #94a3b8; flex-shrink: 0;")
+            ui.icon("expand_more", size="14px").style(f"color: {_MUTED}; flex-shrink: 0;")
 
             # `no-parent-event` disables Quasar's implicit open-on-parent-click and
             # we drive the menu explicitly from the selector's click handler below.
@@ -522,7 +474,7 @@ class IOConfigComponent:
             with menu:
                 if not candidates:
                     ui.label("No upstream producer yet — pick a manual path below.").style(
-                        f"{FONT} font-size: 10px; color: #94a3b8; padding: 6px 10px; font-style: italic;"
+                        f"{FONT} font-size: 10px; color: {_MUTED}; padding: 6px 10px; font-style: italic;"
                     )
                 for c in candidates:
                     self._render_menu_candidate(
@@ -542,15 +494,15 @@ class IOConfigComponent:
         selector.on("click", lambda _e, m=menu: m.open())
 
     def _selector_face(self, color: str, name: str, status_word: str, tag: str | None = None):
-        ui.element("div").style(f"width: 7px; height: 7px; border-radius: 50%; background: {color}; flex-shrink: 0;")
+        ui.element("div").style(f"{_DOT} background: {color};")
         ui.label(name).style(
-            f"{FONT} font-size: 10px; color: #334155; min-width: 0; "
+            f"{FONT} font-size: 11px; color: #1e293b; min-width: 0; "
             "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
         )
         if status_word:
-            ui.label(status_word).style(f"{FONT} font-size: 8px; color: #94a3b8; flex-shrink: 0;")
+            ui.label(status_word).style(f"{_SMALL} color: {_MUTED}; flex-shrink: 0;")
         if tag:
-            ui.label(tag).style(f"{FONT} font-size: 8px; font-weight: 600; color: {_AMBER}; flex-shrink: 0;").tooltip(
+            ui.label(tag).style(f"{_SMALL} font-weight: 600; color: {_AMBER}; flex-shrink: 0;").tooltip(
                 _EXCLUSION_TIPS.get(tag, tag)
             )
 
@@ -568,26 +520,21 @@ class IOConfigComponent:
         row = (
             ui.element("div")
             .classes("cb-io-menu-item")
-            .style(f"display: flex; align-items: center; gap: 8px; padding: 5px 10px; cursor: pointer; {bg}{dim}")
+            .style(f"display: flex; align-items: center; gap: 8px; padding: 4px 10px; cursor: pointer; {bg}{dim}")
         )
         row.on("click", lambda _e, s=slot, v=value, m=menu: self._select_source(s, v, m))
         with row:
-            ui.element("div").style(
-                f"width: 8px; height: 8px; border-radius: 50%; background: {color}; flex-shrink: 0;"
-            )
+            ui.element("div").style(f"{_DOT} background: {color};")
             ui.label(name).style(
                 f"{FONT} font-size: 11px; color: #1e293b; flex: 1 1 0; min-width: 0; "
                 "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
             )
             if skipped:
-                ui.label(skipped).style(f"{FONT} font-size: 8px; color: #64748b; flex-shrink: 0;").tooltip(
+                ui.label(skipped).style(f"{_SMALL} color: {_PATH_COLOR}; flex-shrink: 0;").tooltip(
                     _EXCLUSION_TIPS.get(skipped, skipped)
                 )
             if status_word:
-                ui.label(status_word).style(
-                    f"{FONT} font-size: 8px; font-weight: 600; color: {color}; "
-                    "text-transform: uppercase; flex-shrink: 0;"
-                )
+                ui.label(status_word).style(f"{_SMALL} color: {_MUTED}; flex-shrink: 0;")
 
     def _select_source(self, slot, value, menu):
         try:
@@ -602,19 +549,9 @@ class IOConfigComponent:
         job_dir, job_dir_pred = self._get_job_dir(job_model)
 
         if job_dir and not job_dir_pred:
-            with ui.row().classes("w-full items-center gap-2").style("min-height: 20px; margin-bottom: 2px;"):
-                ui.element("div").style("width: 6px; flex-shrink: 0;")
-                ui.label("Job folder").style(f"{FONT} font-size: 9px; color: #94a3b8; flex-shrink: 0; width: 130px;")
-                ui.label(str(job_dir)).style(
-                    f"{MONO} font-size: 10px; color: #64748b; flex: 1 1 0; min-width: 0; "
-                    "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                ).tooltip(str(job_dir))
-                (
-                    ui.button(icon="content_copy", on_click=_make_copy_handler(str(job_dir)))
-                    .props("flat dense round size=xs")
-                    .style("color: #94a3b8; flex-shrink: 0;")
-                    .tooltip("Copy")
-                )
+            with ui.element("div").style(_ROW_STYLE):
+                ui.label("Job folder").style(LABEL_STYLE)
+                copyable_path(str(job_dir), color=_PATH_COLOR, copy_tooltip="Copy job folder")
 
         for slot in schema:
             resolved = (job_model.paths or {}).get(slot.key)
@@ -635,23 +572,17 @@ class IOConfigComponent:
                 full_path = str(getattr(slot, "path_template", "") or "")
 
             pending = _is_pending_path(full_path)
-            # Name on top, full path (wrapping, copyable) beneath — one slot after
-            # another so long absolute paths are always fully visible, never truncated.
-            with ui.column().classes("w-full").style("gap: 0; margin-bottom: 2px;"):
-                with ui.row().classes("w-full items-center gap-2").style("min-height: 22px;"):
-                    ui.element("div").style(
-                        "width: 6px; height: 6px; border-radius: 50%; border: 1.5px solid #cbd5e1; flex-shrink: 0;"
+            # Name left, full path (wrapping, copyable) right, like every other row.
+            with ui.element("div").style(_ROW_STYLE):
+                self._output_name_label(slot, bool(resolved))
+                if pending or not full_path:
+                    ui.label(str(getattr(slot, "path_template", "")) or "—").style(
+                        f"{MONO} font-size: 10px; color: {_MUTED}; font-style: italic; flex: 1 1 0; min-width: 0;"
                     )
-                    self._output_name_label(slot, bool(resolved))
-                with ui.row().classes("w-full items-start").style("padding-left: 20px;"):
-                    if pending or not full_path:
-                        ui.label(str(getattr(slot, "path_template", "")) or "—").style(
-                            f"{MONO} font-size: 10px; color: #94a3b8; font-style: italic;"
-                        )
-                    else:
-                        copyable_path(
-                            full_path, color=("#64748b" if resolved else "#94a3b8"), copy_tooltip="Copy output path"
-                        )
+                else:
+                    copyable_path(
+                        full_path, color=(_PATH_COLOR if resolved else _MUTED), copy_tooltip="Copy output path"
+                    )
 
     def _output_name_label(self, slot, resolved: bool):
         produces = getattr(slot, "produces", None)

@@ -107,12 +107,6 @@ def create_ui_router(backend: CryoBoostBackend):
             .cb-select-popup .q-item.q-manual-focusable--focused,
             .cb-select-popup .q-item--active { background: #eef2f6; color: #1e293b; }
 
-            /* I/O source selector (custom button + menu of status-dot rows) */
-            .cb-io-src:hover { border-color: #cbd5e1 !important; }
-            /* Clear hover feedback on each candidate row in the source dropdown. */
-            .cb-io-menu-item { transition: background .1s ease; }
-            .cb-io-menu-item:hover { background: #e2e8f0; }
-
             /* Draggable divider between the job roster and the params/main area.
                A thin transparent grab-zone with a subtle line that lights up on
                hover/drag; resize logic is client-side JS (workspace_page). */
