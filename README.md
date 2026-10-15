@@ -28,8 +28,9 @@ venv/bin/python3 -m pytest -m cluster   # one short SLURM job per tool (minutes)
 venv/bin/python3 main.py --port 8081 --host 0.0.0.0
 ```
 
-Then from your laptop: `ssh -f -N -L 8081:localhost:8081 $USER@$HEADNODE` and open
-<http://localhost:8081>.
+Then from your laptop: `ssh -f -N -L 8081:localhost:8081 $USER@$HEADNODE` and open the
+`http://localhost:8081/?token=…` link the server printed. Without the token every page answers 401
+(see *Starting the server* below).
 
 ---
 
@@ -178,12 +179,27 @@ venv/bin/python3 main.py --port 8081 --host 0.0.0.0
 ```
 
 ```
-CryoBoost Server Starting
-Access URLs:
-  Local:    http://localhost:8081
-  Network:  http://111.11.11.11:8081
-INFO:     Uvicorn running on http://0.0.0.0:8081 (Press CTRL+C to quit)
+CryoBoost running on http://<headnode>:8081/?token=Xq3…
+Tunnel from your local machine: ssh -f -N -L 8081:localhost:8081 $USER@<headnode>
+then open: http://localhost:8081/?token=Xq3…
 ```
+
+**The token.** Like Jupyter, the server only answers browsers that carry its token: anyone who reaches
+the port could otherwise submit jobs and read files as you. Open one of the printed links; the server
+moves the token into a cookie and drops it from the address bar, and links within the app (deep links
+included) then work as usual. A browser without it gets 401.
+
+- The token is in `~/.crboost/token` (mode 600) of the user running the server. It is reused across
+  restarts, so bookmarks and open tabs keep working.
+- **Rotate it** by deleting `~/.crboost/token` and restarting the server; every browser then needs the
+  newly printed link.
+- Treat a tokened link like a password: it is in your browser history, and whoever has it controls
+  the server as you. Don't paste it into chats, screenshots or bug reports.
+- Plain HTTP carries the token unencrypted on the internal network; the SSH tunnel is encrypted.
+
+Browser-side state (session, preferences) lives in `~/.crboost/nicegui/` and its session cookie is
+named per port, so two servers on one host — say a development checkout and the shared install — can be
+open side by side in one browser.
 
 From your local machine (still on the cluster's network, physically or via VPN):
 
@@ -195,7 +211,8 @@ ssh -f -N -L ${LOCAL_PORT}:localhost:${HEADNODE_PORT} ${USERNAME}@${HEADNODE_URL
 pkill -f "ssh.*${LOCAL_PORT}:localhost:${HEADNODE_PORT}"
 ```
 
-`LOCAL_PORT` is any free port on your computer, `HEADNODE_PORT` is the port the server listens on.
+`LOCAL_PORT` is any free port on your computer, `HEADNODE_PORT` is the port the server listens on; open
+`http://localhost:${LOCAL_PORT}/?token=…` with the printed token.
 This assumes your public key is already on the cluster. Saving the tunnel in your `~/.ssh/config` is
 handy:
 
