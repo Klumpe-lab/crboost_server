@@ -1,14 +1,17 @@
 # Roadmap 32 — Staging while running, inputs fixed at submit, subsets and forks
 
 **Status:** scoped 2026-10-14 from the branching survey
-(`docs/reports/pipeline-graph/branching-survey-2026-10-12.md`); nothing built. Decisions owed in §9.
+(`docs/reports/pipeline-graph/branching-survey-2026-10-12.md`). Stage 0 answered; stage 1, the §8 table,
+stage 2 (without S2.3) and stage 3 (the Subset job) built 2026-10-15, all NOT RUN (records §3.1, §8, §4.1, §6.1;
+runtime checks §11). The `relion_schemer` path deleted 2026-10-15, NOT RUN (§13). Next: the §11 and §13
+runtime checks; stage 4 once §9.5–9.6 are answered. §9.5–9.7 open.
 
 **In one line.** Jobs can be added and started while others run; a submitted job's inputs never move; and a
 "fork" is one defined thing, a subset of some job's output, used either inside the project or as the start of a
 new one, so in-project branches and "import tomograms from another project" are the same mechanism.
 
 **Not in this roadmap:** an interactive graph builder (dropped: drag-to-wire is a lot of machinery for little
-gain). A read-only graph overview comes after the stages here (§8). Per-TS streaming stays in roadmap 27 stage 3;
+gain). A read-only pipeline table comes right after stage 1 (§8). Per-TS streaming stays in roadmap 27 stage 3;
 §7 is the assessment asked for.
 
 ## Before → After
@@ -148,6 +151,49 @@ roster (`services/jobs/miss_align.py:527-539`).
 
 Size: ~200 lines (resolver, orchestrator, driver base, I/O tab). Risk: medium — every job's start path changes.
 
+### 3.1 Stage 1 record — built 2026-10-15, NOT RUN
+
+Decided with the maintainer before building (2026-10-15): §9.1 accepted, with the rules below.
+
+- **What a job read stays what it reads.** In the build the problem showed up in four places, each fixed by
+  the record. (1) A FAILED job retried in place kept its finished TS but chose its inputs again: add a
+  missAlign, Run, and its failed TS ran on missAlign while the rest stayed on the old alignment, in one dir.
+  (2) Editing a queued job's I/O reached the driver while its SLURM dependency stayed on the old producer.
+  (3) Finished jobs' I/O tabs chose again and could show a source they never read. (4) A finished or switched
+  aggregation merge rewired every optimisation-set consumer, finished or queued.
+- **The record** (S1.1): `AbstractJobParams.submitted_inputs: dict[slot, SubmittedInput] | None`
+  (`services/jobs/_base.py`), `SubmittedInput(source_key, output_key)`. `output_key` pins which output of the
+  producer: without it a curated `optimisation_set_filtered.star` saved later would replace the raw file a
+  job read. Written in `_submit_chain` pass 3 from the pass-2 resolver (`PathResolutionService.record_inputs`).
+  `inputs_fixed` = a record and status not Scheduled: a job put back to Scheduled chooses afresh.
+  `_select_source` reads the record first (`_keyed_source`, shared with overrides); a recorded source that no
+  longer resolves is reported ("fixed at submit, but …"), never replaced. Recorded edges count as `explicit`.
+- **The driver** (S1.2): `get_driver_context` takes `job_model.paths` when `inputs_fixed` and the recorded
+  `job_dir` is the cwd; any other launch (schemer, tilt-filter predict in its own run dir) resolves as before
+  and still honours the record. The schemer deploy clears records of what it runs.
+- **One job dir holds one set of inputs** (S1.4, amended). A FAILED job is retried in place only when the inputs
+  resolved now equal its last attempt's (`_inputs_moved`, input slots only). Otherwise it gets a new dir and
+  redoes every TS; that moves its consumers' inputs, so passes 1–2 repeat until no reused dir sees new inputs.
+- **Reset inputs** (S1.4): a button in the I/O tab of a FAILED job with a record. Finished jobs are not reset;
+  "same job, other input" is Clone (stage 2).
+- **Queued is read-only** (S1.3). Parameter edits on queued jobs were already dropped by the model guard
+  (`services/jobs/_base.py`, `__setattr__` accepts USER_PARAMS only on Scheduled/Failed) while the tab showed
+  editable fields; now `is_job_frozen` says so. Lost: editing a queued job's SLURM settings and I/O.
+- **Not frozen: which TS.** Exclusions and tilt verdicts still reach queued jobs at their start.
+- **No backfill.** Jobs submitted before this change have no record and keep choosing their inputs as before.
+- **I/O tab** (S1.5): a quiet state word per input (`InputState`: automatic / set by hand / fixed at submit,
+  or "follows <refiner>" from `AutoChoice.refined_by`); a fixed job's inputs render read-only.
+- **S1.6:** `apply_aggregation_overrides` skips jobs whose inputs are fixed. The "consumers of another species"
+  half was dropped: a merge carries no species id of this project. Fold-in bug: the aggregate dialog's "Set up
+  extraction" (`_prepopulate_subtomo`, `ui/aggregation/aggregate_dialog.py`) wrote only `paths`, which every Run
+  overwrites, so the wiring never reached the job; it now sets `manual:<optset>` as a hand-set input, on the
+  first Subtomo extraction job whose inputs are not fixed.
+- **S1.7:** `PathResolutionService.mixed_chains` — two direct producers neither upstream of the other → an amber
+  line under Inputs. Synthetic producers are left out.
+- **S1.8:** `planned_stack_apix` reads the alignment this missAlign reads (`source_of`), not the roster's first.
+- Checked: `ruff check` / `ruff format` on the touched files. Not run: Python is absent in the sandbox, so no
+  import check; runtime checks §11.
+
 ---
 
 ## 4. Stage 2 — Staging while running
@@ -164,8 +210,10 @@ slot shows Run and Stop side by side while something is live.
 - The submit lock stays (`_submit_lock`, `pipeline_orchestrator_service.py:155`): two clicks never submit twice.
 - Prerequisites: roadmap 33 S1 + S4 (with the project-wide lock gone, nothing else stops a resubmit into a dir
   whose supervisor still runs; the submit lock is in-process only) and 33 S5 (staged jobs then sit beside live ones).
+  Stage 2 was built without them: a job is skipped while its status reads queued or running, which a job saved
+  Running without a SLURM id defeats (33 S4).
 
-**S2.3 Run to here.** On a job row (and the job tab): the job and its unfinished upstream, nothing else. Run keeps
+**S2.3 Run to here.** DEFERRED (§9.3): not in stage 2; one Run button. On a job row (and the job tab): the job and its unfinished upstream, nothing else. Run keeps
 meaning "everything unfinished on the roster". Stop stays "cancel everything"; cancel on a job stops it and,
 through afterok, what waits on it.
 
@@ -180,7 +228,68 @@ writes (exclusion toggles, verdicts) take the same lock.
 (`pipeline_deletion_service.py:323-370`), so "N jobs read this one" is true under afterok — needed once deleting
 while others run is normal.
 
-Size: ~250 lines. Risk: highest of the roadmap (the run path). Runtime check in §10.
+Size: ~250 lines. Risk: highest of the roadmap (the run path). Runtime check in §11.
+
+### 4.1 Stage 2 record — built 2026-10-15, NOT RUN
+
+Built under §9.2 (live jobs and their upstream locked) and §9.3 (one Run button, no S2.3).
+
+- **S2.1** `jobs_in_use(state)` (`services/path_resolution_service.py`): the queued and running jobs and every job
+  upstream of one (`resolve_slot_edges`), each mapped to a live job that holds it. Add, species-add and clone are
+  open while jobs run: the `ui_mgr.is_running` gates are gone from the panel, the roster and the Species page's
+  Jobs tab. Remove and delete refuse a job in use and say why (`in_use_notice`,
+  `ui/pipeline_builder/config_tab.py`): the roster hides its ×, and the job tab's Delete and
+  `remove_instance_from_pipeline` (the backstop) refuse it. Editing stays status-based (`is_job_frozen`): a job
+  upstream of a live one is Succeeded or live itself, except a Failed producer in the seconds before the
+  reconciler cancels its queued consumer. The run slot shows Run above Stop while anything is live.
+- **S2.2** `_deploy_locked`: the `pipeline_active` refusal stays for the schemer path only (one scheme at a
+  time). `instances_to_run` skips Queued and Running jobs; a job of the run that reads one waits on its SLURM id
+  through `live_after`; when only live jobs are unfinished, Run answers "Nothing to start". `pipeline_order` is no
+  longer rewritten: a run only appends jobs it was given and lacks (the tab's roster comes from `state.jobs` at
+  load, so a finished job taken off the roster reappears there after a reload; pre-existing). The review hold is
+  cleared only by a run that includes a parked job, which then decides afresh as before. Submit lock unchanged.
+- **S2.3** not built (§9.3).
+- **S2.4 Clone**: a copy icon on every roster row except the tilt filter and Import →
+  `add_instance_to_pipeline(type, species_id=, clone_of=)` → `AbstractJobParams.copy_settings_from`: the USER_PARAMS
+  (deep copies of the source's values, same model type, so no typed setters are needed), `slurm_overrides`,
+  `source_overrides`. Not copied: the inputs recorded at the source's submit; the clone's automatic inputs are
+  chosen afresh, so it may follow a refiner its source did not. The A/B pin (`pin_sources_made_ambiguous`) runs as
+  for any add.
+- **S2.5 Registry** (`services/tilt_series/registry.py`): `registry_lock`, the file `registry/.lock` created with
+  O_EXCL and naming its holder (host, pid, SLURM job, time); taken over when its process is gone on this host or it
+  is older than 10 min; a waiter gives up after 15 min, naming the holder. Every mutation is also kept as a change
+  to replay. `save()` takes the lock, re-reads each sidecar it writes, replays this copy's changes onto it and writes
+  it: re-read always, not when the mtime moved, because stat() on the shared mount lags up to a minute while open()
+  does not. The index lists the union with what another process added (except `force`, the mdoc rebuild); when
+  another process wrote meanwhile, the stale mark is kept so the server re-reads. This covers every writer without a
+  call-site change: the supervisors' ingests, exclusion toggles, verdict commits, DL predictions.
+- **S2.6** `preview_deletion(state, instance_id)` lists `consumers_of` (the resolver's wiring); `delete_job` reports
+  the same list as orphaned when it deletes one instance.
+- After a read-through review, same day:
+  - A DL-auto tilt filter that is already queued or running now holds back the alignments of a later run too
+    (`_submit_chain` builds the verdict edges over the run plus such filters, so they land in `live_after`).
+    Before, a cloned alignment started without waiting for the verdict.
+  - Registry: takeovers of a dead lock go one at a time through a second O_EXCL file (`_take_over`); without it,
+    two waiters crossing the stale age together could both remove the dead lock and both hold the new one.
+    `save()` works on a snapshot of the dirty set and pops each tilt series' changes before re-reading it, so a
+    change made while a save runs stays for the next save. The verdict commit saves through `save_async`, under
+    the same asyncio lock as the exclusion toggles. A save that fails partway marks the tilt series it wrote before
+    the failure clean; they stayed dirty with their changes spent, and the next save wrote them from memory over
+    what another process had written since.
+  - `project_service.delete_job` and `species_admin.delete_species` refuse jobs in use themselves; the dialogs'
+    checks alone missed a Run landing while a dialog was open.
+  - Schemer path: while a scheme runs every job counts as in use (`jobs_in_use`), since the jobs it has yet to
+    start are Scheduled.
+  - Table: the rows are worked out on the event loop (where every edit of the jobs runs); only the disk reads go
+    to a thread, on a copy of the rows' jobs. A row whose job was removed since the read is skipped.
+  - Cancelling one job (job tab) no longer stops the tab's polling while other jobs run; the dialog says what
+    happens under afterok (the job and what waits on it fail, the rest runs on).
+  - Left: the roster's render works out `jobs_in_use` (a resolver pass, a few file checks) on the event loop on
+    every rebuild while anything is live.
+- Found, not fixed: the Tomograms wall and the Protocols view create their poll timers inside their own container
+  and clear it on the first build, which deletes the timer (NiceGUI timers are elements), so their 15 s polls never
+  run. The table uses `owned_timer`.
+- Checked: ruff on the touched files. Not run (no Python in the sandbox).
 
 ---
 
@@ -234,15 +343,77 @@ migrates into it on load.
 - Input: one per-TS star of any level (`FS_MOTION_CTF_STAR`, `ALIGNED_TILT_SERIES_STAR`, `TS_CTF_TILT_SERIES_STAR`,
   `TOMOGRAMS_STAR`, `DENOISED_TOMOGRAMS_STAR`). Output: the same file type, rows restricted to the selection.
   Companion directories (warp dirs, settings, tomostars) keep coming from the original producer; per-TS drivers
-  only process rows of their input star (§2.2).
+  only process rows of their input star (§2.2). *Amended (§6.1): aligned tilt series onward, no `FS_MOTION_CTF_STAR`.*
 - The output type follows the input: the resolver reads the output schema from the job instance rather than the
   class (`_get_output_schema`, `path_resolution_service.py:1337`) — a small change, needed only for this job.
 - Selection UI: a table of the cut point's tilt series with the per-TS readouts the Journey already has, plus
   "save as rule". The Subset job's star is rewritten at each submit, so an edited selection applies to the next Run
-  of its consumers (consumers that already ran keep what they read — stage 1).
+  of its consumers (consumers that already ran keep what they read — stage 1). *Amended (§6.1): no rules (§9.4);
+  written once, frozen once run, another choice is a Clone.*
 - Consumers are added with **Add after this job** (pinned to the Subset); existing consumers of the cut point are
   untouched.
 - Size: ~250 lines.
+
+### 6.1 Stage 3 record — built 2026-10-15, NOT RUN
+
+Decided with the maintainer before building (2026-10-15): §9.4 = a list of tilt series, no saved rules. Cut
+points = aligned tilt series onward: alignment takes its tilt series from the registry (`drivers/ts_alignment.py`
+enumerates the registry's, not its input star's), so a cut before it would fail every tilt series left out. Earlier
+cuts are a later stage.
+
+- **The job** (`services/jobs/subset.py`, `JobType.SUBSET`): `RUNS_INLINE`, `USER_PARAMS = {"ts_names"}`, one input
+  `input_star` accepting `CUT_TYPES` (aligned TS, CTF'd TS, tomograms, denoised tomograms), class
+  `OUTPUT_SCHEMA = []`. Spec row after denoise predict: no driver, plugin `subset`, `roster_add=False`.
+  `JobSpec.items_from` names the input a job takes its tilt series from (`input_star` for tsCtf, missAlign,
+  tsReconstruct, denoise train / predict; `input_tomograms` for TM).
+- **Made from the job it cuts.** A "Subset" button in the header of the alignment, missAlign, tsCtf, tsReconstruct
+  and denoise predict tabs (`cut_output`: the job's `output_star` when it is a cut type); refused until that job has
+  succeeded, in a schemer project, and on a Subset (no Subset of a Subset: clone it and untick). Never from the
+  roster's add rows or "+". The new Subset's input is set by hand to that job (`add_instance_to_pipeline(after=)`,
+  `services/subsets.add_refusal`); its I/O input is read-only.
+- **Its tab** (`ui/job_plugins/subset.py`): what it cuts, "k of n chosen", All / None, one table of the cut star's
+  tilt series (position, tilts used, CTF fit with its source job in the hover, blank · dim, excluded); a click on a
+  row keeps or leaves out that tilt series; chosen names the star lacks are flagged. **Add <job>** for each job whose
+  `items_from` input accepts the cut type (`jobs_after`): tsCtf and missAlign after aligned TS, tsReconstruct after
+  CTF'd TS, denoise train / predict and TM after tomograms, TM after denoised tomograms. The added job's
+  `items_from` input is set to the Subset; every other input to the job the Subset cuts when that job offers it
+  (warp dir; settings after an alignment cut), else to the job that job's chain read it from (`_read_up_chain`: the
+  settings after a later cut, and the CTF'd tilt series TM reads beside a tomogram Subset, which would otherwise tie
+  between tsCtf and a clone of it); the rest stays automatic (`add_after_pins`). After an aligned-TS cut the tab says
+  that a tsCtf with `defocus_hand = auto` decides the hand from these tilt series only.
+- **Output from the instance**: `_get_output_schema(job_type, job_model)` gives a Subset one `output_star` of its
+  cut's type, named as the cut star; `subset_cut` reads the cut from the record once submitted, else from the
+  hand setting. The output index, `resolve_outputs` and the I/O tab use it.
+- **Opt-in**: Subset outputs are `auto_eligible=False`; `auto_exclusion` gives a Subset no stage, so a tsCtf set
+  to a Subset of the alignment reads it without a "not upstream" tag; `_select_source` and `automatic_sources`
+  never choose a Subset's own input.
+- **Run** writes it in `_submit_chain` pass 3 (`services/subsets.write_subset_star`): the cut star's global rows of
+  the chosen tilt series in the star's order, every `…File` / `…FileName` / `…Dir` / `rlnTomoReconstructedTomogram*`
+  path made absolute (against the star's folder, else the project root; a relative path found in neither stops the
+  write), other blocks unchanged, and a `run.out` listing what it kept. The per-TS stars stay the cut job's own
+  files, so Warp export still finds the tsCtf job behind a tomogram. Before anything is allocated (Run and Approve),
+  `subset_problem` refuses, with the reason, a Subset with no tilt series chosen, nothing to cut, an unfinished cut,
+  a missing cut star or chosen names that star lacks. The schemer path refuses a run with a Subset. A run that only
+  writes at submit says "… written at submit; nothing to queue" and the spinner follows `pipeline_active`.
+- **Frozen once run**, like any job; another choice is a Clone, which copies the list and the cut. This replaces
+  "rewritten at each submit": one job dir holds one set of inputs, and `_inputs_moved` compares paths, not lists.
+- **Removing** a Subset, or the job it cuts, leaves the inputs set to it as they are
+  (`_cleanup_stale_overrides_for_instance` skips them): the input turns red ("no longer in the project"), never
+  widens to every tilt series.
+- **Refinement following**: a refiner takes over the chosen job's output only when it reads everything it refines
+  from that job (`_follow_refinements`), so a missAlign on a Subset of the alignment no longer moves the full chain
+  onto its warp dir. A missAlign on the alignment is followed as before; one whose star and warp dir are set by hand
+  to two different jobs is not followed any more.
+- **Fold-ins**: missAlign's `planned_stack_apix` follows a Subset to the alignment it cuts; `local_warps_upstream`
+  follows `input_star` last, so the extraction hint survives a tomogram Subset; protocol export skips Subsets and
+  exports an input reading one as reading what it cuts, with a warning for each; `_submit_chain` saves the advanced
+  job-dir counter when pass 3 stops on an inline-write or sbatch-render error (it stayed in memory only); the
+  roster's Clone shows on every row except the tilt filter and Import (it was hidden on every inline job).
+- **Drivers unchanged**: every consumer joins a per-TS star or volume path to the star's folder or the project root
+  with pathlib, which keeps an absolute path (the alignment, tsCtf and tsReconstruct `emit_star`, missAlign's star
+  check, TM, denoise train / predict), and takes its companion folders from its own inputs.
+- Not built: saved rules (§9.4), cuts before alignment, particle-level Subsets (particle sets, roadmap 30).
+- Checked: `ruff check` / `ruff format` on the touched files. Not run (no Python in the sandbox); runtime check §11.
 
 ### Stage 4 — Fork… (either destination) and the imported output
 
@@ -295,12 +466,61 @@ the same parameters. That is an option the user can take, not a step the pipelin
 
 ---
 
-## 8. After this roadmap: the read-only graph overview
+## 8. Next after stage 1: the read-only pipeline table
 
-Spec in the survey (§5 stage 1): a seventh workspace view, rows = depth, columns = chains, cards with status and
-per-TS counts, edges solid when set by hand / fixed at submit and dashed when automatic, Subset and imported
-outputs as their own nodes. Click opens the job. No editing in the graph; the verbs live on the job (Run to here,
-Clone, Add after, Fork…). It gets much simpler once stage 1 makes every submitted edge explicit.
+Moved up 2026-10-15 (was "after this roadmap"); it needs only stage 1's recorded edges. Replaces the survey's
+stages × lanes card grid (§5 stage 1 there) with a git-log style table, after a design the maintainer liked (a public
+post, 2026-10-13: in a pipeline the nodes form a list, so each can be a table row with metadata
+beside it; parallel branches cost lanes, and horizontal space is cheap).
+
+- **Shape.** One row per job, in dependency order. A narrow gutter on the left draws one lane per open chain: a
+  dot on the job's row, lines down to its consumers, a lane looping out and back for a branch that rejoins. Our
+  graph is mostly a list (preprocessing is one chain; branches are per-species particle chains, A/B copies such
+  as tsCtf__2, and refiners such as missAlign), so 1–4 lanes is the usual width.
+- **Edges.** Only each job's main lineage: the input its per-TS rows come from (the star). Side inputs (the
+  alignment settings tsReconstruct reads) go in the row's hover and the I/O tab; drawn, they turn the gutter into
+  spaghetti. Solid when fixed at submit or set by hand, dashed when automatic (they can still move). Subset jobs
+  and imported outputs (stages 3–4) are ordinary rows.
+- **Columns to start:** job + species pill, state, TS ok/total (the roster's `_get_array_progress`), elapsed.
+  Later: a timeline column (queue wait vs run per job), which shows where a long run's day went; it needs
+  submit/start/end times that no job records yet.
+- **Where.** A full-width workspace view. The roster sidebar stays the job catalog (grouped by type, with the
+  add rows); it is too narrow for lanes plus columns.
+- **Build.** Order + lane assignment in Python (topological order, lanes allocated as `git log --graph` does),
+  one inline SVG per row for the gutter, ordinary NiceGUI rows for the rest, a `FingerprintedView` keyed on
+  statuses + edges. Click opens the job. No editing; the verbs live on the job (Run to here, Clone, Add after,
+  Fork…).
+
+**§8 record — 2026-10-15, layout only, NOT RUN.** `services/pipeline_table.py`: `pipeline_rows(state)` → one
+`TableRow` per roster job (dependency order over all inputs, roster order between independent jobs; main lineage
+by `MAIN_SLOTS`), and the pure `assign_lanes(order, parent, explicit)`: a job's first consumer continues straight
+down its lane, each further consumer gets a lane forked off at the job's row (`forks`), a lane frees once its
+consumer has its dot. Per row: `lane`, `arrives`, `through`, `forks`, `continues`, `explicit`. ruff clean; no
+Python in the sandbox, so not executed. Owed: the view (`ui/pipeline_table_view.py`: workspace `View` +
+route, per-row inline SVG gutter drawn from `TableRow`, columns, `FingerprintedView` signature = statuses +
+rows), a rail entry, and a check of `assign_lanes` on a real roster (e.g. print `pipeline_rows` for a copia
+project with two TM species and a missAlign).
+
+**§8 view — built 2026-10-15, NOT RUN.** `ui/pipeline_table_view.py`: `View.TABLE` (`/p/<project>/table`), rail
+icon under Jobs (`static/icons/pipeline_table.svg`), lazily built like the Tomograms wall. One inline SVG per row
+(`gutter_svg`): lanes passing through, the line arriving at the dot, the line continuing down, forks as a curve
+into their lane, the dot in the status colour (running pulses, missing inputs orange, parked hollow amber). Dashed
+= automatic; the dash period divides the row height, so a lane runs on unbroken across rows. Columns: job +
+species pill (hover: every job-fed input with its source and how it was set), state (hover: SLURM id, and what a
+queued job waits for), TS ok/total (`_get_array_progress`), elapsed. Click opens the job.
+- `assign_lanes` changed: a lane holds the consumer it leads to, so a line keeps one style from producer to
+  consumer (`TableRow.solid`); forks take the first free lane right of the dot, so a branch never crosses the
+  lines to its left; a consumer ahead of its producer (a loop) no longer leaves a dangling lane.
+  `TableRow.inputs`: all job-fed inputs. Traced with a JS port on a 17-job roster (two species, missAlign).
+- Elapsed (`run_times`): from the later of the job's submit (`run_submit.script` mtime) and the end of the last
+  input job that ended before it, to its exit marker; it includes queue wait. No job records times yet; the
+  timeline column still needs them.
+- Polling: statuses in memory every 3 s; rows, TS tallies and markers re-read off the loop when those move, else
+  every 15 s; the elapsed labels are set in place, the rest is a `FingerprintedView`.
+- Fixed after a read-through review (2026-10-15, NOT RUN): tsImport is in `pipeline_order` (alignment's prerequisite)
+  but has no roster phase; as a row it took the chain's lane and pushed the chain into lane 1. Rows are now the
+  roster's jobs only, and the straight lane goes to a consumer that has consumers of its own, so a leaf (the tilt
+  filter beside alignment, denoise training beside predict) forks off instead.
 
 Also later: read-side views follow a chosen chain instead of "the first job of each type" (survey §1.5,
 `find_job_by_type`, `services/dashboard_data.py:59-67`, ~20 readers incl. the Journey).
@@ -309,13 +529,16 @@ Also later: read-side views follow a chosen chain instead of "the first job of e
 
 ## 9. Decisions owed by the maintainer
 
-1. **Fixed inputs at submit (S1.1–S1.4).** Recommended. Cost: a retried job keeps its inputs even if a refiner was
-   added since; Reset inputs re-opens them.
-2. **What stays editable next to a live job (S2.1):** "not live and not upstream of live" (recommended), or also
-   allow editing upstream jobs that are already finished (they are frozen anyway).
-3. **Run to here** as the only new run verb (recommended), or also "Run from here" (the job and its downstream).
-4. **Subset selection:** list only, or list + saved rules (recommended: list first, rules once the per-TS readouts
-   it would filter on are settled).
+1. **Fixed inputs at submit (S1.1–S1.4).** DECIDED 2026-10-15: yes, with the amendments in §3.1 (one job dir =
+   one set of inputs; Reset inputs on Failed jobs only; queued read-only; TS selection stays live; no backfill).
+2. **What stays editable next to a live job (S2.1).** DECIDED 2026-10-15: live jobs and everything upstream of them
+   are locked, and upstream jobs cannot be removed or deleted while a downstream job is queued or running;
+   everything else (add, edit Scheduled/Failed, remove, Run) is open while a chain runs.
+3. **Run verbs (S2.3).** DECIDED 2026-10-15: no Run to here / Run from here for now; one Run button (everything
+   unfinished, around what is live). Revisit once the pipeline table (§8) shows the branches, where a per-row
+   verb reads more obviously.
+4. **Subset selection.** DECIDED 2026-10-15: a list of tilt series only; saved rules once the per-TS readouts they
+   would filter on are settled. Cut points from the aligned tilt series onward (§6.1).
 5. **Fork destination rule of thumb (§5):** accept as the dialog's default hint?
 6. **Unify Import tomograms and aggregation sources into imported outputs (§5)** — recommended; it is a migration
    of two records.
@@ -323,27 +546,83 @@ Also later: read-side views follow a chosen chain instead of "the first job of e
 
 ---
 
-## 10. Stage 0 — facts to gather first
+## 10. Stage 0 — facts (answered 2026-10-15, by reading)
 
-1. Warp settings files: are paths inside `warp_tiltseries.settings` relative to the settings file or absolute?
-   Decides whether a CTF'd/aligned cut point can be referenced from another project unchanged.
-2. Registry seeding: which sidecar fields name the source project's paths (job dirs in `outputs`), and whether a
-   seeded copy needs them rewritten or only marked read-only.
-3. Every reader of `job_model.paths` in drivers after `get_driver_context` (S1.2 makes them the submitted values).
-4. Whether any driver mutates its upstream's files (the subset/fork model assumes none does).
-5. Which `ui_mgr.is_running` gates are about editing and which about chrome (§2.1 lists the editing ones).
+1. **Warp settings paths are relative.** We write `DataFolder="tomostar"`, `ProcessingFolder="warp_tiltseries"`
+   (`drivers/ts_import.py:51-54`, `drivers/fs_motion_and_ctf.py:105-108`), resolved against the settings file's
+   own dir. Every Warp consumer stages its own copy (`stage_per_ts_environment`, `drivers/array_job_base.py:454`:
+   settings copied, tomostar copied with absolute MoviePaths, the TS's XML symlinked), and tsCtf copies upstream
+   XMLs into its own `output_processing` (`drivers/ts_ctf.py:223-229`). So a CTF'd/aligned cut point can be read
+   from another project unchanged, given its root is bound in the container (§6 stage 4, `project_binds`).
+2. **Registry paths are absolute and keyed by instance id.** Every `outputs` entry carries `job_instance_id`,
+   `job_dir` and absolute file paths (`services/tilt_series/models.py:52-205`; `adapters/*` pass the supervisor's
+   job dir). A seeded copy can keep them as read-only history without rewriting, but must re-key them: the new
+   project's own `tsReconstruct` would otherwise overwrite the source project's entry of the same id.
+3. **Readers of `paths` after `get_driver_context`:** drivers read `ctx.paths[...]`; in-process readers of
+   `job_model.paths` are the job.star writers (`_get_job_specific_options`, written at submit after pass 3 sets
+   `paths`), `DenoisePredictParams.inherited_from_train` (matches the train job by the model path, so it now
+   matches the recorded one) and `local_warps_upstream` (`services/jobs/miss_align.py`, walks recorded paths). No
+   driver looks another job up by type at run time. Writers outside the orchestrator: `backend.py:355` (tilt-filter
+   predict, its own run dir), `backend.py:599` (per-list extraction, `job_dir` only), `apply_aggregation_overrides`
+   and the aggregate dialog (both fixed in S1.6).
+4. **No driver mutates its upstream's files found.** Upstream XMLs are symlinked read-only into staging or copied
+   (tsCtf); outputs go to the job's own `output_processing`; `.skip` markers and exclusions live in the job's
+   own dir and the registry.
+5. **`ui_mgr.is_running` gates.** Editing: `pipeline_builder_panel.py:114`, `:171`, `:293`, `:465` (add, species
+   add, add instance, remove); `pipeline_roster.py:597`, `:604`, `:718`, `:732` (+/× and add rows);
+   `ui/species/jobs_tab.py:95/135`; `ui/data_import_panel.py:446`, `:652`, `:912` (landing data inputs, project
+   creation — unaffected by stage 2). Chrome: `pipeline_builder_panel.py:97`, `:592` (poller start),
+   `pipeline_roster.py:317` (signature), `:1601` (Run/Stop slot), `status_poller.py:128-131` (flag sync),
+   `logs_tab.py` (log tail timers).
 
 ---
 
 ## 11. Runtime checklist (after `python main.py` restart)
 
-- Stage 1: Run a chain; while tsCtf is queued, add a missAlign on the alignment; tsCtf starts on the alignment,
-  its I/O tab says "fixed at submit". Add a tsCtf__2 afterwards: it says "follows missAlign".
-- Stage 2: while a long job runs, add and clone jobs, Run to here on one of them; it waits on the running
-  producer and starts after it. Cancel it; the running job is unaffected. Approve a tilt filter while another
-  chain runs.
-- Stage 3: Subset of 5 TS on a tsCtf output, tsReconstruct after it; only those 5 are reconstructed; the original
-  tsReconstruct is untouched.
+- Stage 1 (adding jobs while a chain runs comes with stage 2, so these use what is possible now):
+  - Run a chain. A queued job's tab is read-only; its I/O tab says "fixed at submit" per input; its driver log
+    has `[DRIVER_BASE] Inputs fixed at submit`.
+  - With the chain finished, add a missAlign on the alignment. The finished tsCtf still shows the alignment it
+    read ("fixed at submit"); a new tsCtf__2 says "follows missAlign".
+  - Make tsCtf fail on a few TS (cancel it mid-run), add a missAlign, Run: tsCtf resumes in its own dir on the
+    old alignment. Then Reset inputs on it and Run: it says "follows missAlign" before the Run and starts over
+    in a new job dir (events log: "inputs differ from its last attempt").
+  - Aggregate dialog → Set up extraction: the Subtomo extraction job's input reads "set by hand" with the
+    aggregate's optimisation_set, and Run keeps it.
+- §8 table: the branch icon under Jobs on a project with two TM species and a missAlign. Rows in dependency
+  order, one lane per chain, solid lines into jobs that ran, dashed into Scheduled ones; the address bar reads
+  `/p/<project>/table` and Back returns; a row click opens the job; a running job's dot pulses and its elapsed
+  time counts up; TS ok/total matches the roster.
+- Stage 2 (no Run to here, §9.3): while a long job runs, add a job and clone one (the copy icon), Run. Only the
+  unfinished jobs that are not live are submitted; one that reads the running job waits for it (its SLURM
+  dependency, events log "afterok=[…]"); the running job is untouched. The running job and its upstream have no ×,
+  and Delete in their job tab refuses with the reason. Stop still cancels everything. Approve a tilt filter while
+  another chain runs.
+- Stage 2 registry: two supervisors aggregating together (tsCtf and a clone tsCtf__2 finishing at once) both land
+  in the registry (Journey shows both); toggle a TS exclusion during an aggregation; `registry/.lock` is gone
+  after.
+- Stage 3 (§6.1), on a project whose preprocessing chain has run:
+  - The roster has no Subset add row. A tsCtf tab's header has **Subset**; on a tsCtf that has not succeeded it
+    refuses with the reason. On the finished tsCtf it adds a Subset whose tab says what it cuts and "0 of N
+    chosen"; its I/O input is read-only, "set by hand" to tsCtf.
+  - Run with 0 chosen: refused, "Subset not ready: subset: no tilt series chosen", nothing allocated.
+  - Click 5 rows (All / None work), **Add Reconstruct**: tsReconstruct__2 reads input_star ← subset, input_processing
+    ← tsCtf, warp_tiltseries_settings ← the alignment (a notice says so; its I/O tab agrees, all "set by hand"); the
+    original tsReconstruct is unchanged.
+  - Run: the Subset is Succeeded at once (its Logs tab's run.out lists the 5); its star has 5 rows whose
+    `rlnTomoTiltSeriesStarFile` are absolute paths into tsCtf's `tilt_series/`; tsReconstruct__2 finishes 5/5 and
+    the original tsReconstruct is untouched. The Subset's tab is read-only now; its Clone copies the 5 and the cut.
+  - A Run whose only unfinished job is a Subset: "… written at submit; nothing to queue", no spinner left on.
+  - Table (§8): tsCtf → subset → tsReconstruct__2, solid.
+  - A Subset of the alignment + **Add Miss Align** on it: an automatic tsCtf (Scheduled) stays on the alignment's
+    warp dir (no "follows missAlign").
+  - A tomogram Subset of tsReconstruct + **Add Template Match** (asks for the species): its input_tiltseries is set to
+    the tsCtf that tsReconstruct read (no tie with tsCtf__2); TM processes exactly the 5; a Subtomo extraction after it
+    still shows the missAlign local-warp hint when the chain has one.
+  - Remove a Subset (× on a Scheduled one, or Delete on a finished one) with a Scheduled job after it: that job's
+    input_star turns red ("no longer in the project") and Run refuses it saying so; it never falls back to tsCtf.
+  - Protocols → export: warns that the Subset is not a stage and that tsReconstruct__2's input is exported as
+    reading tsCtf; the bundle applies to a fresh project.
 - Stage 4: Fork the same tsCtf output to a new project; it opens with 5 TS in its Journey; reconstruct there;
   exclude a TS in the new project and check the original still has it.
 
@@ -354,3 +633,54 @@ Also later: read-side views follow a chosen chain instead of "the first job of e
 - `ImportedOutput` as a pydantic model with a `Literal` `origin` ("fork" | "files" | "merge") — a discriminated
   union if the three grow different fields.
 - A frozen `dataclass` `Subset(cut_instance, cut_output, ts_ids)` shared by the Subset job and the Fork dialog.
+
+## 13. Fold-in: the `relion_schemer` path deleted (2026-10-15, NOT RUN)
+
+The orchestrator roadmap's §0 items R1, R4, D4 and C8 (C5 is this roadmap's S2.6), built here because this branch
+rewrites the same code. Merged into main with `token_auth` the same day; that roadmap's §0 and its row in
+`docs/roadmaps/README.md` mark them done.
+
+- **R1, afterok unconditional.** `Config.use_afterok_orchestrator` and the template's key are gone; a `conf.yaml`
+  that still has the key shows it under the amber "config" dot as unread (delete the line). Nothing reads
+  `ProjectState.use_afterok_orchestrator`: it is a plain field, always `True` and still written, so an older
+  checkout opening a newer project submits it by afterok too. The silent routes back to the schemer (a config
+  that fails to load, a conf without the key) are gone with it.
+- **R4, the schemer deleted.** `pipeline_runner.py` down to 599 lines (from 1,537): `sync_all_jobs`,
+  `is_active`, the schemer launch and monitor, the in-place retry path, `stop_pipeline`,
+  `reset_submission_failure`, the schemer log readers and the star patching.
+  `pipeline_orchestrator_service.py`: the scheme.star writer, the schemer branch of `_deploy_locked` (with its "already running" guard and the DL-auto, review-hold and Subset refusals),
+  `delete_job` via `relion_pipeliner`, the dry-run comparer. `pipeline_monitor.py`: the schemer recovery,
+  deferred re-deploy and sbatch-error teardown; recovery is load-and-tick. Gone with them: the `sync_all_jobs`
+  calls after project load, delete, Stop and Cancel; the `is_active` OR in the status poller; the schemer
+  branches of `jobs_in_use`, `in_use_notice`, `delete_job`'s refusal, the Subset add refusal and the cancel
+  dialog; `Schemes/` at project creation. Stop's `slurm_job_ids` argument went (it was ignored).
+  "Pipeline started (PID: 0)" now reads "Pipeline started: N job(s) queued".
+- **D4.** Stop and Cancel now scancel the supervisors, then the arrays named in their task manifests (a failure
+  there is ignored: the array has usually ended), then mark each task that had started and has no status
+  marker `.fail` (`mark_stopped_tasks_failed`, off the event loop). A task killed mid-run used to read
+  "running" on a Failed job.
+- **C8.** `_get_current_relion_counter` stays as the one-time seed of `job_dir_counter`, so a project whose earlier
+  jobs RELION numbered continues after them.
+- **Kept, deliberately:** the project-root `qsub.sh` copy (every `job.star` names it as `qsubscript`) and the
+  `relion --tomo --do_projdir` at project creation: both belong to RELION compatibility, the orchestrator
+  roadmap's R2 (C1–C4). So do `job.star`, the star pruning on delete for jobs RELION ran, and `JobTypeResolver`
+  (the type-wide delete fallback; every caller passes an instance id). `deploy_and_run_scheme` and the UI's
+  `scheme_name` keep their names.
+- **Risk:** a job saved as Running without a SLURM id (possible in old schemer-era projects) is never tracked;
+  Run treats it as live and skips it. Already true under afterok; roadmap 33 S4 covers it.
+- Docs: `docs/architecture.md` (monitor, recovery, file map; the "Replacing relion_schemer" section is done and
+  went), CLAUDE.md's two service lines, `config/conf.template.yaml`.
+- **Merge with `token_auth`:** README *Upgrading an existing install* and roadmap 20's S5 checklist say the key is
+  gone instead of asking for it.
+- Checked: `ruff check` on the touched files (the repo's six E501s are older), `ruff format --diff` on the files
+  whose formatting was clean before. Not run: Python is absent in the sandbox.
+- **Runtime checks:**
+  1. `check_boundaries.py`; start the server with a conf that still has `use_afterok_orchestrator`: the amber
+     config dot names it.
+  2. Create a project: no `Schemes/`. Run a short chain: queued, runs, finishes, the spinner stops.
+  3. Stop during an array job: in its job dir every task that had started has a `.task_status/*.fail`, the roster
+     and Journey show those TS failed, not running, and `squeue -u $USER` has nothing of the project left.
+  4. Cancel one running array job from its tab: the same marking; jobs that wait for it fail, the rest runs on.
+  5. Restart the server while a chain runs: the chain keeps going and the statuses catch up within a tick.
+  6. Open a project last run before June and Run something: the new job dir numbers continue after the existing
+     `External/jobNNN`, none reused.

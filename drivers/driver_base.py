@@ -114,29 +114,32 @@ def get_driver_context(expected_type: type[T] | None = None) -> tuple[ProjectSta
         print(f"FATAL: job_model for instance '{instance_id}' has no job_type set.", file=sys.stderr)
         sys.exit(1)
 
-    # Re-resolve paths at drive time rather than trusting the schedule-time snapshot
-    # in job_model.paths. The orchestrator writes paths before the relion schemer has
-    # allocated the real job directory (it works from a predicted job number), so the
-    # cached snapshot can disagree with the actual relion_job_name if the schemer
-    # skipped a number (e.g. because of an orphan row in default_pipeline.star).
-    # Path.cwd() is the authoritative job dir — qsub.sh cd's into the allocated
-    # directory before invoking this driver.
-    from services.path_resolution_service import PathResolutionService, PathResolutionError, get_context_paths
+    # A job the afterok chain submitted runs on the paths resolved at its submit, from the inputs
+    # recorded with them, in the dir allocated then: what it reads cannot move between Run and
+    # its start. Any other launch -- a job submitted before inputs were recorded, or a launcher
+    # running this instance in another dir -- resolves here. Path.cwd() is the authoritative job
+    # dir: qsub.sh cd's into it.
+    submitted_dir = (job_model.paths or {}).get("job_dir")
+    if job_model.inputs_fixed and submitted_dir and Path(submitted_dir).resolve() == job_dir:
+        local_paths = dict(job_model.paths)
+        print(f"[DRIVER_BASE] Inputs fixed at submit for '{instance_id}'", flush=True)
+    else:
+        from services.path_resolution_service import PathResolutionService, PathResolutionError, get_context_paths
 
-    try:
-        resolver = PathResolutionService(project_state)
-        io_paths = resolver.resolve_all_paths(job_type, job_model, job_dir=job_dir, instance_id=instance_id)
-        context_paths = get_context_paths(job_type, job_model, job_dir)
-        fresh_paths = {**context_paths, **io_paths}
-    except PathResolutionError as e:
-        print(f"FATAL: path resolution failed for instance '{instance_id}' at drive time: {e}", file=sys.stderr)
-        sys.exit(1)
+        try:
+            resolver = PathResolutionService(project_state)
+            io_paths = resolver.resolve_all_paths(job_type, job_model, job_dir=job_dir, instance_id=instance_id)
+            context_paths = get_context_paths(job_type, job_model, job_dir)
+            fresh_paths = {**context_paths, **io_paths}
+        except PathResolutionError as e:
+            print(f"FATAL: path resolution failed for instance '{instance_id}' at drive time: {e}", file=sys.stderr)
+            sys.exit(1)
 
-    local_paths = {k: str(v) for k, v in fresh_paths.items() if v is not None}
-    # Mirror the resolver output into the model so any code path that still reads
-    # job_model.paths in-process (e.g. _get_job_specific_options) sees fresh values.
-    # Not persisted to disk — sync_all_jobs owns project_params.json writes.
-    job_model.paths = dict(local_paths)
+        local_paths = {k: str(v) for k, v in fresh_paths.items() if v is not None}
+        # Mirror the resolver output into the model so any code path that still reads
+        # job_model.paths in-process (e.g. _get_job_specific_options) sees fresh values.
+        # Not persisted to disk — the server owns project_params.json writes.
+        job_model.paths = dict(local_paths)
 
     context_data = {
         "instance_id": instance_id,

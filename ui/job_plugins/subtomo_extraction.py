@@ -81,8 +81,8 @@ def _render_empty_upstream_banner(job_model) -> None:
       - Post-run: this job already ran and exited via the all-skip path
         (drivers/subtomo_extraction.py writes .skipped_no_candidates.json).
       - Pre-run: upstream candidate-extraction's particles.star is empty.
-        Surfaces the condition before the user clicks Run / before the
-        schemer dispatches.
+        Surfaces the condition before the user clicks Run, before the
+        job is submitted.
     """
     job_dir, upstream_particles = _resolve_upstream_paths(job_model)
     sentinel_msg = _read_skip_sentinel(job_dir)

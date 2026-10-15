@@ -62,6 +62,7 @@ _MODE_VIEWS: dict[str, View] = {
     "gallery": View.TOMOGRAMS,
     "viewer": View.PICKS,
     "protocols": View.PROTOCOLS,
+    "table": View.TABLE,
 }
 
 
@@ -134,6 +135,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
             "gallery": _refs.get("gallery_container"),
             "viewer": _refs.get("viewer_container"),
             "protocols": _refs.get("protocols_container"),
+            "table": _refs.get("table_container"),
         }
         # If already on this mode, toggle back to pipeline.
         if _mode["current"] == mode_name and mode_name != "pipeline":
@@ -188,6 +190,11 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         protocols = _refs.get("protocols_page")
         if protocols is not None:
             protocols.set_active(_mode["current"] == "protocols")
+
+        # And the pipeline table's status watch.
+        table = _refs.get("table_page")
+        if table is not None:
+            table.set_active(_mode["current"] == "table")
 
     def _toggle_workbench():
         _switch_to("workbench")
@@ -290,6 +297,30 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
                 page.set_active(True)
             await page.show()
 
+    _table_flight = SingleFlight()
+
+    async def _show_table():
+        """The rail's branch glyph: the pipeline table — every job of the roster in dependency
+        order. Built lazily like the gallery; toggles back to the pipeline on a second click."""
+        async with _table_flight("toggle") as acquired:
+            if not acquired:
+                return
+            _switch_to("table")
+            if _mode["current"] != "table":
+                return
+            tc = _refs.get("table_container")
+            if tc is None:
+                return
+            page = _refs.get("table_page")
+            if page is None:
+                from ui.pipeline_table_view import PipelineTablePage
+
+                with tc:
+                    page = PipelineTablePage(tc, ui_mgr.project_path, callbacks)
+                _refs["table_page"] = page
+                page.set_active(True)
+            await page.show()
+
     _viewer_flight = SingleFlight()
 
     async def _open_pick_viewer(species_id: str | None, tomo_name: str | None) -> None:
@@ -365,6 +396,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
     callbacks["toggle_journey"] = _show_journey
     callbacks["toggle_gallery"] = _show_gallery
     callbacks["toggle_protocols"] = _show_protocols
+    callbacks["toggle_table"] = _show_table
     callbacks["open_pick_viewer"] = _open_pick_viewer
 
     with ui.element("div").style(
@@ -414,6 +446,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
                     toggle_journey=_show_journey,
                     toggle_gallery=_show_gallery,
                     toggle_protocols=_show_protocols,
+                    toggle_table=_show_table,
                 )
 
             workbench_container = ui.element("div").style(
@@ -451,6 +484,12 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
                 "width: 100%; height: 100%; display: none; flex-direction: column;"
             )
             _refs["protocols_container"] = protocols_container
+
+            # Pipeline table: lazily built on the first click of its rail icon.
+            table_container = ui.element("div").style(
+                "width: 100%; height: 100%; display: none; flex-direction: column;"
+            )
+            _refs["table_container"] = table_container
 
     # Floating background-tasks tray at workspace scope so spun-off
     # renders/builds remain visible across dialog open/close and view

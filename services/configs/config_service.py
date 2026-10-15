@@ -243,11 +243,6 @@ class Config(BaseModel):
     # catalog affordance is rendered anywhere.
     species_catalog_root: str = ""
 
-    # Dev toggle (temporary): global override so every project uses the afterok orchestrator
-    # (schemer-free submit + inline import) without per-project project_params.json edits. A
-    # per-project `use_afterok_orchestrator: true` still wins on its own. Remove once validated.
-    use_afterok_orchestrator: bool = False
-
     class Config:
         extra = "ignore"
 

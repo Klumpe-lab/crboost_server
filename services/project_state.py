@@ -52,26 +52,13 @@ logger = logging.getLogger(__name__)
 SCHEMA_VERSION: tuple[int, int] = (3, 9)
 
 
-def _afterok_global_default() -> bool:
-    """Temporary dev toggle: repo-config global override (`use_afterok_orchestrator: true` in
-    conf.yaml) that enables the afterok orchestrator on every project without per-project
-    project_params.json edits. Applied as the field default (fresh projects) and OR'd into the
-    load path (existing projects); a per-project True always wins."""
-    try:
-        from services.configs.config_service import get_config_service
-
-        return bool(get_config_service().config.use_afterok_orchestrator)
-    except Exception:
-        return False
-
-
 # Sentinel `owner` value marking a project as shared/lab-owned rather than
 # belonging to one user. `owner` is mutable (transfer); `created_by` stays as
 # immutable provenance. None ⇒ owned by `created_by` (the legacy default).
 SHARED_OWNER = "@lab"
 
 # Project-relative location for aggregation merge outputs. Stable name, not under
-# External/ so it can't collide with the schemer's jobNNN allocation. Each named
+# External/ so it can't collide with the jobNNN allocation. Each named
 # merge writes its own MergedSources/<slug>/ folder (older projects have a flat
 # MergedSources/optimisation_set.star).
 MERGED_DIR_NAME = "MergedSources"
@@ -760,16 +747,15 @@ class ProjectState(BaseModel):
     # Restored explicitly in load() (field-by-field).
     review_hold: ReviewHold | None = None
 
-    # Per-project opt-in to the SLURM afterok submit path (submit_chain) instead of
-    # relion_schemer. Off unless set here or by the conf.yaml global toggle, so existing
-    # projects stay on the schemer. Live status under this flag requires the afterok
-    # reconciler.
-    use_afterok_orchestrator: bool = Field(default_factory=_afterok_global_default)
+    # Always True and read by nothing here. Written so that an older checkout opening this
+    # project submits it as an afterok chain too, rather than through its RELION path, whose job
+    # numbers would collide with the External/jobNNN dirs this one allocated.
+    use_afterok_orchestrator: bool = True
     # Provenance of a project created from a protocol bundle; None for a hand-built
     # project. Restored explicitly in load() (field-by-field).
     protocol_origin: ProtocolOrigin | None = None
-    # Sole job-dir-number allocator for the afterok path. Seeded once from
-    # default_pipeline.star's rlnPipeLineJobCounter at the first submit_chain, then
+    # Sole job-dir-number allocator. Seeded once from default_pipeline.star's
+    # rlnPipeLineJobCounter (if any) at the first submit_chain, then
     # monotonic: always consumes a slot (no reuse on rerun), which avoids a job-number
     # off-by-one after abort + redeploy. 0 = unseeded.
     job_dir_counter: int = 0
@@ -1356,11 +1342,7 @@ class ProjectState(BaseModel):
         # as 'importtomograms') so pipeline_order never references a ghost job.
         project_state.pipeline_order = [iid for iid in _persisted_order if iid in project_state.jobs]
 
-        # Explicit restore (load() is field-by-field, not cls(**data)). Both fields are
-        # optional, so defaulting keeps older projects on the schemer path.
-        project_state.use_afterok_orchestrator = (
-            data.get("use_afterok_orchestrator", False) or _afterok_global_default()
-        )
+        # Explicit restore (load() is field-by-field, not cls(**data)).
         project_state.job_dir_counter = data.get("job_dir_counter", 0)
 
         # Protocol provenance: explicit restore, same reason as above. A
@@ -1501,8 +1483,8 @@ class StateService:
         try:
             project_path = project_json_path.parent.resolve()
             # In-memory state is authoritative — it may be ahead of disk
-            # while a pipeline is running (sync_all_jobs updates job
-            # execution_status/relion_job_name on every tick). Re-reading
+            # while a pipeline is running (reconcile_afterok updates job
+            # execution_status on every tick). Re-reading
             # from disk here would clobber those in-flight updates and leave
             # jobs stuck at their deploy-time Scheduled state after a
             # pipeline run. get_project_state_for

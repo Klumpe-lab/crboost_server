@@ -255,7 +255,8 @@ def pending_extractions(state, project_path: Path, species_id: str) -> list[Pend
 def apply_aggregation_overrides(state) -> int:
     """For aggregation projects with a completed merge, point every consumer
     job's input_optimisation slot at the active merged optimisation_set.star.
-    Idempotent. Returns count of jobs updated.
+    Idempotent. Returns count of jobs updated. Jobs already submitted keep the inputs they
+    were submitted with.
 
     Wires via the synthetic merged-sources producer's `source_key` (not a bare
     `manual:` path) so the IO-config dropdown shows "Merged sources — <name>"
@@ -291,6 +292,8 @@ def apply_aggregation_overrides(state) -> int:
     override_value = f"{JobType.MERGED_SOURCES.value}:{instance_path}"
     updated = 0
     for instance_id, job_model in state.jobs.items():
+        if job_model.inputs_fixed:
+            continue  # submitted: it reads what it was submitted with until its inputs are reset
         schema = getattr(type(job_model), "INPUT_SCHEMA", None) or []
         slot_keys = [s.key for s in schema if s.accepts and JobFileType.OPTIMISATION_SET_STAR in s.accepts]
         if not slot_keys:

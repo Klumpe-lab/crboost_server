@@ -201,11 +201,10 @@ def setup_app(port: int):
     backend = CryoBoostBackend(REPO_ROOT)
     create_ui_router(backend)
 
-    # Single server-side pipeline observer: runs sync_all_jobs centrally
+    # Single server-side pipeline observer: runs reconcile_afterok centrally
     # on a 3-s tick for every project with pipeline_active=True, and on
-    # startup scans the configured project base for projects that were
-    # mid-pipeline when uvicorn last died — re-deploys their remaining
-    # jobs from a fresh scheme. See docs/architecture.md.
+    # startup loads the projects that were mid-pipeline when uvicorn last
+    # died, so the tick picks their chains up again. See docs/architecture.md.
     async def _start_pipeline_monitor():
         await backend.pipeline_monitor.start()
         await backend.curation_watcher.start()

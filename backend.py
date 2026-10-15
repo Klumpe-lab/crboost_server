@@ -137,7 +137,7 @@ def _live_progress(project_dir: Path, jobs: dict[str, Any]) -> dict[str, Any] | 
             continue
         job_dir = project_dir / rel
         status = (job.get("execution_status") or "").strip()
-        # Same reconcile as _derive_live_status: a dead schemer can leave Running persisted.
+        # Same reconcile as _derive_live_status: a job that ended unwatched leaves Running persisted.
         if status == "Running":
             if (job_dir / "RELION_JOB_EXIT_SUCCESS").exists():
                 status = "Succeeded"
@@ -1756,8 +1756,8 @@ class CryoBoostBackend:
         """Derive pipeline status for the roster from project_params.json's
         `jobs` dict (canonical: includes tiltFilter and other non-RELION
         jobs that aren't in default_pipeline.star). Disk RELION_JOB_EXIT_*
-        markers are only used to reconcile in-memory `Running` statuses
-        that the schemer crashed before persisting -- otherwise the project
+        markers are only used to reconcile persisted `Running` statuses of
+        jobs that ended while no server was reconciling -- otherwise the project
         state is the source of truth. A stored `review_hold` with nothing
         running reads "review": the pipeline waits for the tilt-filter review."""
         out: dict[str, Any] = {
@@ -1788,9 +1788,8 @@ class CryoBoostBackend:
                 continue
             status = (job.get("execution_status") or "").strip()
             relion_name = job.get("relion_job_name")
-            # Reconcile Running against on-disk exit markers so a crashed
-            # schemer doesn't leave us perpetually showing a dead job as
-            # "live".
+            # Reconcile Running against on-disk exit markers so a job that
+            # ended while no server was watching doesn't read as "live" for good.
             if status == "Running" and relion_name:
                 job_dir = project_dir / relion_name.rstrip("/")
                 success_marker = job_dir / "RELION_JOB_EXIT_SUCCESS"

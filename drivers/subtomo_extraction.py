@@ -296,8 +296,8 @@ class SubtomoExtractionDriver(ArrayDriver):
             # produced 0 candidates across every tomogram, so there is nothing
             # to extract. Mark every TS as .skip and a sidecar so the UI can
             # render a clear "no picks anywhere — skipped" banner. We exit
-            # SUCCESS rather than fail because (a) the schemer would otherwise
-            # halt the whole pipeline on an upstream-data condition that's
+            # SUCCESS rather than fail because (a) a failure would cancel every
+            # job that waits for this one, on an upstream-data condition that's
             # diagnostic, not a job bug, and (b) it matches the per-TS SKIP
             # semantics, which are also "succeeded but did no work".
             status_dir = ctx.job_dir / STATUS_DIR_NAME

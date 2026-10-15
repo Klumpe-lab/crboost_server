@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from collections import deque
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 from collections.abc import Sequence
@@ -14,12 +15,22 @@ from services.particles.particle_sets import SET_PRODUCER_PREFIX
 
 logger = logging.getLogger(__name__)
 
+
+class InputState(StrEnum):
+    """How an input slot got its source, as the I/O section names it."""
+
+    AUTOMATIC = "automatic"  # chosen by automatic selection; may still change until the job is submitted
+    SET_BY_HAND = "set by hand"
+    FIXED_AT_SUBMIT = "fixed at submit"
+
+
 # (consumer, *refiners) combinations already reported as ambiguous by _follow_refinements.
 _AMBIGUOUS_REFINEMENTS_WARNED: set[tuple[str, ...]] = set()
 
 if TYPE_CHECKING:
     from services.project_state import ProjectState
     from services.job_models import AbstractJobParams
+    from services.jobs._base import SubmittedInput
 
 
 @dataclass(frozen=True)
@@ -94,16 +105,20 @@ class InputSlotValidation:
     # Two or more equally good producers and no override: the slot stays ambiguous until one
     # is picked. One output per producer instance.
     tied: tuple[OutputCandidate, ...] = ()
+    input_state: InputState = InputState.AUTOMATIC
+    # The refining job (missAlign) an automatic choice was moved onto, if any.
+    refined_by: str | None = None
 
 
 @dataclass(frozen=True)
 class AutoChoice:
     """Automatic selection for one input slot: the chosen producer output, or none. `tied` holds
     one output per producer instance when two or more instances are equally good, and then
-    nothing is chosen."""
+    nothing is chosen. `refined_by` names the refining job the choice was moved onto."""
 
     candidate: OutputCandidate | None = None
     tied: tuple[OutputCandidate, ...] = ()
+    refined_by: str | None = None
 
 
 @dataclass(frozen=True)
@@ -119,12 +134,21 @@ class SlotSource:
     # Why no source was chosen: an override that no longer resolves, or a tie.
     problem: str | None = None
     tied: tuple[OutputCandidate, ...] = ()
+    # The source is the one recorded when the job was submitted (`submitted_inputs`).
+    fixed: bool = False
+    refined_by: str | None = None
+
+    @property
+    def state(self) -> InputState:
+        if self.fixed:
+            return InputState.FIXED_AT_SUBMIT
+        return InputState.SET_BY_HAND if self.override_key is not None else InputState.AUTOMATIC
 
 
 @dataclass(frozen=True)
 class SlotEdge:
     """One wire of the pipeline DAG: `consumer`'s input `slot` reads `output` (a file name) of
-    `producer`. `explicit` when an override set it rather than automatic selection."""
+    `producer`. `explicit` when an override or the submit record set it, not automatic selection."""
 
     producer: str
     consumer: str
@@ -234,12 +258,14 @@ def auto_exclusion(consumer_type: JobType, consumer_species_id: str | None, cand
     """Why automatic selection never wires `candidate` into a consumer of `consumer_type` bound
     to `consumer_species_id`, or None when it may. A job producer has to run at an earlier stage
     than its consumer (PIPELINE_ORDER), which keeps automatic wiring acyclic; a producer bound to
-    another species never feeds a species-bound consumer. Synthetic producers have no stage. An
-    explicit override may name either kind."""
+    another species never feeds a species-bound consumer. Synthetic producers have no stage, and
+    neither has a Subset: it sits wherever the output it cuts does (only an explicit choice wires
+    one, `OutputCandidate.auto_eligible`). An explicit override may name either kind."""
     from services.jobs.spec import PIPELINE_ORDER
 
     if (
         not is_synthetic_producer(candidate.producer_instance_id)
+        and candidate.producer_job_type != JobType.SUBSET
         and consumer_type in PIPELINE_ORDER
         and candidate.producer_job_type in PIPELINE_ORDER
         and PIPELINE_ORDER.index(candidate.producer_job_type) >= PIPELINE_ORDER.index(consumer_type)
@@ -248,6 +274,43 @@ def auto_exclusion(consumer_type: JobType, consumer_species_id: str | None, cand
     if consumer_species_id and candidate.species_id and candidate.species_id != consumer_species_id:
         return "other species"
     return None
+
+
+def cut_output(job_type: JobType) -> OutputSlot | None:
+    """The output of `job_type` a Subset can cut: its main star (`output_star`) when that lists
+    tilt series the jobs after it take theirs from (`CUT_TYPES`). None for every other job, a
+    Subset included: a smaller Subset of a Subset is a Clone of it with fewer tilt series."""
+    from services.jobs import jobtype_paramclass
+    from services.jobs.subset import CUT_TYPES
+
+    cls = jobtype_paramclass().get(job_type)
+    slots = (getattr(cls, "OUTPUT_SCHEMA", None) or []) if cls is not None else []
+    return next((s for s in slots if s.key == "output_star" and s.produces in CUT_TYPES), None)
+
+
+def subset_cut(state: ProjectState, job_model: AbstractJobParams) -> tuple[str, OutputSlot] | None:
+    """The job a Subset cuts and the output of it that it cuts: from what the Subset read at its
+    submit when its inputs are fixed, else from its input as set. None when that names no job of
+    the project with such an output."""
+    if job_model.inputs_fixed:
+        rec = (job_model.submitted_inputs or {}).get("input_star")
+        key = rec.source_key if rec is not None else None
+    else:
+        key = (job_model.source_overrides or {}).get("input_star")
+    instance_id = override_instance_id(key) if key else None
+    source = state.jobs.get(instance_id) if instance_id else None
+    if source is None or source.job_type is None:
+        return None
+    slot = cut_output(source.job_type)
+    return (instance_id, slot) if slot is not None else None
+
+
+def _pick_output(matches: list[OutputCandidate], output_key: str = "") -> OutputCandidate | None:
+    """One producer's output among `matches`: the one named `output_key` when given, else the
+    curated `prefer_if_exists` sibling over the raw one."""
+    if output_key:
+        return next((m for m in matches if m.producer_output_key == output_key), None)
+    return next((m for m in matches if m.prefer_if_exists), matches[0] if matches else None)
 
 
 def _synthetic_override_target(override_key: str) -> str:
@@ -301,7 +364,7 @@ class PathResolutionService:
         Resolve inputs + outputs using schemas and return a dict compatible with job_model.paths.
         Respects source_overrides from job_model and species-aware scoring.
         """
-        outputs_manifest = self.resolve_outputs(job_type, job_dir)
+        outputs_manifest = self.resolve_outputs(job_type, job_dir, job_model)
         inputs_manifest = self.resolve_inputs(job_type, job_model, consumer_instance_id=instance_id)
 
         manifest = ResolvedManifest(
@@ -313,8 +376,10 @@ class PathResolutionService:
             return paths, manifest
         return paths
 
-    def resolve_outputs(self, job_type: JobType, job_dir: Path) -> list[ResolvedOutput]:
-        schema = self._get_output_schema(job_type)
+    def resolve_outputs(
+        self, job_type: JobType, job_dir: Path, job_model: AbstractJobParams | None = None
+    ) -> list[ResolvedOutput]:
+        schema = self._get_output_schema(job_type, job_model)
         resolved: list[ResolvedOutput] = []
         for slot in schema:
             resolved_path = str((job_dir / slot.path_template).resolve())
@@ -477,11 +542,12 @@ class PathResolutionService:
     def automatic_sources(self) -> dict[tuple[str, str], OutputCandidate]:
         """What automatic selection wires now: `{(instance_id, slot_key): candidate}` for every
         job's input slot that has no override and one source (unresolved and tied slots are
-        absent)."""
+        absent, and so are jobs whose inputs were fixed at submit)."""
         index = self._build_output_index()
         sources: dict[tuple[str, str], OutputCandidate] = {}
         for instance_id, job_model in self.state.jobs.items():
-            if job_model.job_type is None:
+            # A Subset's input is never chosen automatically (_select_source).
+            if job_model.job_type in (None, JobType.SUBSET) or job_model.inputs_fixed:
                 continue
             overrides = getattr(job_model, "source_overrides", {}) or {}
             for slot in self._get_input_schema(job_model.job_type):
@@ -493,6 +559,64 @@ class PathResolutionService:
                 if choice.candidate is not None:
                     sources[(instance_id, slot.key)] = choice.candidate
         return sources
+
+    def record_inputs(self, instance_id: str) -> dict[str, SubmittedInput]:
+        """What each input slot of `instance_id` reads now, as the record its submit keeps
+        (`submitted_inputs`). Slots without a usable source are left out."""
+        from services.jobs._base import SubmittedInput
+
+        job_model = self.state.jobs[instance_id]
+        index = self._build_output_index()
+        record: dict[str, SubmittedInput] = {}
+        for slot in self._get_input_schema(job_model.job_type):
+            src = self._select_source(job_model.job_type, job_model, slot, index, instance_id)
+            if src.manual_path is not None:
+                record[slot.key] = SubmittedInput(source_key=src.override_key)
+            elif src.candidate is not None and not self._interactive_producer_gap(src.candidate):
+                record[slot.key] = SubmittedInput(
+                    source_key=src.candidate.source_key, output_key=src.candidate.producer_output_key
+                )
+        return record
+
+    def source_of(self, instance_id: str, slot_key: str) -> str | None:
+        """The job one input slot of `instance_id` reads from, chosen as resolve_inputs chooses it;
+        None for a manual file, a synthetic producer, or no source."""
+        job_model = self.state.jobs.get(instance_id)
+        if job_model is None or job_model.job_type is None:
+            return None
+        slot = next((s for s in self._get_input_schema(job_model.job_type) if s.key == slot_key), None)
+        if slot is None:
+            return None
+        chosen = self._select_source(job_model.job_type, job_model, slot, self._build_output_index(), instance_id)
+        c = chosen.candidate
+        return c.producer_instance_id if c is not None and not is_synthetic_producer(c.producer_instance_id) else None
+
+    def mixed_chains(self, instance_id: str) -> tuple[str, str] | None:
+        """Two jobs `instance_id` reads from of which neither is upstream of the other, e.g.
+        tsReconstruct's tilt series from tsCtf__2 but its settings from an alignment tsCtf__2 does
+        not descend from; None when its inputs all lie on one chain. A warning, never a block."""
+        edges = self.resolve_slot_edges()
+        producers: dict[str, set[str]] = {}
+        for e in edges:
+            producers.setdefault(e.consumer, set()).add(e.producer)
+
+        def upstream(job: str) -> set[str]:
+            seen: set[str] = set()
+            frontier = [job]
+            while frontier:
+                for p in producers.get(frontier.pop(), ()):
+                    if p not in seen:
+                        seen.add(p)
+                        frontier.append(p)
+            return seen
+
+        direct = sorted(producers.get(instance_id, ()))
+        ups = {p: upstream(p) for p in direct}
+        for i, a in enumerate(direct):
+            for b in direct[i + 1 :]:
+                if a not in ups[b] and b not in ups[a]:
+                    return (a, b)
+        return None
 
     # -------------------------------------------------------------------------
     # Candidate enumeration for UI
@@ -576,9 +700,11 @@ class PathResolutionService:
         """Expose input schema for UI rendering."""
         return self._get_input_schema(job_type)
 
-    def get_output_schema_for_job(self, job_type: JobType) -> list[OutputSlot]:
-        """Expose output schema for UI rendering."""
-        return self._get_output_schema(job_type)
+    def get_output_schema_for_job(
+        self, job_type: JobType, job_model: AbstractJobParams | None = None
+    ) -> list[OutputSlot]:
+        """Expose output schema for UI rendering (a Subset's from its `job_model`)."""
+        return self._get_output_schema(job_type, job_model)
 
     def validate_input_slot(
         self,
@@ -591,8 +717,24 @@ class PathResolutionService:
         """
         Validate a single input slot's current configuration.
         Returns detailed validation result for UI feedback; the source is the one
-        resolve_inputs would use (`_select_source`).
+        resolve_inputs would use (`_select_source`), with how it was chosen (`input_state`).
         """
+        v = self._validate_input_slot(job_type, job_model, slot_key, check_filesystem, consumer_instance_id)
+        slot = next((s for s in self._get_input_schema(job_type) if s.key == slot_key), None)
+        if slot is not None:
+            src = self._select_source(job_type, job_model, slot, self._build_output_index(), consumer_instance_id)
+            v.input_state, v.refined_by = src.state, src.refined_by
+            v.is_user_override = src.state == InputState.SET_BY_HAND
+        return v
+
+    def _validate_input_slot(
+        self,
+        job_type: JobType,
+        job_model: AbstractJobParams,
+        slot_key: str,
+        check_filesystem: bool,
+        consumer_instance_id: str | None,
+    ) -> InputSlotValidation:
         input_schema = self._get_input_schema(job_type)
         slot = next((s for s in input_schema if s.key == slot_key), None)
 
@@ -712,25 +854,25 @@ class PathResolutionService:
         index: dict[JobFileType, list[OutputCandidate]],
         consumer_instance_id: str | None,
     ) -> SlotSource:
-        """The source of one input slot: the user's override when it is set, otherwise
-        automatic selection (`_auto_select`). A `manual:` override is a file path with no
-        producer. An override that no longer resolves (a deleted job or merge, a stale pick
-        list, a removed import) is reported, never replaced by some other producer such as a
-        downstream Class3D output: the user chose that source. So is a tie."""
+        """The source of one input slot: the one recorded when the job was submitted, else the
+        user's override when it is set, otherwise automatic selection (`_auto_select`). A
+        `manual:` key is a file path with no producer. A recorded source or an override that no
+        longer resolves (a deleted job or merge, a stale pick list, a removed import) is
+        reported, never replaced by some other producer such as a downstream Class3D output:
+        the job read, or the user chose, that source. So is a tie."""
+        if job_model.inputs_fixed:
+            rec = job_model.submitted_inputs.get(slot.key)
+            if rec is None:
+                return SlotSource(fixed=True)
+            return self._keyed_source(slot, rec.source_key, index, output_key=rec.output_key, fixed=True)
+
         override_key = (getattr(job_model, "source_overrides", {}) or {}).get(slot.key)
         if override_key:
-            if override_key.startswith("manual:"):
-                return SlotSource(manual_path=override_key[len("manual:") :], override_key=override_key)
-            hit = self._resolve_override(slot, override_key, index)
-            if hit is not None:
-                return SlotSource(candidate=hit, override_key=override_key)
-            target = _synthetic_override_target(override_key)
-            problem = (
-                self._dangling_synthetic_message(target, override_key)
-                if target
-                else self._dangling_job_message(override_key)
-            )
-            return SlotSource(override_key=override_key, problem=problem)
+            return self._keyed_source(slot, override_key, index)
+
+        if consumer_type == JobType.SUBSET:
+            # What a Subset cuts is set when it is made, from that job's tab; never chosen here.
+            return SlotSource(problem="it cuts nothing: a Subset is made with the Subset button of a finished job")
 
         choice = self._auto_select(
             slot, index, consumer_type, getattr(job_model, "species_id", None), consumer_instance_id
@@ -738,7 +880,28 @@ class PathResolutionService:
         if choice.tied:
             names = ", ".join(c.producer_instance_id for c in choice.tied)
             return SlotSource(problem=f"ambiguous between {names}; pick one in the job's I/O section", tied=choice.tied)
-        return SlotSource(candidate=choice.candidate)
+        return SlotSource(candidate=choice.candidate, refined_by=choice.refined_by)
+
+    def _keyed_source(
+        self,
+        slot: InputSlot,
+        key: str,
+        index: dict[JobFileType, list[OutputCandidate]],
+        output_key: str = "",
+        fixed: bool = False,
+    ) -> SlotSource:
+        """The source a `source_overrides`-style key names. `output_key` pins which output of
+        the producer, for a recorded source."""
+        if key.startswith("manual:"):
+            return SlotSource(manual_path=key[len("manual:") :], override_key=key, fixed=fixed)
+        hit = self._resolve_override(slot, key, index, output_key=output_key)
+        if hit is not None:
+            return SlotSource(candidate=hit, override_key=key, fixed=fixed)
+        target = _synthetic_override_target(key)
+        problem = self._dangling_synthetic_message(target, key) if target else self._dangling_job_message(key)
+        if fixed:
+            problem = f"fixed at submit, but {problem}"
+        return SlotSource(override_key=key, problem=problem, fixed=fixed)
 
     def _dangling_synthetic_message(self, target: str, override_key: str) -> str:
         """Why an override naming a synthetic producer stopped resolving (`target` as
@@ -788,10 +951,11 @@ class PathResolutionService:
         )
 
     def _resolve_override(
-        self, slot: InputSlot, override_key: str, index: dict[JobFileType, list[OutputCandidate]]
+        self, slot: InputSlot, override_key: str, index: dict[JobFileType, list[OutputCandidate]], output_key: str = ""
     ) -> OutputCandidate | None:
         """
-        Resolve a user override to a candidate.
+        Resolve a user override to a candidate. With `output_key`, only that output of the
+        producer (a recorded source keeps the file it read, not a curated sibling written since).
 
         override_key format:
           - "jobtype:instance:<instance_id>" for a job, e.g. "templatematching:instance:templatematching__2"
@@ -814,7 +978,7 @@ class PathResolutionService:
                 for candidate in index.get(accepted_type, [])
                 if candidate.producer_job_type.value == job_type_str and candidate.producer_instance_id == instance_id
             ]
-            return next((m for m in matches if m.prefer_if_exists), matches[0]) if matches else None
+            return _pick_output(matches, output_key)
 
         if job_type_str == JobType.MERGED_SOURCES.value and instance_path.startswith(SET_PRODUCER_PREFIX):
             # From the index, else read directly: a set made moments before a driver starts on another
@@ -859,7 +1023,7 @@ class PathResolutionService:
         # sibling of the same type under one source_key (e.g. optimisation_set vs
         # optimisation_set_filtered). Honor the curated one — matches automatic
         # selection (_auto_select) and the UI dropdown's collapsed row.
-        return next((m for m in matches if m.prefer_if_exists), matches[0])
+        return _pick_output(matches, output_key)
 
     # -------------------------------------------------------------------------
     # Indexing producers
@@ -877,20 +1041,19 @@ class PathResolutionService:
             if producer_job_type is None:
                 continue
 
-            out_schema = self._get_output_schema(producer_job_type)
+            out_schema = self._get_output_schema(producer_job_type, producer_model)
             if not out_schema:
                 continue
 
             relion_job_number = int(getattr(producer_model, "relion_job_number", 0) or 0)
             status = getattr(producer_model, "execution_status", JobStatus.UNKNOWN)
 
-            # Interactive jobs (e.g. TiltFilter) are never dispatched by the relion
-            # schemer -- they only produce outputs when the user explicitly commits
-            # them via the UI (which flips execution_status to SUCCEEDED). Until then
-            # they must not appear in the producer pool: otherwise a merely-SCHEDULED
-            # interactive job beats a real upstream via preferred_source and the
-            # schemer ends up polling an `External/pending_<instance>/...` placeholder
-            # that nothing will ever create.
+            # Interactive jobs (e.g. TiltFilter) are never part of the chain -- they
+            # only produce outputs when the user explicitly commits them via the UI
+            # (which flips execution_status to SUCCEEDED). Until then they must not
+            # appear in the producer pool: otherwise a merely-SCHEDULED interactive job
+            # beats a real upstream via preferred_source and its consumer reads an
+            # `External/pending_<instance>/...` placeholder that nothing will ever create.
             if getattr(producer_model, "IS_INTERACTIVE", False) and status != JobStatus.SUCCEEDED:
                 continue
 
@@ -927,6 +1090,8 @@ class PathResolutionService:
                         relion_job_number=relion_job_number,
                         species_id=species_id,
                         prefer_if_exists=slot.prefer_if_exists,
+                        # A Subset is read only by a job set to read it.
+                        auto_eligible=producer_job_type != JobType.SUBSET,
                     )
                 )
 
@@ -1124,11 +1289,9 @@ class PathResolutionService:
         slot: OutputSlot,
         project_root: Path,
     ) -> str | None:
-        # Prefer relion_job_name + path_template over the cached producer paths dict.
-        # The cached dict is a schedule-time snapshot which drifts when the relion
-        # schemer allocates a different job number than the orchestrator predicted;
-        # relion_job_name is reconciled from default_pipeline.star by sync_all_jobs
-        # and is the authoritative identity once the producer has run.
+        # Prefer relion_job_name + path_template over the cached producer paths dict:
+        # relion_job_name is the dir the producer was allocated at submit, the
+        # authoritative identity once it has been submitted.
         relion_job_name = getattr(producer_model, "relion_job_name", None)
         if relion_job_name:
             job_dir = (project_root / relion_job_name.rstrip("/")).resolve()
@@ -1140,8 +1303,7 @@ class PathResolutionService:
             return str((job_dir / slot.path_template).resolve())
 
         # Fall back to the cached paths snapshot only when the producer has no
-        # reconciled identity yet (e.g. a fresh job whose relion_job_name was
-        # cleared at deploy time and has not yet been picked up by sync_all_jobs).
+        # allocated dir yet.
         stored = (producer_model.paths or {}).get(slot.key)
         if stored:
             return str(Path(stored))
@@ -1235,7 +1397,9 @@ class PathResolutionService:
         if len(per_producer) > 1:
             return AutoChoice(tied=tuple(per_producer[p] for p in sorted(per_producer)))
         (chosen,) = per_producer.values()
-        return AutoChoice(candidate=self._follow_refinements(chosen, index, consumer_instance_id))
+        followed = self._follow_refinements(chosen, index, consumer_instance_id)
+        moved = followed.producer_instance_id != chosen.producer_instance_id
+        return AutoChoice(candidate=followed, refined_by=followed.producer_instance_id if moved else None)
 
     def _follow_refinements(
         self, chosen: OutputCandidate, index: dict[JobFileType, list[OutputCandidate]], consumer_instance_id: str | None
@@ -1277,6 +1441,12 @@ class PathResolutionService:
                     chosen.producer_instance_id,
                     chosen.producer_output_key,
                 ):
+                    continue
+                # Only a refiner of all it refines from the chosen job is a drop-in for it: a missAlign
+                # reading a Subset of the alignment's star refines those tilt series alone, so the
+                # alignment's other consumers keep the alignment's warp dir.
+                others = [self._effective_input(rid, r_model, u, index) for u in spec.refines if u != t]
+                if any(o is None or o.producer_instance_id != chosen.producer_instance_id for o in others):
                     continue
                 r_output = next((c for c in index.get(t, []) if c.producer_instance_id == rid), None)
                 if r_output is not None:
@@ -1334,7 +1504,16 @@ class PathResolutionService:
         schema = getattr(cls, "INPUT_SCHEMA", None) if cls else None
         return list(schema) if schema else []
 
-    def _get_output_schema(self, job_type: JobType) -> list[OutputSlot]:
+    def _get_output_schema(self, job_type: JobType, job_model: AbstractJobParams | None = None) -> list[OutputSlot]:
+        """The outputs of `job_type`. A Subset's have the type of what it cuts, so they come from
+        `job_model`: its star, named as the one it cuts (none while it cuts nothing)."""
+        if job_type == JobType.SUBSET:
+            cut = subset_cut(self.state, job_model) if job_model is not None else None
+            if cut is None:
+                return []
+            return [
+                OutputSlot(key="output_star", produces=cut[1].produces, path_template=Path(cut[1].path_template).name)
+            ]
         from services.job_models import jobtype_paramclass
 
         cls = jobtype_paramclass().get(job_type)
@@ -1414,6 +1593,98 @@ def pin_sources_made_ambiguous(
             job_model.source_overrides[slot_key] = source.source_key
             pinned.append((instance_id, slot_key, source.producer_instance_id))
     return pinned
+
+
+def add_after_pins(state: ProjectState, new_iid: str, subset_iid: str) -> dict[str, str]:
+    """Wire `new_iid`, just added after the Subset `subset_iid`: the input it takes its tilt series
+    from (`JobSpec.items_from`) reads the Subset; each other input reads the job the Subset cuts
+    when that job offers what the input accepts (its warp dir, an alignment's settings), else the
+    job that job's chain read it from (`_read_up_chain`: the settings after a later cut, the CTF'd
+    tilt series TM reads beside a tomogram Subset); the rest stays automatic. Returns
+    {slot: producer} as set; empty when the job cannot follow this Subset."""
+    from services.jobs.spec import JOB_SPEC_BY_TYPE
+
+    new_model, subset = state.jobs.get(new_iid), state.jobs.get(subset_iid)
+    spec = JOB_SPEC_BY_TYPE.get(new_model.job_type) if new_model is not None else None
+    cut = subset_cut(state, subset) if subset is not None and subset.job_type == JobType.SUBSET else None
+    if spec is None or spec.items_from is None or cut is None:
+        return {}
+    source_iid = cut[0]
+    source_type = state.jobs[source_iid].job_type
+    resolver = PathResolutionService(state)
+    offered = {s.produces for s in resolver._get_output_schema(source_type)}
+    if new_model.source_overrides is None:
+        new_model.source_overrides = {}
+    new_model.source_overrides[spec.items_from] = instance_override_key(JobType.SUBSET, subset_iid)
+    pins = {spec.items_from: subset_iid}
+    for slot in resolver._get_input_schema(new_model.job_type):
+        if slot.key == spec.items_from:
+            continue
+        if offered.intersection(slot.accepts):
+            producer = source_iid
+        else:
+            producer = _read_up_chain(resolver, source_iid, slot.accepts)
+        if producer is not None:
+            new_model.source_overrides[slot.key] = instance_override_key(state.jobs[producer].job_type, producer)
+            pins[slot.key] = producer
+    return pins
+
+
+def _read_up_chain(resolver: PathResolutionService, start: str, accepts: Sequence[JobFileType]) -> str | None:
+    """The job `start` reads an input of a type in `accepts` from; when `start` has no such input,
+    the job the nearest job up its chain that has one reads it from. None when that input reads no
+    job (a manual file, a synthetic producer), no job up the chain has one, or two jobs at the same
+    distance read it from different jobs."""
+    wanted = set(accepts)
+    frontier, seen = [start], {start}
+    while frontier:
+        reads: set[str] = set()
+        matched = False
+        upstream: list[str] = []
+        for iid in frontier:
+            job_model = resolver.state.jobs.get(iid)
+            if job_model is None or job_model.job_type is None:
+                continue
+            for slot in resolver._get_input_schema(job_model.job_type):
+                producer = resolver.source_of(iid, slot.key)
+                if wanted.intersection(slot.accepts):
+                    matched = True
+                    if producer is not None:
+                        reads.add(producer)
+                elif producer is not None and producer not in seen:
+                    seen.add(producer)
+                    upstream.append(producer)
+        if matched:
+            return reads.pop() if len(reads) == 1 else None
+        frontier = upstream
+    return None
+
+
+def consumers_of(state: ProjectState, instance_id: str) -> list[str]:
+    """The jobs that read `instance_id`'s outputs, as the resolver wires them: the edges a Run
+    submits by, which default_pipeline.star (not written under afterok) does not have."""
+    return sorted({e.consumer for e in PathResolutionService(state).resolve_slot_edges() if e.producer == instance_id})
+
+
+def jobs_in_use(state: ProjectState) -> dict[str, str]:
+    """The jobs a queued or running job depends on, each mapped to such a job: the live jobs
+    themselves (to themselves) and every job upstream of one. Their outputs or inputs are in use,
+    so none of them is removed, deleted or edited while it runs; every other job is."""
+    live = [iid for iid, jm in state.jobs.items() if jm.execution_status in (JobStatus.QUEUED, JobStatus.RUNNING)]
+    if not live:
+        return {}
+    producers: dict[str, set[str]] = {}
+    for e in PathResolutionService(state).resolve_slot_edges():
+        producers.setdefault(e.consumer, set()).add(e.producer)
+    used = {iid: iid for iid in live}
+    frontier = list(live)
+    while frontier:
+        job = frontier.pop()
+        for p in producers.get(job, ()):
+            if p not in used:
+                used[p] = used[job]
+                frontier.append(p)
+    return used
 
 
 # -----------------------------------------------------------------------------

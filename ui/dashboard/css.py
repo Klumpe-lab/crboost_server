@@ -1458,6 +1458,8 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 .cb-atable td[title] { cursor: help; }
 .cb-atable tr.sel td { background: #eef2ff; }
 .cb-atable .act { color: #6366f1; cursor: pointer; text-decoration: underline dotted; }
+/* ── Pipeline table (ui/pipeline_table_view.py): a row is one job and opens it ── */
+.cb-pt-row:hover { background: #f1f5f9; }
 """
 
 
