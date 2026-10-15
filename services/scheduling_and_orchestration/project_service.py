@@ -186,8 +186,6 @@ class ProjectService:
             # when a Run lands while one is open.
             holder = jobs_in_use(state).get(instance_id) if instance_id else None
             if holder is not None:
-                if state.pipeline_active and not state.use_afterok_orchestrator:
-                    return err("The pipeline is running; delete jobs once it has finished or been stopped.")
                 status = state.jobs[holder].execution_status.value.lower()
                 if holder == instance_id:
                     return err(f"{instance_id} is {status}; cancel it before deleting it.")
@@ -246,7 +244,6 @@ class ProjectService:
                 state.job_path_mapping.pop(iid, None)
 
             await self.backend.state_service.save_project(project_path=project_dir, force=True)
-            await self.backend.pipeline_runner.sync_all_jobs(str(project_dir))
 
             if errors:
                 return err(
@@ -343,7 +340,6 @@ class ProjectService:
             project_dir.mkdir(parents=True, exist_ok=True)
             self.set_project_root(project_dir)
 
-            (project_dir / "Schemes").mkdir(exist_ok=True)
             (project_dir / "Logs").mkdir(exist_ok=True)
 
             await self._setup_qsub_templates(project_dir)
@@ -355,7 +351,7 @@ class ProjectService:
             return err(f"Failed during directory setup: {e!s}")
 
     async def _setup_qsub_templates(self, project_dir: Path):
-        """Copy qsub.sh to project root for relion_schemer to find."""
+        """Copy qsub.sh to the project root, where each job.star's qsubscript points (RELION's GUI)."""
         source_qsub = self.backend.server_dir / "config" / "qsub.sh"
         dest_qsub = project_dir / "qsub.sh"
 
@@ -695,9 +691,6 @@ class ProjectService:
                     self._build_and_persist_registry(project_dir, mdocs_glob)
             except Exception as e:
                 logger.warning("Registry backfill failed for %s: %s", project_dir, e)
-
-            # Sync job statuses
-            await self.backend.pipeline_runner.sync_all_jobs(str(project_path))
 
             project_name = state.project_name
             selected_jobs = list(state.jobs.keys())

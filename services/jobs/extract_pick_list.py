@@ -15,14 +15,12 @@ class ExtractPickListParams(AbstractJobParams):
     file (`manual__<stem>`), and the same name recurs on every tomogram the user saves it
     on. The triple is the key here, as it is for `pick_list_producer_id`.
 
-    Not a scheme/roster job. Two things keep it out of the pipeline machinery:
+    Not a chain/roster job. Two things keep it out of the pipeline machinery:
 
       * `IS_INTERACTIVE = True` -- nothing filters `state.jobs` by pipeline membership,
-        so without this flag `sync_all_jobs`' orphan sweep would reset the instance to
-        SCHEDULED and null its `slurm_job_id` on every 3 s tick, `pipeline_monitor`'s
-        crash recovery would hand it to `deploy_and_run_scheme` as a real scheme job,
-        `get_pipeline_overview` would count it into the roster's done/total forever, and
-        the STOP-ON-FAIL heuristic would see a live job that is not part of any run.
+        so without this flag a Run would submit it as a chain job, `get_pipeline_overview`
+        would count it into the roster's done/total forever, a live one would hold
+        `pipeline_active` open, and a Stop would cancel it as part of the run.
       * `phase=None` on its JobSpec row -- keeps it out of the roster palette and the
         Species page's Jobs tab.
 

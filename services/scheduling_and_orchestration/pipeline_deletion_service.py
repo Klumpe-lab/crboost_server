@@ -186,11 +186,10 @@ class PipelineDeletionService:
         job_name = job_path.rstrip("/") + "/"
         
         # 1. Load the pipeline graph and decide whether this job is actually tracked in it.
-        #    With the afterok orchestrator (conf.yaml use_afterok_orchestrator) jobs live only
-        #    in ProjectState, so default_pipeline.star is commonly absent, process-less, or
-        #    does not list this job. All three mean "no graph row to prune": the job dir still
-        #    goes to Trash, but there is nothing to remove from the star. An empty process
-        #    table is the normal state for an afterok project, not an error.
+        #    Jobs live in ProjectState; only jobs RELION ran have rows in default_pipeline.star,
+        #    so the star is commonly absent, process-less, or does not list this job. All three
+        #    mean "no graph row to prune": the job dir still goes to Trash, but there is nothing
+        #    to remove from the star. An empty process table is the normal state, not an error.
         graph = self.load_pipeline_graph(project_dir)
         job_in_star = (
             graph is not None
