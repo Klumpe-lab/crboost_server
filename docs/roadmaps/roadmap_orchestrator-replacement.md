@@ -1,16 +1,13 @@
 # Orchestrator Replacement — Plan
 
-**Status (2026-10-15, re-checked against main):** **the cutover is done; the cleanup is not.** Every Run and
-Approve is submitted as a SLURM afterok DAG (`_submit_chain`,
-`services/scheduling_and_orchestration/pipeline_orchestrator_service.py:474-718`), status comes from
-`reconcile_afterok` (`pipeline_runner.py:406-556`), and `relion_schemer` cannot be reached under the shipped
-confs. It has been the only path in daily use since June: full chains through Class3D, re-runs of failed jobs and
-time-limit kills have all gone through it, which covers the June "unexercised" list further down. **What is left is
-§0:** the flag is still a flag that defaults to the schemer (R1), the RELION export was never built and the delete
-preview misreports because of it (R2), half of the UI work (R3), and about 1,400 lines of dead schemer code (R4).
+**Status (2026-10-15, end of day):** **the schemer is gone.** R1, R4, C5, C8 and D4 were built on `graphical_pipeline`
+alongside roadmap 32 and merged into main the same day, NOT RUN; the record and its runtime checks are roadmap 32
+§13. Every Run and Approve is submitted as a SLURM afterok DAG (`_submit_chain`), status comes from
+`reconcile_afterok`, and nothing else exists. **What is left of §0:** R2's RELION export (C1–C4, C6, C7) and R3's
+D1, D3 and the rest of D5. The anchors in §0 are as of the morning of 2026-10-15, before the deletion.
 
 Everything below §0 is the June plan and its implementation log, kept as the record. Its anchors and its toggle text
-("template default `false`", "TEMP DEV TOGGLE") are as of 2026-06-24 and stale: the template ships `true`.
+("template default `false`", "TEMP DEV TOGGLE") are as of 2026-06-24 and stale: the key is gone.
 
 Companions: the status-desync diagnosis that motivated this (`PIPELINE_AND_ORCHESTRATOR_STATE.md`) is no longer in
 the tree; `notes/PARTICLE_PROJECT_ROADMAP.md` (git-ignored) holds the particle-stage entry-point work.
@@ -37,7 +34,7 @@ from live state to a generated **RELION-compatibility export**.
 Order: C5 and D4 first (small, and each fixes something wrong today), then R1, then the rest of R2, R4 last. D1 and
 D5 any time. Anchors are current as of 2026-10-15.
 
-### R1 — Make afterok unconditional
+### R1 — Make afterok unconditional — DONE 2026-10-15 (roadmap 32 §13)
 - **Today the flag is a config toggle whose code default is the schemer.** `Config.use_afterok_orchestrator`
   defaults to `False` (`services/configs/config_service.py:246-249`); `ProjectState.use_afterok_orchestrator` takes
   its default from `_afterok_global_default` (`services/project_state.py:55-64`, field `:763-767`) and ORs it in on
@@ -65,7 +62,7 @@ D5 any time. Anchors are current as of 2026-10-15.
   and returns an error, which both dialogs render as a green "No downstream jobs will be affected."
   (`ui/pipeline_builder/job_tab_component.py:403-422`, `ui/pipeline_builder/pipeline_roster.py:773-793`), however
   many jobs read the one being deleted.
-- **C5 (first) — the preview from the edge graph:** consumers from `resolve_slot_edges`
+- **C5 — DONE (roadmap 32 S2.6) — the preview from the edge graph:** consumers from `resolve_slot_edges`
   (`services/path_resolution_service.py:398-446`), and a failed preview says it failed, never "no downstream". Same
   item as roadmap 32 S2.6; whichever lands first.
 - **C1 — `export_relion_compat`** (~200 lines): the general block (counter = `job_dir_counter`), processes
@@ -79,7 +76,7 @@ D5 any time. Anchors are current as of 2026-10-15.
   (`pipeline_deletion_service.py:86-151`, `:211-276`).
 - **C7** — remove the dead star readers (`pipeline_orchestrator_service.py:880-972`;
   `pipeline_deletion_service.py:278-321`; `project_service.py:202-203`; `backend.py:1775-1781`, `:2013-2025`).
-- **C8** — keep the counter seed as a one-time migration: an old schemer project's numbering would otherwise restart
+- **C8 — DONE (the seed stays in `_get_current_relion_counter`)** — keep the counter seed as a one-time migration: an old schemer project's numbering would otherwise restart
   at 1 and collide.
 - *Done when:* the preview names every consumer under afterok, and an afterok project opens in RELION 5 with its
   jobs, edges and statuses.
@@ -87,7 +84,7 @@ D5 any time. Anchors are current as of 2026-10-15.
 ### R3 — UI status (P1.D), the remaining half
 - **Exists:** the queue-wait text, as the run slot's tooltip (`pipeline_roster.py:1657-1665`, data
   `pipeline_runner.py:692-744`; its first-seen time lives in memory and resets on restart).
-- **D4 (first):** the afterok Stop and Cancel never call `mark_stopped_tasks_failed`; only the schemer branch does
+- **D4 — DONE (Stop and Cancel also scancel the manifest arrays):** the afterok Stop and Cancel never call `mark_stopped_tasks_failed`; only the schemer branch does
   (`pipeline_runner.py:1344-1355`). Tasks killed mid-run keep a `task_N.out` with no marker and read "running" on a
   Failed job. Call it in the afterok branches (`:1263-1293`, `:1429-1454`) before R4 deletes the only caller.
 - **D1:** a failed `squeue` reaches only the log (`pipeline_runner.py:461-465`): show "status last checked N s ago"
@@ -100,7 +97,7 @@ D5 any time. Anchors are current as of 2026-10-15.
 - **D6 (WS/SSE events): dropped.** In-place mutation plus the 3 s poll is enough; `services/event_log.py` is a
   console logger, not a UI channel.
 
-### R4 — Decommission: delete the schemer
+### R4 — Decommission: delete the schemer — DONE 2026-10-15 (roadmap 32 §13)
 - **About 1,400 lines, none reachable under afterok:**
   - `pipeline_runner.py`, ~910 of 1,537:
     - `_active_processes` / `_retry_monitors` / `is_active` (`:89-113`);

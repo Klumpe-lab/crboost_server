@@ -21,7 +21,7 @@ attribution trailer, no names) and let them commit. Items touching the same file
 4. **S3 — ChimeraX worker (§1.3) + container defs (§1.7).** Worker done; see the stage log. §1.7
    (pinned container defs) is image-rebuild work, not code: do it with the next rebuild.
 5. **S4 — self-test (§1.8).** Done; see the stage log.
-6. **S5** — the Munich re-install; the maintainer's step.
+6. **S5** — the Munich re-install; the maintainer's step. Handoff checklist written 2026-10-15 under Stage 5.
 
 **Owed by the maintainer (runtime):**
 1. `venv/bin/pip install 'pytest>=7'`, then `venv/bin/python -m pytest` and `venv/bin/python -m pytest -m cluster`
@@ -186,6 +186,19 @@ lacks (`chimerax_artiax.def`, `chimerax_artiax_patch.def`).
 
 ### Stage 5 — Munich re-install from the README only
 - *Success:* unmodified checkout + their `conf.yaml` → self-test green → the copia protocol runs.
+- **Handoff (written 2026-10-15, with roadmap 23 stage 1).** Ship a `main` that has the token gate
+  (`token_auth`) merged. Munich follows the README only: *Quick start* / *Starting the server* for the
+  tokened link and rotating the token, *Upgrading an existing install* for their `config/`. Two items
+  the maintainer checks with them:
+  1. `config/qsub.sh` carries the exit-marker block byte for byte and `exit $EXIT_CODE` (preflight
+     checks both; the S2c renderer refuses a script without the block).
+  2. `filterTilts/tiltnet_resnet18_o1034.pth` travels by hand (git ignores `*.pth`; preflight does not
+     check `tilt_filter.models.*.path`). Without it, leave `tilt_filter.models` empty.
+
+  `use_afterok_orchestrator` needs nothing any more: the relion_schemer path is gone (roadmap 32 §13), so a
+  conf that still has the key only gets preflight's unread-key warning; delete the line. Also: their three
+  local patches (R3–R5) are dropped, not merged; `.nicegui/` in their checkout can go; every browser needs
+  the printed `?token=` link once.
 
 ## 3. Runtime checklist
 1. CBE: copia chain end to end after stage 1; one job's `run.out` shows the new bind list with the project

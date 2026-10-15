@@ -2,8 +2,8 @@
 
 **Status:** rev 2, 2026-10-15: every anchor re-checked against main, and the stages re-ordered so the token gate
 comes first. It is what the Munich install needs, and it does not depend on the lease. Approved 2026-09-29.
-**Stage 1 code-complete 2026-10-15, not run** (branch `token_auth`; see the stage log). **Pickup: the stage 1
-runtime pass (§4, six checks).** Munich ships after stage 1;
+**Stage 1 done 2026-10-15** (built on `token_auth`, merged into main the same day; curl probes of the six checks pass, browser halves not exercised;
+see the stage log). Munich handoff docs written (README *Upgrading an existing install*, roadmap 20 S5). **Pickup: stage 2.** Munich ships after stage 1;
 stages 2–7 are the multi-user CBE work.
 
 Release item: "token-based authentication — two users on the same port interfere; per-member ports are too
@@ -367,3 +367,13 @@ the existing enum.
   302, `location: /p/x?a=1`, `set-cookie: crboost_token_P=…`; with
   `-H "Cookie: crboost_token_P=$(cat ~/.crboost/token)"`: `/api/file?path=$HOME/.ssh/id_rsa` →
   `{"error": …}`.
+- **Runtime pass (2026-10-15, port 8090; accepted by the maintainer on these results).** `check_boundaries.py`
+  clean. Without the token: `/`, `/p/x`, `/static/main.css` and the socket.io polling handshake → 401; a
+  websocket upgrade on `/_nicegui_ws/socket.io/` → 403. `/p/x?a=1&token=…` → 302, `location: /p/x?a=1`,
+  `set-cookie: crboost_token_8090=…; HttpOnly; SameSite=Lax; Path=/`. With the cookie: `/` → 200;
+  `/api/file` on `~/.bashrc` → "not a volume", on an `.mrc` outside any project → "outside project roots";
+  `/api/tilt-thumb` on a `.png` outside any project → "outside project roots". (The `~/.ssh/id_rsa` probe above
+  only reaches "not found" when that key does not exist; use existing files.) Nothing failed, nothing fixed.
+  Not exercised: the browser halves of checks 2–6 (address bar after the redirect, `kill -9` + restart with an
+  open tab, two servers side by side, template/mask and tilt thumbnails loading, the host popover); the first
+  real use of the gated server covers them.
