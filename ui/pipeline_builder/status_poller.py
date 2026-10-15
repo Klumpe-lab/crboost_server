@@ -1,8 +1,8 @@
 """
 Per-tab UI refresher.
 
-Reconciliation (reading exit markers, patching default_pipeline.star,
-clearing pipeline_active on failure) is owned by the server-side
+Reconciliation (reading exit markers and SLURM, clearing pipeline_active
+when the run ends) is owned by the server-side
 PipelineMonitor (services/.../pipeline_monitor.py). This class is purely
 a UI tick: every 3 s it asks the roster to re-render from the in-memory
 state and watches for `pipeline_active` transitions so it can flip the
@@ -62,11 +62,8 @@ class StatusPoller:
         panel.roster.update_status_label(overview)
 
         state = get_project_state_for(project_path)
-        # `pipeline_active` is the monitor's source of truth; OR with
-        # is_active() so a freshly-started pipeline (state already True,
-        # in-memory dict already populated) is recognized before its
-        # first tick.
-        current = bool(state.pipeline_active) or panel.backend.pipeline_runner.is_active(project_path)
+        # `pipeline_active` is the monitor's source of truth; a submit sets it before it returns.
+        current = bool(state.pipeline_active)
 
         if self._last_active is None:
             self._last_active = current
@@ -114,16 +111,15 @@ class StatusPoller:
 
     async def startup_sync(self):
         """Fires when a workspace tab mounts. Records the initial
-        pipeline_active state and starts the 3-s UI refresher. We don't
-        call sync_all_jobs here — the server monitor already keeps state
-        fresh."""
+        pipeline_active state and starts the 3-s UI refresher. It does not
+        reconcile — the server monitor already keeps state fresh."""
         panel = self.panel
         if not panel.ui_mgr.project_path:
             return
 
         project_path = panel.ui_mgr.project_path
         state = get_project_state_for(project_path)
-        active = bool(state.pipeline_active) or panel.backend.pipeline_runner.is_active(project_path)
+        active = bool(state.pipeline_active)
 
         if active and not panel.ui_mgr.is_running:
             panel.ui_mgr.set_pipeline_running(True)

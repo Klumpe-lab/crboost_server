@@ -25,8 +25,6 @@ def in_use_notice(state, instance_id: str) -> str | None:
     holder = jobs_in_use(state).get(instance_id)
     if holder is None:
         return None
-    if state.pipeline_active and not state.use_afterok_orchestrator:
-        return "The pipeline is running; jobs can be removed once it has finished or been stopped."
     name = get_instance_display_name(instance_id, state.jobs.get(instance_id))
     holder_model = state.jobs[holder]
     status = holder_model.execution_status.value.lower()

@@ -674,10 +674,10 @@ class PipelineBuilderPanel:
                     # shows what else is live, if anything.
                     live = bool(get_project_state_for(self.ui_mgr.project_path).pipeline_active)
                     self.ui_mgr.set_pipeline_running(live)
-                    if result.get("afterok") and not result.get("submitted"):
-                        message = result.get("message") or "Nothing was queued."
+                    if result.get("submitted"):
+                        message = f"Pipeline started: {len(result['submitted'])} job(s) queued"
                     else:
-                        message = f"Pipeline started (PID: {result.get('pid')})"
+                        message = result.get("message") or "Nothing was queued."
                     parked = result.get("parked") or []
                     if parked:
                         message += f"; {len(parked)} job(s) wait for the tilt-filter review and start on Approve"
@@ -733,9 +733,7 @@ class PipelineBuilderPanel:
 
         self.poller.stop_all_timers()
         self.ui_mgr.set_pipeline_running(False)
-        slurm_ids = [j["job_id"] for j in running_slurm]
-        result = await self.backend.pipeline_runner.stop_and_cleanup(project_path, slurm_ids)
-        await self.backend.pipeline_runner.sync_all_jobs(str(project_path))
+        result = await self.backend.pipeline_runner.stop_and_cleanup(project_path)
         self.rebuild_pipeline_ui()
 
         if result.get("success"):

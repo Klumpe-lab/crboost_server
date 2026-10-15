@@ -1048,13 +1048,12 @@ class PathResolutionService:
             relion_job_number = int(getattr(producer_model, "relion_job_number", 0) or 0)
             status = getattr(producer_model, "execution_status", JobStatus.UNKNOWN)
 
-            # Interactive jobs (e.g. TiltFilter) are never dispatched by the relion
-            # schemer -- they only produce outputs when the user explicitly commits
-            # them via the UI (which flips execution_status to SUCCEEDED). Until then
-            # they must not appear in the producer pool: otherwise a merely-SCHEDULED
-            # interactive job beats a real upstream via preferred_source and the
-            # schemer ends up polling an `External/pending_<instance>/...` placeholder
-            # that nothing will ever create.
+            # Interactive jobs (e.g. TiltFilter) are never part of the chain -- they
+            # only produce outputs when the user explicitly commits them via the UI
+            # (which flips execution_status to SUCCEEDED). Until then they must not
+            # appear in the producer pool: otherwise a merely-SCHEDULED interactive job
+            # beats a real upstream via preferred_source and its consumer reads an
+            # `External/pending_<instance>/...` placeholder that nothing will ever create.
             if getattr(producer_model, "IS_INTERACTIVE", False) and status != JobStatus.SUCCEEDED:
                 continue
 
@@ -1290,11 +1289,9 @@ class PathResolutionService:
         slot: OutputSlot,
         project_root: Path,
     ) -> str | None:
-        # Prefer relion_job_name + path_template over the cached producer paths dict.
-        # The cached dict is a schedule-time snapshot which drifts when the relion
-        # schemer allocates a different job number than the orchestrator predicted;
-        # relion_job_name is reconciled from default_pipeline.star by sync_all_jobs
-        # and is the authoritative identity once the producer has run.
+        # Prefer relion_job_name + path_template over the cached producer paths dict:
+        # relion_job_name is the dir the producer was allocated at submit, the
+        # authoritative identity once it has been submitted.
         relion_job_name = getattr(producer_model, "relion_job_name", None)
         if relion_job_name:
             job_dir = (project_root / relion_job_name.rstrip("/")).resolve()
@@ -1306,8 +1303,7 @@ class PathResolutionService:
             return str((job_dir / slot.path_template).resolve())
 
         # Fall back to the cached paths snapshot only when the producer has no
-        # reconciled identity yet (e.g. a fresh job whose relion_job_name was
-        # cleared at deploy time and has not yet been picked up by sync_all_jobs).
+        # allocated dir yet.
         stored = (producer_model.paths or {}).get(slot.key)
         if stored:
             return str(Path(stored))
@@ -1673,12 +1669,7 @@ def consumers_of(state: ProjectState, instance_id: str) -> list[str]:
 def jobs_in_use(state: ProjectState) -> dict[str, str]:
     """The jobs a queued or running job depends on, each mapped to such a job: the live jobs
     themselves (to themselves) and every job upstream of one. Their outputs or inputs are in use,
-    so none of them is removed, deleted or edited while it runs; every other job is.
-
-    On the schemer path every job counts while a scheme runs: the jobs it has yet to start are
-    Scheduled, not queued, and it starts them all the same."""
-    if state.pipeline_active and not state.use_afterok_orchestrator:
-        return {iid: iid for iid in state.jobs}
+    so none of them is removed, deleted or edited while it runs; every other job is."""
     live = [iid for iid, jm in state.jobs.items() if jm.execution_status in (JobStatus.QUEUED, JobStatus.RUNNING)]
     if not live:
         return {}

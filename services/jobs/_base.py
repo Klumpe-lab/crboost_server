@@ -263,7 +263,7 @@ class AbstractJobParams(BaseModel):
         # Add job-specific options (in_mic, in_tomoset, etc.)
         options.extend(self._get_job_specific_options())
 
-        # Actual path values, so relion_schemer can see the job's dependencies
+        # Actual path values, so RELION can see the job's dependencies
         for key, path_value in self.paths.items():
             if key in ["input_star", "model_path", "input_tomoset"]:
                 # Convert to relative path for RELION
