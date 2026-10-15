@@ -196,19 +196,21 @@ def render_files_tab(job_type: JobType, job_model, ui_mgr: UIStateManager):
                 ui.label(f"Failed to load image: {e}").classes("text-sm text-red-600")
             return
 
+        # Zoom scales a wrapper, not the ui.image: an element update resends all its props, and the
+        # image's `src` is the whole file as base64.
         zoom_state = {"level": 1.0}
 
         def zoom_in():
             zoom_state["level"] = min(zoom_state["level"] * 1.2, 5.0)
-            img.style(f"transform: scale({zoom_state['level']}); transition: transform 0.2s;")
+            zoom_box.style(f"transform: scale({zoom_state['level']}); transition: transform 0.2s;")
 
         def zoom_out():
             zoom_state["level"] = max(zoom_state["level"] / 1.2, 0.3)
-            img.style(f"transform: scale({zoom_state['level']}); transition: transform 0.2s;")
+            zoom_box.style(f"transform: scale({zoom_state['level']}); transition: transform 0.2s;")
 
         def reset_zoom():
             zoom_state["level"] = 1.0
-            img.style("transform: scale(1); transition: transform 0.2s;")
+            zoom_box.style("transform: scale(1); transition: transform 0.2s;")
 
         with ui.row().classes("w-full justify-center gap-1 p-2 bg-white border-b border-gray-200"):
             ui.button(icon="zoom_in", on_click=zoom_in).props("flat dense round size=sm").tooltip("Zoom In")
@@ -225,9 +227,12 @@ def render_files_tab(job_type: JobType, job_model, ui_mgr: UIStateManager):
                 "align-items: center; justify-content: center;"
             )
         ):
-            img = ui.image(data_uri).style(
-                "max-width: 100%; max-height: 100%; object-fit: contain; transform-origin: center; cursor: zoom-in;"
+            zoom_box = ui.element("div").style(
+                "width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; "
+                "transform-origin: center;"
             )
+            with zoom_box:
+                ui.image(data_uri).style("max-width: 100%; max-height: 100%; object-fit: contain; cursor: zoom-in;")
 
     def _render_text_preview(file_path: Path):
         try:

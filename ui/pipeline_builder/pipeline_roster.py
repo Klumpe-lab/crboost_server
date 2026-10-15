@@ -1615,20 +1615,11 @@ class RosterWidget(FingerprintedView):
                     )
 
                 # Pulsating dot (self-contained inline SVG/SMIL; see _running_spinner_html).
-                ui.html(
-                    '<div style="width:100%;margin-top:4px;display:flex;justify-content:center;">'
-                    + _running_spinner_html(20, "#3b82f6")
-                    + "</div>",
-                    sanitize=False,
-                )
-
-                status_lbl = ui.label("").style(
-                    f"font-size: 8px; color: {SB_MUTE}; "
-                    "font-family: 'IBM Plex Mono', monospace; "
-                    "text-align: center; line-height: 1.4; word-break: break-all; "
-                    "white-space: pre-line; display: block; width: 100%; padding: 0 3px;"
-                )
-                self._refs["status_label"] = status_lbl
+                # Progress and SLURM queue waits are its hover text, not a label under it.
+                with ui.element("div").style("width: 100%; margin-top: 4px; display: flex; justify-content: center;"):
+                    ui.html(_running_spinner_html(20, "#3b82f6"), sanitize=False)
+                    status_tip = ui.tooltip("Running").style("white-space: pre-line;")
+                self._refs["status_label"] = status_tip
             else:
                 play_div = (
                     ui.element("div")
@@ -1662,7 +1653,7 @@ class RosterWidget(FingerprintedView):
         _hidden = {JobType.IMPORT_MOVIES.value, JobType.TS_IMPORT.value}
         visible_selected = sum(1 for iid in self.panel.ui_mgr.selected_jobs if InstanceId.split(iid)[0] not in _hidden)
         total = overview.get("total", visible_selected) if overview else visible_selected
-        text = f"{done}/{total}"
+        text = f"{done}/{total} jobs finished"
         # Surface SLURM queue waits so a long pending time reads as a cluster
         # wait, not a hung orchestrator. This runs on every poll tick (it is NOT
         # signature-gated), so the elapsed minutes stay live.
@@ -1671,7 +1662,7 @@ class RosterWidget(FingerprintedView):
             max_pending = max((q.get("pending_secs", 0) for q in queued_jobs), default=0)
             text += f"\n{len(queued_jobs)} in SLURM queue"
             if max_pending >= 60:
-                text += f"\n{max_pending // 60}m for nodes"
+                text += f"\nlongest wait for nodes: {max_pending // 60} min"
         el.set_text(text)
 
     # ── Helpers ───────────────────────────────────────────────────────────────

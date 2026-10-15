@@ -1188,6 +1188,12 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 .cb-select-popup .q-item:hover { background: #f1f5f9; }
 .cb-select-popup .q-item.q-manual-focusable--focused,
 .cb-select-popup .q-item--active { background: #eef2f6; color: #1e293b; }
+/* I/O source selector (ui/pipeline_builder/io_config_component.py): a .cb-select-sized box
+ * opening a menu of status-dot rows. */
+.cb-io-src { transition: border-color .12s ease; }
+.cb-io-src:hover { border-color: #cbd5e1 !important; }
+.cb-io-menu-item { transition: background .1s ease; }
+.cb-io-menu-item:hover { background: #f1f5f9; }
 /* ── Tomogram gallery (ui/tomo_gallery.py) ─────────────────────────────────── */
 /* The birds-eye wall: a grid of reconstruction tiles, each an image box with the
  * species' picks projected onto it as one inline-SVG layer per species. The frame

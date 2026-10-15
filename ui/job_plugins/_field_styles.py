@@ -61,8 +61,9 @@ SECTION_HEADER_FIRST_STYLE = SECTION_HEADER_STYLE.replace("margin: 8px 0 4px 0",
 # WHITESPACE in the page layout, never an underline rule.
 PAGE_SECTION_STYLE = f"{SANS} font-size: 12px; font-weight: 600; color: #334155; line-height: 1; display: block;"
 
-GROUP_STYLE = "width: 100%; border: 1px solid #eef2f6; border-radius: 4px; padding: 6px 8px 8px; margin-top: 6px;"
-GROUP_MUTED_STYLE = GROUP_STYLE + " background: #fafbfc;"
+# A sub-block inside a Config section (SLURM's "Per-Task Resources" / "Supervisor"): spacing only, no box.
+GROUP_STYLE = "width: 100%; margin-top: 10px;"
+GROUP_MUTED_STYLE = GROUP_STYLE
 
 LABEL_PATH_STYLE = LABEL_STYLE  # path labels share the same column width
 
@@ -84,6 +85,19 @@ def section_rule():
 
 
 # ── Containers ──────────────────────────────────────────────────────────────
+@contextmanager
+def config_section(title: str, *, tooltip: str | None = None):
+    """One section of a job's Config tab (Parameters / Inputs / Outputs / SLURM resources):
+    a page-scale title over its content, no card or border. The tab's column gap separates
+    sections."""
+    with ui.column().classes("w-full").style("gap: 6px;") as el:
+        lbl = ui.label(title).style(PAGE_SECTION_STYLE)
+        if tooltip:
+            lbl.tooltip(tooltip)
+        with ui.column().classes("w-full").style("gap: 0;"):
+            yield el
+
+
 @contextmanager
 def field_grid():
     """Auto-packing multi-column grid of field rows. Fields flow into as many
