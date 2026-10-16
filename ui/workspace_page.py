@@ -65,6 +65,13 @@ _MODE_VIEWS: dict[str, View] = {
     "table": View.TABLE,
 }
 
+# Left-to-right order of the views that are on: the rail's order, the pipeline (job roster
+# + job page) first; the pick viewer, which has no icon, and the foot-of-rail Protocols last.
+_VIEW_ORDER = ("pipeline", "table", "workbench", "gallery", "journey", "viewer", "protocols")
+
+# Every view's container: an equal share of the main area's width when several are on.
+_VIEW_STYLE = "flex: 1 1 0; min-width: 0; height: 100%; overflow: hidden; display: none; flex-direction: column;"
+
 
 def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | None = None) -> dict:
     """Build the workspace and return its `callbacks` dict, which the routed page handler
@@ -88,7 +95,9 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         return {}
 
     callbacks = {}
-    _mode = {"current": "pipeline"}
+    # The views showing, in the order they were turned on. The last one is the view the
+    # address bar names.
+    _on: list[str] = ["pipeline"]
     _refs = {}
 
     if route_writer is None:
@@ -97,18 +106,16 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         route_writer = RouteWriter(ui_mgr.project_path.name, disambiguating_base(ui_mgr.project_path))
     callbacks["set_url"] = route_writer.write
     callbacks["route_writer"] = route_writer
-    # apply_route enters views through the same toggles a click uses, and those switch
-    # BACK to the pipeline when the view is already showing — harmless on a fresh page,
-    # wrong on a Back/Forward. This lets it skip a toggle it doesn't need.
-    callbacks["current_mode"] = lambda: _mode["current"]
 
     def _write_mode_url() -> None:
-        """The address bar follows the view. Every view writes the bare
+        """The address bar follows the view turned on last. Every view writes the bare
         route for itself here; the ones with a target (a job, a tilt-series, a species)
         refine it from their own selection handler right after. The pipeline is the one
         exception — its target is the active job, which lives on `ui_mgr`, so there is
         nothing to wait for."""
-        mode = _mode["current"]
+        if not _on:
+            return
+        mode = _on[-1]
         view = _MODE_VIEWS.get(mode, View.PIPELINE)
         if view is View.PIPELINE and ui_mgr.active_instance_id:
             iid = ui_mgr.active_instance_id
@@ -122,108 +129,132 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
             return
         route_writer.write(view)
 
-    def _switch_to(mode_name: str):
-        """Swap the visible view in main_area: pipeline / workbench / journey / viewer.
-        Each is a sibling container toggled via CSS display. Every view but the pipeline
-        hides the 340px job roster (the roster is the pipeline view's own navigation —
-        see the roster's set_active_mode) and pauses its refresh timers when not visible
-        (the journey panel's on_journey_active / the viewer page's set_active)."""
-        containers = {
-            "pipeline": _refs.get("pipeline_container"),
-            "workbench": _refs.get("workbench_container"),
-            "journey": _refs.get("journey_container"),
-            "gallery": _refs.get("gallery_container"),
-            "viewer": _refs.get("viewer_container"),
-            "protocols": _refs.get("protocols_container"),
-            "table": _refs.get("table_container"),
-        }
-        # If already on this mode, toggle back to pipeline.
-        if _mode["current"] == mode_name and mode_name != "pipeline":
-            mode_name = "pipeline"
-
-        _mode["current"] = mode_name
-        for name, c in containers.items():
+    def _apply_views() -> None:
+        """Show every view that is on, side by side in the rail's order (_VIEW_ORDER: the
+        pipeline, i.e. job roster + job page, leftmost), sharing the width equally; hide the
+        rest. The roster comes and goes with the pipeline view (the roster's
+        set_active_views), and each view's refresh timers run only while it shows."""
+        first = True
+        for i, name in enumerate(_VIEW_ORDER):
+            c = _refs.get(f"{name}_container")
             if c is None:
                 continue
-            if name == mode_name:
-                c.style("display: flex; flex-direction: column;")
+            if name in _on:
+                border = "none" if first else "1px solid #e5e7eb"
+                c.style(f"display: flex; order: {i}; border-left: {border};")
+                first = False
             else:
                 c.style("display: none;")
+        empty = _refs.get("empty_container")
+        if empty is not None:
+            empty.style(f"display: {'none' if _on else 'flex'};")
 
-        if mode_name == "pipeline":
-            invalidate = callbacks.get("invalidate_tm_tabs")
-            if invalidate:
-                invalidate()
-
-        # Nav-icon highlight + roster hide/restore (roster owns _roster_visible).
-        set_mode = callbacks.get("set_active_mode")
-        if set_mode:
-            set_mode(_mode["current"])
-
-        # Coarse route first, then the activations below let each view refine it with its
-        # own target — which is also what makes the history entry come out right: the view
-        # change pushes, the refinement replaces.
-        _write_mode_url()
+        # Nav-icon highlights + roster hide/restore.
+        set_views = callbacks.get("set_active_views")
+        if set_views:
+            set_views(set(_on))
 
         # Pause/resume the journey's 4 s live-refresh with its visibility.
         on_journey = callbacks.get("on_journey_active")
         if on_journey:
-            on_journey(_mode["current"] == "journey")
+            on_journey("journey" in _on)
 
         # Instant registry observe when the Species page is shown (species created
         # from the roster / another tab appear without waiting for its 3 s poll).
         on_wb = callbacks.get("on_workbench_active")
         if on_wb:
-            on_wb(_mode["current"] == "workbench")
+            on_wb("workbench" in _on)
 
-        # Same for the pick viewer's coalesced-rebuild timer.
-        page = _refs.get("viewer_page")
-        if page is not None:
-            page.set_active(_mode["current"] == "viewer")
+        # The pick viewer's coalesced-rebuild timer, the gallery's pending-preview poll, the
+        # Protocols view's 15 s poll and the pipeline table's status watch.
+        for page_key, name in (
+            ("viewer_page", "viewer"),
+            ("gallery_page", "gallery"),
+            ("protocols_page", "protocols"),
+            ("table_page", "table"),
+        ):
+            page = _refs.get(page_key)
+            if page is not None:
+                page.set_active(name in _on)
 
-        # And the gallery's pending-preview poll.
-        gallery = _refs.get("gallery_page")
-        if gallery is not None:
-            gallery.set_active(_mode["current"] == "gallery")
+    def _show(name: str) -> None:
+        """Turn a view on (a no-op for its layout when it already shows) and make it the
+        one the address bar names."""
+        was_on = name in _on
+        if was_on:
+            _on.remove(name)
+        _on.append(name)
+        if not was_on:
+            _apply_views()
+            if name == "pipeline":
+                invalidate = callbacks.get("invalidate_tm_tabs")
+                if invalidate:
+                    invalidate()
+        # Coarse route first, then each view refines it with its own target — which is also
+        # what makes the history entry come out right: the view change pushes, the
+        # refinement replaces.
+        _write_mode_url()
 
-        # And the Protocols view's 15 s poll.
-        protocols = _refs.get("protocols_page")
-        if protocols is not None:
-            protocols.set_active(_mode["current"] == "protocols")
+    def _hide(name: str) -> None:
+        """Turn a view off; the address bar then names the view turned on before it."""
+        if name not in _on:
+            return
+        _on.remove(name)
+        _apply_views()
+        _write_mode_url()
 
-        # And the pipeline table's status watch.
-        table = _refs.get("table_page")
-        if table is not None:
-            table.set_active(_mode["current"] == "table")
+    def _toggle_pipeline():
+        """The Jobs icon: the job roster and the job page, on or off together."""
+        if "pipeline" in _on:
+            _hide("pipeline")
+        else:
+            _show("pipeline")
+
+    def _show_workbench():
+        _show("workbench")
 
     def _toggle_workbench():
-        _switch_to("workbench")
+        if "workbench" in _on:
+            _hide("workbench")
+        else:
+            _show("workbench")
 
     def _open_species(species_id: str):
         """The 'open in Species' link of a job's Config tab: show the Species page ON
         that species (the view keeps its internal mode name "workbench")."""
-        if _mode["current"] != "workbench":
-            _switch_to("workbench")
+        _show("workbench")
         select = callbacks.get("workbench_select_species")
         if select:
             select(species_id)
 
     def ensure_pipeline_mode():
-        if _mode["current"] != "pipeline":
-            _switch_to("pipeline")
+        if "pipeline" not in _on:
+            _show("pipeline")
+
+    def _rail_toggle(name: str, show, flight: SingleFlight):
+        """A rail icon's click: turn its view off when it shows, else show it (building it on
+        first use). SingleFlight: the icon can be destroyed and recreated mid-click by a
+        roster refresh, so several clicks may land; they collapse to one."""
+
+        async def _toggle():
+            async with flight("toggle") as acquired:
+                if not acquired:
+                    return
+                if name in _on:
+                    _hide(name)
+                else:
+                    await show()
+
+        return _toggle
 
     _journey_flight = SingleFlight()
     _journey_built = {"done": False}
 
     async def _show_journey():
-        # SingleFlight: the icon button can be destroyed+recreated mid-click by
-        # a roster refresh, so several clicks may land — collapse them to one.
-        async with _journey_flight("toggle") as acquired:
+        async with _journey_flight("show") as acquired:
             if not acquired:
                 return
-            _switch_to("journey")  # toggles back to pipeline if already on journey
-            if _mode["current"] != "journey":
-                return
+            _show("journey")
             if _journey_built["done"]:
                 return
             _journey_built["done"] = True
@@ -250,15 +281,12 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
     _gallery_flight = SingleFlight()
 
     async def _show_gallery():
-        """The Tomograms icon: the birds-eye wall of reconstructions. Built lazily on
-        first use like the journey (its first pass stats every tomogram's previews),
-        and toggles back to the pipeline on a second click of the same icon."""
-        async with _gallery_flight("toggle") as acquired:
+        """The Tomograms view: the birds-eye wall of reconstructions. Built lazily on
+        first use like the journey (its first pass stats every tomogram's previews)."""
+        async with _gallery_flight("show") as acquired:
             if not acquired:
                 return
-            _switch_to("gallery")
-            if _mode["current"] != "gallery":
-                return
+            _show("gallery")
             gc = _refs.get("gallery_container")
             if gc is None:
                 return
@@ -277,13 +305,11 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
     async def _show_protocols():
         """The foot-of-rail protocol light: the Protocols view — this project's parameters
         beside the protocol it was created from, and the protocol library. Built lazily like the
-        gallery; toggles back to the pipeline on a second click."""
-        async with _protocols_flight("toggle") as acquired:
+        gallery."""
+        async with _protocols_flight("show") as acquired:
             if not acquired:
                 return
-            _switch_to("protocols")
-            if _mode["current"] != "protocols":
-                return
+            _show("protocols")
             pc = _refs.get("protocols_container")
             if pc is None:
                 return
@@ -301,13 +327,11 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
 
     async def _show_table():
         """The rail's branch glyph: the pipeline table — every job of the roster in dependency
-        order. Built lazily like the gallery; toggles back to the pipeline on a second click."""
-        async with _table_flight("toggle") as acquired:
+        order. Built lazily like the gallery."""
+        async with _table_flight("show") as acquired:
             if not acquired:
                 return
-            _switch_to("table")
-            if _mode["current"] != "table":
-                return
+            _show("table")
             tc = _refs.get("table_container")
             if tc is None:
                 return
@@ -326,8 +350,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
     async def _open_pick_viewer(species_id: str | None, tomo_name: str | None) -> None:
         """The Picks & curation row's `viewer ↗` (and the Journey's `full viewer ↗`):
         show the full-page pick viewer on this (species, tomogram), building it on first
-        use like the Journey. Unlike `_show_journey` this never toggles back — the link
-        names a target, so landing on it is the only sensible outcome."""
+        use like the Journey. It has no rail icon; its header's close link turns it off."""
         async with _viewer_flight("open") as acquired:
             if not acquired:
                 return
@@ -341,8 +364,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
                 with vc:
                     page = PickViewerPage(vc, ui_mgr.project_path, callbacks)
                 _refs["viewer_page"] = page
-            if _mode["current"] != "viewer":
-                _switch_to("viewer")
+            _show("viewer")
             await page.show(species_id, tomo_name)
             # show() keeps whichever of the pair was passed as None, so the URL is
             # written from the page's resolved selection, not from the arguments.
@@ -389,15 +411,23 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         once=True,
     )
 
+    # The rail's icons toggle their view; links and routes only ever show one (show_*).
+    toggle_journey = _rail_toggle("journey", _show_journey, _journey_flight)
+    toggle_gallery = _rail_toggle("gallery", _show_gallery, _gallery_flight)
+    toggle_protocols = _rail_toggle("protocols", _show_protocols, _protocols_flight)
+    toggle_table = _rail_toggle("table", _show_table, _table_flight)
+
     callbacks["invalidate_gallery"] = _invalidate_gallery
-    callbacks["toggle_workbench"] = _toggle_workbench
+    callbacks["toggle_pipeline"] = _toggle_pipeline
+    callbacks["show_workbench"] = _show_workbench
     callbacks["open_species"] = _open_species
     callbacks["ensure_pipeline_mode"] = ensure_pipeline_mode
-    callbacks["toggle_journey"] = _show_journey
-    callbacks["toggle_gallery"] = _show_gallery
-    callbacks["toggle_protocols"] = _show_protocols
-    callbacks["toggle_table"] = _show_table
+    callbacks["show_journey"] = _show_journey
+    callbacks["show_gallery"] = _show_gallery
+    callbacks["show_protocols"] = _show_protocols
+    callbacks["show_table"] = _show_table
     callbacks["open_pick_viewer"] = _open_pick_viewer
+    callbacks["hide_view"] = _hide
 
     with ui.element("div").style(
         "position: fixed; inset: 0; display: flex; flex-direction: row; "
@@ -431,9 +461,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         )
 
         with main_area:
-            pipeline_container = ui.element("div").style(
-                "width: 100%; height: 100%; display: flex; flex-direction: column;"
-            )
+            pipeline_container = ui.element("div").style(_VIEW_STYLE + " display: flex; order: 0;")
             _refs["pipeline_container"] = pipeline_container
             with pipeline_container:
                 build_pipeline_builder_panel(
@@ -443,53 +471,51 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
                     roster_panel=roster_panel,
                     toggle_workbench=_toggle_workbench,
                     ensure_pipeline_mode=ensure_pipeline_mode,
-                    toggle_journey=_show_journey,
-                    toggle_gallery=_show_gallery,
-                    toggle_protocols=_show_protocols,
-                    toggle_table=_show_table,
+                    toggle_journey=toggle_journey,
+                    toggle_gallery=toggle_gallery,
+                    toggle_protocols=toggle_protocols,
+                    toggle_table=toggle_table,
                 )
 
-            workbench_container = ui.element("div").style(
-                "width: 100%; height: 100%; display: none; flex-direction: column;"
-            )
+            workbench_container = ui.element("div").style(_VIEW_STYLE)
             _refs["workbench_container"] = workbench_container
             with workbench_container:
                 build_species_page(backend, callbacks)
 
             # Journey: built lazily on first switch (see _show_journey) so the
             # heavy per-TS render doesn't tax every workspace load. Starts hidden.
-            journey_container = ui.element("div").style(
-                "width: 100%; height: 100%; display: none; flex-direction: column;"
-            )
+            journey_container = ui.element("div").style(_VIEW_STYLE)
             _refs["journey_container"] = journey_container
 
             # Tomogram gallery: the birds-eye wall of reconstructions. Lazily built
             # like the journey — its first pass stats every tomogram's previews.
-            gallery_container = ui.element("div").style(
-                "width: 100%; height: 100%; display: none; flex-direction: column;"
-            )
+            gallery_container = ui.element("div").style(_VIEW_STYLE)
             _refs["gallery_container"] = gallery_container
 
             # Pick viewer: the full-page mount of the slabs + lists +
             # gallery component, opened from a tomogram row of the Particles registry's
             # Picks & curation tab. Lazily built on first use, like the journey; it has
-            # no nav icon of its own — its own header carries the routes back.
-            viewer_container = ui.element("div").style(
-                "width: 100%; height: 100%; display: none; flex-direction: column;"
-            )
+            # no nav icon of its own — its own header carries the routes back and the close link.
+            viewer_container = ui.element("div").style(_VIEW_STYLE)
             _refs["viewer_container"] = viewer_container
 
             # Protocols: lazily built on the first click of the foot-of-rail protocol light.
-            protocols_container = ui.element("div").style(
-                "width: 100%; height: 100%; display: none; flex-direction: column;"
-            )
+            protocols_container = ui.element("div").style(_VIEW_STYLE)
             _refs["protocols_container"] = protocols_container
 
             # Pipeline table: lazily built on the first click of its rail icon.
-            table_container = ui.element("div").style(
-                "width: 100%; height: 100%; display: none; flex-direction: column;"
-            )
+            table_container = ui.element("div").style(_VIEW_STYLE)
             _refs["table_container"] = table_container
+
+            # Every view turned off: say where they are rather than leave a blank page.
+            empty_container = ui.element("div").classes("cb-empty").style("flex: 1 1 0; display: none;")
+            _refs["empty_container"] = empty_container
+            with empty_container:
+                ui.icon("view_column", size="40px").classes("text-gray-400")
+                ui.label("No view open.").classes("text-sm text-gray-500")
+                ui.label("Turn views on and off with the icons on the left; several can show side by side.").classes(
+                    "text-[11px] italic text-gray-400"
+                )
 
     # Floating background-tasks tray at workspace scope so spun-off
     # renders/builds remain visible across dialog open/close and view
@@ -499,5 +525,9 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
 
     # Wire the roster resizer once the DOM for this page exists on the client.
     ui.timer(0.1, lambda: ui.run_javascript(_ROSTER_RESIZER_JS), once=True)
+
+    # The opening layout (the pipeline alone) through the same path every toggle takes, so
+    # its rail icon is lit the way a toggled one is.
+    _apply_views()
 
     return callbacks

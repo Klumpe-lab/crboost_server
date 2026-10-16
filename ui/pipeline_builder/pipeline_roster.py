@@ -87,8 +87,8 @@ _SB_DOT_STYLE = (
 )
 
 _JOBS_TIP = (
-    "Jobs — the pipeline roster. Click it while you are already here to collapse the "
-    "roster and give an open job page the full width."
+    "Jobs — the pipeline roster and the open job. Click to show or hide them; every icon here "
+    "turns its view on or off, and the views that are on sit side by side."
 )
 _GALLERY_TIP = "Tomograms — the wall of reconstructions, all of them at once"
 _TABLE_TIP = "Pipeline — every job in the order data flows through them: what reads what, state, tilt series, elapsed"
@@ -216,12 +216,9 @@ class RosterWidget(FingerprintedView):
         super().__init__()
         self.panel = panel
         self._flash_phase: str | None = None
+        # The roster shows while the pipeline view is on (set_active_views).
         self._roster_visible: bool = True
         self._roster_phase: str | None = None
-        # Which workspace view is showing (pipeline / workbench / journey).
-        # Drives the nav-icon highlight; set by workspace _switch_to via
-        # set_active_mode. Starts "pipeline" (the default view at load).
-        self._active_mode: str = "pipeline"
         # Last (kind, tooltip) painted onto the foot-of-rail protocol light, so its
         # timer only touches the DOM when the state actually moved.
         self._protocol_paint: tuple[str, str] | None = None
@@ -935,21 +932,12 @@ class RosterWidget(FingerprintedView):
 
         dialog.open()
 
-    # ── Roster toggle ─────────────────────────────────────────────────────────
-
-    def toggle(self):
-        self._roster_visible = not self._roster_visible
-        if self.panel.roster_panel is not None:
-            self.panel.roster_panel.style(f"display: {'flex' if self._roster_visible else 'none'};")
-        self._update_pipeline_btn_style()
-        self.refresh()
-
     def _clear_flash(self):
         self._flash_phase = None
         self.refresh()
 
     def _update_pipeline_btn_style(self):
-        """Repaint the layers icon for the current roster visibility.
+        """Repaint the layers icon for whether the pipeline view is on.
 
         Updates the icon element IN PLACE. It used to `container.clear()` + rebuild, which
         also destroyed the Quasar tooltip parented to the container — so the Pipeline button
@@ -958,43 +946,29 @@ class RosterWidget(FingerprintedView):
         container = self._refs.get("pipeline_btn")
         if container is None:
             return
-        bg = SB_ABG if self._roster_visible else "transparent"
-        color = SB_ACT if self._roster_visible else SB_MUTE
-        container.style(
-            f"width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
-            f"background: {bg}; position: relative; "  # relative: the count badge anchors to it
-            f"display: flex; align-items: center; justify-content: center; "
-            f"cursor: pointer; flex-shrink: 0;"
-        )
+        self._paint_view_btn("pipeline_btn", self._roster_visible)
         icon = self._refs.get("pipeline_btn_icon")
         if icon is not None:
+            color = SB_ACT if self._roster_visible else SB_MUTE
             icon.content = self._load_svg("layers.svg").replace("currentColor", color)
 
-    def set_active_mode(self, mode: str):
-        """Highlight the nav icon for the active view (exactly one lit) and hide the job
-        roster everywhere except the pipeline view. Driven by the workspace's _switch_to.
+    def _paint_view_btn(self, ref_key: str, on: bool) -> None:
+        """An "on" rail icon: tinted, with an indigo bar on its left edge. Several can be on."""
+        c = self._refs.get(ref_key)
+        if c is not None:
+            c.style(
+                f"background: {SB_ABG if on else 'transparent'}; "
+                f"box-shadow: {'inset 2px 0 0 #6366f1' if on else 'none'};"
+            )
 
-        The roster is the pipeline view's OWN navigation, so it goes away with that view
-        rather than half-following it: Particles / Journey / Tomograms / the pick viewer
-        each get the full width, and collapse-expand is what it always was — a choice about
-        how much room the open job page gets, only meaningful while one is open. Anything
-        else is a second, invisible state variable ("am I on Particles WITH the roster?")
-        that nothing on screen explains.
-        """
-        self._active_mode = mode
+    def set_active_views(self, views: set[str]) -> None:
+        """Light the rail icon of every view that is on, and show the job roster exactly while
+        the pipeline view is: the roster is that view's own navigation, so it comes and goes
+        with it. Driven by the workspace's _apply_views."""
+        self._roster_visible = "pipeline" in views
         if self.panel.roster_panel is not None:
-            if mode != "pipeline":
-                self.panel.roster_panel.style("display: none;")
-            else:
-                self.panel.roster_panel.style(f"display: {'flex' if self._roster_visible else 'none'};")
-        # Pipeline icon keeps its roster-aware styling when it's the active view;
-        # otherwise it dims. The other views are a plain background highlight.
-        if mode == "pipeline":
-            self._update_pipeline_btn_style()
-        else:
-            pc = self._refs.get("pipeline_btn")
-            if pc is not None:
-                pc.style("background: transparent;")
+            self.panel.roster_panel.style(f"display: {'flex' if self._roster_visible else 'none'};")
+        self._update_pipeline_btn_style()
         for ref_key, m in (
             ("wb_btn", "workbench"),
             ("dashboard_btn", "journey"),
@@ -1002,41 +976,35 @@ class RosterWidget(FingerprintedView):
             ("protocol_btn", "protocols"),
             ("table_btn", "table"),
         ):
-            c = self._refs.get(ref_key)
-            if c is not None:
-                c.style(f"background: {SB_ABG if mode == m else 'transparent'};")
+            self._paint_view_btn(ref_key, m in views)
 
     def _on_pipeline_icon(self):
-        """Layers icon: return to the pipeline view if we're elsewhere; if
-        already in pipeline, toggle the job roster (its secondary function)."""
-        if self._active_mode != "pipeline":
-            ensure = self.panel.ensure_pipeline_mode
-            if ensure is not None:
-                ensure()
-        else:
-            self.toggle()
+        """Layers icon: the pipeline view (job roster + job page) on or off."""
+        toggle = self.panel.callbacks.get("toggle_pipeline")
+        if toggle is not None:
+            toggle()
 
     async def _open_journey(self):
-        """Switch to (or toggle off) the embedded journey view. Async because
+        """Toggle the embedded journey view. Async because
         the first open lazily builds the panel behind a spinner."""
         tj = self.panel.toggle_journey
         if tj is not None:
             await tj()
 
     async def _open_gallery(self):
-        """Switch to (or toggle off) the tomogram gallery. Lazily built like the journey."""
+        """Toggle the tomogram gallery. Lazily built like the journey."""
         tg = self.panel.toggle_gallery
         if tg is not None:
             await tg()
 
     async def _open_protocols(self):
-        """The foot-of-rail protocol light's click: opens the Protocols view."""
+        """The foot-of-rail protocol light's click: toggles the Protocols view."""
         tp = self.panel.toggle_protocols
         if tp is not None:
             await tp()
 
     async def _open_table(self):
-        """Switch to (or toggle off) the pipeline table. Lazily built like the gallery."""
+        """Toggle the pipeline table. Lazily built like the gallery."""
         tt = self.panel.toggle_table
         if tt is not None:
             await tt()
@@ -1930,7 +1898,7 @@ class RosterWidget(FingerprintedView):
 
     def _build_protocol_btn(self):
         """Foot-of-rail protocol light. Dim when no protocol; lit when present; blue and
-        breathing while its pipeline runs. Hover names the protocol. Click → Protocols view."""
+        breathing while its pipeline runs. Hover names the protocol. Click toggles the Protocols view."""
         container = (
             ui.element("div")
             .style(

@@ -438,8 +438,8 @@ class TomoGalleryPage:
         self._collected = False
 
     def set_active(self, on: bool) -> None:
-        """The workspace's _switch_to hook: the pending-preview poll runs only while
-        the wall is the visible view."""
+        """The workspace's _apply_views hook: the pending-preview poll runs only while
+        the wall is on screen."""
         self._active = on
         try:
             self._timer.activate() if on else self._timer.deactivate()
@@ -851,7 +851,7 @@ class TomoGalleryPage:
         async with self._flight("journey") as acquired:
             if not acquired:
                 return
-            toggle = self.callbacks.get("toggle_journey")
+            toggle = self.callbacks.get("show_journey")
             if toggle is None:
                 ui.notify("Journey not available in this view", type="warning")
                 return

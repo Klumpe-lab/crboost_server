@@ -163,10 +163,9 @@ async def apply_route(callbacks: dict, route: Route, project_path: Path) -> None
     """Drive a freshly built workspace onto ``route``.
 
     Called from the routed page handler on a fresh workspace, and again on every
-    Back/Forward — where the workspace is already on some view. The view entry points are
-    toggles (`toggle_journey` and friends switch *back* to the pipeline when their view is
-    already shown), so entering one goes through `_enter`, which skips the call when the
-    workspace says it is already there.
+    Back/Forward. Several views can be on at once; the route's view is turned on (the
+    `show_*` callbacks never turn one off) and named in the address bar, and the others
+    stay as they are.
 
     A route may name something this project does not have: a deleted species, a job that
     was never added, a tilt-series with no journey column. Every one of those lands on
@@ -201,22 +200,21 @@ async def apply_route(callbacks: dict, route: Route, project_path: Path) -> None
                 _call(callbacks, "open_job", route.a)
 
         case View.JOURNEY:
-            await _enter(callbacks, "toggle_journey", "journey")
+            await _acall(callbacks, "show_journey")
             section = route.section
             if section and section not in JOURNEY_SECTIONS:
                 ui.notify(f"Unknown journey section '{section}'.", type="warning")
                 section = None
             if route.a or section:
-                # journey_show_ts is registered by build_journey_panel, which toggle_journey
+                # journey_show_ts is registered by build_journey_panel, which show_journey
                 # has finished by now; it reports a tilt-series with no column itself.
                 await _acall(callbacks, "journey_show_ts", route.a or "", section)
 
         case View.TOMOGRAMS:
-            await _enter(callbacks, "toggle_gallery", "gallery")
+            await _acall(callbacks, "show_gallery")
 
         case View.SPECIES:
-            if _mode(callbacks) != "workbench":
-                _call(callbacks, "toggle_workbench")
+            _call(callbacks, "show_workbench")
             if route.a:
                 if state.get_species(route.a) is None:
                     ui.notify(f"No species '{route.a}' in this project's registry.", type="warning")
@@ -238,25 +236,10 @@ async def apply_route(callbacks: dict, route: Route, project_path: Path) -> None
             await _acall(callbacks, "open_pick_viewer", species, route.b)
 
         case View.PROTOCOLS:
-            await _enter(callbacks, "toggle_protocols", "protocols")
+            await _acall(callbacks, "show_protocols")
 
         case View.TABLE:
-            await _enter(callbacks, "toggle_table", "table")
-
-
-def _mode(callbacks: dict) -> str | None:
-    """Which view the workspace is showing right now (`workspace_page._switch_to`'s own
-    mode string, which is "workbench" for the Species page)."""
-    fn = callbacks.get("current_mode")
-    return fn() if fn else None
-
-
-async def _enter(callbacks: dict, key: str, mode_name: str) -> None:
-    """Show a lazily built view. The callback is a toggle, so calling it when the view is
-    already up would switch back to the pipeline — a real hazard on Back/Forward."""
-    if _mode(callbacks) == mode_name:
-        return
-    await _acall(callbacks, key)
+            await _acall(callbacks, "show_table")
 
 
 def _call(callbacks: dict, key: str, *args) -> None:

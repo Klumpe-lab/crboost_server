@@ -773,7 +773,7 @@ class PicksTab:
         async with self._flight("journey") as acquired:
             if not acquired:
                 return
-            toggle = self.ctx.callbacks.get("toggle_journey")
+            toggle = self.ctx.callbacks.get("show_journey")
             if toggle is None:
                 ui.notify("Journey not available in this view", type="warning")
                 return
