@@ -53,11 +53,37 @@ def lineage(state, recon_iid: str) -> str:
     return " ← ".join(parts)
 
 
+def _alignment_of(state, recon_iid: str) -> str:
+    """The alignment or refinement instance a reconstruct job traces back to (reconstruct <- ctf <-
+    alignment), or the reconstruct instance itself when its inputs do not lead to known jobs."""
+    iid = recon_iid
+    for _ in range(2):
+        src = (state.jobs[iid].paths or {}).get("input_processing")
+        parent = _instance_for_dir(state, Path(src).parent) if src else None
+        if parent is None:
+            break
+        iid = parent
+    return iid
+
+
+def recon_version_labels(state) -> dict[str, str]:
+    """{reconstruct instance: short name} for every reconstruct job in the project: the alignment it
+    traces back to (aligntiltsWarp, missAlign), with the reconstruct instance added when two jobs
+    trace back to the same one. Project-wide, so a label means the same job on every tomogram."""
+    recon = [iid for iid, jm in state.jobs.items() if jm.job_type == JobType.TS_RECONSTRUCT and jm.relion_job_name]
+    base = {iid: _alignment_of(state, iid) for iid in recon}
+    counts: dict[str, int] = {}
+    for name in base.values():
+        counts[name] = counts.get(name, 0) + 1
+    return {iid: name if counts[name] == 1 or name == iid else f"{name} ({iid})" for iid, name in base.items()}
+
+
 def recon_versions_for_ts(state, ts_name: str) -> list[dict]:
-    """[{iid, job, dir, lineage, mrc}] for every reconstruct job with a volume of `ts_name`,
+    """[{iid, job, dir, lineage, label, mrc}] for every reconstruct job with a volume of `ts_name`,
     ordered by job dir."""
     project = Path(state.project_path)
     name = re.compile(rf"{re.escape(ts_name)}_[\d.]+Apx\.mrc")
+    labels = recon_version_labels(state)
     out = []
     for iid, jm in state.jobs.items():
         if jm.job_type != JobType.TS_RECONSTRUCT or not jm.relion_job_name:
@@ -67,7 +93,16 @@ def recon_versions_for_ts(state, ts_name: str) -> list[dict]:
         mrcs = sorted(p for p in rec_dir.glob(f"{ts_name}_*Apx.mrc") if name.fullmatch(p.name))
         if mrcs:
             job = jm.relion_job_name.rstrip("/")
-            out.append({"iid": iid, "job": job, "dir": job_dir, "lineage": lineage(state, iid), "mrc": mrcs[0]})
+            out.append(
+                {
+                    "iid": iid,
+                    "job": job,
+                    "dir": job_dir,
+                    "lineage": lineage(state, iid),
+                    "label": labels.get(iid, iid),
+                    "mrc": mrcs[0],
+                }
+            )
     out.sort(key=lambda v: v["job"])
     return out
 
