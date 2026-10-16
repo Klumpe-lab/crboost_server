@@ -42,8 +42,15 @@ def reconstruction_mrc_path(job_dir: Path, ts_name: str, rescale_angpixs: float)
 
 
 def build_reconstruct_command(
-    params: TsReconstructParams, settings_file: Path, input_processing: Path, output_processing: Path
+    params: TsReconstructParams,
+    settings_file: Path,
+    input_processing: Path,
+    output_processing: Path,
+    task_dir: Path | None = None,
 ) -> ToolCommand:
+    """`task_dir`: where WarpTools keeps its work queue. It defaults to a `tasks/` dir inside
+    output_processing, which one running WarpTools locks; array tasks that share the output dir need
+    one each, or every concurrent task but one fails ("Another manager is already using queue dir")."""
     cmd = (
         ToolCommand("WarpTools ts_reconstruct")
         .opt_path("--settings", settings_file, quote=True)
@@ -51,6 +58,8 @@ def build_reconstruct_command(
         .opt_path("--output_processing", output_processing, quote=True)
         .opt("--angpix", params.rescale_angpixs)
     )
+    if task_dir is not None:
+        cmd.opt_path("--task_dir", task_dir, quote=True)
     # --halfmap_frames and --deconv are Warp switches: their presence enables them,
     # whatever value follows (`--halfmap_frames 0` still fails with "Can't find
     # half-averages"). Emit each only when the parameter is 1.
@@ -152,11 +161,14 @@ class TsReconstructDriver(ArrayDriver):
 
     def build_command(self, ctx: DriverContext[TsReconstructParams], item: str, staged) -> ToolCommand:
         staged_settings, staged_processing = staged
+        task_dir = staged_processing.parent / "tasks"
+        task_dir.mkdir(exist_ok=True)
         return build_reconstruct_command(
             params=ctx.params,
             settings_file=staged_settings,
             input_processing=staged_processing,
             output_processing=ctx.paths["output_processing"],
+            task_dir=task_dir,
         )
 
     def verify_outputs(self, ctx: DriverContext[TsReconstructParams], item: str, staged) -> None:
