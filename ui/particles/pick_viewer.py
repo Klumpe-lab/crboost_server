@@ -4222,8 +4222,8 @@ class PickViewerPage:
     NOT a dialog: the whole point of the full page is the width and height a dialog can't
     give the slabs.
 
-    `callbacks` is the workspace's dict; the page uses `species_select`/`toggle_journey`/
-    `journey_show_ts` for its back-links and nothing else."""
+    `callbacks` is the workspace's dict; the page uses `species_select`/`show_journey`/`hide_view`/
+    `journey_show_ts` for its back-links and its close link, and nothing else."""
 
     def __init__(self, container, project_path: Path, callbacks: dict | None = None) -> None:
         self.container = container
@@ -4270,7 +4270,7 @@ class PickViewerPage:
 
     def set_active(self, on: bool) -> None:
         """Pause the coalesce timer while the page isn't the visible view — driven by
-        the workspace's `_switch_to`, like the Journey's."""
+        the workspace's `_apply_views`, like the Journey's."""
         try:
             self._timer.activate() if on else self._timer.deactivate()
         except Exception:
@@ -4328,8 +4328,8 @@ class PickViewerPage:
             select_tab("picks")
 
     def _render_header(self, state) -> None:
-        """Tomogram identity + the two back-links (registry row, Journey). The viewer is
-        a leaf view with no nav icon of its own, so both routes out live here."""
+        """Tomogram identity + the two back-links (registry row, Journey) and the close link.
+        The viewer is a leaf view with no nav icon of its own, so the routes out live here."""
         species = state.get_species(self.species_id) if self.species_id else None
         with ui.row().classes("cb-viewer-page-head w-full items-center gap-3 no-wrap"):
             ui.label("Pick viewer").classes("cb-section-title")
@@ -4346,15 +4346,20 @@ class PickViewerPage:
                 ).on("click", lambda _e: self._manage_species(self.species_id)).tooltip(
                     "Back to this species' Picks & curation tab — the row this viewer was opened from"
                 )
-            if self.tomo_name and self.callbacks.get("toggle_journey") is not None:
+            if self.tomo_name and self.callbacks.get("show_journey") is not None:
                 ui.label("journey ↗").classes(
                     "text-[10px] text-indigo-500 cursor-pointer underline decoration-dotted"
                 ).on("click", lambda _e: self._open_journey()).tooltip(
                     "This tomogram's whole pipeline — motion, CTF, alignment, reconstruction, then these picks"
                 )
+            hide = self.callbacks.get("hide_view")
+            if hide is not None:
+                ui.label("close ✕").classes("text-[10px] text-gray-500 cursor-pointer").on(
+                    "click", lambda _e: hide("viewer")
+                ).tooltip("Close the pick viewer; the other views that are on take its width")
 
     async def _open_journey(self) -> None:
-        toggle = self.callbacks.get("toggle_journey")
+        toggle = self.callbacks.get("show_journey")
         if toggle is None:
             return
         await toggle()

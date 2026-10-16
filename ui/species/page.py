@@ -7,8 +7,8 @@ masks (the mounted workbench) · Picks & curation · Analytics (scores in σ, TM
 sets) · Jobs. The page
 owns the 3-s registry observe (species created / deleted elsewhere — roster "+", another
 browser tab, the Overview's delete) and the `on_workbench_active` / `workbench_select_species`
-hooks the workspace registers (`workspace_page._switch_to` / `_open_species`); the
-internal mode string stays "workbench" (roster `set_active_mode` compares it).
+hooks the workspace registers (`workspace_page._apply_views` / `_open_species`); the
+internal mode string stays "workbench" (roster `set_active_views` compares it).
 """
 
 from __future__ import annotations

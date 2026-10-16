@@ -212,7 +212,7 @@ class PipelineTablePage:
             self._paint_elapsed()
 
     def set_active(self, on: bool) -> None:
-        """The workspace's _switch_to hook: the table polls only while it is the visible view."""
+        """The workspace's _apply_views hook: the table polls only while it is on screen."""
         self._active = on
         if on:
             self._timer.activate()

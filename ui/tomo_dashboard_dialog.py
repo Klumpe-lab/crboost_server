@@ -543,7 +543,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
     def _set_journey_active(on: bool) -> None:
         # Pause the 4 s live-refresh (its signature does per-tick disk I/O in
         # render_strip) whenever the journey isn't the visible view; resume when
-        # it is. Driven by the workspace's _switch_to.
+        # it is. Driven by the workspace's _apply_views.
         _active["on"] = on
         if on and selected["ts"]:
             # The workspace has just written the bare `/journey` route; name the

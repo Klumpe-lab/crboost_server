@@ -95,7 +95,7 @@ class PipelineBuilderPanel:
         self.callbacks["prompt_species_and_add"] = self.prompt_species_and_add
         self.callbacks["remove_instance_from_pipeline"] = self.remove_instance_from_pipeline
         self.callbacks["invalidate_tm_tabs"] = self.invalidate_tm_tabs
-        self.callbacks["set_active_mode"] = self.roster.set_active_mode
+        self.callbacks["set_active_views"] = self.roster.set_active_views
         # Species page: open a job in the pipeline view / add one for a species.
         self.callbacks["open_job"] = self.switch_tab
         self.callbacks["open_job_subsection"] = self.switch_to_job_subsection
