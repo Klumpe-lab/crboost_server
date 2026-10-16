@@ -22,7 +22,8 @@ Three switches, all of them just re-render from the already-collected rows:
   · **size** — how many tiles (and tilt cards) fit across.
 
 A tile's image opens the zoom view, whose Journey button opens that tomogram in the
-Journey. The toggle in a tile's top-left corner swaps the slice for a mosaic of that
+Journey and whose own source strip flips the zoomed tomogram between versions without
+touching the wall. The toggle in a tile's top-left corner swaps the slice for a mosaic of that
 series' tilts, in the same box; a tilt opens the full-size tilt viewer. The caption row
 under a tile sums its tilts up: how many are in the tomogram, the stage-tilt range in use,
 the series' CTF fit, and the dark exposures in use.
@@ -229,7 +230,18 @@ def _recon_source(slab_dir: Path, ts_name: str, mrc: Path | None, warp_png: Path
     else:
         src = {"png": None, "kick": (slab_dir, mrc) if mrc else None, "caption": "X/Y slab"}
     src["mrc"] = mrc
+    src["url"] = _png_url(src["png"])
     return src
+
+
+def _png_url(png: Path | None) -> str | None:
+    """The picture's URL, made here in the collection thread: it stats the PNG, and a stat per
+    tile on the event loop is what froze the page on a source switch."""
+    return vis_asset_url(str(png)) if png is not None else None
+
+
+def _has_png(src: dict | None) -> bool:
+    return src is not None and src["png"] is not None
 
 
 def recon_source_key(label: str) -> str:
@@ -269,6 +281,7 @@ def _sources_for(project_state, project_path: Path, geom: TomoGeometry) -> dict[
             "kick": None if fresh else (job_dir, mrc),
             "caption": f"{label} · denoised X/Y slab",
             "mrc": mrc,
+            "url": _png_url(png if fresh else None),
         }
     return out
 
@@ -344,7 +357,9 @@ class TomoGalleryPage:
         # Kept on the page, so a size switch, a Refresh or the pending poll keeps them.
         self.open_mosaics: set[str] = set()  # tiles showing their tilts instead of the slice
         self._tiles: dict[str, Any] = {}
+        self._pictures: dict[str, Any] = {}  # each tile's image-or-note and 3dmod chip, swapped on a source switch
         self._zoom_ts: str | None = None  # the tomogram the zoom dialog shows
+        self._zoom_source: str = RECON_SOURCE  # the zoom's own version, the wall's when the zoom opens
         self._flight = SingleFlight()
         self._refs: dict[str, Any] = {}
         self._collected = False
@@ -561,6 +576,7 @@ class TomoGalleryPage:
         width = next(w for k, _lbl, w in _SIZES if k == self.size)
         kicks = 0
         self._tiles = {}
+        self._pictures = {}
         with (
             ui.element("div")
             .classes("cb-gal-grid")
@@ -604,33 +620,41 @@ class TomoGalleryPage:
 
     def _render_slice_frame(self, row: dict, group: dict | None, *, kicked: bool) -> int:
         src = row["sources"].get(self.source)
-        spent = 0
         frame = ui.element("div").classes("cb-gal-frame" + ("" if row["aspect"] else " cb-gal-frame-auto"))
         if row["aspect"]:
             frame.style(f"aspect-ratio: {row['aspect'][0]}/{row['aspect'][1]};")
         frame.on("click", lambda _e, r=row: self._zoom(r))
         frame.tooltip("Click to zoom")
         with frame:
-            if src is None:
-                self._render_frame_note("not produced by this source")
-            elif src["png"] is not None:
-                ui.html(
-                    f"<img src='{vis_asset_url(str(src['png']))}' alt='{row['ts']}' loading='lazy' decoding='async' />",
-                    sanitize=False,
-                )
+            # `display: contents`: a box of its own would come between the frame and the image.
+            picture = ui.element("div").style("display: contents;")
+            self._pictures[row["ts"]] = picture
+            with picture:
+                spent = self._render_picture(row, src, kicked=kicked)
+            if _has_png(src):
                 self._render_dot_layers(row, _DOT_R_WALL)
-            elif src["kick"] is not None:
-                if kicked:
-                    spent = 1
-                    self._kick_slab(row, src)
-                self._render_frame_note("rendering slice…", spinner=True)
-            else:
-                self._render_frame_note("no volume on disk")
             self._render_pick_badge(row)
-            if src is not None and src.get("mrc"):
-                copy_3dmod_chip(src["mrc"])
             if group is not None:
                 self._render_mosaic_toggle(row["ts"], len(group["tilts"]), on=False)
+        return spent
+
+    def _render_picture(self, row: dict, src: dict | None, *, kicked: bool) -> int:
+        """What a tile shows for one source: its image, or a note saying why there is none, and
+        the 3dmod chip of that source's volume. Returns 1 when it submitted a slab render."""
+        spent = 0
+        if src is None:
+            self._render_frame_note("not produced by this source")
+        elif src["png"] is not None:
+            ui.html(f"<img src='{src['url']}' alt='{row['ts']}' loading='lazy' decoding='async' />", sanitize=False)
+        elif src["kick"] is not None:
+            if kicked:
+                spent = 1
+                self._kick_slab(row, src)
+            self._render_frame_note("rendering slice…", spinner=True)
+        else:
+            self._render_frame_note("no volume on disk")
+        if src is not None and src.get("mrc"):
+            copy_3dmod_chip(src["mrc"])
         return spent
 
     def _render_mosaic_frame(self, row: dict, group: dict) -> None:
@@ -722,11 +746,30 @@ class TomoGalleryPage:
     # ── Actions ───────────────────────────────────────────────────────────────
 
     def _select_source(self, key: str) -> None:
-        # The segmented control flips its own highlight only when told to (it never
-        # rebuilds itself), and only the grid below it needs re-rendering.
-        self.source = key
+        """Point every tile at another source. A tile that has an image under both sources (or
+        under neither) swaps only its picture and 3dmod chip; its dots, badge, toggle and caption
+        stay. A tile gaining or losing its image is re-filled, so its dots follow. Rebuilding
+        the whole grid instead re-sent every tile's dot layers and froze the page."""
+        old, self.source = self.source, key
+        # The segmented control flips its own highlight only when told to (it never rebuilds itself).
         self._refs["seg_source"].set_active(key)
-        self._rerender_body()
+        kicks = 0
+        for row in self.rows:
+            ts = row["ts"]
+            tile = self._tiles.get(ts)
+            if tile is None or tile.is_deleted or ts in self.open_mosaics:
+                continue  # a tile showing its tilts draws the current source when toggled back
+            before, now = row["sources"].get(old), row["sources"].get(key)
+            picture = self._pictures.get(ts)
+            kicked = kicks < _MAX_KICKS_PER_RENDER
+            if picture is not None and not picture.is_deleted and _has_png(before) == _has_png(now):
+                picture.clear()
+                with picture:
+                    kicks += self._render_picture(row, now, kicked=kicked)
+            else:
+                tile.clear()
+                with tile:
+                    kicks += self._fill_tile(row, kicked=kicked)
 
     def _select_size(self, key: str) -> None:
         self.size = key
@@ -833,6 +876,7 @@ class TomoGalleryPage:
             dlg.on("keydown", self._on_zoom_key, js_handler=_ZOOM_KEYS_JS)
             self._refs["zoom"] = dlg
         self._zoom_ts = row["ts"]
+        self._zoom_source = self.source
         self._fill_zoom()
         dlg.open()
 
@@ -856,8 +900,9 @@ class TomoGalleryPage:
             return
         i = order.index(self._zoom_ts)
         row = self.rows[i]
-        src = row["sources"].get(self.source)
+        src = row["sources"].get(self._zoom_source)
         body.clear()
+        self._refs.pop("zoom_img", None)
         with body:
             # `width: 0; min-width: 100%`: the header wraps inside the slice's width instead
             # of widening the card past it.
@@ -868,8 +913,13 @@ class TomoGalleryPage:
                     ui.label("imported").classes("cb-gal-zoom-src").tooltip(
                         "Volume imported into this project rather than reconstructed by its own pipeline"
                     )
+                sources = self._source_options()
+                if len(sources) > 1:
+                    self._refs["zoom_seg"] = render_segmented(
+                        sources, self._zoom_source, self._select_zoom_source, "cb-seg-sm"
+                    )
                 if src is not None:
-                    ui.label(src["caption"]).classes("cb-gal-zoom-src")
+                    self._refs["zoom_caption"] = ui.label(src["caption"]).classes("cb-gal-zoom-src")
                 ui.label(f"{i + 1} / {len(order)}").classes("cb-gal-zoom-src").tooltip("← → step through the wall")
                 ui.element("div").style("flex: 1;")
                 for sp in self._visible_species(row):
@@ -898,23 +948,52 @@ class TomoGalleryPage:
                 frame.style("width: fit-content;")
                 img_style = "height: min(90vh, calc(100vh - 80px)); width: auto; max-width: 96vw; object-fit: contain;"
             with frame:
-                if src is not None and src["png"] is not None:
-                    ui.html(
-                        f"<img src='{vis_asset_url(str(src['png']))}' alt='{row['ts']}' "
-                        f"style='display: block; {img_style}' />",
-                        sanitize=False,
-                    )
+                if src is None:
+                    if not row["aspect"]:
+                        frame.style("width: 60vw; height: 60vh;")
+                    self._render_frame_note("not produced by this source")
+                elif src["png"] is not None:
+                    # A plain <img> whose src the version switch changes in place: the browser keeps
+                    # the old picture up until the new one has loaded, so a flip doesn't blink.
+                    img = ui.element("img").style(f"display: block; {img_style}")
+                    img.props["src"] = src["url"]
+                    img.props["alt"] = row["ts"]
+                    self._refs["zoom_img"] = img
                     self._render_dot_layers(row, _DOT_R_ZOOM, cap=None)
                 else:
                     if not row["aspect"]:
                         frame.style("width: 60vw; height: 60vh;")
                     self._render_frame_note("no preview on disk for this source yet")
-                if src is not None and src.get("mrc"):
-                    copy_3dmod_chip(src["mrc"])
+                chip = self._refs["zoom_chip"] = ui.element("div").style("display: contents;")
+                with chip:
+                    if src is not None and src.get("mrc"):
+                        copy_3dmod_chip(src["mrc"])
                 if i > 0:
                     self._render_zoom_chevron("left")
                 if i < len(order) - 1:
                     self._render_zoom_chevron("right")
+
+    def _select_zoom_source(self, key: str) -> None:
+        """Show the zoomed tomogram under another version; the wall keeps its own. With an image
+        under both, only the image, its caption and the 3dmod chip change, so the dots stay put;
+        otherwise the zoom is re-filled. The choice holds while stepping with ← →."""
+        row = next((r for r in self.rows if r["ts"] == self._zoom_ts), None)
+        if row is None:
+            return
+        before, now = row["sources"].get(self._zoom_source), row["sources"].get(key)
+        self._zoom_source = key
+        img = self._refs.get("zoom_img")
+        if not (_has_png(before) and _has_png(now) and img is not None and not img.is_deleted):
+            self._fill_zoom()
+            return
+        self._refs["zoom_seg"].set_active(key)
+        img.props["src"] = now["url"]
+        self._refs["zoom_caption"].set_text(now["caption"])
+        chip = self._refs["zoom_chip"]
+        chip.clear()
+        with chip:
+            if now.get("mrc"):
+                copy_3dmod_chip(now["mrc"])
 
     def _render_zoom_chevron(self, side: str) -> None:
         chev = (
