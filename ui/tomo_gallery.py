@@ -12,9 +12,10 @@ Two tabs: Tomograms (the wall) and Tilts (every tilt preview, grouped by tilt se
 
 Three switches, all of them just re-render from the already-collected rows:
 
-  · **source** — the WarpTools recon PNG, or a denoised X/Y slab (cryoCARE /
-    IsoNet / any other denoisepredict job that has a volume for the tomogram).
-    Only methods that actually produced something appear.
+  · **source** — which version of the tomogram: the WarpTools recon PNG (one entry
+    per reconstruct job when there are several, named by the alignment it traces back
+    to), or a denoised X/Y slab (cryoCARE / IsoNet / any other denoisepredict job that
+    has a volume for the tomogram). Only versions that actually produced something appear.
   · **picks** — one toggle per species with picks on any tomogram; its dots are
     projected onto every tile that has them. Nothing picked yet ⇒ no toggles and
     plain slices, which is the de-novo project's normal state.
@@ -51,6 +52,7 @@ from ui.components.buttons import house_button
 from ui.components.copyable import copy_3dmod_chip
 from ui.components.dialogs import dialog_host
 from ui.components.reactive import SingleFlight, owned_timer
+from ui.components.recon_compare import recon_version_labels, recon_versions_for_ts
 from ui.components.segmented import render_segmented
 from ui.dashboard.css import ensure_assets_loaded
 from ui.tilt_previews import (
@@ -213,34 +215,51 @@ def _species_rows(project_state, project_path: Path, geoms: list[TomoGeometry]) 
     return out
 
 
+def _recon_source(slab_dir: Path, ts_name: str, mrc: Path | None, warp_png: Path | None) -> dict:
+    """One reconstruction's tile picture: the WarpTools PNG ts_reconstruct wrote next to the volume,
+    else the X/Y slab we render ourselves under `slab_dir` (the only option for an imported
+    tomogram, which has no WarpTools output)."""
+    from ui.particles.pick_viewer import _recon_slab_paths
+
+    xy_png, _xz = _recon_slab_paths(slab_dir, ts_name)
+    if warp_png is not None:
+        src = {"png": warp_png, "kick": None, "caption": f"WarpTools · {warp_png.name}"}
+    elif xy_png.exists() and not (mrc and is_output_stale(xy_png, [mrc])):
+        src = {"png": xy_png, "kick": None, "caption": f"X/Y slab · {xy_png.name}"}
+    else:
+        src = {"png": None, "kick": (slab_dir, mrc) if mrc else None, "caption": "X/Y slab"}
+    src["mrc"] = mrc
+    return src
+
+
+def recon_source_key(label: str) -> str:
+    """Toolbar key of one reconstruct job's version when the project has several."""
+    return f"{RECON_SOURCE} · {label}"
+
+
 def _sources_for(project_state, project_path: Path, geom: TomoGeometry) -> dict[str, dict]:
     """Per-tomogram image sources, keyed by the toolbar's source id.
 
-    ``recon`` is the WarpTools PNG ts_reconstruct wrote next to the volume, falling
-    back to the X/Y slab we render ourselves (the only option for an imported
-    tomogram, which has no WarpTools output). Each denoisepredict job with a volume
-    for this tomogram adds one entry under its method label. ``kick`` carries the
-    (cache dir, source MRC) the renderer needs when the PNG isn't on disk yet;
-    ``mrc`` is the volume the picture shows, for the 3dmod chip.
+    With one reconstruct job, ``recon`` is its picture. With several (e.g. one per alignment),
+    each job with a volume of this tomogram is its own version, keyed ``recon · <alignment>``
+    by the project-wide label, so one toolbar choice shows the same job on every tile; a tomogram
+    a job did not reconstruct says so instead of showing another job's. Each denoisepredict job
+    with a volume for this tomogram adds one entry under its method label. ``kick`` carries the
+    (cache dir, source MRC) the renderer needs when the PNG isn't on disk yet; ``mrc`` is the
+    volume the picture shows, for the 3dmod chip.
     """
-    from ui.particles.pick_viewer import _recon_slab_paths
     from ui.tomo_dashboard_dialog import _available_denoise_methods_for_ts, _denoise_slab_path
 
     out: dict[str, dict] = {}
-    slab_dir = geom.tomograms_star.parent
-    xy_png, _xz = _recon_slab_paths(slab_dir, geom.tomo_name)
-    warp_png = _find_warp_tomo_preview(project_path, geom.tomo_name, geom.recon_mrc)
-    if warp_png is not None:
-        out[RECON_SOURCE] = {"png": warp_png, "kick": None, "caption": f"WarpTools · {warp_png.name}"}
-    elif xy_png.exists() and not (geom.recon_mrc and is_output_stale(xy_png, [geom.recon_mrc])):
-        out[RECON_SOURCE] = {"png": xy_png, "kick": None, "caption": f"X/Y slab · {xy_png.name}"}
+    if geom.source != SOURCE_IMPORTED and len(recon_version_labels(project_state)) > 1:
+        for v in recon_versions_for_ts(project_state, geom.tomo_name):
+            warp_png = v["mrc"].with_suffix(".png")
+            src = _recon_source(v["dir"], geom.tomo_name, v["mrc"], warp_png if warp_png.exists() else None)
+            src["caption"] = f"{v['label']} · {src['caption']}"
+            out[recon_source_key(v["label"])] = src
     else:
-        out[RECON_SOURCE] = {
-            "png": None,
-            "kick": (slab_dir, geom.recon_mrc) if geom.recon_mrc else None,
-            "caption": "X/Y slab",
-        }
-    out[RECON_SOURCE]["mrc"] = geom.recon_mrc
+        warp_png = _find_warp_tomo_preview(project_path, geom.tomo_name, geom.recon_mrc)
+        out[RECON_SOURCE] = _recon_source(geom.tomograms_star.parent, geom.tomo_name, geom.recon_mrc, warp_png)
 
     for label, job_dir, mrc in _available_denoise_methods_for_ts(project_state, project_path, geom.tomo_name):
         png = _denoise_slab_path(job_dir, geom.tomo_name)
@@ -463,8 +482,9 @@ class TomoGalleryPage:
             for key in row["sources"]:
                 if key not in keys:
                     keys.append(key)
-        keys.sort(key=lambda k: (k != RECON_SOURCE, k.lower()))
-        return [(k, "recon" if k == RECON_SOURCE else k) for k in keys]
+        # Reconstructions first, in the order the tomograms list them (by job dir), then the rest.
+        keys.sort(key=lambda k: (not k.startswith(RECON_SOURCE), "" if k.startswith(RECON_SOURCE) else k.lower()))
+        return [(k, k) for k in keys]
 
     # ── Render ────────────────────────────────────────────────────────────────
 
@@ -515,10 +535,10 @@ class TomoGalleryPage:
             return
         sources = self._source_options()
         species = self._all_species()
+        if sources and self.source not in dict(sources):
+            self.source = sources[0][0]
         if len(sources) > 1:
             ui.label("source").classes("cb-gal-toolbar-label")
-            if self.source not in dict(sources):
-                self.source = sources[0][0]
             self._refs["seg_source"] = render_segmented(sources, self.source, self._select_source)
         if species:
             ui.label("picks").classes("cb-gal-toolbar-label")
@@ -770,7 +790,7 @@ class TomoGalleryPage:
         from services.visualization.preview_render import render_xy_slab_preview
 
         cache_dir, mrc = src["kick"]
-        is_recon = self.source == RECON_SOURCE
+        is_recon = self.source.startswith(RECON_SOURCE)
         out_png = _recon_slab_paths(cache_dir, row["ts"])[0] if is_recon else _denoise_slab_path(cache_dir, row["ts"])
 
         async def _run(progress_cb):

@@ -2115,14 +2115,17 @@ def _render_recon_big_preview(ts_name: str, project_state, project_path: Path, m
         ui.label("No tomogram preview on disk for this TS yet.").classes("cb-section-placeholder")
         return
 
-    # Several reconstruct jobs of this TS (e.g. aligntiltsWarp vs a missAlign refinement):
-    # one pane each, all on the first job's plane, captioned with the alignment each
-    # traces back to.
+    # Several reconstruct jobs of this TS (e.g. aligntiltsWarp vs a missAlign refinement): a
+    # version toggle shows one job's reconstruction, named by the alignment it traces back to,
+    # or "compare" puts them side by side on the first job's plane.
     versions = recon_versions_for_ts(project_state, ts_name) if project_state is not None else []
+    version = _select_recon_version(versions, sel_key, refresh) if len(versions) > 1 else None
 
     with ui.element("div").classes("cb-recon-compare"):
-        if len(versions) > 1:
+        if version == _COMPARE_VERSIONS:
             _render_recon_versions(versions, ts_name, project_path, refresh)
+        elif version is not None:
+            _render_recon_version(next(v for v in versions if v["label"] == version), ts_name)
         else:
             # ── recon (left): clean WarpTools PNG ──
             with ui.element("div").classes("cb-recon-compare-pane"):
@@ -2167,6 +2170,52 @@ def _render_recon_big_preview(ts_name: str, project_state, project_path: Path, m
                     ui.label(f"{selected} · denoised X/Y slab · {dn_mrc.name}").classes("cb-recon-preview-caption")
                 else:
                     ui.label("rendering denoised slab…").classes("cb-section-placeholder")
+
+
+# Which reconstruction version the Reconstruct card shows, keyed by project path: a job's
+# label (recon_version_labels) or _COMPARE_VERSIONS for all of them side by side.
+_SELECTED_RECON_VERSION: dict[str, str] = {}
+_COMPARE_VERSIONS = "compare"
+
+
+def _select_recon_version(versions: list[dict], sel_key: str, refresh) -> str:
+    """Render the version toggle above the previews and return the chosen version."""
+    options = [v["label"] for v in versions] + [_COMPARE_VERSIONS]
+    selected = _SELECTED_RECON_VERSION.get(sel_key)
+    if selected not in options:
+        selected = options[0]
+
+    def _on_version(e) -> None:
+        _SELECTED_RECON_VERSION[sel_key] = e.value
+        refresh()
+
+    with ui.row().classes("items-center gap-2 no-wrap").style("margin-bottom: 4px;"):
+        ui.label("version").classes("cb-recon-pane-tag")
+        (
+            ui.toggle({o: o for o in options}, value=selected, on_change=_on_version)
+            .props("dense no-caps unelevated size=sm toggle-color=indigo color=grey-2")
+            .classes("cb-denoise-method-toggle")
+            .tooltip(
+                "Which reconstruct job's tomogram to show, named by the alignment it traces back to. "
+                "compare: all of them side by side, registered onto the first one's plane."
+            )
+        )
+    return selected
+
+
+def _render_recon_version(v: dict, ts_name: str) -> None:
+    """One reconstruct job's tomogram: its WarpTools PNG (that job's own central slice)."""
+    warp_png = v["mrc"].with_suffix(".png")
+    with ui.element("div").classes("cb-recon-compare-pane"):
+        ui.label(f"recon · {v['label']}").classes("cb-recon-pane-tag")
+        if warp_png.exists():
+            with ui.element("div").classes("cb-recon-preview").style("position: relative;"):
+                ui.html(f"<img src='{vis_asset_url(str(warp_png))}' alt='{ts_name} {v['job']}' />", sanitize=False)
+                copy_3dmod_chip(v["mrc"])
+            ui.label(f"WarpTools · {warp_png.name}").classes("cb-recon-preview-caption")
+        else:
+            ui.label("No WarpTools preview PNG on disk.").classes("cb-section-placeholder")
+        ui.label(f"{v['iid']} ← {v['lineage']}").classes("cb-recon-preview-caption")
 
 
 _PLANE_TIP = (
