@@ -70,8 +70,13 @@ _MODE_VIEWS: dict[str, View] = {
 _VIEW_ORDER = ("pipeline", "table", "workbench", "gallery", "journey", "viewer", "protocols")
 
 # Every view's frame: an equal share of the main area's width when several are on. It holds the
-# box the view builds into and, on its right, the gutter with the view's close cross.
-_VIEW_STYLE = "flex: 1 1 0; min-width: 0; height: 100%; overflow: hidden; display: none; flex-direction: row;"
+# box the view builds into and, floating in its top-right corner, the view's close cross.
+_VIEW_STYLE = (
+    "flex: 1 1 0; min-width: 0; height: 100%; overflow: hidden; display: none; flex-direction: row; position: relative;"
+)
+# The cross, 15 px down (the middle of the Journey's 30 px header line), above the view's own
+# overlays; each view's first line keeps its right end free.
+_VIEW_CLOSE_STYLE = "position: absolute; top: 8px; right: 4px; z-index: 10;"
 _VIEW_BODY_STYLE = "flex: 1 1 0; min-width: 0; height: 100%; overflow: hidden; display: flex; flex-direction: column;"
 
 
@@ -212,16 +217,15 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
 
     def _view_frame(name: str, style: str = _VIEW_STYLE) -> ui.element:
         """A view's frame in the main area, styled by _apply_views; returns the box the view
-        builds into. The gutter on its right holds a cross that turns the view off, the same
-        as its rail icon."""
+        builds into. A cross in its top-right corner turns the view off, the same as its rail
+        icon."""
         frame = ui.element("div").style(style)
         _refs[f"{name}_frame"] = frame
         with frame:
             body = ui.element("div").style(_VIEW_BODY_STYLE)
-            with ui.element("div").classes("cb-view-gutter"):
-                ui.icon("close", size="12px").classes("cb-view-close").on("click", lambda _e: _hide(name)).tooltip(
-                    "Close this view"
-                )
+            ui.icon("close", size="12px").classes("cb-view-close").style(_VIEW_CLOSE_STYLE).on(
+                "click", lambda _e: _hide(name)
+            ).tooltip("Close this view")
         _refs[f"{name}_container"] = body
         return body
 
@@ -512,7 +516,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
             # Pick viewer: the full-page mount of the slabs + lists +
             # gallery component, opened from a tomogram row of the Particles registry's
             # Picks & curation tab. Lazily built on first use, like the journey; it has
-            # no nav icon of its own — its own header carries the routes back, its gutter the close cross.
+            # no nav icon of its own — its own header carries the routes back, its corner the close cross.
             _view_frame("viewer")
 
             # Protocols: lazily built on the first click of the foot-of-rail protocol light.
