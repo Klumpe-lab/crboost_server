@@ -298,7 +298,10 @@ class PipelineTablePage:
             .classes("w-full")
             .style("height: 100%; overflow: auto; padding: 10px 18px 24px; gap: 10px; box-sizing: border-box;"),
         ):
-            with ui.element("div").style("display: flex; align-items: center; gap: 14px; flex-wrap: wrap;"):
+            # The title line's right padding keeps the view's close cross clear.
+            with ui.element("div").style(
+                "display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding-right: 4px;"
+            ):
                 ui.label("Pipeline").style(PAGE_SECTION_STYLE).tooltip(
                     "Every job on the roster, each after the jobs it reads. The lines follow the input a "
                     "job's tilt series come from; its other inputs are in the hover of its name and in its "

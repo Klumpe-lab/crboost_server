@@ -147,11 +147,11 @@ def render_job_tab(
 
     is_running = job_model.execution_status == JobStatus.RUNNING
 
-    # --- Header ---
+    # --- Header --- (its right padding keeps the view's close cross clear)
     with (
         ui.row()
         .classes("w-full items-center border-b border-gray-200 bg-white px-3 gap-2")
-        .style("flex-shrink: 0; min-height: 28px; padding-top: 3px; padding-bottom: 3px;")
+        .style("flex-shrink: 0; min-height: 28px; padding-top: 3px; padding-bottom: 3px; padding-right: 22px;")
     ):
         widget_refs.switcher = render_segmented(
             _build_tab_list(job_type),

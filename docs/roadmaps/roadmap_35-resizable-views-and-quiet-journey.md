@@ -1,8 +1,7 @@
 # Roadmap 35 — Views you can resize, and a quiet Journey
 
-**Status:** scoped 2026-10-17 from reading main (`cb8d419`); **nothing built**. Written while two other sessions
-were editing `~/dev/crboost_server`, so the build waits for a tree of its own (§3.1). S1–S2 are the workspace,
-S3–S5 the Journey.
+**Status:** scoped 2026-10-17 from reading main (`cb8d419`); §3 decided 2026-10-17; S1 built 2026-10-17 in the
+main tree, not run (§7). S1–S2 are the workspace, S3–S5 the Journey.
 
 ## Asked (maintainer, 2026-10-17)
 
@@ -214,18 +213,14 @@ When the maintainer has picked (or mixed: "A's tiles with C's colour"), fold tho
 the default `ChartTheme`, and delete the switcher, `_JOURNEY_PASSES_CSS`, the other themes and the
 `journey_style` key.
 
-## 3. Decisions owed
+## 3. Decisions (maintainer, 2026-10-17)
 
-1. **Where to build.** Two other sessions were editing `~/dev/crboost_server` when this was written. S1–S4 touch
-   `ui/workspace_page.py`, `ui/tomo_dashboard_dialog.py`, `ui/particles/pick_viewer.py`, `ui/dashboard/css.py`
-   and `ui/dashboard/figures.py`. Recommended: a worktree of the maintainer's; otherwise the main tree once those
-   sessions are done.
-2. **Where widths are remembered.** Per browser in `localStorage`, like the roster width (recommended), or per
-   user in the prefs file.
-3. **Species colours on light chrome.** Chosen with the pass (A and B a grey glyph, C desaturated). Changing the
-   palette itself (Material A400, stored per species) is a separate decision.
-4. **One monospace for the app.** The Tilts tab and most other rules use `ui-monospace, monospace`; the Journey
-   moves to Plex Mono in S3. Moving the rest is a separate sweep of 38 rules.
+1. **Where to build: the main tree.** No other session is editing `~/dev/crboost_server`.
+2. **Where widths are remembered: per browser, in `localStorage`**, like the roster width.
+3. **Species colours on light chrome: per pass, as in the S4 table** (A and B a grey glyph, C desaturated). The
+   palette itself (Material A400, stored per species) stays as it is.
+4. **One monospace for the app: out of scope.** The Journey moves to Plex Mono in S3; the other 38 rules keep
+   `ui-monospace, monospace`.
 
 ## 4. Order and dependencies
 
@@ -254,4 +249,11 @@ After restarting `python main.py` and a hard reload:
 
 ## 7. Stage log
 
-Nothing built yet.
+- **S1, 2026-10-17 (not run).** `.cb-view-gutter` and its element are gone; `_view_frame` puts the cross straight
+  in the frame (`position: relative`), absolutely placed at `top: 8px; right: 4px` with `z-index: 10` (inline,
+  `_VIEW_CLOSE_STYLE`; above the pick dots and the lasso), centred on the Journey's 30 px first line; its grey /
+  hover look stays in `.cb-view-close`. First lines that keep the corner free: `.cb-jhead` (the Journey and
+  Protocols share it) and `.cb-gal-toolbar` get a 22 px right padding, `.cb-species-header` too (CSS only, so
+  `ui/species/page.py` is untouched), `.cb-viewer-page-head` 14 px inside the page's 10 px, the job page's header
+  row (`job_tab_component.render_job_tab`) 22 px inline, and the pipeline table's title line 4 px inside its
+  column's 18 px. The interactive-job header already pads 24 px.

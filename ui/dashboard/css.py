@@ -504,7 +504,8 @@ _CB_CSS = """
     width: 100%; height: 100%; min-height: 0;
     overflow-y: auto; padding: 8px 10px;
 }
-.cb-viewer-page-head { padding: 2px 2px 4px 2px; }
+/* The right padding keeps the view's close cross clear. */
+.cb-viewer-page-head { padding: 2px 14px 4px 2px; }
 /* Slab lightbox: a full-viewport overlay holding a CLONE of the clicked slab (image +
  * its pick dots), wheel-zoomed and drag-panned via an inline transform. */
 .cb-slab-lightbox {
@@ -904,10 +905,11 @@ _CB_CSS = """
    One thin line about the selected tilt series: [▾ position · i/N] · four
    labelled stage dots · per-species pick counts · ⓘ · exclude — and, at the far
    right (mounted by the journey), the section selector. The name block drops
-   down the tomogram switcher table; the overview lives there, not on screen. */
+   down the tomogram switcher table; the overview lives there, not on screen. The right
+   padding keeps the view's close cross clear. */
 .cb-jhead {
     flex: 0 0 auto; display: flex; align-items: center; gap: 10px; min-height: 30px;
-    padding: 0 12px; background: #ffffff; border-bottom: 1px solid #e5e7eb;
+    padding: 0 22px 0 12px; background: #ffffff; border-bottom: 1px solid #e5e7eb;
     font-family: 'IBM Plex Sans', sans-serif;
 }
 .cb-jhead-left { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -1081,10 +1083,10 @@ _CB_CSS = """
     transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
 .cb-tw-import:hover { background: #f8fafc; border-color: var(--cb-accent); color: var(--cb-accent); }
-/* Species header row: active pill left, segmented tabs right. */
+/* Species header row: active pill left, segmented tabs right, clear of the view's close cross. */
 .cb-species-header {
     display: flex; align-items: center; gap: 10px; flex-shrink: 0;
-    padding: 5px 10px; border-bottom: 1px solid #e5e7eb; background: #fafbfc; min-height: 30px;
+    padding: 5px 22px 5px 10px; border-bottom: 1px solid #e5e7eb; background: #fafbfc; min-height: 30px;
 }
 /* Species rail: 200 px column, one row per species (mark + counts), "+" at the
  * bottom. Selected row = tinted + an indigo left border. */
@@ -1201,9 +1203,10 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
  * fill), which is what lets a dot layer position in plain percentages and stay
  * registered with the slice at every tile size. */
 .cb-gal-page { display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; }
+/* The right padding keeps the view's close cross clear. */
 .cb-gal-toolbar {
     display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-    padding: 6px 10px; border-bottom: 1px solid #e5e7eb; background: #f8fafc; flex-shrink: 0;
+    padding: 6px 22px 6px 10px; border-bottom: 1px solid #e5e7eb; background: #f8fafc; flex-shrink: 0;
 }
 .cb-gal-title {
     font-size: 10px; text-transform: uppercase; font-weight: 600;
@@ -1525,12 +1528,8 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 .q-notification.bg-warning .q-notification__icon { color: #d97706; }
 .q-notification.bg-info { border-left-color: #6366f1; }
 .q-notification.bg-info .q-notification__icon { color: #6366f1; }
-/* A view's close gutter (ui/workspace_page.py `_view_frame`): a slim column on the view's right
- * whose cross turns the view off, never laid over the view's own toolbar. */
-.cb-view-gutter {
-    flex: 0 0 16px; width: 16px; display: flex; justify-content: center; padding-top: 7px;
-    border-left: 1px solid #f1f5f9; background: #ffffff;
-}
+/* A view's close cross (ui/workspace_page.py `_view_frame`): floats in the frame's top-right
+ * corner; each view's first line keeps that corner free. */
 .cb-view-close { color: #cbd5e1; cursor: pointer; border-radius: 3px; width: 14px; height: 14px; }
 .cb-view-close:hover { color: #475569; background: #f1f5f9; }
 """
