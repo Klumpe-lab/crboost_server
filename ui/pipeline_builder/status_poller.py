@@ -55,8 +55,11 @@ class StatusPoller:
         if not project_path:
             return
 
-        # Roster reads in-memory job_model.execution_status — cheap.
-        panel.roster.refresh()
+        # Roster reads in-memory job_model.execution_status — cheap. Not while the pipeline view
+        # is off screen: it catches up when shown (PipelineBuilderPanel.set_view_active).
+        if panel._view_on:
+            await panel.roster.refresh_array_status()
+            panel.roster.refresh()
 
         overview = await panel.backend.get_pipeline_overview(str(project_path))
         panel.roster.update_status_label(overview)

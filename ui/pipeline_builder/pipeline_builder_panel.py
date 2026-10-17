@@ -32,6 +32,9 @@ from ui.pipeline_builder.job_tab_component import render_job_tab
 
 logger = logging.getLogger(__name__)
 
+# Job pages kept rendered: the shown one and the ones shown just before it (_show_job).
+_KEPT_JOB_PAGES = 3
+
 
 def _safe_notify(message: str, *, type: str = "info") -> None:
     """ui.notify that swallows the "client has been deleted" RuntimeError.
@@ -71,7 +74,10 @@ class PipelineBuilderPanel:
 
         self.ui_mgr = get_ui_state_manager()
 
+        # Rendered job pages, the most recently shown last (_show_job keeps the last _KEPT_JOB_PAGES).
         self._job_content_containers: dict[str, object] = {}
+        # Whether the workspace shows the pipeline view (set_view_active).
+        self._view_on = True
         self._content_wrapper_ref: dict[str, object] = {}
 
         self.roster = RosterWidget(self)
@@ -96,6 +102,7 @@ class PipelineBuilderPanel:
         self.callbacks["remove_instance_from_pipeline"] = self.remove_instance_from_pipeline
         self.callbacks["invalidate_tm_tabs"] = self.invalidate_tm_tabs
         self.callbacks["set_active_views"] = self.roster.set_active_views
+        self.callbacks["on_pipeline_active"] = self.set_view_active
         # Species page: open a job in the pipeline view / add one for a species.
         self.callbacks["open_job"] = self.switch_tab
         self.callbacks["open_job_subsection"] = self.switch_to_job_subsection
@@ -235,9 +242,7 @@ class PipelineBuilderPanel:
 
         active = self.ui_mgr.active_instance_id
         if active and InstanceId.matches(active, tm_type):
-            self._ensure_job_rendered(active)
-            for iid, c in self._job_content_containers.items():
-                c.set_visibility(iid == active)
+            self._show_job(active)
 
     def rerender_job(self, instance_id: str) -> None:
         """Rebuild one job's rendered content after the roster changed a setting that shapes
@@ -249,21 +254,54 @@ class PipelineBuilderPanel:
         container.delete()
         if self.ui_mgr.active_instance_id != instance_id:
             return
+        self._show_job(instance_id)
+
+    def _show_job(self, instance_id: str) -> None:
+        """Make one job's page the shown one: rendered if it is not, the others hidden, and only its
+        timers running. The active page and the ones shown just before it are kept, so switching
+        back is instant; older pages are deleted and rebuilt when reopened: a hidden page still
+        holds every element and polled binding it made, and those slow every page operation."""
         self._ensure_job_rendered(instance_id)
-        rebuilt = self._job_content_containers.get(instance_id)
-        if rebuilt is not None:
-            rebuilt.set_visibility(True)
+        container = self._job_content_containers.pop(instance_id, None)
+        if container is not None:
+            self._job_content_containers[instance_id] = container
+        for iid in list(self._job_content_containers)[:-_KEPT_JOB_PAGES]:
+            self._drop_job_page(iid)
+        for iid, c in self._job_content_containers.items():
+            c.set_visibility(iid == instance_id)
+        self._sync_job_scopes()
+
+    def _drop_job_page(self, instance_id: str) -> None:
+        container = self._job_content_containers.pop(instance_id, None)
+        self.ui_mgr.job_scope(instance_id).set_active(False)
+        self.ui_mgr.get_job_widget_refs(instance_id).cleanup()
+        if container is not None and not container.is_deleted:
+            container.delete()
+
+    def _sync_job_scopes(self) -> None:
+        """Run the shown job page's timers, and only while the pipeline view is on screen."""
+        active = self.ui_mgr.active_instance_id
+        for iid in self._job_content_containers:
+            self.ui_mgr.job_scope(iid).set_active(self._view_on and iid == active)
+
+    def set_view_active(self, on: bool) -> None:
+        """The workspace's hook for the pipeline view (roster + job page) going on or off screen:
+        the roster's and the job pages' timers pause with it, and the roster catches up on return."""
+        self._view_on = on
+        self.ui_mgr.view_scope("pipeline").set_active(on)
+        self._sync_job_scopes()
+        if on:
+            self.roster.refresh()
 
     def switch_tab(self, instance_id: str):
         if self.ensure_pipeline_mode:
             self.ensure_pipeline_mode()
         self.ui_mgr.set_active_instance(instance_id)
-        self._ensure_job_rendered(instance_id)
-        for iid, c in self._job_content_containers.items():
-            c.set_visibility(iid == instance_id)
+        self._show_job(instance_id)
         set_url = self.callbacks.get("set_url")
         if set_url:
             set_url(View.JOB, instance_id, self.ui_mgr.get_job_ui_state(instance_id).active_monitor_tab)
+        self.roster.paint_active()
         self.roster.refresh()
 
     def switch_to_job_subsection(self, instance_id: str, tab_key: str):
@@ -280,9 +318,7 @@ class PipelineBuilderPanel:
         if self.ensure_pipeline_mode:
             self.ensure_pipeline_mode()
         self.ui_mgr.set_active_instance(instance_id)
-        self._ensure_job_rendered(instance_id)
-        for iid, c in self._job_content_containers.items():
-            c.set_visibility(iid == instance_id)
+        self._show_job(instance_id)
 
         # Force a content re-render for the requested subsection.
         job_type = instance_id_to_job_type(instance_id)
@@ -290,6 +326,7 @@ class PipelineBuilderPanel:
 
         # Refresh the roster *after* the content is updated so the
         # sidebar highlight reflects the new active job/tab.
+        self.roster.paint_active()
         self.roster.refresh()
 
     # ── Job/instance management ───────────────────────────────────────────────
@@ -600,6 +637,7 @@ class PipelineBuilderPanel:
 
         self.roster.rebuild_run_slot()
         self.roster.refresh()
+        self.roster.paint_active()
 
         tabs_container = self.ui_mgr.panel_refs.job_tabs_container
         if tabs_container is None:
@@ -630,8 +668,7 @@ class PipelineBuilderPanel:
 
         active = self.ui_mgr.active_instance_id
         if active:
-            self._ensure_job_rendered(active)
-            self._job_content_containers[active].set_visibility(True)
+            self._show_job(active)
 
         if self.ui_mgr.is_running:
             try:

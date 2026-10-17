@@ -72,3 +72,41 @@ async def copy_full_log(path: Path) -> None:
         return
     ui.clipboard.write(text)
     ui.notify(f"Copied {path.name} ({len(text.splitlines())} lines)", type="positive", timeout=1500)
+
+
+# Keeps a live log pinned to its end unless the user has scrolled up to read.
+_PIN_JS = """(() => {
+    const e = getHtmlElement(%d);
+    if (!e) return;
+    if (!e.dataset.pinWatch) {
+        e.dataset.pinWatch = '1';
+        e.addEventListener('scroll', () => {
+            e.dataset.pinned = (e.scrollHeight - e.scrollTop - e.clientHeight < 24) ? '1' : '0';
+        });
+    }
+    if (e.dataset.pinned !== '0') e.scrollTop = e.scrollHeight;
+})()"""
+
+
+class LiveLog:
+    """A polled log tail as one text element, written only when the text changed and kept
+    scrolled to its end unless the user scrolled up. (`ui.log` makes an element per line: pushing a
+    500-line tail on every poll created and deleted a thousand elements per tick.)"""
+
+    def __init__(self, *, style: str) -> None:
+        self._text: str | None = None
+        self.element = ui.label("").classes("cb-livelog").style(style)
+
+    @property
+    def is_deleted(self) -> bool:
+        return self.element.is_deleted
+
+    def set_visibility(self, visible: bool) -> None:
+        self.element.set_visibility(visible)
+
+    def set_text(self, text: str) -> None:
+        if text == self._text or self.element.is_deleted:
+            return
+        self._text = text
+        self.element.set_text(text)
+        self.element.client.run_javascript(_PIN_JS % self.element.id)

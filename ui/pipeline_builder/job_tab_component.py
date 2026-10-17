@@ -9,12 +9,14 @@ from backend import get_backend
 from services.path_resolution_service import cut_output
 from services.project_state import JobStatus, JobType
 from ui.components.buttons import house_button
+from ui.components.reactive import Debounced
 from ui.current_project import current_project_state
 from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
 from ui.job_plugins import get_extra_tabs, get_full_panel_renderer
 from ui.job_plugins._field_styles import config_section
 from ui.routing import View
-from ui.components.species_pill import render_species_pill
+from ui.components.segmented import render_segmented
+from ui.components.species_pill import render_species_mark
 from ui.status_indicator import BoundStatusDot
 from services.models_base import instance_id_to_job_type
 from ui.ui_state import UIStateManager, MonitorTab, get_job_display_name, get_instance_display_name
@@ -77,10 +79,17 @@ def _render_tab_content(
         # SLURM save through `on_edit`, which then reruns the refresh each of them hands back.
         edit_refreshes: list[Callable[[], None]] = []
 
-        def on_edit() -> None:
-            save_handler()
+        def _run_refreshes() -> None:
             for refresh in edit_refreshes:
                 refresh()
+
+        # The fields write the model on every change; the sections that follow them repaint once
+        # typing pauses, not per keystroke.
+        refresh_soon = Debounced(_run_refreshes)
+
+        def on_edit() -> None:
+            save_handler()
+            refresh_soon()
 
         # All sections open on one page, separated by whitespace; the I/O component
         # renders its own Inputs / Outputs sections at the same title scale.
@@ -144,21 +153,18 @@ def render_job_tab(
         .classes("w-full items-center border-b border-gray-200 bg-white px-3 gap-2")
         .style("flex-shrink: 0; min-height: 28px; padding-top: 3px; padding-bottom: 3px;")
     ):
-        BoundStatusDot(instance_id)
-
-        switcher_container = ui.element("div").style(
-            "display: flex; border: 1px solid #e2e8f0; border-radius: 3px; overflow: hidden; flex-shrink: 0;"
+        widget_refs.switcher = render_segmented(
+            _build_tab_list(job_type),
+            active_tab,
+            lambda t: _handle_tab_switch(job_type, instance_id, t, backend, ui_mgr, callbacks),
         )
-        widget_refs.switcher_container = switcher_container
-        _render_tab_switcher(switcher_container, job_type, instance_id, active_tab, backend, ui_mgr, callbacks)
 
-        # Species tag for particle jobs (templatematching / subtomo / reconstruct
-        # / class3d / candidate-extract) so it's obvious which species this job
-        # instance belongs to — matches the badge already shown in the roster.
+        # Species glyph for particle jobs (templatematching / subtomo / reconstruct
+        # / class3d / candidate-extract), named on hover — the roster's own mark.
         _sp_id = getattr(job_model, "species_id", None)
         _species = state.get_species(_sp_id) if _sp_id else None
         if _species is not None:
-            render_species_pill(_species, tooltip=f"Species: {_species.name}")
+            render_species_mark(_species)
 
         if job_type in _EXPERIMENTAL_JOB_TYPES:
             with (
@@ -276,39 +282,6 @@ def _render_interactive_job(
         full_renderer(job_type, instance_id, job_model, backend, ui_mgr, save_handler)
 
 
-def _render_tab_switcher(
-    container,
-    job_type: JobType,
-    instance_id: str,
-    active_tab: str,
-    backend,
-    ui_mgr: UIStateManager,
-    callbacks: dict[str, Callable],
-):
-    container.clear()
-    tabs = _build_tab_list(job_type)
-    with container:
-        for i, (tab_key, label) in enumerate(tabs):
-            is_active = active_tab == tab_key
-            is_last = i == len(tabs) - 1
-            btn = ui.button(
-                label,
-                on_click=lambda t=tab_key: _handle_tab_switch(job_type, instance_id, t, backend, ui_mgr, callbacks),
-            )
-            btn.props("flat dense no-caps")
-            border_r = "" if is_last else "border-right: 1px solid #e2e8f0; "
-            if is_active:
-                btn.style(
-                    f"font-size: 9px; font-weight: 600; padding: 2px 7px; border-radius: 0; "
-                    f"background: #f1f5f9; color: #1e293b; {border_r}min-width: 0;"
-                )
-            else:
-                btn.style(
-                    f"font-size: 9px; font-weight: 500; padding: 2px 7px; border-radius: 0; "
-                    f"background: white; color: #64748b; {border_r}min-width: 0;"
-                )
-
-
 def _handle_tab_switch(
     job_type: JobType, instance_id: str, tab_key: str, backend, ui_mgr: UIStateManager, callbacks: dict[str, Callable]
 ):
@@ -318,8 +291,8 @@ def _handle_tab_switch(
         set_url(View.JOB, instance_id, tab_key)
     widget_refs = ui_mgr.get_job_widget_refs(instance_id)
 
-    if widget_refs.switcher_container:
-        _render_tab_switcher(widget_refs.switcher_container, job_type, instance_id, tab_key, backend, ui_mgr, callbacks)
+    if widget_refs.switcher:
+        widget_refs.switcher.set_active(tab_key)
 
     if tab_key != MonitorTab.LOGS.value:
         ui_mgr.cleanup_job_logs_timer(instance_id)

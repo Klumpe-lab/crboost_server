@@ -8,7 +8,6 @@ built on the patterns in MetadataTranslator.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 
@@ -219,8 +218,8 @@ def generate_tilt_thumbnails(
     """Synchronously generate PNG thumbnails for every tilt referenced by a
     ts_ctf star file. Returns the number of source MRC images processed.
 
-    Designed to be wrapped in `asyncio.to_thread`; the CPU-bound work uses
-    a ProcessPoolExecutor internally. `progress_cb` matches the
+    Run in a worker process (services/workers.py); the CPU-bound work uses a
+    ProcessPoolExecutor of its own inside it. `progress_cb` matches the
     BackgroundTaskRegistry signature `(done, total, message)`.
     """
     # Lazy-import the heavy stack (scipy/PIL/mrcfile) to keep
@@ -305,7 +304,13 @@ def ensure_tilt_thumbnails(project_path: str | Path, state) -> bool:
     _thumb_kickoffs.add(guard)
 
     async def _run(progress_cb):
-        n = await asyncio.to_thread(generate_tilt_thumbnails, source_star, proj, png_dir, progress_cb)
+        from services.workers import WorkKind, run_in_worker
+
+        # In a worker process: the pass decodes every tilt average and forks its own pool to do so,
+        # neither of which belongs in the server.
+        n = await run_in_worker(
+            WorkKind.THUMBNAILS, generate_tilt_thumbnails, source_star, proj, png_dir, progress_cb=progress_cb
+        )
         # Resolve by explicit path: this runs with no client/tab context, where a bare
         # current_project_state() would hand back a blank throwaway and the assignment
         # would silently no-op.

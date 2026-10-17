@@ -35,7 +35,7 @@ from ui.background_task import BackgroundTask
 from ui.components.buttons import house_button
 from ui.components.dialogs import dialog_host
 from ui.components.fields import house_number
-from ui.components.reactive import FingerprintedView, SingleFlight, owned_timer
+from ui.components.reactive import FingerprintedView, SingleFlight, ViewScope, owned_timer
 from ui.dashboard.css import ensure_assets_loaded
 from ui.dashboard.figures import (
     SMALL_CHART_PX,
@@ -110,16 +110,18 @@ def render_tilt_filter_job_panel(job_type, instance_id, job_model, backend, ui_m
     if not project_path:
         ui.label("No project loaded").classes("text-red-500 p-4")
         return
-    TiltFilterPage(backend, Path(project_path), instance_id).mount()
+    TiltFilterPage(backend, Path(project_path), instance_id, ui_mgr.job_scope(instance_id)).mount()
 
 
 class TiltFilterPage:
     """One tilt-filter job page: the panel and the gallery, and what keeps them current."""
 
-    def __init__(self, backend, project_path: Path, instance_id: str) -> None:
+    def __init__(self, backend, project_path: Path, instance_id: str, scope: ViewScope) -> None:
         self.backend = backend
         self.project_path = project_path
         self.iid = instance_id
+        # The job page's scope: the page's pollers run only while it is the shown job.
+        self.scope = scope
         self.gallery = TiltGallery(
             project_path, review=True, on_toggle=self._on_toggle, on_metrics=self._update_numbers, size_control=True
         )
@@ -174,9 +176,9 @@ class TiltFilterPage:
             with self._body, ui.element("div").classes("cb-empty"):
                 ui.spinner(size="lg", color="indigo")
                 ui.label("Reading tilts…").classes("text-xs")
-        # Owned timers: a mode switch rebuilds the page.
-        owned_timer(3.0, self._observe, page)
-        owned_timer(15.0, self._poll_previews, page)
+        # Owned timers, since a mode switch rebuilds the page; paused while the page is hidden.
+        self.scope.timer(3.0, self._observe, page)
+        self.scope.timer(15.0, self._poll_previews, page)
         owned_timer(0.05, self._reload, page, once=True)
 
     def _render_numbers(self) -> None:
@@ -210,7 +212,7 @@ class TiltFilterPage:
                 box = ui.element("div").style("min-width: 0;")
                 self._dl_line = _DlRunLine(self, box)
                 self._dl_line.refresh()
-                owned_timer(3.0, self._dl_line.refresh, box)
+                self.scope.timer(3.0, self._dl_line.refresh, box)
 
     def _render_threshold(self, jm) -> None:
         # The cut belongs to the model whose scores the page shows.

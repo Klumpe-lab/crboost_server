@@ -3,7 +3,9 @@ import logging
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 from nicegui import ui
-from services.array_tasks import TaskProgress
+from services import array_status_cache
+from services.array_status_cache import is_array_job
+from services.array_tasks import TaskProgress, shorten_ts_names
 from services.models_base import JobStatus
 from services.project_state import JobType
 from ui.current_project import current_project_state
@@ -139,63 +141,15 @@ def _inject_svg_color(svg: str, color: str) -> str:
     return svg
 
 
-def _resolve_array_job_dir(job_model, project_path: Path | None = None) -> Path | None:
-    """Resolve job directory for an array job model."""
-    if not job_model:
-        return None
-    stored = (job_model.paths or {}).get("job_dir")
-    if stored:
-        p = Path(stored)
-        if p.is_dir():
-            return p
-    if project_path:
-        rjn = getattr(job_model, "relion_job_name", None)
-        if rjn:
-            p = project_path / rjn.rstrip("/")
-            if p.is_dir():
-                return p
-    return None
+def _row_paint(active: bool) -> tuple[str, str]:
+    """(row css, name css) of a job row, active or not."""
+    if active:
+        return "background: #f0f4f8; border-left: 2px solid #475569;", "font-weight: 600;"
+    return "background: white; border-left: 2px solid #e5e7eb;", "font-weight: 400;"
 
 
-def _get_array_progress(job_model, project_path: Path | None = None) -> TaskProgress | None:
-    """Return a TaskProgress for array jobs, or None (no job dir / no manifest).
-
-    Statuses are resolved PER MANIFEST ITEM via scan_statuses (an item can carry
-    both `.ok` and `.fail` from a superseded submission; `.ok` wins, matching
-    the per-TS sub-rows), and the tally is TaskProgress — the same settledness
-    arithmetic the task tracker uses. Skipped (muted) items count as settled, so
-    a job whose remaining items are all ok/skip reads as complete instead of
-    sitting at 5/6 forever.
-    """
-    from services.array_tasks import manifest_items, progress
-
-    job_dir = _resolve_array_job_dir(job_model, project_path)
-    if job_dir is None:
-        return None
-
-    items = manifest_items(job_dir)
-    if not items:
-        return None
-    return progress(job_dir, items)
-
-
-def _get_array_ts_statuses(
-    job_model, project_path: Path | None = None
-) -> tuple[list[str], dict[str, str], dict[str, str]] | None:
-    """Return (items, statuses, display_names) for per-TS sub-rows, or None."""
-    from services.array_tasks import manifest_items, shorten_ts_names, scan_statuses
-
-    job_dir = _resolve_array_job_dir(job_model, project_path)
-    if job_dir is None:
-        return None
-
-    items = manifest_items(job_dir)
-    if not items:
-        return None
-
-    statuses = scan_statuses(job_dir, items)
-    display_names = shorten_ts_names(items)
-    return items, statuses, display_names
+def _header_border(active: bool) -> str:
+    return "#3b82f6" if active else "#e5e7eb"
 
 
 class RosterWidget(FingerprintedView):
@@ -230,6 +184,10 @@ class RosterWidget(FingerprintedView):
         # roster refreshes (status_poller refreshes the roster every few seconds
         # and would otherwise collapse rows the user had opened).
         self._expanded_instances: dict[str, bool] = {}
+        # The rendered job rows ({instance: (row, name label)}) and multi-instance headers, so a job
+        # switch repaints the old and new active rows instead of rebuilding the roster.
+        self._rows: dict[str, tuple] = {}
+        self._headers: list[tuple] = []
         # Per-tick cache of array job state. Populated by signature(), read by
         # render(). Keyed by instance_id. Avoids redundant disk reads per tick.
         self._array_progress_cache: dict[str, TaskProgress | None] = {}
@@ -283,17 +241,18 @@ class RosterWidget(FingerprintedView):
         ui_mgr = panel.ui_mgr
         jobs = current_project_state().jobs
 
-        # Populate caches that render() will re-read so the two stay in lockstep.
-        # (No memoization across signature+render; they touch the same files,
-        # but file-system caching makes the second read cheap.)
+        # The array jobs' statuses come from the process-wide cache the status poller refreshes in a
+        # thread (services/array_status_cache.py): no disk read here. Kept for render() so the two
+        # stay in lockstep.
         self._array_progress_cache = {}
         self._array_ts_cache = {}
         for iid, jm in jobs.items():
-            if "array_throttle" not in getattr(jm, "USER_PARAMS", set()):
+            if not is_array_job(jm):
                 continue
-            self._array_progress_cache[iid] = _get_array_progress(jm, ui_mgr.project_path)
-            if self._expanded_instances.get(iid):
-                self._array_ts_cache[iid] = _get_array_ts_statuses(jm, ui_mgr.project_path)
+            status = array_status_cache.get(ui_mgr.project_path, iid)
+            self._array_progress_cache[iid] = status.progress if status is not None else None
+            if status is not None and self._expanded_instances.get(iid):
+                self._array_ts_cache[iid] = (list(status.items), status.statuses, shorten_ts_names(status.items))
 
         per_job = tuple(
             (
@@ -326,7 +285,7 @@ class RosterWidget(FingerprintedView):
             self._flash_phase,
             self._roster_visible,
             tuple(ui_mgr.selected_jobs),
-            ui_mgr.active_instance_id,
+            # Not the active job: a job switch repaints its rows in place (paint_active).
             ui_mgr.is_running,
             per_job,
             array_state,
@@ -354,6 +313,13 @@ class RosterWidget(FingerprintedView):
             return ()
         return (bool(rec.star_path), int(rec.count or 0), len(rec.batches or []))
 
+    async def refresh_array_status(self) -> None:
+        """Re-read the array jobs' statuses in a thread (shared with every tab and the pipeline table),
+        for the next `refresh`."""
+        project_path = self.panel.ui_mgr.project_path
+        if project_path:
+            await array_status_cache.refresh(project_path, current_project_state().jobs)
+
     def refresh(self):
         """Render the roster if its signature changed since last paint.
 
@@ -363,8 +329,22 @@ class RosterWidget(FingerprintedView):
         """
         super().refresh()
 
+    def paint_active(self) -> None:
+        """Repaint the active-job highlight on the rendered rows (a job switch)."""
+        active = self.panel.ui_mgr.active_instance_id
+        for iid, (row, name_el) in self._rows.items():
+            if row.is_deleted:
+                continue
+            row_paint, name_paint = _row_paint(iid == active)
+            row.style(row_paint)
+            name_el.style(name_paint)
+        for header, instances in self._headers:
+            if not header.is_deleted:
+                header.style(f"border-left: 2px solid {_header_border(active in instances)};")
+
     def render(self):
         panel = self.panel
+        self._rows, self._headers = {}, []
         # Read by every row: which jobs a queued or running one depends on (their × is hidden).
         self._in_use = jobs_in_use(current_project_state())
         for phase_id, jobs in PHASE_JOBS.items():
@@ -436,13 +416,13 @@ class RosterWidget(FingerprintedView):
                     # single instance's, so their lights stay in the roster's one column.
                     missing = missing_deps(job_type, set(panel.ui_mgr.selected_jobs))
                     any_active = any(panel.ui_mgr.active_instance_id == iid for iid in instances)
-                    header_border = "#3b82f6" if any_active else "#e5e7eb"
-
-                    with ui.element("div").style(
+                    header = ui.element("div").style(
                         f"display: flex; align-items: center; gap: 6px; "
                         f"padding: 4px 8px 4px {_NAME_X}px; "
-                        f"background: #f8fafc; border-left: 2px solid {header_border};"
-                    ):
+                        f"background: #f8fafc; border-left: 2px solid {_header_border(any_active)};"
+                    )
+                    self._headers.append((header, tuple(instances)))
+                    with header:
                         ui.label(get_job_display_name(job_type)).style(
                             f"{MONO} font-size: 10px; font-weight: 600; color: #374151; "
                             "flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
@@ -492,19 +472,12 @@ class RosterWidget(FingerprintedView):
             species = s_state.get_species(species_id)
 
         is_active = panel.ui_mgr.active_instance_id == instance_id
-        if is_active:
-            row_bg, l_border = "#f0f4f8", "#475569"
-            name_color, name_wt = "#1e293b", "600"
-        else:
-            row_bg, l_border = "white", "#e5e7eb"
-            name_color, name_wt = "#1e293b", "400"
-
-        with ui.element("div").style(
+        row_paint, name_paint = _row_paint(is_active)
+        row = ui.element("div").style(
             f"display: flex; align-items: center; gap: {_ROW_GAP}px; "
-            f"padding: 4px 4px 4px {_LEAD_PAD}px; "
-            f"background: {row_bg}; border-left: 2px solid {l_border}; "
-            f"min-width: 0;"
-        ):
+            f"padding: 4px 4px 4px {_LEAD_PAD}px; {row_paint} min-width: 0;"
+        )
+        with row:
             # Status light
             with ui.element("span").style("overflow: visible; line-height: 0; flex-shrink: 0;"):
                 self._status_widget(instance_id)
@@ -518,11 +491,12 @@ class RosterWidget(FingerprintedView):
                 )
                 .on("click", lambda iid=instance_id: panel.switch_tab(iid))
             ):
-                ui.label(base_name).style(
-                    f"{MONO} font-size: 10px; font-weight: {name_wt}; color: {name_color}; "
+                name_el = ui.label(base_name).style(
+                    f"{MONO} font-size: 10px; {name_paint} color: #1e293b; "
                     f"flex: 0 1 {_NAME_COL_CH}ch; min-width: 0; "
                     "white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
                 )
+                self._rows[instance_id] = (row, name_el)
                 if job_tag:
                     tag = ui.label(job_tag).style(
                         f"{MONO} font-size: 8px; color: #94a3b8; flex-shrink: 0; max-width: 10ch; "
@@ -685,7 +659,8 @@ class RosterWidget(FingerprintedView):
                 items, statuses, display_names = ts_data
             else:
                 items, statuses, display_names = [], {}, {}
-            job_dir = _resolve_array_job_dir(job_model, panel.ui_mgr.project_path)
+            status = array_status_cache.get(panel.ui_mgr.project_path, instance_id)
+            job_dir = status.job_dir if status is not None else None
             self._render_ts_sub_rows(
                 instance_id, items, statuses, display_names, _NEST_INDENT, expanded=expanded, job_dir=job_dir
             )

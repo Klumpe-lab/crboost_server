@@ -69,8 +69,10 @@ _MODE_VIEWS: dict[str, View] = {
 # + job page) first; the pick viewer, which has no icon, and the foot-of-rail Protocols last.
 _VIEW_ORDER = ("pipeline", "table", "workbench", "gallery", "journey", "viewer", "protocols")
 
-# Every view's container: an equal share of the main area's width when several are on.
-_VIEW_STYLE = "flex: 1 1 0; min-width: 0; height: 100%; overflow: hidden; display: none; flex-direction: column;"
+# Every view's frame: an equal share of the main area's width when several are on. It holds the
+# box the view builds into and, on its right, the gutter with the view's close cross.
+_VIEW_STYLE = "flex: 1 1 0; min-width: 0; height: 100%; overflow: hidden; display: none; flex-direction: row;"
+_VIEW_BODY_STYLE = "flex: 1 1 0; min-width: 0; height: 100%; overflow: hidden; display: flex; flex-direction: column;"
 
 
 def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | None = None) -> dict:
@@ -136,7 +138,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         set_active_views), and each view's refresh timers run only while it shows."""
         first = True
         for i, name in enumerate(_VIEW_ORDER):
-            c = _refs.get(f"{name}_container")
+            c = _refs.get(f"{name}_frame")
             if c is None:
                 continue
             if name in _on:
@@ -153,6 +155,11 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         set_views = callbacks.get("set_active_views")
         if set_views:
             set_views(set(_on))
+
+        # The roster's and the shown job page's timers run only while the pipeline view shows.
+        on_pipeline = callbacks.get("on_pipeline_active")
+        if on_pipeline:
+            on_pipeline("pipeline" in _on)
 
         # Pause/resume the journey's 4 s live-refresh with its visibility.
         on_journey = callbacks.get("on_journey_active")
@@ -202,6 +209,21 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         _on.remove(name)
         _apply_views()
         _write_mode_url()
+
+    def _view_frame(name: str, style: str = _VIEW_STYLE) -> ui.element:
+        """A view's frame in the main area, styled by _apply_views; returns the box the view
+        builds into. The gutter on its right holds a cross that turns the view off, the same
+        as its rail icon."""
+        frame = ui.element("div").style(style)
+        _refs[f"{name}_frame"] = frame
+        with frame:
+            body = ui.element("div").style(_VIEW_BODY_STYLE)
+            with ui.element("div").classes("cb-view-gutter"):
+                ui.icon("close", size="12px").classes("cb-view-close").on("click", lambda _e: _hide(name)).tooltip(
+                    "Close this view"
+                )
+        _refs[f"{name}_container"] = body
+        return body
 
     def _toggle_pipeline():
         """The Jobs icon: the job roster and the job page, on or off together."""
@@ -427,7 +449,6 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
     callbacks["show_protocols"] = _show_protocols
     callbacks["show_table"] = _show_table
     callbacks["open_pick_viewer"] = _open_pick_viewer
-    callbacks["hide_view"] = _hide
 
     with ui.element("div").style(
         "position: fixed; inset: 0; display: flex; flex-direction: row; "
@@ -461,8 +482,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         )
 
         with main_area:
-            pipeline_container = ui.element("div").style(_VIEW_STYLE + " display: flex; order: 0;")
-            _refs["pipeline_container"] = pipeline_container
+            pipeline_container = _view_frame("pipeline", _VIEW_STYLE + " display: flex; order: 0;")
             with pipeline_container:
                 build_pipeline_builder_panel(
                     backend,
@@ -477,35 +497,29 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
                     toggle_table=toggle_table,
                 )
 
-            workbench_container = ui.element("div").style(_VIEW_STYLE)
-            _refs["workbench_container"] = workbench_container
+            workbench_container = _view_frame("workbench")
             with workbench_container:
                 build_species_page(backend, callbacks)
 
             # Journey: built lazily on first switch (see _show_journey) so the
             # heavy per-TS render doesn't tax every workspace load. Starts hidden.
-            journey_container = ui.element("div").style(_VIEW_STYLE)
-            _refs["journey_container"] = journey_container
+            _view_frame("journey")
 
             # Tomogram gallery: the birds-eye wall of reconstructions. Lazily built
             # like the journey — its first pass stats every tomogram's previews.
-            gallery_container = ui.element("div").style(_VIEW_STYLE)
-            _refs["gallery_container"] = gallery_container
+            _view_frame("gallery")
 
             # Pick viewer: the full-page mount of the slabs + lists +
             # gallery component, opened from a tomogram row of the Particles registry's
             # Picks & curation tab. Lazily built on first use, like the journey; it has
-            # no nav icon of its own — its own header carries the routes back and the close link.
-            viewer_container = ui.element("div").style(_VIEW_STYLE)
-            _refs["viewer_container"] = viewer_container
+            # no nav icon of its own — its own header carries the routes back, its gutter the close cross.
+            _view_frame("viewer")
 
             # Protocols: lazily built on the first click of the foot-of-rail protocol light.
-            protocols_container = ui.element("div").style(_VIEW_STYLE)
-            _refs["protocols_container"] = protocols_container
+            _view_frame("protocols")
 
             # Pipeline table: lazily built on the first click of its rail icon.
-            table_container = ui.element("div").style(_VIEW_STYLE)
-            _refs["table_container"] = table_container
+            _view_frame("table")
 
             # Every view turned off: say where they are rather than leave a blank page.
             empty_container = ui.element("div").classes("cb-empty").style("flex: 1 1 0; display: none;")

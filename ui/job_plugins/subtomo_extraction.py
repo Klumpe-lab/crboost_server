@@ -23,6 +23,7 @@ box / crop / binning explainer lives in the Journey's Dataset pixel table
 tooltips), then the plain parameter form.
 """
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -33,6 +34,7 @@ from services.jobs.miss_align import local_warps_upstream
 from services.models_base import JobType
 from services.project_state import get_project_state_for
 from services.models_base import resolve_species
+from ui.components.reactive import Debounced, owned_timer
 from ui.components.species_pill import render_species_line, species_opener
 from ui.job_plugins import register_params_renderer
 from ui.job_plugins.default_renderer import render_config_preamble, render_default_params
@@ -64,10 +66,12 @@ def render_subtomo_extraction_params(job_type, job_model, is_frozen, save_handle
     warning_container = ui.column().classes("w-full gap-0")
     _render_box_vs_diameter_warning(warning_container, state, species, job_model)
 
-    # Wrap save_handler so the chip re-renders when box_size / binning changes.
+    # Wrap save_handler so the chip re-renders when box_size / binning changes, once typing pauses.
+    refresh_warning = Debounced(lambda: _render_box_vs_diameter_warning(warning_container, state, species, job_model))
+
     def _on_save():
         save_handler()
-        _render_box_vs_diameter_warning(warning_container, state, species, job_model)
+        refresh_warning()
 
     render_config_preamble(job_model)
     # ctx exclude = array_throttle (rendered in the SLURM section, not here).
@@ -83,11 +87,31 @@ def _render_empty_upstream_banner(job_model) -> None:
       - Pre-run: upstream candidate-extraction's particles.star is empty.
         Surfaces the condition before the user clicks Run, before the
         job is submitted.
+
+    Both read star and JSON files, so they are read in a thread after the tab is built and the
+    banner lands in its slot.
     """
+    slot = ui.element("div").classes("w-full")
+
+    async def _fill() -> None:
+        sentinel_msg, upstream_status = await asyncio.to_thread(_banner_facts, job_model)
+        if slot.is_deleted:
+            return
+        with slot:
+            _draw_upstream_banner(sentinel_msg, upstream_status)
+
+    owned_timer(0.01, _fill, slot, once=True)
+
+
+def _banner_facts(job_model) -> tuple[str | None, str | None]:
+    """(skip sentinel message, upstream particles status) for the banner. Disk only, for a thread."""
     job_dir, upstream_particles = _resolve_upstream_paths(job_model)
     sentinel_msg = _read_skip_sentinel(job_dir)
     upstream_status = _check_upstream_particles(upstream_particles) if upstream_particles else None
+    return sentinel_msg, upstream_status
 
+
+def _draw_upstream_banner(sentinel_msg: str | None, upstream_status: str | None) -> None:
     # Post-run state wins over pre-run state — the job actually ran and
     # produced the explicit sidecar, so quote it verbatim.
     if sentinel_msg is not None:

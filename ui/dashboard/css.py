@@ -1086,8 +1086,8 @@ _CB_CSS = """
     display: flex; align-items: center; gap: 10px; flex-shrink: 0;
     padding: 5px 10px; border-bottom: 1px solid #e5e7eb; background: #fafbfc; min-height: 30px;
 }
-/* Species rail: 200 px column, one row per species (pill + counts), "+" at the
- * bottom. Selected row = tinted + a left border in the species color. */
+/* Species rail: 200 px column, one row per species (mark + counts), "+" at the
+ * bottom. Selected row = tinted + an indigo left border. */
 .cb-srail {
     width: 200px; min-width: 200px; flex-shrink: 0; height: 100%; overflow-y: auto; overflow-x: hidden;
     display: flex; flex-direction: column; border-right: 1px solid #e5e7eb; background: #fafafa;
@@ -1217,15 +1217,34 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
     font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em;
     color: #94a3b8; margin-left: 6px;
 }
-.cb-gal-sp {
-    display: inline-flex; align-items: center; gap: 4px; cursor: pointer; user-select: none;
-    border: 1px solid #e2e8f0; border-radius: 999px; background: #ffffff; padding: 1px 8px 1px 5px;
+/* The wall's pick-layer menu (and the zoom's list): a trigger in the toolbar, rows by species. */
+.cb-gal-picks-btn {
+    display: inline-flex; align-items: center; gap: 2px; cursor: pointer; user-select: none;
+    border: 1px solid #e2e8f0; border-radius: 4px; background: #ffffff; padding: 1px 4px 1px 8px;
+    font-size: 10px; color: #334155; white-space: nowrap;
 }
-.cb-gal-sp:hover { background: #f1f5f9; }
-.cb-gal-sp.off { opacity: 0.45; }
-.cb-gal-sp.off .cb-gal-sp-dot { background: #cbd5e1 !important; }
-.cb-gal-sp-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
-.cb-gal-sp-name { font-size: 10px; color: #475569; white-space: nowrap; }
+.cb-gal-picks-btn:hover { background: #f8fafc; }
+.cb-gal-picks-menu { padding: 4px 0; min-width: 240px; }
+.cb-gal-pk-species {
+    display: flex; align-items: center; gap: 5px; padding: 6px 10px 2px;
+    font-size: 10px; font-weight: 600; color: #334155;
+}
+.cb-gal-pk-row {
+    display: flex; align-items: center; gap: 6px; padding: 2px 10px 2px 16px; cursor: pointer;
+    user-select: none; font-size: 10px; color: #334155; white-space: nowrap;
+}
+.cb-gal-pk-row:hover { background: #f1f5f9; }
+.cb-gal-pk-row .q-icon { color: #6366f1; flex: 0 0 auto; }
+.cb-gal-pk-row.off { color: #94a3b8; }
+.cb-gal-pk-row.off .q-icon { color: #cbd5e1; }
+.cb-gal-pk-follow { padding-left: 10px; border-bottom: 1px solid #f1f5f9; padding-bottom: 4px; margin-bottom: 2px; }
+.cb-gal-pk-marker { display: flex; flex: 0 0 auto; cursor: pointer; border-radius: 50%; padding: 1px; }
+.cb-gal-pk-marker:hover { box-shadow: 0 0 0 1px #94a3b8; }
+.cb-gal-pk-row.off .cb-gal-pk-marker { opacity: 0.4; }
+.cb-gal-pk-palette { display: flex; gap: 4px; padding: 6px; }
+.cb-gal-pk-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cb-gal-pk-n { font-family: ui-monospace, monospace; font-size: 9px; color: #94a3b8; }
+.cb-gal-pk-row .cb-gal-pk-warn { color: #d97706; }
 .cb-gal-body { flex: 1 1 0; min-height: 0; overflow-y: auto; overflow-x: hidden; }
 .cb-gal-grid { display: grid; gap: 10px; padding: 10px; align-items: start; }
 .cb-gal-tile {
@@ -1237,12 +1256,12 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
     position: relative; width: 100%; min-height: 60px;
     background: #0f172a; cursor: zoom-in; overflow: hidden;
 }
-.cb-gal-frame > img { width: 100%; height: 100%; object-fit: fill; display: block; }
+.cb-gal-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; display: block; }
 /* Unknown tomogram extent: no aspect-ratio to give the frame a height, so the image
  * sizes itself and the tile is as tall as it is. No dots are drawn in this state
  * (nothing to normalize against), so letterboxing can't desynchronize anything. */
 .cb-gal-frame-auto { aspect-ratio: auto; max-height: 78vh; }
-.cb-gal-frame-auto > img { height: auto; object-fit: contain; }
+.cb-gal-frame-auto .cb-gal-img { position: static; height: auto; object-fit: contain; }
 .cb-gal-dotlayer { position: absolute; inset: 0; pointer-events: none; }
 .cb-gal-dotlayer svg { width: 100%; height: 100%; display: block; }
 .cb-gal-note {
@@ -1389,21 +1408,36 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 /* The gallery's metrics menu: one checkbox per metric. */
 .cb-tg-menu { padding: 4px 8px 4px 4px; }
 .cb-tg-menu .q-checkbox__label { font-family: 'IBM Plex Sans', sans-serif; font-size: 10px; color: #334155; }
-/* Zoom: one tile at viewport scale, in a translucent slate card that hugs the slice
- * (the card is as wide as the frame; the frame's height and width are set inline from
- * the tomogram's aspect, ~90 vh tall). Quasar's minimized-dialog padding and 560 px cap
- * are lifted for this dialog only. */
+/* Zoom: one tile at viewport scale, in a translucent slate card that hugs the slice and its
+ * side column (the frame's height and width are set inline from the tomogram's aspect, as tall
+ * as the screen). Quasar's minimized-dialog padding and 560 px cap are lifted for this dialog only. */
 .cb-gal-zoom-dialog .q-dialog__inner--minimized { padding: 4px; }
 .cb-gal-zoom-dialog .q-dialog__inner--minimized > div { max-width: none; max-height: none; }
+/* The zoom: the slice on the left, as large as the screen holds, and a white column of controls
+ * on its right, top to bottom. */
 .cb-gal-zoom {
     background: rgba(51, 65, 85, 0.55); backdrop-filter: blur(3px);
     border-radius: 8px; padding: 6px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.35);
-    display: flex; flex-direction: column; gap: 6px; width: fit-content; max-width: 98vw;
+    display: flex; flex-direction: row; align-items: stretch; gap: 8px; width: fit-content; max-width: 99vw;
 }
-.cb-gal-zoom-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.cb-gal-zoom-title { font-size: 12px; font-weight: 600; color: #f8fafc; }
-.cb-gal-zoom-ts { font-family: ui-monospace, monospace; font-size: 10px; color: #cbd5e1; }
-.cb-gal-zoom-src { font-family: ui-monospace, monospace; font-size: 10px; color: #94a3b8; }
+.cb-gal-zoom-side {
+    flex: 0 0 auto; display: flex; flex-direction: column; gap: 4px; min-height: 0; overflow-y: auto;
+    background: #ffffff; border-radius: 5px; padding: 8px 4px 8px 8px;
+}
+.cb-gal-zoom-side .cb-gal-pk-row, .cb-gal-zoom-side .cb-gal-pk-species { padding-left: 2px; }
+.cb-gal-zoom-headline { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.cb-gal-zoom-title { font-size: 12px; font-weight: 600; color: #1e293b; }
+.cb-gal-zoom-ts { font-family: ui-monospace, monospace; font-size: 9px; color: #64748b; word-break: break-all; }
+.cb-gal-zoom-src { font-family: ui-monospace, monospace; font-size: 9px; color: #94a3b8; word-break: break-all; }
+.cb-gal-zoom-sec {
+    margin-top: 8px; font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; color: #94a3b8;
+}
+.cb-gal-zoom-list { display: flex; flex-direction: column; }
+.cb-gal-zoom-actions { margin-top: auto; padding-top: 10px; display: flex; gap: 6px; }
+.cb-gal-zoom-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; display: block; }
+.cb-gal-zoom-img.auto {
+    position: static; height: calc(100vh - 28px); width: auto; max-width: calc(100vw - 300px); object-fit: contain;
+}
 .cb-gal-zoom-frame { cursor: default; border-radius: 4px; }
 /* The zoom's previous / next chevrons: dim over the slice, solid under the pointer. */
 .cb-gal-zoom-chev { color: rgba(255, 255, 255, 0.4); background: rgba(15, 23, 42, 0.12); }
@@ -1437,8 +1471,11 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
  * own their own spacing. */
 .cb-scroll-tight .q-scrollarea__content,
 .cb-scroll-tight .q-expansion-item__content { align-items: stretch; padding: 0; gap: 0; }
-/* Log views (job Logs tab): wrap long lines instead of scrolling sideways. */
-.cb-log .q-scrollarea__content { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Live log views (ui/components/log_pane.py LiveLog): one wrapped text box that scrolls. */
+.cb-livelog {
+    flex: 1 1 0; min-height: 0; width: 100%; overflow-y: auto; padding: 8px;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+}
 /* ── Species page · Analytics: the per-tomogram table and the set list ───── */
 .cb-atable-wrap { max-height: 440px; overflow: auto; width: 100%; border-top: 1px solid #e2e8f0; }
 .cb-atable { border-collapse: collapse; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #1e293b; }
@@ -1460,6 +1497,42 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 .cb-atable .act { color: #6366f1; cursor: pointer; text-decoration: underline dotted; }
 /* ── Pipeline table (ui/pipeline_table_view.py): a row is one job and opens it ── */
 .cb-pt-row:hover { background: #f1f5f9; }
+/* ── Toasts (every ui.notify) ──────────────────────────────────────────────── */
+/* A compact white card in the house type, its kind told by a 3 px left bar and the icon's
+ * color, instead of Quasar's filled Material banner. `[class*=...]` outranks Quasar's
+ * `!important` bg-* / text-* color classes. */
+.q-notification, .q-notification[class*="bg-"], .q-notification[class*="text-"] {
+    background: #ffffff !important; color: #1e293b !important;
+    border: 1px solid #e2e8f0; border-left: 3px solid #94a3b8; border-radius: 4px;
+    box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12); min-height: 0; padding: 3px 10px 3px 8px;
+    font-family: 'IBM Plex Sans', sans-serif; font-size: 11px; line-height: 1.4; max-width: 460px;
+}
+.q-notification .q-notification__wrapper { min-height: 0; }
+.q-notification .q-notification__message { font-size: 11px; padding: 3px 0; white-space: pre-line; }
+.q-notification .q-notification__caption { font-size: 10px; color: #64748b; opacity: 1; }
+.q-notification .q-notification__icon, .q-notification .q-notification__spinner {
+    font-size: 13px !important; margin-right: 7px; color: #94a3b8;
+}
+.q-notification .q-notification__actions .q-btn { font-size: 10px; color: #475569 !important; text-transform: none; }
+.q-notification .q-notification__badge {
+    font-size: 9px; padding: 0 4px; background: #475569 !important; color: #ffffff !important;
+}
+.q-notification.bg-positive { border-left-color: #16a34a; }
+.q-notification.bg-positive .q-notification__icon { color: #16a34a; }
+.q-notification.bg-negative { border-left-color: #dc2626; }
+.q-notification.bg-negative .q-notification__icon { color: #dc2626; }
+.q-notification.bg-warning { border-left-color: #d97706; }
+.q-notification.bg-warning .q-notification__icon { color: #d97706; }
+.q-notification.bg-info { border-left-color: #6366f1; }
+.q-notification.bg-info .q-notification__icon { color: #6366f1; }
+/* A view's close gutter (ui/workspace_page.py `_view_frame`): a slim column on the view's right
+ * whose cross turns the view off, never laid over the view's own toolbar. */
+.cb-view-gutter {
+    flex: 0 0 16px; width: 16px; display: flex; justify-content: center; padding-top: 7px;
+    border-left: 1px solid #f1f5f9; background: #ffffff;
+}
+.cb-view-close { color: #cbd5e1; cursor: pointer; border-radius: 3px; width: 14px; height: 14px; }
+.cb-view-close:hover { color: #475569; background: #f1f5f9; }
 """
 
 

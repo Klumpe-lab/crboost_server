@@ -120,6 +120,22 @@ class PipelineRunnerService:
             return JobStatus.RUNNING if started else JobStatus.QUEUED
         return JobStatus.RUNNING
 
+    def _exit_sentinels(self, tracked: dict, proj: Path) -> dict[str, str | None]:
+        """{instance: "success" / "failure" / None} from each tracked job's exit sentinels; jobs with
+        no job dir are left out. Disk only, for a thread."""
+        out: dict[str, str | None] = {}
+        for iid, jm in tracked.items():
+            job_dir = self._resolve_afterok_job_dir(jm, proj)
+            if job_dir is None:
+                continue
+            if (job_dir / "RELION_JOB_EXIT_SUCCESS").exists():
+                out[iid] = "success"
+            elif (job_dir / "RELION_JOB_EXIT_FAILURE").exists():
+                out[iid] = "failure"
+            else:
+                out[iid] = None
+        return out
+
     async def reconcile_afterok(self, project_path: str) -> dict[str, bool]:
         """Status reconciler, ticked by the monitor while a project's pipeline is active. Per
         non-terminal tracked job (submit_chain set slurm_job_id), in order of authority:
@@ -148,17 +164,18 @@ class PipelineRunnerService:
         changes: dict[str, bool] = {}
         pending: dict[str, list[str]] = {}  # slurm_id -> [instance_ids] lacking a terminal sentinel
 
-        # Pass 1 -- disk sentinels (authoritative, cheapest, no SLURM call).
+        # Pass 1 -- disk sentinels (authoritative, cheapest, no SLURM call). Read in a thread: it is a
+        # few stats per job on the shared filesystem, every tick.
+        sentinels = await asyncio.to_thread(self._exit_sentinels, tracked, proj)
         for iid, jm in tracked.items():
-            job_dir = self._resolve_afterok_job_dir(jm, proj)
-            if job_dir is None:
+            if iid not in sentinels:
                 continue
-            if (job_dir / "RELION_JOB_EXIT_SUCCESS").exists():
+            if sentinels[iid] == "success":
                 if jm.execution_status != JobStatus.SUCCEEDED:
                     await self._land_tilt_filter_job(proj, jm, JobStatus.SUCCEEDED)
                     jm.execution_status = JobStatus.SUCCEEDED
                     changes[iid] = True
-            elif (job_dir / "RELION_JOB_EXIT_FAILURE").exists():
+            elif sentinels[iid] == "failure":
                 if jm.execution_status != JobStatus.FAILED:
                     await self._land_tilt_filter_job(proj, jm, JobStatus.FAILED)
                     jm.execution_status = JobStatus.FAILED
@@ -196,7 +213,8 @@ class PipelineRunnerService:
                             else:
                                 new = _afterok_state_to_status(sq_state)
                                 if new == JobStatus.RUNNING:
-                                    new = self._afterok_refine_running(self._resolve_afterok_job_dir(jm, proj))
+                                    job_dir = await asyncio.to_thread(self._resolve_afterok_job_dir, jm, proj)
+                                    new = await asyncio.to_thread(self._afterok_refine_running, job_dir)
                                 elif new == JobStatus.UNKNOWN:
                                     new = JobStatus.QUEUED  # in the queue, just an unmapped state
                         elif sid in terminal:

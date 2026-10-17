@@ -77,11 +77,18 @@ class UIState(BaseModel):
     last_status_refresh: str | None = None
 
 
+_JOB_SCOPE_PREFIX = "job:"
+
+
+def job_scope_key(instance_id: str) -> str:
+    return f"{_JOB_SCOPE_PREFIX}{instance_id}"
+
+
 @dataclass
 class JobWidgetRefs:
     logs_timer: Any | None = None
     content_container: Any | None = None
-    switcher_container: Any | None = None
+    switcher: Any | None = None
     monitor_logs: dict[str, Any] = field(default_factory=dict)
 
     def cleanup(self):
@@ -92,7 +99,7 @@ class JobWidgetRefs:
                 pass
             self.logs_timer = None
         self.content_container = None
-        self.switcher_container = None
+        self.switcher = None
         self.monitor_logs.clear()
 
 
@@ -219,6 +226,7 @@ class UIStateManager:
         self._subscribers: list[Callable[[UIState], None]] = []
         self._status_timer: Any | None = None
         self._rebuild_callback: Callable[[], None] | None = None
+        self._view_scopes: dict[str, Any] = {}  # view_scope()
         # Deep-link target for the Tasks tab: when the user clicks a per-TS
         # row in the roster, we set {instance_id: ts_name} here and switch
         # the job to its "tasks" tab. The tracker pops this on render to
@@ -400,6 +408,19 @@ class UIStateManager:
             self._job_widget_refs[instance_id] = JobWidgetRefs()
         return self._job_widget_refs[instance_id]
 
+    def view_scope(self, key: str):
+        """This tab's `ViewScope` for `key`: "pipeline" (the roster and the job pages) or
+        `job_scope_key(instance_id)` (one job's page). Made on first use, inactive for a job until
+        its panel shows it; a page rebuild starts them afresh."""
+        from ui.components.reactive import ViewScope
+
+        if key not in self._view_scopes:
+            self._view_scopes[key] = ViewScope(active=not key.startswith(_JOB_SCOPE_PREFIX))
+        return self._view_scopes[key]
+
+    def job_scope(self, instance_id: str):
+        return self.view_scope(job_scope_key(instance_id))
+
     def set_job_monitor_tab(self, instance_id: str, tab: str, user_initiated: bool = False):
         ui_state = self.get_job_ui_state(instance_id)
         ui_state.active_monitor_tab = tab if isinstance(tab, str) else tab.value
@@ -444,6 +465,7 @@ class UIStateManager:
         self.cleanup_all_timers()
         self._state = UIState()
         self._job_widget_refs.clear()
+        self._view_scopes.clear()
         self._panel_refs.cleanup()
         self._subscribers.clear()
         self._rebuild_callback = None
@@ -452,6 +474,7 @@ class UIStateManager:
         self._panel_refs.cleanup()
         for refs in self._job_widget_refs.values():
             refs.cleanup()
+        self._view_scopes.clear()
         self._rebuild_callback = None
         self._subscribers.clear()
 

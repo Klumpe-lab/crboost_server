@@ -9,6 +9,7 @@ muted states.
 
 from __future__ import annotations
 
+import functools
 import re
 
 from services.configs.config_service import REPO_ROOT
@@ -18,13 +19,22 @@ _MISSING = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"/>'
 _SIZE_ATTR = re.compile(r'\b(width|height)="\d+(?:\.\d+)?"')
 
 
+@functools.cache
+def _icon_text(name: str) -> str | None:
+    """An asset's markup, read once per process: icons ship with the code, and rosters render
+    dozens per rebuild."""
+    try:
+        return (_ICON_DIR / name).read_text()
+    except FileNotFoundError:
+        return None
+
+
 def load_icon_svg(name: str, color: str | None = None, *, size: int | None = None) -> str:
     """Markup of `static/icons/<name>`, with `currentColor` swapped for `color` and the
     asset's intrinsic width/height overridden by `size` (the viewBox does the scaling).
     A missing asset renders as an empty box rather than breaking the surface."""
-    try:
-        svg = (_ICON_DIR / name).read_text()
-    except FileNotFoundError:
+    svg = _icon_text(name)
+    if svg is None:
         return _MISSING
     if color:
         svg = svg.replace("currentColor", color)

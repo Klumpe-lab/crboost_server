@@ -45,8 +45,14 @@ from services.models_base import JobStatus, ListExtractionState, PickListType, P
 from services.particles.list_ref import fs_slug
 from services.project_state import get_project_state_for
 from services.visualization.imod_vis import generate_candidate_vis
-from services.visualization.preview_orchestrator import generate_candidate_previews, read_preview_manifest
-from services.visualization.preview_render import is_output_stale, render_xy_slab_preview, render_xz_slab_preview
+from services.particles.subtomo_link import subtomo_particles_stars
+from services.visualization.preview_orchestrator import (
+    generate_candidate_previews_for_job,
+    previews_up_to_date,
+    read_preview_manifest,
+)
+from services.visualization.preview_render import is_output_stale, render_recon_slabs
+from services.workers import WorkKind, run_in_worker
 from services.visualization.tomo_geometry import APIX_MRC_HEADER, TomoGeometry, geometry_for_ts
 from ui.components.buttons import house_button
 from ui.components.reactive import SingleFlight
@@ -379,19 +385,6 @@ def _recon_slab_paths(recon_job_dir: Path, ts_name: str) -> tuple[Path, Path]:
     return base / f"{ts_name}_xy.png", base / f"{ts_name}_xz.png"
 
 
-def _render_recon_slabs_sync(mrc_path: Path, xy_png: Path, xz_png: Path) -> str:
-    """Thread body. The two renderers return ``None`` — rather than raise — on missing deps,
-    a non-3D MRC or a read error (`preview_render.py`); that must fail THIS task, or the
-    task settles `succeeded` with no PNG and the canvas has nothing to say."""
-    for name, fn, png in (("X/Y", render_xy_slab_preview, xy_png), ("X/Z", render_xz_slab_preview, xz_png)):
-        if fn(Path(mrc_path), png) is None:
-            raise RuntimeError(
-                f"{name} slab renderer wrote nothing for {mrc_path} (expected {png}) — "
-                "unreadable / non-3D MRC or rendering deps unavailable; see the server log"
-            )
-    return "recon slabs rendered"
-
-
 def _auto_kick_recon_slabs(recon_job_dir: Path, ts_name: str, mrc_path: Path, project_path: Path, refresh) -> str:
     """Render the shared X/Y + X/Z slabs in the background if missing/stale, and say
     which of four states the canvas is in: ``fresh`` (both PNGs current — draw them),
@@ -418,10 +411,8 @@ def _auto_kick_recon_slabs(recon_job_dir: Path, ts_name: str, mrc_path: Path, pr
     _AUTO_KICKED_RECON_SLABS.add(key)
 
     async def _run(progress_cb):
-        import asyncio as _asyncio
-
         progress_cb(0, 0, "rendering tomogram slabs…")
-        return await _asyncio.to_thread(_render_recon_slabs_sync, mrc_path, xy_png, xz_png)
+        return await run_in_worker(WorkKind.RENDER, render_recon_slabs, Path(mrc_path), xy_png, xz_png)
 
     def _done(task) -> None:
         # `status` is "succeeded" | "failed" | "cancelled" once settled (services/background_tasks.py).
@@ -582,12 +573,11 @@ def _auto_kick_list_cutouts(
     _AUTO_KICKED_LIST_CUTOUTS.add(dedup_key)
 
     async def _run(progress_cb):
-        import asyncio as _asyncio
-
         from services.visualization.recon_cutouts import render_recon_cutouts_atlas
 
         progress_cb(0, 0, "cutting tiles from the recon…")
-        return await _asyncio.to_thread(
+        return await run_in_worker(
+            WorkKind.RENDER,
             render_recon_cutouts_atlas,
             Path(recon_mrc),
             picks,
@@ -4030,34 +4020,47 @@ def _auto_kick_preview_generation(instance_id: str, job_model, job_dir: Path, pr
 
     diameter = float(getattr(job_model, "particle_diameter_ang", 0.0))
     state = current_project_state()
+    # The pass is submitted from a task of its own, after a check in a thread, so it is submitted
+    # in the slot of the render that asked for it.
+    slot = ui.context.slot
 
     async def _run(progress_cb):
-        import asyncio as _asyncio
-
-        return await _asyncio.to_thread(
-            generate_candidate_previews,
+        return await run_in_worker(
+            WorkKind.PREVIEW,
+            generate_candidate_previews_for_job,
             candidates_star,
             tomograms_star,
             diameter,
             job_dir,
             project_path,
-            progress_cb,
-            False,
-            state,
             instance_id,
-            job_model,
+            False,
+            progress_cb=progress_cb,
         )
 
-    from ui.background_task import BackgroundTask
+    async def _kick_if_stale() -> None:
+        # A pass over a job whose previews are all current still reads candidates.star and every
+        # subtomo particles.star only to skip each tomogram: on every mount of the Journey or the
+        # pick viewer. Here a complete manifest newer than its sources means there is nothing to do.
+        def _fresh() -> bool:
+            sources = [candidates_star, tomograms_star, *subtomo_particles_stars(state, project_path)]
+            return previews_up_to_date(job_dir, sources)
 
-    BackgroundTask(
-        title=f"Auto-render previews · {instance_id}",
-        subtitle="Filling missing tomogram entries",
-        project_path=str(project_path),
-        # The "Render missing" button's key: it is the same pass, so a click during an
-        # auto-render joins it instead of racing it on manifest.json.
-        dedup_key=f"preview-render:{job_dir}:force=False",
-    ).submit(_run, on_complete=lambda _t: refresh(), show_start_toast=False)
+        if await asyncio.to_thread(_fresh) or slot.parent.is_deleted:
+            return
+        from ui.background_task import BackgroundTask
+
+        with slot:
+            BackgroundTask(
+                title=f"Auto-render previews · {instance_id}",
+                subtitle="Filling missing tomogram entries",
+                project_path=str(project_path),
+                # The "Render missing" button's key: it is the same pass, so a click during an
+                # auto-render joins it instead of racing it on manifest.json.
+                dedup_key=f"preview-render:{job_dir}:force=False",
+            ).submit(_run, on_complete=lambda _t: refresh(), show_start_toast=False)
+
+    asyncio.create_task(_kick_if_stale())
     return ""
 
 
@@ -4142,8 +4145,6 @@ async def _handle_generate_for_instance(
     immediately; user tracks progress via the workspace tray. Multiple
     clicks on the same (job_dir, force) combo dedupe to a single task to
     keep concurrent writes to manifest.json from racing each other."""
-    import asyncio as _asyncio
-
     from ui.background_task import BackgroundTask
 
     candidates_star = job_dir / "candidates.star"
@@ -4152,28 +4153,24 @@ async def _handle_generate_for_instance(
         ui.notify("candidates.star or tomograms.star missing — cannot render previews", type="negative", timeout=4000)
         return
     diameter = float(getattr(job_model, "particle_diameter_ang", 0.0))
-    state = current_project_state()
 
     action = "Re-render all" if force else "Render missing"
     subtitle = "Bypass cache; regenerate every tomogram" if force else "Skip tomograms with a fresh manifest entry"
 
     async def _run(progress_cb) -> str:
-        # The orchestrator is sync; off-thread it so the event loop stays
-        # responsive. progress_cb signature matches:
-        #   preview_orchestrator.py: progress_cb(i, total, tomo_name)
-        # which lines up with our registry's (current, total, message).
-        summary = await _asyncio.to_thread(
-            generate_candidate_previews,
+        # The pass runs in a worker process (services/workers.py); its per-tomogram progress
+        # (i, total, tomo_name) reaches the registry's (current, total, message).
+        summary = await run_in_worker(
+            WorkKind.PREVIEW,
+            generate_candidate_previews_for_job,
             candidates_star,
             tomograms_star,
             diameter,
             job_dir,
             project_path,
-            progress_cb,
-            force,
-            state,
             instance_id,
-            job_model,
+            force,
+            progress_cb=progress_cb,
         )
         n_new = len(summary["ok"])
         n_cached = len(summary["skipped_cached"])
@@ -4222,8 +4219,8 @@ class PickViewerPage:
     NOT a dialog: the whole point of the full page is the width and height a dialog can't
     give the slabs.
 
-    `callbacks` is the workspace's dict; the page uses `species_select`/`show_journey`/`hide_view`/
-    `journey_show_ts` for its back-links and its close link, and nothing else."""
+    `callbacks` is the workspace's dict; the page uses `species_select`/`show_journey`/
+    `journey_show_ts` for its back-links, and nothing else."""
 
     def __init__(self, container, project_path: Path, callbacks: dict | None = None) -> None:
         self.container = container
@@ -4352,11 +4349,6 @@ class PickViewerPage:
                 ).on("click", lambda _e: self._open_journey()).tooltip(
                     "This tomogram's whole pipeline — motion, CTF, alignment, reconstruction, then these picks"
                 )
-            hide = self.callbacks.get("hide_view")
-            if hide is not None:
-                ui.label("close ✕").classes("text-[10px] text-gray-500 cursor-pointer").on(
-                    "click", lambda _e: hide("viewer")
-                ).tooltip("Close the pick viewer; the other views that are on take its width")
 
     async def _open_journey(self) -> None:
         toggle = self.callbacks.get("show_journey")
