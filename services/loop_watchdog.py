@@ -3,12 +3,15 @@
 The server answers every click of every browser tab on one asyncio loop. Anything that holds that
 loop (a synchronous disk read, a pydantic dump, a thread holding the GIL) delays every client's
 next event by as long. This makes such stalls visible instead of guessed at: a heartbeat on the
-loop stamps the time every 50 ms, and a daemon thread checks the stamp. When it is older than the
-threshold, the thread logs where the loop thread is, plus any other thread that is busy rather
-than waiting (a thread holding the GIL stalls the loop from outside it). While the loop is late,
-each check also notes which function of the server's own code the loop is in, so when the loop is
-back, a second line gives the stall's length, where it was spent, and the UI load at that moment:
-clients, mounted elements, polled bindings.
+loop stamps the time every 50 ms, and a daemon thread checks the stamp. While the loop is late,
+each check notes which function of the server's own code the loop is in, so when the loop is back
+from a stall over the threshold, one line gives the stall's length, where it was spent, and the UI
+load at that moment: clients, mounted elements, polled bindings.
+
+The threshold is 1 s, a stall a user feels, and that line is all that is logged. With
+CRBOOST_TRACE_STALLS=1 it is 250 ms, and as a stall passes it the thread also logs where the loop
+thread is, plus any other thread that is busy rather than waiting (a thread holding the GIL stalls
+the loop from outside it): the stacks for fixing one.
 
 One per process, started at app startup (main.py). Warnings, so they pass the quiet log filter.
 """
@@ -30,7 +33,8 @@ logger = logging.getLogger(__name__)
 _HEARTBEAT_S = 0.05
 # A loop this late has missed a heartbeat: busy in one callback.
 _BUSY_S = 2 * _HEARTBEAT_S
-_THRESHOLD_S = 0.25
+_TRACE = bool(os.environ.get("CRBOOST_TRACE_STALLS"))
+_THRESHOLD_S = 0.25 if _TRACE else 1.0
 # A stall this many times the threshold gets a second sample: a long stall can move between callers.
 _RESAMPLE_FACTOR = 4
 _STACK_DEPTH = 18
@@ -75,7 +79,7 @@ class LoopWatchdog:
             beat = self._beat
             lag = time.monotonic() - beat
             if stall_beat is not None and beat != stall_beat:
-                if samples:
+                if peak:
                     # Logged from the loop: the UI counts read structures only the loop mutates.
                     self._loop.call_soon_threadsafe(_log_stall_end, peak * 1000, _spent_in(places))
                 stall_beat, samples, peak = None, 0, 0.0
@@ -86,7 +90,7 @@ class LoopWatchdog:
             places[self._place()] += 1
             if lag > self._threshold:
                 peak = max(peak, lag)
-                if samples == 0 or (samples == 1 and lag > self._threshold * _RESAMPLE_FACTOR):
+                if _TRACE and (samples == 0 or (samples == 1 and lag > self._threshold * _RESAMPLE_FACTOR)):
                     samples += 1
                     logger.warning("Event loop blocked for %.0f ms so far.\n%s", lag * 1000, self._stacks())
 
