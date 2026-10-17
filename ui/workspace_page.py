@@ -52,6 +52,81 @@ _ROSTER_RESIZER_JS = """
 })();
 """
 
+# Client-side resize of the views that sit side by side. A view's share of the main area is its
+# weight, `--cb-vw-<name>` on the main area: the server rewrites a frame's whole style on every
+# toggle, never the main area's. The splitter on a view's left edge drags the boundary with the
+# visible view to its left (by computed `order`); the pair keeps the sum of its weights, so the
+# other views stay put, and neither drops below MINW. A release stores both weights in
+# localStorage and sends one window resize for Plotly's charts (ECharts follows its own box); a
+# double-click splits the pair evenly. Idempotent (guarded by data-wired).
+_VIEW_RESIZER_JS = """
+(function(){
+  const main = document.getElementById('cb-view-main');
+  if(!main || main.dataset.wired) return;
+  main.dataset.wired = '1';
+  const MINW = 260, KEY = 'cbViewW:', PREFIX = 'cb-view-';
+  const weight = (n) => { const w = parseFloat(main.style.getPropertyValue('--cb-vw-'+n)); return w > 0 ? w : 1; };
+  const setW = (n, w) => main.style.setProperty('--cb-vw-'+n, w.toFixed(4));
+  const store = (n) => { try { localStorage.setItem(KEY+n, String(weight(n))); } catch(e){} };
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      const w = (k && k.startsWith(KEY)) ? parseFloat(localStorage.getItem(k)) : NaN;
+      if (w > 0) setW(k.slice(KEY.length), w);
+    }
+  } catch(e){}
+  const orderOf = (f) => parseInt(getComputedStyle(f).order, 10) || 0;
+  const pairAt = (target) => {
+    const sp = target.closest ? target.closest('.cb-view-splitter') : null;
+    if (!sp) return null;
+    const right = sp.parentElement, o = orderOf(right);
+    let left = null, lo = -Infinity;
+    for (const f of main.children) {
+      if (f === right || !f.id.startsWith(PREFIX) || getComputedStyle(f).display === 'none') continue;
+      const fo = orderOf(f);
+      if (fo < o && fo > lo) { left = f; lo = fo; }
+    }
+    if (!left) return null;
+    return {sp: sp, left: left, right: right, l: left.id.slice(PREFIX.length), r: right.id.slice(PREFIX.length)};
+  };
+  let drag = null;
+  main.addEventListener('mousedown', (e)=>{
+    if (e.button !== 0) return;
+    const p = pairAt(e.target);
+    if (!p) return;
+    const wl = p.left.getBoundingClientRect().width, wr = p.right.getBoundingClientRect().width;
+    drag = Object.assign(p, {x0: e.clientX, wl: wl, total: wl + wr, sum: weight(p.l) + weight(p.r)});
+    p.sp.classList.add('dragging');
+    document.body.style.cursor='col-resize'; document.body.style.userSelect='none';
+    e.preventDefault();
+  });
+  const end = ()=>{
+    const d = drag; drag = null;
+    d.sp.classList.remove('dragging');
+    document.body.style.cursor=''; document.body.style.userSelect='';
+    store(d.l); store(d.r);
+    window.dispatchEvent(new Event('resize'));
+  };
+  window.addEventListener('mousemove', (e)=>{
+    if (!drag) return;
+    // A release over an iframe (the molstar viewer) never reaches this window.
+    if (!(e.buttons & 1)) { end(); return; }
+    if (drag.total < 2 * MINW) return;
+    const wl = Math.min(drag.total - MINW, Math.max(MINW, drag.wl + e.clientX - drag.x0));
+    setW(drag.l, drag.sum * wl / drag.total);
+    setW(drag.r, drag.sum * (drag.total - wl) / drag.total);
+  });
+  window.addEventListener('mouseup', ()=>{ if (drag) end(); });
+  main.addEventListener('dblclick', (e)=>{
+    const p = pairAt(e.target);
+    if (!p) return;
+    const half = (weight(p.l) + weight(p.r)) / 2;
+    setW(p.l, half); setW(p.r, half); store(p.l); store(p.r);
+    window.dispatchEvent(new Event('resize'));
+  });
+})();
+"""
+
 
 # workspace view name -> the URL view it addresses. The Species page's internal
 # mode string is "workbench"; the URL says `species`.
@@ -69,11 +144,11 @@ _MODE_VIEWS: dict[str, View] = {
 # + job page) first; the pick viewer, which has no icon, and the foot-of-rail Protocols last.
 _VIEW_ORDER = ("pipeline", "table", "workbench", "gallery", "journey", "viewer", "protocols")
 
-# Every view's frame: an equal share of the main area's width when several are on. It holds the
-# box the view builds into and, floating in its top-right corner, the view's close cross.
-_VIEW_STYLE = (
-    "flex: 1 1 0; min-width: 0; height: 100%; overflow: hidden; display: none; flex-direction: row; position: relative;"
-)
+# Every view's frame: its share of the main area's width when several are on is its weight
+# (`--cb-vw-<name>`, 1 until a splitter moves it; _VIEW_RESIZER_JS). It holds the box the view
+# builds into, the splitter on its left edge and, floating in its top-right corner, the view's
+# close cross.
+_VIEW_STYLE = "min-width: 0; height: 100%; overflow: hidden; display: none; flex-direction: row; position: relative;"
 # The cross, 15 px down (the middle of the Journey's 30 px header line), above the view's own
 # overlays; each view's first line keeps its right end free.
 _VIEW_CLOSE_STYLE = "position: absolute; top: 8px; right: 4px; z-index: 10;"
@@ -138,9 +213,10 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
 
     def _apply_views() -> None:
         """Show every view that is on, side by side in the rail's order (_VIEW_ORDER: the
-        pipeline, i.e. job roster + job page, leftmost), sharing the width equally; hide the
-        rest. The roster comes and goes with the pipeline view (the roster's
-        set_active_views), and each view's refresh timers run only while it shows."""
+        pipeline, i.e. job roster + job page, leftmost), sharing the width by their weights;
+        hide the rest. Every view with a view to its left shows its splitter. The roster comes
+        and goes with the pipeline view (the roster's set_active_views), and each view's
+        refresh timers run only while it shows."""
         first = True
         for i, name in enumerate(_VIEW_ORDER):
             c = _refs.get(f"{name}_frame")
@@ -149,9 +225,14 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
             if name in _on:
                 border = "none" if first else "1px solid #e5e7eb"
                 c.style(f"display: flex; order: {i}; border-left: {border};")
+                if first:
+                    c.classes(remove="cb-view-split")
+                else:
+                    c.classes(add="cb-view-split")
                 first = False
             else:
                 c.style("display: none;")
+                c.classes(remove="cb-view-split")
         empty = _refs.get("empty_container")
         if empty is not None:
             empty.style(f"display: {'none' if _on else 'flex'};")
@@ -218,11 +299,12 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
     def _view_frame(name: str, style: str = _VIEW_STYLE) -> ui.element:
         """A view's frame in the main area, styled by _apply_views; returns the box the view
         builds into. A cross in its top-right corner turns the view off, the same as its rail
-        icon."""
-        frame = ui.element("div").style(style)
+        icon; the splitter on its left edge resizes it against the view to its left."""
+        frame = ui.element("div").props(f"id=cb-view-{name}").style(f"flex: var(--cb-vw-{name}, 1) 1 0; {style}")
         _refs[f"{name}_frame"] = frame
         with frame:
             body = ui.element("div").style(_VIEW_BODY_STYLE)
+            ui.element("div").classes("cb-view-splitter")
             ui.icon("close", size="12px").classes("cb-view-close").style(_VIEW_CLOSE_STYLE).on(
                 "click", lambda _e: _hide(name)
             ).tooltip("Close this view")
@@ -481,8 +563,11 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         # drag is smooth and survives reloads via localStorage.
         ui.element("div").props("id=cb-roster-resizer").classes("cb-roster-resizer")
 
-        main_area = ui.element("div").style(
-            "flex: 1; min-width: 0; height: 100%; overflow: hidden; display: flex; flex-direction: row; gap: 0;"
+        # Styled once and never again: the view weights the splitters set on it must survive.
+        main_area = (
+            ui.element("div")
+            .props("id=cb-view-main")
+            .style("flex: 1; min-width: 0; height: 100%; overflow: hidden; display: flex; flex-direction: row; gap: 0;")
         )
 
         with main_area:
@@ -541,8 +626,8 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
     # when the page rebuilds.
     mount_background_task_tray(project_path_provider=lambda: str(ui_mgr.project_path) if ui_mgr.project_path else None)
 
-    # Wire the roster resizer once the DOM for this page exists on the client.
-    ui.timer(0.1, lambda: ui.run_javascript(_ROSTER_RESIZER_JS), once=True)
+    # Wire the roster resizer and the view splitters once the DOM for this page exists on the client.
+    ui.timer(0.1, lambda: ui.run_javascript(_ROSTER_RESIZER_JS + _VIEW_RESIZER_JS), once=True)
 
     # The opening layout (the pipeline alone) through the same path every toggle takes, so
     # its rail icon is lit the way a toggled one is.

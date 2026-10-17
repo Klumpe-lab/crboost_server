@@ -1,6 +1,6 @@
 # Roadmap 35 — Views you can resize, and a quiet Journey
 
-**Status:** scoped 2026-10-17 from reading main (`cb8d419`); §3 decided 2026-10-17; S1 built 2026-10-17 in the
+**Status:** scoped 2026-10-17 from reading main (`cb8d419`); §3 decided 2026-10-17; S1–S2 built 2026-10-17 in the
 main tree, not run (§7). S1–S2 are the workspace, S3–S5 the Journey.
 
 ## Asked (maintainer, 2026-10-17)
@@ -257,3 +257,12 @@ After restarting `python main.py` and a hard reload:
   `ui/species/page.py` is untouched), `.cb-viewer-page-head` 14 px inside the page's 10 px, the job page's header
   row (`job_tab_component.render_job_tab`) 22 px inline, and the pipeline table's title line 4 px inside its
   column's 18 px. The interactive-job header already pads 24 px.
+- **S2, 2026-10-17 (not run).** Frames carry `id=cb-view-<name>` and `flex: var(--cb-vw-<name>, 1) 1 0`; the main
+  area carries `id=cb-view-main` and is styled once. Each frame holds a `.cb-view-splitter` (6 px, absolute on its
+  left edge, the roster divider's hover line; CSS in `ui/dashboard/css.py`), shown by `.cb-view-split`, which
+  `_apply_views` adds to every frame that is on and not leftmost and removes from the rest. `_VIEW_RESIZER_JS`
+  (wired with the roster resizer by the same 0.1 s one-shot timer) applies every stored `cbViewW:<name>`,
+  delegates mousedown / dblclick from the main area, finds the visible frame to the left by computed `order`,
+  moves the pair's weights so the boundary follows the pointer with their sum fixed and both frames ≥ 260 px, and
+  on release stores both weights and dispatches one window `resize`; a move with no button down ends the drag
+  too (a release over the molstar iframe never reaches the window). A double-click sets both to half their sum.
