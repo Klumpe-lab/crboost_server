@@ -108,7 +108,9 @@ def main():
         additional_binds.append(str(input_optimisation.parent.resolve()))
         additional_binds.append(str(input_reference.parent.resolve()))
 
-        run_tool(cmd, tool_name=params.get_tool_name(), cwd=job_dir, binds=additional_binds)
+        # RELION's progress bar ticks only every 1/60 of an expectation step, which runs for hours on tens of
+        # thousands of tilt-series particles: the idle watchdog would kill a working refine.
+        run_tool(cmd, tool_name=params.get_tool_name(), cwd=job_dir, binds=additional_binds, idle_timeout=0)
 
         # Auto-refine writes its converged result without an iteration tag (RELION's MlOptimiser::write
         # with fn_root = fn_out); these are the OUTPUT_SCHEMA files plus the two half-maps.
