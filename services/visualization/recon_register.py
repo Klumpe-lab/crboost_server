@@ -16,7 +16,6 @@ from pathlib import Path
 import mrcfile
 import numpy as np
 from scipy import fft
-from scipy.signal.windows import tukey
 
 from services.visualization.preview_render import render_xy_slab_preview
 
@@ -45,6 +44,11 @@ def _binned(mrc_path: Path, b: int) -> tuple[np.ndarray, tuple[int, int, int], f
 
 def _prepared(vol: np.ndarray) -> np.ndarray:
     """Tapered, zero-mean, unit-variance copy."""
+    # Imported here, in the worker that registers: scipy.signal loads most of scipy (optimize, stats,
+    # interpolate) in over a second, and the server imports this module only to hand
+    # `render_matched_slabs` to a worker.
+    from scipy.signal.windows import tukey
+
     v = vol - vol.mean()
     for axis, n in enumerate(v.shape):
         shape = [1] * v.ndim

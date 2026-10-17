@@ -5,9 +5,10 @@ loop (a synchronous disk read, a pydantic dump, a thread holding the GIL) delays
 next event by as long. This makes such stalls visible instead of guessed at: a heartbeat on the
 loop stamps the time every 50 ms, and a daemon thread checks the stamp. When it is older than the
 threshold, the thread logs where the loop thread is, plus any other thread that is busy rather
-than waiting (a thread holding the GIL stalls the loop from outside it). When the loop is back, a
-second line gives the stall's length and the UI load at that moment: clients, mounted elements,
-polled bindings.
+than waiting (a thread holding the GIL stalls the loop from outside it). While the loop is late,
+each check also notes which function of the server's own code the loop is in, so when the loop is
+back, a second line gives the stall's length, where it was spent, and the UI load at that moment:
+clients, mounted elements, polled bindings.
 
 One per process, started at app startup (main.py). Warnings, so they pass the quiet log filter.
 """
@@ -16,20 +17,28 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 import threading
 import time
 import traceback
+from collections import Counter
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 _HEARTBEAT_S = 0.05
+# A loop this late has missed a heartbeat: busy in one callback.
+_BUSY_S = 2 * _HEARTBEAT_S
 _THRESHOLD_S = 0.25
 # A stall this many times the threshold gets a second sample: a long stall can move between callers.
 _RESAMPLE_FACTOR = 4
 _STACK_DEPTH = 18
+# How many of a stall's places its end line names.
+_TOP_PLACES = 4
 # Innermost frames of a thread that is waiting, not working: such threads are left out of a report.
 _IDLE_FILES = ("threading.py", "queue.py", "selectors.py", "concurrent/futures/thread.py", "multiprocessing/")
+_SERVER_ROOT = str(Path(__file__).absolute().parents[1]) + os.sep
 
 
 class LoopWatchdog:
@@ -57,27 +66,52 @@ class LoopWatchdog:
             self._loop.call_later(_HEARTBEAT_S, self._tick)
 
     def _watch(self) -> None:
+        # One stall is the time between two heartbeats: it ends when the stamp moves.
+        stall_beat: float | None = None
         samples = 0
         peak = 0.0
+        places: Counter[str] = Counter()
         while not self._stop.wait(_HEARTBEAT_S):
-            lag = time.monotonic() - self._beat
+            beat = self._beat
+            lag = time.monotonic() - beat
+            if stall_beat is not None and beat != stall_beat:
+                if samples:
+                    # Logged from the loop: the UI counts read structures only the loop mutates.
+                    self._loop.call_soon_threadsafe(_log_stall_end, peak * 1000, _spent_in(places))
+                stall_beat, samples, peak = None, 0, 0.0
+                places.clear()
+            if lag <= _BUSY_S:
+                continue
+            stall_beat = beat
+            places[self._place()] += 1
             if lag > self._threshold:
                 peak = max(peak, lag)
                 if samples == 0 or (samples == 1 and lag > self._threshold * _RESAMPLE_FACTOR):
                     samples += 1
                     logger.warning("Event loop blocked for %.0f ms so far.\n%s", lag * 1000, self._stacks())
-            elif samples:
-                stalled_ms = peak * 1000
-                samples, peak = 0, 0.0
-                # Logged from the loop: the UI counts read structures only the loop mutates.
-                self._loop.call_soon_threadsafe(_log_stall_end, stalled_ms)
+
+    def _place(self) -> str:
+        """The function of the server's own code the loop thread is in (time in a library counts
+        against the server function that called it); outside the server's code, the innermost one."""
+        frame = sys._current_frames().get(self._loop_thread) if self._loop_thread is not None else None
+        innermost = frame
+        while frame is not None:
+            path = frame.f_code.co_filename
+            if path.startswith(_SERVER_ROOT) and "site-packages" not in path:
+                return f"{path[len(_SERVER_ROOT) :]}:{frame.f_code.co_name}"
+            frame = frame.f_back
+        if innermost is None:
+            return "(unknown)"
+        return f"{'/'.join(Path(innermost.f_code.co_filename).parts[-2:])}:{innermost.f_code.co_name}"
 
     def _stacks(self) -> str:
         frames = sys._current_frames()
         parts: list[str] = []
         loop_frame = frames.get(self._loop_thread) if self._loop_thread is not None else None
         if loop_frame is not None:
-            parts.append("Loop thread:\n" + "".join(traceback.format_stack(loop_frame)[-_STACK_DEPTH:]))
+            # The import machinery's own frames are left out, so the stack reaches the import that runs.
+            entries = [f for f in traceback.extract_stack(loop_frame) if not f.filename.startswith("<frozen importlib")]
+            parts.append("Loop thread:\n" + "".join(traceback.format_list(entries[-_STACK_DEPTH:])))
         names = {t.ident: t.name for t in threading.enumerate()}
         for ident, frame in frames.items():
             if ident in (self._loop_thread, threading.get_ident()):
@@ -89,8 +123,15 @@ class LoopWatchdog:
         return "\n".join(parts) or "(no stack available)"
 
 
-def _log_stall_end(stalled_ms: float) -> None:
-    logger.warning("Event loop was blocked for %.0f ms. UI load: %s", stalled_ms, ui_load())
+def _spent_in(places: Counter[str]) -> str:
+    """`place ×n` for a stall's most frequent places, n of its checks 50 ms apart."""
+    total = sum(places.values())
+    top = ", ".join(f"{place} ×{n}" for place, n in places.most_common(_TOP_PLACES))
+    return f"{top} (of {total} checks)"
+
+
+def _log_stall_end(stalled_ms: float, spent_in: str) -> None:
+    logger.warning("Event loop was blocked for %.0f ms, in %s. UI load: %s", stalled_ms, spent_in, ui_load())
 
 
 def ui_load() -> str:
