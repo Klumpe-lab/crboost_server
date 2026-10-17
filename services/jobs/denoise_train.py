@@ -12,8 +12,8 @@ from services.computing.slurm_service import SlurmConfig, get_cached_qos_maxwall
 # denoise_train is a single (non-array) job: it trains one model from all the
 # selected tilt-series, so its SLURM --time must cover every tomogram
 # sequentially. A flat profile walltime (conf.yaml denoisetrain.time) silently
-# truncates larger datasets -- the in-job watchdog kills the run at 0.9x the
-# remaining walltime (a 40-TS IsoNet refine needs 10 epochs x ~12 min plus
+# truncates larger datasets -- the in-job watchdog kills the run 5 min before the
+# walltime ends (a 40-TS IsoNet refine needs 10 epochs x ~12 min plus
 # ~48 min prepare_star/make_mask, well over a 2 h allocation).
 #
 # Linear model `base + per_ts * n_selected_ts`, floored at the static profile
@@ -214,8 +214,8 @@ class DenoiseTrainParams(AbstractJobParams):
         n_ts = getattr(self._project_state, "import_selected_tilt_series", 0) or 0
         cap = _TRAIN_WALLTIME_CAP_MIN
         if is_isonet:
-            # /0.9: run_command's watchdog only lets the job spend 90% of --time.
-            minutes = int(self.isonet_work_minutes(n_ts, gres_gpu_count(gres)) / 0.9) + 1
+            # +5: run_command's watchdog kills the tool 5 min before --time.
+            minutes = self.isonet_work_minutes(n_ts, gres_gpu_count(gres)) + 5
             cap = get_cached_qos_maxwall_minutes(qos) or cap
         elif n_ts <= 0:
             return base_time  # cryoCARE can't be estimated without a count -> profile default
