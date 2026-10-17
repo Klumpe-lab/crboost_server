@@ -1532,6 +1532,20 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
  * corner; each view's first line keeps that corner free. */
 .cb-view-close { color: #cbd5e1; cursor: pointer; border-radius: 3px; width: 14px; height: 14px; }
 .cb-view-close:hover { color: #475569; background: #f1f5f9; }
+/* A view's splitter (ui/workspace_page.py `_VIEW_RESIZER_JS`): a 6 px strip on the frame's left
+ * edge that drags the boundary with the view to its left; a double-click splits the pair evenly.
+ * Only a frame with a view to its left shows it (.cb-view-split). The roster divider's look. */
+.cb-view-splitter {
+    display: none; position: absolute; left: 0; top: 0; bottom: 0; width: 6px;
+    cursor: col-resize; z-index: 6;
+}
+.cb-view-split > .cb-view-splitter { display: block; }
+.cb-view-splitter::after {
+    content: ''; position: absolute; left: 0; top: 0; width: 1px; height: 100%;
+    background: transparent; transition: background .12s ease, width .12s ease;
+}
+.cb-view-splitter:hover::after,
+.cb-view-splitter.dragging::after { background: #93c5fd; width: 2px; }
 """
 
 
