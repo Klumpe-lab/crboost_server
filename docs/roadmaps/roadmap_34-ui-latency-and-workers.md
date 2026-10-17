@@ -204,7 +204,7 @@ The four questions as they were put, and what was decided.
   nothing for one user's own tabs; this roadmap is what fixes that.
 
 ## 5. Runtime checklist
-1. With S0 in place, a normal session (several job tabs, the Journey, the wall, a running pipeline) logs no stall
+1. With S0 in place and `CRBOOST_TRACE_STALLS=1`, a normal session (several job tabs, the Journey, the wall, a running pipeline) logs no stall
    over 250 ms; any stall it does log names its code.
 2. During a run, with five jobs opened and two left on Logs: a click into a Config field takes focus in under 100 ms.
 3. Devtools, websocket frames while idle on one job tab: no traffic from hidden tabs.
@@ -270,6 +270,38 @@ module compiled on the loop the first time a click reached it, after every resta
 `__pycache__` dirs date from 2026-08-16). `pycache_setup.py`, imported first by `main.py`, now sends bytecode
 to `~/.cache/crboost/pycache` (the source tree stays clean) and overrides a `-B`.
 
+**2026-10-17, second and third runs (port 8033).** Six stalls, four causes; fixed by reading, NOT RUN:
+- **2.8 s, then 1.4 s on the next restart: the first Journey or Tomograms open imported scipy.signal on
+  the loop** (`tomo_gallery` / `tomo_dashboard_dialog` → `recon_compare` → `recon_register`, whose
+  module-level `from scipy.signal.windows import tukey` pulls scipy.optimize, scipy.stats (about a hundred
+  distributions, each formatting its docstring at import), scipy.interpolate and numpy.testing, which runs
+  `lscpu` in a subprocess at import). The 2.8 s run also compiled all of that from source: `sys.pycache_prefix`
+  makes Python ignore every `__pycache__` beside the sources, the cluster's pre-compiled site-packages
+  included, so each third-party module compiles once per user into the cache on its first import (the pyc
+  timestamps under `~/.cache/crboost/pycache` date each module's first import). Fixed: `tukey` is imported
+  inside `_prepared`, which runs only in the worker; the server never loads scipy.signal.
+- **255–303 ms, first workspace build: the roster rendered twice.** `render()` seeded `_expanded_instances`
+  for array jobs, the signature includes that dict, so `rebuild_pipeline_ui`'s `roster.refresh()` right
+  after `build()`'s found a new signature and repainted. Fixed: `signature()` seeds the defaults. The
+  303 ms run also compiled the job plugins and the aggregation modules on first import (one-time).
+- **521 ms, Tomograms size switch: the whole wall re-rendered** (5437 elements). Fixed: the switch sets
+  the grid's column width and, across the smallest size, the captions in place.
+- **834 ms, the Journey's first paint** (`refresh_all` → `render_main`, sampled in a stat under
+  `geometry_for_ts` in the Particles section; 3856 elements after it). Not fixed: the main pane's sections
+  still read while they render (the item below), and the strip plus pane is ~3000 elements. The watchdog's
+  end line now says where a stall went: each 50 ms check while the loop is late records the function of
+  the server's own code it is in, and the end line names the most frequent ones. That line decides
+  between moving the reads and shrinking the DOM. The loop stack it prints also drops the import
+  machinery's frames, so an import stall shows the line that imported.
+- The "Busy thread" in the first report was the Projects-overview disk sizer walking AGG412
+  (`project_disk_usage.measure`). It releases the GIL at every `scandir` step and `lstat`, so it was
+  running, not blocking.
+
+**2026-10-17, quiet by default.** In a normal session the watchdog printed more than anyone reads: every
+stall over 250 ms came with the stacks of the loop and of every busy thread. It now logs only the end line,
+and only for a stall over 1 s, one a user feels; `CRBOOST_TRACE_STALLS=1` brings back the 250 ms threshold
+and the stacks, for capturing a stall to fix (§8.1).
+
 **Left for later, by the same rules:**
 - The species tabs' analytics, overview and picks computes still run in threads and take the live
   `ProjectState`; moving them to workers means passing paths and loading the state in the worker.
@@ -286,7 +318,7 @@ to `~/.cache/crboost/pycache` (the source tree stays clean) and overrides a `-B`
 A click on a job in the roster, or on Config / Logs / Files / Tasks in a job's header, still takes a second
 or two to show. Not yet looked into. Start here:
 
-1. **Capture first.** Restart (with `pycache_setup.py`, so the first-use compiles are gone after one pass),
+1. **Capture first.** Restart with `CRBOOST_TRACE_STALLS=1` (and `pycache_setup.py`, so the first-use compiles are gone after one pass),
    click through a few jobs and sub-tabs twice each, and collect the watchdog lines. A 1–2 s switch is
    well over its 250 ms threshold, so each one should name its code. The second pass separates one-time
    import/compile cost from the real per-switch cost. If no line appears while the click still lags, the
