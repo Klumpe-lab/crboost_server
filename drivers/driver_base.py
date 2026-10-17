@@ -209,6 +209,10 @@ def allocated_gpu_count(default: int) -> int:
     return max(1, default)
 
 
+# Seconds before SLURM's --time at which run_command kills the tool itself.
+WALLTIME_MARGIN_SEC = 5 * 60
+
+
 def derive_watchdog_timeout() -> int:
     """
     Seconds of wall-clock budget for run_command's watchdog.
@@ -225,8 +229,8 @@ def derive_watchdog_timeout() -> int:
          exceed the longest tool we'd realistically run (post-loop pytom/Warp
          finalization alone can take 15+ min).
 
-    In all cases we apply a 90% safety margin so the watchdog fires before
-    SLURM's own SIGTERM, letting us emit a clean failure marker.
+    In all cases WALLTIME_MARGIN_SEC is held back so the watchdog fires just
+    before SLURM's own SIGTERM, letting us emit a clean failure marker.
     """
     import time
 
@@ -234,7 +238,7 @@ def derive_watchdog_timeout() -> int:
     if end_time and end_time.isdigit():
         remaining = int(end_time) - int(time.time())
         if remaining > 60:
-            return int(remaining * 0.9)
+            return max(remaining - WALLTIME_MARGIN_SEC, 60)
 
     slurm_limit = os.environ.get("SLURM_JOB_TIME_LIMIT", "").strip()
     if slurm_limit and slurm_limit.upper() not in ("UNLIMITED", "INFINITE", ""):
@@ -261,7 +265,7 @@ def derive_watchdog_timeout() -> int:
             except ValueError:
                 minutes = None
         if minutes and minutes > 0:
-            return int(minutes * 60 * 0.9)
+            return max(minutes * 60 - WALLTIME_MARGIN_SEC, 60)
 
     return 8 * 60 * 60  # 8h fallback
 
@@ -293,7 +297,7 @@ def run_command(command: str, cwd: Path, timeout: int | None = None):
     """
     Run a shell command, stream output, and check for errors.
 
-    timeout (total wall-clock) -- derived from SLURM walltime at 90% (see
+    timeout (total wall-clock) -- SLURM walltime minus WALLTIME_MARGIN_SEC (see
     derive_watchdog_timeout) when unset. We kill the run rather than SLURM, so
     the driver still writes a .fail marker and logs a reason instead of
     vanishing mid-line.
