@@ -56,7 +56,7 @@ def _aggregate_species(species_journey: dict, ts_names: list) -> list[dict]:
 
 
 def _pick_state(s: dict) -> str:
-    """Only genuinely-stateful conditions get a tint: running (amber), failed (red),
+    """Only genuinely-stateful conditions get a tint: running (blue), failed (red),
     ran-but-zero (grey). Picks merely existing is neutral."""
     pk = s.get("pick_status")
     sub = s.get("subtomo_status")

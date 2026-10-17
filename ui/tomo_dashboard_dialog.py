@@ -69,11 +69,11 @@ from ui.components.buttons import house_button
 from ui.components.copyable import copy_3dmod_chip
 from ui.components.reactive import owned_timer
 from ui.components.recon_compare import matched_slabs, recon_versions_for_ts, retry_match
-from ui.components.segmented import Segmented
+from ui.components.segmented import Segmented, render_segmented
 from ui.current_project import current_project_state
 from ui.dashboard.css import ensure_assets_loaded
 from ui.dashboard.figures import (
-    SERIES_PALETTE,
+    JOURNEY_THEME,
     _is_meaningful_series,
     _safe_floats,
     _stats,
@@ -185,7 +185,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         container.clear()
         with container, ui.element("div").classes("cb-empty"):
             ui.icon("folder_off", size="40px").classes("text-gray-400")
-            ui.label("No project loaded.").classes("text-sm text-gray-500")
+            ui.label("No project loaded.").classes("text-[12px] text-gray-500")
         return
 
     project_path = Path(state.project_path)
@@ -215,6 +215,8 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
     ensure_assets_loaded()
 
     container.clear()
+    # The Journey's own type and chart tiles hang off this class (ui/dashboard/css.py).
+    container.classes(add="cb-journey")
     with container:
         # Column layout: one thin header line about the selected tilt series (its
         # dropdown holds the whole-project overview) with the section selector at
@@ -412,8 +414,8 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             col_els[ts].classes(add="selected")
         main_area.clear()
         with main_area, ui.element("div").classes("cb-empty"):
-            ui.spinner(size="lg", color="indigo")
-            ui.label("Loading…").classes("text-xs")
+            ui.spinner(size="lg", color="#94a3b8")
+            ui.label("Loading…").classes("text-[10px]")
         await asyncio.sleep(0.02)
         if mine != _sel_gen["n"]:
             return  # superseded by a newer click during the flush
@@ -472,8 +474,8 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
     _build_panel_selector(panel_toggle_container, render_main)
     # The first paint collects off the loop too; the page shows its spinner meanwhile.
     with main_area, ui.element("div").classes("cb-empty"):
-        ui.spinner(size="lg", color="indigo")
-        ui.label("Loading…").classes("text-xs")
+        ui.spinner(size="lg", color="#94a3b8")
+        ui.label("Loading…").classes("text-[10px]")
     owned_timer(0.01, lambda: refresh_all(force_main=True), main_area, once=True)
 
     # Live refresh while the journey is the active view: re-render every 4 s if
@@ -609,11 +611,11 @@ def _render_no_data_empty_state() -> None:
     the user a stable place to land when the project hasn't been run yet."""
     with ui.element("div").classes("cb-empty"):
         ui.icon("hourglass_empty", size="48px").classes("text-gray-400")
-        ui.label("No tilt-series data yet.").classes("text-sm text-gray-500")
+        ui.label("No tilt-series data yet.").classes("text-[12px] text-gray-500")
         ui.label(
             "Run any of the array jobs (FS Motion/CTF, Alignment, CTF, Reconstruct)"
             " to populate the sidebar with per-TS rows."
-        ).classes("text-[11px] italic text-gray-400 text-center").style("max-width: 460px;")
+        ).classes("text-[10px] italic text-gray-400 text-center").style("max-width: 460px;")
 
 
 def _scroll_section_into_view(section_key: str) -> None:
@@ -637,6 +639,7 @@ def _info_copy_row(key: str, value: str, copy_value: str | None = None) -> None:
             ui.button(
                 icon="content_copy",
                 on_click=lambda v=cv: (ui.clipboard.write(v), ui.notify("Copied path", type="positive", timeout=800)),
+                color=None,
             )
             .props("flat dense round size=sm")
             .classes("cb-info-copy")
@@ -664,7 +667,8 @@ def _render_ts_info_popover(ts_name: str, species_list: list[dict], recon_mrc: s
     """The ⓘ button → click popover: full tomo name, metadata, and the relevant
     file paths (each with a copy-full-path button). Click-opened so the copy
     buttons are actually usable (a hover tooltip dismisses as you reach them)."""
-    btn = ui.button(icon="info_outline").props("flat dense round size=sm").classes("cb-ts-info-btn")
+    # color=None: a Quasar colour class would outrank the grey of .cb-ts-info-btn.
+    btn = ui.button(icon="info_outline", color=None).props("flat dense round size=sm").classes("cb-ts-info-btn")
     # Stop the click bubbling to the row so opening info doesn't also switch TS.
     btn.on("click.stop", lambda: None)
     with btn, ui.menu().props("anchor='bottom right' self='top right'"):
@@ -743,12 +747,12 @@ def _render_main_pane_for_ts(
         with ui.element("div").classes("cb-empty"):
             ui.icon("hourglass_empty", size="36px")
             if _selected_panel() == _ALL_PANELS:
-                ui.label(f"No section data yet for {ts_name}.").classes("text-xs")
+                ui.label(f"No section data yet for {ts_name}.").classes("text-[12px]")
                 ui.label("Sections appear once the matching pipeline jobs have run.").classes(
-                    "text-[11px] italic text-center"
+                    "text-[10px] italic text-center"
                 ).style("max-width: 420px;")
             else:
-                ui.label(f"Nothing to show in this section for {ts_name} yet.").classes("text-xs")
+                ui.label(f"Nothing to show in this section for {ts_name} yet.").classes("text-[12px]")
 
 
 # ---------------------------------------------------------------------------
@@ -994,9 +998,6 @@ def _render_dataset_section(ts_name: str, project_state, project_path: Path, ref
 # --- Section chrome + plot helpers that run inside an existing card body ------
 
 
-_ACCENT, _INK, _MUTED = SERIES_PALETTE
-
-
 def _section_header(
     title: str,
     *,
@@ -1036,26 +1037,23 @@ def _stat_tiles(rows: list[tuple]) -> None:
                 tile.tooltip(row[2])
 
 
+# Every Journey chart's height: one tile size, set on the Journey's root (ui/dashboard/css.py).
+_PLOT_HEIGHT = "height: var(--cb-plot-h, 240px);"
+
+
 def _plot_cell(
-    label: str,
-    options: dict,
-    *,
-    height_px: int = 240,
-    wide: bool = False,
-    hint: str | None = None,
-    on_select: Callable[[str], None] | None = None,
+    label: str, options: dict, *, hint: str | None = None, on_select: Callable[[str], None] | None = None
 ) -> ui.echart:
     """One chart tile inside a `.cb-plot-row`: a short regular-weight title (the
     explainer `hint` is its tooltip) over an ECharts plot that fills the tile.
     `on_select(frame_basename)` fires when a point is clicked or hovered (throttled;
     chart data rows carry the frame at slot 3 — see figures.py) so a companion
     tile (the CTF-fit panel) can follow the tilt under the cursor."""
-    cls = "cb-plot-cell cb-plot-cell-wide" if wide else "cb-plot-cell"
-    with ui.element("div").classes(cls):
+    with ui.element("div").classes("cb-plot-cell"):
         lbl = ui.label(label).classes("cb-plot-label")
         if hint:
             lbl.tooltip(hint)
-        chart = ui.echart(options).style(f"width: 100%; height: {height_px}px;")
+        chart = ui.echart(options).style(f"width: 100%; {_PLOT_HEIGHT}")
         if on_select is not None:
 
             def _pick(data) -> None:
@@ -1147,7 +1145,8 @@ _HINT_MOTION = (
 )
 _HINT_MOTION_TRACK = (
     "Beam-induced drift path of every tilt's exposure (x/y shift per frame group of the movie, Warp units ≈ Å), "
-    "all starting at the origin. Indigo = negative stage tilts, amber = positive, darker = higher |tilt|. "
+    "all starting at the origin, coloured by signed stage tilt (negative and positive at the two ends of the scale), "
+    "darker = higher |tilt|. "
     "A shared direction across tilts is stage/beam drift; a long, wandering path is charging or unstable ice. "
     "Source: Warp's per-movie motion.json (or the XML motion-grid nodes when Warp wrote no json)."
 )
@@ -1159,7 +1158,7 @@ _HINT_DEFOCUS_SPREAD = (
 _HINT_CTF_FIT = (
     "Warp's rotationally averaged power spectrum of one tilt (Thon rings, divided by the fitted envelope) against "
     "the CTF² model computed from the defocus, Cs, voltage and amplitude contrast fitted in the same XML. Rings "
-    "should follow the model out to the dashed fit-resolution line; the shaded band is beyond the fitted frequency "
+    "should follow the model out to the fit-resolution line; the shaded band is beyond the fitted frequency "
     "window. Scrub tilts with the slider, or click / hover a tilt in the charts above."
 )
 _HINT_SHIFT = (
@@ -1192,7 +1191,7 @@ _HINT_MASKED = (
 _HINT_THROUGHFOCUS = (
     "Mean per-tilt CTF defocus ((U+V)/2) vs stage tilt, sorted by angle — the through-focus curve. "
     "A clean tilt series traces a smooth trend; scatter or a kink at high tilt flags bad CTF fits. "
-    "The dashed line is a linear fit; its slope sign is a handedness cue (see the TomoHand chip)."
+    "The line is a linear fit; its slope sign is a handedness cue (see the TomoHand chip)."
 )
 
 
@@ -1220,11 +1219,12 @@ def _render_ctf_motion_plots(
             dv = [None if v is None else v / 1.0e4 for v in _safe_floats(df["rlnDefocusV"])]
             fig = build_per_tilt_chart(
                 tilts,
-                [{"name": "Defocus U", "y": du, "marker_size": 7}, {"name": "Defocus V", "y": dv, "marker_size": 7}],
+                [{"name": "Defocus U", "y": du}, {"name": "Defocus V", "y": dv}],
                 y_label="Defocus (µm)",
                 customdata=cd,
                 y_unit=" µm",
                 y_range=(0.0, 10.0),
+                theme=JOURNEY_THEME,
             )
             _plot_cell("Defocus", fig, hint=_HINT_DEFOCUS, on_select=on_select_tilt)
         if has_astig:
@@ -1232,11 +1232,12 @@ def _render_ctf_motion_plots(
             if _is_meaningful_series(astig):
                 fig = build_per_tilt_chart(
                     tilts,
-                    [{"name": "Astigmatism", "y": astig, "marker_size": 7}],
+                    [{"name": "Astigmatism", "y": astig}],
                     y_label="Astigmatism (Å)",
                     customdata=cd,
                     y_unit=" Å",
                     y_range=(0.0, 1500.0),
+                    theme=JOURNEY_THEME,
                 )
                 _plot_cell("Astigmatism", fig, hint=_HINT_ASTIG, on_select=on_select_tilt)
         if res is not None:
@@ -1247,6 +1248,7 @@ def _render_ctf_motion_plots(
                 customdata=cd,
                 y_unit=" Å",
                 y_range=(0.0, 30.0),
+                theme=JOURNEY_THEME,
             )
             _plot_cell("CTF fit resolution", fig, hint=_HINT_CTF_RES, on_select=on_select_tilt)
 
@@ -1286,16 +1288,18 @@ def _render_alignment_plots(df: pd.DataFrame, cd: list[list]) -> None:
                     y_label="Shift (Å)",
                     customdata=cd,
                     y_unit=" Å",
+                    theme=JOURNEY_THEME,
                 )
                 _plot_cell("Refined shift", fig, hint=_HINT_SHIFT)
         offsets = _tilt_offsets(df, tilts)
         if any(v is not None for v in offsets):
             fig = build_per_tilt_chart(
                 tilts,
-                [{"name": "Refined − nominal", "y": offsets, "marker_size": 7}],
+                [{"name": "Refined − nominal", "y": offsets}],
                 y_label="Tilt offset (°)",
                 customdata=cd,
                 y_unit="°",
+                theme=JOURNEY_THEME,
             )
             _plot_cell("Tilt offset", fig, hint=_HINT_TILT_OFFSET)
         if "rlnTomoZRot" in df.columns:
@@ -1304,10 +1308,11 @@ def _render_alignment_plots(df: pd.DataFrame, cd: list[list]) -> None:
             if finite and max(finite) - min(finite) > 0.01:
                 fig = build_per_tilt_chart(
                     tilts,
-                    [{"name": "Tilt-axis rotation", "y": zr, "marker_size": 7}],
+                    [{"name": "Tilt-axis rotation", "y": zr}],
                     y_label="Tilt axis (°)",
                     customdata=cd,
                     y_unit="°",
+                    theme=JOURNEY_THEME,
                 )
                 _plot_cell("Tilt-axis rotation", fig, hint=_HINT_TILT_AXIS)
 
@@ -1321,27 +1326,30 @@ def _render_alignment_plots(df: pd.DataFrame, cd: list[list]) -> None:
         if _is_meaningful_series(intensity):
             fig = build_per_tilt_chart(
                 tilts,
-                [{"name": "Mean intensity", "y": intensity, "marker_size": 7}],
+                [{"name": "Mean intensity", "y": intensity}],
                 y_label="Mean intensity (a.u.)",
                 customdata=cd,
+                theme=JOURNEY_THEME,
             )
             _plot_cell("Mean tilt intensity", fig, hint=_HINT_INTENSITY)
         if _is_meaningful_series(fov):
             fig = build_per_tilt_chart(
                 tilts,
-                [{"name": "FOV fraction", "y": fov, "marker_size": 7}],
+                [{"name": "FOV fraction", "y": fov}],
                 y_label="Field-of-view fraction",
                 customdata=cd,
                 y_range=(0.9, 1.0),
+                theme=JOURNEY_THEME,
             )
             _plot_cell("Field-of-view fraction", fig, hint=_HINT_FOV)
         if _is_meaningful_series(masked):
             fig = build_per_tilt_chart(
                 tilts,
-                [{"name": "Masked fraction", "y": masked, "marker_size": 7}],
+                [{"name": "Masked fraction", "y": masked}],
                 y_label="Masked fraction",
                 customdata=cd,
                 y_range=(0.0, 0.1),
+                theme=JOURNEY_THEME,
             )
             _plot_cell("Masked fraction", fig, hint=_HINT_MASKED)
 
@@ -1363,6 +1371,7 @@ class _CtfFitPanel:
         with ui.element("div").classes("cb-plot-cell"):
             with ui.element("div").style("display: flex; align-items: center; gap: 10px; padding: 0 2px 2px;"):
                 ui.label("CTF fit").classes("cb-plot-label").tooltip(hint)
+                # Slate on a 2 px track with a small thumb (`.cb-fit-slider`, ui/dashboard/css.py).
                 self._slider = (
                     ui.slider(
                         min=0,
@@ -1371,13 +1380,16 @@ class _CtfFitPanel:
                         value=self._pos,
                         on_change=lambda e: self._set(int(e.value)),
                     )
-                    .props("dense")
-                    .style("width: 160px; margin: 0;")
+                    .props("dense track-size=2px thumb-size=10px")
+                    .classes("cb-fit-slider")
+                    .style("flex: 1 1 120px; min-width: 48px; max-width: 160px; margin: 0;")
                 )
+                # A narrow column cuts the readout short rather than spilling the header line.
                 self._readout = ui.label("").style(
-                    "font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #64748b; white-space: nowrap;"
+                    "font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #64748b; white-space: nowrap; "
+                    "min-width: 0; overflow: hidden; text-overflow: ellipsis;"
                 )
-            self._chart = ui.echart(self._options()).style("width: 100%; height: 240px;")
+            self._chart = ui.echart(self._options()).style(f"width: 100%; {_PLOT_HEIGHT}")
 
     def select_frame(self, frame: str) -> None:
         pos = self._pos_by_frame.get(frame)
@@ -1404,7 +1416,12 @@ class _CtfFitPanel:
         self._readout.text = f"{readout} · {fit.defocus_um:.2f} µm"
         freq, measured, model = normalized_overlay(fit)
         return build_ctf_fit_chart(
-            freq, measured, model, fit_res_a=fit.ctf_resolution_a, fit_window_inv_a=fit_window_inv_a(fit)
+            freq,
+            measured,
+            model,
+            fit_res_a=fit.ctf_resolution_a,
+            fit_window_inv_a=fit_window_inv_a(fit),
+            theme=JOURNEY_THEME,
         )
 
 
@@ -1505,13 +1522,15 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
         if _is_meaningful_series(motion_series, threshold=1e-4) or tracks:
             with ui.element("div").classes("cb-plot-row"):
                 if _is_meaningful_series(motion_series, threshold=1e-4):
-                    series = [{"name": "Mean frame motion", "y": motion_series, "mode": "lines+markers"}]
-                    fig = build_per_tilt_chart(tilts, series, y_label="Mean frame motion", customdata=cd)
+                    series = [{"name": "Mean frame motion", "y": motion_series}]
+                    fig = build_per_tilt_chart(
+                        tilts, series, y_label="Mean frame motion", customdata=cd, theme=JOURNEY_THEME
+                    )
                     _plot_cell("Beam-induced motion", fig, hint=_HINT_MOTION, on_select=_select)
                 if tracks:
                     _plot_cell(
                         "Motion trajectories",
-                        build_motion_track_chart(tracks),
+                        build_motion_track_chart(tracks, theme=JOURNEY_THEME),
                         hint=_HINT_MOTION_TRACK,
                         on_select=_select,
                     )
@@ -1531,11 +1550,12 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
                 if _is_meaningful_series(spread_series, threshold=1e-4):
                     fig = build_per_tilt_chart(
                         tilts,
-                        [{"name": "Defocus spread", "y": spread_series, "marker_size": 7}],
+                        [{"name": "Defocus spread", "y": spread_series}],
                         y_label="Defocus spread (µm)",
                         customdata=cd,
                         y_unit=" µm",
                         y_range=(0.0, 0.5),
+                        theme=JOURNEY_THEME,
                     )
                     _plot_cell("Defocus spread across image", fig, hint=_HINT_DEFOCUS_SPREAD, on_select=_select)
                 if entries:
@@ -1835,18 +1855,21 @@ def _render_tilt_qc_section(ts_name: str, project_state, project_path: Path, ref
 
         with ui.element("div").classes("cb-plot-row"):
             if def_mean is not None:
-                series = [{"name": "Mean defocus", "y": def_mean, "marker_size": 7}]
+                series = [{"name": "Mean defocus", "y": def_mean}]
                 if def_fit is not None:
-                    series.append({"name": "Linear fit", "y": def_fit, "color": _MUTED, "mode": "lines", "dash": "dot"})
-                fig = build_per_tilt_chart(def_tilts, series, y_label="Defocus (µm)", customdata=def_cd, y_unit=" µm")
+                    series.append({"name": "Linear fit", "y": def_fit, "ref": True})
+                fig = build_per_tilt_chart(
+                    def_tilts, series, y_label="Defocus (µm)", customdata=def_cd, y_unit=" µm", theme=JOURNEY_THEME
+                )
                 _plot_cell("Through-focus", fig, hint=_HINT_THROUGHFOCUS)
             if sh_mag is not None:
                 fig = build_per_tilt_chart(
                     sh_tilts,
-                    [{"name": "Shift magnitude", "y": sh_mag, "marker_size": 7}],
+                    [{"name": "Shift magnitude", "y": sh_mag}],
                     y_label="Shift (Å)",
                     customdata=sh_cd,
                     y_unit=" Å",
+                    theme=JOURNEY_THEME,
                 )
                 _plot_cell("Shift magnitude", fig, hint=_HINT_SHIFT)
     return True
@@ -1897,13 +1920,28 @@ def _render_tilt_filter_section(ts_name: str, project_state, project_path: Path,
         _stat_tiles(tiles)
 
         if info["dropped"]:
-            with ui.expansion(f"{n_dropped} dropped tilt(s)", value=True).classes("w-full text-[10px]").props("dense"):
-                with ui.element("div").classes("cb-drop-list"):
-                    for d in info["dropped"]:
-                        with ui.element("div").classes("cb-drop-row"):
-                            tilt_str = f"{d['tilt_angle']:+.2f}°" if d["tilt_angle"] is not None else "?°"
-                            ui.label(tilt_str).classes("cb-drop-tilt")
-                            ui.label(d["frame"])
+            # The Dataset section's caret header: a click folds the list, open to begin with.
+            header = ui.element("div").classes("cb-collapsible-header cb-drop-head")
+            with header:
+                ui.label(f"{n_dropped} dropped tilt(s)")
+                caret = ui.icon("expand_less", size="16px").classes("cb-collapse-caret")
+            body = ui.element("div").classes("cb-collapsible-body")
+            with body, ui.element("div").classes("cb-drop-list"):
+                for d in info["dropped"]:
+                    with ui.element("div").classes("cb-drop-row"):
+                        tilt_str = f"{d['tilt_angle']:+.2f}°" if d["tilt_angle"] is not None else "?°"
+                        ui.label(tilt_str).classes("cb-drop-tilt")
+                        ui.label(d["frame"])
+
+            def _toggle_dropped(_=None, _body=body, _caret=caret) -> None:
+                if "cb-collapsed" in _body.classes:
+                    _body.classes(remove="cb-collapsed")
+                    _caret.classes(remove="rot")
+                else:
+                    _body.classes(add="cb-collapsed")
+                    _caret.classes(add="rot")
+
+            header.on("click", _toggle_dropped)
 
     return True
 
@@ -2171,16 +2209,19 @@ def _render_recon_big_preview(ts_name: str, project_state, project_path: Path, m
                     ui.label("denoised").classes("cb-recon-pane-tag")
                     if len(methods) >= 2:
 
-                        def _on_method(e, _key=sel_key) -> None:
-                            _SELECTED_DENOISE_METHOD[_key] = e.value
+                        def _on_method(key: str, _key=sel_key) -> None:
+                            methods_seg.set_active(key)
+                            _SELECTED_DENOISE_METHOD[_key] = key
                             refresh()
 
-                        (
-                            ui.toggle({lbl: lbl for lbl in labels}, value=selected, on_change=_on_method)
-                            .props("dense no-caps unelevated size=sm toggle-color=indigo color=grey-2")
-                            .classes("cb-denoise-method-toggle")
+                        with (
+                            ui.element("div")
+                            .style("display: flex; flex-shrink: 0;")
                             .tooltip("Switch the denoised preview between methods with a result for this TS.")
-                        )
+                        ):
+                            methods_seg = render_segmented(
+                                [(lbl, lbl) for lbl in labels], selected, _on_method, classes="cb-seg-sm"
+                            )
                     else:
                         ui.label(selected).classes("cb-recon-pane-method")
                 if dn_png is not None:
@@ -2208,21 +2249,22 @@ def _select_recon_version(versions: list[dict], sel_key: str, refresh) -> str:
     if selected not in options:
         selected = options[0]
 
-    def _on_version(e) -> None:
-        _SELECTED_RECON_VERSION[sel_key] = e.value
+    def _on_version(key: str) -> None:
+        version_seg.set_active(key)
+        _SELECTED_RECON_VERSION[sel_key] = key
         refresh()
 
     with ui.row().classes("items-center gap-2 no-wrap").style("margin-bottom: 4px;"):
         ui.label("version").classes("cb-recon-pane-tag")
-        (
-            ui.toggle({o: o for o in options}, value=selected, on_change=_on_version)
-            .props("dense no-caps unelevated size=sm toggle-color=indigo color=grey-2")
-            .classes("cb-denoise-method-toggle")
+        with (
+            ui.element("div")
+            .style("display: flex; flex-shrink: 0;")
             .tooltip(
                 "Which reconstruct job's tomogram to show, named by the alignment it traces back to. "
                 "compare: all of them side by side, registered onto the first one's plane."
             )
-        )
+        ):
+            version_seg = render_segmented([(o, o) for o in options], selected, _on_version, classes="cb-seg-sm")
     return selected
 
 

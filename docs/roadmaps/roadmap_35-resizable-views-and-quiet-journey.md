@@ -1,6 +1,6 @@
 # Roadmap 35 — Views you can resize, and a quiet Journey
 
-**Status:** scoped 2026-10-17 from reading main (`cb8d419`); §3 decided 2026-10-17; S1–S2 built 2026-10-17 in the
+**Status:** scoped 2026-10-17 from reading main (`cb8d419`); §3 decided 2026-10-17; S1–S3 built 2026-10-17 in the
 main tree, not run (§7). S1–S2 are the workspace, S3–S5 the Journey.
 
 ## Asked (maintainer, 2026-10-17)
@@ -266,3 +266,51 @@ After restarting `python main.py` and a hard reload:
   moves the pair's weights so the boundary follows the pointer with their sum fixed and both frames ≥ 260 px, and
   on release stores both weights and dispatches one window `resize`; a move with no button down ends the drag
   too (a release over the molstar iframe never reaches the window). A double-click sets both to half their sum.
+- **S3, 2026-10-17 (not run).**
+  - *Root.* `build_journey_panel` adds `cb-journey` to the container it fills; `--cb-plot-h: 240px` and
+    `--cb-plot-min: 340px` live there.
+  - *Fonts.* `:is(.cb-journey, .cb-viewer-page)` rules give Plex Mono to the classes that said `ui-monospace` and
+    to Tailwind's `font-mono`, Plex Sans to the labels inside them (keys, headers, chip labels, pane tags, the
+    checkbox label), 600 to every 700, and put the off-scale sizes (8 px table heads, 11 px table cells) on
+    12 / 10 / 9 px + 11 px mono. `.cb-section-title` is 12 px. The Particles section's Tailwind and inline sizes
+    are on the scale (`text-xs` / `text-sm` headlines 12 px, body and hints 10 px; `font-bold` → `font-semibold`).
+    The Plotly layouts set Plex Sans (`JOURNEY_THEME.plotly_font`, 10 px), tick and colour-bar numbers in Plex Mono,
+    hover labels in the layout font. Both roots (`.cb-journey`, `.cb-viewer-page`) set Plex Sans for text with no
+    face of its own. Pop-ups render under `<body>`, outside the roots, so their own classes carry the pair: the TS
+    ⓘ popover (`.cb-info-card` Sans, `.cb-info-val` / `-meta` Mono), the chip tooltip (`.cb-chip-tooltip` Sans
+    10 px, `.cb-tt-line` Mono, `.cb-tt-head` 600 slate). Words that wore Tailwind `font-mono` (imported-tomogram
+    tags, the WIP markers, "N species", the viewer's species name) are Sans. Plain `.tooltip()`s keep Quasar's
+    body font: an app-wide `.q-tooltip` rule would be the only reach, and is out of scope.
+  - *Controls.* Reconstruct's version and denoise switches are `render_segmented(..., classes="cb-seg-sm")` in a
+    tooltip wrapper; Invert is a `polarity` label with a `raw | inverted` strip; the cutout filter TYPE / PARAM and
+    the gallery sort are `.cb-field` selects with `cb-select-popup`; the dropped-tilts list folds under a
+    Dataset-style caret header (`.cb-drop-head`); the CTF-fit slider is `track-size=2px thumb-size=10px` with
+    slate CSS (`.cb-fit-slider`; Quasar colours it with `--q-primary` in its normal layer, which css.py outranks)
+    and shrinks before its readout spills; the exclude-not-extracted checkbox is `size=xs` and ticks slate;
+    spinners are `color="#94a3b8"` (an inline style); the species tabs drop `indicator-color` (the indicator takes
+    the tab's slate) and their tinted fill; the ⓘ, eye, toolbelt, reference-toggle and copy hovers are slate; the
+    links are `text-slate-500`; the 3dmod command line is a `.cb-field cb-field-mono`; the Dataset's `rule` icon
+    is grey.
+  - *Icon buttons.* NiceGUI's `ui.button` defaults to `color='primary'`, and Quasar's `text-primary !important`
+    sits in a cascade layer that beats any unlayered rule, `!important` or not, so the old `text-purple-600` /
+    `text-blue-600` classes and the `.cb-tb-btn` / `.cb-info-copy` / `.cb-ts-info-btn` greys never showed. Every
+    icon button in the Journey and the pick viewer now passes `color=None` (admin ×3 and the toolbelt as
+    `.cb-tb-btn`, copies, the header ⓘ, the 3dmod copy). The armed curate toggle, visible for the first time, is
+    dark slate; a list's delete is grey with a red hover (`.cb-del-btn`).
+  - *Chart tiles.* `.cb-plot-row` is a grid, `repeat(auto-fill, minmax(min(var(--cb-plot-min), 100%), 1fr))`;
+    `.cb-plot-cell` has no border and `min-width: 0`; `_plot_cell` and the CTF-fit panel are
+    `height: var(--cb-plot-h, 240px)`. `wide`, `height_px` and `.cb-plot-cell-wide` are gone.
+  - *Chart tokens.* `ChartTheme` (frozen dataclass, `ui/dashboard/figures.py`) holds series colours, hollow
+    series, marker size and opacity, the hovered point, reference lines and the axis pointer, the CTF fit's
+    measured / model colours, the signed-tilt ramp, tick and axis-name type, the x axis line, the y grid, y ticks,
+    the plot rect's top, legend and hover-card type, and the Plotly font, pick scales (light and over the X/Z
+    image) and histogram colour. `DEFAULT_THEME` is today's look and every non-Journey builder keeps it;
+    `JOURNEY_THEME` is it with 7 px markers, 600 axis names and Plotly in Plex Sans. The Journey's 15 chart
+    builds, the CTF-fit panel and the three Plotly builds take it. `build_per_tilt_chart` builds its axes with
+    `_axis` and takes `ref: True` for a fit line (the Through-focus fit) instead of `color` / `dash`; markers take
+    the theme's size (the per-series `marker_size` is gone).
+  - *Also.* Mean frame motion is markers only; the header's stage dots and running / failed pick counts take the
+    roster's colours (`#3b82f6`, `#ef4444`); three hints no longer name colours or dashes; the Plotly captions
+    are `.cb-plot-label`.
+  - §1.3 is wrong on one row: there is no "score colouring" select; the three selects are the cutout display
+    filter's TYPE and PARAM and the gallery sort. The exclude-not-extracted checkbox shows only on the full page.
