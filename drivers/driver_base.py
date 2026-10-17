@@ -513,6 +513,7 @@ def run_tool(
     attempts: int = 1,
     label: str = "",
     timeout: int | None = None,
+    idle_timeout: int = IDLE_TIMEOUT_DEFAULT,
 ) -> None:
     """Wrap a tool command for its execution mode and run it.
 
@@ -531,7 +532,7 @@ def run_tool(
     if attempts > 1:
         run_command_with_retries(wrapped, cwd=cwd, attempts=attempts, label=label or tool_name, timeout=timeout)
     else:
-        run_command(wrapped, cwd=cwd, timeout=timeout)
+        run_command(wrapped, cwd=cwd, timeout=timeout, idle_timeout=idle_timeout)
 
 
 def diagnose_stale_producer(path: Path) -> str:
