@@ -41,6 +41,9 @@ class LoopWatchdog:
         self._stop = threading.Event()
 
     def start(self) -> None:
+        # Called on the loop thread: known before the first heartbeat, which a startup that blocks
+        # the loop delays (that stall would otherwise be reported as some other busy thread).
+        self._loop_thread = threading.get_ident()
         self._loop.call_soon(self._tick)
         threading.Thread(target=self._watch, name="loop-watchdog", daemon=True).start()
 
