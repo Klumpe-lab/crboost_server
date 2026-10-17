@@ -31,7 +31,7 @@ _CB_CSS = """
 .cb-ts-titlebar { display: flex; align-items: center; gap: 4px; min-height: 18px; }
 .cb-ts-row .cb-ts-pos { font-weight: 600; color: #1f2937; font-size: 11px; }
 .cb-ts-info-btn { color: #cbd5e1 !important; min-height: 18px !important; }
-.cb-ts-info-btn:hover { color: #6366f1 !important; }
+.cb-ts-info-btn:hover { color: #475569 !important; }
 /* Two tracks per row: a 'prep' bar (the 4 array stages) and one line per
  * species (pick + subtomo segments + pick count). Fixed-width segments keep a
  * stage comparable across tracks; the head column aligns the bars vertically. */
@@ -80,19 +80,22 @@ _CB_CSS = """
 }
 /* Per-row info popover (the ⓘ): full tomo name + metadata + file paths, each
  * with a copy-full-path button. Click-opened so the copy buttons are usable. */
-.cb-info-card { min-width: 300px; max-width: 460px; padding: 6px 4px; display: flex; flex-direction: column; gap: 3px; }
+.cb-info-card {
+    min-width: 300px; max-width: 460px; padding: 6px 4px; display: flex; flex-direction: column; gap: 3px;
+    font-family: 'IBM Plex Sans', sans-serif;
+}
 .cb-info-row { display: flex; align-items: center; gap: 6px; }
 .cb-info-key { font-size: 9px; text-transform: uppercase; letter-spacing: 0.3px; color: #94a3b8; flex: 0 0 88px; }
 .cb-info-val {
-    font-size: 10px; font-family: ui-monospace, monospace; color: #334155;
+    font-size: 10px; font-family: 'IBM Plex Mono', monospace; color: #334155;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     flex: 1 1 auto; min-width: 0;
     /* rtl truncates the LEFT of long paths, keeping the filename visible. */
     direction: rtl; text-align: left;
 }
 .cb-info-copy { color: #94a3b8 !important; }
-.cb-info-copy:hover { color: #6366f1 !important; }
-.cb-info-meta { font-size: 10px; color: #64748b; font-family: ui-monospace, monospace; padding: 1px 0 3px 88px; }
+.cb-info-copy:hover { color: #475569 !important; }
+.cb-info-meta { font-size: 10px; color: #64748b; font-family: 'IBM Plex Mono', monospace; padding: 1px 0 3px 88px; }
 .cb-main { padding: 12px; }
 /* (height/flex/overflow set inline at construction time so the dialog viewport
    chain is self-contained; this rule only carries the padding chrome.) */
@@ -101,7 +104,7 @@ _CB_CSS = """
     color: #9ca3af; font-size: 13px; padding: 40px; flex-direction: column; gap: 8px;
 }
 .cb-section-title {
-    font-family: 'IBM Plex Sans', sans-serif; font-size: 11px; font-weight: 600;
+    font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; font-weight: 600;
     color: #1e293b; letter-spacing: 0;
 }
 .cb-section-card {
@@ -113,7 +116,7 @@ _CB_CSS = """
 .cb-section-status { font-family: 'IBM Plex Sans', sans-serif; font-size: 10px; color: #b45309; }
 /* Job-parameter ⓘ beside a section title: the parameters live in its tooltip. */
 .cb-params-icon { color: #cbd5e1; cursor: help; font-size: 13px !important; }
-.cb-params-icon:hover { color: #6366f1; }
+.cb-params-icon:hover { color: #475569; }
 .cb-params-tt {
     background: #ffffff !important; color: #334155 !important; border: 1px solid #e2e8f0;
     border-radius: 6px; padding: 6px 9px; box-shadow: 0 6px 20px rgba(15, 23, 42, 0.14);
@@ -420,35 +423,36 @@ _CB_CSS = """
 .cb-chip-tooltip {
     background: #ffffff !important; color: #334155 !important; border: 1px solid #e2e8f0;
     border-radius: 8px; padding: 8px 10px; max-width: 280px;
-    box-shadow: 0 6px 20px rgba(15, 23, 42, 0.16); font-size: 11px; line-height: 1.45;
+    box-shadow: 0 6px 20px rgba(15, 23, 42, 0.16); font-family: 'IBM Plex Sans', sans-serif; font-size: 10px;
+    line-height: 1.45;
 }
-.cb-tt-head { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #6366f1; }
-.cb-tt-line { font-family: ui-monospace, monospace; color: #334155; }
+.cb-tt-head { font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: #64748b; }
+.cb-tt-line { font-family: 'IBM Plex Mono', monospace; color: #334155; }
 .cb-tt-sub { font-size: 10px; color: #94a3b8; }
 .cb-tt-sep { margin: 5px 0; background: #e2e8f0; }
 /* Visibility eye — per-list (rail chip) + per-species master (tab); both toggle
  * that scope's canvas dot layers. Shared base + a tab-placement variant. */
 .cb-eye { color: #94a3b8; cursor: pointer; flex: 0 0 auto; transition: color 0.12s; }
-.cb-eye:hover { color: #4338ca; }
+.cb-eye:hover { color: #475569; }
 .cb-tab-eye { margin-left: 4px; align-self: center; }
 /* Per-species tabs beside the canvas. Matched to the journey aesthetic:
- * small, slate, no-caps, thin indigo indicator, and a per-species color
- * swatch tying each tab to its overlay color on the shared canvas. */
+ * small, slate, no-caps, a thin slate indicator (the tab's own colour: the tabs
+ * set no indicator colour) and no tinted fill, and a per-species color swatch
+ * tying each tab to its overlay color on the shared canvas. */
 .cb-species-tabs { min-height: 28px; border-bottom: 1px solid #e5e7eb; }
 .cb-species-panels .q-tab-panel { padding: 8px 0 0 0; }
 .cb-species-tabs .q-tab {
-    min-height: 28px; padding: 0 10px; text-transform: none;
+    min-height: 28px; padding: 0 10px; text-transform: none; color: #475569;
     border-radius: 6px 6px 0 0; transition: background 0.12s;
 }
 .cb-species-tabs .q-tab:hover { background: #f8fafc; }
-.cb-species-tabs .q-tab--active { background: #eef2ff; }
 /* Quasar stacks a tab's children in a column by default; force one inline row
  * so the color dot, label, and master-eye sit side by side at a consistent height. */
 .cb-species-tab .q-tab__content { flex-direction: row; align-items: center; flex-wrap: nowrap; }
 .cb-species-tab .q-tab__label {
-    font-size: 11px; font-weight: 600; color: #64748b; line-height: 1.15; white-space: nowrap;
+    font-size: 10px; font-weight: 600; color: #64748b; line-height: 1.15; white-space: nowrap;
 }
-.cb-species-tabs .q-tab--active .q-tab__label { color: #4338ca; }
+.cb-species-tabs .q-tab--active .q-tab__label { color: #1e293b; }
 /* Per-species color dot before the label, tying the tab to its canvas overlay
  * color (--sp-color set inline per tab). Uses Quasar's stable tab internals. */
 .cb-species-tab .q-tab__content::before {
@@ -472,15 +476,15 @@ _CB_CSS = """
 .cb-gallery-count { font-size: 10px; color: #94a3b8; font-family: ui-monospace, monospace; }
 .cb-toolbelt { flex-shrink: 0; }
 .cb-tb-btn { color: #94a3b8; }
-.cb-tb-btn:hover { color: #4338ca; }
+.cb-tb-btn:hover { color: #475569; }
 /* An armed stateful toolbelt toggle (curation mode) is loud: while it is on, clicking
  * a cutout changes what downstream consumes, so the icon must not read like the rest
- * of the row. */
+ * of the row. Dark slate, the house accent. */
 .cb-tb-btn.cb-tb-on {
-    color: #ffffff; background: #4338ca;
-    box-shadow: 0 0 0 2px rgba(67,56,202,0.22);
+    color: #ffffff; background: #334155;
+    box-shadow: 0 0 0 2px rgba(51,65,85,0.22);
 }
-.cb-tb-btn.cb-tb-on:hover { color: #ffffff; background: #3730a3; }
+.cb-tb-btn.cb-tb-on:hover { color: #ffffff; background: #1e293b; }
 /* The curation bar appears under the header only while curation mode is armed. */
 .cb-curation-bar {
     padding: 3px 0 5px 0; margin-bottom: 2px;
@@ -497,7 +501,7 @@ _CB_CSS = """
     font-weight: 700; letter-spacing: 0.4px;
     cursor: pointer; padding: 3px 2px; user-select: none; width: max-content;
 }
-.cb-ref-toggle:hover { color: #4338ca; }
+.cb-ref-toggle:hover { color: #475569; }
 /* The full-page viewer: fills the workspace main area and scrolls as one. */
 .cb-viewer-page {
     display: flex; flex-direction: column; gap: 6px;
@@ -564,17 +568,16 @@ _CB_CSS = """
     font-size: 10px; color: #9ca3af; font-style: italic;
     padding: 4px 0 2px 0;
 }
+/* The Journey's chart tiles: one grid of equal columns, at least --cb-plot-min wide, so every
+ * chart has the same width and one alone in its row keeps it; the chart is --cb-plot-h tall
+ * (both set on .cb-journey). No border: the tiles sit straight on the section. */
 .cb-plot-row {
-    display: flex; gap: 12px; flex-wrap: wrap; margin: 0 0 6px 0;
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(min(var(--cb-plot-min), 100%), 1fr));
+    gap: 12px; margin: 0 0 6px 0;
 }
-.cb-plot-cell {
-    flex: 1 1 340px; min-width: 280px;
-    background: #ffffff; border: 1px solid #f1f5f9; border-radius: 4px;
-    padding: 6px 6px 6px;
-}
-.cb-plot-cell-wide { flex: 1 1 100%; min-width: 280px; }
+.cb-plot-cell { min-width: 0; background: #ffffff; border-radius: 4px; padding: 6px 6px 6px; }
 /* One short regular-weight title per chart (the explainer tooltip hangs on it);
- * the only bold text in a tile is the axis names. */
+ * the only weighted text in a tile is the axis names. */
 .cb-plot-label {
     font-family: 'IBM Plex Sans', sans-serif; font-size: 10px; color: #64748b;
     font-weight: 400; padding: 0 2px 2px; cursor: help;
@@ -737,16 +740,11 @@ _CB_CSS = """
     text-transform: uppercase; letter-spacing: 0.04em;
     color: #475569; padding: 0 2px 2px 2px;
 }
-/* Denoise-method selector in the denoised pane: a compact segmented toggle
- * (cryoCARE | IsoNet | …) shown only when >1 method has a result for the TS;
- * a single available method renders as the static label below instead. */
-.cb-denoise-method-toggle .q-btn {
-    font-family: ui-monospace, monospace; font-size: 10px;
-    min-height: 18px; padding: 0 7px;
-}
+/* The denoised pane's method: a segmented switch (cryoCARE | IsoNet | …) when >1 method
+ * has a result for the TS; a single available method renders as this static label. */
 .cb-recon-pane-method {
     font-family: ui-monospace, monospace; font-size: 10px; font-weight: 600;
-    color: #4f46e5; padding: 0 2px 2px 2px;
+    color: #475569; padding: 0 2px 2px 2px;
 }
 /* ----------------------------------------------------------------------
  * Polarity invert: a runtime toggle in the section header flips the
@@ -927,10 +925,11 @@ _CB_CSS = """
 .cb-jswitch-idx { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #64748b; white-space: nowrap; }
 .cb-jstage { display: flex; align-items: center; gap: 4px; }
 .cb-jstage-name { font-size: 10px; color: #475569; white-space: nowrap; }
+/* Stage dots in the roster's status colours (ui/status_indicator._DOT_COLORS). */
 .cb-jdot { width: 7px; height: 7px; border-radius: 50%; background: #e5e7eb; flex: 0 0 auto; }
 .cb-jdot.ok { background: #10b981; }
-.cb-jdot.fail { background: #dc2626; }
-.cb-jdot.running { background: #f59e0b; }
+.cb-jdot.fail { background: #ef4444; }
+.cb-jdot.running { background: #3b82f6; }
 .cb-jdot.zero { background: #9ca3af; }
 .cb-jdot.pending { background: #e5e7eb; }
 .cb-jdot.skip { background: repeating-linear-gradient(45deg, #cbd5e1, #cbd5e1 2px, #e5e7eb 2px, #e5e7eb 4px); }
@@ -943,9 +942,9 @@ _CB_CSS = """
 }
 .cb-jsp-n { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #1e293b; }
 .cb-jsp-kept { font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #059669; }
-.cb-jsp.running { background: rgba(245, 158, 11, 0.16); }
-.cb-jsp.running .cb-jsp-n { color: #92400e; }
-.cb-jsp.fail { background: rgba(220, 38, 38, 0.12); }
+.cb-jsp.running { background: rgba(59, 130, 246, 0.14); }
+.cb-jsp.running .cb-jsp-n { color: #1e40af; }
+.cb-jsp.fail { background: rgba(239, 68, 68, 0.12); }
 .cb-jsp.fail .cb-jsp-n { color: #b91c1c; }
 .cb-jsp.zero .cb-jsp-n { color: #94a3b8; }
 .cb-jsp.pending .cb-jsp-n { color: #cbd5e1; }
@@ -1546,6 +1545,55 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 }
 .cb-view-splitter:hover::after,
 .cb-view-splitter.dragging::after { background: #93c5fd; width: 2px; }
+/* ── The Journey (ui/tomo_dashboard_dialog.py, with the Particles section of
+ * ui/particles/pick_viewer.py, which the full-page pick viewer shares) ──────── */
+/* The root: one chart tile size for every chart. */
+.cb-journey { --cb-plot-h: 240px; --cb-plot-min: 340px; }
+/* Text with no face of its own takes Plex Sans, not the page body's. */
+:is(.cb-journey, .cb-viewer-page) { font-family: 'IBM Plex Sans', sans-serif; }
+/* One font pair on one scale: Plex Sans for text, Plex Mono for numbers, paths and frame
+ * names (the shared rules and Tailwind's font-mono use the browser's monospace elsewhere);
+ * 12 px titles, 10 px labels and body, 9 px captions and meta, 11 px mono values; no weight
+ * above 600. */
+:is(.cb-journey, .cb-viewer-page) :is(.font-mono, .cb-hover-card, .cb-tile-score, .cb-tile-z, .cb-tile-idx,
+    .cb-tile-rank, .cb-ltable-count, .cb-gallery-count, .cb-failures-list, .cb-datadump-grid,
+    .cb-datadump-grid-2col, .cb-drop-list, .cb-pixel-table, .cb-pixel-species-row, .cb-chip,
+    .cb-recon-preview-caption, .cb-filter-counter) {
+    font-family: 'IBM Plex Mono', monospace;
+}
+:is(.cb-journey, .cb-viewer-page) :is(.cb-hover-key, .cb-datadump-key, .cb-pixel-header, .cb-pixel-stage-label,
+    .cb-pixel-notes, .cb-pixel-species-name, .cb-chip-label, .cb-recon-pane-tag, .cb-recon-pane-method,
+    .cb-degen-toggle .q-checkbox__label) {
+    font-family: 'IBM Plex Sans', sans-serif;
+}
+:is(.cb-journey, .cb-viewer-page) :is(.cb-hover-key, .cb-ref-label, .cb-ref-toggle, .cb-ltable-h-name,
+    .cb-ltable-h-num, .cb-ltable-h-cell, .cb-ltable-badge, .cb-pixel-header, .cb-pixel-species-name,
+    .cb-chip-label) {
+    font-weight: 600;
+}
+:is(.cb-journey, .cb-viewer-page) :is(.cb-ltable-name, .cb-ltable-count, .cb-instance-toolbar,
+    .cb-gallery-empty, .cb-pixel-section-title, .cb-pixel-species-name, .cb-empty) {
+    font-size: 10px;
+}
+:is(.cb-journey, .cb-viewer-page) :is(.cb-ltable-h-name, .cb-ltable-h-num, .cb-ltable-h-cell,
+    .cb-detail-meta, .cb-recon-preview-caption) {
+    font-size: 9px;
+}
+/* The tilt filter's dropped-tilts fold: the Dataset section's caret header at label size. */
+.cb-drop-head { display: inline-flex; align-items: center; gap: 2px; font-size: 10px; color: #475569; }
+/* The CTF-fit scrubber: slate on a light 2 px track. Quasar colours the track and thumb with
+ * --q-primary in its normal layer, which these outrank; the slider sets no colour prop. */
+.cb-fit-slider .q-slider__track { color: #475569; background: #e2e8f0; }
+.cb-fit-slider .q-slider__inner { background: transparent; }
+.cb-fit-slider .q-slider__thumb { color: #475569; }
+/* The exclude-not-extracted checkbox ticks slate, not --q-primary. */
+.cb-degen-toggle .q-checkbox__inner--truthy { color: #475569; }
+/* A pick list's delete: grey until the pointer is on it. The button passes color=None, so
+ * no Quasar colour class outranks this. */
+.cb-del-btn { color: #cbd5e1; }
+.cb-del-btn:hover { color: #dc2626; }
+/* A readonly command line (the 3dmod popover): a .cb-field in the mono face. */
+.cb-field.cb-field-mono .q-field__native { font-family: 'IBM Plex Mono', monospace; }
 """
 
 

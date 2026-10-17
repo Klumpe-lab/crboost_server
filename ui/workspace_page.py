@@ -379,8 +379,8 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
                     "width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; gap: 10px;"
                 ),
             ):
-                ui.spinner(size="lg", color="indigo")
-                ui.label("Loading journey…").classes("text-sm text-gray-500")
+                ui.spinner(size="lg", color="#94a3b8")
+                ui.label("Loading journey…").classes("text-[10px] text-gray-500")
             await asyncio.sleep(0.03)
             from ui.tomo_dashboard_dialog import build_journey_panel
 

@@ -56,8 +56,9 @@ from services.workers import WorkKind, run_in_worker
 from services.visualization.tomo_geometry import APIX_MRC_HEADER, TomoGeometry, geometry_for_ts
 from ui.components.buttons import house_button
 from ui.components.reactive import SingleFlight
+from ui.components.segmented import render_segmented
 from ui.current_project import current_project_state
-from ui.dashboard.figures import _build_score_hist_fig, _build_xy_scatter_fig, _build_xz_scatter_fig
+from ui.dashboard.figures import JOURNEY_THEME, _build_score_hist_fig, _build_xy_scatter_fig, _build_xz_scatter_fig
 from ui.particles import list_actions
 from ui.particles.list_actions import extraction_badge
 
@@ -340,25 +341,27 @@ def _memoized_keep_state(source_star: Path) -> set[int] | None:
 
 
 def _render_invert_switch(root) -> None:
-    """Polarity-invert toggle wired to add/remove `cb-invert-polarity` on
+    """Polarity switch (raw | inverted) wired to add/remove `cb-invert-polarity` on
     `root`. The CSS flips every `.cb-tomo-preview > img` (and cutout tiles)
     under that root together, so density convention stays consistent."""
 
-    def _on_invert(e, _root=root):
-        if e.value:
+    def _switch(key: str, _root=root) -> None:
+        seg.set_active(key)
+        if key == "inverted":
             _root.classes(add="cb-invert-polarity")
         else:
             _root.classes(remove="cb-invert-polarity")
 
-    (
-        ui.switch("Invert", value=False, on_change=_on_invert)
-        .props("dense color=indigo-6 left-label")
-        .classes("text-[10px]")
+    ui.label("polarity").classes("cb-gal-toolbar-label")
+    with (
+        ui.element("div")
+        .style("display: flex; flex-shrink: 0;")
         .tooltip(
             "Flip the apparent intensity of the tomogram slabs (and cutout tiles). "
             "The picker uses raw densities — this is viewer-only."
         )
-    )
+    ):
+        seg = render_segmented([("raw", "raw"), ("inverted", "inverted")], "raw", _switch, classes="cb-seg-sm")
 
 
 # ---------------------------------------------------------------------------
@@ -500,14 +503,14 @@ def _render_cutout_filter_controls(presets: list, apix, apix_source: str, on_sel
 
     type_sel = (
         ui.select({t: lbl for t, lbl in types}, value=st["type"])
-        .props("dense outlined options-dense")
-        .classes("text-xs")
+        .props('dense popup-content-class="cb-select-popup"')
+        .classes("cb-field")
         .style("min-width: 116px;")
     )
     param_sel = (
         ui.select(_params(st["type"]), value=st["key"])
-        .props("dense outlined options-dense")
-        .classes("text-xs")
+        .props('dense popup-content-class="cb-select-popup"')
+        .classes("cb-field")
         .style("min-width: 84px;")
     )
     param_sel.set_visibility(len(by_type[st["type"]]) > 1)
@@ -619,7 +622,7 @@ def _render_list_cutouts_status(lst: dict, sp: dict, project_path: Path, *, buil
         _render_list_header(lst, sp, project_path)
         ui.label(f"· {len(lst.get('picks', []))} picks").classes("cb-detail-meta")
         if building:
-            ui.spinner(size="16px", color="indigo-500")
+            ui.spinner(size="16px", color="#94a3b8")
             ui.label("rendering cutouts from the recon…").style("font-size: 10px; color: #94a3b8;")
         else:
             ui.label("no cutouts (picks outside the recon, or recon unreadable)").style(
@@ -1133,9 +1136,9 @@ async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, r
     def _no_recon() -> None:
         with ui.element("div").classes("cb-empty"):
             ui.icon("image_not_supported", size="24px").classes("text-gray-400")
-            ui.label("No reconstructed tomogram on disk — cutouts unavailable.").classes("text-xs")
+            ui.label("No reconstructed tomogram on disk — cutouts unavailable.").classes("text-[10px]")
             ui.label("This list's dots still overlay the slab canvas on the left.").classes(
-                "text-[11px] italic text-gray-500"
+                "text-[10px] italic text-gray-500"
             )
 
     if not recon:
@@ -1161,7 +1164,7 @@ async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, r
     else:
         with ui.element("div").classes("w-full").style("margin-top: 10px;") as pending_box:
             with ui.row().classes("items-center gap-2"):
-                ui.spinner(size="16px", color="indigo-500")
+                ui.spinner(size="16px", color="#94a3b8")
                 ui.label("loading cutouts…").style("font-size: 10px; color: #94a3b8;")
 
     def _probe() -> dict:
@@ -1632,7 +1635,7 @@ def _imported_wip_marker(text: str, tip: str) -> None:
     silently default it."""
     with ui.row().classes("items-center gap-1").style("display:inline-flex;"):
         ui.icon("error_outline", size="13px").classes("text-red-500")
-        ui.label(text).classes("font-mono text-red-600").tooltip(tip)
+        ui.label(text).classes("text-red-600").tooltip(tip)
 
 
 def _render_imported_species_row(sp_obj, project_state, ts_name: str) -> None:
@@ -1647,7 +1650,7 @@ def _render_imported_species_row(sp_obj, project_state, ts_name: str) -> None:
         or SPECIES_OVERLAY_COLORS[sum(map(ord, str(sp_obj.id))) % len(SPECIES_OVERLAY_COLORS)]
     )
     lists = project_state.get_pick_lists(sp_obj.id, ts_name)
-    with ui.element("div").style("display:flex; gap:10px; align-items:center; padding:3px 2px; font-size:11px;"):
+    with ui.element("div").style("display:flex; gap:10px; align-items:center; padding:3px 2px; font-size:10px;"):
         ui.icon("circle", size="10px").style(f"color:{color};")
         ui.label(str(sp_obj.name)).style("font-weight:600;")
         if lists:
@@ -1709,15 +1712,15 @@ def render_imported_particles_section(
         card._props["data-section"] = "particles"
         with ui.element("div").classes("cb-section-card-header"):
             ui.label("Particles").classes("cb-section-title")
-            ui.label("imported tomogram").classes("text-[10px] font-mono text-gray-500")
+            ui.label("imported tomogram").classes("text-[10px] text-gray-500")
             ui.space()
-            ui.label("manual picking · WIP").classes("text-[10px] font-mono text-amber-600").tooltip(
+            ui.label("manual picking · WIP").classes("text-[10px] text-amber-600").tooltip(
                 "Particle-only project: pick manually in ArtiaX. Automated template matching on imported "
                 "tomograms is not wired yet (it needs a per-tilt-series star)."
             )
 
         with ui.element("div").style(
-            "display:flex; gap:16px; align-items:center; flex-wrap:wrap; padding:6px 2px; font-size:11px;"
+            "display:flex; gap:16px; align-items:center; flex-wrap:wrap; padding:6px 2px; font-size:10px;"
         ):
             ui.label(ts_name).classes("font-mono").style("font-weight:600;")
             if dims_known:
@@ -1751,7 +1754,7 @@ def render_imported_particles_section(
         if not species:
             ui.label("No species registered yet — register one to start picking.").classes(
                 "italic text-gray-500"
-            ).style("padding:6px 2px; font-size:11px;")
+            ).style("padding:6px 2px; font-size:10px;")
         else:
             for sp_obj in species:
                 _render_imported_species_row(sp_obj, project_state, ts_name)
@@ -1819,11 +1822,11 @@ def _render_no_species_empty_state(project_path: Path, refresh) -> None:
     de-novo entry point: picking needs a species, so the section offers to create one."""
     with ui.element("div").classes("cb-empty"):
         ui.icon("scatter_plot", size="28px").classes("text-gray-400")
-        ui.label("No particle species yet.").classes("text-xs")
+        ui.label("No particle species yet.").classes("text-[12px]")
         ui.label(
             "A species is the label picks hang off. Create one to pick particles by hand in ArtiaX — "
             "no template or template-matching job needed."
-        ).classes("text-[11px] italic text-center text-gray-500").style("max-width: 460px;")
+        ).classes("text-[10px] italic text-center text-gray-500").style("max-width: 460px;")
         house_button("New species", lambda: _prompt_new_species(project_path, refresh), kind="accent")
 
 
@@ -1876,7 +1879,7 @@ def render_particles_section(
         card._props["data-section"] = "particles"
         with ui.element("div").classes("cb-section-card-header"):
             ui.label("Particles").classes("cb-section-title")
-            ui.label(f"{len(species_data)} species").classes("text-[10px] font-mono text-gray-500")
+            ui.label(f"{len(species_data)} species").classes("text-[10px] text-gray-500")
             _render_geometry_chip(geom)
             # Route to the tab that owns this species' pick-list actions; follows the
             # active species tab, like the admin buttons.
@@ -1885,7 +1888,7 @@ def render_particles_section(
             ui.space()
             # Per-species generate controls (Render previews · Re-render · IMOD)
             # live in the panel toolbar, following the active tab; the canvas-wide
-            # Invert switch is section-level (shared across species).
+            # polarity switch is section-level (shared across species).
             admin_host = ui.row().classes("items-center gap-0 cb-section-admin")
             if mrc_path is not None:
                 _render_invert_switch(card)
@@ -1901,7 +1904,7 @@ def render_particles_section(
                 return
             with manage_host:
                 ui.label("manage in Particles registry ↗").classes(
-                    "text-[10px] text-indigo-500 cursor-pointer underline decoration-dotted"
+                    "text-[10px] text-slate-500 cursor-pointer underline decoration-dotted"
                 ).on("click", lambda _e, s=sid: manage_species(s)).tooltip(
                     "Curate in ArtiaX · import a .coords · extract · dedup · delete — opens this species' "
                     "Picks & curation tab, where all of them live in one place."
@@ -1917,7 +1920,7 @@ def render_particles_section(
                 return
             with viewer_host:
                 ui.label("full viewer ↗").classes(
-                    "text-[10px] text-indigo-500 cursor-pointer underline decoration-dotted"
+                    "text-[10px] text-slate-500 cursor-pointer underline decoration-dotted"
                 ).style("margin-left: 8px;").on("click", lambda _e, s=sid, t=ts_name: open_viewer(s, t)).tooltip(
                     "Open this species + tomogram in the full-page pick viewer — bigger slabs, curation mode, "
                     "the per-list extraction verb and fullscreen."
@@ -1995,7 +1998,7 @@ def render_particles_section(
         with tabs_host:
             tabs = (
                 ui.tabs(value=active_sp["iid"])
-                .props("dense align=left indicator-color=indigo")
+                .props("dense align=left")
                 .classes("cb-species-tabs")
                 .on_value_change(_on_species_tab)
             )
@@ -2040,10 +2043,10 @@ def _render_particles_canvas(
     # reported as exactly that, never spun on.
     if slab_state in ("kicked", "in-flight"):
         with ui.element("div").classes("cb-empty"):
-            ui.spinner(size="26px", color="indigo-500")
-            ui.label("Rendering tomogram slices…").classes("text-xs")
+            ui.spinner(size="26px", color="#94a3b8")
+            ui.label("Rendering tomogram slices…").classes("text-[10px]")
             ui.label("Auto-kicked in the background — the canvas fills when the slab PNG lands.").classes(
-                "text-[11px] italic text-gray-500"
+                "text-[10px] italic text-gray-500"
             )
         return layer_ids
     if slab_state == "failed":
@@ -2057,7 +2060,7 @@ def _render_particles_canvas(
         with ui.element("div").classes("cb-empty"):
             ui.icon("error_outline", size="26px").classes("text-red-500")
             ui.label(f"Slab render failed — {_RECON_SLAB_ERRORS.get(key, 'unknown')}").classes(
-                "text-xs text-red-600"
+                "text-[10px] text-red-600"
             ).tooltip(str(mrc_path))
             house_button("Retry", _retry, tooltip="Re-render the X/Y + X/Z slabs from the reconstruction")
         return layer_ids
@@ -2065,7 +2068,7 @@ def _render_particles_canvas(
         with ui.element("div").classes("cb-empty"):
             ui.icon("error_outline", size="26px").classes("text-red-500")
             ui.label(f"Slab PNG missing after a successful render — expected {xy_png} and {xz_png}").classes(
-                "text-xs text-red-600"
+                "text-[10px] text-red-600"
             )
         return layer_ids
 
@@ -2184,27 +2187,30 @@ def _render_species_admin_buttons(sp: dict, project_path: Path, refresh) -> None
             on_click=lambda: _handle_generate_for_instance(
                 iid, jm, job_dir, project_path, False, gen_missing_btn, refresh
             ),
+            color=None,
         )
         .props("flat dense round size=sm")
-        .classes("text-purple-600")
+        .classes("cb-tb-btn")
         .tooltip("Render previews for tomograms whose manifest entry is missing or stale.")
     )
     regen_btn = (
         ui.button(
             icon="refresh",
             on_click=lambda: _handle_generate_for_instance(iid, jm, job_dir, project_path, True, regen_btn, refresh),
+            color=None,
         )
         .props("flat dense round size=sm")
-        .classes("text-gray-500")
+        .classes("cb-tb-btn")
         .tooltip("Re-render all: bypass cache and regenerate every tomogram's preview from scratch.")
     )
     imod_btn = (
         ui.button(
             icon="scatter_plot",
             on_click=lambda: _handle_generate_imod_for_instance(iid, jm, job_dir, project_path, imod_btn, refresh),
+            color=None,
         )
         .props("flat dense round size=sm")
-        .classes("text-blue-600")
+        .classes("cb-tb-btn")
         .tooltip("Regenerate IMOD .mod overlays" if has_imod_models else "Generate IMOD .mod overlays")
     )
 
@@ -2236,7 +2242,7 @@ def _render_species_tab_body(
     if sp["row"]["status"] == "missing-volume":
         with lists_host:
             ui.label("No reconstructed tomogram on disk for 3dmod — picks plot still works.").classes(
-                "text-[11px] text-amber-700 italic"
+                "text-[10px] text-amber-700 italic"
             )
 
     # Always present an `auto` entry so the PyTOM section (incl. its zero-picks /
@@ -2453,7 +2459,7 @@ def _render_list_rail(
                         )
                         if copy_path:
                             cbtn = (
-                                ui.button(icon="content_copy")
+                                ui.button(icon="content_copy", color=None)
                                 .props("flat dense round size=sm")
                                 .classes("cb-info-copy")
                                 .tooltip(copy_path)
@@ -2472,9 +2478,9 @@ def _render_list_rail(
                         if slug != "auto":
                             del_label = lst.get("label") or slug
                             dbtn = (
-                                ui.button(icon="delete_outline")
-                                .props("flat dense round size=sm color=negative")
-                                .classes("cb-info-copy")
+                                ui.button(icon="delete_outline", color=None)
+                                .props("flat dense round size=sm")
+                                .classes("cb-del-btn")
                                 .tooltip("Delete this list (its star, curated subset, extraction output and saves)")
                             )
                             dbtn.on(
@@ -2514,7 +2520,7 @@ async def _render_list_detail(
     if lst is None:
         with ui.element("div").classes("cb-empty"):
             ui.icon("inbox", size="28px").classes("text-gray-400")
-            ui.label("No pick lists yet for this species.").classes("text-xs")
+            ui.label("No pick lists yet for this species.").classes("text-[10px]")
         return
     if lst["slug"] == "auto":
         _render_species_auto_section(sp, layer_ids, project_path, refresh, refresh_roster, mode=mode)
@@ -2535,7 +2541,7 @@ def _render_species_auto_section(
     if status == "errored":
         with ui.element("div").classes("cb-empty"):
             ui.icon("error_outline", size="28px").classes("text-red-500")
-            ui.label("Render error: " + (row.get("error") or "unknown")).classes("text-xs text-red-600")
+            ui.label("Render error: " + (row.get("error") or "unknown")).classes("text-[10px] text-red-600")
         return
     if status == "zero-picks":
         _render_zero_picks_empty_state(manifest, sp["label"])
@@ -2548,13 +2554,13 @@ def _render_species_auto_section(
                 # of spinning on a preview that is not coming.
                 ui.icon("hourglass_empty", size="28px").classes("text-gray-400")
                 ui.label(f"No candidate preview — {note}; run Pick candidates from the Jobs tab").classes(
-                    "text-xs text-gray-600"
+                    "text-[10px] text-gray-600"
                 )
             else:
-                ui.spinner(size="28px", color="indigo-500")
-                ui.label("Generating preview for this tilt-series…").classes("text-xs")
+                ui.spinner(size="28px", color="#94a3b8")
+                ui.label("Generating preview for this tilt-series…").classes("text-[10px]")
                 ui.label("Auto-kicked in the background — the page refreshes when the manifest lands.").classes(
-                    "text-[11px] italic text-gray-500"
+                    "text-[10px] italic text-gray-500"
                 )
         return
 
@@ -2608,13 +2614,15 @@ def _render_zero_picks_empty_state(manifest: dict, species_name: str | None) -> 
                     "rounded border border-gray-200 bg-gray-50 object-contain"
                 )
             with ui.column().classes("gap-1 items-start"):
-                ui.label(f"0 picks above cutoff for {species_label}").classes("text-sm font-semibold text-amber-700")
+                ui.label(f"0 picks above cutoff for {species_label}").classes(
+                    "text-[12px] font-semibold text-amber-700"
+                )
                 ui.label(f"PyTOM processed this tilt-series but no {score_field} value cleared the cutoff.").classes(
-                    "text-[11px] text-gray-700"
+                    "text-[10px] text-gray-700"
                 )
                 if total:
                     ui.label(f"{zero_n} of {total} TS in this job came back empty.").classes(
-                        "text-[11px] italic text-gray-500"
+                        "text-[10px] italic text-gray-500"
                     )
                 ui.label(
                     "Check the picking cutoff, template chirality (TomoHand), "
@@ -2643,7 +2651,7 @@ _FULLSCREEN_JS = """(e) => {
 def _toolbelt_button(icon: str, tooltip: str) -> ui.button:
     """One toolbelt icon. Popover-opening icons wrap this in `with btn, ui.menu()`;
     stateful toggles flip `.cb-tb-on` on the returned button."""
-    return ui.button(icon=icon).props("flat dense round size=sm").classes("cb-tb-btn").tooltip(tooltip)
+    return ui.button(icon=icon, color=None).props("flat dense round size=sm").classes("cb-tb-btn").tooltip(tooltip)
 
 
 def _cmd_row(label: str, value: str, *, status: tuple[str, str, str] | None = None) -> dict:
@@ -2651,11 +2659,11 @@ def _cmd_row(label: str, value: str, *, status: tuple[str, str, str] | None = No
     them. Returns the input/icon so a lazily-computed command (the per-pick peek) can
     fill them in later."""
     with ui.row().classes("w-full items-center gap-1 no-wrap"):
-        ui.label(label).classes("text-[9px] uppercase font-bold text-gray-400").style("width: 62px;")
+        ui.label(label).classes("text-[9px] uppercase font-semibold text-gray-400").style("width: 62px;")
         cmd = (
             ui.input(value=value)
-            .props("dense outlined readonly hide-bottom-space")
-            .classes("text-xs font-mono flex-1")
+            .props("dense readonly hide-bottom-space")
+            .classes("cb-field cb-field-mono flex-1")
             .style("min-width: 0;")
         )
         icon_name, icon_color, icon_tip = status or ("info", "text-gray-400", "")
@@ -2666,9 +2674,10 @@ def _cmd_row(label: str, value: str, *, status: tuple[str, str, str] | None = No
             ui.button(
                 icon="content_copy",
                 on_click=lambda: (ui.clipboard.write(cmd.value), ui.notify("Copied", type="positive", timeout=800)),
+                color=None,
             )
             .props("flat dense round size=sm")
-            .classes("text-gray-500 hover:text-gray-800")
+            .classes("cb-tb-btn")
             .tooltip("Copy to clipboard")
         )
     return {"cmd_input": cmd, "status_icon": icon}
@@ -3169,7 +3178,7 @@ def _render_gallery_body(
                 if degenerate_indices:
                     exclude_degen_cb = (
                         ui.checkbox(f"exclude {len(degenerate_indices)} not-extracted", value=True)
-                        .props("dense")
+                        .props("dense size=xs")
                         .classes("cb-degen-toggle")
                         .tooltip(
                             "Picks that produced no subtomo cutout (no match / render failed). On (default) keeps "
@@ -3220,8 +3229,8 @@ def _render_gallery_body(
             with ui.element("div").classes("cb-info-card cb-tb-card"):
                 sort_select = (
                     ui.select(options={"best": "Best", "worst": "Worst", "z": "Z depth"}, value="best")
-                    .props("dense outlined options-dense")
-                    .classes("text-xs")
+                    .props('dense popup-content-class="cb-select-popup"')
+                    .classes("cb-field")
                     .style("min-width: 108px;")
                 )
         if len(_filter_presets) >= 2:
@@ -3755,9 +3764,9 @@ def _render_picks_scatter_section(row: dict, entry: dict, manifest: dict, has_su
 
         with ui.row().classes("w-full gap-3 items-stretch flex-wrap"):
             with ui.column().classes("gap-1").style(f"flex: 1 1 320px; min-width: 280px; max-width: {xy_max_w}px;"):
-                ui.label("X / Y top-down").classes("cb-section-title")
+                ui.label("X / Y top-down").classes("cb-plot-label").style("cursor: default;")
                 with ui.element("div").classes("cb-aspect").style(f"aspect-ratio: {xy_aspect};"):
-                    xy_plot = ui.plotly(_build_xy_scatter_fig(picks, tomo_dims, score_field)).style(
+                    xy_plot = ui.plotly(_build_xy_scatter_fig(picks, tomo_dims, score_field, JOURNEY_THEME)).style(
                         "width: 100%; height: 100%;"
                     )
             with (
@@ -3765,14 +3774,14 @@ def _render_picks_scatter_section(row: dict, entry: dict, manifest: dict, has_su
                 .classes("gap-2 cb-picks-right")
                 .style(f"flex: 1 1 320px; min-width: 280px; max-width: {xz_max_w}px;")
             ):
-                ui.label("X / Z side").classes("cb-section-title")
+                ui.label("X / Z side").classes("cb-plot-label").style("cursor: default;")
                 with ui.element("div").classes("cb-aspect").style(f"aspect-ratio: {xz_aspect};"):
-                    xz_plot = ui.plotly(_build_xz_scatter_fig(picks, tomo_dims, score_field, xz_url)).style(
-                        "width: 100%; height: 100%;"
-                    )
-                ui.label("Score distribution").classes("cb-section-title")
-                ui.plotly(_build_score_hist_fig(picks, score_field)).style("width: 100%; height: 160px;")
-                ui.label("Hovered pick").classes("cb-section-title")
+                    xz_plot = ui.plotly(
+                        _build_xz_scatter_fig(picks, tomo_dims, score_field, xz_url, JOURNEY_THEME)
+                    ).style("width: 100%; height: 100%;")
+                ui.label("Score distribution").classes("cb-plot-label").style("cursor: default;")
+                ui.plotly(_build_score_hist_fig(picks, score_field, JOURNEY_THEME)).style("width: 100%; height: 160px;")
+                ui.label("Hovered pick").classes("cb-plot-label").style("cursor: default;")
                 hover_labels = _render_hover_card_skeleton()
 
                 def on_hover(e, _picks=picks, _ps=pixel_size_ang, _labels=hover_labels):
@@ -4288,10 +4297,10 @@ class PickViewerPage:
             if not self.tomo_name:
                 with ui.element("div").classes("cb-empty"):
                     ui.icon("scatter_plot", size="28px").classes("text-gray-400")
-                    ui.label("No tomogram selected.").classes("text-xs")
+                    ui.label("No tomogram selected.").classes("text-[12px]")
                     ui.label(
                         "Open the viewer from a tomogram group on the Particles registry's Picks & curation tab."
-                    ).classes("text-[11px] italic text-gray-500")
+                    ).classes("text-[10px] italic text-gray-500")
                 return
             rendered = render_particles_section(
                 self.tomo_name,
@@ -4307,9 +4316,9 @@ class PickViewerPage:
             if not rendered:
                 with ui.element("div").classes("cb-empty"):
                     ui.icon("hourglass_empty", size="28px").classes("text-gray-400")
-                    ui.label(f"Nothing to show for {self.tomo_name} yet.").classes("text-xs")
+                    ui.label(f"Nothing to show for {self.tomo_name} yet.").classes("text-[12px]")
                     ui.label("The viewer needs a reconstructed tomogram and at least one registered species.").classes(
-                        "text-[11px] italic text-gray-500"
+                        "text-[10px] italic text-gray-500"
                     )
 
     def _manage_species(self, species_id: str) -> None:
@@ -4331,21 +4340,19 @@ class PickViewerPage:
         with ui.row().classes("cb-viewer-page-head w-full items-center gap-3 no-wrap"):
             ui.label("Pick viewer").classes("cb-section-title")
             if self.tomo_name:
-                ui.label(self.tomo_name).classes("text-[11px] font-mono text-gray-700")
+                ui.label(self.tomo_name).classes("text-[10px] font-mono text-gray-700")
             if species is not None:
-                ui.label(str(getattr(species, "name", "") or self.species_id)).classes(
-                    "text-[10px] font-mono text-gray-500"
-                )
+                ui.label(str(getattr(species, "name", "") or self.species_id)).classes("text-[10px] text-gray-500")
             ui.space()
             if self.species_id and self.callbacks.get("open_species") is not None:
                 ui.label("← Particles registry").classes(
-                    "text-[10px] text-indigo-500 cursor-pointer underline decoration-dotted"
+                    "text-[10px] text-slate-500 cursor-pointer underline decoration-dotted"
                 ).on("click", lambda _e: self._manage_species(self.species_id)).tooltip(
                     "Back to this species' Picks & curation tab — the row this viewer was opened from"
                 )
             if self.tomo_name and self.callbacks.get("show_journey") is not None:
                 ui.label("journey ↗").classes(
-                    "text-[10px] text-indigo-500 cursor-pointer underline decoration-dotted"
+                    "text-[10px] text-slate-500 cursor-pointer underline decoration-dotted"
                 ).on("click", lambda _e: self._open_journey()).tooltip(
                     "This tomogram's whole pipeline — motion, CTF, alignment, reconstruction, then these picks"
                 )

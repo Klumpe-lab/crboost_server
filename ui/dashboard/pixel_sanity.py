@@ -232,7 +232,7 @@ def render_pixel_sanity_table(rows: list[dict]) -> None:
         return
 
     with ui.element("div").classes("cb-pixel-section-title"):
-        ui.icon("rule", size="13px").classes("text-indigo-600")
+        ui.icon("rule", size="13px").classes("text-slate-400")
         ui.label("Pixel / binning sanity")
         ui.icon("info_outline", size="11px").classes("cb-pixel-warn-icon").tooltip(
             "Per-stage pixel size, tomogram dimensions, and template/extract/subtomo "
