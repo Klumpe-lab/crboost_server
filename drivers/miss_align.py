@@ -671,8 +671,7 @@ def main():
         #    cluster with a bind-mounted static /etc/passwd), getpass.getuser() throws "getpwuid():
         #    uid not found"; setting USER/LOGNAME short-circuits that lookup. The container wrapper
         #    disables tqdm for every tool, but the tool's progress bars are its only output for
-        #    hours of training and the only thing keeping run_command's idle watchdog from killing
-        #    it, so they are switched back on here. Several training GPUs rendezvous over NCCL, whose
+        #    hours of training, so they are switched back on here. Several training GPUs rendezvous over NCCL, whose
         #    peer-to-peer path can stall across PCIe switches on datacenter nodes; the tool's docs
         #    prescribe NCCL_P2P_DISABLE=1 (shared memory instead, negligible cost). Each of those ranks
         #    would also torch.compile the same model into the one kernel cache, and they race on its

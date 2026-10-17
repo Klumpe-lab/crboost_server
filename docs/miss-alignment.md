@@ -312,7 +312,8 @@ e.g. raise `pool_size` when it caps the loaders) and when the processes outnumbe
   its files (pytorch/pytorch#134384): two 3-trainer runs died a minute into training on a missing `.json`, the
   second with `TORCHINDUCTOR_COMPILE_THREADS=1`. The driver sets `TORCHDYNAMO_DISABLE=1` for every run (a
   compiled model's checkpoint keys differ from an eager one's, so the setting must not change between resumes).
-  The tool hangs after a rank dies (the builders keep it alive) until the 45-min no-output watchdog fires.
+  The tool hangs after a rank dies (the builders keep it alive), and nothing kills it before 90 % of the walltime:
+  if `run.out` stops moving for hours, cancel the job.
 - **Checkpoints.** Lightning keeps the best three per-epoch checkpoints, but nothing resumes inside a
   macro-iteration (`trainer.fit` gets no `ckpt_path`): a run killed mid-iteration repeats it. Each finished
   iteration writes `iter{N}/` (XMLs, `model.ckpt`), and a re-run resumes after the last one
