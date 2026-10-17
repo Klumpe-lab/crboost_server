@@ -257,6 +257,19 @@ The four questions as they were put, and what was decided.
   The automatic preview pass is gated (§3.4). `main.py` runs only as `__main__` (a spawned worker imports it
   as `__mp_main__`).
 
+**2026-10-17, first run (port 8012).** The watchdog worked at once: a 506 ms stall at startup, the pipeline
+monitor's recovery parsing every project_params.json under the project base on the loop. That scan and the
+recovered projects' loads now run in a thread (`_projects_with_active_pipeline`, `preload_project_state`). The
+stall was reported against "Busy thread MainThread": the loop thread is now recorded when the watchdog starts,
+not at its first heartbeat, which a blocking startup delays.
+
+The second stall (468 ms, first workspace load) was the roster importing `ui.aggregation.aggregate_dialog`
+inside its render, and the import compiling the module from source: `main.py` set
+`sys.dont_write_bytecode`, so nothing imported after that line was ever cached, and every lazily imported
+module compiled on the loop the first time a click reached it, after every restart (the in-tree
+`__pycache__` dirs date from 2026-08-16). `pycache_setup.py`, imported first by `main.py`, now sends bytecode
+to `~/.cache/crboost/pycache` (the source tree stays clean) and overrides a `-B`.
+
 **Left for later, by the same rules:**
 - The species tabs' analytics, overview and picks computes still run in threads and take the live
   `ProjectState`; moving them to workers means passing paths and loading the state in the worker.
@@ -267,3 +280,30 @@ The four questions as they were put, and what was decided.
 - `template_viewer._load_volume` reads a whole MRC on the loop.
 - S7 (status dots and job-model bindings pushed instead of polled every 0.1 s): only if S0's log still shows
   binding passes now that hidden pages are deleted.
+
+## 8. Open: switching jobs and job sub-tabs still takes 1–2 s (reported 2026-10-17, after S0–S6)
+
+A click on a job in the roster, or on Config / Logs / Files / Tasks in a job's header, still takes a second
+or two to show. Not yet looked into. Start here:
+
+1. **Capture first.** Restart (with `pycache_setup.py`, so the first-use compiles are gone after one pass),
+   click through a few jobs and sub-tabs twice each, and collect the watchdog lines. A 1–2 s switch is
+   well over its 250 ms threshold, so each one should name its code. The second pass separates one-time
+   import/compile cost from the real per-switch cost. If no line appears while the click still lags, the
+   time is in the browser (DOM size, Quasar components), not the server: devtools Performance on one click.
+2. **Suspects from reading:**
+   - A job switch to a page that is not among the three kept (`_KEPT_JOB_PAGES`) renders the whole job page:
+     Parameters, I/O and SLURM sections of Config at once, 150–300 elements, many of them Quasar inputs, and
+     the I/O resolver's `exists()` stats on the shared filesystem (`services/path_resolution_service.py`),
+     template header reads (`ui/job_plugins/template_match.py`), all on the loop.
+   - A sub-tab switch (`_handle_tab_switch`, `ui/pipeline_builder/job_tab_component.py`) clears the tab
+     content and renders the new tab from scratch: back to Config means the whole form again; Files does an
+     `iterdir` and a `stat` per entry on the loop (`ui/pipeline_builder/files_tab.py`).
+   - Every `clear()` walks every binding in the process (`nicegui/binding.py` `remove`): its cost grows with
+     what all tabs have mounted (the watchdog's end line gives the element and binding counts).
+   - `roster.refresh()` after a switch is signature-gated, but the signature still walks every job and the
+     species and tilt-filter fingerprints on each call.
+3. **Likely shape of the fix, by the §2 rules:** sub-tabs built once per job page and switched by visibility
+   (like the workspace views), so a switch is a class flip; render-time disk reads (I/O resolution, template
+   headers, Files listing) read first in a thread, then build; if the browser side dominates, fewer Quasar
+   inputs per form row.

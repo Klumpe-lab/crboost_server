@@ -51,6 +51,26 @@ def _predict_in_flight(state) -> bool:
     return any(getattr(jm, "predict_in_flight", False) for jm in state.jobs.values())
 
 
+def _projects_with_active_pipeline(base_path: Path) -> list[Path]:
+    """The project dirs under `base_path` whose saved state has `pipeline_active` set. Disk only,
+    for a thread."""
+    found: list[Path] = []
+    for item in base_path.iterdir():
+        if not item.is_dir():
+            continue
+        params_file = item / "project_params.json"
+        if not params_file.exists():
+            continue
+        try:
+            with open(params_file) as f:
+                data = json.load(f)
+        except Exception:
+            continue
+        if bool(data.get("pipeline_active")):
+            found.append(item)
+    return found
+
+
 class PipelineMonitor:
     def __init__(self, backend: CryoBoostBackend):
         self._backend = backend
@@ -91,21 +111,10 @@ class PipelineMonitor:
             logger.info("Recovery: base path %s missing; skipping", base_path)
             return
 
-        candidates: list[Path] = []
         try:
-            for item in base_path.iterdir():
-                if not item.is_dir():
-                    continue
-                params_file = item / "project_params.json"
-                if not params_file.exists():
-                    continue
-                try:
-                    with open(params_file) as f:
-                        data = json.load(f)
-                except Exception:
-                    continue
-                if bool(data.get("pipeline_active")):
-                    candidates.append(item)
+            # Off the loop: it parses every project_params.json under the base, which stalled
+            # startup by half a second on a real base.
+            candidates = await asyncio.to_thread(_projects_with_active_pipeline, base_path)
         except Exception:
             logger.exception("Recovery: failed to walk %s", base_path)
             return
@@ -122,11 +131,11 @@ class PipelineMonitor:
                 logger.exception("Recovery: failed for %s", project_path.name)
 
     async def _recover_one(self, project_path: Path) -> None:
-        from services.project_state import get_project_state_for
+        from services.project_state import preload_project_state
 
         # The chain lives entirely in SLURM, so loading the state into the registry is all
         # recovery needs: the next tick's reconcile_afterok re-observes it.
-        get_project_state_for(project_path)
+        await preload_project_state(project_path)
         logger.info("Recovery[%s]: state loaded; the next tick reconciles it", project_path.name)
 
     # ── Tick loop ────────────────────────────────────────────────────────

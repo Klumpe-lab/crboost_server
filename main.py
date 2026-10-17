@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
+import pycache_setup  # noqa: F401  (first: it decides where every later import is compiled to)
 import asyncio
 import functools
 import io
 import os
 import socket
+import sys
 import argparse
 from pathlib import Path
 import warnings
@@ -33,10 +35,6 @@ from services.server_auth import (
     session_cookie_name,
 )
 import logging
-
-import sys
-
-sys.dont_write_bytecode = True
 
 
 class SuppressPruneStorageError(logging.Filter):
