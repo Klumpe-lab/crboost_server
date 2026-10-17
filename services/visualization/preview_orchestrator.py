@@ -142,9 +142,7 @@ def _resolve_tomo_mrc(tomo_row, project_root: Path | None) -> Path | None:
     return None
 
 
-def _find_warp_tomo_preview(
-    project_root: Path | None, tomo_name: str, mrc_path: Path | None = None
-) -> Path | None:
+def _find_warp_tomo_preview(project_root: Path | None, tomo_name: str, mrc_path: Path | None = None) -> Path | None:
     """Locate the WarpTools tomogram-preview PNG for a given tomogram.
 
     WarpTools writes one PNG per reconstructed tomogram into
@@ -304,6 +302,8 @@ def generate_candidate_previews(
                     entries[name] = prior_entries[name]
         manifest = {
             "version": MANIFEST_VERSION,
+            # Written by a pass that reached every tomogram (previews_up_to_date reads it).
+            "complete": not partial,
             "score_field": score_col,
             "particle_diameter_ang": float(particle_diameter_ang),
             "template": template_block,
@@ -486,3 +486,49 @@ def read_preview_manifest(job_dir: Path) -> dict | None:
     except Exception as e:
         logger.warning("Could not parse preview manifest %s: %s", p, e)
         return None
+
+
+def generate_candidate_previews_for_job(
+    candidates_star: Path,
+    tomograms_star: Path,
+    particle_diameter_ang: float,
+    job_dir: Path,
+    project_root: Path,
+    instance_id: str,
+    force: bool = False,
+    progress_cb: Callable[[int, int, str], None] | None = None,
+) -> dict:
+    """`generate_candidate_previews` from paths alone, for a worker process: the project state
+    (the subtomo jobs for the cutout atlases, the species for the template tile) is read from the
+    project's project_params.json, as the candidate-extract driver has it."""
+    from services.project_state import ProjectState
+
+    state = ProjectState.load(Path(project_root) / "project_params.json")
+    state.project_path = Path(project_root)
+    return generate_candidate_previews(
+        candidates_star,
+        tomograms_star,
+        particle_diameter_ang,
+        job_dir,
+        project_root,
+        progress_cb,
+        force,
+        state,
+        instance_id,
+        state.jobs.get(instance_id),
+    )
+
+
+def previews_up_to_date(job_dir: Path, sources: list[Path]) -> bool:
+    """Whether a job's preview manifest was written by a complete pass after every one of
+    `sources` last changed (candidates.star, tomograms.star, the subtomo jobs' particles.star):
+    then a "render missing" pass would only re-read all of them to skip every tomogram. For a
+    thread."""
+    manifest_path = Path(job_dir) / PREVIEW_SUBDIR / MANIFEST_NAME
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (OSError, ValueError):
+        return False
+    if manifest.get("version") != MANIFEST_VERSION or not manifest.get("complete"):
+        return False
+    return not is_output_stale(manifest_path, [Path(s) for s in sources])

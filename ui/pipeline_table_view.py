@@ -23,16 +23,17 @@ from typing import Any
 
 from nicegui import ui
 
+from services import array_status_cache
+from services.array_status_cache import is_array_job
 from services.array_tasks import TaskProgress
 from services.models_base import JobStatus
 from services.path_resolution_service import InputState
 from services.pipeline_table import RunTimes, TableRow, pipeline_rows, run_times
 from services.project_state import ProjectState, get_project_state_for
 from ui.components.reactive import FingerprintedView, SingleFlight, owned_timer
-from ui.components.species_pill import render_species_pill
+from ui.components.species_pill import render_species_mark
 from ui.dashboard.css import ensure_assets_loaded
 from ui.job_plugins._field_styles import PAGE_SECTION_STYLE
-from ui.pipeline_builder.pipeline_roster import _get_array_progress
 from ui.status_indicator import _BADGE_STYLES, _DOT_COLORS
 from ui.styles import MONO, SANS
 from ui.ui_state import get_instance_display_name
@@ -125,16 +126,11 @@ def _elapsed_text(status: JobStatus, times: RunTimes | None, now: float) -> str:
     return ""
 
 
-def _read_disk(
-    jobs: dict[str, Any], project_path: Path, rows: list[TableRow]
-) -> tuple[dict[str, TaskProgress | None], dict[str, RunTimes]]:
-    """What the table reads from disk: the TS tallies and the run times. Runs in a worker thread,
-    on its own copy of the rows' jobs, so an add or a removal meanwhile cannot change the dict
-    under it."""
-    progress = {
-        iid: _get_array_progress(jm, project_path) for iid, jm in jobs.items() if "array_throttle" in jm.USER_PARAMS
-    }
-    return progress, run_times(jobs, project_path, rows)
+def _read_disk(jobs: dict[str, Any], project_path: Path, rows: list[TableRow]) -> dict[str, RunTimes]:
+    """What the table reads from disk besides the array statuses (the shared cache's): the run times.
+    Runs in a worker thread, on its own copy of the rows' jobs, so an add or a removal meanwhile
+    cannot change the dict under it."""
+    return run_times(jobs, project_path, rows)
 
 
 def _inputs_tip(row: TableRow, state: ProjectState) -> str:
@@ -238,7 +234,13 @@ class PipelineTablePage:
                 # to a thread.
                 rows = pipeline_rows(state)
                 jobs = {r.instance_id: state.jobs[r.instance_id] for r in rows}
-                self.progress, self.times = await asyncio.to_thread(_read_disk, jobs, self.project_path, rows)
+                await array_status_cache.refresh(self.project_path, jobs)
+                self.progress = {
+                    iid: (s.progress if (s := array_status_cache.get(self.project_path, iid)) else None)
+                    for iid, jm in jobs.items()
+                    if is_array_job(jm)
+                }
+                self.times = await asyncio.to_thread(_read_disk, jobs, self.project_path, rows)
                 self.rows = rows
                 self.error = None
             except Exception as e:
@@ -376,9 +378,11 @@ class _TableView(FingerprintedView):
             with ui.element("div").style(_CELL + " gap: 6px;"):
                 ui.label(get_instance_display_name(iid, jm)).style(f"{MONO} font-size: 11px; color: #1e293b;")
                 species = state.get_species(jm.species_id) if jm.species_id else None
-                if species is not None:
-                    render_species_pill(species, compact=True)
                 tip = _inputs_tip(row, state)
+                if species is not None:
+                    # Named in the cell's hover: a hover of its own would stack on that one.
+                    render_species_mark(species, tooltip="")
+                    tip = f"Species: {species.name}" + (f"\n{tip}" if tip else "")
                 if tip:
                     ui.tooltip(tip).style("white-space: pre-line;").props("delay=400")
             self._render_state(row, jm, state, parked)

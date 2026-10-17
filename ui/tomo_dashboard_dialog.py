@@ -63,9 +63,11 @@ from services.tilt_series_service import ensure_tilt_thumbnails
 from services.pixel_chain import apply_sanity_rules, compute_pixel_chain
 from services.visualization.preview_orchestrator import _find_warp_tomo_preview
 from services.visualization.preview_render import is_output_stale, render_xy_slab_preview
+from services.workers import WorkKind, run_in_worker
 from ui.components.chip import render_chip
 from ui.components.buttons import house_button
 from ui.components.copyable import copy_3dmod_chip
+from ui.components.reactive import owned_timer
 from ui.components.recon_compare import matched_slabs, recon_versions_for_ts, retry_match
 from ui.components.segmented import Segmented
 from ui.current_project import current_project_state
@@ -384,7 +386,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             f"{ts}: {'excluded — will be skipped on the next run' if not currently else 'restored to processing'}",
             type="info",
         )
-        render_strip()
+        await refresh_all()
 
     async def select_ts(ts: str) -> None:
         # Instant feedback: move the column highlight + paint a spinner now and
@@ -415,19 +417,36 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         await asyncio.sleep(0.02)
         if mine != _sel_gen["n"]:
             return  # superseded by a newer click during the flush
-        # One collect for both renders, as in refresh_all.
-        journey_data = collect_dashboard_journey(state, project_path)
-        species_data = collect_species_journey(state, project_path)
+        # One collect for both renders, as in refresh_all, in a thread.
+        journey_data, species_data = await asyncio.to_thread(_collect)
+        if mine != _sel_gen["n"] or main_area.is_deleted:
+            return  # superseded by a newer click during the collect
         render_main(force=True, journey_data=journey_data, species_data=species_data)  # selection changed
         render_strip(journey_data, species_data)
 
-    def refresh_all(force_main: bool = False) -> None:
+    def _collect() -> tuple:
+        # Both collectors read star files, manifests and task statuses for every tilt series:
+        # callers run this in a thread, never on the event loop.
+        return collect_dashboard_journey(state, project_path), collect_species_journey(state, project_path)
+
+    _collecting = {"on": False}
+
+    async def refresh_all(force_main: bool = False) -> None:
         # One collect per pass. `render_strip` needs both unfiltered and `_main_signature`
         # needs the same journey plus one TS's species rows, and neither collector memoizes
         # internally. On a fully-extracted de-novo project a collect costs the per-list
-        # extraction stats of every tomogram, so it must not run twice per tick.
-        journey_data = collect_dashboard_journey(state, project_path)
-        species_data = collect_species_journey(state, project_path)
+        # extraction stats of every tomogram, so it must not run twice per tick. A pass asked
+        # for while one collects is queued as a refresh request instead of running alongside.
+        if _collecting["on"]:
+            request_refresh(force_main)
+            return
+        _collecting["on"] = True
+        try:
+            journey_data, species_data = await asyncio.to_thread(_collect)
+        finally:
+            _collecting["on"] = False
+        if main_area.is_deleted:
+            return
         render_strip(journey_data, species_data)
         render_main(force=force_main, journey_data=journey_data, species_data=species_data)
 
@@ -451,7 +470,11 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         _refresh_req["quiet"] = 0
 
     _build_panel_selector(panel_toggle_container, render_main)
-    refresh_all()
+    # The first paint collects off the loop too; the page shows its spinner meanwhile.
+    with main_area, ui.element("div").classes("cb-empty"):
+        ui.spinner(size="lg", color="indigo")
+        ui.label("Loading…").classes("text-xs")
+    owned_timer(0.01, lambda: refresh_all(force_main=True), main_area, once=True)
 
     # Live refresh while the journey is the active view: re-render every 4 s if
     # any background task is in flight for this project. Keeps the strip /
@@ -524,7 +547,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
 
     live_timer = ui.timer(4.0, _maybe_refresh)
 
-    def _flush_refresh() -> None:
+    async def _flush_refresh() -> None:
         # Trailing-edge flush of the coalesced refresh: rebuild once the request
         # flag has been quiet for ~one tick, so a burst of auto-kick completions
         # collapses into a single rebuild instead of N. Idle cost is one bool check.
@@ -536,7 +559,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             _refresh_req["pending"] = False
             _refresh_req["quiet"] = 0
             _refresh_req["force_main"] = False
-            refresh_all(force_main=fm)
+            await refresh_all(force_main=fm)
 
     refresh_coalesce_timer = ui.timer(0.2, _flush_refresh)
 
@@ -2338,11 +2361,6 @@ def _denoise_slab_path(denoise_job_dir: Path, ts_name: str) -> Path:
     return denoise_job_dir / "vis" / "slabs" / f"{ts_name}_xy.png"
 
 
-def _render_denoise_slab_sync(mrc_path: Path, xy_png: Path) -> str:
-    render_xy_slab_preview(Path(mrc_path), xy_png)
-    return "denoised slab rendered"
-
-
 def _auto_kick_denoise_slab(denoise_job_dir: Path, ts_name: str, mrc_path: Path, project_path: Path, refresh) -> None:
     """Render the denoised X/Y slab in the background if missing/stale. Mirrors
     _auto_kick_recon_slabs: module-level dedup set + BackgroundTask dedup_key,
@@ -2356,10 +2374,9 @@ def _auto_kick_denoise_slab(denoise_job_dir: Path, ts_name: str, mrc_path: Path,
     _AUTO_KICKED_DENOISE_SLAB.add(key)
 
     async def _run(progress_cb):
-        import asyncio as _asyncio
-
         progress_cb(0, 0, "rendering denoised slab…")
-        return await _asyncio.to_thread(_render_denoise_slab_sync, mrc_path, xy_png)
+        await run_in_worker(WorkKind.RENDER, render_xy_slab_preview, Path(mrc_path), xy_png)
+        return "denoised slab rendered"
 
     from ui.background_task import BackgroundTask
 

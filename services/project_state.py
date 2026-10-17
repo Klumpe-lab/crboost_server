@@ -8,6 +8,7 @@ import re
 import shutil
 import tempfile
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -1093,12 +1094,13 @@ class ProjectState(BaseModel):
         # Always stamp the current code's schema version on save
         self.schema_version = SCHEMA_VERSION
 
-        data = self.model_dump(exclude={"project_path"})
-        data["project_path"] = str(self.project_path) if self.project_path else None
+        # One native call writes the JSON: Python's json encoder with an indent is pure Python, and it
+        # would hold the GIL (and so the event loop) for the whole write.
+        text = self.model_dump_json(indent=2, fallback=str)
         fd, tmp_path = tempfile.mkstemp(dir=str(save_path.parent), suffix=".tmp", prefix=".project_params_")
         try:
             with os.fdopen(fd, "w") as f:
-                json.dump(data, f, indent=2, default=str)
+                f.write(text)
             os.rename(tmp_path, str(save_path))
         except BaseException:
             try:
@@ -1377,6 +1379,9 @@ class ProjectState(BaseModel):
 # =========================================================================
 
 _project_states: dict[Path, ProjectState] = {}
+# Path.resolve() is an lstat per path component, a round trip each on NFS, and this lookup runs dozens
+# of times per render; a project's path resolves the same for the life of the process.
+_resolved_paths: dict[Path, Path] = {}
 
 
 def get_project_state_for(project_path: Path) -> ProjectState:
@@ -1385,7 +1390,9 @@ def get_project_state_for(project_path: Path) -> ProjectState:
     Backend/service code that has a project_path available should use
     this directly (via StateService.state_for(path)).
     """
-    resolved = project_path.resolve()
+    resolved = _resolved_paths.get(project_path)
+    if resolved is None:
+        resolved = _resolved_paths[project_path] = project_path.resolve()
     if resolved not in _project_states:
         params_file = resolved / "project_params.json"
         if params_file.exists():
@@ -1507,9 +1514,11 @@ class StateService:
                 return
             target_path = state.project_path / "project_params.json"
             if force or state.is_dirty:
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, state.save, target_path)
+                # Its own thread: a save never queues behind renders in the default executor.
+                await asyncio.get_running_loop().run_in_executor(_SAVE_EXECUTOR, state.save, target_path)
 
+
+_SAVE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="project-save")
 
 _state_service_instance: StateService | None = None
 

@@ -521,3 +521,16 @@ def render_template_thumb(template_path: Path, out_path: Path, *, tile_px: int =
     img = Image.fromarray(u8, mode="L").resize((tile_px, tile_px), Image.LANCZOS)
     img.save(str(out_path), format="PNG", optimize=True)
     return out_path
+
+
+def render_recon_slabs(mrc_path: Path, xy_png: Path, xz_png: Path) -> str:
+    """Both slabs of one reconstruction, for the pick viewer's shared canvas; worker-safe. The two
+    renderers return None, rather than raise, on missing deps, a non-3D MRC or a read error; that
+    must fail the task, or it settles `succeeded` with no PNG and the canvas has nothing to say."""
+    for name, fn, png in (("X/Y", render_xy_slab_preview, xy_png), ("X/Z", render_xz_slab_preview, xz_png)):
+        if fn(Path(mrc_path), Path(png)) is None:
+            raise RuntimeError(
+                f"{name} slab renderer wrote nothing for {mrc_path} (expected {png}) — "
+                "unreadable / non-3D MRC or rendering deps unavailable; see the server log"
+            )
+    return "recon slabs rendered"

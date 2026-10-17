@@ -37,9 +37,10 @@ from services.project_state import get_project_state_for
 from services.tilt_series import get_registry_for
 from ui.components.buttons import house_button
 from ui.components.fields import HOUSE_LABEL_CLS, house_number, house_select
-from ui.components.reactive import FingerprintedView, SingleFlight, owned_timer
+from ui.components.reactive import FingerprintedView, SingleFlight
 from ui.components.segmented import render_segmented
 from ui.styles import MONO, SANS as FONT
+from ui.ui_state import get_ui_state_manager
 
 if TYPE_CHECKING:
     from ui.pipeline_builder.pipeline_builder_panel import PipelineBuilderPanel
@@ -242,11 +243,12 @@ class TiltFilterStatus(FingerprintedView):
 
 def render_tilt_filter_status(project_path: Path, instance_id: str) -> TiltFilterStatus:
     """The status words in the current slot, with their own 3 s observer. The roster rebuilds
-    the row, so the observer is an owned_timer, ended with the words."""
+    the row, so the observer is an owned timer, ended with the words; it runs while the pipeline
+    view shows."""
     body = ui.element("div").style("display: flex; align-items: center; min-width: 0; flex-shrink: 1;")
     view = TiltFilterStatus(project_path, instance_id, body)
     view.refresh()
-    owned_timer(3.0, view.refresh, body)
+    get_ui_state_manager().view_scope("pipeline").timer(3.0, view.refresh, body)
     return view
 
 
@@ -389,12 +391,12 @@ class TiltFilterControls(FingerprintedView):
 
 def render_tilt_filter_controls(panel: PipelineBuilderPanel, instance_id: str, flight: SingleFlight, indent: int):
     """The dropdown under the tilt filter's roster row, with its own 3 s observer: an
-    owned_timer, since the roster rebuilds the row."""
+    owned timer, since the roster rebuilds the row, that runs while the pipeline view shows."""
     with ui.element("div").style(f"padding: 2px 4px 5px {indent}px; min-width: 0;"):
         body = ui.element("div").style("display: flex; flex-direction: column; gap: 3px; min-width: 0;")
         view = TiltFilterControls(panel, instance_id, flight, body)
         view.refresh()
-        owned_timer(3.0, view.refresh, body)
+        get_ui_state_manager().view_scope("pipeline").timer(3.0, view.refresh, body)
 
 
 # ── the job page: the state and every action ──
@@ -501,9 +503,9 @@ class TiltFilterReview(FingerprintedView):
 
 def render_tilt_filter_review(backend, project_path: Path, instance_id: str) -> TiltFilterReview:
     """The review block in the current slot, with its own 3 s observer (an owned_timer: a mode
-    switch rebuilds the job page)."""
+    switch rebuilds the job page) that runs while the job page shows."""
     body = ui.element("div").style("min-width: 0;")
     view = TiltFilterReview(backend, project_path, instance_id, body)
     view.refresh()
-    owned_timer(3.0, view.refresh, body)
+    get_ui_state_manager().job_scope(instance_id).timer(3.0, view.refresh, body)
     return view

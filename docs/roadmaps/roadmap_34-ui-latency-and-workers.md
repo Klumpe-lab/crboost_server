@@ -1,8 +1,8 @@
 # Roadmap 34 — UI latency: nothing heavy on the event loop, heavy work in worker processes
 
 **Status:** scoped 2026-10-17 from a read-only survey of main (timers and polls, background tasks, the job-tab
-edit path). **Nothing built, nothing measured**: every cost below is read off the code, so S0 comes first and
-re-ranks the rest.
+edit path); **S0–S6 built the same day, NOT RUN** (ruff clean; no server run here). S7 not built. The decisions
+are in §3, what was built and what is left in §7. §1 is the survey as it stood before the build.
 
 ## Before → After
 
@@ -134,9 +134,10 @@ live timers. This ranks §1 by what actually happens on a real session, and stay
 `/api/file` sets `Content-Encoding: identity` like the image routes; every binary route does the same.
 
 ### S5 — No work per keystroke
-- Text and number fields update the model on blur, or after a short debounce (decision 3), not per key.
-- The `edit_refreshes` chain (SLURM signature, missAlign summary, subtomo warning) runs on that update only.
-- A SLURM field's blur updates the values in place instead of rebuilding the section around the focused field.
+- Fields keep updating the model on every change (decision 3); what follows an edit waits for the typing to pause.
+- The `edit_refreshes` chain (SLURM signature, missAlign summary, subtomo warning) runs 0.3 s after the last keystroke.
+- The SLURM section holds its rebuild while one of its fields has focus and rebuilds 0.8 s after the last blur, so it
+  never replaces the field the user just clicked into.
 
 ### S6 — Worker processes for CPU work
 - `services/workers.py`: a `ProcessPoolExecutor` with the `spawn` start method (not fork: the server is
@@ -158,16 +159,39 @@ live timers. This ranks §1 by what actually happens on a real session, and stay
 Job-model bindings and status dots are updated when the model changes (the status poller already knows when it
 does) instead of NiceGUI's 0.1 s polling of every active link in the process.
 
-## 3. Decisions owed
-1. **Hidden job tabs:** unmount all but the active one and the last two (recommended; a reopened job is rebuilt,
-   which loses scroll position and expanded sections), or keep every one mounted with its timers paused.
-2. **Where CPU work runs:** a spawn pool owned by the server (recommended; no new service to run, and it dies with
-   the server), a separate long-lived worker process fed by a queue (survives server restarts, one more thing to
-   start at every site), or SLURM jobs (queue latency makes interactive renders feel worse).
-3. **Fields:** model update on blur (recommended for numbers and paths; nothing changes until the user leaves the
-   field) or a 300 ms debounce (updates while typing, still ~10× fewer events).
-4. **Server-side preview passes:** only for tomograms the driver's manifest lacks (recommended), or none at all,
-   leaving previews to the driver plus an explicit "Render previews" button.
+## 3. Decisions (2026-10-17)
+The four questions as they were put, and what was decided.
+
+1. **Hidden job pages: kept or deleted.** What "unload" meant: every job page opened in a browser tab stays
+   in that tab's page (hidden) after switching to another job, with every field, polled binding and timer it
+   made, on the server and in the browser. Each hidden page slowed every later page operation (a `clear()`
+   walks every binding of the process) and its timers kept working. **Built:** the panel keeps the shown page
+   and the two shown before it, so switching between recent jobs is instant; older pages are deleted and
+   rebuilt when reopened, which costs what a first open costs and loses their scroll position. All hidden
+   pages' timers are paused either way. Taken as the default when the build started (the question had come
+   back as "what do you mean"); `_KEPT_JOB_PAGES` in `ui/pipeline_builder/pipeline_builder_panel.py` is the one
+   number to change if three is wrong.
+2. **Where CPU work runs: a process pool owned by the server** (the user's choice). `services/workers.py`:
+   spawned processes (the server is multi-threaded; a fork would copy its locks mid-use), 4 by default
+   (`CRBOOST_WORKERS`), started on first use, stopped with the server, at a lower CPU priority. A cap per kind
+   of work (renders 3, preview passes 1, thumbnail passes 1), so one burst never takes every worker. A worker
+   that dies fails its task and the next task gets a fresh pool. Not a separate service: nothing new to start
+   or configure at a site. Not SLURM: queue latency on interactive renders.
+3. **Fields: update on change** (the user's choice: "think about user experience"). A field writes the model
+   on every keystroke, as before. What is derived from it (missAlign's summary and schedule, the SLURM section,
+   the subtomo box-size warning) repaints once typing pauses for 0.3 s (`Debounced`); the save stays debounced
+   at 1 s. The SLURM section no longer rebuilds while one of its fields has focus, so a click into the next
+   field is never swallowed by a rebuild of the section.
+4. **Which previews.** The candidate previews: for each template-matching candidate-extract job, the
+   per-tomogram images of its picks (the pick overlay, the cutout gallery with its eight display filters, the
+   score histograms) that the Journey's Particles section and the pick viewer show, listed in the job's
+   `vis/preview/manifest.json`. The candidate-extract driver renders them on the compute node. On every mount
+   of the Journey or the pick viewer the server also started a "render missing" pass per job, which read the
+   whole candidates.star and every subtomo particles.star only to find each tomogram cached. **Built:** that
+   automatic pass now starts only when the manifest was not written by a complete pass or is older than
+   candidates.star, tomograms.star or a subtomo particles.star (`previews_up_to_date`, read in a thread); the
+   "Render missing" and "Re-render all" buttons always run. A manifest now records whether its pass reached
+   every tomogram (`complete`), so an interrupted pass is still picked up. Both passes run in a worker.
 
 ## 4. Order and dependencies
 - S0 first: an afternoon, and it re-ranks everything below with real stacks.
@@ -184,7 +208,7 @@ does) instead of NiceGUI's 0.1 s polling of every active link in the process.
    over 250 ms; any stall it does log names its code.
 2. During a run, with five jobs opened and two left on Logs: a click into a Config field takes focus in under 100 ms.
 3. Devtools, websocket frames while idle on one job tab: no traffic from hidden tabs.
-4. Typing in a numeric field: no save until the field is left (or the debounce passes); the next click lands.
+4. Typing in a numeric field: no summary or section rebuild per keystroke; the next click lands.
 5. Load a template in the workbench: the response carries no gzip; the UI keeps responding while it streams.
 6. A candidate-preview pass and a slab render running in workers: the roster and a Config tab stay responsive.
 7. Two browser tabs on one project: the array scan runs once per tick, not twice (S0's minute line).
@@ -193,3 +217,53 @@ does) instead of NiceGUI's 0.1 s polling of every active link in the process.
 - Multi-user scaling (roadmap 23).
 - Moving the drivers' own compute: they already run on SLURM.
 - A different web framework.
+
+## 7. Stage log
+
+**2026-10-17 — S0–S6 built, NOT RUN.** Verified by ruff and reading only; nothing was started here.
+
+- **S0** `services/loop_watchdog.py`, started at app startup (`main.py`): a 50 ms heartbeat on the loop and a
+  daemon thread that logs, at WARNING, the loop thread's stack (and any busy thread's) once the loop has not
+  ticked for 250 ms, a second sample past 1 s, then the stall's length with the UI load (clients, mounted
+  elements, polled bindings).
+- **S1** `ViewScope` (`ui/components/reactive.py`), per browser tab through `UIStateManager.view_scope` /
+  `job_scope`. The job panel runs only the shown job page's scope, and only while the pipeline view shows
+  (`PipelineBuilderPanel._show_job`, `_sync_job_scopes`, `set_view_active`, called from the workspace's
+  `_apply_views`); it keeps 3 job pages (§3.1). On those scopes: the Logs tab's poll, the task tracker's,
+  the tilt-filter page's three pollers and its review block; on the pipeline scope the roster's tilt-filter
+  status and controls. The status poller skips the roster while the view is hidden and the roster catches up
+  on return. Logs are a `LiveLog` (`ui/components/log_pane.py`): one text element, written only when the text
+  changed, pinned to the end unless scrolled up. The task tracker scans in a thread, updates only the rows
+  whose status moved, stops once every task settled and the job ended, and reads a task's log only when its
+  row is opened (it read every task's two log files at render).
+- **S2** `services/array_status_cache.py`: the roster's signature and render and the pipeline table read
+  array statuses from it; the status poller refreshes it in a thread, one scan per project per tick for the
+  whole process. A job switch repaints the old and new active rows in place (`RosterWidget.paint_active`)
+  instead of rebuilding the roster. The Journey collects in a thread (`_collect`; first paint, TS select,
+  refresh, exclude toggle). The afterok reconcile reads its exit sentinels and the started-task glob in a
+  thread. The subtomo tab's upstream banner reads its star and sentinel in a thread after the tab is built.
+  Icon files are read once per process; `get_project_state_for` resolves each project path once.
+- **S3** `ProjectState.save` writes with `model_dump_json(indent=2, fallback=str)` (same content, still
+  indented); saves run on their own single thread.
+- **S4** `services/http_responses.py` (`NO_GZIP`, `json_headers`): `/api/file` volumes and every image route
+  pass through uncompressed; a JSON file over 1 MB too.
+- **S5** `Debounced` (`reactive.py`, carries the caller's slot into its task); the job tab's edit refreshes
+  and the subtomo warning use it. The SLURM section holds its rebuild while a field has focus and rebuilds
+  0.8 s after the last blur.
+- **S6** `services/workers.py` (`run_in_worker`, `WorkKind`, progress through a small file read once a second).
+  In workers now: the pick viewer's recon slabs (`render_recon_slabs`, moved to `preview_render.py`) and list
+  cutouts, the wall's and the Journey's denoised slabs, matched-plane registration, the candidate preview
+  passes (`generate_candidate_previews_for_job`, which loads the state from disk) and the tilt thumbnail pass.
+  The automatic preview pass is gated (§3.4). `main.py` runs only as `__main__` (a spawned worker imports it
+  as `__mp_main__`).
+
+**Left for later, by the same rules:**
+- The species tabs' analytics, overview and picks computes still run in threads and take the live
+  `ProjectState`; moving them to workers means passing paths and loading the state in the worker.
+- The Journey's main pane still reads its Particles section (tomograms.star, manifests, pick lists) while it
+  renders; its collect moved, its render did not.
+- `get_registry_for` still re-syncs on the loop for callers outside a thread (the tilt-filter page's pollers,
+  now paused when hidden).
+- `template_viewer._load_volume` reads a whole MRC on the loop.
+- S7 (status dots and job-model bindings pushed instead of polled every 0.1 s): only if S0's log still shows
+  binding passes now that hidden pages are deleted.

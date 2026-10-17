@@ -43,6 +43,7 @@ when to reach for each helper.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Any
@@ -53,6 +54,45 @@ from nicegui import ui
 from ui.components.dialogs import dialog_host
 
 logger = logging.getLogger(__name__)
+
+# How long typing must pause before a field's derived views (summaries, warnings) follow it.
+EDIT_SETTLE_S = 0.3
+
+
+class Debounced:
+    """`callback` run once, `delay_s` after the last call: for work that follows an edit (a summary,
+    a warning, a section rebuild) and must not run per keystroke. The field itself updates the
+    model at once; only what is derived from it waits for the typing to pause. `cancel()` drops a
+    pending run (a SLURM field taking focus holds its section's rebuild)."""
+
+    def __init__(self, callback: Callable[[], Any], delay_s: float = EDIT_SETTLE_S) -> None:
+        self._callback = callback
+        self._delay_s = delay_s
+        self._task: asyncio.Task | None = None
+
+    def __call__(self) -> None:
+        self.cancel()
+        try:
+            slot = ui.context.slot
+        except RuntimeError:
+            slot = None
+        self._task = asyncio.create_task(self._later(slot))
+
+    def cancel(self) -> None:
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+
+    async def _later(self, slot) -> None:
+        await asyncio.sleep(self._delay_s)
+        # NiceGUI keeps a slot stack per asyncio task, and this one starts empty: the callback runs
+        # in the slot of the call that scheduled it, so whatever it builds lands where it would have.
+        if slot is None:
+            self._callback()
+            return
+        if slot.parent.is_deleted:
+            return
+        with slot:
+            self._callback()
 
 
 def owned_timer(interval: float, callback: Callable[[], Any], owner: Any, *, once: bool = False) -> ui.timer:
@@ -76,6 +116,55 @@ def owned_timer(interval: float, callback: Callable[[], Any], owner: Any, *, onc
     with dialog_host():
         timer = ui.timer(interval, tick, once=once)
     return timer
+
+
+class ViewScope:
+    """Whether a view is on screen, for the timers that serve it.
+
+    A view that is not on screen does no work: its pollers are made with `scope.timer(...)`, which
+    pauses them while the scope is inactive and resumes them when it is shown again. Whoever shows
+    and hides the view calls `set_active`: the workspace for the pipeline view (`ui/workspace_page.py`
+    `_apply_views`), the job panel for one job's page (`PipelineBuilderPanel._sync_job_scopes`).
+    `on_show` callbacks run when the scope comes back, for a view that must catch up at once rather
+    than on its next tick. Scopes live per browser tab (`UIStateManager.view_scope`)."""
+
+    def __init__(self, active: bool = True) -> None:
+        self.active = active
+        self._timers: list[tuple[ui.timer, Any]] = []
+        self._on_show: list[Callable[[], Any]] = []
+
+    def timer(self, interval: float, callback: Callable[[], Any], owner: Any, *, once: bool = False) -> ui.timer:
+        """An `owned_timer` that runs only while the scope is active."""
+        t = owned_timer(interval, callback, owner, once=once)
+        if not self.active:
+            t.deactivate()
+        self._timers.append((t, owner))
+        return t
+
+    def on_show(self, callback: Callable[[], Any]) -> None:
+        self._on_show.append(callback)
+
+    def set_active(self, on: bool) -> None:
+        if on == self.active:
+            return
+        self.active = on
+        live: list[tuple[ui.timer, Any]] = []
+        for t, owner in self._timers:
+            if getattr(t, "_is_canceled", False) or t.is_deleted:
+                continue
+            if owner.is_deleted:
+                # A paused timer never ticks, so it would never notice its owner is gone.
+                t.cancel()
+                continue
+            live.append((t, owner))
+            if on:
+                t.activate()
+            else:
+                t.deactivate()
+        self._timers = live
+        if on:
+            for callback in list(self._on_show):
+                callback()
 
 
 class FingerprintedView:

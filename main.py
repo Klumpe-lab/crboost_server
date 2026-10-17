@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import asyncio
 import functools
 import io
 import os
@@ -19,7 +20,10 @@ from starlette.middleware.sessions import SessionMiddleware
 from backend import CryoBoostBackend
 from services.configs.config_service import REPO_ROOT
 from services.event_log import EVENTS_LOGGER_NAME
+from services.http_responses import NO_GZIP, json_headers
+from services.loop_watchdog import LoopWatchdog
 from services.project_state import is_in_loaded_project
+from services import workers
 from services.server_auth import (
     NICEGUI_STORAGE_DIR,
     STORAGE_SECRET_FILE,
@@ -102,10 +106,10 @@ def install_sticky_banner(lines: list[str]) -> None:
 
 
 @functools.lru_cache(maxsize=512)
-def _preview_thumb(path: str, mtime_ns: int) -> bytes | None:
-    """A 512 px JPEG of a WarpTools preview PNG (about 1 MB at 1024 px): the projects
-    roster's hover card fetches these, often over an SSH tunnel. Keyed on mtime so a
-    re-reconstruction is never served stale. None without Pillow."""
+def _preview_thumb(path: str, mtime_ns: int, size: int = 512) -> bytes | None:
+    """A `size` px JPEG of a preview PNG (a WarpTools one is about 1 MB at 1024 px): the projects
+    roster's hover card and the tomogram wall's tiles fetch these, often over an SSH tunnel. Keyed
+    on mtime so a re-reconstruction is never served stale. None without Pillow."""
     try:
         from PIL import Image
     except ImportError:
@@ -113,7 +117,7 @@ def _preview_thumb(path: str, mtime_ns: int) -> bytes | None:
         return None
     with Image.open(path) as im:
         small = im.convert("L")
-        small.thumbnail((512, 512))
+        small.thumbnail((size, size))
         buf = io.BytesIO()
         small.save(buf, format="JPEG", quality=85)
     return buf.getvalue()
@@ -122,10 +126,6 @@ def _preview_thumb(path: str, mtime_ns: int) -> bytes | None:
 def setup_app(port: int):
     """Configures and returns the FastAPI app."""
     app = FastAPI()
-
-    # PNG/JPEG bytes don't shrink under gzip, and NiceGUI's GZipMiddleware (level 9) would compress every
-    # image response on the event loop for nothing. A set Content-Encoding makes it pass the body through.
-    no_gzip = {"Content-Encoding": "identity"}
 
     @app.get("/api/tilt-thumb")
     def serve_tilt_thumb(path: str):
@@ -137,10 +137,10 @@ def setup_app(port: int):
             return {"error": "not found"}
         if not is_in_loaded_project(p):
             return {"error": "outside project roots"}
-        return FileResponse(p, media_type="image/png", headers={"Cache-Control": "public, max-age=86400", **no_gzip})
+        return FileResponse(p, media_type="image/png", headers={"Cache-Control": "public, max-age=86400", **NO_GZIP})
 
     @app.get("/api/vis-asset")
-    def serve_vis_asset(path: str, v: str = ""):
+    def serve_vis_asset(path: str, v: str = "", thumb: int = 0):
         # Path-traversal guard: resolve and require the file to live under a
         # currently-loaded project root. The project-state registry is the
         # authoritative list of roots a user has opened in this session.
@@ -160,9 +160,17 @@ def setup_app(port: int):
         # (`v`, from vis_asset_url) names one version of the file, so the browser may keep it for good:
         # a rewrite changes the URL. Without `v`, a short TTL keeps the copy self-correcting.
         if resolved.suffix == ".json":
-            return FileResponse(resolved, media_type=media, headers={"Cache-Control": "no-cache"})
+            return FileResponse(resolved, media_type=media, headers=json_headers(resolved.stat().st_size, "no-cache"))
         cache_header = "public, max-age=31536000, immutable" if v not in ("", "0") else "public, max-age=300"
-        return FileResponse(resolved, media_type=media, headers={"Cache-Control": cache_header, **no_gzip})
+        # `thumb` (vis_asset_url): a downscaled JPEG of a PNG, for a wall of tiles that would
+        # otherwise pull and decode a full-size picture per tile.
+        if thumb and resolved.suffix == ".png":
+            small = _preview_thumb(str(resolved), resolved.stat().st_mtime_ns, min(max(thumb, 64), 2048))
+            if small is not None:
+                return Response(
+                    content=small, media_type="image/jpeg", headers={"Cache-Control": cache_header, **NO_GZIP}
+                )
+        return FileResponse(resolved, media_type=media, headers={"Cache-Control": cache_header, **NO_GZIP})
 
     @app.get("/api/project-preview")
     def serve_project_preview(path: str):
@@ -179,7 +187,7 @@ def setup_app(port: int):
             return {"error": "not a tomogram preview"}
         if not any((p / "project_params.json").is_file() for p in resolved.parents):
             return {"error": "outside any project"}
-        cache = {"Cache-Control": "public, max-age=300", **no_gzip}
+        cache = {"Cache-Control": "public, max-age=300", **NO_GZIP}
         thumb = _preview_thumb(str(resolved), resolved.stat().st_mtime_ns)
         if thumb is None:
             return FileResponse(resolved, media_type="image/png", headers=cache)
@@ -206,12 +214,16 @@ def setup_app(port: int):
     # startup loads the projects that were mid-pipeline when uvicorn last
     # died, so the tick picks their chains up again. See docs/architecture.md.
     async def _start_pipeline_monitor():
+        # Logs where the event loop was whenever it stalls (services/loop_watchdog.py).
+        LoopWatchdog(asyncio.get_running_loop()).start()
+        workers.warm_up()
         await backend.pipeline_monitor.start()
         await backend.curation_watcher.start()
 
     async def _stop_pipeline_monitor():
         await backend.pipeline_monitor.stop()
         await backend.curation_watcher.stop()
+        workers.shutdown()
 
     # add_event_handler is the non-deprecated spelling of @app.on_event.
     app.add_event_handler("startup", _start_pipeline_monitor)
@@ -234,7 +246,9 @@ def setup_app(port: int):
     return app
 
 
-if __name__ in {"__main__", "__mp_main__"}:
+# Not "__mp_main__": the worker processes (services/workers.py) are spawned, and a spawned child
+# imports this module under that name; it must not start a second server.
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="CryoBoost Server")
     parser.add_argument("--port", type=int, default=8081, help="Port to run server on")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to bind to")

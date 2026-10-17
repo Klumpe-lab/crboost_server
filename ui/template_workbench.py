@@ -43,6 +43,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from nicegui import app, context, ui
 
 from services import species_admin
+from services.http_responses import NO_GZIP
 from services.project_state import (
     ParticleSpecies,
     ParticleTemplate,
@@ -120,7 +121,8 @@ def serve_file(path: str):
         return {"error": "not a volume"}
     if not (is_in_loaded_project(p) or is_registered_volume(p)):
         return {"error": "outside project roots"}
-    return FileResponse(p, media_type="application/octet-stream")
+    # NO_GZIP: a volume compressed by the middleware would hold the event loop for seconds.
+    return FileResponse(p, media_type="application/octet-stream", headers=NO_GZIP)
 
 
 COLOR_PALETTE = [

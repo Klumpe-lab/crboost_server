@@ -97,6 +97,41 @@ was down from the `RELION_JOB_EXIT_*` markers and `sacct`.
   `save_project(force=True)`. If you write `execution_status` from a
   new code path, either call `mark_dirty()` yourself or force-save.
 
+## Where work runs
+
+The server is one Python process, and one asyncio event loop answers every click of every
+browser tab. Anything that holds the loop delays every client's next event by as long, so each
+kind of work has one place it runs:
+
+| Work | Where | How |
+|---|---|---|
+| In-memory reads, building and updating elements | the loop | directly; each callback short |
+| Disk reads: stat, glob, star / JSON / manifest parsing, registry re-syncs | a thread | `await asyncio.to_thread(fn, ...)`; a render reads first, then builds (the Journey's `_collect`) |
+| CPU-bound Python: slab renders, preview passes, cutout filters, volume registration, tilt thumbnails | a worker process | `await run_in_worker(WorkKind.X, fn, *args, progress_cb=...)` (`services/workers.py`) |
+| The array jobs' task statuses (roster, pipeline table) | one scan per tick for the process | `services/array_status_cache.py`: the poller calls `refresh()` in a thread; readers call `get()` |
+| Project saves | one thread of their own | `StateService.save_project` → `ProjectState.save` (`model_dump_json`) |
+
+A thread does not protect the loop from Python-level CPU work: the thread holds the GIL and the
+loop waits for it. That is what the worker processes are for. Worker work is a module-level
+function with arguments and a result that pickle (paths, numbers, small dicts). It never gets a
+`ProjectState`, a job model, an element or a callback; it reads what it needs from disk, and every
+state change or UI update happens back in the server from its result. Each `WorkKind` has its own
+cap, and workers run at a lower CPU priority than the server.
+
+A view that is not on screen does no work. Its pollers are made with `ViewScope.timer`
+(`ui/components/reactive.py`): a job page's from `ui_mgr.job_scope(instance_id)`, the roster's from
+`ui_mgr.view_scope("pipeline")`; whole views pause through their `set_active` hook from the
+workspace's `_apply_views`. The job panel keeps the shown job page and the two before it; older
+ones are deleted and rebuilt on reopen.
+
+What follows an edit (a summary, a warning, a section rebuild) runs once the typing pauses
+(`Debounced`), while the field itself writes the model on every change. A rebuild never replaces a
+field the user may be typing in: the SLURM section holds its rebuild while one of its fields has
+focus.
+
+`services/loop_watchdog.py` logs every stall of the loop over 250 ms with the stack of the loop
+thread (and of any busy thread). A new one names the code to move.
+
 ## File map
 
 - `services/scheduling_and_orchestration/pipeline_monitor.py` — the
@@ -112,3 +147,7 @@ was down from the `RELION_JOB_EXIT_*` markers and `sacct`.
 - `ui/projects_overview.py` — shared project list widget (landing +
   project-hub dialog).
 - `main.py:setup_app` — FastAPI startup/shutdown hooks for the monitor.
+- `services/workers.py` — the worker processes for CPU-bound work.
+- `services/array_status_cache.py` — the array jobs' statuses, one scan per tick.
+- `services/loop_watchdog.py` — the event-loop stall log.
+- `ui/components/reactive.py` — `ViewScope`, `Debounced`, `owned_timer`, `FingerprintedView`.

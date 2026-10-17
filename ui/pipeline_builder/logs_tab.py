@@ -4,6 +4,7 @@ import asyncio
 from nicegui import ui
 
 from services.project_state import JobStatus, JobType
+from ui.components.log_pane import LiveLog
 from ui.styles import MONO
 from ui.ui_state import UIStateManager
 
@@ -21,20 +22,25 @@ def render_logs_tab(job_type: JobType, instance_id: str, job_model, backend, ui_
     widget_refs = ui_mgr.get_job_widget_refs(instance_id)
     ui_mgr.cleanup_job_logs_timer(instance_id)
 
+    # The log polls run only while this job's page is the one shown (its view scope).
+    scope = ui_mgr.job_scope(instance_id)
+
     if not job_model.relion_job_name:
-        with ui.column().classes("w-full h-full items-center justify-center text-gray-400 gap-2"):
+        with ui.column().classes("w-full h-full items-center justify-center text-gray-400 gap-2") as placeholder:
             ui.icon("schedule", size="48px")
             ui.label("Job scheduled. Logs will appear here once running.")
 
         if ui_mgr.is_running:
-            widget_refs.logs_timer = ui.timer(
-                3.0, lambda: asyncio.create_task(_refresh_job_logs_with_placeholder_swap(instance_id, backend, ui_mgr))
+            widget_refs.logs_timer = scope.timer(
+                3.0,
+                lambda: asyncio.create_task(_refresh_job_logs_with_placeholder_swap(instance_id, backend, ui_mgr)),
+                placeholder,
             )
         return
 
     is_running = job_model.execution_status == JobStatus.RUNNING
 
-    with ui.column().classes("w-full h-full overflow-hidden").style("gap: 0;"):
+    with ui.column().classes("w-full h-full overflow-hidden").style("gap: 0;") as logs_box:
         # ── Mini tab bar ──
         with (
             ui.row()
@@ -61,24 +67,9 @@ def render_logs_tab(job_type: JobType, instance_id: str, job_model, backend, ui_
                 .tooltip("Copy the full log to the clipboard")
             )
 
-        # ── Log panels (stacked, toggle visibility). `cb-log` wraps long lines
-        # (ui.log's default is `white-space: pre`, i.e. sideways scrolling). ──
-        stdout_log = (
-            ui.log(max_lines=1000)
-            .classes("w-full p-2 cb-log")
-            .style(
-                f"flex: 1; overflow-y: auto; {MONO} font-size: 10px; "
-                "line-height: 1.4; background: #fafafa; min-height: 0;"
-            )
-        )
-        stderr_log = (
-            ui.log(max_lines=1000)
-            .classes("w-full p-2 cb-log")
-            .style(
-                f"flex: 1; overflow-y: auto; {MONO} font-size: 10px; "
-                "line-height: 1.4; color: #b91c1c; background: #fefafa; min-height: 0;"
-            )
-        )
+        # ── Log panels (stacked, toggle visibility), each one text element that wraps long lines. ──
+        stdout_log = LiveLog(style=f"{MONO} font-size: 10px; line-height: 1.4; background: #fafafa; color: #334155;")
+        stderr_log = LiveLog(style=f"{MONO} font-size: 10px; line-height: 1.4; background: #fefafa; color: #b91c1c;")
         stderr_log.set_visibility(False)
 
     monitor = {
@@ -106,8 +97,8 @@ def render_logs_tab(job_type: JobType, instance_id: str, job_model, backend, ui_
     asyncio.create_task(_refresh_job_logs(instance_id, backend, ui_mgr))
 
     if is_running or ui_mgr.is_running:
-        widget_refs.logs_timer = ui.timer(
-            3.0, lambda: asyncio.create_task(_refresh_job_logs(instance_id, backend, ui_mgr))
+        widget_refs.logs_timer = scope.timer(
+            3.0, lambda: asyncio.create_task(_refresh_job_logs(instance_id, backend, ui_mgr)), logs_box
         )
 
 
@@ -199,10 +190,9 @@ async def _refresh_job_logs(instance_id: str, backend, ui_mgr: UIStateManager):
             stderr_lines[-MAX_LOG_LINES:]
         )
 
-    monitor["stdout"].clear()
-    monitor["stdout"].push(stdout)
-    monitor["stderr"].clear()
-    monitor["stderr"].push(stderr)
+    # Written only when the text changed: an unchanged tick sends nothing to the browser.
+    monitor["stdout"].set_text(stdout)
+    monitor["stderr"].set_text(stderr)
 
     # Show/hide stderr indicator dot — only show for actual error output,
     # not for placeholder messages when the log file doesn't exist yet.

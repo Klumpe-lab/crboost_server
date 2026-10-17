@@ -11,7 +11,6 @@ each job traces back to (reconstruct <- tsCtf <- alignment/refinement), read fro
 paths the jobs actually ran with.
 """
 
-import asyncio
 import json
 import re
 from pathlib import Path
@@ -19,6 +18,7 @@ from pathlib import Path
 from services.models_base import JobType
 from services.visualization.preview_render import is_output_stale
 from services.visualization.recon_register import render_matched_slabs
+from services.workers import WorkKind, run_in_worker
 from ui.background_task import BackgroundTask
 
 # Failed plane-matching renders, keyed by reference dir + TS + the version set. What is
@@ -33,6 +33,37 @@ def _instance_for_dir(state, job_dir: Path) -> str | None:
         rel = (jm.relion_job_name or "").rstrip("/")
         if rel and (project / rel).resolve() == job_dir.resolve():
             return iid
+    return None
+
+
+def job_dirs(state) -> dict[Path, str]:
+    """{job dir: instance} for every job with a RELION job dir, by plain path (no resolve, so no
+    stat per job on NFS); the job paths it is matched against are written the same way."""
+    project = Path(state.project_path)
+    return {project / jm.relion_job_name.rstrip("/"): iid for iid, jm in state.jobs.items() if jm.relion_job_name}
+
+
+def recon_of(state, iid: str, dirs: dict[Path, str] | None = None) -> str | None:
+    """The reconstruct instance whose tomograms `iid` works on, followed back through the job
+    dirs its input paths point into (candidate extraction <- template matching <- reconstruct;
+    denoise <- reconstruct); `iid` itself when it is one. None when no input leads to one."""
+    dirs = job_dirs(state) if dirs is None else dirs
+    queue, seen = [iid], set()
+    while queue:
+        cur = queue.pop(0)
+        if cur in seen or cur not in state.jobs:
+            continue
+        seen.add(cur)
+        jm = state.jobs[cur]
+        if jm.job_type == JobType.TS_RECONSTRUCT:
+            return cur
+        for value in (jm.paths or {}).values():
+            if not isinstance(value, str) or not value.startswith("/"):
+                continue
+            path = Path(value)
+            parent = next((dirs[p] for p in (path, *path.parents) if p in dirs), None)
+            if parent is not None:
+                queue.append(parent)
     return None
 
 
@@ -134,7 +165,8 @@ def matched_slabs(versions: list[dict], ts_name: str, project_path: Path, refres
 
     async def _run(progress_cb):
         progress_cb(0, 0, "registering reconstructions…")
-        await asyncio.to_thread(
+        await run_in_worker(
+            WorkKind.RENDER,
             render_matched_slabs,
             (ref["mrc"], ref["slab"], ref["plane_json"]),
             [(v["mrc"], v["slab"], v["plane_json"]) for v in versions[1:]],

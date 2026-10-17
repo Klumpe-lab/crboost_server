@@ -20,9 +20,12 @@ Register as an extra tab via the plugin system:
         render_array_task_tracker(instance_id, job_model, ui_mgr)
 """
 
+import asyncio
 from pathlib import Path
 
 from nicegui import ui
+
+from services.models_base import JobStatus
 
 from services.array_tasks import (
     TaskProgress,
@@ -35,6 +38,7 @@ from services.array_tasks import (
     resolve_job_dir,
 )
 from ui.components.log_pane import STDERR_STYLE, STDOUT_STYLE, log_pane
+from ui.components.reactive import owned_timer
 from ui.styles import MONO
 
 # ── Status constants ──
@@ -44,6 +48,9 @@ _FAIL = "fail"
 _RUNNING = "running"
 _PENDING = "pending"
 _SKIP = "skip"
+
+# The job is over: a tracker whose tasks have all settled stops polling.
+_ENDED = (JobStatus.SUCCEEDED, JobStatus.FAILED)
 
 _CHIP = {
     _OK: ("check_circle", "#16a34a", "#f0fdf4"),
@@ -99,10 +106,14 @@ def render_array_task_tracker(instance_id: str, job_model, ui_mgr) -> None:
     # cb-scroll-tight: NiceGUI lays scroll-area / expansion content out as a flex
     # column with align-items: flex-start + 1 rem padding, which squeezes every
     # task's log pane to the left; the rows own their spacing and fill the width.
-    with ui.column().classes("w-full h-full overflow-hidden cb-scroll-tight").style("gap: 0;"):
+    with ui.column().classes("w-full h-full overflow-hidden cb-scroll-tight").style("gap: 0;") as tracker:
         # ── Summary bar ──
-        summary_container = ui.row().classes("w-full items-center px-4 py-2 bg-gray-50 border-b border-gray-100")
-        summary_container.style("gap: 12px; flex-shrink: 0;")
+        with (
+            ui.row()
+            .classes("w-full items-center px-4 py-2 bg-gray-50 border-b border-gray-100")
+            .style("gap: 12px; flex-shrink: 0;")
+        ):
+            summary = ui.html("", sanitize=False)
 
         # ── Progress bar ──
         progress_bar = (
@@ -117,20 +128,26 @@ def render_array_task_tracker(instance_id: str, job_model, ui_mgr) -> None:
             with ui.column().classes("w-full gap-0").style("padding: 0;"):
                 row_widgets = _build_task_rows(display_order, item_to_task_idx, job_dir, instance_id, focus_target)
 
-    # Initial status update
-    statuses = _scan_statuses(job_dir, items)
-    _update_summary(summary_container, statuses, item_label)
-    _update_progress(progress_bar, statuses)
-    _apply_statuses_to_rows(row_widgets, statuses)
+    # The poll scans in a thread and touches only what changed: the summary, the bar and the rows
+    # whose status moved. It runs while this job's page is the one shown, and ends once every
+    # task has settled and the job is over.
+    shown: dict[str, str] = {}
 
-    # Poll timer — only updates summary/progress/row badges, never rebuilds rows
-    def _poll():
-        s = _scan_statuses(job_dir, items)
-        _update_summary(summary_container, s, item_label)
+    async def _poll() -> None:
+        s = await asyncio.to_thread(_scan_statuses, job_dir, items)
+        if tracker.is_deleted or s == shown:
+            return
+        summary.set_content(_summary_html(s, item_label))
         _update_progress(progress_bar, s)
-        _apply_statuses_to_rows(row_widgets, s)
+        _apply_statuses_to_rows(row_widgets, s, shown)
+        shown.clear()
+        shown.update(s)
+        p = TaskProgress.from_statuses(s)
+        if p.n_settled == p.total and getattr(job_model, "execution_status", None) in _ENDED:
+            timer.cancel()
 
-    ui.timer(5.0, _poll)
+    owned_timer(0.01, _poll, tracker, once=True)
+    timer = ui_mgr.job_scope(instance_id).timer(5.0, _poll, tracker) if ui_mgr is not None else ui.timer(5.0, _poll)
 
     # Scroll the focused TS into view after the DOM settles.
     if focus_target is not None:
@@ -146,7 +163,7 @@ def render_array_task_tracker(instance_id: str, job_model, ui_mgr) -> None:
 # ── Internals ──
 
 
-def _update_summary(container: ui.row, statuses: dict[str, str], item_label: str) -> None:
+def _summary_html(statuses: dict[str, str], item_label: str) -> str:
     p = TaskProgress.from_statuses(statuses)
 
     parts = []
@@ -161,10 +178,7 @@ def _update_summary(container: ui.row, statuses: dict[str, str], item_label: str
     if p.n_pending:
         parts.append(f'<span style="color: #9ca3af;">{p.n_pending} pending</span>')
 
-    html = f'<span style="{MONO} font-size: 11px;">{" · ".join(parts)} / {p.total} {item_label.lower()}</span>'
-    container.clear()
-    with container:
-        ui.html(html, sanitize=False)
+    return f'<span style="{MONO} font-size: 11px;">{" · ".join(parts)} / {p.total} {item_label.lower()}</span>'
 
 
 def _update_progress(bar: ui.linear_progress, statuses: dict[str, str]) -> None:
@@ -220,17 +234,26 @@ def _build_task_rows(
                         f"{MONO} font-size: 9px; color: {icon_color}; text-transform: uppercase; font-weight: 600;"
                     )
 
-            _render_inline_log(job_dir, task_idx)
+            # The task's log is read when its row is first opened, not for every row at render.
+            log_box = ui.element("div").classes("w-full")
+            if is_focus:
+                with log_box:
+                    _render_inline_log(job_dir, task_idx)
+            else:
+                exp.on_value_change(lambda e, box=log_box, i=task_idx: _open_inline_log(e, box, job_dir, i))
 
         row_widgets[name] = {"icon": icon_el, "label": status_label, "expansion": exp}
 
     return row_widgets
 
 
-def _apply_statuses_to_rows(row_widgets: dict[str, dict], statuses: dict[str, str]) -> None:
-    """Update icon, label text, and background color on existing rows without rebuilding."""
+def _apply_statuses_to_rows(row_widgets: dict[str, dict], statuses: dict[str, str], shown: dict[str, str]) -> None:
+    """Update icon, label text and background color of the rows whose status changed since `shown`
+    (what the rows display now), without rebuilding them."""
     for name, widgets in row_widgets.items():
         status = statuses.get(name, _PENDING)
+        if shown.get(name) == status:
+            continue
         icon_name, icon_color, bg_color = _CHIP.get(status, _CHIP[_PENDING])
 
         widgets["icon"]._props["name"] = icon_name
@@ -246,6 +269,13 @@ def _apply_statuses_to_rows(row_widgets: dict[str, dict], statuses: dict[str, st
 
 
 # ── Inline log viewer ──
+
+
+def _open_inline_log(e, box, job_dir: Path, task_idx: int) -> None:
+    if not e.value or box.is_deleted or box.default_slot.children:
+        return
+    with box:
+        _render_inline_log(job_dir, task_idx)
 
 
 def _render_inline_log(job_dir: Path, task_idx: int) -> None:
