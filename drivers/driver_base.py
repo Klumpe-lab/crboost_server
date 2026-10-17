@@ -8,7 +8,6 @@ import subprocess
 import sys
 import os
 import shlex
-import time
 import argparse
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -192,12 +191,6 @@ class DriverContext(Generic[T]):
         )
 
 
-# Seconds of complete silence from a tool before run_command treats it as hung.
-# Generous on purpose: WarpTools/pytom go quiet during finalization, and killing a
-# working-but-quiet tool is far worse than waiting out a real hang a bit longer.
-IDLE_TIMEOUT_DEFAULT = 45 * 60
-
-
 def allocated_gpu_count(default: int) -> int:
     """GPUs SLURM actually gave this job (renumbered 0..N-1 inside the --nv container).
 
@@ -296,35 +289,23 @@ def print_cmd_only() -> bool:
     return os.environ.get(PRINT_CMD_ENV, "").strip() not in ("", "0")
 
 
-def run_command(command: str, cwd: Path, timeout: int | None = None, idle_timeout: int = IDLE_TIMEOUT_DEFAULT):
+def run_command(command: str, cwd: Path, timeout: int | None = None):
     """
     Run a shell command, stream output, and check for errors.
 
-    Two independent watchdogs, because "hung" and "slow" are different failures:
+    timeout (total wall-clock) -- derived from SLURM walltime at 90% (see
+    derive_watchdog_timeout) when unset. We kill the run rather than SLURM, so
+    the driver still writes a .fail marker and logs a reason instead of
+    vanishing mid-line.
 
-      timeout (total wall-clock) -- derived from SLURM walltime at 90% (see
-        derive_watchdog_timeout) when unset. This does not save the job: a run
-        that trips it was going to exceed --time anyway. It means we kill it
-        rather than SLURM, so the driver still writes a .fail marker and logs a
-        reason instead of vanishing mid-line.
-
-      idle_timeout (seconds with zero output) -- targets the hang hazard: a
-        tool crashes, an orphaned child keeps the stdout
-        pipe open, and the readline loop below blocks forever on a pipe that will
-        never EOF. Total-runtime alone is a poor detector for that, because it
-        scales with the allocation: under the 14-day g_long QOS a process hung in
-        its first minute would sit on a GPU for ~12 days before the 90% mark.
-        Inactivity catches it in `idle_timeout` regardless of allocation size.
-
-    Set idle_timeout=0 to disable inactivity checking for a legitimately silent
-    tool. It is capped at the total budget, since outliving that is meaningless.
+    A tool's silence is never treated as a hang: RELION, WarpTools and pytom
+    legitimately print nothing for hours.
     """
     import signal
     import threading
 
     if timeout is None:
         timeout = derive_watchdog_timeout()
-    idle_timeout = min(idle_timeout, timeout) if idle_timeout else 0
 
     # Echo the exact command into the job log: the one reliable record of what
     # was actually executed (container wrap included) — reproducibility + the
@@ -346,28 +327,17 @@ def run_command(command: str, cwd: Path, timeout: int | None = None, idle_timeou
         start_new_session=True,
     )
 
-    # Watchdog: kill the entire process group on total-time or inactivity breach.
+    # Watchdog: kill the entire process group once the total budget is spent.
     done = threading.Event()
-    started = time.monotonic()
-    last_output = [started]  # list so the reader loop below can rebind it
-
-    def _kill(reason: str):
-        if process.poll() is None:
-            print(f"\n[run_command] {reason} — killing process group", flush=True)
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except OSError:
-                pass
 
     def _watchdog():
-        poll = min(30, idle_timeout) if idle_timeout else timeout
-        while not done.wait(poll):
-            now = time.monotonic()
-            if now - started > timeout:
-                return _kill(f"TIMEOUT after {timeout}s")
-            idle = now - last_output[0]
-            if idle_timeout and idle > idle_timeout:
-                return _kill(f"NO OUTPUT for {int(idle)}s (idle limit {idle_timeout}s)")
+        if done.wait(timeout) or process.poll() is not None:
+            return
+        print(f"\n[run_command] TIMEOUT after {timeout}s — killing process group", flush=True)
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            pass
 
     watchdog = threading.Thread(target=_watchdog, daemon=True)
     watchdog.start()
@@ -375,7 +345,6 @@ def run_command(command: str, cwd: Path, timeout: int | None = None, idle_timeou
     print("--- CONTAINER OUTPUT ---", flush=True)
     if process.stdout:
         for line in iter(process.stdout.readline, ""):
-            last_output[0] = time.monotonic()
             print(line, end="", flush=True)
 
     process.wait()
@@ -513,7 +482,6 @@ def run_tool(
     attempts: int = 1,
     label: str = "",
     timeout: int | None = None,
-    idle_timeout: int = IDLE_TIMEOUT_DEFAULT,
 ) -> None:
     """Wrap a tool command for its execution mode and run it.
 
@@ -532,7 +500,7 @@ def run_tool(
     if attempts > 1:
         run_command_with_retries(wrapped, cwd=cwd, attempts=attempts, label=label or tool_name, timeout=timeout)
     else:
-        run_command(wrapped, cwd=cwd, timeout=timeout, idle_timeout=idle_timeout)
+        run_command(wrapped, cwd=cwd, timeout=timeout)
 
 
 def diagnose_stale_producer(path: Path) -> str:
