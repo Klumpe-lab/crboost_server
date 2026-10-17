@@ -1596,6 +1596,73 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 .cb-field.cb-field-mono .q-field__native { font-family: 'IBM Plex Mono', monospace; }
 """
 
+# The Journey's three style passes while they are compared (ui/dashboard/journey_style.py):
+# A · Ledger (the Tilts tab), B · Dense (the most on one screen), C · Soft (one muted accent).
+# Every rule hangs off the root's cb-jv-<pass> class and comes after _CB_CSS, so it wins the
+# ties with the baseline. The charts' share of each pass is figures.CHART_THEMES.
+_JOURNEY_PASSES_CSS = """
+/* Chart tiles: height, and the narrowest column. */
+.cb-journey.cb-jv-a { --cb-plot-h: 150px; --cb-plot-min: 260px; }
+.cb-journey.cb-jv-b { --cb-plot-h: 116px; --cb-plot-min: 200px; }
+.cb-journey.cb-jv-c { --cb-plot-h: 170px; --cb-plot-min: 300px; }
+/* Section chrome: A and B no card; C a pale panel without a border, the charts on white. */
+.cb-journey:is(.cb-jv-a, .cb-jv-b) .cb-main > .cb-section-card {
+    background: transparent; border: none; border-radius: 0; padding: 0 2px;
+}
+.cb-journey.cb-jv-a .cb-main > .cb-section-card { margin-bottom: 22px; }
+.cb-journey.cb-jv-b .cb-main > .cb-section-card { margin-bottom: 14px; }
+.cb-journey.cb-jv-c .cb-main > .cb-section-card {
+    background: #f8fafc; border: none; border-radius: 6px; padding: 12px; margin-bottom: 10px;
+}
+/* A card inside a section (the scatter fallback's) is plain in every pass. */
+.cb-journey:is(.cb-jv-a, .cb-jv-b, .cb-jv-c) .cb-section-card .cb-section-card {
+    background: transparent; border: none; padding: 0;
+}
+/* B: titles in the toolbar label's voice, and the stats on the title line. */
+.cb-journey.cb-jv-b .cb-section-title {
+    font-size: 9px; font-weight: 400; text-transform: uppercase; letter-spacing: 0.06em; color: #94a3b8;
+}
+.cb-journey.cb-jv-b .cb-main > .cb-section-card:has(> .cb-stats) {
+    display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 14px;
+}
+.cb-journey.cb-jv-b .cb-main > .cb-section-card:has(> .cb-stats) > * { flex: 0 0 100%; min-width: 0; }
+.cb-journey.cb-jv-b .cb-main > .cb-section-card:has(> .cb-stats) > :is(.cb-section-card-header, .cb-stats) {
+    flex: 0 1 auto; margin-bottom: 8px;
+}
+.cb-journey.cb-jv-b .cb-stats { gap: 0 10px; margin: 0 0 8px; }
+.cb-journey.cb-jv-b .cb-stat { flex-direction: row; align-items: baseline; gap: 4px; }
+.cb-journey.cb-jv-b :is(.cb-stat-label, .cb-stat-value) { font-size: 10px; }
+.cb-journey.cb-jv-b .cb-stat + .cb-stat::before { content: '·'; color: #cbd5e1; margin-right: 6px; }
+/* Chart labels (A keeps the baseline's 10 px #64748b). */
+.cb-journey.cb-jv-b .cb-plot-label { font-size: 9px; color: #94a3b8; }
+.cb-journey.cb-jv-c .cb-plot-label { color: #475569; }
+/* Species on light chrome: A and B the roster's grey glyph, C the colour at half saturation.
+ * The slabs' dots keep their colours in every pass; so do the pick lists' swatches, which are
+ * the slab dots' legend. The header dot's colour is inline, hence !important. */
+.cb-journey:is(.cb-jv-a, .cb-jv-b) .cb-jsp-dot,
+.cb-journey:is(.cb-jv-a, .cb-jv-b) .cb-species-tab .q-tab__content::before {
+    width: 11px; height: 11px; border-radius: 0; box-shadow: none; background: #94a3b8 !important;
+    -webkit-mask: url(/static/icons/particle.svg) center / contain no-repeat;
+    mask: url(/static/icons/particle.svg) center / contain no-repeat;
+}
+.cb-journey:is(.cb-jv-a, .cb-jv-b) .cb-pixel-species-row .cb-pixel-stripe { background: #cbd5e1 !important; }
+.cb-journey.cb-jv-c :is(.cb-jsp-dot, .cb-pixel-species-row .cb-pixel-stripe) { filter: saturate(0.5); }
+.cb-journey.cb-jv-c .cb-species-tab .q-tab__content::before { filter: saturate(0.5); }
+/* Red for what is wrong: the dropped tilts' angles, out of the amber box. */
+.cb-journey:is(.cb-jv-a, .cb-jv-b, .cb-jv-c) .cb-drop-list { background: transparent; border: none; padding: 2px 0; }
+.cb-journey:is(.cb-jv-a, .cb-jv-b, .cb-jv-c) .cb-drop-list .cb-drop-row { border-bottom: none; }
+.cb-journey:is(.cb-jv-a, .cb-jv-b, .cb-jv-c) .cb-drop-list .cb-drop-tilt { color: #dc2626; }
+/* The Particles section's leftover indigo: the selected list row, a cutout's hover ring and
+ * rank tag, and the kept counts, in slate; the list table without its box. */
+.cb-journey:is(.cb-jv-a, .cb-jv-b, .cb-jv-c) .cb-ltable { background: transparent; border-color: transparent; }
+.cb-journey:is(.cb-jv-a, .cb-jv-b, .cb-jv-c) .cb-ltable-row.selected {
+    background: #f1f5f9; border-color: #e2e8f0; box-shadow: inset 2px 0 0 #475569;
+}
+.cb-journey:is(.cb-jv-a, .cb-jv-b, .cb-jv-c) .cb-gallery-tile:hover { border-color: #cbd5e1; }
+.cb-journey:is(.cb-jv-a, .cb-jv-b, .cb-jv-c) .cb-gallery-tile .cb-tile-rank { background: rgba(51, 65, 85, 0.85); }
+.cb-journey:is(.cb-jv-a, .cb-jv-b, .cb-jv-c) .cb-jsp-kept { color: #64748b; }
+"""
+
 
 def ensure_assets_loaded() -> None:
     """Inject the stylesheet once per client. The Species page (built with the workspace)
@@ -1605,4 +1672,4 @@ def ensure_assets_loaded() -> None:
     if getattr(client, "_cb_assets_loaded", False):
         return
     client._cb_assets_loaded = True
-    ui.add_head_html(f"<style>{_CB_CSS}</style>")
+    ui.add_head_html(f"<style>{_CB_CSS}{_JOURNEY_PASSES_CSS}</style>")
