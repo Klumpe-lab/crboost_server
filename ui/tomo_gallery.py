@@ -411,6 +411,7 @@ class TomoGalleryPage:
         self._overlay_keys: dict[str, tuple] = {}  # the layer ids each tile's overlay draws
         self._imgs: dict[str, Any] = {}  # each tile's <img>, re-pointed on a source switch
         self._chips: dict[str, Any] = {}  # each tile's 3dmod chip slot
+        self._captions: dict[str, Any] = {}  # each tile's caption numbers, compact at the smallest size
         self._prefetched: set[str] = set()
         self.tab: str = TOMOGRAMS_TAB
         self._tab_chosen = False
@@ -750,18 +751,19 @@ class TomoGalleryPage:
         if not self.rows:
             self._render_empty()
             return
-        width = next(w for k, _lbl, w in _SIZES if k == self.size)
         kicks = 0
-        self._tiles, self._pictures, self._imgs, self._chips = {}, {}, {}, {}
+        self._tiles, self._pictures, self._imgs, self._chips, self._captions = {}, {}, {}, {}, {}
         self._overlays, self._overlay_keys = {}, {}
-        with (
-            ui.element("div")
-            .classes("cb-gal-grid")
-            .style(f"grid-template-columns: repeat(auto-fill, minmax({width}px, 1fr));")
-        ):
+        grid = ui.element("div").classes("cb-gal-grid").style(self._grid_columns())
+        self._refs["grid"] = grid
+        with grid:
             for row in self.rows:
                 kicks += self._render_tile(row, kicked=kicks < _MAX_KICKS_PER_RENDER)
         self._prefetch_other_sources()
+
+    def _grid_columns(self) -> str:
+        width = next(w for k, _lbl, w in _SIZES if k == self.size)
+        return f"grid-template-columns: repeat(auto-fill, minmax({width}px, 1fr));"
 
     def _render_empty(self) -> None:
         with ui.element("div").classes("cb-empty"):
@@ -793,7 +795,8 @@ class TomoGalleryPage:
         with ui.element("div").classes("cb-gal-cap"):
             ui.label(row["label"]).classes("cb-gal-name").tooltip(row["ts"])
             if group is not None:
-                ui.html(tomogram_caption_html(group, compact=self.size == "s"), sanitize=False).style("flex: 0 0 auto;")
+                caption = ui.html(tomogram_caption_html(group, compact=self.size == "s"), sanitize=False)
+                self._captions[row["ts"]] = caption.style("flex: 0 0 auto;")
         return spent
 
     def _render_slice_frame(self, row: dict, group: dict | None, *, kicked: bool) -> int:
@@ -1007,12 +1010,21 @@ class TomoGalleryPage:
         self._prefetch_other_sources()
 
     def _select_size(self, key: str) -> None:
+        was_compact = self.size == "s"
         self.size = key
         self._refs["seg_size"].set_active(key)
-        # The tilt cards follow by one CSS variable; only the wall re-renders.
+        # The tilt cards follow by one CSS variable; the wall by its column width and, across the
+        # smallest size, its captions, set in place: a re-render would rebuild every tile.
         self.tilt_gallery.set_size(key)
-        if self.tab != TILTS_TAB:
-            self._rerender_body()
+        grid = self._refs.get("grid")
+        if grid is None or grid.is_deleted:
+            return  # the wall is not showing; its next render reads `self.size`
+        grid.style(self._grid_columns())
+        if (key == "s") != was_compact:
+            for ts, caption in self._captions.items():
+                group = self._group_by_ts.get(ts)
+                if group is not None and not caption.is_deleted:
+                    caption.content = tomogram_caption_html(group, compact=key == "s")
 
     def _select_tab(self, key: str) -> None:
         self.tab = key

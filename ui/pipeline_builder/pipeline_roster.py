@@ -249,6 +249,9 @@ class RosterWidget(FingerprintedView):
         for iid, jm in jobs.items():
             if not is_array_job(jm):
                 continue
+            # Expanded while running until the user toggles it. Seeded here, not in render(): a key
+            # render() adds moves this signature, and the next refresh repaints the whole roster.
+            self._expanded_instances.setdefault(iid, jm.execution_status == JobStatus.RUNNING)
             status = array_status_cache.get(ui_mgr.project_path, iid)
             self._array_progress_cache[iid] = status.progress if status is not None else None
             if status is not None and self._expanded_instances.get(iid):
