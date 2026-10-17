@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import re
 from collections.abc import Callable
 from functools import partial
 from pathlib import Path
@@ -73,7 +74,6 @@ from ui.components.segmented import Segmented, render_segmented
 from ui.current_project import current_project_state
 from ui.dashboard.css import ensure_assets_loaded
 from ui.dashboard.figures import (
-    JOURNEY_THEME,
     _is_meaningful_series,
     _safe_floats,
     _stats,
@@ -81,6 +81,14 @@ from ui.dashboard.figures import (
     build_empty_chart,
     build_motion_track_chart,
     build_per_tilt_chart,
+)
+from ui.dashboard.journey_style import (
+    STYLE_LABELS,
+    JourneyStyle,
+    journey_style,
+    journey_theme,
+    set_journey_style,
+    style_classes,
 )
 from ui.dashboard.pixel_sanity import render_pixel_sanity_table
 from ui.dashboard.strip import build_strip
@@ -215,15 +223,24 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
     ensure_assets_loaded()
 
     container.clear()
-    # The Journey's own type and chart tiles hang off this class (ui/dashboard/css.py).
+    # The Journey's own type and chart tiles hang off this class, its style pass off
+    # cb-jv-<pass> (ui/dashboard/css.py).
     container.classes(add="cb-journey")
+
+    def _apply_style_class() -> None:
+        remove, add = style_classes(journey_style())
+        container.classes(remove=remove, add=add)
+
+    _apply_style_class()
     with container:
         # Column layout: one thin header line about the selected tilt series (its
-        # dropdown holds the whole-project overview) with the section selector at
-        # its right end, and the selected TS's detail pane below.
+        # dropdown holds the whole-project overview) with the style select and the
+        # section selector at its right end, and the selected TS's detail pane below.
         with ui.element("div").classes("cb-jhead"):
             strip_container = ui.element("div").classes("cb-jhead-left")
-            panel_toggle_container = ui.element("div").classes("cb-jhead-right")
+            with ui.element("div").classes("cb-jhead-right"):
+                style_host = ui.element("div").style("display: flex; align-items: center; margin-right: 10px;")
+                panel_toggle_container = ui.element("div").style("display: flex;")
         main_area = (
             ui.element("div")
             .classes("cb-main")
@@ -295,6 +312,8 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             job_states,
             _registry_sig(),
             _selected_panel(),
+            # The style pass: another tab of this browser may have switched it.
+            journey_style(),
             # A fresh species with no rows yet must still surface as a species tab.
             state.species_identity(),
             pick_lists_sig,
@@ -308,6 +327,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         if not force and _main_sig["sig"] is not None and sig == _main_sig["sig"]:
             return
         _main_sig["sig"] = sig
+        _apply_style_class()
         main_area.clear()
         with main_area:
             if selected["ts"] is None:
@@ -472,6 +492,28 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         _refresh_req["quiet"] = 0
 
     _build_panel_selector(panel_toggle_container, render_main)
+
+    async def _switch_style(e) -> None:
+        # The charts are built on the server, so a pass flip rebuilds the pane in it.
+        set_journey_style(JourneyStyle(e.value))
+        _apply_style_class()
+        await refresh_all(force_main=True)
+
+    with style_host:
+        ui.label("style").classes("cb-gal-toolbar-label").tooltip(
+            "Temporary: switch between three looks for the Journey to pick one."
+        )
+        (
+            ui.select(
+                {str(s): label for s, label in STYLE_LABELS.items()},
+                value=str(journey_style()),
+                on_change=_switch_style,
+            )
+            .props('dense popup-content-class="cb-select-popup"')
+            .classes("cb-field")
+            .style("width: 78px;")
+        )
+
     # The first paint collects off the loop too; the page shows its spinner meanwhile.
     with main_area, ui.element("div").classes("cb-empty"):
         ui.spinner(size="lg", color="#94a3b8")
@@ -1041,6 +1083,21 @@ def _stat_tiles(rows: list[tuple]) -> None:
 _PLOT_HEIGHT = "height: var(--cb-plot-h, 240px);"
 
 
+def _axis_unit(options: dict) -> str | None:
+    """The unit in the y axis name's trailing parenthesis ("Defocus (µm)" → "µm")."""
+    y_axis = options.get("yAxis")
+    found = re.search(r"\(([^()]+)\)\s*$", str(y_axis.get("name") or "")) if isinstance(y_axis, dict) else None
+    return found.group(1) if found else None
+
+
+def _without_axis_names(options: dict) -> dict:
+    for key in ("xAxis", "yAxis"):
+        axis = options.get(key)
+        if isinstance(axis, dict) and axis.get("name"):
+            axis["name"] = ""
+    return options
+
+
 def _plot_cell(
     label: str, options: dict, *, hint: str | None = None, on_select: Callable[[str], None] | None = None
 ) -> ui.echart:
@@ -1048,7 +1105,12 @@ def _plot_cell(
     explainer `hint` is its tooltip) over an ECharts plot that fills the tile.
     `on_select(frame_basename)` fires when a point is clicked or hovered (throttled;
     chart data rows carry the frame at slot 3 — see figures.py) so a companion
-    tile (the CTF-fit panel) can follow the tilt under the cursor."""
+    tile (the CTF-fit panel) can follow the tilt under the cursor. A style pass
+    without axis names folds the y unit into the title instead."""
+    if not journey_theme().axis_names:
+        unit = _axis_unit(options)
+        label = f"{label} · {unit}" if unit else label
+        _without_axis_names(options)
     with ui.element("div").classes("cb-plot-cell"):
         lbl = ui.label(label).classes("cb-plot-label")
         if hint:
@@ -1224,7 +1286,7 @@ def _render_ctf_motion_plots(
                 customdata=cd,
                 y_unit=" µm",
                 y_range=(0.0, 10.0),
-                theme=JOURNEY_THEME,
+                theme=journey_theme(),
             )
             _plot_cell("Defocus", fig, hint=_HINT_DEFOCUS, on_select=on_select_tilt)
         if has_astig:
@@ -1237,7 +1299,7 @@ def _render_ctf_motion_plots(
                     customdata=cd,
                     y_unit=" Å",
                     y_range=(0.0, 1500.0),
-                    theme=JOURNEY_THEME,
+                    theme=journey_theme(),
                 )
                 _plot_cell("Astigmatism", fig, hint=_HINT_ASTIG, on_select=on_select_tilt)
         if res is not None:
@@ -1248,7 +1310,7 @@ def _render_ctf_motion_plots(
                 customdata=cd,
                 y_unit=" Å",
                 y_range=(0.0, 30.0),
-                theme=JOURNEY_THEME,
+                theme=journey_theme(),
             )
             _plot_cell("CTF fit resolution", fig, hint=_HINT_CTF_RES, on_select=on_select_tilt)
 
@@ -1288,7 +1350,7 @@ def _render_alignment_plots(df: pd.DataFrame, cd: list[list]) -> None:
                     y_label="Shift (Å)",
                     customdata=cd,
                     y_unit=" Å",
-                    theme=JOURNEY_THEME,
+                    theme=journey_theme(),
                 )
                 _plot_cell("Refined shift", fig, hint=_HINT_SHIFT)
         offsets = _tilt_offsets(df, tilts)
@@ -1299,7 +1361,7 @@ def _render_alignment_plots(df: pd.DataFrame, cd: list[list]) -> None:
                 y_label="Tilt offset (°)",
                 customdata=cd,
                 y_unit="°",
-                theme=JOURNEY_THEME,
+                theme=journey_theme(),
             )
             _plot_cell("Tilt offset", fig, hint=_HINT_TILT_OFFSET)
         if "rlnTomoZRot" in df.columns:
@@ -1312,7 +1374,7 @@ def _render_alignment_plots(df: pd.DataFrame, cd: list[list]) -> None:
                     y_label="Tilt axis (°)",
                     customdata=cd,
                     y_unit="°",
-                    theme=JOURNEY_THEME,
+                    theme=journey_theme(),
                 )
                 _plot_cell("Tilt-axis rotation", fig, hint=_HINT_TILT_AXIS)
 
@@ -1329,7 +1391,7 @@ def _render_alignment_plots(df: pd.DataFrame, cd: list[list]) -> None:
                 [{"name": "Mean intensity", "y": intensity}],
                 y_label="Mean intensity (a.u.)",
                 customdata=cd,
-                theme=JOURNEY_THEME,
+                theme=journey_theme(),
             )
             _plot_cell("Mean tilt intensity", fig, hint=_HINT_INTENSITY)
         if _is_meaningful_series(fov):
@@ -1339,7 +1401,7 @@ def _render_alignment_plots(df: pd.DataFrame, cd: list[list]) -> None:
                 y_label="Field-of-view fraction",
                 customdata=cd,
                 y_range=(0.9, 1.0),
-                theme=JOURNEY_THEME,
+                theme=journey_theme(),
             )
             _plot_cell("Field-of-view fraction", fig, hint=_HINT_FOV)
         if _is_meaningful_series(masked):
@@ -1349,7 +1411,7 @@ def _render_alignment_plots(df: pd.DataFrame, cd: list[list]) -> None:
                 y_label="Masked fraction",
                 customdata=cd,
                 y_range=(0.0, 0.1),
-                theme=JOURNEY_THEME,
+                theme=journey_theme(),
             )
             _plot_cell("Masked fraction", fig, hint=_HINT_MASKED)
 
@@ -1368,9 +1430,12 @@ class _CtfFitPanel:
         self._pos_by_frame = {frame: i for i, (_t, _i, frame, _l) in enumerate(self._entries)}
         # Start at the tilt nearest 0° — the best-fit reference of the series.
         self._pos = min(range(len(self._entries)), key=lambda i: abs(self._entries[i][0]))
+        # Read once: scrubbing and hovering rebuild the chart in the pass it was built in.
+        self._theme = journey_theme()
+        title = "CTF fit" if self._theme.axis_names else "CTF fit · 1/Å"
         with ui.element("div").classes("cb-plot-cell"):
             with ui.element("div").style("display: flex; align-items: center; gap: 10px; padding: 0 2px 2px;"):
-                ui.label("CTF fit").classes("cb-plot-label").tooltip(hint)
+                ui.label(title).classes("cb-plot-label").tooltip(hint)
                 # Slate on a 2 px track with a small thumb (`.cb-fit-slider`, ui/dashboard/css.py).
                 self._slider = (
                     ui.slider(
@@ -1415,14 +1480,15 @@ class _CtfFitPanel:
             return build_empty_chart("No CTF-fit curves in the Warp XML for this tilt")
         self._readout.text = f"{readout} · {fit.defocus_um:.2f} µm"
         freq, measured, model = normalized_overlay(fit)
-        return build_ctf_fit_chart(
+        opts = build_ctf_fit_chart(
             freq,
             measured,
             model,
             fit_res_a=fit.ctf_resolution_a,
             fit_window_inv_a=fit_window_inv_a(fit),
-            theme=JOURNEY_THEME,
+            theme=self._theme,
         )
+        return opts if self._theme.axis_names else _without_axis_names(opts)
 
 
 def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Path, refresh) -> bool:
@@ -1524,13 +1590,13 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
                 if _is_meaningful_series(motion_series, threshold=1e-4):
                     series = [{"name": "Mean frame motion", "y": motion_series}]
                     fig = build_per_tilt_chart(
-                        tilts, series, y_label="Mean frame motion", customdata=cd, theme=JOURNEY_THEME
+                        tilts, series, y_label="Mean frame motion", customdata=cd, theme=journey_theme()
                     )
                     _plot_cell("Beam-induced motion", fig, hint=_HINT_MOTION, on_select=_select)
                 if tracks:
                     _plot_cell(
                         "Motion trajectories",
-                        build_motion_track_chart(tracks, theme=JOURNEY_THEME),
+                        build_motion_track_chart(tracks, theme=journey_theme()),
                         hint=_HINT_MOTION_TRACK,
                         on_select=_select,
                     )
@@ -1555,7 +1621,7 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
                         customdata=cd,
                         y_unit=" µm",
                         y_range=(0.0, 0.5),
-                        theme=JOURNEY_THEME,
+                        theme=journey_theme(),
                     )
                     _plot_cell("Defocus spread across image", fig, hint=_HINT_DEFOCUS_SPREAD, on_select=_select)
                 if entries:
@@ -1859,7 +1925,7 @@ def _render_tilt_qc_section(ts_name: str, project_state, project_path: Path, ref
                 if def_fit is not None:
                     series.append({"name": "Linear fit", "y": def_fit, "ref": True})
                 fig = build_per_tilt_chart(
-                    def_tilts, series, y_label="Defocus (µm)", customdata=def_cd, y_unit=" µm", theme=JOURNEY_THEME
+                    def_tilts, series, y_label="Defocus (µm)", customdata=def_cd, y_unit=" µm", theme=journey_theme()
                 )
                 _plot_cell("Through-focus", fig, hint=_HINT_THROUGHFOCUS)
             if sh_mag is not None:
@@ -1869,7 +1935,7 @@ def _render_tilt_qc_section(ts_name: str, project_state, project_path: Path, ref
                     y_label="Shift (Å)",
                     customdata=sh_cd,
                     y_unit=" Å",
-                    theme=JOURNEY_THEME,
+                    theme=journey_theme(),
                 )
                 _plot_cell("Shift magnitude", fig, hint=_HINT_SHIFT)
     return True

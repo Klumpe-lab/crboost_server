@@ -1,7 +1,7 @@
 # Roadmap 35 — Views you can resize, and a quiet Journey
 
-**Status:** scoped 2026-10-17 from reading main (`cb8d419`); §3 decided 2026-10-17; S1–S3 built 2026-10-17 in the
-main tree, not run (§7). S1–S2 are the workspace, S3–S5 the Journey.
+**Status:** scoped 2026-10-17 from reading main (`cb8d419`); §3 decided 2026-10-17; S1–S4 built 2026-10-17 in the
+main tree, not run (§7); S5 waits for the maintainer's pick. S1–S2 are the workspace, S3–S5 the Journey.
 
 ## Asked (maintainer, 2026-10-17)
 
@@ -229,16 +229,59 @@ smallest commit and can land first.
 
 ## 5. Runtime checklist
 
-After restarting `python main.py` and a hard reload:
+After restarting `python main.py` and a hard reload, on `AGG412_20260311_MyrGFP_Grid2` (two reconstruct versions,
+two picking arms). The Plotly charts only draw in the scatter fallback (a species or tilt series with picks but no
+cutout atlas); the denoise switch only shows when two denoise methods have a result for the tilt series.
 
-1. Open Jobs, Tomograms and the Journey: no gutter on the right of any view; each cross sits in its corner over
-   nothing.
-2. Drag the Tomograms | Journey boundary; reload; close and reopen Tomograms: the widths stay. The charts re-fit
-   when the drag ends.
-3. Open the Journey on a fully processed project with every section on, and flip `style` through A, B and C on the
-   same tilt series.
-4. In each pass: Reconstruct's version and denoise switches, Invert, score colouring, sort, the dropped-tilts list,
-   the CTF-fit scrubber, and chart hover (the fit follows the tilt under the cursor) all still work.
+0. **Fonts reach the browser.** DevTools console:
+   `[...document.fonts].filter(f => f.family.includes('Plex') && f.status === 'loaded').length`. If it is 0, the
+   module-level `ui.add_head_html` blocks (`main.py`, `ui/main_ui.py`) never arrive and every Plex rule renders in
+   the fallback faces; the one-pair look then needs the fonts loaded from `ensure_assets_loaded` (app-wide).
+1. **S1.** Open Jobs, the pipeline table, the Particles registry, Tomograms, the Journey, Protocols and the pick
+   viewer: no gutter on the right of any; each cross sits in its corner, nothing under it on the first line, grey,
+   slate on hover; a click closes the view.
+2. **S2.** Drag the Tomograms | Journey boundary: it follows the pointer and stops at 260 px a side; on release the
+   Particles section's Plotly charts re-fit (ECharts follow live: note any judder with every section on). Reload
+   and reopen the same views, then close and reopen Tomograms: the widths stay. A double-click on the boundary
+   splits the pair evenly. Release a drag over the molstar viewer (Particles registry · Templates & masks): the
+   drag ends on the next move.
+3. **S3, in every pass.** Reconstruct's `version` strip (two versions, and `compare`) switches the previews;
+   `polarity raw | inverted` flips the slabs and the cutouts; the display filter's TYPE / PARAM (the `tune`
+   popover) and the gallery sort (`sort` popover) are 16 px house selects with the house popup; the dropped-tilts
+   caret folds the list; the CTF-fit scrubber is a slate 2 px track with a small thumb, and hovering a Motion & CTF
+   chart point moves the fit to that tilt (only those tiles drive it); species tabs have a slate indicator and no
+   tinted fill; the render-previews / re-render / IMOD icons, the toolbelt and the header ⓘ are grey with a slate
+   hover; spinners are grey; the header's stage dots run blue and fail red. Every tile in a row has the same width
+   and one alone keeps it; mean frame motion is markers only. Computed fonts on a datadump value, a chip, the pixel
+   table, a cutout tile's labels and an axis tick: Plex Sans / Plex Mono only.
+4. **S4.** On one tilt series flip `style` A → B → C. Changing together: the header's species mark (grey glyph in
+   A and B, half-saturated colour in C), the section chrome (none / none / pale panels), titles (B: grey uppercase,
+   stats on the title line), the tile size (150 / 116 / 170 px), chart labels (B: `Defocus · µm`, no axis names),
+   markers, reference lines (B dotted), the motion trajectories' ramp, the hovered point, the Plotly picks and
+   histogram, the dropped tilts' angles in red. Unchanged: the slabs' pick dots, the pick lists' swatches, the
+   Tomograms wall, the full-page pick viewer, the tilt-filter job page, the Species page's Analytics charts. The
+   pass survives a reload.
+5. **Narrow** the Journey to 260 px in each pass: the charts stay inside the pane and the CTF-fit header line cuts
+   its readout short rather than spilling.
+
+Open, not settled by reading:
+
+- Plain `.tooltip()`s and every pop-up (menus, the TS switcher, select popups) sit under `<body>`, outside the
+  Journey's root: they keep Quasar's body font and the baseline in every pass.
+- ECharts draws text on a canvas: on a cold load before Plex arrives, ticks and names can stay in the fallback until
+  the next redraw (`renderer="svg"` in `_plot_cell` and the CTF panel would avoid it).
+- The hover card (with its 336 px tilt image) clamps to its tile, so on the smaller tiles it hangs below the chart
+  and can run off the window near the bottom edge.
+- `static/main.css` styles `.cb-collapsible-header` uppercase at 11 px with `!important`; if that file starts being
+  served, the Dataset header and the dropped-tilts fold change with it.
+- Toggling views on and off changes their widths without a window `resize`, so Plotly charts keep a stale width
+  until the next one (older than S2; S2 dispatches one on release and on double-click only). Stored weights can
+  open a view below 260 px when a different set of views is on.
+- Not in the S4 table, chosen here: B's third series (hollow `#94a3b8`, as A's), C's gap between panels (10 px),
+  the CTF fit's per-pass colours, the 22 / 10 px plot-rect tops.
+- A failed job's status word in a section header is amber, like every non-succeeded status (one class).
+- Sub-titles (a pick list's header, `Subtomo gallery`, `Pick distribution`) share `.cb-section-title`: 12 px like
+  the section titles, and B's toolbar voice reaches them too.
 
 ## 6. Not in scope
 
@@ -314,3 +357,32 @@ After restarting `python main.py` and a hard reload:
     are `.cb-plot-label`.
   - §1.3 is wrong on one row: there is no "score colouring" select; the three selects are the cutout display
     filter's TYPE and PARAM and the gallery sort. The exclude-not-extracted checkbox shows only on the full page.
+- **S4, 2026-10-17 (not run).**
+  - *Switch.* `ui/dashboard/journey_style.py` (new, deletes whole in S5): `JourneyStyle(StrEnum)` `a | b | c`, read
+    from and written to `app.storage.user["journey_style"]` (A when unset or unknown), `journey_theme()` →
+    `figures.CHART_THEMES[...]`, and the root's class pair. In the header, `.cb-jhead-right` now holds its own host
+    for a `style` toolbar label + a 78 px `.cb-field` select (`A · ledger | B · dense | C · soft`, `cb-select-popup`)
+    ahead of the section switch's host (`_build_panel_selector` clears its host, so the select cannot share it). A
+    change stores the pass, swaps `cb-jv-a|b|c` on the root and runs `refresh_all(force_main=True)` (collects in a
+    thread, then `render_main(force=True)`). `render_main` re-applies the class and `_main_signature` carries the
+    pass, so a second tab of the same browser comes round on its next rebuild.
+  - *Charts.* Every Journey chart build calls `journey_theme()` (15 sites); the CTF-fit panel reads it once at
+    build, so scrubbing and hovering stay in the pass it was built in. The Particles scatter fallback takes
+    `theme=journey_theme()` in the Journey (`mode="slim"`) and `JOURNEY_THEME` on the full page.
+    `CHART_THEMES = {"a", "b", "c"}` in `figures.py` are `JOURNEY_THEME` with the table's tokens; B also sets
+    `axis_names=False` (new token): `_plot_cell` then blanks both axis names and folds the y name's unit into the
+    title (`Defocus · µm`; none where the name has none), and the CTF-fit tile titles itself `CTF fit · 1/Å`. The
+    CTF fit's measured / model colours are per pass (A slate / light slate, B grey / light grey, C blue-grey /
+    sand). Plot-rect top: 22 px in A and C (9 px names), 10 px in B.
+  - *CSS.* `_JOURNEY_PASSES_CSS` in `ui/dashboard/css.py`, injected right after `_CB_CSS` by
+    `ensure_assets_loaded`, every rule under `.cb-journey.cb-jv-*`: the tile tokens, the section chrome on the
+    top-level cards (`.cb-main > .cb-section-card`; a card nested in a section is plain in every pass), B's
+    toolbar-label titles and one-line stats beside them (flex on cards `:has(> .cb-stats)`), the chart labels,
+    species on light chrome (A and B the roster's `particle.svg` as a grey mask on the header dot, the species tab
+    dot and the pixel table's species stripe; C `saturate(0.5)`), and in every pass the dropped tilts' angles in red
+    out of the amber box, the selected pick-list row / cutout hover ring / rank tag / kept count in slate and the
+    list table without its box.
+  - *Not done, by design or open.* There is no linked-tilt highlight to style (only the hovered point, and the
+    CTF-fit panel following it). B's third series (Refined shift has three) is not in the table: hollow `#94a3b8`,
+    as A's. The pick lists' swatches keep their colours in every pass: they are the slab dots' legend. Pop-ups
+    (menus, tooltips, the TS switcher) live under `<body>` and keep the baseline.

@@ -58,7 +58,14 @@ from ui.components.buttons import house_button
 from ui.components.reactive import SingleFlight
 from ui.components.segmented import render_segmented
 from ui.current_project import current_project_state
-from ui.dashboard.figures import JOURNEY_THEME, _build_score_hist_fig, _build_xy_scatter_fig, _build_xz_scatter_fig
+from ui.dashboard.figures import (
+    JOURNEY_THEME,
+    ChartTheme,
+    _build_score_hist_fig,
+    _build_xy_scatter_fig,
+    _build_xz_scatter_fig,
+)
+from ui.dashboard.journey_style import journey_theme
 from ui.particles import list_actions
 from ui.particles.list_actions import extraction_badge
 
@@ -2590,7 +2597,9 @@ def _render_species_auto_section(
     # No subtomo cutouts in the manifest — scatter fallback (its own mini X/Y +
     # X/Z plots). Whether an extraction job exists decides which of two very
     # different situations this is, so the fallback says which.
-    _render_picks_scatter_section(row, entry, manifest, sp.get("subtomo_job_dir") is not None)
+    # The Journey's charts follow its style pass; the full page has no pass of its own.
+    theme = journey_theme() if mode == "slim" else JOURNEY_THEME
+    _render_picks_scatter_section(row, entry, manifest, sp.get("subtomo_job_dir") is not None, theme=theme)
 
 
 def _render_zero_picks_empty_state(manifest: dict, species_name: str | None) -> None:
@@ -3719,7 +3728,9 @@ def _render_gallery_body(
         ui.run_javascript(bridge_js)
 
 
-def _render_picks_scatter_section(row: dict, entry: dict, manifest: dict, has_subtomo_job: bool = False) -> None:
+def _render_picks_scatter_section(
+    row: dict, entry: dict, manifest: dict, has_subtomo_job: bool = False, *, theme: ChartTheme = JOURNEY_THEME
+) -> None:
     """Scatter-only fallback: X/Y + X/Z + score histogram. Renders only when
     the gallery isn't available.
 
@@ -3766,7 +3777,7 @@ def _render_picks_scatter_section(row: dict, entry: dict, manifest: dict, has_su
             with ui.column().classes("gap-1").style(f"flex: 1 1 320px; min-width: 280px; max-width: {xy_max_w}px;"):
                 ui.label("X / Y top-down").classes("cb-plot-label").style("cursor: default;")
                 with ui.element("div").classes("cb-aspect").style(f"aspect-ratio: {xy_aspect};"):
-                    xy_plot = ui.plotly(_build_xy_scatter_fig(picks, tomo_dims, score_field, JOURNEY_THEME)).style(
+                    xy_plot = ui.plotly(_build_xy_scatter_fig(picks, tomo_dims, score_field, theme)).style(
                         "width: 100%; height: 100%;"
                     )
             with (
@@ -3776,11 +3787,11 @@ def _render_picks_scatter_section(row: dict, entry: dict, manifest: dict, has_su
             ):
                 ui.label("X / Z side").classes("cb-plot-label").style("cursor: default;")
                 with ui.element("div").classes("cb-aspect").style(f"aspect-ratio: {xz_aspect};"):
-                    xz_plot = ui.plotly(
-                        _build_xz_scatter_fig(picks, tomo_dims, score_field, xz_url, JOURNEY_THEME)
-                    ).style("width: 100%; height: 100%;")
+                    xz_plot = ui.plotly(_build_xz_scatter_fig(picks, tomo_dims, score_field, xz_url, theme)).style(
+                        "width: 100%; height: 100%;"
+                    )
                 ui.label("Score distribution").classes("cb-plot-label").style("cursor: default;")
-                ui.plotly(_build_score_hist_fig(picks, score_field, JOURNEY_THEME)).style("width: 100%; height: 160px;")
+                ui.plotly(_build_score_hist_fig(picks, score_field, theme)).style("width: 100%; height: 160px;")
                 ui.label("Hovered pick").classes("cb-plot-label").style("cursor: default;")
                 hover_labels = _render_hover_card_skeleton()
 
