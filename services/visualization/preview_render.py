@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -297,6 +298,9 @@ def render_xy_slab_preview(
 # missing-wedge streaks aren't an issue at this scale.
 # ---------------------------------------------------------------------------
 
+# Particle stacks read at once per atlas.
+_STACK_READERS = 4
+
 
 def render_pick_cutouts_atlas(
     pick_to_mrcs: list,
@@ -334,15 +338,23 @@ def render_pick_cutouts_atlas(
 
     # Preload one 2D float mean-frame per pick (None where there's no subtomo or
     # the read fails) plus a precise failure reason, and the header pixel size.
+    # The reads wait on the file system (a stack per pick, ~5 MB each), so a few run at once.
+    with ThreadPoolExecutor(max_workers=_STACK_READERS) as readers:
+        loaded = list(
+            readers.map(
+                lambda info: _load_subtomo_mean_frame(info["mrcs"], info.get("visible_frames")) if info else None,
+                pick_to_mrcs,
+            )
+        )
     frames: list = []
     fail_info: list = []
     apix_header: float | None = None
-    for info in pick_to_mrcs:
+    for info, result in zip(pick_to_mrcs, loaded, strict=True):
         if info is None:
             frames.append(None)
             fail_info.append({"reason": "no subtomo match"})
             continue
-        arr, err, apix = _load_subtomo_mean_frame(info["mrcs"], info.get("visible_frames"))
+        arr, err, apix = result
         frames.append(arr)
         if arr is None:
             fail_info.append({"reason": err or "render failed", "mrcs": str(info["mrcs"])})

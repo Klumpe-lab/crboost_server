@@ -13,11 +13,16 @@ for projects with hundreds of tomograms.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
+import multiprocessing
+import os
 import uuid
 from pathlib import Path
 from collections.abc import Callable
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
 
 import numpy as np
 
@@ -78,6 +83,11 @@ MANIFEST_VERSION = 14  # v14: cutout filter presets expanded to denoise/local-co
 #     from "never ran". The dashboard reads this list to render a "zero"
 #     pill state. Derived by scanning the upstream `tomograms.star` for
 #     tomos missing from `particles.star`'s `rlnTomoName` column.
+
+# Tomograms a server-side pass renders at once, each in a process of its own: the cutout filters
+# are CPU-bound per pick, and reading the particle stacks waits on the file system. A large
+# tomogram (~2000 picks) holds about 1 GB while its atlases render.
+_PASS_PROCESSES = 8
 
 SCORE_COL_PRIORITY = ("rlnLCCmax", "rlnAutopickFigureOfMerit", "rlnMaxValueProbDistribution")
 
@@ -193,6 +203,94 @@ def _render_one_tomogram(
     }
 
 
+def _render_tomogram(
+    tomo_name: str,
+    tomo_row,
+    tomo_particles,
+    score_col: str | None,
+    mrc_path: Path | None,
+    project_root: Path | None,
+    tomo_out_dir: Path,
+    tomo_index: dict,
+    join_cutouts: bool,
+) -> dict:
+    """One tomogram's manifest entry: picks.json, the slab previews and the cutout atlases.
+    Module-level so a pass can run several tomograms in processes of their own.
+
+    `tomo_index` is this tomogram's part of `build_pick_to_mrcs_index`; `join_cutouts` says
+    the project has extraction data at all (then a tomogram without any still records why
+    each pick has no tile)."""
+    pixel_size = _get_pixel_size(tomo_row)
+    tomo_size = _get_binned_tomo_size(tomo_row, project_root=project_root)
+    coords = _get_imod_coords(tomo_particles, tomo_size, pixel_size)
+    scores = tomo_particles[score_col].values.astype(float) if score_col else None
+
+    # Pull centered-Å coords for the subtomo lookup. Same column names
+    # as the SUBTOMO_EXTRACTION job uses, so we get exact-match keys.
+    ang_cols = ("rlnCenteredCoordinateXAngst", "rlnCenteredCoordinateYAngst", "rlnCenteredCoordinateZAngst")
+    coords_ang = None
+    if all(c in tomo_particles.columns for c in ang_cols):
+        coords_ang = tomo_particles[list(ang_cols)].values.astype(float)
+
+    # Score-desc sort applied here so the sprite-atlas index aligns
+    # with the post-sort pick indices in picks.json — write_picks_data
+    # repeats the same sort internally, producing the same order.
+    if scores is not None and len(scores):
+        order = np.argsort(-np.asarray(scores, dtype=float))
+    else:
+        order = np.arange(len(coords))
+    coords_ang_sorted = coords_ang[order] if coords_ang is not None else None
+
+    entry = _render_one_tomogram(
+        pick_coords_xyz=np.asarray(coords),
+        scores=scores,
+        score_field=score_col,
+        tomo_dims_xyz=tuple(int(v) for v in tomo_size),
+        pixel_size_ang=pixel_size,
+        out_dir=tomo_out_dir,
+    )
+    entry["tomo_mrc"] = str(mrc_path) if mrc_path else None
+    warp_png = _find_warp_tomo_preview(project_root, tomo_name, mrc_path)
+    entry["warp_tomo_preview"] = str(warp_png) if warp_png else None
+    entry["xz_preview"] = None
+    entry["xy_slab_preview"] = None
+    if mrc_path is not None:
+        xz_png = render_xz_slab_preview(mrc_path, tomo_out_dir / "xz_preview.png")
+        if xz_png is not None:
+            entry["xz_preview"] = str(xz_png)
+        xy_png = render_xy_slab_preview(mrc_path, tomo_out_dir / "xy_slab_preview.png")
+        if xy_png is not None:
+            entry["xy_slab_preview"] = str(xy_png)
+
+    # Per-pick cutout sprite atlas (joined to subtomo .mrcs via Å coords).
+    entry["cutout_atlas"] = None
+    entry["cutout_index"] = None
+    entry["cutout_n_ok"] = 0
+    entry["cutout_failures"] = []
+    entry["cutout_variants"] = {}
+    entry["cutout_apix"] = None
+    entry["cutout_apix_source"] = None
+    if coords_ang_sorted is not None and join_cutouts:
+        pick_to_mrcs = []
+        for x_a, y_a, z_a in coords_ang_sorted:
+            info = lookup_for_pick(tomo_index, tomo_name, x_a, y_a, z_a)
+            pick_to_mrcs.append(info)
+        # apix is read from the .mrcs header (the subtomo-extraction bin);
+        # no hint here — `pixel_size` is the RECON bin, a different scale.
+        meta = render_pick_cutouts_atlas(
+            pick_to_mrcs, tomo_out_dir / "cutout_atlas.png", tomo_out_dir / "cutout_index.json"
+        )
+        if meta is not None:
+            entry["cutout_atlas"] = meta["atlas_path"]
+            entry["cutout_index"] = meta["index_path"]
+            entry["cutout_n_ok"] = meta["n_ok"]
+            entry["cutout_failures"] = meta.get("failures") or []
+            entry["cutout_variants"] = meta.get("variants") or {}
+            entry["cutout_apix"] = meta.get("apix")
+            entry["cutout_apix_source"] = meta.get("apix_source")
+    return entry
+
+
 def _entry_outputs(entry: dict) -> list:
     out = []
     if entry.get("picks_json"):
@@ -217,8 +315,11 @@ def generate_candidate_previews(
     project_state=None,
     instance_id: str | None = None,
     job_model=None,
+    processes: int = 1,
 ) -> dict:
     """Build per-tomo picks.json + sprite-atlas + manifest for one extract job.
+
+    `processes` > 1 renders that many tomograms at once, each in a process of its own.
 
     `project_state` (optional) lets us walk the project's SUBTOMO_EXTRACTION
     jobs to build per-pick cutout atlases. Without it there are no atlases;
@@ -259,11 +360,15 @@ def generate_candidate_previews(
     # already cached an empty-cutout manifest. Built once so the per-tomo
     # loop is O(1) per entry.
     tomos_with_subtomo: set[str] = {k[0] for k in subtomo_index.keys()}
+    # The index cut per tomogram: each render is sent only its own part.
+    index_by_tomo: dict[str, dict] = {}
+    for key, info in subtomo_index.items():
+        index_by_tomo.setdefault(key[0], {})[key] = info
     # particles.star files behind the cutout join — added to per-tomo staleness
     # below so a preview cached mid-extraction rebuilds once the subtomo job
     # finishes (candidates.star, the only thing `sources` otherwise watches, is
     # unchanged by then).
-    subtomo_stars = subtomo_particles_stars(project_state, project_root) if project_state is not None else []
+    subtomo_stars = subtomo_particles_stars(project_state, project_root, output_dir)
 
     ok: list[str] = []
     skipped_cached: list[str] = []
@@ -295,7 +400,8 @@ def generate_candidate_previews(
         any tomogram this pass hasn't reached yet, so an interrupted pass never
         loses ground. Written tmp+replace so a kill mid-write can't truncate it.
         """
-        entries = dict(tomo_entries)
+        # In candidates.star order, whatever order the renders finish in.
+        entries = {name: tomo_entries[name] for name in tomo_names if name in tomo_entries}
         if partial:
             for name in tomo_names:
                 if name not in entries and name in prior_entries:
@@ -304,6 +410,9 @@ def generate_candidate_previews(
             "version": MANIFEST_VERSION,
             # Written by a pass that reached every tomogram (previews_up_to_date reads it).
             "complete": not partial,
+            # The extraction particles.star files the cutouts were joined against
+            # (previews_up_to_date compares them with the ones on disk now).
+            "cutout_sources": sorted(_source_tag(s) for s in subtomo_stars),
             "score_field": score_col,
             "particle_diameter_ang": float(particle_diameter_ang),
             "template": template_block,
@@ -323,6 +432,8 @@ def generate_candidate_previews(
         tmp_path.replace(manifest_path)
 
     total = len(tomo_names)
+    # This pass's tomograms, as `_render_tomogram` arguments; the cached ones are taken as they are.
+    todo: list[tuple] = []
     for i, tomo_name in enumerate(tomo_names):
         if progress_cb is not None:
             try:
@@ -372,83 +483,53 @@ def generate_candidate_previews(
                 tomo_entries[tomo_name] = prior_entry
                 continue
 
-        try:
-            pixel_size = _get_pixel_size(tomo_row)
-            tomo_size = _get_binned_tomo_size(tomo_row, project_root=project_root)
-            tomo_particles = particles_df[particles_df["rlnTomoName"] == tomo_name]
-            coords = _get_imod_coords(tomo_particles, tomo_size, pixel_size)
-            scores = tomo_particles[score_col].values.astype(float) if score_col else None
-
-            # Pull centered-Å coords for the subtomo lookup. Same column names
-            # as the SUBTOMO_EXTRACTION job uses, so we get exact-match keys.
-            ang_cols = ("rlnCenteredCoordinateXAngst", "rlnCenteredCoordinateYAngst", "rlnCenteredCoordinateZAngst")
-            coords_ang = None
-            if all(c in tomo_particles.columns for c in ang_cols):
-                coords_ang = tomo_particles[list(ang_cols)].values.astype(float)
-
-            # Score-desc sort applied here so the sprite-atlas index aligns
-            # with the post-sort pick indices in picks.json — write_picks_data
-            # repeats the same sort internally, producing the same order.
-            if scores is not None and len(scores):
-                order = np.argsort(-np.asarray(scores, dtype=float))
-            else:
-                order = np.arange(len(coords))
-            coords_ang_sorted = coords_ang[order] if coords_ang is not None else None
-
-            entry = _render_one_tomogram(
-                pick_coords_xyz=np.asarray(coords),
-                scores=scores,
-                score_field=score_col,
-                tomo_dims_xyz=tuple(int(v) for v in tomo_size),
-                pixel_size_ang=pixel_size,
-                out_dir=tomo_out_dir,
+        tomo_particles = particles_df[particles_df["rlnTomoName"] == tomo_name]
+        todo.append(
+            (
+                tomo_name,
+                tomo_row,
+                tomo_particles,
+                score_col,
+                mrc_path,
+                project_root,
+                tomo_out_dir,
+                index_by_tomo.get(tomo_name, {}),
+                bool(subtomo_index),
             )
-            entry["tomo_mrc"] = str(mrc_path) if mrc_path else None
-            warp_png = _find_warp_tomo_preview(project_root, tomo_name, mrc_path)
-            entry["warp_tomo_preview"] = str(warp_png) if warp_png else None
-            entry["xz_preview"] = None
-            entry["xy_slab_preview"] = None
-            if mrc_path is not None:
-                xz_png = render_xz_slab_preview(mrc_path, tomo_out_dir / "xz_preview.png")
-                if xz_png is not None:
-                    entry["xz_preview"] = str(xz_png)
-                xy_png = render_xy_slab_preview(mrc_path, tomo_out_dir / "xy_slab_preview.png")
-                if xy_png is not None:
-                    entry["xy_slab_preview"] = str(xy_png)
+        )
 
-            # Per-pick cutout sprite atlas (joined to subtomo .mrcs via Å coords).
-            entry["cutout_atlas"] = None
-            entry["cutout_index"] = None
-            entry["cutout_n_ok"] = 0
-            entry["cutout_failures"] = []
-            entry["cutout_variants"] = {}
-            entry["cutout_apix"] = None
-            entry["cutout_apix_source"] = None
-            if coords_ang_sorted is not None and subtomo_index:
-                pick_to_mrcs = []
-                for x_a, y_a, z_a in coords_ang_sorted:
-                    info = lookup_for_pick(subtomo_index, tomo_name, x_a, y_a, z_a)
-                    pick_to_mrcs.append(info)
-                # apix is read from the .mrcs header (the subtomo-extraction bin);
-                # no hint here — `pixel_size` is the RECON bin, a different scale.
-                meta = render_pick_cutouts_atlas(
-                    pick_to_mrcs, tomo_out_dir / "cutout_atlas.png", tomo_out_dir / "cutout_index.json"
-                )
-                if meta is not None:
-                    entry["cutout_atlas"] = meta["atlas_path"]
-                    entry["cutout_index"] = meta["index_path"]
-                    entry["cutout_n_ok"] = meta["n_ok"]
-                    entry["cutout_failures"] = meta.get("failures") or []
-                    entry["cutout_variants"] = meta.get("variants") or {}
-                    entry["cutout_apix"] = meta.get("apix")
-                    entry["cutout_apix_source"] = meta.get("apix_source")
+    n_taken = total - len(todo)  # cached, or missing from tomograms.star
+    n_rendered = 0
 
-            tomo_entries[tomo_name] = entry
-            ok.append(tomo_name)
+    def _finish(tomo_name: str, render: Callable[[], dict]) -> None:
+        nonlocal n_rendered
+        try:
+            entry = render()
+        except BrokenProcessPool:
+            raise  # a render process died (out of memory?): fail the pass, so it is retried
         except Exception as e:
             logger.warning("Preview render failed for %s: %s", tomo_name, e)
             errored.append({"tomo": tomo_name, "error": str(e)})
+        else:
+            tomo_entries[tomo_name] = entry
+            ok.append(tomo_name)
         _write_manifest(partial=True)
+        n_rendered += 1
+        if progress_cb is not None:
+            try:
+                progress_cb(n_taken + n_rendered, total, tomo_name)
+            except Exception:
+                pass
+
+    n_procs = min(processes, len(todo), os.cpu_count() or 1)
+    if n_procs <= 1:
+        for args in todo:
+            _finish(args[0], functools.partial(_render_tomogram, *args))
+    else:
+        with ProcessPoolExecutor(max_workers=n_procs, mp_context=multiprocessing.get_context("spawn")) as pool:
+            futures = {pool.submit(_render_tomogram, *args): args[0] for args in todo}
+            for future in as_completed(futures):
+                _finish(futures[future], future.result)
 
     if progress_cb is not None:
         try:
@@ -500,7 +581,8 @@ def generate_candidate_previews_for_job(
 ) -> dict:
     """`generate_candidate_previews` from paths alone, for a worker process: the project state
     (the subtomo jobs for the cutout atlases, the species for the template tile) is read from the
-    project's project_params.json, as the candidate-extract driver has it."""
+    project's project_params.json, as the candidate-extract driver has it. Renders `_PASS_PROCESSES`
+    tomograms at once."""
     from services.project_state import ProjectState
 
     state = ProjectState.load(Path(project_root) / "project_params.json")
@@ -516,14 +598,22 @@ def generate_candidate_previews_for_job(
         state,
         instance_id,
         state.jobs.get(instance_id),
+        processes=_PASS_PROCESSES,
     )
 
 
-def previews_up_to_date(job_dir: Path, sources: list[Path]) -> bool:
+def _source_tag(path: Path) -> str:
+    """`External/jobNNN/particles.star`: one extraction star however the project root is spelled."""
+    return "/".join(Path(path).parts[-3:])
+
+
+def previews_up_to_date(job_dir: Path, sources: list[Path], cutout_sources: list[Path]) -> bool:
     """Whether a job's preview manifest was written by a complete pass after every one of
-    `sources` last changed (candidates.star, tomograms.star, the subtomo jobs' particles.star):
-    then a "render missing" pass would only re-read all of them to skip every tomogram. For a
-    thread."""
+    `sources` (candidates.star, tomograms.star) and `cutout_sources` (the extraction jobs'
+    particles.star) last changed, and joined every one of `cutout_sources`: then a "render
+    missing" pass would only re-read all of them to skip every tomogram. An extraction job
+    that finished before the manifest was written but was not joined (it is new to the join)
+    makes it stale too. For a thread."""
     manifest_path = Path(job_dir) / PREVIEW_SUBDIR / MANIFEST_NAME
     try:
         manifest = json.loads(manifest_path.read_text())
@@ -531,4 +621,6 @@ def previews_up_to_date(job_dir: Path, sources: list[Path]) -> bool:
         return False
     if manifest.get("version") != MANIFEST_VERSION or not manifest.get("complete"):
         return False
-    return not is_output_stale(manifest_path, [Path(s) for s in sources])
+    if {_source_tag(s) for s in cutout_sources} - set(manifest.get("cutout_sources") or ()):
+        return False
+    return not is_output_stale(manifest_path, [Path(s) for s in (*sources, *cutout_sources)])
