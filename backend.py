@@ -1611,6 +1611,11 @@ class CryoBoostBackend:
                     jobs_dict: dict[str, Any] = {}
                     ts_count = 0
                     mnemonic = ""
+                    # As the project recorded them; None when it recorded none (never the model defaults).
+                    apix: float | None = None
+                    voltage_kv: float | None = None
+                    dose_per_tilt: float | None = None
+                    dose_source = ""
                     source_directory = ""
                     species: list[dict[str, str]] = []
                     review_hold: dict[str, Any] | None = None
@@ -1635,6 +1640,12 @@ class CryoBoostBackend:
                         total_jobs_planned = len(jobs_dict)
                         ts_count = data.get("import_selected_tilt_series") or data.get("import_total_tilt_series") or 0
                         mnemonic = data.get("mnemonic") or ""
+                        microscope = data.get("microscope") or {}
+                        acquisition = data.get("acquisition") or {}
+                        apix = microscope.get("pixel_size_angstrom")
+                        voltage_kv = microscope.get("acceleration_voltage_kv")
+                        dose_per_tilt = acquisition.get("dose_per_tilt")
+                        dose_source = acquisition.get("dose_per_tilt_source") or ""
                         # Registered particle species, so the roster can answer "which projects
                         # have a ribosome in them". id/name/color only.
                         species = [
@@ -1713,6 +1724,10 @@ class CryoBoostBackend:
                             "name": item.name,
                             "path": str(item),
                             "mnemonic": mnemonic,
+                            "apix": apix,
+                            "voltage_kv": voltage_kv,
+                            "dose_per_tilt": dose_per_tilt,
+                            "dose_source": dose_source,
                             "modified": mod_time.strftime("%Y-%m-%d %H:%M"),
                             "modified_timestamp": stats.st_mtime,
                             "created_at": created_at,
