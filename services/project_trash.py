@@ -5,21 +5,24 @@ Removing a finished job moves its directory to `Trash/<Top>_<jobNNN>`
 the trash is cleared. Nothing in ProjectState refers to a trashed job any more.
 
 `list_trash` sizes each entry the way the project sizer does (allocated blocks, symlinks never
-followed); `clear_trash` deletes named entries. Both block: callers run them off the event loop.
+followed); `clear_trash` deletes named entries, or all of them. Both block: callers run them off the
+event loop.
 """
 
 from __future__ import annotations
 
 import os
 import re
-import shutil
 import stat
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from services.background_tasks import ProgressCallback
 from services.jobs.spec import display_name
 from services.models_base import InstanceId, JobType
+from services.project_delete import delete_path
 from services.project_disk_usage import tree_bytes
 from services.result import err, ok
 
@@ -94,40 +97,35 @@ def list_trash(project_dir: Path) -> list[TrashEntry]:
     return entries
 
 
-def _delete_tree(path: Path) -> list[str]:
-    """rmtree that carries on past what it cannot delete and returns those paths with the reason."""
-    problems: list[str] = []
-    shutil.rmtree(path, onerror=lambda _fn, failed, exc_info: problems.append(f"{failed}: {exc_info[1]}"))
-    return problems
-
-
-def _delete_file(path: Path) -> list[str]:
-    try:
-        os.unlink(path)
-    except OSError as e:
-        return [f"{path}: {e}"]
-    return []
-
-
-def clear_trash(project_dir: Path, names: list[str]) -> dict[str, Any]:
-    """Permanently delete the named entries of the project's Trash/. Each name must be a direct
-    entry of Trash/; a symlink is removed itself, never followed. Deletes what it can and names
-    what it could not."""
+def clear_trash(
+    project_dir: Path,
+    names: list[str] | None = None,
+    progress_cb: ProgressCallback | None = None,
+    stop: threading.Event | None = None,
+) -> dict[str, Any]:
+    """Permanently delete the named entries of the project's Trash/, or all of them when `names` is
+    None. Each name must be a direct entry of Trash/; a symlink is removed itself, never followed.
+    Deletes what it can and names what it could not. `progress_cb` hears of each entry before it
+    goes; a set `stop` ends it before the next one."""
     trash = project_dir / TRASH_DIR
+    if names is None:
+        try:
+            names = sorted(os.listdir(trash))
+        except FileNotFoundError:
+            # No job was ever removed from this project.
+            names = []
     removed: list[str] = []
     failed: list[str] = []
-    for name in names:
+    for i, name in enumerate(names):
+        if stop is not None and stop.is_set():
+            return err(f"Stopped after {i} of {len(names)} trash entries", removed=removed, failed=failed)
+        if progress_cb is not None:
+            progress_cb(i, len(names), name)
         if not name or name in (".", "..") or Path(name).name != name:
             failed.append(f"{name!r} is not an entry of {trash}")
             continue
-        target = trash / name
-        try:
-            st = os.lstat(target)
-        except FileNotFoundError:
-            # Already cleared from another server: nothing left to delete.
-            removed.append(name)
-            continue
-        problems = _delete_tree(target) if stat.S_ISDIR(st.st_mode) else _delete_file(target)
+        # An entry already cleared from another server counts as removed.
+        problems = delete_path(trash / name)
         if problems:
             more = f" (and {len(problems) - 1} more)" if len(problems) > 1 else ""
             failed.append(f"{name}: {problems[0]}{more}")

@@ -25,9 +25,11 @@ from collections.abc import Awaitable, Callable
 
 from nicegui import ui, app
 
+from services.background_tasks import get_background_task_registry
 from services.configs.user_prefs_service import get_prefs_service
 from services.project_disk_usage import BUCKET_OTHER, BUCKET_PARTICLES, BUCKET_PREPROCESSING, BUCKET_TRASH, DiskUsage
 from services.project_state import SHARED_OWNER
+from ui.background_task import BackgroundTask
 from ui.components.buttons import house_button
 from ui.components.copyable import copy_on_click
 from ui.components.dialogs import dialog_host
@@ -101,6 +103,20 @@ def _preview_img_html(png: str, stamp: int) -> str:
 
 def avatar_color(key: str) -> str:
     return _AVATAR_PALETTE[hash(key) % len(_AVATAR_PALETTE)]
+
+
+# Background-task keys of the roster's own work, per project path. While one runs, its project is out
+# of the list (a deletion) or its trash chip is (a clear), so nobody acts on what is going away.
+_DELETE_KEY = "delete-project:"
+_CLEAR_TRASH_KEY = "clear-trash:"
+
+
+def _running_roster_tasks() -> frozenset[str]:
+    return frozenset(
+        t.dedup_key
+        for t in get_background_task_registry().all()
+        if t.is_running and t.dedup_key and t.dedup_key.startswith((_DELETE_KEY, _CLEAR_TRASH_KEY))
+    )
 
 
 # Only these statuses get a badge; an idle project renders none. "review": the pipeline
@@ -237,12 +253,11 @@ class ProjectsOverview:
         self._timer = None
         self._last_scanned_base: str | None = None
         self._refresh_lock = asyncio.Lock()
-        # Set while a delete is in progress -- blocks auto-refresh so the
-        # greyed-out row stays visible until rmtree completes.
-        self._pause_refresh = False
-        # Set while a row's hover card is open -- also holds auto-refresh, since a
+        # Set while a row's hover card is open -- holds auto-refresh, since a
         # rebuild would destroy the card under the pointer. _render_list clears it.
         self._preview_open = False
+        # The roster's running deletions and trash clears as of the last render.
+        self._running_tasks: frozenset[str] = frozenset()
         # Deletion mode: armed by the header's trash toggle, a row click deletes.
         self._delete_mode = False
         self._delete_btn = None
@@ -295,20 +310,21 @@ class ProjectsOverview:
         if self._list_container is None:
             self.stop()
             return
-        if self._pause_refresh or self._preview_open:
+        if self._preview_open:
             return
         async with self._refresh_lock:
             base = (self.base_path_provider() or "").strip()
             try:
                 projects = await self.backend.scan_for_projects(base) if base else []
                 # The timer rescans every tick; rebuild the rows (and their hover menus) only when
-                # the scan or the MRU order moved. Filter, sort and selection changes re-render
-                # through their own handlers.
+                # the scan, the MRU order or the running deletions moved. Filter, sort and selection
+                # changes re-render through their own handlers.
                 unchanged = (
                     not force
                     and base == self._last_scanned_base
                     and projects == self._projects
                     and self.prefs.prefs.recent_project_rank() == self._mru_rank
+                    and _running_roster_tasks() == self._running_tasks
                 )
                 self._projects = projects
                 self._last_scanned_base = base
@@ -423,14 +439,13 @@ class ProjectsOverview:
     def _toggle_delete_mode(self):
         self._set_delete_mode(not self._delete_mode)
 
-    def _set_delete_mode(self, on: bool, *, rerender: bool = True):
+    def _set_delete_mode(self, on: bool):
         """Arm or disarm deletion mode. Armed, the rows re-render as delete targets: a click
         opens the confirm dialog, nothing previews, and the travel chevron is a trash glyph,
         so no click on a row leaves the page."""
         self._delete_mode = on
         self._style_delete_mode()
-        if rerender:
-            self._render_list()
+        self._render_list()
 
     def _style_delete_mode(self):
         """The header toggle, its hint and the roster's outline, for the current mode. The
@@ -534,7 +549,8 @@ class ProjectsOverview:
         # Every hover card died with the rows.
         self._preview_open = False
 
-        all_projects = self._projects
+        self._running_tasks = _running_roster_tasks()
+        all_projects = [p for p in self._projects if _DELETE_KEY + p["path"] not in self._running_tasks]
         eff = self._eff_owner_of  # mutable owner, falling back to created_by
 
         self._sync_species_options(all_projects)
@@ -733,7 +749,7 @@ class ProjectsOverview:
             else:
 
                 async def _delete():
-                    await self._handle_delete(Path(path_str), name, row)
+                    await self._handle_delete(proj)
 
                 row.on("click", _delete)
         elif preview_mode:
@@ -1122,11 +1138,11 @@ class ProjectsOverview:
 
     def _render_trash(self, proj: dict):
         """Jobs removed from the project keep their disk space in its Trash/ until it is cleared.
-        Shown only when Trash/ holds something: its size when the last measurement is newer than
-        the trash's last change, else the number of removed jobs. A click lists them, sized afresh,
-        and can clear them; in deletion mode the row is the only target."""
+        Shown only when Trash/ holds something and is not being cleared: its size when the last
+        measurement is newer than the trash's last change, else the number of removed jobs. A click
+        lists them, sized afresh, and can clear them; in deletion mode the row is the only target."""
         n = proj.get("trash_count") or 0
-        if not n:
+        if not n or _CLEAR_TRASH_KEY + proj["path"] in self._running_tasks:
             return
         usage: DiskUsage | None = proj.get("disk_usage")
         fresh = usage is not None and not usage.error and usage.measured_at >= (proj.get("trash_mtime") or 0.0)
@@ -1147,8 +1163,10 @@ class ProjectsOverview:
             chip.on("click.stop", lambda: self._open_trash(Path(proj["path"]), proj["name"]))
 
     async def _open_trash(self, project_dir: Path, name: str):
-        """The project's Trash/: every removed job with its size, measured afresh, and one button that
-        deletes them all. On the page layout, so a roster refresh cannot take the dialog away."""
+        """The project's Trash/: every removed job with its size, measured afresh while the dialog is
+        open, and one button that deletes them all. The button does not wait for the sizes: it closes
+        the dialog and clears in the background (`_clear_trash`). On the page layout, so a roster
+        refresh cannot take the dialog away."""
         async with self._flight("trash") as acquired:
             if not acquired:
                 return
@@ -1163,58 +1181,78 @@ class ProjectsOverview:
                     self._trash_wait("Measuring Trash/ …")
                 with ui.row().classes("w-full justify-end mt-3 gap-2"):
                     house_button("Cancel", dialog.close)
-                    clear_btn = house_button("Clear trash", kind="danger")
-                    clear_btn.disable()
-            dialog.open()
-            listing = await self.backend.list_project_trash(project_dir)
-        if body.is_deleted:
-            return
-        body.clear()
-        with body:
-            if not listing["success"]:
-                ui.label(f"Could not read Trash/: {listing['error']}").style(
-                    f"{FONT} font-size: 11px; color: {CLR_FAILED};"
-                )
-                return
-            entries = listing["entries"]
-            if not entries:
-                ui.label("Trash/ is empty.").style(f"{FONT} font-size: 11px; color: {CLR_SUBLABEL};")
-                return
-            total = sum(e.size_bytes for e in entries)
-            self._render_trash_entries(entries, total)
-        clear_btn.set_text(f"Clear trash · {format_bytes(total)}")
-        clear_btn.enable()
+                    clear_btn = house_button("Clear trash", lambda: dialog.submit(True), kind="danger")
+            listed: dict[str, list] = {}
 
-        async def clear():
-            async with self._flight("trash-clear") as acquired:
-                if not acquired:
+            async def measure():
+                listing = await self.backend.list_project_trash(project_dir)
+                # Closed while it measured: cancelled, or cleared without waiting for the sizes.
+                if body.is_deleted or not dialog.value:
                     return
-                clear_btn.disable()
                 body.clear()
                 with body:
-                    self._trash_wait(
-                        f"Deleting {len(entries)} job{'s' if len(entries) != 1 else ''} ({format_bytes(total)}): "
-                        "large jobs take a while. Closing this does not stop it."
-                    )
-                result = await self.backend.clear_project_trash(project_dir, [e.name for e in entries])
-                if dialog.is_deleted:
-                    return
-                removed = set(result.get("removed") or [])
-                freed = format_bytes(sum(e.size_bytes for e in entries if e.name in removed))
-                if result["success"]:
-                    ui.notify(f"Cleared the trash of '{name}': {freed} freed", type="positive")
-                else:
-                    ui.notify(
-                        f"{freed} freed. {result['error']}",
-                        type="negative",
-                        multi_line=True,
-                        timeout=0,
-                        close_button=True,
-                    )
-                dialog.close()
-                await self.refresh(force=True)
+                    if not listing["success"]:
+                        ui.label(f"Could not read Trash/: {listing['error']}").style(
+                            f"{FONT} font-size: 11px; color: {CLR_FAILED};"
+                        )
+                        clear_btn.disable()
+                        return
+                    entries = listing["entries"]
+                    if not entries:
+                        ui.label("Trash/ is empty.").style(f"{FONT} font-size: 11px; color: {CLR_SUBLABEL};")
+                        clear_btn.disable()
+                        return
+                    total = sum(e.size_bytes for e in entries)
+                    self._render_trash_entries(entries, total)
+                listed["entries"] = entries
+                clear_btn.set_text(f"Clear trash · {format_bytes(total)}")
 
-        clear_btn.on_click(clear)
+            with dialog:
+                ui.timer(0.01, measure, once=True)
+            cleared = await dialog
+        if cleared:
+            self._clear_trash(project_dir, name, listed.get("entries"))
+
+    def _clear_trash(self, project_dir: Path, name: str, entries: list | None):
+        """Clear the project's Trash/ in the background: its chip leaves the row at once and the progress
+        shows in the tray. `entries` is the dialog's listing when it arrived before the click; without
+        it everything in Trash/ goes, and the tray counts jobs instead of bytes."""
+        names = [e.name for e in entries] if entries else None
+        sizes = {e.name: e.size_bytes for e in entries or []}
+
+        async def work(progress_cb) -> str:
+            result = await self.backend.clear_project_trash(project_dir, names, progress_cb)
+            removed = result.get("removed") or []
+            if sizes:
+                done = f"{format_bytes(sum(sizes.get(n, 0) for n in removed))} freed"
+            else:
+                done = f"{len(removed)} job{'s' if len(removed) != 1 else ''} deleted"
+            if not result["success"]:
+                raise RuntimeError(f"{done}. {result['error']}")
+            # The task no longer hides the chip: a re-render before the next scan must not bring it back.
+            path = str(project_dir)
+            self._projects = [{**p, "trash_count": 0} if p["path"] == path else p for p in self._projects]
+            return done
+
+        subtitle = None
+        if entries:
+            jobs = f"{len(entries)} removed job{'s' if len(entries) != 1 else ''}"
+            subtitle = f"{jobs} · {format_bytes(sum(sizes.values()))}"
+        self._run_in_tray(f"Clear trash · {name}", subtitle, _CLEAR_TRASH_KEY + str(project_dir), work)
+        self._render_list()
+
+    def _run_in_tray(self, title: str, subtitle: str | None, key: str, work) -> None:
+        """Run `work` as a background task with its card in the tray (bottom-right), and rescan when it
+        ends. `key` (a `_running_roster_tasks` key) holds the row's state while it runs, and a second
+        run of the same key joins the first. The completion timer hangs on the outer container, which
+        no re-render clears."""
+        with self._outer_container:
+            BackgroundTask(title=title, subtitle=subtitle, dedup_key=key).submit(
+                work,
+                # on_complete is called sync: the one-shot timer awaits the rescan.
+                on_complete=lambda _task: ui.timer(0.01, lambda: self.refresh(force=True), once=True),
+                show_start_toast=False,
+            )
 
     @staticmethod
     def _trash_wait(text: str):
@@ -1257,39 +1295,41 @@ class ProjectsOverview:
             f"{MONO} font-size: 10px; color: {CLR_LABEL}; margin-top: 8px; align-self: flex-end;"
         )
 
-    async def _handle_delete(self, project_dir: Path, name: str, row_el):
-        """Full delete lifecycle owned by the component:
-        1. show confirm dialog (anchored to outer container so it's not
-           destroyed by row re-renders)
-        2. on confirm, pause auto-refresh + grey out the row
-        3. backend.delete_project (the rmtree)
-        4. disarm deletion mode, and if that was the previewed project, preview the
-           open one again
-        5. resume auto-refresh and refresh the list"""
+    async def _handle_delete(self, proj: dict):
+        """Confirm (the dialog anchored to the outer container, so no row re-render destroys it), then
+        delete in the background: the row leaves the list at once, the progress shows in the tray, and
+        a project that could not be deleted comes back to the list. One deletion disarms deletion mode;
+        if it was the previewed project, the open one is previewed again."""
         if self._outer_container is None:
             return
-        with self._outer_container:
-            confirmed = await self._show_delete_confirm(project_dir, name)
+        project_dir, name = Path(proj["path"]), proj["name"]
+        async with self._flight("delete") as acquired:
+            if not acquired:
+                return
+            with self._outer_container:
+                confirmed = await self._show_delete_confirm(project_dir, name)
         if not confirmed:
             return
+        usage: DiskUsage | None = proj.get("disk_usage")
+        size = format_bytes(usage.total_bytes) if usage is not None and not usage.error else None
+
+        async def work(progress_cb) -> str:
+            result = await self.backend.delete_project(project_dir, progress_cb)
+            if not result["success"]:
+                raise RuntimeError(result["error"])
+            # The task no longer hides the row: a re-render before the next scan must not bring it back.
+            self._projects = [p for p in self._projects if p["path"] != proj["path"]]
+            return f"{size} freed" if size else "deleted"
 
         was_selected = self._selected_resolved is not None and str(project_dir.resolve()) == self._selected_resolved
-        self._pause_refresh = True
-        try:
-            self._mark_row_deleting(row_el, name)
-            result = await self.backend.delete_project(project_dir)
-            if not result["success"]:
-                ui.notify(f"Failed to delete: {result['error']}", type="negative")
-                return
-            ui.notify(f"Deleted '{name}'", type="positive")
-            # One deletion per arming: the next one needs the toggle again.
-            self._set_delete_mode(False, rerender=False)
-            if was_selected and self.on_select is not None and self.current_path:
-                self.set_selected(self.current_path)
-                await self.on_select(Path(self.current_path))
-        finally:
-            self._pause_refresh = False
-            await self.refresh(force=True)
+        self._run_in_tray(
+            f"Delete project · {name}", f"{size} on disk" if size else None, _DELETE_KEY + proj["path"], work
+        )
+        # One deletion per arming: the next one needs the toggle again. The re-render drops the row.
+        self._set_delete_mode(False)
+        if was_selected and self.on_select is not None and self.current_path:
+            self.set_selected(self.current_path)
+            await self.on_select(Path(self.current_path))
 
     async def _show_delete_confirm(self, project_dir: Path, name: str) -> bool:
         with ui.dialog() as dialog, ui.card().classes("w-96"):
@@ -1311,26 +1351,3 @@ class ProjectsOverview:
     @staticmethod
     def _eff_owner_of(p: dict) -> str:
         return p.get("owner") or p.get("creator") or "unknown"
-
-    @staticmethod
-    def _mark_row_deleting(row_el, name: str):
-        """Replace the row's contents with a spinner + 'Deleting…' label
-        and dim it so it's visibly in-flight. Survives until refresh()
-        re-renders the list."""
-        if row_el is None or getattr(row_el, "is_deleted", False):
-            return
-        try:
-            row_el.clear()
-            with row_el:
-                ui.spinner("dots", size="xs").style(f"color: {CLR_SUBLABEL};")
-                ui.label(f"Deleting {name}...").style(
-                    f"{FONT} font-size: 10px; color: {CLR_SUBLABEL}; font-style: italic; margin-left: 8px;"
-                )
-            # The row is a stretch-aligned flex row (text stack + chevron); with both
-            # gone the spinner would sit flush against the top-left corner.
-            row_el.style(
-                add="opacity: 0.5; pointer-events: none; cursor: default; align-items: center; padding: 8px 12px;"
-            )
-            row_el.is_deleted = True
-        except Exception as e:
-            logger.debug("Could not grey out row: %s", e)

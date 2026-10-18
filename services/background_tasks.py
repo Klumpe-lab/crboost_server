@@ -169,12 +169,15 @@ class BackgroundTaskRegistry:
     def snapshot_for_project(
         self, project_path: str | None, *, recent_window_sec: float = 30.0
     ) -> tuple[list[BackgroundTaskRecord], list[BackgroundTaskRecord]]:
-        """Return (active, recent_finished) for the given project.
+        """Return (active, recent_finished) for the given project, plus the tasks of no
+        project (deleting a project, clearing its trash), which show on every page.
         `recent_finished` includes failed/cancelled within the window."""
         now = datetime.now()
         active: list[BackgroundTaskRecord] = []
         recent: list[BackgroundTaskRecord] = []
-        for t in self.for_project(project_path):
+        for t in self._tasks.values():
+            if project_path and t.project_path not in (project_path, None):
+                continue
             if t.is_running:
                 active.append(t)
             elif t.finished_at and (now - t.finished_at).total_seconds() < recent_window_sec:

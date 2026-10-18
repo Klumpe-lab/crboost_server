@@ -7,6 +7,7 @@ import os
 import pwd
 import re
 import shutil
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,8 @@ from services.particles import class_readout, particle_sets, set_ops
 from services.particles.list_ref import extract_pick_list_instance_id
 from services.particles.particle_sets import ParentRef, Rule
 from services.project_state import get_state_service, remove_project_state
+from services.background_tasks import ProgressCallback
+from services.project_delete import delete_project_dir, is_being_deleted
 from services.project_disk_usage import get_disk_usage_service, is_stale as is_disk_usage_stale
 from services.project_trash import clear_trash, list_trash, trash_summary
 from services.event_log import events
@@ -1591,6 +1594,9 @@ class CryoBoostBackend:
             for item in path.iterdir():
                 if not item.is_dir():
                     continue
+                if is_being_deleted(item.name):
+                    # A project mid-deletion (services/project_delete.py) is gone as far as the list goes.
+                    continue
                 params_file = item / "project_params.json"
                 if not params_file.exists():
                     if not item.name.startswith("."):
@@ -1891,15 +1897,20 @@ class CryoBoostBackend:
             progress_cb=progress_cb,
         )
 
-    async def delete_project(self, project_path: Path) -> dict[str, Any]:
-        """Remove a project directory from disk and drop its in-memory state."""
+    async def delete_project(self, project_path: Path, progress_cb: ProgressCallback | None = None) -> dict[str, Any]:
+        """Remove a project directory from disk and drop its in-memory state. The project leaves every
+        scan the moment this starts (services/project_delete.py); `progress_cb` follows it job directory
+        by job directory, and cancelling stops it after the one it is on."""
+        stop = threading.Event()
         try:
-            await asyncio.to_thread(shutil.rmtree, project_path)
-        except OSError as e:
-            logger.exception("Failed to delete project %s", project_path)
-            return err(str(e))
-        remove_project_state(project_path)
-        return ok()
+            result = await asyncio.to_thread(delete_project_dir, Path(project_path), progress_cb, stop)
+        except asyncio.CancelledError:
+            # The thread cannot be interrupted: it stops before the next unit and puts the rest back.
+            stop.set()
+            raise
+        if result["success"]:
+            remove_project_state(project_path)
+        return result
 
     async def list_project_trash(self, project_path: Path) -> dict[str, Any]:
         """The jobs removed from the project that still sit in its Trash/, sized afresh, largest first."""
@@ -1910,13 +1921,21 @@ class CryoBoostBackend:
             return err(str(e))
         return ok(entries=entries)
 
-    async def clear_project_trash(self, project_path: Path, names: list[str]) -> dict[str, Any]:
-        """Permanently delete the named Trash/ entries. When that empties Trash/, the cached project
-        size drops it at once."""
+    async def clear_project_trash(
+        self, project_path: Path, names: list[str] | None = None, progress_cb: ProgressCallback | None = None
+    ) -> dict[str, Any]:
+        """Permanently delete the named Trash/ entries, or all of them when `names` is None; cancelling
+        stops it after the entry it is on. When that empties Trash/, the cached project size drops it
+        at once."""
         project_dir = Path(project_path)
+        stop = threading.Event()
         try:
-            result = await asyncio.to_thread(clear_trash, project_dir, names)
+            result = await asyncio.to_thread(clear_trash, project_dir, names, progress_cb, stop)
             remaining, _ = await asyncio.to_thread(trash_summary, project_dir)
+        except asyncio.CancelledError:
+            # The thread cannot be interrupted: it stops before the next entry.
+            stop.set()
+            raise
         except OSError as e:
             logger.exception("Could not clear the trash of %s", project_dir)
             return err(str(e))
