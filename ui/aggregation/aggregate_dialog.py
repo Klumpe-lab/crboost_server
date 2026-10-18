@@ -48,6 +48,7 @@ from ui.components.buttons import house_button
 from ui.components.dialogs import dialog_host
 from ui.components.reactive import SingleFlight
 from ui.components.segmented import render_segmented
+from ui.components.svg_icon import load_icon_svg
 from ui.dashboard.css import ensure_assets_loaded
 from ui.projects_overview import avatar_color
 
@@ -104,7 +105,6 @@ class _Row:
     mnemonic: str
     species_id: str
     species_label: str
-    species_color: str
     tomo_name: str
     slug: str
     label: str
@@ -185,7 +185,6 @@ def _rows_for_project(project_path: Path) -> list[_Row]:
                         mnemonic=mnemonic,
                         species_id=species_id,
                         species_label=sp.name,
-                        species_color=sp.color or SLATE,
                         tomo_name=tomo_name,
                         slug="auto",
                         label="candidates",
@@ -208,7 +207,6 @@ def _rows_for_project(project_path: Path) -> list[_Row]:
                     mnemonic=mnemonic,
                     species_id=species_id,
                     species_label=sp.name,
-                    species_color=sp.color or SLATE,
                     tomo_name=pl.tomo_name,
                     slug=pl.slug,
                     label=pl.label or pl.slug,
@@ -497,14 +495,12 @@ class _AggregateDialog:
         for r in prows:
             by_tomo.setdefault(r.tomo_name, []).append(r)
         # A visible spine down the indent. merge_card gets its hierarchy for free from a
-        # species level drawn in the species colour; this tree has no species level (the
-        # species is the dropdown), so without a rule the three depths read as one flat
-        # white staircase.
-        species_color = prows[0].species_color or SLATE
+        # species level; this tree has no species level (the species is the dropdown), so
+        # without a rule the three depths read as one flat white staircase.
         with (
             ui.element("div")
             .classes("w-full")
-            .style(f"padding-left: 22px; border-left: 2px solid {species_color}33; margin-left: 9px;")
+            .style("padding-left: 22px; border-left: 2px solid #e2e8f0; margin-left: 9px;")
         ):
             # Position-sorted high → low, matching the merge dialog and the roster.
             for tomo_name in sorted(by_tomo, key=ts_position_sort_key, reverse=True):
@@ -527,12 +523,11 @@ class _AggregateDialog:
                 "text-slate-400 cursor-pointer"
             )
             arrow.on("click", lambda _e, k=tomo_key: self.toggle_tomo_expansion(k))
-            # The species' own colour, on every tomogram row. This is the anchor merge_card
-            # gets from its species level; here it is the only place the species is visible
-            # once you have picked it in the dropdown.
-            ui.element("div").style(
-                f"width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; "
-                f"background: {trows[0].species_color or SLATE};"
+            # The species glyph, named on hover, on every tomogram row. This is the anchor
+            # merge_card gets from its species level; here it is the only place the species is
+            # visible once you have picked it in the dropdown.
+            ui.html(load_icon_svg("particle.svg", SLATE_MUTED, size=11), sanitize=False).style(
+                "display: flex; flex-shrink: 0;"
             ).tooltip(trows[0].species_label or trows[0].species_id)
             ui.label(pretty).style(f"width: 92px; flex-shrink: 0; font-size: 11px; color: {SLATE}; font-weight: 500;")
             ui.label(tomo_name if pretty != tomo_name else "").style(
@@ -564,8 +559,7 @@ class _AggregateDialog:
                 f"color: {STEEL if r.is_curated else '#cbd5e1'}; flex-shrink: 0;"
             ).tooltip(tip)
             ui.label(r.label or r.slug).style(
-                f"font-size: 11px; font-weight: {'600' if r.is_curated else '400'}; "
-                f"color: {r.species_color if r.is_curated else SLATE}; flex-shrink: 0;"
+                f"font-size: 11px; font-weight: {'600' if r.is_curated else '400'}; color: {SLATE}; flex-shrink: 0;"
             )
             ui.label(r.slug).classes("truncate").style(
                 f"flex: 1; min-width: 0; font-family: monospace; font-size: 9px; color: {SLATE_MUTED};"

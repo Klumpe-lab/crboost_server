@@ -1,6 +1,6 @@
 """Compact segmented control.
 
-The flat, dense tab switcher of the job tab (`job_tab_component._render_tab_switcher`)
+The flat, dense tab switcher of the job tab (`job_tab_component.render_job_tab`)
 as a reusable component: 9 px buttons on one bordered strip, the active segment tinted
 `#f1f5f9`, instead of Quasar `ui.tabs`. Switching only flips the `active` class on the
 segments, with no clear()+rebuild, so a click that lands mid-switch still hits a live
