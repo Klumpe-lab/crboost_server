@@ -21,6 +21,7 @@ class Refine3DParams(AbstractJobParams):
         "auto_local_healpix_order",
         "offset_range",
         "offset_step",
+        "sigma_ang",
         "symmetry",
         "ini_high",
         "low_resol_join_halves",
@@ -66,6 +67,13 @@ class Refine3DParams(AbstractJobParams):
     )
     offset_range            : int = Field(default=5, ge=0, description="Translational search range (pixels)")
     offset_step             : int = Field(default=1, ge=1, description="Translational search step (pixels)")
+    # Template matching already found each particle's orientation; a global search repeats that work over every
+    # orientation at once (days per iteration on tens of thousands of tilt-series particles).
+    sigma_ang               : float = Field(
+        default=4.0,
+        description="Local angular search around the input angles: σ in degrees, searched ±3σ "
+        "(4 = ±12°, one 12° template-matching step). -1 = global search, for particles without angles",
+    )
 
     # Symmetry / filtering
     symmetry             : SymmetryGroup = Field(default=SymmetryGroup.C1, description="Point group symmetry")

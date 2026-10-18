@@ -9,6 +9,31 @@ from pathlib import Path
 
 from drivers.driver_base import ToolCommand, get_driver_context, run_tool
 from services.jobs.refine3d import Refine3DParams
+from services.subtomo_merge import _parse_optimisation_set, _read_particles_star
+
+ANGLE_COLS = ("rlnAngleRot", "rlnAngleTilt", "rlnAnglePsi")
+# 0,0,0 is how hand-picked lists and merges say "no orientation"; template matching lands there for only a handful
+# of particles (one grid point among thousands).
+MAX_UNORIENTED_FRACTION = 0.01
+
+
+def check_angle_priors(input_optimisation: Path) -> None:
+    """A local search only refines orientations the particles already have: refuse a set without them."""
+    particles_star, _ = _parse_optimisation_set(input_optimisation)
+    _, particles, _ = _read_particles_star(particles_star)
+    missing = [c for c in ANGLE_COLS if c not in particles.columns]
+    if missing:
+        raise ValueError(
+            f"{particles_star} has no {missing}: a local angular search needs input angles. "
+            "Set sigma_ang to -1 for a global search."
+        )
+    unoriented = int((particles[list(ANGLE_COLS)] == 0).all(axis=1).sum())
+    print(f"[DRIVER] {unoriented}/{len(particles)} particles at angles 0,0,0", flush=True)
+    if unoriented > MAX_UNORIENTED_FRACTION * len(particles):
+        raise ValueError(
+            f"{unoriented}/{len(particles)} particles in {particles_star} sit at 0,0,0 (no orientation): a local "
+            "angular search would keep them there. Set sigma_ang to -1 for a global search."
+        )
 
 
 def main():
@@ -35,6 +60,8 @@ def main():
         print(f"[DRIVER] Input optimisation_set: {input_optimisation}", flush=True)
         print(f"[DRIVER] Input reference: {input_reference}", flush=True)
         print(f"[DRIVER] Job dir: {job_dir}", flush=True)
+        if params.sigma_ang > 0:
+            check_angle_priors(input_optimisation)
 
         output_root = str(job_dir / "run")
 
@@ -66,6 +93,8 @@ def main():
             .flag("--trust_ref_size")
         )
 
+        if params.sigma_ang > 0:
+            cmd.opt("--sigma_ang", params.sigma_ang)
         if params.ini_high > 0:
             cmd.opt("--ini_high", params.ini_high)
         if params.particle_diameter > 0:
@@ -108,9 +137,7 @@ def main():
         additional_binds.append(str(input_optimisation.parent.resolve()))
         additional_binds.append(str(input_reference.parent.resolve()))
 
-        # RELION's progress bar ticks only every 1/60 of an expectation step, which runs for hours on tens of
-        # thousands of tilt-series particles: the idle watchdog would kill a working refine.
-        run_tool(cmd, tool_name=params.get_tool_name(), cwd=job_dir, binds=additional_binds, idle_timeout=0)
+        run_tool(cmd, tool_name=params.get_tool_name(), cwd=job_dir, binds=additional_binds)
 
         # Auto-refine writes its converged result without an iteration tag (RELION's MlOptimiser::write
         # with fn_root = fn_out); these are the OUTPUT_SCHEMA files plus the two half-maps.
