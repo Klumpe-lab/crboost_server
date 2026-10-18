@@ -59,6 +59,15 @@ logger = logging.getLogger(__name__)
 EDIT_SETTLE_S = 0.3
 
 
+def slot_is_gone(slot) -> bool:
+    """Whether the element a captured slot belongs to is gone: deleted, or already garbage-collected
+    (NiceGUI's `slot.parent` raises then rather than returning a deleted element)."""
+    try:
+        return slot.parent.is_deleted
+    except RuntimeError:  # the parent was collected: as gone as a deleted one
+        return True
+
+
 class Debounced:
     """`callback` run once, `delay_s` after the last call: for work that follows an edit (a summary,
     a warning, a section rebuild) and must not run per keystroke. The field itself updates the
@@ -89,7 +98,7 @@ class Debounced:
         if slot is None:
             self._callback()
             return
-        if slot.parent.is_deleted:
+        if slot_is_gone(slot):
             return
         with slot:
             self._callback()
