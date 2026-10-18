@@ -10,6 +10,8 @@ of stage 0's `post_handedness_fix` re-processing, with a rigid-only phase that n
 **2026-10-10 (maintainer):** no rigid-only phase and no staged arms. Stage 4 (Warp export) is being built by the
 maintainer in its own worktree; then PAPER on all eight AGG412 projects (roadmap 29 §6.1). Picks are never moved between
 alignments: particles in refined tomograms come from template matching re-run on them.
+**2026-10-18:** the first full PAPER run (AGG412 MyrGFP_Grid2, 48 TS) took 20.7 h on 2× A100; its numbers, the
+A/B read and the rollout to the other seven AGG412 projects are in roadmap 29 §6.2.
 
 **Progress 2026-09-30.** Sources checked against the container's exact versions (miss-alignment 0.2.0, warpylib
 1.0.1, both from PyPI) and WarpTools `main`; nothing below has run.

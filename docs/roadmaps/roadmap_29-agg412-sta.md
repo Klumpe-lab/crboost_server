@@ -2,7 +2,9 @@
 
 **Status:** scoped 2026-10-08; nothing built. Stage 0 is a user run with no code change. The campaign's
 living record (decisions D#, watch-list W#, run log, analysis scripts) is the git-ignored
-`notes/agg412_picking/PLAYBOOK.md`; this roadmap is the plan from the picks onwards. Related: 24
+`notes/agg412_picking/PLAYBOOK.md`; this roadmap is the plan from the picks onwards. **2026-10-18:** stage 0
+done (all eight picking chains green); the miss-alignment A/B ran on MyrGFP_Grid2 (+20 % picks, +8 % top-50
+LCC); the rollout to the other seven projects, with its decisions (MA#), parameters and run log, is §6.2. Related: 24
 (miss-alignment regimes and evaluation, whose stages 4 and 6 this leans on), 21 (Warp export), 27 (per-TS
 catch-up), and `docs/reports/412-capsid/412-sta-refinement-playbook.md` (why the 412 needs local refinement).
 
@@ -198,6 +200,9 @@ rigid refinement; the per-run changes report (`missalign_changes.json`); particl
 
 ### 6.1 Running it on all eight projects (how; 2026-10-10)
 
+*For the remaining seven projects, §6.2 (measured costs, parameters, decisions) replaces the cost table and
+steps 1 and 3 below.*
+
 missAlign is one GPU job per project over all its tilt series (not an array), training a model and then
 aligning every series, once per macro-iteration. With the current code each project trains its own model;
 `infer` (one model, many projects) is not built.
@@ -255,6 +260,185 @@ first):
 **Don't:** re-run the baseline tsCtf after adding a missAlign. It shows the newest missAlign as its source and
 would rebind to it, overwriting the baseline.
 
+### 6.2 Rollout to the other seven projects (2026-10-18)
+
+MyrGFP_Grid2 ran the trio first (missAlign `job022` → tsCtf__2 `job023` → tsReconstruct__2 `job024`), then
+template matching, candidates and Warp Export on both arms. This section is the record for the other seven:
+what Grid2 measured, the decisions (MA#; append only — a changed decision is struck through and followed by its
+replacement), the parameters, and the run log.
+
+#### 6.2.1 What Grid2 measured (job logs, read 2026-10-18)
+
+| | |
+|---|---|
+| missAlign wall | 20 h 39 on clip-g4-5 (2× A100, 16 CPUs, 64 G); 48 TS (Position_10_4 left out: 1 tilt) |
+| Layout (auto) | 1 trainer on GPU 0 · 5 patch builders (GPU 1 ×3, GPU 0 ×2) · 10 loaders; the trainer was the limit (~80 % busy) |
+| Training | 19 h 36 over 9 iterations (1 h 55 – 2 h 22 each), 2.74–3.14 steps/s (88–100 cubes/s); every iteration stopped early, at epoch 21–26 of 30 |
+| Alignment | 61 min in all: ~5 min per iteration, 13 min for each 18.6 Å anchoring round; 75 s per TS over the whole schedule |
+| Staging, stamp, z-box fits, pre-flight | ~2 min |
+| What changed | per-tilt change with the rigid shift removed: median 16.7 Å rms, p90 37.9, max 121.8 (Position_6); 3×3 local warps 8–44 Å rms (median 16.3); `z_box auto` fitted 43 of 48 series (1188–2480 Å of 3174), 5 kept the full box |
+| Requested wall time | 11-17:45:00, from older estimator constants; the current ones would ask ~3.9 d (§6.2.6) |
+| tsCtf__2 | 48/48, 8–39 s per TS on g2/g3; 0.9 GB |
+| tsReconstruct__2 | the first attempt lost series to dev41's shared WarpTools task queue (fixed 2026-10-16: a `--task_dir` per task); the re-run 48/48, 3–6 min per TS on g2/g3; 146 GB = 3 GB per TS (full, even and odd tomograms, 1 GB each) |
+| A/B (2026-10-17) | ribosome, same template and FP = 1 cutoff on both arms: the refined tomograms gave +20 % picks per TS (median; 43/47 up) and +8 % top-50 LCC (45/47 up), the gain growing with how far a series moved. No map yet: both Refine 3D jobs were OOM-killed (preread on). |
+
+#### 6.2.2 Decisions
+
+| # | Decision | Why | Who, when |
+|---|---|---|---|
+| MA1 | No rigid-only arm and no staged verification; PAPER at the upstream budget on all eight projects, QOS `g_long`, in parallel | progress over verification ladders | maintainer, 2026-10-10 |
+| MA2 | Picks are never moved between alignments: refined tomograms get their own TM run | a moved pick keeps the old geometry | maintainer, 2026-10-10 |
+| MA3 | Warp Export before the rollout | the `[3,3]` grids reach particles only through Warp; RELION extraction reads the rigid per-tilt geometry | maintainer, 2026-10-10 (built 2026-10-11, first run 2026-10-12) |
+| MA4 | One Warp image for every Warp job: 2.0.0dev41 + AreTomo2 (`tools.warp_aretomo`) | dev36's particle export is wrong for RELION 5 | maintainer, 2026-10-11 |
+| MA5 | Excluded and < 2-tilt series are left out of a run (logged; `left_out` in `missalign_changes.json`) instead of failing it | one series that cannot be reconstructed killed the whole single-job run (Grid2 Position_10_4) | 2026-10-14 |
+| MA6 | Eager training (`TORCHDYNAMO_DISABLE=1`) in every run | the compile-cache race killed two 3-trainer runs; compiled and eager checkpoints differ, so it must not flip between resumes | 2026-10-15 |
+| MA7 | 2 GPUs, 1 trainer, 16 CPUs, builders and loaders on auto | 4-GPU requests queued for days; 3 trainers fed by 1 builder ran 6.65 s/step; this layout 0.33 s/step | 2026-10-15 |
+| MA8 | Grid2 is the campaign's A/B, not the pilot (§6 design) | the first project through the Warp export path end to end | 2026-10-12 – 17 |
+| MA9 | Roll out to the remaining seven projects | Grid2's A/B (§6.2.1) | maintainer, 2026-10-18 |
+| MA10 | Every missAlign parameter as in job022 (§6.2.3) | the one measured run; keeps the eight projects comparable | proposed 2026-10-18 |
+| MA11 | `num_gpus` 2 and no GRES override | job022 had `num_gpus` 4 with GRES `gpu:2`: it ran right (driver and estimate read the override), but the tab shows two numbers | proposed 2026-10-18 |
+| MA12 | Constraint `g4` | Grid2's 20.7 h is an A100 number; a fed trainer on V100 / RTX 6000 is unmeasured. A job still pending after ~12 h: cancel, widen to `g2\|g3\|g4`, Run again (nothing lost, it never started) | proposed 2026-10-18 |
+| MA13 | Time set by hand, `3-00:00:00` | the estimate asks 2:00:00 in the pilot and unmilled2 (§6.2.6) and ~5× too long elsewhere; 3 d covers the worst A100 case (~29.5 h) 2.4 times | proposed 2026-10-18 |
+| MA14 | tsCtf__2 = the project's baseline tsCtf, unchanged | the A/B compares the alignment only | proposed 2026-10-18 |
+| MA15 | tsReconstruct__2 = the baseline except `halfmap_frames` 0 | the frame halves feed only denoising, which no AGG412 chain runs; 2 GB less per TS (~1.6 TB over 819 TS); Warp writes the full tomogram the same either way. Keep 1 if the refined tomograms will be denoised | proposed 2026-10-18 |
+| MA16 | One Run per project with only the three new jobs selected, from the dev server (`~/dev/crboost_server`), all seven at once | the lab install (pulled 2026-10-14) lacks the `--task_dir` fix; a Run of all roster jobs rebinds baseline jobs to the new producers | proposed 2026-10-18 |
+| MA17 | Short series stay in: FCIsolation Position_32_4 (3 tilts), 17_2 (4), 29_5 (4), 30_3 (9); unmilled2 Position_32_3 (5) | Grid2 refined a 10-tilt series without trouble; mark, don't drop. If a run dies on one, exclude it in the registry and start that job over (a changed series list refuses to resume) | proposed 2026-10-18 |
+| MA18 | Not in this rollout: the tilt-split score (§6.1 step 1, roadmap 24 stage 3), seed repeats, rebuilt-stack arms (`prepare_stacks_apix`) | MA1; the TM read-out (picks, LCC) answers whether it helps | proposed 2026-10-18 |
+
+#### 6.2.3 Parameters
+
+missAlign (`services/jobs/miss_align.py`):
+
+| Field | Grid2 job022 (ran) | The seven | Note |
+|---|---|---|---|
+| iteration_preset | paper | paper | |
+| custom_schedule | (empty) | (empty) | read only with `custom` |
+| → schedule | `30A anchoring; 20A anchoring x2; 10A global; 10A [3,3] x5` | same | on 6.2 Å stacks: ds5 = 31 Å, ds3 = 18.6 Å ×2, ds2 = 12.4 Å global, ds2 `[3,3]` ×5 (the 10 Å entries run 24 % coarser; no whole downsample comes closer) |
+| steps_per_epoch | 1000 | 1000 | set by the preset |
+| max_epochs_per_iteration | 30 | 30 | never reached: early stops at 21–26 |
+| lr_milestones | 5,15 | 5,15 | |
+| seed | 45132 | 45132 | |
+| batch_size | 32 | 32 | |
+| patch_size | 96 | 96 | 1190 Å field of view at 12.4 Å |
+| pool_size | 1000 | 1000 | room for 15 loaders; 10 used |
+| num_gpus | 4 (GRES override `gpu:2`) | **2** | MA11 |
+| training_gpus | 1 | 1 | |
+| patch_builders | 0 (auto → 5) | 0 | |
+| dataloader_workers | 0 (auto → 10) | 0 | |
+| prepare_stacks_apix | 0 | 0 | aligns the alignment job's 6.2 Å stacks |
+| z_box | auto | auto | set by the preset |
+| SLURM partition | g | g | |
+| SLURM constraint | `g2\|g3\|g4` (landed on g4) | **`g4`** | MA12 |
+| SLURM nodes / ntasks_per_node | 1 / 1 | 1 / 1 | |
+| SLURM cpus_per_task | 16 | 16 | sets the layout: 1 trainer, 5 builders, 10 loaders |
+| SLURM gres | `gpu:2` (override) | no override (→ `gpu:2`) | MA11 |
+| SLURM mem | 64G | 64G | profile default 48G |
+| SLURM time | estimated, 11-17:45:00 | **3-00:00:00** | MA13 |
+| SLURM qos | g_long | g_long | |
+| input_star, input_processing, warp_tiltseries_settings | aligntiltsWarp job007 | the project's aligntiltsWarp (§6.2.4) | automatic |
+
+tsCtf__2 (`services/jobs/ts_ctf.py`), the same as the baseline tsCtf in all eight projects:
+
+| Field | Grid2 job023 (ran) | The seven |
+|---|---|---|
+| window | 512 | 512 |
+| range_min_max | 30:10 | 30:10 |
+| defocus_hand | set_flip | set_flip |
+| defocus_min_max | 1.1:8 | 1.1:8 |
+| do_phase | false | false |
+| perdevice | 1 | 1 |
+| array_throttle | 20 | 20 |
+| SLURM per task (profile, no override) | g · `g2\|g3\|g4` · 1 node · 1 task · 2 CPUs · `gpu:1` · 8G · 0:10:00 · default QOS | same (tasks took ≤ 39 s) |
+| Supervisor (`supervisor_slurm`, conf.yaml) | g · `g2\|g3\|g4` · 1 CPU · no GPU · 4G · 8:00:00 | same |
+| input_star, input_processing | missAlign job022 | the new missAlign (automatic: it refines aligntiltsWarp) |
+| warp_tiltseries_settings | aligntiltsWarp job007 | the project's aligntiltsWarp |
+
+tsReconstruct__2 (`services/jobs/ts_reconstruct.py`):
+
+| Field | Grid2 job024 (ran) | The seven |
+|---|---|---|
+| rescale_angpixs | 6.2 | 6.2 |
+| halfmap_frames | 1 | **0** (MA15) |
+| halfmap_tilts | 0 | 0 |
+| deconv | 0 | 0 |
+| perdevice | 1 | 1 |
+| array_throttle | 20 | 20 |
+| SLURM per task (profile, no override) | g · `g2\|g3\|g4` · 1 node · 1 task · 4 CPUs · `gpu:1` · 64G · 1:00:00 · default QOS | same (tasks took ≤ 6 min) |
+| Supervisor (`supervisor_slurm`, conf.yaml) | g · `g2\|g3\|g4` · 1 CPU · no GPU · 4G · 8:00:00 | same |
+| input_star, input_processing | tsCtf__2 job023 | the new tsCtf__2 |
+| warp_tiltseries_settings | aligntiltsWarp job007 | the project's aligntiltsWarp |
+
+#### 6.2.4 Per project
+
+Read 2026-10-18 from each project's `project_params.json`, its alignment star and the stack headers. All eight
+picking chains are green (stage 0 done). The job numbers are each project's next free ones, right if these three
+are the next jobs deployed.
+
+| Project (`AGG412_…`) | Alignment (input) | Series in its star | Left out (< 2 tilts) | Refined | < 25 tilts (fewest) | New jobs | missAlign expected (no early stop) | The estimate would ask | tsReconstruct__2 disk (`halfmap_frames` 0 / 1) |
+|---|---|---|---|---|---|---|---|---|---|
+| 20240204_412_Slot6 | job004 | 123 | — | 123 | 10 (15) | job013 / 014 / 015 | ~22 h (28.5 h) | 5-2:45:00 | 0.12 / 0.37 TB |
+| 20251031_412_FCIsolation | job007 | 142 | — | 142 | 34 (3) | job016 / 017 / 018 | ~22.5 h (29 h) | 5-16:38:00 | 0.14 / 0.43 TB |
+| 20251113_412 | job004 | 141 | — | 141 | 9 (17) | job013 / 014 / 015 | ~22.5 h (29 h) | 5-12:08:00 | 0.14 / 0.42 TB |
+| 20260204_412 (pilot) | job004 | 23 | — | 23 | 0 (31) | job016 / 017 / 018 | ~20 h (26.5 h) | **2:00:00** | 0.02 / 0.07 TB |
+| 20260205_412_FCIso_unmilled2 | job010 | 164 | Position_22_4, Position_32 | 162 | 11 (5) | job019 / 020 / 021 | ~23 h (29.5 h) | **2:00:00** | 0.16 / 0.49 TB |
+| 20260311_412_Grid3 | job004 | 95 | — | 95 | 0 (32) | job013 / 014 / 015 | ~21.5 h (28 h) | 4-15:30:00 | 0.10 / 0.29 TB |
+| SK_20251017_412 | job007 | 133 | — | 133 | 8 (20) | job016 / 017 / 018 | ~22.5 h (29 h) | 5-6:53:00 | 0.13 / 0.40 TB |
+| **Total** | | 821 | 2 | **819** | | | ~310 A100 GPU-h | | 0.8 / 2.5 TB |
+
+Expected = Grid2's 19.6 h of training (independent of the series count) + 75 s of alignment per series + a few
+minutes of staging; in brackets, every iteration running all 30 epochs (25.9 h of training). A100 only. With
+Grid2's 48 the eight projects cover all 867 tomograms. Then tsCtf__2 (~20–40 min) and tsReconstruct__2
+(~30–60 min at 20 tasks) per project. §6.1's cost table (~1,130 h wall, ~2,300 GPU-h for all eight) is superseded.
+
+#### 6.2.5 Per project, in the app
+
+1. Open the project from the dev server (`~/dev/crboost_server`), not the lab install (MA16).
+2. Add missAlign, tsCtf and tsReconstruct (they become `missAlign`, `tsCtf__2`, `tsReconstruct__2`) and set them
+   as §6.2.3: missAlign preset `paper`, `num_gpus` 2, and in its SLURM section constraint `g4`, CPUs 16, mem 64G,
+   time `3-00:00:00`, QOS `g_long`; tsReconstruct__2 `halfmap_frames` 0.
+3. IO tabs: missAlign ← aligntiltsWarp (all three slots); tsCtf__2 star and processing ← missAlign, settings ←
+   aligntiltsWarp; tsReconstruct__2 star and processing ← tsCtf__2, settings ← aligntiltsWarp.
+4. Run with only these three selected.
+5. missAlign's `run.out` within minutes: `Workers: 1 trainer(s) on GPU 0 · 5 patch builder(s) … · 10 loader(s)
+   per trainer … · 16 of 16 CPUs`; the left-out lines (unmilled2: two); `Pre-flight emit OK for N/N`; then the
+   Training bar at ~2.7–3.1 steps/s. Much slower means a non-A100 card or a starved layout.
+6. If it stops at the time limit, Run it again: it resumes after the last finished iteration.
+
+The job tab will warn in five projects that the full run exceeds the time override: that is the estimate
+(§6.2.6), not the run.
+
+**Don't:**
+- Re-run a baseline job (tsCtf, tsReconstruct, TM, candidates, subtomo) after adding the trio without first
+  pinning its inputs in its IO tab: it would follow the newest producer and overwrite the baseline.
+- Edit `drivers/` or `services/` in the dev tree while the chains are queued or running: each driver loads the
+  dev tree when it starts.
+
+**Watch:**
+- Seven 2-GPU jobs on `g_long` at once: jobs pending with `QOSMaxGRESPerUser` or `QOSMaxJobsPerUserLimit` hit
+  the QOS's per-user cap and start as others finish.
+- A dead trainer leaves the builders running and the tool hung: `run.out` still for more than ~45 min → cancel,
+  Run again.
+- Next, per project once tsReconstruct__2 is done: TM on the refined tomograms (MA2), candidates, Warp Export, as
+  Grid2's job026 / 028 / 030; their parameters when the trio is through.
+
+#### 6.2.6 Code follow-ups found (not built)
+
+1. **The wall-time estimate counts `import_selected_tilt_series`**, which is 0 in the pilot and unmilled2. The
+   estimate then falls back to the profile's 2:00:00 without a warning, while one PAPER iteration needs ~2.3 h:
+   every attempt would die in iteration 1 and repeat it. Count the input star's series (what the driver refines).
+   `denoise_train`'s estimate reads the same field.
+2. **The constants are ~5× long.** `_TRAINER_STEP_SEC` 1.0 (a fed A100 measured 0.33) and
+   `_WALLTIME_PER_TS_ALIGN_MIN` 5 (measured ~0.3 GPU-min per series per iteration). With the measured values
+   Grid2's estimate would be ~32 h (20.7 h ran; the rest is the 30-epoch cap and the builder/loader constants)
+   instead of ~3.9 d.
+3. **Trainer speed on V100 / RTX 6000 is unmeasured**; the first job that lands on g2/g3 measures it (steps/s in
+   `run.out`).
+
+#### 6.2.7 Run log (append; newest last)
+
+- **2026-10-18** — Grid2 logs read (§6.2.1); the seven projects surveyed (§6.2.4); MA10–MA18 proposed. Nothing
+  submitted.
+
 ## 7. Code this needs (proposed; nothing built)
 
 | # | What | For | Size |
@@ -275,8 +459,8 @@ job is worth it only once the scripted protocol has settled.
 1. Ribosome σ cut: from R1's class-by-σ table (proposed) or a fixed ≥ 8σ.
 2. 412 curation scope: ≥ 9σ (2,143 + Slot6) or ≥ 10σ (929 + Slot6).
 3. 412 local route (V4 a or b), after V2/V3.
-4. A/B dataset: the AGG412 pilot (proposed) or `post_handedness_fix` (roadmap 24's plan).
-5. Arm B's training budget: default 250 × 30 first (proposed) or upstream 1000 × 30.
+4. ~~A/B dataset: the AGG412 pilot (proposed) or `post_handedness_fix` (roadmap 24's plan).~~ MyrGFP_Grid2 (§6.2, MA8).
+5. ~~Arm B's training budget: default 250 × 30 first (proposed) or upstream 1000 × 30.~~ No arm B (MA1).
 6. TM maps (~7.5 TB): keep until σ cuts and extraction diameters are final, then delete the `*_angles.mrc`
    (half) or both maps.
 7. C1: supervisor QOS or a supervisor that stops before its limit (or both).
