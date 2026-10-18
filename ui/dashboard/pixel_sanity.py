@@ -120,7 +120,6 @@ _UNIVERSAL_STAGE_KEYS = {"camera", "fs_ctf", "tilt_filter", "align", "ts_ctf", "
 def _render_pixel_row_cells(r: dict) -> None:
     """Emit the row cells for one row inside the surrounding `cb-pixel-table`.
     Column count must match `_PIXEL_COLUMNS`."""
-    stripe = r.get("species_color")
     for col_key, _label, _hint in _PIXEL_COLUMNS:
         warning = r["warnings"].get(col_key)
         if col_key == "stage":
@@ -128,7 +127,6 @@ def _render_pixel_row_cells(r: dict) -> None:
             if warning:
                 cls += f" cb-pixel-warn-{warning[0]}"
             with ui.element("div").classes(cls):
-                ui.element("span").classes("cb-pixel-stripe").style(f"background:{stripe};" if stripe else "")
                 ui.label(r["stage_label"]).classes("cb-pixel-stage-label")
                 if r.get("instance_id"):
                     ui.label(r["instance_id"]).classes("cb-pixel-instance-label")
@@ -252,9 +250,7 @@ def render_pixel_sanity_table(rows: list[dict]) -> None:
             for sid, group_rows in species_groups:
                 first = group_rows[0]
                 species_name = first.get("species_name") or sid or "unspecified"
-                species_color = first.get("species_color") or "#94a3b8"
                 with ui.element("div").classes("cb-pixel-species-row"):
-                    ui.element("span").classes("cb-pixel-stripe").style(f"background:{species_color};")
                     ui.label(str(species_name)).classes("cb-pixel-species-name")
                     if sid and species_name != sid:
                         ui.label(f"({sid})").classes("cb-pixel-species-id")

@@ -43,6 +43,7 @@ from ui.components.buttons import house_button
 from ui.components.dialogs import dialog_host
 from ui.components.reactive import SingleFlight
 from ui.components.segmented import render_segmented
+from ui.components.svg_icon import load_icon_svg
 from ui.dashboard.css import ensure_assets_loaded
 from ui.local_file_picker import local_file_picker
 from ui.projects_overview import avatar_color
@@ -651,7 +652,6 @@ class _MergeSelector:
 
     def _render_species(self, cand) -> None:
         src = self.dlg.find_source(cand.optset_path)
-        sp_color = cand.species_color or SLATE
         expanded = cand.optset_path in self.expanded_species
         fully_selected = src is not None and src.tomo_names is None
         partial = src is not None and src.tomo_names is not None
@@ -669,8 +669,9 @@ class _MergeSelector:
             arrow.on("click", lambda _e, c=cand: self._toggle_species(c))
 
             if cand.species_label:
+                ui.html(load_icon_svg("particle.svg", SLATE_MUTED, size=11), sanitize=False).style("display: flex;")
                 ui.label(cand.species_label).style(
-                    f"color: {sp_color}; font-size: 11px; font-weight: 600; flex-shrink: 0;"
+                    f"color: {SLATE}; font-size: 11px; font-weight: 600; flex-shrink: 0;"
                 )
             else:
                 ui.label("Unassigned").classes("text-[11px] text-slate-400 italic").style("flex-shrink: 0;")

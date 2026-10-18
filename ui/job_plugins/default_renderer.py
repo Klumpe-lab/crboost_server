@@ -85,7 +85,7 @@ def _classify_fields(job_model, field_names: set[str]) -> dict[str, list[str]]:
 
 def render_species_badge(job_model, project_path: Path | None, *, callbacks: dict | None = None):
     """Species line at the top of a particle-phase job config on the DEFAULT render
-    path (reconstruct / class3d / …): the shared pill + "open in Species" link.
+    path (reconstruct / class3d / …): the shared species mark + "open in Species" link.
     No-op for jobs without a `species_id`. The TM / pick-candidates / subtomo
     plugins render the same line themselves (via `resolve_species`)."""
     species_id = getattr(job_model, "species_id", None)
