@@ -51,6 +51,7 @@ from services.visualization.preview_orchestrator import (
     previews_up_to_date,
     read_preview_manifest,
 )
+from services.visualization.cutout_filters import keyed_path, offered_presets, render_variant, variant_is_current
 from services.visualization.preview_render import is_output_stale, render_recon_slabs
 from services.workers import WorkKind, run_in_worker
 from services.visualization.tomo_geometry import APIX_MRC_HEADER, TomoGeometry, geometry_for_ts
@@ -65,7 +66,6 @@ from ui.dashboard.figures import (
     _build_xy_scatter_fig,
     _build_xz_scatter_fig,
 )
-from ui.dashboard.journey_style import journey_theme
 from ui.particles import list_actions
 from ui.particles.list_actions import extraction_badge
 
@@ -474,23 +474,47 @@ def _list_cutout_box_px(sp: dict) -> int:
 # ── Cutout display-filter UI (shared by the auto gallery + list sheet) ──
 # Presets live in services/visualization/cutout_filters.py. The control is two
 # compact selects: TYPE (None/Denoise/Local contrast/Bandpass/Lowpass) and, when
-# the type has more than one option, PARAM (its intensity/cutoff). `on_select(key)`
-# fires with the chosen preset key whenever either changes.
+# the type has more than one option, PARAM (its intensity/cutoff). A pass writes
+# the raw atlas alone; a filter's atlas is rendered the first time someone picks
+# it, for that one atlas, and `on_select(key, atlas_path)` swaps it in.
 def _cutout_filter_tooltip(apix, apix_source: str) -> str:
     base = (
         "Display filter only — never changes the data, the picks, or any star file. "
         "Denoise / Local contrast usually read best on noisy tomograms; "
         "Lowpass / Bandpass are frequency cutoffs. "
+        "A filter is rendered for this tomogram the first time you pick it. "
     )
     if apix and apix > 0:
         return base + f"Frequency cutoffs use {apix:.2f} Å/px (from {apix_source}; e.g. 30 Å ≈ {30.0 / apix:.0f}px)."
     return base + "Pixel size is unknown (absent from the cutout header), so the frequency filters are hidden."
 
 
-def _render_cutout_filter_controls(presets: list, apix, apix_source: str, on_select) -> None:
+# One render per variant atlas, however many galleries ask for it at once.
+_VARIANT_RENDERS: dict[str, asyncio.Future] = {}
+
+
+async def _render_variant_once(raw_atlas: Path, raw_index: Path, key: str) -> Path | None:
+    """Render the `key` filter's atlas beside `raw_atlas` in a worker (`render_variant`); a render
+    already running for it is joined. None when it cannot be rendered."""
+    target = str(keyed_path(raw_atlas, key))
+    flight = _VARIANT_RENDERS.get(target)
+    if flight is None:
+        flight = asyncio.ensure_future(run_in_worker(WorkKind.RENDER, render_variant, raw_atlas, raw_index, key))
+        _VARIANT_RENDERS[target] = flight
+        flight.add_done_callback(lambda _f: _VARIANT_RENDERS.pop(target, None))
+    # Shielded: a gallery torn down mid-render must not cancel it for the others waiting.
+    result = await asyncio.shield(flight)
+    return Path(result["atlas"]) if result else None
+
+
+def _render_cutout_filter_controls(
+    presets: list, apix, apix_source: str, raw_atlas: Path, raw_index: Path, on_select
+) -> None:
     """Render the compact TYPE (+ conditional PARAM) selects into the current row.
-    `presets` are the preset dicts that have a variant atlas on disk (ordered).
-    Calls `on_select(preset_key)` whenever the selection changes."""
+    `presets` are the filters offered (`offered_presets`, ordered). Once the chosen
+    filter's atlas is on disk, `on_select(preset_key, atlas_path)` is called with it: a
+    filter not yet rendered for this atlas is rendered first (the label beside the
+    selects says so meanwhile), and only the latest choice is applied."""
     if len(presets) < 2:
         return
     types: list[tuple[str, str]] = []
@@ -507,6 +531,7 @@ def _render_cutout_filter_controls(presets: list, apix, apix_source: str, on_sel
         return {p["key"]: (p.get("param_label") or "—") for p in by_type.get(t, [])}
 
     st = {"type": types[0][0], "key": by_type[types[0][0]][0]["key"]}
+    names = {p["key"]: " ".join(filter(None, (p.get("type_label"), p.get("param_label")))) for p in presets}
 
     type_sel = (
         ui.select({t: lbl for t, lbl in types}, value=st["type"])
@@ -521,22 +546,46 @@ def _render_cutout_filter_controls(presets: list, apix, apix_source: str, on_sel
         .style("min-width: 84px;")
     )
     param_sel.set_visibility(len(by_type[st["type"]]) > 1)
+    status = ui.label("").classes("cb-gal-toolbar-label")
+    status.set_visibility(False)
 
-    def _on_type(e) -> None:
+    async def _apply(key: str) -> None:
+        st["key"] = key
+        if await asyncio.to_thread(variant_is_current, raw_atlas, key):
+            status.set_visibility(False)
+            on_select(key, keyed_path(raw_atlas, key))
+            return
+        status.set_text(f"rendering {names.get(key, key)}…")
+        status.set_visibility(True)
+        try:
+            path = await _render_variant_once(raw_atlas, raw_index, key)
+        except Exception:
+            logger.exception("Cutout filter %s failed for %s", key, raw_atlas)
+            path = None
+        if st["key"] != key or status.is_deleted:
+            return  # another filter was picked meanwhile, or the gallery is gone
+        if path is None:
+            status.set_text(f"{names.get(key, key)} could not be rendered (server log)")
+            return
+        status.set_visibility(False)
+        on_select(key, path)
+
+    async def _on_type(e) -> None:
         t = e.value or types[0][0]
         st["type"] = t
         opts = _params(t)
         keys = list(opts)
-        st["key"] = keys[0] if keys else t
+        key = keys[0] if keys else t
+        st["key"] = key  # before set_options, whose change event would ask for it again
         multi = len(keys) > 1
         param_sel.set_visibility(multi)
         if multi:
-            param_sel.set_options(opts, value=st["key"])
-        on_select(st["key"])
+            param_sel.set_options(opts, value=key)
+        await _apply(key)
 
-    def _on_param(e) -> None:
-        st["key"] = e.value or st["key"]
-        on_select(st["key"])
+    async def _on_param(e) -> None:
+        if e.value and e.value != st["key"]:
+            await _apply(e.value)
 
     type_sel.on_value_change(_on_type)
     param_sel.on_value_change(_on_param)
@@ -939,18 +988,14 @@ def _render_list_cutout_sheet(
             """
         )
 
-    from services.visualization.cutout_filters import get_filter_presets, keyed_path
-
     _apix = atlas_meta.get("apix")
     _apix_source = atlas_meta.get("apix_source") or "unknown"
-    _list_filter_presets = [
-        p for p in get_filter_presets() if p["key"] == "raw" or keyed_path(Path(atlas_path), p["key"]).exists()
-    ]
+    _list_filter_presets = offered_presets(_apix)
 
-    def _on_list_select(key: str) -> None:
+    def _on_list_select(key: str, variant_atlas: Path) -> None:
         # Swap each tile's background-image to the chosen variant atlas, in place —
         # no rebuild, so the keep/drop handlers and dot sync survive the switch.
-        url = vis_asset_url(str(keyed_path(Path(atlas_path), key)))
+        url = vis_asset_url(str(variant_atlas))
         for t in tiles.values():
             try:
                 t.style(add=f"background-image: url({url});")
@@ -1017,8 +1062,14 @@ def _render_list_cutout_sheet(
                     with fbtn, ui.menu().props("anchor='bottom right' self='top right'"):
                         with ui.element("div").classes("cb-info-card cb-tb-card"):
                             with ui.row().classes("items-center gap-2 no-wrap"):
+                                # The index sits beside the atlas (`_list_cutout_paths`).
                                 _render_cutout_filter_controls(
-                                    _list_filter_presets, _apix, _apix_source, _on_list_select
+                                    _list_filter_presets,
+                                    _apix,
+                                    _apix_source,
+                                    Path(atlas_path),
+                                    Path(atlas_path).with_suffix(".json"),
+                                    _on_list_select,
                                 )
                 # A workbench list has no per-pick peek (no subtomo extraction behind
                 # it), so the popover carries the per-tomogram command only.
@@ -1489,7 +1540,7 @@ def _ce_species_entry(
     label = (manifest.get("template") or {}).get("species_name") or split_species_id(iid) or iid
     # Resolve the subtomo job for this species (by species_id) so the
     # gallery's save-filter writes into that species' job, not another's.
-    sub_match = matching_subtomo_instance(project_state, species_id)
+    sub_match = matching_subtomo_instance(project_state, species_id, job_dir)
     subtomo_job_dir = job_dir_for(project_state, sub_match[0], sub_match[1], project_path) if sub_match else None
     # Auto list's curated kept count (the subtomo-gallery keep/drop), read off the
     # cheap reviewed sidecar so the table shows kept/total for auto like the rest.
@@ -1881,7 +1932,7 @@ def render_particles_section(
 
     mrc_path = geom.recon_mrc if geom else None
 
-    root_cls = "cb-section-card cb-particles-root w-full" + (" cb-viewer-full" if mode == "full" else "")
+    root_cls = "cb-section-card cb-particles-root cb-pv w-full" + (" cb-viewer-full" if mode == "full" else "")
     with ui.element("div").classes(root_cls) as card:
         card._props["data-section"] = "particles"
         with ui.element("div").classes("cb-section-card-header"):
@@ -1940,10 +1991,11 @@ def render_particles_section(
             _show_manage_link_for(sp)
             _show_viewer_link_for(sp)
 
-        # Layout: species tabs, then the lists strip full width across the top, then
+        # Layout: species tabs and the lists strip on one line (wrapping when narrow), then
         # one row with the slabs left and the gallery right, both starting at the same y.
-        tabs_host = ui.element("div").classes("w-full")
-        lists_host = ui.element("div").classes("cb-lists-strip w-full")
+        with ui.element("div").classes("cb-pv-bar"):
+            tabs_host = ui.element("div").classes("cb-pv-tabs w-full")
+            lists_host = ui.element("div").classes("cb-lists-strip w-full")
         with ui.element("div").classes("cb-particles-split"):
             canvas_col = ui.element("div").classes("cb-particles-canvas-col")
             detail_host = ui.element("div").classes("cb-particles-detail-col")
@@ -2597,9 +2649,7 @@ def _render_species_auto_section(
     # No subtomo cutouts in the manifest — scatter fallback (its own mini X/Y +
     # X/Z plots). Whether an extraction job exists decides which of two very
     # different situations this is, so the fallback says which.
-    # The Journey's charts follow its style pass; the full page has no pass of its own.
-    theme = journey_theme() if mode == "slim" else JOURNEY_THEME
-    _render_picks_scatter_section(row, entry, manifest, sp.get("subtomo_job_dir") is not None, theme=theme)
+    _render_picks_scatter_section(row, entry, manifest, sp.get("subtomo_job_dir") is not None)
 
 
 def _render_zero_picks_empty_state(manifest: dict, species_name: str | None) -> None:
@@ -2960,29 +3010,21 @@ def _render_gallery_body(
     cutout_index = atlas_meta.get("index", {})
     failures = entry.get("cutout_failures") or atlas_meta.get("failures") or []
 
-    # Display-filter variants (raw + lowpass/bandpass). Each variant is a sibling
-    # atlas PNG that shares this exact tile index, so switching filters just swaps
-    # the atlas URL the tiles + noise-reference tiles point at — no re-layout. apix
-    # is read from the cutout file's OWN header (subtomo and recon use different
-    # bins), so the Å→px conversion in the unit toggle/tooltip is always correct.
-    from services.visualization.cutout_filters import get_filter_presets
-
-    cutout_variants = entry.get("cutout_variants") or {}
+    # Display-filter variants. Each variant is a sibling atlas PNG that shares this
+    # exact tile index, so switching filters just swaps the atlas URL the tiles +
+    # noise-reference tiles point at — no re-layout. A variant is rendered the first
+    # time it is picked (`_render_cutout_filter_controls`). apix is read from the
+    # cutout file's OWN header (subtomo and recon use different bins), so the Å→px
+    # conversion in the unit toggle/tooltip is always correct.
     cutout_apix = entry.get("cutout_apix")
     cutout_apix_source = entry.get("cutout_apix_source") or "unknown"
-    _filter_presets = [p for p in get_filter_presets() if p["key"] in cutout_variants]
+    _filter_presets = offered_presets(cutout_apix)
 
-    def _variant_atlas_url(key: str) -> str:
-        v = cutout_variants.get(key)
-        if v and v.get("atlas"):
-            return vis_asset_url(v["atlas"])
-        return vis_asset_url(entry["cutout_atlas"])
-
-    def _on_filter_select(key: str) -> None:
+    def _on_filter_select(key: str, variant_atlas: Path) -> None:
         # Swap the atlas the tiles + noise-reference tiles point at, then re-render
         # (positions are identical across filters — only the pixels differ).
         nonlocal atlas_url
-        atlas_url = _variant_atlas_url(key)
+        atlas_url = vis_asset_url(str(variant_atlas))
         _refresh_reference_strip()
         _refresh_grid()
 
@@ -3248,7 +3290,12 @@ def _render_gallery_body(
                 with ui.element("div").classes("cb-info-card cb-tb-card"):
                     with ui.row().classes("items-center gap-2 no-wrap"):
                         _render_cutout_filter_controls(
-                            _filter_presets, cutout_apix, cutout_apix_source, _on_filter_select
+                            _filter_presets,
+                            cutout_apix,
+                            cutout_apix_source,
+                            Path(entry["cutout_atlas"]),
+                            Path(entry["cutout_index"]),
+                            _on_filter_select,
                         )
         peek_refs = _render_3dmod_popover(row, with_peek=True)
         curate_btn = None
@@ -4063,8 +4110,8 @@ def _auto_kick_preview_generation(instance_id: str, job_model, job_dir: Path, pr
         # subtomo particles.star only to skip each tomogram: on every mount of the Journey or the
         # pick viewer. Here a complete manifest newer than its sources means there is nothing to do.
         def _fresh() -> bool:
-            sources = [candidates_star, tomograms_star, *subtomo_particles_stars(state, project_path)]
-            return previews_up_to_date(job_dir, sources)
+            cutout_sources = subtomo_particles_stars(state, project_path, job_dir)
+            return previews_up_to_date(job_dir, [candidates_star, tomograms_star], cutout_sources)
 
         if await asyncio.to_thread(_fresh) or slot.parent.is_deleted:
             return

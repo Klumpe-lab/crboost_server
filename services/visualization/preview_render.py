@@ -312,8 +312,8 @@ def render_pick_cutouts_atlas(
     filters: list | None = None,
     apix_hint: float | None = None,
 ) -> dict | None:
-    """Build sprite-atlas PNG(s) + index JSON(s) of per-pick subtomo thumbnails —
-    one per display-filter preset (see services/visualization/cutout_filters.py).
+    """Build the sprite-atlas PNG + index JSON of per-pick subtomo thumbnails: the raw
+    atlas, or one per preset in `filters` (see services/visualization/cutout_filters.py).
 
     `pick_to_mrcs` is aligned to the pick order in picks.json; each element is
     None (no matching subtomo) or a dict with keys
