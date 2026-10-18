@@ -108,8 +108,10 @@ def staged_ts_name(ts_name: str, method: AlignmentMethod) -> str:
 
 def collect_per_ts_outputs(job_dir: Path, ts_name: str, staged_name: str) -> None:
     """
-    Copy alignment outputs from the per-TS staging dir into the shared job dir, under the
-    real name when the series ran under ARETOMO_ALIAS.
+    Move alignment outputs from the per-TS staging dir into the shared job dir, under the
+    real name when the series ran under ARETOMO_ALIAS. A move, not a copy: nothing reads the
+    staged outputs afterwards and a copy would double the job's size; staging shares the
+    job dir's filesystem, so each move is a rename.
     - warp_tiltseries/{staged_name}.xml → job_dir/warp_tiltseries/{ts_name}.xml
     - warp_tiltseries/tiltstack/{staged_name}/ → job_dir/warp_tiltseries/tiltstack/{ts_name}/
     """
@@ -119,18 +121,19 @@ def collect_per_ts_outputs(job_dir: Path, ts_name: str, staged_name: str) -> Non
     shared_warp = job_dir / "warp_tiltseries"
     shared_warp.mkdir(parents=True, exist_ok=True)
 
-    # Copy XML
+    # XML
     src_xml = staged_warp / f"{staged_name}.xml"
     if src_xml.exists():
-        shutil.copy2(str(src_xml), str(shared_warp / f"{ts_name}.xml"))
+        src_xml.replace(shared_warp / f"{ts_name}.xml")
 
-    # Copy tiltstack directory
+    # Tiltstack directory
     src_tiltstack = staged_warp / "tiltstack" / staged_name
     if src_tiltstack.exists():
         dst_tiltstack = shared_warp / "tiltstack" / ts_name
         if dst_tiltstack.exists():
             shutil.rmtree(str(dst_tiltstack))
-        shutil.copytree(str(src_tiltstack), str(dst_tiltstack))
+        dst_tiltstack.parent.mkdir(parents=True, exist_ok=True)
+        src_tiltstack.replace(dst_tiltstack)
         if staged_name != ts_name:
             rename_alias_files(dst_tiltstack, staged_name, ts_name)
 

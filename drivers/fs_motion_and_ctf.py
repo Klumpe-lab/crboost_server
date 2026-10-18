@@ -19,7 +19,6 @@ The mode dispatch, both bootstraps, manifest lookup, exclusions, tally and exit
 code all live in ArrayDriver; this file is the fs_motion-specific hooks.
 """
 
-import shutil
 from pathlib import Path
 
 from drivers.array_job_base import ArrayDriver, ArrayResults, read_manifest
@@ -202,10 +201,12 @@ def stage_fs_environment(job_dir: Path, ts_name: str, frame_filenames: list[str]
 
 def collect_fs_outputs(job_dir: Path, ts_name: str) -> None:
     """
-    Copy per-TS warp_frameseries outputs into the shared job-level output dir.
+    Move per-TS warp_frameseries outputs into the shared job-level output dir.
 
     Each frame produces a unique XML and unique average MRCs (named by frame stem),
-    so there are no collisions between TS tasks.
+    so there are no collisions between TS tasks. A move, not a copy: nothing reads the
+    staged outputs afterwards and a copy would double the job's size; staging shares the
+    job dir's filesystem, so each move is a rename.
     """
     stage_root = job_dir / ".staging" / f"task_{ts_name}"
     staged_warp = stage_root / "warp_frameseries"
@@ -215,25 +216,25 @@ def collect_fs_outputs(job_dir: Path, ts_name: str) -> None:
     if not staged_warp.exists():
         return
 
-    # Copy XMLs (per-frame metadata)
-    for xml_file in staged_warp.glob("*.xml"):
-        shutil.copy2(str(xml_file), str(shared_warp / xml_file.name))
+    # XMLs (per-frame metadata)
+    for xml_file in list(staged_warp.glob("*.xml")):
+        xml_file.replace(shared_warp / xml_file.name)
 
-    # Copy subdirectories (average/, powerspectrum/, etc.)
+    # Subdirectories (average/, powerspectrum/, etc.)
     for subdir in staged_warp.iterdir():
         if subdir.is_dir():
             shared_subdir = shared_warp / subdir.name
             shared_subdir.mkdir(parents=True, exist_ok=True)
-            for f in subdir.iterdir():
+            for f in list(subdir.iterdir()):
                 if f.is_file():
-                    shutil.copy2(str(f), str(shared_subdir / f.name))
+                    f.replace(shared_subdir / f.name)
                 elif f.is_dir():
                     # Nested subdirs like average/even/, average/odd/
                     shared_nested = shared_subdir / f.name
                     shared_nested.mkdir(parents=True, exist_ok=True)
-                    for nf in f.iterdir():
+                    for nf in list(f.iterdir()):
                         if nf.is_file():
-                            shutil.copy2(str(nf), str(shared_nested / nf.name))
+                            nf.replace(shared_nested / nf.name)
 
 
 class FsMotionCtfDriver(ArrayDriver):
