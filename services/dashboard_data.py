@@ -22,6 +22,7 @@ from services.models_base import (
     InstanceId,
     JobStatus,
     JobType,
+    PARTICLE_EXTRACTION_TYPES,
     ListExtractionState,
     PickListType,
     # Re-export: the renderers read this as a dashboard overlay constant, but a
@@ -31,6 +32,7 @@ from services.models_base import (
 )
 from services.models_base import resolve_species as resolve_species
 from services.models_base import split_species_id as split_species_id
+from services.particles.subtomo_link import serves_candidate_job
 from services.tilt_series.build import infer_position
 from services.visualization.preview_orchestrator import read_preview_manifest
 
@@ -88,7 +90,7 @@ def candidate_extract_instances(state) -> list[tuple[str, object]]:
 def subtomo_extract_instances(state) -> list[tuple[str, object]]:
     out: list[tuple[str, object]] = []
     for instance_id, job_model in state.jobs.items():
-        if getattr(job_model, "job_type", None) == JobType.SUBTOMO_EXTRACTION:
+        if getattr(job_model, "job_type", None) in PARTICLE_EXTRACTION_TYPES:
             out.append((instance_id, job_model))
     return sorted(out, key=lambda kv: kv[0])
 
@@ -133,7 +135,7 @@ def resolve_volume_for_3dmod(tomo_row: pd.Series, project_path: Path) -> Path | 
     return None
 
 
-def vis_asset_url(asset_path: str) -> str:
+def vis_asset_url(asset_path: str, thumb: int = 0) -> str:
     # mtime-keyed cache-buster: when the atlas/manifest regenerates, the URL
     # changes, so the browser doesn't serve a stale copy from disk cache
     # against an unchanged path. Nanoseconds: the route caches a versioned PNG for good, so a rewrite
@@ -142,7 +144,9 @@ def vis_asset_url(asset_path: str) -> str:
         v = Path(asset_path).stat().st_mtime_ns
     except OSError:
         v = 0
-    return f"/api/vis-asset?path={urllib.parse.quote(asset_path, safe='')}&v={v}"
+    # `thumb`: serve a JPEG at most that many px across instead of the PNG itself.
+    size = f"&thumb={thumb}" if thumb else ""
+    return f"/api/vis-asset?path={urllib.parse.quote(asset_path, safe='')}&v={v}{size}"
 
 
 def position_label(tomo_name: str) -> tuple[str, tuple[int, int]]:
@@ -803,11 +807,15 @@ def _species_label_for(jm, iid: str, manifest: dict) -> str:
     )
 
 
-def matching_subtomo_instance(state, species_id):
-    """The SUBTOMO_EXTRACTION instance attached to this species_id, or None."""
+def matching_subtomo_instance(state, species_id, ce_job_dir: Path | None = None):
+    """The extraction instance (Subtomo Extraction or Warp Export) attached to this species_id,
+    or None. With `ce_job_dir`, one that serves that candidate-extract job, so a species picked
+    on two branches pairs each with its own extraction (`serves_candidate_job`)."""
     for s_iid, s_jm in subtomo_extract_instances(state):
         _, s_sid = resolve_species(state, s_jm, s_iid)
-        if s_sid == species_id:
+        if s_sid != species_id:
+            continue
+        if ce_job_dir is None or serves_candidate_job(state, s_jm, ce_job_dir):
             return s_iid, s_jm
     return None
 
@@ -971,7 +979,7 @@ def collect_species_journey(project_state, project_path: Path, only_ts: str | No
         entries = manifest.get("tomograms") or {}
         label = _species_label_for(jm, iid, manifest)
         pick_status = _candidate_extract_status_per_ts(jd, jm, manifest)
-        sub_match = matching_subtomo_instance(project_state, species_id)
+        sub_match = matching_subtomo_instance(project_state, species_id, jd)
         sub_status: dict[str, str] = {}
         sub_star = None
         reviewed: dict[str, int] = {}

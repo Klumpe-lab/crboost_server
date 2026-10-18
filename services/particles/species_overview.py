@@ -163,8 +163,8 @@ def species_overview(state, project_path: Path, species_id: str) -> SpeciesOverv
     ``candidates.star`` with ``extraction_state == "n/a"``."""
     project_path = Path(project_path)
     ce = ce_instance_for_species(state, species_id)
-    sub = matching_subtomo_instance(state, species_id)
     ce_dir = job_dir_for(state, ce[0], ce[1], project_path) if ce else None
+    sub = matching_subtomo_instance(state, species_id, ce_dir)
     subtomo_dir = subtomo_job_dir_for_species(state, species_id, project_path)
 
     # Per-tomo auto accounting: {tomo: (total, kept)}; kept None = no filter committed.

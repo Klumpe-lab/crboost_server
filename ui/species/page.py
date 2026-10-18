@@ -1,6 +1,6 @@
 """The Species page — `[rail 200px | detail]`.
 
-Detail = header row (active species' pill + segmented tabs) + one container per
+Detail = header row (active species' mark + segmented tabs) + one container per
 (species, tab), built lazily on first selection and cached; a switch only flips
 visibility. Tabs: Overview (identity editor, status, sanity, delete) · Templates &
 masks (the mounted workbench) · Picks & curation · Analytics (scores in σ, TM health, particle
@@ -25,7 +25,7 @@ from services.project_state import get_project_state_for
 from ui.components.buttons import house_button
 from ui.components.reactive import FingerprintedView, SingleFlight
 from ui.components.segmented import Segmented, render_segmented
-from ui.components.species_pill import render_species_pill
+from ui.components.species_pill import render_species_mark
 from ui.components.svg_icon import load_icon_svg
 from ui.dashboard.css import ensure_assets_loaded
 from ui.routing import View
@@ -53,7 +53,7 @@ DEFAULT_TAB = "overview"
 
 
 class _PillView(FingerprintedView):
-    """The header's species pill: repaints on select / rename / recolor only."""
+    """The header's species mark: repaints on select / rename / recolor only."""
 
     def __init__(self, container: ui.element, page: SpeciesPage) -> None:
         super().__init__(container)
@@ -66,7 +66,7 @@ class _PillView(FingerprintedView):
         sid = self._page.active_species_id
         species = get_project_state_for(self._page.project_path).get_species(sid) if sid else None
         if species is not None:
-            render_species_pill(species, tooltip=f"id: {species.id}")
+            render_species_mark(species, named=True, tooltip=f"id: {species.id}")
 
 
 class SpeciesPage:

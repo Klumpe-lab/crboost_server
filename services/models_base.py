@@ -126,6 +126,11 @@ class JobType(str, Enum):
             raise ValueError(f"Unknown job type '{value}'. Valid types: {valid}") from None
 
 
+# The jobs that cut the per-particle 2D stacks from a candidate-extract job's optimisation set.
+# Both write the same particles.star / optimisation_set.star envelope.
+PARTICLE_EXTRACTION_TYPES = frozenset({JobType.SUBTOMO_EXTRACTION, JobType.WARP_EXPORT})
+
+
 @dataclass(frozen=True, slots=True)
 class InstanceId:
     """Typed form of the job instance-id grammar: ``{job_type}`` or

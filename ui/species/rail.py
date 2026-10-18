@@ -1,6 +1,6 @@
 """Species rail — the left column of the Species page.
 
-One row per registered species (the one species pill + a muted "n tpl · n lists"
+One row per registered species (the species mark + a muted "n tpl · n lists"
 meta) and a "+" at the bottom. A `FingerprintedView`: the page's 3-s observe tick and
 every select / create / delete call `refresh()`, and the DOM rebuilds only when the
 active id, `species_identity()` (id · name · color per species) or the per-species
@@ -20,7 +20,7 @@ from nicegui import ui
 from services.project_state import get_project_state_for
 from ui.components.reactive import FingerprintedView
 from services.particles.catalog import is_enabled as catalog_is_enabled
-from ui.components.species_pill import render_species_pill
+from ui.components.species_pill import render_species_mark
 
 
 def _counts(state) -> tuple[tuple[str, int, int], ...]:
@@ -58,10 +58,10 @@ class SpeciesRail(FingerprintedView):
         for species in state.species_registry:
             n_tpl, n_lists = counts.get(species.id, (0, 0))
             row = ui.element("div").classes("cb-srail-row" + (" selected" if species.id == active else ""))
-            row.style(f"border-left-color: {species.color if species.id == active else 'transparent'};")
+            row.style(f"border-left-color: {'#6366f1' if species.id == active else 'transparent'};")
             row.on("click", lambda _e, sid=species.id: self._on_select(sid))
             with row:
-                render_species_pill(species)
+                render_species_mark(species, named=True)
                 ui.label(f"{n_tpl} tpl · {n_lists} list{'s' if n_lists != 1 else ''}").classes("cb-srail-meta").tooltip(
                     "templates registered · pick lists (hand-picked / imported / merged)"
                 )
