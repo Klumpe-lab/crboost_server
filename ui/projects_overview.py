@@ -49,6 +49,7 @@ CLR_GHOST = "#cbd5e1"
 CLR_BORDER = "#e2e8f0"
 CLR_META = "#64748b"
 CLR_RUNNING = "#3b82f6"
+CLR_QUEUED = "#93c5fd"
 CLR_FAILED = "#dc2626"
 CLR_DONE = "#0d9488"
 CLR_REVIEW = "#d97706"
@@ -104,6 +105,7 @@ def avatar_color(key: str) -> str:
 # waits for the tilt-filter review (backend._derive_live_status).
 _STATUS_STYLES = {
     "running": {"color": CLR_RUNNING, "label": "live"},
+    "queued": {"color": CLR_QUEUED, "label": "in queue"},
     "review": {"color": CLR_REVIEW, "label": "review"},
     "failed": {"color": CLR_FAILED, "label": "failed"},
     "done": {"color": CLR_DONE, "label": "done"},
@@ -620,6 +622,7 @@ class ProjectsOverview:
             label_text = "unknown owner"
             dot = CLR_GHOST
         live = sum(1 for p in projects if p.get("live_status") == "running")
+        queued = sum(1 for p in projects if p.get("live_status") == "queued")
         with (
             ui.row()
             .classes("w-full items-center")
@@ -639,6 +642,8 @@ class ProjectsOverview:
             )
             if live:
                 ui.label(f"· {live} live").style(f"{MONO} font-size: 8px; color: {CLR_RUNNING};")
+            if queued:
+                ui.label(f"· {queued} in queue").style(f"{MONO} font-size: 8px; color: {CLR_QUEUED};")
 
     # =====================================================================
     # ROW
@@ -651,7 +656,7 @@ class ProjectsOverview:
     _W_OWNER = 84
     _W_TS = 44
     _W_SIZE = 56
-    _W_STATUS = 46
+    _W_STATUS = 56  # fits "IN QUEUE", the widest badge
 
     def _render_row(self, proj: dict, *, compact: bool = False):
         path_str = proj["path"]
@@ -975,7 +980,7 @@ class ProjectsOverview:
         done out of those in scope, and how many the run has failed so far, in red, since each
         is dropped from every job after it. Live projects only; the hover breaks it down."""
         lp = proj.get("live_progress")
-        if not lp or proj.get("live_status") != "running":
+        if not lp or proj.get("live_status") not in ("running", "queued"):
             return
         if lp["state"] == "queued":
             lines = [f"{lp['stage']}: queued on the cluster"]
@@ -1003,8 +1008,9 @@ class ProjectsOverview:
 
     @staticmethod
     def _render_status(proj: dict):
-        """done / failed / review / live; an idle project gets no badge. The live dot ripples
-        (`.cb-live-pulse`, ui/dashboard/css.py). The job counts live in the hover."""
+        """done / failed / review / in queue / live; an idle project gets no badge. The live dot
+        ripples (`.cb-live-pulse`, ui/dashboard/css.py); the in-queue dot stays still. The job
+        counts live in the hover."""
         status = proj.get("live_status") or "idle"
         s = _STATUS_STYLES.get(status)
         if s is None:

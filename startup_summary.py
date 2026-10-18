@@ -26,7 +26,13 @@ _PROBE_TIMEOUT_SEC = 8
 
 # SGR 2 (faint) is as small as a terminal gets: there is no escape for a smaller font.
 _DIM, _RESET = "\x1b[2m", "\x1b[0m"
-_STATUS_COLOR = {"running": "\x1b[2;36m", "review": "\x1b[2;35m", "failed": "\x1b[2;31m", "done": "\x1b[2;32m"}
+_STATUS_COLOR = {
+    "running": "\x1b[2;36m",
+    "queued": "\x1b[2;34m",
+    "review": "\x1b[2;35m",
+    "failed": "\x1b[2;31m",
+    "done": "\x1b[2;32m",
+}
 _RELION_JOB_DIR = re.compile(r"job\d{3,}")
 
 
