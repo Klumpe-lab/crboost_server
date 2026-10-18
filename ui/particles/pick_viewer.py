@@ -56,7 +56,7 @@ from services.visualization.preview_render import is_output_stale, render_recon_
 from services.workers import WorkKind, run_in_worker
 from services.visualization.tomo_geometry import APIX_MRC_HEADER, TomoGeometry, geometry_for_ts
 from ui.components.buttons import house_button
-from ui.components.reactive import SingleFlight
+from ui.components.reactive import SingleFlight, slot_is_gone
 from ui.components.segmented import render_segmented
 from ui.current_project import current_project_state
 from ui.dashboard.figures import (
@@ -4113,7 +4113,7 @@ def _auto_kick_preview_generation(instance_id: str, job_model, job_dir: Path, pr
             cutout_sources = subtomo_particles_stars(state, project_path, job_dir)
             return previews_up_to_date(job_dir, [candidates_star, tomograms_star], cutout_sources)
 
-        if await asyncio.to_thread(_fresh) or slot.parent.is_deleted:
+        if await asyncio.to_thread(_fresh) or slot_is_gone(slot):
             return
         from ui.background_task import BackgroundTask
 
