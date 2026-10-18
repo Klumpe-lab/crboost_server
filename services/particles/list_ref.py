@@ -99,10 +99,11 @@ def species_anchors(state, project_path: Path, species_id: str) -> SpeciesAnchor
     project_path = Path(project_path)
     species = state.get_species(species_id)
     ce = ce_instance_for_species(state, species_id)
-    sub = matching_subtomo_instance(state, species_id)
+    ce_dir = job_dir_for(state, ce[0], ce[1], project_path) if ce else None
+    sub = matching_subtomo_instance(state, species_id, ce_dir)
     return SpeciesAnchors(
         species_label=str(getattr(species, "name", "") or species_id),
-        ce_job_dir=job_dir_for(state, ce[0], ce[1], project_path) if ce else None,
+        ce_job_dir=ce_dir,
         subtomo_job_dir=job_dir_for(state, sub[0], sub[1], project_path) if sub else None,
         subtomo_iid=sub[0] if sub else None,
     )

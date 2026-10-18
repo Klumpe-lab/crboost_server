@@ -1,10 +1,10 @@
-"""The one species pill.
+"""The one species mark.
 
-Every surface that names a species — job-tab header, the Config tab
-of a particle-phase job, and the Species rail — draws the same
-capsule: species name in the species color on a tinted, bordered pill. Three
-copies of the style string used to live in the roster, the default renderer and
-the job-tab header; a recolor / rename now looks identical everywhere.
+Every surface that names a species — job-tab header, pipeline table, the Config tab
+of a particle-phase job, the Species rail and page header — draws the roster's grey
+particle glyph, named on hover. Where the name is the content (rail, page header,
+Config tab line) it follows the glyph in plain slate text. Species colors stay on the
+canvas overlays they key, never on names.
 """
 
 from __future__ import annotations
@@ -13,26 +13,27 @@ from collections.abc import Callable
 
 from nicegui import ui
 
+from ui.components.svg_icon import load_icon_svg
 from ui.styles import SANS
 
+_GLYPH = "#94a3b8"
 
-def render_species_pill(species, *, compact: bool = False, tooltip: str | None = None):
-    """Read-only species capsule. `compact` is the table-row size (8 px text);
-    the default is the header / Config-tab size (9 px)."""
-    font_px = 8 if compact else 9
-    pad = "1px 6px" if compact else "1px 8px"
-    pill = ui.element("div").style(
-        f"display: inline-flex; align-items: center; flex-shrink: 0; "
-        f"background: {species.color}18; border: 1px solid {species.color}55; "
-        f"border-radius: 999px; padding: {pad};"
-    )
-    if tooltip:
-        pill.tooltip(tooltip)
-    with pill:
-        ui.label(species.name).style(
-            f"font-size: {font_px}px; color: {species.color}; font-weight: 600; white-space: nowrap;"
-        )
-    return pill
+
+def render_species_mark(species, *, named: bool = False, tooltip: str | None = None):
+    """Read-only species mark: the grey glyph, plus the name when `named`. The hover
+    says `tooltip`, by default "Species: <name>"; "" gives it none (a caller whose own
+    hover names the species)."""
+    mark = ui.element("div").style("display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; min-width: 0;")
+    with mark:
+        ui.html(load_icon_svg("particle.svg", _GLYPH, size=11), sanitize=False).style("display: flex;")
+        if named:
+            ui.label(species.name).style(
+                f"{SANS} font-size: 10px; color: #334155; font-weight: 600; white-space: nowrap; "
+                "overflow: hidden; text-overflow: ellipsis;"
+            )
+        if tooltip != "":
+            ui.tooltip(tooltip or f"Species: {species.name}")
+    return mark
 
 
 def species_opener(callbacks: dict | None, species_id: str) -> Callable[[], None] | None:
@@ -47,7 +48,7 @@ def species_opener(callbacks: dict | None, species_id: str) -> Callable[[], None
 
 
 def render_species_line(species, *, on_open: Callable[[], None] | None = None) -> None:
-    """The one-line species header of a particle-phase job's Config tab: the pill
+    """The one-line species header of a particle-phase job's Config tab: the named mark
     plus an "open in Species" link. With no resolvable species the line is an amber notice —
     the job's dropdowns / sanity checks depend on the link, so it must not be
     silent (CLAUDE.md "Surfacing uncertainty")."""
@@ -62,7 +63,7 @@ def render_species_line(species, *, on_open: Callable[[], None] | None = None) -
             f"{SANS} font-size: 9px; font-weight: 700; color: #94a3b8; "
             "letter-spacing: 0.06em; text-transform: uppercase;"
         )
-        render_species_pill(species)
+        render_species_mark(species, named=True)
         if on_open is not None:
             ui.label("open in Particles registry ↗").style(
                 f"{SANS} font-size: 10px; color: #6366f1; cursor: pointer; text-decoration: underline dotted;"
