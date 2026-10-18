@@ -28,6 +28,7 @@ from services.particles.list_ref import extract_pick_list_instance_id
 from services.particles.particle_sets import ParentRef, Rule
 from services.project_state import get_state_service, remove_project_state
 from services.project_disk_usage import get_disk_usage_service, is_stale as is_disk_usage_stale
+from services.project_trash import clear_trash, list_trash, trash_summary
 from services.event_log import events
 from services.result import ErrorCode, err, ok
 from services.computing.slurm_service import SlurmService, write_sbatch_script
@@ -1712,9 +1713,11 @@ class CryoBoostBackend:
                         tomo_preview = _find_tomo_preview(item, jobs_dict)
                         self._tomo_preview_cache[str(item)] = (last_activity_ts, tomo_preview)
                     disk_usage = get_disk_usage_service().cached(item)
+                    trash_count, trash_mtime = trash_summary(item)
                     disk_usage_stale = is_disk_usage_stale(
                         disk_usage,
-                        last_activity_ts=last_activity_ts,
+                        # Clearing the trash changes nothing else in the project.
+                        last_activity_ts=max(last_activity_ts, trash_mtime),
                         running=derived["live_status"] in ("running", "queued"),
                         now=time.time(),
                     )
@@ -1743,6 +1746,8 @@ class CryoBoostBackend:
                             "last_activity": datetime.fromtimestamp(last_activity_ts).strftime("%Y-%m-%d %H:%M"),
                             "disk_usage": disk_usage,
                             "disk_usage_stale": disk_usage_stale,
+                            "trash_count": trash_count,
+                            "trash_mtime": trash_mtime,
                             "tomo_preview": tomo_preview,
                             "live_progress": live_progress,
                             **derived,
@@ -1895,6 +1900,29 @@ class CryoBoostBackend:
             return err(str(e))
         remove_project_state(project_path)
         return ok()
+
+    async def list_project_trash(self, project_path: Path) -> dict[str, Any]:
+        """The jobs removed from the project that still sit in its Trash/, sized afresh, largest first."""
+        try:
+            entries = await asyncio.to_thread(list_trash, Path(project_path))
+        except OSError as e:
+            logger.exception("Could not read the trash of %s", project_path)
+            return err(str(e))
+        return ok(entries=entries)
+
+    async def clear_project_trash(self, project_path: Path, names: list[str]) -> dict[str, Any]:
+        """Permanently delete the named Trash/ entries. When that empties Trash/, the cached project
+        size drops it at once."""
+        project_dir = Path(project_path)
+        try:
+            result = await asyncio.to_thread(clear_trash, project_dir, names)
+            remaining, _ = await asyncio.to_thread(trash_summary, project_dir)
+        except OSError as e:
+            logger.exception("Could not clear the trash of %s", project_dir)
+            return err(str(e))
+        if remaining == 0:
+            await asyncio.to_thread(get_disk_usage_service().trash_cleared, project_dir)
+        return result
 
     async def transfer_project_ownership(self, project_path: Path, new_owner: str | None) -> dict[str, Any]:
         """Reassign a project's owner WITHOUT moving it on disk.

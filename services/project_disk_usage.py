@@ -127,6 +127,12 @@ class _Walk:
         return total
 
 
+def tree_bytes(path: str, st: os.stat_result) -> tuple[int, int]:
+    """(allocated bytes, unreadable directories) of one tree, counted the way `measure` counts it."""
+    walk = _Walk()
+    return walk.tree_bytes(path, st), walk.unreadable_dirs
+
+
 def measure(project_dir: Path, jobs: dict[str, Any]) -> DiskUsage:
     """Walk `project_dir` and attribute every byte to a bucket.
 
@@ -278,6 +284,21 @@ class DiskUsageService:
         except Exception as e:
             logger.exception("Disk usage measurement failed for %s", project_dir)
             usage = DiskUsage(measured_at=time.time(), error=str(e))
+        self._store(project_dir, usage)
+
+    def trash_cleared(self, project_dir: Path) -> None:
+        """The project's Trash/ was emptied: drop it from the newest measurement now, so the roster
+        shows the freed space without waiting for the next walk. Blocks (reads and writes the cache)."""
+        usage = self.cached(project_dir)
+        if usage is None or usage.error or not usage.buckets.get(BUCKET_TRASH):
+            return
+        patched = usage.model_copy(deep=True)
+        patched.total_bytes = max(0, usage.total_bytes - usage.buckets[BUCKET_TRASH])
+        patched.buckets[BUCKET_TRASH] = 0
+        patched.parts.pop(BUCKET_TRASH, None)
+        self._store(project_dir, patched)
+
+    def _store(self, project_dir: Path, usage: DiskUsage) -> None:
         self._memory[str(project_dir)] = usage
         target = project_dir / CACHE_NAME
         # Per-process temp name: two servers may measure the same project at once.

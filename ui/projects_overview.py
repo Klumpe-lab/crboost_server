@@ -30,7 +30,9 @@ from services.project_disk_usage import BUCKET_OTHER, BUCKET_PARTICLES, BUCKET_P
 from services.project_state import SHARED_OWNER
 from ui.components.buttons import house_button
 from ui.components.copyable import copy_on_click
+from ui.components.dialogs import dialog_host
 from ui.components.fields import house_select
+from ui.components.reactive import SingleFlight
 from ui.components.segmented import render_segmented
 from ui.routing import Route, route_to_path
 from ui.styles import MONO, SANS as FONT
@@ -245,6 +247,7 @@ class ProjectsOverview:
         self._delete_mode = False
         self._delete_btn = None
         self._delete_hint = None
+        self._flight = SingleFlight()
 
     # =====================================================================
     # PUBLIC API
@@ -660,6 +663,7 @@ class ProjectsOverview:
     _W_APIX = 44
     _W_KV = 40
     _W_DOSE = 62
+    _W_TRASH = 52
 
     def _render_row(self, proj: dict, *, compact: bool = False):
         path_str = proj["path"]
@@ -799,6 +803,7 @@ class ProjectsOverview:
                         "Last activity"
                     )
                     self._render_size(proj)
+                    self._render_trash(proj)
 
             # ---- Travel chevron: full row height, its own hit area ----
             # A full-height column on the right edge, so "go there" is the easiest
@@ -890,6 +895,10 @@ class ProjectsOverview:
                 ).tooltip(tip)
             with ui.element("div").style(f"width: {self._W_SIZE}px; {fixed} display: flex; justify-content: flex-end;"):
                 self._render_size(proj)
+            with ui.element("div").style(
+                f"width: {self._W_TRASH}px; {fixed} display: flex; justify-content: flex-end;"
+            ):
+                self._render_trash(proj)
             with ui.element("div").style(f"width: {self._W_STATUS}px; {fixed} display: flex;"):
                 self._render_status(proj)
 
@@ -1110,6 +1119,143 @@ class ProjectsOverview:
                     f"{usage.unreadable_dirs} director{'ies' if usage.unreadable_dirs != 1 else 'y'} unreadable "
                     "(permissions): the size is a lower bound"
                 ).style("margin-top: 4px;")
+
+    def _render_trash(self, proj: dict):
+        """Jobs removed from the project keep their disk space in its Trash/ until it is cleared.
+        Shown only when Trash/ holds something: its size when the last measurement is newer than
+        the trash's last change, else the number of removed jobs. A click lists them, sized afresh,
+        and can clear them; in deletion mode the row is the only target."""
+        n = proj.get("trash_count") or 0
+        if not n:
+            return
+        usage: DiskUsage | None = proj.get("disk_usage")
+        fresh = usage is not None and not usage.error and usage.measured_at >= (proj.get("trash_mtime") or 0.0)
+        size = usage.buckets.get(BUCKET_TRASH, 0) if fresh else None
+        jobs = f"{n} removed job{'s' if n != 1 else ''}"
+        hint = f"Trash: {jobs}, {format_bytes(size)}" if size else f"Trash: {jobs}, not measured since it changed"
+        clickable = not self._delete_mode
+        chip = ui.element("div").style(
+            "display: flex; align-items: center; gap: 2px; flex-shrink: 0; white-space: nowrap; "
+            f"color: {size_color(size or 0)}; cursor: {'pointer' if clickable else 'default'};"
+        )
+        chip.tooltip(f"{hint}. Click to see them and clear the trash." if clickable else hint)
+        with chip:
+            ui.icon("delete_outline", size="11px")
+            ui.label(format_bytes(size) if size else str(n)).style(f"{MONO} font-size: 9px;")
+        if clickable:
+            chip.classes("cb-proj-trash")
+            chip.on("click.stop", lambda: self._open_trash(Path(proj["path"]), proj["name"]))
+
+    async def _open_trash(self, project_dir: Path, name: str):
+        """The project's Trash/: every removed job with its size, measured afresh, and one button that
+        deletes them all. On the page layout, so a roster refresh cannot take the dialog away."""
+        async with self._flight("trash") as acquired:
+            if not acquired:
+                return
+            with dialog_host(), ui.dialog() as dialog, ui.card().style("width: 600px; max-width: 95vw;"):
+                ui.label(f"Trash · {name}").style(f"{FONT} font-size: 13px; font-weight: 600; color: {CLR_HEADING};")
+                ui.label(
+                    "Removing a job moves its directory to Trash/, where it keeps its disk space. Clearing the "
+                    "trash deletes these directories permanently."
+                ).style(f"{FONT} font-size: 12px; color: {CLR_LABEL}; margin-top: 4px;")
+                body = ui.column().classes("w-full").style("gap: 0; margin-top: 8px;")
+                with body:
+                    self._trash_wait("Measuring Trash/ …")
+                with ui.row().classes("w-full justify-end mt-3 gap-2"):
+                    house_button("Cancel", dialog.close)
+                    clear_btn = house_button("Clear trash", kind="danger")
+                    clear_btn.disable()
+            dialog.open()
+            listing = await self.backend.list_project_trash(project_dir)
+        if body.is_deleted:
+            return
+        body.clear()
+        with body:
+            if not listing["success"]:
+                ui.label(f"Could not read Trash/: {listing['error']}").style(
+                    f"{FONT} font-size: 11px; color: {CLR_FAILED};"
+                )
+                return
+            entries = listing["entries"]
+            if not entries:
+                ui.label("Trash/ is empty.").style(f"{FONT} font-size: 11px; color: {CLR_SUBLABEL};")
+                return
+            total = sum(e.size_bytes for e in entries)
+            self._render_trash_entries(entries, total)
+        clear_btn.set_text(f"Clear trash · {format_bytes(total)}")
+        clear_btn.enable()
+
+        async def clear():
+            async with self._flight("trash-clear") as acquired:
+                if not acquired:
+                    return
+                clear_btn.disable()
+                body.clear()
+                with body:
+                    self._trash_wait(
+                        f"Deleting {len(entries)} job{'s' if len(entries) != 1 else ''} ({format_bytes(total)}): "
+                        "large jobs take a while. Closing this does not stop it."
+                    )
+                result = await self.backend.clear_project_trash(project_dir, [e.name for e in entries])
+                if dialog.is_deleted:
+                    return
+                removed = set(result.get("removed") or [])
+                freed = format_bytes(sum(e.size_bytes for e in entries if e.name in removed))
+                if result["success"]:
+                    ui.notify(f"Cleared the trash of '{name}': {freed} freed", type="positive")
+                else:
+                    ui.notify(
+                        f"{freed} freed. {result['error']}",
+                        type="negative",
+                        multi_line=True,
+                        timeout=0,
+                        close_button=True,
+                    )
+                dialog.close()
+                await self.refresh(force=True)
+
+        clear_btn.on_click(clear)
+
+    @staticmethod
+    def _trash_wait(text: str):
+        with ui.row().classes("items-center").style("gap: 8px; padding: 10px 0;"):
+            ui.spinner("dots", size="sm").style(f"color: {CLR_SUBLABEL};")
+            ui.label(text).style(f"{FONT} font-size: 11px; color: {CLR_SUBLABEL};")
+
+    @staticmethod
+    def _render_trash_entries(entries: list, total: int):
+        """One line per removed job: its type and instance, the Trash/ directory, when it last wrote, its size."""
+        cell = f"{MONO} font-size: 9px; white-space: nowrap;"
+        with ui.element("div").style(
+            "display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; column-gap: 14px; row-gap: 4px; "
+            "align-items: baseline; width: 100%; max-height: 50vh; overflow-y: auto;"
+        ):
+            for title in ("Removed job", "Directory", "Last written", "Size"):
+                ui.label(title).style(f"{FONT} font-size: 9px; font-weight: 600; color: {CLR_SUBLABEL};")
+            for e in entries:
+                with ui.element("div").style("display: flex; align-items: baseline; gap: 6px; min-width: 0;"):
+                    ui.label(e.job_label or "unknown job").style(
+                        f"{FONT} font-size: 11px; color: {CLR_HEADING if e.job_label else CLR_SUBLABEL}; "
+                        "white-space: nowrap;"
+                    )
+                    if e.instance_id:
+                        ui.label(e.instance_id).style(
+                            f"{cell} color: {CLR_SUBLABEL}; overflow: hidden; text-overflow: ellipsis;"
+                        )
+                ui.label(f"Trash/{e.name}").style(f"{cell} color: {CLR_LABEL};")
+                ui.label(datetime.fromtimestamp(e.modified).strftime("%Y-%m-%d")).style(
+                    f"{cell} color: {CLR_SUBLABEL};"
+                )
+                size = ui.label(("≥" if e.unreadable_dirs else "") + format_bytes(e.size_bytes)).style(
+                    f"{cell} color: {size_color(e.size_bytes)}; text-align: right;"
+                )
+                if e.unreadable_dirs:
+                    size.tooltip(f"{e.unreadable_dirs} unreadable director{'ies' if e.unreadable_dirs != 1 else 'y'}")
+        jobs = f"{len(entries)} removed job{'s' if len(entries) != 1 else ''}"
+        lower_bound = "≥" if any(e.unreadable_dirs for e in entries) else ""
+        ui.label(f"{jobs} · {lower_bound}{format_bytes(total)}").style(
+            f"{MONO} font-size: 10px; color: {CLR_LABEL}; margin-top: 8px; align-self: flex-end;"
+        )
 
     async def _handle_delete(self, project_dir: Path, name: str, row_el):
         """Full delete lifecycle owned by the component:
