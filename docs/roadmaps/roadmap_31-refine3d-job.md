@@ -38,6 +38,15 @@ Until now Refine3D ran by hand (`docs/reports/` copia chain, the `tutorial_sta/`
 - Resources: `job_resource_profiles.refine3d` = 2 GPUs (one per half-set), 8 CPUs, 96 GB, 8 h.
 - Species drift chip: symmetry, as for Class 3D and Reconstruct Particle.
 
+## Stage 2 — local angular searches (built 2026-10-18, not run)
+- First runs (AGG412_20260311_MyrGFP_Grid2 job033 / job035, 26k / 33k Warp Export particles at 3.1 Å/px) searched
+  globally: 36,864 orientations × 515 translations per particle, ETA 115 / 144 h for iteration 1 alone against a
+  120 h walltime. The template-matching angles were never used.
+- `sigma_ang` (default 4°: RELION searches ±3σ = ±12°, one 12° template-matching step) → `--sigma_ang`, so
+  auto-refine searches locally around the input angles from iteration 1; `-1` restores the global search.
+- The driver refuses a local search when the particles carry no angle columns or more than 1 % of them sit at
+  0,0,0 (hand-picked lists and merges encode "no orientation" that way), and logs the 0,0,0 count either way.
+
 ## Owed
 - Runtime: the first run on a Warp Export set (AGG412_20260311_MyrGFP_Grid2, ribosome). Checks: mpirun starts
   three ranks inside the container, the two half-sets land on two GPUs, the run converges and
