@@ -1686,7 +1686,7 @@ class CryoBoostBackend:
                     derived = self._derive_live_status(item, jobs_dict, review_hold)
                     derived["pipeline_active_flag"] = pipeline_active
                     live_progress = None
-                    if derived["live_status"] == "running":
+                    if derived["live_status"] in ("running", "queued"):
                         try:
                             live_progress = _live_progress(item, jobs_dict)
                         except OSError:  # a job dir changing under the scan: the row shows, just without it
@@ -1704,7 +1704,7 @@ class CryoBoostBackend:
                     disk_usage_stale = is_disk_usage_stale(
                         disk_usage,
                         last_activity_ts=last_activity_ts,
-                        running=derived["live_status"] == "running",
+                        running=derived["live_status"] in ("running", "queued"),
                         now=time.time(),
                     )
 
@@ -1828,9 +1828,12 @@ class CryoBoostBackend:
             out["review_parked"] = len(review_hold.get("parked") or [])
             out["review_since"] = str(review_hold.get("held_at") or "")[11:16]
 
-        # A job sitting in the SLURM queue is part of a live run, not a finished one.
-        if out["running_live"] > 0 or out["queued"] > 0:
+        # One job at work makes the whole project running; a run whose jobs all still wait in the SLURM
+        # queue is queued -- live, not finished, but nothing computes yet.
+        if out["running_live"] > 0:
             out["live_status"] = "running"
+        elif out["queued"] > 0:
+            out["live_status"] = "queued"
         elif out["review_parked"] > 0:
             out["live_status"] = "review"
         elif out["failed"] > 0:
