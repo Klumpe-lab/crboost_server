@@ -61,8 +61,6 @@ class ChartTheme:
     y_grid: str | None = "#f1f5f9"
     y_ticks: int | None = None
     grid_top: int = 30
-    # False: a Journey chart tile drops the axis names and folds the y unit into its title.
-    axis_names: bool = True
     # The legend and the hover card (its values in the mono face; the tilt filter's note).
     legend_color: str = "#475569"
     card_font: str = _SANS
@@ -83,97 +81,35 @@ class ChartTheme:
 
 
 DEFAULT_THEME = ChartTheme()
-# The Journey's: the house values in one font pair, no weight above 600, Plotly in Plex Sans.
-JOURNEY_THEME = replace(DEFAULT_THEME, marker_size=7, name_weight=600, plotly_font=_SANS, plotly_size=10)
-
-# The Journey's style passes while they are compared (ui/dashboard/journey_style.py), each the
-# Journey's theme with its own chart tokens: A · Ledger (the Tilts tab), B · Dense (the most on
-# one screen), C · Soft (one muted accent). Every pass keeps the species colours on the slabs.
-_GREY_RAMP = ((0.0, "#e2e8f0"), (1.0, "#334155"))
-_GREY_RAMP_DARK = ((0.0, "#64748b"), (1.0, "#f8fafc"))
-CHART_THEMES: dict[str, ChartTheme] = {
-    "a": replace(
-        JOURNEY_THEME,
-        series=("#475569", "#94a3b8", "#94a3b8"),
-        hollow=(False, False, True),
-        marker_size=4,
-        hover_color="#0f172a",
-        hover_ring="#ffffff",
-        ref_color="#cbd5e1",
-        fit_measured="#475569",
-        fit_model="#94a3b8",
-        tilt_neg="#334155",
-        tilt_mid="#e2e8f0",
-        tilt_pos="#57534e",
-        tick_color="#94a3b8",
-        name_size=9,
-        name_weight=400,
-        name_color="#64748b",
-        x_line=None,
-        grid_top=22,
-        card_note="#64748b",
-        pick_scale=_GREY_RAMP,
-        pick_color="#475569",
-        pick_scale_dark=_GREY_RAMP_DARK,
-        pick_color_dark="#e2e8f0",
-        hist_color="#cbd5e1",
-    ),
-    "b": replace(
-        JOURNEY_THEME,
-        series=("#64748b", "#cbd5e1", "#94a3b8"),
-        hollow=(False, False, True),
-        marker_size=3,
-        marker_opacity=0.7,
-        hover_color="#0f172a",
-        ref_color="#e2e8f0",
-        ref_type="dotted",
-        fit_measured="#64748b",
-        fit_model="#94a3b8",
-        tilt_neg="#334155",
-        tilt_mid="#e2e8f0",
-        tilt_pos="#334155",
-        tick_color="#94a3b8",
-        name_size=9,
-        name_weight=400,
-        name_color="#94a3b8",
-        axis_names=False,
-        x_line=None,
-        y_grid=None,
-        y_ticks=2,
-        grid_top=10,
-        card_note="#64748b",
-        pick_scale=_GREY_RAMP,
-        pick_color="#475569",
-        pick_scale_dark=_GREY_RAMP_DARK,
-        pick_color_dark="#e2e8f0",
-        pick_opacity=0.6,
-        hist_color="#cbd5e1",
-    ),
-    "c": replace(
-        JOURNEY_THEME,
-        series=("#4f6b84", "#b39b7d", "#94a3b8"),
-        marker_size=4.5,
-        hover_ring="#0f172a",
-        ref_color="#cbd5e1",
-        fit_measured="#4f6b84",
-        fit_model="#b39b7d",
-        tilt_neg="#3f5a73",
-        tilt_mid="#e2e8f0",
-        tilt_pos="#8c7457",
-        tick_color="#94a3b8",
-        name_size=9,
-        name_weight=400,
-        name_color="#64748b",
-        x_line="#e2e8f0",
-        grid_top=22,
-        card_note="#64748b",
-        pick_scale=((0.0, "#d5dee6"), (1.0, "#3f5a73")),
-        pick_color="#4f6b84",
-        pick_scale_dark=((0.0, "#7d93a8"), (1.0, "#e6edf3")),
-        pick_color_dark="#c7d2dc",
-        hist_color="#c7d2dc",
-    ),
-}
+# The Journey's: one font pair, no weight above 600, Plotly in Plex Sans; gray-blue with a warm
+# second series. The species colours on the slabs are not chart tokens and keep their own.
+JOURNEY_THEME = replace(
+    DEFAULT_THEME,
+    series=("#4e79a7", "#dd8452", "#7f8fa6"),
+    hollow=(False, False, True),
+    marker_size=6,
+    hover_ring="#0f172a",
+    ref_color="#cbd5e1",
+    fit_measured="#4e79a7",
+    fit_model="#dd8452",
+    tilt_neg="#3d6593",
+    tilt_mid="#cbd5e1",
+    tilt_pos="#c8743a",
+    tick_color="#94a3b8",
+    name_size=9,
+    name_weight=400,
+    name_color="#5b6f8a",
+    x_line="#e2e8f0",
+    grid_top=22,
+    card_note="#64748b",
+    plotly_font=_SANS,
+    plotly_size=10,
+    pick_scale=((0.0, "#d6e2ef"), (1.0, "#2f5d8a")),
+    pick_color="#4e79a7",
+    pick_scale_dark=((0.0, "#8aa8c8"), (1.0, "#eef4fa")),
+    pick_color_dark="#c6d7ea",
+    hist_color="#a4bdd8",
+)
 
 # ECharts line types → Plotly dash names.
 _PLOTLY_DASH = {"dashed": "dash", "dotted": "dot", "solid": "solid"}

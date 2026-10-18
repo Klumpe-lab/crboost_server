@@ -1,7 +1,8 @@
 # Roadmap 35 — Views you can resize, and a quiet Journey
 
 **Status:** scoped 2026-10-17 from reading main (`cb8d419`); §3 decided 2026-10-17; S1–S4 built 2026-10-17 in the
-main tree, not run (§7); S5 waits for the maintainer's pick. S1–S2 are the workspace, S3–S5 the Journey.
+main tree, not run (§7); C pulled back after the first look, then kept and folded (S5, 2026-10-18); S6 (Particles
+layout passes) A kept and folded (S7, 2026-10-18). S1–S2 are the workspace, S3–S7 the Journey.
 
 ## Asked (maintainer, 2026-10-17)
 
@@ -386,3 +387,47 @@ Open, not settled by reading:
     CTF-fit panel following it). B's third series (Refined shift has three) is not in the table: hollow `#94a3b8`,
     as A's. The pick lists' swatches keep their colours in every pass: they are the slab dots' legend. Pop-ups
     (menus, tooltips, the TS switcher) live under `<body>` and keep the baseline.
+- **Pulled back, 2026-10-17 (not run).** The maintainer's first look, on C: the passes went too far. Charts far
+  too small, colours too dark and grey, series dots hard to tell apart, a header that stacks into a column when
+  the Journey shares the screen, charts that leave the pane's right side empty, and colour the Dataset table does
+  not need. Changed:
+  - *Header.* `.cb-jhead` wraps: the section selector (with the style select) drops to a second, right-aligned
+    line when one line does not fit. The header is a size container (`cb-jhead`); under 720 px the stage dots lose
+    their words (each names its stage on hover), the `style` label goes and the selector's segments tighten.
+  - *Chart tiles.* A wrapping flex row again: tiles share their row's width and wrap below `--cb-plot-min`, so
+    every row, a lone last tile included, fills the pane.
+  - *C.* Tiles 220 px tall, columns ≥ 300 px. Series gray-blue `#4e79a7`, warm `#dd8452`, hollow `#7f8fa6`,
+    6 px; the CTF fit and the signed-tilt ramp in the same pair (`#3d6593` / `#c8743a` around `#cbd5e1`); picks
+    and histogram on a gray-blue ramp. Section panels `#eef3f8`, titles `#2c4a6b`, chart labels `#4a6584`, the
+    header's active section `#e3ebf4`.
+  - *Dataset.* The pixel table's stage and species stripes are gone.
+  - *Default pass:* C (was A). A and B change only where the header and the tiles' fill do.
+- **S5, 2026-10-18 (not run).** The maintainer kept C. `JOURNEY_THEME` is C's tokens and `CHART_THEMES`, the
+  `axis_names` token (B only) and its title folding are gone; every Journey chart and the scatter fallback (in the
+  Journey and the full page) take `JOURNEY_THEME`. C's CSS is the `.cb-journey` baseline; `_JOURNEY_PASSES_CSS`,
+  the `style` select, the `cb-jv-*` classes and `ui/dashboard/journey_style.py` are deleted. A browser's stored
+  `journey_style` key is now ignored.
+- **S6, 2026-10-18 (not run).** Asked: the Particles panel's colours, spacing, layout and fonts are messy; a few
+  layouts behind a dropdown, as before. A temporary `layout` select at the right end of the panel's title line
+  (both mounts) picks one of four, stored in `app.storage.user["particles_layout"]` (`ui/particles/layout_pass.py`,
+  A when unset); a change rebuilds the section through the mount's `refresh`. The root carries `cb-pv cb-pv-<pass>`;
+  the rules are `_PARTICLES_PASSES_CSS` in `ui/dashboard/css.py`.
+  - *now:* the panel as it was, for comparison.
+  - *Shared by A–C:* list selection and the hover brush (tile ↔ dot) in gray-blue `#4e79a7` / `#e3ebf4`; the
+    template anchor gray-blue and the noise-floor anchors warm `#dd8452`, 1 px; rank tags gray-blue; a tile's index
+    and z show on hover only (score and rank stay); the slab locator a hollow white ring (was a pink disc); the
+    gallery title, the references caret and the anchor labels at 9–10 px without capitals; no dashed rules.
+    Selected picks stay amber, dropped ones red, species dots their colour.
+  - *A · Toolbar:* species as a segmented strip and the lists as chips beside it on one line (wrapping when
+    narrow); a chip's copy-path and delete icons show on hover.
+  - *B · Sidebar:* the lists table under the slabs, in their column (≥ 260 px), without its head row; the gallery
+    runs from the top of the row.
+  - *C · Ledger:* the table above, hairline rows, at most 560 px wide so the counts sit by the names; plain 9 px
+    column heads.
+  - When one is picked: fold its rules into the base CSS, keep its list placement, and delete the select,
+    `layout_pass.py` and the other passes.
+- **S7, 2026-10-18 (not run).** The maintainer kept A · Toolbar. Its rules and the shared ones are
+  `_PARTICLES_CSS` (`ui/dashboard/css.py`), hung off `.cb-particles-root.cb-pv`, which the root always carries;
+  the select, `ui/particles/layout_pass.py` and the now / B / C rules are deleted. Hovering the selected chip no
+  longer whitens it (the shared row hover is gone; A's chip hover skips `.selected`). A browser's stored
+  `particles_layout` key is now ignored.
