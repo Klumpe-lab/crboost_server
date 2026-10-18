@@ -216,10 +216,13 @@ venv/bin/python3 main.py --port 8081 --host 0.0.0.0
 ```
 
 ```
-CryoBoost running on http://<headnode>:8081/?token=Xq3…
 Tunnel from your local machine: ssh -f -N -L 8081:localhost:8081 $USER@<headnode>
-then open: http://localhost:8081/?token=Xq3…
+Access in your browser:         http://localhost:8081/?token=Xq3…
 ```
+
+Below the two pinned lines comes a faint startup snapshot: user, cluster, node/GPU totals, your SLURM
+jobs grouped by job directory, and your five most recently active projects with their status and a
+tokened link each. Already on the cluster network? Replace `localhost` with the headnode's name.
 
 **The token.** Like Jupyter, the server only answers browsers that carry its token: anyone who reaches
 the port could otherwise submit jobs and read files as you. Open one of the printed links; the server

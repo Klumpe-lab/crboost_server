@@ -2,6 +2,7 @@
 import pycache_setup  # noqa: F401  (first: it decides where every later import is compiled to)
 import asyncio
 import functools
+import getpass
 import io
 import os
 import socket
@@ -26,6 +27,7 @@ from services.http_responses import NO_GZIP, json_headers
 from services.loop_watchdog import LoopWatchdog
 from services.project_state import is_in_loaded_project
 from services import workers
+from startup_summary import summary_lines
 from services.server_auth import (
     NICEGUI_STORAGE_DIR,
     STORAGE_SECRET_FILE,
@@ -71,10 +73,9 @@ _BOLD, _CYAN, _RESET = "\x1b[1m", "\x1b[1;36m", "\x1b[0m"
 
 def banner_lines(port: int, hostname: str, token: str) -> list[str]:
     return [
-        f"{_BOLD}CryoBoost running on{_RESET} {_CYAN}http://{hostname}:{port}/?token={token}{_RESET}",
         f"{_BOLD}Tunnel from your local machine:{_RESET} "
         f"{_CYAN}ssh -f -N -L {port}:localhost:{port} $USER@{hostname}{_RESET}",
-        f"{_BOLD}then open:{_RESET} {_CYAN}http://localhost:{port}/?token={token}{_RESET}",
+        f"{_BOLD}Access in your browser:{_RESET}         {_CYAN}http://localhost:{port}/?token={token}{_RESET}",
     ]
 
 
@@ -83,13 +84,17 @@ def install_sticky_banner(lines: list[str]) -> None:
     output scrolls underneath. Plain print when stdout isn't a TTY (redirected
     to a file, systemd, ...) or CRBOOST_PLAIN_LOG is set."""
     import atexit
+    import re
     import shutil
 
     if not sys.stdout.isatty() or os.environ.get("CRBOOST_PLAIN_LOG"):
         print("\n".join(lines) + "\n")
         return
-    rows = shutil.get_terminal_size().lines
-    top = len(lines) + 1
+    cols, rows = shutil.get_terminal_size()
+    # A line longer than the terminal wraps onto more rows; the scroll region must start below all of them,
+    # or log output overwrites the wrapped tail of the banner.
+    visible = [re.sub(r"\x1b\[[0-9;]*m", "", line) for line in lines]
+    top = sum(max(1, -(-len(v) // cols)) for v in visible) + 1
     out = sys.stdout
     out.write("\x1b[2J\x1b[H")  # clear screen, cursor home
     out.write("\n".join(lines) + "\n")
@@ -259,8 +264,12 @@ if __name__ == "__main__":
     # simplest single source of truth.
     os.environ["CRBOOST_PORT"] = str(args.port)
     token = read_or_create_secret(TOKEN_FILE)
+    # Before setup_app: the summary's SLURM probe runs on a throwaway event loop of its own.
+    summary = summary_lines(args.port, socket.gethostname(), getpass.getuser(), token)
     app = setup_app(args.port)
     install_sticky_banner(banner_lines(args.port, socket.gethostname(), token))
+    # Printed into the scrolling region under the pinned links: a startup snapshot that log output may scroll away.
+    print("\n".join(summary) + "\n", flush=True)
 
     # log_config=None: uvicorn otherwise reinstalls its own logging config at
     # run() time, undoing setup_logging() and re-enabling the per-request
