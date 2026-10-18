@@ -84,9 +84,9 @@ MANIFEST_VERSION = 14  # v14: cutout filter presets expanded to denoise/local-co
 #     pill state. Derived by scanning the upstream `tomograms.star` for
 #     tomos missing from `particles.star`'s `rlnTomoName` column.
 
-# Tomograms a server-side pass renders at once, each in a process of its own: the cutout filters
-# are CPU-bound per pick, and reading the particle stacks waits on the file system. A large
-# tomogram (~2000 picks) holds about 1 GB while its atlases render.
+# Tomograms a server-side pass renders at once, each in a process of its own: reading the
+# particle stacks waits on the file system, and averaging them is CPU-bound. A large tomogram
+# (~2000 picks) holds about 0.5 GB while its atlas renders.
 _PASS_PROCESSES = 8
 
 SCORE_COL_PRIORITY = ("rlnLCCmax", "rlnAutopickFigureOfMerit", "rlnMaxValueProbDistribution")
@@ -391,9 +391,9 @@ def generate_candidate_previews(
     def _write_manifest(*, partial: bool) -> None:
         """Persist the manifest as it stands.
 
-        Called after every tomogram, not only at the end: one tomogram costs
-        ~a minute (the cutout atlas is re-rendered for every display-filter
-        preset), so with an end-only write any interruption — a server
+        Called after every tomogram, not only at the end: a large tomogram costs
+        a while (one particle stack read per pick for its cutout atlas), so
+        with an end-only write any interruption — a server
         restart, a kill — would discard every atlas the pass had written,
         leaving `cutout_atlas=None` and the dashboard on the scatter view
         while the tiles sit on disk. Partial writes carry forward the prior entry for

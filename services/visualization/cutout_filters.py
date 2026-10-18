@@ -13,6 +13,10 @@ pick, in pick order, None where a pick had no usable cutout). `build_filtered_at
 takes that list, applies one filter preset, normalizes tomogram-wide, and lays
 the tiles into a sprite-atlas PNG array + an index dict for the gallery.
 
+The pipelines write the raw atlas alone. Any other filter is rendered when someone
+picks it in a gallery, for that one atlas, from the raw atlas's own tiles
+(`render_variant`).
+
 The cutoff is specified in Ångström and converted to a pixel frequency with the
 source file's own pixel size (`apix`, read from the MRC header by the caller) —
 so recon cutouts (reconstruction bin) and subtomo cutouts (extraction bin), which
@@ -309,6 +313,42 @@ def keyed_path(base_path: Path, key: str) -> Path:
     return base_path.with_name(f"{base_path.stem}__{key}{base_path.suffix}")
 
 
+_FREQ_FILTER_KINDS = ("lowpass", "bandpass")
+
+
+def offered_presets(apix: float | None) -> list[dict]:
+    """The presets a gallery offers: all of them, less the frequency filters when the cutouts'
+    pixel size is unknown (an Å cutoff could not be converted to pixels)."""
+    return [p for p in get_filter_presets() if apix or p.get("kind") not in _FREQ_FILTER_KINDS]
+
+
+def _index_extra(source: str | None, apix, apix_source, frame_px, preset: dict) -> dict:
+    """What an atlas index records beside its tiles: where the tiles came from, their source
+    pixel size, the source frame size (a variant's Å cutoffs need the frame-to-tile scale)
+    and the filter."""
+    return {
+        "source": source,
+        "apix": apix,
+        "apix_source": apix_source,
+        "frame_px": frame_px,
+        "filter_schema": FILTER_SCHEMA_VERSION,
+        "filter": {
+            k: preset.get(k)
+            for k in (
+                "key",
+                "type",
+                "type_label",
+                "param_label",
+                "kind",
+                "cutoff_ang",
+                "highpass_ang",
+                "weight",
+                "clip_limit",
+            )
+        },
+    }
+
+
 def emit_filtered_atlases(
     frames: list,
     fail_info: list | None,
@@ -322,15 +362,16 @@ def emit_filtered_atlases(
     cols: int,
     source: str,
 ) -> dict | None:
-    """Render one atlas per filter preset from preloaded 2D float `frames`.
+    """Render the atlas of preloaded 2D float `frames`, one per preset in `filters` (default:
+    `raw` alone; the other filters are rendered when someone picks one, `render_variant`).
 
     Shared by both cutout pipelines: the caller produces `frames` (+ aligned
     `fail_info`) and the source MRC's header pixel size; this resolves apix,
-    builds + saves the `raw` atlas plus a variant per preset, and returns the
-    raw atlas's metadata augmented with `apix`, `apix_source`, and a `variants`
-    map {key: {atlas, index, n_ok}}. Returns None if every pick failed (a raw
-    index JSON is still written so the caller can see why). When apix is unknown,
-    only `raw` is produced (Å→px conversion would be meaningless).
+    builds + saves the atlases, and returns the raw atlas's metadata augmented
+    with `apix`, `apix_source`, and a `variants` map {key: {atlas, index, n_ok}}.
+    Returns None if every pick failed (a raw index JSON is still written so the
+    caller can see why). When apix is unknown, the frequency filters are skipped
+    (Å→px conversion would be meaningless).
     """
     import importlib.util
 
@@ -339,11 +380,13 @@ def emit_filtered_atlases(
         return None
 
     apix, apix_source = resolve_apix(apix_header, apix_hint)
-    presets = list(filters) if filters else get_filter_presets()
+    presets = list(filters) if filters else [p for p in get_filter_presets() if is_raw(p)]
     if apix is None:
         # Only the frequency filters need apix; denoise/CLAHE are apix-independent,
         # so drop just the lowpass/bandpass presets when the pixel size is unknown.
-        presets = [p for p in presets if p.get("kind") not in ("lowpass", "bandpass")]
+        presets = [p for p in presets if p.get("kind") not in _FREQ_FILTER_KINDS]
+    first = next((f for f in frames if f is not None), None)
+    frame_px = list(first.shape) if first is not None else None
 
     n = len(frames)
     variants: dict[str, dict] = {}
@@ -353,26 +396,7 @@ def emit_filtered_atlases(
         built = build_filtered_atlas(frames, fail_info, apix=apix, preset=preset, tile_px=tile_px, cols=cols)
         atlas_p = keyed_path(raw_atlas_path, key)
         index_p = keyed_path(raw_index_path, key)
-        extra = {
-            "source": source,
-            "apix": apix,
-            "apix_source": apix_source,
-            "filter_schema": FILTER_SCHEMA_VERSION,
-            "filter": {
-                k: preset.get(k)
-                for k in (
-                    "key",
-                    "type",
-                    "type_label",
-                    "param_label",
-                    "kind",
-                    "cutoff_ang",
-                    "highpass_ang",
-                    "weight",
-                    "clip_limit",
-                )
-            },
-        }
+        extra = _index_extra(source, apix, apix_source, frame_px, preset)
         if key == "raw" and built["n_ok"] == 0:
             # All picks failed: still write the raw index so the caller surfaces why.
             save_atlas(built, atlas_p, index_p, extra=extra)
@@ -423,3 +447,73 @@ def save_atlas(built: dict, atlas_path: Path, index_path: Path, *, extra: dict |
     if extra:
         payload.update(extra)
     index_path.write_text(json.dumps(payload))
+
+
+def variant_is_current(raw_atlas_path: Path, key: str) -> bool:
+    """Whether the `key` variant of a raw atlas is on disk and no older than the raw atlas."""
+    if key == "raw":
+        return True
+    try:
+        return keyed_path(raw_atlas_path, key).stat().st_mtime >= Path(raw_atlas_path).stat().st_mtime
+    except OSError:  # no variant yet (or no raw atlas): not current
+        return False
+
+
+def render_variant(raw_atlas_path: Path, raw_index_path: Path, key: str) -> dict | None:
+    """Render the `key` display filter of a raw cutout atlas, beside it (`keyed_path`).
+
+    A pass writes the raw atlas alone; a filter is rendered when someone picks it, for the one
+    atlas they are looking at. Its tiles come from the raw atlas itself, so nothing is read
+    again from the particle stacks or the tomogram: the image filters (denoise, local contrast)
+    work on [0, 1] images anyway, and the frequency filters see the raw tile's 1–99 % clip. The
+    Å cutoffs use the tile's own pixel size: the source's, scaled by the frame-to-tile resize.
+
+    Returns {atlas, index, n_ok}, or None when the preset is unknown, the raw atlas cannot be
+    read, no tile survives, or a frequency filter has no tile pixel size (a raw atlas written
+    before the frame size was recorded)."""
+    import json
+
+    from PIL import Image
+
+    preset = next((p for p in get_filter_presets() if p["key"] == key), None)
+    if preset is None:
+        logger.warning("Unknown cutout filter %r", key)
+        return None
+    raw_atlas_path, raw_index_path = Path(raw_atlas_path), Path(raw_index_path)
+    try:
+        meta = json.loads(raw_index_path.read_text())
+        with Image.open(raw_atlas_path) as im:
+            atlas = np.asarray(im.convert("L"))
+    except (OSError, ValueError) as e:
+        logger.warning("Could not read the raw cutout atlas %s: %s", raw_atlas_path, e)
+        return None
+
+    tile_px = int(meta["tile_px"])
+    cols = int(meta["cols"])
+    apix, frame_px = meta.get("apix"), meta.get("frame_px")
+    tile_apix = float(apix) * float(frame_px[1]) / tile_px if apix and frame_px else None
+    if preset.get("kind") in _FREQ_FILTER_KINDS and not tile_apix:
+        logger.warning("No tile pixel size recorded for %s, so %s is not rendered", raw_atlas_path, key)
+        return None
+
+    n = int(meta.get("n_picks") or 0)
+    frames: list = [None] * n
+    fail_info: list = [None] * n
+    for f in meta.get("failures") or []:
+        i = int(f.get("i", -1))
+        if 0 <= i < n:
+            fail_info[i] = {k: v for k, v in f.items() if k != "i"}
+    for k, (r, c) in (meta.get("index") or {}).items():
+        i = int(k)
+        if 0 <= i < n:
+            tile = atlas[r * tile_px : (r + 1) * tile_px, c * tile_px : (c + 1) * tile_px]
+            frames[i] = tile.astype(np.float32) / 255.0
+
+    built = build_filtered_atlas(frames, fail_info, apix=tile_apix, preset=preset, tile_px=tile_px, cols=cols)
+    if built["n_ok"] == 0:
+        return None
+    atlas_p, index_p = keyed_path(raw_atlas_path, key), keyed_path(raw_index_path, key)
+    save_atlas(
+        built, atlas_p, index_p, extra=_index_extra(meta.get("source"), apix, meta.get("apix_source"), frame_px, preset)
+    )
+    return {"atlas": str(atlas_p), "index": str(index_p), "n_ok": built["n_ok"]}
