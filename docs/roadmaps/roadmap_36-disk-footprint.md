@@ -39,6 +39,17 @@ into `<project>/Trash/<Top>_<jobNNN>`, and nothing ever deleted it.
   FCIsolation, unmilled2 and the pilot; SK's dialog lists six jobs (Template Match ×2, Pick candidates ×2,
   Subtomo Extraction ×2) plus three Oct-4 preprocessing jobs; Clear trash empties `SK/Trash/`, the row's
   size drops by the trash at once and the chip goes.
+- *Follow-up, built 2026-10-18, NOT RUN: deleting from the roster no longer blocks.* A confirmed project
+  deletion takes the row out of the list at once and runs as a background task with its card in the tray
+  (bottom-right). `services/project_delete.py` first renames the project to `.<name>.deleting-<hex>`, which
+  every project scan skips, then deletes it job directory by job directory, project_params.json last; a
+  deletion that fails, or is cancelled from its card, puts what is left back under the project's name. The
+  trash dialog's Clear button no longer waits for the sizes: clearing closes the dialog, hides the chip and
+  runs in the tray the same way. Tasks of no project show in every page's tray (`snapshot_for_project`).
+  *Runtime check:* delete two projects back to back: both rows go at once, two cards count job
+  directories, neither row comes back. Open a trash and clear it at once: the dialog closes, the chip goes,
+  the card ends "N jobs deleted". Cancel a large deletion from its card: the project returns to the list
+  with what was left.
 
 ### S2 — No `.staging/` duplicates (built 2026-10-18, NOT RUN)
 `drivers/fs_motion_and_ctf.py::collect_fs_outputs` copies each task's XMLs, averages and half-averages
