@@ -568,14 +568,14 @@ _CB_CSS = """
     font-size: 10px; color: #9ca3af; font-style: italic;
     padding: 4px 0 2px 0;
 }
-/* The Journey's chart tiles: one grid of equal columns, at least --cb-plot-min wide, so every
- * chart has the same width and one alone in its row keeps it; the chart is --cb-plot-h tall
- * (both set on .cb-journey). No border: the tiles sit straight on the section. */
-.cb-plot-row {
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(min(var(--cb-plot-min), 100%), 1fr));
-    gap: 12px; margin: 0 0 6px 0;
+/* The Journey's chart tiles share their row's width and wrap once a tile would get narrower
+ * than --cb-plot-min, so the charts always fill the pane; the chart is --cb-plot-h tall (both
+ * set on .cb-journey). No border: the tiles sit straight on the section. */
+.cb-plot-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 0 0 6px 0; }
+.cb-plot-cell {
+    flex: 1 1 var(--cb-plot-min, 340px); min-width: 0;
+    background: #ffffff; border-radius: 4px; padding: 6px 6px 6px;
 }
-.cb-plot-cell { min-width: 0; background: #ffffff; border-radius: 4px; padding: 6px 6px 6px; }
 /* One short regular-weight title per chart (the explainer tooltip hangs on it);
  * the only weighted text in a tile is the axis names. */
 .cb-plot-label {
@@ -653,10 +653,6 @@ _CB_CSS = """
 .cb-pixel-cell.cb-pixel-warn-warn  { background: #fff7ed; color: #b45309; }
 .cb-pixel-cell.cb-pixel-warn-info  { color: #475569; }
 .cb-pixel-cell.cb-pixel-notes { white-space: normal; color: #475569; font-size: 10px; }
-.cb-pixel-stripe {
-    display: inline-block; width: 3px; height: 12px;
-    border-radius: 1px; background: #cbd5e1; flex-shrink: 0;
-}
 .cb-pixel-stage-label    { color: #1e293b; font-weight: 600; }
 .cb-pixel-instance-label { color: #94a3b8; font-size: 9px; }
 .cb-pixel-warn-icon      { cursor: help; }
@@ -670,7 +666,6 @@ _CB_CSS = """
     font-family: ui-monospace, monospace;
     background: #f8fafc;
 }
-.cb-pixel-species-row .cb-pixel-stripe { width: 4px; height: 14px; }
 .cb-pixel-species-name {
     color: #334155; font-weight: 700; text-transform: uppercase;
     letter-spacing: 0.5px; font-size: 11px;
@@ -904,14 +899,19 @@ _CB_CSS = """
    labelled stage dots · per-species pick counts · ⓘ · exclude — and, at the far
    right (mounted by the journey), the section selector. The name block drops
    down the tomogram switcher table; the overview lives there, not on screen. The right
-   padding keeps the view's close cross clear. */
+   padding keeps the view's close cross clear. When the pane is too narrow for one line,
+   the selector wraps onto a second one, right-aligned; narrower still (a query on the
+   header itself, below), the line tightens. */
 .cb-jhead {
-    flex: 0 0 auto; display: flex; align-items: center; gap: 10px; min-height: 30px;
-    padding: 0 22px 0 12px; background: #ffffff; border-bottom: 1px solid #e5e7eb;
-    font-family: 'IBM Plex Sans', sans-serif;
+    flex: 0 0 auto; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px; min-height: 30px;
+    padding: 3px 22px 3px 12px; background: #ffffff; border-bottom: 1px solid #e5e7eb;
+    font-family: 'IBM Plex Sans', sans-serif; container: cb-jhead / inline-size;
 }
-.cb-jhead-left { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.cb-jhead-right { flex: 0 0 auto; display: flex; align-items: center; }
+.cb-jhead-left { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 4px 10px; flex-wrap: wrap; }
+.cb-jhead-right {
+    flex: 0 1 auto; min-width: 0; display: flex; align-items: center; flex-wrap: wrap; row-gap: 4px;
+    margin-left: auto;
+}
 .cb-jhead-empty { font-size: 10px; color: #94a3b8; }
 .cb-jsep { width: 1px; height: 14px; background: #e5e7eb; flex: 0 0 auto; }
 .cb-jswitch {
@@ -925,6 +925,12 @@ _CB_CSS = """
 .cb-jswitch-idx { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #64748b; white-space: nowrap; }
 .cb-jstage { display: flex; align-items: center; gap: 4px; }
 .cb-jstage-name { font-size: 10px; color: #475569; white-space: nowrap; }
+/* A narrow pane (the Journey beside other views): the stage dots without their words (each
+ * dot names its stage on hover) and the section selector on tighter segments. */
+@container cb-jhead (max-width: 720px) {
+    .cb-jstage-name { display: none; }
+    .cb-jhead-right .cb-seg-btn { padding: 2px 5px; }
+}
 /* Stage dots in the roster's status colours (ui/status_indicator._DOT_COLORS). */
 .cb-jdot { width: 7px; height: 7px; border-radius: 50%; background: #e5e7eb; flex: 0 0 auto; }
 .cb-jdot.ok { background: #10b981; }
@@ -1011,6 +1017,8 @@ _CB_CSS = """
  * hover only, never the row's, so the row and "enter" read as two different targets. */
 .cb-proj-chevron:hover { background: #dbeafe !important; }
 .cb-proj-chevron:hover .q-icon { color: #2563eb !important; }
+/* A project's trash size in the roster: it opens the trash dialog, so it says so on hover. */
+.cb-proj-trash:hover { color: #dc2626 !important; }
 /* Click-to-copy text (ui/components/copyable.copy_on_click): the path itself is the
  * control, so it has to say so on hover. */
 .cb-copy-path { cursor: pointer; }
@@ -1547,8 +1555,8 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 .cb-view-splitter.dragging::after { background: #93c5fd; width: 2px; }
 /* ── The Journey (ui/tomo_dashboard_dialog.py, with the Particles section of
  * ui/particles/pick_viewer.py, which the full-page pick viewer shares) ──────── */
-/* The root: one chart tile size for every chart. */
-.cb-journey { --cb-plot-h: 240px; --cb-plot-min: 340px; }
+/* The root: one chart tile size for every chart; tiles share a row and wrap below the minimum. */
+.cb-journey { --cb-plot-h: 220px; --cb-plot-min: 300px; }
 /* Text with no face of its own takes Plex Sans, not the page body's. */
 :is(.cb-journey, .cb-viewer-page) { font-family: 'IBM Plex Sans', sans-serif; }
 /* One font pair on one scale: Plex Sans for text, Plex Mono for numbers, paths and frame
@@ -1594,73 +1602,116 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 .cb-del-btn:hover { color: #dc2626; }
 /* A readonly command line (the 3dmod popover): a .cb-field in the mono face. */
 .cb-field.cb-field-mono .q-field__native { font-family: 'IBM Plex Mono', monospace; }
-"""
-
-# The Journey's three style passes while they are compared (ui/dashboard/journey_style.py):
-# A · Ledger (the Tilts tab), B · Dense (the most on one screen), C · Soft (one muted accent).
-# Every rule hangs off the root's cb-jv-<pass> class and comes after _CB_CSS, so it wins the
-# ties with the baseline. The charts' share of each pass is figures.CHART_THEMES.
-_JOURNEY_PASSES_CSS = """
-/* Chart tiles: height, and the narrowest column. */
-.cb-journey.cb-jv-a { --cb-plot-h: 150px; --cb-plot-min: 260px; }
-.cb-journey.cb-jv-b { --cb-plot-h: 116px; --cb-plot-min: 200px; }
-.cb-journey.cb-jv-c { --cb-plot-h: 170px; --cb-plot-min: 300px; }
-/* Section chrome: A and B no card; C a pale panel without a border, the charts on white. */
-.cb-journey:is(.cb-jv-a, .cb-jv-b) .cb-main > .cb-section-card {
-    background: transparent; border: none; border-radius: 0; padding: 0 2px;
+/* Sections: a pale gray-blue panel without a border, the charts on white; the titles and the
+ * header's active section in gray-blue ink. A card inside a section (the scatter fallback's) is
+ * plain. */
+.cb-journey .cb-main > .cb-section-card {
+    background: #eef3f8; border: none; border-radius: 6px; padding: 12px; margin-bottom: 10px;
 }
-.cb-journey.cb-jv-a .cb-main > .cb-section-card { margin-bottom: 22px; }
-.cb-journey.cb-jv-b .cb-main > .cb-section-card { margin-bottom: 14px; }
-.cb-journey.cb-jv-c .cb-main > .cb-section-card {
-    background: #f8fafc; border: none; border-radius: 6px; padding: 12px; margin-bottom: 10px;
-}
-/* A card inside a section (the scatter fallback's) is plain in every pass. */
-.cb-journey:is(.cb-jv-a, .cb-jv-b, .cb-jv-c) .cb-section-card .cb-section-card {
-    background: transparent; border: none; padding: 0;
-}
-/* B: titles in the toolbar label's voice, and the stats on the title line. */
-.cb-journey.cb-jv-b .cb-section-title {
-    font-size: 9px; font-weight: 400; text-transform: uppercase; letter-spacing: 0.06em; color: #94a3b8;
-}
-.cb-journey.cb-jv-b .cb-main > .cb-section-card:has(> .cb-stats) {
-    display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 14px;
-}
-.cb-journey.cb-jv-b .cb-main > .cb-section-card:has(> .cb-stats) > * { flex: 0 0 100%; min-width: 0; }
-.cb-journey.cb-jv-b .cb-main > .cb-section-card:has(> .cb-stats) > :is(.cb-section-card-header, .cb-stats) {
-    flex: 0 1 auto; margin-bottom: 8px;
-}
-.cb-journey.cb-jv-b .cb-stats { gap: 0 10px; margin: 0 0 8px; }
-.cb-journey.cb-jv-b .cb-stat { flex-direction: row; align-items: baseline; gap: 4px; }
-.cb-journey.cb-jv-b :is(.cb-stat-label, .cb-stat-value) { font-size: 10px; }
-.cb-journey.cb-jv-b .cb-stat + .cb-stat::before { content: '·'; color: #cbd5e1; margin-right: 6px; }
-/* Chart labels (A keeps the baseline's 10 px #64748b). */
-.cb-journey.cb-jv-b .cb-plot-label { font-size: 9px; color: #94a3b8; }
-.cb-journey.cb-jv-c .cb-plot-label { color: #475569; }
-/* Species on light chrome: A and B the roster's grey glyph, C the colour at half saturation.
- * The slabs' dots keep their colours in every pass; so do the pick lists' swatches, which are
- * the slab dots' legend. The header dot's colour is inline, hence !important. */
-.cb-journey:is(.cb-jv-a, .cb-jv-b) .cb-jsp-dot,
-.cb-journey:is(.cb-jv-a, .cb-jv-b) .cb-species-tab .q-tab__content::before {
-    width: 11px; height: 11px; border-radius: 0; box-shadow: none; background: #94a3b8 !important;
-    -webkit-mask: url(/static/icons/particle.svg) center / contain no-repeat;
-    mask: url(/static/icons/particle.svg) center / contain no-repeat;
-}
-.cb-journey:is(.cb-jv-a, .cb-jv-b) .cb-pixel-species-row .cb-pixel-stripe { background: #cbd5e1 !important; }
-.cb-journey.cb-jv-c :is(.cb-jsp-dot, .cb-pixel-species-row .cb-pixel-stripe) { filter: saturate(0.5); }
-.cb-journey.cb-jv-c .cb-species-tab .q-tab__content::before { filter: saturate(0.5); }
+.cb-journey .cb-section-card .cb-section-card { background: transparent; border: none; padding: 0; }
+.cb-journey .cb-section-title { color: #2c4a6b; }
+.cb-journey .cb-jhead .cb-seg-btn.active { background: #e3ebf4; color: #2c4a6b; }
+.cb-journey .cb-plot-label { color: #4a6584; }
+/* Species on light chrome at half saturation. The slabs' dots keep their colours; so do the pick
+ * lists' swatches, which are the slab dots' legend. */
+.cb-journey .cb-jsp-dot { filter: saturate(0.5); }
+.cb-journey .cb-species-tab .q-tab__content::before { filter: saturate(0.5); }
 /* Red for what is wrong: the dropped tilts' angles, out of the amber box. */
-.cb-journey:is(.cb-jv-a, .cb-jv-b, .cb-jv-c) .cb-drop-list { background: transparent; border: none; padding: 2px 0; }
-.cb-journey:is(.cb-jv-a, .cb-jv-b, .cb-jv-c) .cb-drop-list .cb-drop-row { border-bottom: none; }
-.cb-journey:is(.cb-jv-a, .cb-jv-b, .cb-jv-c) .cb-drop-list .cb-drop-tilt { color: #dc2626; }
+.cb-journey .cb-drop-list { background: transparent; border: none; padding: 2px 0; }
+.cb-journey .cb-drop-list .cb-drop-row { border-bottom: none; }
+.cb-journey .cb-drop-list .cb-drop-tilt { color: #dc2626; }
 /* The Particles section's leftover indigo: the selected list row, a cutout's hover ring and
  * rank tag, and the kept counts, in slate; the list table without its box. */
-.cb-journey:is(.cb-jv-a, .cb-jv-b, .cb-jv-c) .cb-ltable { background: transparent; border-color: transparent; }
-.cb-journey:is(.cb-jv-a, .cb-jv-b, .cb-jv-c) .cb-ltable-row.selected {
-    background: #f1f5f9; border-color: #e2e8f0; box-shadow: inset 2px 0 0 #475569;
+.cb-journey .cb-ltable { background: transparent; border-color: transparent; }
+.cb-journey .cb-ltable-row.selected { background: #f1f5f9; border-color: #e2e8f0; box-shadow: inset 2px 0 0 #475569; }
+.cb-journey .cb-gallery-tile:hover { border-color: #cbd5e1; }
+.cb-journey .cb-gallery-tile .cb-tile-rank { background: rgba(51, 65, 85, 0.85); }
+.cb-journey .cb-jsp-kept { color: #64748b; }
+"""
+
+# The Particles panel (root .cb-particles-root.cb-pv); after _CB_CSS, so it wins its ties.
+_PARTICLES_CSS = """
+/* One gray-blue for list selection and the hover brush, the calibration anchors in the charts'
+ * pair (template gray-blue, noise floor warm), tile corners quieter (index and z on hover), the
+ * gallery's title at label size. Selected picks stay amber, dropped ones red, and species keep
+ * their colours on the slabs. */
+.cb-particles-root.cb-pv > .cb-section-card-header {
+    margin-bottom: 10px; flex-wrap: wrap; row-gap: 4px;
 }
-.cb-journey:is(.cb-jv-a, .cb-jv-b, .cb-jv-c) .cb-gallery-tile:hover { border-color: #cbd5e1; }
-.cb-journey:is(.cb-jv-a, .cb-jv-b, .cb-jv-c) .cb-gallery-tile .cb-tile-rank { background: rgba(51, 65, 85, 0.85); }
-.cb-journey:is(.cb-jv-a, .cb-jv-b, .cb-jv-c) .cb-jsp-kept { color: #64748b; }
+.cb-particles-root.cb-pv .cb-species-tabs .q-tab--active .q-tab__label { color: #2c4a6b; }
+.cb-particles-root.cb-pv .cb-particles-split { gap: 14px; }
+.cb-particles-root.cb-pv .cb-ltable {
+    flex-direction: row; flex-wrap: wrap; gap: 4px; background: transparent; border: none; padding: 0;
+}
+.cb-particles-root.cb-pv .cb-ltable-name { font-weight: 500; color: #334155; }
+.cb-particles-root.cb-pv .cb-gallery-head { padding: 0 0 4px; }
+.cb-particles-root.cb-pv .cb-gallery-head .cb-section-title { font-size: 10px; color: #4a6584; }
+.cb-particles-root.cb-pv .cb-gallery-count { font-size: 9px; }
+.cb-particles-root.cb-pv .cb-curation-bar { border-bottom: none; }
+.cb-particles-root.cb-pv .cb-ref-toggle {
+    font-size: 10px; font-weight: 500; text-transform: none; letter-spacing: 0; color: #64748b;
+}
+.cb-particles-root.cb-pv .cb-reference-strip { border-bottom: none; padding: 4px 2px 10px; }
+.cb-particles-root.cb-pv .cb-reference-strip .cb-ref-label {
+    font-size: 9px; font-weight: 600; text-transform: none; letter-spacing: 0; color: #64748b;
+}
+.cb-particles-root.cb-pv .cb-reference-strip .cb-ref-divider { background: #dbe4ee; }
+.cb-particles-root.cb-pv .cb-template-tile { border: 1px solid #4e79a7; box-shadow: none; }
+.cb-particles-root.cb-pv .cb-template-tile .cb-tile-rank {
+    background: rgba(78, 121, 167, 0.92);
+}
+.cb-particles-root.cb-pv .cb-noise-tile { border: 1px solid #dd8452; box-shadow: none; }
+.cb-particles-root.cb-pv .cb-noise-tile .cb-tile-rank { background: rgba(221, 132, 82, 0.92); }
+.cb-particles-root.cb-pv .cb-gallery-tile .cb-tile-rank { background: rgba(44, 74, 107, 0.85); }
+.cb-particles-root.cb-pv .cb-gallery-tile:not(:hover) :is(.cb-tile-idx, .cb-tile-z) {
+    opacity: 0;
+}
+.cb-particles-root.cb-pv .cb-gallery-tile:not(.selected):hover { border-color: #9fb6cf; }
+.cb-particles-root.cb-pv .cb-gallery-tile.cb-tile-highlight {
+    outline-color: #4e79a7; box-shadow: 0 0 0 1px #4e79a7, 0 0 8px rgba(78, 121, 167, 0.55);
+}
+.cb-particles-root.cb-pv .cb-lasso-rect {
+    border-color: #4e79a7; background: rgba(78, 121, 167, 0.12);
+}
+/* The locator that follows a hovered tile onto the slab: a hollow white ring, not a pink disc. */
+.cb-particles-root.cb-pv .cb-pick-marker {
+    width: 12px; height: 12px; background: transparent; border: 2px solid #ffffff;
+    box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.8), inset 0 0 0 1px rgba(15, 23, 42, 0.8);
+}
+/* The list's copy-path and delete icons show on the chip under the pointer. */
+.cb-particles-root.cb-pv .cb-ltable-row:not(:hover) .cb-ltable-cell:has(.cb-info-copy, .cb-del-btn) {
+    opacity: 0;
+}
+
+/* The species as a segmented strip and the lists as chips beside it, one line
+ * (wrapping when narrow) above the slabs and the gallery. */
+.cb-particles-root.cb-pv .cb-pv-bar {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 6px 16px; margin-bottom: 12px;
+}
+.cb-particles-root.cb-pv .cb-pv-bar > .cb-pv-tabs { width: auto; flex: 0 0 auto; }
+.cb-particles-root.cb-pv .cb-pv-bar > .cb-lists-strip { width: auto; flex: 1 1 320px; margin: 0; }
+.cb-particles-root.cb-pv .cb-species-tabs {
+    min-height: 0; border: 1px solid #d5dfea; border-radius: 4px; background: #ffffff;
+}
+.cb-particles-root.cb-pv .cb-species-tabs .q-tab {
+    min-height: 22px; padding: 0 8px; border-radius: 0; border-right: 1px solid #d5dfea;
+}
+.cb-particles-root.cb-pv .cb-species-tabs .q-tab:last-child { border-right: none; }
+.cb-particles-root.cb-pv .cb-species-tabs .q-tab--active { background: #e3ebf4; }
+.cb-particles-root.cb-pv .cb-species-tabs .q-tab__indicator { display: none; }
+.cb-particles-root.cb-pv .cb-ltable-head { display: none; }
+.cb-particles-root.cb-pv .cb-ltable-row {
+    display: inline-flex; align-items: center; gap: 6px; padding: 0 3px 0 7px;
+    background: #ffffff; border: 1px solid #d5dfea; border-radius: 4px;
+}
+.cb-particles-root.cb-pv .cb-ltable-row:not(.cb-ltable-head, .selected):hover {
+    background: #ffffff; border-color: #9fb6cf;
+}
+.cb-particles-root.cb-pv .cb-ltable-row.selected {
+    background: #e3ebf4; border-color: #9fb6cf; box-shadow: none;
+}
+.cb-particles-root.cb-pv .cb-ltable-name { max-width: 180px; }
+.cb-particles-root.cb-pv .cb-ltable-cell:empty { display: none; }
 """
 
 
@@ -1672,4 +1723,4 @@ def ensure_assets_loaded() -> None:
     if getattr(client, "_cb_assets_loaded", False):
         return
     client._cb_assets_loaded = True
-    ui.add_head_html(f"<style>{_CB_CSS}{_JOURNEY_PASSES_CSS}</style>")
+    ui.add_head_html(f"<style>{_CB_CSS}{_PARTICLES_CSS}</style>")
