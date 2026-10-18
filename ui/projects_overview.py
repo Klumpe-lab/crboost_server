@@ -657,6 +657,9 @@ class ProjectsOverview:
     _W_TS = 44
     _W_SIZE = 56
     _W_STATUS = 56  # fits "IN QUEUE", the widest badge
+    _W_APIX = 44
+    _W_KV = 40
+    _W_DOSE = 62
 
     def _render_row(self, proj: dict, *, compact: bool = False):
         path_str = proj["path"]
@@ -778,7 +781,7 @@ class ProjectsOverview:
                         f"{MONO} font-size: 9px; color: {CLR_GHOST}; font-style: italic;"
                     )
 
-                # ---- Line 4: TS · last activity · size ----
+                # ---- Line 4: TS · pixel size · voltage · dose · last activity · size ----
                 # Starts flush with the paths above. Wraps rather than overflows on a
                 # narrow pane.
                 with ui.element("div").style(
@@ -788,6 +791,10 @@ class ProjectsOverview:
                     ui.label(f"{ts_count} TS" if ts_count else "— TS").style(
                         f"{MONO} font-size: 9px; color: {CLR_LABEL if ts_count else CLR_GHOST}; {fixed}"
                     )
+                    for text, tip, known in self._acquisition_cells(proj):
+                        ui.label(text).style(
+                            f"{MONO} font-size: 9px; color: {CLR_LABEL if known else CLR_GHOST}; {fixed}"
+                        ).tooltip(tip)
                     ui.label(last_activity).style(f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; {fixed}").tooltip(
                         "Last activity"
                     )
@@ -851,8 +858,8 @@ class ProjectsOverview:
         return route_to_path(Route(project=p.name, base=str(p.parent)))
 
     def _render_compact_body(self, proj: dict):
-        """Compact view: one line -- name, live progress, owner, TS, size, status. The owner
-        sits in the row because the compact list has no owner sections."""
+        """Compact view: one line -- name, live progress, owner, TS, pixel size, voltage, dose,
+        size, status. The owner sits in the row because the compact list has no owner sections."""
         name = proj["name"]
         ts_count = proj.get("ts_count") or 0
         mnemonic = proj.get("mnemonic") or ""
@@ -875,10 +882,34 @@ class ProjectsOverview:
                 f"{MONO} font-size: 9px; color: {CLR_LABEL if ts_count else CLR_GHOST}; "
                 f"width: {self._W_TS}px; text-align: right; {fixed}"
             )
+            widths = (self._W_APIX, self._W_KV, self._W_DOSE)
+            for (text, tip, known), width in zip(self._acquisition_cells(proj), widths, strict=True):
+                ui.label(text).style(
+                    f"{MONO} font-size: 9px; color: {CLR_LABEL if known else CLR_GHOST}; "
+                    f"width: {width}px; text-align: right; {fixed}"
+                ).tooltip(tip)
             with ui.element("div").style(f"width: {self._W_SIZE}px; {fixed} display: flex; justify-content: flex-end;"):
                 self._render_size(proj)
             with ui.element("div").style(f"width: {self._W_STATUS}px; {fixed} display: flex;"):
                 self._render_status(proj)
+
+    @staticmethod
+    def _acquisition_cells(proj: dict) -> list[tuple[str, str, bool]]:
+        """(text, tooltip, recorded) for pixel size, voltage and dose per tilt, as the project
+        recorded them. A project that recorded none says "—"; an estimated dose carries "~"."""
+        apix, kv, dose = proj.get("apix"), proj.get("voltage_kv"), proj.get("dose_per_tilt")
+        source = proj.get("dose_source") or ""
+        dose_tip = {
+            "mdoc": "Dose per tilt, read from the mdoc",
+            "estimated": "Dose per tilt, estimated from the mdoc DoseRate",
+            "user": "Dose per tilt, entered by hand",
+        }.get(source, "Dose per tilt")
+        approx = "~" if source == "estimated" else ""
+        return [
+            (f"{apix:.3g} Å" if apix else "— Å", "Pixel size of the raw movies (Å/px)", bool(apix)),
+            (f"{kv:.0f} kV" if kv else "— kV", "Acceleration voltage", bool(kv)),
+            (f"{approx}{dose:.3g} e⁻/Å²" if dose else "— e⁻/Å²", dose_tip, bool(dose)),
+        ]
 
     @staticmethod
     def _owner_label(owner: str) -> str:
