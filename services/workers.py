@@ -34,6 +34,8 @@ from concurrent.futures.process import BrokenProcessPool
 from enum import StrEnum
 from typing import Any, TypeVar
 
+from services.log_setup import setup_worker_logging
+
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
@@ -74,11 +76,7 @@ def _init_worker() -> None:
         os.nice(_WORKER_NICENESS)
     except OSError:
         pass
-    logging.basicConfig(
-        level=logging.WARNING,
-        format="%(asctime)s %(levelname).1s worker %(name)s:%(lineno)d %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    setup_worker_logging()
 
 
 def _get_pool() -> ProcessPoolExecutor:

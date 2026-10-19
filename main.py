@@ -22,8 +22,8 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from backend import CryoBoostBackend
 from services.configs.config_service import REPO_ROOT
-from services.event_log import EVENTS_LOGGER_NAME
 from services.http_responses import NO_GZIP, json_headers
+from services.log_setup import setup_logging
 from services.loop_watchdog import LoopWatchdog
 from services.project_state import is_in_loaded_project
 from services import workers
@@ -38,34 +38,9 @@ from services.server_auth import (
 )
 import logging
 
-
-class SuppressPruneStorageError(logging.Filter):
-    def filter(self, record):
-        return "Request is not set" not in record.getMessage()
-
+logger = logging.getLogger(__name__)
 
 warnings.filterwarnings("ignore", message="Pydantic serializer warnings")
-
-
-def setup_logging(debug: bool = False):
-    # Terminal contract: only warnings/errors and the handful of pipeline events
-    # routed through `services.event_log` (pipeline started / finished / failed,
-    # jobs queued, job status changes) reach the console. Module-level
-    # logger.info() is diagnostic and stays hidden unless --debug.
-    logging.basicConfig(
-        level=logging.DEBUG if debug else logging.WARNING,
-        # name:lineno makes every record trackable to its file
-        format="%(asctime)s %(levelname).1s %(name)s:%(lineno)d %(message)s",
-        datefmt="%H:%M:%S",
-    )
-    logging.getLogger(EVENTS_LOGGER_NAME).setLevel(logging.INFO)
-    # Quiet down noisy third-party loggers
-    logging.getLogger("nicegui").setLevel(logging.WARNING)
-    logging.getLogger("nicegui").addFilter(SuppressPruneStorageError())
-    logging.getLogger("uvicorn").setLevel(logging.WARNING)
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 _BOLD, _CYAN, _RESET = "\x1b[1m", "\x1b[1;36m", "\x1b[0m"
@@ -217,7 +192,7 @@ def setup_app(port: int):
     # startup loads the projects that were mid-pipeline when uvicorn last
     # died, so the tick picks their chains up again. See docs/architecture.md.
     async def _start_pipeline_monitor():
-        # Logs where the event loop was whenever it stalls (services/loop_watchdog.py).
+        # Logs where the event loop was whenever it stalls, to the log file (services/loop_watchdog.py).
         LoopWatchdog(asyncio.get_running_loop()).start()
         workers.warm_up()
         await backend.pipeline_monitor.start()
@@ -258,14 +233,15 @@ if __name__ == "__main__":
     parser.add_argument("--debug", action="store_true", help="Enable DEBUG-level logging")
 
     args = parser.parse_args()
-    setup_logging(debug=args.debug)
+    log_file = setup_logging(debug=args.debug, port=args.port)
+    logger.info("Server starting: port %d, pid %d, user %s, %s", args.port, os.getpid(), getpass.getuser(), REPO_ROOT)
     # Expose the bind port to the running app (the status strip on the landing
     # page surfaces it); setup_app() runs before uvicorn so an env var is the
     # simplest single source of truth.
     os.environ["CRBOOST_PORT"] = str(args.port)
     token = read_or_create_secret(TOKEN_FILE)
     # Before setup_app: the summary's SLURM probe runs on a throwaway event loop of its own.
-    summary = summary_lines(args.port, socket.gethostname(), getpass.getuser(), token)
+    summary = summary_lines(args.port, socket.gethostname(), getpass.getuser(), token, log_file)
     app = setup_app(args.port)
     install_sticky_banner(banner_lines(args.port, socket.gethostname(), token))
     # Printed into the scrolling region under the pinned links: a startup snapshot that log output may scroll away.
