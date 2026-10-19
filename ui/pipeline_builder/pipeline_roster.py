@@ -1295,22 +1295,15 @@ class RosterWidget(FingerprintedView):
     def _render_dataset_ts_expansion(self, state) -> None:
         """Collapsible per-tilt-series table living on the Dataset row.
 
-        Rows come from the TiltSeriesRegistry — the ProjectState mirror it used
-        to read is gone. Pre-registry projects have no expansion (counts in the
-        header still render).
+        The header's counts come from the project state; the rows from the TiltSeriesRegistry,
+        read the first time the row opens. Parsing a registry is seconds of work on a large
+        project, and the hub previews projects this server has not loaded.
         """
-        from services.tilt_series import get_registry_for
-
-        try:
-            all_ts = list(get_registry_for(state.project_path).all_tilt_series())
-        except Exception:
-            all_ts = []
-        if not all_ts:
-            return
-        selected_ts = [t for t in all_ts if t.is_selected]
-        excluded_ts = [t for t in all_ts if not t.is_selected]
         sel = state.import_selected_tilt_series
         tot = state.import_total_tilt_series
+        if not tot or state.project_path is None:
+            return
+        project_path = Path(state.project_path)
         header_text = f"{sel} of {tot} tilt-series"
 
         exp = ui.expansion().props("dense header-class=q-px-none").style("width: 100%; background: transparent;")
@@ -1325,33 +1318,58 @@ class RosterWidget(FingerprintedView):
                 ui.label("Selected").style(f"{FONT} font-size: 10px; color: #94a3b8;")
                 ui.label(header_text).style(f"{MONO} font-size: 9px; color: #1e40af;")
 
-        with exp:
+        async def _fill(e) -> None:
+            if not e.value or exp.default_slot.children:
+                return
+            from services.tilt_series import get_registry_for, preload_registry
+
+            with exp:
+                waiting = ui.label("Reading the tilt-series registry…").style(
+                    f"{FONT} font-size: 9px; color: #94a3b8; padding: 3px 11px;"
+                )
+            try:
+                await preload_registry(project_path)
+                all_ts = list(get_registry_for(project_path).all_tilt_series())
+            except Exception:
+                logger.exception("Could not read the tilt-series registry of %s", project_path)
+                waiting.set_text("Could not read the tilt-series registry (see the server log)")
+                return
+            waiting.delete()
+            with exp:
+                self._render_ts_table(all_ts)
+
+        exp.on_value_change(_fill)
+
+    @staticmethod
+    def _render_ts_table(all_ts: list) -> None:
+        if not all_ts:
+            ui.label("No tilt-series registry").style("font-size: 9px; font-style: italic; color: #cbd5e1;")
+            return
+        selected_ts = [t for t in all_ts if t.is_selected]
+        excluded_ts = [t for t in all_ts if not t.is_selected]
+        with ui.element("div").style(
+            "display: grid; grid-template-columns: 44px 44px 44px 1fr; gap: 0; padding: 3px 11px; background: #f8fafc;"
+        ):
+            for hdr in ("POS", "BEAM", "TILTS", "MDOC"):
+                ui.label(hdr).style(
+                    "font-size: 8px; font-weight: 600; color: #94a3b8; "
+                    "letter-spacing: 0.04em; text-transform: uppercase;"
+                )
+        # Show all rows inline — the outer menu has a single scrollbar.
+        for td in sorted(selected_ts, key=lambda x: (x.stage_position, x.beam_position)):
             with ui.element("div").style(
                 "display: grid; grid-template-columns: 44px 44px 44px 1fr; gap: 0; "
-                "padding: 3px 11px; background: #f8fafc;"
+                "padding: 2px 11px; border-top: 1px solid #fafbfc;"
             ):
-                for hdr in ("POS", "BEAM", "TILTS", "MDOC"):
-                    ui.label(hdr).style(
-                        "font-size: 8px; font-weight: 600; color: #94a3b8; "
-                        "letter-spacing: 0.04em; text-transform: uppercase;"
-                    )
-            # Show all rows inline — the outer menu has a single scrollbar.
-            for td in sorted(selected_ts, key=lambda x: (x.stage_position, x.beam_position)):
-                with ui.element("div").style(
-                    "display: grid; grid-template-columns: 44px 44px 44px 1fr; gap: 0; "
-                    "padding: 2px 11px; border-top: 1px solid #fafbfc;"
-                ):
-                    _ts_cell(str(td.stage_position), "#64748b")
-                    _ts_cell(str(td.beam_position), "#64748b")
-                    _ts_cell(str(td.frame_count), "#64748b")
-                    _ts_cell(
-                        td.mdoc_filename, "#94a3b8", extra="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
-                    )
-            if excluded_ts:
-                with ui.element("div").style("padding: 4px 11px; border-top: 1px solid #e2e8f0;"):
-                    ui.label(f"+{len(excluded_ts)} excluded").style(
-                        "font-size: 9px; font-style: italic; color: #cbd5e1;"
-                    )
+                _ts_cell(str(td.stage_position), "#64748b")
+                _ts_cell(str(td.beam_position), "#64748b")
+                _ts_cell(str(td.frame_count), "#64748b")
+                _ts_cell(
+                    td.mdoc_filename, "#94a3b8", extra="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                )
+        if excluded_ts:
+            with ui.element("div").style("padding: 4px 11px; border-top: 1px solid #e2e8f0;"):
+                ui.label(f"+{len(excluded_ts)} excluded").style("font-size: 9px; font-style: italic; color: #cbd5e1;")
 
     async def _open_project_hub(self):
         from nicegui import app as ng_app
@@ -1590,7 +1608,7 @@ class RosterWidget(FingerprintedView):
                         current_path=current_path_str,
                         selected_path=current_path_str,
                         show_filter=True,
-                        height_css="calc(100vh - 118px)",
+                        fill=True,
                         title="Projects Overview",
                     )
                     overview_ref["comp"] = overview

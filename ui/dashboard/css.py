@@ -1019,6 +1019,15 @@ _CB_CSS = """
 .cb-proj-chevron:hover .q-icon { color: #2563eb !important; }
 /* A project's trash size in the roster: it opens the trash dialog, so it says so on hover. */
 .cb-proj-trash:hover { color: #dc2626 !important; }
+/* The roster's compact columns give way on a narrow roster, tier 1 first, so the status and the
+ * chevron never leave the row (ui/projects_overview.py `_COMPACT_COLUMNS`). Container queries:
+ * the roster is narrower in the project hub than on the landing page at the same window size. */
+.cb-proj-roster { container-type: inline-size; }
+@container (max-width: 1480px) { .cb-pc-t1 { display: none !important; } }
+@container (max-width: 1220px) { .cb-pc-t2 { display: none !important; } }
+@container (max-width: 940px) { .cb-pc-t3 { display: none !important; } }
+/* The landing page's view switch stands in for its card's title, so it is a notch bigger. */
+.cb-seg-title .cb-seg-btn { font-size: 11px; line-height: 18px; padding: 2px 10px; }
 /* Click-to-copy text (ui/components/copyable.copy_on_click): the path itself is the
  * control, so it has to say so on hover. */
 .cb-copy-path { cursor: pointer; }

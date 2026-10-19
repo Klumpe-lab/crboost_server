@@ -21,7 +21,7 @@ from services.computing.container_service import get_container_service
 from services.scheduling_and_orchestration.pipeline_runner import PipelineRunnerService
 from services.scheduling_and_orchestration.pipeline_monitor import PipelineMonitor
 from services.array_tasks import manifest_items, progress as task_progress
-from services.jobs.spec import display_name, driver_invocation
+from services.jobs.spec import PIPELINE_ORDER, display_name, driver_invocation
 from services.jobs.tilt_filter import FilterMode
 from services.models_base import JobStatus, JobType
 from services.particles import class_readout, particle_sets, set_ops
@@ -84,6 +84,22 @@ def _registry_ts_count(project_dir: Path) -> int:
 
 _RECON_PNG_APIX = re.compile(r"_(\d+(?:\.\d+)?)Apx\.png$")
 _JOB_NUMBER = re.compile(r"job(\d+)")
+_PIPELINE_POSITION = {jt.value: i for i, jt in enumerate(PIPELINE_ORDER)}
+
+
+def _furthest_done(jobs: dict[str, Any]) -> dict[str, str] | None:
+    """The succeeded job furthest down the pipeline, for the projects roster's "where it is at"
+    column: its display name and instance id. None when no job has succeeded."""
+    best: tuple[int, str, str] | None = None
+    for iid, job in jobs.items():
+        if not isinstance(job, dict) or (job.get("execution_status") or "").strip() != "Succeeded":
+            continue
+        position = _PIPELINE_POSITION.get(job.get("job_type"))
+        if position is not None and (best is None or position > best[0]):
+            best = (position, iid, job["job_type"])
+    if best is None:
+        return None
+    return {"label": display_name(JobType(best[2])), "instance_id": best[1]}
 
 
 def _find_tomo_preview(project_dir: Path, jobs: dict[str, Any]) -> dict[str, Any] | None:
@@ -400,7 +416,9 @@ class CryoBoostBackend:
         output = stdout.decode().strip()
         run.slurm_job_id = output.split()[-1] if output else None
         await self.state_service.save_project(project_path=project_path, force=True)
-        events.info("Tilt filter DL run %s queued: SLURM job %s", run_dir.name, run.slurm_job_id)
+        events.info(
+            "%s · tilt filter DL run %s queued as SLURM %s", Path(project_path).name, run_dir.name, run.slurm_job_id
+        )
         return ok(slurm_job_id=run.slurm_job_id, job_dir=str(run_dir))
 
     async def autostart_tilt_filter_predict(self, project_path: Path, *, fresh: bool = False) -> None:
@@ -436,7 +454,7 @@ class CryoBoostBackend:
         job_model.auto_error = f"The automatic DL run could not be submitted: {res['error']}"
         state.mark_dirty()
         await self.state_service.save_project(project_path=project_path, force=True)
-        events.warning("%s: %s", project_path.name, job_model.auto_error)
+        events.warning("%s · %s", project_path.name, job_model.auto_error)
 
     async def cancel_tilt_filter_predict(self, project_path: Path, instance_id: str) -> dict[str, Any]:
         """Cancel the tilt filter's in-flight DL prediction run. Only scancels: the monitor
@@ -452,7 +470,7 @@ class CryoBoostBackend:
         if not res.get("success"):
             return err(f"scancel of SLURM job {slurm_id} failed: {res.get('error')}")
         run_name = Path(job_model.predict_run.job_dir).name
-        events.info("Tilt filter DL run %s cancelled (SLURM job %s)", run_name, slurm_id)
+        events.info("%s · tilt filter DL run %s cancelled (SLURM %s)", Path(project_path).name, run_name, slurm_id)
         return ok()
 
     async def set_tilt_filter_mode(self, project_path: Path, instance_id: str, mode: FilterMode) -> dict[str, Any]:
@@ -482,7 +500,7 @@ class CryoBoostBackend:
         state.mark_dirty()
         # Not a USER_PARAMS field, so nothing marks the project dirty on its own: force the save.
         await self.state_service.save_project(project_path=project_path, force=True)
-        events.info("Tilt filter %s: mode %s", instance_id, mode.value)
+        events.info("%s · %s mode %s", Path(project_path).name, instance_id, mode.value)
         res = ok()
         hold = state.review_hold
         if mode == FilterMode.DL_AUTO and hold is not None and hold.barrier == instance_id:
@@ -505,7 +523,9 @@ class CryoBoostBackend:
         if not res["success"]:
             return res
         await self.state_service.save_project(project_path=project_path, force=True)
-        events.info("Tilt filter approved: %d kept, %d dropped", res["kept"], res["dropped"])
+        events.info(
+            "%s · %s approved: %d kept, %d dropped", project_path.name, instance_id, res["kept"], res["dropped"]
+        )
         hold = state.review_hold
         if hold is not None and hold.barrier == instance_id:
             res["resume"] = await self.pipeline_orchestrator.submit_parked(project_path)
@@ -520,7 +540,7 @@ class CryoBoostBackend:
         res = reopen_review(state, instance_id)
         if res["success"]:
             await self.state_service.save_project(project_path=project_path, force=True)
-            events.info("Tilt filter re-opened for review")
+            events.info("%s · %s re-opened for review", project_path.name, instance_id)
         return res
 
     async def extract_pick_list(
@@ -656,7 +676,9 @@ class CryoBoostBackend:
                 return err(msg)
             output = stdout.decode().strip()
             slurm_job_id = output.split()[-1] if output else None
-            events.info("Per-list extraction queued: SLURM job %s (%s/%s)", slurm_job_id, species_id, slug)
+            events.info(
+                "%s · per-list extraction %s/%s queued as SLURM %s", project_path.name, species_id, slug, slurm_job_id
+            )
             jm.slurm_job_id = slurm_job_id
             jm.execution_status = JobStatus.QUEUED
             await self.state_service.save_project(project_path=project_path, force=True)
@@ -1581,7 +1603,7 @@ class CryoBoostBackend:
         projects = []
         path = Path(base_path)
 
-        logger.info("Scanning directory: %s", path)
+        logger.debug("Scanning directory: %s", path)
 
         if not path.exists():
             logger.info("Path does not exist: %s", path)
@@ -1600,7 +1622,7 @@ class CryoBoostBackend:
                 params_file = item / "project_params.json"
                 if not params_file.exists():
                     if not item.name.startswith("."):
-                        logger.info("Skipped '%s' - missing project_params.json", item.name)
+                        logger.debug("Skipped '%s' - missing project_params.json", item.name)
                     continue
                 try:
                     stats = params_file.stat()
@@ -1626,6 +1648,9 @@ class CryoBoostBackend:
                     source_directory = ""
                     species: list[dict[str, str]] = []
                     review_hold: dict[str, Any] | None = None
+                    n_picks = 0
+                    n_pick_lists = 0
+                    protocol = ""
                     try:
                         with open(params_file) as f:
                             data = json.load(f)
@@ -1660,6 +1685,11 @@ class CryoBoostBackend:
                             for s in (data.get("species_registry") or [])
                             if isinstance(s, dict) and s.get("id")
                         ]
+                        # Each pick list caches its pick count for display; the roster sums them.
+                        pick_lists = [pl for pl in (data.get("pick_lists") or []) if isinstance(pl, dict)]
+                        n_pick_lists = len(pick_lists)
+                        n_picks = sum(int(pl.get("count") or 0) for pl in pick_lists)
+                        protocol = (data.get("protocol_origin") or {}).get("name") or ""
                         # Where the raw data came from. Prefer the resolved
                         # frames dir; fall back to the movies glob's parent.
                         source_directory = data.get("import_source_directory") or ""
@@ -1756,6 +1786,10 @@ class CryoBoostBackend:
                             "trash_mtime": trash_mtime,
                             "tomo_preview": tomo_preview,
                             "live_progress": live_progress,
+                            "furthest_done": _furthest_done(jobs_dict),
+                            "n_picks": n_picks,
+                            "n_pick_lists": n_pick_lists,
+                            "protocol": protocol,
                             **derived,
                         }
                     )
@@ -1772,7 +1806,7 @@ class CryoBoostBackend:
         projects.sort(key=lambda x: (x["created_timestamp"], x["name"]))
         for idx, proj in enumerate(projects, start=1):
             proj["stable_index"] = idx
-        logger.info("Found %d valid projects.", len(projects))
+        logger.debug("Found %d valid projects.", len(projects))
         return projects
 
     @staticmethod
