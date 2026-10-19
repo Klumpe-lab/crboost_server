@@ -308,6 +308,10 @@ e.g. raise `pool_size` when it caps the loaders) and when the processes outnumbe
 - **Alignment** starts one process per GPU and pulls tilt series from a queue; at 100+ tilt series it
   reaches hours per iteration, and every extra GPU shortens it.
 - **Limits.** One node (`num_gpus ≤ 4`). A full node queues longer on `g_long`.
+- **Short series.** A series of fewer than 10 tilts (`MIN_TILTS`) is left out at staging, listed under `left_out`
+  in `missalign_changes.json`, and absent downstream. The tool's shift generator needs at least 4 tilts; a patch
+  builder that draws a shorter series dies, and training waits on it until the walltime. A resumed run keeps the
+  series it was staged with.
 - **No torch.compile.** Every trainer would compile the same model into one Triton cache, and the ranks race on
   its files (pytorch/pytorch#134384): two 3-trainer runs died a minute into training on a missing `.json`, the
   second with `TORCHINDUCTOR_COMPILE_THREADS=1`. The driver sets `TORCHDYNAMO_DISABLE=1` for every run (a

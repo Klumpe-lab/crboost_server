@@ -304,6 +304,7 @@ replacement), the parameters, and the run log.
 | MA16 | One Run per project with only the three new jobs selected, from the dev server (`~/dev/crboost_server`), all seven at once | the lab install (pulled 2026-10-14) lacks the `--task_dir` fix; a Run of all roster jobs rebinds baseline jobs to the new producers | proposed 2026-10-18 |
 | MA17 | Short series stay in: FCIsolation Position_32_4 (3 tilts), 17_2 (4), 29_5 (4), 30_3 (9); unmilled2 Position_32_3 (5) | Grid2 refined a 10-tilt series without trouble; mark, don't drop. If a run dies on one, exclude it in the registry and start that job over (a changed series list refuses to resume) | proposed 2026-10-18 |
 | MA18 | Not in this rollout: the tilt-split score (§6.1 step 1, roadmap 24 stage 3), seed repeats, rebuilt-stack arms (`prepare_stacks_apix`) | MA1; the TM read-out (picks, LCC) answers whether it helps | proposed 2026-10-18 |
+| MA19 | Series of fewer than 10 tilts are left out of a run (`MIN_TILTS` in `drivers/miss_align.py`); a resumed run keeps the series it was staged with. Supersedes MA17 | FCIsolation's patch builder died on Position_32_4 (3 tilts; the tool needs ≥ 4) and training hung for ~14 h | maintainer, 2026-10-19 |
 
 #### 6.2.3 Parameters
 
@@ -438,6 +439,18 @@ The job tab will warn in five projects that the full run exceeds the time overri
 
 - **2026-10-18** — Grid2 logs read (§6.2.1); the seven projects surveyed (§6.2.4); MA10–MA18 proposed. Nothing
   submitted.
+- **2026-10-18 23:13–23:19** — All seven submitted: QOS `g_long`, `3-00:00:00`, constraint `g2|g3|g4`. Grid3's
+  first two submits were refused without a QOS (`QOSMaxWallDurationPerJobLimit`) and left empty job013 / job014;
+  its third is job015.
+- **2026-10-19 00:09** — FCIsolation job016 (SLURM 3527088, clip-g2-3): a patch builder died on Position_32_4
+  (`num_points must be at least 4, got 3`), and training hung, still RUNNING in SLURM with no output.
+- **2026-10-19 14:19–14:24** — The other six missAlign jobs and Grid2's Refine 3D job036 / job037 ended `FAILED`
+  1:0 (sacct) on g3/g4 nodes, with no line in `run.out` / `run.err` and no exit marker, so nothing could be
+  written to `/groups` at the time. Likely a shared-filesystem drop. Checkpoints kept: SK, 20251113, Slot6,
+  unmilled2 iterations 1–3; Grid3, pilot 1–5. Refine 3D job036 had finished iteration 9, job037 iteration 4.
+- **2026-10-19** — MA19 built. `drivers/refine3d.py` now continues a re-run from the last finished iteration
+  (`relion_refine --continue`, output `run_ct<N>_*` copied to the `run_*` names), so Run picks job036 / job037
+  up where they stopped.
 
 ## 7. Code this needs (proposed; nothing built)
 

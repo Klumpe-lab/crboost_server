@@ -140,11 +140,20 @@ def read_stacks(upstream_processing: Path, ts_names: list[str]) -> dict[str, Sta
     return stacks
 
 
-def unreconstructable(stacks: dict[str, StackInfo]) -> dict[str, str]:
-    """Series whose stack holds fewer than 2 tilts, with the reason. One training run covers every series,
-    so one that cannot be reconstructed would fail all of them; it is left out instead, the way an array
+# The tool's shift generator rejects a series of fewer than 4 tilts; the patch builder that draws one dies and
+# training waits on it until the walltime. 10 leaves a margin above that.
+MIN_TILTS = 10
+
+
+def too_few_tilts(stacks: dict[str, StackInfo]) -> dict[str, str]:
+    """Series whose stack holds fewer than MIN_TILTS tilts, with the reason. One training run covers every
+    series, so one the tool cannot take would fail all of them; it is left out instead, the way an array
     job fails that series alone and carries on."""
-    return {ts: f"{s.n_tilts} tilt(s) in {s.path.name}" for ts, s in sorted(stacks.items()) if s.n_tilts < 2}
+    return {
+        ts: f"{s.n_tilts} tilt(s) in {s.path.name}, fewer than {MIN_TILTS}"
+        for ts, s in sorted(stacks.items())
+        if s.n_tilts < MIN_TILTS
+    }
 
 
 def common_stack_apix(stacks: dict[str, StackInfo]) -> float:
@@ -567,9 +576,15 @@ def main():
             ts_names = [ts for ts in ts_names if ts not in excluded]
             print(f"[DRIVER] Excluded from processing, not refined: {excluded}", flush=True)
         stacks = read_stacks(upstream_processing, ts_names)
-        left_out = unreconstructable(stacks)
+        staged_processing = job_dir / "warp_tiltseries"
+        manifest_path = job_dir / "run_manifest.json"
+        left_out = too_few_tilts(stacks)
+        if last_checkpointed_iteration(staged_processing) > 0 and manifest_path.is_file():
+            # A checkpointed run keeps the series it was staged with; the minimum applies when a run is staged.
+            staged_with = set(json.loads(manifest_path.read_text())["tilt_series"])
+            left_out = {ts: reason for ts, reason in left_out.items() if ts not in staged_with}
         for ts, reason in left_out.items():
-            print(f"[DRIVER] WARNING: {ts} left out, cannot be reconstructed: {reason}", flush=True)
+            print(f"[DRIVER] WARNING: {ts} left out: {reason}", flush=True)
             del stacks[ts]
         ts_names = [ts for ts in ts_names if ts not in left_out]
         if not ts_names:
@@ -596,8 +611,6 @@ def main():
         full_volume = [dims["VX"] * dims["apix"], dims["VY"] * dims["apix"], dims["VZ"] * dims["apix"]]
 
         # 1. Resume from the last checkpointed macro-iteration, or stage afresh.
-        staged_processing = job_dir / "warp_tiltseries"
-        manifest_path = job_dir / "run_manifest.json"
         manifest = run_manifest(input_star, ts_names, schedule, params)
         resume_from = last_checkpointed_iteration(staged_processing)
         if resume_from > 0:
