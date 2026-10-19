@@ -1,20 +1,42 @@
 #!/usr/bin/env python3
 """
 Driver for RELION gold-standard 3D refinement (relion_refine_mpi --auto_refine --split_random_halves).
+
+A re-run in a job dir where an earlier attempt finished an iteration continues from the latest one
+(relion_refine --continue) instead of starting over.
 """
 
+import re
+import shutil
 import sys
 import traceback
 from pathlib import Path
 
 from drivers.driver_base import ToolCommand, get_driver_context, run_tool
 from services.jobs.refine3d import Refine3DParams
-from services.subtomo_merge import _parse_optimisation_set, _read_particles_star
+from services.subtomo_merge import _parse_optimisation_set, _read_particles_star, write_optimisation_set
 
 ANGLE_COLS = ("rlnAngleRot", "rlnAngleTilt", "rlnAnglePsi")
 # 0,0,0 is how hand-picked lists and merges say "no orientation"; template matching lands there for only a handful
 # of particles (one grid point among thousands).
 MAX_UNORIENTED_FRACTION = 0.01
+
+# On --continue relion_refine reads every option back from the checkpoint except these computation ones.
+CONTINUE_OPTIONS = ("--j", "--pool", "--gpu", "--preread_images", "--dont_combine_weights_via_disc")
+# A finished iteration: its optimiser star and the files that star points at. A continuation names them
+# run_ct<N>_it<M>_*.
+OPTIMISER_RE = re.compile(r"run(?:_ct\d+)?_it(\d{3})_optimiser\.star")
+ITERATION_FILES = (
+    "_data.star",
+    "_sampling.star",
+    "_half1_model.star",
+    "_half2_model.star",
+    "_half1_class001.mrc",
+    "_half2_class001.mrc",
+)
+# The converged result carries no iteration tag (RELION's MlOptimiser::write with fn_root = fn_out): the
+# OUTPUT_SCHEMA files plus the two half-maps.
+RESULT_FILES = ("_optimisation_set.star", "_class001.mrc", "_half1_class001_unfil.mrc", "_half2_class001_unfil.mrc")
 
 
 def check_angle_priors(input_optimisation: Path) -> None:
@@ -34,6 +56,59 @@ def check_angle_priors(input_optimisation: Path) -> None:
             f"{unoriented}/{len(particles)} particles in {particles_star} sit at 0,0,0 (no orientation): a local "
             "angular search would keep them there. Set sigma_ang to -1 for a global search."
         )
+
+
+def latest_checkpoint(job_dir: Path) -> tuple[int, Path] | None:
+    """The last iteration (>= 1) an earlier attempt finished writing in job_dir, and its optimiser star."""
+    done = []
+    for optimiser in job_dir.glob("run*_optimiser.star"):
+        m = OPTIMISER_RE.fullmatch(optimiser.name)
+        prefix = optimiser.name.removesuffix("_optimiser.star")
+        if m and int(m.group(1)) >= 1 and all((job_dir / f"{prefix}{s}").is_file() for s in ITERATION_FILES):
+            done.append((int(m.group(1)), optimiser))
+    return max(done, default=None)
+
+
+def options_of(argv: list[str]) -> dict[str, tuple[str, ...]]:
+    """relion_refine arguments by option: '--sym C1 --ctf' -> {'--sym': ('C1',), '--ctf': ()}."""
+    options: dict[str, tuple[str, ...]] = {}
+    key = None
+    for token in argv:
+        if token.startswith("--"):
+            key = token
+            options[key] = ()
+        elif key is not None:
+            options[key] += (token,)
+    return options
+
+
+def changed_since_start(job_dir: Path, argv: list[str]) -> list[str]:
+    """The refinement options in argv that differ from those the run in job_dir was started with, as recorded in
+    its run_it000_optimiser.star. A continued run reads them from its checkpoint, so it would not apply these."""
+    first = job_dir / "run_it000_optimiser.star"
+    recorded = next((line[1:].split() for line in first.read_text().splitlines() if line.startswith("# --")), None)
+    if recorded is None:
+        raise ValueError(f"{first} does not record the command its run was started with")
+    skip = (*CONTINUE_OPTIONS, "--o")
+    then = {k: v for k, v in options_of(recorded).items() if k not in skip}
+    now = {k: v for k, v in options_of(argv).items() if k not in skip}
+
+    def shown(values: tuple[str, ...] | None) -> str:
+        return "unset" if values is None else " ".join(values) or "on"
+
+    return [f"{k} {shown(then.get(k))} -> {shown(now.get(k))}" for k in sorted(then | now) if then.get(k) != now.get(k)]
+
+
+def continue_command(fresh: ToolCommand, optimiser: Path, output_root: Path) -> ToolCommand:
+    """fresh as a continuation from optimiser: the same mpirun prefix and computation options; every other option
+    comes from the checkpoint."""
+    i = fresh.parts.index("relion_refine_mpi") + 1
+    cmd = ToolCommand(" ".join(fresh.parts[:i]))
+    cmd.opt_path("--continue", optimiser, quote=False).opt_path("--o", output_root, quote=False)
+    for option, values in options_of(fresh.parts[i:]).items():
+        if option in CONTINUE_OPTIONS:
+            cmd.raw(" ".join((option, *values)))
+    return cmd
 
 
 def main():
@@ -63,7 +138,7 @@ def main():
         if params.sigma_ang > 0:
             check_angle_priors(input_optimisation)
 
-        output_root = str(job_dir / "run")
+        output_root = job_dir / "run"
 
         # Split random halves needs MPI: a leader plus one follower per half-set. The container runs with
         # --cleanenv and SLURM_* unset, so mpirun cannot see the allocation and counts physical cores as
@@ -132,6 +207,24 @@ def main():
         if params.use_gpu:
             cmd.flag("--gpu")
 
+        checkpoint = latest_checkpoint(job_dir)
+        if checkpoint is not None:
+            iteration, optimiser = checkpoint
+            changed = changed_since_start(job_dir, cmd.parts[cmd.parts.index("relion_refine_mpi") + 1 :])
+            if changed:
+                raise RuntimeError(
+                    f"{optimiser.name} holds iteration {iteration} of a run started with other settings "
+                    f"({'; '.join(changed)}). A continued run reads its settings from that checkpoint, so it would "
+                    "not apply these. Restore them to continue, or run the new settings as a new Refine 3D job."
+                )
+            output_root = job_dir / f"run_ct{iteration}"
+            cmd = continue_command(cmd, optimiser, output_root)
+            print(
+                f"[DRIVER] CONTINUE: {optimiser.name} finished iteration {iteration}; continuing from it "
+                f"as {output_root.name}_*",
+                flush=True,
+            )
+
         print(f"[DRIVER] Command: {cmd}", flush=True)
 
         additional_binds.append(str(input_optimisation.parent.resolve()))
@@ -139,22 +232,25 @@ def main():
 
         run_tool(cmd, tool_name=params.get_tool_name(), cwd=job_dir, binds=additional_binds)
 
-        # Auto-refine writes its converged result without an iteration tag (RELION's MlOptimiser::write
-        # with fn_root = fn_out); these are the OUTPUT_SCHEMA files plus the two half-maps.
-        expected = [
-            job_dir / "run_optimisation_set.star",
-            job_dir / "run_class001.mrc",
-            job_dir / "run_half1_class001_unfil.mrc",
-            job_dir / "run_half2_class001_unfil.mrc",
-        ]
-        missing = [p.name for p in expected if not p.exists()]
+        root = output_root.name
+        result_set = job_dir / f"{root}_optimisation_set.star"
+        if root != "run" and not result_set.exists() and (job_dir / f"{root}_data.star").exists():
+            # The checkpoint does not record the input optimisation set, so a continued relion_refine may not
+            # write one; the tomograms are the input set's.
+            _, tomograms = _parse_optimisation_set(input_optimisation)
+            write_optimisation_set(result_set, particles_star=job_dir / f"{root}_data.star", tomograms_star=tomograms)
+            print(f"[DRIVER] relion_refine wrote no {result_set.name}; the driver wrote it", flush=True)
+        missing = [f"{root}{s}" for s in RESULT_FILES if not (job_dir / f"{root}{s}").exists()]
         if missing:
             raise RuntimeError(
                 f"relion_refine_mpi finished without the converged outputs {missing} in {job_dir}. "
                 "Check run.out for relion_refine errors."
             )
-        for p in expected:
-            print(f"[DRIVER] Output: {p}", flush=True)
+        for s in RESULT_FILES:
+            # A continuation wrote run_ct<N>_*; downstream jobs read the run_* names.
+            if root != "run":
+                shutil.copy2(job_dir / f"{root}{s}", job_dir / f"run{s}")
+            print(f"[DRIVER] Output: {job_dir / f'run{s}'}", flush=True)
 
         print("--- SLURM JOB END (Exit Code: 0) ---", flush=True)
 
