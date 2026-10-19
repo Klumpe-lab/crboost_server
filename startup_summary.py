@@ -36,10 +36,11 @@ _STATUS_COLOR = {
 _RELION_JOB_DIR = re.compile(r"job\d{3,}")
 
 
-def summary_lines(port: int, hostname: str, user: str, token: str) -> list[str]:
+def summary_lines(port: int, hostname: str, user: str, token: str, log_file: Path | None) -> list[str]:
     nodes, jobs, slurm_error = _probe_slurm(user)
     rows = [
         ("user", f"{user}   (snapshot {datetime.now():%H:%M})"),
+        ("log", str(log_file).replace(str(Path.home()), "~", 1) if log_file else "none: console only"),
         ("cluster", " · ".join(x for x in (_cluster_name(), hostname) if x)),
         ("resources", slurm_error or _resources(nodes)),
         ("jobs", slurm_error or _job_counts(jobs)),

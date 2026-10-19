@@ -1,9 +1,9 @@
 """The one logger that reaches the terminal at INFO.
 
-`setup_logging()` in main.py keeps the root at WARNING, so every module-level
-`logger.info()` is diagnostic-only (visible with --debug). The few things an
-operator actually watches the console for — pipeline started / finished /
-failed, jobs queued, job status changes — go through `events` instead.
+Every module-level `logger.info()` goes to the log file only (`services/log_setup.py`). The few things
+an operator actually watches the console for — projects created and deleted, pipeline started, jobs
+queued, job status changes — go through `events` instead, and name their project first:
+`events.info("%s · %s queued as SLURM %s", project.name, instance_id, slurm_id)`.
 """
 
 import logging

@@ -13,7 +13,8 @@ CRBOOST_TRACE_STALLS=1 it is 250 ms, and as a stall passes it the thread also lo
 thread is, plus any other thread that is busy rather than waiting (a thread holding the GIL stalls
 the loop from outside it): the stacks for fixing one.
 
-One per process, started at app startup (main.py). Warnings, so they pass the quiet log filter.
+One per process, started at app startup (main.py). Its lines go to the log file; the console shows
+them only with CRBOOST_TRACE_STALLS=1 (services/log_setup.py).
 """
 
 from __future__ import annotations
@@ -33,8 +34,8 @@ logger = logging.getLogger(__name__)
 _HEARTBEAT_S = 0.05
 # A loop this late has missed a heartbeat: busy in one callback.
 _BUSY_S = 2 * _HEARTBEAT_S
-_TRACE = bool(os.environ.get("CRBOOST_TRACE_STALLS"))
-_THRESHOLD_S = 0.25 if _TRACE else 1.0
+TRACE_STALLS = bool(os.environ.get("CRBOOST_TRACE_STALLS"))
+_THRESHOLD_S = 0.25 if TRACE_STALLS else 1.0
 # A stall this many times the threshold gets a second sample: a long stall can move between callers.
 _RESAMPLE_FACTOR = 4
 _STACK_DEPTH = 18
@@ -90,7 +91,7 @@ class LoopWatchdog:
             places[self._place()] += 1
             if lag > self._threshold:
                 peak = max(peak, lag)
-                if _TRACE and (samples == 0 or (samples == 1 and lag > self._threshold * _RESAMPLE_FACTOR)):
+                if TRACE_STALLS and (samples == 0 or (samples == 1 and lag > self._threshold * _RESAMPLE_FACTOR)):
                     samples += 1
                     logger.warning("Event loop blocked for %.0f ms so far.\n%s", lag * 1000, self._stacks())
 

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from services.background_tasks import ProgressCallback
+from services.event_log import events
 from services.result import err, ok
 
 logger = logging.getLogger(__name__)
@@ -115,6 +116,7 @@ def delete_project_dir(
         return err(f"Could not delete {project_dir}: {e}")
     problem = _take_apart(doomed, progress_cb, stop)
     if problem is None:
+        events.info("%s · deleted from %s", project_dir.name, project_dir.parent)
         return ok()
     try:
         os.rename(doomed, project_dir)
@@ -122,4 +124,5 @@ def delete_project_dir(
     except OSError:
         # The name was taken meanwhile (a new project): what is left keeps the deletion name.
         left = doomed
+    events.warning("%s · deletion stopped: %s; what is left is in %s", project_dir.name, problem, left)
     return err(f"Could not delete all of {project_dir.name}: {problem}. What is left is in {left}")
