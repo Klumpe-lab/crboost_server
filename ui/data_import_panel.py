@@ -17,6 +17,7 @@ from services.configs.mdoc_service import describe_duplicate_ts_names, describe_
 from services.configs.user_prefs_service import get_prefs_service
 
 from ui.components.buttons import house_button
+from ui.components.segmented import render_segmented
 from ui.ui_state import get_ui_state_manager
 from ui.local_file_picker import local_file_picker
 from ui.glob_directory_input import GlobDirectoryInput
@@ -29,6 +30,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MOVIES_EXT = "*.eer"
 DEFAULT_MDOCS_EXT = "*.mdoc"
+
+# The landing page's two views, switched by each card's title.
+LANDING_VIEWS = (("overview", "Projects overview"), ("new", "New project"))
 
 # Type scale for this panel — three sizes and two families, matching the projects
 # roster beside it. 12/600 titles a card, 10 is the working size (field labels and
@@ -1189,18 +1193,31 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         f"{FONT} font-size: {SZ_BODY}; width: 100%; border-bottom: 1px solid {CLR_GHOST}; padding: 1px 2px;"
     )
 
-    with ui.row().classes("w-full gap-3 items-start").style(FONT):
+    # Two views share the page: the projects roster (the default, filling the page) and the
+    # new-project form. Each card's title is the same switch between them, and the form keeps
+    # what was typed while the roster shows.
+    views: dict[str, ui.element] = {}
+
+    def show_view(key: str) -> None:
+        for name, view in views.items():
+            view.style(f"display: {'flex' if name == key else 'none'};")
+
+    def view_switch(active: str) -> None:
+        render_segmented(LANDING_VIEWS, active, show_view, classes="cb-seg-title")
+
+    with ui.element("div").style(
+        f"{FONT} width: 100%; flex: 1 1 0; min-height: 0; display: flex; flex-direction: column;"
+    ):
         # =================================================================
-        # LEFT COLUMN: Project Setup
-        # Narrower than the roster on purpose: this card is a form the user fills
-        # once, the roster beside it is the thing they read and re-read. 1 : 1.45.
+        # NEW PROJECT: the project setup form, the width it always had.
         # =================================================================
-        with ui.column().classes("gap-2").style("flex: 1 1 0; min-width: 0;"):
-            with ui.column().classes("w-full gap-0 px-4 py-3").style(card_style):
-                ui.label("Project Setup").style(
-                    f"{FONT} font-size: {SZ_TITLE}; font-weight: 600; color: {CLR_HEADING}; "
-                    "letter-spacing: -0.01em; margin-bottom: 8px;"
-                )
+        views["new"] = ui.element("div").style(
+            "flex: 1 1 0; min-height: 0; overflow-y: auto; display: none; flex-direction: column;"
+        )
+        with views["new"]:
+            with ui.column().classes("w-full gap-0 px-4 py-3").style(card_style + " max-width: 880px;"):
+                with ui.element("div").style("margin-bottom: 8px;"):
+                    view_switch("new")
 
                 with ui.row().classes("w-full gap-4 mb-2"):
                     with ui.column().classes("gap-0").style("flex: 1;"):
@@ -1444,28 +1461,24 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                         ui_mgr.panel_refs.create_button = create_btn
 
         # =================================================================
-        # RIGHT COLUMN: Projects Overview + History sidebar
-        # `min-width: 0`, not a 460 px floor: a floor pushes the pair past the
-        # viewport at 100 % zoom and hides the roster's right edge (its status
-        # pill, its travel chevron) behind a horizontal scrollbar. The roster rows
-        # shrink instead — every fixed cell in them is under 46 px.
+        # PROJECTS OVERVIEW: the default view. It fills the page to its bottom edge
+        # and scrolls inside, so the card's bottom is always on screen.
         # =================================================================
-        with ui.column().classes("gap-2").style("flex: 1.45 1 0; min-width: 0;"):
-            # ----- Projects Overview -----
+        views["overview"] = ui.element("div").style(
+            "flex: 1 1 0; min-height: 0; display: flex; flex-direction: column;"
+        )
+        with views["overview"]:
             overview = ProjectsOverview(
                 backend,
                 base_path_provider=lambda: ui_mgr.data_import.project_base_path or "",
                 on_browse=handle_load_project_click,
                 auto_refresh_sec=15.0,
                 show_filter=True,
-                # The roster runs to the bottom of the viewport: what is above it is the
-                # page's 12 px padding, the status strip and the roster's own control row.
-                height_css="calc(100vh - 104px)",
-                title="Projects Overview",
+                fill=True,
+                title_slot=lambda: view_switch("overview"),
             )
             local_refs["projects_overview"] = overview
-            with ui.element("div").classes("w-full"):
-                overview.build()
+            overview.build()
 
     # =========================================================================
     # WIRING

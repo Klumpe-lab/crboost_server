@@ -2,6 +2,8 @@
 Main UI router.
 """
 
+import logging
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -19,6 +21,14 @@ from ui.ui_state import get_ui_state_manager
 from ui.components.buttons import house_button
 from ui.data_import_panel import build_data_import_panel
 from ui.workspace_page import build_workspace_page
+
+logger = logging.getLogger(__name__)
+
+# The page shown while a project loads: the workspace's whole viewport, a spinner in its middle.
+_OPENING_STYLE = (
+    "position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; "
+    "justify-content: center; gap: 10px; background: #ffffff;"
+)
 
 
 def create_ui_router(backend: CryoBoostBackend):
@@ -147,10 +157,12 @@ def create_ui_router(backend: CryoBoostBackend):
 
         callbacks = {"rebuild_pipeline_ui": on_project_ready, "check_and_update_statuses": lambda: None}
 
+        # The viewport itself, like the workspace: the projects roster fills what the status
+        # strip leaves and ends at the bottom edge, whatever the strip's height.
         with (
             ui.column()
-            .classes("w-full bg-gray-50 px-6 py-3")
-            .style("height: 100%; overflow-y: auto; box-sizing: border-box;")
+            .classes("bg-gray-50 px-6 py-3")
+            .style("position: fixed; inset: 0; overflow: hidden; flex-wrap: nowrap; box-sizing: border-box;")
         ):
             from ui.landing_status_strip import mount_landing_status_strip
 
@@ -198,16 +210,32 @@ def create_ui_router(backend: CryoBoostBackend):
         # stays authoritative), so re-entering a project this tab already holds costs a
         # dict lookup and correctly re-stamps it onto the "recently viewed" MRU.
         target = found["path"]
+        # The first open of a project parses its state and tilt-series registry, seconds on a
+        # large one: say so at once instead of leaving the new page blank meanwhile.
+        started = time.monotonic()
+        with ui.element("div").style(_OPENING_STYLE) as opening:
+            ui.spinner(size="lg", color="#94a3b8")
+            ui.label(f"Opening {target.name}…").style("font-size: 11px; color: #64748b;")
         if not await load_project_into_tab(backend, ui_mgr, target):
             ui.navigate.to("/")
             return
+        loaded = time.monotonic()
 
         # The canonical base, not the one the URL happened to carry: a link that pinned a
         # base it did not need gets tidied to the short form by the first write.
         writer = RouteWriter(target.name, disambiguating_base(target))
         writer.adopt(route)
         writer.suppressed = True
+        opening.delete()
         callbacks = build_workspace_page(backend, writer)
+        built = time.monotonic()
+        logger.info(
+            "%s · opened in %.1f s (load %.1f s, build %.1f s)",
+            target.name,
+            built - started,
+            loaded - started,
+            built - loaded,
+        )
 
         async def _apply() -> None:
             try:

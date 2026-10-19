@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import getpass
+import html
 import logging
 import itertools
 import math
@@ -85,11 +86,31 @@ _HOVER_CLOSE = (
 
 
 def _hover_open_js(menu_id: int) -> str:
+    """Open the row's card after a short hover. The card is built on the server the first time
+    its row is entered (one emit per row element), inside the delay before it shows."""
     return (
-        f"() => {{ const s = {_HOVER_STATE}; clearTimeout(s.timer); s.timer = setTimeout(() => {{ "
+        f"(e) => {{ const s = {_HOVER_STATE}; clearTimeout(s.timer); "
+        "const row = e && e.currentTarget; if (row && !row.dataset.cbCard) { row.dataset.cbCard = '1'; emit(); } "
+        "s.timer = setTimeout(() => { "
         f"if (s.open !== null && s.open !== {menu_id}) runMethod(s.open, 'hide', []); "
         f"s.open = {menu_id}; runMethod({menu_id}, 'show', []); }}, 90); }}"
     )
+
+
+def _set_title(element, text: str):
+    """A native hover title. The roster renders hundreds of cells, and a tooltip is one more
+    element per cell to build on every render."""
+    element.props["title"] = text
+    return element
+
+
+def _short_count(n: int) -> str:
+    """842, 33.3k, 1.2M."""
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}k"
+    return str(n)
 
 
 def _preview_img_html(png: str, stamp: int) -> str:
@@ -197,6 +218,11 @@ class ProjectsOverview:
         Whether to render the "Only mine" toggle in the header.
     height_px : int
         Vertical room for the scroll area.
+    fill : bool
+        Fill the parent's height instead (the parent is a flex column with a height): the
+        rows scroll inside and the card ends at the parent's bottom edge.
+    title_slot : optional callable () -> None
+        Renders the header's title in place of the `title` label (the landing page's view switch).
     """
 
     def __init__(
@@ -212,7 +238,9 @@ class ProjectsOverview:
         show_filter: bool = True,
         height_px: int = 380,
         height_css: str | None = None,
+        fill: bool = False,
         title: str = "Projects Overview",
+        title_slot: Callable[[], None] | None = None,
     ):
         self.backend = backend
         # When set, a row click *previews* the project (on_select). The landing page
@@ -227,7 +255,9 @@ class ProjectsOverview:
         # Optional CSS height override for the scroll area (e.g. "calc(88vh - 120px)")
         # so the roster can fill a tall panel instead of a fixed pixel box.
         self.height_css = height_css
+        self.fill = fill
         self.title = title
+        self.title_slot = title_slot
         self.prefs = get_prefs_service()
         try:
             self._current_resolved = str(Path(current_path).resolve()) if current_path else None
@@ -241,6 +271,10 @@ class ProjectsOverview:
         self._projects: list[dict] = []
         self._outer_container = None
         self._list_container = None
+        self._column_header = None
+        # What the list shows, in order: (key, fingerprint, element) per section header and row. A
+        # render whose keys come out the same rebuilds only the entries whose fingerprint moved.
+        self._rendered: list[tuple[str, object, ui.element]] = []
         self._size_label = None
         self._sort_seg = None
         self._owner_seg = None
@@ -273,21 +307,27 @@ class ProjectsOverview:
         Triggers the first scan + starts the auto-refresh timer."""
         outer = (
             ui.column()
-            .classes("w-full gap-0")
+            # cb-proj-roster: the container the compact columns' width tiers query (ui/dashboard/css.py).
+            .classes("w-full gap-0 cb-proj-roster")
             .style(
                 "background: white; border-radius: 8px; "
                 f"border: 1px solid {CLR_BORDER}; "
                 "box-shadow: 0 1px 3px rgba(15,23,42,0.06); "
                 # Never wider than the pane it sits in: a narrow landing page clips
                 # here rather than scrolling the whole roster sideways.
-                "min-width: 0; max-width: 100%; overflow: hidden;"
+                "min-width: 0; max-width: 100%; overflow: hidden; flex-wrap: nowrap;"
+                + (" flex: 1 1 0; min-height: 0;" if self.fill else "")
             )
         )
         self._outer_container = outer
-        _scroll_h = self.height_css or f"{self.height_px}px"
+        if self.fill:
+            scroll_style = "flex: 1 1 0; min-height: 0;"
+        else:
+            scroll_style = f"height: {self.height_css or f'{self.height_px}px'};"
         with outer:
             self._build_header()
-            with ui.scroll_area().classes("w-full cb-scroll-noh").style(f"height: {_scroll_h}; padding: 0;"):
+            self._column_header = self._build_column_header()
+            with ui.scroll_area().classes("w-full cb-scroll-noh").style(f"{scroll_style} padding: 0;"):
                 self._list_container = ui.column().classes("w-full").style("gap: 0; padding: 0;")
                 with self._list_container:
                     self._render_loading_skeleton()
@@ -367,10 +407,13 @@ class ProjectsOverview:
             .classes("w-full items-center px-3 py-2")
             .style(f"gap: 6px 10px; flex-wrap: wrap; border-bottom: 1px solid {CLR_BORDER};")
         ):
-            ui.label(self.title).style(
-                f"{FONT} font-size: 12px; font-weight: 600; color: {CLR_HEADING}; "
-                "letter-spacing: -0.01em; flex-shrink: 0;"
-            )
+            if self.title_slot is not None:
+                self.title_slot()
+            else:
+                ui.label(self.title).style(
+                    f"{FONT} font-size: 12px; font-weight: 600; color: {CLR_HEADING}; "
+                    "letter-spacing: -0.01em; flex-shrink: 0;"
+                )
             self._size_label = ui.label("").style(f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; flex-shrink: 0;")
             self._delete_hint = ui.label("Deletion mode · click a project to delete it").style(
                 f"{FONT} font-size: 9px; font-weight: 600; color: {CLR_FAILED}; letter-spacing: 0.02em; "
@@ -429,6 +472,25 @@ class ProjectsOverview:
             ui.button(icon="refresh", on_click=self.refresh).props("flat dense round size=xs").classes(
                 "text-slate-400 hover:text-blue-600 shrink-0"
             ).tooltip(f"Rescan now (auto every {int(self.auto_refresh_sec)}s)")
+
+    def _build_column_header(self):
+        """Compact view: the column titles, above the scroll area so they stay put. Same widths,
+        gap and padding as `_render_compact_body`, plus the chevron's column."""
+        head = ui.element("div").style(
+            f"display: flex; align-items: center; gap: 12px; padding: 4px {8 + self._W_CHEVRON}px 4px 14px; "
+            f"width: 100%; border-bottom: 1px solid {CLR_BORDER}; background: #f8fafc;"
+        )
+        cell = f"{FONT} font-size: 9px; font-weight: 600; color: {CLR_SUBLABEL}; white-space: nowrap;"
+        with head:
+            ui.label("Project").style(f"{cell} flex: 1 1 auto; min-width: 0;")
+            for title, width, right, tier in self._COMPACT_COLUMNS:
+                label = ui.label(title).style(
+                    f"{cell} width: {width}px; flex-shrink: 0;{' text-align: right;' if right else ''}"
+                )
+                if tier:
+                    label.classes(tier)
+        head.set_visibility(False)
+        return head
 
     @staticmethod
     def _small_segmented(tabs, active: str, on_switch: Callable[[str], None], *, hint: str):
@@ -545,9 +607,6 @@ class ProjectsOverview:
         # Deleted when the tab closed while refresh() awaited the scan.
         if self._list_container is None or self._list_container.is_deleted:
             return
-        self._list_container.clear()
-        # Every hover card died with the rows.
-        self._preview_open = False
 
         self._running_tasks = _running_roster_tasks()
         all_projects = [p for p in self._projects if _DELETE_KEY + p["path"] not in self._running_tasks]
@@ -582,6 +641,19 @@ class ProjectsOverview:
             else:
                 self._size_label.props(remove="title")
 
+        compact = self.prefs.prefs.projects_compact_view
+        items = self._list_items(visible, compact)
+        if self._column_header is not None:
+            self._column_header.set_visibility(compact and bool(items))
+
+        if items and [key for key, _, _ in items] == [key for key, _, _ in self._rendered]:
+            self._patch_list(items)
+            return
+
+        self._list_container.clear()
+        self._rendered = []
+        # Every hover card died with the rows.
+        self._preview_open = False
         with self._list_container:
             if not visible:
                 msg = "No projects to show"
@@ -600,34 +672,83 @@ class ProjectsOverview:
                     "font-style: italic; padding: 24px 16px; text-align: center;"
                 )
                 return
+            for key, fingerprint, build in items:
+                self._rendered.append((key, fingerprint, build()))
 
-            if self.prefs.prefs.projects_compact_view:
-                # One flat list: the owner moves into each row, so no section breaks.
-                for proj in sorted(visible, key=self._sort_key):
-                    self._render_row(proj, compact=True)
-                return
+    def _list_items(self, visible: list[dict], compact: bool) -> list[tuple[str, object, Callable[[], ui.element]]]:
+        """What the list shows, in order: (key, fingerprint, builder) per section header and row.
+        The fingerprint holds everything the entry's render reads."""
+        items: list[tuple[str, object, Callable[[], ui.element]]] = []
 
-            # Group by effective owner -- it lives in a section header rather
-            # than on every row. The current user floats to the top, then
-            # Lab / Shared, then the rest alphabetically.
-            groups: dict[str, list[dict]] = {}
-            for proj in visible:
-                groups.setdefault(eff(proj), []).append(proj)
+        def add_row(proj: dict) -> None:
+            path = proj["path"]
+            fingerprint = (
+                proj,
+                compact,
+                self._delete_mode,
+                self._is_path(path, self._current_resolved),
+                self._is_path(path, self._selected_resolved),
+                _CLEAR_TRASH_KEY + path in self._running_tasks,
+            )
+            items.append((f"row:{path}", fingerprint, lambda: self._render_row(proj, compact=compact)))
 
-            def _section_order(k: str):
-                if k == CURRENT_USER:
-                    return (0, "")
-                if k == SHARED_OWNER:
-                    return (1, "")
-                return (2, k.lower())
+        if compact:
+            # One flat list: the owner moves into each row, so no section breaks.
+            for proj in sorted(visible, key=self._sort_key):
+                add_row(proj)
+            return items
 
-            for owner in sorted(groups, key=_section_order):
-                rows = sorted(groups[owner], key=self._sort_key)
-                self._render_section_header(owner, rows)
-                for proj in rows:
-                    self._render_row(proj)
+        # Group by effective owner -- it lives in a section header rather
+        # than on every row. The current user floats to the top, then
+        # Lab / Shared, then the rest alphabetically.
+        groups: dict[str, list[dict]] = {}
+        for proj in visible:
+            groups.setdefault(self._eff_owner_of(proj), []).append(proj)
 
-    def _render_section_header(self, creator: str, projects: list[dict]):
+        def _section_order(k: str):
+            if k == CURRENT_USER:
+                return (0, "")
+            if k == SHARED_OWNER:
+                return (1, "")
+            return (2, k.lower())
+
+        for owner in sorted(groups, key=_section_order):
+            rows = sorted(groups[owner], key=self._sort_key)
+            statuses = tuple(p.get("live_status") for p in rows)
+            items.append(
+                (f"owner:{owner}", (owner, statuses), lambda o=owner, r=rows: self._render_section_header(o, r))
+            )
+            for proj in rows:
+                add_row(proj)
+        return items
+
+    def _patch_list(self, items: list[tuple[str, object, Callable[[], ui.element]]]) -> None:
+        """Same entries in the same order: rebuild only those whose fingerprint moved, in place.
+        A timer tick usually changes one live project, and a full render of a long roster blocks
+        the event loop for a second."""
+        for i, (key, fingerprint, build) in enumerate(items):
+            _, old_fingerprint, old_element = self._rendered[i]
+            if fingerprint == old_fingerprint:
+                continue
+            with self._list_container:
+                element = build()
+            element.move(target_index=i)
+            old_element.delete()
+            self._rendered[i] = (key, fingerprint, element)
+            # A replaced row takes its hover card with it, open or not.
+            self._preview_open = False
+
+    @staticmethod
+    def _is_path(path_str: str, resolved: str | None) -> bool:
+        if not resolved:
+            return False
+        try:
+            return str(Path(path_str).resolve()) == resolved
+        except OSError:
+            # Unreachable mount mid-render: it is not the open or previewed project.
+            return False
+
+    def _render_section_header(self, creator: str, projects: list[dict]) -> ui.element:
         is_me = creator == CURRENT_USER
         is_lab = creator == SHARED_OWNER
         known = creator and creator != "unknown"
@@ -642,11 +763,12 @@ class ProjectsOverview:
             dot = CLR_GHOST
         live = sum(1 for p in projects if p.get("live_status") == "running")
         queued = sum(1 for p in projects if p.get("live_status") == "queued")
-        with (
+        header = (
             ui.row()
             .classes("w-full items-center")
             .style(f"gap: 6px; padding: 5px 12px; background: #f1f5f9; border-bottom: 1px solid {CLR_BORDER};")
-        ):
+        )
+        with header:
             ui.element("div").style(f"width: 5px; height: 5px; border-radius: 50%; background: {dot}; flex-shrink: 0;")
             ui.label(label_text).style(
                 f"{MONO} font-size: 9px; font-weight: 700; color: {CLR_LABEL}; letter-spacing: 0.02em;"
@@ -663,6 +785,7 @@ class ProjectsOverview:
                 ui.label(f"· {live} live").style(f"{MONO} font-size: 8px; color: {CLR_RUNNING};")
             if queued:
                 ui.label(f"· {queued} in queue").style(f"{MONO} font-size: 8px; color: {CLR_QUEUED};")
+        return header
 
     # =====================================================================
     # ROW
@@ -673,30 +796,47 @@ class ProjectsOverview:
     _W_CHEVRON = 30
     # Compact view columns.
     _W_OWNER = 84
+    _W_FURTHEST = 104
+    _W_JOBS = 84
     _W_TS = 44
+    _W_TOMOS = 44
+    _W_PICKS = 48
+    _W_SPECIES = 120
     _W_SIZE = 56
     _W_STATUS = 56  # fits "IN QUEUE", the widest badge
     _W_APIX = 44
     _W_KV = 40
     _W_DOSE = 62
+    _W_ACTIVITY = 76
     _W_TRASH = 52
 
-    def _render_row(self, proj: dict, *, compact: bool = False):
+    # The compact view's columns after the name, in row order (`_render_compact_body`):
+    # (title, width, right-aligned, tier). A narrow roster hides tier 1 first, then 2, then 3
+    # (`.cb-proj-roster` container queries, ui/dashboard/css.py), so the status and the
+    # chevron never leave the row.
+    _COMPACT_COLUMNS = (
+        ("Owner", _W_OWNER, False, "cb-pc-t2"),
+        ("Furthest job", _W_FURTHEST, False, "cb-pc-t3"),
+        ("Jobs", _W_JOBS, True, ""),
+        ("TS", _W_TS, True, ""),
+        ("Tomos", _W_TOMOS, True, "cb-pc-t3"),
+        ("Picks", _W_PICKS, True, "cb-pc-t2"),
+        ("Species", _W_SPECIES, False, "cb-pc-t1"),
+        ("Å/px", _W_APIX, True, "cb-pc-t2"),
+        ("kV", _W_KV, True, "cb-pc-t1"),
+        ("Dose", _W_DOSE, True, "cb-pc-t1"),
+        ("Activity", _W_ACTIVITY, True, "cb-pc-t2"),
+        ("Size", _W_SIZE, True, ""),
+        ("Trash", _W_TRASH, True, ""),
+        ("Status", _W_STATUS, False, ""),
+    )
+
+    def _render_row(self, proj: dict, *, compact: bool = False) -> ui.element:
         path_str = proj["path"]
         name = proj["name"]
         ts_count = proj.get("ts_count") or 0
-        last_activity = proj.get("last_activity") or proj.get("modified") or ""
         source_dir = proj.get("source_directory") or ""
-        # The generated mnemonic ("icy-majestic-darwin") gets no column: it would compete
-        # with the project's real name for the eye. It is one hover away on the name.
-        mnemonic = proj.get("mnemonic") or ""
-
-        is_current = False
-        if self._current_resolved:
-            try:
-                is_current = str(Path(path_str).resolve()) == self._current_resolved
-            except Exception:
-                is_current = False
+        is_current = self._is_path(path_str, self._current_resolved)
 
         async def _select():
             self.set_selected(path_str)
@@ -710,12 +850,7 @@ class ProjectsOverview:
         # previews it; otherwise the row is not a click target at all, so a stray click
         # never drops the user into a project.
         preview_mode = self.on_select is not None
-        is_selected = False
-        if self._selected_resolved:
-            try:
-                is_selected = str(Path(path_str).resolve()) == self._selected_resolved
-            except Exception:
-                is_selected = False
+        is_selected = self._is_path(path_str, self._selected_resolved)
 
         # The row is a two-column flex: the text stack, and a full-height chevron.
         # `overflow: hidden` is load-bearing, not cosmetic: this widget lives inside a
@@ -745,7 +880,7 @@ class ProjectsOverview:
         if deleting:
             # Deletion mode: the row is the trigger and nothing else on it acts.
             if is_current:
-                row.tooltip("The open project can't be deleted from here")
+                _set_title(row, "The open project can't be deleted from here")
             else:
 
                 async def _delete():
@@ -755,14 +890,12 @@ class ProjectsOverview:
         elif preview_mode:
             row.on("click", _select)
 
-        fixed = "flex-shrink: 0; white-space: nowrap;"
+        cell = self._text_cell
         with row:
-            if proj.get("tomo_preview"):
-                self._render_preview_card(proj, row)
             if compact:
-                self._render_compact_body(proj)
+                self._render_compact_body(proj, row)
                 self._render_chevron(path_str, is_current)
-                return
+                return row
             with ui.element("div").style(
                 "flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 3px; "
                 "padding: 9px 8px 10px 14px;"
@@ -779,8 +912,7 @@ class ProjectsOverview:
                         "letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; "
                         "white-space: nowrap; min-width: 0; flex: 0 1 auto;"
                     )
-                    if mnemonic:
-                        name_lbl.tooltip(f"{name}\n{mnemonic}")
+                    _set_title(name_lbl, self._name_title(proj))
                     if is_current:
                         ui.label("CURRENT").style(
                             f"{FONT} font-size: 7px; color: #1e40af; font-weight: 700; "
@@ -788,6 +920,7 @@ class ProjectsOverview:
                             "border-radius: 3px; padding: 0 4px; flex-shrink: 0; "
                             "letter-spacing: 0.05em;"
                         )
+                    self._render_preview_card(proj, row)
                     ui.element("div").style("flex: 1 1 0; min-width: 0;")
                     self._render_live_progress(proj)
                     self._render_status(proj)
@@ -801,23 +934,31 @@ class ProjectsOverview:
                         f"{MONO} font-size: 9px; color: {CLR_GHOST}; font-style: italic;"
                     )
 
-                # ---- Line 4: TS · pixel size · voltage · dose · last activity · size ----
-                # Starts flush with the paths above. Wraps rather than overflows on a
-                # narrow pane.
+                # ---- Line 4: TS · tomograms · jobs · furthest job · picks · species · acquisition ·
+                # last activity · size. Starts flush with the paths above; wraps rather than
+                # overflows on a narrow pane. What the project has none of is left out, the TS aside.
                 with ui.element("div").style(
                     "display: flex; align-items: center; flex-wrap: wrap; column-gap: 18px; row-gap: 2px; "
                     "min-width: 0; margin-top: 2px;"
                 ):
-                    ui.label(f"{ts_count} TS" if ts_count else "— TS").style(
-                        f"{MONO} font-size: 9px; color: {CLR_LABEL if ts_count else CLR_GHOST}; {fixed}"
-                    )
+                    cell(f"{ts_count} TS" if ts_count else "— TS", color=CLR_LABEL if ts_count else CLR_GHOST)
+                    text, title = self._tomos_text(proj)
+                    if text != "—":
+                        cell(f"{text} tomos", color=CLR_LABEL, title=title)
+                    self._render_jobs(proj)
+                    if proj.get("furthest_done"):
+                        text, title = self._furthest_text(proj)
+                        cell(f"→ {text}", color=CLR_LABEL, title=title, font=FONT)
+                    text, title = self._picks_text(proj)
+                    if text != "—":
+                        cell(f"{text} picks", color=CLR_LABEL, title=title)
+                    if proj.get("species"):
+                        text, title = self._species_text(proj)
+                        cell(text, color=CLR_SUBLABEL, title=title, font=FONT)
                     for text, tip, known in self._acquisition_cells(proj):
-                        ui.label(text).style(
-                            f"{MONO} font-size: 9px; color: {CLR_LABEL if known else CLR_GHOST}; {fixed}"
-                        ).tooltip(tip)
-                    ui.label(last_activity).style(f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; {fixed}").tooltip(
-                        "Last activity"
-                    )
+                        cell(text, color=CLR_LABEL if known else CLR_GHOST, title=tip)
+                    text, title = self._activity_text(proj)
+                    cell(text, color=CLR_SUBLABEL, title=title)
                     self._render_size(proj)
                     self._render_trash(proj)
 
@@ -825,6 +966,7 @@ class ProjectsOverview:
             # A full-height column on the right edge, so "go there" is the easiest
             # thing on the row to hit.
             self._render_chevron(path_str, is_current)
+        return row
 
     def _render_chevron(self, path_str: str, is_current: bool):
         if is_current:
@@ -832,7 +974,7 @@ class ProjectsOverview:
                 f"width: {self._W_CHEVRON}px; flex-shrink: 0; display: flex; "
                 "align-items: center; justify-content: center;"
             ):
-                ui.icon("check", size="14px").style(f"color: {CLR_RUNNING};").tooltip("Currently open")
+                _set_title(ui.icon("check", size="14px").style(f"color: {CLR_RUNNING};"), "Currently open")
             return
         if self._delete_mode:
             # Armed: the travel column becomes a trash glyph that lights with the row
@@ -863,8 +1005,8 @@ class ProjectsOverview:
                 f"border-left: 1px solid {CLR_BORDER}; background: #f8fafc; text-decoration: none; "
                 "align-self: stretch; padding: 0;"
             )
-            .tooltip("Enter this project")
         )
+        _set_title(chev, "Enter this project")
         with chev:
             ui.icon("chevron_right", size="20px").style(f"color: {CLR_SUBLABEL}; pointer-events: none;")
 
@@ -878,37 +1020,69 @@ class ProjectsOverview:
         p = Path(path_str)
         return route_to_path(Route(project=p.name, base=str(p.parent)))
 
-    def _render_compact_body(self, proj: dict):
-        """Compact view: one line -- name, live progress, owner, TS, pixel size, voltage, dose,
-        size, status. The owner sits in the row because the compact list has no owner sections."""
-        name = proj["name"]
+    def _render_compact_body(self, proj: dict, row: ui.element):
+        """Compact view: one line -- the name, a live run's progress, then the columns of
+        `_COMPACT_COLUMNS` in that order, pushed to the row's right end. The owner sits in the
+        row because the compact list has no owner sections."""
         ts_count = proj.get("ts_count") or 0
-        mnemonic = proj.get("mnemonic") or ""
         fixed = "flex-shrink: 0; white-space: nowrap;"
+        cell = self._text_cell
         with ui.element("div").style(
             "flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 6px 8px 6px 14px;"
         ):
-            name_lbl = ui.label(name).style(
+            name_lbl = ui.label(proj["name"]).style(
                 f"{FONT} font-size: 11px; font-weight: 600; color: {CLR_HEADING}; letter-spacing: -0.01em; "
-                "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1 1 auto;"
+                "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 0 1 auto;"
             )
-            if mnemonic:
-                name_lbl.tooltip(f"{name}\n{mnemonic}")
+            _set_title(name_lbl, self._name_title(proj))
+            self._render_preview_card(proj, row)
             self._render_live_progress(proj)
-            ui.label(self._owner_label(self._eff_owner_of(proj))).style(
-                f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; width: {self._W_OWNER}px; {fixed} "
-                "overflow: hidden; text-overflow: ellipsis;"
+            ui.element("div").style("flex: 1 1 0; min-width: 0;")
+            cell(self._owner_label(self._eff_owner_of(proj)), color=CLR_SUBLABEL, width=self._W_OWNER, tier="cb-pc-t2")
+            text, title = self._furthest_text(proj)
+            known = proj.get("furthest_done") is not None
+            cell(
+                text,
+                color=CLR_LABEL if known else CLR_GHOST,
+                title=title,
+                width=self._W_FURTHEST,
+                tier="cb-pc-t3",
+                font=FONT,
             )
-            ui.label(f"{ts_count} TS" if ts_count else "— TS").style(
-                f"{MONO} font-size: 9px; color: {CLR_LABEL if ts_count else CLR_GHOST}; "
-                f"width: {self._W_TS}px; text-align: right; {fixed}"
+            self._render_jobs(proj, width=self._W_JOBS)
+            cell(
+                str(ts_count) if ts_count else "—",
+                color=CLR_LABEL if ts_count else CLR_GHOST,
+                title=f"{ts_count} tilt-series" if ts_count else "No tilt-series recorded",
+                width=self._W_TS,
+                right=True,
             )
-            widths = (self._W_APIX, self._W_KV, self._W_DOSE)
-            for (text, tip, known), width in zip(self._acquisition_cells(proj), widths, strict=True):
-                ui.label(text).style(
-                    f"{MONO} font-size: 9px; color: {CLR_LABEL if known else CLR_GHOST}; "
-                    f"width: {width}px; text-align: right; {fixed}"
-                ).tooltip(tip)
+            for (text, title), width, tier in (
+                (self._tomos_text(proj), self._W_TOMOS, "cb-pc-t3"),
+                (self._picks_text(proj), self._W_PICKS, "cb-pc-t2"),
+            ):
+                known = text != "—"
+                cell(text, color=CLR_LABEL if known else CLR_GHOST, title=title, width=width, right=True, tier=tier)
+            text, title = self._species_text(proj)
+            known = bool(proj.get("species"))
+            cell(
+                text,
+                color=CLR_SUBLABEL if known else CLR_GHOST,
+                title=title,
+                width=self._W_SPECIES,
+                tier="cb-pc-t1",
+                font=FONT,
+            )
+            acquisition = zip(
+                self._acquisition_cells(proj),
+                (self._W_APIX, self._W_KV, self._W_DOSE),
+                ("cb-pc-t2", "cb-pc-t1", "cb-pc-t1"),
+                strict=True,
+            )
+            for (text, tip, known), width, tier in acquisition:
+                cell(text, color=CLR_LABEL if known else CLR_GHOST, title=tip, width=width, right=True, tier=tier)
+            text, title = self._activity_text(proj)
+            cell(text, color=CLR_SUBLABEL, title=title, width=self._W_ACTIVITY, right=True, tier="cb-pc-t2")
             with ui.element("div").style(f"width: {self._W_SIZE}px; {fixed} display: flex; justify-content: flex-end;"):
                 self._render_size(proj)
             with ui.element("div").style(
@@ -917,6 +1091,97 @@ class ProjectsOverview:
                 self._render_trash(proj)
             with ui.element("div").style(f"width: {self._W_STATUS}px; {fixed} display: flex;"):
                 self._render_status(proj)
+
+    @staticmethod
+    def _text_cell(
+        text: str,
+        *,
+        color: str,
+        title: str = "",
+        width: int | None = None,
+        right: bool = False,
+        tier: str = "",
+        font: str = MONO,
+    ) -> ui.label:
+        """One 9 px cell. With `width` it is a fixed column that ellipsises; `tier` hides it
+        on a narrow roster."""
+        style = f"{font} font-size: 9px; color: {color}; flex-shrink: 0; white-space: nowrap;"
+        if width is not None:
+            style += f" width: {width}px; overflow: hidden; text-overflow: ellipsis;"
+            if right:
+                style += " text-align: right;"
+        label = ui.label(text).style(style)
+        if tier:
+            label.classes(tier)
+        if title:
+            _set_title(label, title)
+        return label
+
+    @staticmethod
+    def _render_jobs(proj: dict, *, width: int | None = None) -> None:
+        """Succeeded of planned jobs, the failed ones in red; running and queued in the hover."""
+        ok, total, failed = (proj.get(key) or 0 for key in ("succeeded", "total_jobs_planned", "failed"))
+        parts = [f"{ok} of {total} jobs succeeded"]
+        for key, word in (("running_live", "running"), ("queued", "queued"), ("failed", "failed")):
+            if proj.get(key):
+                parts.append(f"{proj[key]} {word}")
+        style = "display: flex; align-items: baseline; gap: 5px; flex-shrink: 0; white-space: nowrap;"
+        if width is not None:
+            style += f" width: {width}px; justify-content: flex-end; overflow: hidden;"
+        text = (f"{ok}/{total}" if width is not None else f"{ok}/{total} jobs") if total else "—"
+        with _set_title(ui.element("div").style(style), " · ".join(parts)):
+            ui.label(text).style(f"{MONO} font-size: 9px; color: {CLR_LABEL if total else CLR_GHOST};")
+            if failed:
+                ui.label(f"{failed} failed").style(f"{MONO} font-size: 9px; color: {CLR_FAILED};")
+
+    @staticmethod
+    def _name_title(proj: dict) -> str:
+        """The name's hover: the name, its generated mnemonic and the protocol it was created from.
+        The mnemonic ("icy-majestic-darwin") gets no column: it would compete with the project's
+        real name for the eye."""
+        lines = [proj["name"]]
+        if proj.get("mnemonic"):
+            lines.append(proj["mnemonic"])
+        if proj.get("protocol"):
+            lines.append(f"Created from the {proj['protocol']} protocol")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _furthest_text(proj: dict) -> tuple[str, str]:
+        done = proj.get("furthest_done")
+        if not done:
+            return "—", "No job has succeeded yet"
+        return done["label"], f"Furthest job down the pipeline that succeeded: {done['label']} ({done['instance_id']})"
+
+    @staticmethod
+    def _tomos_text(proj: dict) -> tuple[str, str]:
+        n = (proj.get("tomo_preview") or {}).get("n_tomos") or 0
+        if not n:
+            return "—", "No reconstructed tomograms"
+        return str(n), f"{n} tomograms in the newest reconstruction job"
+
+    @staticmethod
+    def _picks_text(proj: dict) -> tuple[str, str]:
+        n, lists = proj.get("n_picks") or 0, proj.get("n_pick_lists") or 0
+        if not n:
+            return "—", "No picks"
+        return _short_count(n), f"{n:,} picks in {lists} pick list{'s' if lists != 1 else ''}"
+
+    @staticmethod
+    def _species_text(proj: dict) -> tuple[str, str]:
+        names = [s.get("name") or s["id"] for s in proj.get("species") or []]
+        if not names:
+            return "—", "No particle species registered"
+        return " · ".join(names), "Particle species: " + ", ".join(names)
+
+    @staticmethod
+    def _activity_text(proj: dict) -> tuple[str, str]:
+        ts = proj.get("last_activity_ts") or 0.0
+        if not ts:
+            return "—", "No activity recorded"
+        when = datetime.fromtimestamp(ts)
+        short = when.strftime("%b %d %H:%M") if when.year == datetime.now().year else when.strftime("%Y-%m-%d")
+        return short, f"Last activity {when.strftime('%Y-%m-%d %H:%M')}"
 
     @staticmethod
     def _acquisition_cells(proj: dict) -> list[tuple[str, str, bool]]:
@@ -945,11 +1210,41 @@ class ProjectsOverview:
         return owner
 
     def _render_preview_card(self, proj: dict, row) -> None:
-        """Row hover: a white card beside the row (to its left, over the page, so it never
-        covers the list) with the project's WarpTools tomogram previews, stepped with
-        chevrons, and a few facts. It opens and closes in the browser (_hover_open_js) so
-        it appears at once and can be moved onto; the roster's auto-refresh holds while
-        it is open, because a rebuild would take it away from under the pointer."""
+        """Row hover: a white card just right of the project's name, over the blank rest of the
+        name column, with the project's WarpTools tomogram previews, stepped with chevrons, and
+        a few facts. Called where the name ends: the card hangs off a zero-width anchor there,
+        since the roster can span the page with no room beside it. It opens and closes in the
+        browser (_hover_open_js) so it appears at once and can be moved onto; the roster's
+        auto-refresh holds while it is open, because a rebuild would take it away from under the
+        pointer. Only the empty menu is built with the row; its content is built the first time
+        the row is entered, so a render of the whole roster does not build a card per project."""
+        if not proj.get("tomo_preview"):
+            return
+        with ui.element("div").style("width: 0; align-self: stretch; flex-shrink: 0;"):
+            menu = (
+                ui.menu()
+                .props(
+                    'no-parent-event no-focus no-refocus anchor="center left" self="center left" '
+                    ':offset="[6, 0]" transition-show="fade" transition-hide="fade" :transition-duration="80"'
+                )
+                .style(
+                    f"background: white; border: 1px solid {CLR_BORDER}; border-radius: 6px; "
+                    "box-shadow: 0 8px 24px rgba(15,23,42,0.16);"
+                )
+            )
+        menu.on_value_change(self._on_preview_toggle)
+
+        def fill() -> None:
+            if menu.is_deleted or menu.default_slot.children:
+                return
+            with menu:
+                self._render_preview_card_body(proj)
+
+        row.on("mouseenter", fill, js_handler=_hover_open_js(menu.id))
+        row.on("mouseleave", js_handler=_HOVER_CLOSE)
+
+    @staticmethod
+    def _render_preview_card_body(proj: dict) -> None:
         pv = proj["tomo_preview"]
         pngs = pv["pngs"]
         name = proj["name"]
@@ -974,47 +1269,32 @@ class ProjectsOverview:
             image.set_content(_preview_img_html(pngs[shown["i"]], stamp))
             caption_label.set_text(caption(shown["i"]))
 
-        menu = (
-            ui.menu()
-            .props(
-                'no-parent-event no-focus no-refocus anchor="center left" self="center right" '
-                ':offset="[4, 0]" transition-show="fade" transition-hide="fade" :transition-duration="80"'
-            )
-            .style(
-                f"background: white; border: 1px solid {CLR_BORDER}; border-radius: 6px; "
-                "box-shadow: 0 8px 24px rgba(15,23,42,0.16);"
-            )
-        )
-        menu.on_value_change(self._on_preview_toggle)
-        with menu:
-            card = ui.element("div").style("padding: 8px; width: 276px;")
-            card.on("mouseenter", js_handler=_HOVER_STAY)
-            card.on("mouseleave", js_handler=_HOVER_CLOSE)
-            with card:
-                image = ui.html(_preview_img_html(pngs[0], stamp), sanitize=False)
-                with ui.element("div").style("display: flex; align-items: center; gap: 2px; margin-top: 6px;"):
-                    nav = "flat dense round size=sm"
-                    if len(pngs) > 1:
-                        ui.button(icon="chevron_left", on_click=lambda: step(-1)).props(nav).style(
-                            f"color: {CLR_LABEL};"
-                        ).tooltip("Previous tomogram")
-                    caption_label = ui.label(caption(0)).style(
-                        f"{MONO} font-size: 10px; color: {CLR_HEADING}; flex: 1 1 0; min-width: 0; "
-                        "text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                    )
-                    if len(pngs) > 1:
-                        ui.button(icon="chevron_right", on_click=lambda: step(1)).props(nav).style(
-                            f"color: {CLR_LABEL};"
-                        ).tooltip("Next tomogram")
-                ui.label(" · ".join(facts)).style(
-                    f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; text-align: center; margin-top: 2px;"
+        card = ui.element("div").style("padding: 8px; width: 276px;")
+        card.on("mouseenter", js_handler=_HOVER_STAY)
+        card.on("mouseleave", js_handler=_HOVER_CLOSE)
+        with card:
+            image = ui.html(_preview_img_html(pngs[0], stamp), sanitize=False)
+            with ui.element("div").style("display: flex; align-items: center; gap: 2px; margin-top: 6px;"):
+                nav = "flat dense round size=sm"
+                if len(pngs) > 1:
+                    ui.button(icon="chevron_left", on_click=lambda: step(-1)).props(nav).style(
+                        f"color: {CLR_LABEL};"
+                    ).tooltip("Previous tomogram")
+                caption_label = ui.label(caption(0)).style(
+                    f"{MONO} font-size: 10px; color: {CLR_HEADING}; flex: 1 1 0; min-width: 0; "
+                    "text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
                 )
-                if species:
-                    ui.label(f"species: {species}").style(
-                        f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; text-align: center;"
-                    )
-        row.on("mouseenter", js_handler=_hover_open_js(menu.id))
-        row.on("mouseleave", js_handler=_HOVER_CLOSE)
+                if len(pngs) > 1:
+                    ui.button(icon="chevron_right", on_click=lambda: step(1)).props(nav).style(
+                        f"color: {CLR_LABEL};"
+                    ).tooltip("Next tomogram")
+            ui.label(" · ".join(facts)).style(
+                f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; text-align: center; margin-top: 2px;"
+            )
+            if species:
+                ui.label(f"species: {species}").style(
+                    f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; text-align: center;"
+                )
 
     def _on_preview_toggle(self, e):
         self._preview_open = bool(e.value)
@@ -1027,7 +1307,7 @@ class ProjectsOverview:
             f"{MONO} font-size: 9px; color: {color}; min-width: 0; max-width: 100%; align-self: flex-start; "
             "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
         )
-        label.tooltip(f"{what}\n{path}\nClick to copy")
+        _set_title(label, f"{what}\n{path}\nClick to copy")
         copy_on_click(label, path)
 
     @staticmethod
@@ -1050,7 +1330,8 @@ class ProjectsOverview:
         if n_tomos:
             lines.append(f"{n_tomos} tomograms reconstructed")
         cell = f"{MONO} font-size: 9px; white-space: nowrap;"
-        with ui.element("div").style("display: flex; align-items: baseline; gap: 5px; flex-shrink: 0;"):
+        box = ui.element("div").style("display: flex; align-items: baseline; gap: 5px; flex-shrink: 0;")
+        with _set_title(box, "\n".join(lines)):
             ui.label(lp["stage"]).style(
                 f"{FONT} font-size: 9px; font-weight: 600; color: {CLR_RUNNING}; white-space: nowrap;"
             )
@@ -1060,7 +1341,6 @@ class ProjectsOverview:
                 ui.label(f"{lp['ok']}/{lp['total']}").style(f"{cell} color: {CLR_LABEL};")
             if lp["failed"]:
                 ui.label(f"· {lp['failed']} failed").style(f"{cell} color: {CLR_FAILED};")
-            ui.tooltip("\n".join(lines)).style("white-space: pre-line;")
 
     @staticmethod
     def _render_status(proj: dict):
@@ -1081,11 +1361,8 @@ class ProjectsOverview:
             counts.append(f"{proj['queued']} queued")
         if proj.get("failed"):
             counts.append(f"{proj['failed']} failed")
-        with (
-            ui.element("div")
-            .style("display: flex; align-items: center; gap: 4px; flex-shrink: 0;")
-            .tooltip(" · ".join(counts))
-        ):
+        badge = ui.element("div").style("display: flex; align-items: center; gap: 4px; flex-shrink: 0;")
+        with _set_title(badge, " · ".join(counts)):
             dot = ui.element("div").style(
                 f"width: 6px; height: 6px; border-radius: 50%; background: {s['color']}; flex-shrink: 0;"
             )
@@ -1103,12 +1380,15 @@ class ProjectsOverview:
         usage: DiskUsage | None = proj.get("disk_usage")
         cell = f"{MONO} font-size: 9px; flex-shrink: 0; white-space: nowrap;"
         if usage is None:
-            ui.label("— GB").style(f"{cell} color: {CLR_GHOST};").tooltip(
-                "Not measured yet: queued for a background size scan"
+            _set_title(
+                ui.label("— GB").style(f"{cell} color: {CLR_GHOST};"),
+                "Not measured yet: queued for a background size scan",
             )
             return
         if usage.error:
-            ui.label("? GB").style(f"{cell} color: {CLR_FAILED};").tooltip(f"Size measurement failed: {usage.error}")
+            _set_title(
+                ui.label("? GB").style(f"{cell} color: {CLR_FAILED};"), f"Size measurement failed: {usage.error}"
+            )
             return
         total = usage.total_bytes
         weight = 600 if total >= _SIZE_HEAVY else 400
@@ -1116,25 +1396,32 @@ class ProjectsOverview:
             f"{cell} color: {size_color(total)}; font-weight: {weight};"
         )
         measured = datetime.fromtimestamp(usage.measured_at).strftime("%Y-%m-%d %H:%M")
+        # The breakdown is one html element, not a label per cell: the roster has a size per row.
+        rows = []
+        for bucket, title in _BUCKET_LABELS:
+            n = usage.buckets.get(bucket, 0)
+            if not n:
+                continue
+            top = sorted(usage.parts.get(bucket, {}).items(), key=lambda kv: -kv[1])
+            biggest = " · ".join(f"{lbl} {format_bytes(b)}" for lbl, b in top[:3] if b >= n / 100)
+            rows.append(
+                f"<span>{html.escape(title)}</span><span style='text-align: right;'>{format_bytes(n)}</span>"
+                f"<span style='opacity: 0.75;'>{html.escape(biggest)}</span>"
+            )
+        body = (
+            f"<div>{format_bytes(total)} on disk · measured {measured}</div>"
+            "<div style='display: grid; grid-template-columns: auto auto 1fr; column-gap: 12px; margin-top: 4px;'>"
+            + "".join(rows)
+            + "</div>"
+        )
+        if usage.unreadable_dirs:
+            body += (
+                f"<div style='margin-top: 4px;'>{usage.unreadable_dirs} "
+                f"director{'ies' if usage.unreadable_dirs != 1 else 'y'} unreadable (permissions): "
+                "the size is a lower bound</div>"
+            )
         with label, ui.tooltip().style(f"{MONO} font-size: 10px; padding: 6px 8px;"):
-            ui.label(f"{format_bytes(total)} on disk · measured {measured}")
-            with ui.element("div").style(
-                "display: grid; grid-template-columns: auto auto 1fr; column-gap: 12px; margin-top: 4px;"
-            ):
-                for bucket, title in _BUCKET_LABELS:
-                    n = usage.buckets.get(bucket, 0)
-                    if not n:
-                        continue
-                    top = sorted(usage.parts.get(bucket, {}).items(), key=lambda kv: -kv[1])
-                    biggest = " · ".join(f"{lbl} {format_bytes(b)}" for lbl, b in top[:3] if b >= n / 100)
-                    ui.label(title)
-                    ui.label(format_bytes(n)).style("text-align: right;")
-                    ui.label(biggest).style("opacity: 0.75;")
-            if usage.unreadable_dirs:
-                ui.label(
-                    f"{usage.unreadable_dirs} director{'ies' if usage.unreadable_dirs != 1 else 'y'} unreadable "
-                    "(permissions): the size is a lower bound"
-                ).style("margin-top: 4px;")
+            ui.html(body, sanitize=False)
 
     def _render_trash(self, proj: dict):
         """Jobs removed from the project keep their disk space in its Trash/ until it is cleared.
@@ -1154,7 +1441,7 @@ class ProjectsOverview:
             "display: flex; align-items: center; gap: 2px; flex-shrink: 0; white-space: nowrap; "
             f"color: {size_color(size or 0)}; cursor: {'pointer' if clickable else 'default'};"
         )
-        chip.tooltip(f"{hint}. Click to see them and clear the trash." if clickable else hint)
+        _set_title(chip, f"{hint}. Click to see them and clear the trash." if clickable else hint)
         with chip:
             ui.icon("delete_outline", size="11px")
             ui.label(format_bytes(size) if size else str(n)).style(f"{MONO} font-size: 9px;")

@@ -318,19 +318,30 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         else:
             _show("pipeline")
 
+    def _ensure_species_page() -> None:
+        """Build the Species page on its first showing, not with the workspace: it selects its
+        first species and builds that species' Overview, work nobody waits for until they open it.
+        Building registers its callbacks (workbench_select_species, species_select_tab, ...)."""
+        if _refs.get("species_built"):
+            return
+        _refs["species_built"] = True
+        with _refs["workbench_container"]:
+            build_species_page(backend, callbacks)
+
     def _show_workbench():
+        _ensure_species_page()
         _show("workbench")
 
     def _toggle_workbench():
         if "workbench" in _on:
             _hide("workbench")
         else:
-            _show("workbench")
+            _show_workbench()
 
     def _open_species(species_id: str):
         """The 'open in Species' link of a job's Config tab: show the Species page ON
         that species (the view keeps its internal mode name "workbench")."""
-        _show("workbench")
+        _show_workbench()
         select = callbacks.get("workbench_select_species")
         if select:
             select(species_id)
@@ -586,9 +597,8 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
                     toggle_table=toggle_table,
                 )
 
-            workbench_container = _view_frame("workbench")
-            with workbench_container:
-                build_species_page(backend, callbacks)
+            # Species page: built on its first showing (_ensure_species_page).
+            _view_frame("workbench")
 
             # Journey: built lazily on first switch (see _show_journey) so the
             # heavy per-TS render doesn't tax every workspace load. Starts hidden.

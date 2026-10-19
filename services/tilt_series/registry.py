@@ -28,12 +28,37 @@ import socket
 import tempfile
 import time
 from collections.abc import Callable, Iterable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
+
+from pydantic import ValidationError
 
 from services.tilt_series.models import Frame, FrameOutput, TiltSeries, TiltSeriesOutput, Tomogram, TomogramOutput
 
 logger = logging.getLogger(__name__)
+
+# A full load reads this many sidecars at a time: on the shared mount every read is a round
+# trip, and the files do not depend on each other.
+_READ_THREADS = 16
+_dict_path_warned = False
+
+
+def _parse_tilt_series(raw: bytes) -> TiltSeries:
+    """One sidecar's TiltSeries, validated from its JSON text directly, which skips building the
+    intermediate dicts (most of a large project's load time). A file the JSON mode rejects is
+    validated from the parsed dicts instead, so a difference between the two modes costs speed,
+    never a tilt-series; invalid JSON raises from that second attempt."""
+    global _dict_path_warned
+    try:
+        return TiltSeries.model_validate_json(raw)
+    except ValidationError:
+        ts = TiltSeries.model_validate(json.loads(raw))
+        if not _dict_path_warned:
+            _dict_path_warned = True
+            logger.warning("A registry sidecar validated only from parsed dicts (%s); loads run slower", ts.id)
+        return ts
+
 
 # The registry lock (`registry/.lock`) is held for the length of one save, seconds. A lock older
 # than _LOCK_STALE_S was left by a process that died holding it; a waiter gives up after
@@ -322,14 +347,19 @@ class TiltSeriesRegistry:
             )
 
         ts_ids = index.get("tilt_series", [])
+        with ThreadPoolExecutor(max_workers=_READ_THREADS, thread_name_prefix="registry-read") as pool:
+            sidecars = list(pool.map(self._read_sidecar, ts_ids))
         loaded = 0
-        for ts_id in ts_ids:
+        for ts_id, sidecar in zip(ts_ids, sidecars, strict=True):
             ts_path = self._ts_path(ts_id)
-            if not ts_path.exists():
+            if isinstance(sidecar, FileNotFoundError):
                 logger.warning("Registry index references missing TS file: %s", ts_path)
                 continue
             try:
-                self._load_sidecar(ts_id, ts_path, replacing=False)
+                if isinstance(sidecar, OSError):
+                    raise sidecar
+                mtime_ns, raw = sidecar
+                self._load_sidecar(ts_id, ts_path, replacing=False, mtime_ns=mtime_ns, raw=raw)
                 loaded += 1
             except Exception as e:
                 logger.warning("Failed to load TS sidecar %s: %s", ts_path, e)
@@ -474,13 +504,26 @@ class TiltSeriesRegistry:
 
     # ── Internals ──────────────────────────────────────────────────────────
 
-    def _load_sidecar(self, ts_id: str, ts_path: Path, *, replacing: bool, mtime_ns: int | None = None) -> None:
-        """Parse one TS sidecar into the registry and record its mtime. Raises on bad JSON."""
+    def _read_sidecar(self, ts_id: str) -> tuple[int, bytes] | OSError:
+        """(mtime_ns, contents) of one sidecar, or the error reading it, for a pool thread. The
+        mtime comes from the open file: on the shared mount stat() can lag what open() reads."""
+        try:
+            with open(self._ts_path(ts_id), "rb") as f:
+                return os.fstat(f.fileno()).st_mtime_ns, f.read()
+        except OSError as e:
+            # Returned, not raised: load() reports each unreadable sidecar and loads the rest.
+            return e
+
+    def _load_sidecar(
+        self, ts_id: str, ts_path: Path, *, replacing: bool, mtime_ns: int | None = None, raw: bytes | None = None
+    ) -> None:
+        """Parse one TS sidecar into the registry and record its mtime. Raises on bad JSON.
+        `raw` is the file's contents when the caller already read them."""
         if mtime_ns is None:
             mtime_ns = ts_path.stat().st_mtime_ns
-        with open(ts_path) as f:
-            data = json.load(f)
-        ts = TiltSeries.model_validate(data)
+        if raw is None:
+            raw = ts_path.read_bytes()
+        ts = _parse_tilt_series(raw)
         self._tilt_series[ts.id] = ts
         self._reindex_ts(ts, replacing=replacing)
         self._ts_mtime_ns[ts.id] = mtime_ns
