@@ -163,6 +163,9 @@ _VIOLET_TEXT = "#6d28d9"
 _INDIGO_TEXT = "#4a3aa7"
 _MUTED = "#94a3b8"
 _LABEL = "#64748b"
+# A step darker inside the popover: its glass lets the page show through.
+_POP_MUTED = "#475569"
+_POP_LABEL = "#334155"
 
 CONFIDENCE_TIP = "Confidence that this particular tilt should be excluded."
 
@@ -701,12 +704,12 @@ def _popover_html(s: TiltState, m: dict, vals: dict, outliers: set, bands: dict,
     esc = html.escape
     rows = [
         f'<div style="font-weight:600;color:#0f172a;">{_signed(s.angle, 1)}° · tilt {s.number} '
-        f'<span style="{MONO} font-weight:400;color:{_MUTED};">{esc(s.frame_id)}</span></div>'
+        f'<span style="{MONO} font-weight:400;color:{_POP_MUTED};">{esc(s.frame_id)}</span></div>'
     ]
     status = _status_line(s, threshold)
     if status is not None:
         rows.append(f'<div style="color:{status[1]};">{esc(status[0])}</div>')
-    rows.append(f'<div style="color:{_LABEL};">{esc(where_sentence(s))}</div>')
+    rows.append(f'<div style="color:{_POP_LABEL};">{esc(where_sentence(s))}</div>')
     body = []
     for metric in _METRICS:
         value = vals[metric.key]
@@ -717,10 +720,10 @@ def _popover_html(s: TiltState, m: dict, vals: dict, outliers: set, bands: dict,
         value_cls = f' class="cb-to-v-{metric.key}"' if metric.key in outliers else ""
         dark = f"color:{_AMBER_TEXT};font-weight:600;" if metric.key == "exp" and s.is_dark else ""
         body.append(
-            f'<tr><td style="padding:1px 0;color:{_LABEL};white-space:nowrap;">{esc(metric.label)}</td>'
+            f'<tr><td style="padding:1px 0;color:{_POP_LABEL};white-space:nowrap;">{esc(metric.label)}</td>'
             f'<td{value_cls} style="padding:1px 0 1px 10px;{MONO} text-align:right;white-space:nowrap;{dark}">'
             f"{esc(metric.fmt(value))}</td>"
-            f'<td style="padding:1px 0 1px 10px;{MONO} color:{_MUTED};text-align:right;white-space:nowrap;">'
+            f'<td style="padding:1px 0 1px 10px;{MONO} color:{_POP_MUTED};text-align:right;white-space:nowrap;">'
             f"{esc(typical)}</td></tr>"
         )
     if body:
@@ -728,7 +731,7 @@ def _popover_html(s: TiltState, m: dict, vals: dict, outliers: set, bands: dict,
         rows.append(f'<table style="border-collapse:collapse;margin-top:4px;">{head}{"".join(body)}</table>')
     missing = _missing(s, m)
     if missing:
-        rows.append(f'<div style="color:{_MUTED};margin-top:3px;">Not recorded: {esc(", ".join(missing))}.</div>')
+        rows.append(f'<div style="color:{_POP_MUTED};margin-top:3px;">Not recorded: {esc(", ".join(missing))}.</div>')
     return "".join(rows)
 
 
@@ -741,7 +744,7 @@ def _icons_html(s: TiltState, m: dict, vals: dict, outliers: set, bands: dict) -
     output lacks with no verdict against it, an outlier (drawn only while one of its metrics is
     ticked). Each carries its popover: what it means, the value against the cut, the source."""
     esc = html.escape
-    muted = f'<div style="color:{_MUTED};margin-top:3px;">'
+    muted = f'<div style="color:{_POP_MUTED};margin-top:3px;">'
     icons = []
     if s.is_dark:
         icons.append(
@@ -1112,11 +1115,11 @@ _SHOW = (
     ("outliers", "outliers"),
 )
 _GROUPINGS = (("series", "series"), ("position", "position"))
+# Its panel is the app tooltip's glass (`.cb-glass`, ui/dashboard/css.py).
 _POPOVER_STYLE = (
-    "position: fixed; z-index: 6000; display: none; max-width: 400px; background: #ffffff; "
-    "border: 1px solid #e2e8f0; border-radius: 5px; box-shadow: 0 6px 18px rgba(15,23,42,0.16); "
+    "position: fixed; z-index: 6000; display: none; max-width: 400px; "
     "padding: 6px 8px; font-family: 'IBM Plex Sans', sans-serif; font-size: 10px; line-height: 1.45; "
-    "color: #334155; white-space: normal;"
+    "white-space: normal;"
 )
 
 
@@ -1331,7 +1334,7 @@ class TiltGallery:
         self._pos_ui = {}
         self._list = None
         with self.root:
-            ui.element("div").classes("cb-tp-popover").style(_POPOVER_STYLE)
+            ui.element("div").classes("cb-tp-popover cb-glass").style(_POPOVER_STYLE)
             for text, color, spinner in notes:
                 self._note(text, color=color, spinner=spinner)
             if not self.groups:

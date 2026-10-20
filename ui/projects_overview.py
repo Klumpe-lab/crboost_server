@@ -1335,12 +1335,9 @@ class ProjectsOverview:
                     'no-parent-event no-focus no-refocus anchor="bottom left" self="top left" '
                     ':offset="[-8, 8]" transition-show="fade" transition-hide="fade" :transition-duration="80"'
                 )
-                .classes("cb-proj-card")
+                .classes("cb-proj-card cb-glass")
                 # Visible overflow: the caret sits outside the card's box.
-                .style(
-                    f"background: white; border: 1px solid {CLR_BORDER}; border-radius: 6px; "
-                    "box-shadow: 0 8px 24px rgba(15,23,42,0.16); overflow: visible; max-height: none;"
-                )
+                .style("overflow: visible; max-height: none;")
             )
         menu.on_value_change(self._on_preview_toggle)
 
@@ -1398,17 +1395,17 @@ class ProjectsOverview:
         says so."""
         facts = proj.get("card") or {}
         grid = "display: grid; grid-template-columns: 64px minmax(0, 1fr); column-gap: 8px; row-gap: 2px;"
-        key_style = f"{FONT} font-size: 9px; color: {CLR_SUBLABEL};"
+        key_style = f"{FONT} font-size: 9px; color: {CLR_LABEL};"
         head_style = (
-            f"{FONT} font-size: 9px; font-weight: 600; color: {CLR_SUBLABEL}; letter-spacing: 0.06em; "
+            f"{FONT} font-size: 9px; font-weight: 600; color: {CLR_LABEL}; letter-spacing: 0.06em; "
             "text-transform: uppercase; margin: 8px 0 3px;"
         )
 
         def value(text: str | None, *, path: bool = False) -> None:
             if not text:
-                ui.label("not recorded").style(f"{FONT} font-size: 9px; color: {CLR_GHOST}; font-style: italic;")
+                ui.label("not recorded").style(f"{FONT} font-size: 9px; color: {CLR_META}; font-style: italic;")
                 return
-            label = ui.label(text).style(f"{MONO} font-size: 9px; color: {CLR_LABEL}; word-break: break-all;")
+            label = ui.label(text).style(f"{MONO} font-size: 9px; color: {CLR_HEADING}; word-break: break-all;")
             if path:
                 copy_on_click(label, text)
 
@@ -1424,10 +1421,10 @@ class ProjectsOverview:
 
         with ui.element("div").style("width: 600px; flex-shrink: 0; min-width: 0;"):
             if proj.get("mnemonic"):
-                ui.label(proj["mnemonic"]).style(f"{MONO} font-size: 10px; color: {CLR_LABEL};")
+                ui.label(proj["mnemonic"]).style(f"{MONO} font-size: 10px; color: {CLR_HEADING};")
             if proj.get("protocol"):
                 ui.label(f"created from the {proj['protocol']} protocol").style(
-                    f"{FONT} font-size: 9px; color: {CLR_SUBLABEL};"
+                    f"{FONT} font-size: 9px; color: {CLR_LABEL};"
                 )
             section(
                 "Paths · click to copy",
@@ -1550,7 +1547,7 @@ class ProjectsOverview:
                 ui.label(value).classes("cb-params-v").style(f"color: {colour};" if colour else "")
             if log is not None:
                 ui.label("from the job's run.out; the time left assumes the current pace").style(
-                    f"grid-column: 1 / -1; margin-top: 3px; font-size: 9px; color: {CLR_SUBLABEL};"
+                    f"grid-column: 1 / -1; margin-top: 3px; font-size: 9px; color: {CLR_LABEL};"
                 )
 
     @staticmethod
@@ -1617,7 +1614,7 @@ class ProjectsOverview:
             biggest = " · ".join(f"{lbl} {format_bytes(b)}" for lbl, b in top[:3] if b >= n / 100)
             rows.append(
                 f"<span>{html.escape(title)}</span><span style='text-align: right;'>{format_bytes(n)}</span>"
-                f"<span style='opacity: 0.75;'>{html.escape(biggest)}</span>"
+                f"<span style='color: #475569;'>{html.escape(biggest)}</span>"
             )
         body = (
             f"<div>{format_bytes(total)} on disk · measured {measured}</div>"
