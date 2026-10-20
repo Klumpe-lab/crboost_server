@@ -331,7 +331,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
             ui.element("div").classes("cb-view-splitter")
             ui.icon("close", size="12px").classes("cb-view-close").style(_VIEW_CLOSE_STYLE).on(
                 "click", lambda _e: _hide(name)
-            ).tooltip("Close this view")
+            )
         _refs[f"{name}_container"] = body
         return body
 

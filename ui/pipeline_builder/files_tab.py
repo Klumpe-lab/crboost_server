@@ -213,8 +213,8 @@ def render_files_tab(job_type: JobType, job_model, ui_mgr: UIStateManager):
             zoom_box.style("transform: scale(1); transition: transform 0.2s;")
 
         with ui.row().classes("w-full justify-center gap-1 p-2 bg-white border-b border-gray-200"):
-            ui.button(icon="zoom_in", on_click=zoom_in).props("flat dense round size=sm").tooltip("Zoom In")
-            ui.button(icon="zoom_out", on_click=zoom_out).props("flat dense round size=sm").tooltip("Zoom Out")
+            ui.button(icon="zoom_in", on_click=zoom_in).props("flat dense round size=sm")
+            ui.button(icon="zoom_out", on_click=zoom_out).props("flat dense round size=sm")
             ui.button(icon="center_focus_strong", on_click=reset_zoom).props("flat dense round size=sm").tooltip(
                 "Reset"
             )

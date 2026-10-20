@@ -118,8 +118,8 @@ _CB_CSS = """
 .cb-params-icon { color: #cbd5e1; cursor: help; font-size: 13px !important; }
 .cb-params-icon:hover { color: #475569; }
 .cb-params-tt {
-    background: #ffffff !important; color: #334155 !important; border: 1px solid #e2e8f0;
-    border-radius: 6px; padding: 6px 9px; box-shadow: 0 6px 20px rgba(15, 23, 42, 0.14);
+    /* The panel itself is the app tooltip's (below); this only lays out the key/value grid. */
+    padding: 6px 9px;
     display: grid; grid-template-columns: max-content max-content; gap: 2px 12px;
     font-family: 'IBM Plex Sans', sans-serif; font-size: 10px;
 }
@@ -418,13 +418,10 @@ _CB_CSS = """
  * counts, sub-labels) — one slate tone + size instead of ad-hoc inline font
  * styles, so the list header / provenance / status rows read as one block. */
 .cb-detail-meta { font-size: 10px; color: #94a3b8; line-height: 1.2; }
-/* Rich pytom-chip info tooltip: a light card (overrides Quasar's dark default)
+/* Rich pytom-chip info tooltip, on the app tooltip's pane (its look lives in the shared rule)
  * with an auto-pick-stats section + a template-match section. */
 .cb-chip-tooltip {
-    background: #ffffff !important; color: #334155 !important; border: 1px solid #e2e8f0;
-    border-radius: 8px; padding: 8px 10px; max-width: 280px;
-    box-shadow: 0 6px 20px rgba(15, 23, 42, 0.16); font-family: 'IBM Plex Sans', sans-serif; font-size: 10px;
-    line-height: 1.45;
+    padding: 8px 10px; max-width: 280px; line-height: 1.45;
 }
 .cb-tt-head { font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: #64748b; }
 .cb-tt-line { font-family: 'IBM Plex Mono', monospace; color: #334155; }
@@ -1060,14 +1057,12 @@ _CB_CSS = """
 }
 .cb-proj-card[data-side="above"]::before { top: auto; bottom: -5px; transform: translateX(-50%) rotate(225deg); }
 /* Every tooltip in the app, Quasar's and the native `title` ones (drawn by _TITLE_TIP_JS as
- * .cb-title-tip), in the gallery zoom's composition: a near-white panel with slate text inside a
- * translucent slate frame (the zoom's rgba(51,65,85,.55) ring) and its soft drop shadow. Never wider
- * than about a path and a half; long paths wrap. A Quasar tooltip that sets its own max-width
- * inline keeps it. */
+ * .cb-title-tip): one barely-gray glass pane, a hairline slate outline, the blur behind it keeping
+ * the slate text legible over whatever it covers. Never wider than about a path and a half; long
+ * paths wrap. A Quasar tooltip that sets its own max-width inline keeps it. */
 .q-tooltip.q-tooltip--style, .cb-title-tip {
-    background: rgba(255, 255, 255, 0.94); backdrop-filter: blur(3px); color: #1e293b;
-    border-radius: 5px;
-    box-shadow: 0 0 0 3px rgba(51, 65, 85, 0.55), 0 10px 30px rgba(15, 23, 42, 0.35);
+    background: rgba(241, 245, 249, 0.6); backdrop-filter: blur(8px); color: #1e293b;
+    border: 1px solid rgba(100, 116, 139, 0.35); border-radius: 5px; box-shadow: none;
     font-family: 'IBM Plex Sans', sans-serif; font-size: 10px;
     max-width: min(120ch, 92vw); overflow-wrap: anywhere; line-height: 1.4;
 }

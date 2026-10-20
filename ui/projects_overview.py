@@ -1383,17 +1383,13 @@ class ProjectsOverview:
             with ui.element("div").style("display: flex; align-items: center; gap: 2px; margin-top: 6px;"):
                 nav = "flat dense round size=sm"
                 if len(pngs) > 1:
-                    ui.button(icon="chevron_left", on_click=lambda: step(-1)).props(nav).style(
-                        f"color: {CLR_LABEL};"
-                    ).tooltip("Previous tomogram")
+                    ui.button(icon="chevron_left", on_click=lambda: step(-1)).props(nav).style(f"color: {CLR_LABEL};")
                 caption_label = ui.label(caption(0)).style(
                     f"{MONO} font-size: 10px; color: {CLR_HEADING}; flex: 1 1 0; min-width: 0; "
                     "text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
                 )
                 if len(pngs) > 1:
-                    ui.button(icon="chevron_right", on_click=lambda: step(1)).props(nav).style(
-                        f"color: {CLR_LABEL};"
-                    ).tooltip("Next tomogram")
+                    ui.button(icon="chevron_right", on_click=lambda: step(1)).props(nav).style(f"color: {CLR_LABEL};")
 
     @staticmethod
     def _render_card_facts(proj: dict) -> None:
