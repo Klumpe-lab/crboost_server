@@ -1476,25 +1476,15 @@ class ProjectsOverview:
     @staticmethod
     def _render_live_progress(proj: dict):
         """A live run at a glance (backend._live_progress): the job at work, its tilt-series
-        done out of those in scope, and a red dot when the run has failed some, since each is
-        dropped from every job after it. Live projects only; the hover breaks it down."""
+        done out of those in scope (or, without per-TS counts, how far its run.out says it is),
+        and a red dot when the run has failed some, since each is dropped from every job after
+        it. Live projects only; the hover lays it out as a small key/value card."""
         lp = proj.get("live_progress")
         if not lp or proj.get("live_status") not in ("running", "queued"):
             return
-        if lp["state"] == "queued":
-            lines = [f"{lp['stage']}: queued on the cluster"]
-        elif lp["total"]:
-            lines = [f"{lp['stage']}: {lp['ok']} of {lp['total']} tilt-series done, {lp['running']} running"]
-        else:
-            lines = [f"{lp['stage']}: running"]
-        if lp["failed_by_stage"]:
-            lines.append("Failed so far: " + ", ".join(f"{stage} {n}" for stage, n in lp["failed_by_stage"]))
-        n_tomos = (proj.get("tomo_preview") or {}).get("n_tomos")
-        if n_tomos:
-            lines.append(f"{n_tomos} tomograms reconstructed")
+        log = lp.get("log")  # services/log_progress.py, for a job without per-TS counts
         cell = f"{MONO} font-size: 9px; white-space: nowrap; flex-shrink: 0;"
-        box = ui.element("div").style("display: flex; align-items: baseline; gap: 5px; min-width: 0;")
-        with _set_title(box, "\n".join(lines)):
+        with ui.element("div").style("display: flex; align-items: baseline; gap: 5px; min-width: 0;"):
             ui.label(lp["stage"]).style(
                 f"{FONT} font-size: 9px; font-weight: 600; color: {CLR_RUNNING}; white-space: nowrap; "
                 "overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto;"
@@ -1503,11 +1493,64 @@ class ProjectsOverview:
                 ui.label("queued").style(f"{cell} color: {CLR_SUBLABEL};")
             elif lp["total"]:
                 ui.label(f"{lp['ok']}/{lp['total']}").style(f"{cell} color: {CLR_LABEL};")
+            elif log is not None:
+                # Amber once run.out has gone quiet: a hung tool looks like a running one otherwise.
+                ui.label(log.short).style(f"{cell} color: {CLR_REVIEW if log.quiet_min else CLR_LABEL};")
             if lp["failed"]:
                 # A superscript dot, the count in the hover.
                 ui.element("div").style(
                     f"width: 5px; height: 5px; border-radius: 50%; background: {CLR_FAILED}; "
                     "align-self: flex-start; margin: 1px 0 0 -3px; flex-shrink: 0;"
+                )
+            ProjectsOverview._live_progress_card(proj, lp, log)
+
+    @staticmethod
+    def _live_progress_card(proj: dict, lp: dict, log) -> None:
+        """The Running cell's hover: job · where it is · overall bar · time left · warnings, as the
+        key/value grid of the app's parameter tooltips (`.cb-params-tt`, ui/dashboard/css.py)."""
+        rows: list[tuple[str, str, str | None]] = []  # (key, value, colour)
+        fraction = None
+        if lp["state"] == "queued":
+            rows.append(("state", "queued on the cluster", None))
+        elif lp["total"]:
+            rows.append(("tilt-series", f"{lp['ok']} of {lp['total']} done · {lp['running']} running", None))
+            fraction = lp["ok"] / lp["total"]
+        elif log is not None:
+            rows.append(("at", log.stage, None))
+            fraction = log.fraction
+        else:
+            rows.append(("state", "running", None))
+        if log is not None and log.eta:
+            rows.append(("left", f"≈ {log.eta}", None))
+        if log is not None and log.quiet_min is not None:
+            rows.append(("log", f"no output for {log.quiet_min} min", CLR_REVIEW))
+        if lp["failed_by_stage"]:
+            failed = " · ".join(f"{stage} {n}" for stage, n in lp["failed_by_stage"])
+            rows.append(("failed TS", failed, CLR_FAILED))
+        n_tomos = (proj.get("tomo_preview") or {}).get("n_tomos")
+        if n_tomos:
+            rows.append(("tomograms", f"{n_tomos} reconstructed", None))
+        with ui.tooltip().classes("cb-params-tt"):
+            ui.label("job").classes("cb-params-k")
+            ui.label(lp["stage"]).classes("cb-params-v").style(f"{FONT} font-weight: 600; color: {CLR_RUNNING};")
+            for key, value, colour in rows[:1]:
+                ui.label(key).classes("cb-params-k")
+                ui.label(value).classes("cb-params-v").style(f"color: {colour};" if colour else "")
+            if fraction is not None:
+                pct = round(fraction * 100)
+                ui.label("overall").classes("cb-params-k")
+                with ui.element("div").style("display: flex; align-items: center; gap: 6px;"):
+                    with ui.element("div").style(
+                        f"width: 90px; height: 4px; border-radius: 2px; background: {CLR_BORDER}; overflow: hidden;"
+                    ):
+                        ui.element("div").style(f"width: {pct}%; height: 100%; background: {CLR_RUNNING};")
+                    ui.label(f"{pct}%").classes("cb-params-v")
+            for key, value, colour in rows[1:]:
+                ui.label(key).classes("cb-params-k")
+                ui.label(value).classes("cb-params-v").style(f"color: {colour};" if colour else "")
+            if log is not None:
+                ui.label("from the job's run.out; the time left assumes the current pace").style(
+                    f"grid-column: 1 / -1; margin-top: 3px; font-size: 9px; color: {CLR_SUBLABEL};"
                 )
 
     @staticmethod

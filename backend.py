@@ -21,6 +21,7 @@ from services.computing.container_service import get_container_service
 from services.scheduling_and_orchestration.pipeline_runner import PipelineRunnerService
 from services.scheduling_and_orchestration.pipeline_monitor import PipelineMonitor
 from services.array_tasks import manifest_items, progress as task_progress
+from services.log_progress import read as read_log_progress
 from services.jobs.spec import PIPELINE_ORDER, display_name, driver_invocation
 from services.jobs.tilt_filter import FilterMode
 from services.models_base import JobStatus, JobType
@@ -146,7 +147,7 @@ def _live_progress(project_dir: Path, jobs: dict[str, Any]) -> dict[str, Any] | 
     Per-TS facts come from each job's `.task_manifest.json` + `.task_status/` markers
     (services.array_tasks), read only for live projects. A failed TS is dropped from
     everything downstream, so the per-job fail counts add up to the TS the run has lost."""
-    current: tuple | None = None  # (queued?, job number, label, state, job_dir)
+    current: tuple | None = None  # (queued?, job number, label, state, job_dir, job type)
     failed: list[tuple[int, str, int]] = []  # (job number, label, failed TS)
     counts_by_dir: dict[Path, Any] = {}
     for iid, job in jobs.items():
@@ -170,7 +171,7 @@ def _live_progress(project_dir: Path, jobs: dict[str, Any]) -> dict[str, Any] | 
         m = _JOB_NUMBER.search(rel)
         number = int(m.group(1)) if m else 0
         if status in ("Running", "Queued") and (current is None or (status == "Queued", number) < current[:2]):
-            current = (status == "Queued", number, label, status.lower(), job_dir)
+            current = (status == "Queued", number, label, status.lower(), job_dir, job.get("job_type"))
         # Queued / Scheduled jobs have not run in this run; their markers are an earlier attempt's.
         if status not in ("Succeeded", "Running", "Failed"):
             continue
@@ -190,12 +191,16 @@ def _live_progress(project_dir: Path, jobs: dict[str, Any]) -> dict[str, Any] | 
         "running": None,
         "failed": sum(n for _, _, n in failed),
         "failed_by_stage": [(label, n) for _, label, n in sorted(failed)],
+        "log": None,
     }
     counts = counts_by_dir.get(current[4])
     if current[3] == "running" and counts is not None:
         out["ok"] = counts.n_ok
         out["total"] = counts.total - counts.n_skip
         out["running"] = counts.n_running
+    elif current[3] == "running":
+        # No per-TS counts (not an array job): how far its tool says it is (services/log_progress.py).
+        out["log"] = read_log_progress(current[5], current[4])
     return out
 
 

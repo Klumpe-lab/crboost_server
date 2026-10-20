@@ -25,6 +25,7 @@ from ui.pipeline_builder.io_tab import render_io_tab
 from ui.pipeline_builder.slurm_tab import render_slurm_tab
 from ui.pipeline_builder.logs_tab import render_logs_tab
 from ui.pipeline_builder.files_tab import render_files_tab
+from ui.pipeline_builder.log_progress_chip import render_log_progress_chip
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +190,8 @@ def render_job_tab(
                 icon="content_copy",
                 on_click=lambda p=full_path: ui.run_javascript(f"navigator.clipboard.writeText({p!r})"),
             ).props("flat dense round size=xs").classes("text-gray-400 hover:text-gray-600").tooltip("Copy path")
+
+        render_log_progress_chip(job_type, instance_id, ui_mgr)
 
         ui.space()
 
