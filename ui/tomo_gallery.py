@@ -805,7 +805,6 @@ class TomoGalleryPage:
         if row["aspect"]:
             frame.style(f"aspect-ratio: {row['aspect'][0]}/{row['aspect'][1]};")
         frame.on("click", lambda _e, r=row: self._zoom(r))
-        frame.tooltip("Click to zoom")
         with frame:
             # `display: contents`: a box of its own would come between the frame and the image.
             picture = ui.element("div").style("display: contents;")
