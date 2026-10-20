@@ -1057,12 +1057,12 @@ _CB_CSS = """
 }
 .cb-proj-card[data-side="above"]::before { top: auto; bottom: -5px; transform: translateX(-50%) rotate(225deg); }
 /* Every tooltip in the app, Quasar's and the native `title` ones (drawn by _TITLE_TIP_JS as
- * .cb-title-tip): one barely-gray glass pane, a hairline slate outline, the blur behind it keeping
- * the slate text legible over whatever it covers. Never wider than about a path and a half; long
+ * .cb-title-tip): see-through, the faintest neutral gray tint and a hairline outline; a touch of blur
+ * so the text separates from what it covers. Never wider than about a path and a half; long
  * paths wrap. A Quasar tooltip that sets its own max-width inline keeps it. */
 .q-tooltip.q-tooltip--style, .cb-title-tip {
-    background: rgba(241, 245, 249, 0.6); backdrop-filter: blur(8px); color: #1e293b;
-    border: 1px solid rgba(100, 116, 139, 0.35); border-radius: 5px; box-shadow: none;
+    background: rgba(120, 120, 120, 0.12); backdrop-filter: blur(1.5px); color: #111827;
+    border: 1px solid rgba(75, 85, 99, 0.4); border-radius: 5px; box-shadow: none;
     font-family: 'IBM Plex Sans', sans-serif; font-size: 10px;
     max-width: min(120ch, 92vw); overflow-wrap: anywhere; line-height: 1.4;
 }
