@@ -42,8 +42,8 @@ logger = logging.getLogger(__name__)
 # SPECIES_OVERLAY_COLORS (imported above) indexes per-species overlay colors for
 # the shared tomogram canvas, so a species keeps its color across re-renders and
 # matches its checkbox. Maximally-saturated hues that are absent from a greyscale
-# tomogram (no mid-grays) so the dots pop; the .cb-pick-ghost dual halo (dark +
-# light ring) keeps them legible on both the bright and dark ends of the backdrop.
+# tomogram (no mid-grays) so the dots pop; the .cb-pick-ghost hairline white edge
+# keeps them legible on the dark end of the backdrop.
 
 # Overlay glyph per pick-list type. Color (per list) is the primary
 # distinguisher; the glyph is secondary reinforcement so several lists over one

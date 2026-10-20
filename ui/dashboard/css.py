@@ -778,12 +778,11 @@ _CB_CSS = """
 .cb-pick-ghost {
     pointer-events: auto !important;
     cursor: pointer;
-    width: 4px !important; height: 4px !important;
+    width: 3px !important; height: 3px !important;
     background: var(--sp-color, #00e5ff) !important;
-    /* Crisp dual ring: solid dark inner + bright white outer. At this tiny
-     * size the high-contrast double ring is what makes the dot legible on
-     * any tomogram backdrop — not the dot area itself. */
-    box-shadow: 0 0 0 1px rgba(0,0,0,1), 0 0 0 2px rgba(255,255,255,0.9) !important;
+    /* The tomogram gallery's dot (ui/tomo_gallery.py _dots_svg): species color with a hairline
+     * white edge, so the picks mark the slab without hiding what they sit on. */
+    box-shadow: 0 0 0 0.5px rgba(255,255,255,0.8) !important;
     transition: box-shadow 0.1s ease, width 0.1s ease, height 0.1s ease, filter 0.1s ease;
 }
 /* Invisible hit-area so the tiny dot is easy to hover AND click (click toggles
@@ -817,17 +816,17 @@ _CB_CSS = """
 }
 /* Per-list glyph (set on the layer via .cb-shape-*, cascades to its dots).
  * Color stays the primary distinguisher; shape is secondary reinforcement.
- * Dots are 3px and lean on the dual ring for legibility, so shapes stay
+ * Dots are 3px with a hairline edge, so shapes stay
  * simple (triangle trades the ring for a filled glyph — used only by merged). */
 .cb-shape-circle .cb-pick-ghost { border-radius: 50%; }
 .cb-shape-square .cb-pick-ghost { border-radius: 0; }
 .cb-shape-diamond .cb-pick-ghost { border-radius: 0; transform: translate(-50%, -50%) rotate(45deg); }
-/* Triangle (merged lists): clip-path clips box-shadow, so the dual ring above
- * is invisible. Give it more area and a drop-shadow outline instead (filter follows
+/* Triangle (merged lists): clip-path clips box-shadow, so the hairline
+ * edge is invisible. Give it a little more area and a drop-shadow outline (filter follows
  * the clipped shape), so a merged pick reads on the slab. */
 .cb-shape-triangle .cb-pick-ghost {
     border-radius: 0; clip-path: polygon(50% 0, 0 100%, 100% 100%);
-    width: 9px !important; height: 9px !important;
+    width: 5px !important; height: 5px !important;
     box-shadow: none !important;
     filter: drop-shadow(0 0 0.5px rgba(0,0,0,0.95)) drop-shadow(0 0 1.2px rgba(255,255,255,0.9));
 }
