@@ -125,15 +125,13 @@ _MUTED = "#94a3b8"
 # Secondary text (status words, notes, tags) is one size everywhere.
 _SMALL = f"{FONT} font-size: 9px;"
 _DOT = "width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;"
-_TIP_PANEL_STYLE = (
-    "background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 8px 10px; "
-    "max-width: 380px; box-shadow: 0 8px 24px rgba(0,0,0,0.28);"
-)
-_TIP_TITLE = f"{FONT} font-size: 11px; font-weight: 700; color: #f8fafc;"
-_TIP_LEAD = f"{FONT} font-size: 10px; color: #cbd5e1; margin-top: 1px;"
-_TIP_KEY = f"{FONT} font-size: 10px; font-weight: 600; color: #e2e8f0;"
-_TIP_DESC = f"{FONT} font-size: 10px; color: #94a3b8; line-height: 1.35;"
-_TIP_PATH = f"{MONO} font-size: 10px; color: #cbd5e1; word-break: break-all; white-space: normal;"
+# The app tooltip's panel and frame come from ui/dashboard/css.py; only the room is set here.
+_TIP_PANEL_STYLE = "padding: 8px 10px; max-width: 380px;"
+_TIP_TITLE = f"{FONT} font-size: 11px; font-weight: 700; color: #0f172a;"
+_TIP_LEAD = f"{FONT} font-size: 10px; color: #475569; margin-top: 1px;"
+_TIP_KEY = f"{FONT} font-size: 10px; font-weight: 600; color: #1e293b;"
+_TIP_DESC = f"{FONT} font-size: 10px; color: #64748b; line-height: 1.35;"
+_TIP_PATH = f"{MONO} font-size: 10px; color: #475569; word-break: break-all; white-space: normal;"
 
 
 def _safe_int(x) -> int | None:
