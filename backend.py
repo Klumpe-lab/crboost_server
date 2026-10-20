@@ -1589,16 +1589,6 @@ class CryoBoostBackend:
         get_disk_usage_service().request([p["path"] for p in projects if p["disk_usage_stale"]])
         return projects
 
-    async def read_project_state_detached(self, project_path: str):
-        """Load a project's ProjectState from disk for read-only preview WITHOUT
-        registering it in the shared in-memory registry (so the central pipeline
-        observer / sync never picks up a merely-previewed project). Used by the
-        project hub's left-hand params panel."""
-        from services.project_state import ProjectState
-
-        params_file = Path(project_path) / "project_params.json"
-        return await asyncio.to_thread(ProjectState.load, params_file)
-
     def _scan_for_projects_sync(self, base_path: str) -> list[dict[str, Any]]:
         projects = []
         path = Path(base_path)
@@ -1651,6 +1641,9 @@ class CryoBoostBackend:
                     n_picks = 0
                     n_pick_lists = 0
                     protocol = ""
+                    # What only the roster's hover card shows: the globs, and the acquisition and
+                    # import facts the row has no column for. As recorded.
+                    card: dict[str, Any] = {}
                     try:
                         with open(params_file) as f:
                             data = json.load(f)
@@ -1697,6 +1690,17 @@ class CryoBoostBackend:
                             mg = data.get("movies_glob") or ""
                             if mg:
                                 source_directory = str(Path(mg).parent) if "*" in mg else mg
+                        card = {
+                            "movies_glob": data.get("movies_glob") or "",
+                            "mdocs_glob": data.get("mdocs_glob") or "",
+                            "cs_mm": microscope.get("spherical_aberration_mm"),
+                            "amp_contrast": microscope.get("amplitude_contrast"),
+                            "tilt_axis_deg": acquisition.get("tilt_axis_degrees"),
+                            "frame_extension": data.get("import_frame_extension") or "",
+                            "source_kind": data.get("import_source_kind") or "",
+                            "ts_selected": data.get("import_selected_tilt_series") or 0,
+                            "ts_total": data.get("import_total_tilt_series") or 0,
+                        }
                     except Exception as e:
                         logger.warning("Unreadable project_params.json for %s -- using fallbacks: %s", item.name, e)
 
@@ -1790,6 +1794,7 @@ class CryoBoostBackend:
                             "n_picks": n_picks,
                             "n_pick_lists": n_pick_lists,
                             "protocol": protocol,
+                            "card": card,
                             **derived,
                         }
                     )

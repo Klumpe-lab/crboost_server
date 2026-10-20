@@ -33,7 +33,6 @@ from ui.pipeline_builder.pipeline_constants import (
     SB_ABG,
     SB_SEP,
     missing_deps,
-    fmt,
 )
 from ui.pipeline_builder.tilt_filter_row import render_tilt_filter_controls, render_tilt_filter_status
 
@@ -58,11 +57,6 @@ _NAME_COL_CH = max(len(get_job_display_name(jt)) for jobs in PHASE_JOBS.values()
 # What nests under a job row (the per-TS list, the filter's settings) indents to its name column.
 _NEST_INDENT = 18
 _SPECIES_GLYPH = "#94a3b8"
-
-
-def _ts_cell(text: str, color: str, extra: str = ""):
-    """Tiny monospace cell for the tilt-series table in the metadata popup."""
-    ui.label(text).style(f"font-size: 9px; font-family: 'IBM Plex Mono', monospace; color: {color}; {extra}")
 
 
 # The Journey nav glyph (three ascending bars) lives in static/icons/journey.svg since
@@ -1155,467 +1149,45 @@ class RosterWidget(FingerprintedView):
             )
         return avatar
 
-    def _render_project_params(self, state, tomo_counts=None) -> None:
-        """Render a project's parameter sections (Project / Acquisition /
-        Dataset) into the current container. Used by the left pane of the
-        project hub; works for any loaded-or-detached ProjectState. SLURM
-        defaults intentionally NOT shown here — they live in the landing-page
-        settings editor now.
-
-        ``tomo_counts`` is a ``services.project_counts.TomogramCounts`` read off the event
-        loop by the caller — the same number the rail badge shows, so the pane and the
-        badge cannot disagree. Omitted (None) means "not counted", which renders as no
-        Tomograms row rather than as zero."""
-        if state is None:
-            with ui.element("div").style("padding: 40px 16px; text-align: center;"):
-                ui.icon("touch_app", size="22px").style("color: #cbd5e1;")
-                ui.label("Select a project to preview its parameters").style(
-                    f"{FONT} font-size: 11px; color: #94a3b8; margin-top: 6px;"
-                )
-            return
-
-        ts_sel = state.import_selected_tilt_series or 0
-        ts_tot = state.import_total_tilt_series or 0
-        if ts_tot:
-            ts_display = f"{ts_sel} of {ts_tot} selected"
-        elif ts_sel:
-            ts_display = str(ts_sel)
-        else:
-            ts_display = "---"
-        self._render_overview_section(
-            "Project",
-            [
-                ("Name", state.project_name),
-                ("Root", str(state.project_path) if state.project_path else "---"),
-                ("Movies", state.movies_glob or "---"),
-                ("MDOC", state.mdocs_glob or "---"),
-                ("Tilt-series", ts_display),
-            ],
-        )
-        self._render_overview_section(
-            "Acquisition",
-            [
-                ("Pixel", f"{fmt(state.microscope.pixel_size_angstrom)} Å"),
-                ("Voltage", f"{fmt(state.microscope.acceleration_voltage_kv)} kV"),
-                ("Cs", f"{fmt(state.microscope.spherical_aberration_mm)} mm"),
-                ("Amp. C.", fmt(state.microscope.amplitude_contrast)),
-                ("Dose", f"{fmt(state.acquisition.dose_per_tilt)} e⁻/Å²"),
-                ("Tilt ax.", f"{fmt(state.acquisition.tilt_axis_degrees)} °"),
-            ],
-        )
-
-        # Dataset. Rendered whenever there is ANYTHING to say — a particle-only project
-        # has no frames and no tilt-series but can have imported tomograms, and gating the
-        # whole section on the frame import is what made those projects read as empty.
-        ds_rows: list[tuple] = []
-        if tomo_counts is not None and tomo_counts.total:
-            split = " · ".join(
-                p
-                for p in (
-                    f"{tomo_counts.reconstructed} reconstructed" if tomo_counts.reconstructed else "",
-                    f"{tomo_counts.imported} imported" if tomo_counts.imported else "",
-                )
-                if p
-            )
-            ds_rows.append(("Tomograms", f"{tomo_counts.total}  ({split})" if split else str(tomo_counts.total)))
-            if tomo_counts.missing:
-                # Stated, never folded into the count — the star describes a volume that
-                # is not where it says it is, and that is the user's decision to make.
-                ds_rows.append(("Not on disk", str(tomo_counts.missing), "#b45309"))
-        if state.import_source_directory:
-            ds_rows.append(("Source", state.import_source_directory))
-        if state.import_frame_extension:
-            ds_rows.append(("Format", state.import_frame_extension))
-        # Which delivery layer Create imported, and a dose that is not the mdocs' own
-        # fact (estimated from DoseRate, or typed) says so — stated, not folded.
-        if state.import_source_kind == "stacks":
-            ds_rows.append(("Source layer", "SerialEM stacks (split)"))
-        elif state.import_source_kind == "movies":
-            ds_rows.append(("Source layer", "movies"))
-        dose_source = state.acquisition.dose_per_tilt_source
-        if dose_source == "estimated":
-            ds_rows.append(("Dose/tilt", f"{state.acquisition.dose_per_tilt:g} (estimated)", "#b45309"))
-        elif dose_source == "user":
-            ds_rows.append(("Dose/tilt", f"{state.acquisition.dose_per_tilt:g} (user)"))
-        if ds_rows or state.import_total_positions or state.import_total_tilt_series:
-            self._render_overview_section("Dataset", ds_rows)
-            self._render_dataset_ts_expansion(state)
-
-        ui.element("div").style("height: 10px;")
-
-    # ── Overview helpers (denser layout, no nested scroll) ────────────────────
-
-    def _overview_section_header(self, title: str) -> None:
-        """Category head. Whitespace above it is the separation — no banded background and
-        no rules: with a hairline under every row as well, the pane read as a stack of
-        boxes with the values pushed to the far margin."""
-        ui.element("div").style("height: 14px;")
-        ui.label(title).style(
-            f"{FONT} padding: 0 12px 4px; font-size: 9px; font-weight: 700; "
-            "color: #94a3b8; letter-spacing: 0.09em; text-transform: uppercase;"
-        )
-
-    # Label column of the parameter table. Wide enough for "Tilt-series" without
-    # hyphenating it, and the same on every section so the three tables read as one.
-    _PARAM_LABEL_W = 72
-
-    def _render_overview_section(self, title: str, rows: list) -> None:
-        """Label · value pairs on one grid. The label column is fixed, so values line up
-        and sit NEXT to what names them instead of across a gulf from it.
-        A row may carry a third element: an explicit value colour (warnings).
-
-        Values are 9 px mono — one notch under the labels — because half of them are
-        absolute paths and globs, and at 10 px in a 380 px pane those wrapped to three
-        lines each. Any value that reads as an absolute path also gets the app's copy
-        button (`ui/components/copyable.py`), since a wrapped path is exactly what you
-        cannot hand-select."""
-        from ui.components.copyable import copy_button
-
-        self._overview_section_header(title)
-        for row in rows:
-            row_lbl, row_val = row[0], row[1]
-            color = row[2] if len(row) > 2 else "#1e40af"
-            text = str(row_val)
-            is_path = text.startswith("/")
-            with ui.element("div").style(
-                f"display: grid; grid-template-columns: {self._PARAM_LABEL_W}px minmax(0, 1fr); "
-                "align-items: baseline; padding: 1px 12px; gap: 8px;"
-            ):
-                ui.label(row_lbl).style(f"{FONT} font-size: 10px; color: #94a3b8;")
-                if is_path:
-                    with ui.element("div").style("display: flex; align-items: baseline; gap: 3px; min-width: 0;"):
-                        ui.label(text).style(
-                            f"{MONO} font-size: 9px; color: {color}; word-break: break-all; "
-                            "flex: 1 1 0; min-width: 0; line-height: 1.4;"
-                        )
-                        copy_button(text, tooltip=f"Copy\n{text}", color="#cbd5e1")
-                else:
-                    ui.label(text).style(f"{MONO} font-size: 9px; color: {color}; word-break: break-all;")
-
-    def _render_dataset_ts_expansion(self, state) -> None:
-        """Collapsible per-tilt-series table living on the Dataset row.
-
-        The header's counts come from the project state; the rows from the TiltSeriesRegistry,
-        read the first time the row opens. Parsing a registry is seconds of work on a large
-        project, and the hub previews projects this server has not loaded.
-        """
-        sel = state.import_selected_tilt_series
-        tot = state.import_total_tilt_series
-        if not tot or state.project_path is None:
-            return
-        project_path = Path(state.project_path)
-        header_text = f"{sel} of {tot} tilt-series"
-
-        exp = ui.expansion().props("dense header-class=q-px-none").style("width: 100%; background: transparent;")
-
-        with exp.add_slot("header"):
-            # Same label column as _render_overview_section — this IS one of its rows, it
-            # just happens to open.
-            with ui.element("div").style(
-                f"display: grid; grid-template-columns: {self._PARAM_LABEL_W}px minmax(0, 1fr); "
-                "align-items: baseline; padding: 1px 12px; gap: 8px; width: 100%;"
-            ):
-                ui.label("Selected").style(f"{FONT} font-size: 10px; color: #94a3b8;")
-                ui.label(header_text).style(f"{MONO} font-size: 9px; color: #1e40af;")
-
-        async def _fill(e) -> None:
-            if not e.value or exp.default_slot.children:
-                return
-            from services.tilt_series import get_registry_for, preload_registry
-
-            with exp:
-                waiting = ui.label("Reading the tilt-series registry…").style(
-                    f"{FONT} font-size: 9px; color: #94a3b8; padding: 3px 11px;"
-                )
-            try:
-                await preload_registry(project_path)
-                all_ts = list(get_registry_for(project_path).all_tilt_series())
-            except Exception:
-                logger.exception("Could not read the tilt-series registry of %s", project_path)
-                waiting.set_text("Could not read the tilt-series registry (see the server log)")
-                return
-            waiting.delete()
-            with exp:
-                self._render_ts_table(all_ts)
-
-        exp.on_value_change(_fill)
-
-    @staticmethod
-    def _render_ts_table(all_ts: list) -> None:
-        if not all_ts:
-            ui.label("No tilt-series registry").style("font-size: 9px; font-style: italic; color: #cbd5e1;")
-            return
-        selected_ts = [t for t in all_ts if t.is_selected]
-        excluded_ts = [t for t in all_ts if not t.is_selected]
-        with ui.element("div").style(
-            "display: grid; grid-template-columns: 44px 44px 44px 1fr; gap: 0; padding: 3px 11px; background: #f8fafc;"
-        ):
-            for hdr in ("POS", "BEAM", "TILTS", "MDOC"):
-                ui.label(hdr).style(
-                    "font-size: 8px; font-weight: 600; color: #94a3b8; "
-                    "letter-spacing: 0.04em; text-transform: uppercase;"
-                )
-        # Show all rows inline — the outer menu has a single scrollbar.
-        for td in sorted(selected_ts, key=lambda x: (x.stage_position, x.beam_position)):
-            with ui.element("div").style(
-                "display: grid; grid-template-columns: 44px 44px 44px 1fr; gap: 0; "
-                "padding: 2px 11px; border-top: 1px solid #fafbfc;"
-            ):
-                _ts_cell(str(td.stage_position), "#64748b")
-                _ts_cell(str(td.beam_position), "#64748b")
-                _ts_cell(str(td.frame_count), "#64748b")
-                _ts_cell(
-                    td.mdoc_filename, "#94a3b8", extra="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
-                )
-        if excluded_ts:
-            with ui.element("div").style("padding: 4px 11px; border-top: 1px solid #e2e8f0;"):
-                ui.label(f"+{len(excluded_ts)} excluded").style("font-size: 9px; font-style: italic; color: #cbd5e1;")
-
     async def _open_project_hub(self):
         from nicegui import app as ng_app
         from services.configs.user_prefs_service import get_prefs_service
+        from ui.local_file_picker import local_file_picker
         from ui.projects_overview import ProjectsOverview
 
         panel = self.panel
-
-        prefs_service = get_prefs_service()
-        prefs = prefs_service.load_from_app_storage(ng_app.storage.user)
-        base_path = prefs.project_base_path or await panel.backend.get_default_project_base()
-
+        prefs = get_prefs_service().load_from_app_storage(ng_app.storage.user)
+        # Read by the overview on every refresh; the header's folder button moves it.
+        current_base = {"path": prefs.project_base_path or await panel.backend.get_default_project_base()}
         current_path_str = str(panel.ui_mgr.project_path.resolve()) if panel.ui_mgr.project_path else None
 
-        # Mutable base path read by the overview each refresh; updated by the
-        # BASE input + Recent Locations dropdown. Holding a reference here
-        # rather than capturing the value avoids stale closures when the
-        # auto-refresh fires.
-        current_base = {"path": base_path}
-        history_refs: dict = {"container": None, "visible": False, "dropdown": None, "path_input": None}
-        overview_ref: dict = {"comp": None}
-
-        # ── history helpers ───────────────────────────────────────────────────
-
-        def _render_history():
-            c = history_refs.get("container")
-            if c is None:
+        async def _browse():
+            result = await local_file_picker(directory=current_base["path"] or "~", mode="directory")
+            if not result:
                 return
-            c.clear()
-            roots = prefs_service.prefs.recent_project_roots
-            with c:
-                if not roots:
-                    ui.label("No saved locations").style(
-                        f"{FONT} font-size: 10px; color: #cbd5e1; font-style: italic; padding: 8px 12px;"
-                    )
-                else:
-                    for root in roots[:12]:
-                        with (
-                            ui.element("div")
-                            .style("display: flex; align-items: center; gap: 4px; padding: 5px 10px; cursor: pointer;")
-                            .classes("hover:bg-slate-50")
-                        ):
-                            ui.label(root.path).style(
-                                f"{MONO} font-size: 10px; color: #475569; flex: 1; "
-                                "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                            ).on("click", lambda p=root.path: _use_history(p))
-                            (
-                                ui.button(icon="close", on_click=lambda p=root.path: _remove_history(p))
-                                .props("flat dense round size=xs")
-                                .style("color: #cbd5e1; flex-shrink: 0;")
-                            )
-                with ui.element("div").style(
-                    "display: flex; justify-content: flex-end; padding: 4px 10px; border-top: 1px solid #f1f5f9;"
-                ):
-                    house_button("Clear all", _clear_history)
+            current_base["path"] = result[0]
+            await overview.refresh(force=True)
 
-        def _toggle_history():
-            dd = history_refs.get("dropdown")
-            if dd is None:
-                return
-            if history_refs["visible"]:
-                dd.style("display: none;")
-                history_refs["visible"] = False
-            else:
-                _render_history()
-                dd.style("display: block;")
-                history_refs["visible"] = True
-
-        def _close_history():
-            dd = history_refs.get("dropdown")
-            if dd:
-                dd.style("display: none;")
-            history_refs["visible"] = False
-
-        async def _use_history(path: str):
-            _close_history()
-            path_input_ref = history_refs.get("path_input")
-            if path_input_ref:
-                path_input_ref.value = path
-            current_base["path"] = path
-            comp = overview_ref.get("comp")
-            if comp is not None:
-                await comp.refresh()
-
-        def _remove_history(path: str):
-            prefs_service.prefs.remove_recent_root(path)
-            prefs_service.save_to_app_storage(ng_app.storage.user)
-            _render_history()
-
-        def _clear_history():
-            prefs_service.prefs.clear_recent_roots()
-            prefs_service.save_to_app_storage(ng_app.storage.user)
-            _render_history()
-
-        async def _apply_base_change():
-            new_base = (history_refs["path_input"].value or "").strip()
-            if not new_base:
-                return
-            current_base["path"] = new_base
-            comp = overview_ref.get("comp")
-            if comp is not None:
-                await comp.refresh()
-                if comp._projects:
-                    prefs_service.prefs.add_recent_root(new_base)
-                    prefs_service.save_to_app_storage(ng_app.storage.user)
-                    _render_history()
-
-        # ── selected-project preview (left pane) ─────────────────────────────
-        selected_ref = {"path": current_path_str}
-        left_refs: dict = {"container": None}
-
-        async def _load_left(path_str):
-            from services.project_counts import tomogram_counts
-
-            left = left_refs.get("container")
-            if left is None:
-                return
-            state = None
-            if path_str:
-                try:
-                    state = await panel.backend.read_project_state_detached(path_str)
-                except Exception as e:
-                    logger.info("Preview load failed for %s: %s", path_str, e)
-                    state = None
-            counts = None
-            if state is not None:
-                try:
-                    counts = await asyncio.to_thread(tomogram_counts, state, Path(path_str))
-                except Exception:
-                    # Reported, not swallowed; the pane still renders, minus the row.
-                    logger.exception("Could not count tomograms for %s", path_str)
-            left.clear()
-            with left:
-                self._render_project_params(state, counts)
-
-        async def _on_select(target: Path):
-            selected_ref["path"] = str(target)
-            await _load_left(str(target))
-
-        # ── dialog ────────────────────────────────────────────────────────────
-
-        # Full screen: the parameter pane and the roster both carry absolute paths, and
-        # any narrower window wraps one or the other.
+        # The landing page's roster, in a dialog: the card is transparent so the roster's own
+        # border is the dialog's edge. The backdrop and Esc close it.
         with (
-            ui.dialog().props("maximized") as dialog,
+            ui.dialog() as dialog,
             ui.card().style(
-                "width: 100vw; max-width: 100vw; height: 100vh; padding: 0; overflow: hidden; "
-                "border-radius: 0; display: flex; flex-direction: column;"
+                "width: 94vw; max-width: 94vw; height: 90vh; padding: 0; overflow: visible; "
+                "background: transparent; box-shadow: none; display: flex; flex-direction: column;"
             ),
         ):
-            # Base path bar. Width fix: the inner flex row + input carry an
-            # explicit width:100% so the input fills the strip instead of
-            # shrink-wrapping to ~80 px of intrinsic content width.
-            with ui.element("div").style(
-                "display: flex; align-items: center; gap: 6px; width: 100%; "
-                "padding: 7px 12px; border-bottom: 1px solid #e5e7eb; "
-                "background: #f8fafc; position: relative; flex-shrink: 0;"
-            ):
-                ui.label("BASE").style(
-                    f"{FONT} font-size: 9px; font-weight: 700; color: #94a3b8; letter-spacing: 0.09em; flex-shrink: 0;"
-                )
-
-                with ui.element("div").style("flex: 1 1 auto; position: relative; min-width: 0; width: 100%;"):
-                    with ui.element("div").style("display: flex; align-items: center; gap: 4px; width: 100%;"):
-                        path_input = (
-                            ui.input(value=current_base["path"])
-                            .props("dense borderless")
-                            .classes("flex-1")
-                            .style(
-                                f"width: 100%; min-width: 0; font-size: 10px; {MONO} "
-                                "color: #1e293b; background: transparent;"
-                            )
-                            .on("blur", _apply_base_change)
-                        )
-                        history_refs["path_input"] = path_input
-                        (
-                            ui.button(icon="expand_more", on_click=_toggle_history)
-                            .props("flat dense round size=xs")
-                            .style("color: #94a3b8; flex-shrink: 0;")
-                            .tooltip("Recent locations")
-                        )
-
-                    history_dropdown = ui.element("div").style(
-                        "display: none; position: absolute; top: calc(100% + 4px); left: 0; right: 0; "
-                        "z-index: 9999; background: white; "
-                        "border: 1px solid #e2e8f0; border-radius: 5px; "
-                        "box-shadow: 0 4px 16px rgba(15,23,42,0.10); "
-                        "max-height: 200px; overflow-y: auto;"
-                    )
-                    history_refs["dropdown"] = history_dropdown
-                    with history_dropdown:
-                        history_refs["container"] = ui.element("div").style("width: 100%;")
-
-                # A maximized dialog has no backdrop to click away on.
-                (
-                    ui.button(icon="close", on_click=dialog.close)
-                    .props("flat dense round size=sm")
-                    .style("color: #64748b; flex-shrink: 0;")
-                    .tooltip("Close (Esc)")
-                )
-
-            # Two-column body: left = selected project's params, right = the
-            # all-projects roster (single-click previews here; arrow opens).
-            with ui.element("div").style(
-                "display: flex; flex-direction: row; align-items: stretch; width: 100%; flex: 1 1 auto; min-height: 0;"
-            ):
-                # LEFT — parameter panel for the previewed project. 560 px, not 380: the
-                # Project section is four absolute paths and globs, and at 380 every one
-                # of them wrapped to three lines, which is what made this pane read as a
-                # ransom note rather than a table.
-                with ui.element("div").style(
-                    "flex: 0 0 560px; max-width: 40%; border-right: 1px solid #e5e7eb; "
-                    "display: flex; flex-direction: column; min-height: 0; background: #ffffff;"
-                ):
-                    with ui.element("div").style(
-                        "padding: 8px 14px; border-bottom: 1px solid #f1f5f9; flex-shrink: 0;"
-                    ):
-                        ui.label("Project parameters").style(
-                            f"{FONT} font-size: 12px; font-weight: 600; color: #0f172a;"
-                        )
-                        ui.label("Click a project to preview · use the arrow to open it").style(
-                            f"{FONT} font-size: 9px; color: #94a3b8; margin-top: 1px;"
-                        )
-                    with ui.scroll_area().classes("w-full").style("flex: 1 1 auto; min-height: 0; padding: 0;"):
-                        left_refs["container"] = ui.element("div").classes("w-full")
-
-                # RIGHT — roster; preview on click, travel via the row arrow.
-                with ui.element("div").style(
-                    "flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; min-height: 0;"
-                ):
-                    overview = ProjectsOverview(
-                        panel.backend,
-                        on_select=_on_select,
-                        base_path_provider=lambda: current_base["path"],
-                        auto_refresh_sec=15.0,
-                        current_path=current_path_str,
-                        selected_path=current_path_str,
-                        show_filter=True,
-                        fill=True,
-                        title="Projects Overview",
-                    )
-                    overview_ref["comp"] = overview
-                    overview.build()
-
-        # Paint the left pane for the currently-loaded project up front.
-        await _load_left(selected_ref["path"])
+            overview = ProjectsOverview(
+                panel.backend,
+                base_path_provider=lambda: current_base["path"],
+                on_browse=_browse,
+                auto_refresh_sec=15.0,
+                current_path=current_path_str,
+                show_filter=True,
+                fill=True,
+                title="Projects Overview",
+            )
+            overview.build()
 
         # Cancel auto-refresh on any dismissal path. `hide` covers backdrop
         # click / escape / programmatic close; `before-hide` is a Quasar

@@ -1051,6 +1051,23 @@ _CB_CSS = """
 .cb-proj-delrow:hover { background: #fef2f2; }
 .cb-proj-deltrash { color: #fca5a5; background: #fffafa; transition: color 0.12s, background-color 0.12s; }
 .cb-proj-delrow:hover .cb-proj-deltrash { color: #dc2626; background: #fee2e2; }
+/* A project's hover card (ui/projects_overview.py `_render_hover_card`): a caret on the edge
+ * facing its row, aimed at the project's name; the open handler sets data-side and --cb-caret-x. */
+.cb-proj-card::before {
+    content: ''; position: absolute; top: -5px; left: var(--cb-caret-x, 24px);
+    width: 9px; height: 9px; background: #ffffff;
+    border-left: 1px solid #e2e8f0; border-top: 1px solid #e2e8f0;
+    transform: translateX(-50%) rotate(45deg);
+}
+.cb-proj-card[data-side="above"]::before { top: auto; bottom: -5px; transform: translateX(-50%) rotate(225deg); }
+/* Every Quasar tooltip: the gallery zoom's translucent slate (denser here, so 10 px text
+ * stays legible over white), never wider than about a path and a half; long paths wrap.
+ * A tooltip that sets its own max-width inline keeps it. */
+.q-tooltip.q-tooltip--style {
+    background: rgba(51, 65, 85, 0.86); backdrop-filter: blur(3px); color: #f8fafc;
+    border-radius: 6px; box-shadow: 0 6px 18px rgba(15, 23, 42, 0.25);
+    max-width: min(120ch, 92vw); overflow-wrap: anywhere; line-height: 1.4;
+}
 /* Scroll area that must never scroll sideways (projects roster): content is pinned to
  * the viewport width, so an over-wide child clips instead of growing a horizontal pan. */
 .cb-scroll-noh .q-scrollarea__container { overflow-x: hidden !important; }
@@ -1490,11 +1507,21 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
  * own their own spacing. */
 .cb-scroll-tight .q-scrollarea__content,
 .cb-scroll-tight .q-expansion-item__content { align-items: stretch; padding: 0; gap: 0; }
-/* Live log views (ui/components/log_pane.py LiveLog): one wrapped text box that scrolls. */
-.cb-livelog {
-    flex: 1 1 0; min-height: 0; width: 100%; overflow-y: auto; padding: 8px;
-    white-space: pre-wrap; overflow-wrap: anywhere;
+/* Log wells (ui/components/log_pane.py): every log in the app is a dark slate pane of wrapped
+ * mono, set apart from the light UI; error lines red, warnings amber, the app's own notes dim. */
+.cb-log-well {
+    font-family: 'IBM Plex Mono', monospace; font-size: 10px; line-height: 1.5;
+    background: #1e293b; color: #e2e8f0; border-radius: 6px; padding: 8px 10px;
+    white-space: pre-wrap; overflow-wrap: anywhere; overflow-y: auto; box-sizing: border-box;
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.3);
+    scrollbar-width: thin; scrollbar-color: #475569 transparent;
 }
+.cb-log-well ::selection { background: rgba(147, 197, 253, 0.35); }
+.cb-log-err { color: #fca5a5; }
+.cb-log-warn { color: #fcd34d; }
+.cb-log-note { color: #64748b; font-style: italic; }
+/* A live log (LiveLog) fills what its tab leaves, inset from the tab's edges. */
+.cb-livelog { flex: 1 1 0; min-height: 0; width: auto; margin: 6px 10px 10px; }
 /* ── Species page · Analytics: the per-tomogram table and the set list ───── */
 .cb-atable-wrap { max-height: 440px; overflow: auto; width: 100%; border-top: 1px solid #e2e8f0; }
 .cb-atable { border-collapse: collapse; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #1e293b; }

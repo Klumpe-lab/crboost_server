@@ -26,6 +26,8 @@ _PROBE_TIMEOUT_SEC = 8
 
 # SGR 2 (faint) is as small as a terminal gets: there is no escape for a smaller font.
 _DIM, _RESET = "\x1b[2m", "\x1b[0m"
+# The project links stand out of the faint block in the banner links' bold cyan (main.py).
+_LINK = "\x1b[1;36m"
 _STATUS_COLOR = {
     "running": "\x1b[2;36m",
     "queued": "\x1b[2;34m",
@@ -58,7 +60,7 @@ def summary_lines(port: int, hostname: str, user: str, token: str, log_file: Pat
             f"{p['succeeded']:>3}/{p['total']:<3} jobs  {p['active']}"
         )
         rows.append(("projects" if i == 0 else "", line))
-        rows.append(("", f"  {_link(port, token, p['path'])}"))
+        rows.append(("", f"  Go to this project: {_RESET}{_LINK}{_link(port, token, p['path'])}{_RESET}"))
     # A blank line under the pinned links, and one above the projects, so the block breathes.
     return [""] + [f"{_DIM}{label:<10} {value}{_RESET}" for label, value in rows]
 

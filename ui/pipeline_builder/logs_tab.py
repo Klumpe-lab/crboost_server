@@ -5,17 +5,13 @@ from nicegui import ui
 
 from services.project_state import JobStatus, JobType
 from ui.components.log_pane import LiveLog
-from ui.styles import MONO
+from ui.components.segmented import render_segmented
+from ui.styles import MONO, SANS
 from ui.ui_state import UIStateManager
 
-_TAB_ACTIVE = (
-    f"{MONO} font-size: 10px; font-weight: 600; padding: 2px 10px; border-radius: 0; "
-    "background: #f1f5f9; color: #1e293b; min-width: 0;"
-)
-_TAB_INACTIVE = (
-    f"{MONO} font-size: 10px; font-weight: 400; padding: 2px 10px; border-radius: 0; "
-    "background: transparent; color: #94a3b8; min-width: 0;"
-)
+_LOG_FILES = {"stdout": "run.out", "stderr": "run.err"}
+# What the log readers put in place of a log that has no lines yet.
+_NO_LOG = {"", "No output yet", "No errors yet", "run.out not found.", "run.err not found."}
 
 
 def render_logs_tab(job_type: JobType, instance_id: str, job_model, backend, ui_mgr: UIStateManager):
@@ -26,9 +22,9 @@ def render_logs_tab(job_type: JobType, instance_id: str, job_model, backend, ui_
     scope = ui_mgr.job_scope(instance_id)
 
     if not job_model.relion_job_name:
-        with ui.column().classes("w-full h-full items-center justify-center text-gray-400 gap-2") as placeholder:
-            ui.icon("schedule", size="48px")
-            ui.label("Job scheduled. Logs will appear here once running.")
+        with ui.column().classes("w-full h-full items-center justify-center gap-2") as placeholder:
+            ui.icon("schedule", size="24px").style("color: #cbd5e1;")
+            ui.label("Scheduled · its logs show here once it runs").style(f"{SANS} font-size: 11px; color: #94a3b8;")
 
         if ui_mgr.is_running:
             widget_refs.logs_timer = scope.timer(
@@ -39,25 +35,25 @@ def render_logs_tab(job_type: JobType, instance_id: str, job_model, backend, ui_
         return
 
     is_running = job_model.execution_status == JobStatus.RUNNING
+    job_dir = job_model.relion_job_name.rstrip("/")
 
     with ui.column().classes("w-full h-full overflow-hidden").style("gap: 0;") as logs_box:
-        # ── Mini tab bar ──
-        with (
-            ui.row()
-            .classes("w-full items-center")
-            .style("gap: 0; flex-shrink: 0; border-bottom: 1px solid #e2e8f0; padding: 0 8px;")
-        ):
-            stdout_btn = ui.button("stdout").props("flat dense no-caps")
-            stdout_btn.style(_TAB_ACTIVE)
-
-            stderr_btn = ui.button("stderr").props("flat dense no-caps")
-            stderr_btn.style(_TAB_INACTIVE)
-
-            stderr_dot = (
-                ui.icon("circle", size="6px")
-                .style("color: #ef4444; margin-left: -4px; display: none;")
-                .tooltip("stderr has output")
+        # Header: the stream switch (stderr's line count on it), the file shown, a live mark
+        # while the job runs, and copy-the-whole-file.
+        with ui.row().classes("w-full items-center no-wrap").style("gap: 8px; flex-shrink: 0; padding: 6px 10px 0;"):
+            seg = render_segmented(
+                [("stdout", "stdout"), ("stderr", "stderr")], "stdout", lambda k: switch_log(k), classes="cb-seg-sm"
             )
+            file_label = ui.label(f"{job_dir}/run.out").style(
+                f"{MONO} font-size: 9px; color: #94a3b8; overflow: hidden; text-overflow: ellipsis; "
+                "white-space: nowrap; min-width: 0;"
+            )
+            with ui.row().classes("items-center no-wrap").style("gap: 4px; flex-shrink: 0;") as live_mark:
+                ui.element("div").classes("cb-live-pulse").style(
+                    "width: 6px; height: 6px; border-radius: 50%; background: #3b82f6;"
+                )
+                ui.label("live").style(f"{SANS} font-size: 9px; color: #3b82f6;")
+            live_mark.set_visibility(is_running)
             ui.space()
             # Copies the whole current log (the panel shows the last 500 lines).
             (
@@ -67,15 +63,16 @@ def render_logs_tab(job_type: JobType, instance_id: str, job_model, backend, ui_
                 .tooltip("Copy the full log to the clipboard")
             )
 
-        # ── Log panels (stacked, toggle visibility), each one text element that wraps long lines. ──
-        stdout_log = LiveLog(style=f"{MONO} font-size: 10px; line-height: 1.4; background: #fafafa; color: #334155;")
-        stderr_log = LiveLog(style=f"{MONO} font-size: 10px; line-height: 1.4; background: #fefafa; color: #b91c1c;")
+        # ── Log wells (stacked, toggle visibility), each one element that wraps long lines. ──
+        stdout_log = LiveLog()
+        stderr_log = LiveLog()
         stderr_log.set_visibility(False)
 
     monitor = {
         "stdout": stdout_log,
         "stderr": stderr_log,
-        "_stderr_dot": stderr_dot,
+        "_seg": seg,
+        "_live": live_mark,
         "_active": "stdout",
         # Set here as well as on refresh so the copy button has a target before the first tick.
         "_job_path": job_model.relion_job_name,
@@ -86,11 +83,8 @@ def render_logs_tab(job_type: JobType, instance_id: str, job_model, backend, ui_
         monitor["_active"] = tab
         stdout_log.set_visibility(is_stdout)
         stderr_log.set_visibility(not is_stdout)
-        stdout_btn.style(_TAB_ACTIVE if is_stdout else _TAB_INACTIVE)
-        stderr_btn.style(_TAB_INACTIVE if is_stdout else _TAB_ACTIVE)
-
-    stdout_btn.on_click(lambda: switch_log("stdout"))
-    stderr_btn.on_click(lambda: switch_log("stderr"))
+        file_label.set_text(f"{job_dir}/{_LOG_FILES[tab]}")
+        seg.set_active(tab)
 
     widget_refs.monitor_logs = monitor
 
@@ -194,13 +188,16 @@ async def _refresh_job_logs(instance_id: str, backend, ui_mgr: UIStateManager):
     monitor["stdout"].set_text(stdout)
     monitor["stderr"].set_text(stderr)
 
-    # Show/hide stderr indicator dot — only show for actual error output,
-    # not for placeholder messages when the log file doesn't exist yet.
-    stderr_dot = monitor.get("_stderr_dot")
-    if stderr_dot and not stderr_dot.is_deleted:
-        _no_error_messages = {"No errors yet", "No errors", "run.err not found.", ""}
-        has_stderr = bool(stderr.strip()) and stderr.strip() not in _no_error_messages
-        stderr_dot.style(f"color: #ef4444; margin-left: -4px; display: {'inline-flex' if has_stderr else 'none'};")
+    # stderr's line count on its segment, so output there is visible from stdout; nothing for
+    # the readers' own placeholders. "+" when the panel shows only the tail.
+    seg = monitor.get("_seg")
+    if seg is not None:
+        has_stderr = stderr.strip() not in _NO_LOG
+        n = len([line for line in stderr_lines if line.strip()])
+        seg.set_badge("stderr", f"{min(n, MAX_LOG_LINES)}{'+' if n > MAX_LOG_LINES else ''}" if has_stderr else "")
+    live = monitor.get("_live")
+    if live is not None and not live.is_deleted:
+        live.set_visibility(job_model.execution_status == JobStatus.RUNNING)
 
     if job_model.execution_status in (JobStatus.SUCCEEDED, JobStatus.FAILED) and not ui_mgr.is_running:
         ui_mgr.cleanup_job_logs_timer(instance_id)

@@ -74,26 +74,46 @@ ANY_SPECIES_LABEL = "any species"
 # WarpTools preview names end in the reconstruction's pixel size: `<tomo>_6.20Apx.png`.
 _PREVIEW_SUFFIX = re.compile(r"_\d+(?:\.\d+)?Apx\.png$")
 
-# Row hover card, run in the browser: no server round-trip to open it, and it stays open
-# while the pointer is on it. One shared timer: entering a row or its card cancels a
-# pending close, leaving either schedules one, and opening a card closes any other.
+# Project hover card, run in the browser: no server round-trip to open it. The name column
+# opens it; it stays open while the pointer is on its row or on it. One shared timer: entering
+# the row or the card cancels a pending close, leaving either schedules one, and opening a
+# card closes any other.
 _HOVER_STATE = "(window.__cbHoverCard ??= {timer: 0, open: null})"
 _HOVER_STAY = f"() => {{ clearTimeout({_HOVER_STATE}.timer); }}"
 _HOVER_CLOSE = (
     f"() => {{ const s = {_HOVER_STATE}; clearTimeout(s.timer); s.timer = setTimeout(() => "
     "{ if (s.open !== null) runMethod(s.open, 'hide', []); s.open = null; }, 200); }"
 )
+# Re-fit the open card (its content may arrive after it shows), then say which side of the
+# row Quasar put it on and aim its caret (`.cb-proj-card::before`, ui/dashboard/css.py) at
+# the start of the name.
+_HOVER_FIT = (
+    "(s, id, zone) => { if (s.open !== id) return; runMethod(id, 'updatePosition', []); "
+    "requestAnimationFrame(() => { const m = getHtmlElement(id), row = zone && zone.closest('.cb-proj-row'); "
+    "if (!m || !row) return; "
+    "const r = row.getBoundingClientRect(), z = zone.getBoundingClientRect(), b = m.getBoundingClientRect(); "
+    "m.dataset.side = b.top >= r.bottom - 1 ? 'below' : 'above'; "
+    "m.style.setProperty('--cb-caret-x', Math.min(Math.max(z.left + 24 - b.left, 14), b.width - 14) + 'px'); "
+    "}); }"
+)
+
+
+def _hover_stay_js(menu_id: int) -> str:
+    """Back on the row: keep its own card open, leave any other card's pending close alone."""
+    return f"() => {{ const s = {_HOVER_STATE}; if (s.open === {menu_id}) clearTimeout(s.timer); }}"
 
 
 def _hover_open_js(menu_id: int) -> str:
-    """Open the row's card after a short hover. The card is built on the server the first time
-    its row is entered (one emit per row element), inside the delay before it shows."""
+    """Open the name column's card after a short hover. The card is built on the server the first
+    time its name column is entered (one emit per element), inside the delay before it shows."""
     return (
-        f"(e) => {{ const s = {_HOVER_STATE}; clearTimeout(s.timer); "
-        "const row = e && e.currentTarget; if (row && !row.dataset.cbCard) { row.dataset.cbCard = '1'; emit(); } "
+        f"(e) => {{ const s = {_HOVER_STATE}; clearTimeout(s.timer); const fit = {_HOVER_FIT}; "
+        "const zone = e && e.currentTarget; "
+        "if (zone && !zone.dataset.cbCard) { zone.dataset.cbCard = '1'; emit(); } "
         "s.timer = setTimeout(() => { "
         f"if (s.open !== null && s.open !== {menu_id}) runMethod(s.open, 'hide', []); "
-        f"s.open = {menu_id}; runMethod({menu_id}, 'show', []); }}, 90); }}"
+        f"s.open = {menu_id}; runMethod({menu_id}, 'show', []); "
+        f"for (const ms of [30, 200, 600]) setTimeout(() => fit(s, {menu_id}, zone), ms); }}, 90); }}"
     )
 
 
@@ -876,7 +896,7 @@ class ProjectsOverview:
             row_classes = "w-full hover:bg-slate-50 transition-colors group"
             row_style = base_style + cursor + outline
 
-        row = ui.element("div").classes(row_classes).style(row_style)
+        row = ui.element("div").classes(f"{row_classes} cb-proj-row").style(row_style)
         if deleting:
             # Deletion mode: the row is the trigger and nothing else on it acts.
             if is_current:
@@ -904,24 +924,23 @@ class ProjectsOverview:
                 with ui.element("div").style(
                     "display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; min-width: 0;"
                 ):
-                    # The name is the one thing in this widget with weight. Everything
-                    # else on the row is 8-9 px meta, so 12/600 reads as the title
-                    # without needing a rule or a background to say so.
-                    name_lbl = ui.label(name).style(
-                        f"{FONT} font-size: 12px; font-weight: 600; color: {CLR_HEADING}; "
-                        "letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; "
-                        "white-space: nowrap; min-width: 0; flex: 0 1 auto;"
-                    )
-                    _set_title(name_lbl, self._name_title(proj))
-                    if is_current:
-                        ui.label("CURRENT").style(
-                            f"{FONT} font-size: 7px; color: #1e40af; font-weight: 700; "
-                            "background: #dbeafe; border: 1px solid #93c5fd; "
-                            "border-radius: 3px; padding: 0 4px; flex-shrink: 0; "
-                            "letter-spacing: 0.05em;"
+                    with self._name_zone(gap=8) as zone:
+                        # The name is the one thing in this widget with weight. Everything
+                        # else on the row is 8-9 px meta, so 12/600 reads as the title
+                        # without needing a rule or a background to say so.
+                        ui.label(name).style(
+                            f"{FONT} font-size: 12px; font-weight: 600; color: {CLR_HEADING}; "
+                            "letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; "
+                            "white-space: nowrap; min-width: 0; flex: 0 1 auto;"
                         )
-                    self._render_preview_card(proj, row)
-                    ui.element("div").style("flex: 1 1 0; min-width: 0;")
+                        if is_current:
+                            ui.label("CURRENT").style(
+                                f"{FONT} font-size: 7px; color: #1e40af; font-weight: 700; "
+                                "background: #dbeafe; border: 1px solid #93c5fd; "
+                                "border-radius: 3px; padding: 0 4px; flex-shrink: 0; "
+                                "letter-spacing: 0.05em;"
+                            )
+                        self._render_hover_card(proj, zone, row)
                     self._render_live_progress(proj)
                     self._render_status(proj)
 
@@ -1030,14 +1049,13 @@ class ProjectsOverview:
         with ui.element("div").style(
             "flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 6px 8px 6px 14px;"
         ):
-            name_lbl = ui.label(proj["name"]).style(
-                f"{FONT} font-size: 11px; font-weight: 600; color: {CLR_HEADING}; letter-spacing: -0.01em; "
-                "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 0 1 auto;"
-            )
-            _set_title(name_lbl, self._name_title(proj))
-            self._render_preview_card(proj, row)
-            self._render_live_progress(proj)
-            ui.element("div").style("flex: 1 1 0; min-width: 0;")
+            with self._name_zone(gap=12) as zone:
+                ui.label(proj["name"]).style(
+                    f"{FONT} font-size: 11px; font-weight: 600; color: {CLR_HEADING}; letter-spacing: -0.01em; "
+                    "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 0 1 auto;"
+                )
+                self._render_hover_card(proj, zone, row)
+                self._render_live_progress(proj)
             cell(self._owner_label(self._eff_owner_of(proj)), color=CLR_SUBLABEL, width=self._W_OWNER, tier="cb-pc-t2")
             text, title = self._furthest_text(proj)
             known = proj.get("furthest_done") is not None
@@ -1135,18 +1153,6 @@ class ProjectsOverview:
                 ui.label(f"{failed} failed").style(f"{MONO} font-size: 9px; color: {CLR_FAILED};")
 
     @staticmethod
-    def _name_title(proj: dict) -> str:
-        """The name's hover: the name, its generated mnemonic and the protocol it was created from.
-        The mnemonic ("icy-majestic-darwin") gets no column: it would compete with the project's
-        real name for the eye."""
-        lines = [proj["name"]]
-        if proj.get("mnemonic"):
-            lines.append(proj["mnemonic"])
-        if proj.get("protocol"):
-            lines.append(f"Created from the {proj['protocol']} protocol")
-        return "\n".join(lines)
-
-    @staticmethod
     def _furthest_text(proj: dict) -> tuple[str, str]:
         done = proj.get("furthest_done")
         if not done:
@@ -1209,27 +1215,36 @@ class ProjectsOverview:
             return "you"
         return owner
 
-    def _render_preview_card(self, proj: dict, row) -> None:
-        """Row hover: a white card just right of the project's name, over the blank rest of the
-        name column, with the project's WarpTools tomogram previews, stepped with chevrons, and
-        a few facts. Called where the name ends: the card hangs off a zero-width anchor there,
-        since the roster can span the page with no room beside it. It opens and closes in the
-        browser (_hover_open_js) so it appears at once and can be moved onto; the roster's
-        auto-refresh holds while it is open, because a rebuild would take it away from under the
-        pointer. Only the empty menu is built with the row; its content is built the first time
-        the row is entered, so a render of the whole roster does not build a card per project."""
-        if not proj.get("tomo_preview"):
-            return
-        with ui.element("div").style("width: 0; align-self: stretch; flex-shrink: 0;"):
+    @staticmethod
+    def _name_zone(*, gap: int) -> ui.element:
+        """The row's name column: the name and what sits beside it, out to the next column. Only
+        this area opens the project's hover card, and the card's caret points back into it."""
+        return ui.element("div").style(
+            f"flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: {gap}px; align-self: stretch;"
+        )
+
+    def _render_hover_card(self, proj: dict, zone: ui.element, row: ui.element) -> None:
+        """Name-column hover: a white card under the project's row (over it when there is no room
+        below), never on it, with a caret on its edge pointing at the name. It holds what the row
+        does not: the tomogram previews, the paths to copy, and the acquisition and import facts
+        without a column. The menu is a child of the row, so the row is its anchor. It opens and
+        closes in the browser (_hover_open_js) so it appears at once and can be moved onto; the
+        roster's auto-refresh holds while it is open, because a rebuild would take it away from
+        under the pointer. Only the empty menu is built with the row; its content is built the
+        first time the name column is entered, so a render of the whole roster does not build a
+        card per project."""
+        with row:
             menu = (
                 ui.menu()
                 .props(
-                    'no-parent-event no-focus no-refocus anchor="center left" self="center left" '
-                    ':offset="[6, 0]" transition-show="fade" transition-hide="fade" :transition-duration="80"'
+                    'no-parent-event no-focus no-refocus anchor="bottom left" self="top left" '
+                    ':offset="[-8, 8]" transition-show="fade" transition-hide="fade" :transition-duration="80"'
                 )
+                .classes("cb-proj-card")
+                # Visible overflow: the caret sits outside the card's box.
                 .style(
                     f"background: white; border: 1px solid {CLR_BORDER}; border-radius: 6px; "
-                    "box-shadow: 0 8px 24px rgba(15,23,42,0.16);"
+                    "box-shadow: 0 8px 24px rgba(15,23,42,0.16); overflow: visible; max-height: none;"
                 )
             )
         menu.on_value_change(self._on_preview_toggle)
@@ -1238,26 +1253,25 @@ class ProjectsOverview:
             if menu.is_deleted or menu.default_slot.children:
                 return
             with menu:
-                self._render_preview_card_body(proj)
+                card = ui.element("div").style("display: flex; align-items: flex-start; gap: 14px; padding: 10px;")
+                card.on("mouseenter", js_handler=_HOVER_STAY)
+                card.on("mouseleave", js_handler=_HOVER_CLOSE)
+                with card:
+                    if proj.get("tomo_preview"):
+                        self._render_card_previews(proj)
+                    self._render_card_facts(proj)
 
-        row.on("mouseenter", fill, js_handler=_hover_open_js(menu.id))
+        zone.on("mouseenter", fill, js_handler=_hover_open_js(menu.id))
+        row.on("mouseenter", js_handler=_hover_stay_js(menu.id))
         row.on("mouseleave", js_handler=_HOVER_CLOSE)
 
     @staticmethod
-    def _render_preview_card_body(proj: dict) -> None:
-        pv = proj["tomo_preview"]
-        pngs = pv["pngs"]
+    def _render_card_previews(proj: dict) -> None:
+        """The project's WarpTools tomogram previews, stepped with chevrons."""
+        pngs = proj["tomo_preview"]["pngs"]
         name = proj["name"]
         # The scan's activity stamp is the cache-buster: a new reconstruction moves it.
         stamp = int(proj.get("last_activity_ts") or 0)
-        ts_count = proj.get("ts_count") or 0
-        facts = [f"{pv['n_tomos']}/{ts_count} tomograms" if ts_count else f"{pv['n_tomos']} tomograms"]
-        if pv["apix"]:
-            facts.append(f"{pv['apix']:.2f} Å/px")
-        usage = proj.get("disk_usage")
-        if usage is not None and not usage.error:
-            facts.append(format_bytes(usage.total_bytes))
-        species = ", ".join(s.get("name") or s["id"] for s in proj.get("species") or [])
         shown = {"i": 0}
 
         def caption(i: int) -> str:
@@ -1269,10 +1283,7 @@ class ProjectsOverview:
             image.set_content(_preview_img_html(pngs[shown["i"]], stamp))
             caption_label.set_text(caption(shown["i"]))
 
-        card = ui.element("div").style("padding: 8px; width: 276px;")
-        card.on("mouseenter", js_handler=_HOVER_STAY)
-        card.on("mouseleave", js_handler=_HOVER_CLOSE)
-        with card:
+        with ui.element("div").style("width: 260px; flex-shrink: 0;"):
             image = ui.html(_preview_img_html(pngs[0], stamp), sanitize=False)
             with ui.element("div").style("display: flex; align-items: center; gap: 2px; margin-top: 6px;"):
                 nav = "flat dense round size=sm"
@@ -1288,13 +1299,74 @@ class ProjectsOverview:
                     ui.button(icon="chevron_right", on_click=lambda: step(1)).props(nav).style(
                         f"color: {CLR_LABEL};"
                     ).tooltip("Next tomogram")
-            ui.label(" · ".join(facts)).style(
-                f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; text-align: center; margin-top: 2px;"
-            )
-            if species:
-                ui.label(f"species: {species}").style(
-                    f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; text-align: center;"
+
+    @staticmethod
+    def _render_card_facts(proj: dict) -> None:
+        """What the row has no room for: the mnemonic and protocol, every path (click to copy),
+        and the acquisition and import facts without a column. What the project did not record
+        says so."""
+        facts = proj.get("card") or {}
+        grid = "display: grid; grid-template-columns: 64px minmax(0, 1fr); column-gap: 8px; row-gap: 2px;"
+        key_style = f"{FONT} font-size: 9px; color: {CLR_SUBLABEL};"
+        head_style = (
+            f"{FONT} font-size: 9px; font-weight: 600; color: {CLR_SUBLABEL}; letter-spacing: 0.06em; "
+            "text-transform: uppercase; margin: 8px 0 3px;"
+        )
+
+        def value(text: str | None, *, path: bool = False) -> None:
+            if not text:
+                ui.label("not recorded").style(f"{FONT} font-size: 9px; color: {CLR_GHOST}; font-style: italic;")
+                return
+            label = ui.label(text).style(f"{MONO} font-size: 9px; color: {CLR_LABEL}; word-break: break-all;")
+            if path:
+                copy_on_click(label, text)
+
+        def section(title: str, rows: list[tuple[str, str | None]], *, paths: bool = False) -> None:
+            ui.label(title).style(head_style)
+            with ui.element("div").style(grid):
+                for key, text in rows:
+                    ui.label(key).style(key_style)
+                    value(text, path=paths)
+
+        def num(v, unit: str = "") -> str | None:
+            return None if v is None else f"{v:g}{unit}"
+
+        with ui.element("div").style("width: 600px; flex-shrink: 0; min-width: 0;"):
+            if proj.get("mnemonic"):
+                ui.label(proj["mnemonic"]).style(f"{MONO} font-size: 10px; color: {CLR_LABEL};")
+            if proj.get("protocol"):
+                ui.label(f"created from the {proj['protocol']} protocol").style(
+                    f"{FONT} font-size: 9px; color: {CLR_SUBLABEL};"
                 )
+            section(
+                "Paths · click to copy",
+                [
+                    ("Project", proj["path"]),
+                    ("Raw data", proj.get("source_directory")),
+                    ("Movies", facts.get("movies_glob")),
+                    ("MDOCs", facts.get("mdocs_glob")),
+                ],
+                paths=True,
+            )
+            section(
+                "Acquisition",
+                [
+                    ("Cs", num(facts.get("cs_mm"), " mm")),
+                    ("Amp. contrast", num(facts.get("amp_contrast"))),
+                    ("Tilt axis", num(facts.get("tilt_axis_deg"), "°")),
+                ],
+            )
+            # Only what was imported: a particle-only project has no frames to describe.
+            imported: list[tuple[str, str | None]] = []
+            if facts.get("ts_total"):
+                imported.append(("Tilt-series", f"{facts.get('ts_selected') or 0} of {facts['ts_total']} selected"))
+            if facts.get("frame_extension"):
+                imported.append(("Format", facts["frame_extension"]))
+            kind = {"stacks": "SerialEM stacks (split)", "movies": "movies"}.get(facts.get("source_kind") or "")
+            if kind:
+                imported.append(("Source layer", kind))
+            if imported:
+                section("Import", imported)
 
     def _on_preview_toggle(self, e):
         self._preview_open = bool(e.value)

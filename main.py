@@ -47,10 +47,12 @@ _BOLD, _CYAN, _RESET = "\x1b[1m", "\x1b[1;36m", "\x1b[0m"
 
 
 def banner_lines(port: int, hostname: str, token: str) -> list[str]:
+    # Each command and link alone on its line, so a whole-line yank copies nothing else.
     return [
-        f"{_BOLD}Tunnel from your local machine:{_RESET} "
+        f"{_BOLD}Tunnel from your local machine:{_RESET}",
         f"{_CYAN}ssh -f -N -L {port}:localhost:{port} $USER@{hostname}{_RESET}",
-        f"{_BOLD}Access in your browser:{_RESET}         {_CYAN}http://localhost:{port}/?token={token}{_RESET}",
+        f"{_BOLD}Access in your browser:{_RESET}",
+        f"{_CYAN}http://localhost:{port}/?token={token}{_RESET}",
     ]
 
 
