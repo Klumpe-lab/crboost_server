@@ -127,6 +127,28 @@ _VIEW_RESIZER_JS = """
 })();
 """
 
+# Esc closes the views one at a time, the last turned on first (_on_escape). A capturing
+# listener on the window, so it runs before the Escapes that dismiss something smaller (the
+# slab lightbox, a pinned tilt popover, a pick selection on screen) and leaves the key to them,
+# as it does to an open dialog or menu.
+_VIEW_ESCAPE_JS = """
+(function(){
+  if (window.__cbViewEscape) return;
+  window.__cbViewEscape = true;
+  const busy = '.q-dialog, .q-menu, .cb-slab-lightbox, .cb-tp-popover[data-pinned], .cb-gallery-tile.selected';
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || e.repeat) return;
+    // Only what is on screen counts: a hidden view keeps its selections.
+    if ([...document.querySelectorAll(busy)].some((el) => el.getClientRects().length)) return;
+    // Esc in a field leaves the field, then closes the view like anywhere else.
+    const a = document.activeElement;
+    const fields = 'input, textarea, select, [contenteditable="true"]';
+    if (a && a !== document.body && a.closest && a.closest(fields)) a.blur();
+    emitEvent('cb_view_escape');
+  }, true);
+})();
+"""
+
 
 # workspace view name -> the URL view it addresses. The Species page's internal
 # mode string is "workbench"; the URL says `species`.
@@ -223,8 +245,10 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
             if c is None:
                 continue
             if name in _on:
-                border = "none" if first else "1px solid #e5e7eb"
-                c.style(f"display: flex; order: {i}; border-left: {border};")
+                # A slate edge and a faint shadow cast onto the view to its left, so two views
+                # read as two panels rather than one gray surface.
+                border, shadow = ("none", "none") if first else ("1px solid #cbd5e1", "-4px 0 12px rgba(15,23,42,0.16)")
+                c.style(f"display: flex; order: {i}; border-left: {border}; box-shadow: {shadow};")
                 if first:
                     c.classes(remove="cb-view-split")
                 else:
@@ -519,6 +543,12 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
 
         ui.timer(0, _apply, once=True)
 
+    def _on_escape(_e) -> None:
+        """Esc turns off the view turned on last; the one left showing stays."""
+        if len(_on) > 1:
+            _hide(_on[-1])
+
+    ui.on("cb_view_escape", _on_escape)
     ui.on("cb_popstate", _on_popstate)
     ui.timer(
         0.1,
@@ -636,8 +666,8 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
     # when the page rebuilds.
     mount_background_task_tray(project_path_provider=lambda: str(ui_mgr.project_path) if ui_mgr.project_path else None)
 
-    # Wire the roster resizer and the view splitters once the DOM for this page exists on the client.
-    ui.timer(0.1, lambda: ui.run_javascript(_ROSTER_RESIZER_JS + _VIEW_RESIZER_JS), once=True)
+    # Wire the roster resizer, the view splitters and Esc once the DOM for this page exists on the client.
+    ui.timer(0.1, lambda: ui.run_javascript(_ROSTER_RESIZER_JS + _VIEW_RESIZER_JS + _VIEW_ESCAPE_JS), once=True)
 
     # The opening layout (the pipeline alone) through the same path every toggle takes, so
     # its rail icon is lit the way a toggled one is.

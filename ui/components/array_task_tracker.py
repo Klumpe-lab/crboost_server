@@ -37,7 +37,7 @@ from services.array_tasks import (
     scan_statuses as _scan_statuses,
     resolve_job_dir,
 )
-from ui.components.log_pane import STDERR_STYLE, STDOUT_STYLE, log_pane
+from ui.components.log_pane import log_pane
 from ui.components.reactive import owned_timer
 from ui.styles import MONO
 
@@ -290,9 +290,9 @@ def _render_inline_log(job_dir: Path, task_idx: int) -> None:
             ui.label("No log output yet.").style(f"{MONO} font-size: 10px; color: #94a3b8;")
             return
         if stdout_text:
-            log_pane("stdout", stdout_text, stdout_path, max_h="60vh", **STDOUT_STYLE)
+            log_pane("stdout", stdout_text, stdout_path, max_h="60vh")
         if stderr_text:
-            log_pane("stderr", stderr_text, stderr_path, max_h="40vh", **STDERR_STYLE)
+            log_pane("stderr", stderr_text, stderr_path, max_h="40vh")
 
 
 def _render_placeholder(message: str) -> None:
