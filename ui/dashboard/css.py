@@ -1071,7 +1071,15 @@ _CB_CSS = """
 /* Scroll area that must never scroll sideways (projects roster): content is pinned to
  * the viewport width, so an over-wide child clips instead of growing a horizontal pan. */
 .cb-scroll-noh .q-scrollarea__container { overflow-x: hidden !important; }
-.cb-scroll-noh .q-scrollarea__content { width: 100%; max-width: 100%; }
+/* No NiceGUI content padding: the rows run edge to edge, under the column titles above them. */
+.cb-scroll-noh .q-scrollarea__content { width: 100%; max-width: 100%; padding: 0; gap: 0; }
+/* The roster's compact column titles: each sorts its column on a click; the sorted one is darker. */
+.cb-proj-colhead {
+    font-family: 'IBM Plex Sans', sans-serif; font-size: 9px; font-weight: 600; color: #94a3b8;
+    white-space: nowrap; cursor: pointer; user-select: none;
+}
+.cb-proj-colhead:hover { color: #475569; }
+.cb-proj-colhead.active { color: #334155; }
 /* Template workbench lists: table rows, so the per-row facts (apix / box / lp, sigma
  * stats, size, polarity) sit in columns sized to their content. Only the file column flexes.
  * The accent is a custom property set per list on the container (indigo for templates,

@@ -145,7 +145,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
     JobSpec(
         JobType.MISS_ALIGN,
         MissAlignParams,
-        "Miss Align",
+        "Missalignment",
         PHASE_PREPROCESSING,
         dependencies=(JobType.TS_ALIGNMENT,),
         driver="miss_align.py",
