@@ -72,8 +72,10 @@ ANY_SPECIES = "__any__"
 ANY_SPECIES_LABEL = "any species"
 # Column sorts whose first click runs A→Z; every other column starts with the most on top.
 _ASCENDING_FIRST = frozenset({"name", "owner", "species"})
-# The Status column's order: what wants attention first. Idle projects have no badge and sort last.
-_STATUS_RANK = {"failed": 4, "review": 3, "running": 2, "queued": 1, "done": 0}
+# The Status column's order, top first: live work, then what waits on it, then finished, then failed. Idle
+# projects have no badge and sort last. The list opens sorted this way (DEFAULT_COLUMN_SORT).
+_STATUS_RANK = {"running": 4, "queued": 3, "review": 2, "done": 1, "failed": 0}
+DEFAULT_COLUMN_SORT = ("status", True)
 
 # WarpTools preview names end in the reconstruction's pixel size: `<tomo>_6.20Apx.png`.
 _PREVIEW_SUFFIX = re.compile(r"_\d+(?:\.\d+)?Apx\.png$")
@@ -306,7 +308,7 @@ class ProjectsOverview:
         self._species_select = None
         self._sort_mode = DEFAULT_SORT
         # A clicked column title: (sort key, descending). Overrides _sort_mode until a mode is clicked.
-        self._column_sort: tuple[str, bool] | None = None
+        self._column_sort: tuple[str, bool] | None = DEFAULT_COLUMN_SORT
         self._column_labels: dict[str, tuple[ui.label, str, bool]] = {}
         self._species_filter = ANY_SPECIES
         self._syncing_species = False
@@ -453,7 +455,10 @@ class ProjectsOverview:
             # In the full view sorting happens inside each owner section, so the
             # Lab/Shared grouping is unaffected by it.
             self._sort_seg = self._small_segmented(
-                SORT_MODES, self._sort_mode, self._on_sort, hint="Order: last opened by you, or created"
+                SORT_MODES,
+                "" if self._column_sort else self._sort_mode,
+                self._on_sort,
+                hint="Order: last opened by you, or created",
             )
 
             # Species index across the scanned projects. Options are refreshed on every
