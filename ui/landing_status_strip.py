@@ -51,17 +51,14 @@ CLR_NEUTRAL = "#94a3b8"
 
 _REFRESH_SEC = 15.0
 
-# Light popover (opens on hover, closes on leave) — same gray/blue palette as the rest of the UI.
-_POPOVER_STYLE = (
-    "background: #ffffff; color: #334155; border: 1px solid #e2e8f0; border-radius: 10px; "
-    "padding: 12px 14px; box-shadow: 0 10px 30px rgba(15,23,42,0.12);"
-)
+# Popover (opens on hover, closes on leave) on the app tooltip's glass (`.cb-glass`, ui/dashboard/css.py);
+# only the room is set here.
+_POPOVER_STYLE = "padding: 12px 14px;"
 _POP_TITLE = f"{FONT} font-size: 12px; font-weight: 700; color: {CLR_HEADING};"
 _POP_LABEL = (
-    f"{FONT} font-size: 9px; font-weight: 700; color: {CLR_SUBLABEL}; "
-    "letter-spacing: 0.06em; text-transform: uppercase;"
+    f"{FONT} font-size: 9px; font-weight: 700; color: {CLR_LABEL}; letter-spacing: 0.06em; text-transform: uppercase;"
 )
-_POP_DESC = f"{FONT} font-size: 10px; color: {CLR_LABEL}; line-height: 1.4;"
+_POP_DESC = f"{FONT} font-size: 10px; color: #334155; line-height: 1.4;"
 _POP_VAL = f"{MONO} font-size: 10.5px; color: {CLR_HEADING};"
 _POP_CHIP = (
     f"{MONO} font-size: 9.5px; color: {CLR_LABEL}; background: #f1f5f9; "
@@ -80,9 +77,13 @@ _CMD_QOS = (
 
 def _pop_copy_row(text: str) -> None:
     """A mono command/path line with a copy icon, on the light popover."""
-    with ui.row().classes("items-center").style(
-        "gap: 6px; background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 5px; "
-        "padding: 4px 6px; margin-top: 3px; width: 100%;"
+    with (
+        ui.row()
+        .classes("items-center")
+        .style(
+            "gap: 6px; background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 5px; "
+            "padding: 4px 6px; margin-top: 3px; width: 100%;"
+        )
     ):
         ui.label(text).style(_POP_PATH + " flex: 1 1 0; min-width: 0;")
         copy_button(text, tooltip="Copy", color=CLR_ACCENT)
@@ -173,9 +174,7 @@ class LandingStatusStrip(FingerprintedView):
             cluster = []
             for p in parts:
                 grp = gpu_by_part.get(p.name, {})
-                gpu_groups = tuple(
-                    sorted(((g, t, f, c) for (g, t, f), c in grp.items()), key=lambda x: (-x[3], x[1]))
-                )
+                gpu_groups = tuple(sorted(((g, t, f, c) for (g, t, f), c in grp.items()), key=lambda x: (-x[3], x[1])))
                 total_nodes = len(part_names.get(p.name, ())) or (getattr(p, "nodes", 0) or 0)
                 specs = spec_by_part.get(p.name, {})
                 spec = max(specs.items(), key=lambda kv: kv[1])[0] if specs else (0, 0)  # modal (cpus, mem_gb)
@@ -250,9 +249,7 @@ class LandingStatusStrip(FingerprintedView):
             if not s.checked:
                 self._dot_item(CLR_NEUTRAL, "SLURM", "checking…", "Checking cluster reachability…", pulse=False)
             elif s.slurm_ok:
-                self._dot_item(
-                    CLR_OK, "SLURM", f"{s.slurm_partitions} part", "", popover=self._slurm_popover
-                )
+                self._dot_item(CLR_OK, "SLURM", f"{s.slurm_partitions} part", "", popover=self._slurm_popover)
             else:
                 self._dot_item(CLR_BAD, "SLURM", "unreachable", "", popover=self._slurm_popover)
 
@@ -273,12 +270,7 @@ class LandingStatusStrip(FingerprintedView):
                 )
             else:
                 missing = ", ".join(s.cont_missing) if s.cont_missing else "some paths"
-                self._dot_item(
-                    CLR_WARN,
-                    "containers",
-                    f"{s.cont_n_ok}/{s.cont_n_total}",
-                    f"Missing on disk: {missing}",
-                )
+                self._dot_item(CLR_WARN, "containers", f"{s.cont_n_ok}/{s.cont_n_total}", f"Missing on disk: {missing}")
 
             # Config keys this version never reads: only shown when there are some.
             if s.config_warnings:
@@ -290,10 +282,14 @@ class LandingStatusStrip(FingerprintedView):
             ui.element("div").style("flex: 1;")
 
             if s.has_override:
-                with ui.element("div").style(
-                    "display: flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 20px; "
-                    "background: #eff6ff; border: 1px solid #bfdbfe; flex-shrink: 0;"
-                ).tooltip("Your personal config override is active (~/.crboost/conf.yaml)"):
+                with (
+                    ui.element("div")
+                    .style(
+                        "display: flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 20px; "
+                        "background: #eff6ff; border: 1px solid #bfdbfe; flex-shrink: 0;"
+                    )
+                    .tooltip("Your personal config override is active (~/.crboost/conf.yaml)")
+                ):
                     ui.element("div").style(f"width: 5px; height: 5px; border-radius: 50%; background: {CLR_ACCENT};")
                     ui.label("custom").style(f"{FONT} font-size: 9px; font-weight: 600; color: #1e40af;")
 
@@ -350,7 +346,7 @@ class LandingStatusStrip(FingerprintedView):
                     .style("background: transparent; box-shadow: none; overflow: visible;")
                 )
                 with menu:
-                    with ui.element("div").style(_POPOVER_STYLE):
+                    with ui.element("div").classes("cb-glass").style(_POPOVER_STYLE):
                         popover()
                 # Hover-card behaviour: open on hover/click, and close when the pointer leaves BOTH
                 # the trigger and the popover (so it doesn't linger). Re-opening on the menu's own

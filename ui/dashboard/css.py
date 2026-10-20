@@ -1051,8 +1051,10 @@ _CB_CSS = """
  * facing its row, aimed at the project's name; the open handler sets data-side and --cb-caret-x. */
 .cb-proj-card::before {
     content: ''; position: absolute; top: -5px; left: var(--cb-caret-x, 24px);
-    width: 9px; height: 9px; background: #ffffff;
-    border-left: 1px solid #e2e8f0; border-top: 1px solid #e2e8f0;
+    width: 9px; height: 9px; background: rgba(120, 120, 120, 0.12); backdrop-filter: blur(1.5px);
+    border-left: 1px solid rgba(75, 85, 99, 0.4); border-top: 1px solid rgba(75, 85, 99, 0.4);
+    /* Only the half outside the card: the half over it would show the card's edge through the glass. */
+    clip-path: polygon(0 0, 100% 0, 0 100%);
     transform: translateX(-50%) rotate(45deg);
 }
 .cb-proj-card[data-side="above"]::before { top: auto; bottom: -5px; transform: translateX(-50%) rotate(225deg); }
@@ -1060,12 +1062,29 @@ _CB_CSS = """
  * .cb-title-tip): see-through, the faintest neutral gray tint and a hairline outline; a touch of blur
  * so the text separates from what it covers. Never wider than about a path and a half; long
  * paths wrap. A Quasar tooltip that sets its own max-width inline keeps it. */
-.q-tooltip.q-tooltip--style, .cb-title-tip {
-    background: rgba(120, 120, 120, 0.12); backdrop-filter: blur(1.5px); color: #111827;
+.q-tooltip.q-tooltip--style, .cb-title-tip, .cb-glass {
+    background: rgba(120, 120, 120, 0.12); backdrop-filter: blur(1.5px); color: #020617;
     border: 1px solid rgba(75, 85, 99, 0.4); border-radius: 5px; box-shadow: none;
+}
+.q-tooltip.q-tooltip--style, .cb-title-tip {
     font-family: 'IBM Plex Sans', sans-serif; font-size: 10px;
     max-width: min(120ch, 92vw); overflow-wrap: anywhere; line-height: 1.4;
 }
+/* The same glass on the hover popups that are not tooltips (.cb-glass: the projects roster's
+ * card, the landing status strip's popovers, the tilt popover) and on the charts' hover boxes:
+ * ECharts' through ui/dashboard/figures.py `_tooltip`, Plotly's here (SVG takes no blur, so a
+ * little more tint). Secondary text inside them is a step darker than on the page, or it
+ * disappears into whatever shows through. */
+.js-plotly-plot .hoverlayer .hovertext path {
+    fill: rgba(241, 245, 249, 0.82) !important; stroke: rgba(75, 85, 99, 0.4) !important;
+}
+.js-plotly-plot .hoverlayer .hovertext text { fill: #020617 !important; }
+:is(.q-tooltip--style, .cb-glass) .cb-params-k,
+:is(.q-tooltip--style, .cb-glass) .cb-tt-sub { color: #475569; }
+:is(.q-tooltip--style, .cb-glass) .cb-params-v,
+:is(.q-tooltip--style, .cb-glass) .cb-tt-line { color: #020617; }
+:is(.q-tooltip--style, .cb-glass) .cb-tt-head { color: #334155; }
+:is(.q-tooltip--style, .cb-glass) .cb-tt-sep { background: rgba(75, 85, 99, 0.3); }
 .cb-title-tip {
     position: fixed; z-index: 9500; pointer-events: none; padding: 6px 10px;
     white-space: pre-line; display: none;
@@ -1291,6 +1310,17 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 .cb-gal-pk-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .cb-gal-pk-n { font-family: ui-monospace, monospace; font-size: 9px; color: #94a3b8; }
 .cb-gal-pk-row .cb-gal-pk-warn { color: #d97706; }
+/* Segmentation layers: the opacity row under the list, and a feature's share of the volume in a
+ * tile's caption (a swatch in the feature's colour variable, then the number). */
+.cb-gal-feat-opacity {
+    display: flex; align-items: center; gap: 6px; padding: 6px 10px 2px 16px;
+    font-size: 9px; color: #94a3b8; border-top: 1px solid #f1f5f9; margin-top: 4px;
+}
+.cb-gal-feat-badge {
+    display: inline-flex; align-items: center; gap: 2px; flex: 0 0 auto;
+    font-family: ui-monospace, monospace; font-size: 9px; color: #64748b; white-space: nowrap;
+}
+.cb-gal-feat-dot { width: 6px; height: 6px; border-radius: 1px; flex: 0 0 auto; }
 .cb-gal-body { flex: 1 1 0; min-height: 0; overflow-y: auto; overflow-x: hidden; }
 .cb-gal-grid { display: grid; gap: 10px; padding: 10px; align-items: start; }
 .cb-gal-tile {

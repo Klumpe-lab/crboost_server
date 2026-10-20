@@ -102,6 +102,10 @@ _FILETYPE_INFO: dict[JobFileType, tuple] = {
     JobFileType.TOMOGRAMS_STAR: ("Tomograms star", "Reconstructed tomograms star (tsReconstruct)."),
     JobFileType.DENOISED_TOMOGRAMS_STAR: ("Denoised tomograms star", "Tomograms star pointing at denoised volumes."),
     JobFileType.DENOISE_MODEL_TAR: ("Denoise model", "Trained denoising model archive."),
+    JobFileType.SEGMENTATIONS: (
+        "Segmentations",
+        "segmentations.json: feature probability volumes per tomogram, with their provenance (segment).",
+    ),
     JobFileType.TM_RESULTS_DIR: ("Template-match results dir", "PyTOM score/angle volumes from template matching."),
     JobFileType.CANDIDATES_STAR: ("Candidates star", "Picked candidate positions (template matching)."),
     JobFileType.OPTIMISATION_SET_STAR: (
@@ -128,10 +132,10 @@ _DOT = "width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;"
 # The app tooltip's panel and frame come from ui/dashboard/css.py; only the room is set here.
 _TIP_PANEL_STYLE = "padding: 8px 10px; max-width: 380px;"
 _TIP_TITLE = f"{FONT} font-size: 11px; font-weight: 700; color: #0f172a;"
-_TIP_LEAD = f"{FONT} font-size: 10px; color: #475569; margin-top: 1px;"
+_TIP_LEAD = f"{FONT} font-size: 10px; color: #334155; margin-top: 1px;"
 _TIP_KEY = f"{FONT} font-size: 10px; font-weight: 600; color: #1e293b;"
-_TIP_DESC = f"{FONT} font-size: 10px; color: #64748b; line-height: 1.35;"
-_TIP_PATH = f"{MONO} font-size: 10px; color: #475569; word-break: break-all; white-space: normal;"
+_TIP_DESC = f"{FONT} font-size: 10px; color: #475569; line-height: 1.35;"
+_TIP_PATH = f"{MONO} font-size: 10px; color: #334155; word-break: break-all; white-space: normal;"
 
 
 def _safe_int(x) -> int | None:
@@ -653,7 +657,7 @@ class IOConfigComponent:
                 ui.label(info[1]).style(_TIP_DESC + " margin-top: 2px;")
             if not resolved:
                 ui.label("Predicted — exists once this job finishes.").style(
-                    f"{FONT} font-size: 10px; color: #fbbf24; margin-top: 3px;"
+                    f"{FONT} font-size: 10px; color: #b45309; margin-top: 3px;"
                 )
         return name
 

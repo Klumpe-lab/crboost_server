@@ -65,7 +65,7 @@ class ChartTheme:
     legend_color: str = "#475569"
     card_font: str = _SANS
     card_size: int = 10
-    card_color: str = "#334155"
+    card_color: str = "#020617"
     card_mono: str = _MONO
     card_note: str = "#6366f1"
     # Plotly: layout font (None leaves Plotly's own), the pick scatters (scores on a colour
@@ -101,7 +101,7 @@ JOURNEY_THEME = replace(
     name_color="#5b6f8a",
     x_line="#e2e8f0",
     grid_top=22,
-    card_note="#64748b",
+    card_note="#475569",
     plotly_font=_SANS,
     plotly_size=10,
     pick_scale=((0.0, "#d6e2ef"), (1.0, "#2f5d8a")),
@@ -540,7 +540,7 @@ _FIT_TOOLTIP_JS = r"""
   const f = ps[0].data ? ps[0].data[0] : null;
   let h = __OPEN__;
   if (typeof f === 'number' && f > 0) h += '<div style="font-weight:600">' + (1 / f).toFixed(1)
-    + ' Å <span style="color:#94a3b8;font-weight:400">(' + f.toFixed(3) + ' 1/Å)</span></div>';
+    + ' Å <span style="color:#475569;font-weight:400">(' + f.toFixed(3) + ' 1/Å)</span></div>';
   for (const p of ps) {
     const v = p.data ? p.data[1] : null;
     if (v === null || v === undefined) continue;
@@ -579,15 +579,15 @@ _TOOLTIP_POSITION_JS = """
 
 
 def _tooltip(formatter_js: str, *, trigger: str = "axis", theme: ChartTheme = DEFAULT_THEME) -> dict:
-    """The house hover card (white, hairline border, soft shadow) with a JS formatter."""
+    """The house hover card with a JS formatter, on the app tooltip's glass (ui/dashboard/css.py)."""
     out = {
         "trigger": trigger,
-        "backgroundColor": "#ffffff",
-        "borderColor": "#e2e8f0",
+        "backgroundColor": "rgba(120, 120, 120, 0.12)",
+        "borderColor": "rgba(75, 85, 99, 0.4)",
         "borderWidth": 1,
         "padding": [6, 8],
         "appendToBody": True,
-        "extraCssText": "box-shadow: 0 6px 18px rgba(15,23,42,0.10); border-radius: 5px;",
+        "extraCssText": "box-shadow: none; border-radius: 5px; backdrop-filter: blur(1.5px);",
         ":formatter": formatter_js,
         ":position": _TOOLTIP_POSITION_JS,
     }
@@ -954,7 +954,7 @@ _COUNTS_TOOLTIP_JS = r"""
     h += '<div>' + p.marker + '<span style="font-family:IBM Plex Mono,monospace;font-weight:600">' + v
       + '</span> ' + p.seriesName + '</div>';
   }
-  if (!total) h += '<div style="color:#94a3b8">none</div>';
+  if (!total) h += '<div style="color:#475569">none</div>';
   return h + '</div>';
 }
 """
