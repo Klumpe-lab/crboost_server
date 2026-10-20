@@ -1060,15 +1060,16 @@ _CB_CSS = """
 }
 .cb-proj-card[data-side="above"]::before { top: auto; bottom: -5px; transform: translateX(-50%) rotate(225deg); }
 /* Every tooltip in the app, Quasar's and the native `title` ones (drawn by _TITLE_TIP_JS as
- * .cb-title-tip): the gallery zoom's translucent slate, the blur doing the work of keeping 10 px text legible
- * over a busy page; never wider than about a path and a half; long paths wrap. A Quasar tooltip that
- * sets its own max-width inline keeps it. */
+ * .cb-title-tip), in the gallery zoom's composition: a near-white panel with slate text inside a
+ * translucent slate frame (the zoom's rgba(51,65,85,.55) ring) and its soft drop shadow. Never wider
+ * than about a path and a half; long paths wrap. A Quasar tooltip that sets its own max-width
+ * inline keeps it. */
 .q-tooltip.q-tooltip--style, .cb-title-tip {
-    background: rgba(51, 65, 85, 0.62); backdrop-filter: blur(6px); color: #ffffff;
-    border-radius: 6px; box-shadow: 0 6px 18px rgba(15, 23, 42, 0.25);
+    background: rgba(255, 255, 255, 0.94); backdrop-filter: blur(3px); color: #1e293b;
+    border-radius: 5px;
+    box-shadow: 0 0 0 3px rgba(51, 65, 85, 0.55), 0 10px 30px rgba(15, 23, 42, 0.35);
     font-family: 'IBM Plex Sans', sans-serif; font-size: 10px;
     max-width: min(120ch, 92vw); overflow-wrap: anywhere; line-height: 1.4;
-    text-shadow: 0 1px 1px rgba(15, 23, 42, 0.35);
 }
 .cb-title-tip {
     position: fixed; z-index: 9500; pointer-events: none; padding: 6px 10px;
