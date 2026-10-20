@@ -1527,8 +1527,9 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 .cb-log-err { color: #fca5a5; }
 .cb-log-warn { color: #fcd34d; }
 .cb-log-note { color: #64748b; font-style: italic; }
-/* A live log (LiveLog) fills what its tab leaves, inset from the tab's edges. */
-.cb-livelog { flex: 1 1 0; min-height: 0; width: auto; margin: 6px 10px 10px; }
+/* A live log (LiveLog) fills what its tab leaves, inset from the tab's edges. align-self: its NiceGUI
+ * column aligns children flex-start, which shrink-wraps a width-less child to its longest line. */
+.cb-livelog { flex: 1 1 0; min-height: 0; width: auto; align-self: stretch; margin: 6px 10px 10px; }
 /* ── Species page · Analytics: the per-tomogram table and the set list ───── */
 .cb-atable-wrap { max-height: 440px; overflow: auto; width: 100%; border-top: 1px solid #e2e8f0; }
 .cb-atable { border-collapse: collapse; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #1e293b; }
