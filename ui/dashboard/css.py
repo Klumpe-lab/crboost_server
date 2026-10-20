@@ -1059,13 +1059,20 @@ _CB_CSS = """
     transform: translateX(-50%) rotate(45deg);
 }
 .cb-proj-card[data-side="above"]::before { top: auto; bottom: -5px; transform: translateX(-50%) rotate(225deg); }
-/* Every Quasar tooltip: the gallery zoom's translucent slate (denser here, so 10 px text
- * stays legible over white), never wider than about a path and a half; long paths wrap.
- * A tooltip that sets its own max-width inline keeps it. */
-.q-tooltip.q-tooltip--style {
-    background: rgba(51, 65, 85, 0.86); backdrop-filter: blur(3px); color: #f8fafc;
+/* Every tooltip in the app, Quasar's and the native `title` ones (drawn by _TITLE_TIP_JS as
+ * .cb-title-tip): the gallery zoom's translucent slate, the blur doing the work of keeping 10 px text legible
+ * over a busy page; never wider than about a path and a half; long paths wrap. A Quasar tooltip that
+ * sets its own max-width inline keeps it. */
+.q-tooltip.q-tooltip--style, .cb-title-tip {
+    background: rgba(51, 65, 85, 0.62); backdrop-filter: blur(6px); color: #ffffff;
     border-radius: 6px; box-shadow: 0 6px 18px rgba(15, 23, 42, 0.25);
+    font-family: 'IBM Plex Sans', sans-serif; font-size: 10px;
     max-width: min(120ch, 92vw); overflow-wrap: anywhere; line-height: 1.4;
+    text-shadow: 0 1px 1px rgba(15, 23, 42, 0.35);
+}
+.cb-title-tip {
+    position: fixed; z-index: 9500; pointer-events: none; padding: 6px 10px;
+    white-space: pre-line; display: none;
 }
 /* Scroll area that must never scroll sideways (projects roster): content is pinned to
  * the viewport width, so an over-wide child clips instead of growing a horizontal pan. */
@@ -1546,7 +1553,7 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 .cb-atable .dim { color: #94a3b8; }
 .cb-atable .mk { color: #b45309; cursor: help; }
 .cb-atable .err { color: #b91c1c; font-weight: 700; cursor: help; }
-.cb-atable td[title] { cursor: help; }
+.cb-atable td:is([title], [data-cb-tip]) { cursor: help; }
 .cb-atable tr.sel td { background: #eef2ff; }
 .cb-atable .act { color: #6366f1; cursor: pointer; text-decoration: underline dotted; }
 /* ── Pipeline table (ui/pipeline_table_view.py): a row is one job and opens it ── */
@@ -1768,3 +1775,53 @@ def ensure_assets_loaded() -> None:
         return
     client._cb_assets_loaded = True
     ui.add_head_html(f"<style>{_CB_CSS}{_PARTICLES_CSS}</style>")
+    client.run_javascript(_TITLE_TIP_JS)
+
+
+# Native `title` hovers drawn as the app's tooltip. The browser's own is OS-styled and can't be
+# restyled, and the roster and the HTML-string views use `title` because a Quasar tooltip is one
+# more element per cell. One delegated listener and one shared box for the whole page: hovering
+# an element moves its `title` to `data-cb-tip` (so the native one never shows; a new `title`
+# from a later update wins over the stored one) and shows the box under it after a short delay.
+_TITLE_TIP_JS = """
+(() => {
+  if (window.__cbTitleTip) return;
+  window.__cbTitleTip = true;
+  const tip = document.createElement('div');
+  tip.className = 'cb-title-tip';
+  document.body.appendChild(tip);
+  let host = null, timer = 0, mx = 0, shown = false;
+  const hide = () => { clearTimeout(timer); host = null; shown = false; tip.style.display = 'none'; };
+  const place = () => {
+    const r = host.getBoundingClientRect();
+    tip.style.display = 'block';
+    const w = tip.offsetWidth, h = tip.offsetHeight, vw = window.innerWidth, vh = window.innerHeight;
+    const below = r.bottom + 6 + h <= vh - 4;
+    tip.style.left = Math.max(4, Math.min(mx - w / 2, vw - w - 4)) + 'px';
+    tip.style.top = (below ? r.bottom + 6 : Math.max(4, r.top - h - 6)) + 'px';
+  };
+  document.addEventListener('mouseover', (e) => {
+    const el = e.target.closest && e.target.closest('[title], [data-cb-tip]');
+    if (el === host) return;
+    hide();
+    if (!el) return;
+    const t = el.getAttribute('title');
+    if (t !== null) { el.setAttribute('data-cb-tip', t); el.removeAttribute('title'); }
+    const text = el.getAttribute('data-cb-tip');
+    if (!text || !text.trim()) return;
+    host = el; mx = e.clientX;
+    timer = setTimeout(() => {
+      if (host !== el || !el.isConnected) return;
+      tip.textContent = text;
+      shown = true;
+      place();
+    }, 350);
+  }, true);
+  document.addEventListener('mousemove', (e) => { if (host && !shown) mx = e.clientX; }, true);
+  document.addEventListener('mouseout', (e) => {
+    if (host && !(e.relatedTarget && host.contains(e.relatedTarget))) hide();
+  }, true);
+  for (const ev of ['mousedown', 'wheel', 'keydown']) document.addEventListener(ev, hide, true);
+  window.addEventListener('scroll', hide, true);
+})();
+"""
