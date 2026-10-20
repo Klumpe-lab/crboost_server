@@ -87,9 +87,9 @@ _JOB_NUMBER = re.compile(r"job(\d+)")
 _PIPELINE_POSITION = {jt.value: i for i, jt in enumerate(PIPELINE_ORDER)}
 
 
-def _furthest_done(jobs: dict[str, Any]) -> dict[str, str] | None:
+def _furthest_done(jobs: dict[str, Any]) -> dict[str, Any] | None:
     """The succeeded job furthest down the pipeline, for the projects roster's "where it is at"
-    column: its display name and instance id. None when no job has succeeded."""
+    column: its display name, instance id and pipeline position (the sort key). None when no job has succeeded."""
     best: tuple[int, str, str] | None = None
     for iid, job in jobs.items():
         if not isinstance(job, dict) or (job.get("execution_status") or "").strip() != "Succeeded":
@@ -99,7 +99,7 @@ def _furthest_done(jobs: dict[str, Any]) -> dict[str, str] | None:
             best = (position, iid, job["job_type"])
     if best is None:
         return None
-    return {"label": display_name(JobType(best[2])), "instance_id": best[1]}
+    return {"label": display_name(JobType(best[2])), "instance_id": best[1], "position": best[0]}
 
 
 def _find_tomo_preview(project_dir: Path, jobs: dict[str, Any]) -> dict[str, Any] | None:

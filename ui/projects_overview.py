@@ -70,6 +70,10 @@ SORT_MODES = (("recent", "Last opened"), ("created", "Created"))
 DEFAULT_SORT = "recent"
 ANY_SPECIES = "__any__"
 ANY_SPECIES_LABEL = "any species"
+# Column sorts whose first click runs A→Z; every other column starts with the most on top.
+_ASCENDING_FIRST = frozenset({"name", "owner", "species"})
+# The Status column's order: what wants attention first. Idle projects have no badge and sort last.
+_STATUS_RANK = {"failed": 4, "review": 3, "running": 2, "queued": 1, "done": 0}
 
 # WarpTools preview names end in the reconstruction's pixel size: `<tomo>_6.20Apx.png`.
 _PREVIEW_SUFFIX = re.compile(r"_\d+(?:\.\d+)?Apx\.png$")
@@ -301,6 +305,9 @@ class ProjectsOverview:
         self._view_seg = None
         self._species_select = None
         self._sort_mode = DEFAULT_SORT
+        # A clicked column title: (sort key, descending). Overrides _sort_mode until a mode is clicked.
+        self._column_sort: tuple[str, bool] | None = None
+        self._column_labels: dict[str, tuple[ui.label, str, bool]] = {}
         self._species_filter = ANY_SPECIES
         self._syncing_species = False
         self._mru_rank: dict[str, int] = {}
@@ -495,22 +502,52 @@ class ProjectsOverview:
 
     def _build_column_header(self):
         """Compact view: the column titles, above the scroll area so they stay put. Same widths,
-        gap and padding as `_render_compact_body`, plus the chevron's column."""
+        gap and padding as `_render_compact_body`, plus the chevron's column. A title click
+        sorts by its column, a second click reverses it (`_on_column_sort`)."""
         head = ui.element("div").style(
             f"display: flex; align-items: center; gap: 12px; padding: 4px {8 + self._W_CHEVRON}px 4px 14px; "
             f"width: 100%; border-bottom: 1px solid {CLR_BORDER}; background: #f8fafc;"
         )
-        cell = f"{FONT} font-size: 9px; font-weight: 600; color: {CLR_SUBLABEL}; white-space: nowrap;"
         with head:
-            ui.label("Project").style(f"{cell} flex: 1 1 auto; min-width: 0;")
-            for title, width, right, tier in self._COMPACT_COLUMNS:
-                label = ui.label(title).style(
-                    f"{cell} width: {width}px; flex-shrink: 0;{' text-align: right;' if right else ''}"
+            columns = [("name", "Project", None, False, ""), *self._COMPACT_COLUMNS]
+            for key, title, width, right, tier in columns:
+                size = "flex: 1 1 auto; min-width: 0;" if width is None else f"width: {width}px; flex-shrink: 0;"
+                label = (
+                    ui.label(title)
+                    .classes("cb-proj-colhead")
+                    .style(f"{size}{' text-align: right;' if right else ''}")
+                    .on("click", lambda _e, k=key: self._on_column_sort(k))
                 )
                 if tier:
                     label.classes(tier)
+                self._column_labels[key] = (label, title, right)
+        self._paint_column_header()
         head.set_visibility(False)
         return head
+
+    def _paint_column_header(self) -> None:
+        """The sorted column's title in the label color with its arrow, on the side that keeps
+        the title flush with its column's content."""
+        for key, (label, title, right) in self._column_labels.items():
+            if self._column_sort is not None and self._column_sort[0] == key:
+                arrow = "↓" if self._column_sort[1] else "↑"
+                label.set_text(f"{arrow} {title}" if right else f"{title} {arrow}")
+                label.classes(add="active")
+            else:
+                label.set_text(title)
+                label.classes(remove="active")
+
+    def _on_column_sort(self, key: str) -> None:
+        """First click sorts by the column (text up, numbers and states down), a second reverses
+        it. It replaces the Last opened / Created order until one of those is clicked."""
+        if self._column_sort is not None and self._column_sort[0] == key:
+            self._column_sort = (key, not self._column_sort[1])
+        else:
+            self._column_sort = (key, key not in _ASCENDING_FIRST)
+        if self._sort_seg is not None:
+            self._sort_seg.set_active("")
+        self._paint_column_header()
+        self._render_list()
 
     @staticmethod
     def _small_segmented(tabs, active: str, on_switch: Callable[[str], None], *, hint: str):
@@ -560,8 +597,10 @@ class ProjectsOverview:
 
     def _on_sort(self, key: str):
         self._sort_mode = key
+        self._column_sort = None
         if self._sort_seg is not None:
             self._sort_seg.set_active(key)
+        self._paint_column_header()
         self._render_list()
 
     def _on_species_filter(self, e):
@@ -604,6 +643,54 @@ class ProjectsOverview:
             return (-(proj.get("created_timestamp") or 0.0), proj.get("name", ""))
         rank = self._mru_rank.get(self._resolved_path(proj))
         return (0 if rank is not None else 1, rank if rank is not None else 0, -(proj.get("last_activity_ts") or 0.0))
+
+    def _sorted(self, projects: list[dict]) -> list[dict]:
+        """By the clicked column when there is one, else by `_sort_key`. A project the column has
+        nothing for always goes last, in `_sort_key` order, whichever way the column runs."""
+        base = sorted(projects, key=self._sort_key)
+        if self._column_sort is None:
+            return base
+        key, descending = self._column_sort
+        valued = [(self._column_value(key, p), p) for p in base]
+        known = sorted(((v, p) for v, p in valued if v is not None), key=lambda vp: vp[0], reverse=descending)
+        return [p for _, p in known] + [p for v, p in valued if v is None]
+
+    def _column_value(self, key: str, proj: dict):
+        """What a column sorts on; None when the project has nothing there. Text sorts as lowercase,
+        states by how much they want attention (failed first)."""
+        if key == "name":
+            return proj["name"].lower()
+        if key == "live":
+            lp = proj.get("live_progress")
+            if not lp or proj.get("live_status") not in ("running", "queued"):
+                return None
+            return (lp["state"] != "queued", lp.get("failed") or 0, lp["stage"].lower())
+        if key == "owner":
+            return self._owner_label(self._eff_owner_of(proj)).lower()
+        if key == "furthest":
+            return (proj.get("furthest_done") or {}).get("position")
+        if key == "jobs":
+            total = proj.get("total_jobs_planned") or 0
+            return (proj.get("succeeded") or 0, total) if total else None
+        if key == "species":
+            names = [s.get("name") or s["id"] for s in proj.get("species") or []]
+            return " ".join(names).lower() if names else None
+        if key == "size":
+            usage = proj.get("disk_usage")
+            return usage.total_bytes if usage is not None and not usage.error else None
+        if key == "status":
+            return _STATUS_RANK.get(proj.get("live_status") or "idle")
+        value = {
+            "ts": proj.get("ts_count"),
+            "tomos": (proj.get("tomo_preview") or {}).get("n_tomos"),
+            "picks": proj.get("n_picks"),
+            "apix": proj.get("apix"),
+            "kv": proj.get("voltage_kv"),
+            "dose": proj.get("dose_per_tilt"),
+            "activity": proj.get("last_activity_ts"),
+            "trash": proj.get("trash_count"),
+        }[key]
+        return value or None
 
     @staticmethod
     def _resolved_path(proj: dict) -> str:
@@ -714,7 +801,7 @@ class ProjectsOverview:
 
         if compact:
             # One flat list: the owner moves into each row, so no section breaks.
-            for proj in sorted(visible, key=self._sort_key):
+            for proj in self._sorted(visible):
                 add_row(proj)
             return items
 
@@ -733,7 +820,7 @@ class ProjectsOverview:
             return (2, k.lower())
 
         for owner in sorted(groups, key=_section_order):
-            rows = sorted(groups[owner], key=self._sort_key)
+            rows = self._sorted(groups[owner])
             statuses = tuple(p.get("live_status") for p in rows)
             items.append(
                 (f"owner:{owner}", (owner, statuses), lambda o=owner, r=rows: self._render_section_header(o, r))
@@ -829,26 +916,28 @@ class ProjectsOverview:
     _W_DOSE = 62
     _W_ACTIVITY = 76
     _W_TRASH = 52
+    _W_LIVE = 120
 
     # The compact view's columns after the name, in row order (`_render_compact_body`):
-    # (title, width, right-aligned, tier). A narrow roster hides tier 1 first, then 2, then 3
-    # (`.cb-proj-roster` container queries, ui/dashboard/css.py), so the status and the
-    # chevron never leave the row.
+    # (sort key, title, width, right-aligned, tier). A narrow roster hides tier 1 first, then 2,
+    # then 3 (`.cb-proj-roster` container queries, ui/dashboard/css.py), so the status and the
+    # chevron never leave the row. A title click sorts by its column (`_column_value`).
     _COMPACT_COLUMNS = (
-        ("Owner", _W_OWNER, False, "cb-pc-t2"),
-        ("Furthest job", _W_FURTHEST, False, "cb-pc-t3"),
-        ("Jobs", _W_JOBS, True, ""),
-        ("TS", _W_TS, True, ""),
-        ("Tomos", _W_TOMOS, True, "cb-pc-t3"),
-        ("Picks", _W_PICKS, True, "cb-pc-t2"),
-        ("Species", _W_SPECIES, False, "cb-pc-t1"),
-        ("Å/px", _W_APIX, True, "cb-pc-t2"),
-        ("kV", _W_KV, True, "cb-pc-t1"),
-        ("Dose", _W_DOSE, True, "cb-pc-t1"),
-        ("Activity", _W_ACTIVITY, True, "cb-pc-t2"),
-        ("Size", _W_SIZE, True, ""),
-        ("Trash", _W_TRASH, True, ""),
-        ("Status", _W_STATUS, False, ""),
+        ("live", "Running", _W_LIVE, False, ""),
+        ("owner", "Owner", _W_OWNER, False, "cb-pc-t2"),
+        ("furthest", "Furthest job", _W_FURTHEST, False, "cb-pc-t3"),
+        ("jobs", "Jobs", _W_JOBS, True, ""),
+        ("ts", "TS", _W_TS, True, ""),
+        ("tomos", "Tomos", _W_TOMOS, True, "cb-pc-t3"),
+        ("picks", "Picks", _W_PICKS, True, "cb-pc-t2"),
+        ("species", "Species", _W_SPECIES, False, "cb-pc-t1"),
+        ("apix", "Å/px", _W_APIX, True, "cb-pc-t2"),
+        ("kv", "kV", _W_KV, True, "cb-pc-t1"),
+        ("dose", "Dose", _W_DOSE, True, "cb-pc-t1"),
+        ("activity", "Activity", _W_ACTIVITY, True, "cb-pc-t2"),
+        ("size", "Size", _W_SIZE, True, ""),
+        ("trash", "Trash", _W_TRASH, True, ""),
+        ("status", "Status", _W_STATUS, False, ""),
     )
 
     def _render_row(self, proj: dict, *, compact: bool = False) -> ui.element:
@@ -1040,9 +1129,9 @@ class ProjectsOverview:
         return route_to_path(Route(project=p.name, base=str(p.parent)))
 
     def _render_compact_body(self, proj: dict, row: ui.element):
-        """Compact view: one line -- the name, a live run's progress, then the columns of
-        `_COMPACT_COLUMNS` in that order, pushed to the row's right end. The owner sits in the
-        row because the compact list has no owner sections."""
+        """Compact view: one line -- the name, then the columns of `_COMPACT_COLUMNS` in that
+        order, pushed to the row's right end. The owner sits in the row because the compact list
+        has no owner sections."""
         ts_count = proj.get("ts_count") or 0
         fixed = "flex-shrink: 0; white-space: nowrap;"
         cell = self._text_cell
@@ -1055,6 +1144,7 @@ class ProjectsOverview:
                     "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 0 1 auto;"
                 )
                 self._render_hover_card(proj, zone, row)
+            with ui.element("div").style(f"width: {self._W_LIVE}px; {fixed} display: flex; overflow: hidden;"):
                 self._render_live_progress(proj)
             cell(self._owner_label(self._eff_owner_of(proj)), color=CLR_SUBLABEL, width=self._W_OWNER, tier="cb-pc-t2")
             text, title = self._furthest_text(proj)
@@ -1385,8 +1475,8 @@ class ProjectsOverview:
     @staticmethod
     def _render_live_progress(proj: dict):
         """A live run at a glance (backend._live_progress): the job at work, its tilt-series
-        done out of those in scope, and how many the run has failed so far, in red, since each
-        is dropped from every job after it. Live projects only; the hover breaks it down."""
+        done out of those in scope, and a red dot when the run has failed some, since each is
+        dropped from every job after it. Live projects only; the hover breaks it down."""
         lp = proj.get("live_progress")
         if not lp or proj.get("live_status") not in ("running", "queued"):
             return
@@ -1401,18 +1491,23 @@ class ProjectsOverview:
         n_tomos = (proj.get("tomo_preview") or {}).get("n_tomos")
         if n_tomos:
             lines.append(f"{n_tomos} tomograms reconstructed")
-        cell = f"{MONO} font-size: 9px; white-space: nowrap;"
-        box = ui.element("div").style("display: flex; align-items: baseline; gap: 5px; flex-shrink: 0;")
+        cell = f"{MONO} font-size: 9px; white-space: nowrap; flex-shrink: 0;"
+        box = ui.element("div").style("display: flex; align-items: baseline; gap: 5px; min-width: 0;")
         with _set_title(box, "\n".join(lines)):
             ui.label(lp["stage"]).style(
-                f"{FONT} font-size: 9px; font-weight: 600; color: {CLR_RUNNING}; white-space: nowrap;"
+                f"{FONT} font-size: 9px; font-weight: 600; color: {CLR_RUNNING}; white-space: nowrap; "
+                "overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto;"
             )
             if lp["state"] == "queued":
                 ui.label("queued").style(f"{cell} color: {CLR_SUBLABEL};")
             elif lp["total"]:
                 ui.label(f"{lp['ok']}/{lp['total']}").style(f"{cell} color: {CLR_LABEL};")
             if lp["failed"]:
-                ui.label(f"· {lp['failed']} failed").style(f"{cell} color: {CLR_FAILED};")
+                # A superscript dot, the count in the hover.
+                ui.element("div").style(
+                    f"width: 5px; height: 5px; border-radius: 50%; background: {CLR_FAILED}; "
+                    "align-self: flex-start; margin: 1px 0 0 -3px; flex-shrink: 0;"
+                )
 
     @staticmethod
     def _render_status(proj: dict):
