@@ -39,7 +39,7 @@ from ui.components.buttons import house_button
 from ui.components.chip import render_method_chip, render_polarity_chip
 from ui.components.color_swatch import render_color_swatch
 from ui.components.path_link import render_path_link
-from ui.job_plugins._field_styles import PANEL_STYLE, PANEL_TITLE_STYLE
+from ui.job_plugins._field_styles import PANEL_HEAD_STYLE, PANEL_STYLE, PANEL_TITLE_STYLE
 from ui.particles.list_actions import commit_extraction_geometry
 from services.particles.catalog import is_enabled as catalog_is_enabled
 from ui.components.reactive import FingerprintedView, SingleFlight
@@ -69,7 +69,7 @@ def _section(title: str, *, tooltip: str | None = None) -> None:
     """A section's title, the first line inside its panel (`PANEL_STYLE`). One helper so a new
     section cannot invent a fourth heading style. No underline rule and no hint tail — panels are
     separated by the page's gap, and anything worth saying rides the title's tooltip."""
-    lbl = ui.label(title).style(f"{PANEL_TITLE_STYLE} margin-bottom: 4px;")
+    lbl = ui.label(title).style(f"{PANEL_TITLE_STYLE} {PANEL_HEAD_STYLE} margin-bottom: 4px;")
     if tooltip:
         lbl.tooltip(tooltip)
 
