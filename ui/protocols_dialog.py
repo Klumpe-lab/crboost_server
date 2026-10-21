@@ -37,11 +37,12 @@ logger = logging.getLogger(__name__)
 
 _flight = SingleFlight()
 
-# A grid row is a plain div inside a ui.column (align-items: flex-start): without an
-# explicit width it shrink-wraps, so the row carries width: 100% itself.
+# A protocol is a pale gray-blue panel of its own, the rows set apart by the list's gap rather than a rule.
+# A grid row is a plain div inside a ui.column (align-items: flex-start): without an explicit width it
+# shrink-wraps, so the row carries width: 100% itself.
 _ROW = (
     "display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; "
-    "padding: 6px 0; width: 100%; box-sizing: border-box;"
+    "padding: 8px 10px; width: 100%; box-sizing: border-box; background: #eef3f8; border-radius: 6px;"
 )
 
 
@@ -59,8 +60,7 @@ async def open_protocols_dialog(backend) -> None:
                     "~/.crboost/protocols/. Click a protocol to see every stage and its parameters. Create project "
                     "makes a regular project with those species and stages, ready to Run."
                 ).style(TEXT)
-            ui.element("div").style("height: 1px; background: #e2e8f0; margin: 0 16px;")
-            with ui.column().classes("w-full gap-0").style("padding: 4px 16px 8px;"):
+            with ui.column().classes("w-full").style("padding: 4px 16px 8px; gap: 6px;"):
                 if not infos:
                     ui.label("No protocol bundles found.").style(TEXT + " padding: 8px 0;")
                 for info in infos:
@@ -72,7 +72,7 @@ async def open_protocols_dialog(backend) -> None:
 
 
 def _protocol_row(backend, dialog, info: ProtocolInfo) -> None:
-    with ui.element("div").style(_ROW + " border-bottom: 1px solid #f1f5f9;"):
+    with ui.element("div").style(_ROW):
         with ui.column().classes("gap-0").style("min-width: 0;"):
             name = ui.label(info.name).style(VAL + " font-weight: 600;")
             if info.protocol is None:
@@ -112,7 +112,6 @@ def _open_protocol_detail(info: ProtocolInfo) -> None:
             if p.description:
                 ui.label(p.description).style(TEXT)
             copyable_path(str(info.bundle_dir), font_size="9px", color="#94a3b8")
-        ui.element("div").style("height: 1px; background: #e2e8f0; margin: 0 16px;")
         with ui.scroll_area().classes("w-full cb-scroll-tight").style("height: 70vh;"):
             with ui.column().classes("w-full gap-0").style("padding: 2px 16px 14px;"):
                 for sp in p.species:

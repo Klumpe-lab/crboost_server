@@ -9,7 +9,8 @@ import re
 import shutil
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 from datetime import datetime
@@ -65,6 +66,16 @@ def _is_pipeline_job_dict(job: Any) -> bool:
     The scan reads json and cannot see ``IS_INTERACTIVE``, so the job type is the filter.
     ``tiltFilter`` stays counted: interactive to launch, but pipeline work."""
     return not (isinstance(job, dict) and job.get("job_type") == JobType.EXTRACT_PICK_LIST.value)
+
+
+# How often a streaming project scan hands over what it has found so far.
+_PARTIAL_SCAN_EVERY_S = 0.3
+
+
+def _scan_order(project: dict[str, Any]) -> tuple:
+    """The project scan's stable order: oldest first by created_at (or the ctime fallback). Newly
+    created projects go to the end, and edits to project_params.json never shuffle positions."""
+    return (project["created_timestamp"], project["name"])
 
 
 def _registry_ts_count(project_dir: Path) -> int:
@@ -1732,8 +1743,29 @@ class CryoBoostBackend:
 
         return str(Path.home())
 
-    async def scan_for_projects(self, base_path: str) -> list[dict[str, Any]]:
-        projects = await asyncio.to_thread(self._scan_for_projects_sync, base_path)
+    async def scan_for_projects(
+        self, base_path: str, on_partial: Callable[[list[dict[str, Any]]], None] | None = None
+    ) -> list[dict[str, Any]]:
+        """Every project under `base_path`, in scan order. `on_partial`, when given, is called on the
+        event loop (inside this coroutine, so in the caller's UI context) with the projects found so
+        far, in the same order, while the scan runs."""
+        if on_partial is None:
+            projects = await asyncio.to_thread(self._scan_for_projects_sync, base_path)
+        else:
+            loop = asyncio.get_running_loop()
+            partials: asyncio.Queue[list[dict[str, Any]] | None] = asyncio.Queue()
+            scan = asyncio.ensure_future(
+                asyncio.to_thread(
+                    self._scan_for_projects_sync,
+                    base_path,
+                    lambda found: loop.call_soon_threadsafe(partials.put_nowait, found),
+                )
+            )
+            # Runs after every partial the thread queued: those were scheduled before the result was.
+            scan.add_done_callback(lambda _t: partials.put_nowait(None))
+            while (found := await partials.get()) is not None:
+                on_partial(found)
+            projects = await scan
         self._project_scans[base_path] = projects
         # Sizes are measured in the background; a later scan picks the results up.
         get_disk_usage_service().request([p["path"] for p in projects if p["disk_usage_stale"]])
@@ -1743,7 +1775,9 @@ class CryoBoostBackend:
         """What the last scan_for_projects of this base found; None before the first. Read-only."""
         return self._project_scans.get(base_path)
 
-    def _scan_for_projects_sync(self, base_path: str) -> list[dict[str, Any]]:
+    def _scan_for_projects_sync(
+        self, base_path: str, on_partial: Callable[[list[dict[str, Any]]], None] | None = None
+    ) -> list[dict[str, Any]]:
         path = Path(base_path)
 
         logger.debug("Scanning directory: %s", path)
@@ -1964,19 +1998,25 @@ class CryoBoostBackend:
 
             # Each project costs a dozen metadata round-trips; on a cold NFS cache, one project
             # after the other adds up to seconds for a full base.
+            projects: list[dict[str, Any]] = []
             with ThreadPoolExecutor(max_workers=16) as pool:
-                projects = [p for p in pool.map(scan_one, path.iterdir()) if p is not None]
+                futures = [pool.submit(scan_one, item) for item in path.iterdir()]
+                last_partial = time.monotonic()
+                for future in as_completed(futures):
+                    found = future.result()
+                    if found is None:
+                        continue
+                    projects.append(found)
+                    if on_partial is not None and time.monotonic() - last_partial >= _PARTIAL_SCAN_EVERY_S:
+                        # A new list each time: the loop reads it while this thread goes on appending.
+                        on_partial(sorted(projects, key=_scan_order))
+                        last_partial = time.monotonic()
 
         except Exception as e:
             logger.error("Error scanning projects: %s", e)
             return []
 
-        # Stable order: oldest-first by created_at (or ctime fallback). Newly
-        # created projects always go to the end -- positions never shuffle on
-        # in-place edits to project_params.json.
-        projects.sort(key=lambda x: (x["created_timestamp"], x["name"]))
-        for idx, proj in enumerate(projects, start=1):
-            proj["stable_index"] = idx
+        projects.sort(key=_scan_order)
         logger.debug("Found %d valid projects.", len(projects))
         return projects
 

@@ -13,13 +13,12 @@ from ui.components.reactive import Debounced
 from ui.current_project import current_project_state
 from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
 from ui.job_plugins import get_extra_tabs, get_full_panel_renderer
-from ui.job_plugins._field_styles import config_section
+from ui.job_plugins._field_styles import PANEL_STYLE, PANEL_TITLE_STYLE, config_section
 from ui.routing import View
-from ui.components.segmented import render_segmented
 from ui.components.species_pill import render_species_mark
 from ui.status_indicator import BoundStatusDot
 from services.models_base import instance_id_to_job_type
-from ui.ui_state import UIStateManager, MonitorTab, get_job_display_name, get_instance_display_name
+from ui.ui_state import UIStateManager, MonitorTab, get_instance_display_name
 from ui.pipeline_builder.config_tab import render_config_tab, in_use_notice, is_job_frozen
 from ui.pipeline_builder.io_tab import render_io_tab
 from ui.pipeline_builder.slurm_tab import render_slurm_tab
@@ -33,6 +32,13 @@ logger = logging.getLogger(__name__)
 # in the job header so users know the tool is not yet production-hardened (its interface,
 # routing and outputs may still change).
 _EXPERIMENTAL_JOB_TYPES = {JobType.MISS_ALIGN}
+
+# The line under the view's title on every job page: no rule under it, the sections below are panels.
+_JOB_LINE_STYLE = "flex-shrink: 0; gap: 8px; min-height: 22px; padding: 0 14px 6px;"
+_PATH_STYLE = (
+    "font-size: 10px; font-family: 'IBM Plex Mono', monospace; color: #94a3b8; "
+    "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;"
+)
 
 
 def create_save_handler(ui_mgr: UIStateManager) -> Callable:
@@ -56,15 +62,54 @@ def create_save_handler(ui_mgr: UIStateManager) -> Callable:
     return _trigger
 
 
-def _build_tab_list(job_type: JobType):
-    tabs = [(MonitorTab.CONFIG.value, "Config"), (MonitorTab.LOGS.value, "Logs"), (MonitorTab.FILES.value, "Files")]
-    for et in get_extra_tabs(job_type):
-        tabs.append((et.key, et.label))
-    return tabs
+# The sections after Parameters / I/O / SLURM that read the job directory when built: shown folded
+# until opened (or named by the URL), then built once. Each sits in a fixed-height box the user can
+# drag taller; its view scrolls inside it.
+_LAZY_BOX_STYLE = (
+    "width: 100%; height: 360px; min-height: 140px; resize: vertical; overflow: hidden; "
+    "display: flex; flex-direction: column; background: #fff; border-radius: 4px;"
+)
 
 
-def _render_tab_content(
-    tab_key: str,
+def _section_dom_id(instance_id: str, key: str) -> str:
+    return f"cb-jsec-{instance_id}-{key}"
+
+
+def _lazy_sections(job_type: JobType) -> list[tuple[str, str, bool]]:
+    """(key, title, boxed) of the page's folded sections, in page order: the extra tabs (Tasks,
+    Results), the log, the files. Boxed ones fill a fixed-height box; the rest take their height."""
+    out = [(et.key, et.label, et.key == "tasks") for et in get_extra_tabs(job_type)]
+    out.append((MonitorTab.LOGS.value, "Log", True))
+    out.append((MonitorTab.FILES.value, "Files", True))
+    return out
+
+
+def _render_lazy_section(title: str, boxed: bool, *, open_: bool, dom_id: str, build: Callable) -> Callable:
+    """A folded section: its title line opens and closes it; the content is built on the first
+    opening. Returns its opener."""
+    built = {"done": False}
+    with ui.column().classes("w-full").style(f"gap: 8px; {PANEL_STYLE}").props(f"id={dom_id}"):
+        with ui.row().classes("items-center no-wrap").style("gap: 5px; cursor: pointer; user-select: none;") as head:
+            caret = ui.label("▸").style("font-size: 9px; color: #94a3b8; width: 8px;")
+            ui.label(title).style(PANEL_TITLE_STYLE)
+        body = ui.element("div").style(_LAZY_BOX_STYLE if boxed else "width: 100%;")
+        body.set_visibility(False)
+
+    def set_open(on: bool) -> None:
+        if on and not built["done"]:
+            built["done"] = True
+            with body:
+                build()
+        body.set_visibility(on)
+        caret.set_text("▾" if on else "▸")
+
+    head.on("click", lambda _e: set_open(not body.visible))
+    if open_:
+        set_open(True)
+    return lambda: set_open(True)
+
+
+def _render_job_page(
     job_type: JobType,
     instance_id: str,
     job_model,
@@ -73,55 +118,62 @@ def _render_tab_content(
     backend,
     ui_mgr: UIStateManager,
     callbacks: dict[str, Callable] | None = None,
-):
-    if tab_key == MonitorTab.CONFIG.value:
-        # An edit in one section can change what another shows: missAlign's parameters set the time limit
-        # and GRES its SLURM section displays, and its warnings read the SLURM settings. Parameters and
-        # SLURM save through `on_edit`, which then reruns the refresh each of them hands back.
-        edit_refreshes: list[Callable[[], None]] = []
+) -> dict[str, Callable]:
+    """The job's one page: Parameters, Inputs / Outputs and SLURM resources open, then the folded
+    sections (_lazy_sections). Returns each folded section's opener by key."""
+    # An edit in one section can change what another shows: missAlign's parameters set the time limit
+    # and GRES its SLURM section displays, and its warnings read the SLURM settings. Parameters and
+    # SLURM save through `on_edit`, which then reruns the refresh each of them hands back.
+    edit_refreshes: list[Callable[[], None]] = []
 
-        def _run_refreshes() -> None:
-            for refresh in edit_refreshes:
-                refresh()
+    def _run_refreshes() -> None:
+        for refresh in edit_refreshes:
+            refresh()
 
-        # The fields write the model on every change; the sections that follow them repaint once
-        # typing pauses, not per keystroke.
-        refresh_soon = Debounced(_run_refreshes)
+    # The fields write the model on every change; the sections that follow them repaint once
+    # typing pauses, not per keystroke.
+    refresh_soon = Debounced(_run_refreshes)
 
-        def on_edit() -> None:
-            save_handler()
-            refresh_soon()
+    def on_edit() -> None:
+        save_handler()
+        refresh_soon()
 
-        # All sections open on one page, separated by whitespace; the I/O component
-        # renders its own Inputs / Outputs sections at the same title scale.
-        with ui.scroll_area().classes("w-full h-full"):
-            with ui.column().classes("w-full").style("padding: 8px 14px 12px; gap: 18px;"):
-                with config_section("Parameters"):
-                    params_refresh = render_config_tab(
-                        job_type,
-                        job_model,
-                        is_frozen,
-                        ui_mgr,
-                        backend,
-                        on_edit,
-                        instance_id=instance_id,
-                        callbacks=callbacks,
-                    )
-                    if params_refresh is not None:
-                        edit_refreshes.append(params_refresh)
-                render_io_tab(job_type, instance_id, job_model, is_frozen, ui_mgr, save_handler)
-                with config_section("SLURM resources"):
-                    edit_refreshes.append(render_slurm_tab(job_model, is_frozen, on_edit))
-    elif tab_key == MonitorTab.LOGS.value:
-        render_logs_tab(job_type, instance_id, job_model, backend, ui_mgr)
-    elif tab_key == MonitorTab.FILES.value:
-        render_files_tab(job_type, job_model, ui_mgr)
-    else:
-        for et in get_extra_tabs(job_type):
-            if tab_key == et.key:
-                et.render(job_type, instance_id, job_model, backend, ui_mgr)
-                return
-        ui.label(f"Unknown tab: {tab_key}").classes("text-red-500 p-4")
+    openers: dict[str, Callable] = {}
+    active = ui_mgr.get_job_ui_state(instance_id).active_monitor_tab
+    with ui.scroll_area().classes("w-full h-full"):
+        with ui.column().classes("w-full").style("padding: 4px 14px 16px; gap: 10px;"):
+            with config_section("Parameters"):
+                params_refresh = render_config_tab(
+                    job_type,
+                    job_model,
+                    is_frozen,
+                    ui_mgr,
+                    backend,
+                    on_edit,
+                    instance_id=instance_id,
+                    callbacks=callbacks,
+                )
+                if params_refresh is not None:
+                    edit_refreshes.append(params_refresh)
+            # An input chosen there changes what the other sections say of it (template matching's
+            # search-region note), so it is an edit like theirs.
+            edit_refreshes.append(render_io_tab(job_type, instance_id, job_model, is_frozen, ui_mgr, on_edit))
+            with config_section("SLURM resources"):
+                edit_refreshes.append(render_slurm_tab(job_model, is_frozen, on_edit))
+
+            builders: dict[str, Callable[[], None]] = {
+                et.key: lambda et=et: et.render(job_type, instance_id, job_model, backend, ui_mgr)
+                for et in get_extra_tabs(job_type)
+            }
+            builders[MonitorTab.LOGS.value] = lambda: render_logs_tab(job_type, instance_id, job_model, backend, ui_mgr)
+            builders[MonitorTab.FILES.value] = lambda: render_files_tab(job_type, job_model, ui_mgr)
+            for key, title, boxed in _lazy_sections(job_type):
+                # The log is open from the start once the job has run; the others when the URL names them.
+                open_ = key == active or (key == MonitorTab.LOGS.value and bool(job_model.relion_job_name))
+                openers[key] = _render_lazy_section(
+                    title, boxed, open_=open_, dom_id=_section_dom_id(instance_id, key), build=builders[key]
+                )
+    return openers
 
 
 def render_job_tab(
@@ -140,26 +192,12 @@ def render_job_tab(
         _render_interactive_job(job_type, instance_id, job_model, backend, ui_mgr, callbacks, full_renderer)
         return
 
-    job_ui_state = ui_mgr.get_job_ui_state(instance_id)
     widget_refs = ui_mgr.get_job_widget_refs(instance_id)
-
     frozen = is_job_frozen(instance_id)
-    active_tab = job_ui_state.active_monitor_tab
-
     is_running = job_model.execution_status == JobStatus.RUNNING
 
-    # --- Header --- (its right padding keeps the view's close cross clear)
-    with (
-        ui.row()
-        .classes("w-full items-center border-b border-gray-200 bg-white px-3 gap-2")
-        .style("flex-shrink: 0; min-height: 28px; padding-top: 3px; padding-bottom: 3px; padding-right: 22px;")
-    ):
-        widget_refs.switcher = render_segmented(
-            _build_tab_list(job_type),
-            active_tab,
-            lambda t: _handle_tab_switch(job_type, instance_id, t, backend, ui_mgr, callbacks),
-        )
-
+    # --- The job's line under the view's title (which names the job): its marks, folder and actions ---
+    with ui.row().classes("w-full items-center no-wrap").style(_JOB_LINE_STYLE):
         # Species glyph for particle jobs (templatematching / subtomo / reconstruct
         # / class3d / candidate-extract), named on hover — the roster's own mark.
         _sp_id = getattr(job_model, "species_id", None)
@@ -182,10 +220,7 @@ def render_job_tab(
 
         if job_model.relion_job_name and ui_mgr.project_path:
             full_path = str(ui_mgr.project_path / job_model.relion_job_name.rstrip("/"))
-            ui.label(full_path).style(
-                "font-size: 10px; font-family: 'IBM Plex Mono', monospace; color: #94a3b8; "
-                "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;"
-            )
+            ui.label(full_path).style(_PATH_STYLE)
             ui.button(
                 icon="content_copy",
                 on_click=lambda p=full_path: ui.run_javascript(f"navigator.clipboard.writeText({p!r})"),
@@ -219,14 +254,10 @@ def render_job_tab(
             ).props("flat round dense size=xs color=red").tooltip("Delete this job")
 
     # --- Content ---
-    content_container = ui.column().classes("w-full overflow-hidden").style("flex: 1 1 0%; min-height: 0;")
-    widget_refs.content_container = content_container
-
     save_handler = create_save_handler(ui_mgr)
-
-    with content_container:
-        _render_tab_content(
-            active_tab, job_type, instance_id, job_model, frozen, save_handler, backend, ui_mgr, callbacks
+    with ui.column().classes("w-full overflow-hidden").style("flex: 1 1 0%; min-height: 0;"):
+        widget_refs.section_openers = _render_job_page(
+            job_type, instance_id, job_model, frozen, save_handler, backend, ui_mgr, callbacks
         )
 
 
@@ -250,14 +281,9 @@ def _render_interactive_job(
         else "Automatic — a Run submits this step as a chain job after fsMotion: it predicts every tilt and "
         "drops those at or above the threshold (labels you set still win), and alignment follows without a review."
     )
-    # --- Compact header ---
-    with (
-        ui.row()
-        .classes("w-full items-center px-6 py-2 border-b border-gray-200 bg-white gap-3")
-        .style("flex-shrink: 0;")
-    ):
+    # --- The job's line under the view's title, as on every job page ---
+    with ui.row().classes("w-full items-center no-wrap").style(_JOB_LINE_STYLE):
         BoundStatusDot(instance_id)
-        ui.label(get_job_display_name(job_type)).classes("text-sm font-semibold text-gray-800")
         with (
             ui.element("div")
             .style(
@@ -271,13 +297,13 @@ def _render_interactive_job(
             )
         if job_model.relion_job_name and ui_mgr.project_path:
             full_path = str(ui_mgr.project_path / job_model.relion_job_name.rstrip("/"))
-            ui.label(full_path).classes("text-xs font-mono text-gray-400")
+            ui.label(full_path).style(_PATH_STYLE)
         ui.space()
         if ui_mgr.is_project_created:
             ui.button(
                 icon="delete",
                 on_click=lambda: _handle_delete(job_type, instance_id, job_model, backend, ui_mgr, callbacks),
-            ).props("flat round dense color=red").tooltip("Delete this job")
+            ).props("flat round dense size=xs color=red").tooltip("Delete this job")
 
     # --- Full panel content ---
     save_handler = create_save_handler(ui_mgr)
@@ -288,31 +314,21 @@ def _render_interactive_job(
 def _handle_tab_switch(
     job_type: JobType, instance_id: str, tab_key: str, backend, ui_mgr: UIStateManager, callbacks: dict[str, Callable]
 ):
+    """A deep link to one part of the job's page (the URL's third segment, the roster's Tasks
+    link): open that section and scroll it into view; "config" is the top of the page."""
     ui_mgr.set_job_monitor_tab(instance_id, tab_key, user_initiated=True)
     set_url = (callbacks or {}).get("set_url")
     if set_url:
         set_url(View.JOB, instance_id, tab_key)
-    widget_refs = ui_mgr.get_job_widget_refs(instance_id)
-
-    if widget_refs.switcher:
-        widget_refs.switcher.set_active(tab_key)
-
-    if tab_key != MonitorTab.LOGS.value:
-        ui_mgr.cleanup_job_logs_timer(instance_id)
-
-    content_container = widget_refs.content_container
-    if content_container:
-        state = current_project_state()
-        job_model = state.jobs.get(instance_id)
-        if job_model is None:
-            return
-        frozen = is_job_frozen(instance_id)
-        save_handler = create_save_handler(ui_mgr)
-        content_container.clear()
-        with content_container:
-            _render_tab_content(
-                tab_key, job_type, instance_id, job_model, frozen, save_handler, backend, ui_mgr, callbacks
-            )
+    opener = ui_mgr.get_job_widget_refs(instance_id).section_openers.get(tab_key)
+    if opener is None:
+        return
+    opener()
+    # A section built just now reaches the browser with this update; scroll once it is there.
+    ui.run_javascript(
+        f"setTimeout(() => document.getElementById({_section_dom_id(instance_id, tab_key)!r})"
+        "?.scrollIntoView({block: 'start', behavior: 'smooth'}), 60);"
+    )
 
 
 async def _handle_stop_job(

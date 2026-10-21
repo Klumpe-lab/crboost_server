@@ -37,6 +37,7 @@ from ui.components.dialogs import dialog_host
 from ui.components.fields import house_number
 from ui.components.reactive import FingerprintedView, SingleFlight, ViewScope, owned_timer
 from ui.dashboard.css import ensure_assets_loaded
+from ui.job_plugins._field_styles import PANEL_STYLE, PANEL_TITLE_STYLE
 from ui.dashboard.figures import (
     SMALL_CHART_PX,
     TILT_STATES,
@@ -167,11 +168,14 @@ class TiltFilterPage:
         self._applied_threshold = jm.threshold
         page = ui.element("div").style("width: 100%; flex: 1 1 0; min-height: 0; overflow-y: auto; overflow-x: hidden;")
         with page:
-            with ui.element("div").style("display: flex; flex-direction: column; gap: 10px; padding: 10px 14px 4px;"):
-                self._render_numbers()
-                self._render_review(jm)
-                self._render_charts_toggle()
-            self._controls = ui.element("div").style("padding: 4px 14px 0; min-width: 0;")
+            # The review's numbers, actions and charts on one panel; the tilt series below are panels of their own.
+            with ui.element("div").style("padding: 4px 14px 0;"):
+                with ui.element("div").style(f"display: flex; flex-direction: column; gap: 10px; {PANEL_STYLE}"):
+                    ui.label("Review").style(PANEL_TITLE_STYLE)
+                    self._render_numbers()
+                    self._render_review(jm)
+                    self._render_charts_toggle()
+            self._controls = ui.element("div").style("padding: 10px 14px 0; min-width: 0;")
             self._body = ui.element("div").style("min-width: 0;")
             with self._body, ui.element("div").classes("cb-empty"):
                 ui.spinner(size="lg", color="indigo")

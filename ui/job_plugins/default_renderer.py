@@ -151,12 +151,12 @@ def render_denoise_inheritance(job_model, project_path: Path | None, *, is_froze
         with (
             ui.element("div")
             .style(
-                "display: inline-flex; align-items: center; background: #f3e8ff; "
-                "border: 1px solid #e9d5ff; border-radius: 999px; padding: 1px 8px;"
+                "display: inline-flex; align-items: center; background: #e3ebf4; "
+                "border-radius: 999px; padding: 1px 8px;"
             )
             .tooltip("Inherited from the denoise-train job — set the method there; predict follows it automatically.")
         ):
-            ui.label(method.value).style("font-size: 10px; color: #6b21a8; font-weight: 600;")
+            ui.label(method.value).style("font-size: 10px; color: #2c4a6b; font-weight: 600;")
         ui.label("inherited from denoise-train").style(f"{SANS} font-size: 9px; color: {CLR_SUBLABEL};")
 
 
@@ -166,18 +166,19 @@ def render_denoise_inheritance(job_model, project_path: Path | None, *, is_froze
 
 
 def render_config_preamble(job_model):
-    """Collapsible 'How this job works' panel from the param class's CONFIG_PREAMBLE
+    """Collapsible 'How this job works' fold from the param class's CONFIG_PREAMBLE
     (markdown). No-op when the class defines no preamble."""
     text = (getattr(job_model, "CONFIG_PREAMBLE", "") or "").strip()
     if not text:
         return
     with (
-        ui.expansion("How this job works", icon="info")
+        ui.expansion("How this job works", icon="info_outline")
         .props("dense")
         .classes("w-full")
-        .style("border: 1px solid #e9d5ff; border-radius: 5px; background: #faf5ff; margin-bottom: 8px;")
+        .style("margin-bottom: 8px;")
     ) as exp:
-        exp.props('header-class="text-[11px] font-semibold text-purple-800"')
+        # Folded text inside the Parameters panel: no box of its own.
+        exp.props('header-class="text-[11px] font-semibold text-slate-600 px-0"')
         with ui.column().classes("w-full").style("padding: 2px 12px 8px;"):
             ui.markdown(text).classes("cb-preamble").style("font-size: 11px; line-height: 1.5; color: #334155;")
 

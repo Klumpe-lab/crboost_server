@@ -60,7 +60,7 @@ from ui.components.reactive import SingleFlight
 from ui.components.segmented import render_segmented
 from ui.components.buttons import house_button
 from ui.components.fields import house_field as _field
-from ui.job_plugins._field_styles import PAGE_SECTION_STYLE
+from ui.job_plugins._field_styles import PANEL_STYLE, PANEL_TITLE_STYLE, SECTION_HEADER_FIRST_STYLE
 from ui.components.template_viewer import TemplateViewerController, render_template_viewer
 from ui.local_file_picker import local_file_picker
 from ui.template_import_dialog import open_template_import_dialog
@@ -166,13 +166,14 @@ COLOR_PALETTE = [
 
 
 # ─── Shared style chrome ────────────────────────────────────────────────
-# Three font sizes total. Two accent colors total. Section panels use
-# a thin gray underline rather than full card borders.
+# Three font sizes total. Two accent colors total. The page's blocks are pale gray-blue
+# panels (`PANEL_STYLE`) a gap apart, never underlined or boxed in borders.
 
 # Three ranks; an element uses the one that matches what it is, so a page block
 # ("Source") and one input's label ("apix") never read at the same weight:
-#   SECTION  — `_section()` below: 11 px semibold MIXED case + a rule. Templates · Masks ·
-#              Source · Viewer. The page's structure.
+#   SECTION  — `_section()` below: a panel's title, 12 px semibold MIXED case. Templates ·
+#              Masks · Viewer · Activity log. The page's structure; `_subsection()` (Source)
+#              is a block inside a panel.
 #   TOOL     — `_TOOL_CLS`: 10 px semibold mixed case. One tool inside a panel — Resample,
 #              Apply lowpass, Flip polarity. Named, but subordinate to its section.
 #   FIELD    — `_LABEL_CLS`: 9 px uppercase, muted. The label of ONE input, and the column
@@ -207,12 +208,17 @@ _SANS = "font-family: 'IBM Plex Sans', sans-serif;"
 
 
 def _section(title: str) -> None:
-    """A block header for the page's own structure — Templates, Masks, Source, Viewer.
-    `PAGE_SECTION_STYLE` (12 px semibold), no underline rule and no explanatory tail:
-    the header + whitespace carry the structure and the tables draw their own head
-    border."""
-    with ui.row().classes("w-full items-baseline gap-2 px-1"):
-        ui.label(title).style(PAGE_SECTION_STYLE)
+    """A panel's title — Templates, Masks, Viewer, Activity log. `PANEL_TITLE_STYLE`, no
+    underline rule and no explanatory tail: the panel and the gap between panels carry the
+    structure, and the tables draw their own head border."""
+    with ui.row().classes("w-full items-baseline gap-2"):
+        ui.label(title).style(f"{PANEL_TITLE_STYLE} margin-bottom: 4px;")
+
+
+def _subsection(title: str) -> None:
+    """A block inside a panel (Source): whitespace above it and the sub-section rank."""
+    with ui.row().classes("w-full items-baseline gap-2"):
+        ui.label(title).style(SECTION_HEADER_FIRST_STYLE)
 
 
 def _action_button(label: str, on_click) -> ui.button:
@@ -1022,15 +1028,16 @@ class TemplateWorkbench:
         # two columns on a wide window, one when the workspace is narrow or the roster
         # is open, with no breakpoint to maintain. `align-items: start` keeps a long
         # template list from stretching the mask column.
-        with ui.column().classes("w-full gap-4 p-2"):
+        # Each column is one panel: its list over the Source block that adds to it.
+        with ui.column().classes("w-full p-2").style("gap: 10px;"):
             with ui.element("div").style(
                 "display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); "
-                "gap: 16px; width: 100%; align-items: start;"
+                "gap: 10px; width: 100%; align-items: start;"
             ):
-                with ui.column().classes("gap-2 min-w-0").style("width: 100%;"):
+                with ui.column().classes("gap-2 min-w-0").style(f"width: 100%; {PANEL_STYLE}"):
                     self._render_templates_section()
                     self._render_source_panel()
-                with ui.column().classes("gap-2 min-w-0").style("width: 100%;"):
+                with ui.column().classes("gap-2 min-w-0").style(f"width: 100%; {PANEL_STYLE}"):
                     self._render_masks_section()
             self._render_viewer_panel()
             self._render_log_panel()
@@ -1069,7 +1076,7 @@ class TemplateWorkbench:
                 .classes("cb-tw-table")
                 .style(
                     f"--cb-tw-cols: {_TW_COLS}; --cb-accent: {_INDIGO}; --cb-accent-tint: {_INDIGO}14; "
-                    f"height: {_LIST_HEIGHT_PX}px; overflow-y: auto;"
+                    f"height: {_LIST_HEIGHT_PX}px; overflow-y: auto; background: #ffffff; border-radius: 4px;"
                 )
             )
             with self._templates_table:
@@ -1259,7 +1266,7 @@ class TemplateWorkbench:
         # mt-3: clear air between the list block above and this one — the subsection
         # boundary is whitespace, not another rule.
         with ui.column().classes("gap-1 min-w-0 mt-3").style("width: 100%;"):
-            _section("Source")
+            _subsection("Source")
 
             # `Segmented`, not `ui.tabs()`: Quasar's QTab renders 14 px uppercase, louder
             # than the section header above it. Switching flips visibility, so a panel's
@@ -1490,7 +1497,7 @@ class TemplateWorkbench:
                 .classes("cb-tw-table")
                 .style(
                     f"--cb-tw-cols: {_TW_COLS}; --cb-accent: {_PURPLE}; --cb-accent-tint: {_PURPLE}14; "
-                    f"height: {_LIST_HEIGHT_PX}px; overflow-y: auto;"
+                    f"height: {_LIST_HEIGHT_PX}px; overflow-y: auto; background: #ffffff; border-radius: 4px;"
                 )
             )
             with self._masks_table:
@@ -1498,8 +1505,8 @@ class TemplateWorkbench:
 
             # Same two-line header shape as the templates column. The derived-from line
             # states where new masks come from, so it sits on the Source header.
-            with ui.row().classes("w-full items-baseline gap-2 px-1 mt-3"):
-                ui.label("Source").style(PAGE_SECTION_STYLE)
+            with ui.row().classes("w-full items-baseline gap-2 mt-3"):
+                ui.label("Source").style(SECTION_HEADER_FIRST_STYLE)
                 # Dynamic state, not a hint: says which template new masks derive from.
                 self._mask_source_label = ui.label("").classes(_HINT_CLS)
                 self._update_mask_source_label()
@@ -1662,9 +1669,9 @@ class TemplateWorkbench:
     # ------------------------------------------------------------------
 
     def _render_viewer_panel(self) -> None:
-        with ui.column().classes("w-full gap-1"):
-            with ui.row().classes("w-full items-baseline gap-2 px-1"):
-                ui.label("Viewer").style(PAGE_SECTION_STYLE)
+        with ui.column().classes("w-full gap-1").style(PANEL_STYLE):
+            with ui.row().classes("w-full items-baseline gap-2"):
+                ui.label("Viewer").style(PANEL_TITLE_STYLE)
                 ui.element("div").classes("flex-1")
                 ui.label("mode").classes(_HINT_CLS)
                 # `.cb-field` chrome so the select matches the 10 px label beside it
@@ -1680,7 +1687,7 @@ class TemplateWorkbench:
                 ui.card()
                 .tight()
                 .classes("w-full overflow-hidden")
-                .style("border: 1px solid #e5e7eb; box-shadow: none;")
+                .style("border: none; box-shadow: none; border-radius: 4px;")
             ):
                 # Grid-stacked (same as _stacked_panels): both panels share one
                 # cell, the hidden one is visibility-hidden, so the card always holds the
@@ -1751,12 +1758,15 @@ class TemplateWorkbench:
         # House section header + plain disclosure caret instead of Quasar's boxed
         # ui.expansion — one less bordered widget on the page.
         state = {"open": False}
-        with ui.row().classes("w-full items-center gap-1 px-1 cursor-pointer select-none") as header:
-            caret = (
-                ui.icon("chevron_right", size="14px").classes("text-gray-400").style("transition: transform .12s ease;")
-            )
-            ui.label("Activity log").style(PAGE_SECTION_STYLE)
-        self._log_container = ui.column().classes("w-full gap-0.5 px-2 py-1 max-h-40 overflow-y-auto")
+        with ui.column().classes("w-full gap-0").style(PANEL_STYLE):
+            with ui.row().classes("w-full items-center gap-1 cursor-pointer select-none") as header:
+                caret = (
+                    ui.icon("chevron_right", size="14px")
+                    .classes("text-gray-400")
+                    .style("transition: transform .12s ease;")
+                )
+                ui.label("Activity log").style(PANEL_TITLE_STYLE)
+            self._log_container = ui.column().classes("w-full gap-0.5 px-2 py-1 max-h-40 overflow-y-auto")
         self._log_container.set_visibility(False)
 
         def _toggle() -> None:

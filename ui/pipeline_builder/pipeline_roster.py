@@ -15,6 +15,7 @@ from ui.components.copyable import copy_on_click
 from ui.components.dialogs import dialog_host
 from ui.components.reactive import FingerprintedView, SingleFlight
 from ui.components.svg_icon import load_icon_svg
+from ui.job_plugins._field_styles import PANEL_TITLE_STYLE
 from ui.protocols_view import protocol_light
 from ui.styles import MONO, SANS as FONT
 from ui.status_indicator import BoundStatusDot, _dot_html, _running_led_html
@@ -139,11 +140,11 @@ def _row_paint(active: bool) -> tuple[str, str]:
     """(row css, name css) of a job row, active or not."""
     if active:
         return "background: #f0f4f8; border-left: 2px solid #475569;", "font-weight: 600;"
-    return "background: white; border-left: 2px solid #e5e7eb;", "font-weight: 400;"
+    return "background: white; border-left: 2px solid transparent;", "font-weight: 400;"
 
 
 def _header_border(active: bool) -> str:
-    return "#3b82f6" if active else "#e5e7eb"
+    return "#3b82f6" if active else "transparent"
 
 
 class RosterWidget(FingerprintedView):
@@ -191,6 +192,9 @@ class RosterWidget(FingerprintedView):
         self._flight = SingleFlight()
         # Jobs a queued or running job depends on (jobs_in_use), refreshed by every render.
         self._in_use: dict[str, str] = {}
+        # The projects hub (dialog, roster), built on its first open and only shown again after: a
+        # rebuild of the whole roster blocks the event loop for a second or more.
+        self._hub: tuple[ui.dialog, Any] | None = None
 
     def _get_container(self) -> Any:
         return self.panel.roster_panel
@@ -344,6 +348,9 @@ class RosterWidget(FingerprintedView):
         self._rows, self._headers = {}, []
         # Read by every row: which jobs a queued or running one depends on (their × is hidden).
         self._in_use = jobs_in_use(current_project_state())
+        # The panel's title line, in the views' title style (ui/workspace_page.py `_view_frame`).
+        with ui.element("div").style("display: flex; align-items: center; min-height: 28px; padding: 4px 8px 0 14px;"):
+            ui.label("Jobs").style(PANEL_TITLE_STYLE)
         for phase_id, jobs in PHASE_JOBS.items():
             icon_or_svg, phase_label, _ = PHASE_META[phase_id]
             is_flashing = self._flash_phase == phase_id
@@ -353,8 +360,9 @@ class RosterWidget(FingerprintedView):
                 .props(f'id="{ROSTER_ANCHOR[phase_id]}"')
                 .style(
                     "display: flex; align-items: center; gap: 5px; "
-                    "padding: 4px 8px 3px 10px; "
-                    "background: #f1f5f9; border-bottom: 1px solid #e5e7eb; "
+                    # Set apart by the space above it; white, since it sticks over the rows.
+                    "padding: 10px 8px 3px 10px; "
+                    "background: #ffffff; "
                     "position: sticky; top: 0; z-index: 2;"
                 )
             ):
@@ -710,10 +718,7 @@ class RosterWidget(FingerprintedView):
                 icon_name = _TS_ICONS.get(status, "radio_button_unchecked")
                 short_name = display_names.get(ts_name, ts_name)
 
-                row_style = (
-                    "display: flex; align-items: center; gap: 5px; "
-                    "padding: 2px 6px 2px 8px; border-bottom: 1px solid #f8fafc;"
-                )
+                row_style = "display: flex; align-items: center; gap: 5px; padding: 2px 6px 2px 8px;"
                 # Active when there is something to jump to (at least queued → started).
                 if status != "pending":
                     row_style += " cursor: pointer;"
@@ -1150,6 +1155,12 @@ class RosterWidget(FingerprintedView):
         return avatar
 
     async def _open_project_hub(self):
+        if self._hub is not None and not self._hub[0].is_deleted:
+            dialog, overview = self._hub
+            dialog.open()
+            overview.resume()
+            return
+
         from nicegui import app as ng_app
         from services.configs.user_prefs_service import get_prefs_service
         from ui.local_file_picker import local_file_picker
@@ -1195,6 +1206,7 @@ class RosterWidget(FingerprintedView):
         dialog.on("hide", lambda: overview.stop())
         dialog.on("before-hide", lambda: overview.stop())
         dialog.open()
+        self._hub = (dialog, overview)
 
     # ── Run slot ──────────────────────────────────────────────────────────────
 
@@ -1567,14 +1579,13 @@ class RosterWidget(FingerprintedView):
             ):
                 with ui.element("div").style(
                     "padding: 7px 11px 5px; font-size: 9px; font-weight: 700; "
-                    "color: #94a3b8; letter-spacing: 0.09em; text-transform: uppercase; "
-                    "border-bottom: 1px solid #f1f5f9;"
+                    "color: #94a3b8; letter-spacing: 0.09em; text-transform: uppercase;"
                 ):
                     ui.label(title)
                 for row_lbl, row_val in rows:
                     with ui.element("div").style(
                         "display: flex; justify-content: space-between; align-items: baseline; "
-                        "padding: 5px 11px; border-bottom: 1px solid #f8fafc; gap: 10px;"
+                        "padding: 4px 11px; gap: 10px;"
                     ):
                         ui.label(row_lbl).style("font-size: 10px; color: #94a3b8; flex-shrink: 0;")
                         ui.label(str(row_val)).style(

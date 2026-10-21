@@ -15,7 +15,7 @@ from nicegui import ui
 
 from services.array_tasks import ts_display_name
 from services.particles import analytics
-from ui.analytics.common import LABEL_CLS, TOOLTIP_STYLE, WARN_COLOR, fmt_sigma
+from ui.analytics.common import CHART_CELL_STYLE, LABEL_CLS, TOOLTIP_STYLE, WARN_COLOR, fmt_sigma
 from ui.components.buttons import house_button
 from ui.components.fields import house_number
 from ui.dashboard.figures import build_sigma_histogram, build_survival_chart
@@ -169,14 +169,14 @@ class ScorePanel:
 
     def _render_charts(self) -> None:
         with ui.element("div").style("display: flex; gap: 14px; flex-wrap: wrap; min-width: 0; width: 100%;"):
-            with ui.element("div").style("flex: 1 1 280px; min-width: 0;"):
+            with ui.element("div").style(f"flex: 1 1 280px; min-width: 0; {CHART_CELL_STYLE}"):
                 ui.label("score histogram").style(f"{SANS} font-size: 9px; font-weight: 600; color: #334155;").tooltip(
                     HIST_TIP
                 )
                 self._hist = ui.echart(self._hist_options(), on_point_click=self._on_hist_click).style(
                     f"height: {CHART_PX}px; width: 100%;"
                 )
-            with ui.element("div").style("flex: 1 1 280px; min-width: 0;"):
+            with ui.element("div").style(f"flex: 1 1 280px; min-width: 0; {CHART_CELL_STYLE}"):
                 ui.label("picks ≥ z vs Gaussian noise").style(
                     f"{SANS} font-size: 9px; font-weight: 600; color: #334155;"
                 ).tooltip(SURVIVAL_TIP)

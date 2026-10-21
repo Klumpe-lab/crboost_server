@@ -33,7 +33,6 @@ from services.project_state import ProjectState, get_project_state_for
 from ui.components.reactive import FingerprintedView, SingleFlight, owned_timer
 from ui.components.species_pill import render_species_mark
 from ui.dashboard.css import ensure_assets_loaded
-from ui.job_plugins._field_styles import PAGE_SECTION_STYLE
 from ui.status_indicator import _BADGE_STYLES, _DOT_COLORS
 from ui.styles import MONO, SANS
 from ui.ui_state import get_instance_display_name
@@ -296,17 +295,18 @@ class PipelineTablePage:
             self.container,
             ui.column()
             .classes("w-full")
-            .style("height: 100%; overflow: auto; padding: 10px 18px 24px; gap: 10px; box-sizing: border-box;"),
+            .style("height: 100%; overflow: auto; padding: 4px 18px 24px 14px; gap: 10px; box-sizing: border-box;"),
         ):
-            # The title line's right padding keeps the view's close cross clear.
-            with ui.element("div").style(
-                "display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding-right: 4px;"
-            ):
-                ui.label("Pipeline").style(PAGE_SECTION_STYLE).tooltip(
+            set_title = self.callbacks.get("set_view_title")
+            if set_title:
+                set_title(
+                    "table",
+                    "Pipeline",
                     "Every job on the roster, each after the jobs it reads. The lines follow the input a "
-                    "job's tilt series come from; its other inputs are in the hover of its name and in its "
-                    "I/O tab. Click a row to open the job."
+                    "job's tilt series come from; its other inputs are in the hover of its name and on its "
+                    "page. Click a row to open the job.",
                 )
+            with ui.element("div").style("display: flex; align-items: center; gap: 14px; flex-wrap: wrap;"):
                 for solid, text in ((True, "fixed at submit or set by hand"), (False, "automatic, may still change")):
                     with ui.element("div").style("display: flex; align-items: center; gap: 5px;"):
                         ui.html(_legend_line(solid), sanitize=False)

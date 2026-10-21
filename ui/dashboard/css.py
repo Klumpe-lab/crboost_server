@@ -436,7 +436,7 @@ _CB_CSS = """
  * small, slate, no-caps, a thin slate indicator (the tab's own colour: the tabs
  * set no indicator colour) and no tinted fill, and a per-species color swatch
  * tying each tab to its overlay color on the shared canvas. */
-.cb-species-tabs { min-height: 28px; border-bottom: 1px solid #e5e7eb; }
+.cb-species-tabs { min-height: 28px; }
 .cb-species-panels .q-tab-panel { padding: 8px 0 0 0; }
 .cb-species-tabs .q-tab {
     min-height: 28px; padding: 0 10px; text-transform: none; color: #475569;
@@ -505,8 +505,7 @@ _CB_CSS = """
     width: 100%; height: 100%; min-height: 0;
     overflow-y: auto; padding: 8px 10px;
 }
-/* The right padding keeps the view's close cross clear. */
-.cb-viewer-page-head { padding: 2px 14px 4px 2px; }
+.cb-viewer-page-head { padding: 0 10px 4px 2px; }
 /* Slab lightbox: a full-viewport overlay holding a CLONE of the clicked slab (image +
  * its pick dots), wheel-zoomed and drag-panned via an inline transform. */
 .cb-slab-lightbox {
@@ -894,13 +893,13 @@ _CB_CSS = """
    One thin line about the selected tilt series: [▾ position · i/N] · four
    labelled stage dots · per-species pick counts · ⓘ · exclude — and, at the far
    right (mounted by the journey), the section selector. The name block drops
-   down the tomogram switcher table; the overview lives there, not on screen. The right
-   padding keeps the view's close cross clear. When the pane is too narrow for one line,
+   down the tomogram switcher table; the overview lives there, not on screen. It sits under
+   the view's title line, with no rule between them. When the pane is too narrow for one line,
    the selector wraps onto a second one, right-aligned; narrower still (a query on the
    header itself, below), the line tightens. */
 .cb-jhead {
     flex: 0 0 auto; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px; min-height: 30px;
-    padding: 3px 22px 3px 12px; background: #ffffff; border-bottom: 1px solid #e5e7eb;
+    padding: 0 12px 6px 14px; background: #ffffff;
     font-family: 'IBM Plex Sans', sans-serif; container: cb-jhead / inline-size;
 }
 .cb-jhead-left { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 4px 10px; flex-wrap: wrap; }
@@ -1145,10 +1144,11 @@ _CB_CSS = """
     transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
 .cb-tw-import:hover { background: #f8fafc; border-color: var(--cb-accent); color: var(--cb-accent); }
-/* Species header row: active pill left, segmented tabs right, clear of the view's close cross. */
+/* Species header row: active pill left, segmented tabs right. It sits under the view's title line
+ * with no rule between them. */
 .cb-species-header {
     display: flex; align-items: center; gap: 10px; flex-shrink: 0;
-    padding: 5px 22px 5px 10px; border-bottom: 1px solid #e5e7eb; background: #fafbfc; min-height: 30px;
+    padding: 0 10px 6px 14px; background: #ffffff; min-height: 26px;
 }
 /* Species rail: 200 px column, one row per species (mark + counts), "+" at the
  * bottom. Selected row = tinted + an indigo left border. */
@@ -1161,7 +1161,7 @@ _CB_CSS = """
     border-bottom: 1px solid #f1f5f9; border-left: 3px solid transparent; cursor: pointer;
     min-width: 0;
 }
-.cb-srail-row:hover { background: #f8fafc; }
+.cb-srail-row:hover { background: #e3ebf4; }
 .cb-srail-row.selected { background: #ffffff; }
 .cb-srail-meta {
     margin-left: auto; font-size: 9px; color: #94a3b8; white-space: nowrap; flex-shrink: 0;
@@ -1265,10 +1265,10 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
  * fill), which is what lets a dot layer position in plain percentages and stay
  * registered with the slice at every tile size. */
 .cb-gal-page { display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; }
-/* The right padding keeps the view's close cross clear. */
+/* Under the view's title line, with no rule between them. */
 .cb-gal-toolbar {
     display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-    padding: 6px 22px 6px 10px; border-bottom: 1px solid #e5e7eb; background: #f8fafc; flex-shrink: 0;
+    padding: 0 10px 6px 14px; background: #ffffff; flex-shrink: 0;
 }
 .cb-gal-title {
     font-size: 10px; text-transform: uppercase; font-weight: 600;
@@ -1366,12 +1366,13 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 .cb-gal-mosaic-toggle:hover, .cb-gal-mosaic-toggle.on { background: rgba(37,99,235,0.88); color: #ffffff; }
 /* Tilt previews (ui/tilt_previews.py): the Tilts tab's groups and cards, and a tile's
  * mosaic cells. A series is one HTML string; its sizes and layout are inline there. */
-.cb-tp-group { border: 1px solid #e5e7eb; border-radius: 5px; background: #ffffff; overflow: hidden; }
+/* A series is a pale gray-blue panel, the Journey's section look; its tilt cards stay white. */
+.cb-tp-group { border-radius: 6px; background: #eef3f8; overflow: hidden; }
 .cb-tp-head {
-    display: flex; align-items: center; gap: 6px; padding: 3px 8px; min-width: 0;
-    background: #f8fafc; cursor: pointer; user-select: none;
+    display: flex; align-items: center; gap: 6px; padding: 4px 8px; min-width: 0;
+    cursor: pointer; user-select: none;
 }
-.cb-tp-head:hover { background: #f1f5f9; }
+.cb-tp-head:hover { background: #e3ebf4; }
 .cb-tp-chev { font-size: 9px; color: #94a3b8; transition: transform 0.15s; }
 .cb-tp-chev.open { transform: rotate(90deg); }
 .cb-tp-name { font-size: 10px; font-weight: 600; color: #334155; white-space: nowrap; }
@@ -1612,8 +1613,8 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 .q-notification.bg-warning .q-notification__icon { color: #d97706; }
 .q-notification.bg-info { border-left-color: #6366f1; }
 .q-notification.bg-info .q-notification__icon { color: #6366f1; }
-/* A view's close cross (ui/workspace_page.py `_view_frame`): floats in the frame's top-right
- * corner; each view's first line keeps that corner free. */
+/* A view's expand icon and close cross (ui/workspace_page.py `_view_frame`), at the right end of
+ * its title line. */
 .cb-view-close { color: #cbd5e1; cursor: pointer; border-radius: 3px; width: 14px; height: 14px; }
 .cb-view-close:hover { color: #475569; background: #f1f5f9; }
 /* A view's splitter (ui/workspace_page.py `_VIEW_RESIZER_JS`): a 6 px strip on the frame's left

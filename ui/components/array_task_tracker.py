@@ -108,11 +108,7 @@ def render_array_task_tracker(instance_id: str, job_model, ui_mgr) -> None:
     # task's log pane to the left; the rows own their spacing and fill the width.
     with ui.column().classes("w-full h-full overflow-hidden cb-scroll-tight").style("gap: 0;") as tracker:
         # ── Summary bar ──
-        with (
-            ui.row()
-            .classes("w-full items-center px-4 py-2 bg-gray-50 border-b border-gray-100")
-            .style("gap: 12px; flex-shrink: 0;")
-        ):
+        with ui.row().classes("w-full items-center px-3 py-1").style("gap: 12px; flex-shrink: 0;"):
             summary = ui.html("", sanitize=False)
 
         # ── Progress bar ──

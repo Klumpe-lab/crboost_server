@@ -65,14 +65,26 @@ _VIEW_RESIZER_JS = """
   if(!main || main.dataset.wired) return;
   main.dataset.wired = '1';
   const MINW = 260, KEY = 'cbViewW:', PREFIX = 'cb-view-';
-  const weight = (n) => { const w = parseFloat(main.style.getPropertyValue('--cb-vw-'+n)); return w > 0 ? w : 1; };
-  const setW = (n, w) => main.style.setProperty('--cb-vw-'+n, w.toFixed(4));
+  const weight = (n) => {
+    const w = parseFloat(main.style.getPropertyValue('--cb-vw-'+n));
+    return (Number.isFinite(w) && w > 0) ? w : 1;
+  };
+  const setW = (n, w) => {
+    main.style.setProperty('--cb-vw-'+n, w.toFixed(4));
+    let min = 1;
+    for (const f of main.children) {
+      if (!f.id.startsWith(PREFIX)) continue;
+      const v = weight(f.id.slice(PREFIX.length));
+      if (v < min) min = v;
+    }
+    main.style.setProperty('--cb-vw-unit', String(min));
+  };
   const store = (n) => { try { localStorage.setItem(KEY+n, String(weight(n))); } catch(e){} };
   try {
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
       const w = (k && k.startsWith(KEY)) ? parseFloat(localStorage.getItem(k)) : NaN;
-      if (w > 0) setW(k.slice(KEY.length), w);
+      if (Number.isFinite(w) && w > 0) setW(k.slice(KEY.length), w);
     }
   } catch(e){}
   const orderOf = (f) => parseInt(getComputedStyle(f).order, 10) || 0;
@@ -167,14 +179,29 @@ _MODE_VIEWS: dict[str, View] = {
 _VIEW_ORDER = ("pipeline", "table", "workbench", "gallery", "journey", "viewer", "protocols")
 
 # Every view's frame: its share of the main area's width when several are on is its weight
-# (`--cb-vw-<name>`, 1 until a splitter moves it; _VIEW_RESIZER_JS). It holds the box the view
-# builds into, the splitter on its left edge and, floating in its top-right corner, the view's
-# close cross.
+# (`--cb-vw-<name>`, 1 until a splitter moves it; _VIEW_RESIZER_JS). It holds the view's title
+# line (its name, the expand icon and the close cross), the box the view builds into below it
+# and the splitter on its left edge.
 _VIEW_STYLE = "min-width: 0; height: 100%; overflow: hidden; display: none; flex-direction: row; position: relative;"
-# The cross, 15 px down (the middle of the Journey's 30 px header line), above the view's own
-# overlays; each view's first line keeps its right end free.
-_VIEW_CLOSE_STYLE = "position: absolute; top: 8px; right: 4px; z-index: 10;"
-_VIEW_BODY_STYLE = "flex: 1 1 0; min-width: 0; height: 100%; overflow: hidden; display: flex; flex-direction: column;"
+_VIEW_COLUMN_STYLE = "flex: 1 1 0; min-width: 0; height: 100%; display: flex; flex-direction: column; overflow: hidden;"
+_VIEW_HEAD_STYLE = (
+    "flex: 0 0 auto; display: flex; align-items: center; gap: 4px; min-height: 28px; padding: 4px 6px 0 14px;"
+)
+_VIEW_TITLE_STYLE = (
+    "font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; font-weight: 600; color: #2c4a6b; "
+    "white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;"
+)
+_VIEW_BODY_STYLE = "flex: 1 1 0; min-width: 0; min-height: 0; overflow: hidden; display: flex; flex-direction: column;"
+# Each view's name on its title line; the pipeline's names the job its page shows (set_view_title).
+_VIEW_TITLES = {
+    "pipeline": "Jobs",
+    "workbench": "Particles registry",
+    "journey": "Journey",
+    "gallery": "Tomograms",
+    "viewer": "Pick viewer",
+    "protocols": "Protocols",
+    "table": "Pipeline",
+}
 
 
 def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | None = None) -> dict:
@@ -244,6 +271,10 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
             c = _refs.get(f"{name}_frame")
             if c is None:
                 continue
+            expand = _refs.get(f"{name}_expand")
+            if expand is not None:
+                # Alone already: nothing to expand over.
+                expand.set_visibility(len(_on) > 1)
             if name in _on:
                 # A slate edge and a faint shadow cast onto the view to its left, so two views
                 # read as two panels rather than one gray surface.
@@ -320,18 +351,52 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         _apply_views()
         _write_mode_url()
 
+    def _solo(name: str) -> None:
+        """The expand icon: this view alone fills the main area; every other view turns off."""
+        _on[:] = [name]
+        _apply_views()
+        _write_mode_url()
+
+    def _set_view_title(name: str, text: str, tooltip: str | None = None) -> None:
+        """A view names itself on its title line (the pipeline: the job its page shows); the
+        tooltip is a native hover title."""
+        title = _refs.get(f"{name}_title")
+        if title is None or title.is_deleted:
+            return
+        title.set_text(text)
+        if tooltip:
+            title.props["title"] = tooltip
+        else:
+            title.props.pop("title", None)
+        title.update()
+
     def _view_frame(name: str, style: str = _VIEW_STYLE) -> ui.element:
         """A view's frame in the main area, styled by _apply_views; returns the box the view
-        builds into. A cross in its top-right corner turns the view off, the same as its rail
-        icon; the splitter on its left edge resizes it against the view to its left."""
-        frame = ui.element("div").props(f"id=cb-view-{name}").style(f"flex: var(--cb-vw-{name}, 1) 1 0; {style}")
+        builds into. Its title line names the view and carries, at the right end, the expand
+        icon (this view alone) and the cross that turns it off, the same as its rail icon; the
+        splitter on its left edge resizes it against the view to its left."""
+        frame = (
+            ui.element("div")
+            .props(f"id=cb-view-{name}")
+            .style(f"flex: calc(var(--cb-vw-{name}, 1) / var(--cb-vw-unit, 1)) 1 0; {style}")
+        )
         _refs[f"{name}_frame"] = frame
         with frame:
-            body = ui.element("div").style(_VIEW_BODY_STYLE)
+            with ui.element("div").style(_VIEW_COLUMN_STYLE):
+                with ui.element("div").style(_VIEW_HEAD_STYLE):
+                    _refs[f"{name}_title"] = ui.label(_VIEW_TITLES[name]).style(_VIEW_TITLE_STYLE)
+                    ui.element("div").style("flex: 1 1 auto;")
+                    _refs[f"{name}_expand"] = (
+                        ui.icon("open_in_full", size="10px")
+                        .classes("cb-view-close")
+                        .props('title="Show only this view"')
+                        .on("click", lambda _e: _solo(name))
+                    )
+                    ui.icon("close", size="12px").classes("cb-view-close").props('title="Close this view"').on(
+                        "click", lambda _e: _hide(name)
+                    )
+                body = ui.element("div").style(_VIEW_BODY_STYLE)
             ui.element("div").classes("cb-view-splitter")
-            ui.icon("close", size="12px").classes("cb-view-close").style(_VIEW_CLOSE_STYLE).on(
-                "click", lambda _e: _hide(name)
-            )
         _refs[f"{name}_container"] = body
         return body
 
@@ -576,6 +641,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
     callbacks["show_protocols"] = _show_protocols
     callbacks["show_table"] = _show_table
     callbacks["open_pick_viewer"] = _open_pick_viewer
+    callbacks["set_view_title"] = _set_view_title
 
     with ui.element("div").style(
         "position: fixed; inset: 0; display: flex; flex-direction: row; "
@@ -641,7 +707,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
             # Pick viewer: the full-page mount of the slabs + lists +
             # gallery component, opened from a tomogram row of the Particles registry's
             # Picks & curation tab. Lazily built on first use, like the journey; it has
-            # no nav icon of its own — its own header carries the routes back, its corner the close cross.
+            # no nav icon of its own — its own header carries the routes back, its title line the close cross.
             _view_frame("viewer")
 
             # Protocols: lazily built on the first click of the foot-of-rail protocol light.

@@ -22,7 +22,15 @@ from services.array_tasks import ts_display_name
 from services.dashboard_data import vis_asset_url
 from services.particles.class_readout import CONCENTRATION_RULE, CLASS3D_KIND, class_iteration_table
 from services.particles.records import Record
-from ui.analytics.common import HINT_CLS, LABEL_CLS, TOOLTIP_STYLE, esc, render_provenance
+from ui.analytics.common import (
+    TABLE_ON_PANEL_STYLE,
+    CHART_CELL_STYLE,
+    HINT_CLS,
+    LABEL_CLS,
+    TOOLTIP_STYLE,
+    esc,
+    render_provenance,
+)
 from ui.components.buttons import house_button
 from ui.components.copyable import copy_on_click
 from ui.components.fields import house_text
@@ -74,14 +82,14 @@ class ReadoutPanel:
         ).classes(HINT_CLS)
         its, per = class_iteration_table(self.record)
         with ui.element("div").style("display: flex; gap: 14px; flex-wrap: wrap; min-width: 0; width: 100%;"):
-            with ui.element("div").style("flex: 1 1 280px; min-width: 0;"):
+            with ui.element("div").style(f"flex: 1 1 280px; min-width: 0; {CHART_CELL_STYLE}"):
                 with ui.label("convergence").style(f"{SANS} font-size: 9px; font-weight: 600; color: #334155;"):
                     ui.tooltip(
                         "Class shares at each iteration (model.star). The classification has settled when the bars "
                         "stop changing."
                     ).style(TOOLTIP_STYLE)
                 ui.echart(build_class_convergence_chart(its, per)).style(f"height: {CHART_PX}px; width: 100%;")
-            with ui.element("div").style("flex: 1 1 280px; min-width: 0;"):
+            with ui.element("div").style(f"flex: 1 1 280px; min-width: 0; {CHART_CELL_STYLE}"):
                 with ui.label("each score bin, by class").style(
                     f"{SANS} font-size: 9px; font-weight: 600; color: #334155;"
                 ):
@@ -90,7 +98,9 @@ class ReadoutPanel:
                         "below which the good classes stop being the majority is where background takes over."
                     ).style(TOOLTIP_STYLE)
                 ui.html(self._bin_shares_html(), sanitize=False)
-        ui.html(self._class_table_html(), sanitize=False).classes("cb-atable-wrap").style("max-height: none;")
+        ui.html(self._class_table_html(), sanitize=False).classes("cb-atable-wrap").style(
+            f"max-height: none; {TABLE_ON_PANEL_STYLE}"
+        )
         self._class_maps()
         self._galleries()
         if self._on_make_subset is not None:
@@ -291,7 +301,7 @@ class ReadoutPanel:
                     _open_commands(d["merged"])
                 ui.image(vis_asset_url(d["slices_png"])).style("width: 360px; height: 120px;").props("fit=contain")
             fsc = d.get("fsc")
-            with ui.element("div").style("flex: 1 1 280px; min-width: 0;"):
+            with ui.element("div").style(f"flex: 1 1 280px; min-width: 0; {CHART_CELL_STYLE}"):
                 if not fsc:
                     ui.label(d.get("note") or "No half maps.").classes(HINT_CLS)
                     return

@@ -7,14 +7,13 @@ Layout:
     (throttle only appears for array jobs).
   • Resource fields stacked one per row (label inline-left of input) —
     per-task fields for array jobs, plain fields otherwise.
-  • Array jobs additionally show a walltime estimate and a read-only
-    Supervisor resource summary in their own bordered groups.
+  • Array jobs additionally show a read-only Supervisor resource summary
+    below, set apart by whitespace.
 
 Presets exist on the model and can be applied programmatically; the panel
 has no preset UI.
 """
 
-import math
 from collections.abc import Callable
 
 from nicegui import ui
@@ -40,36 +39,6 @@ def _is_array_job(job_model) -> bool:
 
 # Quiet time after a SLURM field edit before the panel rebuilds to show its effect (refresh_after_edit).
 _REFRESH_AFTER_EDIT_S = 0.8
-
-
-def _parse_time_to_minutes(time_str: str) -> float:
-    """Parse SLURM time format (H:MM:SS or D-H:MM:SS) to minutes."""
-    try:
-        if "-" in time_str:
-            days, rest = time_str.split("-", 1)
-            parts = rest.split(":")
-            hours = int(parts[0]) if len(parts) > 0 else 0
-            mins = int(parts[1]) if len(parts) > 1 else 0
-            secs = int(parts[2]) if len(parts) > 2 else 0
-            return int(days) * 1440 + hours * 60 + mins + secs / 60
-        parts = time_str.split(":")
-        if len(parts) == 3:
-            return int(parts[0]) * 60 + int(parts[1]) + int(parts[2]) / 60
-        if len(parts) == 2:
-            return int(parts[0]) + int(parts[1]) / 60
-        return float(parts[0])
-    except (ValueError, IndexError):
-        return 0
-
-
-def _format_duration(minutes: float) -> str:
-    if minutes < 60:
-        return f"{minutes:.0f}min"
-    hours = minutes / 60
-    if hours < 24:
-        return f"{hours:.1f}h"
-    days = hours / 24
-    return f"{days:.1f}d"
 
 
 def render_slurm_tab(job_model, is_frozen: bool, save_handler: Callable) -> Callable[[], None]:
@@ -109,12 +78,10 @@ def render_slurm_tab(job_model, is_frozen: bool, save_handler: Callable) -> Call
 
 def _signature(job_model) -> tuple:
     """Everything the panel shows that can change while it is open."""
-    state = job_model._project_state
     return (
         job_model.get_effective_slurm_config().model_dump(),
         dict(job_model.slurm_overrides or {}),
         getattr(job_model, "array_throttle", None),
-        getattr(state, "import_selected_tilt_series", 0) if state is not None else 0,
     )
 
 
@@ -134,7 +101,7 @@ def _render_slurm_content(
             if has_profile:
                 job_type_val = job_model.job_type.value if job_model.job_type else "?"
                 ui.label(f"profile: {job_type_val}").style(
-                    f"{MONO} font-size: 9px; color: #059669; background: #ecfdf5; "
+                    f"{MONO} font-size: 9px; color: #475569; background: #e3ebf4; "
                     "padding: 1px 6px; border-radius: 3px; flex-shrink: 0;"
                 )
                 if overrides and not is_frozen:
@@ -147,8 +114,6 @@ def _render_slurm_content(
                     house_button("Reset to profile", reset_to_profile)
 
             if is_array:
-                if has_profile:
-                    ui.element("div").style("width: 1px; height: 12px; background: #e2e8f0;")
                 with ui.element("div").style("display: flex; align-items: baseline; gap: 6px; flex-shrink: 0;"):
                     lbl = ui.label("Max concurrent").style(LABEL_STYLE)
                     lbl.tooltip("SLURM --array throttle: max tasks running simultaneously")
@@ -182,7 +147,6 @@ def _render_slurm_content(
         with field_group():
             section_header("Per-Task Resources", first=True)
             _render_resource_fields(effective_config, job_model, is_frozen, save_handler, hold, release)
-            _render_walltime_estimate(job_model, effective_config)
         _render_supervisor_summary()
     else:
         _render_resource_fields(effective_config, job_model, is_frozen, save_handler, hold, release)
@@ -251,33 +215,8 @@ def _render_resource_fields(effective_config, job_model, is_frozen, save_handler
                     inp.on("blur", _make_blur(fname))
 
 
-def _render_walltime_estimate(job_model, effective_config):
-    """Estimated total wall time for the array based on TS count + throttle."""
-    n_ts = 0
-    if job_model._project_state is not None:
-        n_ts = getattr(job_model._project_state, "import_selected_tilt_series", 0)
-
-    if n_ts <= 0:
-        return
-
-    per_task_min = _parse_time_to_minutes(effective_config.time)
-    if per_task_min <= 0:
-        return
-
-    throttle = getattr(job_model, "array_throttle", 4) or 1
-    batches = math.ceil(n_ts / throttle)
-    total_min = batches * per_task_min
-
-    with ui.row().classes("w-full items-center gap-1").style("margin-top: 6px;"):
-        ui.icon("schedule", size="11px").style(f"color: {CLR_SUBLABEL};")
-        ui.label(
-            f"{n_ts} TS × {_format_duration(per_task_min)}/task, "
-            f"throttle {throttle} → ~{_format_duration(total_min)} wall"
-        ).style(f"{MONO} font-size: 10px; color: {CLR_SUBLABEL};")
-
-
 def _render_supervisor_summary():
-    """Read-only supervisor SLURM config in a muted bordered group."""
+    """Read-only supervisor SLURM config, set apart from the per-task fields by whitespace."""
     try:
         from services.configs.config_service import get_config_service
 
