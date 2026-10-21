@@ -165,6 +165,11 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             safe_msg = message.replace("'", "").replace('"', "").replace("\\", "/")
             input_el.props(f"error=true error-message='{safe_msg}'")
 
+    def _page_gone() -> bool:
+        """The tab closed or reloaded while a glob check was awaited: its elements belong to a deleted client."""
+        container = local_refs["dataset_overview_container"]
+        return container is not None and container.is_deleted
+
     def _set_hint(hint_label, msg, color):
         if hint_label and not getattr(hint_label, "is_deleted", False):
             hint_label.set_text(msg)
@@ -198,8 +203,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         async def _finish():
             await asyncio.sleep(_VALIDATE_DEBOUNCE_SEC)
             is_valid, _count, msg = await _validate_glob_full(pattern)
-            if ui_mgr.data_import.movies_glob != pattern:
-                return  # pattern changed while we were checking
+            if ui_mgr.data_import.movies_glob != pattern or _page_gone():
+                return  # pattern changed (or the page went away) while we were checking
             # Once a scan has spoken, the frames field stops gating on its own glob:
             # SerialEM stacks live one folder down and only become frames at Create.
             verdict = _overview_frames_verdict()
@@ -262,7 +267,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         async def _finish():
             await asyncio.sleep(_VALIDATE_DEBOUNCE_SEC)
             is_valid, count, msg = await _validate_glob_full(pattern)
-            if ui_mgr.data_import.mdocs_glob != pattern:
+            if ui_mgr.data_import.mdocs_glob != pattern or _page_gone():
                 return
             # Co-located mdocs are derived from the data folder; a SerialEM delivery keeps
             # one folder per series, so when the derived depth matches nothing, try the
@@ -274,7 +279,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                 other_ok, _n, _m = await _validate_glob_full(
                     str(Path(pattern).parents[1 if ext.startswith("*/") else 0] / other)
                 )
-                if ui_mgr.data_import.mdocs_glob != pattern:
+                if ui_mgr.data_import.mdocs_glob != pattern or _page_gone():
                     return
                 if other_ok:
                     ui_mgr.panel_refs.mdocs_input.set_extension(other)  # re-enters via on_mdocs_change

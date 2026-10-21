@@ -38,6 +38,10 @@ class UserPreferences(BaseModel):
     show_only_mine: bool = True
     # Projects roster: one line per project (default) or the full four-line row.
     projects_compact_view: bool = True
+    # Projects roster order, as last clicked: a column title (sort key, descending) wins over the
+    # Last opened / Created mode until a mode is clicked. The default is the roster's DEFAULT_COLUMN_SORT.
+    projects_sort_mode: str = "recent"
+    projects_column_sort: tuple[str, bool] | None = ("status", True)
     recent_project_roots: list[RecentPath] = Field(default_factory=list)
     recent_data_paths: list[RecentPath] = Field(default_factory=list)
     # Individual projects (not their base directories), most-recently-opened first.
@@ -74,12 +78,6 @@ class UserPreferences(BaseModel):
     def _remove_from_mru(mru: list[RecentPath], path: str):
         mru[:] = [r for r in mru if r.path != path]
 
-    @staticmethod
-    def _prune_mru(mru: list[RecentPath]) -> int:
-        before = len(mru)
-        mru[:] = [r for r in mru if Path(r.path).exists() and Path(r.path).is_dir()]
-        return before - len(mru)
-
     # --- project roots ---
 
     def add_recent_root(self, path: str, label: str | None = None) -> bool:
@@ -90,9 +88,6 @@ class UserPreferences(BaseModel):
 
     def clear_recent_roots(self):
         self.recent_project_roots.clear()
-
-    def prune_invalid_roots(self) -> int:
-        return self._prune_mru(self.recent_project_roots)
 
     # --- individual projects (MRU behind the roster's "Recently viewed" sort) ---
 
@@ -115,9 +110,6 @@ class UserPreferences(BaseModel):
     def clear_recent_data_paths(self):
         self.recent_data_paths.clear()
 
-    def prune_invalid_data_paths(self) -> int:
-        return self._prune_mru(self.recent_data_paths)
-
 
 class UserPrefsService:
     """
@@ -139,21 +131,17 @@ class UserPrefsService:
         """Load preferences from NiceGUI's app.storage.user"""
         raw = storage.get(self.STORAGE_KEY)
         if raw:
+            # Recent paths are not checked for existence here: this runs on the event loop at every
+            # page load, and a stat per entry on a cold group mount blocked it for seconds. A path
+            # that is gone stays listed until removed from its dropdown.
             try:
                 self._prefs = UserPreferences(**raw)
-                # Auto-prune invalid paths on load
-                pruned = self._prefs.prune_invalid_roots()
-                pruned += self._prefs.prune_invalid_data_paths()
-                if pruned > 0:
-                    logger.info("Pruned %d invalid recent paths", pruned)
                 return self._prefs
             except Exception as e:
                 logger.error("Failed to parse stored prefs: %s", e)
 
         # Fallback: try loading from file
         self._prefs = self._load_from_file() or UserPreferences()
-        if self._prefs:
-            self._prefs.prune_invalid_roots()
         return self._prefs
 
     def save_to_app_storage(self, storage: dict[str, Any]):
