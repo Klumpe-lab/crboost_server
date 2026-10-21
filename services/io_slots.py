@@ -38,6 +38,9 @@ class JobFileType(str, Enum):
     # Denoising model
     DENOISE_MODEL_TAR = "denoise_model_tar"  # External/jobXXX/denoising_model.tar.gz
 
+    # Segmentations: one entry per (tomogram, feature) with its volume and provenance
+    SEGMENTATIONS = "segmentations"  # External/jobXXX/segmentations.json
+
     # Template matching / picking
     TM_RESULTS_DIR = "tm_results_dir"  # External/jobXXX/tmResults/
     CANDIDATES_STAR = "candidates_star"  # External/jobXXX/candidates.star

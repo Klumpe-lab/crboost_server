@@ -2348,7 +2348,7 @@ class TemplateWorkbench:
         async with self._flight("import_mask") as acquired:
             if not acquired:
                 return
-            picker = local_file_picker("/", upper_limit=None, mode="file", glob="*.mrc,*.map,*.rec,*.ccp4")
+            picker = local_file_picker(None, mode="file", glob="*.mrc,*.map,*.rec,*.ccp4")
             result = await picker
             if not result or not result[0]:
                 return

@@ -1,46 +1,110 @@
 import asyncio
 import fnmatch
+import html
 import os
-from pathlib import Path
 
 from nicegui import ui
 
 from ui.components.buttons import house_button
+from ui.components.reactive import Debounced
+from ui.dashboard.css import ensure_assets_loaded
 from ui.styles import MONO as _MONO, SANS as _SANS
 
 
-_MAX_FILE_ROWS = 400  # file rows shipped per listing; the rest is a count
+_MAX_ROWS = 500  # rows shipped per paint; the rest is a count ("type to narrow")
+_TYPE_SETTLE_S = 0.12
+_WILDCARDS = ("*", "?", "[")
+
+# Where the previous pick landed. A picker opened with no directory starts here, so the second
+# template of a session does not start the walk from / again. One server per user, so one value.
+_last_dir: str | None = None
 
 _FOLDER_SVG = (
-    '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">'
-    '<path d="M1.5 4C1.5 3.448 1.948 3 2.5 3H6.379L7.72 4.2C7.893 4.388 8.138 4.5 8.394 4.5H13.5'
-    "C14.052 4.5 14.5 4.948 14.5 5.5V12C14.5 12.552 14.052 13 13.5 13H2.5C1.948 13 1.5 12.552 1.5 "
-    '12V4Z" fill="#fbbf24" stroke="#d97706" stroke-width="0.75"/>'
-    "</svg>"
+    '<svg width="12" height="12" viewBox="0 0 16 16" style="flex-shrink:0">'
+    '<path d="M1.5 4C1.5 3.45 1.95 3 2.5 3H6.4L7.9 4.5H13.5C14.05 4.5 14.5 4.95 14.5 5.5V12'
+    'C14.5 12.55 14.05 13 13.5 13H2.5C1.95 13 1.5 12.55 1.5 12V4Z" fill="#bfdbfe" stroke="#60a5fa"/></svg>'
+)
+_FILE_SVG = (
+    '<svg width="12" height="12" viewBox="0 0 16 16" style="flex-shrink:0">'
+    '<path d="M3.5 1.5H9.5L13 5V14.5H3.5V1.5Z" fill="#fff" stroke="#94a3b8"/>'
+    '<path d="M9.5 1.5V5H13" fill="none" stroke="#94a3b8"/></svg>'
 )
 
-_FILE_SVG = (
-    '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">'
-    '<path d="M3.5 1.5H9.5L13 5V14.5H3.5V1.5Z" fill="#f9fafb" stroke="#d1d5db" stroke-width="0.75"/>'
-    '<path d="M9.5 1.5V5H13" stroke="#d1d5db" stroke-width="0.75" fill="none"/>'
-    '<line x1="5.5" y1="7.5" x2="11" y2="7.5" stroke="#e5e7eb" stroke-width="0.75"/>'
-    '<line x1="5.5" y1="9.5" x2="11" y2="9.5" stroke="#e5e7eb" stroke-width="0.75"/>'
-    '<line x1="5.5" y1="11.5" x2="9" y2="11.5" stroke="#e5e7eb" stroke-width="0.75"/>'
-    "</svg>"
+_ROW_STYLE = (
+    f"display: flex; align-items: center; gap: 6px; height: 19px; padding: 0 10px; {_SANS} "
+    "font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
 )
+_NOTE_STYLE = f"{_SANS} font-size: 10px; color: #94a3b8; padding: 6px 10px;"
+
+# One listener per list, not per row: the rows are an HTML string, so a 500-entry folder is one
+# element on the socket. The click highlights at once in the browser and tells the server which.
+_CLICK_JS = (
+    "(e) => { const r = e.target.closest('[data-i]'); if (!r) return; "
+    "r.parentElement.querySelectorAll('.cb-fp-sel').forEach(x => x.classList.remove('cb-fp-sel')); "
+    "r.classList.add('cb-fp-sel'); emit({i: Number(r.dataset.i)}); }"
+)
+_OPEN_JS = "(e) => { const r = e.target.closest('[data-i]'); if (r) emit({i: Number(r.dataset.i)}); }"
+
+
+def _arrow_js(list_id: int) -> str:
+    """↑/↓ in the path bar move the highlight through the list, in the browser."""
+    return (
+        "(e) => { if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return; e.preventDefault(); "
+        f"const rows = getHtmlElement({list_id}).querySelectorAll('[data-i]'); if (!rows.length) return; "
+        "let k = -1; rows.forEach((r, j) => { if (r.classList.contains('cb-fp-sel')) k = j; }); "
+        "k = e.key === 'ArrowDown' ? Math.min(k + 1, rows.length - 1) : Math.max(k - 1, 0); "
+        "rows.forEach(r => r.classList.remove('cb-fp-sel')); rows[k].classList.add('cb-fp-sel'); "
+        "rows[k].scrollIntoView({block: 'nearest'}); emit({i: Number(rows[k].dataset.i)}); }"
+    )
+
+
+def _scan(folder: str) -> list[tuple[str, bool]] | None:
+    """(name, is_dir) of a folder, folders first; None when it cannot be read. os.scandir uses
+    d_type, so no per-entry stat where the filesystem reports it. Runs in a thread."""
+    out: list[tuple[str, bool]] = []
+    try:
+        with os.scandir(folder) as it:
+            for e in it:
+                if e.name.startswith("."):
+                    continue
+                try:
+                    out.append((e.name, e.is_dir()))
+                except OSError:  # entry vanished or is unreadable mid-scan: not listable
+                    continue
+    except OSError:  # missing / unreadable folder: the caller says so
+        return None
+    out.sort(key=lambda t: (not t[1], t[0].lower()))
+    return out
+
+
+def _kind(path: str) -> str | None:
+    if os.path.isdir(path):
+        return "dir"
+    if os.path.isfile(path):
+        return "file"
+    return None
+
+
+def _nearest_dir(path: str) -> str:
+    while not os.path.isdir(path):
+        parent = os.path.dirname(path)
+        if parent == path:
+            return os.path.expanduser("~")
+        path = parent
+    return path
+
+
+def _matches(name: str, typed: str) -> bool:
+    if not typed:
+        return True
+    if any(c in typed for c in _WILDCARDS):
+        return fnmatch.fnmatch(name.lower(), typed.lower())
+    return typed.lower() in name.lower()
 
 
 class local_file_picker(ui.dialog):
-    def __init__(
-        self,
-        directory: str,
-        *,
-        upper_limit: str | None = ...,
-        mode: str = "directory",
-        multiple: bool = False,
-        glob: str | None = None,
-    ) -> None:
-        """A navigable file/directory picker.
+    def __init__(self, directory: str | None = None, *, mode: str = "directory", glob: str | None = None) -> None:
+        """The file/folder browser every picker in the app opens.
 
         ``mode``: ``"directory"`` returns a folder, ``"file"`` returns a file, ``"any"``
         returns WHICHEVER the user highlighted. ``"any"`` exists for pickers whose caller
@@ -48,272 +112,327 @@ class local_file_picker(ui.dialog):
         ``tomograms.star``, and asking the user to first say which of those they have is
         the question the file browser already answers.
 
-        ``multiple`` (file mode only) renders a checkbox per file and OK returns every
-        ticked path (selection persists across navigation). ``glob`` filters which *files*
-        are shown — one pattern (``"*.mrc"``) or several, comma-separated
-        (``"*.mrc,*.rec"``), since fnmatch has no alternation and a file type with two
-        conventional suffixes is the common case. Directories are always listed so you can
-        navigate. Directory scans run off the event loop (Lustre-friendly)."""
+        The path bar is the autocomplete: what is typed after the last ``/`` filters the
+        listing of the folder before it (substring, or a wildcard pattern), so the list
+        under the bar IS the suggestion list and typing costs no disk read once the folder
+        is listed. Tab completes, ↑/↓ choose, Enter opens. A pasted path goes straight
+        there; a path that does not exist lands on its nearest existing folder and says so.
+
+        ``glob`` prefills the file filter — one pattern (``"*.mrc"``) or several,
+        comma-separated (``"*.mrc,*.rec"``); the user can edit or clear it. Folders are
+        always listed. ``directory=None`` starts where the previous pick landed."""
         super().__init__()
+        ensure_assets_loaded()
 
-        self.path = Path(directory).expanduser().resolve()
         self.mode = mode
-        self.multiple = bool(multiple)
-        self.glob = glob
-        self.selected_path: Path | None = None
-        self.selected_paths: set[str] = set()  # multi-select: absolute path strings
-        self._row_checkboxes: dict[str, ui.checkbox] = {}  # current view's file checkboxes
-        self.count_label = None  # select-all bar counter (multi mode)
+        self._start = directory
+        self._dir = ""  # the folder listed
+        self._entries: list[tuple[str, bool]] = []
+        self._rows: list[tuple[str, bool]] = []  # selectable rows by data-i: (absolute path, is_dir)
+        self._sel: int | None = None
+        self._scans: dict[str, list[tuple[str, bool]] | None] = {}  # this dialog's listings
+        self._gen = 0
+        self._echo: str | None = None  # a path-bar value this class wrote itself
+        self._typed_task: asyncio.Task | None = None
+        self._typed_settled = Debounced(self._kick_typed, _TYPE_SETTLE_S)
 
-        if upper_limit is None:
-            self.upper_limit = None
-        else:
-            self.upper_limit = Path(directory if upper_limit == ... else upper_limit).expanduser().resolve()
-
-        with self, ui.card().classes("p-0").style("width: 70vw; max-width: 900px;"):
-            # Header: up button + editable path bar
-            with ui.row().classes("w-full items-center px-3 py-2 bg-gray-50 border-b gap-2"):
-                self.up_button = (
-                    ui.button(icon="arrow_upward", on_click=self._go_up)
-                    .props("flat round dense size=sm")
-                    .classes("text-gray-500 shrink-0")
-                )
+        with self, ui.card().style("width: 680px; max-width: 92vw; padding: 0; gap: 0; border-radius: 6px;"):
+            with (
+                ui.row()
+                .classes("w-full items-center no-wrap")
+                .style("gap: 2px; padding: 5px 8px; background: #f8fafc; border-bottom: 1px solid #e2e8f0;")
+            ):
+                self._up = self._icon("arrow_upward", self._go_up, "Parent folder")
+                self._icon("home", self._go_home, "Home folder")
                 self.path_input = (
-                    ui.input(value=str(self.path))
-                    .props("dense borderless hide-bottom-space")
-                    .style(f"{_MONO} font-size: 12px; color: #374151; flex: 1;")
+                    ui.input(on_change=self._on_typed)
+                    .props("dense hide-bottom-space autofocus autocomplete=off spellcheck=false")
+                    .classes("cb-field cb-field-mono flex-1 min-w-0")
+                    .style("margin-left: 4px;")
+                    .tooltip("Type or paste a path · Tab completes · ↑↓ choose · Enter opens")
                 )
-                self.path_input.on("keyup.enter", lambda e: self._navigate_to_typed())
+                self.path_input.on("keydown.enter", self._on_enter)
+                self.path_input.on("keydown.tab.prevent", self._on_tab)
+                self._glob_input = None
+                if mode != "directory":
+                    self._glob_input = (
+                        ui.input(value=glob or "", placeholder="all files", on_change=self._on_glob)
+                        .props("dense hide-bottom-space autocomplete=off spellcheck=false")
+                        .classes("cb-field cb-field-mono")
+                        .style("width: 110px; margin-left: 6px;")
+                        .tooltip("Files shown: one pattern or several, comma-separated (*.mrc,*.rec). Empty = all")
+                    )
 
-            # File list
-            self.list_container = ui.column().classes("w-full p-0 overflow-y-auto").style("height: 50vh;")
+            with ui.element("div").style("height: 46vh; overflow-y: auto; padding: 2px 0;"):
+                self._list = ui.html("", sanitize=False)
+            self._list.on("click", self._on_click, js_handler=_CLICK_JS)
+            self._list.on("dblclick", self._on_open, js_handler=_OPEN_JS)
+            self.path_input.on("keydown", self._on_click, js_handler=_arrow_js(self._list.id))
 
-            # Footer
-            with ui.row().classes("w-full justify-between items-center px-4 py-3 bg-gray-50 border-t"):
-                if self.mode == "directory":
-                    hint = "Double-click folder to enter. OK selects current directory."
-                elif self.mode == "any":
-                    hint = "Click a folder or a file to pick it. Double-click a folder to enter it."
-                elif self.multiple:
-                    hint = "Tick files to select. OK confirms the ticked set."
-                else:
-                    hint = "Click to select, double-click to confirm."
-                ui.label(hint).style(f"{_SANS} font-size: 11px; color: #9ca3af;")
-                with ui.row().classes("gap-2"):
-                    house_button("Cancel", self.close)
-                    house_button("OK", self._handle_ok, kind="accent")
+            with (
+                ui.row()
+                .classes("w-full items-center no-wrap")
+                .style("gap: 6px; padding: 5px 8px; background: #f8fafc; border-top: 1px solid #e2e8f0;")
+            ):
+                self._status = ui.label("").style(
+                    f"{_MONO} font-size: 10px; color: #94a3b8; flex: 1; min-width: 0; "
+                    "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                )
+                house_button("Cancel", self.close)
+                house_button("Select", self._on_ok, kind="accent")
 
-        with self.list_container:
-            ui.label("Loading…").classes("text-gray-400 text-sm p-4")
-        ui.timer(0.01, self._refresh_list, once=True)
+            ui.timer(0.01, self._open_start, once=True)
+
+    @staticmethod
+    def _icon(icon: str, handler, tip: str) -> ui.button:
+        return (
+            ui.button(icon=icon, on_click=handler)
+            .props("flat dense round size=xs")
+            .classes("text-slate-400 shrink-0")
+            .tooltip(tip)
+        )
 
     # ── Navigation ────────────────────────────────────────────────────────────
 
-    async def _navigate_to_typed(self) -> None:
-        """Enter in the path bar. A typed path to an existing FILE is a SELECTION in single
-        file mode — pasting a known absolute path is the fastest way to pick one, and
-        "not a valid directory" would be a lie about a path that exists. Anything else
-        navigates, under the same root limit."""
+    def _abs(self, typed: str) -> str:
+        """An absolute path for what is in the bar; relative text is relative to the listed
+        folder. Symlinks are kept as typed — /groups/… stays /groups/…, not its mount."""
+        t = os.path.expanduser(typed.strip())
+        return os.path.abspath(os.path.join(self._dir or os.path.expanduser("~"), t))
+
+    def _split_typed(self) -> tuple[str, str]:
+        """(folder to list, name filter) for the path bar."""
+        typed = (self.path_input.value or "").strip()
+        if not typed:
+            return self._dir, ""
+        p = self._abs(typed)
+        if typed.endswith("/"):
+            return p, ""
+        return os.path.dirname(p), os.path.basename(p)
+
+    def _set_bar(self, value: str) -> None:
+        self._echo = value
+        self.path_input.value = value
+
+    async def _open_start(self) -> None:
+        wanted = os.path.abspath(os.path.expanduser(self._start or _last_dir or "~"))
+        start = await asyncio.to_thread(_nearest_dir, wanted)
+        await self._enter(start)
+        if start != wanted:
+            self._note(f"{wanted} does not exist · nearest folder shown", bad=True)
+
+    async def _enter(self, folder: str) -> None:
+        """List `folder` (fresh read) and put it in the bar, ready for the next name."""
+        self._scans.pop(folder, None)
+        self._set_bar(folder.rstrip("/") + "/")
+        self._sel = None
+        if await self._load(folder):
+            self._paint()
+
+    async def _load(self, folder: str) -> bool:
+        """Make `folder` the listed one. False (listing unchanged) when it cannot be read or a
+        newer navigation overtook this one."""
+        self._gen += 1
+        gen = self._gen
+        if folder not in self._scans:
+            self._list.style("opacity: 0.45;")
+            self._note(f"reading {folder} …")
+            self._scans[folder] = await asyncio.to_thread(_scan, folder)
+            self._list.style("opacity: 1;")
+        if gen != self._gen:
+            return False
+        entries = self._scans[folder]
+        if entries is None:
+            self._scans.pop(folder, None)
+            self._note(f"cannot read {folder}", bad=True)
+            return False
+        self._dir = folder
+        self._entries = entries
+        self._up.set_enabled(folder != os.path.dirname(folder))
+        return True
+
+    async def _go_up(self) -> None:
+        if self._dir and self._dir != os.path.dirname(self._dir):
+            await self._enter(os.path.dirname(self._dir))
+
+    async def _go_home(self) -> None:
+        await self._enter(os.path.expanduser("~"))
+
+    # ── Path bar ──────────────────────────────────────────────────────────────
+
+    def _on_typed(self, e) -> None:
+        if e.value == self._echo:
+            self._echo = None
+            return
+        self._echo = None
+        self._sel = None
+        self._typed_settled()
+
+    def _kick_typed(self) -> None:
+        self._typed_task = asyncio.create_task(self._apply_typed())
+
+    async def _apply_typed(self) -> None:
+        folder, _ = self._split_typed()
+        if folder and folder != self._dir:
+            if await asyncio.to_thread(_kind, folder) != "dir":
+                self._note(f"no folder {folder}", bad=True)
+                return
+            if not await self._load(folder):
+                return
+        self._paint()
+
+    async def _on_tab(self) -> None:
+        self._typed_settled.cancel()
+        await self._apply_typed()
+        folder, typed = self._split_typed()
+        if folder != self._dir or not typed:
+            return
+        names = [(n, d) for n, d in self._entries if n.lower().startswith(typed.lower())]
+        if len(names) == 1:
+            name, is_dir = names[0]
+            if is_dir:
+                await self._enter(os.path.join(folder, name))
+            else:
+                self._set_bar(os.path.join(folder, name))
+            return
+        common = os.path.commonprefix([n for n, _ in names])
+        if len(common) > len(typed):
+            self._set_bar(os.path.join(folder, common))
+            self._paint_for(common)
+
+    async def _on_enter(self) -> None:
+        if self._sel is not None:
+            await self._open_row(self._sel)
+            return
         typed = (self.path_input.value or "").strip()
         if not typed:
             return
-        p = Path(typed).expanduser().resolve()
-        pick_file = self.mode in ("file", "any") and not self.multiple and p.is_file()
-        if not pick_file and not p.is_dir():
-            ui.notify(f"Not a valid directory: {typed}", type="warning", timeout=2500)
-            self.path_input.value = str(self.path)
-            return
-        if self.upper_limit is not None:
-            under = p.parent if pick_file else p
-            if under != self.upper_limit and self.upper_limit not in under.parents:
-                ui.notify("Cannot navigate above the root limit", type="warning", timeout=2500)
-                self.path_input.value = str(self.path)
-                return
-        if pick_file:
-            self.submit([str(p)])
-            return
-        self.path = p
-        self.selected_path = None
-        await self._refresh_list()
-
-    async def _go_up(self) -> None:
-        parent = self.path.parent
-        if parent != self.path:
-            self.path = parent
-            self.selected_path = None
-            await self._refresh_list()
-
-    # ── List ─────────────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _scan_dir(path: Path, glob: str | None, dirs_only: bool) -> tuple[list[tuple], int]:
-        """Off-loop directory scan via os.scandir (d_type — no per-entry stat where the
-        filesystem reports it). Returns (sorted (Path, is_dir) tuples, hidden_file_count).
-        ``dirs_only`` (directory pickers) lists no files at all: a 5000-frame tomogram
-        directory is a number, not 5000 rows shipped over the socket. Files are otherwise
-        filtered by ``glob`` (fnmatch) and capped at _MAX_FILE_ROWS."""
-        out: list[tuple] = []
-        hidden = 0
-        n_files = 0
-        try:
-            with os.scandir(path) as it:
-                for e in it:
-                    if e.name.startswith("."):
-                        continue
-                    try:
-                        is_dir = e.is_dir()
-                    except OSError:
-                        continue
-                    if is_dir:
-                        out.append((Path(e.path), True))
-                        continue
-                    if glob and not any(fnmatch.fnmatch(e.name, g) for g in glob.split(",")):
-                        continue
-                    n_files += 1
-                    if dirs_only or n_files > _MAX_FILE_ROWS:
-                        hidden += 1
-                        continue
-                    out.append((Path(e.path), False))
-        except OSError:
-            return [], 0
-        out.sort(key=lambda t: (not t[1], t[0].name.lower()))
-        return out, hidden
-
-    async def _refresh_list(self) -> None:
-        self.path_input.value = str(self.path)
-        self._update_up_button()
-        # Feedback first: the old listing must not linger while a slow NFS readdir runs,
-        # or the user reads stale entries as "the folder switch did not happen".
-        self.list_container.clear()
-        self._row_checkboxes.clear()
-        with self.list_container:
-            ui.label("Loading…").classes("text-gray-400 text-sm p-4")
-        target = self.path
-        entries, hidden = await asyncio.to_thread(self._scan_dir, target, self.glob, self.mode == "directory")
-        if target != self.path:
-            return  # navigated again meanwhile; that refresh owns the list
-        self.list_container.clear()
-        with self.list_container:
-            if not entries and not hidden:
-                ui.label("Empty directory").classes("text-gray-400 text-sm p-4")
-                return
-            if self.multiple and any(not is_dir for _, is_dir in entries):
-                self._render_select_all_bar([p for p, is_dir in entries if not is_dir])
-            for item, is_dir in entries:
-                self._create_row(item, is_dir)
-            if hidden:
-                note = f"{hidden} files" if self.mode == "directory" else f"+{hidden} more files (narrow with the glob)"
-                ui.label(note).style(f"{_MONO} font-size: 10px; color: #9ca3af; padding: 6px 16px;")
-
-    def _render_select_all_bar(self, files: list[Path]) -> None:
-        with ui.row().classes("w-full items-center px-4 py-1 gap-2 bg-gray-50 border-b border-gray-100"):
-            house_button("Select all", lambda: self._set_paths(files, True))
-            house_button("Clear", lambda: self._set_paths(None, False))
-            self.count_label = ui.label(self._count_text()).style(
-                f"{_MONO} font-size: 10px; color: #9ca3af; margin-left: auto;"
-            )
-
-    def _count_text(self) -> str:
-        return f"{len(self.selected_paths)} selected"
-
-    def _update_count(self) -> None:
-        if self.count_label is not None:
-            self.count_label.text = self._count_text()
-
-    def _toggle_path(self, path: str, value: bool) -> None:
-        if value:
-            self.selected_paths.add(path)
-        else:
-            self.selected_paths.discard(path)
-        self._update_count()
-
-    def _set_paths(self, files: list[Path] | None, value: bool) -> None:
-        if value and files:
-            for f in files:
-                self.selected_paths.add(str(f))
-        elif not value:
-            self.selected_paths.clear()
-        for sp, cb in self._row_checkboxes.items():
-            cb.value = sp in self.selected_paths
-        self._update_count()
-
-    def _create_row(self, item: Path, is_dir: bool) -> None:
-        row = ui.row().classes("w-full items-center px-4 py-1 cursor-pointer hover:bg-blue-50 border-b border-gray-100")
-        row.path = item
-        row.is_dir = is_dir
-        multi_file = self.multiple and not is_dir
-
-        with row:
-            if multi_file:
-                cb = ui.checkbox(
-                    value=str(item) in self.selected_paths,
-                    on_change=lambda e, p=str(item): self._toggle_path(p, bool(e.value)),
-                ).props("dense")
-                self._row_checkboxes[str(item)] = cb
-            ui.html(_FOLDER_SVG if is_dir else _FILE_SVG, sanitize=False).classes("shrink-0")
-            ui.label(item.name).style(f"{_SANS} font-size: 13px; color: #374151;").classes("ml-2 truncate flex-1")
-
-        row.on("dblclick", lambda e, r=row: self._double_click_row(r))
-        if not multi_file:
-            row.on("click", lambda e, r=row: self._select_row(r))
-
-    def _select_row(self, row) -> None:
-        for child in self.list_container:
-            if hasattr(child, "path"):
-                child.classes(remove="bg-blue-100")
-        row.classes("bg-blue-100")
-        self.selected_path = row.path
-
-    async def _double_click_row(self, row) -> None:
-        if row.is_dir:
-            self.path = row.path
-            self.selected_path = None
-            await self._refresh_list()
-        elif self.multiple:
-            p = str(row.path)
-            now = p not in self.selected_paths
-            self._toggle_path(p, now)
-            cb = self._row_checkboxes.get(p)
-            if cb is not None:
-                cb.value = now
-        elif self.mode in ("file", "any"):
-            self.submit([str(row.path)])
-
-    # ── OK ────────────────────────────────────────────────────────────────────
-
-    async def _handle_ok(self):
-        if self.multiple:
-            if self.selected_paths:
-                self.submit(sorted(self.selected_paths))
+        p = self._abs(typed)
+        kind = await asyncio.to_thread(_kind, p)
+        if kind == "dir":
+            await self._enter(p)
+        elif kind == "file":
+            if self.mode == "directory":
+                self._note("that is a file · this asks for a folder", bad=True)
             else:
-                ui.notify("Tick at least one file", type="warning")
+                self._pick(p, False)
+        elif any(c in os.path.basename(p) for c in _WILDCARDS):
+            # A pasted glob (…/frames/*.eer): its folder, with the pattern as the file filter.
+            parent = await asyncio.to_thread(_nearest_dir, os.path.dirname(p))
+            if self._glob_input is not None:
+                self._glob_input.value = os.path.basename(p)
+            await self._enter(parent)
+        else:
+            nearest = await asyncio.to_thread(_nearest_dir, p)
+            await self._enter(nearest)
+            self._note(f"{p} does not exist · nearest folder shown", bad=True)
+
+    # ── List ──────────────────────────────────────────────────────────────────
+
+    def _note(self, text: str, *, bad: bool = False) -> None:
+        self._status.text = text
+        self._status.style(f"color: {'#b91c1c' if bad else '#94a3b8'};")
+
+    def _on_glob(self) -> None:
+        self._sel = None
+        self._paint()
+
+    def _globs(self) -> list[str]:
+        if self._glob_input is None:
+            return []
+        return [g.strip() for g in (self._glob_input.value or "").split(",") if g.strip()]
+
+    def _paint(self) -> None:
+        folder, typed = self._split_typed()
+        self._paint_for(typed if folder == self._dir else "")
+
+    def _paint_for(self, typed: str) -> None:
+        globs = self._globs()
+        dirs = [n for n, d in self._entries if d and _matches(n, typed)]
+        all_files = [n for n, d in self._entries if not d]
+        globbed = [n for n in all_files if not globs or any(fnmatch.fnmatch(n, g) for g in globs)]
+        files = [n for n in globbed if _matches(n, typed)]
+        if typed and not any(c in typed for c in _WILDCARDS):
+            # Names that START with what was typed come first: that is the completion.
+            low = typed.lower()
+            dirs.sort(key=lambda n: not n.lower().startswith(low))
+            files.sort(key=lambda n: not n.lower().startswith(low))
+
+        listed = [(n, True) for n in dirs] + [(n, False) for n in files]
+        shown = listed[:_MAX_ROWS]
+        self._rows = []
+        parts: list[str] = []
+        for name, is_dir in shown:
+            label = html.escape(name)
+            if is_dir or self.mode != "directory":
+                i = len(self._rows)
+                self._rows.append((os.path.join(self._dir, name), is_dir))
+                sel = " cb-fp-sel" if i == self._sel else ""
+                parts.append(
+                    f'<div class="cb-fp-row{sel}" data-i="{i}" style="{_ROW_STYLE} color: #334155; cursor: pointer;">'
+                    f"{_FOLDER_SVG if is_dir else _FILE_SVG}<span>{label}</span></div>"
+                )
+            else:
+                # A folder picker shows the files too, greyed: they say whether this is the folder.
+                parts.append(f'<div style="{_ROW_STYLE} color: #cbd5e1;">{_FILE_SVG}<span>{label}</span></div>')
+        if not listed:
+            empty = f"nothing matches “{html.escape(typed)}”" if typed else "empty folder"
+            if not typed and globbed != all_files:
+                empty = f"no files match {html.escape(', '.join(globs))}"
+            parts.append(f'<div style="{_NOTE_STYLE}">{empty}</div>')
+        elif len(listed) > len(shown):
+            parts.append(f'<div style="{_NOTE_STYLE}">+{len(listed) - len(shown)} more · type to narrow</div>')
+        self._list.content = "".join(parts)
+
+        status = f"{len(dirs)} folders · {len(files)} files"
+        if len(globbed) != len(all_files):
+            status += f" ({len(all_files) - len(globbed)} hidden by filter)"
+        self._note(status)
+
+    def _on_click(self, e) -> None:
+        i = e.args.get("i") if isinstance(e.args, dict) else None
+        if isinstance(i, int) and 0 <= i < len(self._rows):
+            self._sel = i
+
+    async def _on_open(self, e) -> None:
+        i = e.args.get("i") if isinstance(e.args, dict) else None
+        if isinstance(i, int) and 0 <= i < len(self._rows):
+            await self._open_row(i)
+
+    async def _open_row(self, i: int) -> None:
+        path, is_dir = self._rows[i]
+        if is_dir:
+            await self._enter(path)
+        else:
+            self._pick(path, False)
+
+    # ── Select ────────────────────────────────────────────────────────────────
+
+    def _pick(self, path: str, is_dir: bool) -> None:
+        global _last_dir
+        _last_dir = path if is_dir else os.path.dirname(path)
+        self.submit([path])
+
+    async def _on_ok(self) -> None:
+        if self._sel is not None:
+            path, is_dir = self._rows[self._sel]
+            if is_dir and self.mode == "file":
+                await self._enter(path)
+            else:
+                self._pick(path, is_dir)
             return
-        if self.selected_path:
-            if self.mode == "any":
-                self.submit([str(self.selected_path)])
-            elif self.mode == "directory" and self.selected_path.is_dir():
-                self.submit([str(self.selected_path)])
-            elif self.mode == "file" and self.selected_path.is_file():
-                self.submit([str(self.selected_path)])
-            elif self.mode == "directory":
-                ui.notify("Please select a folder", type="warning")
-            else:
-                ui.notify("Invalid selection", type="warning")
+        typed = (self.path_input.value or "").strip()
+        p = self._abs(typed) if typed else self._dir
+        kind = await asyncio.to_thread(_kind, p)
+        if kind == "file" and self.mode != "directory":
+            self._pick(p, False)
+        elif kind == "dir" and self.mode == "file":
+            await self._enter(p)
+        elif kind == "dir":
+            self._pick(p, True)
+        elif self.mode != "file" and self._dir:
+            # Nothing chosen: "the folder I am standing in" — for "any" that is the common case
+            # (open the recon folder, Select, take everything in it).
+            self._pick(self._dir, True)
         else:
-            # Nothing highlighted: "directory" and "any" both mean "the folder I am
-            # standing in" — for "any" that is the common case (open the recon folder,
-            # press OK, take everything in it).
-            if self.mode in ("directory", "any"):
-                self.submit([str(self.path)])
-            else:
-                ui.notify("Please select a file", type="warning")
-
-    # ── Up button ─────────────────────────────────────────────────────────────
-
-    def _update_up_button(self) -> None:
-        at_root = self.path == self.path.parent
-        if self.upper_limit is None:
-            self.up_button.props(f"disable={at_root}")
-        else:
-            at_limit = self.path == self.upper_limit or self.upper_limit in self.path.parents
-            self.up_button.props(f"disable={at_root or at_limit}")
+            self._note("pick a file", bad=True)

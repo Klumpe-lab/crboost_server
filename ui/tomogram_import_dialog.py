@@ -299,7 +299,7 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
 
     async def _browse() -> None:
         start = src["folder"] or _start_dir(path_in.value) or str(project_path)
-        result = await local_file_picker(start, upper_limit=None, mode="any", glob=_PICKER_GLOB)
+        result = await local_file_picker(start, mode="any", glob=_PICKER_GLOB)
         if result:
             await _resolve(result[0])
 

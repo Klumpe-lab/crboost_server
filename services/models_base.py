@@ -37,6 +37,23 @@ class DenoiseMethod(str, Enum):
     ISONET = "IsoNet"
 
 
+class SegmentMethod(str, Enum):
+    """What the Segment job runs: easymode's pretrained networks for the features chosen, or one
+    Ais model (.scnm) the user trained, whose title names the feature."""
+
+    EASYMODE = "easymode"
+    AIS_MODEL = "Ais model"
+
+
+class SegmentFormat(str, Enum):
+    """easymode's `--format` for its own networks' volumes (p × 127, p × 255, p). Volumes from Ais
+    models are always p × 255."""
+
+    INT8 = "int8"
+    UINT16 = "uint16"
+    FLOAT32 = "float32"
+
+
 class IsoNetRefineMethod(str, Enum):
     """IsoNet `refine --method` strategy. Values match the CLI strings. AUTO selects
     isonet2-n2n when even/odd halves are present (missing-wedge correction + denoising)."""
@@ -88,6 +105,7 @@ class JobType(str, Enum):
     TS_RECONSTRUCT = "tsReconstruct"
     DENOISE_TRAIN = "denoisetrain"
     DENOISE_PREDICT = "denoisepredict"
+    SEGMENT = "segment"
     # A finished per-tilt-series output cut down to chosen tilt series; written at submit, no
     # SLURM job (services/jobs/subset.py).
     SUBSET = "subset"
@@ -233,6 +251,15 @@ class SpeciesOrigin(StrEnum):
     WORKBENCH = "workbench"  # template-driven (the Species page "+")
     MANUAL = "manual"  # created de novo for hand picking (roster "+", Journey empty state)
     IMPORTED = "imported"
+
+
+class FeatureOrigin(StrEnum):
+    """What first produced a segmentation feature in a project (`FeatureClass.origin`). Stored as
+    a plain str, validated at the write site (`ProjectState.add_feature`)."""
+
+    EASYMODE = "easymode"  # a pretrained easymode network
+    AIS = "ais"  # an Ais model (.scnm) trained by the user
+    IMPORT = "import"  # a volume segmented elsewhere and registered
 
 
 class PickSourceKind(StrEnum):

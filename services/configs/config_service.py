@@ -138,11 +138,14 @@ class ToolConfig(BaseModel):
     """Configuration for a specific external tool.
 
     `container_path` is the image a container tool runs in; `bin_path` is the directory
-    holding a binary tool's executables, put first on PATH for its calls."""
+    holding a binary tool's executables, put first on PATH for its calls. `cache_dir` is the
+    host directory of a tool's downloaded model weights, for the tools that keep them outside
+    the image (easymode)."""
 
     exec_mode: Literal["container", "binary"] = "container"
     container_path: str | None = None
     bin_path: str | None = None
+    cache_dir: str | None = None
 
 
 class ContainerRuntime(StrEnum):

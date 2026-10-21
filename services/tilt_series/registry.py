@@ -86,7 +86,9 @@ _LOCK_POLL_S = 0.5
 # (1, 5): additive Frame.p_bad (the DL classifier's P(bad), kept apart from the
 #         verdict). Frame.filter_probability is dropped on load: it held the winning
 #         class's probability (1.0 after a manual commit), not a P(bad).
-REGISTRY_SCHEMA_VERSION = (1, 5)
+# (1, 6): additive SegmentationTomogramOutput tomogram output. Code older than this
+#         fails to validate a sidecar that holds one and skips that tilt series.
+REGISTRY_SCHEMA_VERSION = (1, 6)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -221,6 +223,15 @@ class TiltSeriesRegistry:
             ts.tomogram.outputs[output.job_instance_id] = output
 
         self._change(ts_id, attach)
+
+    def detach_tomogram_output(self, ts_id: str, job_instance_id: str) -> None:
+        """Remove one job's output from a tomogram: a run of the job that no longer produced it."""
+
+        def detach(ts: TiltSeries) -> None:
+            if ts.tomogram is not None:
+                ts.tomogram.outputs.pop(job_instance_id, None)
+
+        self._change(ts_id, detach)
 
     def set_excluded(self, ts_id: str, excluded: bool, *, reason: str | None = None) -> None:
         """Mark/unmark a tilt-series as excluded from processing (forward-only).
