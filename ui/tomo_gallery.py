@@ -50,20 +50,24 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import time
 from pathlib import Path
 from typing import Any
 
 from nicegui import ui
 
 from services.dashboard_data import position_label, tilt_thumb_dir, vis_asset_url
-from services.models_base import SPECIES_OVERLAY_COLORS, FeatureOrigin, species_palette_color
+from services.models_base import SPECIES_OVERLAY_COLORS
 from services.project_state import get_project_state_for
+from services.segmentation import display
 from services.tilt_series_service import ensure_tilt_thumbnails
 from services.visualization.preview_orchestrator import _find_warp_tomo_preview, read_preview_manifest
 from services.visualization.preview_render import is_output_stale
 from services.visualization.tomo_geometry import SOURCE_IMPORTED, TomoGeometry, all_geometries
 from ui.components.buttons import house_button
 from ui.components.copyable import copy_3dmod_chip
+from ui.components import feature_layers as fl
 from ui.components.dialogs import dialog_host
 from ui.components.reactive import SingleFlight, owned_timer
 from services.job_lineage import job_dirs, recon_of
@@ -71,6 +75,7 @@ from ui.components.recon_compare import recon_version_labels, recon_versions_for
 from ui.components.segmented import render_segmented
 from ui.components.svg_icon import load_icon_svg
 from ui.dashboard.css import ensure_assets_loaded
+from ui.segmentation_import_dialog import open_segmentation_import_dialog
 from ui.tilt_previews import (
     TILT_CLICK_JS,
     TiltGallery,
@@ -82,6 +87,8 @@ from ui.tilt_previews import (
     tilt_context,
     tomogram_caption_html,
 )
+
+logger = logging.getLogger(__name__)
 
 RECON_SOURCE = "recon"
 TOMOGRAMS_TAB, TILTS_TAB = "tomograms", "tilts"
@@ -117,15 +124,6 @@ _MAX_KICKS_PER_RENDER = 6
 # The zoom's side column, and the room the dialog's padding takes around the slice.
 _ZOOM_SIDE_PX = 300
 _ZOOM_CHROME_PX = 28
-
-# The segmentation fills' opacity choices; the slice stays readable under one fill at 40 %.
-_FEATURE_OPACITIES: tuple[tuple[str, str], ...] = (("0.25", "25%"), ("0.4", "40%"), ("0.6", "60%"))
-_FEATURE_OPACITY = "0.4"
-_FEATURE_ORIGIN_OF_TOOL = {"easymode": FeatureOrigin.EASYMODE, "ais": FeatureOrigin.AIS}
-_FEATURES_TIP = (
-    "Segmented features: each fills where its probability is at least 0.5 in any plane of the slab the "
-    "slice shows, so a membrane thinner than the slab still shows."
-)
 
 # The zoom dialog's keys (← → step through the wall, ↑ ↓ switch versions), filtered in the
 # browser so no other key is sent.
@@ -274,62 +272,6 @@ def _pick_layers(project_state, project_path: Path, geoms: list[TomoGeometry]) -
     return layers, per_ts
 
 
-def _feature_layers(project_state, tilt_series: list, dirs: dict[Path, str]) -> tuple[list[dict], dict]:
-    """The segmentation overlays: ``(layers, {ts: [{id, feature, xy, fraction}, ...]})``.
-
-    A layer is one feature of one producer (a Segment job, or an import): two jobs that both
-    segmented membranes are two layers in the feature's one colour, labelled by producer. ``layers``
-    = ``[{id, feature, producer, shared, origin, recon, recon_label, n}]`` by feature. ``recon`` is
-    the reconstruct instance the segmented density traces to: as the producer recorded it, else
-    followed through the job's current inputs; the wall matches it against the source as it does a
-    pick layer's. ``xy`` is the URL of the X/Y overlay mask; a volume without one on
-    disk draws nothing."""
-    recon_labels = recon_version_labels(project_state)
-    layers: dict[str, dict] = {}
-    per_ts: dict[str, list[dict]] = {}
-    for ts in tilt_series:
-        outputs = ts.tomogram.outputs if ts.tomogram is not None else {}
-        for producer, out in outputs.items():
-            if out.output_type != "segmentation":
-                continue
-            # What the volumes were computed on, as recorded; the job's inputs as they are now only when
-            # nothing was (they may have been re-pointed since).
-            live = recon_of(project_state, producer, dirs) if producer in project_state.jobs else None
-            recon = out.recon_instance or live
-            for feature, vol in out.volumes.items():
-                if vol.overlay_xy is None or not Path(vol.overlay_xy).is_file():
-                    continue
-                layer_id = f"{producer}:{feature}"
-                if layer_id not in layers:
-                    tool = vol.model.tool if vol.model is not None else None
-                    layers[layer_id] = {
-                        "id": layer_id,
-                        "feature": feature,
-                        "producer": producer,
-                        # A volume that names no tool was registered from elsewhere.
-                        "origin": _FEATURE_ORIGIN_OF_TOOL.get(tool, FeatureOrigin.IMPORT),
-                        "recon": recon,
-                        "recon_label": recon_labels.get(recon, recon or "") if len(recon_labels) > 1 else "",
-                        "n": 0,
-                    }
-                layers[layer_id]["n"] += 1
-                per_ts.setdefault(ts.id, []).append(
-                    {
-                        "id": layer_id,
-                        "feature": feature,
-                        "xy": vis_asset_url(str(vol.overlay_xy)),
-                        "fraction": vol.fraction_pct,
-                    }
-                )
-    ordered = sorted(layers.values(), key=lambda layer: (layer["feature"], layer["producer"]))
-    producers_of: dict[str, int] = {}
-    for layer in ordered:
-        producers_of[layer["feature"]] = producers_of.get(layer["feature"], 0) + 1
-    for layer in ordered:
-        layer["shared"] = producers_of[layer["feature"]] > 1
-    return ordered, per_ts
-
-
 def _recon_source(slab_dir: Path, ts_name: str, mrc: Path | None, warp_png: Path | None) -> dict:
     """One reconstruction's tile picture: the WarpTools PNG ts_reconstruct wrote next to the volume,
     else the X/Y slab we render ourselves under `slab_dir` (the only option for an imported
@@ -415,12 +357,12 @@ def _sources_for(project_state, project_path: Path, geom: TomoGeometry, dirs: di
 def collect_rows(project_state, project_path: Path, tilt_series: list) -> tuple[list[dict], list[dict], list[dict]]:
     """``(rows, pick layers, feature layers)``: one row per tomogram, ordered by acquisition
     position, and the layers its ``picks`` and ``features`` entries name (`_pick_layers`,
-    `_feature_layers`, the latter read from the registry's `tilt_series`). Disk-only — safe to call
+    `feature_layers.collect_layers`, the latter read from the registry's `tilt_series`). Disk-only — safe to call
     in a thread, which is where the page calls it from."""
     geoms = all_geometries(project_state, project_path)
     layers, picks_by_ts = _pick_layers(project_state, project_path, geoms)
     dirs = job_dirs(project_state)
-    feature_layers, features_by_ts = _feature_layers(project_state, tilt_series, dirs)
+    feature_layers, features_by_ts = fl.collect_layers(project_state, tilt_series, dirs)
     rows: list[dict] = []
     for geom in geoms:
         picks = picks_by_ts.get(geom.tomo_name, [])
@@ -480,14 +422,12 @@ class TomoGalleryPage:
         self.layer_on: dict[str, bool] = {}
         # Live pick-layer lists, "wall" (the toolbar menu) and "zoom": (body, summary label, source getter).
         self._picks_menus: dict[str, tuple[Any, Any, Any]] = {}
-        # Segmentation overlays (`_feature_layers`): a layer shows on the source that shows the
-        # reconstruction its density traces to, unless switched off in `feature_on`. Colours and the
-        # opacity are CSS variables on the page and the zoom (`_feature_vars`): changing them
-        # repaints no tile.
+        # Segmentation overlays (`feature_layers.collect_layers`): a layer shows on the source that shows
+        # the reconstruction its density traces to, unless it is hidden (`services.segmentation.display`,
+        # shared with the Journey and the pick viewer). Colours and the opacity are CSS variables on the
+        # page and the zoom (`_feature_vars`): changing them repaints no tile.
         self.feature_layers: list[dict] = []
         self._feature_layer_by_id: dict[str, dict] = {}
-        self.feature_on: dict[str, bool] = {}
-        self.feature_opacity: str = _FEATURE_OPACITY
         self._features_menus: dict[str, tuple[Any, Any, Any]] = {}  # as _picks_menus
         self._badges: dict[str, Any] = {}  # each tile's feature fractions, in its caption
         self._badge_keys: dict[str, tuple] = {}
@@ -546,8 +486,17 @@ class TomoGalleryPage:
             ui.spinner(size="lg", color="indigo")
             ui.label("Reading tomograms…").classes("text-xs")
         await asyncio.sleep(0.03)  # flush the spinner before the disk pass
+        started = time.monotonic()
         await self._collect()
+        collected = time.monotonic()
         self.render()
+        logger.info(
+            "%s · tomograms shown in %.1f s (read %.1f s, render %.1f s)",
+            self.project_path.name,
+            time.monotonic() - started,
+            collected - started,
+            time.monotonic() - collected,
+        )
 
     async def _collect(self) -> None:
         # Explicit-path resolution, not the tab accessor: this also runs from a timer
@@ -641,7 +590,7 @@ class TomoGalleryPage:
         """Whether a segmentation layer fills over `source`: switched on, and made on the
         reconstruction the source shows (a denoised version counts as the one it was denoised from).
         Over another reconstruction it is hidden, and its menu row says so."""
-        return self.feature_on.get(layer["id"], True) and not self._off_source(layer, source)
+        return display.is_shown(self.project_path, layer["id"]) and not self._off_source(layer, source)
 
     def _visible_features(self, row: dict, source: str) -> list[dict]:
         """The row's segmentation entries that fill over `source`."""
@@ -767,7 +716,7 @@ class TomoGalleryPage:
             self._picks_menus["wall"] = (body, summary, lambda: self.source)
             self._refresh_picks_lists()
         if self.feature_layers:
-            ui.label("features").classes("cb-gal-toolbar-label").tooltip(_FEATURES_TIP)
+            ui.label("features").classes("cb-gal-toolbar-label").tooltip(fl.TIP)
             trigger = ui.element("div").classes("cb-gal-picks-btn")
             with trigger:
                 summary = ui.label("")
@@ -776,25 +725,23 @@ class TomoGalleryPage:
                     body = ui.element("div").classes("cb-gal-picks-menu")
             self._features_menus["wall"] = (body, summary, lambda: self.source)
             self._refresh_features_lists()
+        if self.rows:
+            house_button(
+                "Import segmentations…",
+                self._import_segmentations,
+                tooltip="Register volumes segmented outside crboost (MemBrain, easymode or Ais run by hand) on "
+                "these tomograms",
+            )
 
     # ── Segmentation layers ───────────────────────────────────────────────────
 
-    def _feature_color(self, feature: str) -> str:
-        """The feature's colour: as registered, else the palette slot registering it would give."""
-        entry = get_project_state_for(self.project_path).get_feature(feature)
-        return entry.color if entry is not None else species_palette_color(feature)
-
     def _feature_name(self, layer: dict) -> str:
-        entry = get_project_state_for(self.project_path).get_feature(layer["feature"])
-        name = entry.name if entry is not None else layer["feature"]
-        return f"{name} · {layer['producer']}" if layer["shared"] else name
+        return fl.feature_name(self.project_path, layer)
 
     def _feature_vars(self) -> str:
-        """The CSS variables the segmentation fills and badges read: one colour per feature, and the
-        fills' opacity. Set on the page and on the zoom, which the dialog puts outside the page."""
-        colors = {layer["feature"]: self._feature_color(layer["feature"]) for layer in self.feature_layers}
-        variables = [f"{_feature_var(f)}: {c};" for f, c in colors.items()]
-        return " ".join([*variables, f"--cb-feat-opacity: {self.feature_opacity};"])
+        """The CSS variables the segmentation fills and badges read (`feature_layers.css_vars`). Set on
+        the page and on the zoom, which the dialog puts outside the page."""
+        return fl.css_vars(self.project_path, (layer["feature"] for layer in self.feature_layers))
 
     def _apply_feature_vars(self) -> None:
         style = self._feature_vars()
@@ -804,10 +751,7 @@ class TomoGalleryPage:
                 el.style(style)
 
     def _features_summary(self, source: str) -> str:
-        shown = [layer for layer in self.feature_layers if self._feature_shown(layer, source)]
-        if len(shown) == 1:
-            return self._feature_name(shown[0])
-        return f"{len(shown)} of {len(self.feature_layers)} layers"
+        return fl.layers_summary(self.project_path, self.feature_layers, lambda layer: self._off_source(layer, source))
 
     def _refresh_features_lists(self) -> None:
         """Repaint every live segmentation-layer list (the toolbar's menu, the zoom's side column)
@@ -826,69 +770,22 @@ class TomoGalleryPage:
                 self._render_features_list(source_of(), row)
 
     def _render_features_list(self, source: str, row: dict | None = None) -> None:
-        """The segmentation layers: a click on a row shows or hides it, a click on its swatch picks
-        the feature's colour (kept with the project). The count is the tomograms a layer covers, or,
-        for one tomogram (`row`, the zoom), the feature's share of its volume. A layer made on
-        another reconstruction than the source shows is hidden, and its row says so."""
+        """The segmentation layers (`feature_layers.render_layer_rows`). The count is the tomograms a
+        layer covers, or, for one tomogram (`row`, the zoom), the feature's share of its volume."""
         fractions = {e["id"]: e["fraction"] for e in row["features"]} if row is not None else {}
-        for layer in self.feature_layers:
-            if row is not None and layer["id"] not in fractions:
-                continue
-            on = self.feature_on.get(layer["id"], True)
-            hidden = self._off_source(layer, source)
-            item = ui.element("div").classes("cb-gal-pk-row" + ("" if on and not hidden else " off"))
-            item.on("click", lambda _e, lid=layer["id"]: self._toggle_feature(lid))
-            with item:
-                ui.icon("check_box" if on else "check_box_outline_blank", size="14px")
-                swatch = ui.element("div").classes("cb-gal-pk-marker")
-                swatch.on("click.stop", lambda: None)
-                with swatch:
-                    ui.html(_swatch_svg(self._feature_color(layer["feature"])), sanitize=False)
-                    ui.tooltip("Pick this feature's colour")
-                    with ui.menu().props("anchor='bottom left' self='top left'"):
-                        with ui.element("div").classes("cb-gal-pk-palette"):
-                            for color in SPECIES_OVERLAY_COLORS:
-                                pick = ui.html(_swatch_svg(color, 14), sanitize=False).classes("cb-gal-pk-marker")
-                                pick.on("click.stop", lambda _e, lay=layer, c=color: self._set_feature_color(lay, c))
-                ui.label(self._feature_name(layer)).classes("cb-gal-pk-name")
-                count = _fraction_text(fractions.get(layer["id"])) if row is not None else str(layer["n"])
-                ui.label(count).classes("cb-gal-pk-n")
-                if on and hidden:
-                    ui.icon("visibility_off", size="12px").classes("cb-gal-pk-warn").tooltip(
-                        f"Segmented on {layer['recon_label'] or layer['recon']}, a different reconstruction from the "
-                        "one this source shows, so it is hidden here: another alignment puts the specimen elsewhere "
-                        "in the volume."
-                    )
-        with ui.element("div").classes("cb-gal-feat-opacity"):
-            ui.label("opacity")
-            render_segmented(list(_FEATURE_OPACITIES), self.feature_opacity, self._set_feature_opacity)
+        layers = [layer for layer in self.feature_layers if row is None or layer["id"] in fractions]
+        fl.render_layer_rows(
+            self.project_path,
+            layers,
+            count_of=lambda layer: fl.fraction_text(fractions.get(layer["id"])) if row is not None else str(layer["n"]),
+            off_source=lambda layer: self._off_source(layer, source),
+            on_change=self._feature_display_changed,
+        )
 
-    def _toggle_feature(self, layer_id: str) -> None:
-        self.feature_on[layer_id] = not self.feature_on.get(layer_id, True)
+    def _feature_display_changed(self) -> None:
+        """A layer shown or hidden, a colour picked, the opacity switched."""
+        self._apply_feature_vars()
         self._features_changed()
-
-    def _set_feature_color(self, layer: dict, color: str) -> None:
-        """Recolour a feature everywhere it is drawn; the colour is the project's, so it is saved.
-        A feature no job registered yet (one that landed while this server was not watching) is
-        registered here."""
-        from backend import get_backend
-
-        state = get_project_state_for(self.project_path)
-        registered = state.get_feature(layer["feature"]) is not None
-        feature = state.add_feature(layer["feature"], origin=layer["origin"])
-        if feature.color != color or not registered:
-            feature.color = color
-            state.mark_dirty()
-            backend = get_backend()
-            if backend is not None:
-                asyncio.create_task(backend.save_project(self.project_path, debounce_s=1.0))
-        self._apply_feature_vars()
-        self._refresh_features_lists()
-
-    def _set_feature_opacity(self, value: str) -> None:
-        self.feature_opacity = value
-        self._apply_feature_vars()
-        self._refresh_features_lists()
 
     def _features_changed(self) -> None:
         self._refresh_features_lists()
@@ -1052,8 +949,8 @@ class TomoGalleryPage:
                 continue
             layer = self._feature_layer_by_id[f["id"]]
             with ui.element("div").classes("cb-gal-feat-badge"):
-                ui.element("div").classes("cb-gal-feat-dot").style(f"background: var({_feature_var(f['feature'])});")
-                ui.label(_fraction_text(f["fraction"]))
+                ui.element("div").classes("cb-gal-feat-dot").style(f"background: var({fl.feature_var(f['feature'])});")
+                ui.label(fl.fraction_text(f["fraction"]))
                 ui.tooltip(f"{self._feature_name(layer)}: {f['fraction']:.1f} % of the volume (mean probability)")
 
     def _render_slice_frame(self, row: dict, group: dict | None, *, kicked: bool) -> int:
@@ -1125,7 +1022,7 @@ class TomoGalleryPage:
         if not row["aspect"]:
             return
         for f in self._visible_features(row, source):
-            ui.element("div").style(_fill_style(f["feature"], f["xy"]))
+            ui.element("div").style(fl.fill_style(f["feature"], f["xy"]))
 
     def _refresh_overlays(self) -> None:
         """Repaint the overlay of each tile whose drawn layers changed (a source switch while
@@ -1341,6 +1238,22 @@ class TomoGalleryPage:
                 return
             await self.reload()
 
+    def _import_segmentations(self) -> None:
+        """The import dialog; the wall re-collects once a batch has registered or been removed."""
+        from backend import get_backend
+
+        backend = get_backend()
+        if backend is None:
+            ui.notify("The server's backend is not running; nothing can be imported.", type="negative")
+            return
+
+        async def _reload() -> None:
+            # A task of its own starts with no NiceGUI slot; the wall's container gives it the client.
+            with self.container:
+                await self._reload_click()
+
+        open_segmentation_import_dialog(backend, self.project_path, on_done=lambda: asyncio.create_task(_reload()))
+
     def _kick_slab(self, row: dict, src: dict) -> None:
         """Render this tile's missing X/Y slab in the background. Same cache paths and
         dedup keys the Journey uses, so a slab rendered from either surface serves
@@ -1493,8 +1406,7 @@ class TomoGalleryPage:
                         self._render_picks_list(self._zoom_source)
                 if row["features"]:
                     ui.label("features").classes("cb-gal-zoom-sec").tooltip(
-                        f"{_FEATURES_TIP} Beside each, its share of the volume: the mean probability over the "
-                        "whole tomogram."
+                        f"{fl.TIP} Beside each, its share of the volume: the mean probability over the whole tomogram."
                     )
                     features = ui.element("div").classes("cb-gal-zoom-list")
                     self._features_menus["zoom"] = (features, None, lambda: self._zoom_source)
@@ -1591,39 +1503,6 @@ class TomoGalleryPage:
         chev.on("click.stop", lambda: self._step_zoom(-1 if side == "left" else 1))
         with chev:
             ui.icon(f"chevron_{side}", size="34px")
-
-
-def _feature_var(feature: str) -> str:
-    """The CSS variable holding a feature's colour; feature ids are lower-case ASCII slugs."""
-    return f"--cb-feat-{feature}"
-
-
-def _fill_style(feature: str, mask_url: str) -> str:
-    """One feature's fill over a frame: the feature's colour, cut out by its overlay mask (white
-    with the feature as alpha, `services/segmentation/volumes.py`) stretched over the frame, which
-    is the tomogram's X/Y box. Colour and opacity are page variables."""
-    mask = f'url("{mask_url}")'
-    return (
-        "position: absolute; inset: 0; pointer-events: none; "
-        f"background-color: var({_feature_var(feature)}); opacity: var(--cb-feat-opacity); "
-        f"-webkit-mask-image: {mask}; mask-image: {mask}; "
-        "-webkit-mask-size: 100% 100%; mask-size: 100% 100%; "
-        "-webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;"
-    )
-
-
-def _fraction_text(fraction: float | None) -> str:
-    if fraction is None:
-        return "–"
-    return f"{fraction:.0f}%" if fraction >= 10 else f"{fraction:.1f}%"
-
-
-def _swatch_svg(color: str, size: int = 10) -> str:
-    """A feature's key in the layer lists: a square, where a pick layer's is a dot."""
-    return (
-        f'<svg width="{size}" height="{size}" style="display: block;"><rect x="1" y="1" width="{size - 2}" '
-        f'height="{size - 2}" rx="2" fill="{color}" stroke="rgba(15,23,42,0.35)" stroke-width="1"/></svg>'
-    )
 
 
 def _marker_svg(color: str, size: int = 10) -> str:

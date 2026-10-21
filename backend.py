@@ -9,6 +9,7 @@ import re
 import shutil
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from datetime import datetime
@@ -262,6 +263,8 @@ class CryoBoostBackend:
         self._pending_saves: dict[str, asyncio.Task] = {}
         # Projects-roster hover previews: project path -> (activity ts it was found at, preview).
         self._tomo_preview_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
+        # Projects roster: base path -> its last scan, so a newly opened roster shows at once.
+        self._project_scans: dict[str, list[dict[str, Any]]] = {}
 
     def registry_for(self, project_path: Path) -> TiltSeriesRegistry:
         """TiltSeriesRegistry for a project. Lazily loaded from sidecar JSON
@@ -874,6 +877,141 @@ class CryoBoostBackend:
             "batches": len(all_batches),
         }
 
+    # ── Segmentation import (Tomograms view; a project-level artifact, not a job) ──
+
+    async def list_segmentation_files(self, source: str) -> list[str]:
+        """The .mrc files of a folder or glob, off the event loop."""
+        from services.segmentation.ingest import list_volume_files
+
+        return await asyncio.to_thread(list_volume_files, source)
+
+    def segmentation_import_names(self, project_path: Path, recon_instance: str) -> dict[str, dict]:
+        """The tomogram names files can be matched to (`ingest.tomogram_names`) for one reconstruct
+        job. On the event loop: the cached registry is shared with every reader."""
+        from services.segmentation.ingest import tomogram_names
+
+        state = self.state_service.state_for(Path(project_path))
+        return tomogram_names(state, get_registry_for(Path(project_path)).all_tilt_series(), recon_instance)
+
+    async def probe_segmentation_volumes(
+        self, paths: list[str], progress_cb: ProgressCallback | None = None
+    ) -> dict[str, dict]:
+        """Grid, data type and value range of each volume, read in a worker (every value is read)."""
+        from services.segmentation.ingest import probe_volumes
+        from services.workers import WorkKind, run_in_worker
+
+        return await run_in_worker(WorkKind.SEGMENTATIONS, probe_volumes, list(paths), progress_cb=progress_cb)
+
+    async def plan_segmentation_import(
+        self,
+        project_path: Path,
+        files: list[str],
+        names: dict[str, dict],
+        feature: str,
+        full_scale: float | None,
+        probes: dict,
+    ) -> list[dict]:
+        """The import's rows (`ingest.plan_import`), skipping files the registry holds already; reads
+        the tomograms' headers off the event loop."""
+        from services.segmentation.ingest import plan_import, registered_paths
+
+        state = self.state_service.state_for(Path(project_path))
+        registered = registered_paths(state, get_registry_for(Path(project_path)).all_tilt_series())
+        return await asyncio.to_thread(plan_import, files, names, feature, full_scale, probes, registered)
+
+    async def commit_segmentation_import(
+        self,
+        project_path: Path,
+        rows: list[dict],
+        *,
+        recon_instance: str,
+        source: str,
+        feature: str,
+        full_scale: float | None,
+        progress_cb: ProgressCallback | None = None,
+    ) -> dict[str, Any]:
+        """Register the rows a plan accepted as a new batch: their overlay masks and fractions (in a
+        worker), the batch's segmentations.json, the volumes in the tilt-series registry, and the
+        features and the batch in the project. The volumes are referenced where they are.
+        Returns ok(batch, n_volumes, features, skipped=[{name, reason}])."""
+        from services.models_base import FeatureOrigin
+        from services.project_state import SegmentationImport
+        from services.segmentation.ingest import IMPORTS_DIR, batch_dir, import_manifest, new_batch_id, summarize_import
+        from services.segmentation.manifest import tomogram_outputs, write_manifest
+        from services.workers import WorkKind, run_in_worker
+
+        project_path = Path(project_path)
+        state = self.state_service.state_for(project_path)
+        batch = new_batch_id({b.batch for b in state.segmentation_imports})
+        out_dir = batch_dir(project_path, batch)
+        rows = await run_in_worker(
+            WorkKind.SEGMENTATIONS, summarize_import, rows, str(out_dir / "vis"), progress_cb=progress_cb
+        )
+        skipped = [{"name": r["name"], "reason": r["reason"]} for r in rows if not r.get("ok")]
+        manifest = import_manifest(
+            batch, rows, recon_instance=recon_instance, source=source, feature=feature, full_scale=full_scale
+        )
+        if not manifest.entries:
+            return err("Nothing was registered: no volume could be read", skipped=skipped)
+        await asyncio.to_thread(out_dir.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(write_manifest, out_dir, manifest)
+
+        registry = get_registry_for(project_path)
+        for ts_id, output in tomogram_outputs(manifest, out_dir).items():
+            registry.attach_tomogram_output(ts_id, output)
+        await registry.save_async()
+
+        for feature_id in manifest.features():
+            state.add_feature(feature_id, origin=FeatureOrigin.IMPORT)
+        state.segmentation_imports.append(
+            SegmentationImport(
+                batch=batch,
+                dir=str(IMPORTS_DIR / batch),
+                source=source,
+                recon_instance=recon_instance,
+                features=manifest.features(),
+                n_volumes=len(manifest.entries),
+            )
+        )
+        state.mark_dirty()
+        await self.state_service.save_project(project_path=project_path, force=True)
+        events.info(
+            "%s · registered %d segmentation volume(s) from %s as %s",
+            project_path.name,
+            len(manifest.entries),
+            source,
+            batch,
+        )
+        return ok(batch=batch, n_volumes=len(manifest.entries), features=manifest.features(), skipped=skipped)
+
+    async def remove_segmentation_import(self, project_path: Path, batch: str) -> dict[str, Any]:
+        """Forget one import batch: its volumes leave the tilt-series registry and the batch's
+        manifest and overlay masks are deleted. The volumes themselves are never touched."""
+        from services.segmentation.ingest import producer_id
+
+        project_path = Path(project_path)
+        state = self.state_service.state_for(project_path)
+        rec = state.get_segmentation_import(batch)
+        if rec is None:
+            return err(f"This project has no segmentation import {batch}")
+        producer = producer_id(batch)
+        registry = get_registry_for(project_path)
+        for ts in list(registry.all_tilt_series()):
+            if ts.tomogram is not None and producer in ts.tomogram.outputs:
+                registry.detach_tomogram_output(ts.id, producer)
+        await registry.save_async()
+        state.segmentation_imports = [b for b in state.segmentation_imports if b.batch != batch]
+        state.mark_dirty()
+        await self.state_service.save_project(project_path=project_path, force=True)
+        try:
+            await asyncio.to_thread(shutil.rmtree, project_path / rec.dir)
+        except FileNotFoundError:
+            pass  # the batch's folder is already gone: nothing left to delete
+        except OSError as e:
+            logger.exception("Segmentation import %s: could not delete %s", batch, rec.dir)
+            return ok(warning=f"Removed from the project, but {rec.dir} could not be deleted: {e}")
+        return ok()
+
     async def _await_extraction_outdirs(
         self, targets: dict[str, tuple[str, str | None]], timeout_s: int, *, project_path: Path
     ) -> dict[str, tuple]:
@@ -1285,9 +1423,15 @@ class CryoBoostBackend:
         auto_coords: str | None,
         seed_coords: str | None,
         scope: dict[str, Any],
+        features: list[dict] | None = None,
     ) -> dict[str, Any]:
         res = await self.curation_service.switch_session_scope(
-            session_info, open_recon=open_recon, auto_coords=auto_coords, seed_coords=seed_coords, scope=scope
+            session_info,
+            open_recon=open_recon,
+            auto_coords=auto_coords,
+            seed_coords=seed_coords,
+            scope=scope,
+            features=features,
         )
         if res.get("success") and scope.get("project_path") and scope.get("curation_dir"):
             self.curation_watcher.mark_hot(Path(scope["project_path"]), Path(scope["curation_dir"]))
@@ -1590,12 +1734,16 @@ class CryoBoostBackend:
 
     async def scan_for_projects(self, base_path: str) -> list[dict[str, Any]]:
         projects = await asyncio.to_thread(self._scan_for_projects_sync, base_path)
+        self._project_scans[base_path] = projects
         # Sizes are measured in the background; a later scan picks the results up.
         get_disk_usage_service().request([p["path"] for p in projects if p["disk_usage_stale"]])
         return projects
 
+    def last_project_scan(self, base_path: str) -> list[dict[str, Any]] | None:
+        """What the last scan_for_projects of this base found; None before the first. Read-only."""
+        return self._project_scans.get(base_path)
+
     def _scan_for_projects_sync(self, base_path: str) -> list[dict[str, Any]]:
-        projects = []
         path = Path(base_path)
 
         logger.debug("Scanning directory: %s", path)
@@ -1608,17 +1756,18 @@ class CryoBoostBackend:
             return []
 
         try:
-            for item in path.iterdir():
+
+            def scan_one(item: Path) -> dict[str, Any] | None:
                 if not item.is_dir():
-                    continue
+                    return None
                 if is_being_deleted(item.name):
                     # A project mid-deletion (services/project_delete.py) is gone as far as the list goes.
-                    continue
+                    return None
                 params_file = item / "project_params.json"
                 if not params_file.exists():
                     if not item.name.startswith("."):
                         logger.debug("Skipped '%s' - missing project_params.json", item.name)
-                    continue
+                    return None
                 try:
                     stats = params_file.stat()
                     mod_time = datetime.fromtimestamp(stats.st_mtime)
@@ -1767,44 +1916,56 @@ class CryoBoostBackend:
                         now=time.time(),
                     )
 
-                    projects.append(
-                        {
-                            "name": item.name,
-                            "path": str(item),
-                            "mnemonic": mnemonic,
-                            "apix": apix,
-                            "voltage_kv": voltage_kv,
-                            "dose_per_tilt": dose_per_tilt,
-                            "dose_source": dose_source,
-                            "modified": mod_time.strftime("%Y-%m-%d %H:%M"),
-                            "modified_timestamp": stats.st_mtime,
-                            "created_at": created_at,
-                            "created_timestamp": created_ts,
-                            "creator": creator,
-                            "owner": owner_raw,
-                            "pipeline_active": pipeline_active,
-                            "total_jobs_planned": total_jobs_planned,
-                            "ts_count": ts_count,
-                            "species": species,
-                            "source_directory": source_directory,
-                            "last_activity_ts": last_activity_ts,
-                            "last_activity": datetime.fromtimestamp(last_activity_ts).strftime("%Y-%m-%d %H:%M"),
-                            "disk_usage": disk_usage,
-                            "disk_usage_stale": disk_usage_stale,
-                            "trash_count": trash_count,
-                            "trash_mtime": trash_mtime,
-                            "tomo_preview": tomo_preview,
-                            "live_progress": live_progress,
-                            "furthest_done": _furthest_done(jobs_dict),
-                            "n_picks": n_picks,
-                            "n_pick_lists": n_pick_lists,
-                            "protocol": protocol,
-                            "card": card,
-                            **derived,
-                        }
-                    )
+                    try:
+                        resolved_path = str(item.resolve())
+                    except OSError:
+                        # Unreachable mount mid-scan: the unresolved path still matches what was opened from this base.
+                        resolved_path = str(item)
+
+                    return {
+                        "name": item.name,
+                        "path": str(item),
+                        # Compared per row on every roster render; resolving there would stat the mount on the loop.
+                        "resolved_path": resolved_path,
+                        "mnemonic": mnemonic,
+                        "apix": apix,
+                        "voltage_kv": voltage_kv,
+                        "dose_per_tilt": dose_per_tilt,
+                        "dose_source": dose_source,
+                        "modified": mod_time.strftime("%Y-%m-%d %H:%M"),
+                        "modified_timestamp": stats.st_mtime,
+                        "created_at": created_at,
+                        "created_timestamp": created_ts,
+                        "creator": creator,
+                        "owner": owner_raw,
+                        "pipeline_active": pipeline_active,
+                        "total_jobs_planned": total_jobs_planned,
+                        "ts_count": ts_count,
+                        "species": species,
+                        "source_directory": source_directory,
+                        "last_activity_ts": last_activity_ts,
+                        "last_activity": datetime.fromtimestamp(last_activity_ts).strftime("%Y-%m-%d %H:%M"),
+                        "disk_usage": disk_usage,
+                        "disk_usage_stale": disk_usage_stale,
+                        "trash_count": trash_count,
+                        "trash_mtime": trash_mtime,
+                        "tomo_preview": tomo_preview,
+                        "live_progress": live_progress,
+                        "furthest_done": _furthest_done(jobs_dict),
+                        "n_picks": n_picks,
+                        "n_pick_lists": n_pick_lists,
+                        "protocol": protocol,
+                        "card": card,
+                        **derived,
+                    }
                 except Exception as e:
                     logger.info("Error reading %s: %s", item.name, e)
+                    return None
+
+            # Each project costs a dozen metadata round-trips; on a cold NFS cache, one project
+            # after the other adds up to seconds for a full base.
+            with ThreadPoolExecutor(max_workers=16) as pool:
+                projects = [p for p in pool.map(scan_one, path.iterdir()) if p is not None]
 
         except Exception as e:
             logger.error("Error scanning projects: %s", e)
