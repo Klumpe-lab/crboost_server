@@ -8,10 +8,11 @@ from typing import TYPE_CHECKING
 
 from services.array_tasks import any_task_started, manifest_array_job_id, mark_stopped_tasks_failed
 from services.jobs.tilt_filter import COMMIT_RECORD, TiltFilterCommit
-from services.models_base import JobType
+from services.models_base import FeatureOrigin, JobType
 from services.project_state import JobStatus
 from services.event_log import events
 from services.result import err, ok
+from services.segmentation.manifest import read_manifest as read_segmentation_manifest
 from services.tilt_series import reload_registry
 from services.tilt_series_service import ensure_tilt_thumbnails
 
@@ -172,12 +173,12 @@ class PipelineRunnerService:
                 continue
             if sentinels[iid] == "success":
                 if jm.execution_status != JobStatus.SUCCEEDED:
-                    await self._land_tilt_filter_job(proj, jm, JobStatus.SUCCEEDED)
+                    await self._land_job(proj, jm, JobStatus.SUCCEEDED)
                     jm.execution_status = JobStatus.SUCCEEDED
                     changes[iid] = True
             elif sentinels[iid] == "failure":
                 if jm.execution_status != JobStatus.FAILED:
-                    await self._land_tilt_filter_job(proj, jm, JobStatus.FAILED)
+                    await self._land_job(proj, jm, JobStatus.FAILED)
                     jm.execution_status = JobStatus.FAILED
                     changes[iid] = True
             else:
@@ -228,7 +229,7 @@ class PipelineRunnerService:
                             new = JobStatus.FAILED if expired else jm.execution_status
                         if new != JobStatus.UNKNOWN and jm.execution_status != new:
                             events.info("%s: %s -> %s", iid, jm.execution_status.value, new.value)
-                            await self._land_tilt_filter_job(proj, jm, new)
+                            await self._land_job(proj, jm, new)
                             jm.execution_status = new
                             changes[iid] = True
         # Drop grace timers for ids no longer pending this tick (resolved / left tracked / none pending).
@@ -282,6 +283,33 @@ class PipelineRunnerService:
                 break
 
         return {k: v for k, v in changes.items() if not k.startswith("__")}
+
+    async def _land_job(self, proj: Path, jm, new: JobStatus) -> None:
+        """What has to reach the server before a job's status says it ended."""
+        await self._land_tilt_filter_job(proj, jm, new)
+        await self._land_segment_job(proj, jm, new)
+
+    async def _land_segment_job(self, proj: Path, jm, new: JobStatus) -> None:
+        """A Segment job succeeded: its volumes are in the registry files, and the features it
+        produced become the project's, each with its colour, the first time a job produces them.
+        The registry is re-read first: the Tomograms view reads it on its next collection, and
+        get_registry_for can miss the job's write for up to a minute (see reload_registry)."""
+        if jm.job_type != JobType.SEGMENT or new != JobStatus.SUCCEEDED:
+            return
+        await reload_registry(proj)
+        job_dir = self._resolve_afterok_job_dir(jm, proj)
+        try:
+            if job_dir is None:
+                raise FileNotFoundError("no job directory recorded")
+            manifest = await asyncio.to_thread(read_segmentation_manifest, job_dir)
+        except (OSError, ValueError):
+            # The job's log says why it wrote none; there is nothing to register without it.
+            logger.exception("Segment job %s: no readable segmentations.json", jm.relion_job_name)
+            return
+        state = self.backend.state_service.state_for(proj)
+        origin = FeatureOrigin.AIS if manifest.method == "ais" else FeatureOrigin.EASYMODE
+        for feature in manifest.features():
+            state.add_feature(feature, origin=origin)
 
     async def _land_tilt_filter_job(self, proj: Path, jm, new: JobStatus) -> None:
         """A DL-auto tilt filter's job ends, and its status is about to say so. Succeeded: the

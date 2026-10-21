@@ -823,7 +823,7 @@ class PicksTab:
             start = str(self.ctx.project_path)
             if start_dir and await asyncio.to_thread(Path(start_dir).is_dir):
                 start = start_dir
-            picked = await local_file_picker(start, upper_limit=None, mode="file", glob="*.coords")
+            picked = await local_file_picker(start, mode="file", glob="*.coords")
             if not picked:
                 return
             list_actions.import_picks_from_path(

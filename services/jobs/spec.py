@@ -33,6 +33,7 @@ from services.jobs.import_movies import ImportMoviesParams
 from services.jobs.miss_align import MissAlignParams
 from services.jobs.reconstruct_particle import ReconstructParticleParams
 from services.jobs.refine3d import Refine3DParams
+from services.jobs.segment import SegmentParams
 from services.jobs.subset import SubsetParams
 from services.jobs.subtomo_extraction import SubtomoExtractionParams
 from services.jobs.template_match import TemplateMatchPytomParams
@@ -193,6 +194,16 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         driver="denoise_predict.py",
         plugins=("array_tasks",),
         items_from="input_star",
+    ),
+    JobSpec(
+        JobType.SEGMENT,
+        SegmentParams,
+        "Segment",
+        PHASE_PREPROCESSING,
+        dependencies=(JobType.TS_RECONSTRUCT,),
+        driver="segment.py",
+        plugins=("segment", "array_tasks"),
+        items_from="input_tomograms",
     ),
     # Made from the tab of the job whose output it cuts, never from the roster; written at submit.
     JobSpec(

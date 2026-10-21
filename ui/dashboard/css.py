@@ -1677,6 +1677,9 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
  * no Quasar colour class outranks this. */
 .cb-del-btn { color: #cbd5e1; }
 .cb-del-btn:hover { color: #dc2626; }
+/* The file browser's rows (ui/local_file_picker.py): hover, and the chosen row. */
+.cb-fp-row:hover { background: #eff6ff; }
+.cb-fp-row.cb-fp-sel { background: #dbeafe; }
 /* A readonly command line (the 3dmod popover): a .cb-field in the mono face. */
 .cb-field.cb-field-mono .q-field__native { font-family: 'IBM Plex Mono', monospace; }
 /* Sections: a pale gray-blue panel without a border, the charts on white; the titles and the

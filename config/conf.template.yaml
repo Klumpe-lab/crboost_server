@@ -106,6 +106,14 @@ job_resource_profiles:
     cpus_per_task: 2
     time: "0:20:00"
 
+  # Per tomogram. easymode peaked at 22 GB of GPU memory on a 264 x 530 x 530 tomogram: set
+  # `constraint` to the node features whose cards have at least 24 GB.
+  segment:
+    gres: "gpu:1"
+    mem: "32G"
+    cpus_per_task: 8
+    time: "1:00:00"
+
   templatematching:
     gres: "gpu:1"
     mem: "32G"
@@ -260,3 +268,10 @@ tools:
     exec_mode: "container"
     container_path: "/path/to/miss_alignment.sif"
     bin_path: ""
+  # easymode + Ais + Pom in one image (the Segment job). cache_dir holds the weights, filled once
+  # with `easymode download --all` (see the image's %help); the job only ever reads them.
+  easymode:
+    exec_mode: "container"
+    container_path: "/path/to/easymode_1.2.5.sif"
+    bin_path: ""
+    cache_dir: "/path/to/cache_and_artifacts/easymode_1.2.5"

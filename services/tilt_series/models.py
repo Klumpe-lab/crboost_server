@@ -205,8 +205,50 @@ class DenoisePredictTomogramOutput(_OutputBase):
     model_path: Path  # the trained-model archive this prediction consumed
 
 
+class ModelRef(BaseModel):
+    """The network that made a segmentation volume. None where the producer did not say (a volume
+    imported from elsewhere)."""
+
+    model_config = ConfigDict(extra="forbid")
+    tool: str | None = None  # "easymode" | "ais"
+    tool_version: str | None = None
+    feature: str
+    variant: str | None = None  # easymode's registry tag, e.g. "sv2-3d"
+    timestamp: str | None = None  # the weights' timestamp in easymode's registry
+    weights_sha256: str | None = None
+
+
+class SegVolume(BaseModel):
+    """One feature's probability volume of a tomogram. Stored values run from 0 to `full_scale`
+    (p = value / full_scale): 127 for easymode's int8, 255 for Ais (uint8, written as MRC mode 6),
+    1 for float32."""
+
+    model_config = ConfigDict(extra="forbid")
+    path: Path
+    full_scale: float
+    engine: Literal["easymode-native", "ais"] | None = None
+    model: ModelRef | None = None
+    fraction_pct: float | None = None  # mean p over the volume, in percent
+    overlay_xy: Path | None = None  # p ≥ 0.5 over the central Z slab, as an alpha mask
+    overlay_xz: Path | None = None  # p ≥ 0.5 over the central Y slab, as an alpha mask
+
+
+class SegmentationTomogramOutput(_OutputBase):
+    """Feature volumes of one tomogram, all on the grid of the density they were computed from.
+    `recon_instance` is the reconstruct job that density traces to (the coordinate frame); None for
+    a tomogram that no reconstruct job of the project made."""
+
+    output_type: Literal["segmentation"] = "segmentation"
+
+    source_mrc: Path
+    recon_instance: str | None = None
+    shape_zyx: tuple[int, int, int]
+    voxel_angstrom: float
+    volumes: dict[str, SegVolume] = Field(default_factory=dict)  # keyed by feature id
+
+
 TomogramOutput = Annotated[
-    TsReconstructTomogramOutput | DenoisePredictTomogramOutput,
+    TsReconstructTomogramOutput | DenoisePredictTomogramOutput | SegmentationTomogramOutput,
     Field(discriminator="output_type"),
 ]
 

@@ -99,10 +99,7 @@ async def open_template_import_dialog(
                     refs["import_btn"].disable()
 
     async def _browse():
-        # The picker lives one project-root level up so the user can grab
-        # files from anywhere on the cluster they have read access to.
-        # No upper_limit — the user might point at someone else's project.
-        picker = local_file_picker("/", upper_limit=None, mode="file")
+        picker = local_file_picker(None, mode="file")
         result = await picker
         if result and result[0]:
             picked = result[0]

@@ -17,6 +17,7 @@ from services.jobs.tilt_filter import TiltFilterParams
 from services.jobs.ts_reconstruct import TsReconstructParams
 from services.jobs.denoise_train import DenoiseTrainParams
 from services.jobs.denoise_predict import DenoisePredictParams
+from services.jobs.segment import SegmentParams
 from services.jobs.subset import SubsetParams
 from services.jobs.template_match import TemplateMatchPytomParams
 from services.jobs.candidate_extract import CandidateExtractPytomParams
@@ -51,6 +52,7 @@ __all__ = [
     "MissAlignParams",
     "ReconstructParticleParams",
     "Refine3DParams",
+    "SegmentParams",
     "SubsetParams",
     "SubtomoExtractionParams",
     "SymmetryGroup",

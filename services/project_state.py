@@ -16,6 +16,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, PrivateAttr, SerializeAsAny, ValidationError, field_validator
 
 from services.models_base import (
+    FeatureOrigin,
     InstanceId,
     JobType,
     # Re-exports: many modules import these via services.project_state.
@@ -50,7 +51,8 @@ logger = logging.getLogger(__name__)
 # 3.7: +protocol_origin (which protocol bundle a project was created from)
 # 3.8: +import_source_kind + acquisition.dose_per_tilt_source (SerialEM stack ingest)
 # 3.9: +review_hold (the jobs a run parked behind an unapproved tilt filter)
-SCHEMA_VERSION: tuple[int, int] = (3, 9)
+# 3.10: +feature_registry (segmentation features)
+SCHEMA_VERSION: tuple[int, int] = (3, 10)
 
 
 # Sentinel `owner` value marking a project as shared/lab-owned rather than
@@ -247,6 +249,20 @@ class ParticleSpecies(BaseModel):
 
     def get_mask_by_id(self, mask_id: str) -> TemplateMask | None:
         return next((m for m in self.masks if m.id == mask_id), None)
+
+
+class FeatureClass(BaseModel):
+    """A segmentation feature of the project (membrane, void, …) and the one colour it has on
+    every view that draws segmentations. Registered the first time a Segment job or an import
+    produces it; its volumes live in the tilt-series registry (SegmentationTomogramOutput)."""
+
+    id: str  # slug; the `<feature>` suffix of the volume files
+    name: str  # display label
+    color: str = "#3b82f6"
+    ontology_id: str | None = None  # a GO / CDPO term when the user gives one; never guessed
+    origin: str = ""  # FeatureOrigin
+    created_at: datetime | None = None
+    notes: str = ""
 
 
 def _migrate_v1_to_v2(data: dict[str, Any]) -> None:
@@ -731,6 +747,8 @@ class ProjectState(BaseModel):
     # `jobs` on load for projects without the field.
     pipeline_order: list[str] = Field(default_factory=list)
     species_registry: list[ParticleSpecies] = Field(default_factory=list)
+    # Segmentation features, one colour each (FeatureClass). Restored explicitly in load().
+    feature_registry: list[FeatureClass] = Field(default_factory=list)
     # Per-(species, tomo) manual-curation workbench. Only workbench-authored
     # lists (manual/imported/merged) persist here; `auto`/`filtered` are
     # disk-backed and synthesized at render time so this never goes stale
@@ -919,6 +937,27 @@ class ProjectState(BaseModel):
         self.mark_dirty()
         self.bump_registry_rev()
         return species
+
+    def get_feature(self, feature_id: str) -> FeatureClass | None:
+        return next((f for f in self.feature_registry if f.id == feature_id), None)
+
+    def add_feature(self, feature_id: str, *, origin: str, name: str = "") -> FeatureClass:
+        """Register a segmentation feature under the id its volume files carry, or return the one
+        already registered. Its colour is the palette slot of the id, as a species' is."""
+        existing = self.get_feature(feature_id)
+        if existing is not None:
+            return existing
+        feature = FeatureClass(
+            id=feature_id,
+            name=name or feature_id,
+            color=species_palette_color(feature_id),
+            origin=FeatureOrigin(origin).value,  # validate at the write site; the field stays a plain str
+            created_at=datetime.now(),
+        )
+        self.feature_registry.append(feature)
+        self.update_modified()
+        self.mark_dirty()
+        return feature
 
     def species_references(self, species_id: str) -> dict[str, list[str]]:
         """Everything in this project that points at `species_id`.
@@ -1228,6 +1267,12 @@ class ProjectState(BaseModel):
             logger.exception("Could not load species registry")
             project_state.load_warnings.append(f"Species registry could not be loaded and was reset ({e})")
             project_state.species_registry = []
+        try:
+            project_state.feature_registry = [FeatureClass(**f) for f in data.get("feature_registry", [])]
+        except (ValidationError, TypeError) as e:
+            logger.exception("Could not load the segmentation feature registry")
+            project_state.load_warnings.append(f"Segmentation features could not be loaded and were reset ({e})")
+            project_state.feature_registry = []
 
         it = data.get("imported_tomograms")
         if it:

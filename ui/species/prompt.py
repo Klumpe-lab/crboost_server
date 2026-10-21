@@ -83,7 +83,7 @@ def _path_row(label: str, hint: str, on_pick, state: dict, key: str) -> None:
 async def _pick_volume() -> str | None:
     """One MRC-family file, or None when the picker was cancelled / the pick is not a
     volume. A wrong suffix is reported, never silently accepted."""
-    result = await local_file_picker("/", upper_limit=None, mode="file", glob=_VOLUME_GLOB)
+    result = await local_file_picker(None, mode="file", glob=_VOLUME_GLOB)
     if not result or not result[0]:
         return None
     picked = result[0]
