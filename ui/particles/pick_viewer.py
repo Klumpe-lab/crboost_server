@@ -55,7 +55,9 @@ from services.visualization.cutout_filters import keyed_path, offered_presets, r
 from services.visualization.preview_render import is_output_stale, render_recon_slabs
 from services.workers import WorkKind, run_in_worker
 from services.visualization.tomo_geometry import APIX_MRC_HEADER, TomoGeometry, geometry_for_ts
+from services.job_lineage import job_dirs, recon_of
 from ui.components.buttons import house_button
+from ui.components.feature_layers import FeatureFills, layers_for_ts
 from ui.components.reactive import SingleFlight, slot_is_gone
 from ui.components.segmented import render_segmented
 from ui.current_project import current_project_state
@@ -277,6 +279,12 @@ def _score_detail(pick: dict) -> str:
     if pick.get("sigma_score") is not None:
         return f"{pick['sigma_score']:.2f}σ (LCC {pick['score']:.4f})"
     return f"LCC {pick['score']:.4f}"
+
+
+def _atlas_probe(url: str) -> None:
+    """A hidden <img> of a CSS-background atlas: until it has loaded, the tiles beside it show the
+    loading look (`.cb-img-probe`, ui/dashboard/css.py). The browser fetches the atlas once for both."""
+    ui.element("img").classes("cb-img-probe")._props["src"] = url
 
 
 # Atlas-index parse cache: path -> (mtime, meta). The cutout sheet re-reads the same
@@ -1097,6 +1105,7 @@ def _render_list_cutout_sheet(
         grid_el = ui.element("div").classes("cb-gallery-scroll").style("display: flex; flex-wrap: wrap; gap: 4px;")
         grid_el._props["id"] = grid_id
         with grid_el:
+            _atlas_probe(atlas_url)
             for i in all_idx:
                 pos = index.get(str(i))
                 if not pos:
@@ -1935,6 +1944,7 @@ def render_particles_section(
     root_cls = "cb-section-card cb-particles-root cb-pv w-full" + (" cb-viewer-full" if mode == "full" else "")
     with ui.element("div").classes(root_cls) as card:
         card._props["data-section"] = "particles"
+        fills = _canvas_fills(project_state, project_path, ts_name, geom, card)
         with ui.element("div").classes("cb-section-card-header"):
             ui.label("Particles").classes("cb-section-title")
             ui.label(f"{len(species_data)} species").classes("text-[10px] text-gray-500")
@@ -1948,6 +1958,8 @@ def render_particles_section(
             # live in the panel toolbar, following the active tab; the canvas-wide
             # polarity switch is section-level (shared across species).
             admin_host = ui.row().classes("items-center gap-0 cb-section-admin")
+            if fills is not None:
+                fills.menu()
             if mrc_path is not None:
                 _render_invert_switch(card)
 
@@ -2013,7 +2025,9 @@ def render_particles_section(
             # the DOM) because the master-eye on each tab only appears once that
             # species' dot layers exist. Returns {iid: {"xy": lid, "xz": lid}} so the
             # active species' gallery cross-links to its own dots.
-            canvas_layers = _render_particles_canvas(species_data, geom, ts_name, project_path, refresh, slab_vh)
+            canvas_layers = _render_particles_canvas(
+                species_data, geom, ts_name, project_path, refresh, slab_vh, fills=fills
+            )
 
         # Species-switch generation. The two hosts are shared by every species, and the
         # detail pane renders one tick late off a once-timer, so without this, switching
@@ -2078,12 +2092,31 @@ def render_particles_section(
     return True
 
 
+def _canvas_fills(project_state, project_path: Path, ts_name: str, geom: TomoGeometry | None, holder):
+    """The segmentation fills of the slab canvas (`FeatureFills`, colours on `holder`): None without a
+    reconstruction on disk, which the slabs are rendered from, or without a segmentation of the tomogram."""
+    if geom is None or geom.recon_mrc is None:
+        return None
+    layers, entries = layers_for_ts(project_state, project_path, ts_name)
+    if not layers:
+        return None
+    shown = job_dirs(project_state).get(geom.tomograms_star.parent)
+    return FeatureFills(project_path, layers, entries, holder, recon_of(project_state, shown) if shown else None)
+
+
 def _render_particles_canvas(
-    species_data: list[dict], geom: TomoGeometry | None, ts_name: str, project_path: Path, refresh, slab_vh: int
+    species_data: list[dict],
+    geom: TomoGeometry | None,
+    ts_name: str,
+    project_path: Path,
+    refresh,
+    slab_vh: int,
+    *,
+    fills: FeatureFills | None = None,
 ) -> dict:
     """Maximized shared slab canvas with each species' picks overlaid as a
-    color-coded, toggleable layer. Returns {iid: {"xy": layer_id, "xz":
-    layer_id|None}} so each tab's gallery can cross-link to its dots."""
+    color-coded, toggleable layer, over the segmentation fills (`fills`). Returns {iid: {"xy": layer_id,
+    "xz": layer_id|None}} so each tab's gallery can cross-link to its dots."""
     layer_ids: dict[str, dict] = {}
 
     if geom is None or geom.recon_mrc is None:
@@ -2132,8 +2165,8 @@ def _render_particles_canvas(
         return layer_ids
 
     with_picks = [sp for sp in species_data if sp.get("lists")]
-    if not with_picks:
-        # Recon slab exists but nothing picked yet — clean slab, no overlay.
+    if not with_picks and fills is None:
+        # Recon slab exists but nothing picked or segmented yet — clean slab, no overlay.
         with ui.element("div").classes("cb-recon-preview cb-recon-canvas").style(f"max-height: {slab_vh}vh;"):
             ui.image(vis_asset_url(str(xy_png)))
         return layer_ids
@@ -2169,6 +2202,8 @@ def _render_particles_canvas(
         xy_host.style(f"aspect-ratio: {x_dim}/{y_dim};")
         with xy_host:
             ui.image(vis_asset_url(str(xy_png)))
+            if fills is not None:
+                fills.draw("xy")
             for sp in with_picks:
                 for lst in sp["lists"]:
                     lid = f"cb-pl-{nonce}-{sp['idx']}-{lst['slug']}-xy"
@@ -2186,6 +2221,8 @@ def _render_particles_canvas(
             xz_host.style(f"aspect-ratio: {x_dim}/{z_dim}; margin-top: 6px;")
             with xz_host:
                 ui.image(vis_asset_url(str(xz_png)))
+                if fills is not None:
+                    fills.draw("xz")
                 for sp in with_picks:
                     for lst in sp["lists"]:
                         lid = f"cb-pl-{nonce}-{sp['idx']}-{lst['slug']}-xz"
@@ -2804,6 +2841,7 @@ def _render_anchor_tiles(
     tile_px = _DISPLAY_TILE_PX
     bg_w, bg_h = cols * tile_px, rows * tile_px
     with ui.element("div").classes("cb-ref-tiles"):
+        _atlas_probe(atlas_url)
         for n, pick_idx in enumerate(indices):
             pos = cutout_index.get(str(pick_idx))
             if not pos:
@@ -2876,6 +2914,7 @@ def _render_reference_strip(
             with ui.element("div").classes("cb-ref-group"):
                 ui.label("Template").classes("cb-ref-label")
                 with ui.element("div").classes("cb-ref-tiles"):
+                    _atlas_probe(template_url)
                     tile = ui.element("div").classes("cb-template-tile")
                     tile.style(f"background-image: url({template_url});")
                     apix = template_block.get("pixel_size_ang") if template_block else None
@@ -3500,6 +3539,7 @@ def _render_gallery_body(
         )
         grid_container.clear()
         with grid_container, ui.element("div").classes("cb-gallery-grid"):
+            _atlas_probe(atlas_url)
             for rank, pick_idx in enumerate(_sorted_pick_indices()):
                 pos = cutout_index.get(str(pick_idx))
                 if not pos:

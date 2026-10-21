@@ -9,7 +9,7 @@ from collections.abc import Callable
 from nicegui import ui
 
 from services.tilt_series.preimport import DatasetOverview
-from ui.job_plugins._field_styles import PANEL_TITLE_STYLE
+from ui.job_plugins._field_styles import PANEL_HEAD_STYLE, PANEL_TITLE_STYLE
 from ui.styles import MONO, SANS as FONT
 
 CLR_HEADING = "#0f172a"
@@ -86,7 +86,7 @@ def build_dataset_overview_panel(overview: DatasetOverview, on_change: Callable[
     all_pos_cbs: list[tuple] = []
 
     # --- Header: the title and the selection counts ---
-    with ui.row().classes("w-full items-baseline justify-between"):
+    with ui.row().classes("w-full items-baseline justify-between").style(PANEL_HEAD_STYLE):
         ui.label("Dataset overview").style(PANEL_TITLE_STYLE)
         summary_label = ui.label("")
     summary_label.style(f"{MONO} font-size: 10px; color: {CLR_SUBLABEL};")

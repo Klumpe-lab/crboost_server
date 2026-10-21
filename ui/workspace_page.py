@@ -180,12 +180,13 @@ _VIEW_ORDER = ("pipeline", "table", "workbench", "gallery", "journey", "viewer",
 
 # Every view's frame: its share of the main area's width when several are on is its weight
 # (`--cb-vw-<name>`, 1 until a splitter moves it; _VIEW_RESIZER_JS). It holds the view's title
-# line (its name, the expand icon and the close cross), the box the view builds into below it
+# line (a stripe: its name, the expand icon and the close cross), the box the view builds into below it
 # and the splitter on its left edge.
 _VIEW_STYLE = "min-width: 0; height: 100%; overflow: hidden; display: none; flex-direction: row; position: relative;"
 _VIEW_COLUMN_STYLE = "flex: 1 1 0; min-width: 0; height: 100%; display: flex; flex-direction: column; overflow: hidden;"
 _VIEW_HEAD_STYLE = (
-    "flex: 0 0 auto; display: flex; align-items: center; gap: 4px; min-height: 28px; padding: 4px 6px 0 14px;"
+    "flex: 0 0 auto; display: flex; align-items: center; gap: 4px; min-height: 28px; padding: 3px 6px 3px 14px; "
+    "margin-bottom: 6px; background: #dfe7f0;"
 )
 _VIEW_TITLE_STYLE = (
     "font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; font-weight: 600; color: #2c4a6b; "
@@ -278,7 +279,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
             if name in _on:
                 # A slate edge and a faint shadow cast onto the view to its left, so two views
                 # read as two panels rather than one gray surface.
-                border, shadow = ("none", "none") if first else ("1px solid #cbd5e1", "-4px 0 12px rgba(15,23,42,0.16)")
+                border, shadow = ("none", "none") if first else ("2px solid #b4c2d3", "-4px 0 12px rgba(15,23,42,0.16)")
                 c.style(f"display: flex; order: {i}; border-left: {border}; box-shadow: {shadow};")
                 if first:
                     c.classes(remove="cb-view-split")
@@ -659,7 +660,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
             .props("id=cb-roster-panel")
             .style(
                 "width: 340px; min-width: 340px; height: 100%; flex-shrink: 0; "
-                "background: #ffffff; border-right: 1px solid #e5e7eb; "
+                "background: #ffffff; border-right: 2px solid #b4c2d3; "
                 "overflow-y: auto; overflow-x: hidden; "
                 "flex-direction: column; gap: 0; display: flex;"
             )

@@ -13,7 +13,7 @@ from ui.components.reactive import Debounced
 from ui.current_project import current_project_state
 from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
 from ui.job_plugins import get_extra_tabs, get_full_panel_renderer
-from ui.job_plugins._field_styles import PANEL_STYLE, PANEL_TITLE_STYLE, config_section
+from ui.job_plugins._field_styles import PANEL_HEAD_STYLE, PANEL_STYLE, PANEL_TITLE_STYLE, config_section
 from ui.routing import View
 from ui.components.species_pill import render_species_mark
 from ui.status_indicator import BoundStatusDot
@@ -88,8 +88,9 @@ def _render_lazy_section(title: str, boxed: bool, *, open_: bool, dom_id: str, b
     """A folded section: its title line opens and closes it; the content is built on the first
     opening. Returns its opener."""
     built = {"done": False}
-    with ui.column().classes("w-full").style(f"gap: 8px; {PANEL_STYLE}").props(f"id={dom_id}"):
-        with ui.row().classes("items-center no-wrap").style("gap: 5px; cursor: pointer; user-select: none;") as head:
+    with ui.column().classes("w-full").style(f"gap: 8px; {PANEL_STYLE}").props(f"id={dom_id}") as panel:
+        head_style = f"gap: 5px; cursor: pointer; user-select: none; {PANEL_HEAD_STYLE}"
+        with ui.row().classes("items-center no-wrap").style(head_style) as head:
             caret = ui.label("▸").style("font-size: 9px; color: #94a3b8; width: 8px;")
             ui.label(title).style(PANEL_TITLE_STYLE)
         body = ui.element("div").style(_LAZY_BOX_STYLE if boxed else "width: 100%;")
@@ -102,10 +103,12 @@ def _render_lazy_section(title: str, boxed: bool, *, open_: bool, dom_id: str, b
                 build()
         body.set_visibility(on)
         caret.set_text("▾" if on else "▸")
+        # Folded, the stripe is the whole panel.
+        panel.style(f"padding-bottom: {12 if on else 0}px;")
+        head.style(f"border-radius: {'6px 6px 0 0' if on else '6px'};")
 
     head.on("click", lambda _e: set_open(not body.visible))
-    if open_:
-        set_open(True)
+    set_open(open_)
     return lambda: set_open(True)
 
 
@@ -140,7 +143,9 @@ def _render_job_page(
 
     openers: dict[str, Callable] = {}
     active = ui_mgr.get_job_ui_state(instance_id).active_monitor_tab
-    with ui.scroll_area().classes("w-full h-full"):
+    # cb-scroll-tight drops the scroll area's own 1 rem padding, so the panels' left edges line up with
+    # the view's title and the job's line above them (both 14 px in).
+    with ui.scroll_area().classes("w-full h-full cb-scroll-tight"):
         with ui.column().classes("w-full").style("padding: 4px 14px 16px; gap: 10px;"):
             with config_section("Parameters"):
                 params_refresh = render_config_tab(

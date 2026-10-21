@@ -60,7 +60,7 @@ from ui.components.reactive import SingleFlight
 from ui.components.segmented import render_segmented
 from ui.components.buttons import house_button
 from ui.components.fields import house_field as _field
-from ui.job_plugins._field_styles import PANEL_STYLE, PANEL_TITLE_STYLE, SECTION_HEADER_FIRST_STYLE
+from ui.job_plugins._field_styles import PANEL_HEAD_STYLE, PANEL_STYLE, PANEL_TITLE_STYLE, SECTION_HEADER_FIRST_STYLE
 from ui.components.template_viewer import TemplateViewerController, render_template_viewer
 from ui.local_file_picker import local_file_picker
 from ui.template_import_dialog import open_template_import_dialog
@@ -211,8 +211,8 @@ def _section(title: str) -> None:
     """A panel's title — Templates, Masks, Viewer, Activity log. `PANEL_TITLE_STYLE`, no
     underline rule and no explanatory tail: the panel and the gap between panels carry the
     structure, and the tables draw their own head border."""
-    with ui.row().classes("w-full items-baseline gap-2"):
-        ui.label(title).style(f"{PANEL_TITLE_STYLE} margin-bottom: 4px;")
+    with ui.row().classes("w-full items-baseline gap-2").style(f"{PANEL_HEAD_STYLE} margin-bottom: 4px;"):
+        ui.label(title).style(PANEL_TITLE_STYLE)
 
 
 def _subsection(title: str) -> None:
@@ -1670,7 +1670,7 @@ class TemplateWorkbench:
 
     def _render_viewer_panel(self) -> None:
         with ui.column().classes("w-full gap-1").style(PANEL_STYLE):
-            with ui.row().classes("w-full items-baseline gap-2"):
+            with ui.row().classes("w-full items-baseline gap-2").style(PANEL_HEAD_STYLE):
                 ui.label("Viewer").style(PANEL_TITLE_STYLE)
                 ui.element("div").classes("flex-1")
                 ui.label("mode").classes(_HINT_CLS)
@@ -1758,8 +1758,9 @@ class TemplateWorkbench:
         # House section header + plain disclosure caret instead of Quasar's boxed
         # ui.expansion — one less bordered widget on the page.
         state = {"open": False}
-        with ui.column().classes("w-full gap-0").style(PANEL_STYLE):
-            with ui.row().classes("w-full items-center gap-1 cursor-pointer select-none") as header:
+        with ui.column().classes("w-full gap-0").style(f"{PANEL_STYLE} padding-bottom: 0;") as panel:
+            header = ui.row().classes("w-full items-center gap-1 cursor-pointer select-none")
+            with header.style(f"{PANEL_HEAD_STYLE} border-radius: 6px;"):
                 caret = (
                     ui.icon("chevron_right", size="14px")
                     .classes("text-gray-400")
@@ -1773,6 +1774,9 @@ class TemplateWorkbench:
             state["open"] = not state["open"]
             self._log_container.set_visibility(state["open"])
             caret.style(f"transform: rotate({90 if state['open'] else 0}deg);")
+            # Folded, the stripe is the whole panel.
+            panel.style(f"padding-bottom: {12 if state['open'] else 0}px;")
+            header.style(f"border-radius: {'6px 6px 0 0' if state['open'] else '6px'};")
 
         header.on("click", _toggle)
 
