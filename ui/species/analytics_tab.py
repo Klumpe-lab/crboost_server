@@ -60,6 +60,7 @@ from ui.components.buttons import house_button
 from ui.components.dialogs import dialog_host
 from ui.components.fields import house_select
 from ui.components.reactive import FingerprintedView, SingleFlight
+from ui.job_plugins._field_styles import PANEL_HEAD_STYLE
 from ui.species.tab import TabContext
 from ui.styles import SANS
 
@@ -246,7 +247,7 @@ class _AnalyticsView(FingerprintedView):
         c = self._tab.computed
         # Each block is a panel; the slot's gap separates them.
         with panel():
-            with ui.row().classes("w-full items-center gap-3"):
+            with ui.row().classes("w-full items-center gap-3").style(PANEL_HEAD_STYLE):
                 section(
                     "Scores in σ",
                     tooltip="Template-matching scores divided by each tomogram's noise level σ, so one cut means the "

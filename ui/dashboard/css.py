@@ -1708,6 +1708,23 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 .cb-journey .cb-gallery-tile:hover { border-color: #cbd5e1; }
 .cb-journey .cb-gallery-tile .cb-tile-rank { background: rgba(51, 65, 85, 0.85); }
 .cb-journey .cb-jsp-kept { color: #64748b; }
+/* A picture still on its way: its box breathes between two grays, so a tile that is loading
+ * reads as loading rather than as a dark, empty one. _IMG_STATE_JS marks every <img> once it
+ * has loaded or failed (data-cb-img); a box breathes while it holds an unmarked one, or a
+ * waiting note (.cb-gal-note-wait). Cutouts and templates are CSS backgrounds, which fire no
+ * events: their container carries a hidden <img> of the same atlas (.cb-img-probe), and its
+ * tiles breathe until that one is marked. */
+@keyframes cb-img-wait {
+    0%, 100% { background-color: #e6e9ee; }
+    50%      { background-color: #d4dae2; }
+}
+:is(.cb-gal-frame, .cb-tomo-preview, .cb-recon-preview, .cb-tp-img):has(img:not([data-cb-img]), .cb-gal-note-wait),
+:is(.cb-gallery-scroll, .cb-gallery-grid, .cb-ref-tiles):has(> .cb-img-probe:not([data-cb-img]))
+    > :is(.cb-gallery-tile, .cb-noise-tile, .cb-template-tile) {
+    animation: cb-img-wait 1.4s ease-in-out infinite;
+}
+.cb-img-probe { display: none; }
+.cb-gal-note.cb-gal-note-wait { color: #64748b; }
 """
 
 # The Particles panel (root .cb-particles-root.cb-pv); after _CB_CSS, so it wins its ties.
@@ -1806,6 +1823,7 @@ def ensure_assets_loaded() -> None:
     client._cb_assets_loaded = True
     ui.add_head_html(f"<style>{_CB_CSS}{_PARTICLES_CSS}</style>")
     client.run_javascript(_TITLE_TIP_JS)
+    client.run_javascript(_IMG_STATE_JS)
 
 
 # Native `title` hovers drawn as the app's tooltip. The browser's own is OS-styled and can't be
@@ -1853,5 +1871,20 @@ _TITLE_TIP_JS = """
   }, true);
   for (const ev of ['mousedown', 'wheel', 'keydown']) document.addEventListener(ev, hide, true);
   window.addEventListener('scroll', hide, true);
+})();
+"""
+
+# Marks each <img> data-cb-img="ok" or "err" once it has loaded or failed, for the loading look
+# above. load and error don't bubble, so one capturing listener on the document sees them all;
+# the pass over document.images catches the ones that finished before it was installed.
+_IMG_STATE_JS = """
+(() => {
+  if (window.__cbImgState) return;
+  window.__cbImgState = true;
+  const mark = (img, ok) => img.setAttribute('data-cb-img', ok ? 'ok' : 'err');
+  const on = (e) => { if (e.target && e.target.tagName === 'IMG') mark(e.target, e.type === 'load'); };
+  document.addEventListener('load', on, true);
+  document.addEventListener('error', on, true);
+  for (const img of document.images) if (img.complete && img.getAttribute('src')) mark(img, img.naturalWidth > 0);
 })();
 """

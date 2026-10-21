@@ -37,7 +37,7 @@ from ui.components.dialogs import dialog_host
 from ui.components.fields import house_number
 from ui.components.reactive import FingerprintedView, SingleFlight, ViewScope, owned_timer
 from ui.dashboard.css import ensure_assets_loaded
-from ui.job_plugins._field_styles import PANEL_STYLE, PANEL_TITLE_STYLE
+from ui.job_plugins._field_styles import PANEL_HEAD_STYLE, PANEL_STYLE, PANEL_TITLE_STYLE
 from ui.dashboard.figures import (
     SMALL_CHART_PX,
     TILT_STATES,
@@ -171,7 +171,7 @@ class TiltFilterPage:
             # The review's numbers, actions and charts on one panel; the tilt series below are panels of their own.
             with ui.element("div").style("padding: 4px 14px 0;"):
                 with ui.element("div").style(f"display: flex; flex-direction: column; gap: 10px; {PANEL_STYLE}"):
-                    ui.label("Review").style(PANEL_TITLE_STYLE)
+                    ui.label("Review").style(f"{PANEL_TITLE_STYLE} {PANEL_HEAD_STYLE}")
                     self._render_numbers()
                     self._render_review(jm)
                     self._render_charts_toggle()

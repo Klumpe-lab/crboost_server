@@ -349,7 +349,10 @@ class RosterWidget(FingerprintedView):
         # Read by every row: which jobs a queued or running one depends on (their × is hidden).
         self._in_use = jobs_in_use(current_project_state())
         # The panel's title line, in the views' title style (ui/workspace_page.py `_view_frame`).
-        with ui.element("div").style("display: flex; align-items: center; min-height: 28px; padding: 4px 8px 0 14px;"):
+        with ui.element("div").style(
+            "display: flex; align-items: center; min-height: 28px; padding: 3px 8px 3px 14px; "
+            "margin-bottom: 6px; background: #dfe7f0;"
+        ):
             ui.label("Jobs").style(PANEL_TITLE_STYLE)
         for phase_id, jobs in PHASE_JOBS.items():
             icon_or_svg, phase_label, _ = PHASE_META[phase_id]

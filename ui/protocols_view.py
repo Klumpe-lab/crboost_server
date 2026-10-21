@@ -37,7 +37,7 @@ from ui.components.chip import render_chip
 from ui.components.fields import house_text
 from ui.components.reactive import FingerprintedView, SingleFlight, owned_timer
 from ui.dashboard.css import ensure_assets_loaded
-from ui.job_plugins._field_styles import PANEL_STYLE, PANEL_TITLE_STYLE
+from ui.job_plugins._field_styles import PANEL_HEAD_STYLE, PANEL_STYLE, PANEL_TITLE_STYLE
 from ui.protocols_blocks import KEY, LABEL, TEXT, VAL, fmt_value, kv_grid, species_block, stage_block, stage_title
 from ui.styles import MONO, SANS as FONT
 
@@ -76,7 +76,7 @@ def _panel(title: str, tooltip: str | None = None):
     """One block of the page: a pale gray-blue panel with its title line inside; yields that line,
     for marks that belong beside the title."""
     with ui.column().classes("w-full").style(f"gap: 8px; {PANEL_STYLE}"):
-        with ui.row().classes("w-full items-center gap-2 no-wrap") as head:
+        with ui.row().classes("w-full items-center gap-2 no-wrap").style(PANEL_HEAD_STYLE) as head:
             lab = ui.label(title).style(PANEL_TITLE_STYLE)
             if tooltip:
                 lab.tooltip(tooltip)

@@ -1290,7 +1290,9 @@ class TomoGalleryPage:
         spent = 0
         self._imgs.pop(row["ts"], None)
         if src is None:
-            self._render_frame_note("not produced by this source" if row["ready"] else "reading…")
+            self._render_frame_note(
+                "not produced by this source" if row["ready"] else "reading…", wait=not row["ready"]
+            )
         elif src["png"] is not None:
             img = ui.element("img").classes("cb-gal-img")
             img.props.update(src=src["thumb"], alt=row["ts"], loading="lazy", decoding="async")
@@ -1299,7 +1301,7 @@ class TomoGalleryPage:
             if kicked:
                 spent = 1
                 self._kick_slab(row, src)
-            self._render_frame_note("rendering slice…", spinner=True)
+            self._render_frame_note("rendering slice…", spinner=True, wait=True)
         else:
             self._render_frame_note("no volume on disk")
         return spent
@@ -1417,8 +1419,9 @@ class TomoGalleryPage:
             "trustworthy. Open the Journey's Reconstruct card for this tilt-series."
         )
 
-    def _render_frame_note(self, text: str, *, spinner: bool = False) -> None:
-        with ui.element("div").classes("cb-gal-note"):
+    def _render_frame_note(self, text: str, *, spinner: bool = False, wait: bool = False) -> None:
+        """`wait`: the picture is on its way, so the frame shows the loading look (.cb-gal-note-wait)."""
+        with ui.element("div").classes("cb-gal-note" + (" cb-gal-note-wait" if wait else "")):
             if spinner:
                 ui.spinner(size="18px", color="indigo-400")
             ui.label(text)

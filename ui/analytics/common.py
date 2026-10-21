@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from nicegui import ui
 
 from services.particles.records import Record
-from ui.job_plugins._field_styles import PANEL_STYLE, PANEL_TITLE_STYLE
+from ui.job_plugins._field_styles import PANEL_HEAD_STYLE, PANEL_STYLE, PANEL_TITLE_STYLE
 
 # The Species page's three type ranks: section (12 px semibold, mixed case, the title of its
 # panel), field (9 px uppercase, muted), hint (10 px, lightest).
@@ -40,7 +40,8 @@ def panel(title: str | None = None, *, tooltip: str | None = None) -> Iterator[u
     are separated by the page's gap, never by a rule; a block inside one is never a panel."""
     with ui.column().classes("w-full").style(f"gap: 8px; {PANEL_STYLE}") as el:
         if title:
-            section(title, tooltip=tooltip)
+            with ui.element("div").style(PANEL_HEAD_STYLE):
+                section(title, tooltip=tooltip)
         yield el
 
 
