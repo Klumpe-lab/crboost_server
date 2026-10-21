@@ -19,7 +19,9 @@ def job_dirs(state) -> dict[Path, str]:
 def recon_of(state, iid: str, dirs: dict[Path, str] | None = None) -> str | None:
     """The reconstruct instance whose tomograms `iid` works on, followed back through the job
     dirs its input paths point into (candidate extraction <- template matching <- reconstruct;
-    denoise <- reconstruct); `iid` itself when it is one. None when no input leads to one."""
+    denoise <- reconstruct); `iid` itself when it is one. None when no input leads to one. A
+    Segment job a job reads is not followed: its tomograms are not that job's (template matching
+    restricted to a region reads one beside its own tomograms, which may come from elsewhere)."""
     dirs = job_dirs(state) if dirs is None else dirs
     queue, seen = [iid], set()
     while queue:
@@ -30,6 +32,8 @@ def recon_of(state, iid: str, dirs: dict[Path, str] | None = None) -> str | None
         jm = state.jobs[cur]
         if jm.job_type == JobType.TS_RECONSTRUCT:
             return cur
+        if jm.job_type == JobType.SEGMENT and cur != iid:
+            continue
         for value in (jm.paths or {}).values():
             if not isinstance(value, str) or not value.startswith("/"):
                 continue

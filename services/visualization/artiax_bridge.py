@@ -349,9 +349,19 @@ def display_recon_path(recon: Path, bin_factor: int) -> Path:
     return r.with_name(f"{r.stem}{DISPLAY_SUFFIX}{int(bin_factor)}.mrc")
 
 
-def ensure_display_recon(recon: Path, bin_factor: int, pixel_size_full: float, size_full: Sequence[int]) -> dict:
+def ensure_display_recon(
+    recon: Path,
+    bin_factor: int,
+    pixel_size_full: float,
+    size_full: Sequence[int],
+    *,
+    dest: Path | None = None,
+    max_pool: bool = False,
+) -> dict:
     """The volume an ArtiaX session should actually open for ``recon``, generating the
-    binned copy once and reusing it forever after.
+    binned copy once (``dest``, by default beside ``recon``) and reusing it forever after.
+    ``max_pool`` bins by the block's maximum instead of its mean (a segmentation's copy, where
+    a feature thinner than a block must not fade below its level).
 
     Returns ``{path, pixel_size, size, bin, corner_offset_angst, generated, note}``.
     ``note`` is non-empty exactly when the display copy could NOT be made and the caller
@@ -378,7 +388,7 @@ def ensure_display_recon(recon: Path, bin_factor: int, pixel_size_full: float, s
     }
     if n <= 1:
         return full
-    dest = display_recon_path(src, n)
+    dest = Path(dest) if dest is not None else display_recon_path(src, n)
     off = display_corner_offset(n, pixel_size_full)
     binned = {
         "path": str(dest),
@@ -409,7 +419,8 @@ def ensure_display_recon(recon: Path, bin_factor: int, pixel_size_full: float, s
             with mrcfile.new_mmap(str(tmp), shape=(bz, by, bx), mrc_mode=2, overwrite=True) as out:
                 for k in range(bz):
                     slab = np.asarray(data[k * n : (k + 1) * n, : by * n, : bx * n], dtype=np.float32)
-                    out.data[k] = slab.reshape(n, by, n, bx, n).mean(axis=(0, 2, 4))
+                    blocks = slab.reshape(n, by, n, bx, n)
+                    out.data[k] = blocks.max(axis=(0, 2, 4)) if max_pool else blocks.mean(axis=(0, 2, 4))
                 out.voxel_size = tuple(float(pixel_size_full) * n for _ in range(3))
         os.replace(tmp, dest)
     except (OSError, ValueError, MemoryError) as e:
@@ -423,16 +434,126 @@ def ensure_display_recon(recon: Path, bin_factor: int, pixel_size_full: float, s
     return {**binned, "size": [bx, by, bz], "generated": True}
 
 
-def session_chimerax_commands(recon_mrc, auto_coords: Path | None = None, seed_coords: Path | None = None) -> list[str]:
+# How transparent a segmentation surface is in ChimeraX (0 opaque, 1 invisible).
+FEATURE_TRANSPARENCY = 0.6
+
+
+def _chimerax_origin(mrc: Path) -> tuple[float, float, float]:
+    """Where ChimeraX places voxel (0, 0, 0) of an MRC: its header origin when that is set, else
+    its start indices times the voxel size."""
+    import mrcfile
+
+    with mrcfile.open(str(mrc), header_only=True, permissive=True) as m:
+        h = m.header
+        origin = (float(h.origin.x), float(h.origin.y), float(h.origin.z))
+        if any(origin):
+            return origin
+        size = m.voxel_size
+        return (float(h.nxstart) * float(size.x), float(h.nystart) * float(size.y), float(h.nzstart) * float(size.z))
+
+
+def session_features(
+    volumes: Sequence[dict],
+    *,
+    tomo_name: str,
+    open_recon: Path,
+    display_bin: int,
+    pixel_size_full: float,
+    size_full: Sequence[int],
+    visible_roots: Sequence[Path] = (),
+) -> tuple[list[dict], list[str]]:
+    """The segmentation volumes of a session (`services.segmentation.chimerax.session_volumes`) as
+    ChimeraX opens them, each placed on the grid of the tomogram ArtiaX opens (`open_recon`), so
+    the surfaces sit on the density: ``([{name, path, level, color, voxel, origin}], skipped)``. A
+    session on a binned display copy opens copies of the volumes binned the same way (max-pooled,
+    so a membrane thinner than a bin stays whole), cached under each one's `cache_dir`; where no
+    copy can be made, the full-size volume is shifted by the binning's corner offset.
+
+    A volume that cannot be shown is left out, its reason in `skipped`: not readable, on another
+    grid than the tomogram, its copy not writable, or outside the folders the session sees
+    (`visible_roots`, when given). One `open` that fails stops the `.cxc` (and a switch's chain)
+    before the tomogram and the picks are loaded."""
+    if not volumes:
+        return [], []
+    n = int(display_bin)
+    origin = _chimerax_origin(open_recon)
+    out: list[dict] = []
+    skipped: list[str] = []
+    for v in volumes:
+        try:
+            path, voxel, shift = _session_volume(v, tomo_name, n, pixel_size_full, size_full, visible_roots)
+        except (OSError, ValueError) as e:
+            logger.warning("ChimeraX opens %s without its %s: %s", tomo_name, v["name"], e)
+            skipped.append(f"{v['name']}: {e}")
+            continue
+        out.append(
+            {
+                "name": v["name"],
+                "path": str(path),
+                "level": float(v["level"]),
+                "color": v["color"],
+                "voxel": voxel,
+                "origin": [c - shift for c in origin],
+            }
+        )
+    return out, skipped
+
+
+def _session_volume(
+    v: dict, tomo_name: str, n: int, pixel_size_full: float, size_full: Sequence[int], visible_roots
+) -> tuple[Path, float, float]:
+    """(the file ChimeraX opens, its voxel size, the corner shift to apply) for one segmentation
+    volume. Raises OSError / ValueError naming why it cannot be shown."""
+    import mrcfile
+
+    src = Path(v["path"])
+    with mrcfile.open(str(src), header_only=True, permissive=True) as m:
+        grid = [int(m.header.nx), int(m.header.ny), int(m.header.nz)]
+    if grid != [int(s) for s in size_full]:
+        raise ValueError(f"its grid {grid} (x, y, z) is not the tomogram's {list(size_full)}")
+    path, voxel, shift = src, float(pixel_size_full), display_corner_offset(n, pixel_size_full)
+    if n > 1:
+        cache = Path(v["cache_dir"]) / "vis" / "segment" / "display"
+        dest = cache / f"{tomo_name}__{v['name']}{DISPLAY_SUFFIX}{n}.mrc"
+        cache.mkdir(parents=True, exist_ok=True)
+        if dest.exists() and dest.stat().st_mtime < src.stat().st_mtime:
+            dest.unlink()  # made from an earlier version of the volume
+        disp = ensure_display_recon(src, n, pixel_size_full, size_full, dest=dest, max_pool=True)
+        if disp["bin"] == n:
+            path, voxel, shift = Path(disp["path"]), float(disp["pixel_size"]), 0.0
+    if visible_roots and not any(path.is_relative_to(Path(r)) for r in visible_roots):
+        raise ValueError(f"{path} is outside the folders the ChimeraX session sees")
+    return path, voxel, shift
+
+
+def feature_volume_commands(features: Sequence[dict]) -> list[str]:
+    """`open` and `volume` per segmentation volume (`session_features`): a transparent surface at
+    p = 0.5 in the feature's colour, on the tomogram's grid. Opened before ArtiaX starts, into a
+    session with nothing open, so the volumes are models #1, #2, … in order."""
+    cmds: list[str] = []
+    for model, f in enumerate(features, start=1):
+        ox, oy, oz = f["origin"]
+        cmds.append(f"open {_cxc_quote(f['path'])}")
+        cmds.append(
+            f"volume #{model} style surface level {f['level']:g} color {f['color']} "
+            f"transparency {FEATURE_TRANSPARENCY:g} origin {ox:g},{oy:g},{oz:g} voxelSize {f['voxel']:g}"
+        )
+    return cmds
+
+
+def session_chimerax_commands(
+    recon_mrc, auto_coords: Path | None = None, seed_coords: Path | None = None, features: Sequence[dict] = ()
+) -> list[str]:
     """The ChimeraX command lines that load a tomogram + our picks into ArtiaX.
 
     This is the single source of the load backbone: the ``.cxc`` bakes these in for
     the auto-launch path, the in-session switch sends the same lines over REST, and the
     UI surfaces them verbatim as copyable "paste these into ChimeraX" guidance, so the
     three never drift. The seed is opened last, after the reference list, so it is the
-    model selected when the user arrives.
+    model selected when the user arrives. The tomogram's segmentation volumes (`features`,
+    `session_features`) are opened first, as plain ChimeraX volumes.
     """
-    cmds = ["artiax start", f"artiax open tomo {_cxc_quote(recon_mrc)}"]
+    cmds = [*feature_volume_commands(features), "artiax start", f"artiax open tomo {_cxc_quote(recon_mrc)}"]
     if auto_coords is not None:
         cmds.append(f"open {_cxc_quote(auto_coords)}")
     if seed_coords is not None:
@@ -448,11 +569,13 @@ def session_chimerax_commands(recon_mrc, auto_coords: Path | None = None, seed_c
 # stay correctly attributed across a server restart. The chain is runtime-verified.
 
 
-def swap_chimerax_commands(open_recon, auto_coords: Path | None = None, seed_coords: Path | None = None) -> str:
+def swap_chimerax_commands(
+    open_recon, auto_coords: Path | None = None, seed_coords: Path | None = None, features: Sequence[dict] = ()
+) -> str:
     """One ``;``-chained ChimeraX command that closes what the session has open and loads
     another tomogram + its lists — the launch backbone behind a ``close session``. The
     seed is opened last here too, so the switched-to list is the selected one."""
-    return "close session ; " + " ; ".join(session_chimerax_commands(open_recon, auto_coords, seed_coords))
+    return "close session ; " + " ; ".join(session_chimerax_commands(open_recon, auto_coords, seed_coords, features))
 
 
 def cd_chimerax_command(curation_dir) -> str:
@@ -525,6 +648,7 @@ def build_session_cxc(
     seed_coords: Path | None = None,
     save_dir_script: Path | None = None,
     window_size: Sequence[int] | None = None,
+    features: Sequence[dict] = (),
 ) -> str:
     """Build a ChimeraX startup ``.cxc`` that preloads one tomogram + our picks in ArtiaX.
 
@@ -546,7 +670,7 @@ def build_session_cxc(
     lines.append("set bgColor black")
     if window_size is not None:
         lines.append(f"windowsize {int(window_size[0])} {int(window_size[1])}")
-    lines.extend(session_chimerax_commands(recon_mrc, auto_coords, seed_coords))
+    lines.extend(session_chimerax_commands(recon_mrc, auto_coords, seed_coords, features))
     if save_dir_script is not None:
         # Last, after everything is loaded: a failure here stops the .cxc with the
         # session already usable, and the control center states the folder anyway.
@@ -582,6 +706,8 @@ def prepare_curation_bundle(
     project_root: Path | None = None,
     window_size: Sequence[int] | None = None,
     display_bin: int = 1,
+    segmentations: Sequence[dict] = (),
+    visible_roots: Sequence[Path] = (),
 ) -> dict:
     """Materialize everything a ChimeraX/ArtiaX session needs to open one
     tomogram preloaded with a reference pick list, and declare that session's scope.
@@ -627,6 +753,15 @@ def prepare_curation_bundle(
     disp = ensure_display_recon(Path(recon), display_bin, frame.pixel_size, frame.size)
     open_recon = Path(disp["path"])
     offset = float(disp["corner_offset_angst"])
+    features, features_skipped = session_features(
+        segmentations,
+        tomo_name=tomo_name,
+        open_recon=open_recon,
+        display_bin=int(disp["bin"]),
+        pixel_size_full=frame.pixel_size,
+        size_full=frame.size,
+        visible_roots=visible_roots,
+    )
 
     is_auto = coords_label == "auto"
     ref_coords: Path | None = None
@@ -650,6 +785,7 @@ def prepare_curation_bundle(
             seed_coords=seed,
             save_dir_script=save_dir_script,
             window_size=window_size,
+            features=features,
         )
     )
     write_manifest(
@@ -688,7 +824,9 @@ def prepare_curation_bundle(
         "tomo_size": [int(v) for v in disp["size"]],
         "auto_count": int(n),
         "coords_label": coords_label,
-        "commands": session_chimerax_commands(open_recon, ref_coords, seed),
+        "features": features,
+        "features_skipped": features_skipped,
+        "commands": session_chimerax_commands(open_recon, ref_coords, seed, features),
     }
 
 

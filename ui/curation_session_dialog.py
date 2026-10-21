@@ -575,6 +575,7 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
                     auto_coords=b.get("auto_coords"),
                     seed_coords=b.get("seed_coords"),
                     scope=scope,
+                    features=b.get("features"),
                 )
             finally:
                 state["busy"] = False

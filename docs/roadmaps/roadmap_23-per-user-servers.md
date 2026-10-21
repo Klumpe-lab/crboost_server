@@ -377,3 +377,17 @@ the existing enum.
   Not exercised: the browser halves of checks 2–6 (address bar after the redirect, `kill -9` + restart with an
   open tab, two servers side by side, template/mask and tilt thumbnails loading, the host popover); the first
   real use of the gated server covers them.
+
+**Port block, startup survey, tunnel hardening (2026-10-21), built, not run — a slice of stage 5 without the
+launcher.** Replaces §3.7's `20000 + uid % 10000` with one block, `PORT_RANGE` 24300–24331
+(`services/port_survey.py`): below the ephemeral range (32768–60999 on clip-login-1), clear of X11 (6010+), VNC,
+the busy 8xxx; nothing listened in 20000–31999 there. `main.py` without `--port` binds the checkout's remembered
+port (`~/.crboost/ports.json`) or a user+checkout hash slot, then the next free one; one dual-stack socket
+(`::`, V6ONLY 0), bound before the heavy imports and handed to uvicorn (`server_app.serve`), so a `::1`
+squatter fails the bind instead of taking `localhost` connections, and the banner prints only once the
+monitors are up. Every start surveys `/proc/net/tcp{,6}` + the user's `/proc/<pid>` and lists leftovers with
+one `kill -9` line: ssh `-L` tunnels to the same host (ten of the maintainer's on clip-login-1 that day),
+stopped / unanswering / portless CryoBoost servers, workers whose server is gone. A checkout already running
+and answering → its links, exit 0. Tunnel command: `ExitOnForwardFailure=yes`, `ServerAliveInterval=30`,
+`127.0.0.1`. 401 page names the owner (`x-cryoboost-user` header, which the survey reads). Workers get
+`PR_SET_PDEATHSIG`; uvicorn `timeout_graceful_shutdown` 5 s. Startup spinner (`services/startup_spinner.py`).

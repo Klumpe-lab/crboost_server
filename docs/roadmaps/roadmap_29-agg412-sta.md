@@ -451,6 +451,11 @@ The job tab will warn in five projects that the full run exceeds the time overri
 - **2026-10-19** — MA19 built. `drivers/refine3d.py` now continues a re-run from the last finished iteration
   (`relion_refine --continue`, output `run_ct<N>_*` copied to the `run_*` names), so Run picks job036 / job037
   up where they stopped.
+- **2026-10-21** — All seven missAlign runs finished: `RELION_JOB_EXIT_SUCCESS`, 9 iterations each. Slot6 job013
+  123/123, FCIsolation job016 138/138 (MA19 left out 17_2, 29_5, 30_3, 32_4), 20251113 job013 141/141, pilot
+  job016 23/23, unmilled2 job019 162/162 (Position_22_4 and Position_32 left out, 1 tilt), Grid3 job015 95/95,
+  SK job016 133/133: 815 refined. Only missAlign was deployed, so tsCtf__2 / tsReconstruct__2 are still to be
+  added (§6.2.3).
 
 ## 7. Code this needs (proposed; nothing built)
 

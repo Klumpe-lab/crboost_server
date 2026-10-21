@@ -25,11 +25,11 @@ venv/bin/python3 preflight.py        # 1st run writes config/conf.yaml + config/
 $EDITOR config/conf.yaml config/qsub.sh
 venv/bin/python3 preflight.py        # must exit 0
 venv/bin/python3 -m pytest -m cluster   # one short SLURM job per tool (minutes); must pass
-venv/bin/python3 main.py --port 8081 --host 0.0.0.0
+venv/bin/python3 main.py
 ```
 
-Then from your laptop: `ssh -f -N -L 8081:localhost:8081 $USER@$HEADNODE` and open the
-`http://localhost:8081/?token=…` link the server printed. Without the token every page answers 401
+The server picks its own port. On your laptop, run the `ssh …` tunnel command it printed and open the
+`http://localhost:<port>/?token=…` link it printed. Without the token every page answers 401
 (see *Starting the server* below). Updating an install whose `config/` came from older templates: see
 *Upgrading an existing install* below.
 
@@ -212,13 +212,33 @@ holds sessions or browser storage; you can delete it.
 <summary><b>Starting the server and tunnelling in</b></summary>
 
 ```bash
-venv/bin/python3 main.py --port 8081 --host 0.0.0.0
+venv/bin/python3 main.py
 ```
 
 ```
-Tunnel from your local machine: ssh -f -N -L 8081:localhost:8081 $USER@<headnode>
-Access in your browser:         http://localhost:8081/?token=Xq3…
+On your own computer (not here), open the tunnel:
+ssh -f -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -L 24305:127.0.0.1:24305 $USER@<headnode>
+Then open in your browser:
+http://localhost:24305/?token=Xq3…
 ```
+
+**The port.** CryoBoost servers take their ports from one small block, 24300–24331, and each checkout
+gets the same port every time it is free (remembered in `~/.crboost/ports.json`), so the tunnel
+command and bookmarks stay the same. Before it binds, the server looks at what holds the ports on this
+host: if this checkout is already running and answering, it prints that server's links and stops instead
+of starting a second one. A taken port is skipped, and a port given with `--port` that is taken is
+reported with whoever holds it. `--host` binds one address instead of every interface.
+
+**Leftovers.** Every start also lists what of yours on this host is left over from earlier sessions, with
+the `kill -9 …` command that ends them: an `ssh -L` tunnel to the headnode itself (the tunnel command
+pasted here instead of on your computer: it holds the port, and a browser tunnel that lands on it hangs),
+a CryoBoost server that is stopped (Ctrl-Z) or no longer answers, and CryoBoost worker processes whose
+server is gone. Nothing is killed for you.
+
+The tunnel command ends with an error rather than lingering when it cannot take its port: on your
+computer an old tunnel may still hold it (`pkill -f 'ssh.*-L <port>:'` ends that one), and on the
+headnode the server holds it. `ServerAliveInterval` ends a tunnel whose connection died (laptop asleep,
+VPN switched) instead of leaving every page hanging.
 
 Below the two pinned lines comes a faint startup snapshot: user, cluster, node/GPU totals, your SLURM
 jobs grouped by job directory, and your five most recently active projects with their status and a
@@ -244,11 +264,11 @@ open side by side in one browser.
 From your local machine (still on the cluster's network, physically or via VPN):
 
 ```bash
-ssh -L ${LOCAL_PORT}:localhost:${HEADNODE_PORT} ${USERNAME}@${HEADNODE_URL}
+ssh -L ${LOCAL_PORT}:127.0.0.1:${HEADNODE_PORT} ${USERNAME}@${HEADNODE_URL}
 # background:
-ssh -f -N -L ${LOCAL_PORT}:localhost:${HEADNODE_PORT} ${USERNAME}@${HEADNODE_URL}
+ssh -f -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -L ${LOCAL_PORT}:127.0.0.1:${HEADNODE_PORT} ${USERNAME}@${HEADNODE_URL}
 # kill when done:
-pkill -f "ssh.*${LOCAL_PORT}:localhost:${HEADNODE_PORT}"
+pkill -f "ssh.*${LOCAL_PORT}:127.0.0.1:${HEADNODE_PORT}"
 ```
 
 `LOCAL_PORT` is any free port on your computer, `HEADNODE_PORT` is the port the server listens on; open
@@ -260,9 +280,9 @@ handy:
 Host cryoboost-tunnel
     HostName [YOUR CLUSTER NODE]
     User [YOUR USERNAME]
-    LocalForward 8080 localhost:42
-    LocalForward 8081 localhost:42
-    LocalForward 8082 localhost:42
+    LocalForward 24305 127.0.0.1:24305
+    ExitOnForwardFailure yes
+    ServerAliveInterval 30
 ```
 
 Then `ssh cryoboost-tunnel` is enough.

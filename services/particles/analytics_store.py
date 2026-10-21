@@ -317,11 +317,21 @@ def tm_health_record(project_path: Path, state, instance_id: str) -> Record:
 
 
 def write_tm_tomogram_sidecar(
-    job_dir: Path, tomo: str, *, instance_id: str, diameter_ang: float | None, started_at: float | None
+    job_dir: Path,
+    tomo: str,
+    *,
+    instance_id: str,
+    diameter_ang: float | None,
+    started_at: float | None,
+    search_region: dict | None = None,
 ) -> Record:
     """The template-match driver's per-tomogram sidecar: the job.json facts, the node and runtime of
     the task, and a scan of the score map for its peaks (the one number no backfill can produce
-    without reading the 2 GB map again). A failed scan is recorded in the sidecar, not raised."""
+    without reading the 2 GB map again). A failed scan is recorded in the sidecar, not raised.
+
+    With a `search_region` (the job's, from its task manifest) the sidecar records it with the share
+    of the tomogram it searched (`searched_pct`), since σ and the false-positive cutoff were
+    measured over that volume, and the scan counts only peaks inside it, as extraction does."""
     import socket
     import time
 
@@ -334,10 +344,15 @@ def write_tm_tomogram_sidecar(
     data["runtime_min"] = round((time.time() - started_at) / 60.0, 1) if started_at else None
     data["scan"] = None
     radius = analytics.exclusion_radius_px(diameter_ang, data.get("voxel"))
+    mask = _search_region_record(data, tm_results, tomo, search_region)
     if data.get("sigma") and data.get("fp1_sigma"):
         try:
             scan = analytics.scan_score_map(
-                scores, sigma=float(data["sigma"]), cutoff_sigma=float(data["fp1_sigma"]), radius_px=radius
+                scores,
+                sigma=float(data["sigma"]),
+                cutoff_sigma=float(data["fp1_sigma"]),
+                radius_px=radius,
+                mask_mrc=mask,
             )
         except (OSError, ValueError, MemoryError) as e:
             logger.exception("Score-map scan failed for %s", scores)
@@ -362,6 +377,26 @@ def write_tm_tomogram_sidecar(
     )
     write_record(tm_sidecar_path(job_dir, tomo), record)
     return record
+
+
+def _search_region_record(data: dict, tm_results: Path, tomo: str, search_region: dict | None) -> Path | None:
+    """Record the job's search region in `data` with the share of the tomogram its mask covers, and
+    return the mask; None without a region. A mask that cannot be read is recorded as such."""
+    from services.segmentation.search_region import search_mask_path
+
+    if not search_region:
+        return None
+    mask = search_mask_path(tm_results, tomo)
+    record = {k: search_region.get(k) for k in ("include", "exclude", "dilation_ang")}
+    record["mask"] = str(mask)
+    try:
+        record["searched_pct"] = round(analytics.mask_fraction(mask) * 100.0, 2)
+    except (OSError, ValueError) as e:
+        logger.exception("Search mask %s could not be read", mask)
+        record["error"] = f"mask unreadable: {type(e).__name__}: {e}"
+        mask = None
+    data["search_region"] = record
+    return mask
 
 
 def _backfill_runtime_min(tm_results: Path, tomo: str, scores: Path) -> float | None:

@@ -41,6 +41,10 @@ class ChartTheme:
     ref_color: str = "#94a3b8"
     ref_type: str = "dashed"
     pointer_color: str = "#cbd5e1"
+    # Tilts the tilt filter dropped: their marker ring, and the dashed line at their angle
+    # (the tilt filter page's "excluded" red, so a dropped tilt reads the same everywhere).
+    drop_color: str = "#e34948"
+    drop_line: str = "rgba(227, 73, 72, 0.35)"
     # The CTF fit: Warp's measured spectrum and the CTF model.
     fit_measured: str = "#0f172a"
     fit_model: str = "#4f46e5"
@@ -500,13 +504,15 @@ _TOOLTIP_IMG_JS = (
 _TOOLTIP_FORMATTER_JS = r"""
 (ps) => {
   if (!Array.isArray(ps)) ps = [ps];
-  const d = ps[0].data || [];
+  // A dropped tilt's point is a styled item ({value: row, ...}) — unwrap to the row.
+  const row = (p) => { const d = p && p.data; return (d && !Array.isArray(d) && d.value) ? d.value : (d || []); };
+  const d = row(ps[0]);
   const deg = (typeof d[0] === 'number') ? d[0].toFixed(2) + '°' : '';
   let h = __OPEN__;
   h += '<div style="font-weight:600">' + (d[2] ? 'Tilt ' + d[2] + ' · ' : '') + deg + '</div>';
   if (d[4]) h += '<div style="color:__NOTE__">tilt filter: ' + d[4] + '</div>';
   for (const p of ps) {
-    const v = p.data ? p.data[1] : null;
+    const v = row(p)[1];
     if (v === null || v === undefined) continue;
     h += '<div>' + p.marker + p.seriesName
       + ' <span style="font-family:__MONO__;font-weight:600">'
@@ -704,6 +710,42 @@ def build_empty_chart(message: str) -> dict:
     }
 
 
+def _drop_angles(dropped_tilts: Sequence[float] | None) -> set[float]:
+    """The dropped stage angles, rounded to a millidegree so a point matches its angle
+    across readers (both come from the registry's `nominal_tilt_angle_deg`)."""
+    return {round(float(t), 3) for t in (dropped_tilts or []) if t is not None}
+
+
+def _drop_note(theme: ChartTheme, glyph: str = "○") -> list[dict]:
+    """The corner key for the dropped-tilt marks — the charts carry no legend entry for
+    them (a per-point style has none), so the red rings and lines get one line of text."""
+    return [
+        {
+            "type": "text",
+            "right": 4,
+            "top": 2,
+            "silent": True,
+            "style": {
+                "text": f"{glyph} dropped tilt",
+                "fill": theme.drop_color,
+                "font": f"9px {theme.name_font}",
+            },
+        }
+    ]
+
+
+def _drop_mark_line(angles: set[float], theme: ChartTheme) -> dict:
+    """A faint dashed vertical line at each dropped tilt's angle — the mark that survives
+    into the stages whose outputs carry no row for the tilt at all."""
+    return {
+        "silent": True,
+        "symbol": "none",
+        "label": {"show": False},
+        "lineStyle": {"color": theme.drop_line, "type": "dashed", "width": 1},
+        "data": [{"xAxis": a} for a in sorted(angles)],
+    }
+
+
 def build_per_tilt_chart(
     x_tilts: list[float],
     series: list[dict],
@@ -713,6 +755,7 @@ def build_per_tilt_chart(
     customdata: list[list] | None = None,
     y_unit: str = "",
     y_range: tuple[float, float] | None = None,
+    dropped_tilts: Sequence[float] | None = None,
     theme: ChartTheme = DEFAULT_THEME,
 ) -> dict:
     """ECharts options for a per-tilt chart: x = stage tilt angle, y = one or more
@@ -727,23 +770,36 @@ def build_per_tilt_chart(
     [tilt_number, frame_basename, (verdict)] rows surfaced in the hover card. `y_unit`:
     suffix for hover values (" µm", " Å"). `y_range`: fixed y-axis [min, max] so the same
     metric is visually comparable across tilt series; auto-extended (never clipped) when
-    the data exceeds it.
+    the data exceeds it. `dropped_tilts`: stage angles the tilt filter dropped — their
+    points are drawn as open red rings and a faint dashed line marks each angle, so a
+    dropped tilt reads the same in every chart of the journey (the stages after the
+    filter carry no row for it at all, and then only the line is left).
     """
+    drops = _drop_angles(dropped_tilts)
+    drop_style = {"color": "#ffffff", "borderColor": theme.drop_color, "borderWidth": 1.2}
+    ringed = False
     out: list[dict] = []
     for i, s in enumerate(series):
         ref = bool(s.get("ref"))
         color = theme.ref_color if ref else (s.get("color") or theme.series[i % len(theme.series)])
         mode = "lines" if ref else s.get("mode", "markers")
         is_line = "lines" in mode
-        pts: list[list] = []
+        pts: list = []
         for j, (x, y) in enumerate(zip(x_tilts, s["y"], strict=False)):
             if x is None:
                 continue
             extra = list(customdata[j]) if customdata is not None and j < len(customdata) else []
             # None y stays None → ECharts draws a gap (line) / skips the point (scatter).
-            pts.append([x, y, *extra])
+            row = [x, y, *extra]
+            # A dropped tilt's own estimate: same place, ringed — never hidden (it is the
+            # measurement the filter judged). Fits and reference lines stay untouched.
+            if not ref and round(float(x), 3) in drops:
+                pts.append({"value": row, "itemStyle": drop_style, "symbolSize": theme.marker_size + 1})
+                ringed = True
+            else:
+                pts.append(row)
         if is_line:
-            pts.sort(key=lambda p: p[0])
+            pts.sort(key=lambda p: (p["value"] if isinstance(p, dict) else p)[0])
         hollow = not is_line and theme.hollow[i % len(theme.hollow)]
         entry: dict = {
             "name": s["name"],
@@ -763,6 +819,11 @@ def build_per_tilt_chart(
                 "type": theme.ref_type if ref else "solid",
             }
         out.append(entry)
+
+    # One markLine carries every dropped angle; it rides the first series (ECharts draws
+    # it once, under the points).
+    if drops and out:
+        out[0]["markLine"] = _drop_mark_line(drops, theme)
 
     show_legend = len(series) > 1
     y_axis = _axis(y_label, horizontal=False, theme=theme)
@@ -787,7 +848,7 @@ def build_per_tilt_chart(
         y_axis["max"] = round(ymax + pad, 6)
         y_axis["scale"] = False
 
-    return {
+    opts = {
         "animation": False,
         "color": list(theme.series),
         "grid": _grid(show_legend, theme),
@@ -797,10 +858,18 @@ def build_per_tilt_chart(
         "tooltip": _tooltip(_card_js(_TOOLTIP_FORMATTER_JS, theme).replace("__UNIT__", y_unit), theme=theme),
         "series": out,
     }
+    if drops:
+        # After the filter the tilt has no point left to ring — then the key names the line.
+        opts["graphic"] = _drop_note(theme, glyph="○" if ringed else "╌")
+    return opts
 
 
 def build_motion_track_chart(
-    tracks: list[dict], *, unit_label: str = "Warp units, ≈ Å", theme: ChartTheme = DEFAULT_THEME
+    tracks: list[dict],
+    *,
+    unit_label: str = "Warp units, ≈ Å",
+    dropped_tilts: Sequence[float] | None = None,
+    theme: ChartTheme = DEFAULT_THEME,
 ) -> dict:
     """ECharts options for the beam-induced motion tracks of every tilt in a tilt
     series: one thin polyline per tilt (x/y shift per time step of the movie, all
@@ -808,7 +877,10 @@ def build_motion_track_chart(
     high tilts drawn last. `tracks`: [{tilt, index, frame, x, y, thumb?}]. Data rows
     are [x, y, tilt_number, frame_basename, tilt_deg, thumb_url] — frame at slot 3,
     like the per-tilt charts, so one select hook serves both. Both axes share one
-    symmetric range so a path's direction reads true."""
+    symmetric range so a path's direction reads true. `dropped_tilts`: stage angles the
+    tilt filter dropped — those paths are drawn dashed in the drop red instead of their
+    tilt colour."""
+    drops = _drop_angles(dropped_tilts)
     max_abs_tilt = max((abs(float(t["tilt"])) for t in tracks), default=0.0)
     lim = 1.0
     for t in tracks:
@@ -816,8 +888,11 @@ def build_motion_track_chart(
             lim = max(lim, abs(float(v)))
     lim = round(lim * 1.08, 3)
     series: list[dict] = []
+    drawn_drop = False
     for t in sorted(tracks, key=lambda t: abs(float(t["tilt"]))):
-        color = tilt_color(float(t["tilt"]), max_abs_tilt, theme)
+        is_drop = round(float(t["tilt"]), 3) in drops
+        drawn_drop = drawn_drop or is_drop
+        color = theme.drop_color if is_drop else tilt_color(float(t["tilt"]), max_abs_tilt, theme)
         rows = [
             [x, y, t["index"], t["frame"], t["tilt"], t.get("thumb", "")] for x, y in zip(t["x"], t["y"], strict=True)
         ]
@@ -829,7 +904,7 @@ def build_motion_track_chart(
                 "symbol": "circle",
                 "symbolSize": 3,
                 "showSymbol": True,
-                "lineStyle": {"color": color, "width": 1.3},
+                "lineStyle": {"color": color, "width": 1.3, **({"type": "dashed"} if is_drop else {})},
                 "itemStyle": {"color": color},
                 "emphasis": {"focus": "series", "lineStyle": {"width": 2.4}},
             }
@@ -838,7 +913,7 @@ def build_motion_track_chart(
     y_axis = _axis("Y shift", horizontal=False, theme=theme)
     x_axis.update({"min": -lim, "max": lim})
     y_axis.update({"min": -lim, "max": lim, "scale": False})
-    return {
+    opts = {
         "animation": False,
         "grid": _grid(False, theme),
         "xAxis": x_axis,
@@ -847,6 +922,9 @@ def build_motion_track_chart(
         "tooltip": _tooltip(_card_js(_TRACK_TOOLTIP_JS, theme), trigger="item", theme=theme),
         "series": series,
     }
+    if drawn_drop:
+        opts["graphic"] = _drop_note(theme, glyph="╌")
+    return opts
 
 
 def build_ctf_fit_chart(

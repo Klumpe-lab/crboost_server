@@ -24,6 +24,11 @@ The Config tab opens with the one species line (pill + "open in Species");
 species facts (templates, masks, Ø, symmetry) live on the species itself, not
 here. If species.templates is empty the row states the absence and
 points at the Species page rather than preselecting anything.
+
+The Search region section restricts matching to segmented features of the tomograms
+(services/segmentation/search_region.py). The features offered are the project's: registered,
+or set on a Segment job. Its note names the segmentations the job will read (the I/O section's,
+which shows that input only while a region is set) and what they lack.
 """
 
 from pathlib import Path
@@ -31,16 +36,30 @@ from pathlib import Path
 from nicegui import ui
 
 from services.jobs.template_match import TM_SYMMETRY_CHOICES
-from services.models_base import JobType
+from services.models_base import JobType, SegmentMethod
+from services.path_resolution_service import PathResolutionService, override_instance_id
 from services.project_state import get_project_state_for
 from services.models_base import resolve_species
+from services.segmentation.search_region import describe, read_segmentations
 from services.templating.template_metadata import read_template_header
 from ui.components.species_pill import render_species_line, species_opener
 from ui.job_plugins import register_params_renderer
-from ui.job_plugins._field_styles import SPECIES_SECTION_TITLE, choice_row, field_grid, section_header
+from ui.job_plugins._field_styles import (
+    HELPER_STYLE,
+    SPECIES_SECTION_TITLE,
+    choice_row,
+    field_grid,
+    multi_choice_row,
+    numeric_field,
+    section_header,
+)
 from ui.job_plugins.default_renderer import render_config_preamble, render_default_params
 
 _OVERRIDE_NOTE = "Changing it here affects only this job instance — the species is not modified."
+_SEARCH_FIELDS = {"search_include", "search_exclude", "search_dilation_ang"}
+_WARN_STYLE = HELPER_STYLE + " color: #b45309;"
+# Under the value column of a field row (label column 110 px + gap).
+_NOTE_STYLE = " margin: 0 0 4px 118px;"
 
 
 @register_params_renderer(JobType.TEMPLATE_MATCH_PYTOM)
@@ -57,19 +76,122 @@ def render_template_match_params(job_type, job_model, is_frozen, save_handler, *
     # Render the regular params with template_path/mask_path/symmetry excluded —
     # we handle these specially below (or via the species header). The ctx
     # exclude (array_throttle → SLURM section) is honored too.
-    exclude = {"template_path", "mask_path", "symmetry"} | set(_ctx.get("exclude") or ())
+    exclude = {"template_path", "mask_path", "symmetry"} | _SEARCH_FIELDS | set(_ctx.get("exclude") or ())
     render_config_preamble(job_model)
     render_default_params(job_type, job_model, is_frozen, save_handler, exclude=exclude)
 
-    if species is None:
-        return
+    if species is not None:
+        # ── Template + mask + search symmetry ─────────────────────────────────
+        section_header(SPECIES_SECTION_TITLE)
+        with field_grid():
+            _render_template_dropdown(species, job_model, is_frozen, save_handler)
+            _render_mask_dropdown(species, job_model, is_frozen, save_handler)
+            _render_symmetry_dropdown(species, job_model, is_frozen, save_handler)
 
-    # ── Template + mask + search symmetry ─────────────────────────────────
-    section_header(SPECIES_SECTION_TITLE)
+    if ui_mgr is None or not ui_mgr.project_path:
+        return None
+    state = get_project_state_for(ui_mgr.project_path)
+    return _render_search_region(state, job_model, instance_id, is_frozen, save_handler)
+
+
+def _render_search_region(state, job_model, instance_id: str | None, is_frozen: bool, save_handler):
+    """The features to search in and to leave out, and how far to grow the region; under them, what
+    the job will read. Returns the note's refresh, which the job tab reruns after an edit."""
+    section_header("Search region")
+    features = _project_features(state)
+    held = [*job_model.search_include, *job_model.search_exclude]
+    options = {f: f for f in features} | {f: f"{f} · not segmented in this project" for f in held if f not in features}
     with field_grid():
-        _render_template_dropdown(species, job_model, is_frozen, save_handler)
-        _render_mask_dropdown(species, job_model, is_frozen, save_handler)
-        _render_symmetry_dropdown(species, job_model, is_frozen, save_handler)
+        multi_choice_row(
+            "Search in",
+            job_model,
+            "search_include",
+            options,
+            is_frozen=is_frozen,
+            save_handler=save_handler,
+            placeholder="no segmentations in this project",
+            hint="Match only where one of these features has p ≥ 0.5. None: the whole tomogram, less what is left out.",
+        )
+        multi_choice_row(
+            "Leave out",
+            job_model,
+            "search_exclude",
+            options,
+            is_frozen=is_frozen,
+            save_handler=save_handler,
+            placeholder="no segmentations in this project",
+            hint="Never match where one of these features has p ≥ 0.5 (void, ice, …).",
+        )
+        numeric_field(
+            "Grow by",
+            job_model,
+            "search_dilation_ang",
+            is_frozen=is_frozen,
+            save_handler=save_handler,
+            suffix="Å",
+            hint="Grow the searched features by this distance before what is left out is cut away, so a particle "
+            "on the region's edge is matched whole.",
+        )
+
+    @ui.refreshable
+    def note() -> None:
+        text, warn = _region_note(state, job_model, instance_id)
+        ui.label(text).style((_WARN_STYLE if warn else HELPER_STYLE) + _NOTE_STYLE)
+
+    note()
+    return note.refresh
+
+
+def _project_features(state) -> list[str]:
+    """The features this project has segmentations of, or a Segment job is set to make."""
+    ids = {f.id for f in state.feature_registry}
+    for jm in state.jobs.values():
+        if jm.job_type == JobType.SEGMENT and jm.method == SegmentMethod.EASYMODE:
+            ids |= set(jm.features)
+    return sorted(ids)
+
+
+def _region_note(state, job_model, instance_id: str | None) -> tuple[str, bool]:
+    """(text, is_warning): what the region is and which segmentations it reads, or what keeps it
+    from running."""
+    if not job_model.restricts_search:
+        return "The whole tomogram is searched.", False
+    both = sorted(set(job_model.search_include) & set(job_model.search_exclude))
+    if both:
+        return f"{', '.join(both)}: both searched in and left out, so nothing would be searched.", True
+    region = describe(job_model.search_include, job_model.search_exclude, job_model.search_dilation_ang)
+    v = PathResolutionService(state).validate_input_slot(
+        job_model.job_type, job_model, "input_segmentations", check_filesystem=False, consumer_instance_id=instance_id
+    )
+    if v.error_message:
+        return f"Searched: {region}. Segmentations: {v.error_message}", True
+    if not v.resolved_path:
+        return (
+            f"Searched: {region}. No segmentations to read: add a Segment job, or import segmentations in the "
+            "Tomograms view.",
+            True,
+        )
+    source = _source_label(state, v.source_key or "")
+    try:
+        have = set(read_segmentations(v.resolved_path).features())
+    except FileNotFoundError:
+        return f"Searched: {region}, read from {source} once it has run.", False
+    except (OSError, ValueError) as e:
+        return f"Searched: {region}. {source}'s segmentations.json could not be read: {e}", True
+    lack = sorted({*job_model.search_include, *job_model.search_exclude} - have)
+    if lack:
+        return f"Searched: {region}. {source} has no {', '.join(lack)}: pick other segmentations in I/O.", True
+    return f"Searched: {region}, from {source}.", False
+
+
+def _source_label(state, source_key: str) -> str:
+    """The segmentations an input reads, by name: a job's instance, or an import batch's label."""
+    instance = override_instance_id(source_key)
+    if instance is not None:
+        return instance
+    batch = Path(source_key.partition(":")[2]).name
+    rec = state.get_segmentation_import(batch)
+    return f"the segmentation {rec.label}" if rec is not None else source_key
 
 
 def _default_note(kind: str, default_name: str | None) -> str:

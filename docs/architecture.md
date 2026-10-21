@@ -130,8 +130,9 @@ field the user may be typing in: the SLURM section holds its rebuild while one o
 focus.
 
 `services/loop_watchdog.py` logs every stall of the loop over 1 s as one line naming the code it was
-spent in. With `CRBOOST_TRACE_STALLS=1` it logs every stall over 250 ms, with the stack of the loop
-thread (and of any busy thread). A new one names the code to move.
+spent in, to the log file (`~/.crboost/logs/`). With `CRBOOST_TRACE_STALLS=1` it logs every stall over
+250 ms, with the stack of the loop thread (and of any busy thread), on the console too. A new one names
+the code to move.
 
 ## File map
 

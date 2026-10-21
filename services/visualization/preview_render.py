@@ -111,6 +111,25 @@ def is_output_stale(target: Path, sources) -> bool:
     return False
 
 
+SLAB_BYTE_BUDGET = 50 * 1024 * 1024
+
+
+def central_slab(
+    n: int, plane_bytes: int, *, byte_budget: int = SLAB_BYTE_BUDGET, center: int | None = None
+) -> tuple[int, int]:
+    """[lo, hi) of the planes a slab preview averages along an axis of `n` planes of `plane_bytes`
+    each: about 2 % of the axis and at least 3 planes, fewer when that would read more than
+    `byte_budget`, centred on `center` (the middle by default) and kept inside the volume.
+
+    The X/Y and X/Z slab previews take their range here, and so do the segmentation overlays, from
+    the shape and data type of the tomogram they sit on: the budget depends on the data type, so an
+    int8 feature volume would otherwise get a thicker slab than its float16 tomogram."""
+    n_slices = int(min(max(1, byte_budget // plane_bytes), max(3, n // 50), n))
+    c = n // 2 if center is None else center
+    lo = min(max(0, c - n_slices // 2), n - n_slices)
+    return lo, lo + n_slices
+
+
 # ---------------------------------------------------------------------------
 # X/Z slab preview — server-side rendered once per tomogram, cached as PNG.
 # This is not a Z-MIP / per-pick volume rendering; it's the
@@ -121,7 +140,7 @@ def is_output_stale(target: Path, sources) -> bool:
 
 
 def render_xz_slab_preview(
-    mrc_path: Path, out_path: Path, *, max_dim: int = 1024, slab_byte_budget: int = 50 * 1024 * 1024
+    mrc_path: Path, out_path: Path, *, max_dim: int = 1024, slab_byte_budget: int = SLAB_BYTE_BUDGET
 ) -> Path | None:
     """Render an X/Z preview PNG by averaging a central Y-slab of the tomogram.
 
@@ -151,12 +170,7 @@ def render_xz_slab_preview(
             slab_per_slice_bytes = nz * nx * data.dtype.itemsize
             if slab_per_slice_bytes <= 0:
                 return None
-            max_slices_by_budget = max(1, slab_byte_budget // slab_per_slice_bytes)
-            target_slices = max(3, ny // 50)
-            n_slices = int(min(max_slices_by_budget, target_slices, ny))
-            half = n_slices // 2
-            y_lo = max(0, (ny // 2) - half)
-            y_hi = min(ny, y_lo + n_slices)
+            y_lo, y_hi = central_slab(ny, slab_per_slice_bytes, byte_budget=slab_byte_budget)
             # Always copy out: a view into the mmap is invalid once the file closes.
             # Cast to float32 inside the with-block so the mmap is still valid when
             # np.array is called.
@@ -207,7 +221,7 @@ def render_xy_slab_preview(
     out_path: Path,
     *,
     max_dim: int = 1024,
-    slab_byte_budget: int = 50 * 1024 * 1024,
+    slab_byte_budget: int = SLAB_BYTE_BUDGET,
     z_center: int | None = None,
     shift_yx: tuple[int, int] = (0, 0),
 ) -> Path | None:
@@ -250,13 +264,7 @@ def render_xy_slab_preview(
             slab_per_slice_bytes = ny * nx * data.dtype.itemsize
             if slab_per_slice_bytes <= 0:
                 return None
-            max_slices_by_budget = max(1, slab_byte_budget // slab_per_slice_bytes)
-            target_slices = max(3, nz // 50)
-            n_slices = int(min(max_slices_by_budget, target_slices, nz))
-            half = n_slices // 2
-            zc = nz // 2 if z_center is None else z_center
-            z_lo = min(max(0, zc - half), nz - n_slices)
-            z_hi = z_lo + n_slices
+            z_lo, z_hi = central_slab(nz, slab_per_slice_bytes, byte_budget=slab_byte_budget, center=z_center)
             slab = np.array(data[z_lo:z_hi, :, :], dtype=np.float32, copy=True)
     except Exception as e:
         logger.warning("X/Y slab read failed for %s: %s", mrc_path, e)

@@ -45,3 +45,8 @@ def render_denoise_predict_tasks(job_type, instance_id, job_model, backend, ui_m
 @register_extra_tab(JobType.WARP_EXPORT, key="tasks", label="Tasks", icon="view_list")
 def render_warp_export_tasks(job_type, instance_id, job_model, backend, ui_mgr):
     render_array_task_tracker(instance_id, job_model, ui_mgr)
+
+
+@register_extra_tab(JobType.SEGMENT, key="tasks", label="Tasks", icon="view_list")
+def render_segment_tasks(job_type, instance_id, job_model, backend, ui_mgr):
+    render_array_task_tracker(instance_id, job_model, ui_mgr)

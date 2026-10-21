@@ -12,11 +12,13 @@ from services.jobs._base import SubmittedInput
 from services.jobs.spec import JOB_SPEC_BY_TYPE, JOB_SPECS, driver_invocation
 from services.jobs.tilt_filter import FilterMode, dl_auto_filters, review_barrier, verdict_edges
 from services.path_resolution_service import PathResolutionError, PathResolutionService, find_cycle, get_context_paths
-from services.models_base import InstanceId
+from services.models_base import InstanceId, SegmentMethod
 from services.event_log import events
 from services.result import err, ok
 from services.project_state import AbstractJobParams, JobCategory, JobType, JobStatus, ReviewHold
+from services.segmentation.search_region import search_region_problem
 from services.subsets import subset_problem, write_subset_star
+from services.tilt_series import get_registry_for
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -159,7 +161,7 @@ class PipelineOrchestratorService:
         parked = self._parked_behind_review(state, instances_to_run) if barrier else []
         if parked:
             instances_to_run = [iid for iid in instances_to_run if iid not in parked]
-            events.info("%s: %s wait for the %s review", project_dir.name, ", ".join(parked), barrier)
+            events.info("%s · %s wait for the %s review", project_dir.name, ", ".join(parked), barrier)
             if not instances_to_run:
                 state.review_hold = ReviewHold(barrier=barrier, parked=parked)
                 await self.backend.state_service.save_project(project_path=project_dir, force=True)
@@ -171,7 +173,7 @@ class PipelineOrchestratorService:
                     message=f"Nothing to start: {len(parked)} job(s) wait for the tilt-filter review.",
                 )
 
-        events.info("Pipeline started: %s — %s", project_dir.name, ", ".join(instances_to_run))
+        events.info("%s · started %s", project_dir.name, ", ".join(instances_to_run))
 
         # Submit the whole remaining set (FAILED + fresh) as SLURM dependencies. _submit_chain
         # allocates External/jobNNN dirs and wires the afterok edges; edges to already-SUCCEEDED
@@ -258,7 +260,7 @@ class PipelineOrchestratorService:
                 await self.backend.state_service.save_project(project_path=project_dir, force=True)
                 return ok(submitted=[], message="None of the parked jobs is left to run.")
             why = "runs in DL auto" if auto else "approved"
-            events.info("%s: %s %s; submitting %s", project_dir.name, hold.barrier, why, ", ".join(parked))
+            events.info("%s · %s %s; submitting %s", project_dir.name, hold.barrier, why, ", ".join(parked))
             return await self._submit_chain(project_dir=project_dir, instances_to_run=parked, state=state)
 
     async def _submit_chain(self, project_dir: Path, instances_to_run: list[str], state) -> dict[str, Any]:
@@ -401,9 +403,40 @@ class PipelineOrchestratorService:
             _restore_allocation(state, previous)
             start_over.update(changed)
             for iid in changed:
-                events.info("%s: inputs differ from its last attempt; it starts over in a new job dir", iid)
+                events.info(
+                    "%s · %s: inputs differ from its last attempt; it starts over in a new job dir",
+                    project_dir.name,
+                    iid,
+                )
         for iid in reused:
             logger.info("Reusing FAILED job dir %s for in-place retry of %s", job_dirs[iid], iid)
+
+        # A template match restricted to a search region needs every feature it names on every tomogram
+        # it will match; what lacks one is said now, not by a failed task an hour later.
+        region_problems = []
+        excluded: set[str] | None = None
+        for iid in instances_to_run:
+            job_model = state.jobs[iid]
+            if not getattr(job_model, "restricts_search", False):
+                continue
+            if excluded is None:
+                excluded = get_registry_for(project_dir).excluded_ids()
+            producer = state.jobs.get(resolver.source_of(iid, "input_segmentations") or "")
+            planned = (
+                list(producer.features)
+                if producer is not None
+                and producer.job_type == JobType.SEGMENT
+                and producer.method == SegmentMethod.EASYMODE
+                else None
+            )
+            problem = await asyncio.to_thread(
+                search_region_problem, job_model, resolved[iid], planned=planned, excluded=excluded
+            )
+            if problem:
+                region_problems.append(f"{iid}: {problem}")
+        if region_problems:
+            _restore_allocation(state, previous)
+            return err("Search region not ready — " + "; ".join(region_problems))
 
         # Derive the dependency DAG, restrict to the SUBMITTED set, toposort (cycle-checked).
         # Inline-completed providers (RUNS_INLINE, e.g. IMPORT) are never submitted; an edge from
@@ -528,7 +561,7 @@ class PipelineOrchestratorService:
                     script_path=script_path, cwd=project_dir, after_ids=after_ids or None
                 )
             except Exception as e:
-                logger.exception("afterok submit failed for %s", instance_id)
+                logger.exception("%s · submitting %s failed", project_dir.name, instance_id)
                 submit_error = (instance_id, e)
                 break
 
@@ -537,7 +570,8 @@ class PipelineOrchestratorService:
             job_model.slurm_job_id = slurm_id
             job_model.execution_status = JobStatus.QUEUED
             submitted.append({"instance_id": instance_id, "slurm_job_id": slurm_id, "afterok": after_ids})
-            events.info("Queued %s -> SLURM %s (afterok=%s)", instance_id, slurm_id, after_ids)
+            after = f" after {', '.join(after_ids)}" if after_ids else ""
+            events.info("%s · %s queued as SLURM %s%s", project_dir.name, instance_id, slurm_id, after)
 
         # Mark the run active (so the monitor ticks it -> reconcile_afterok) and persist the
         # committed counter + every submitted handle (on success OR partial failure) so no live

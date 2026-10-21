@@ -210,13 +210,16 @@ class _ConsoleHandler(logging.StreamHandler):
     def __init__(self, stream: TextIO) -> None:
         super().__init__(stream)
         self._last: float | None = None
+        # Clears what is left of the line first: during startup the cursor sits at the start of the
+        # spinner's line (services/startup_spinner.py), and a shorter log line would leave its tail behind.
+        self._clear = "\x1b[K" if stream.isatty() else ""
 
     def format(self, record: logging.LogRecord) -> str:
         text = super().format(record)
         now = time.monotonic()
         gap = self._last is not None and now - self._last > _GAP_S
         self._last = now
-        return f"\n{text}" if gap else text
+        return f"{self._clear}\n{text}" if gap else f"{self._clear}{text}"
 
 
 def setup_logging(*, debug: bool, port: int) -> Path | None:

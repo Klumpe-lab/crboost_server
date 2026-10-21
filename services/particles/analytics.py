@@ -95,13 +95,22 @@ def exclusion_radius_px(diameter_ang: float | None, voxel: float | None) -> int 
 
 
 def scan_score_map(
-    scores_mrc: Path, *, sigma: float, cutoff_sigma: float, radius_px: int | None, chunk: int = 16
+    scores_mrc: Path,
+    *,
+    sigma: float,
+    cutoff_sigma: float,
+    radius_px: int | None,
+    chunk: int = 16,
+    mask_mrc: Path | None = None,
 ) -> dict[str, Any]:
     """Peaks of one PyTOM score map, in σ: the global maximum and where it sits, the local maxima
     (26-neighbourhood) above `cutoff_sigma`, and how many of them survive PyTOM's greedy exclusion
     at `radius_px` — what extraction would return with that cutoff and no cap (extraction can add
     shoulder picks, so read the count as a floor). Streams the map in Z chunks of `chunk` slices
-    with a one-slice halo, so memory stays at a few chunks whatever the volume size."""
+    with a one-slice halo, so memory stays at a few chunks whatever the volume size. With the job's
+    search mask (`mask_mrc`), scores outside it count as 0, as extraction sets them."""
+    from contextlib import nullcontext
+
     import mrcfile
 
     t0 = time.monotonic()
@@ -109,15 +118,24 @@ def scan_score_map(
     values: list[np.ndarray] = []
     positions: list[np.ndarray] = []
     top_val, top_zyx = -math.inf, (0, 0, 0)
-    with mrcfile.mmap(str(scores_mrc), mode="r", permissive=True) as m:
+    with (
+        mrcfile.mmap(str(scores_mrc), mode="r", permissive=True) as m,
+        mrcfile.mmap(str(mask_mrc), mode="r", permissive=True) if mask_mrc is not None else nullcontext() as mm,
+    ):
         data = m.data
         if data is None or data.ndim != 3:
             raise ValueError(f"{scores_mrc} is not a 3D volume")
         nz, ny, nx = data.shape
+        mask = mm.data if mm is not None else None
+        if mask is not None and mask.shape != data.shape:
+            raise ValueError(f"search mask {mask_mrc} is {mask.shape}, the score map {data.shape}")
         for z0 in range(0, nz, chunk):
             z1 = min(nz, z0 + chunk)
             lo, hi = max(0, z0 - 1), min(nz, z1 + 1)
             block = np.asarray(data[lo:hi], dtype=np.float32)
+            if mask is not None:
+                # A new array: `block` can be a read-only view of the mapped score map.
+                block = np.where(np.asarray(mask[lo:hi]) > 0, block, np.float32(0.0))
             core = block[z0 - lo : z0 - lo + (z1 - z0)]
             k = int(np.argmax(core))
             v = float(core.flat[k])
@@ -169,6 +187,16 @@ def scan_score_map(
         out["n_peaks"] = int(kept.size)
         out["peaks_sigma"] = [round(float(v) / sigma, SCORE_DECIMALS) for v in vals[kept][:SCAN_TOP_PEAKS]]
     return out
+
+
+def mask_fraction(mask_mrc: Path) -> float:
+    """The share of a volume a mask (> 0 inside) covers, 0 … 1."""
+    import mrcfile
+
+    with mrcfile.mmap(str(mask_mrc), mode="r", permissive=True) as m:
+        if m.data is None:
+            raise ValueError(f"{mask_mrc} holds no data")
+        return float(np.count_nonzero(np.asarray(m.data) > 0)) / float(m.data.size)
 
 
 def _greedy_exclusion(vals: np.ndarray, pos: np.ndarray, radius: float) -> np.ndarray:

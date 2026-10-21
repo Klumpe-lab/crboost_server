@@ -1,8 +1,9 @@
 # Roadmap 37 — Segmentations v1: produce, ingest, show, and restrict template matching
 
 **Status:** scoped 2026-10-20. S0 done except S0.5 (container built, weights frozen, one-tomogram run recorded in
-the S0 record). S1 → S3 built 2026-10-20 on `segmentations` (ruff-clean, not run; build record §6); stopped
-for the maintainer's runtime check (§6.4). Next: S4 → S7. Background survey:
+the S0 record). S1 → S7 built 2026-10-20 on `segmentations` (ruff-clean, not run): S1–S3 build record §6, S4–S7
+§7. Next: the maintainer's runtime pass, once (§5; §6.4 and §7.4 say how). The Segment job's first run (2026-10-20)
+led to roadmap 38 (segmenting at 10 Å, TTA, Z smoothing). Background survey:
 `docs/reports/tool-survey/segmentation-and-annotation-models-2026-10.md` (tool I/O contracts, pitfalls, sources).
 
 **In one line.** easymode (and Ais models) segment a project's tomograms as a per-tomogram job; segmentations
@@ -179,10 +180,15 @@ imports; the driver imports it on compute nodes). `config/conf.template.yaml:224
   255); ambiguous cases are asked in the dialog.
 - Files are referenced, not copied; manifest under `<project>/Segmentations/imports/<batch>/`; overlays and
   fractions rendered in a worker (`run_in_worker(WorkKind.RENDER, …)`) by the same function the driver uses.
+- As built (§7): files are matched against one reconstruct job's tomograms, which the dialog asks for when the
+  project has several; a file not named `…__<feature>.mrc` (MemBrain's) takes the feature the import gives; the
+  worker kind is `WorkKind.SEGMENTATIONS`; a batch can be removed. Imported tomograms carry no segmentations in v1.
 
 ### S5 — Journey and pick viewer overlays
 The same feature layers over the X/Y and X/Z slabs of the pick viewer (`ui/particles/pick_viewer.py`, beside
 `_render_pick_layer` `:1294`) and the Journey's reconstruct card. X/Z overlay PNG is written by the driver too.
+As built (§7): `ui/components/feature_layers.py` serves the wall, the Journey and the pick viewer, with one
+show/hide and opacity setting per project for all of them.
 
 ### S6 — Template matching restricted to a feature region
 - `TemplateMatchPytomParams` (`services/jobs/template_match.py`): optional input slot `input_segmentations`
@@ -197,11 +203,14 @@ The same feature layers over the X/Y and X/Z slabs of the pick viewer (`ui/parti
 - Submit-time check: every tomogram the job will match has the named features; missing ones are listed before
   submission.
 - The TM analytics sidecar records the searched fraction so σ statistics are read against the right volume.
+- As built (§7): the input exists only while a region is set (`InputSlot.when`), not as `required=False`; the
+  dilation grows the included features; the sidecar's peak scan counts only peaks inside the mask.
 
 ### S7 — ChimeraX
 `session_chimerax_commands` (`services/visualization/artiax_bridge.py:426`) gains the visible features of the
 tomogram: `open <volume>`, `volume #N level <0.5 × full scale> color <hex> transparency 0.6`. 3dmod stays the plain
-volume hand-off.
+volume hand-off. As built (§7): the volumes open first (models #1 … #k), each placed on the grid ArtiaX opens
+(binned like the tomogram in a binned session), in the `.cxc`, the copyable commands and the in-session switch.
 
 ## 3. Rendering
 
@@ -301,7 +310,8 @@ untouched; switching the lab runscripts to the new image is a separate decision 
 2. Gallery: features menu shows the three; membranes appear as a transparent fill on the tiles and line up with
    the membranes in the slab (also on the WarpTools picture); badges show fractions; colour change is instant.
 3. A second reconstruct job (another alignment): its tiles hide the features with the note.
-4. Import a folder of MemBrain outputs: matched files register; a wrong-grid file is listed and skipped.
+4. Import a folder of MemBrain outputs (Feature: membrane): matched files register; a wrong-grid file is listed and
+   skipped.
 5. Journey and pick viewer show the same layers on X/Y and X/Z.
 6. TM with search region cytoplasm − void: `tmResults/<tomo>_search_mask.mrc` exists, the pytom log shows skipped
    sub-volumes, candidates lie inside the region; a tomogram without the features is listed before submit.
@@ -379,3 +389,119 @@ the palette).
    runs the same call outside crboost.
 
 Per-stage file snapshots: `notes/37-stage-snap/s1`, `s2`, `s3` (git-ignored).
+
+## 7. Build record: S4–S7 (2026-10-20, ruff-clean, not run)
+
+### 7.1 What was built
+- **S4.** `services/segmentation/ingest.py`: the `.mrc` files of a folder or glob matched to one reconstruct job's
+  tomograms (their tilt-series ids and the stems of their volumes and of the denoised volumes made from them):
+  `<tomogram>__<feature>.mrc` names the tomogram exactly; any other name (MemBrain's
+  `<tomogram>_…_segmented.mrc`) is matched to the longest tomogram name it starts with, followed by `_ - .` but not
+  by `_<digit>` (`Position_29_5_…` is not a file of `Position_29`), and takes the feature the import gives; a file
+  named exactly like a tomogram is that tomogram and skipped, and so is a file the registry holds already. Grid =
+  the tomogram's or skipped. Encoding read off each file (`volumes.infer_full_scale`: integers ≤ 1 a mask, except
+  in a `__<feature>` file, where they are an easymode or Ais volume with next to nothing in it; int8 p × 127,
+  unsigned ≤ 255 p × 255, floats in 0 … 1 p; anything else skipped until the import names one), the import's
+  choice checked against the data type. Values
+  are read in a worker (`WorkKind.SEGMENTATIONS`, one at a time), and so are the overlays and fractions, by
+  `summarize_volume`, which now takes the full scale and counts values beyond it as p = 1. A batch is
+  `Segmentations/imports/<batch>/` (segmentations.json, `vis/` masks), a `ProjectState.segmentation_imports`
+  record (project schema 3.11), registry outputs under `importedSegmentations__<batch>` with the chosen
+  `recon_instance`, and its features registered (origin import). Dialog `ui/segmentation_import_dialog.py`, from
+  the Tomograms toolbar ("Import segmentations…"): source, the reconstruction (with several, chosen by the user,
+  no default), feature, encoding; the table is the confirmation, and Import takes only the latest table, once it
+  is complete; one import per project at a time, as a background task, and the wall reloads when it lands;
+  earlier batches are listed with Remove (registry entries, manifest and masks go; the volumes are never
+  touched). Each batch is a SEGMENTATIONS producer for the resolver
+  (`JobType.IMPORTED_SEGMENTATIONS`, synthetic, ranked below a Segment job).
+- **S5.** `ui/components/feature_layers.py`: the layer collection (moved out of the gallery), the fills, the
+  layer menu and `FeatureFills` for one tomogram's pictures; the gallery uses the same pieces. Which layers show
+  and the fills' opacity are one setting per project for every view (`services/segmentation/display.py`, held by
+  the server). Pick viewer (Journey Particles section and full page): fills on the X/Y and X/Z slabs under the
+  dots, the menu in the section header beside Invert; a tomogram with segmentations and no picks gets the canvas
+  too. Journey Reconstruct card: fills over the WarpTools picture (each version's in the version mode) and the
+  denoised slab, each from the reconstruction it shows, none in compare mode (registered planes); a picture is
+  framed to its exact box only when fills are drawn on it; the menu in the card's chip strip.
+- **S6.** `InputSlot.when`: the name of a bool attribute of the job's parameters; while it is False the resolver,
+  the wiring, the submit record and the I/O section do not see the slot. Template matching: `search_include`,
+  `search_exclude`, `search_dilation_ang`, `restricts_search`, and input `input_segmentations` (SEGMENTATIONS,
+  preferred `segment`, `when="restricts_search"`); a job that failed with its inputs fixed and was given a region
+  since chooses that input afresh (Reset inputs to pick another). `services/segmentation/search_region.py`: the
+  mask is the union of the included features (p ≥ 0.5), grown by a Euclidean distance (`search_dilation_ang`,
+  computed over Z slabs with a halo, so memory stays at one slab's transform), less the union of the excluded
+  ones; int8 0/1 with the tomogram's voxel size. `recon_of` no longer follows a job into a Segment job it reads
+  (its tomograms are not that job's), and the I/O section's two-chains warning leaves the segmentations input
+  out. Driver: the supervisor logs the region, where it reads it
+  from and the tomograms lacking a feature; each task writes `tmResults/<tomo>_search_mask.mrc` and passes
+  `--tomogram-mask`, and fails on a missing feature, another grid, another reconstruction or an empty region.
+  Submit (`_submit_chain`, after resolution): with the producer's segmentations.json, every named feature on every
+  tomogram the job will match (every Nth, less the excluded); before its producer has run, the Segment job's
+  planned features; a feature both searched in and left out is refused too; a refusal hands every job back its
+  dir. TM sidecar: `search_region` (include, exclude,
+  dilation, mask, `searched_pct`); the peak scan sets scores outside the mask to 0, as extraction does. Job tab:
+  a Search region section (the features offered are the registered ones and those a Segment job is set to make)
+  with a note naming the segmentations read and what they lack; the I/O section re-renders when the input appears
+  or goes (`IOConfigComponent.refresh_if_inputs_changed`, among the job tab's edit refreshes), and a choice made in
+  the I/O section now reruns the other sections' refreshes like an edit in them.
+- **S7.** `services/segmentation/chimerax.py` (`session_volumes`): the tomogram's shown layers on the session's
+  reconstruction. `artiax_bridge.session_features` puts each on the grid ArtiaX opens: a copy binned like the
+  tomogram's but max-pooled, so a membrane thinner than a bin stays whole (under
+  `<producer dir>/vis/segment/display/`), or, where none can be made, the full-size volume shifted by the
+  binning's corner offset. A volume that is unreadable, on another grid, not writable for its copy or outside the
+  folders the session binds is left out and named in a toast: one failed `open` would stop the `.cxc` before the
+  tomogram and picks load. `feature_volume_commands` opens them before `artiax start`, into an empty
+  session, as models #1 … #k: `volume #k style surface level <p = 0.5> color <hex> transparency 0.6 origin …
+  voxelSize …`. In the `.cxc`, the copyable commands and the in-session switch (`features` in the bundle).
+
+### 7.2 Decisions taken in the build
+- **The segmentations input exists only while a search region is set** (`InputSlot.when`), not
+  `required=False` as scoped: an optional slot is wired automatically whenever a Segment job exists, so template
+  matching would wait for (and, after a failure, never run without) a Segment job it does not read.
+- **An import names its reconstruction.** Two reconstructions of one tilt series share names and grids; the
+  record (`recon_instance`) keeps the views' hidden-elsewhere rule and the matching job's same-reconstruction check
+  true for imported volumes.
+- **MemBrain's names** are matched by tomogram-name prefix and take the import's feature, so its outputs need no
+  renaming.
+- **Encoding** is read off each file and shown per row (data type and range); label maps, scores and logits are
+  skipped until the import names an encoding.
+- **Imported tomograms** have no registry tilt series and carry no segmentations in v1, as the job does not
+  segment them either.
+- **Remove** for an import batch (not scoped): an import writes registry entries and features, so it has an undo.
+- **Visibility is one setting** for the wall, the Journey, the pick viewer and ChimeraX, held by the server and
+  not saved with the project; a colour stays the project's.
+- **ChimeraX opens the volumes first**, so their model ids are known without a probe; a volume it could not open
+  is left out, since a failed `open` stops the `.cxc` and a switch's chain. The copyable commands number the
+  volumes #1 … #k too, so they are for a session with nothing open.
+- **The peak scan honours the mask**, so its count stays "what extraction returns".
+- **Not done (review notes):** a Failed job's newly gained segmentations input shows read-only like its other
+  inputs (Reset inputs makes it choosable); a re-import of files a batch already holds is skipped, not merged.
+
+### 7.3 Cross-branch
+Project schema 3.11 (`segmentation_imports`): older code ignores the key and drops it on its next save, so the
+batches stop being offered to template matching there; their registry entries stay (registry 1.6, §6.3).
+`JobType.IMPORTED_SEGMENTATIONS`: a template-matching override naming an import reads as a dangling override on
+older code. No registry schema change.
+
+### 7.4 Runtime check (S4–S7; §5 items 4–7)
+1. Tomograms view → Import segmentations…: a folder of MemBrain outputs with Feature `membrane` (and, with two
+   reconstruct jobs, Computed on). The table lists each file's tomogram, feature, encoding (hover: data type and
+   range) and status; a wrong-grid file says so. Import: the tray shows it; the wall reloads with the layer named
+   `membrane · import <date>` when a Segment job's membrane exists too. Remove takes it out again.
+2. Journey: the Reconstruct card fills the WarpTools picture and the denoised slab; its features menu hides a layer
+   in place and the gallery agrees after its next render. Particles section and the full pick viewer: fills on X/Y
+   and X/Z under the dots.
+3. Template matching, Search region `cytoplasm`, Leave out `void`: the I/O section gains Segmentations; Run with a
+   tomogram lacking void is refused with the list; a clean run writes `tmResults/<tomo>_search_mask.mrc`, the task
+   log names the searched share, the pytom log shows skipped sub-volumes, the candidates lie inside the region, and
+   the TM sidecar has `search_region.searched_pct`.
+4. Curate in ArtiaX on a segmented tomogram: the features open as transparent surfaces on the density (binned
+   session: `…/vis/segment/display/*_cbdisp2.mrc` appear), and a switch to another tomogram brings its own.
+
+Two review passes (one on S4–S5, one on S6–S7) found the import's stale-plan and reload bugs, sibling-name
+matching, near-empty volumes read as masks, the `recon_of` and two-chains slips, an empty or huge dilation and the
+ChimeraX failure modes above; all fixed in the build.
+
+Snapshots: `notes/37-stage-snap/base4/` holds every file S4–S7 changed as it was before (`.absent` = new file);
+`notes/37-stage-snap/s4-s7/` the files as built. Commit split: `commit_s1s3/*.patch` (S1–S3 content of the files
+S4–S7 changed too), `pipeline_runner_segmentation.patch` and `orchestrator_segmentation.patch` (files that also
+hold another session's uncommitted hunks).

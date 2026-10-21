@@ -256,11 +256,12 @@ class CurationSessionService:
         auto_coords: str | None,
         seed_coords: str | None,
         scope: dict[str, Any],
+        features: list[dict] | None = None,
     ) -> dict[str, Any]:
         """Re-point a live session at another (species, tomogram). `session_info` is what
         `find_active_curation_session*` returned (`node`, `rest_port`, `session_dir`,
-        `slurm_job_id`); the three paths are the target bundle's; `scope` is
-        `curation_scope(...)` for the target.
+        `slurm_job_id`); the three paths and the segmentation volumes (`features`) are the target
+        bundle's; `scope` is `curation_scope(...)` for the target.
 
         Order matters: (1) the swap chain over REST; failure here means ArtiaX still has
         the old tomogram and the scope on disk stays the old one;
@@ -278,7 +279,7 @@ class CurationSessionService:
         if not open_recon or not seed_coords:
             return err("the target bundle has no recon / seed to open — prepare it again (Curate picks)")
         chain = artiax_bridge.swap_chimerax_commands(
-            open_recon, Path(auto_coords) if auto_coords else None, Path(seed_coords)
+            open_recon, Path(auto_coords) if auto_coords else None, Path(seed_coords), features or ()
         )
         cd_cmd = artiax_bridge.cd_chimerax_command(scope["curation_dir"])
         seed_name = Path(seed_coords).name
@@ -746,12 +747,24 @@ class CurationSessionService:
         With neither (a species picked de novo), the session opens the bare
         tomogram and the user picks into an empty ArtiaX list.
         """
+        from services.project_state import get_project_state_for
+        from services.segmentation.chimerax import session_volumes
+        from services.tilt_series import get_registry_for
         from services.visualization import artiax_bridge
 
         out_dir = artiax_bridge.curation_dir(
             Path(project_path), tomo_name, species_id=species_id, species_label=species_label
         )
         export_source = source_star or candidates_star
+        # The tomogram's segmentations, as the views show them; read here, on the event loop, where
+        # the cached registry is shared.
+        segmentations = session_volumes(
+            get_project_state_for(Path(project_path)),
+            get_registry_for(Path(project_path)),
+            Path(project_path),
+            tomo_name,
+            Path(tomograms_star),
+        )
         try:
             info = await asyncio.to_thread(
                 artiax_bridge.prepare_curation_bundle,
@@ -765,6 +778,10 @@ class CurationSessionService:
                 coords_label=coords_label,
                 project_root=Path(project_path),
                 display_bin=int(getattr(self.config_service.curation, "display_bin", 1) or 1),
+                segmentations=segmentations,
+                # What a session binds (launch_curation_session): the site roots, the project, and
+                # the home directory its worker binds itself.
+                visible_roots=[*map(Path, self.config_service.config.container_binds), Path(project_path), Path.home()],
             )
         except Exception as e:
             logger.warning("prepare_curation_bundle failed for %s: %s", tomo_name, e)

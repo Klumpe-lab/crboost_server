@@ -57,6 +57,7 @@ from services.dashboard_data import (
     vis_asset_url,
     warp_hand_from_registry,
 )
+from services.job_lineage import job_dirs, recon_of
 from services.models_base import InstanceId, JobType
 from services.tilt_series.warp_curves import CtfFit1D, fit_window_inv_a, normalized_overlay, read_frameseries_fit
 from services.tilt_series_service import ensure_tilt_thumbnails
@@ -67,6 +68,7 @@ from services.workers import WorkKind, run_in_worker
 from ui.components.chip import render_chip
 from ui.components.buttons import house_button
 from ui.components.copyable import copy_3dmod_chip
+from ui.components.feature_layers import FeatureFills, layers_for_ts
 from ui.components.reactive import owned_timer
 from ui.components.recon_compare import matched_slabs, recon_versions_for_ts, retry_match
 from ui.components.segmented import Segmented, render_segmented
@@ -1059,6 +1061,9 @@ def _plot_cell(
         if on_select is not None:
 
             def _pick(data) -> None:
+                # A dropped tilt's point is a styled item ({value: row, ...}), not a bare row.
+                if isinstance(data, dict):
+                    data = data.get("value")
                 if isinstance(data, list) and len(data) > 3 and data[3]:
                     on_select(str(data[3]))
 
@@ -1115,6 +1120,19 @@ def _per_tilt_customdata(
     verdicts = verdicts or {}
     thumbs = thumbs or {}
     return [[n, b, verdicts.get(b, ""), thumbs.get(b, "")] for n, b in zip(numbers, bases, strict=True)]
+
+
+def _filter_marks(project_state, project_path: Path, ts_name: str) -> tuple[dict[str, str], list[float]]:
+    """What the tilt filter decided for this TS: ({frame basename: "keep"/"drop (…)"},
+    [stage angles of the dropped tilts]). Every per-tilt chart of the journey takes the
+    angles so a dropped tilt is marked the same at every stage — ringed where its own
+    measurement exists (before the filter), a dashed line at its angle after, where the
+    stage's outputs carry no row for it. Empty when no verdict covers this TS."""
+    committed = tilt_filter_committed(project_state)
+    verdicts = filter_verdicts_from_registry(project_path, ts_name, committed=committed)
+    info = filter_kept_dropped_from_registry(project_path, ts_name, committed=committed)
+    angles = [d["tilt_angle"] for d in (info or {}).get("dropped", []) if d["tilt_angle"] is not None]
+    return verdicts, angles
 
 
 def _tilt_numbers(df: pd.DataFrame) -> list[int | None]:
@@ -1203,13 +1221,15 @@ def _render_ctf_motion_plots(
     cd: list[list],
     ctf_res: list | None = None,
     on_select_tilt: Callable[[str], None] | None = None,
+    dropped_tilts: list[float] | None = None,
 ) -> None:
     """Defocus + astigmatism (always scatter — each tilt is an independent estimate)
     and, when the caller has the real per-tilt values (registry QC fields, XML-sourced
     at ingest — the star's rlnCtfMaxResolution is a 1e-6 placeholder), the CTF fit
     resolution. `cd` is the section's hover-card customdata (`_per_tilt_customdata`),
     shared by every chart so hover / click select the same frame; `on_select_tilt`
-    is the CTF-fit panel's hook."""
+    is the CTF-fit panel's hook; `dropped_tilts` the stage angles the tilt filter
+    dropped (`_filter_marks`), marked in every chart."""
     tilts = _safe_floats(df["rlnTomoNominalStageTiltAngle"])
     has_def = "rlnDefocusU" in df.columns and "rlnDefocusV" in df.columns
     has_astig = "rlnCtfAstigmatism" in df.columns
@@ -1226,6 +1246,7 @@ def _render_ctf_motion_plots(
                 customdata=cd,
                 y_unit=" µm",
                 y_range=(0.0, 10.0),
+                dropped_tilts=dropped_tilts,
                 theme=JOURNEY_THEME,
             )
             _plot_cell("Defocus", fig, hint=_HINT_DEFOCUS, on_select=on_select_tilt)
@@ -1239,6 +1260,7 @@ def _render_ctf_motion_plots(
                     customdata=cd,
                     y_unit=" Å",
                     y_range=(0.0, 1500.0),
+                    dropped_tilts=dropped_tilts,
                     theme=JOURNEY_THEME,
                 )
                 _plot_cell("Astigmatism", fig, hint=_HINT_ASTIG, on_select=on_select_tilt)
@@ -1250,6 +1272,7 @@ def _render_ctf_motion_plots(
                 customdata=cd,
                 y_unit=" Å",
                 y_range=(0.0, 30.0),
+                dropped_tilts=dropped_tilts,
                 theme=JOURNEY_THEME,
             )
             _plot_cell("CTF fit resolution", fig, hint=_HINT_CTF_RES, on_select=on_select_tilt)
@@ -1264,10 +1287,12 @@ def _tilt_offsets(df: pd.DataFrame, tilts: list) -> list:
     return [(-v) - t if v is not None and t is not None else None for v, t in zip(yt, tilts, strict=False)]
 
 
-def _render_alignment_plots(df: pd.DataFrame, cd: list[list]) -> None:
+def _render_alignment_plots(df: pd.DataFrame, cd: list[list], dropped_tilts: list[float] | None = None) -> None:
     """Per-tilt shift (magnitude + X/Y), the aligner's tilt offset, the tilt-axis
     rotation when it varies, and the per-tilt facts Warp records beside the
     solution (mean intensity, field-of-view fraction, masked fraction).
+    `dropped_tilts`: the tilt filter's dropped angles (`_filter_marks`), marked
+    in every chart.
 
     Markers only — even for smoothly-varying metrics, connecting per-tilt
     estimates with lines turns outliers into zigzag and obscures the actual
@@ -1290,6 +1315,7 @@ def _render_alignment_plots(df: pd.DataFrame, cd: list[list]) -> None:
                     y_label="Shift (Å)",
                     customdata=cd,
                     y_unit=" Å",
+                    dropped_tilts=dropped_tilts,
                     theme=JOURNEY_THEME,
                 )
                 _plot_cell("Refined shift", fig, hint=_HINT_SHIFT)
@@ -1301,6 +1327,7 @@ def _render_alignment_plots(df: pd.DataFrame, cd: list[list]) -> None:
                 y_label="Tilt offset (°)",
                 customdata=cd,
                 y_unit="°",
+                dropped_tilts=dropped_tilts,
                 theme=JOURNEY_THEME,
             )
             _plot_cell("Tilt offset", fig, hint=_HINT_TILT_OFFSET)
@@ -1314,6 +1341,7 @@ def _render_alignment_plots(df: pd.DataFrame, cd: list[list]) -> None:
                     y_label="Tilt axis (°)",
                     customdata=cd,
                     y_unit="°",
+                    dropped_tilts=dropped_tilts,
                     theme=JOURNEY_THEME,
                 )
                 _plot_cell("Tilt-axis rotation", fig, hint=_HINT_TILT_AXIS)
@@ -1331,6 +1359,7 @@ def _render_alignment_plots(df: pd.DataFrame, cd: list[list]) -> None:
                 [{"name": "Mean intensity", "y": intensity}],
                 y_label="Mean intensity (a.u.)",
                 customdata=cd,
+                dropped_tilts=dropped_tilts,
                 theme=JOURNEY_THEME,
             )
             _plot_cell("Mean tilt intensity", fig, hint=_HINT_INTENSITY)
@@ -1341,6 +1370,7 @@ def _render_alignment_plots(df: pd.DataFrame, cd: list[list]) -> None:
                 y_label="Field-of-view fraction",
                 customdata=cd,
                 y_range=(0.9, 1.0),
+                dropped_tilts=dropped_tilts,
                 theme=JOURNEY_THEME,
             )
             _plot_cell("Field-of-view fraction", fig, hint=_HINT_FOV)
@@ -1351,6 +1381,7 @@ def _render_alignment_plots(df: pd.DataFrame, cd: list[list]) -> None:
                 y_label="Masked fraction",
                 customdata=cd,
                 y_range=(0.0, 0.1),
+                dropped_tilts=dropped_tilts,
                 theme=JOURNEY_THEME,
             )
             _plot_cell("Masked fraction", fig, hint=_HINT_MASKED)
@@ -1508,7 +1539,10 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
         # any chart also drives the CTF-fit panel below (built after the charts,
         # hence the indirection).
         thumbs = _tilt_thumbs(project_state, project_path, _frame_names(df))
-        cd = _per_tilt_customdata(df, thumbs=thumbs)
+        # This stage runs before the filter, so every dropped tilt still has its own
+        # measurement here: the hover carries the verdict, the charts ring the point.
+        verdicts, dropped_tilts = _filter_marks(project_state, project_path, ts_name)
+        cd = _per_tilt_customdata(df, verdicts=verdicts, thumbs=thumbs)
         fit_panel: dict[str, _CtfFitPanel] = {}
 
         def _select(frame: str) -> None:
@@ -1516,7 +1550,9 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
             if panel is not None:
                 panel.select_frame(frame)
 
-        _render_ctf_motion_plots(df, cd=cd, ctf_res=ctf_res_series, on_select_tilt=_select)
+        _render_ctf_motion_plots(
+            df, cd=cd, ctf_res=ctf_res_series, on_select_tilt=_select, dropped_tilts=dropped_tilts
+        )
 
         tracks = fsm_motion_tracks(project_path, instance_id, ts_name)
         for t in tracks:
@@ -1526,13 +1562,18 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
                 if _is_meaningful_series(motion_series, threshold=1e-4):
                     series = [{"name": "Mean frame motion", "y": motion_series}]
                     fig = build_per_tilt_chart(
-                        tilts, series, y_label="Mean frame motion", customdata=cd, theme=JOURNEY_THEME
+                        tilts,
+                        series,
+                        y_label="Mean frame motion",
+                        customdata=cd,
+                        dropped_tilts=dropped_tilts,
+                        theme=JOURNEY_THEME,
                     )
                     _plot_cell("Beam-induced motion", fig, hint=_HINT_MOTION, on_select=_select)
                 if tracks:
                     _plot_cell(
                         "Motion trajectories",
-                        build_motion_track_chart(tracks, theme=JOURNEY_THEME),
+                        build_motion_track_chart(tracks, dropped_tilts=dropped_tilts, theme=JOURNEY_THEME),
                         hint=_HINT_MOTION_TRACK,
                         on_select=_select,
                     )
@@ -1557,6 +1598,7 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
                         customdata=cd,
                         y_unit=" µm",
                         y_range=(0.0, 0.5),
+                        dropped_tilts=dropped_tilts,
                         theme=JOURNEY_THEME,
                     )
                     _plot_cell("Defocus spread across image", fig, hint=_HINT_DEFOCUS_SPREAD, on_select=_select)
@@ -1645,7 +1687,10 @@ def _render_ts_alignment_section(ts_name: str, project_state, project_path: Path
         _stat_tiles(tiles)
 
         thumbs = _tilt_thumbs(project_state, project_path, _frame_names(df))
-        _render_alignment_plots(df, _per_tilt_customdata(df, thumbs=thumbs))
+        # Dropped tilts have no row in the aligner's output at all — the dashed line at
+        # their angle is what marks them here.
+        verdicts, dropped_tilts = _filter_marks(project_state, project_path, ts_name)
+        _render_alignment_plots(df, _per_tilt_customdata(df, verdicts=verdicts, thumbs=thumbs), dropped_tilts)
     return True
 
 
@@ -1712,12 +1757,10 @@ def _render_ts_ctf_section(ts_name: str, project_state, project_path: Path, refr
                 )
             )
 
-        # Tilt-filter per-tilt verdict (keep/drop + DL P(bad)): summarised as a tile
-        # and surfaced on each plot point's hover below. Empty when no verdict covers
-        # this TS.
-        dl_by_frame = filter_verdicts_from_registry(
-            project_path, ts_name, committed=tilt_filter_committed(project_state)
-        )
+        # Tilt-filter per-tilt verdict (keep/drop + DL P(bad)): summarised as a tile,
+        # surfaced on each plot point's hover below, and the dropped angles marked in
+        # the charts. Empty when no verdict covers this TS.
+        dl_by_frame, dropped_tilts = _filter_marks(project_state, project_path, ts_name)
         if dl_by_frame:
             n_keep = sum(1 for v in dl_by_frame.values() if v.startswith("keep"))
             tiles.append(("Tilts kept by the filter", f"{n_keep} of {len(dl_by_frame)}"))
@@ -1729,7 +1772,7 @@ def _render_ts_ctf_section(ts_name: str, project_state, project_path: Path, refr
         # No motion plot and no CTF-fit panel here — motion doesn't change after
         # alignment, and the Motion & CTF section already carries the one PS1D-vs-model
         # panel (the per-tilt TiltPS1D reader stays in warp_curves for the day it's wanted).
-        _render_ctf_motion_plots(df, cd=cd)
+        _render_ctf_motion_plots(df, cd=cd, dropped_tilts=dropped_tilts)
     return True
 
 
@@ -1790,6 +1833,7 @@ def _render_tilt_qc_section(ts_name: str, project_state, project_path: Path, ref
         if d is not None:
             names.extend(_frame_names(d))
     thumbs = _tilt_thumbs(project_state, project_path, names)
+    verdicts, dropped_tilts = _filter_marks(project_state, project_path, ts_name)
 
     # Defocus (µm) mean per tilt, sorted by tilt angle so the through-focus trend
     # reads as a curve (the star is acquisition-ordered); the hover rows travel
@@ -1803,7 +1847,7 @@ def _render_tilt_qc_section(ts_name: str, project_state, project_path: Path, ref
         mean_um = [
             ((u + v) / 2.0) / 1.0e4 if u is not None and v is not None else None for u, v in zip(du, dv, strict=False)
         ]
-        raw_cd = _per_tilt_customdata(def_df, thumbs=thumbs)
+        raw_cd = _per_tilt_customdata(def_df, verdicts=verdicts, thumbs=thumbs)
         pairs = sorted(
             [(t, m, c) for t, m, c in zip(raw_t, mean_um, raw_cd, strict=False) if t is not None and m is not None],
             key=lambda p: p[0],
@@ -1821,7 +1865,7 @@ def _render_tilt_qc_section(ts_name: str, project_state, project_path: Path, ref
     sh_tilts = sh_mag = sh_cd = None
     if align_df is not None and {"rlnTomoXShiftAngst", "rlnTomoYShiftAngst"}.issubset(align_df.columns):
         sh_tilts = _safe_floats(align_df["rlnTomoNominalStageTiltAngle"])
-        sh_cd = _per_tilt_customdata(align_df, thumbs=thumbs)
+        sh_cd = _per_tilt_customdata(align_df, verdicts=verdicts, thumbs=thumbs)
         xs = _safe_floats(align_df["rlnTomoXShiftAngst"])
         ys = _safe_floats(align_df["rlnTomoYShiftAngst"])
         mag = [
@@ -1861,7 +1905,13 @@ def _render_tilt_qc_section(ts_name: str, project_state, project_path: Path, ref
                 if def_fit is not None:
                     series.append({"name": "Linear fit", "y": def_fit, "ref": True})
                 fig = build_per_tilt_chart(
-                    def_tilts, series, y_label="Defocus (µm)", customdata=def_cd, y_unit=" µm", theme=JOURNEY_THEME
+                    def_tilts,
+                    series,
+                    y_label="Defocus (µm)",
+                    customdata=def_cd,
+                    y_unit=" µm",
+                    dropped_tilts=dropped_tilts,
+                    theme=JOURNEY_THEME,
                 )
                 _plot_cell("Through-focus", fig, hint=_HINT_THROUGHFOCUS)
             if sh_mag is not None:
@@ -1871,6 +1921,7 @@ def _render_tilt_qc_section(ts_name: str, project_state, project_path: Path, ref
                     y_label="Shift (Å)",
                     customdata=sh_cd,
                     y_unit=" Å",
+                    dropped_tilts=dropped_tilts,
                     theme=JOURNEY_THEME,
                 )
                 _plot_cell("Shift magnitude", fig, hint=_HINT_SHIFT)
@@ -2091,6 +2142,8 @@ def _render_reconstruct_section(ts_name: str, project_state, project_path: Path,
         card._props["data-instance"] = rec_iid
         status_label = getattr(rec_jm.execution_status, "value", str(rec_jm.execution_status))
         _section_header("Reconstruction", params=param_rows, status_label=status_label, instance_id=rec_iid)
+        layers, entries = layers_for_ts(project_state, project_path, ts_name)
+        fills = FeatureFills(project_path, layers, entries, card, rec_iid) if layers else None
 
         if mrc_path is None or not Path(mrc_path).exists():
             with ui.element("div").classes("cb-chip-strip"):
@@ -2100,7 +2153,9 @@ def _render_reconstruct_section(ts_name: str, project_state, project_path: Path,
                     status="neutral",
                     tooltip="Reconstructed tomogram MRC not on disk for this TS — can't sample for polarity.",
                 )
-            _render_recon_big_preview(ts_name, project_state, project_path, None, refresh)
+                menu_slot = ui.element("div").style("display: contents;")
+            _render_recon_big_preview(ts_name, project_state, project_path, None, refresh, fills=fills)
+            _features_menu(menu_slot, fills)
             return True
 
         polarity = _compute_tomogram_polarity(Path(mrc_path))
@@ -2138,13 +2193,53 @@ def _render_reconstruct_section(ts_name: str, project_state, project_path: Path,
                     status="neutral",
                     tooltip="Fraction of voxels below mean − 1.5σ in the sampled Z slice.",
                 )
-        _render_recon_big_preview(ts_name, project_state, project_path, Path(mrc_path), refresh)
+            menu_slot = ui.element("div").style("display: contents;")
+        _render_recon_big_preview(ts_name, project_state, project_path, Path(mrc_path), refresh, fills=fills)
+        _features_menu(menu_slot, fills)
     return True
 
 
-def _render_recon_big_preview(ts_name: str, project_state, project_path: Path, mrc_path: Path | None, refresh) -> None:
+def _features_menu(slot, fills: FeatureFills | None) -> None:
+    """The card's segmentation menu, in the chip strip. Built after the previews, which set the
+    reconstruction the menu reads its hidden-here notes against (the version shown)."""
+    if fills is not None:
+        with slot:
+            fills.menu()
+
+
+def _framed_preview(url: str, alt: str, fills: FeatureFills, recon: str | None) -> None:
+    """A preview picture with the segmentation fills of `recon` over it. The box is exactly the picture,
+    so the fills stretched over it line up: as wide as the pane unless 75vh of height caps it first,
+    which is what `.cb-recon-preview img` gives a plain picture."""
+    x, y = fills.dims[0], fills.dims[1]
+    with ui.element("div").style(
+        f"position: relative; width: min(100%, calc(75vh * {x} / {y})); aspect-ratio: {x} / {y};"
+    ):
+        ui.html(
+            f"<img src='{url}' alt='{alt}' style='position: absolute; inset: 0; width: 100%; height: 100%; "
+            "max-height: none; object-fit: fill;' />",
+            sanitize=False,
+        )
+        fills.draw("xy", recon)
+
+
+def _fills_over(fills: FeatureFills | None, recon: str | None) -> bool:
+    """Whether a preview of reconstruction `recon` gets segmentation fills."""
+    return fills is not None and fills.dims is not None and fills.any_for(recon)
+
+
+def _render_recon_big_preview(
+    ts_name: str,
+    project_state,
+    project_path: Path,
+    mrc_path: Path | None,
+    refresh,
+    *,
+    fills: FeatureFills | None = None,
+) -> None:
     """Side-by-side tomogram preview: the WarpTools recon PNG (left) and the
-    cryoCARE/IsoNet denoised X/Y slab (right).
+    cryoCARE/IsoNet denoised X/Y slab (right), each under the segmentation fills of the
+    reconstruction it shows (`fills`; none in the compare mode, whose slabs are on another plane).
 
     The recon PNG sits next to the .mrc as `<tomo>_<res>Apx.png`, written by
     ts_reconstruct. The denoised volume has no such PNG, so its pane is an X/Y
@@ -2167,8 +2262,11 @@ def _render_recon_big_preview(ts_name: str, project_state, project_path: Path, m
 
     dn_png: Path | None = None
     dn_mrc: Path | None = None
+    dn_recon: str | None = None
     if sel is not None:
         _, dn_job_dir, dn_mrc = sel
+        dn_iid = job_dirs(project_state).get(Path(dn_job_dir)) if fills is not None else None
+        dn_recon = recon_of(project_state, dn_iid) if dn_iid else None
         _auto_kick_denoise_slab(dn_job_dir, ts_name, dn_mrc, project_path, refresh)
         candidate = _denoise_slab_path(dn_job_dir, ts_name)
         if candidate.exists():
@@ -2188,17 +2286,20 @@ def _render_recon_big_preview(ts_name: str, project_state, project_path: Path, m
         if version == _COMPARE_VERSIONS:
             _render_recon_versions(versions, ts_name, project_path, refresh)
         elif version is not None:
-            _render_recon_version(next(v for v in versions if v["label"] == version), ts_name)
+            _render_recon_version(next(v for v in versions if v["label"] == version), ts_name, fills)
         else:
             # ── recon (left): clean WarpTools PNG ──
             with ui.element("div").classes("cb-recon-compare-pane"):
                 ui.label("recon").classes("cb-recon-pane-tag")
                 if png_path and png_path.exists():
                     with ui.element("div").classes("cb-recon-preview").style("position: relative;"):
-                        ui.html(
-                            f"<img src='{vis_asset_url(str(png_path))}' alt='{ts_name} WarpTools recon' />",
-                            sanitize=False,
-                        )
+                        if _fills_over(fills, None):
+                            _framed_preview(vis_asset_url(str(png_path)), f"{ts_name} WarpTools recon", fills, None)
+                        else:
+                            ui.html(
+                                f"<img src='{vis_asset_url(str(png_path))}' alt='{ts_name} WarpTools recon' />",
+                                sanitize=False,
+                            )
                         if mrc_path:
                             copy_3dmod_chip(mrc_path)
                     ui.label(f"WarpTools · {png_path.name}").classes("cb-recon-preview-caption")
@@ -2228,10 +2329,15 @@ def _render_recon_big_preview(ts_name: str, project_state, project_path: Path, m
                         ui.label(selected).classes("cb-recon-pane-method")
                 if dn_png is not None:
                     with ui.element("div").classes("cb-recon-preview").style("position: relative;"):
-                        ui.html(
-                            f"<img src='{vis_asset_url(str(dn_png))}' alt='{ts_name} {selected} denoised' />",
-                            sanitize=False,
-                        )
+                        if _fills_over(fills, dn_recon):
+                            _framed_preview(
+                                vis_asset_url(str(dn_png)), f"{ts_name} {selected} denoised", fills, dn_recon
+                            )
+                        else:
+                            ui.html(
+                                f"<img src='{vis_asset_url(str(dn_png))}' alt='{ts_name} {selected} denoised' />",
+                                sanitize=False,
+                            )
                         copy_3dmod_chip(dn_mrc)
                     ui.label(f"{selected} · denoised X/Y slab · {dn_mrc.name}").classes("cb-recon-preview-caption")
                 else:
@@ -2270,14 +2376,20 @@ def _select_recon_version(versions: list[dict], sel_key: str, refresh) -> str:
     return selected
 
 
-def _render_recon_version(v: dict, ts_name: str) -> None:
-    """One reconstruct job's tomogram: its WarpTools PNG (that job's own central slice)."""
+def _render_recon_version(v: dict, ts_name: str, fills: FeatureFills | None = None) -> None:
+    """One reconstruct job's tomogram: its WarpTools PNG (that job's own central slice), under the
+    segmentation fills of that reconstruction."""
+    if fills is not None:
+        fills.recon = v["iid"]
     warp_png = v["mrc"].with_suffix(".png")
     with ui.element("div").classes("cb-recon-compare-pane"):
         ui.label(f"recon · {v['label']}").classes("cb-recon-pane-tag")
         if warp_png.exists():
             with ui.element("div").classes("cb-recon-preview").style("position: relative;"):
-                ui.html(f"<img src='{vis_asset_url(str(warp_png))}' alt='{ts_name} {v['job']}' />", sanitize=False)
+                if _fills_over(fills, v["iid"]):
+                    _framed_preview(vis_asset_url(str(warp_png)), f"{ts_name} {v['job']}", fills, v["iid"])
+                else:
+                    ui.html(f"<img src='{vis_asset_url(str(warp_png))}' alt='{ts_name} {v['job']}' />", sanitize=False)
                 copy_3dmod_chip(v["mrc"])
             ui.label(f"WarpTools · {warp_png.name}").classes("cb-recon-preview-caption")
         else:
