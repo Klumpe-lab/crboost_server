@@ -239,7 +239,9 @@ def _section(title: str, subtitle: str = ""):
     """One block of the dialog: a pale gray-blue panel with its title and subtitle inside; the rows
     keep their own side padding."""
     with ui.element("div").style(f"{_ROW_BOX} {_PANEL}"):
-        with ui.element("div").style(f"{_ROW_BOX} padding: 0 16px 4px;"):
+        # The panels' title stripe (PANEL_HEAD_STYLE), fitted to this panel's padding.
+        head = "background: #dfe7f0; margin: -10px 0 4px; padding: 6px 16px; border-radius: 6px 6px 0 0;"
+        with ui.element("div").style(f"{_ROW_BOX} {head}"):
             ui.label(title).style(PANEL_TITLE_STYLE)
             if subtitle:
                 ui.label(subtitle).style(f"{FONT} font-size: 10px; color: {CLR_SUBLABEL}; margin-top: 3px;")

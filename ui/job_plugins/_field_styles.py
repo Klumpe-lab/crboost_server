@@ -65,6 +65,12 @@ PAGE_SECTION_STYLE = f"{SANS} font-size: 12px; font-weight: 600; color: #334155;
 # title in gray-blue ink, as the Journey's sections. Fields keep their white boxes on it.
 PANEL_STYLE = "background: #eef3f8; border-radius: 6px; padding: 10px 12px 12px; box-sizing: border-box;"
 PANEL_TITLE_STYLE = f"{SANS} font-size: 12px; font-weight: 600; color: #2c4a6b; line-height: 1; display: block;"
+# A panel's title line as a stripe across its top, edge to edge: the margins undo PANEL_STYLE's padding, so
+# it belongs on the panel's first child (the title label, or the row holding it).
+PANEL_HEAD_STYLE = (
+    "background: #dfe7f0; margin: -10px -12px 0; padding: 6px 12px; width: calc(100% + 24px); "
+    "border-radius: 6px 6px 0 0; box-sizing: border-box;"
+)
 
 # A sub-block inside a Config section (SLURM's "Per-Task Resources" / "Supervisor"): spacing only, no box.
 GROUP_STYLE = "width: 100%; margin-top: 10px;"
@@ -92,7 +98,7 @@ def config_section(title: str, *, tooltip: str | None = None):
     title over its content on a pale gray-blue panel, the Journey's section look. No border;
     the page's column gap separates sections."""
     with ui.column().classes("w-full").style(f"gap: 8px; {PANEL_STYLE}") as el:
-        lbl = ui.label(title).style(PANEL_TITLE_STYLE)
+        lbl = ui.label(title).style(f"{PANEL_TITLE_STYLE} {PANEL_HEAD_STYLE}")
         if tooltip:
             lbl.tooltip(tooltip)
         with ui.column().classes("w-full").style("gap: 0;"):

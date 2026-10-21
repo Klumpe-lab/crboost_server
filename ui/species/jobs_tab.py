@@ -26,7 +26,7 @@ from services.project_state import ParticleSpecies, get_project_state_for
 from services.templating.template_metadata import get_effective_mask_path, get_effective_template_path
 from ui.components.chip import render_chip
 from ui.components.reactive import FingerprintedView
-from ui.job_plugins._field_styles import PANEL_STYLE, PANEL_TITLE_STYLE
+from ui.job_plugins._field_styles import PANEL_HEAD_STYLE, PANEL_STYLE, PANEL_TITLE_STYLE
 from ui.species.tab import TabContext
 from ui.status_indicator import _dot_html
 from ui.styles import MONO, SANS
@@ -99,7 +99,7 @@ class _JobsView(FingerprintedView):
         open_job = callbacks.get("open_job")
         # One panel: the jobs, then the add row. Rows are separated by their height, not by rules.
         with ui.column().classes("w-full gap-0").style(PANEL_STYLE):
-            ui.label("Jobs").style(f"{PANEL_TITLE_STYLE} margin-bottom: 6px;").tooltip(
+            ui.label("Jobs").style(f"{PANEL_TITLE_STYLE} {PANEL_HEAD_STYLE} margin-bottom: 6px;").tooltip(
                 "The particle-phase jobs attributed to this species: by instance suffix "
                 "(`templatematching__<id>`), the job's species_id, or the single-species fallback (resolve_species)."
             )
