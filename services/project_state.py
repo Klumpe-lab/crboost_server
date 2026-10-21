@@ -52,7 +52,8 @@ logger = logging.getLogger(__name__)
 # 3.8: +import_source_kind + acquisition.dose_per_tilt_source (SerialEM stack ingest)
 # 3.9: +review_hold (the jobs a run parked behind an unapproved tilt filter)
 # 3.10: +feature_registry (segmentation features)
-SCHEMA_VERSION: tuple[int, int] = (3, 10)
+# 3.11: +segmentation_imports (segmentations registered from elsewhere)
+SCHEMA_VERSION: tuple[int, int] = (3, 11)
 
 
 # Sentinel `owner` value marking a project as shared/lab-owned rather than
@@ -263,6 +264,26 @@ class FeatureClass(BaseModel):
     origin: str = ""  # FeatureOrigin
     created_at: datetime | None = None
     notes: str = ""
+
+
+class SegmentationImport(BaseModel):
+    """One batch of segmentations made outside crboost and registered on the project's tomograms
+    (services/segmentation/ingest.py). The volumes stay where they are; `dir` holds the batch's
+    segmentations.json and overlay masks. A SEGMENTATIONS producer of its own,
+    `importedSegmentations__<batch>`, so template matching can read it like a Segment job."""
+
+    batch: str
+    dir: str  # project-relative: Segmentations/imports/<batch>
+    source: str = ""  # the folder or glob the volumes came from
+    recon_instance: str | None = None  # the reconstruct job whose tomograms they were computed on
+    features: list[str] = Field(default_factory=list)
+    n_volumes: int = 0
+    imported_at: datetime = Field(default_factory=datetime.now)
+
+    @property
+    def label(self) -> str:
+        """What the views and the I/O menu call the batch."""
+        return f"import {self.imported_at:%d %b %H:%M}"
 
 
 def _migrate_v1_to_v2(data: dict[str, Any]) -> None:
@@ -749,6 +770,9 @@ class ProjectState(BaseModel):
     species_registry: list[ParticleSpecies] = Field(default_factory=list)
     # Segmentation features, one colour each (FeatureClass). Restored explicitly in load().
     feature_registry: list[FeatureClass] = Field(default_factory=list)
+    # Batches of segmentations registered from elsewhere (SegmentationImport). Restored
+    # explicitly in load().
+    segmentation_imports: list[SegmentationImport] = Field(default_factory=list)
     # Per-(species, tomo) manual-curation workbench. Only workbench-authored
     # lists (manual/imported/merged) persist here; `auto`/`filtered` are
     # disk-backed and synthesized at render time so this never goes stale
@@ -958,6 +982,9 @@ class ProjectState(BaseModel):
         self.update_modified()
         self.mark_dirty()
         return feature
+
+    def get_segmentation_import(self, batch: str) -> SegmentationImport | None:
+        return next((b for b in self.segmentation_imports if b.batch == batch), None)
 
     def species_references(self, species_id: str) -> dict[str, list[str]]:
         """Everything in this project that points at `species_id`.
@@ -1273,6 +1300,15 @@ class ProjectState(BaseModel):
             logger.exception("Could not load the segmentation feature registry")
             project_state.load_warnings.append(f"Segmentation features could not be loaded and were reset ({e})")
             project_state.feature_registry = []
+        try:
+            project_state.segmentation_imports = [SegmentationImport(**b) for b in data.get("segmentation_imports", [])]
+        except (ValidationError, TypeError) as e:
+            logger.exception("Could not load the segmentation import batches")
+            project_state.load_warnings.append(
+                f"Segmentation import batches could not be loaded and were dropped ({e}); their volumes stay in the "
+                "registry but template matching no longer offers them"
+            )
+            project_state.segmentation_imports = []
 
         it = data.get("imported_tomograms")
         if it:

@@ -235,7 +235,7 @@ def main() -> int:
     if failures:
         print(f"{len(failures)} check(s) failed.")
         return 1
-    print(f"All checks passed. Start the server with: {sys.executable} main.py --port 8081")
+    print(f"All checks passed. Start the server with: {sys.executable} main.py")
     return 0
 
 

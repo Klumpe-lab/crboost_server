@@ -36,6 +36,12 @@ PROBES = {
     ),
     "pymol": "python -c 'import pymol'",
     "cistem": "command -v simulate",
+    # Not `easymode --help`: importing easymode writes its settings into the image's read-only default
+    # cache unless the Segment job's EASYMODE_CACHE_DIR is set.
+    "easymode": (
+        "command -v ais && python -c 'import importlib.metadata as m, tensorflow as tf; "
+        'm.version("easymode"); assert tf.config.list_physical_devices("GPU")\''
+    ),
 }
 # ChimeraX (curation.sif_path) is no `tools:` entry: the curation worker starts it with a bare
 # `<runtime> exec`, and so does its probe.

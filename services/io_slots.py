@@ -116,6 +116,11 @@ class InputSlot(BaseModel):
         default=False, description="If true, resolver may provide a list of paths rather than a single path"
     )
 
+    # The name of a bool attribute of the job's parameters: while it is False the job has no such
+    # input, so nothing resolves, wires, records or shows it (template matching's segmentations,
+    # read only while a search region is set). None: the input always exists.
+    when: str | None = Field(default=None)
+
     description: str = Field(default="")
 
     @field_validator("key")

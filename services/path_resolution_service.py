@@ -205,6 +205,9 @@ class PathResolutionError(ValueError):
 PICK_LIST_PRODUCER_PREFIX = "pick_list__"
 IMPORTED_TOMOGRAMS_INSTANCE_PATH = "Tomograms"
 IMPORTED_TOMOGRAMS_PRODUCER_ID = "importedTomograms"
+# One batch of segmentations registered from elsewhere: `importedSegmentations__<batch>`, its
+# instance path the batch dir (services/segmentation/ingest.py).
+IMPORTED_SEGMENTATIONS_PREFIX = f"{JobType.IMPORTED_SEGMENTATIONS.value}__"
 
 
 # An override naming a job names its instance: "<jobtype>:instance:<instance_id>". Older project
@@ -247,10 +250,10 @@ def pick_list_producer_prefix_for_species(species_id: str) -> str:
 def is_synthetic_producer(producer_instance_id: str) -> bool:
     """True for a producer that has no SLURM job — so it can never be an afterok
     dependency. The aggregation merge, imported tomograms, per-pick-list
-    extractions (which run as their own one-off job, outside the pipeline graph) and
-    particle sets."""
+    extractions (which run as their own one-off job, outside the pipeline graph),
+    particle sets and imported segmentations."""
     return producer_instance_id in ("mergedSources", IMPORTED_TOMOGRAMS_PRODUCER_ID) or producer_instance_id.startswith(
-        (PICK_LIST_PRODUCER_PREFIX, SET_PRODUCER_PREFIX)
+        (PICK_LIST_PRODUCER_PREFIX, SET_PRODUCER_PREFIX, IMPORTED_SEGMENTATIONS_PREFIX)
     )
 
 
@@ -324,6 +327,8 @@ def _synthetic_override_target(override_key: str) -> str:
     also recognised so older persisted overrides keep resolving."""
     if override_key.startswith(f"{JobType.IMPORTED_TOMOGRAMS.value}:"):
         return "imported"
+    if override_key.startswith(f"{JobType.IMPORTED_SEGMENTATIONS.value}:"):
+        return "segmentation_import"
     prefix = f"{JobType.MERGED_SOURCES.value}:"
     if not override_key.startswith(prefix):
         return ""
@@ -397,7 +402,7 @@ class PathResolutionService:
         consumer_instance_id excludes the consumer from its own candidate pool
         (a job's OUTPUT slot is never a valid source for its own INPUT slot).
         """
-        input_schema = self._get_input_schema(job_type)
+        input_schema = self._get_input_schema(job_type, job_model)
         index = self._build_output_index()
 
         resolved_inputs: list[ResolvedInput] = []
@@ -489,7 +494,7 @@ class PathResolutionService:
             if job_model is None or job_model.job_type is None:
                 continue
 
-            for slot in self._get_input_schema(job_model.job_type):
+            for slot in self._get_input_schema(job_model.job_type, job_model):
                 src = self._select_source(job_model.job_type, job_model, slot, index, consumer_id)
                 chosen = src.candidate
                 if chosen is None:
@@ -550,7 +555,7 @@ class PathResolutionService:
             if job_model.job_type in (None, JobType.SUBSET) or job_model.inputs_fixed:
                 continue
             overrides = getattr(job_model, "source_overrides", {}) or {}
-            for slot in self._get_input_schema(job_model.job_type):
+            for slot in self._get_input_schema(job_model.job_type, job_model):
                 if overrides.get(slot.key):
                     continue
                 choice = self._auto_select(
@@ -568,7 +573,7 @@ class PathResolutionService:
         job_model = self.state.jobs[instance_id]
         index = self._build_output_index()
         record: dict[str, SubmittedInput] = {}
-        for slot in self._get_input_schema(job_model.job_type):
+        for slot in self._get_input_schema(job_model.job_type, job_model):
             src = self._select_source(job_model.job_type, job_model, slot, index, instance_id)
             if src.manual_path is not None:
                 record[slot.key] = SubmittedInput(source_key=src.override_key)
@@ -584,7 +589,7 @@ class PathResolutionService:
         job_model = self.state.jobs.get(instance_id)
         if job_model is None or job_model.job_type is None:
             return None
-        slot = next((s for s in self._get_input_schema(job_model.job_type) if s.key == slot_key), None)
+        slot = next((s for s in self._get_input_schema(job_model.job_type, job_model) if s.key == slot_key), None)
         if slot is None:
             return None
         chosen = self._select_source(job_model.job_type, job_model, slot, self._build_output_index(), instance_id)
@@ -594,8 +599,16 @@ class PathResolutionService:
     def mixed_chains(self, instance_id: str) -> tuple[str, str] | None:
         """Two jobs `instance_id` reads from of which neither is upstream of the other, e.g.
         tsReconstruct's tilt series from tsCtf__2 but its settings from an alignment tsCtf__2 does
-        not descend from; None when its inputs all lie on one chain. A warning, never a block."""
+        not descend from; None when its inputs all lie on one chain. A warning, never a block. An input
+        a job has only while a parameter is set (`InputSlot.when`: template matching's segmentations,
+        made beside its tomograms rather than upstream of them) is no chain of its own."""
         edges = self.resolve_slot_edges()
+        job_model = self.state.jobs.get(instance_id)
+        side = (
+            {s.key for s in self._get_input_schema(job_model.job_type) if s.when}
+            if job_model is not None and job_model.job_type is not None
+            else set()
+        )
         producers: dict[str, set[str]] = {}
         for e in edges:
             producers.setdefault(e.consumer, set()).add(e.producer)
@@ -610,7 +623,7 @@ class PathResolutionService:
                         frontier.append(p)
             return seen
 
-        direct = sorted(producers.get(instance_id, ()))
+        direct = sorted({e.producer for e in edges if e.consumer == instance_id and e.slot not in side})
         ups = {p: upstream(p) for p in direct}
         for i, a in enumerate(direct):
             for b in direct[i + 1 :]:
@@ -696,9 +709,11 @@ class PathResolutionService:
                 deduped[pos_by_key[key]] = c
         return deduped
 
-    def get_input_schema_for_job(self, job_type: JobType) -> list[InputSlot]:
-        """Expose input schema for UI rendering."""
-        return self._get_input_schema(job_type)
+    def get_input_schema_for_job(
+        self, job_type: JobType, job_model: AbstractJobParams | None = None
+    ) -> list[InputSlot]:
+        """Expose input schema for UI rendering: with `job_model`, the inputs it has now."""
+        return self._get_input_schema(job_type, job_model)
 
     def get_output_schema_for_job(
         self, job_type: JobType, job_model: AbstractJobParams | None = None
@@ -839,7 +854,7 @@ class PathResolutionService:
         self, job_type: JobType, job_model: AbstractJobParams, check_filesystem: bool = True
     ) -> list[InputSlotValidation]:
         """Validate all input slots for a job."""
-        input_schema = self._get_input_schema(job_type)
+        input_schema = self._get_input_schema(job_type, job_model)
         return [self.validate_input_slot(job_type, job_model, slot.key, check_filesystem) for slot in input_schema]
 
     # -------------------------------------------------------------------------
@@ -860,11 +875,12 @@ class PathResolutionService:
         longer resolves (a deleted job or merge, a stale pick list, a removed import) is
         reported, never replaced by some other producer such as a downstream Class3D output:
         the job read, or the user chose, that source. So is a tie."""
-        if job_model.inputs_fixed:
-            rec = job_model.submitted_inputs.get(slot.key)
+        rec = job_model.submitted_inputs.get(slot.key) if job_model.inputs_fixed else None
+        if job_model.inputs_fixed and (rec is not None or slot.when is None):
             if rec is None:
                 return SlotSource(fixed=True)
             return self._keyed_source(slot, rec.source_key, index, output_key=rec.output_key, fixed=True)
+        # Not fixed, or an input the job gained after its last submit (`InputSlot.when`): chosen afresh.
 
         override_key = (getattr(job_model, "source_overrides", {}) or {}).get(slot.key)
         if override_key:
@@ -910,6 +926,9 @@ class PathResolutionService:
             return self._dangling_pick_list_message(override_key)
         if target == "imported":
             return self._dangling_imported_message()
+        if target == "segmentation_import":
+            batch_dir = override_key.split(":", 1)[1]
+            return f"the segmentation import this input was set to ({batch_dir}) was removed — pick another source"
         if target == "particle_set":
             set_id = override_key.split(":", 1)[1][len(SET_PRODUCER_PREFIX) :]
             return f"the particle set {set_id} this input was set to no longer exists — pick another source"
@@ -1099,6 +1118,7 @@ class PathResolutionService:
         self._add_imported_tomograms_candidates(index, project_root)
         self._add_pick_list_optset_candidates(index)
         self._add_particle_set_candidates(index)
+        self._add_segmentation_import_candidates(index, project_root)
 
         for t, lst in index.items():
             index[t] = sorted(lst, key=lambda c: (c.producer_job_type.value, c.instance_path, c.producer_output_key))
@@ -1171,6 +1191,32 @@ class PathResolutionService:
                 label=f"Imported tomograms — {rec.count} tomogram(s)" if rec.count else "Imported tomograms",
             )
         )
+
+    def _add_segmentation_import_candidates(
+        self, index: dict[JobFileType, list[OutputCandidate]], project_root: Path
+    ) -> None:
+        """Every batch of segmentations registered from elsewhere (`ProjectState.segmentation_imports`)
+        as a synthetic SEGMENTATIONS producer, its manifest the output. A Segment job outranks
+        them in automatic selection; two batches are a tie the user settles in the I/O section."""
+        for rank, b in enumerate(getattr(self.state, "segmentation_imports", None) or []):
+            manifest = project_root / b.dir / "segmentations.json"
+            if not manifest.exists():
+                continue
+            producer_id = f"{IMPORTED_SEGMENTATIONS_PREFIX}{b.batch}"
+            index[JobFileType.SEGMENTATIONS].append(
+                OutputCandidate(
+                    produces=JobFileType.SEGMENTATIONS,
+                    producer_job_type=JobType.IMPORTED_SEGMENTATIONS,
+                    producer_output_key="output_segmentations",
+                    path=str(manifest),
+                    instance_path=b.dir,
+                    producer_instance_id=producer_id,
+                    execution_status=JobStatus.SUCCEEDED,
+                    relion_job_number=rank,
+                    species_id=None,
+                    label=f"Imported segmentations — {b.label} · {', '.join(b.features)}",
+                )
+            )
 
     def _add_pick_list_optset_candidates(self, index: dict[JobFileType, list[OutputCandidate]]) -> None:
         """Surface every EXTRACTED curation pick list as an OPTIMISATION_SET_STAR producer.
@@ -1480,7 +1526,7 @@ class PathResolutionService:
     ) -> OutputCandidate | None:
         """The producer `instance_id` reads its input of type `t` from, chosen the way
         resolve_inputs chooses it; None for no such slot, a manual file, or no source."""
-        slot = next((s for s in self._get_input_schema(job_model.job_type) if t in s.accepts), None)
+        slot = next((s for s in self._get_input_schema(job_model.job_type, job_model) if t in s.accepts), None)
         if slot is None:
             return None
         return self._select_source(job_model.job_type, job_model, slot, index, instance_id).candidate
@@ -1497,12 +1543,15 @@ class PathResolutionService:
     # Schema access
     # -------------------------------------------------------------------------
 
-    def _get_input_schema(self, job_type: JobType) -> list[InputSlot]:
+    def _get_input_schema(self, job_type: JobType, job_model: AbstractJobParams | None = None) -> list[InputSlot]:
+        """The inputs of `job_type`; with `job_model`, only those it has now (`InputSlot.when`)."""
         from services.job_models import jobtype_paramclass
 
         cls = jobtype_paramclass().get(job_type)
-        schema = getattr(cls, "INPUT_SCHEMA", None) if cls else None
-        return list(schema) if schema else []
+        schema = list(getattr(cls, "INPUT_SCHEMA", None) or []) if cls else []
+        if job_model is not None:
+            schema = [s for s in schema if s.when is None or getattr(job_model, s.when, False)]
+        return schema
 
     def _get_output_schema(self, job_type: JobType, job_model: AbstractJobParams | None = None) -> list[OutputSlot]:
         """The outputs of `job_type`. A Subset's have the type of what it cuts, so they come from
@@ -1583,7 +1632,7 @@ def pin_sources_made_ambiguous(
             job_model.source_overrides = {}
         if job_model.source_overrides.get(slot_key):
             continue
-        slot = next((s for s in resolver._get_input_schema(job_model.job_type) if s.key == slot_key), None)
+        slot = next((s for s in resolver._get_input_schema(job_model.job_type, job_model) if s.key == slot_key), None)
         if slot is None:
             continue
         choice = resolver._auto_select(
@@ -1617,7 +1666,7 @@ def add_after_pins(state: ProjectState, new_iid: str, subset_iid: str) -> dict[s
         new_model.source_overrides = {}
     new_model.source_overrides[spec.items_from] = instance_override_key(JobType.SUBSET, subset_iid)
     pins = {spec.items_from: subset_iid}
-    for slot in resolver._get_input_schema(new_model.job_type):
+    for slot in resolver._get_input_schema(new_model.job_type, new_model):
         if slot.key == spec.items_from:
             continue
         if offered.intersection(slot.accepts):
@@ -1645,7 +1694,7 @@ def _read_up_chain(resolver: PathResolutionService, start: str, accepts: Sequenc
             job_model = resolver.state.jobs.get(iid)
             if job_model is None or job_model.job_type is None:
                 continue
-            for slot in resolver._get_input_schema(job_model.job_type):
+            for slot in resolver._get_input_schema(job_model.job_type, job_model):
                 producer = resolver.source_of(iid, slot.key)
                 if wanted.intersection(slot.accepts):
                     matched = True

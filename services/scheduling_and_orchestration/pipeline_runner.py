@@ -228,7 +228,7 @@ class PipelineRunnerService:
                             expired = (now - first) >= _AFTEROK_ABSENT_GRACE_SEC
                             new = JobStatus.FAILED if expired else jm.execution_status
                         if new != JobStatus.UNKNOWN and jm.execution_status != new:
-                            events.info("%s: %s -> %s", iid, jm.execution_status.value, new.value)
+                            events.info("%s · %s %s → %s", proj.name, iid, jm.execution_status.value, new.value)
                             await self._land_job(proj, jm, new)
                             jm.execution_status = new
                             changes[iid] = True
@@ -358,7 +358,9 @@ class PipelineRunnerService:
                 # landed: the gallery and the job row re-read on that status, and get_registry_for can
                 # miss the job's write for up to a minute (see reload_registry).
                 await reload_registry(proj)
-            events.info("Tilt filter DL run %s: %s -> %s", Path(run.job_dir).name, run.status.value, new.value)
+            events.info(
+                "%s · tilt filter DL run %s %s → %s", proj.name, Path(run.job_dir).name, run.status.value, new.value
+            )
             run.status = new
             run.error = error
             return True

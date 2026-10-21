@@ -285,7 +285,7 @@ class _MergeDialog:
                 return
             state = self.state
             start_dir = str(state.project_path) if state.project_path else "/"
-            result = await local_file_picker(start_dir, upper_limit=None, mode="directory")
+            result = await local_file_picker(start_dir, mode="directory")
             if not result or not result[0]:
                 return
             chosen = result[0]

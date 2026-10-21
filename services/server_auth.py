@@ -9,7 +9,9 @@ restarting issues a new one.
 
 from __future__ import annotations
 
+import getpass
 import hmac
+import html
 import os
 import secrets
 from pathlib import Path
@@ -20,14 +22,22 @@ TOKEN_FILE = CRBOOST_HOME / "token"
 STORAGE_SECRET_FILE = CRBOOST_HOME / "secret"
 NICEGUI_STORAGE_DIR = CRBOOST_HOME / "nicegui"
 
-_UNAUTHORIZED_PAGE = (
-    b"<!doctype html><html><head><meta charset='utf-8'><title>CryoBoost: token required</title></head>"
-    b"<body style='font-family: sans-serif; margin: 3em;'>"
-    b"<h3>This CryoBoost server needs its access token.</h3>"
-    b"<p>Open the link the server printed when it started (it ends in <code>?token=&hellip;</code>). "
-    b"The token is also in <code>~/.crboost/token</code> of the user running the server.</p>"
-    b"</body></html>"
-)
+# Sent with the 401, so whoever reaches the wrong port learns whose server it is (and services/port_survey.py
+# can tell a CryoBoost server from another program).
+OWNER_HEADER = "x-cryoboost-user"
+
+
+def _unauthorized_page(owner: str, port: int) -> bytes:
+    owner = html.escape(owner)
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'><title>CryoBoost: token required</title></head>"
+        "<body style='font-family: sans-serif; margin: 3em;'>"
+        f"<h3>This is {owner}'s CryoBoost server (port {port}). It needs its access token.</h3>"
+        "<p>Open the link the server printed when it started (it ends in <code>?token=&hellip;</code>). "
+        f"The token is also in <code>~/.crboost/token</code> of {owner}.</p>"
+        f"<p>Not {owner}? Then this is not your server: yours printed its own port and link when it started.</p>"
+        "</body></html>"
+    ).encode()
 
 
 def read_or_create_secret(path: Path) -> str:
@@ -64,6 +74,8 @@ class TokenGate:
         self.app = app
         self._token = token.encode()
         self._cookie = f"crboost_token_{port}"
+        self._owner = getpass.getuser()
+        self._page = _unauthorized_page(self._owner, port)
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] not in ("http", "websocket"):
@@ -91,12 +103,13 @@ class TokenGate:
                 "status": 401,
                 "headers": [
                     (b"content-type", b"text/html; charset=utf-8"),
-                    (b"content-length", str(len(_UNAUTHORIZED_PAGE)).encode()),
+                    (b"content-length", str(len(self._page)).encode()),
                     (b"cache-control", b"no-store"),
+                    (OWNER_HEADER.encode(), self._owner.encode()),
                 ],
             }
         )
-        await send({"type": "http.response.body", "body": _UNAUTHORIZED_PAGE})
+        await send({"type": "http.response.body", "body": self._page})
 
     def _matches(self, value: str | None) -> bool:
         return value is not None and hmac.compare_digest(value.encode(), self._token)

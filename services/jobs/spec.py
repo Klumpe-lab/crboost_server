@@ -294,7 +294,11 @@ PIPELINE_ORDER: Final[tuple[JobType, ...]] = tuple(s.job_type for s in JOB_SPECS
 # Synthetic sources that are not pipeline jobs (no JobSpec row) but still need
 # a human-readable name (e.g. MergedSources appears as a producer candidate).
 _SYNTHETIC_DISPLAY_NAMES: Final[Mapping[JobType, str]] = MappingProxyType(
-    {JobType.MERGED_SOURCES: "Merged Sources", JobType.IMPORTED_TOMOGRAMS: "Imported Tomograms"}
+    {
+        JobType.MERGED_SOURCES: "Merged Sources",
+        JobType.IMPORTED_TOMOGRAMS: "Imported Tomograms",
+        JobType.IMPORTED_SEGMENTATIONS: "Imported Segmentations",
+    }
 )
 
 

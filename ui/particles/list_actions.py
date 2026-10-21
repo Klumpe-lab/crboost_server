@@ -697,6 +697,13 @@ async def curate_in_artiax(backend, ref: ListRef) -> None:
             # The display copy could not be built, so this session opens the full-res
             # volume and takes ~20 s. Say it once, here — never silently slow.
             ui.notify(f"No downscaled copy for {ref.tomo_name}: {bundle['display_note']}", type="warning", timeout=7000)
+        if bundle.get("features_skipped"):
+            # Segmentations ChimeraX could not have opened stay out of the session; which and why.
+            ui.notify(
+                f"ArtiaX opens {ref.tomo_name} without: {'; '.join(bundle['features_skipped'])}",
+                type="warning",
+                timeout=9000,
+            )
         if bundle.get("seed_error"):
             # The seed file exists and the .cxc opens it; only its 0-pick row is missing.
             # The watcher registers it on the first save — say so rather than hide it.

@@ -29,6 +29,7 @@ from services.project_state import (
     set_project_state_for,
 )
 from services.tilt_series import preload_registry
+from services.event_log import events
 from services.result import err, ok
 from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
 
@@ -625,12 +626,17 @@ class ProjectService:
             )
             await proc.wait()
 
+            n_ts = state.import_selected_tilt_series
+            events.info(
+                "%s · created in %s, %s",
+                project_name,
+                project_dir.parent,
+                f"{n_ts} tilt-series" if n_ts else "no raw data",
+            )
             return ok(message=f"Project '{project_name}' created.", project_path=str(project_dir))
 
         except Exception as e:
-            import traceback
-
-            traceback.print_exc()
+            logger.exception("Creating project %s failed", project_name)
             return err(str(e))
 
     async def load_project_state(self, project_path: str) -> dict[str, Any]:
@@ -706,11 +712,10 @@ class ProjectService:
             project_name = state.project_name
             selected_jobs = list(state.jobs.keys())
 
+            logger.info("%s · opened (%s)", project_dir.name, project_dir)
             return ok(
                 project_name=project_name, selected_jobs=selected_jobs, movies_glob=movies_glob, mdocs_glob=mdocs_glob
             )
         except Exception as e:
-            import traceback
-
-            traceback.print_exc()
+            logger.exception("Loading project %s failed", project_path)
             return err(str(e))

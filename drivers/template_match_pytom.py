@@ -19,6 +19,12 @@ Mode is determined by the SLURM_ARRAY_TASK_ID env var:
           prepared by the supervisor. Atomically writes
           `.task_status/{name}.{ok|fail}`.
 
+With a search region (`params.restricts_search`) the supervisor records the segmentations and the
+region in the manifest, and each task builds its tomogram's mask from them as
+`tmResults/{name}_search_mask.mrc` and passes it as `--tomogram-mask`
+(services/segmentation/search_region.py); a tomogram whose segmentations lack a named feature, sit
+on another grid or come from another reconstruction fails its task with that reason.
+
 There is no per-task staging isolation: pytom takes explicit per-tomogram args
 and outputs are name-keyed, so tasks cannot collide. The task reads its inputs
 from the manifest snapshot, not the drive-time resolver: all array tasks of one
@@ -44,7 +50,15 @@ import starfile
 from drivers.array_job_base import ArrayDriver, ArrayResults, read_manifest
 from drivers.driver_base import DriverContext, ToolCommand, require_producer_input
 from services.configs.starfile_service import StarfileService
+from services.job_lineage import recon_of
 from services.job_models import TemplateMatchPytomParams
+from services.segmentation.search_region import (
+    build_search_mask,
+    describe,
+    read_segmentations,
+    search_mask_path,
+    write_search_mask,
+)
 
 
 # Temporary: pytom 0.10-style text file inputs instead of --relion5-tomograms-star.
@@ -347,6 +361,36 @@ class TemplateMatchPytomDriver(ArrayDriver):
             est = expected_angle_count(sym, inc_deg)
             self.log(f"symmetry={sym}: wrote {len(angles)} angles (estimate {est}) → {self._angle_list_path}")
 
+        self._search_region = self._settle_search_region(ctx, items) if ctx.params.restricts_search else None
+
+    def _settle_search_region(self, ctx: DriverContext[TemplateMatchPytomParams], items: list[str]) -> dict:
+        """What every task needs to build its mask: the segmentations, the region, and the
+        reconstruction this job's tomograms trace to. Tomograms lacking a named feature are listed
+        here; their tasks fail with the reason."""
+        p = ctx.params
+        source = ctx.paths.get("input_segmentations")
+        if source is None:
+            raise FileNotFoundError("A search region is set but no segmentations were resolved for it")
+        require_producer_input(source, "Segmentations (search region)")
+        manifest = read_segmentations(source)
+        named = sorted(set(p.search_include) | set(p.search_exclude))
+        have = {(e.tomogram, e.feature) for e in manifest.entries}
+        lacking = [t for t in items if any((t, f) not in have for f in named)]
+        recon = recon_of(ctx.state, ctx.instance_id)
+        self.log(
+            f"Search region: {describe(p.search_include, p.search_exclude, p.search_dilation_ang)}, from "
+            f"{manifest.producer} ({source}); this job's tomograms trace to {recon or 'no reconstruct job'}"
+        )
+        if lacking:
+            self.log(f"WARN: {len(lacking)} tomogram(s) lack a feature of the region and will fail: {lacking}")
+        return {
+            "manifest": str(source),
+            "include": list(p.search_include),
+            "exclude": list(p.search_exclude),
+            "dilation_ang": float(p.search_dilation_ang),
+            "recon_instance": recon,
+        }
+
     def manifest_extras(self, ctx: DriverContext[TemplateMatchPytomParams], items: list[str]) -> dict:
         raw_tomo_paths: dict[str, str] = {}
         for _, row in self._tomo_df.iterrows():
@@ -360,6 +404,7 @@ class TemplateMatchPytomDriver(ArrayDriver):
             "template_path": str(ctx.paths["template_path"]),
             "mask_path": str(ctx.paths["mask_path"]),
             "angle_list_path": str(self._angle_list_path) if self._angle_list_path else None,
+            "search_region": self._search_region,
         }
 
     def aggregate(self, ctx: DriverContext[TemplateMatchPytomParams], results: ArrayResults) -> None:
@@ -405,6 +450,9 @@ class TemplateMatchPytomDriver(ArrayDriver):
         if not local_tomo.exists():
             os.symlink(tomo_path.resolve(), local_tomo)
 
+        search = manifest.get("search_region")
+        search_mask = self._stage_search_mask(item, search, tomo_path, tm_results_dir) if search else None
+
         return {
             "local_tomo": local_tomo,
             "tm_results_dir": tm_results_dir,
@@ -413,8 +461,46 @@ class TemplateMatchPytomDriver(ArrayDriver):
             "use_legacy": bool(manifest.get("legacy_text_input", True)),
             "patched_tomograms_star": manifest.get("patched_tomograms_star"),
             "angle_list_path": manifest.get("angle_list_path"),
+            "search_mask": search_mask,
             "started_at": time.time(),
         }
+
+    def _stage_search_mask(self, item: str, search: dict, tomo_path: Path, tm_results_dir: Path) -> Path:
+        """This tomogram's search region as the mask pytom reads. Every named feature has to be
+        segmented for it, on its grid and on the reconstruction this job's tomograms trace to."""
+        import mrcfile
+
+        manifest = read_segmentations(search["manifest"])
+        entries = {e.feature: e for e in manifest.entries if e.tomogram == item}
+        named = [*search["include"], *search["exclude"]]
+        missing = [f for f in named if f not in entries]
+        if missing:
+            raise ValueError(
+                f"{manifest.producer} has no {', '.join(missing)} for {item}, which the search region names"
+            )
+        with mrcfile.open(tomo_path, header_only=True, permissive=True) as m:
+            shape = (int(m.header.nz), int(m.header.ny), int(m.header.nx))
+        recon = search.get("recon_instance")
+        for f in named:
+            e = entries[f]
+            if recon and e.recon_instance and e.recon_instance != recon:
+                raise ValueError(
+                    f"{f} of {item} was segmented on {e.recon_instance}, but this job matches the tomograms of "
+                    f"{recon}: another alignment puts the specimen elsewhere in the volume"
+                )
+            if tuple(e.shape_zyx) != shape:
+                raise ValueError(f"{f} of {item} is on a {tuple(e.shape_zyx)} grid (z, y, x); the tomogram is {shape}")
+        voxel = entries[named[0]].voxel_angstrom
+        mask = build_search_mask(entries, search["include"], search["exclude"], search["dilation_ang"] / voxel)
+        if not mask.any():
+            raise ValueError(
+                f"The search region ({describe(search['include'], search['exclude'], search['dilation_ang'])}) "
+                f"is empty on {item}"
+            )
+        path = search_mask_path(tm_results_dir, item)
+        write_search_mask(path, mask, voxel)
+        self.log(f"Search region: {mask.mean() * 100:.1f} % of the tomogram → {path.name}")
+        return path
 
     def build_command(self, ctx: DriverContext[TemplateMatchPytomParams], item: str, staged) -> ToolCommand:
         gpu_ids = os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(",")
@@ -430,6 +516,8 @@ class TemplateMatchPytomDriver(ArrayDriver):
         )
 
         cmd.opt_path("-v", staged["local_tomo"], quote=False)
+        if staged.get("search_mask") is not None:
+            cmd.opt_path("--tomogram-mask", staged["search_mask"], quote=False)
         if staged["use_legacy"]:
             cmd.opt_path("--tilt-angles", ctx.job_dir / "tiltAngleFiles" / f"{item}.tlt", quote=False)
             cmd.opt_path("--defocus", ctx.job_dir / "defocusFiles" / f"{item}.txt", quote=False)
@@ -466,12 +554,14 @@ class TemplateMatchPytomDriver(ArrayDriver):
                 return
             species, _sid = resolve_species(ctx.state, ctx.params, ctx.instance_id)
             diameter = getattr(species, "diameter_ang", None) if species is not None else None
+            search = read_manifest(ctx.job_dir).get("search_region")
             record = write_tm_tomogram_sidecar(
                 ctx.job_dir,
                 item,
                 instance_id=ctx.instance_id,
                 diameter_ang=float(diameter) if diameter else None,
                 started_at=started_at,
+                search_region=search,
             )
             scan = record.data.get("scan") or {}
             self.log(

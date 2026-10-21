@@ -8,8 +8,10 @@ segment driver — supervisor + one SLURM array task per tomogram.
   segmentations.json and makes the tilt-series registry say the same. The server registers the
   features when it sees the job succeed.
 
-- Task: links its tomogram into a directory of its own as <tomogram>.mrc, runs `easymode segment`
-  (or `ais segment`) on it into segmentations/, checks every volume it promised, and leaves the
+- Task: puts its tomogram into a directory of its own as <tomogram>.mrc (resampled to 10 Å, the
+  voxel size easymode's networks were trained on, or linked as it is), runs `easymode segment` (or
+  `ais segment`) on it into a directory of its own, puts each volume back on the tomogram's grid in
+  segmentations/ (`services.segmentation.grid`), checks every volume it promised, and leaves the
   overlay masks and fractions in analytics/segment/<tomogram>.json for the supervisor.
 
 How a task runs the tools follows from three things they do:
@@ -21,9 +23,9 @@ How a task runs the tools follows from three things they do:
   EASYMODE_CACHE_DIR and AIS_CONFIG_DIR name. Concurrent tasks sharing one would read each other's
   half-written files, so each task has its own, with the cache's models/ linked into it.
 - Both claim a tomogram by writing a 10³ placeholder under the output name, and skip outputs that
-  exist. A task removes what an interrupted attempt left before it runs; complete volumes are kept,
-  so only the missing features are computed again. Volumes made with other settings are removed by
-  the supervisor before a re-run (`_settle_previous_run`).
+  exist. A task removes what an interrupted attempt left before it runs and asks only for the
+  volumes segmentations/ lacks, so only the missing features are computed again. Volumes made with
+  other settings are removed by the supervisor before a re-run (`_settle_previous_run`).
 """
 
 import json
@@ -40,7 +42,16 @@ from services.computing.container_service import get_container_service
 from services.job_lineage import recon_of
 from services.jobs.segment import SegmentParams
 from services.models_base import SegmentFormat, SegmentMethod
-from services.segmentation.easymode import TOOL_NAME, ais_model_title, easymode_cache_dir, file_sha256, read_catalog
+from services.segmentation.easymode import (
+    TOOL_NAME,
+    ais_model_metadata,
+    ais_model_title,
+    easymode_cache_dir,
+    file_sha256,
+    plane_pixel,
+    read_catalog,
+)
+from services.segmentation.grid import TRAINING_VOXEL_ANGSTROM, finish_volume, processing_shape, write_resampled
 from services.segmentation.manifest import (
     ENGINE_AIS,
     ENGINE_NATIVE,
@@ -75,23 +86,57 @@ def _sidecar_path(job_dir: Path, tomo: str) -> Path:
     return job_dir / SIDECAR_DIR / f"{tomo}.json"
 
 
+def _task_dir(job_dir: Path, tomo: str) -> Path:
+    return job_dir / ".staging" / f"task_{tomo}"
+
+
+def _tool_output(job_dir: Path, tomo: str, target: dict) -> Path:
+    """Where the tool writes a volume, on the grid it segments, before the task finishes it."""
+    return _task_dir(job_dir, tomo) / "out" / _volume_path(job_dir, tomo, target).name
+
+
+def _drop_resampled_copy(job_dir: Path, tomo: str) -> None:
+    """The tomogram resampled for the tools is not needed once its volumes are finished; a link to the
+    tomogram itself stays."""
+    staged = _task_dir(job_dir, tomo) / "in" / f"{tomo}.mrc"
+    if not staged.is_symlink():
+        staged.unlink(missing_ok=True)
+
+
 def _ais_model(params: SegmentParams) -> Path:
     return Path((params.ais_model_path or "").strip())
 
 
 def _settings(params: SegmentParams) -> dict:
-    """The run's settings that shape every volume: TTA, and the storage format of easymode's own
-    networks."""
+    """The run's settings that shape every volume: TTA, the storage format of easymode's own networks,
+    the voxel size the tools segment at (None: the tomogram's own) and whether the networks that
+    decide plane by plane are smoothed along Z."""
     easymode = params.method == SegmentMethod.EASYMODE
-    return {"tta": params.tta, "format": SegmentFormat(params.output_format).value if easymode else None}
+    return {
+        "tta": params.tta,
+        "format": SegmentFormat(params.output_format).value if easymode else None,
+        "segment_at": TRAINING_VOXEL_ANGSTROM if easymode and params.match_training_voxel else None,
+        "smooth_z": params.smooth_z,
+    }
 
 
 def _identity(target: dict, settings: dict) -> tuple:
     """What one feature's volumes depend on besides the tomogram: the network that makes them and the
-    run's settings (the format reaches only easymode's own networks)."""
+    run's settings (the format reaches only easymode's own networks, the smoothing only the networks
+    that decide plane by plane)."""
     model = target["model"]
     fmt = settings.get("format") if target["engine"] == ENGINE_NATIVE else None
-    return target["suffix"], target["engine"], model["variant"], model["weights_sha256"], settings.get("tta"), fmt
+    smooth = target.get("plane_angstrom") if settings.get("smooth_z") else None
+    return (
+        target["suffix"],
+        target["engine"],
+        model["variant"],
+        model["weights_sha256"],
+        settings.get("tta"),
+        fmt,
+        settings.get("segment_at"),
+        smooth,
+    )
 
 
 def _grid(mrc: Path) -> tuple[tuple[int, int, int], int, float]:
@@ -120,15 +165,24 @@ def _write_json(path: Path, data: dict) -> None:
 
 def resolve_targets(params: SegmentParams) -> list[dict]:
     """What the job runs, one entry per feature: its id, the suffix of its volume file (an Ais model's
-    title as it is, which `ais segment` puts in the name), the engine and the model reference.
-    Raises naming what is missing."""
+    title as it is, which `ais segment` puts in the name), the engine, the model reference, and the X/Y
+    pixel of a network that decides plane by plane (`plane_angstrom`, None for a 3D one). Raises
+    naming what is missing."""
     if params.method == SegmentMethod.AIS_MODEL:
         scnm = _ais_model(params)
         if not scnm.name or not scnm.is_file():
             raise FileNotFoundError(f"Ais model not found: {params.ais_model_path!r}")
         title = ais_model_title(scnm)
         model = ModelRef(tool="ais", feature=feature_slug(title), weights_sha256=file_sha256(scnm))
-        return [{"feature": model.feature, "suffix": title, "engine": ENGINE_AIS, "model": model.model_dump()}]
+        return [
+            {
+                "feature": model.feature,
+                "suffix": title,
+                "engine": ENGINE_AIS,
+                "model": model.model_dump(),
+                "plane_angstrom": plane_pixel(ais_model_metadata(scnm)),
+            }
+        ]
 
     if not params.features:
         raise ValueError("No features chosen: pick them in the job's Parameters")
@@ -150,8 +204,16 @@ def resolve_targets(params: SegmentParams) -> list[dict]:
         )
         # easymode hands an Ais-engine feature to `ais segment`, which names the volume after the
         # model's title, not after the feature.
-        suffix = ais_model_title(entry.weights) if entry.engine == ENGINE_AIS else name
-        targets.append({"feature": name, "suffix": suffix, "engine": entry.engine, "model": model.model_dump()})
+        ais = entry.engine == ENGINE_AIS
+        targets.append(
+            {
+                "feature": name,
+                "suffix": ais_model_title(entry.weights) if ais else name,
+                "engine": entry.engine,
+                "model": model.model_dump(),
+                "plane_angstrom": plane_pixel(ais_model_metadata(entry.weights)) if ais else None,
+            }
+        )
     return targets
 
 
@@ -199,6 +261,11 @@ class SegmentDriver(ArrayDriver):
             "recon_instance": recon,
             "cache_dir": str(easymode_cache_dir()) if easymode else None,
         }
+        s = self._run["settings"]
+        at = f"at {s['segment_at']:g} Å" if s["segment_at"] else "at the tomograms' own voxel size"
+        planes = [f"{t['feature']} {t['plane_angstrom']:g} Å" for t in self._targets if t["plane_angstrom"]]
+        smooth = f"; along Z to their X/Y pixel: {', '.join(planes)}" if s["smooth_z"] and planes else ""
+        self.log(f"Segmenting {at}, TTA {s['tta']}{smooth}")
         if not print_cmd_only():
             self._settle_previous_run(ctx, items)
 
@@ -221,11 +288,11 @@ class SegmentDriver(ArrayDriver):
         return versions
 
     def _settle_previous_run(self, ctx: DriverContext[SegmentParams], items: list[str]) -> None:
-        """A failed job can be changed and run again in its directory, where the tools skip the
-        volumes that exist. Volumes made otherwise than this run would make them (another model under
-        the same feature name, another TTA or format) are removed with their overlays, and when
-        anything changed no tomogram counts as done, so each is segmented for what it now lacks;
-        volumes of unchanged features are kept."""
+        """A failed job can be changed and run again in its directory, where the tasks keep the volumes
+        that exist. Volumes made otherwise than this run would make them (another model under the same
+        feature name, another TTA, format, voxel size or smoothing) are removed with their overlays and
+        what the tool left of them, and when anything changed no tomogram counts as done, so each is
+        segmented for what it now lacks; volumes of unchanged features are kept."""
         try:
             before = read_manifest(ctx.job_dir)
         except FileNotFoundError:
@@ -242,8 +309,9 @@ class SegmentDriver(ArrayDriver):
             return
         for previous, current in changed:
             for item in items:
-                for path in {_volume_path(ctx.job_dir, item, previous), _volume_path(ctx.job_dir, item, current)}:
-                    path.unlink(missing_ok=True)
+                for target in (previous, current):
+                    _volume_path(ctx.job_dir, item, target).unlink(missing_ok=True)
+                    _tool_output(ctx.job_dir, item, target).unlink(missing_ok=True)
                 for path in _overlay_paths(ctx.job_dir, item, current):
                     path.unlink(missing_ok=True)
         if changed:
@@ -336,6 +404,7 @@ class SegmentDriver(ArrayDriver):
         self.log("Every volume is there from an earlier attempt")
         if not _sidecar_path(ctx.job_dir, item).exists():
             self._summarize(ctx, item, tomo, grid, run["targets"])
+        _drop_resampled_copy(ctx.job_dir, item)
         return True
 
     def stage(self, ctx: DriverContext[SegmentParams], item: str) -> dict:
@@ -351,34 +420,67 @@ class SegmentDriver(ArrayDriver):
             )
         self.log(f"{tomo} · {shape[2]} × {shape[1]} × {shape[0]} at {apix:g} Å")
 
-        task_dir = ctx.job_dir / ".staging" / f"task_{item}"
-        in_dir, easymode_dir, ais_dir = task_dir / "in", task_dir / "easymode", task_dir / "ais"
-        for d in (in_dir, easymode_dir, ais_dir):
+        task_dir = _task_dir(ctx.job_dir, item)
+        in_dir, tool_dir = task_dir / "in", task_dir / "out"
+        easymode_dir, ais_dir = task_dir / "easymode", task_dir / "ais"
+        for d in (in_dir, tool_dir, easymode_dir, ais_dir):
             d.mkdir(parents=True, exist_ok=True)
-        _relink(in_dir / f"{item}.mrc", tomo.resolve())
         cache_dir = Path(run["cache_dir"]) if run.get("cache_dir") else None
         if cache_dir is not None:
             _relink(easymode_dir / "models", cache_dir / "models")
-        out_dir = ctx.job_dir / OUTPUT_DIR
-        out_dir.mkdir(exist_ok=True)
+        (ctx.job_dir / OUTPUT_DIR).mkdir(exist_ok=True)
+        tool_grid = self._stage_tomogram(
+            tomo, in_dir / f"{item}.mrc", shape, apix, run["settings"].get("segment_at"), task_dir
+        )
 
+        # The volumes this task still has to make; what an interrupted attempt left of them goes.
+        pending = []
         for t in run["targets"]:
-            path = _volume_path(ctx.job_dir, item, t)
-            problem = volume_problem(path, shape)
-            if problem not in (None, "missing"):
-                self.log(f"Removing {path.name}: {problem}")
-                path.unlink()
+            final = _volume_path(ctx.job_dir, item, t)
+            for path, grid in ((final, shape), (_tool_output(ctx.job_dir, item, t), tool_grid)):
+                problem = volume_problem(path, grid)
+                if problem not in (None, "missing"):
+                    self.log(f"Removing {path.name}: {problem}")
+                    path.unlink()
+            if not final.exists():
+                pending.append(t)
 
         return {
             "tomo": tomo,
             "grid": (shape, itemsize, apix),
             "targets": run["targets"],
+            "pending": pending,
+            "settings": run["settings"],
+            "task_dir": task_dir,
+            "tool_grid": tool_grid,
             "in_dir": in_dir,
+            "tool_dir": tool_dir,
             "easymode_dir": easymode_dir,
             "ais_dir": ais_dir,
-            "out_dir": out_dir,
             "cache_dir": cache_dir,
         }
+
+    def _stage_tomogram(
+        self, tomo: Path, staged: Path, shape, apix: float, segment_at: float | None, task_dir: Path
+    ) -> tuple:
+        """Put the tomogram the tools read at `staged`: resampled to `segment_at` Å when the run asks
+        for it and the tomogram is finer by more than 5 %, else a link to it. A complete copy from an
+        earlier attempt is kept. Returns the grid (z, y, x) the tools segment on."""
+        grid = processing_shape(shape, apix, segment_at) if segment_at else None
+        if grid is None:
+            if segment_at:
+                self.log(f"Segmenting at the tomogram's {apix:g} Å: within 5 % of {segment_at:g} Å, or coarser")
+            _relink(staged, tomo.resolve())
+            return tuple(shape)
+        size = f"{grid[2]} × {grid[1]} × {grid[0]}"
+        if print_cmd_only():
+            self.log(f"Would segment at {segment_at:g} Å: {size}")
+        elif not staged.is_symlink() and volume_problem(staged, grid) is None:
+            self.log(f"Segmenting at {segment_at:g} Å: {size}, resampled by an earlier attempt")
+        else:
+            self.log(f"Segmenting at {segment_at:g} Å: {size}, resampling (spectrum cropped)")
+            write_resampled(tomo, staged, grid, tmp_dir=task_dir)
+        return grid
 
     def build_command(self, ctx: DriverContext[SegmentParams], item: str, staged: dict) -> ToolCommand:
         env = " ".join(
@@ -397,16 +499,16 @@ class SegmentDriver(ArrayDriver):
                 ToolCommand(f"{env} ais segment")
                 .opt_path("-m", _ais_model(p), quote=True)
                 .opt_path("-d", staged["in_dir"], quote=True)
-                .opt_path("-ou", staged["out_dir"], quote=True)
+                .opt_path("-ou", staged["tool_dir"], quote=True)
                 .opt("-tta", p.tta)
                 .opt("-p", 1)
                 .opt("-gpu", 0)
             )
         return (
             ToolCommand(f"{env} easymode segment")
-            .raw(" ".join(shlex.quote(t["feature"]) for t in staged["targets"]))
+            .raw(" ".join(shlex.quote(t["feature"]) for t in staged["pending"]))
             .opt_path("--data", staged["in_dir"], quote=True)
-            .opt_path("--output", staged["out_dir"], quote=True)
+            .opt_path("--output", staged["tool_dir"], quote=True)
             .opt("--format", SegmentFormat(p.output_format).value)
             .opt("--tta", p.tta)
             .opt("--gpu", 0)
@@ -421,14 +523,34 @@ class SegmentDriver(ArrayDriver):
         return binds
 
     def verify_outputs(self, ctx: DriverContext[SegmentParams], item: str, staged: dict) -> None:
-        for t in staged["targets"]:
-            path = _volume_path(ctx.job_dir, item, t)
-            problem = volume_problem(path, staged["grid"][0])
+        for t in staged["pending"]:
+            path = _tool_output(ctx.job_dir, item, t)
+            problem = volume_problem(path, staged["tool_grid"])
             if problem:
                 raise RuntimeError(f"{path.name}: {problem}")
 
     def collect(self, ctx: DriverContext[SegmentParams], item: str, staged: dict) -> None:
+        """Each new volume onto the tomogram's grid in segmentations/ (smoothed along Z first for a
+        network that decides plane by plane, when the run asks for it), then the overlays and
+        fractions of all of them. The resampled copy of the tomogram goes."""
+        shape, _itemsize, apix = staged["grid"]
+        smooth = staged["settings"].get("smooth_z")
+        for t in staged["pending"]:
+            final = _volume_path(ctx.job_dir, item, t)
+            done = finish_volume(
+                _tool_output(ctx.job_dir, item, t),
+                final,
+                shape_zyx=shape,
+                voxel=apix,
+                smooth_fwhm=t.get("plane_angstrom") if smooth else None,
+                tmp_dir=staged["task_dir"],
+            )
+            problem = volume_problem(final, shape)
+            if problem:
+                raise RuntimeError(f"{final.name}: {problem}")
+            self.log(f"{t['feature']}: {done}")
         self._summarize(ctx, item, staged["tomo"], staged["grid"], staged["targets"])
+        _drop_resampled_copy(ctx.job_dir, item)
 
     def _summarize(self, ctx: DriverContext[SegmentParams], item: str, tomo: Path, grid, targets: list[dict]) -> None:
         """Each volume's overlay masks and fraction, into the tomogram's sidecar for the supervisor."""

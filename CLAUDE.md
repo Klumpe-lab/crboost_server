@@ -10,7 +10,7 @@ CryoBoost Server — a web-based cryo-electron tomography pipeline manager. It r
 
 ```bash
 # Run the server
-python main.py --port 8081 --host 0.0.0.0
+python main.py              # picks a free port in 24300–24331; --port N to choose
 
 # Validate environment setup
 python preflight.py
@@ -73,6 +73,7 @@ NiceGUI-based. `main_ui.py` defines routes. Key components:
 
 - **Instance IDs**: Jobs are keyed by `instance_id` string (e.g., `"tsReconstruct"`, `"templatematching__ribosome"`). The `__` separator denotes a species-specific instance. `JobType` enum holds the base type; instance_id may differ.
 - **Singletons**: Services use module-level `_instance` + `get_*()` factory pattern (e.g., `get_config_service()`, `get_state_service()`).
+- **Logs** (`services/log_setup.py`): `logger.info` lands in the log file only (`~/.crboost/logs/crboost-<port>.log`, 5 × 20 MB); what an operator watches the console for goes through `services.event_log.events`, project name first (`"%s · %s queued as SLURM %s"`). Code that runs on a timer logs at DEBUG, or the file fills with it.
 - **Dirty tracking**: `ProjectState` has `mark_dirty()` / `is_dirty` / `save_if_dirty()` for deferred persistence.
 - **RELION compatibility**: The system generates RELION-compatible directory structures, `default_pipeline.star`, and `job.star` files so projects can also be opened in RELION directly.
 
@@ -91,7 +92,7 @@ Conventions when writing new UI:
 - **Polls observe state; they don't rebuild the DOM directly.** A timer's callback should mutate model fields (or trigger a `FingerprintedView.refresh()` which is signature-gated), never call `container.clear()` unconditionally.
 - **Default poll cadence**: 3 s for cheap in-memory state observation, ~15 s for anything that touches disk. Sub-second timers must be replaceable by CSS animations or hard-justified.
 - **Animations are CSS, never server ticks.** `@keyframes` in `ui/main_ui.py` drives the braille spinner (`.cb-braille-spin`) — there is no 0.17 s `ui.timer` advancing a glyph anymore.
-- **Nothing heavy on the event loop.** One loop answers every click of every tab (`docs/architecture.md` "Where work runs"). Disk reads (stat, glob, star/JSON parsing) go to `asyncio.to_thread`; a render reads first, then builds. CPU-bound Python (renders, preview passes, filters, registration, thumbnails) goes to `run_in_worker(WorkKind.X, fn, *args)` (`services/workers.py`): a module-level fn, picklable args and result, never a `ProjectState`/job model/callback, state changes back in the server. A thread does not protect the loop from Python-level CPU work (the GIL). Array-job statuses come from `services/array_status_cache.py`, never a per-view scan. If a `signature()` does disk I/O, prefer mtimes or an in-memory cache; it runs on every tick. `services/loop_watchdog.py` logs any stall over 1 s as one line naming where it went; `CRBOOST_TRACE_STALLS=1` logs every stall over 250 ms with the loop's stack.
+- **Nothing heavy on the event loop.** One loop answers every click of every tab (`docs/architecture.md` "Where work runs"). Disk reads (stat, glob, star/JSON parsing) go to `asyncio.to_thread`; a render reads first, then builds. CPU-bound Python (renders, preview passes, filters, registration, thumbnails) goes to `run_in_worker(WorkKind.X, fn, *args)` (`services/workers.py`): a module-level fn, picklable args and result, never a `ProjectState`/job model/callback, state changes back in the server. A thread does not protect the loop from Python-level CPU work (the GIL). Array-job statuses come from `services/array_status_cache.py`, never a per-view scan. If a `signature()` does disk I/O, prefer mtimes or an in-memory cache; it runs on every tick. `services/loop_watchdog.py` logs any stall over 1 s as one line naming where it went, to the log file only; `CRBOOST_TRACE_STALLS=1` logs every stall over 250 ms with the loop's stack, on the console too.
 - **Hidden views do nothing.** A view's pollers are `ViewScope.timer`s (`ui/components/reactive.py`): job pages use `ui_mgr.job_scope(instance_id)`, the roster `ui_mgr.view_scope("pipeline")`, whole views their `set_active` hook. Polled text is one element written only when it changed (`LiveLog`), never `ui.log` re-pushed per tick.
 - **Edits update the model at once; what follows them waits for the typing to pause** (`Debounced`). A rebuild must never replace a field the user may be in (the SLURM section holds its rebuild while one of its fields has focus).
 - **NiceGUI's slot stack is per asyncio task.** Work scheduled into a new task (`asyncio.create_task`, `Debounced`) that builds elements or submits a `BackgroundTask` captures `ui.context.slot` first and enters it.

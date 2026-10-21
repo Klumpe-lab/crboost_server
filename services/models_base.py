@@ -135,6 +135,11 @@ class JobType(str, Enum):
     # resolve.
     IMPORTED_TOMOGRAMS = "importedTomograms"
 
+    # Synthetic source, same contract: one batch of segmentations made outside crboost and
+    # registered (services/segmentation/ingest.py) is a SEGMENTATIONS producer
+    # `importedSegmentations__<batch>`, so template matching can read it like a Segment job's.
+    IMPORTED_SEGMENTATIONS = "importedSegmentations"
+
     @classmethod
     def from_string(cls, value: str) -> JobType:
         try:

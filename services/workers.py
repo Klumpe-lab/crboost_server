@@ -21,6 +21,7 @@ every worker from another. Workers run at a lower CPU priority than the server, 
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import functools
 import json
 import logging
@@ -47,14 +48,22 @@ class WorkKind(StrEnum):
     RENDER = "render"  # one picture from one volume: slabs, matched planes, cutout atlases
     PREVIEW = "preview"  # a candidate-extract job's whole preview pass
     THUMBNAILS = "thumbnails"  # a project's tilt preview pass
+    SEGMENTATIONS = "segmentations"  # reading a batch of segmentation volumes an import registers
 
 
 # Concurrent tasks per kind. A preview or thumbnail pass is long and walks a whole job, so one at a
 # time; renders are short and asked for in bursts.
-_CAPS: dict[WorkKind, int] = {WorkKind.RENDER: 3, WorkKind.PREVIEW: 1, WorkKind.THUMBNAILS: 1}
+_CAPS: dict[WorkKind, int] = {
+    WorkKind.RENDER: 3,
+    WorkKind.PREVIEW: 1,
+    WorkKind.THUMBNAILS: 1,
+    WorkKind.SEGMENTATIONS: 1,
+}
 _DEFAULT_WORKERS = 4
 # Added to the workers' nice value: under load the server's loop gets the CPU first.
 _WORKER_NICENESS = 10
+# prctl(2): the signal a process gets when its parent dies.
+_PR_SET_PDEATHSIG = 1
 # How often the server reads a running task's progress file.
 _PROGRESS_POLL_S = 1.0
 
@@ -72,6 +81,12 @@ def _worker_count() -> int:
 def _init_worker() -> None:
     # Ctrl-C reaches the whole process group; the server shuts the pool down itself.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+    # A server killed with -9, or lost with its terminal, would otherwise leave its workers running for good.
+    try:
+        ctypes.CDLL(None, use_errno=True).prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
+    except (OSError, AttributeError):
+        # Not Linux: no prctl, and the workers outlive a killed server as before.
+        pass
     try:
         os.nice(_WORKER_NICENESS)
     except OSError:
@@ -166,9 +181,9 @@ async def run_in_worker(
 
 
 def warm_up() -> None:
-    """Start one worker at server startup, in the background: a spawned worker imports the server's
-    modules (Python's spawn re-imports main.py, as `__mp_main__`) before its first task, which would
-    otherwise delay the first render by seconds."""
+    """Start one worker at server startup, in the background: a spawned worker starts a fresh interpreter
+    (Python's spawn re-imports main.py, as `__mp_main__`) before its first task, which would otherwise
+    delay the first render."""
     _get_pool().submit(os.getpid)
 
 

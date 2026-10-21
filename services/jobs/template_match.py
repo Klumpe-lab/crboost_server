@@ -53,6 +53,9 @@ class TemplateMatchPytomParams(AbstractJobParams):
         "perdevice",
         "array_throttle",
         "every_nth_tomogram",
+        "search_include",
+        "search_exclude",
+        "search_dilation_ang",
     }
 
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
@@ -64,6 +67,14 @@ class TemplateMatchPytomParams(AbstractJobParams):
         # The tilt cut now propagates natively (tiltFilter trims the tomostar
         # upstream of alignment), so tsCtf's star already contains only kept tilts.
         InputSlot(key="input_tiltseries", accepts=[JobFileType.TS_CTF_TILT_SERIES_STAR], preferred_source="tsCtf"),
+        # The segmentations of the tomograms, read only while a search region is set: without one the job
+        # has no such input, so it neither waits for nor fails with a Segment job.
+        InputSlot(
+            key="input_segmentations",
+            accepts=[JobFileType.SEGMENTATIONS],
+            preferred_source="segment",
+            when="restricts_search",
+        ),
     ]
     OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = [
         OutputSlot(key="output_dir", produces=JobFileType.TM_RESULTS_DIR, path_template="tmResults/", is_dir=True),
@@ -111,6 +122,28 @@ class TemplateMatchPytomParams(AbstractJobParams):
         description="Match every Nth tomogram (in name order) instead of all of them, e.g. 10 for a decoy or mirror "
         "control on a tenth of the data. 1 = all.",
     )
+
+    # Search region: where in each tomogram the template is matched, from the tomograms' segmentations
+    # (services/segmentation/search_region.py). Nothing set: the whole tomogram.
+    search_include: list[str] = Field(
+        default_factory=list,
+        description="Match only where one of these features has p ≥ 0.5. None: the whole tomogram, less what is "
+        "excluded.",
+    )
+    search_exclude: list[str] = Field(
+        default_factory=list, description="Never match where one of these features has p ≥ 0.5."
+    )
+    search_dilation_ang: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Grow the included region by this distance (Å) before the excluded features are cut out, so a "
+        "particle sitting on the region's edge is matched whole.",
+    )
+
+    @property
+    def restricts_search(self) -> bool:
+        """Whether a search region is set; the job reads segmentations only then."""
+        return bool(self.search_include or self.search_exclude)
 
     def _get_job_specific_options(self) -> list[tuple[str, str]]:
         return [

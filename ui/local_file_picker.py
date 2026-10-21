@@ -19,16 +19,10 @@ _WILDCARDS = ("*", "?", "[")
 # template of a session does not start the walk from / again. One server per user, so one value.
 _last_dir: str | None = None
 
-_FOLDER_SVG = (
-    '<svg width="12" height="12" viewBox="0 0 16 16" style="flex-shrink:0">'
-    '<path d="M1.5 4C1.5 3.45 1.95 3 2.5 3H6.4L7.9 4.5H13.5C14.05 4.5 14.5 4.95 14.5 5.5V12'
-    'C14.5 12.55 14.05 13 13.5 13H2.5C1.95 13 1.5 12.55 1.5 12V4Z" fill="#bfdbfe" stroke="#60a5fa"/></svg>'
-)
-_FILE_SVG = (
-    '<svg width="12" height="12" viewBox="0 0 16 16" style="flex-shrink:0">'
-    '<path d="M3.5 1.5H9.5L13 5V14.5H3.5V1.5Z" fill="#fff" stroke="#94a3b8"/>'
-    '<path d="M9.5 1.5V5H13" fill="none" stroke="#94a3b8"/></svg>'
-)
+# The same Material glyphs as the header's up/home buttons, flat slate.
+_ICON = '<i class="q-icon notranslate material-icons" style="font-size: 14px; color: {c}; flex-shrink: 0;">{g}</i>'
+_FOLDER_ICON = _ICON.format(g="folder", c="#94a3b8")
+_FILE_ICON = _ICON.format(g="insert_drive_file", c="#cbd5e1")
 
 _ROW_STYLE = (
     f"display: flex; align-items: center; gap: 6px; height: 19px; padding: 0 10px; {_SANS} "
@@ -38,10 +32,11 @@ _NOTE_STYLE = f"{_SANS} font-size: 10px; color: #94a3b8; padding: 6px 10px;"
 
 # One listener per list, not per row: the rows are an HTML string, so a 500-entry folder is one
 # element on the socket. The click highlights at once in the browser and tells the server which.
+# A click on empty space clears the highlight: that is how "nothing chosen" is reached again.
 _CLICK_JS = (
-    "(e) => { const r = e.target.closest('[data-i]'); if (!r) return; "
-    "r.parentElement.querySelectorAll('.cb-fp-sel').forEach(x => x.classList.remove('cb-fp-sel')); "
-    "r.classList.add('cb-fp-sel'); emit({i: Number(r.dataset.i)}); }"
+    "(e) => { const r = e.target.closest('[data-i]'); "
+    "e.currentTarget.querySelectorAll('.cb-fp-sel').forEach(x => x.classList.remove('cb-fp-sel')); "
+    "if (r) r.classList.add('cb-fp-sel'); emit({i: r ? Number(r.dataset.i) : -1}); }"
 )
 _OPEN_JS = "(e) => { const r = e.target.closest('[data-i]'); if (r) emit({i: Number(r.dataset.i)}); }"
 
@@ -163,10 +158,10 @@ class local_file_picker(ui.dialog):
                         .tooltip("Files shown: one pattern or several, comma-separated (*.mrc,*.rec). Empty = all")
                     )
 
-            with ui.element("div").style("height: 46vh; overflow-y: auto; padding: 2px 0;"):
+            with ui.element("div").style("height: 46vh; overflow-y: auto; padding: 2px 0;") as scroller:
                 self._list = ui.html("", sanitize=False)
-            self._list.on("click", self._on_click, js_handler=_CLICK_JS)
-            self._list.on("dblclick", self._on_open, js_handler=_OPEN_JS)
+            scroller.on("click", self._on_click, js_handler=_CLICK_JS)
+            scroller.on("dblclick", self._on_open, js_handler=_OPEN_JS)
             self.path_input.on("keydown", self._on_click, js_handler=_arrow_js(self._list.id))
 
             with (
@@ -179,7 +174,7 @@ class local_file_picker(ui.dialog):
                     "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
                 )
                 house_button("Cancel", self.close)
-                house_button("Select", self._on_ok, kind="accent")
+                self._select = house_button("Select", self._on_ok, kind="accent")
 
             ui.timer(0.01, self._open_start, once=True)
 
@@ -370,11 +365,11 @@ class local_file_picker(ui.dialog):
                 sel = " cb-fp-sel" if i == self._sel else ""
                 parts.append(
                     f'<div class="cb-fp-row{sel}" data-i="{i}" style="{_ROW_STYLE} color: #334155; cursor: pointer;">'
-                    f"{_FOLDER_SVG if is_dir else _FILE_SVG}<span>{label}</span></div>"
+                    f"{_FOLDER_ICON if is_dir else _FILE_ICON}<span>{label}</span></div>"
                 )
             else:
                 # A folder picker shows the files too, greyed: they say whether this is the folder.
-                parts.append(f'<div style="{_ROW_STYLE} color: #cbd5e1;">{_FILE_SVG}<span>{label}</span></div>')
+                parts.append(f'<div style="{_ROW_STYLE} color: #cbd5e1;">{_FILE_ICON}<span>{label}</span></div>')
         if not listed:
             empty = f"nothing matches “{html.escape(typed)}”" if typed else "empty folder"
             if not typed and globbed != all_files:
@@ -388,11 +383,13 @@ class local_file_picker(ui.dialog):
         if len(globbed) != len(all_files):
             status += f" ({len(all_files) - len(globbed)} hidden by filter)"
         self._note(status)
+        self._show_target()
 
     def _on_click(self, e) -> None:
         i = e.args.get("i") if isinstance(e.args, dict) else None
-        if isinstance(i, int) and 0 <= i < len(self._rows):
-            self._sel = i
+        if isinstance(i, int):
+            self._sel = i if 0 <= i < len(self._rows) else None
+            self._show_target()
 
     async def _on_open(self, e) -> None:
         i = e.args.get("i") if isinstance(e.args, dict) else None
@@ -413,26 +410,56 @@ class local_file_picker(ui.dialog):
         _last_dir = path if is_dir else os.path.dirname(path)
         self.submit([path])
 
-    async def _on_ok(self) -> None:
-        if self._sel is not None:
+    def _accepts(self, is_dir: bool) -> bool:
+        return self.mode == "any" or (self.mode == "directory") == is_dir
+
+    def _target(self) -> tuple[str, bool, bool] | None:
+        """What Select takes now, as (path, is_dir, opens_instead), from memory only:
+        1. the highlighted row;
+        2. the name typed in the bar, when it is exactly an entry of the listed folder;
+        3. the listed folder itself, when this picker takes folders — standing in a folder
+           and pressing Select picks it, no stepping out to highlight it from its parent.
+        A highlighted folder in a file picker is opened instead of taken."""
+        if self._sel is not None and self._sel < len(self._rows):
             path, is_dir = self._rows[self._sel]
-            if is_dir and self.mode == "file":
-                await self._enter(path)
-            else:
-                self._pick(path, is_dir)
+            return path, is_dir, not self._accepts(is_dir)
+        folder, typed = self._split_typed()
+        if folder == self._dir and typed:
+            for name, is_dir in self._entries:
+                if name == typed and (is_dir or self._accepts(is_dir)):
+                    return os.path.join(folder, name), is_dir, not self._accepts(is_dir)
+        if self.mode != "file" and self._dir:
+            return self._dir, True, False
+        return None
+
+    def _show_target(self) -> None:
+        """The Select button names what it will take, so the rule above is never a guess."""
+        t = self._target()
+        if t is None:
+            self._select.text = "Select file"
+            self._select.disable()
             return
-        typed = (self.path_input.value or "").strip()
-        p = self._abs(typed) if typed else self._dir
-        kind = await asyncio.to_thread(_kind, p)
-        if kind == "file" and self.mode != "directory":
-            self._pick(p, False)
-        elif kind == "dir" and self.mode == "file":
-            await self._enter(p)
-        elif kind == "dir":
-            self._pick(p, True)
-        elif self.mode != "file" and self._dir:
-            # Nothing chosen: "the folder I am standing in" — for "any" that is the common case
-            # (open the recon folder, Select, take everything in it).
-            self._pick(self._dir, True)
-        else:
+        path, is_dir, opens = t
+        name = os.path.basename(path.rstrip("/")) or "/"
+        if len(name) > 28:
+            name = name[:27] + "…"
+        name += "/" if is_dir and name != "/" else ""
+        self._select.text = f"{'Open' if opens else 'Select'} {name}"
+        self._select.enable()
+
+    async def _on_ok(self) -> None:
+        # A pasted path the debounce has not caught up with yet: list it first.
+        self._typed_settled.cancel()
+        await self._apply_typed()
+        folder, _ = self._split_typed()
+        if folder != self._dir:
+            return  # the bar names a folder that does not exist; _apply_typed said so
+        t = self._target()
+        if t is None:
             self._note("pick a file", bad=True)
+            return
+        path, is_dir, opens = t
+        if opens:
+            await self._enter(path)
+        else:
+            self._pick(path, is_dir)

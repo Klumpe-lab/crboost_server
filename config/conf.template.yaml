@@ -112,7 +112,7 @@ job_resource_profiles:
     gres: "gpu:1"
     mem: "32G"
     cpus_per_task: 8
-    time: "1:00:00"
+    time: "2:00:00"
 
   templatematching:
     gres: "gpu:1"
