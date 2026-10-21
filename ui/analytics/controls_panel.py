@@ -26,7 +26,7 @@ from services.particles import analytics
 from services.particles.analytics_store import AnalyticsSource
 from services.particles.particle_sets import ParentRef
 from services.particles.set_ops import half_set_check, read_table, recall_curve, reference_table
-from ui.analytics.common import HINT_CLS, LABEL_CLS, TOOLTIP_STYLE
+from ui.analytics.common import CHART_CELL_STYLE, HINT_CLS, LABEL_CLS, TOOLTIP_STYLE
 from ui.components.buttons import house_button
 from ui.components.dialogs import dialog_host
 from ui.components.fields import house_number, house_select, house_text
@@ -136,7 +136,7 @@ class ControlsPanel:
         with ui.element("div").style("display: flex; align-items: center; gap: 10px; flex-wrap: wrap;"):
             house_select("decoy run", decoys, value=self._decoy_key, width="w-96", on_change=self._set_decoy)
             self._fdr_text = ui.label("").style(f"{MONO} font-size: 10px; color: #1e293b;")
-        with ui.element("div").style("width: 100%; max-width: 560px;"):
+        with ui.element("div").style(f"width: 100%; max-width: 560px; {CHART_CELL_STYLE}"):
             self._fdr_chart = ui.echart(self._fdr_options()).style(f"height: {CHART_PX}px; width: 100%;")
         self._update_fdr()
 
@@ -307,7 +307,7 @@ class ControlsPanel:
             )
             house_button("Compute", lambda: self._compute_recall(own))
             self._recall_text = ui.label("").style(f"{MONO} font-size: 10px; color: #1e293b;")
-        with ui.element("div").style("width: 100%; max-width: 560px;"):
+        with ui.element("div").style(f"width: 100%; max-width: 560px; {CHART_CELL_STYLE}"):
             self._recall_chart = ui.echart(build_curves_chart([], [], x_name="σ", y_name="share")).style(
                 f"height: {CHART_PX}px; width: 100%;"
             )

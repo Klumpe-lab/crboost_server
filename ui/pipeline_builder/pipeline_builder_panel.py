@@ -27,7 +27,7 @@ from ui.pipeline_builder.pipeline_roster import RosterWidget
 from ui.pipeline_builder.status_poller import StatusPoller
 from ui.routing import View
 from services.models_base import InstanceId, instance_id_to_job_type
-from ui.ui_state import get_ui_state_manager, get_job_display_name
+from ui.ui_state import get_ui_state_manager, get_instance_display_name, get_job_display_name
 from ui.pipeline_builder.job_tab_component import render_job_tab
 
 logger = logging.getLogger(__name__)
@@ -270,6 +270,9 @@ class PipelineBuilderPanel:
         for iid, c in self._job_content_containers.items():
             c.set_visibility(iid == instance_id)
         self._sync_job_scopes()
+        set_title = self.callbacks.get("set_view_title")
+        if set_title:
+            set_title("pipeline", get_instance_display_name(instance_id, current_project_state().jobs.get(instance_id)))
 
     def _drop_job_page(self, instance_id: str) -> None:
         container = self._job_content_containers.pop(instance_id, None)
@@ -653,6 +656,9 @@ class PipelineBuilderPanel:
 
         selected = self.ui_mgr.selected_jobs
         if not selected:
+            set_title = self.callbacks.get("set_view_title")
+            if set_title:
+                set_title("pipeline", "Jobs")
             with tabs_container:
                 ui.label("Select jobs from the left panel.").classes("text-xs text-gray-400 italic p-8")
             return

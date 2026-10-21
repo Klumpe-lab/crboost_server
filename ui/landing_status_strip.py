@@ -91,7 +91,7 @@ def _pop_copy_row(text: str) -> None:
 
 def _section_header(title: str, command: str) -> None:
     """A section label with a right-aligned terminal icon whose tooltip is the exact command."""
-    with ui.row().classes("items-center").style("gap: 6px; width: 100%; margin-top: 9px; margin-bottom: 2px;"):
+    with ui.row().classes("items-center").style("gap: 6px; width: 100%; margin-top: 12px; margin-bottom: 2px;"):
         ui.label(title).style(_POP_LABEL)
         ui.element("div").style("flex: 1;")
         ui.icon("terminal", size="13px").style(f"color: {CLR_SUBLABEL}; cursor: help;").tooltip(command)
@@ -239,11 +239,9 @@ class LandingStatusStrip(FingerprintedView):
         s = self.state
         with ui.element("div").style(
             "display: flex; align-items: center; gap: 14px; width: 100%; "
-            "padding: 7px 14px; background: #ffffff; border: 1px solid "
-            f"{CLR_BORDER}; border-radius: 8px; box-shadow: 0 1px 3px rgba(15,23,42,0.05);"
+            "padding: 7px 14px; background: #eef3f8; border-radius: 6px;"
         ):
             self._wordmark()
-            ui.element("div").style(f"width: 1px; height: 20px; background: {CLR_BORDER}; flex-shrink: 0;")
 
             # SLURM (click for partitions + submission-template path)
             if not s.checked:
@@ -386,7 +384,6 @@ class LandingStatusStrip(FingerprintedView):
     def _slurm_popover(self) -> None:
         s = self.state
         qsub = str(REPO_ROOT / "config" / "qsub.sh")
-        divider = "height: 1px; background: #e2e8f0; margin: 8px 0 2px; width: 100%;"
         # Hide the GPUS/JOB column when no QOS actually caps GPUs per job (all "—") — else it's noise.
         show_gpu_col = any(r[3] != "—" for r in s.qos_rows)
         qos_cols = "1fr 104px 66px" if show_gpu_col else "1fr 104px"
@@ -429,7 +426,6 @@ class LandingStatusStrip(FingerprintedView):
                                     ui.label("").style(_POP_DESC)
 
             # ── Your QOS (per-user limits) ────────────────────────────────────
-            ui.element("div").style(divider)
             _section_header("Your QOS  ·  ★ = default", _CMD_QOS)
             if not s.qos_probed:
                 ui.label("probing…").style(_POP_DESC)
@@ -455,7 +451,6 @@ class LandingStatusStrip(FingerprintedView):
                     )
 
             # ── Submission template ───────────────────────────────────────────
-            ui.element("div").style(divider)
             _section_header("Submission template", f"cat {qsub}")
             _pop_copy_row(qsub)
 

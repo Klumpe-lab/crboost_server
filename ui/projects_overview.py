@@ -302,13 +302,22 @@ class ProjectsOverview:
         # render whose keys come out the same rebuilds only the entries whose fingerprint moved.
         self._rendered: list[tuple[str, object, ui.element]] = []
         self._size_label = None
+        self._scan_note = None
+        # True while a scan streams rows in: an empty list then means "not found yet".
+        self._scanning = False
         self._sort_seg = None
         self._owner_seg = None
         self._view_seg = None
         self._species_select = None
-        self._sort_mode = DEFAULT_SORT
+        # The order the user last chose, in any roster (prefs); one that names a mode or a column this
+        # roster no longer has falls back to the default.
+        prefs = self.prefs.prefs
+        self._sort_mode = prefs.projects_sort_mode if prefs.projects_sort_mode in dict(SORT_MODES) else DEFAULT_SORT
         # A clicked column title: (sort key, descending). Overrides _sort_mode until a mode is clicked.
         self._column_sort: tuple[str, bool] | None = DEFAULT_COLUMN_SORT
+        column_sort = prefs.projects_column_sort
+        if column_sort is None or column_sort[0] in {"name", *(c[0] for c in self._COMPACT_COLUMNS)}:
+            self._column_sort = None if column_sort is None else (column_sort[0], bool(column_sort[1]))
         self._column_labels: dict[str, tuple[ui.label, str, bool]] = {}
         self._species_filter = ANY_SPECIES
         self._syncing_species = False
@@ -339,9 +348,10 @@ class ProjectsOverview:
             # cb-proj-roster: the container the compact columns' width tiers query (ui/dashboard/css.py).
             .classes("w-full gap-0 cb-proj-roster")
             .style(
-                "background: white; border-radius: 8px; "
-                f"border: 1px solid {CLR_BORDER}; "
-                "box-shadow: 0 1px 3px rgba(15,23,42,0.06); "
+                # A pale gray-blue panel, the Journey's section look, holding the list on white. The
+                # border is transparent until deletion mode colours it.
+                "background: #eef3f8; border-radius: 6px; border: 1px solid transparent; "
+                "padding: 0 8px 8px; box-sizing: border-box; "
                 # Never wider than the pane it sits in: a narrow landing page clips
                 # here rather than scrolling the whole roster sideways.
                 "min-width: 0; max-width: 100%; overflow: hidden; flex-wrap: nowrap;"
@@ -356,8 +366,21 @@ class ProjectsOverview:
         with outer:
             self._build_header()
             self._column_header = self._build_column_header()
-            with ui.scroll_area().classes("w-full cb-scroll-noh").style(f"{scroll_style} padding: 0;"):
+            with (
+                ui.scroll_area()
+                .classes("w-full cb-scroll-noh")
+                .style(f"{scroll_style} padding: 0; background: #ffffff; border-radius: 4px;")
+            ):
                 self._list_container = ui.column().classes("w-full").style("gap: 0; padding: 0;")
+            # The last scan of this base, from any roster, shows at once; the scan below brings it up
+            # to date and re-renders only the rows that moved.
+            base = (self.base_path_provider() or "").strip()
+            cached = self.backend.last_project_scan(base) if base else None
+            if cached is not None:
+                self._projects = cached
+                self._last_scanned_base = base
+                self._render_list()
+            else:
                 with self._list_container:
                     self._render_loading_skeleton()
 
@@ -371,6 +394,18 @@ class ProjectsOverview:
             self._timer = ui.timer(self.auto_refresh_sec, self.refresh)
         return outer
 
+    def resume(self):
+        """Restart the auto-refresh that `stop` ended (a kept dialog shown again) and rescan now. The
+        rows on screen stay until the scan says what moved."""
+        if self._outer_container is None or self._outer_container.is_deleted:
+            return
+        # A hover card does not outlive the dialog it was in; left set, it would hold every refresh.
+        self._preview_open = False
+        with self._outer_container:
+            ui.timer(0.05, self.refresh, once=True)
+            if self._timer is None and self.auto_refresh_sec > 0:
+                self._timer = ui.timer(self.auto_refresh_sec, self.refresh)
+
     async def refresh(self, force: bool = False):
         """Re-scan the base path and re-render (a timer tick only when something changed; `force`
         always). Re-entrant-safe via lock.
@@ -383,8 +418,16 @@ class ProjectsOverview:
             return
         async with self._refresh_lock:
             base = (self.base_path_provider() or "").strip()
+            # Nothing of this base on screen yet (first scan, or another base): rows show as the
+            # scan finds them instead of after the whole base is read.
+            stream = bool(base) and base != self._last_scanned_base
             try:
-                projects = await self.backend.scan_for_projects(base) if base else []
+                if stream:
+                    self._scanning = True
+                    projects = await self.backend.scan_for_projects(base, on_partial=self._show_partial)
+                else:
+                    projects = await self.backend.scan_for_projects(base) if base else []
+                self._scanning = False
                 # The timer rescans every tick; rebuild the rows (and their hover menus) only when
                 # the scan, the MRU order or the running deletions moved. Filter, sort and selection
                 # changes re-render through their own handlers.
@@ -405,6 +448,9 @@ class ProjectsOverview:
                 self.stop()
             except Exception as e:
                 logger.info("ProjectsOverview refresh failed: %s", e)
+            finally:
+                self._scanning = False
+                self._set_scan_note(None)
 
     def set_selected(self, selected_path: str | None):
         """Mark a row as the previewed project (faint outline) and re-render.
@@ -414,6 +460,20 @@ class ProjectsOverview:
         except Exception:
             self._selected_resolved = None
         self._render_list()
+
+    def _show_partial(self, found: list[dict]) -> None:
+        """A streaming scan's projects so far: render them (new rows only, see _patch_list)."""
+        if self._list_container is None or self._list_container.is_deleted:
+            return
+        self._set_scan_note(f"Scanning… {len(found)} found")
+        self._projects = found
+        self._render_list()
+
+    def _set_scan_note(self, text: str | None) -> None:
+        if self._scan_note is None or self._scan_note.is_deleted:
+            return
+        self._scan_note.set_text(text or "")
+        self._scan_note.set_visibility(text is not None)
 
     def stop(self):
         """Cancel the auto-refresh timer (e.g. when a dialog closes)."""
@@ -431,11 +491,7 @@ class ProjectsOverview:
     def _build_header(self):
         """One control row: the title and the total size on the left, every control on
         the right. It wraps on a narrow pane instead of pushing controls off the edge."""
-        with (
-            ui.row()
-            .classes("w-full items-center px-3 py-2")
-            .style(f"gap: 6px 10px; flex-wrap: wrap; border-bottom: 1px solid {CLR_BORDER};")
-        ):
+        with ui.row().classes("w-full items-center px-3 py-2").style("gap: 6px 10px; flex-wrap: wrap;"):
             if self.title_slot is not None:
                 self.title_slot()
             else:
@@ -444,6 +500,9 @@ class ProjectsOverview:
                     "letter-spacing: -0.01em; flex-shrink: 0;"
                 )
             self._size_label = ui.label("").style(f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; flex-shrink: 0;")
+            # Shown while a first scan streams its rows in.
+            self._scan_note = ui.label("").style(f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; flex-shrink: 0;")
+            self._scan_note.set_visibility(False)
             self._delete_hint = ui.label("Deletion mode · click a project to delete it").style(
                 f"{FONT} font-size: 9px; font-weight: 600; color: {CLR_FAILED}; letter-spacing: 0.02em; "
                 "flex-shrink: 0; white-space: nowrap;"
@@ -511,7 +570,7 @@ class ProjectsOverview:
         sorts by its column, a second click reverses it (`_on_column_sort`)."""
         head = ui.element("div").style(
             f"display: flex; align-items: center; gap: 12px; padding: 4px {8 + self._W_CHEVRON}px 4px 14px; "
-            f"width: 100%; border-bottom: 1px solid {CLR_BORDER}; background: #f8fafc;"
+            "width: 100%;"
         )
         with head:
             columns = [("name", "Project", None, False, ""), *self._COMPACT_COLUMNS]
@@ -551,8 +610,15 @@ class ProjectsOverview:
             self._column_sort = (key, key not in _ASCENDING_FIRST)
         if self._sort_seg is not None:
             self._sort_seg.set_active("")
+        self._save_sort()
         self._paint_column_header()
         self._render_list()
+
+    def _save_sort(self) -> None:
+        """The next roster, here or on another page, opens in this order."""
+        self.prefs.prefs.projects_sort_mode = self._sort_mode
+        self.prefs.prefs.projects_column_sort = self._column_sort
+        self.prefs.save_to_app_storage(app.storage.user)
 
     @staticmethod
     def _small_segmented(tabs, active: str, on_switch: Callable[[str], None], *, hint: str):
@@ -582,7 +648,7 @@ class ProjectsOverview:
         if self._delete_hint is not None:
             self._delete_hint.set_visibility(on)
         if self._outer_container is not None:
-            self._outer_container.style(f"border: 1px solid {CLR_FAILED if on else CLR_BORDER};")
+            self._outer_container.style(f"border: 1px solid {CLR_FAILED if on else 'transparent'};")
             if on:
                 self._outer_container.classes(add="cb-proj-delmode")
             else:
@@ -605,6 +671,7 @@ class ProjectsOverview:
         self._column_sort = None
         if self._sort_seg is not None:
             self._sort_seg.set_active(key)
+        self._save_sort()
         self._paint_column_header()
         self._render_list()
 
@@ -646,7 +713,7 @@ class ProjectsOverview:
         that does, by activity, rather than being silently treated as 'just opened'."""
         if self._sort_mode == "created":
             return (-(proj.get("created_timestamp") or 0.0), proj.get("name", ""))
-        rank = self._mru_rank.get(self._resolved_path(proj))
+        rank = self._mru_rank.get(proj["resolved_path"])
         return (0 if rank is not None else 1, rank if rank is not None else 0, -(proj.get("last_activity_ts") or 0.0))
 
     def _sorted(self, projects: list[dict]) -> list[dict]:
@@ -696,15 +763,6 @@ class ProjectsOverview:
             "trash": proj.get("trash_count"),
         }[key]
         return value or None
-
-    @staticmethod
-    def _resolved_path(proj: dict) -> str:
-        try:
-            return str(Path(proj["path"]).resolve())
-        except OSError:
-            # Dangling/unreachable mount mid-scan: the unresolved path still keys the
-            # MRU correctly for anything opened from this same base.
-            return proj.get("path", "")
 
     # =====================================================================
     # LIST
@@ -758,7 +816,7 @@ class ProjectsOverview:
         if self._column_header is not None:
             self._column_header.set_visibility(compact and bool(items))
 
-        if items and [key for key, _, _ in items] == [key for key, _, _ in self._rendered]:
+        if items and self._rendered:
             self._patch_list(items)
             return
 
@@ -770,7 +828,9 @@ class ProjectsOverview:
             if not visible:
                 msg = "No projects to show"
                 base = self._last_scanned_base or ""
-                if not base:
+                if self._scanning:
+                    msg = "Scanning…"
+                elif not base:
                     msg = "Set a base location to scan for projects"
                 elif all_projects and species_filter != ANY_SPECIES:
                     label = (self._species_select.options if self._species_select else {}).get(
@@ -798,8 +858,8 @@ class ProjectsOverview:
                 proj,
                 compact,
                 self._delete_mode,
-                self._is_path(path, self._current_resolved),
-                self._is_path(path, self._selected_resolved),
+                proj["resolved_path"] == self._current_resolved,
+                proj["resolved_path"] == self._selected_resolved,
                 _CLEAR_TRASH_KEY + path in self._running_tasks,
             )
             items.append((f"row:{path}", fingerprint, lambda: self._render_row(proj, compact=compact)))
@@ -835,30 +895,34 @@ class ProjectsOverview:
         return items
 
     def _patch_list(self, items: list[tuple[str, object, Callable[[], ui.element]]]) -> None:
-        """Same entries in the same order: rebuild only those whose fingerprint moved, in place.
-        A timer tick usually changes one live project, and a full render of a long roster blocks
-        the event loop for a second."""
+        """Bring the shown entries to `items` by key: build the new ones and those whose fingerprint
+        moved, move the rest into place, delete the ones gone. A timer tick usually changes one live
+        project, a streaming scan only adds rows, and a full render of a long roster blocks the event
+        loop for a second."""
+        wanted = {key for key, _, _ in items}
+        old: dict[str, tuple[object, ui.element]] = {}
+        for key, fingerprint, element in self._rendered:
+            if key in wanted:
+                old[key] = (fingerprint, element)
+            else:
+                element.delete()
+                self._preview_open = False
+        rendered: list[tuple[str, object, ui.element]] = []
         for i, (key, fingerprint, build) in enumerate(items):
-            _, old_fingerprint, old_element = self._rendered[i]
-            if fingerprint == old_fingerprint:
-                continue
-            with self._list_container:
-                element = build()
-            element.move(target_index=i)
-            old_element.delete()
-            self._rendered[i] = (key, fingerprint, element)
-            # A replaced row takes its hover card with it, open or not.
-            self._preview_open = False
-
-    @staticmethod
-    def _is_path(path_str: str, resolved: str | None) -> bool:
-        if not resolved:
-            return False
-        try:
-            return str(Path(path_str).resolve()) == resolved
-        except OSError:
-            # Unreachable mount mid-render: it is not the open or previewed project.
-            return False
+            prev = old.get(key)
+            if prev is not None and prev[0] == fingerprint:
+                element = prev[1]
+            else:
+                with self._list_container:
+                    element = build()
+                if prev is not None:
+                    prev[1].delete()
+                    # A replaced row takes its hover card with it, open or not.
+                    self._preview_open = False
+            if self._list_container.default_slot.children.index(element) != i:
+                element.move(target_index=i)
+            rendered.append((key, fingerprint, element))
+        self._rendered = rendered
 
     def _render_section_header(self, creator: str, projects: list[dict]) -> ui.element:
         is_me = creator == CURRENT_USER
@@ -875,11 +939,7 @@ class ProjectsOverview:
             dot = CLR_GHOST
         live = sum(1 for p in projects if p.get("live_status") == "running")
         queued = sum(1 for p in projects if p.get("live_status") == "queued")
-        header = (
-            ui.row()
-            .classes("w-full items-center")
-            .style(f"gap: 6px; padding: 5px 12px; background: #f1f5f9; border-bottom: 1px solid {CLR_BORDER};")
-        )
+        header = ui.row().classes("w-full items-center").style("gap: 6px; padding: 5px 12px; background: #eef3f8;")
         with header:
             ui.element("div").style(f"width: 5px; height: 5px; border-radius: 50%; background: {dot}; flex-shrink: 0;")
             ui.label(label_text).style(
@@ -950,7 +1010,7 @@ class ProjectsOverview:
         name = proj["name"]
         ts_count = proj.get("ts_count") or 0
         source_dir = proj.get("source_directory") or ""
-        is_current = self._is_path(path_str, self._current_resolved)
+        is_current = proj["resolved_path"] == self._current_resolved
 
         async def _select():
             self.set_selected(path_str)
@@ -964,7 +1024,7 @@ class ProjectsOverview:
         # previews it; otherwise the row is not a click target at all, so a stray click
         # never drops the user into a project.
         preview_mode = self.on_select is not None
-        is_selected = self._is_path(path_str, self._selected_resolved)
+        is_selected = proj["resolved_path"] == self._selected_resolved
 
         # The row is a two-column flex: the text stack, and a full-height chevron.
         # `overflow: hidden` is load-bearing, not cosmetic: this widget lives inside a
@@ -973,7 +1033,7 @@ class ProjectsOverview:
         # Clipping means the roster degrades by ellipsising paths instead.
         base_style = (
             "display: flex; flex-direction: row; align-items: stretch; gap: 0; "
-            f"overflow: hidden; border-bottom: 1px solid {CLR_BORDER};"
+            "overflow: hidden; border-bottom: 1px solid #f1f5f9;"
         )
         outline = " box-shadow: inset 0 0 0 1.5px #93c5fd;" if is_selected else ""
         deleting = self._delete_mode
@@ -1097,7 +1157,7 @@ class ProjectsOverview:
                 .classes("cb-proj-deltrash")
                 .style(
                     f"width: {self._W_CHEVRON}px; flex-shrink: 0; display: flex; align-items: center; "
-                    f"justify-content: center; align-self: stretch; border-left: 1px solid {CLR_BORDER};"
+                    "justify-content: center; align-self: stretch;"
                 )
             ):
                 ui.icon("delete_outline", size="16px")
@@ -1115,7 +1175,7 @@ class ProjectsOverview:
             .style(
                 f"width: {self._W_CHEVRON}px; flex-shrink: 0; display: flex; "
                 "align-items: center; justify-content: center; cursor: pointer; "
-                f"border-left: 1px solid {CLR_BORDER}; background: #f8fafc; text-decoration: none; "
+                "background: #f8fafc; text-decoration: none; "
                 "align-self: stretch; padding: 0;"
             )
         )

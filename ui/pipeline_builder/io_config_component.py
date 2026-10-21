@@ -209,10 +209,11 @@ class IOConfigComponent:
         self._validation_cache: dict[str, InputSlotValidation] = {}
         self._slot_containers: dict[str, ui.element] = {}
         self._gain_container: ui.element | None = None
+        self._input_keys: list[str] = []  # the inputs the job had at the last render
 
     def render(self):
         # The Inputs and Outputs sections keep the Config tab's section gap.
-        self._root = ui.column().classes("w-full").style("gap: 18px;")
+        self._root = ui.column().classes("w-full").style("gap: 10px;")
         with self._root:
             self._render_body()
 
@@ -224,7 +225,8 @@ class IOConfigComponent:
             return
 
         resolver = PathResolutionService(state, active_instance_ids=self.active_instance_ids)
-        input_schema = resolver.get_input_schema_for_job(self.job_type)
+        input_schema = resolver.get_input_schema_for_job(self.job_type, job_model)
+        self._input_keys = [s.key for s in input_schema]
         output_schema = resolver.get_output_schema_for_job(self.job_type, job_model)
         wants_gain = self.job_type in GAIN_CONSUMERS
         # A job the chain submitted reads what was resolved then; only a Failed one may choose again.
@@ -259,6 +261,20 @@ class IOConfigComponent:
         if output_schema:
             with config_section("Outputs"):
                 self._render_output_slots(output_schema, job_model)
+
+    def refresh_if_inputs_changed(self) -> None:
+        """Re-render when the job's inputs changed with its parameters (an input that exists only while
+        a parameter is set, `InputSlot.when`); otherwise nothing, so no control is rebuilt under the user."""
+        state = current_project_state()
+        job_model = state.jobs.get(self.instance_id)
+        if job_model is None or self._root.is_deleted:
+            return
+        keys = [s.key for s in PathResolutionService(state).get_input_schema_for_job(self.job_type, job_model)]
+        if keys == self._input_keys:
+            return
+        self._root.clear()
+        with self._root:
+            self._render_body()
 
     async def _reset_inputs(self):
         state = current_project_state()
@@ -757,6 +773,7 @@ def render_io_config(
     on_change: Callable[[], None] | None = None,
     active_instance_ids: set | None = None,
     read_only: bool = False,
-):
+) -> IOConfigComponent:
     component = IOConfigComponent(job_type, instance_id, on_change, active_instance_ids, read_only=read_only)
     component.render()
+    return component

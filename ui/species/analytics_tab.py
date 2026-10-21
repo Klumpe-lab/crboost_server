@@ -47,7 +47,7 @@ from services.particles.set_ops import parent_options, parent_options_all_specie
 from services.particles.species_jobs import jobs_for_species
 from services.project_state import get_project_state_for
 from ui.analytics.controls_panel import ControlsPanel
-from ui.analytics.common import ERROR_CLS, HINT_CLS, LABEL_CLS, TOOLTIP_STYLE, render_provenance, section
+from ui.analytics.common import ERROR_CLS, HINT_CLS, LABEL_CLS, TOOLTIP_STYLE, panel, render_provenance, section
 from ui.analytics.funnel import FunnelLine, FunnelStep
 from ui.analytics.project_breakdown import ProjectBreakdown
 from ui.analytics.results_section import ResultsSection
@@ -244,29 +244,30 @@ class _AnalyticsView(FingerprintedView):
         self._spatial = None
         self._controls = None
         c = self._tab.computed
-        with ui.row().classes("w-full items-center gap-3 px-1"):
-            section(
-                "Scores in σ",
-                tooltip="Template-matching scores divided by each tomogram's noise level σ, so one cut means the "
-                "same everywhere. Rules on this page mark tomograms; nothing is dropped by them.",
-            )
-            if c is not None and c.sources:
-                house_select(
-                    "source",
-                    {s.key: s.label for s in c.sources},
-                    value=c.source.key if c.source else None,
-                    width="w-96",
-                    hint="Which template match and extraction the numbers describe.",
-                    on_change=lambda e: self._tab.choose_source(e.value),
+        # Each block is a panel; the slot's gap separates them.
+        with panel():
+            with ui.row().classes("w-full items-center gap-3"):
+                section(
+                    "Scores in σ",
+                    tooltip="Template-matching scores divided by each tomogram's noise level σ, so one cut means the "
+                    "same everywhere. Rules on this page mark tomograms; nothing is dropped by them.",
                 )
-            ui.space()
-            house_button("Refresh", self._tab.refresh_now, tooltip="Re-read the records now")
-        if c is None:
-            ui.label("computing…").classes(HINT_CLS + " px-1")
-            return
-        for e in c.errors:
-            ui.label(f"Unavailable — {e}").classes(ERROR_CLS + " px-1").tooltip("Full traceback in the server log.")
-        with ui.column().classes("w-full gap-2 px-1"):
+                if c is not None and c.sources:
+                    house_select(
+                        "source",
+                        {s.key: s.label for s in c.sources},
+                        value=c.source.key if c.source else None,
+                        width="w-96",
+                        hint="Which template match and extraction the numbers describe.",
+                        on_change=lambda e: self._tab.choose_source(e.value),
+                    )
+                ui.space()
+                house_button("Refresh", self._tab.refresh_now, tooltip="Re-read the records now")
+            if c is None:
+                ui.label("computing…").classes(HINT_CLS)
+                return
+            for e in c.errors:
+                ui.label(f"Unavailable — {e}").classes(ERROR_CLS).tooltip("Full traceback in the server log.")
             if not c.sources:
                 ui.label(
                     "No template match or candidate extraction for this species yet — add them from the Jobs tab."
@@ -274,22 +275,29 @@ class _AnalyticsView(FingerprintedView):
             for n in c.notes:
                 ui.label(n).classes(HINT_CLS)
             if c.rows:
-                self._render_scores(c)
-            with ui.element("div").style("margin-top: 8px;"):
-                section(
-                    "Particle sets",
-                    tooltip="Every cut, split or class subset of particles is a new set: its parent is never changed, "
-                    "and its recipe (parent, operation, parameters) and funnel are recorded. A set is offered as an "
-                    "input in the I/O section of Subtomo extraction, Reconstruct particle and Class 3D.",
-                )
+                render_provenance([("template match", c.tm), ("candidates", c.cand)])
+                ScorePanel(
+                    c.rows,
+                    c.cand.data if c.cand else None,
+                    cut=self._tab.cut_for(c),
+                    on_cut=lambda v: self._on_cut(c, v),
+                    on_make_subset=(lambda: self._tab.make_subset(c)) if c.cand else None,
+                ).build()
+        if c.rows:
+            self._render_scores(c)
+        with panel(
+            "Particle sets",
+            tooltip="Every cut, split or class subset of particles is a new set: its parent is never changed, "
+            "and its recipe (parent, operation, parameters) and funnel are recorded. A set is offered as an "
+            "input in the I/O section of Subtomo extraction, Reconstruct particle and Class 3D.",
+        ):
             SetsPanel(c.sets, readers=c.readers, stale=c.stale, on_delete=self._tab.delete_set).build()
-            with ui.element("div").style("margin-top: 8px;"):
-                section(
-                    "Classes and maps",
-                    tooltip="Results of this species' Class 3D and Reconstruct particle jobs: convergence, classes "
-                    "against score, tomogram and project, class maps and members, half-map FSC. Each job's Results "
-                    "tab shows the same.",
-                )
+        with panel(
+            "Classes and maps",
+            tooltip="Results of this species' Class 3D and Reconstruct particle jobs: convergence, classes "
+            "against score, tomogram and project, class maps and members, half-map FSC. Each job's Results "
+            "tab shows the same.",
+        ):
             ResultsSection(
                 self._tab.backend,
                 self._tab.ctx.project_path,
@@ -299,80 +307,72 @@ class _AnalyticsView(FingerprintedView):
             ).build()
 
     def _render_scores(self, c: _Computed) -> None:
-        render_provenance([("template match", c.tm), ("candidates", c.cand)])
+        """The panels after the scores: per project, where the picks sit, the tomograms, the controls."""
         cut = self._tab.cut_for(c)
-        ScorePanel(
-            c.rows,
-            c.cand.data if c.cand else None,
-            cut=cut,
-            on_cut=lambda v: self._on_cut(c, v),
-            on_make_subset=(lambda: self._tab.make_subset(c)) if c.cand else None,
-        ).build()
         projects = (c.cand.data.get("projects") or {}) if c.cand else {}
         if projects:
-            section(
+            with panel(
                 "Per project",
                 tooltip="This merge's particles by the project they came from: one row per project, each row's "
                 "tomograms and particles, the σ ladder and the count at or above the cut.",
-            )
-            self._breakdown = ProjectBreakdown(c.rows, projects, cut=cut)
-            self._breakdown.build()
-        steps, cut_index = self._funnel_steps(c)
-        if steps:
-            self._funnel = FunnelLine(
-                steps,
-                [r["cand"] for r in c.rows if r.get("cand")],
-                cut=cut,
-                cut_index=cut_index,
-                open_job=self._tab.ctx.callbacks.get("open_job"),
-            )
-            self._funnel.build()
-        section(
+            ):
+                self._breakdown = ProjectBreakdown(c.rows, projects, cut=cut)
+                self._breakdown.build()
+        with panel(
             "Where the picks sit",
-            tooltip="The pick slab, faces, neighbours, the extraction's losses, and picks at or above the cut against "
-            "data quality per tomogram.",
-        )
-        self._spatial = SpatialPanel(
-            c.rows,
-            c.quality,
-            c.subtomo.record.data if c.subtomo and c.subtomo.record else None,
-            cut=cut,
-            nn_close_ang=(c.cand.data.get("nn_close_ang") if c.cand else None),
-            others=c.others,
-            on_overlap=self._overlap_handler(c),
-        )
-        self._spatial.build()
-        self._render_marker_summary(c)
-        section(
+            tooltip="The funnel from template match to refinement, the pick slab, faces, neighbours, the extraction's "
+            "losses, and picks at or above the cut against data quality per tomogram.",
+        ):
+            steps, cut_index = self._funnel_steps(c)
+            if steps:
+                self._funnel = FunnelLine(
+                    steps,
+                    [r["cand"] for r in c.rows if r.get("cand")],
+                    cut=cut,
+                    cut_index=cut_index,
+                    open_job=self._tab.ctx.callbacks.get("open_job"),
+                )
+                self._funnel.build()
+            self._spatial = SpatialPanel(
+                c.rows,
+                c.quality,
+                c.subtomo.record.data if c.subtomo and c.subtomo.record else None,
+                cut=cut,
+                nn_close_ang=(c.cand.data.get("nn_close_ang") if c.cand else None),
+                others=c.others,
+                on_overlap=self._overlap_handler(c),
+            )
+            self._spatial.build()
+        with panel(
             "Tomograms",
             tooltip="One row per tomogram of the template match. Hover a cell for its detail, a marker for its rule.",
-        )
-        TomogramTable(c.rows, c.markers).build()
+        ):
+            self._render_marker_summary(c)
+            TomogramTable(c.rows, c.markers).build()
         if c.source is not None and c.source.kind == "jobs":
-            with ui.element("div").style("margin-top: 8px;"):
-                section(
-                    "Controls",
-                    tooltip="Checks of the scores measured on this data rather than taken from the Gaussian formula: "
-                    "control templates (decoy, mirror), random-position decoys, recall against a reference, half-set "
-                    "independence.",
+            with panel(
+                "Controls",
+                tooltip="Checks of the scores measured on this data rather than taken from the Gaussian formula: "
+                "control templates (decoy, mirror), random-position decoys, recall against a reference, half-set "
+                "independence.",
+            ):
+                own_key = f"job:{c.source.ce_instance}:candidates" if c.source.ce_instance else None
+                self._controls = ControlsPanel(
+                    self._tab.backend,
+                    self._tab.ctx.project_path,
+                    self._tab.ctx.species_id,
+                    rows=c.rows,
+                    controls=c.controls,
+                    templates=c.templates,
+                    selected_template=c.selected_template,
+                    parents=c.parents,
+                    own_key=own_key,
+                    diameter=c.diameter,
+                    cut=cut,
+                    state_getter=lambda: get_project_state_for(self._tab.ctx.project_path),
+                    on_changed=lambda: asyncio.create_task(self._tab.refresh_now()),
                 )
-            own_key = f"job:{c.source.ce_instance}:candidates" if c.source.ce_instance else None
-            self._controls = ControlsPanel(
-                self._tab.backend,
-                self._tab.ctx.project_path,
-                self._tab.ctx.species_id,
-                rows=c.rows,
-                controls=c.controls,
-                templates=c.templates,
-                selected_template=c.selected_template,
-                parents=c.parents,
-                own_key=own_key,
-                diameter=c.diameter,
-                cut=cut,
-                state_getter=lambda: get_project_state_for(self._tab.ctx.project_path),
-                on_changed=lambda: asyncio.create_task(self._tab.refresh_now()),
-            )
-            self._controls.build()
+                self._controls.build()
 
     def _overlap_handler(self, c: _Computed):
         """The overlap count for this source's own table at the current cut, or None when the source has
@@ -488,7 +488,7 @@ class AnalyticsTab:
 
     def build(self, container: ui.element) -> None:
         with container:
-            slot = ui.column().classes("w-full gap-2 p-2")
+            slot = ui.column().classes("w-full p-2").style("gap: 10px;")
         self._view = _AnalyticsView(slot, self)
         self._view.refresh()
 

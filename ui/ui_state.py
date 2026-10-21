@@ -87,8 +87,8 @@ def job_scope_key(instance_id: str) -> str:
 @dataclass
 class JobWidgetRefs:
     logs_timer: Any | None = None
-    content_container: Any | None = None
-    switcher: Any | None = None
+    # The job page's folded sections (Tasks, Log, Files, ...) by key: each opens its section.
+    section_openers: dict[str, Any] = field(default_factory=dict)
     monitor_logs: dict[str, Any] = field(default_factory=dict)
 
     def cleanup(self):
@@ -98,8 +98,7 @@ class JobWidgetRefs:
             except Exception:
                 pass
             self.logs_timer = None
-        self.content_container = None
-        self.switcher = None
+        self.section_openers.clear()
         self.monitor_logs.clear()
 
 

@@ -58,21 +58,33 @@ class SpeciesRail(FingerprintedView):
         for species in state.species_registry:
             n_tpl, n_lists = counts.get(species.id, (0, 0))
             row = ui.element("div").classes("cb-srail-row" + (" selected" if species.id == active else ""))
-            row.style(f"border-left-color: {'#6366f1' if species.id == active else 'transparent'};")
+            row.style(
+                f"border-left-color: {'#6366f1' if species.id == active else 'transparent'}; border-bottom: none;"
+            )
             row.on("click", lambda _e, sid=species.id: self._on_select(sid))
             with row:
                 render_species_mark(species, named=True)
                 ui.label(f"{n_tpl} tpl · {n_lists} list{'s' if n_lists != 1 else ''}").classes("cb-srail-meta").tooltip(
                     "templates registered · pick lists (hand-picked / imported / merged)"
                 )
-        add = ui.element("div").classes("cb-srail-add").on("click", lambda _e: self._on_add())
+        add = (
+            ui.element("div")
+            .classes("cb-srail-add")
+            .style("border-bottom: none;")
+            .on("click", lambda _e: self._on_add())
+        )
         with add:
             ui.icon("add", size="13px")
             ui.label("New species")
         # Second entry point only when a lab catalog is configured. Not a disabled
         # row when it is off: an affordance for a missing feature is worse than none.
         if self._on_add_from_catalog is not None and catalog_is_enabled():
-            from_cat = ui.element("div").classes("cb-srail-add").on("click", lambda _e: self._on_add_from_catalog())
+            from_cat = (
+                ui.element("div")
+                .classes("cb-srail-add")
+                .style("border-bottom: none;")
+                .on("click", lambda _e: self._on_add_from_catalog())
+            )
             with from_cat:
                 ui.icon("library_books", size="13px")
                 ui.label("From catalog")

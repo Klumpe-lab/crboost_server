@@ -39,7 +39,7 @@ from ui.components.buttons import house_button
 from ui.components.chip import render_method_chip, render_polarity_chip
 from ui.components.color_swatch import render_color_swatch
 from ui.components.path_link import render_path_link
-from ui.job_plugins._field_styles import PAGE_SECTION_STYLE
+from ui.job_plugins._field_styles import PANEL_STYLE, PANEL_TITLE_STYLE
 from ui.particles.list_actions import commit_extraction_geometry
 from services.particles.catalog import is_enabled as catalog_is_enabled
 from ui.components.reactive import FingerprintedView, SingleFlight
@@ -50,8 +50,8 @@ logger = logging.getLogger(__name__)
 
 _DISK_REFRESH_S = 15.0  # status/sanity recompute cadence while shown (both touch disk)
 # Three ranks, and they must not collide — what is separate conceptually looks separate:
-#   SECTION  — `PAGE_SECTION_STYLE` from the house vocabulary: 12 px semibold MIXED case.
-#              "Species info" / "Template matching files" / "Extraction geometry".
+#   SECTION  — a pale gray-blue panel (`PANEL_STYLE`) titled in `PANEL_TITLE_STYLE`, 12 px semibold
+#              MIXED case: "Species info" / "Template matching files" / "Extraction geometry".
 #   FIELD    — 9 px uppercase, muted: the label beside one input.
 #   HINT     — 10 px, lightest: the sentence explaining a section or a value.
 # A section title is never uppercase and a field label always is — that difference is
@@ -66,10 +66,10 @@ _NAME_INPUT_STYLE = "font-size: 12px; font-weight: 600; color: #1f2937;"
 
 
 def _section(title: str, *, tooltip: str | None = None) -> None:
-    """A top-level block header. One helper so a new section cannot invent a fourth
-    heading style. No underline rule and no hint tail — sections are separated by the
-    page's vertical gap, and anything worth saying rides the title's tooltip."""
-    lbl = ui.label(title).style(PAGE_SECTION_STYLE)
+    """A section's title, the first line inside its panel (`PANEL_STYLE`). One helper so a new
+    section cannot invent a fourth heading style. No underline rule and no hint tail — panels are
+    separated by the page's gap, and anything worth saying rides the title's tooltip."""
+    lbl = ui.label(title).style(f"{PANEL_TITLE_STYLE} margin-bottom: 4px;")
     if tooltip:
         lbl.tooltip(tooltip)
 
@@ -107,7 +107,7 @@ def render_identity_editor(backend, project_path: Path, species_id: str) -> None
     """Swatch · name · diameter · symmetry · notes, plus the provenance line. Each edit =
     `mutate_species` (dirty + rev) and a 1-s debounced save.
 
-    No card and no coloured stripe: the species colour is already carried by the swatch
+    A plain panel, no coloured stripe: the species colour is already carried by the swatch
     and the header pill, and every input reads at the scale of the label beside it
     (Quasar's default ~14 px dwarfs the 10 px labels)."""
     state = get_project_state_for(project_path)
@@ -119,7 +119,7 @@ def render_identity_editor(backend, project_path: Path, species_id: str) -> None
         get_project_state_for(project_path).mutate_species(species_id, fn)
         asyncio.create_task(backend.save_project(project_path, debounce_s=1.0))
 
-    with ui.column().classes("w-full gap-1 px-1"):
+    with ui.column().classes("w-full gap-1").style(PANEL_STYLE):
         _section("Species info")
         # Row 1 — identity line.
         with ui.row().classes("w-full items-center gap-2 no-wrap"):
@@ -295,7 +295,7 @@ class _BindingsView(FingerprintedView):
             return
         on_open = self._open_templates_tab()
         tpl, mask = sp.get_selected_template(), sp.get_selected_mask()
-        with ui.column().classes("w-full gap-1 px-1"):
+        with ui.column().classes("w-full gap-1").style(PANEL_STYLE):
             _section(
                 "Template matching files",
                 tooltip=(
@@ -381,7 +381,7 @@ class ExtractionGeometryPanel:
         sp = get_project_state_for(self._tab.ctx.project_path).get_species(self._tab.ctx.species_id)
         ep = getattr(sp, "extraction_params", None) if sp is not None else None
         descriptions = _geometry_descriptions()
-        with ui.column().classes("w-full gap-1 px-1"):
+        with ui.column().classes("w-full gap-1").style(PANEL_STYLE):
             _section(
                 "Extraction geometry",
                 tooltip=(
@@ -545,8 +545,8 @@ class OverviewTab:
 
     def build(self, container: ui.element) -> None:
         ctx = self.ctx
-        # gap-5: sections separate by whitespace, not by underline rules.
-        with container, ui.column().classes("w-full gap-5 p-3"):
+        # Sections are panels a gap apart, never underline rules.
+        with container, ui.column().classes("w-full p-3").style("gap: 10px;"):
             render_identity_editor(ctx.backend, ctx.project_path, ctx.species_id)
             bindings_slot = ui.element("div").classes("w-full")
             self._bindings = _BindingsView(bindings_slot, self)

@@ -26,11 +26,11 @@ from services.project_state import ParticleSpecies, get_project_state_for
 from services.templating.template_metadata import get_effective_mask_path, get_effective_template_path
 from ui.components.chip import render_chip
 from ui.components.reactive import FingerprintedView
+from ui.job_plugins._field_styles import PANEL_STYLE, PANEL_TITLE_STYLE
 from ui.species.tab import TabContext
 from ui.status_indicator import _dot_html
 from ui.styles import MONO, SANS
 
-_LABEL_CLS = "text-[10px] font-bold text-gray-500 uppercase tracking-wider"
 _HINT_CLS = "text-[10px] text-gray-400"
 
 
@@ -97,39 +97,40 @@ class _JobsView(FingerprintedView):
             return
         callbacks = self._tab.ctx.callbacks
         open_job = callbacks.get("open_job")
-        with ui.row().classes("w-full items-baseline gap-2 px-1"):
-            ui.label("JOBS").classes(_LABEL_CLS)
-            ui.label("particle-phase jobs attributed to this species").classes(_HINT_CLS).tooltip(
-                "Attribution = instance suffix (`templatematching__<id>`), the job's species_id, or the "
-                "single-species fallback (resolve_species)."
+        # One panel: the jobs, then the add row. Rows are separated by their height, not by rules.
+        with ui.column().classes("w-full gap-0").style(PANEL_STYLE):
+            ui.label("Jobs").style(f"{PANEL_TITLE_STYLE} margin-bottom: 6px;").tooltip(
+                "The particle-phase jobs attributed to this species: by instance suffix "
+                "(`templatematching__<id>`), the job's species_id, or the single-species fallback (resolve_species)."
             )
-        if not rows:
-            ui.label("No jobs for this species yet — add one below.").classes(_HINT_CLS + " px-1")
-        for iid, jm in rows:
-            status = getattr(jm, "execution_status", JobStatus.UNKNOWN)
-            dot = _dot_html(status, is_orphaned=bool(getattr(jm, "is_orphaned", False)))
-            with (
-                ui.row()
-                .classes("w-full items-center gap-2 px-1")
-                .style("min-height: 26px; border-bottom: 1px solid #f1f5f9; flex-wrap: nowrap;")
-            ):
-                ui.html(dot, sanitize=False, tag="span").style("display: inline-flex; align-items: center;")
-                ui.label(display_name(jm.job_type)).style(f"{SANS} font-size: 11px; font-weight: 600; color: #1e293b;")
-                ui.label(iid).style(f"{MONO} font-size: 10px; color: #64748b;")
-                ui.label(str(getattr(status, "value", status))).style(f"{SANS} font-size: 9px; color: #94a3b8;")
-                for label, message in _drift(sp, jm):
-                    render_chip(label, "drift", status="warn", tooltip=message + " — jobs keep their creation snapshot")
-                ui.space()
-                if open_job is not None:
-                    ui.label("open ↗").style(
-                        f"{SANS} font-size: 10px; color: #6366f1; cursor: pointer; text-decoration: underline dotted;"
-                    ).on("click", lambda _e, i=iid: open_job(i)).tooltip("Show this job in the pipeline view")
-        with ui.row().classes("w-full items-center gap-1 px-1 mt-2 flex-wrap"):
-            ui.label("Add for this species:").classes(_HINT_CLS)
-            for job_type in PARTICLE_JOB_TYPES:
-                ui.button(display_name(job_type), on_click=lambda _e, jt=job_type: self._tab.add(jt)).props(
-                    "flat dense no-caps size=sm color=indigo"
-                ).style("font-size: 10px; padding: 0 6px;")
+            if not rows:
+                ui.label("No jobs for this species yet — add one below.").classes(_HINT_CLS)
+            for iid, jm in rows:
+                status = getattr(jm, "execution_status", JobStatus.UNKNOWN)
+                dot = _dot_html(status, is_orphaned=bool(getattr(jm, "is_orphaned", False)))
+                with ui.row().classes("w-full items-center gap-2").style("min-height: 26px; flex-wrap: nowrap;"):
+                    ui.html(dot, sanitize=False, tag="span").style("display: inline-flex; align-items: center;")
+                    ui.label(display_name(jm.job_type)).style(
+                        f"{SANS} font-size: 11px; font-weight: 600; color: #1e293b;"
+                    )
+                    ui.label(iid).style(f"{MONO} font-size: 10px; color: #64748b;")
+                    ui.label(str(getattr(status, "value", status))).style(f"{SANS} font-size: 9px; color: #94a3b8;")
+                    for label, message in _drift(sp, jm):
+                        render_chip(
+                            label, "drift", status="warn", tooltip=message + " — jobs keep their creation snapshot"
+                        )
+                    ui.space()
+                    if open_job is not None:
+                        ui.label("open ↗").style(
+                            f"{SANS} font-size: 10px; color: #6366f1; cursor: pointer; "
+                            "text-decoration: underline dotted;"
+                        ).on("click", lambda _e, i=iid: open_job(i)).tooltip("Show this job in the pipeline view")
+            with ui.row().classes("w-full items-center gap-1 mt-2 flex-wrap"):
+                ui.label("Add for this species:").classes(_HINT_CLS)
+                for job_type in PARTICLE_JOB_TYPES:
+                    ui.button(display_name(job_type), on_click=lambda _e, jt=job_type: self._tab.add(jt)).props(
+                        "flat dense no-caps size=sm color=indigo"
+                    ).style("font-size: 10px; padding: 0 6px;")
 
 
 class JobsTab:

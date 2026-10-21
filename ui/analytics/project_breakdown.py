@@ -10,7 +10,7 @@ from nicegui import ui
 
 from services.particles import analytics
 from services.particles.sigma import LADDER_SIGMAS
-from ui.analytics.common import esc
+from ui.analytics.common import TABLE_ON_PANEL_STYLE, esc
 
 _SHOWN = tuple(z for z in LADDER_SIGMAS if z > 7.0)
 
@@ -25,7 +25,7 @@ class ProjectBreakdown:
         self._html = None
 
     def build(self) -> None:
-        with ui.element("div").classes("cb-atable-wrap").style("max-height: none;"):
+        with ui.element("div").classes("cb-atable-wrap").style(f"max-height: none; {TABLE_ON_PANEL_STYLE}"):
             self._html = ui.html(self._content(), sanitize=False)
 
     def set_cut(self, cut: float) -> None:

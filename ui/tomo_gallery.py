@@ -51,18 +51,21 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 from nicegui import ui
 
-from services.dashboard_data import position_label, tilt_thumb_dir, vis_asset_url
-from services.models_base import SPECIES_OVERLAY_COLORS
+from services.dashboard_data import job_dir_for, position_label, tilt_thumb_dir, vis_asset_url
+from services.models_base import SPECIES_OVERLAY_COLORS, InstanceId, JobType
 from services.project_state import get_project_state_for
 from services.segmentation import display
 from services.tilt_series_service import ensure_tilt_thumbnails
-from services.visualization.preview_orchestrator import _find_warp_tomo_preview, read_preview_manifest
+from services.visualization.preview_orchestrator import read_preview_manifest
 from services.visualization.preview_render import is_output_stale
 from services.visualization.tomo_geometry import SOURCE_IMPORTED, TomoGeometry, all_geometries
 from ui.components.buttons import house_button
@@ -71,7 +74,7 @@ from ui.components import feature_layers as fl
 from ui.components.dialogs import dialog_host
 from ui.components.reactive import SingleFlight, owned_timer
 from services.job_lineage import job_dirs, recon_of
-from ui.components.recon_compare import recon_version_labels, recon_versions_for_ts
+from ui.components.recon_compare import recon_version_labels
 from ui.components.segmented import render_segmented
 from ui.components.svg_icon import load_icon_svg
 from ui.dashboard.css import ensure_assets_loaded
@@ -112,6 +115,16 @@ _WALL_DOTS = 260
 _DOT_R_WALL = 1.1
 _DOT_R_ZOOM = 2.0
 
+# A reconstruct job's volume or its WarpTools preview: `<tomogram>_<apix>Apx.mrc|png`.
+_RECON_FILE = re.compile(r"(.+)_[\d.]+Apx\.(mrc|png)")
+
+# Threads for the per-tomogram reads: each is one small file or a few stats, and one after the
+# other on NFS they add up to seconds for a hundred tomograms.
+_IO_THREADS = 16
+
+# Tomograms whose sources one pass reads before their tiles fill in.
+_FILL_CHUNK = 24
+
 # Tiles show a JPEG at most this wide (the zoom shows the PNG itself): a WarpTools PNG is ~1 MB,
 # and a wall of them is tens of MB to fetch and decode on every source switch.
 _TILE_THUMB_PX = 640
@@ -137,6 +150,14 @@ _ZOOM_KEYS_JS = """(event) => {
 # ---------------------------------------------------------------------------
 # Collection — pure disk reads, runs in a thread (no NiceGUI here)
 # ---------------------------------------------------------------------------
+
+
+def _pmap(fn, items: list) -> list:
+    """`fn` over `items` on `_IO_THREADS` threads, results in order."""
+    if len(items) < 2:
+        return [fn(x) for x in items]
+    with ThreadPoolExecutor(max_workers=_IO_THREADS) as pool:
+        return list(pool.map(fn, items))
 
 
 def _stride_sample(items: list, cap: int) -> list:
@@ -212,10 +233,11 @@ def _pick_layers(project_state, project_path: Path, geoms: list[TomoGeometry]) -
             entries: dict[str, dict] = {}
             job_dir = job_dir_for(project_state, iid, jm, project_path)
             manifest = read_preview_manifest(job_dir) if job_dir else None
-            for ts, entry in ((manifest or {}).get("tomograms") or {}).items():
-                if not entry.get("picks_json"):
-                    continue
-                data = _read_picks_json(Path(entry["picks_json"]))
+            todo = [(ts, e) for ts, e in ((manifest or {}).get("tomograms") or {}).items() if e.get("picks_json")]
+            # The first read fills the job's σ cache, which the others then share.
+            datas = [_read_picks_json(Path(e["picks_json"])) for _ts, e in todo[:1]]
+            datas += _pmap(lambda te: _read_picks_json(Path(te[1]["picks_json"])), todo[1:])
+            for (ts, entry), data in zip(todo, datas, strict=True):
                 dims = data.get("tomo_dims_xyz_px") or entry.get("tomo_dims_xyz_px")
                 entries[ts] = {
                     "n": int(data.get("n") or len(data.get("picks") or [])),
@@ -240,25 +262,26 @@ def _pick_layers(project_state, project_path: Path, geoms: list[TomoGeometry]) -
             from_tm = pl.source_kind == PickSourceKind.TM and pl.source_ref in project_state.jobs
             recon = recon_of(project_state, pl.source_ref, dirs) if from_tm else None
             by_recon.setdefault(recon, {}).setdefault(pl.tomo_name, []).append(pl)
+
+        def _list_entry(item: tuple[str, list]) -> tuple[str, dict]:
+            ts, lists = item
+            geom = geom_by_ts.get(ts)
+            if geom is not None and geom.is_usable:
+                picks: list[dict] = []
+                for pl in lists:
+                    # None = unreadable (already logged by the reader); the wall draws what it can.
+                    picks.extend(_read_pick_list_voxels(Path(pl.path), list(geom.dims_xyz_px), geom.binned_apix) or [])
+                n, dots = len(picks), _normalized_dots(picks, geom.dims_xyz_px)
+                dims = [int(geom.dims_xyz_px[0]), int(geom.dims_xyz_px[1])]
+            else:
+                # No resolved frame ⇒ nothing can be placed. Carry the registered
+                # count anyway so the tile can say "picks here, not drawable" —
+                # dropping the species would read as "nothing picked".
+                n, dots, dims = sum(int(pl.count or 0) for pl in lists), [], None
+            return ts, {"n": n, "dots": dots, "dims": dims}
+
         for recon, by_ts in by_recon.items():
-            entries = {}
-            for ts, lists in by_ts.items():
-                geom = geom_by_ts.get(ts)
-                if geom is not None and geom.is_usable:
-                    picks: list[dict] = []
-                    for pl in lists:
-                        # None = unreadable (already logged by the reader); the wall draws what it can.
-                        picks.extend(
-                            _read_pick_list_voxels(Path(pl.path), list(geom.dims_xyz_px), geom.binned_apix) or []
-                        )
-                    n, dots = len(picks), _normalized_dots(picks, geom.dims_xyz_px)
-                    dims = [int(geom.dims_xyz_px[0]), int(geom.dims_xyz_px[1])]
-                else:
-                    # No resolved frame ⇒ nothing can be placed. Carry the registered
-                    # count anyway so the tile can say "picks here, not drawable" —
-                    # dropping the species would read as "nothing picked".
-                    n, dots, dims = sum(int(pl.count or 0) for pl in lists), [], None
-                entries[ts] = {"n": n, "dots": dots, "dims": dims}
+            entries = dict(_pmap(_list_entry, list(by_ts.items())))
             label = "pick lists" + (f" · {_recon_label(recon)}" if _recon_label(recon) else "")
             layer_id = f"lists:{species_id}:{recon or ''}"
             _add({"id": layer_id, "species_id": species_id, "species": name, "label": label, "recon": recon}, entries)
@@ -308,7 +331,109 @@ def recon_source_key(label: str) -> str:
     return f"{RECON_SOURCE} · {label}"
 
 
-def _sources_for(project_state, project_path: Path, geom: TomoGeometry, dirs: dict[Path, str]) -> dict[str, dict]:
+def source_prep(project_state, project_path: Path, tilt_series: list) -> dict:
+    """What every tomogram's sources are looked up in, read once for the whole wall: each
+    reconstruct job's reconstruction directory, listed once (a glob per tomogram lists the same
+    directory again for every tile), the denoisepredict jobs, the registry's tilt series by id and
+    the job dirs.
+
+    ``versions`` = ``{tomogram: [{iid, job, dir, label, mrc, png}]}`` by job dir, the first volume
+    by name per job (as ``recon_versions_for_ts``); ``pngs`` = ``{tomogram: [WarpTools PNG]}``;
+    ``denoise`` = ``[{iid, label, dir}]``; ``labels`` = ``recon_version_labels``. Disk-only."""
+    from ui.tomo_dashboard_dialog import _denoise_method_label
+
+    project_path = Path(project_path)
+    labels = recon_version_labels(project_state)
+    versions: dict[str, list[dict]] = {}
+    pngs: dict[str, list[Path]] = {}
+    for iid, jm in project_state.jobs.items():
+        if jm.job_type != JobType.TS_RECONSTRUCT or not jm.relion_job_name:
+            continue
+        job = jm.relion_job_name.rstrip("/")
+        rec_dir = project_path / job / "warp_tiltseries" / "reconstruction"
+        try:
+            names = sorted(os.listdir(rec_dir))
+        except OSError:
+            # Planned, deleted or unreadable: the job offers no volume, as the glob it stands in for found none.
+            continue
+        present = set(names)
+        for name in names:
+            m = _RECON_FILE.fullmatch(name)
+            if m is None:
+                continue
+            ts = m.group(1)
+            if m.group(2) == "png":
+                pngs.setdefault(ts, []).append(rec_dir / name)
+            elif not any(v["iid"] == iid for v in versions.get(ts, [])):
+                png = f"{name[: -len('.mrc')]}.png"
+                versions.setdefault(ts, []).append(
+                    {
+                        "iid": iid,
+                        "job": job,
+                        "dir": project_path / job,
+                        "label": labels.get(iid, iid),
+                        "mrc": rec_dir / name,
+                        "png": rec_dir / png if png in present else None,
+                    }
+                )
+    for vs in versions.values():
+        vs.sort(key=lambda v: v["job"])
+
+    denoise = []
+    for iid, jm in (project_state.jobs or {}).items():
+        if getattr(jm, "job_type", None) != JobType.DENOISE_PREDICT and not InstanceId.matches(
+            iid, JobType.DENOISE_PREDICT
+        ):
+            continue
+        job_dir = job_dir_for(project_state, iid, jm, project_path)
+        if job_dir is not None:
+            denoise.append({"iid": iid, "label": _denoise_method_label(jm, iid, project_state), "dir": job_dir})
+
+    return {
+        "labels": labels,
+        "versions": versions,
+        "pngs": pngs,
+        "denoise": denoise,
+        "tilt_series": {ts.id: ts for ts in tilt_series},
+        "dirs": job_dirs(project_state),
+    }
+
+
+def _warp_png(prep: dict, geom: TomoGeometry) -> Path | None:
+    """The WarpTools PNG of a tomogram (``_find_warp_tomo_preview``): beside its volume, else the
+    newest-named one any reconstruct job wrote for it."""
+    if geom.recon_mrc is not None:
+        png = geom.recon_mrc.parent / f"{geom.recon_mrc.stem}.png"
+        if png.exists():
+            return png
+    found = prep["pngs"].get(geom.tomo_name)
+    return max(found) if found else None
+
+
+def _denoised_for_ts(prep: dict, ts_name: str) -> list[tuple[str, Path, Path]]:
+    """(method label, job dir, denoised volume) per denoisepredict job with a volume of this
+    tomogram on disk, by label (``_available_denoise_methods_for_ts``, from the prep). Two jobs
+    of one method are told apart by instance."""
+    ts = prep["tilt_series"].get(ts_name)
+    outputs = ts.tomogram.outputs if ts is not None and ts.tomogram is not None else {}
+    found: list[tuple[str, str, Path, Path]] = []
+    for job in prep["denoise"]:
+        out = outputs.get(job["iid"])
+        if out is None or getattr(out, "output_type", "") != "denoise_predict":
+            continue
+        # The registry can outlive a deleted volume; such a method has nothing to show.
+        mrc = Path(out.denoised_mrc)
+        if mrc.exists():
+            found.append((job["label"], job["iid"], job["dir"], mrc))
+    label_counts: dict[str, int] = {}
+    for lbl, *_ in found:
+        label_counts[lbl] = label_counts.get(lbl, 0) + 1
+    out_list = [(lbl if label_counts[lbl] == 1 else f"{lbl} ({iid})", job_dir, mrc) for lbl, iid, job_dir, mrc in found]
+    out_list.sort(key=lambda t: t[0].lower())
+    return out_list
+
+
+def _sources_for(project_state, geom: TomoGeometry, prep: dict) -> dict[str, dict]:
     """Per-tomogram image sources, keyed by the toolbar's source id.
 
     With one reconstruct job, ``recon`` is its picture. With several (e.g. one per alignment),
@@ -320,24 +445,23 @@ def _sources_for(project_state, project_path: Path, geom: TomoGeometry, dirs: di
     volume the picture shows, for the 3dmod chip; ``recon`` the reconstruct instance it is (or
     was denoised from), which pick layers are matched against.
     """
-    from ui.tomo_dashboard_dialog import _available_denoise_methods_for_ts, _denoise_slab_path
+    from ui.tomo_dashboard_dialog import _denoise_slab_path
 
     out: dict[str, dict] = {}
-    recon_labels = recon_version_labels(project_state)
+    recon_labels = prep["labels"]
+    dirs = prep["dirs"]
     if geom.source != SOURCE_IMPORTED and len(recon_labels) > 1:
-        for v in recon_versions_for_ts(project_state, geom.tomo_name):
-            warp_png = v["mrc"].with_suffix(".png")
-            src = _recon_source(v["dir"], geom.tomo_name, v["mrc"], warp_png if warp_png.exists() else None)
+        for v in prep["versions"].get(geom.tomo_name, []):
+            src = _recon_source(v["dir"], geom.tomo_name, v["mrc"], v["png"])
             src["caption"] = f"{v['label']} · {src['caption']}"
             src["recon"] = v["iid"]
             out[recon_source_key(v["label"])] = src
     else:
-        warp_png = _find_warp_tomo_preview(project_path, geom.tomo_name, geom.recon_mrc)
-        src = _recon_source(geom.tomograms_star.parent, geom.tomo_name, geom.recon_mrc, warp_png)
+        src = _recon_source(geom.tomograms_star.parent, geom.tomo_name, geom.recon_mrc, _warp_png(prep, geom))
         src["recon"] = next(iter(recon_labels)) if geom.source != SOURCE_IMPORTED and recon_labels else None
         out[RECON_SOURCE] = src
 
-    for label, job_dir, mrc in _available_denoise_methods_for_ts(project_state, project_path, geom.tomo_name):
+    for label, job_dir, mrc in _denoised_for_ts(prep, geom.tomo_name):
         png = _denoise_slab_path(job_dir, geom.tomo_name)
         fresh = png.exists() and not is_output_stale(png, [mrc])
         url, thumb = _png_urls(png if fresh else None)
@@ -354,6 +478,42 @@ def _sources_for(project_state, project_path: Path, geom: TomoGeometry, dirs: di
     return out
 
 
+def sources_by_ts(project_state, geoms: list[TomoGeometry], prep: dict) -> dict[str, dict[str, dict]]:
+    """``{tomogram: _sources_for(...)}`` for `geoms`, read on a few threads. Disk-only."""
+    found = _pmap(lambda g: _sources_for(project_state, g, prep), geoms)
+    return {g.tomo_name: sources for g, sources in zip(geoms, found, strict=True)}
+
+
+def _row_aspect(geom: TomoGeometry, picks: list[dict]) -> tuple | None:
+    # Frame aspect = the tomogram's own X/Y extent, else the extent the picks on it
+    # were normalized against (the candidate-extract job read it when it wrote
+    # picks.json, and can have it when the volume is no longer on disk). Neither ⇒
+    # the frame is not the tomogram's box, so the tile lets the image size itself
+    # and reports its picks as counted-but-unplaced rather than scattering them
+    # against a guessed extent.
+    if geom.dims_xyz_px:
+        return tuple(geom.dims_xyz_px[:2])
+    return next((tuple(p["dims"]) for p in picks if p.get("dims")), None)
+
+
+def compose_row(geom: TomoGeometry, sources: dict, picks: list[dict], features: list[dict], *, ready: bool) -> dict:
+    """One tile's row. ``ready`` is False while its sources are still being read: the tile
+    shows its frame and label and says it is reading."""
+    label, order = position_label(geom.tomo_name)
+    return {
+        "ts": geom.tomo_name,
+        "label": label,
+        "order": order,
+        "aspect": _row_aspect(geom, picks),
+        "volume": str(geom.recon_mrc) if geom.recon_mrc else None,
+        "source_label": geom.source,
+        "sources": sources,
+        "picks": picks,
+        "features": features,
+        "ready": ready,
+    }
+
+
 def collect_rows(project_state, project_path: Path, tilt_series: list) -> tuple[list[dict], list[dict], list[dict]]:
     """``(rows, pick layers, feature layers)``: one row per tomogram, ordered by acquisition
     position, and the layers its ``picks`` and ``features`` entries name (`_pick_layers`,
@@ -361,33 +521,15 @@ def collect_rows(project_state, project_path: Path, tilt_series: list) -> tuple[
     in a thread, which is where the page calls it from."""
     geoms = all_geometries(project_state, project_path)
     layers, picks_by_ts = _pick_layers(project_state, project_path, geoms)
-    dirs = job_dirs(project_state)
-    feature_layers, features_by_ts = fl.collect_layers(project_state, tilt_series, dirs)
-    rows: list[dict] = []
-    for geom in geoms:
-        picks = picks_by_ts.get(geom.tomo_name, [])
-        # Frame aspect = the tomogram's own X/Y extent, else the extent the picks on it
-        # were normalized against (the candidate-extract job read it when it wrote
-        # picks.json, and can have it when the volume is no longer on disk). Neither ⇒
-        # the frame is not the tomogram's box, so the tile lets the image size itself
-        # and reports its picks as counted-but-unplaced rather than scattering them
-        # against a guessed extent.
-        aspect = tuple(geom.dims_xyz_px[:2]) if geom.dims_xyz_px else None
-        if aspect is None:
-            aspect = next((tuple(p["dims"]) for p in picks if p.get("dims")), None)
-        rows.append(
-            {
-                "ts": geom.tomo_name,
-                "label": position_label(geom.tomo_name)[0],
-                "order": position_label(geom.tomo_name)[1],
-                "aspect": aspect,
-                "volume": str(geom.recon_mrc) if geom.recon_mrc else None,
-                "source_label": geom.source,
-                "sources": _sources_for(project_state, project_path, geom, dirs),
-                "picks": picks,
-                "features": features_by_ts.get(geom.tomo_name, []),
-            }
+    prep = source_prep(project_state, project_path, tilt_series)
+    feature_layers, features_by_ts = fl.collect_layers(project_state, tilt_series, prep["dirs"])
+    sources = sources_by_ts(project_state, geoms, prep)
+    rows = [
+        compose_row(
+            g, sources[g.tomo_name], picks_by_ts.get(g.tomo_name, []), features_by_ts.get(g.tomo_name, []), ready=True
         )
+        for g in geoms
+    ]
     rows.sort(key=lambda r: (r["order"], r["ts"]))
     return rows, layers, feature_layers
 
@@ -461,6 +603,12 @@ class TomoGalleryPage:
         self._refs: dict[str, Any] = {}
         self._collected = False
         self._active = False
+        # Bumped by every reload: a pass that finds it moved has been superseded and drops its result.
+        self._gen = 0
+        self._geom_by_ts: dict[str, TomoGeometry] = {}
+        self._tilts_pending = False  # the tilts of the running reload have not landed yet
+        self._kicks_left = _MAX_KICKS_PER_RENDER  # slab renders the running reload may still submit
+        self._controls_key: tuple = ()  # what the tab controls were last built from
         # Slabs kicked off by this page land minutes later. Poll while the wall is the
         # visible view AND something is still pending — disk work, so 15 s (CLAUDE.md),
         # gated on a signature so a tick that changes nothing never touches the DOM.
@@ -470,9 +618,9 @@ class TomoGalleryPage:
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     async def show(self) -> None:
-        """Point the workspace at the wall. The first call collects behind a spinner;
-        later ones show what's cached (the pending-tile poll and the Refresh button
-        bring in previews that landed meanwhile)."""
+        """Point the workspace at the wall. The first call collects (`reload`); later ones
+        show what's cached (the pending-tile poll and the Refresh button bring in previews
+        that landed meanwhile)."""
         async with self._flight("show") as acquired:
             if not acquired:
                 return
@@ -481,38 +629,171 @@ class TomoGalleryPage:
             await self.reload()
 
     async def reload(self) -> None:
+        """Re-read the wall. The tiles show as soon as the tomograms are known, each its frame
+        and label; their pictures fill in a batch at a time, the pick and segmentation layers
+        and the tilts as each pass lands."""
+        self._gen += 1
+        gen = self._gen
+        self._collected = False
         self.container.clear()
         with self.container, ui.element("div").classes("cb-empty"):
             ui.spinner(size="lg", color="indigo")
             ui.label("Reading tomograms…").classes("text-xs")
         await asyncio.sleep(0.03)  # flush the spinner before the disk pass
         started = time.monotonic()
-        await self._collect()
-        collected = time.monotonic()
-        self.render()
-        logger.info(
-            "%s · tomograms shown in %.1f s (read %.1f s, render %.1f s)",
-            self.project_path.name,
-            time.monotonic() - started,
-            collected - started,
-            time.monotonic() - collected,
-        )
-
-    async def _collect(self) -> None:
-        # Explicit-path resolution, not the tab accessor: this also runs from a timer
-        # tick, where a bare lookup can hand back a blank throwaway state.
         state = get_project_state_for(self.project_path)
         tilt_series, self.tilt_error = registry_tilt_series(self.project_path)
         # The tilt filter's review is live job state: snapshot it here, derive in the thread.
         ctx = tilt_context(state)
         png_dir = self._png_dir = tilt_thumb_dir(state, self.project_path)
-        (self.rows, layers, feature_layers), (self.tilt_groups, self.tilt_facts) = await asyncio.to_thread(
+        geoms = await asyncio.to_thread(all_geometries, state, self.project_path)
+        if self._stale(gen):
+            return
+        # In wall order, so the tiles fill in from the top.
+        geoms.sort(key=lambda g: (position_label(g.tomo_name)[1], g.tomo_name))
+        self._geom_by_ts = {g.tomo_name: g for g in geoms}
+        self.rows = [compose_row(g, {}, [], [], ready=False) for g in geoms]
+        self._source_recon = {}
+        self.tilt_groups, self.tilt_facts = [], {}
+        self._group_by_ts, self._tilt_by_key, self._frame_keys = {}, {}, set()
+        self._tilts_pending = True
+        self._kicks_left = _MAX_KICKS_PER_RENDER
+        if not self._tab_chosen and not self.rows:
+            # A project with tilts and no tomograms opens on Tilts; which it is waits for the tilts.
+            groups, facts = await asyncio.to_thread(collect_tilt_groups, tilt_series, png_dir, ctx)
+            if self._stale(gen):
+                return
+            self._apply_tilts(state, groups, facts)
+        self.render()
+        shown = time.monotonic()
+        await asyncio.gather(
+            self._fill_sources(gen, state, geoms, tilt_series),
+            self._fill_layers(gen, state, geoms, tilt_series),
+            self._fill_tilts(gen, state, tilt_series, png_dir, ctx),
+        )
+        if self._stale(gen):
+            return
+        self._collected = True
+        with self.container:
+            self._prefetch_other_sources()
+        logger.info(
+            "%s · tomograms: wall shown in %.1f s, filled in %.1f s",
+            self.project_path.name,
+            shown - started,
+            time.monotonic() - started,
+        )
+
+    def _stale(self, gen: int) -> bool:
+        """A newer reload started, or the page went away, while this one awaited."""
+        return gen != self._gen or self.container.is_deleted
+
+    async def _fill_sources(self, gen: int, state, geoms: list[TomoGeometry], tilt_series: list) -> None:
+        """The tiles' pictures, a batch of tomograms at a time, each batch filled in as it lands."""
+        prep = await asyncio.to_thread(source_prep, state, self.project_path, tilt_series)
+        for i in range(0, len(geoms), _FILL_CHUNK):
+            sources = await asyncio.to_thread(sources_by_ts, state, geoms[i : i + _FILL_CHUNK], prep)
+            if self._stale(gen):
+                return
+            # A task of its own (gather) starts with no NiceGUI slot; the wall's container gives it the client.
+            with self.container:
+                self._land_sources(sources)
+
+    async def _fill_layers(self, gen: int, state, geoms: list[TomoGeometry], tilt_series: list) -> None:
+        dirs = job_dirs(state)
+        (layers, picks_by_ts), (feature_layers, features_by_ts) = await asyncio.to_thread(
+            lambda: (_pick_layers(state, self.project_path, geoms), fl.collect_layers(state, tilt_series, dirs))
+        )
+        if self._stale(gen):
+            return
+        with self.container:
+            self._land_layers(layers, picks_by_ts, feature_layers, features_by_ts)
+
+    async def _fill_tilts(self, gen: int, state, tilt_series: list, png_dir: Path, ctx: dict) -> None:
+        if not self._tilts_pending:
+            return  # read before the first render
+        groups, facts = await asyncio.to_thread(collect_tilt_groups, tilt_series, png_dir, ctx)
+        if self._stale(gen):
+            return
+        with self.container:
+            self._apply_tilts(state, groups, facts)
+            self._land_tilts()
+
+    def _land_sources(self, sources: dict[str, dict]) -> None:
+        for row in self.rows:
+            if row["ts"] in sources:
+                row["sources"] = sources[row["ts"]]
+                row["ready"] = True
+        self._source_recon.update({key: src.get("recon") for s in sources.values() for key, src in s.items()})
+        before = self.source
+        self._sync_controls()
+        # The first batch can move the wall's source (the toolbar picks the first one there is):
+        # the tiles filled before it follow.
+        ready = [r["ts"] for r in self.rows if r["ready"]] if self.source != before else list(sources)
+        for ts in ready:
+            self._refill(ts)
+
+    def _land_layers(self, layers: list[dict], picks_by_ts: dict, feature_layers: list[dict], features_by_ts: dict):
+        self._apply_layers(layers, feature_layers)
+        reshaped = []
+        for row in self.rows:
+            ts = row["ts"]
+            row["picks"] = picks_by_ts.get(ts, [])
+            row["features"] = features_by_ts.get(ts, [])
+            aspect = _row_aspect(self._geom_by_ts[ts], row["picks"])
+            if aspect != row["aspect"]:
+                row["aspect"] = aspect
+                reshaped.append(ts)
+        self._apply_feature_vars()
+        self._sync_controls()
+        for ts in reshaped:
+            self._refill(ts)
+        self._refresh_overlays()
+
+    def _land_tilts(self) -> None:
+        tabs = self._refs.get("seg_tab")
+        if tabs is not None:
+            tabs.set_badge(TILTS_TAB, str(len(self._tilt_by_key)))
+        self._sync_controls()
+        if self.tab == TILTS_TAB:
+            self._rerender_body()
+            return
+        # Captions and mosaic toggles; a tile still reading gets them with its picture.
+        for row in self.rows:
+            if row["ready"]:
+                self._refill(row["ts"])
+
+    def _refill(self, ts: str) -> None:
+        """Rebuild one tile in place (the grid and the other tiles stay)."""
+        tile = self._tiles.get(ts)
+        row = next((r for r in self.rows if r["ts"] == ts), None)
+        if tile is None or tile.is_deleted or row is None:
+            return
+        tile.clear()
+        with tile:
+            self._kicks_left -= self._fill_tile(row, kicked=self._kicks_left > 0)
+
+    async def _collect(self, gen: int) -> None:
+        """Everything at once, for the pending-preview poll (which re-renders only on a change)."""
+        # Explicit-path resolution, not the tab accessor: this runs from a timer tick,
+        # where a bare lookup can hand back a blank throwaway state.
+        state = get_project_state_for(self.project_path)
+        tilt_series, tilt_error = registry_tilt_series(self.project_path)
+        ctx = tilt_context(state)
+        png_dir = self._png_dir = tilt_thumb_dir(state, self.project_path)
+        (rows, layers, feature_layers), (groups, facts) = await asyncio.to_thread(
             lambda: (
                 collect_rows(state, self.project_path, tilt_series),
                 collect_tilt_groups(tilt_series, png_dir, ctx),
             )
         )
-        self._collected = True
+        if self._stale(gen):
+            return
+        self.rows, self.tilt_error = rows, tilt_error
+        self._apply_layers(layers, feature_layers)
+        self._source_recon = {key: src.get("recon") for row in self.rows for key, src in row["sources"].items()}
+        self._apply_tilts(state, groups, facts)
+
+    def _apply_layers(self, layers: list[dict], feature_layers: list[dict]) -> None:
         # Colors picked in this session outlive a re-collection.
         for layer in layers:
             if layer["id"] in self._layer_by_id:
@@ -521,7 +802,10 @@ class TomoGalleryPage:
         self._layer_by_id = {layer["id"]: layer for layer in layers}
         self.feature_layers = feature_layers
         self._feature_layer_by_id = {layer["id"]: layer for layer in feature_layers}
-        self._source_recon = {key: src.get("recon") for row in self.rows for key, src in row["sources"].items()}
+
+    def _apply_tilts(self, state, groups: list[dict], facts: dict) -> None:
+        self.tilt_groups, self.tilt_facts = groups, facts
+        self._tilts_pending = False
         self._group_by_ts = {g["ts"]: g for g in self.tilt_groups}
         self._tilt_by_key = {t["key"]: t for g in self.tilt_groups for t in g["tilts"]}
         self._frame_keys = {s.frame_id for g in self.tilt_groups for s, _title in g["ticks"]}
@@ -539,9 +823,10 @@ class TomoGalleryPage:
     async def _tick(self) -> None:
         if not self._active or not self._collected or not self._pending_count():
             return
+        gen = self._gen
         before = self._grid_signature()
-        await self._collect()
-        if self._grid_signature() != before:
+        await self._collect(gen)
+        if not self._stale(gen) and self._grid_signature() != before:
             self.render()
 
     def invalidate(self) -> None:
@@ -682,7 +967,7 @@ class TomoGalleryPage:
         with ui.element("div").classes("cb-gal-toolbar"):
             tabs = render_segmented([(TOMOGRAMS_TAB, "Tomograms"), (TILTS_TAB, "Tilts")], self.tab, self._select_tab)
             tabs.set_badge(TOMOGRAMS_TAB, str(len(self.rows)))
-            tabs.set_badge(TILTS_TAB, str(len(self._tilt_by_key)))
+            tabs.set_badge(TILTS_TAB, "" if self._tilts_pending else str(len(self._tilt_by_key)))
             self._refs["seg_tab"] = tabs
             # The active tab's own controls: a tab switch rebuilds them, never the strip that was clicked.
             controls = ui.element("div").style("display: flex; align-items: center; gap: 8px; flex-wrap: wrap;")
@@ -694,7 +979,28 @@ class TomoGalleryPage:
             self._refs["seg_size"] = render_segmented([(k, lbl) for k, lbl, _w in _SIZES], self.size, self._select_size)
             house_button("Refresh", self._reload_click, tooltip="Re-read the tomograms, tilts and previews from disk")
 
+    def _controls_signature(self) -> tuple:
+        return (
+            self.tab,
+            tuple(k for k, _label in self._source_options()),
+            tuple(layer["id"] for layer in self.layers),
+            tuple(layer["id"] for layer in self.feature_layers),
+            bool(self.rows),
+            bool(self.tilt_groups),
+        )
+
+    def _sync_controls(self) -> None:
+        """Rebuild the tab controls when what they offer changed (a source, a layer or the
+        tilts landed), and only then."""
+        controls = self._refs.get("tab_controls")
+        if controls is None or controls.is_deleted or self._controls_signature() == self._controls_key:
+            return
+        controls.clear()
+        with controls:
+            self._render_tab_controls()
+
     def _render_tab_controls(self) -> None:
+        self._controls_key = self._controls_signature()
         if self.tab == TILTS_TAB:
             if self.tilt_groups:
                 self.tilt_gallery.render_controls()
@@ -984,7 +1290,7 @@ class TomoGalleryPage:
         spent = 0
         self._imgs.pop(row["ts"], None)
         if src is None:
-            self._render_frame_note("not produced by this source")
+            self._render_frame_note("not produced by this source" if row["ready"] else "reading…")
         elif src["png"] is not None:
             img = ui.element("img").classes("cb-gal-img")
             img.props.update(src=src["thumb"], alt=row["ts"], loading="lazy", decoding="async")
@@ -1135,6 +1441,11 @@ class TomoGalleryPage:
     def _render_tilts(self) -> None:
         """Every tilt preview, one collapsible group per tilt series (TiltGallery), under the
         notes only this page knows: the registry error and the previews still being made."""
+        if self._tilts_pending:
+            with ui.element("div").classes("cb-empty"):
+                ui.spinner(size="lg", color="indigo")
+                ui.label("Reading tilts…").classes("text-xs")
+            return
         notes: list[tuple[str, str, bool]] = []
         if self.tilt_error:
             notes.append((self.tilt_error, "#b45309", False))
@@ -1297,6 +1608,8 @@ class TomoGalleryPage:
         stepping through the wall in its order with ←/→ or the side chevrons. A dialog and not
         a mode: zooming is a look, and the routes onward (Journey, 3dmod) are one click away
         either way. One dialog per page, re-filled per tomogram, so a step never closes it."""
+        if not row["ready"]:
+            return  # its pictures are still being read
         dlg = self._refs.get("zoom")
         if dlg is None or dlg.is_deleted:
             with dialog_host():
@@ -1313,7 +1626,7 @@ class TomoGalleryPage:
         dlg.open()
 
     def _step_zoom(self, delta: int) -> None:
-        order = [r["ts"] for r in self.rows]
+        order = [r["ts"] for r in self.rows if r["ready"]]
         if self._zoom_ts not in order:
             return
         i = order.index(self._zoom_ts) + delta

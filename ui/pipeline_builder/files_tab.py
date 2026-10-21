@@ -98,7 +98,7 @@ def render_files_tab(job_type: JobType, job_model, ui_mgr: UIStateManager):
             if current != job_dir and job_dir in current.parents:
                 with (
                     ui.row()
-                    .classes("w-full items-center gap-2 cursor-pointer hover:bg-gray-50 p-2 border-b border-gray-100")
+                    .classes("w-full items-center gap-2 cursor-pointer hover:bg-slate-100 px-2 py-1 rounded")
                     .on("click", lambda: navigate_to(current.parent))
                 ):
                     ui.icon("folder_open", size="16px").classes("text-gray-400")
@@ -109,11 +109,9 @@ def render_files_tab(job_type: JobType, job_model, ui_mgr: UIStateManager):
                 is_selected = state["selected_file"] == item
                 icon = "folder" if is_dir else _get_file_icon(item.suffix)
                 color = "text-blue-400" if is_dir else "text-gray-400"
-                bg_class = "bg-blue-100" if is_selected else "hover:bg-gray-50"
+                bg_class = "bg-blue-100" if is_selected else "hover:bg-slate-100"
 
-                with ui.row().classes(
-                    f"w-full items-center gap-2 cursor-pointer {bg_class} p-2 border-b border-gray-100"
-                ) as row:
+                with ui.row().classes(f"w-full items-center gap-2 cursor-pointer {bg_class} px-2 py-1 rounded") as row:
                     ui.icon(icon, size="16px").classes(color)
                     ui.label(item.name).classes("text-xs text-gray-700 flex-1 truncate")
 
@@ -146,9 +144,7 @@ def render_files_tab(job_type: JobType, job_model, ui_mgr: UIStateManager):
             return
 
         with preview_container:
-            with ui.row().classes(
-                "w-full items-center justify-between p-3 bg-gray-50 border-b border-gray-200 shrink-0"
-            ):
+            with ui.row().classes("w-full items-center justify-between px-3 py-2 shrink-0"):
                 with ui.column().classes("gap-0 flex-1 min-w-0"):
                     ui.label(selected.name).classes("text-xs font-bold text-gray-700 truncate")
                     try:
@@ -212,7 +208,7 @@ def render_files_tab(job_type: JobType, job_model, ui_mgr: UIStateManager):
             zoom_state["level"] = 1.0
             zoom_box.style("transform: scale(1); transition: transform 0.2s;")
 
-        with ui.row().classes("w-full justify-center gap-1 p-2 bg-white border-b border-gray-200"):
+        with ui.row().classes("w-full justify-center gap-1 p-1"):
             ui.button(icon="zoom_in", on_click=zoom_in).props("flat dense round size=sm")
             ui.button(icon="zoom_out", on_click=zoom_out).props("flat dense round size=sm")
             ui.button(icon="center_focus_strong", on_click=reset_zoom).props("flat dense round size=sm").tooltip(
@@ -223,7 +219,7 @@ def render_files_tab(job_type: JobType, job_model, ui_mgr: UIStateManager):
             ui.element("div")
             .classes("w-full bg-gray-900")
             .style(
-                "height: calc(80vh - 100px); overflow: auto; display: flex; "
+                "flex: 1 1 0; min-height: 0; overflow: auto; display: flex; "
                 "align-items: center; justify-content: center;"
             )
         ):
@@ -295,10 +291,12 @@ def render_files_tab(job_type: JobType, job_model, ui_mgr: UIStateManager):
     # Layout
     # ============================================
 
-    with ui.row().classes("w-full border border-gray-200 rounded-lg bg-white").style("height: 80vh; gap: 0;"):
-        with ui.column().classes("border-r border-gray-200").style("width: 35%; height: 100%; overflow-y: auto;"):
-            with ui.row().classes("w-full items-center justify-between p-3 bg-gray-50 border-b border-gray-200"):
-                ui.label("Job Files").classes("text-[10px] font-black text-gray-400 uppercase")
+    # Fills the job page's Files box: the list on a faint gray-blue pane, the preview on white.
+    with ui.row().classes("w-full no-wrap").style("height: 100%; gap: 0;"):
+        with ui.column().style(
+            "width: 35%; height: 100%; overflow-y: auto; gap: 0; background: #f8fafc; border-radius: 4px 0 0 4px;"
+        ):
+            with ui.row().classes("w-full items-center justify-between no-wrap px-3 py-1"):
                 path_label = ui.label(job_dir.name).classes("text-xs text-gray-600 font-mono truncate")
                 ui.button(
                     icon="refresh", on_click=lambda: (render_file_list.refresh(), render_preview.refresh())
@@ -306,7 +304,7 @@ def render_files_tab(job_type: JobType, job_model, ui_mgr: UIStateManager):
 
             file_list_container = ui.column().classes("w-full gap-0")
 
-        with ui.column().classes("bg-white").style("width: 65%; height: 100%;"):
+        with ui.column().classes("bg-white").style("width: 65%; height: 100%; min-width: 0;"):
             preview_container = ui.column().classes("w-full h-full")
 
     render_file_list()

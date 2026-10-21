@@ -25,7 +25,7 @@ from nicegui import ui
 from services.array_tasks import ts_display_name
 from services.particles import analytics
 from services.particles.particle_sets import ParentRef
-from ui.analytics.common import HINT_CLS, TOOLTIP_STYLE
+from ui.analytics.common import CHART_CELL_STYLE, HINT_CLS, TOOLTIP_STYLE
 from ui.components.buttons import house_button
 from ui.components.fields import house_number, house_select
 from ui.components.reactive import SingleFlight
@@ -72,7 +72,7 @@ class SpatialPanel:
     def build(self) -> None:
         self._render_summary()
         with ui.element("div").style("display: flex; gap: 14px; flex-wrap: wrap; min-width: 0; width: 100%;"):
-            with ui.element("div").style("flex: 1 1 280px; min-width: 0;"):
+            with ui.element("div").style(f"flex: 1 1 280px; min-width: 0; {CHART_CELL_STYLE}"):
                 self._title(
                     "depth through the pick slab",
                     "Pooled over tomograms with 20 or more picks: picks per tenth of the slab (between its 5th and "
@@ -80,7 +80,7 @@ class SpatialPanel:
                     "cut.",
                 )
                 self._depth = ui.echart(self._depth_options()).style(f"height: {CHART_PX}px; width: 100%;")
-            with ui.element("div").style("flex: 1 1 280px; min-width: 0;"):
+            with ui.element("div").style(f"flex: 1 1 280px; min-width: 0; {CHART_CELL_STYLE}"):
                 with ui.element("div").style("display: flex; align-items: center; gap: 8px;"):
                     self._title(
                         "yield against quality",
@@ -91,7 +91,7 @@ class SpatialPanel:
                     house_select("x", QUALITY_METRICS, value=self.metric, width="w-40", on_change=self._on_metric)
                 self._yield = ui.echart(self._yield_options()).style(f"height: {CHART_PX}px; width: 100%;")
             if self.subtomo and self.subtomo.get("visible_hist"):
-                with ui.element("div").style("flex: 1 1 220px; min-width: 0;"):
+                with ui.element("div").style(f"flex: 1 1 220px; min-width: 0; {CHART_CELL_STYLE}"):
                     self._title(
                         "tilts each particle is seen in",
                         "rlnTomoVisibleFrames of the extraction: how many tilts carry each particle. Few views mean a "

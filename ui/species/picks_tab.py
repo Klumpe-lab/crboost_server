@@ -72,6 +72,7 @@ from ui.background_task import BackgroundTask
 from ui.components.buttons import house_button
 from ui.components.chip import render_chip
 from ui.components.reactive import FingerprintedView, SingleFlight
+from ui.job_plugins._field_styles import PANEL_STYLE, PANEL_TITLE_STYLE, SECTION_HEADER_STYLE
 from ui.components.svg_icon import load_icon_svg
 from ui.local_file_picker import local_file_picker
 from ui.particles import list_actions, session_status
@@ -81,7 +82,6 @@ from ui.styles import MONO
 logger = logging.getLogger(__name__)
 
 _DISK_REFRESH_S = 15.0  # rows/refs/curation-dir recompute cadence while shown (star reads + globs)
-_LABEL_CLS = "text-[10px] font-bold text-gray-500 uppercase tracking-wider"
 _HINT_CLS = "text-[10px] text-gray-400"
 _LINK_CLS = "text-[10px] text-indigo-500 cursor-pointer underline decoration-dotted"
 
@@ -287,7 +287,7 @@ class _PicksView(FingerprintedView):
         c = self._tab.computed
         with ui.row().classes("w-full items-center gap-2 px-1"):
             # The title carries the save contract on hover.
-            ui.label("PICKS & CURATION").classes(_LABEL_CLS).tooltip(
+            ui.label("Picks & curation").style(PANEL_TITLE_STYLE).tooltip(
                 _save_contract(c.species_slug) if c is not None and not c.error else "computing…"
             )
             ui.space()
@@ -335,61 +335,63 @@ class _PicksView(FingerprintedView):
     # ── One tomogram ──────────────────────────────────────────────────────────
 
     def _render_group(self, c: _Computed, info: _TomoInfo, rows: list[ListRow]) -> None:
-        with ui.element("div").classes("cb-ptable-group"):
-            ui.label(info.tomo_name).classes("cb-ptable-group-name")
-            # Copying the save dir is an act on the name beside it — the folder is the
-            # tomogram's — so it sits with the name rather than at the far right with the
-            # navigation verbs, a whole row's width away from what it copies.
-            ui.button(icon="content_copy", on_click=lambda _e, d=info.curation_dir: self._tab.copy(d)).props(
-                "flat dense round size=sm"
-            ).tooltip(info.curation_dir)
-            if rows:
-                ui.label(f"{len(rows)} list{'s' if len(rows) != 1 else ''}").classes(_HINT_CLS)
-            else:
-                ui.label("no lists").classes(_HINT_CLS)
-            if not info.has_geometry:
-                render_chip(
-                    "geometry",
-                    "missing",
-                    status="error",
-                    tooltip="No tomograms.star carries this tomogram, so a .coords cannot be mapped into it and "
-                    "ArtiaX has no volume to open. Reconstruct or import it first.",
-                )
-            if info.n_saves:
-                render_chip(
-                    "saves",
-                    str(info.n_saves),
-                    status="info",
-                    tooltip="user .coords files in this tomogram's curation dir (an untouched pre-seeded list is not "
-                    "a save) — the watcher registers EACH as its own pick list, named after the file",
-                )
-            ui.space()
-            self._render_group_actions(info)
+        # One panel per tomogram: its name line over its lists, the table white on the panel.
+        with ui.column().classes("w-full gap-1").style(PANEL_STYLE):
+            with ui.element("div").classes("cb-ptable-group").style("margin-top: 0; padding: 0 2px 2px;"):
+                ui.label(info.tomo_name).classes("cb-ptable-group-name")
+                # Copying the save dir is an act on the name beside it — the folder is the
+                # tomogram's — so it sits with the name rather than at the far right with the
+                # navigation verbs, a whole row's width away from what it copies.
+                ui.button(icon="content_copy", on_click=lambda _e, d=info.curation_dir: self._tab.copy(d)).props(
+                    "flat dense round size=sm"
+                ).tooltip(info.curation_dir)
+                if rows:
+                    ui.label(f"{len(rows)} list{'s' if len(rows) != 1 else ''}").classes(_HINT_CLS)
+                else:
+                    ui.label("no lists").classes(_HINT_CLS)
+                if not info.has_geometry:
+                    render_chip(
+                        "geometry",
+                        "missing",
+                        status="error",
+                        tooltip="No tomograms.star carries this tomogram, so a .coords cannot be mapped into it and "
+                        "ArtiaX has no volume to open. Reconstruct or import it first.",
+                    )
+                if info.n_saves:
+                    render_chip(
+                        "saves",
+                        str(info.n_saves),
+                        status="info",
+                        tooltip="user .coords files in this tomogram's curation dir (an untouched pre-seeded list "
+                        "is not a save) — the watcher registers EACH as its own pick list, named after the file",
+                    )
+                ui.space()
+                self._render_group_actions(info)
 
-        # The table box is drawn for every tomogram, empty of lists or not, because the
-        # import row lives in it and that row is the point of an empty tomogram.
-        with ui.element("div").classes("cb-ltable cb-ptable"):
-            if rows:
-                with ui.element("div").classes("cb-ltable-row cb-ptable-row cb-ltable-head"):
-                    ui.element("div")  # swatch
-                    ui.label("list").classes("cb-ltable-h-name")
-                    ui.label("source").classes("cb-ltable-h-name")
-                    ui.label("origin").classes("cb-ltable-h-name").tooltip(
-                        "The template and mask these picks came out of. Hover a cell for the full paths."
-                    )
-                    ui.label("picks").classes("cb-ltable-h-num")
-                    ui.label("Extracted").classes("cb-ltable-h-cell").tooltip(
-                        "Subtomo-extracted state: ✓ when this list's subtomograms are cut and current with its "
-                        "picks, ⚠ when they are stale, blank when it has not been extracted."
-                    )
-                    ui.label("job").classes("cb-ltable-h-cell").tooltip(
-                        "The per-list extraction JOB behind that state — queued / running / succeeded / failed. "
-                        "Hover a mark for the geometry it cut with and any failure text; click it for the logs."
-                    )
-                    ui.element("div")  # actions
-                for row in rows:
-                    self._render_row(c, info.tomo_name, row)
-            self._render_import_row(info)
+            # The table box is drawn for every tomogram, empty of lists or not, because the
+            # import row lives in it and that row is the point of an empty tomogram.
+            with ui.element("div").classes("cb-ltable cb-ptable").style("background: #ffffff; border: none;"):
+                if rows:
+                    with ui.element("div").classes("cb-ltable-row cb-ptable-row cb-ltable-head"):
+                        ui.element("div")  # swatch
+                        ui.label("list").classes("cb-ltable-h-name")
+                        ui.label("source").classes("cb-ltable-h-name")
+                        ui.label("origin").classes("cb-ltable-h-name").tooltip(
+                            "The template and mask these picks came out of. Hover a cell for the full paths."
+                        )
+                        ui.label("picks").classes("cb-ltable-h-num")
+                        ui.label("Extracted").classes("cb-ltable-h-cell").tooltip(
+                            "Subtomo-extracted state: ✓ when this list's subtomograms are cut and current with its "
+                            "picks, ⚠ when they are stale, blank when it has not been extracted."
+                        )
+                        ui.label("job").classes("cb-ltable-h-cell").tooltip(
+                            "The per-list extraction JOB behind that state — queued / running / succeeded / failed. "
+                            "Hover a mark for the geometry it cut with and any failure text; click it for the logs."
+                        )
+                        ui.element("div")  # actions
+                    for row in rows:
+                        self._render_row(c, info.tomo_name, row)
+                self._render_import_row(info)
 
     def _render_import_row(self, info: _TomoInfo) -> None:
         """The import affordance, one per tomogram and always there — under a group's lists
@@ -581,42 +583,45 @@ class _PicksView(FingerprintedView):
     # ── Watcher log ───────────────────────────────────────────────────────────
 
     def _render_log(self) -> None:
-        events, unattributed = self._tab.watcher_view()
-        with ui.row().classes("w-full items-baseline gap-2 px-1 pt-3"):
-            ui.label("WATCHER").classes(_LABEL_CLS)
-            ui.label("what the server did with saves for this species").classes(_HINT_CLS)
-        if not events:
-            ui.label("Nothing ingested yet for this species.").classes(_HINT_CLS + " px-1")
-        for e in events:
-            with ui.row().classes("w-full items-center gap-2 px-1").style("min-height: 20px; flex-wrap: nowrap;"):
-                ui.label(e["ts"].replace("T", " ")).classes("text-[10px] text-gray-400").style(MONO)
-                ui.label(e["kind"]).classes(f"text-[10px] font-bold {_EVENT_CLS.get(e['kind'], 'text-gray-500')}")
-                ui.label(e["tomo_name"]).classes("text-[10px] text-slate-600 truncate").style(MONO)
-                ui.label(Path(e["coords"]).name).classes("text-[10px] text-gray-500 truncate").tooltip(e["coords"])
-                if e.get("count") is not None:
-                    ui.label(f"{e['count']} picks").classes("text-[10px] text-emerald-700")
-                if e.get("message"):
-                    ui.label(e["message"]).classes("text-[10px] text-orange-700 truncate").tooltip(e["message"])
-        if unattributed:
-            with ui.row().classes("w-full items-baseline gap-2 px-1 pt-2"):
-                ui.label("UNATTRIBUTED SAVES").classes(_LABEL_CLS + " text-orange-600")
-                ui.label("project-wide — a save here reached no species, and was never guessed at").classes(_HINT_CLS)
-            for u in unattributed:
-                with ui.column().classes("w-full gap-0 px-1"):
-                    with ui.row().classes("w-full items-center gap-2").style("flex-wrap: nowrap;"):
-                        ui.label(u["dir"]).classes("text-[10px] text-slate-700 truncate").style(MONO).tooltip(u["dir"])
-                        n = len(u.get("files") or [])
-                        if n:
-                            ui.label(f"{n} file{'s' if n != 1 else ''}").classes(_HINT_CLS).tooltip(
-                                "\n".join(Path(f).name for f in u["files"])
+        with ui.column().classes("w-full gap-0").style(PANEL_STYLE):
+            events, unattributed = self._tab.watcher_view()
+            ui.label("Watcher").style(f"{PANEL_TITLE_STYLE} margin-bottom: 6px;").tooltip(
+                "What the server did with saves for this species."
+            )
+            if not events:
+                ui.label("Nothing ingested yet for this species.").classes(_HINT_CLS)
+            for e in events:
+                with ui.row().classes("w-full items-center gap-2").style("min-height: 20px; flex-wrap: nowrap;"):
+                    ui.label(e["ts"].replace("T", " ")).classes("text-[10px] text-gray-400").style(MONO)
+                    ui.label(e["kind"]).classes(f"text-[10px] font-bold {_EVENT_CLS.get(e['kind'], 'text-gray-500')}")
+                    ui.label(e["tomo_name"]).classes("text-[10px] text-slate-600 truncate").style(MONO)
+                    ui.label(Path(e["coords"]).name).classes("text-[10px] text-gray-500 truncate").tooltip(e["coords"])
+                    if e.get("count") is not None:
+                        ui.label(f"{e['count']} picks").classes("text-[10px] text-emerald-700")
+                    if e.get("message"):
+                        ui.label(e["message"]).classes("text-[10px] text-orange-700 truncate").tooltip(e["message"])
+            if unattributed:
+                ui.label("Unattributed saves").style(f"{SECTION_HEADER_STYLE} color: #ea580c;").tooltip(
+                    "Project-wide: a save here reached no species, and was never guessed at."
+                )
+                for u in unattributed:
+                    with ui.column().classes("w-full gap-0"):
+                        with ui.row().classes("w-full items-center gap-2").style("flex-wrap: nowrap;"):
+                            ui.label(u["dir"]).classes("text-[10px] text-slate-700 truncate").style(MONO).tooltip(
+                                u["dir"]
                             )
-                        ui.space()
-                        # The only way these picks acquire a species, and it is the
-                        # user's call — never an inference.
-                        ui.label("assign ↗").classes(_LINK_CLS).on(
-                            "click", lambda _e, entry=u: self._tab.assign_unattributed(entry)
-                        ).tooltip("Move these .coords into a species + tomogram's curation folder and import them")
-                    ui.label(u["reason"]).classes("text-[10px] text-orange-700")
+                            n = len(u.get("files") or [])
+                            if n:
+                                ui.label(f"{n} file{'s' if n != 1 else ''}").classes(_HINT_CLS).tooltip(
+                                    "\n".join(Path(f).name for f in u["files"])
+                                )
+                            ui.space()
+                            # The only way these picks acquire a species, and it is the
+                            # user's call — never an inference.
+                            ui.label("assign ↗").classes(_LINK_CLS).on(
+                                "click", lambda _e, entry=u: self._tab.assign_unattributed(entry)
+                            ).tooltip("Move these .coords into a species + tomogram's curation folder and import them")
+                        ui.label(u["reason"]).classes("text-[10px] text-orange-700")
 
 
 def _noop() -> None:
@@ -645,7 +650,7 @@ class PicksTab:
 
     def build(self, container: ui.element) -> None:
         with container:
-            slot = ui.column().classes("w-full gap-1 p-2")
+            slot = ui.column().classes("w-full p-2").style("gap: 10px;")
         self._view = _PicksView(slot, self)
         # Paint "computing…" only; the first compute is kicked by the page's
         # `_refresh_visible_tab` right after this (build runs during page construction,

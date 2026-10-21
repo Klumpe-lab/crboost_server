@@ -61,6 +61,11 @@ SECTION_HEADER_FIRST_STYLE = SECTION_HEADER_STYLE.replace("margin: 8px 0 4px 0",
 # WHITESPACE in the page layout, never an underline rule.
 PAGE_SECTION_STYLE = f"{SANS} font-size: 12px; font-weight: 600; color: #334155; line-height: 1; display: block;"
 
+# A page's large blocks (a job page's sections): a pale gray-blue panel without a border and its
+# title in gray-blue ink, as the Journey's sections. Fields keep their white boxes on it.
+PANEL_STYLE = "background: #eef3f8; border-radius: 6px; padding: 10px 12px 12px; box-sizing: border-box;"
+PANEL_TITLE_STYLE = f"{SANS} font-size: 12px; font-weight: 600; color: #2c4a6b; line-height: 1; display: block;"
+
 # A sub-block inside a Config section (SLURM's "Per-Task Resources" / "Supervisor"): spacing only, no box.
 GROUP_STYLE = "width: 100%; margin-top: 10px;"
 GROUP_MUTED_STYLE = GROUP_STYLE
@@ -80,18 +85,14 @@ def section_header(text: str, *, first: bool = False):
     ui.label(text).style(style)
 
 
-def section_rule():
-    ui.element("div").style(f"width: 100%; height: 1px; background: {CLR_BORDER}; margin: 4px 0 6px 0;")
-
-
 # ── Containers ──────────────────────────────────────────────────────────────
 @contextmanager
 def config_section(title: str, *, tooltip: str | None = None):
-    """One section of a job's Config tab (Parameters / Inputs / Outputs / SLURM resources):
-    a page-scale title over its content, no card or border. The tab's column gap separates
-    sections."""
-    with ui.column().classes("w-full").style("gap: 6px;") as el:
-        lbl = ui.label(title).style(PAGE_SECTION_STYLE)
+    """One section of a job's page (Parameters / Inputs / Outputs / SLURM resources): its
+    title over its content on a pale gray-blue panel, the Journey's section look. No border;
+    the page's column gap separates sections."""
+    with ui.column().classes("w-full").style(f"gap: 8px; {PANEL_STYLE}") as el:
+        lbl = ui.label(title).style(PANEL_TITLE_STYLE)
         if tooltip:
             lbl.tooltip(tooltip)
         with ui.column().classes("w-full").style("gap: 0;"):
@@ -394,6 +395,44 @@ def choice_row(
 
             def _on_change(e):
                 setattr(job_model, attr, e.value or empty_value)
+                save_handler()
+
+            sel.on_value_change(_on_change)
+    return sel
+
+
+def multi_choice_row(
+    label: str,
+    job_model,
+    attr: str,
+    options: dict[str, str],
+    *,
+    is_frozen: bool,
+    save_handler: Callable,
+    hint: str | None = None,
+    placeholder: str = "none available",
+):
+    """`choice_row` for a list field: any number of the options, shown comma-separated in the
+    box. The field's values must be among `options` (the caller adds any it holds that are not,
+    labelled as such, so they stay visible and removable). Writes a new sorted list, so the model
+    sees an assignment and marks itself dirty."""
+    with ui.element("div").style(ROW_STYLE):
+        _label(label, hint)
+        if not options:
+            sel = ui.select(options={"": placeholder}, value="")
+        else:
+            current = [v for v in getattr(job_model, attr) or [] if v in options]
+            sel = ui.select(options=options, value=current, multiple=True)
+        sel.props(_INPUT_PROPS_BASE)
+        sel.props('popup-content-class="cb-select-popup"')
+        sel.classes("cb-select")
+        sel.style("flex: 1 1 0; min-width: 0;")
+        if is_frozen or not options:
+            sel.disable()
+        else:
+
+            def _on_change(e):
+                setattr(job_model, attr, sorted(e.value or []))
                 save_handler()
 
             sel.on_value_change(_on_change)

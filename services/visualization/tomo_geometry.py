@@ -29,6 +29,7 @@ reconstruction's thickness, so the division is a last resort, not a first source
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -233,7 +234,7 @@ def all_geometries(project_state, project_path: Path) -> list[TomoGeometry]:
     would have used.
     """
     project_path = Path(project_path)
-    out: list[TomoGeometry] = []
+    todo: list[tuple[pd.Series, str, Path, str]] = []
     seen: set[str] = set()
     for source, star_path in tomogram_star_sources(project_state, project_path):
         df = read_tomo_table(star_path)
@@ -244,8 +245,11 @@ def all_geometries(project_state, project_path: Path) -> list[TomoGeometry]:
             if name in seen:
                 continue
             seen.add(name)
-            out.append(_geometry_from_row(row, name, star_path, source, project_path))
-    return out
+            todo.append((row, name, star_path, source))
+    # Each row stats its volume and reads its header: a few NFS round-trips per tomogram, which add up
+    # to seconds for a hundred of them when done in turn.
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        return list(pool.map(lambda t: _geometry_from_row(*t, project_path), todo))
 
 
 def geometry_for_ts(project_state, project_path: Path, ts_name: str) -> TomoGeometry | None:

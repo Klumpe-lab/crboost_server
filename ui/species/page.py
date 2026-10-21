@@ -93,7 +93,15 @@ class SpeciesPage:
     def build(self) -> None:
         ensure_assets_loaded()
         with ui.element("div").style("display: flex; flex-direction: row; width: 100%; height: 100%; min-height: 0;"):
-            rail = ui.element("div").classes("cb-srail")
+            # The rail is a pale gray-blue panel beside the page, not a ruled-off column.
+            rail = (
+                ui.element("div")
+                .classes("cb-srail")
+                .style(
+                    "background: #eef3f8; border-right: none; border-radius: 6px; "
+                    "margin: 0 0 10px 10px; height: auto; align-self: stretch;"
+                )
+            )
             self._rail = SpeciesRail(
                 rail,
                 self.project_path,

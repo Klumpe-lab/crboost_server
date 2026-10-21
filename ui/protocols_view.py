@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +37,7 @@ from ui.components.chip import render_chip
 from ui.components.fields import house_text
 from ui.components.reactive import FingerprintedView, SingleFlight, owned_timer
 from ui.dashboard.css import ensure_assets_loaded
-from ui.job_plugins._field_styles import PAGE_SECTION_STYLE
+from ui.job_plugins._field_styles import PANEL_STYLE, PANEL_TITLE_STYLE
 from ui.protocols_blocks import KEY, LABEL, TEXT, VAL, fmt_value, kv_grid, species_block, stage_block, stage_title
 from ui.styles import MONO, SANS as FONT
 
@@ -70,10 +71,16 @@ def protocol_light(project_path: Path | None) -> tuple[str, str]:
     return "lit", f"Created from {head}. Click for the Protocols view."
 
 
-def _section(title: str, tooltip: str | None = None) -> None:
-    lab = ui.label(title).style(PAGE_SECTION_STYLE)
-    if tooltip:
-        lab.tooltip(tooltip)
+@contextmanager
+def _panel(title: str, tooltip: str | None = None):
+    """One block of the page: a pale gray-blue panel with its title line inside; yields that line,
+    for marks that belong beside the title."""
+    with ui.column().classes("w-full").style(f"gap: 8px; {PANEL_STYLE}"):
+        with ui.row().classes("w-full items-center gap-2 no-wrap") as head:
+            lab = ui.label(title).style(PANEL_TITLE_STYLE)
+            if tooltip:
+                lab.tooltip(tooltip)
+        yield head
 
 
 # ── the page ──────────────────────────────────────────────────────────────────
@@ -157,7 +164,7 @@ class ProtocolsPage:
             with (
                 ui.column()
                 .classes("w-full")
-                .style("height: 100%; overflow-y: auto; padding: 10px 18px 24px; gap: 0; box-sizing: border-box;")
+                .style("height: 100%; overflow-y: auto; padding: 0 14px 24px; gap: 0; box-sizing: border-box;")
             ):
                 self._refs["header"] = ui.element("div").classes("w-full")
                 self._refs["params_host"] = ui.element("div").classes("w-full")
@@ -201,7 +208,10 @@ class ProtocolsPage:
         host.clear()
         info = self.info_for(self.selected)
         origin = self.state.protocol_origin
-        with host, ui.element("div").classes("cb-jhead").style("margin-bottom: 14px;"):
+        with (
+            host,
+            ui.element("div").classes("cb-jhead").style("margin-bottom: 4px; padding-left: 0; padding-right: 0;"),
+        ):
             with ui.element("div").classes("cb-jhead-left"):
                 if info is None:
                     ui.label("No protocol bundles under config/protocols/ or ~/.crboost/protocols/.").classes(
@@ -335,13 +345,15 @@ class _ParamsView(FingerprintedView):
         ids = self._stage_ids()
         edits = self._edits()
         n_edited = sum(len(v) for v in edits.values())
-        with ui.column().classes("w-full gap-2").style("margin-bottom: 22px;"):
-            with ui.row().classes("w-full items-center gap-2 no-wrap"):
-                _section(
-                    "This project",
-                    f"{state.project_name} was created from {origin.name} v{origin.version}: per stage, the "
-                    "parameters the protocol pinned beside what the job holds now.",
-                )
+        with (
+            ui.element("div").classes("w-full").style("margin-bottom: 10px;"),
+            _panel(
+                "This project",
+                f"{state.project_name} was created from {origin.name} v{origin.version}: per stage, the "
+                "parameters the protocol pinned beside what the job holds now.",
+            ) as head,
+        ):
+            with head:
                 ui.label(f"applied {origin.applied_at or '?'}").style(TEXT)
                 if n_edited:
                     render_chip(
@@ -352,20 +364,16 @@ class _ParamsView(FingerprintedView):
                     )
                 if page.frozen_error:
                     render_chip("frozen copy", "unreadable", status="error", tooltip=page.frozen_error)
-            for index, iid in enumerate(ids, start=1):
-                self._stage_row(index, iid, state.jobs.get(iid), edits.get(iid) or [])
+            with ui.column().classes("w-full gap-0"):
+                for index, iid in enumerate(ids, start=1):
+                    self._stage_row(index, iid, state.jobs.get(iid), edits.get(iid) or [])
 
     def _stage_row(self, index: int, iid: str, jm, edits: list) -> None:
         page = self.page
         frozen_stage = page.frozen.get_stage(iid) if page.frozen is not None else None
         title = stage_title(frozen_stage)[0] if frozen_stage is not None else (getattr(jm, "job_type", None) or iid)
         edited = {n: (a, b) for n, a, b in edits}
-        with (
-            ui.expansion()
-            .classes("w-full cb-scroll-tight")
-            .style("border-bottom: 1px solid #f1f5f9;")
-            .props("dense") as exp
-        ):
+        with ui.expansion().classes("w-full cb-scroll-tight").props("dense") as exp:
             exp.props('header-class="p-0"')
             with exp.add_slot("header"):
                 with (
@@ -432,9 +440,8 @@ class _ProtocolView(FingerprintedView):
         if info is None:
             return
         p = info.protocol
-        with ui.column().classes("w-full gap-5"):
-            with ui.column().classes("w-full gap-1"):
-                _section("Protocol as declared", str(info.bundle_dir))
+        with ui.column().classes("w-full").style("gap: 10px;"):
+            with _panel("Protocol as declared", str(info.bundle_dir)):
                 if p is None:
                     ui.label(f"broken: {info.error}").style(TEXT + " color: #b91c1c;")
                 else:
@@ -453,12 +460,11 @@ class _ProtocolView(FingerprintedView):
                                 species_block(sp)
                             for i, st in enumerate(p.stages, start=1):
                                 stage_block(i, st)
-            with ui.column().classes("w-full gap-1"):
-                _section(
-                    "Save this project as a protocol",
-                    "Export this project's pipeline (species, assets, every stage's parameters) as a new bundle under "
-                    "~/.crboost/protocols/<name>/ — the way a workflow that worked becomes something you can hand over",
-                )
+            with _panel(
+                "Save this project as a protocol",
+                "Export this project's pipeline (species, assets, every stage's parameters) as a new bundle under "
+                "~/.crboost/protocols/<name>/ — the way a workflow that worked becomes something you can hand over",
+            ):
                 with ui.row().classes("items-center gap-2 no-wrap"):
                     name_input = house_text("name", width="w-56", placeholder=f"{page.state.project_name}-v1")
                     house_button(

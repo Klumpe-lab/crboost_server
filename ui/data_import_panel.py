@@ -23,6 +23,7 @@ from ui.local_file_picker import local_file_picker
 from ui.glob_directory_input import GlobDirectoryInput
 from ui.dataset_overview_panel import build_dataset_overview_panel, build_dry_run_summary
 from ui.projects_overview import ProjectsOverview
+from ui.job_plugins._field_styles import PANEL_STYLE, PANEL_TITLE_STYLE
 from ui.styles import MONO, SANS as FONT
 
 logger = logging.getLogger(__name__)
@@ -47,7 +48,6 @@ CLR_HEADING = "#0f172a"  # slate-950: dark, authoritative
 CLR_LABEL = "#475569"  # slate-600
 CLR_SUBLABEL = "#94a3b8"  # slate-400
 CLR_GHOST = "#cbd5e1"  # slate-300
-CLR_BORDER = "#e2e8f0"  # slate-200, slightly blue-tinted
 CLR_ACCENT = "#2563eb"  # blue-600
 CLR_ACCENT_LIGHT = "#dbeafe"
 CLR_ACCENT_TEXT = "#1e40af"
@@ -940,7 +940,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
     # DATASET OVERVIEW
     # =========================================================================
 
-    _PROGRESS_BOX = f"border: 1px solid {CLR_BORDER}; border-radius: 6px; padding: 8px 10px; background: #f8fafc;"
+    _PROGRESS_BOX = "border-radius: 6px; padding: 8px 10px; background: #eef3f8;"
 
     def _render_scan_affordance(msg: str, color: str, *, can_scan: bool):
         """Pre-scan feedback under the path fields: the mdoc count and the Scan
@@ -1123,9 +1123,16 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             local_refs["overview_glob"] = mdocs_glob
             _stop_parse_timer()
             container.clear()
-            with container:
-                # "Save Selection" button row
-                with ui.row().classes("w-full items-center justify-between mb-1"):
+            # One panel: the overview with its title, then the selection's save action under it.
+            with container, ui.column().classes("w-full").style(f"gap: 6px; {PANEL_STYLE}"):
+
+                def _on_selection_change():
+                    _refresh_dose_row()
+                    update_create_button_state()
+
+                build_dataset_overview_panel(overview, on_change=_on_selection_change)
+
+                with ui.row().classes("w-full items-center justify-between"):
                     if restored:
                         ui.label("Restored saved selection").style(
                             f"{FONT} font-size: 9px; color: {CLR_SUCCESS}; font-style: italic;"
@@ -1141,12 +1148,6 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                             ui.notify("Selection saved", type="positive")
 
                     house_button("Save selection", _do_save_selection)
-
-                def _on_selection_change():
-                    _refresh_dose_row()
-                    update_create_button_state()
-
-                build_dataset_overview_panel(overview, on_change=_on_selection_change)
             _apply_overview_to_fields(overview)
         except Exception as e:
             logger.exception("Dataset parsing failed for %s", mdocs_glob)
@@ -1183,12 +1184,10 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
     ui_mgr.panel_refs.autodetect_button = None
     ui_mgr.panel_refs.load_button = None
 
-    card_style = (
-        "background: white; border-radius: 8px; "
-        f"border: 1px solid {CLR_BORDER}; "
-        "box-shadow: 0 1px 3px rgba(15,23,42,0.06);"
-    )
-    section_style = f"border: 1px solid {CLR_BORDER}; border-radius: 6px; padding: 7px 9px; background: #f8fafc;"
+    # The form is white with its blocks on pale gray-blue panels (the Journey's section look); no
+    # card outline around it.
+    card_style = "background: white;"
+    section_style = f"gap: 8px; {PANEL_STYLE}"
     field_label_style = (
         f"{FONT} font-size: {SZ_BODY}; font-weight: 500; color: {CLR_LABEL}; "
         "letter-spacing: 0.01em; margin-bottom: 2px;"
@@ -1220,84 +1219,87 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             "flex: 1 1 0; min-height: 0; overflow-y: auto; display: none; flex-direction: column;"
         )
         with views["new"]:
-            with ui.column().classes("w-full gap-0 px-4 py-3").style(card_style + " max-width: 880px;"):
-                with ui.element("div").style("margin-bottom: 8px;"):
+            with ui.column().classes("w-full px-4 py-3").style(card_style + " max-width: 880px; gap: 10px;"):
+                with ui.element("div"):
                     view_switch("new")
 
-                with ui.row().classes("w-full gap-4 mb-2"):
-                    with ui.column().classes("gap-0").style("flex: 1;"):
-                        ui.label("Project Name").style(field_label_style)
-                        project_name_input = (
-                            ui.input(
-                                value=ui_mgr.data_import.project_name,
-                                on_change=on_project_name_change,
-                                placeholder="e.g. HIV_Tomo_Batch1",
+                with ui.column().classes("w-full").style(f"gap: 6px; {PANEL_STYLE}"):
+                    ui.label("Project").style(PANEL_TITLE_STYLE)
+                    with ui.row().classes("w-full gap-4"):
+                        with ui.column().classes("gap-0").style("flex: 1;"):
+                            ui.label("Project Name").style(field_label_style)
+                            project_name_input = (
+                                ui.input(
+                                    value=ui_mgr.data_import.project_name,
+                                    on_change=on_project_name_change,
+                                    placeholder="e.g. HIV_Tomo_Batch1",
+                                )
+                                .props("dense borderless hide-bottom-space")
+                                .style(input_sans_style)
                             )
-                            .props("dense borderless hide-bottom-space")
-                            .style(input_sans_style)
-                        )
-                        project_name_input.on("blur", lambda e: sync_state_from_inputs())
-                        ui_mgr.panel_refs.project_name_input = project_name_input
+                            project_name_input.on("blur", lambda e: sync_state_from_inputs())
+                            ui_mgr.panel_refs.project_name_input = project_name_input
 
-                    with ui.column().classes("gap-0").style("flex: 2;"):
+                        with ui.column().classes("gap-0").style("flex: 2;"):
+                            with ui.row().classes("items-center gap-1"):
+                                ui.label("Base Location").style(field_label_style)
+                                with ui.icon("help_outline", size="11px").style(f"color: {CLR_GHOST}; cursor: help;"):
+                                    ui.tooltip(
+                                        "Where the project directory will be created. "
+                                        "Processing artifacts and results are stored here."
+                                    ).style(f"{FONT} font-size: {SZ_META};")
+                            with ui.row().classes("w-full items-center gap-1"):
+                                project_path_input = GlobDirectoryInput(
+                                    extension="",
+                                    initial_glob=ui_mgr.data_import.project_base_path,
+                                    on_change=on_project_path_change,
+                                    on_commit=on_project_path_commit,
+                                    recent_provider=_recent_roots,
+                                    on_forget_recent=forget_root,
+                                    placeholder="/path/to/projects",
+                                )
+                                project_path_input.input_el.on("blur", on_project_path_blur)
+                                ui_mgr.panel_refs.project_path_input = project_path_input
+                                with ui.element("div").style("position: relative;"):
+                                    ui.button(icon="folder", on_click=pick_project_path).props(
+                                        "flat dense round size=xs"
+                                    ).classes("text-slate-400 hover:text-slate-600")
+                                    ui.tooltip("New project directory will be created here").style(
+                                        f"{FONT} font-size: {SZ_META};"
+                                    )
+
+                    # Project creation has no type switches. Leaving the raw-data globs empty is
+                    # the request for a data-less project (see is_dataless()), and merging
+                    # particles across projects is a capability every project has, reachable
+                    # from the PARTICLES header of the roster. The
+                    # dataless_hint below says what is about to be created, so neither can happen
+                    # by accident.
+
+                    # Shared/lab ownership toggle: when on, the project is created
+                    # with owner = SHARED_OWNER (grouped under "Lab / Shared" in the
+                    # roster) instead of belonging to the creating user. `created_by`
+                    # still records who actually made it; ownership can be changed
+                    # later from the roster.
+                    def on_shared_toggle(e):
+                        ui_mgr.update_data_import(is_shared=bool(e.value))
+
+                    with ui.row().classes("w-full items-center justify-between"):
                         with ui.row().classes("items-center gap-1"):
-                            ui.label("Base Location").style(field_label_style)
+                            ui.label("Shared (lab) project").style(field_label_style)
                             with ui.icon("help_outline", size="11px").style(f"color: {CLR_GHOST}; cursor: help;"):
                                 ui.tooltip(
-                                    "Where the project directory will be created. "
-                                    "Processing artifacts and results are stored here."
+                                    "Create under the shared Lab area instead of your own. "
+                                    "Ownership can be transferred later from the roster."
                                 ).style(f"{FONT} font-size: {SZ_META};")
-                        with ui.row().classes("w-full items-center gap-1"):
-                            project_path_input = GlobDirectoryInput(
-                                extension="",
-                                initial_glob=ui_mgr.data_import.project_base_path,
-                                on_change=on_project_path_change,
-                                on_commit=on_project_path_commit,
-                                recent_provider=_recent_roots,
-                                on_forget_recent=forget_root,
-                                placeholder="/path/to/projects",
-                            )
-                            project_path_input.input_el.on("blur", on_project_path_blur)
-                            ui_mgr.panel_refs.project_path_input = project_path_input
-                            with ui.element("div").style("position: relative;"):
-                                ui.button(icon="folder", on_click=pick_project_path).props(
-                                    "flat dense round size=xs"
-                                ).classes("text-slate-400 hover:text-slate-600")
-                                ui.tooltip("New project directory will be created here").style(
-                                    f"{FONT} font-size: {SZ_META};"
-                                )
+                        ui.switch(value=ui_mgr.data_import.is_shared, on_change=on_shared_toggle).props("dense").style(
+                            "transform: scale(0.65);"
+                        )
 
-                # Project creation has no type switches. Leaving the raw-data globs empty is
-                # the request for a data-less project (see is_dataless()), and merging
-                # particles across projects is a capability every project has, reachable
-                # from the PARTICLES header of the roster. The
-                # dataless_hint below says what is about to be created, so neither can happen
-                # by accident.
-
-                # Shared/lab ownership toggle: when on, the project is created
-                # with owner = SHARED_OWNER (grouped under "Lab / Shared" in the
-                # roster) instead of belonging to the creating user. `created_by`
-                # still records who actually made it; ownership can be changed
-                # later from the roster.
-                def on_shared_toggle(e):
-                    ui_mgr.update_data_import(is_shared=bool(e.value))
-
-                with ui.row().classes("w-full items-center justify-between mb-2"):
-                    with ui.row().classes("items-center gap-1"):
-                        ui.label("Shared (lab) project").style(field_label_style)
-                        with ui.icon("help_outline", size="11px").style(f"color: {CLR_GHOST}; cursor: help;"):
-                            ui.tooltip(
-                                "Create under the shared Lab area instead of your own. "
-                                "Ownership can be transferred later from the roster."
-                            ).style(f"{FONT} font-size: {SZ_META};")
-                    ui.switch(value=ui_mgr.data_import.is_shared, on_change=on_shared_toggle).props("dense").style(
-                        "transform: scale(0.65);"
-                    )
-
-                raw_data_section = ui.column().classes("w-full gap-1")
+                raw_data_section = ui.column().classes("w-full").style("gap: 10px;")
                 local_refs["raw_data_section"] = raw_data_section
 
-                with raw_data_section, ui.column().classes("w-full gap-2").style(section_style):
+                with raw_data_section, ui.column().classes("w-full").style(section_style):
+                    ui.label("Raw data").style(PANEL_TITLE_STYLE)
                     # Raw Frames & Mdocs (combined input)
                     with ui.column().classes("w-full gap-0"):
                         with ui.row().classes("w-full items-center justify-between"):
@@ -1451,10 +1453,10 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                 # Dataset overview (populated when mdocs are validated). Lives
                 # inside raw_data_section.
                 with raw_data_section:
-                    dataset_overview_container = ui.column().classes("w-full gap-0 mt-1")
+                    dataset_overview_container = ui.column().classes("w-full gap-0")
                     local_refs["dataset_overview_container"] = dataset_overview_container
 
-                with ui.row().classes("w-full items-center justify-between mt-3"):
+                with ui.row().classes("w-full items-center justify-between"):
                     status_indicator = ui.label("Enter details to begin...").style(
                         f"{FONT} font-size: {SZ_BODY}; color: {CLR_SUBLABEL};"
                     )

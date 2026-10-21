@@ -16,7 +16,7 @@ from nicegui import ui
 from services.array_tasks import ts_display_name, ts_position_sort_key
 from services.particles import analytics
 from services.particles.sigma import LADDER_SIGMAS
-from ui.analytics.common import HINT_CLS, esc, fmt_sci
+from ui.analytics.common import TABLE_ON_PANEL_STYLE, HINT_CLS, esc, fmt_sci
 from ui.components.fields import house_select
 
 MARKER_LABELS = {
@@ -211,7 +211,7 @@ class TomogramTable:
             )
             n_marked = len(self.markers)
             ui.label(f"{len(self.rows)} tomograms · {n_marked} marked").classes(HINT_CLS)
-        with ui.element("div").classes("cb-atable-wrap"):
+        with ui.element("div").classes("cb-atable-wrap").style(TABLE_ON_PANEL_STYLE):
             self._html = ui.html(self._content(), sanitize=False)
 
     def _content(self) -> str:

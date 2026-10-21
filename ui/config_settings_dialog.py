@@ -17,6 +17,7 @@ Design notes
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 import logging
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,7 @@ from nicegui import ui
 from services.configs.config_service import check_path_exists, get_config_service
 from services.models_base import JobType
 from ui.components.buttons import house_button
+from ui.job_plugins._field_styles import PANEL_TITLE_STYLE
 from ui.styles import MONO, SANS as FONT
 
 logger = logging.getLogger(__name__)
@@ -47,6 +49,8 @@ _LABEL_W = 132
 # Every container row is a plain div inside a ui.column (align-items: flex-start):
 # without an explicit width it shrink-wraps to the left.
 _ROW_BOX = "width: 100%; box-sizing: border-box;"
+# A section: the Journey's pale gray-blue panel, inset from the dialog's edges.
+_PANEL = "background: #eef3f8; border-radius: 6px; padding: 10px 0 8px; margin: 0 12px; width: calc(100% - 24px);"
 # Label-plus-input cells that flow into as many columns as the row allows. The cell
 # is `minmax(200px, 1fr)` and the input takes what the label leaves — so every input
 # in a grid has the same length and the last column reaches the right edge.
@@ -98,16 +102,19 @@ def open_config_settings(on_saved: Callable[[], None] | None = None) -> None:
         "tools": copy.deepcopy(eff.get("tools") or {}),
     }
 
-    with ui.dialog() as dialog, ui.card().style(
-        "width: 92vw; max-width: 1060px; max-height: 90vh; padding: 0; overflow: hidden; "
-        "border-radius: 8px; box-shadow: 0 12px 32px rgba(15,23,42,0.18);"
+    with (
+        ui.dialog() as dialog,
+        ui.card().style(
+            "width: 92vw; max-width: 1060px; max-height: 90vh; padding: 0; overflow: hidden; "
+            "border-radius: 8px; box-shadow: 0 12px 32px rgba(15,23,42,0.18);"
+        ),
     ):
         _build_header(dialog, cs, on_saved)
         # cb-scroll-tight: NiceGUI's scroll-area content is a flex column with
         # align-items: flex-start, so anything without an explicit width shrink-wraps
         # to the left edge — every row below claims the full width instead.
         with ui.scroll_area().classes("w-full cb-scroll-tight").style("height: 66vh; padding: 0;"):
-            body = ui.column().classes("w-full").style("gap: 0; padding: 0 0 10px;")
+            body = ui.column().classes("w-full").style("gap: 10px; padding: 2px 0 10px;")
             with body:
                 _section_environment(nv)
                 _section_containers(nv)
@@ -122,10 +129,7 @@ def open_config_settings(on_saved: Callable[[], None] | None = None) -> None:
 
 
 def _build_header(dialog, cs, on_saved) -> None:
-    with ui.element("div").style(
-        "display: flex; align-items: center; gap: 10px; padding: 12px 16px; "
-        f"border-bottom: 1px solid {CLR_BORDER}; background: #f8fafc;"
-    ):
+    with ui.element("div").style("display: flex; align-items: center; gap: 10px; padding: 12px 16px 8px;"):
         ui.icon("settings", size="18px").style(f"color: {CLR_ACCENT};")
         with ui.column().classes("gap-0").style("flex: 1; min-width: 0;"):
             ui.label("Server configuration").style(
@@ -141,17 +145,25 @@ def _build_header(dialog, cs, on_saved) -> None:
 
 def _override_badge(cs) -> None:
     if cs.has_user_override:
-        with ui.element("div").style(
-            "display: flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 20px; "
-            "background: #eff6ff; border: 1px solid #bfdbfe; flex-shrink: 0;"
-        ).tooltip(f"Your personal override is active:\n{cs.user_override_path}"):
+        with (
+            ui.element("div")
+            .style(
+                "display: flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 20px; "
+                "background: #eff6ff; border: 1px solid #bfdbfe; flex-shrink: 0;"
+            )
+            .tooltip(f"Your personal override is active:\n{cs.user_override_path}")
+        ):
             ui.element("div").style(f"width: 6px; height: 6px; border-radius: 50%; background: {CLR_ACCENT};")
             ui.label("custom config").style(f"{FONT} font-size: 10px; font-weight: 600; color: #1e40af;")
     else:
-        with ui.element("div").style(
-            "display: flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 20px; "
-            "background: #f1f5f9; border: 1px solid #e2e8f0; flex-shrink: 0;"
-        ).tooltip("Using the shared server defaults. Edits below are saved to your home folder only."):
+        with (
+            ui.element("div")
+            .style(
+                "display: flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 20px; "
+                "background: #f1f5f9; border: 1px solid #e2e8f0; flex-shrink: 0;"
+            )
+            .tooltip("Using the shared server defaults. Edits below are saved to your home folder only.")
+        ):
             ui.element("div").style("width: 6px; height: 6px; border-radius: 50%; background: #94a3b8;")
             ui.label("server defaults").style(f"{FONT} font-size: 10px; font-weight: 600; color: {CLR_LABEL};")
 
@@ -188,10 +200,7 @@ def _build_footer(dialog, cs, nv, on_saved) -> None:
         if on_saved:
             on_saved()
 
-    with ui.element("div").style(
-        "display: flex; align-items: center; gap: 8px; padding: 10px 16px; "
-        f"border-top: 1px solid {CLR_BORDER}; background: #f8fafc;"
-    ):
+    with ui.element("div").style("display: flex; align-items: center; gap: 8px; padding: 10px 16px 14px;"):
         house_button(
             "Revert to server defaults",
             _do_revert,
@@ -208,9 +217,7 @@ async def _confirm_revert(cs) -> bool:
         ui.notify("Already on server defaults — nothing to revert", type="info")
         return False
     with ui.dialog() as d, ui.card().classes("w-96"):
-        ui.label("Revert to server defaults?").style(
-            f"{FONT} font-size: 13px; font-weight: 600; color: {CLR_HEADING};"
-        )
+        ui.label("Revert to server defaults?").style(f"{FONT} font-size: 13px; font-weight: 600; color: {CLR_HEADING};")
         ui.label("This deletes your personal override. The shared server configuration is untouched.").style(
             f"{FONT} font-size: 12px; color: {CLR_LABEL}; margin-top: 4px;"
         )
@@ -227,17 +234,16 @@ async def _confirm_revert(cs) -> bool:
 # ── section header + shared field builders ─────────────────────────────────
 
 
-def _section_header(title: str, subtitle: str = "") -> None:
-    with ui.element("div").style(
-        f"{_ROW_BOX} padding: 9px 16px 6px; background: #f8fafc; border-top: 1px solid #e2e8f0; "
-        "border-bottom: 1px solid #e2e8f0;"
-    ):
-        ui.label(title).style(
-            f"{FONT} font-size: 10px; font-weight: 700; color: #64748b; "
-            "letter-spacing: 0.08em; text-transform: uppercase;"
-        )
-        if subtitle:
-            ui.label(subtitle).style(f"{FONT} font-size: 10px; color: {CLR_SUBLABEL}; margin-top: 1px;")
+@contextmanager
+def _section(title: str, subtitle: str = ""):
+    """One block of the dialog: a pale gray-blue panel with its title and subtitle inside; the rows
+    keep their own side padding."""
+    with ui.element("div").style(f"{_ROW_BOX} {_PANEL}"):
+        with ui.element("div").style(f"{_ROW_BOX} padding: 0 16px 4px;"):
+            ui.label(title).style(PANEL_TITLE_STYLE)
+            if subtitle:
+                ui.label(subtitle).style(f"{FONT} font-size: 10px; color: {CLR_SUBLABEL}; margin-top: 3px;")
+        yield
 
 
 def _path_field(label: str, initial: str, setter: Callable[[str], None], kind: str, note: str = "") -> None:
@@ -283,33 +289,33 @@ def _path_field(label: str, initial: str, setter: Callable[[str], None], kind: s
 
 
 def _section_environment(nv: dict[str, Any]) -> None:
-    _section_header("Environment", "The Python used inside SLURM jobs")
+    with _section("Environment", "The Python used inside SLURM jobs"):
 
-    def set_py(v):
-        nv["crboost_python"] = v
+        def set_py(v):
+            nv["crboost_python"] = v
 
-    _path_field(
-        "job Python",
-        nv["crboost_python"],
-        set_py,
-        kind="python",
-        note="Empty = the interpreter running this server. Either way it must start on the compute nodes.",
-    )
+        _path_field(
+            "job Python",
+            nv["crboost_python"],
+            set_py,
+            kind="python",
+            note="Empty = the interpreter running this server. Either way it must start on the compute nodes.",
+        )
 
 
 def _section_containers(nv: dict[str, Any]) -> None:
-    _section_header("Containers & tools", _TOOLS_HINT)
-    tools: dict[str, Any] = nv["tools"]
-    if not tools:
-        with ui.element("div").style(f"{_ROW_BOX} padding: 8px 16px;"):
-            ui.label("No tools configured.").style(
-                f"{FONT} font-size: 11px; color: {CLR_SUBLABEL}; font-style: italic;"
-            )
-        return
+    with _section("Containers & tools", _TOOLS_HINT):
+        tools: dict[str, Any] = nv["tools"]
+        if not tools:
+            with ui.element("div").style(f"{_ROW_BOX} padding: 8px 16px;"):
+                ui.label("No tools configured.").style(
+                    f"{FONT} font-size: 11px; color: {CLR_SUBLABEL}; font-style: italic;"
+                )
+            return
 
-    for name in sorted(tools):
-        tc = tools[name]
-        _tool_row(name, tc)
+        for name in sorted(tools):
+            tc = tools[name]
+            _tool_row(name, tc)
 
 
 def _tool_row(name: str, tc: dict[str, Any]) -> None:
@@ -322,7 +328,7 @@ def _tool_row(name: str, tc: dict[str, Any]) -> None:
     def active_key() -> str:
         return "container_path" if tc.get("exec_mode") == "container" else "bin_path"
 
-    with ui.element("div").style(f"{_ROW_BOX} padding: 5px 16px; border-bottom: 1px solid #f8fafc;"):
+    with ui.element("div").style(f"{_ROW_BOX} padding: 5px 16px;"):
         with ui.row().classes("w-full items-center").style("gap: 8px; flex-wrap: nowrap;"):
             ui.label(name).style(
                 f"{MONO} font-size: 10px; font-weight: 600; color: {CLR_HEADING}; "
@@ -337,7 +343,7 @@ def _tool_row(name: str, tc: dict[str, Any]) -> None:
 
             mode_select = (
                 ui.select(["container", "binary"], value=tc.get("exec_mode"))
-                .props('dense options-dense borderless popup-content-class=cb-select-popup')
+                .props("dense options-dense borderless popup-content-class=cb-select-popup")
                 .classes("cb-select")
                 .style("width: 92px; flex-shrink: 0; font-size: 10px;")
             )
@@ -363,26 +369,26 @@ def _tool_row(name: str, tc: dict[str, Any]) -> None:
 
 
 def _section_slurm(nv: dict[str, Any]) -> None:
-    _section_header("SLURM defaults", "Applied when submitting jobs — takes effect on the next run")
-    sd: dict[str, Any] = nv["slurm_defaults"]
+    with _section("SLURM defaults", "Applied when submitting jobs — takes effect on the next run"):
+        sd: dict[str, Any] = nv["slurm_defaults"]
 
-    # Global defaults — the common fields in a grid that fills the row; every cell
-    # is the same label-plus-input shape, so the inputs line up and end together.
-    fields = ["partition", "constraint", "gres", "mem", "cpus_per_task", "time", "nodes", "ntasks_per_node"]
-    with ui.element("div").style(f"{_ROW_BOX} padding: 8px 16px 4px;"):
-        with ui.element("div").style(_FIELD_GRID):
-            for key in fields:
-                _grid_text(sd, key, _FIELD_LABELS.get(key, key))
+        # Global defaults — the common fields in a grid that fills the row; every cell
+        # is the same label-plus-input shape, so the inputs line up and end together.
+        fields = ["partition", "constraint", "gres", "mem", "cpus_per_task", "time", "nodes", "ntasks_per_node"]
+        with ui.element("div").style(f"{_ROW_BOX} padding: 8px 16px 4px;"):
+            with ui.element("div").style(_FIELD_GRID):
+                for key in fields:
+                    _grid_text(sd, key, _FIELD_LABELS.get(key, key))
 
-    # Per-job overrides — only the fields actually present per profile.
-    profiles: dict[str, Any] = nv["job_resource_profiles"]
-    if profiles:
-        with ui.element("div").style(f"{_ROW_BOX} padding: 6px 16px 2px;"):
-            ui.label("Per-job overrides").style(
-                f"{FONT} font-size: 9px; font-weight: 700; color: {CLR_SUBLABEL}; letter-spacing: 0.06em;"
-            )
-        for key in profiles:
-            _profile_row(key, profiles[key])
+        # Per-job overrides — only the fields actually present per profile.
+        profiles: dict[str, Any] = nv["job_resource_profiles"]
+        if profiles:
+            with ui.element("div").style(f"{_ROW_BOX} padding: 6px 16px 2px;"):
+                ui.label("Per-job overrides").style(
+                    f"{FONT} font-size: 9px; font-weight: 700; color: {CLR_SUBLABEL}; letter-spacing: 0.06em;"
+                )
+            for key in profiles:
+                _profile_row(key, profiles[key])
 
 
 def _grid_text(store: dict[str, Any], key: str, label: str) -> None:
@@ -407,7 +413,7 @@ def _profile_row(job_key: str, profile: dict[str, Any]) -> None:
     display = _JOB_LABELS.get(job_key, job_key)
     with ui.element("div").style(
         f"{_ROW_BOX} display: grid; grid-template-columns: {_LABEL_W}px minmax(0, 1fr); gap: 8px; "
-        "align-items: start; padding: 4px 16px; border-bottom: 1px solid #f8fafc;"
+        "align-items: start; padding: 4px 16px;"
     ):
         ui.label(display).style(
             f"{MONO} font-size: 10px; color: #374151; text-align: right; overflow: hidden; text-overflow: ellipsis; "
@@ -419,21 +425,21 @@ def _profile_row(job_key: str, profile: dict[str, Any]) -> None:
 
 
 def _section_local(nv: dict[str, Any]) -> None:
-    _section_header("Project defaults", "Landing-page defaults for new projects")
-    local: dict[str, Any] = nv["local"]
-    local.setdefault("DefaultProjectBase", "")
-    local.setdefault("DefaultMoviesGlob", "")
-    local.setdefault("DefaultMdocsGlob", "")
+    with _section("Project defaults", "Landing-page defaults for new projects"):
+        local: dict[str, Any] = nv["local"]
+        local.setdefault("DefaultProjectBase", "")
+        local.setdefault("DefaultMoviesGlob", "")
+        local.setdefault("DefaultMdocsGlob", "")
 
-    def mk(k):
-        def _s(v):
-            local[k] = v
+        def mk(k):
+            def _s(v):
+                local[k] = v
 
-        return _s
+            return _s
 
-    _path_field("project base", local.get("DefaultProjectBase") or "", mk("DefaultProjectBase"), kind="dir")
-    _path_field("movies glob", local.get("DefaultMoviesGlob") or "", mk("DefaultMoviesGlob"), kind="glob")
-    _path_field("mdocs glob", local.get("DefaultMdocsGlob") or "", mk("DefaultMdocsGlob"), kind="glob")
+        _path_field("project base", local.get("DefaultProjectBase") or "", mk("DefaultProjectBase"), kind="dir")
+        _path_field("movies glob", local.get("DefaultMoviesGlob") or "", mk("DefaultMoviesGlob"), kind="glob")
+        _path_field("mdocs glob", local.get("DefaultMdocsGlob") or "", mk("DefaultMdocsGlob"), kind="glob")
 
 
 def _coerce_like(old: Any, new: str) -> Any:

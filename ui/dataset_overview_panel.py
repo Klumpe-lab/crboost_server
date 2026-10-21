@@ -9,6 +9,7 @@ from collections.abc import Callable
 from nicegui import ui
 
 from services.tilt_series.preimport import DatasetOverview
+from ui.job_plugins._field_styles import PANEL_TITLE_STYLE
 from ui.styles import MONO, SANS as FONT
 
 CLR_HEADING = "#0f172a"
@@ -83,7 +84,11 @@ def build_dataset_overview_panel(overview: DatasetOverview, on_change: Callable[
 
     # --- State tracking ---
     all_pos_cbs: list[tuple] = []
-    summary_label = ui.label("")
+
+    # --- Header: the title and the selection counts ---
+    with ui.row().classes("w-full items-baseline justify-between"):
+        ui.label("Dataset overview").style(PANEL_TITLE_STYLE)
+        summary_label = ui.label("")
     summary_label.style(f"{MONO} font-size: 10px; color: {CLR_SUBLABEL};")
 
     # --- Dynamic acquisition summary bar ---
@@ -111,13 +116,6 @@ def build_dataset_overview_panel(overview: DatasetOverview, on_change: Callable[
     _refresh_counts()
     _refresh_summary_bar()
 
-    # --- Header ---
-    with ui.row().classes("w-full items-baseline justify-between mt-2 mb-1"):
-        ui.label("Dataset Overview").style(
-            f"{FONT} font-size: 12px; font-weight: 600; color: {CLR_HEADING}; letter-spacing: -0.01em;"
-        )
-        summary_label.move(target_index=1)
-
     hdr_style = (
         f"{FONT} font-size: 8px; font-weight: 500; color: {CLR_SUBLABEL}; "
         f"text-transform: uppercase; letter-spacing: 0.04em; {CELL}"
@@ -131,7 +129,7 @@ def build_dataset_overview_panel(overview: DatasetOverview, on_change: Callable[
         ui.column()
         .classes("w-full gap-0")
         .style(
-            f"border: 1px solid {CLR_BORDER}; border-radius: 6px; "
+            f"border: 1px solid {CLR_BORDER}; border-radius: 6px; background: #ffffff; "
             "min-width: 0; max-height: 420px; overflow-y: auto; overflow-x: auto;"
         )
     ):
@@ -221,11 +219,7 @@ def _build_acquisition_summary_bar(s, overview, row_registry):
     if not s.pixel_sizes and not s.voltages:
         return
 
-    with (
-        ui.element("div")
-        .classes("w-full")
-        .style(f"border: 1px solid {CLR_BORDER}; border-radius: 6px; padding: 6px 10px; background: #f8fafc;")
-    ):
+    with ui.element("div").classes("w-full").style("padding: 2px 0;"):
         with ui.row().classes("w-full items-center gap-4 flex-wrap"):
             _param_chip("Pixel", s.pixel_sizes, "\u212b", ".3f", "pixel_size")
             _param_chip("Voltage", s.voltages, "kV", ".0f", "voltage")
@@ -389,7 +383,7 @@ def _build_position_group(pos, overview, refresh_all, row_registry):
         with ts_container_ref[0]:
             for ts_idx, ts in enumerate(pos.tilt_series):
                 is_last = ts_idx == len(pos.tilt_series) - 1
-                border = "" if is_last else f"border-bottom: 1px solid {CLR_BORDER};"
+                border = "" if is_last else "border-bottom: 1px solid #f1f5f9;"
                 a_lo, a_hi = ts.angle_range
                 ts_angle = f"{a_lo:+.1f}\u00b0..{a_hi:+.1f}\u00b0"
 
@@ -534,10 +528,7 @@ def build_dry_run_summary(overview: DatasetOverview) -> None:
         with (
             ui.column()
             .classes("w-full gap-0")
-            .style(
-                f"border: 1px solid {CLR_BORDER}; border-radius: 6px; "
-                "max-height: 200px; overflow-y: auto; background: #f8fafc;"
-            )
+            .style("border-radius: 6px; max-height: 200px; overflow-y: auto; background: #eef3f8; padding: 4px 0;")
         ):
             for ts in selected:
                 ui.label(f"  {ts.ts_label}  ({ts.tilt_count} tilts)").style(
@@ -545,11 +536,7 @@ def build_dry_run_summary(overview: DatasetOverview) -> None:
                 )
 
         # Data safety guarantee
-        with (
-            ui.column()
-            .classes("w-full gap-1")
-            .style(f"border: 1px solid {CLR_BORDER}; border-radius: 6px; padding: 10px 12px; background: #f0fdf4;")
-        ):
+        with ui.column().classes("w-full gap-1").style("border-radius: 6px; padding: 10px 12px; background: #f0fdf4;"):
             with ui.row().classes("items-center gap-2"):
                 ui.icon("verified_user", size="16px").style("color: #16a34a;")
                 ui.label("Your original data will not be modified").style(
