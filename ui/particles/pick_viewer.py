@@ -56,7 +56,7 @@ from services.visualization.preview_render import is_output_stale, render_recon_
 from services.workers import WorkKind, run_in_worker
 from services.visualization.tomo_geometry import APIX_MRC_HEADER, TomoGeometry, geometry_for_ts
 from services.job_lineage import job_dirs, recon_of
-from ui.components.buttons import house_button
+from ui.components.buttons import house_button, icon_button
 from ui.components.feature_layers import FeatureFills, layers_for_ts
 from ui.components.reactive import SingleFlight, slot_is_gone
 from ui.components.segmented import render_segmented
@@ -1064,7 +1064,7 @@ def _render_list_cutout_sheet(
             _render_list_header(lst, sp, project_path)
             counter = ui.label(_counter_txt()).classes("cb-filter-counter")
             ui.space()
-            with ui.row().classes("cb-toolbelt items-center gap-0 no-wrap"):
+            with ui.row().classes("cb-toolbelt items-center gap-0.5 no-wrap"):
                 if len(_list_filter_presets) >= 2:
                     fbtn = _toolbelt_button("tune", "Display filter — how the cutouts are rendered, never the data")
                     with fbtn, ui.menu().props("anchor='bottom right' self='top right'"):
@@ -1957,7 +1957,7 @@ def render_particles_section(
             # Per-species generate controls (Render previews · Re-render · IMOD)
             # live in the panel toolbar, following the active tab; the canvas-wide
             # polarity switch is section-level (shared across species).
-            admin_host = ui.row().classes("items-center gap-0 cb-section-admin")
+            admin_host = ui.row().classes("items-center gap-0.5 cb-section-admin")
             if fills is not None:
                 fills.menu()
             if mrc_path is not None:
@@ -2277,38 +2277,21 @@ def _render_species_admin_buttons(sp: dict, project_path: Path, refresh) -> None
         return
     imod_dir = job_dir / "vis" / "imodPartRad"
     has_imod_models = imod_dir.exists() and any(imod_dir.glob("*.mod"))
-    gen_missing_btn = (
-        ui.button(
-            icon="auto_fix_high",
-            on_click=lambda: _handle_generate_for_instance(
-                iid, jm, job_dir, project_path, False, gen_missing_btn, refresh
-            ),
-            color=None,
-        )
-        .props("flat dense round size=sm")
-        .classes("cb-tb-btn")
-        .tooltip("Render previews for tomograms whose manifest entry is missing or stale.")
-    )
-    regen_btn = (
-        ui.button(
-            icon="refresh",
-            on_click=lambda: _handle_generate_for_instance(iid, jm, job_dir, project_path, True, regen_btn, refresh),
-            color=None,
-        )
-        .props("flat dense round size=sm")
-        .classes("cb-tb-btn")
-        .tooltip("Re-render all: bypass cache and regenerate every tomogram's preview from scratch.")
-    )
-    imod_btn = (
-        ui.button(
-            icon="scatter_plot",
-            on_click=lambda: _handle_generate_imod_for_instance(iid, jm, job_dir, project_path, imod_btn, refresh),
-            color=None,
-        )
-        .props("flat dense round size=sm")
-        .classes("cb-tb-btn")
-        .tooltip("Regenerate IMOD .mod overlays" if has_imod_models else "Generate IMOD .mod overlays")
-    )
+    gen_missing_btn = icon_button(
+        "auto_fix_high",
+        lambda: _handle_generate_for_instance(iid, jm, job_dir, project_path, False, gen_missing_btn, refresh),
+        tooltip="Render previews for tomograms whose manifest entry is missing or stale.",
+    ).classes("cb-tb-btn")
+    regen_btn = icon_button(
+        "refresh",
+        lambda: _handle_generate_for_instance(iid, jm, job_dir, project_path, True, regen_btn, refresh),
+        tooltip="Re-render all: bypass cache and regenerate every tomogram's preview from scratch.",
+    ).classes("cb-tb-btn")
+    imod_btn = icon_button(
+        "scatter_plot",
+        lambda: _handle_generate_imod_for_instance(iid, jm, job_dir, project_path, imod_btn, refresh),
+        tooltip="Regenerate IMOD .mod overlays" if has_imod_models else "Generate IMOD .mod overlays",
+    ).classes("cb-tb-btn")
 
 
 def _render_species_tab_body(
@@ -2554,12 +2537,7 @@ def _render_list_rail(
                             str(Path(sp["job_dir"]) / "candidates.star") if slug == "auto" else (lst.get("path") or "")
                         )
                         if copy_path:
-                            cbtn = (
-                                ui.button(icon="content_copy", color=None)
-                                .props("flat dense round size=sm")
-                                .classes("cb-info-copy")
-                                .tooltip(copy_path)
-                            )
+                            cbtn = icon_button("content_copy", tooltip=copy_path)
                             cbtn.on(
                                 "click.stop",
                                 lambda e, v=copy_path: (
@@ -2573,11 +2551,10 @@ def _render_list_rail(
                         # registered list, and there is nothing here to unregister.
                         if slug != "auto":
                             del_label = lst.get("label") or slug
-                            dbtn = (
-                                ui.button(icon="delete_outline", color=None)
-                                .props("flat dense round size=sm")
-                                .classes("cb-del-btn")
-                                .tooltip("Delete this list (its star, curated subset, extraction output and saves)")
+                            dbtn = icon_button(
+                                "delete_outline",
+                                tooltip="Delete this list (its star, curated subset, extraction output and saves)",
+                                kind="danger",
                             )
                             dbtn.on(
                                 "click.stop",
@@ -2747,7 +2724,7 @@ _FULLSCREEN_JS = """(e) => {
 def _toolbelt_button(icon: str, tooltip: str) -> ui.button:
     """One toolbelt icon. Popover-opening icons wrap this in `with btn, ui.menu()`;
     stateful toggles flip `.cb-tb-on` on the returned button."""
-    return ui.button(icon=icon, color=None).props("flat dense round size=sm").classes("cb-tb-btn").tooltip(tooltip)
+    return icon_button(icon, tooltip=tooltip).classes("cb-tb-btn")
 
 
 def _cmd_row(label: str, value: str, *, status: tuple[str, str, str] | None = None) -> dict:
@@ -2766,16 +2743,11 @@ def _cmd_row(label: str, value: str, *, status: tuple[str, str, str] | None = No
         icon = ui.icon(icon_name, size="14px").classes(icon_color)
         if icon_tip:
             icon.tooltip(icon_tip)
-        (
-            ui.button(
-                icon="content_copy",
-                on_click=lambda: (ui.clipboard.write(cmd.value), ui.notify("Copied", type="positive", timeout=800)),
-                color=None,
-            )
-            .props("flat dense round size=sm")
-            .classes("cb-tb-btn")
-            .tooltip("Copy to clipboard")
-        )
+        icon_button(
+            "content_copy",
+            lambda: (ui.clipboard.write(cmd.value), ui.notify("Copied", type="positive", timeout=800)),
+            tooltip="Copy to clipboard",
+        ).classes("cb-tb-btn")
     return {"cmd_input": cmd, "status_icon": icon}
 
 
@@ -3256,7 +3228,7 @@ def _render_gallery_body(
             ui.label("Subtomo gallery").classes("cb-section-title")
             ui.label(f"{len(all_pick_indices)} cutouts").classes("cb-gallery-count")
             ui.space()
-            toolbelt = ui.row().classes("cb-toolbelt items-center gap-0 no-wrap")
+            toolbelt = ui.row().classes("cb-toolbelt items-center gap-0.5 no-wrap")
         # The curation bar exists only while curation mode is armed: counter, the
         # degenerate-picks toggle, Reset and Save. With the mode off there is nothing
         # to save, so showing a disabled Save pair would only be noise.

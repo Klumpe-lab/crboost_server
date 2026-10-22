@@ -47,7 +47,7 @@ from services.particles.set_ops import parent_options, parent_options_all_specie
 from services.particles.species_jobs import jobs_for_species
 from services.project_state import get_project_state_for
 from ui.analytics.controls_panel import ControlsPanel
-from ui.analytics.common import ERROR_CLS, HINT_CLS, LABEL_CLS, TOOLTIP_STYLE, panel, render_provenance, section
+from ui.analytics.common import ERROR_CLS, HINT_CLS, LABEL_CLS, TOOLTIP_STYLE, panel, render_provenance
 from ui.analytics.funnel import FunnelLine, FunnelStep
 from ui.analytics.project_breakdown import ProjectBreakdown
 from ui.analytics.results_section import ResultsSection
@@ -60,7 +60,7 @@ from ui.components.buttons import house_button
 from ui.components.dialogs import dialog_host
 from ui.components.fields import house_select
 from ui.components.reactive import FingerprintedView, SingleFlight
-from ui.job_plugins._field_styles import PANEL_HEAD_STYLE
+from ui.job_plugins._field_styles import panel_head
 from ui.species.tab import TabContext
 from ui.styles import SANS
 
@@ -247,12 +247,11 @@ class _AnalyticsView(FingerprintedView):
         c = self._tab.computed
         # Each block is a panel; the slot's gap separates them.
         with panel():
-            with ui.row().classes("w-full items-center gap-3").style(PANEL_HEAD_STYLE):
-                section(
-                    "Scores in σ",
-                    tooltip="Template-matching scores divided by each tomogram's noise level σ, so one cut means the "
-                    "same everywhere. Rules on this page mark tomograms; nothing is dropped by them.",
-                )
+            with panel_head(
+                "Scores in σ",
+                tooltip="Template-matching scores divided by each tomogram's noise level σ, so one cut means the "
+                "same everywhere. Rules on this page mark tomograms; nothing is dropped by them.",
+            ):
                 if c is not None and c.sources:
                     house_select(
                         "source",
@@ -262,7 +261,6 @@ class _AnalyticsView(FingerprintedView):
                         hint="Which template match and extraction the numbers describe.",
                         on_change=lambda e: self._tab.choose_source(e.value),
                     )
-                ui.space()
                 house_button("Refresh", self._tab.refresh_now, tooltip="Re-read the records now")
             if c is None:
                 ui.label("computing…").classes(HINT_CLS)

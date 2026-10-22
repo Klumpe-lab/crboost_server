@@ -27,6 +27,7 @@ from collections.abc import Callable, Hashable
 from nicegui import ui
 
 from services.background_tasks import BackgroundTaskRecord, get_background_task_registry
+from ui.components.buttons import icon_button
 from ui.components.reactive import FingerprintedView
 
 logger = logging.getLogger(__name__)
@@ -124,13 +125,9 @@ def _render_task_card(task: BackgroundTaskRecord, refresh_tray: Callable[[], Non
                     )
 
             if task.is_running:
-                ui.button(icon="close", on_click=lambda t=task: _cancel(t, refresh_tray)).props(
-                    "flat dense round size=xs"
-                ).classes("text-slate-400 hover:text-red-500").tooltip("Cancel")
+                icon_button("close", lambda t=task: _cancel(t, refresh_tray), tooltip="Cancel", kind="danger")
             else:
-                ui.button(icon="close", on_click=lambda t=task: _dismiss(t, refresh_tray)).props(
-                    "flat dense round size=xs"
-                ).classes("text-slate-300 hover:text-slate-600").tooltip("Dismiss")
+                icon_button("close", lambda t=task: _dismiss(t, refresh_tray), tooltip="Dismiss")
 
         # Progress + status line
         if task.is_running:
@@ -186,7 +183,7 @@ def _status_glyph(status: str) -> tuple[str, str]:
 
 def _outcome_text(task: BackgroundTaskRecord) -> str:
     secs = task.duration_sec
-    duration = f"{secs:.0f}s" if secs >= 1 else f"{secs*1000:.0f}ms"
+    duration = f"{secs:.0f}s" if secs >= 1 else f"{secs * 1000:.0f}ms"
     if task.status == "succeeded":
         if task.result_message:
             return f"{task.result_message} · {duration}"

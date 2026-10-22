@@ -30,8 +30,6 @@ _CB_CSS = """
 .cb-ts-row.selected { background: #eef2ff; border-left: 3px solid #6366f1; padding-left: 7px; }
 .cb-ts-titlebar { display: flex; align-items: center; gap: 4px; min-height: 18px; }
 .cb-ts-row .cb-ts-pos { font-weight: 600; color: #1f2937; font-size: 11px; }
-.cb-ts-info-btn { color: #cbd5e1 !important; min-height: 18px !important; }
-.cb-ts-info-btn:hover { color: #475569 !important; }
 /* Two tracks per row: a 'prep' bar (the 4 array stages) and one line per
  * species (pick + subtomo segments + pick count). Fixed-width segments keep a
  * stage comparable across tracks; the head column aligns the bars vertically. */
@@ -79,7 +77,7 @@ _CB_CSS = """
     );
 }
 /* Per-row info popover (the ⓘ): full tomo name + metadata + file paths, each
- * with a copy-full-path button. Click-opened so the copy buttons are usable. */
+ * whose value copies on click. Click-opened so the values can be clicked. */
 .cb-info-card {
     min-width: 300px; max-width: 460px; padding: 6px 4px; display: flex; flex-direction: column; gap: 3px;
     font-family: 'IBM Plex Sans', sans-serif;
@@ -93,8 +91,6 @@ _CB_CSS = """
     /* rtl truncates the LEFT of long paths, keeping the filename visible. */
     direction: rtl; text-align: left;
 }
-.cb-info-copy { color: #94a3b8 !important; }
-.cb-info-copy:hover { color: #475569 !important; }
 .cb-info-meta { font-size: 10px; color: #64748b; font-family: 'IBM Plex Mono', monospace; padding: 1px 0 3px 88px; }
 .cb-main { padding: 12px; }
 /* (height/flex/overflow set inline at construction time so the dialog viewport
@@ -429,8 +425,8 @@ _CB_CSS = """
 .cb-tt-sep { margin: 5px 0; background: #e2e8f0; }
 /* Visibility eye — per-list (rail chip) + per-species master (tab); both toggle
  * that scope's canvas dot layers. Shared base + a tab-placement variant. */
-.cb-eye { color: #94a3b8; cursor: pointer; flex: 0 0 auto; transition: color 0.12s; }
-.cb-eye:hover { color: #475569; }
+.cb-eye { color: #8aa0b8; cursor: pointer; flex: 0 0 auto; transition: color 0.12s; }
+.cb-eye:hover { color: var(--cb-head-ink, #12324f); }
 .cb-tab-eye { margin-left: 4px; align-self: center; }
 /* Per-species tabs beside the canvas. Matched to the journey aesthetic:
  * small, slate, no-caps, a thin slate indicator (the tab's own colour: the tabs
@@ -472,16 +468,16 @@ _CB_CSS = """
 .cb-gallery-head { padding: 0 0 2px 0; }
 .cb-gallery-count { font-size: 10px; color: #94a3b8; font-family: ui-monospace, monospace; }
 .cb-toolbelt { flex-shrink: 0; }
-.cb-tb-btn { color: #94a3b8; }
-.cb-tb-btn:hover { color: #475569; }
+.cb-tb-btn { color: #6b829b; }
+.cb-tb-btn:hover { color: var(--cb-head-ink, #12324f); }
 /* An armed stateful toolbelt toggle (curation mode) is loud: while it is on, clicking
  * a cutout changes what downstream consumes, so the icon must not read like the rest
  * of the row. Dark slate, the house accent. */
 .cb-tb-btn.cb-tb-on {
-    color: #ffffff; background: #334155;
-    box-shadow: 0 0 0 2px rgba(51,65,85,0.22);
+    color: #ffffff !important; background: var(--cb-btn-accent, #1f4e79) !important;
+    box-shadow: 0 0 0 2px rgba(74, 143, 212, 0.25);
 }
-.cb-tb-btn.cb-tb-on:hover { color: #ffffff; background: #1e293b; }
+.cb-tb-btn.cb-tb-on:hover { color: #ffffff !important; background: var(--cb-btn-accent-hover, #163a5c) !important; }
 /* The curation bar appears under the header only while curation mode is armed. */
 .cb-curation-bar {
     padding: 3px 0 5px 0; margin-bottom: 2px;
@@ -678,15 +674,15 @@ _CB_CSS = """
     display: inline-flex; align-items: center; gap: 6px;
     padding: 2px 8px; border-radius: 999px;
     font-family: ui-monospace, monospace; font-size: 10px;
-    border: 1px solid #e5e7eb; background: #f8fafc;
-    color: #475569; cursor: help; line-height: 1.4;
+    border: 1px solid #dbe3ec; background: #f4f8fc;
+    color: #33506e; cursor: help; line-height: 1.4;
     white-space: nowrap;
 }
 .cb-chip .cb-chip-label {
-    color: #94a3b8; text-transform: uppercase;
+    color: #7d93ab; text-transform: uppercase;
     font-size: 9px; font-weight: 700; letter-spacing: 0.4px;
 }
-.cb-chip .cb-chip-value { color: #1e293b; font-weight: 600; }
+.cb-chip .cb-chip-value { color: #12324f; font-weight: 600; }
 .cb-chip-ok      { background: #ecfdf5; border-color: #a7f3d0; }
 .cb-chip-ok      .cb-chip-value { color: #047857; }
 .cb-chip-warn    { background: #fffbeb; border-color: #fcd34d; }
@@ -695,7 +691,7 @@ _CB_CSS = """
 .cb-chip-error   .cb-chip-value { color: #b91c1c; }
 .cb-chip-info    { background: #eff6ff; border-color: #bfdbfe; }
 .cb-chip-info    .cb-chip-value { color: #1d4ed8; }
-.cb-chip-neutral { background: #f1f5f9; }
+.cb-chip-neutral { background: #eef3f8; }
 .cb-chip-icon    { font-size: 11px !important; }
 /* Recon-section large canvas: viewport-filling WarpTools PNG preview. */
 .cb-recon-preview {
@@ -881,9 +877,9 @@ _CB_CSS = """
 /* The kept-counter chip, in the gallery's curation bar. */
 .cb-filter-counter {
     font-family: ui-monospace, monospace; font-size: 10px;
-    color: #475569;
+    color: #33506e;
     padding: 1px 6px; border-radius: 3px;
-    background: #f1f5f9; border: 1px solid #e2e8f0;
+    background: #f4f8fc; border: 1px solid #dbe3ec;
 }
 .cb-filter-counter.cb-filter-dirty {
     color: #b45309; background: #fef3c7; border-color: #fde68a;
@@ -899,7 +895,7 @@ _CB_CSS = """
    header itself, below), the line tightens. */
 .cb-jhead {
     flex: 0 0 auto; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px; min-height: 30px;
-    padding: 0 12px 6px 14px; background: #ffffff;
+    padding: 5px 12px 5px 14px;
     font-family: 'IBM Plex Sans', sans-serif; container: cb-jhead / inline-size;
 }
 .cb-jhead-left { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 4px 10px; flex-wrap: wrap; }
@@ -908,14 +904,14 @@ _CB_CSS = """
     margin-left: auto;
 }
 .cb-jhead-empty { font-size: 10px; color: #94a3b8; }
-.cb-jsep { width: 1px; height: 14px; background: #e5e7eb; flex: 0 0 auto; }
+.cb-jsep { width: 1px; height: 14px; background: var(--cb-panel-line, #dbe3ec); flex: 0 0 auto; }
 .cb-jswitch {
     display: flex; align-items: baseline; gap: 6px; cursor: pointer; user-select: none;
     padding: 3px 6px; margin-left: -6px; border-radius: 4px;
 }
-.cb-jswitch:hover { background: #f1f5f9; }
+.cb-jswitch:hover { background: var(--cb-hover, #e6eff8); }
 .cb-jswitch-caret { font-size: 9px; color: #94a3b8; }
-.cb-jswitch-pos { font-size: 12px; font-weight: 600; color: #0f172a; white-space: nowrap; }
+.cb-jswitch-pos { font-size: 12px; font-weight: 600; color: var(--cb-head-ink, #12324f); white-space: nowrap; }
 .cb-jswitch-pos.excluded { text-decoration: line-through; color: #94a3b8; }
 .cb-jswitch-idx { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #64748b; white-space: nowrap; }
 .cb-jstage { display: flex; align-items: center; gap: 4px; }
@@ -992,19 +988,24 @@ _CB_CSS = """
  * switcher as one bordered strip; the active segment is tinted, never a Quasar tab. */
 .cb-seg {
     display: inline-flex; align-items: stretch; flex-shrink: 0;
-    border: 1px solid #e2e8f0; border-radius: 4px; overflow: hidden; background: #ffffff;
+    border: 1px solid var(--cb-field-line, #d3dde8); border-radius: var(--cb-field-radius, 4px); overflow: hidden;
+    background: #ffffff; box-shadow: 0 1px 1px rgba(16, 42, 67, 0.04);
 }
 .cb-seg-btn {
     font-size: 9px; font-weight: 500; line-height: 16px; padding: 2px 8px;
-    color: #64748b; background: #ffffff; cursor: pointer; user-select: none;
-    border-right: 1px solid #e2e8f0; white-space: nowrap;
+    color: #4f6782; background: #ffffff; cursor: pointer; user-select: none;
+    border-right: 1px solid #e3eaf2; white-space: nowrap;
 }
 .cb-seg-btn { display: inline-flex; align-items: baseline; gap: 5px; }
 .cb-seg-btn:last-child { border-right: none; }
-.cb-seg-badge { font-size: 10px; font-variant-numeric: tabular-nums; color: #94a3b8; }
-.cb-seg-btn.active .cb-seg-badge { color: #64748b; }
-.cb-seg-btn:hover { background: #f8fafc; }
-.cb-seg-btn.active { background: #f1f5f9; color: #1e293b; font-weight: 600; }
+.cb-seg-badge { font-size: 10px; font-variant-numeric: tabular-nums; color: #8aa0b8; }
+.cb-seg-btn.active .cb-seg-badge { color: #4a6584; }
+.cb-seg-btn:hover { background: #f4f8fc; color: var(--cb-head-ink, #12324f); }
+/* The active segment: the title stripes' light blue with their blue tick, under it. */
+.cb-seg-btn.active {
+    background: var(--cb-head, #edf4fb); color: var(--cb-head-ink, #12324f); font-weight: 600;
+    box-shadow: inset 0 -2px 0 var(--cb-accent, #4a8fd4);
+}
 /* Small strip: as tall as a 16 px `.cb-field`, for control rows (projects roster). */
 .cb-seg-sm .cb-seg-btn { line-height: 14px; padding: 0 6px; }
 /* Projects roster travel chevron (ui/projects_overview.py): a full-row-height tinted
@@ -1095,11 +1096,11 @@ _CB_CSS = """
 .cb-scroll-noh .q-scrollarea__content { width: 100%; max-width: 100%; padding: 0; gap: 0; }
 /* The roster's compact column titles: each sorts its column on a click; the sorted one is darker. */
 .cb-proj-colhead {
-    font-family: 'IBM Plex Sans', sans-serif; font-size: 9px; font-weight: 600; color: #94a3b8;
+    font-family: 'IBM Plex Sans', sans-serif; font-size: 9px; font-weight: 600; color: #7d93ab;
     white-space: nowrap; cursor: pointer; user-select: none;
 }
-.cb-proj-colhead:hover { color: #475569; }
-.cb-proj-colhead.active { color: #334155; }
+.cb-proj-colhead:hover { color: #33506e; }
+.cb-proj-colhead.active { color: var(--cb-head-ink, #12324f); }
 /* Template workbench lists: table rows, so the per-row facts (apix / box / lp, sigma
  * stats, size, polarity) sit in columns sized to their content. Only the file column flexes.
  * The accent is a custom property set per list on the container (indigo for templates,
@@ -1148,20 +1149,21 @@ _CB_CSS = """
  * with no rule between them. */
 .cb-species-header {
     display: flex; align-items: center; gap: 10px; flex-shrink: 0;
-    padding: 0 10px 6px 14px; background: #ffffff; min-height: 26px;
+    padding: 5px 10px 5px 14px; min-height: 26px;
 }
 /* Species rail: 200 px column, one row per species (mark + counts), "+" at the
  * bottom. Selected row = tinted + an indigo left border. */
 .cb-srail {
     width: 200px; min-width: 200px; flex-shrink: 0; height: 100%; overflow-y: auto; overflow-x: hidden;
-    display: flex; flex-direction: column; border-right: 1px solid #e5e7eb; background: #fafafa;
+    display: flex; flex-direction: column; border-right: 1px solid var(--cb-panel-line, #dbe3ec);
+    background: var(--cb-rail, #eef3f8);
 }
 .cb-srail-row {
     display: flex; align-items: center; gap: 6px; padding: 6px 8px 6px 7px;
-    border-bottom: 1px solid #f1f5f9; border-left: 3px solid transparent; cursor: pointer;
+    border-bottom: 1px solid #e3eaf2; border-left: 3px solid transparent; cursor: pointer;
     min-width: 0;
 }
-.cb-srail-row:hover { background: #e3ebf4; }
+.cb-srail-row:hover { background: var(--cb-hover, #e6eff8); }
 .cb-srail-row.selected { background: #ffffff; }
 .cb-srail-meta {
     margin-left: auto; font-size: 9px; color: #94a3b8; white-space: nowrap; flex-shrink: 0;
@@ -1169,9 +1171,9 @@ _CB_CSS = """
 }
 .cb-srail-add {
     display: flex; align-items: center; gap: 4px; padding: 7px 10px; cursor: pointer;
-    font-size: 10px; color: #6366f1; border-bottom: 1px solid #f1f5f9;
+    font-size: 10px; color: #1f4e79; border-bottom: 1px solid #e3eaf2;
 }
-.cb-srail-add:hover { background: #eef2ff; }
+.cb-srail-add:hover { background: var(--cb-hover, #e6eff8); }
 
 /* ── App-wide control chrome ───────────────────────────────────────────────── */
 /* Lives here, not in main_ui's add_head_html: that block is baked into the page
@@ -1190,8 +1192,11 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 
 /* House button hover states (ui/components/buttons.py — the base look is inline
  * on the element, so hover needs !important to override it). */
-.q-btn.cb-btn:hover { background: #f1f5f9 !important; border-color: #94a3b8 !important; }
-.q-btn.cb-btn--accent:hover { background: #1e293b !important; border-color: #1e293b !important; }
+.q-btn.cb-btn:hover { background: #f4f8fc !important; border-color: var(--cb-field-line-hover, #a9c6e4) !important; }
+.q-btn.cb-btn--accent:hover {
+    background: var(--cb-btn-accent-hover, #163a5c) !important;
+    border-color: var(--cb-btn-accent-hover, #163a5c) !important;
+}
 .q-btn.cb-btn--danger:hover { background: #fef2f2 !important; border-color: #f87171 !important; }
 
 /* The .cb-select / .cb-field control chrome; this is its only definition. Every page
@@ -1202,13 +1207,15 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 .cb-select .q-field__control,
 .cb-field .q-field__control {
     height: 20px; min-height: 20px; padding: 0 5px;
-    border: 1px solid #e2e8f0; border-radius: 4px;
-    background: #fff; transition: border-color .12s ease;
+    border: 1px solid var(--cb-field-line, #d3dde8); border-radius: var(--cb-field-radius, 4px);
+    background: var(--cb-field-bg, #fff); transition: border-color .12s ease, box-shadow .12s ease;
 }
 .cb-select .q-field__control:hover,
-.cb-field .q-field__control:hover { border-color: #cbd5e1; }
+.cb-field .q-field__control:hover { border-color: var(--cb-field-line-hover, #a9c6e4); }
 .cb-select.q-field--focused .q-field__control,
-.cb-field.q-field--focused .q-field__control { border-color: #94a3b8; }
+.cb-field.q-field--focused .q-field__control {
+    border-color: var(--cb-field-focus, #4a8fd4); box-shadow: var(--cb-field-ring, 0 0 0 2px rgba(74, 143, 212, 0.16));
+}
 .cb-select .q-field__control:before,
 .cb-select .q-field__control:after,
 .cb-field .q-field__control:before,
@@ -1268,27 +1275,30 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 /* Under the view's title line, with no rule between them. */
 .cb-gal-toolbar {
     display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-    padding: 0 10px 6px 14px; background: #ffffff; flex-shrink: 0;
+    padding: 5px 10px 5px 14px; flex-shrink: 0;
 }
 .cb-gal-title {
     font-size: 10px; text-transform: uppercase; font-weight: 600;
     color: #64748b; letter-spacing: 0.3px;
 }
 .cb-gal-count {
-    font-family: ui-monospace, monospace; font-size: 10px; color: #1e40af;
-    background: #eef2ff; border-radius: 3px; padding: 0 5px;
+    font-family: ui-monospace, monospace; font-size: 10px; color: #1f4e79;
+    background: var(--cb-head, #edf4fb); border-radius: 3px; padding: 0 5px;
 }
 .cb-gal-toolbar-label {
-    font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em;
-    color: #94a3b8; margin-left: 6px;
+    font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+    color: #6b829b; margin-left: 4px; padding-left: 10px; border-left: 1px solid var(--cb-panel-line, #dbe3ec);
+    line-height: 16px;
 }
+.cb-gal-toolbar-label:first-child { margin-left: 0; padding-left: 0; border-left: none; }
 /* The wall's pick-layer menu (and the zoom's list): a trigger in the toolbar, rows by species. */
 .cb-gal-picks-btn {
     display: inline-flex; align-items: center; gap: 2px; cursor: pointer; user-select: none;
-    border: 1px solid #e2e8f0; border-radius: 4px; background: #ffffff; padding: 1px 4px 1px 8px;
-    font-size: 10px; color: #334155; white-space: nowrap;
+    border: 1px solid var(--cb-field-line, #d3dde8); border-radius: var(--cb-field-radius, 4px); background: #ffffff;
+    padding: 1px 4px 1px 8px; min-height: 20px; box-sizing: border-box;
+    font-size: 10px; color: #24405e; white-space: nowrap;
 }
-.cb-gal-picks-btn:hover { background: #f8fafc; }
+.cb-gal-picks-btn:hover { background: #f4f8fc; border-color: var(--cb-field-line-hover, #a9c6e4); }
 .cb-gal-picks-menu { padding: 4px 0; min-width: 240px; }
 .cb-gal-pk-species {
     display: flex; align-items: center; gap: 5px; padding: 6px 10px 2px;
@@ -1298,10 +1308,10 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
     display: flex; align-items: center; gap: 6px; padding: 2px 10px 2px 16px; cursor: pointer;
     user-select: none; font-size: 10px; color: #334155; white-space: nowrap;
 }
-.cb-gal-pk-row:hover { background: #f1f5f9; }
-.cb-gal-pk-row .q-icon { color: #6366f1; flex: 0 0 auto; }
-.cb-gal-pk-row.off { color: #94a3b8; }
-.cb-gal-pk-row.off .q-icon { color: #cbd5e1; }
+.cb-gal-pk-row:hover { background: var(--cb-hover, #e6eff8); }
+.cb-gal-pk-row .q-icon { color: var(--cb-accent, #4a8fd4); flex: 0 0 auto; }
+.cb-gal-pk-row.off { color: #8aa0b8; }
+.cb-gal-pk-row.off .q-icon { color: #b8c7d8; }
 .cb-gal-pk-follow { padding-left: 10px; border-bottom: 1px solid #f1f5f9; padding-bottom: 4px; margin-bottom: 2px; }
 .cb-gal-pk-marker { display: flex; flex: 0 0 auto; cursor: pointer; border-radius: 50%; padding: 1px; }
 .cb-gal-pk-marker:hover { box-shadow: 0 0 0 1px #94a3b8; }
@@ -1325,7 +1335,8 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 .cb-gal-grid { display: grid; gap: 10px; padding: 10px; align-items: start; }
 .cb-gal-tile {
     display: flex; flex-direction: column; min-width: 0;
-    border: 1px solid #e5e7eb; border-radius: 5px; overflow: hidden; background: #ffffff;
+    border: 1px solid var(--cb-card-line, #dbe3ec); border-radius: calc(var(--cb-card-radius, 4px) + 1px);
+    overflow: hidden; background: #ffffff; box-shadow: var(--cb-card-shadow, 0 1px 2px rgba(16, 42, 67, 0.06));
 }
 .cb-gal-tile:hover { border-color: #c7d2fe; box-shadow: 0 2px 8px rgba(15,23,42,0.08); }
 .cb-gal-frame {
@@ -1367,13 +1378,17 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 /* Tilt previews (ui/tilt_previews.py): the Tilts tab's groups and cards, and a tile's
  * mosaic cells. A series is one HTML string; its sizes and layout are inline there. */
 /* A series is a pale gray-blue panel, the Journey's section look; its tilt cards stay white. */
-.cb-tp-group { border-radius: 6px; background: #eef3f8; overflow: hidden; }
+.cb-tp-group {
+    border-radius: var(--cb-radius, 5px); background: var(--cb-panel, #ffffff); overflow: hidden;
+    outline: 1px solid var(--cb-panel-line, #dbe3ec); outline-offset: -1px;
+}
 .cb-tp-head {
     display: flex; align-items: center; gap: 6px; padding: 4px 8px; min-width: 0;
     cursor: pointer; user-select: none;
+    background: var(--cb-group-head, #edf4fb); box-shadow: 0 1px 0 var(--cb-group-head-line, #dbe3ec);
 }
-.cb-tp-head:hover { background: #e3ebf4; }
-.cb-tp-chev { font-size: 9px; color: #94a3b8; transition: transform 0.15s; }
+.cb-tp-head:hover { background: var(--cb-hover, #e6eff8); }
+.cb-tp-chev { font-size: 9px; color: #8aa0b8; transition: transform 0.15s; }
 .cb-tp-chev.open { transform: rotate(90deg); }
 .cb-tp-name { font-size: 10px; font-weight: 600; color: #334155; white-space: nowrap; }
 .cb-tp-ts {
@@ -1382,7 +1397,8 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 }
 .cb-tp-n { font-family: ui-monospace, monospace; font-size: 9px; color: #64748b; }
 .cb-tp-card {
-    border: 1px solid #e5e7eb; border-radius: 4px; overflow: hidden;
+    border: 1px solid var(--cb-card-line, #dbe3ec); border-radius: var(--cb-card-radius, 4px); overflow: hidden;
+    box-shadow: var(--cb-card-shadow, 0 1px 2px rgba(16, 42, 67, 0.06));
     background: #ffffff; cursor: zoom-in;
 }
 /* In the review a click on a card toggles the tilt's exclusion; the magnifier opens it. */
@@ -1390,7 +1406,7 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 .cb-tp-card:hover { box-shadow: 0 0 0 1px #93c5fd; }
 .cb-tp-cap {
     display: flex; gap: 6px; padding: 1px 5px; white-space: nowrap; overflow: hidden;
-    font-family: ui-monospace, monospace; font-size: 8px; color: #64748b; background: #fafafa;
+    font-family: ui-monospace, monospace; font-size: 8px; color: #64748b; background: var(--cb-cap, #f4f8fc);
 }
 .cb-tp-cap b { font-weight: 600; color: #0f172a; }
 .cb-tp-cell { cursor: zoom-in; }
@@ -1615,8 +1631,8 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 .q-notification.bg-info .q-notification__icon { color: #6366f1; }
 /* A view's expand icon and close cross (ui/workspace_page.py `_view_frame`), at the right end of
  * its title line. */
-.cb-view-close { color: #cbd5e1; cursor: pointer; border-radius: 3px; width: 14px; height: 14px; }
-.cb-view-close:hover { color: #475569; background: #f1f5f9; }
+.cb-view-close { color: #8aa0b8; cursor: pointer; border-radius: 3px; width: 16px; height: 16px; }
+.cb-view-close:hover { color: var(--cb-head-ink, #12324f); background: var(--cb-hover, #e6eff8); }
 /* A view's splitter (ui/workspace_page.py `_VIEW_RESIZER_JS`): a 6 px strip on the frame's left
  * edge that drags the boundary with the view to its left; a double-click splits the pair evenly.
  * Only a frame with a view to its left shows it (.cb-view-split). The roster divider's look. */
@@ -1674,10 +1690,6 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 .cb-fit-slider .q-slider__thumb { color: #475569; }
 /* The exclude-not-extracted checkbox ticks slate, not --q-primary. */
 .cb-degen-toggle .q-checkbox__inner--truthy { color: #475569; }
-/* A pick list's delete: grey until the pointer is on it. The button passes color=None, so
- * no Quasar colour class outranks this. */
-.cb-del-btn { color: #cbd5e1; }
-.cb-del-btn:hover { color: #dc2626; }
 /* The file browser's rows (ui/local_file_picker.py): hover, and the chosen row. */
 .cb-fp-row:hover { background: #eff6ff; }
 .cb-fp-row.cb-fp-sel { background: #dbeafe; }
@@ -1687,11 +1699,11 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
  * header's active section in gray-blue ink. A card inside a section (the scatter fallback's) is
  * plain. */
 .cb-journey .cb-main > .cb-section-card {
-    background: #eef3f8; border: none; border-radius: 6px; padding: 12px; margin-bottom: 10px;
+    background: var(--cb-panel, #ffffff); border: none; border-radius: var(--cb-radius, 5px); padding: 12px;
+    margin-bottom: 10px; outline: 1px solid var(--cb-panel-line, #dbe3ec); outline-offset: -1px;
 }
 .cb-journey .cb-section-card .cb-section-card { background: transparent; border: none; padding: 0; }
-.cb-journey .cb-section-title { color: #2c4a6b; }
-.cb-journey .cb-jhead .cb-seg-btn.active { background: #e3ebf4; color: #2c4a6b; }
+.cb-journey .cb-section-title { color: var(--cb-head-ink, #12324f); }
 .cb-journey .cb-plot-label { color: #4a6584; }
 /* Species on light chrome at half saturation. The slabs' dots keep their colours; so do the pick
  * lists' swatches, which are the slab dots' legend. */
@@ -1725,6 +1737,46 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 }
 .cb-img-probe { display: none; }
 .cb-gal-note.cb-gal-note-wait { color: #64748b; }
+/* ── Harbor controls ─────────────────────────────────────────────────────────
+ * The house icon button (ui/components/buttons.py `icon_button`): muted, a light-blue tint under
+ * the pointer, red only on a delete's hover, navy while armed. Quasar's own hover veil is off. */
+.q-btn.cb-icon-btn .q-icon { font-size: 15px; }
+.q-btn.cb-icon-btn .q-focus-helper { display: none; }
+.q-btn.cb-icon-btn:hover { color: var(--cb-head-ink, #12324f) !important; background: var(--cb-hover, #e6eff8); }
+.q-btn.cb-icon-btn--danger:hover { color: #b91c1c !important; background: #fef2f2; }
+.q-btn.cb-icon-btn.cb-icon-btn--armed { color: #ffffff !important; background: var(--cb-btn-accent, #1f4e79); }
+.q-btn.cb-icon-btn.cb-icon-btn--armed:hover { background: var(--cb-btn-accent-hover, #163a5c); }
+/* Checkboxes, switches and radios in the accent blue; their labels in the house face. */
+.q-checkbox__inner--truthy, .q-checkbox__inner--indet, .q-radio__inner--truthy,
+.q-toggle__inner--truthy { color: var(--cb-accent, #4a8fd4) !important; }
+.q-checkbox__inner--falsy, .q-radio__inner--falsy { color: #9fb2c8 !important; }
+.q-toggle__inner--falsy { color: #b8c7d8 !important; }
+.q-checkbox__label, .q-toggle__label, .q-radio__label {
+    font-family: 'IBM Plex Sans', sans-serif; font-size: 10px; color: #33506e;
+}
+/* The tool strip under a view's title line (the Tomograms wall's, the Particles registry's, the
+ * Journey's): white, a hairline under it, butted against the title line so the two read as one
+ * header in two tiers. */
+.cb-gal-toolbar, .cb-species-header, .cb-journey .cb-jhead {
+    background: var(--cb-surface, #ffffff); border-bottom: 1px solid var(--cb-panel-line, #dbe3ec);
+    margin-top: -6px; margin-bottom: 6px; min-height: 31px; box-sizing: border-box;
+}
+/* A Journey section's title line as the panels' stripe: edge to edge across the card's top. */
+.cb-journey .cb-main > .cb-section-card > .cb-section-card-header:first-child {
+    margin: -12px -12px 12px; padding: 5px 12px; min-height: 30px; box-sizing: border-box;
+    background: var(--cb-head, #edf4fb); border-radius: var(--cb-radius, 5px) var(--cb-radius, 5px) 0 0;
+    box-shadow: 0 1px 0 var(--cb-head-line, #c9dbee), inset var(--cb-accent-w, 2px) 0 0 var(--cb-accent, #4a8fd4),
+        inset 0 1px 0 var(--cb-head-glint, rgba(255, 255, 255, 0.9));
+}
+/* Folded, the stripe is the whole card. */
+.cb-journey .cb-main > .cb-section-card:has(> .cb-section-card-header:first-child + .cb-collapsed) {
+    padding-bottom: 0;
+}
+.cb-journey .cb-main > .cb-section-card > .cb-section-card-header:first-child:has(+ .cb-collapsed) {
+    margin-bottom: 0; border-radius: var(--cb-radius, 5px);
+}
+.cb-params-icon { color: #8aa0b8; }
+.cb-params-icon:hover { color: var(--cb-head-ink, #12324f); }
 """
 
 # The Particles panel (root .cb-particles-root.cb-pv); after _CB_CSS, so it wins its ties.
@@ -1736,7 +1788,7 @@ _PARTICLES_CSS = """
 .cb-particles-root.cb-pv > .cb-section-card-header {
     margin-bottom: 10px; flex-wrap: wrap; row-gap: 4px;
 }
-.cb-particles-root.cb-pv .cb-species-tabs .q-tab--active .q-tab__label { color: #2c4a6b; }
+.cb-particles-root.cb-pv .cb-species-tabs .q-tab--active .q-tab__label { color: var(--cb-head-ink, #12324f); }
 .cb-particles-root.cb-pv .cb-particles-split { gap: 14px; }
 .cb-particles-root.cb-pv .cb-ltable {
     flex-direction: row; flex-wrap: wrap; gap: 4px; background: transparent; border: none; padding: 0;
@@ -1777,7 +1829,7 @@ _PARTICLES_CSS = """
     box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.8), inset 0 0 0 1px rgba(15, 23, 42, 0.8);
 }
 /* The list's copy-path and delete icons show on the chip under the pointer. */
-.cb-particles-root.cb-pv .cb-ltable-row:not(:hover) .cb-ltable-cell:has(.cb-info-copy, .cb-del-btn) {
+.cb-particles-root.cb-pv .cb-ltable-row:not(:hover) .cb-ltable-cell:has(.cb-icon-btn) {
     opacity: 0;
 }
 
@@ -1789,24 +1841,28 @@ _PARTICLES_CSS = """
 .cb-particles-root.cb-pv .cb-pv-bar > .cb-pv-tabs { width: auto; flex: 0 0 auto; }
 .cb-particles-root.cb-pv .cb-pv-bar > .cb-lists-strip { width: auto; flex: 1 1 320px; margin: 0; }
 .cb-particles-root.cb-pv .cb-species-tabs {
-    min-height: 0; border: 1px solid #d5dfea; border-radius: 4px; background: #ffffff;
+    min-height: 0; border: 1px solid var(--cb-field-line, #d3dde8); border-radius: var(--cb-field-radius, 4px);
+    background: #ffffff; box-shadow: 0 1px 1px rgba(16, 42, 67, 0.04);
 }
 .cb-particles-root.cb-pv .cb-species-tabs .q-tab {
-    min-height: 22px; padding: 0 8px; border-radius: 0; border-right: 1px solid #d5dfea;
+    min-height: 22px; padding: 0 8px; border-radius: 0; border-right: 1px solid #e3eaf2;
 }
 .cb-particles-root.cb-pv .cb-species-tabs .q-tab:last-child { border-right: none; }
-.cb-particles-root.cb-pv .cb-species-tabs .q-tab--active { background: #e3ebf4; }
+.cb-particles-root.cb-pv .cb-species-tabs .q-tab--active {
+    background: var(--cb-head, #edf4fb); box-shadow: inset 0 -2px 0 var(--cb-accent, #4a8fd4);
+}
 .cb-particles-root.cb-pv .cb-species-tabs .q-tab__indicator { display: none; }
 .cb-particles-root.cb-pv .cb-ltable-head { display: none; }
 .cb-particles-root.cb-pv .cb-ltable-row {
     display: inline-flex; align-items: center; gap: 6px; padding: 0 3px 0 7px;
-    background: #ffffff; border: 1px solid #d5dfea; border-radius: 4px;
+    background: #ffffff; border: 1px solid var(--cb-field-line, #d3dde8); border-radius: var(--cb-field-radius, 4px);
 }
 .cb-particles-root.cb-pv .cb-ltable-row:not(.cb-ltable-head, .selected):hover {
-    background: #ffffff; border-color: #9fb6cf;
+    background: #ffffff; border-color: var(--cb-field-line-hover, #a9c6e4);
 }
 .cb-particles-root.cb-pv .cb-ltable-row.selected {
-    background: #e3ebf4; border-color: #9fb6cf; box-shadow: none;
+    background: var(--cb-head, #edf4fb); border-color: var(--cb-field-line-hover, #a9c6e4);
+    box-shadow: inset 0 -2px 0 var(--cb-accent, #4a8fd4);
 }
 .cb-particles-root.cb-pv .cb-ltable-name { max-width: 180px; }
 .cb-particles-root.cb-pv .cb-ltable-cell:empty { display: none; }
@@ -1821,7 +1877,7 @@ def ensure_assets_loaded() -> None:
     if getattr(client, "_cb_assets_loaded", False):
         return
     client._cb_assets_loaded = True
-    ui.add_head_html(f"<style>{_CB_CSS}{_PARTICLES_CSS}</style>")
+    ui.add_head_html(f"<style>{_THEME_CSS}{_CB_CSS}{_PARTICLES_CSS}</style>")
     client.run_javascript(_TITLE_TIP_JS)
     client.run_javascript(_IMG_STATE_JS)
 
@@ -1887,4 +1943,43 @@ _IMG_STATE_JS = """
   document.addEventListener('error', on, true);
   for (const img of document.images) if (img.complete && img.getAttribute('src')) mark(img, img.naturalWidth > 0);
 })();
+"""
+
+# The app's palette and chrome as `--cb-*` variables, in one place. The panels, title stripes, view title
+# lines, the lines between main panels, the cards, fields and buttons read them (inline ones carry the
+# same value as their fallback: ui/job_plugins/_field_styles.py, ui/workspace_page.py,
+# ui/components/buttons.py). White panels lifted a hair off a cool page, light-blue title stripes with a
+# blue tick, a glassy title line on each view ruled off in light blue, blue focus rings, navy actions.
+_THEME_CSS = """
+:root {
+    --cb-page: #f6f8fb; --cb-surface: #ffffff; --cb-rail: #eef3f8; --cb-rail-line: #d3dde8;
+    --cb-panel: #ffffff; --cb-panel-line: #dbe3ec; --cb-panel-shadow: 0 1px 2px rgba(16, 42, 67, 0.06);
+    --cb-radius: 5px; --cb-pad-y: 9px; --cb-pad-x: 11px;
+    --cb-head: #edf4fb; --cb-head-line: #c9dbee; --cb-head-ink: #12324f; --cb-head-size: 12px;
+    --cb-head-track: 0; --cb-head-pad: 5px; --cb-accent: #4a8fd4; --cb-accent-w: 2px;
+    --cb-head-glint: rgba(255, 255, 255, 0.9);
+    --cb-view-head: linear-gradient(180deg, #ffffff, #edf3f9); --cb-view-head-line: #a9c6e4;
+    --cb-view-head-line-w: 1px; --cb-view-head-ink: #12324f;
+    --cb-edge: #c9d6e3; --cb-edge-w: 1px; --cb-edge-shadow: -2px 0 6px rgba(16, 42, 67, 0.06);
+    --cb-hover: #e6eff8; --cb-card-line: #dbe3ec; --cb-card-radius: 4px; --cb-cap: #f4f8fc;
+    --cb-card-shadow: 0 1px 2px rgba(16, 42, 67, 0.06);
+    --cb-group-head: #edf4fb; --cb-group-head-line: #dbe3ec; --cb-box-line: #dbe3ec;
+    --cb-field-line: #d3dde8; --cb-field-line-hover: #a9c6e4; --cb-field-focus: #4a8fd4;
+    --cb-field-ring: 0 0 0 2px rgba(74, 143, 212, 0.16); --cb-field-radius: 4px; --cb-field-bg: #fff;
+    --cb-btn-line: #b8cce0; --cb-btn-accent: #1f4e79; --cb-btn-accent-hover: #163a5c;
+}
+body { background: var(--cb-page) !important; }
+/* A wide job page in two columns: Parameters on the left, Inputs / Outputs over SLURM on the right,
+ * the folded sections across both below. Narrower than 860 px it stays one column. */
+.cb-jobscroll .q-scrollarea__content { container-type: inline-size; }
+@container (min-width: 860px) {
+    .cb-jobpage {
+        display: grid !important; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+        align-items: start; column-gap: 12px;
+    }
+    .cb-jsec-params { grid-column: 1; grid-row: 1 / span 2; }
+    .cb-jsec-io { grid-column: 2; grid-row: 1; }
+    .cb-jsec-slurm { grid-column: 2; grid-row: 2; }
+    .cb-jsec-fold { grid-column: 1 / -1; }
+}
 """

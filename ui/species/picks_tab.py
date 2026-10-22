@@ -69,7 +69,7 @@ from services.particles.species_overview import NOT_APPLICABLE, ExtractJob, List
 from services.project_state import get_project_state_for
 from services.visualization import artiax_bridge
 from ui.background_task import BackgroundTask
-from ui.components.buttons import house_button
+from ui.components.buttons import house_button, icon_button
 from ui.components.chip import render_chip
 from ui.components.reactive import FingerprintedView, SingleFlight
 from ui.job_plugins._field_styles import PANEL_HEAD_STYLE, PANEL_STYLE, PANEL_TITLE_STYLE, SECTION_HEADER_STYLE
@@ -342,9 +342,9 @@ class _PicksView(FingerprintedView):
                 # Copying the save dir is an act on the name beside it — the folder is the
                 # tomogram's — so it sits with the name rather than at the far right with the
                 # navigation verbs, a whole row's width away from what it copies.
-                ui.button(icon="content_copy", on_click=lambda _e, d=info.curation_dir: self._tab.copy(d)).props(
-                    "flat dense round size=sm"
-                ).tooltip(info.curation_dir)
+                icon_button(
+                    "content_copy", lambda _e, d=info.curation_dir: self._tab.copy(d), tooltip=info.curation_dir
+                )
                 if rows:
                     ui.label(f"{len(rows)} list{'s' if len(rows) != 1 else ''}").classes(_HINT_CLS)
                 else:
@@ -439,15 +439,18 @@ class _PicksView(FingerprintedView):
         # mode. The Journey icon sits beside it because the two answer different questions:
         # the viewer is about these picks, the Journey about everything that happened to
         # this tilt-series before them.
-        ui.button(icon="grid_view", on_click=lambda _e, t=info.tomo_name: self._tab.open_viewer(t)).props(
-            "flat dense round size=sm color=indigo"
-        ).tooltip("Open this tomogram's picks in the full-page pick viewer")
-        with (
-            ui.button(on_click=lambda _e, t=info.tomo_name: self._tab.open_in_journey(t))
-            .props("flat dense round size=sm color=indigo")
-            .tooltip("This tomogram's whole pipeline — motion, CTF, alignment, reconstruction")
+        icon_button(
+            "grid_view",
+            lambda _e, t=info.tomo_name: self._tab.open_viewer(t),
+            tooltip="Open this tomogram's picks in the full-page pick viewer",
+        )
+        # No Material glyph for the Journey: its own SVG inside the house icon button.
+        with icon_button(
+            "",
+            lambda _e, t=info.tomo_name: self._tab.open_in_journey(t),
+            tooltip="This tomogram's whole pipeline — motion, CTF, alignment, reconstruction",
         ):
-            ui.html(load_icon_svg("journey.svg", "#4f46e5", size=16), sanitize=False)
+            ui.html(load_icon_svg("journey.svg", "#6b829b", size=15), sanitize=False)
 
     def _render_row(self, c: _Computed, tomo: str, row: ListRow) -> None:
         ref = self._tab.ref(tomo, row.slug)
@@ -469,9 +472,11 @@ class _PicksView(FingerprintedView):
                 else:
                     name.tooltip(row.star_path or "no backing star on disk")
                 if coords:
-                    ui.button(icon="content_copy", on_click=lambda _e, p=coords: self._tab.copy_file(p)).props(
-                        "flat dense round size=xs"
-                    ).tooltip(f"Copy this list's .coords path — {coords}")
+                    icon_button(
+                        "content_copy",
+                        lambda _e, p=coords: self._tab.copy_file(p),
+                        tooltip=f"Copy this list's .coords path — {coords}",
+                    )
             if row.source_kind:
                 ui.label(row.source_kind).classes("cb-ptable-source").tooltip(
                     f"{row.source_kind} · {row.source_ref or '—'}"
@@ -565,20 +570,25 @@ class _PicksView(FingerprintedView):
         if ref is None or row.slug == AUTO_SLUG:
             return  # the auto list follows its subtomo job; it is not extracted per list
         extracted = row.extraction_state == ListExtractionState.EXTRACTED.value
-        ui.button(
-            icon="science", on_click=lambda _e, r=ref: list_actions.extract_list(self._tab.backend, r, on_done=_noop)
-        ).props("flat dense round size=sm color=indigo").tooltip(
-            "Re-extract this list's subtomograms" if extracted else "Extract this list's subtomograms"
+        icon_button(
+            "science",
+            lambda _e, r=ref: list_actions.extract_list(self._tab.backend, r, on_done=_noop),
+            tooltip="Re-extract this list's subtomograms" if extracted else "Extract this list's subtomograms",
         )
         if row.list_type == PickListType.MERGED.value:
-            ui.button(icon="join_inner", on_click=lambda _e, r=ref: self._tab.open_dedup(r)).props(
-                "flat dense round size=sm color=orange-7"
-            ).tooltip("Overlapping picks — inspect and deduplicate")
+            icon_button(
+                "join_inner",
+                lambda _e, r=ref: self._tab.open_dedup(r),
+                tooltip="Overlapping picks — inspect and deduplicate",
+            )
         else:
-            ui.element("div").style("width: 28px; height: 28px; flex: 0 0 auto;")
-        ui.button(icon="delete_outline", on_click=lambda _e, r=ref: self._tab.delete_list(r)).props(
-            "flat dense round size=sm color=negative"
-        ).tooltip("Delete this list (its star, curated subset, extraction output and saves)")
+            ui.element("div").style("width: 20px; height: 20px; flex: 0 0 auto;")
+        icon_button(
+            "delete_outline",
+            lambda _e, r=ref: self._tab.delete_list(r),
+            tooltip="Delete this list (its star, curated subset, extraction output and saves)",
+            kind="danger",
+        )
 
     # ── Watcher log ───────────────────────────────────────────────────────────
 

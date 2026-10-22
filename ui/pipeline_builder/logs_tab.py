@@ -4,6 +4,7 @@ import asyncio
 from nicegui import ui
 
 from services.project_state import JobStatus, JobType
+from ui.components.buttons import icon_button
 from ui.components.log_pane import LiveLog
 from ui.components.segmented import render_segmented
 from ui.styles import MONO, SANS
@@ -56,11 +57,10 @@ def render_logs_tab(job_type: JobType, instance_id: str, job_model, backend, ui_
             live_mark.set_visibility(is_running)
             ui.space()
             # Copies the whole current log (the panel shows the last 500 lines).
-            (
-                ui.button(icon="content_copy", on_click=lambda: _copy_active_log(monitor, backend, ui_mgr))
-                .props("flat dense round size=xs")
-                .style("color: #94a3b8;")
-                .tooltip("Copy the full log to the clipboard")
+            icon_button(
+                "content_copy",
+                lambda: _copy_active_log(monitor, backend, ui_mgr),
+                tooltip="Copy the full log to the clipboard",
             )
 
         # ── Log wells (stacked, toggle visibility), each one element that wraps long lines. ──

@@ -27,8 +27,8 @@ from typing import Any
 from nicegui import ui
 
 from services.configs.config_service import REPO_ROOT, get_config_service
-from ui.components.buttons import house_button
-from ui.components.copyable import copy_button
+from ui.components.buttons import house_button, icon_button
+from ui.components.copyable import copy_button, copy_on_click
 from ui.components.reactive import FingerprintedView
 from ui.config_settings_dialog import open_config_settings
 from ui.protocols_dialog import open_protocols_dialog
@@ -75,8 +75,8 @@ _CMD_QOS = (
 )
 
 
-def _pop_copy_row(text: str) -> None:
-    """A mono command/path line with a copy icon, on the light popover."""
+def _pop_copy_row(text: str, *, path: bool = False) -> None:
+    """A mono line on the light popover: a command with a copy icon, or a `path` whose text copies it."""
     with (
         ui.row()
         .classes("items-center")
@@ -85,8 +85,11 @@ def _pop_copy_row(text: str) -> None:
             "padding: 4px 6px; margin-top: 3px; width: 100%;"
         )
     ):
-        ui.label(text).style(_POP_PATH + " flex: 1 1 0; min-width: 0;")
-        copy_button(text, tooltip="Copy", color=CLR_ACCENT)
+        label = ui.label(text).style(_POP_PATH + " flex: 1 1 0; min-width: 0;")
+        if path:
+            copy_on_click(label, text)
+        else:
+            copy_button(text, tooltip="Copy")
 
 
 def _section_header(title: str, command: str) -> None:
@@ -239,7 +242,7 @@ class LandingStatusStrip(FingerprintedView):
         s = self.state
         with ui.element("div").style(
             "display: flex; align-items: center; gap: 14px; width: 100%; "
-            "padding: 7px 14px; background: #eef3f8; border-radius: 6px;"
+            "padding: 7px 14px; background: var(--cb-panel, #ffffff); border-radius: var(--cb-radius, 5px);"
         ):
             self._wordmark()
 
@@ -277,19 +280,19 @@ class LandingStatusStrip(FingerprintedView):
                     CLR_WARN, "config", f"{n} warning{'s' if n != 1 else ''}", "", popover=self._config_popover
                 )
 
-            ui.element("div").style("flex: 1;")
+            ui.space()
 
             if s.has_override:
                 with (
                     ui.element("div")
                     .style(
-                        "display: flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 20px; "
-                        "background: #eff6ff; border: 1px solid #bfdbfe; flex-shrink: 0;"
+                        "display: flex; align-items: center; gap: 4px; padding: 0 6px; border-radius: 3px; "
+                        "background: #edf4fb; border: 1px solid #c9dbee; flex-shrink: 0; line-height: 16px;"
                     )
                     .tooltip("Your personal config override is active (~/.crboost/conf.yaml)")
                 ):
                     ui.element("div").style(f"width: 5px; height: 5px; border-radius: 50%; background: {CLR_ACCENT};")
-                    ui.label("custom").style(f"{FONT} font-size: 9px; font-weight: 600; color: #1e40af;")
+                    ui.label("custom").style(f"{FONT} font-size: 9px; font-weight: 600; color: #1f4e79;")
 
             house_button(
                 "Protocols",
@@ -297,11 +300,10 @@ class LandingStatusStrip(FingerprintedView):
                 tooltip="Protocol bundles: a protocol's stages and parameters, or create a project from one",
             )
 
-            (
-                ui.button(icon="settings", on_click=lambda: open_config_settings(on_saved=self._on_config_saved))
-                .props("flat dense round size=sm")
-                .classes("text-slate-400 hover:text-blue-600")
-                .tooltip("Server configuration & container paths")
+            icon_button(
+                "settings",
+                lambda: open_config_settings(on_saved=self._on_config_saved),
+                tooltip="Server configuration & container paths",
             )
 
     def _on_config_saved(self) -> None:
@@ -452,7 +454,7 @@ class LandingStatusStrip(FingerprintedView):
 
             # ── Submission template ───────────────────────────────────────────
             _section_header("Submission template", f"cat {qsub}")
-            _pop_copy_row(qsub)
+            _pop_copy_row(qsub, path=True)
 
 
 def mount_landing_status_strip(backend) -> LandingStatusStrip | None:

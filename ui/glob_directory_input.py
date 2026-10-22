@@ -5,6 +5,7 @@ from collections.abc import Callable
 
 from nicegui import ui
 
+from ui.components.buttons import icon_button
 from ui.styles import MONO as _MONO
 
 _CLR_GHOST = "#d1d5db"
@@ -257,9 +258,9 @@ class GlobDirectoryInput:
                         "letter-spacing: 0.04em; white-space: nowrap; padding: 0 6px;"
                     )
                     if self._on_forget_recent:
-                        ui.button(icon="close", on_click=lambda p=path_str: self._forget(p, subdirs)).props(
-                            "flat dense round size=xs"
-                        ).classes("text-slate-300 hover:text-red-400 mr-1")
+                        icon_button(
+                            "close", lambda p=path_str: self._forget(p, subdirs), tooltip="Forget", kind="danger"
+                        ).classes("mr-1")
             shown = subdirs[:_MAX_COMPLETIONS]
             for path_str in shown:
                 ui.button(Path(path_str).name + "/", on_click=lambda p=path_str: self.set_directory(p)).props(

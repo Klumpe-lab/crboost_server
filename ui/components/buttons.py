@@ -25,13 +25,13 @@ from nicegui import ui
 
 _BASE_STYLE = (
     "font-family: 'IBM Plex Sans', sans-serif; font-size: 10px; font-weight: 600; "
-    "letter-spacing: 0.02em; color: #334155; background: #ffffff; "
-    "border: 1px solid #cbd5e1; border-radius: 4px; "
+    "letter-spacing: 0.02em; color: #24405e; background: #ffffff; "
+    "border: 1px solid var(--cb-btn-line, #b8cce0); border-radius: var(--cb-field-radius, 4px); "
     "height: 22px; min-height: 22px; padding: 0 10px; min-width: 84px;"
 )
 _KIND_STYLE = {
     "default": "",
-    "accent": "background: #334155; border-color: #334155; color: #f8fafc;",
+    "accent": "background: var(--cb-btn-accent, #1f4e79); border-color: var(--cb-btn-accent, #1f4e79); color: #f8fafc;",
     "danger": "color: #b91c1c; border-color: #fca5a5;",
 }
 
@@ -51,6 +51,27 @@ def house_button(
     btn = ui.button(label, icon=icon, on_click=on_click, color=None).props("unelevated dense no-caps")
     btn.classes("cb-btn" + ("" if kind == "default" else f" cb-btn--{kind}"))
     btn.style(_BASE_STYLE + _KIND_STYLE[kind])
+    if tooltip:
+        btn.tooltip(tooltip)
+    return btn
+
+
+# The icon-only button of the house vocabulary: a 20 px square that sits flush with 16-20 px fields and
+# segmented strips in a header or toolbar. Muted until hovered; `danger` (deletes) turns red on hover only.
+# Hover, pressed and armed states live in ui/dashboard/css.py (`.cb-icon-btn`).
+_ICON_STYLE = (
+    "width: 20px; height: 20px; min-width: 20px; min-height: 20px; padding: 0; flex-shrink: 0; "
+    "border-radius: var(--cb-field-radius, 4px); color: #6b829b;"
+)
+
+
+def icon_button(
+    icon: str, on_click: Callable | None = None, *, tooltip: str | None = None, kind: str = "default"
+) -> ui.button:
+    """`kind`: "default" or "danger". `color=None` for the same reason as `house_button`."""
+    btn = ui.button(icon=icon, on_click=on_click, color=None).props("flat dense")
+    btn.classes("cb-icon-btn" + ("" if kind == "default" else f" cb-icon-btn--{kind}"))
+    btn.style(_ICON_STYLE)
     if tooltip:
         btn.tooltip(tooltip)
     return btn

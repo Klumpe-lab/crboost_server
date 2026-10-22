@@ -98,7 +98,7 @@ class SpeciesPage:
                 ui.element("div")
                 .classes("cb-srail")
                 .style(
-                    "background: #eef3f8; border-right: none; border-radius: 6px; "
+                    "background: var(--cb-panel, #ffffff); border-right: none; border-radius: var(--cb-radius, 5px); "
                     "margin: 0 0 10px 10px; height: auto; align-self: stretch;"
                 )
             )

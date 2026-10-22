@@ -39,8 +39,10 @@ from services.project_state import (
     get_project_state_for,
 )
 from services.array_tasks import ts_position_sort_key, ts_pretty_name
-from ui.components.buttons import house_button
+from ui.components.buttons import house_button, icon_button
+from ui.components.copyable import copy_on_click
 from ui.components.dialogs import dialog_host
+from ui.components.fields import house_select
 from ui.components.reactive import SingleFlight
 from ui.components.segmented import render_segmented
 from ui.components.svg_icon import load_icon_svg
@@ -56,6 +58,9 @@ log = logging.getLogger(__name__)
 STEEL = "#4682b4"
 SLATE = "#475569"
 SLATE_MUTED = "#94a3b8"
+# The header, toolbar and action bars: a light-blue band ruled off from the body by a hairline.
+_BAR_TOP = "background: #f4f8fc; border-bottom: 1px solid #dbe3ec;"
+_BAR_BOTTOM = "background: #f4f8fc; border-top: 1px solid #dbe3ec;"
 
 
 def _active_merge(state) -> AggregationMerge | None:
@@ -551,8 +556,8 @@ class _MergeSelector:
             self.rebuild()
 
         ui.input(placeholder="Filter projects, species…", on_change=on_filter, value=self.filter).props(
-            "dense outlined clearable debounce=200"
-        ).classes("w-full mb-1")
+            "dense clearable debounce=200"
+        ).classes("cb-field w-full mb-1")
 
     def species_options(self) -> dict[str, str]:
         """`{key: label}` for the species picker, "" first meaning every species. Keyed on
@@ -836,9 +841,12 @@ class _MergeSelector:
                     ui.label(lbl).classes("text-[10px] text-gray-700 truncate flex-1").tooltip(s.optset_path)
                     if s.tomo_names is not None:
                         ui.label(f"{len(s.tomo_names)} tomos").classes("text-[10px] text-slate-500")
-                    ui.button(icon="close", on_click=lambda _e, sp=s.optset_path: self._remove_orphan(sp)).props(
-                        "flat dense round size=xs"
-                    ).classes("text-gray-400 hover:text-red-500")
+                    icon_button(
+                        "close",
+                        lambda _e, sp=s.optset_path: self._remove_orphan(sp),
+                        tooltip="Remove this source",
+                        kind="danger",
+                    )
 
     def _remove_orphan(self, optset_path: str) -> None:
         state = self.dlg.state
@@ -882,24 +890,29 @@ def open_aggregation_merge_dialog(project_path) -> None:
         .classes("w-[1060px] max-w-[96vw] max-h-[92vh] overflow-hidden border border-slate-200 bg-white p-0")
         .style("color: #1e293b;"),
     ):
-        with ui.row().classes("w-full items-center gap-3 px-4 py-2 border-b border-slate-200 bg-slate-50"):
+        with ui.row().classes("w-full items-center gap-3 px-4 py-2").style(_BAR_TOP):
             ui.icon("merge_type", size="20px").style(f"color: {SLATE};")
             ui.label("Aggregate").classes("text-sm font-bold text-slate-700")
             render_segmented(GRADE_TABS, GRADE_EXTRACTED, _switch_grade)
             if has_merged_outputs(d.state):
-                ui.badge("merged", color="green").classes("text-[10px]")
+                ui.label("merged").style(
+                    "background: #ecfdf5; border: 1px solid #a7f3d0; color: #047857; border-radius: 3px; "
+                    "padding: 0 6px; font: 600 9px 'IBM Plex Sans', sans-serif;"
+                )
             ui.space()
-            ui.button(icon="add", on_click=lambda: d.pick_manual_path()).props("flat dense round size=sm").classes(
-                "text-slate-500"
-            ).tooltip("Add an optimisation_set.star path outside your project roots")
-            ui.button(icon="close", on_click=dlg.close).props("flat dense round size=sm").classes("text-slate-500")
+            icon_button(
+                "add",
+                lambda: d.pick_manual_path(),
+                tooltip="Add an optimisation_set.star path outside your project roots",
+            )
+            icon_button("close", dlg.close, tooltip="Close")
 
         # Toolbar lives below; the selector reference is bound there.
-        toolbar = ui.row().classes("w-full items-center gap-3 px-4 py-1.5 border-b border-slate-100 bg-slate-50")
+        toolbar = ui.row().classes("w-full items-center gap-3 px-4 py-1.5").style(_BAR_TOP)
 
         # Scrollable tree body, then a merge bar (name + run), then the registry.
         tree_body = ui.column().classes("w-full p-2 gap-0 overflow-auto bg-white").style("max-height: 48vh;")
-        merge_bar = ui.row().classes("w-full items-center gap-2 px-3 py-2 border-t border-slate-200 bg-slate-50")
+        merge_bar = ui.row().classes("w-full items-center gap-2 px-3 py-2").style(_BAR_BOTTOM)
         footer = ui.row().classes("w-full items-center gap-2 px-3 pb-1")
         registry_holder = ui.column().classes("w-full px-3 pb-3 pt-1 overflow-auto").style("max-height: 30vh;")
 
@@ -919,20 +932,14 @@ def open_aggregation_merge_dialog(project_path) -> None:
             # Species picker first, mirroring the coordinate dialog's toolbar. Options are
             # filled once discovery returns (see selector.load) — the tree does not exist
             # yet at build time.
-            species_select = (
-                ui.select(
-                    {"": "All species"},
-                    label="Species",
-                    on_change=lambda e: selector.set_species_filter(str(e.value or "")),
-                )
-                .props("dense outlined")
-                .classes("text-xs")
-                .style("min-width: 200px;")
+            species_select = house_select(
+                "species",
+                {"": "All species"},
+                width="w-48",
+                on_change=lambda e: selector.set_species_filter(str(e.value or "")),
             )
             selector.species_select = species_select
-            ui.switch("Show curated only", value=False, on_change=_toggle_curated_only).props(
-                "dense color=blue-grey"
-            ).classes("text-xs").tooltip(
+            ui.switch("Show curated only", value=False, on_change=_toggle_curated_only).props("dense").tooltip(
                 "Show only sources that have a curated (filtered) set, and within them only the tomograms you reviewed."
             )
             ui.space()
@@ -1153,16 +1160,8 @@ def _render_merge_record(d: _MergeDialog, m: AggregationMerge, is_active: bool) 
                 optset = (d.merge_dir_for(m.slug) / "optimisation_set.star") if d.merge_dir_for(m.slug) else None
                 if optset is not None:
                     with ui.row().classes("items-center gap-1 mt-1"):
-                        ui.label(str(optset)).classes("text-[9px] font-mono text-slate-400 truncate").style(
-                            "flex: 1; min-width: 0;"
-                        ).tooltip(str(optset))
-                        ui.button(
-                            icon="content_copy",
-                            on_click=lambda _e, p=str(optset): (
-                                ui.clipboard.write(p),
-                                ui.notify("Path copied", type="info", timeout=1200),
-                            ),
-                        ).props("flat dense round size=xs").classes("text-slate-400")
+                        label = ui.label(str(optset)).classes("text-[9px] font-mono text-slate-400 truncate")
+                        copy_on_click(label.style("flex: 1; min-width: 0;").tooltip(str(optset)), str(optset))
 
 
 def _render_merge_table(m: AggregationMerge) -> None:

@@ -1,11 +1,10 @@
 """
 Reusable copy-to-clipboard affordances.
 
-App-wide rule: wherever an absolute path (or a shell command) is shown, render
-it with a small copy button so the user never has to hand-select truncated text.
-Use `copyable_path` for inline path rows and `copy_button` to bolt a copy icon
-onto anything else (including inside popovers/tooltips). `copy_on_click` makes the
-path text itself the affordance where an extra icon per row is too much chrome.
+App-wide rule: wherever an absolute path is shown, the path text itself copies it on a
+click (`copy_on_click`, `copyable_path` for inline path rows), so the user never has to
+hand-select truncated text and no row carries a copy icon. `copy_button` is for what is
+not shown as text: a whole log, a command, a file's contents.
 """
 
 from __future__ import annotations
@@ -13,6 +12,8 @@ from __future__ import annotations
 import shlex
 
 from nicegui import ui
+
+from ui.components.buttons import icon_button
 
 _MONO = "font-family: 'IBM Plex Mono', monospace;"
 
@@ -32,16 +33,11 @@ async def _write_clipboard(text: str) -> None:
         ui.notify(f"Clipboard failed: {e}", type="negative", timeout=2500)
 
 
-def copy_button(text: str, *, tooltip: str = "Copy to clipboard", color: str = "#94a3b8", size: str = "xs"):
+def copy_button(text: str, *, tooltip: str = "Copy to clipboard"):
     async def _do():
         await _write_clipboard(text)
 
-    return (
-        ui.button(icon="content_copy", on_click=_do)
-        .props(f"flat dense round size={size}")
-        .style(f"color: {color}; flex-shrink: 0;")
-        .tooltip(tooltip)
-    )
+    return icon_button("content_copy", _do, tooltip=tooltip)
 
 
 def imod_command(volume) -> str:
@@ -86,24 +82,18 @@ def copy_on_click(element, text: str):
 
 
 def copyable_path(
-    path: str,
-    *,
-    color: str = "#475569",
-    font_size: str = "10px",
-    wrap: bool = True,
-    copy_tooltip: str = "Copy path",
-    copy_color: str = "#94a3b8",
+    path: str, *, color: str = "#475569", font_size: str = "10px", wrap: bool = True, copy_tooltip: str = "Copy path"
 ):
-    """Inline row: the FULL path (wrapping so it is always visible) + a copy icon.
+    """The FULL path (wrapping so it is always visible); a click copies it, `copy_tooltip` on hover.
 
-    Set wrap=False to ellipsize on one line instead (still copyable via the icon).
+    Set wrap=False to ellipsize on one line instead (the hover then shows the path too).
     """
-    with ui.row().classes("items-center").style("gap: 4px; flex: 1 1 0; min-width: 0;"):
-        if wrap:
-            text_style = "word-break: break-all; white-space: normal; line-height: 1.35;"
-        else:
-            text_style = "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-        ui.label(str(path)).style(
-            f"{_MONO} font-size: {font_size}; color: {color}; flex: 1 1 0; min-width: 0; {text_style}"
-        )
-        copy_button(str(path), tooltip=copy_tooltip, color=copy_color)
+    if wrap:
+        text_style = "word-break: break-all; white-space: normal; line-height: 1.35;"
+    else:
+        text_style = "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+    label = ui.label(str(path)).style(
+        f"{_MONO} font-size: {font_size}; color: {color}; flex: 1 1 0; min-width: 0; {text_style}"
+    )
+    label.props["title"] = copy_tooltip if wrap else f"{copy_tooltip}\n{path}"
+    return copy_on_click(label, str(path))

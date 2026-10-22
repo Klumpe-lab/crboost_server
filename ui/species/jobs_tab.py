@@ -24,6 +24,7 @@ from services.models_base import JobStatus, JobType
 from services.particles.species_jobs import PARTICLE_JOB_TYPES, jobs_for_species
 from services.project_state import ParticleSpecies, get_project_state_for
 from services.templating.template_metadata import get_effective_mask_path, get_effective_template_path
+from ui.components.buttons import house_button
 from ui.components.chip import render_chip
 from ui.components.reactive import FingerprintedView
 from ui.job_plugins._field_styles import PANEL_HEAD_STYLE, PANEL_STYLE, PANEL_TITLE_STYLE
@@ -125,12 +126,10 @@ class _JobsView(FingerprintedView):
                             f"{SANS} font-size: 10px; color: #6366f1; cursor: pointer; "
                             "text-decoration: underline dotted;"
                         ).on("click", lambda _e, i=iid: open_job(i)).tooltip("Show this job in the pipeline view")
-            with ui.row().classes("w-full items-center gap-1 mt-2 flex-wrap"):
+            with ui.row().classes("w-full items-center mt-2 flex-wrap").style("gap: 6px;"):
                 ui.label("Add for this species:").classes(_HINT_CLS)
                 for job_type in PARTICLE_JOB_TYPES:
-                    ui.button(display_name(job_type), on_click=lambda _e, jt=job_type: self._tab.add(jt)).props(
-                        "flat dense no-caps size=sm color=indigo"
-                    ).style("font-size: 10px; padding: 0 6px;")
+                    house_button(display_name(job_type), lambda _e, jt=job_type: self._tab.add(jt))
 
 
 class JobsTab:

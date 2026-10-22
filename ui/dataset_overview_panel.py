@@ -528,7 +528,10 @@ def build_dry_run_summary(overview: DatasetOverview) -> None:
         with (
             ui.column()
             .classes("w-full gap-0")
-            .style("border-radius: 6px; max-height: 200px; overflow-y: auto; background: #eef3f8; padding: 4px 0;")
+            .style(
+                "border-radius: var(--cb-radius, 5px); max-height: 200px; overflow-y: auto; "
+                "background: var(--cb-panel, #ffffff); padding: 4px 0;"
+            )
         ):
             for ts in selected:
                 ui.label(f"  {ts.ts_label}  ({ts.tilt_count} tilts)").style(

@@ -151,12 +151,12 @@ def render_denoise_inheritance(job_model, project_path: Path | None, *, is_froze
         with (
             ui.element("div")
             .style(
-                "display: inline-flex; align-items: center; background: #e3ebf4; "
+                "display: inline-flex; align-items: center; background: var(--cb-hover, #e6eff8); "
                 "border-radius: 999px; padding: 1px 8px;"
             )
             .tooltip("Inherited from the denoise-train job — set the method there; predict follows it automatically.")
         ):
-            ui.label(method.value).style("font-size: 10px; color: #2c4a6b; font-weight: 600;")
+            ui.label(method.value).style("font-size: 10px; color: var(--cb-head-ink, #12324f); font-weight: 600;")
         ui.label("inherited from denoise-train").style(f"{SANS} font-size: 9px; color: {CLR_SUBLABEL};")
 
 
