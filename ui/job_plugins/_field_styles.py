@@ -50,8 +50,7 @@ PATH_LABEL_W = LABEL_W
 # larger size, not uppercase + letter-spacing, so the visual hierarchy is
 # bold-vs-regular rather than caps-vs-lowercase.
 SECTION_HEADER_STYLE = (
-    f"{SANS} font-size: 11px; font-weight: 600; color: {CLR_HEADER}; "
-    "line-height: 1; margin: 8px 0 4px 0; display: block;"
+    f"{SANS} font-size: 11px; font-weight: 600; color: #33506e; line-height: 1; margin: 8px 0 4px 0; display: block;"
 )
 SECTION_HEADER_FIRST_STYLE = SECTION_HEADER_STYLE.replace("margin: 8px 0 4px 0", "margin: 0 0 4px 0")
 
@@ -59,18 +58,47 @@ SECTION_HEADER_FIRST_STYLE = SECTION_HEADER_STYLE.replace("margin: 8px 0 4px 0",
 # "Templates", "Masks", "Source", "Viewer". One notch above SECTION_HEADER_STYLE
 # (12 px vs 11 px), still mixed case; separation from the previous section is
 # WHITESPACE in the page layout, never an underline rule.
-PAGE_SECTION_STYLE = f"{SANS} font-size: 12px; font-weight: 600; color: #334155; line-height: 1; display: block;"
-
-# A page's large blocks (a job page's sections): a pale gray-blue panel without a border and its
-# title in gray-blue ink, as the Journey's sections. Fields keep their white boxes on it.
-PANEL_STYLE = "background: #eef3f8; border-radius: 6px; padding: 10px 12px 12px; box-sizing: border-box;"
-PANEL_TITLE_STYLE = f"{SANS} font-size: 12px; font-weight: 600; color: #2c4a6b; line-height: 1; display: block;"
-# A panel's title line as a stripe across its top, edge to edge: the margins undo PANEL_STYLE's padding, so
-# it belongs on the panel's first child (the title label, or the row holding it).
-PANEL_HEAD_STYLE = (
-    "background: #dfe7f0; margin: -10px -12px 0; padding: 6px 12px; width: calc(100% + 24px); "
-    "border-radius: 6px 6px 0 0; box-sizing: border-box;"
+PAGE_SECTION_STYLE = (
+    f"{SANS} font-size: 12px; font-weight: 600; color: var(--cb-head-ink, #12324f); line-height: 1; display: block;"
 )
+
+# A page's large blocks (a job page's sections): a panel and its title in the panel ink, as the
+# Journey's sections. Fields keep their white boxes on it. Colours, radius, padding and lines are the
+# style's CSS variables (`--cb-*`, ui/dashboard/css.py `_THEME_CSS`); each fallback is the default
+# style's value. The outline is drawn over the content, so it costs no layout and the stripe can't
+# cover it.
+PANEL_STYLE = (
+    "background: var(--cb-panel, #ffffff); border-radius: var(--cb-radius, 5px); "
+    "padding: var(--cb-pad-y, 9px) var(--cb-pad-x, 11px) calc(var(--cb-pad-y, 9px) + 2px); box-sizing: border-box; "
+    "outline: 1px solid var(--cb-panel-line, #dbe3ec); outline-offset: -1px; "
+    "box-shadow: var(--cb-panel-shadow, 0 1px 2px rgba(16, 42, 67, 0.06));"
+)
+PANEL_TITLE_STYLE = (
+    f"{SANS} font-size: var(--cb-head-size, 12px); font-weight: 600; color: var(--cb-head-ink, #12324f); "
+    "letter-spacing: var(--cb-head-track, 0); line-height: 1; display: block;"
+)
+# A panel's title line as a stripe across its top, edge to edge: the margins undo PANEL_STYLE's padding, so
+# it belongs on the panel's first child (the title label, or the row holding it). A style may rule it off
+# below and mark its left end (--cb-head-line, --cb-accent).
+PANEL_HEAD_STYLE = (
+    "background: var(--cb-head, #edf4fb); "
+    "margin: calc(-1 * var(--cb-pad-y, 9px)) calc(-1 * var(--cb-pad-x, 11px)) 0; "
+    "padding: var(--cb-head-pad, 5px) var(--cb-pad-x, 11px); width: calc(100% + 2 * var(--cb-pad-x, 11px)); "
+    "border-radius: var(--cb-radius, 5px) var(--cb-radius, 5px) 0 0; box-sizing: border-box; "
+    "box-shadow: 0 1px 0 var(--cb-head-line, #c9dbee), "
+    "inset var(--cb-accent-w, 2px) 0 0 var(--cb-accent, #4a8fd4), "
+    "inset 0 1px 0 var(--cb-head-glint, rgba(255, 255, 255, 0.9));"
+)
+
+
+def fold_panel(panel, head, open_: bool) -> None:
+    """A folding panel (a job page's Log and Files, the workbench's Activity log): folded, its title
+    stripe is the whole panel."""
+    panel.style(f"padding-bottom: {'calc(var(--cb-pad-y, 9px) + 2px)' if open_ else '0'};")
+    head.style(
+        f"border-radius: {'var(--cb-radius, 5px) var(--cb-radius, 5px) 0 0' if open_ else 'var(--cb-radius, 5px)'};"
+    )
+
 
 # A sub-block inside a Config section (SLURM's "Per-Task Resources" / "Supervisor"): spacing only, no box.
 GROUP_STYLE = "width: 100%; margin-top: 10px;"
@@ -92,6 +120,19 @@ def section_header(text: str, *, first: bool = False):
 
 
 # ── Containers ──────────────────────────────────────────────────────────────
+@contextmanager
+def panel_head(title: str, *, tooltip: str | None = None):
+    """A panel's title stripe with controls on it: the title on the left, the controls the caller builds
+    in the yielded row on the right, all centred on one line. The first child of a `PANEL_STYLE` panel."""
+    with ui.row().classes("items-center no-wrap").style(f"gap: 8px; min-height: 30px; {PANEL_HEAD_STYLE}"):
+        lbl = ui.label(title).style(PANEL_TITLE_STYLE)
+        if tooltip:
+            lbl.tooltip(tooltip)
+        ui.space()
+        with ui.row().classes("items-center no-wrap").style("gap: 6px;") as controls:
+            yield controls
+
+
 @contextmanager
 def config_section(title: str, *, tooltip: str | None = None):
     """One section of a job's page (Parameters / Inputs / Outputs / SLURM resources): its

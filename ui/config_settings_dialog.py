@@ -27,7 +27,7 @@ from nicegui import ui
 
 from services.configs.config_service import check_path_exists, get_config_service
 from services.models_base import JobType
-from ui.components.buttons import house_button
+from ui.components.buttons import house_button, icon_button
 from ui.job_plugins._field_styles import PANEL_TITLE_STYLE
 from ui.styles import MONO, SANS as FONT
 
@@ -50,7 +50,10 @@ _LABEL_W = 132
 # without an explicit width it shrink-wraps to the left.
 _ROW_BOX = "width: 100%; box-sizing: border-box;"
 # A section: the Journey's pale gray-blue panel, inset from the dialog's edges.
-_PANEL = "background: #eef3f8; border-radius: 6px; padding: 10px 0 8px; margin: 0 12px; width: calc(100% - 24px);"
+_PANEL = (
+    "background: var(--cb-panel, #ffffff); border-radius: var(--cb-radius, 5px); "
+    "padding: 10px 0 8px; margin: 0 12px; width: calc(100% - 24px);"
+)
 # Label-plus-input cells that flow into as many columns as the row allows. The cell
 # is `minmax(200px, 1fr)` and the input takes what the label leaves — so every input
 # in a grid has the same length and the last column reaches the right edge.
@@ -140,7 +143,7 @@ def _build_header(dialog, cs, on_saved) -> None:
                 "text-overflow: ellipsis; white-space: nowrap;"
             )
         _override_badge(cs)
-        ui.button(icon="close", on_click=dialog.close).props("flat dense round size=sm").classes("text-slate-400")
+        icon_button("close", dialog.close, tooltip="Close")
 
 
 def _override_badge(cs) -> None:
@@ -240,7 +243,12 @@ def _section(title: str, subtitle: str = ""):
     keep their own side padding."""
     with ui.element("div").style(f"{_ROW_BOX} {_PANEL}"):
         # The panels' title stripe (PANEL_HEAD_STYLE), fitted to this panel's padding.
-        head = "background: #dfe7f0; margin: -10px 0 4px; padding: 6px 16px; border-radius: 6px 6px 0 0;"
+        head = (
+            "background: var(--cb-head, #edf4fb); margin: -10px 0 4px; padding: 6px 16px; "
+            "border-radius: var(--cb-radius, 5px) var(--cb-radius, 5px) 0 0; "
+            "box-shadow: 0 1px 0 var(--cb-head-line, #c9dbee), "
+            "inset var(--cb-accent-w, 2px) 0 0 var(--cb-accent, #4a8fd4);"
+        )
         with ui.element("div").style(f"{_ROW_BOX} {head}"):
             ui.label(title).style(PANEL_TITLE_STYLE)
             if subtitle:

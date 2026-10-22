@@ -186,13 +186,18 @@ _VIEW_STYLE = "min-width: 0; height: 100%; overflow: hidden; display: none; flex
 _VIEW_COLUMN_STYLE = "flex: 1 1 0; min-width: 0; height: 100%; display: flex; flex-direction: column; overflow: hidden;"
 _VIEW_HEAD_STYLE = (
     "flex: 0 0 auto; display: flex; align-items: center; gap: 4px; min-height: 28px; padding: 3px 6px 3px 14px; "
-    "margin-bottom: 6px; background: #dfe7f0;"
+    "margin-bottom: 6px; background: var(--cb-view-head, linear-gradient(180deg, #ffffff, #edf3f9)); "
+    "box-shadow: 0 var(--cb-view-head-line-w, 1px) 0 var(--cb-view-head-line, #a9c6e4), "
+    "inset 0 1px 0 var(--cb-head-glint, rgba(255, 255, 255, 0.9));"
 )
 _VIEW_TITLE_STYLE = (
-    "font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; font-weight: 600; color: #2c4a6b; "
+    "font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; font-weight: 600; "
+    "color: var(--cb-view-head-ink, #12324f); letter-spacing: var(--cb-head-track, 0); "
     "white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;"
 )
 _VIEW_BODY_STYLE = "flex: 1 1 0; min-width: 0; min-height: 0; overflow: hidden; display: flex; flex-direction: column;"
+# The line between two main panels (views side by side, the roster and the view beside it).
+_VIEW_EDGE = "var(--cb-edge-w, 1px) solid var(--cb-edge, #c9d6e3)"
 # Each view's name on its title line; the pipeline's names the job its page shows (set_view_title).
 _VIEW_TITLES = {
     "pipeline": "Jobs",
@@ -279,7 +284,11 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
             if name in _on:
                 # A slate edge and a faint shadow cast onto the view to its left, so two views
                 # read as two panels rather than one gray surface.
-                border, shadow = ("none", "none") if first else ("2px solid #b4c2d3", "-4px 0 12px rgba(15,23,42,0.16)")
+                border, shadow = (
+                    ("none", "none")
+                    if first
+                    else (_VIEW_EDGE, "var(--cb-edge-shadow, -2px 0 6px rgba(16, 42, 67, 0.06))")
+                )
                 c.style(f"display: flex; order: {i}; border-left: {border}; box-shadow: {shadow};")
                 if first:
                     c.classes(remove="cb-view-split")
@@ -650,9 +659,9 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
     ):
         primary_sidebar = ui.element("div").style(
             "width: 60px; min-width: 60px; height: 100%; flex-shrink: 0; "
-            "background: #f8fafc; display: flex; flex-direction: column; "
+            "background: var(--cb-rail, #eef3f8); display: flex; flex-direction: column; "
             "align-items: center; gap: 0; overflow: visible; z-index: 20; "
-            "border-right: 1px solid #e2e8f0;"
+            "border-right: 1px solid var(--cb-rail-line, #d3dde8);"
         )
 
         roster_panel = (
@@ -660,7 +669,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
             .props("id=cb-roster-panel")
             .style(
                 "width: 340px; min-width: 340px; height: 100%; flex-shrink: 0; "
-                "background: #ffffff; border-right: 2px solid #b4c2d3; "
+                f"background: var(--cb-surface, #ffffff); border-right: {_VIEW_EDGE}; "
                 "overflow-y: auto; overflow-x: hidden; "
                 "flex-direction: column; gap: 0; display: flex;"
             )

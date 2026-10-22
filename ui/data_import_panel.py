@@ -16,7 +16,7 @@ from backend import CryoBoostBackend
 from services.configs.mdoc_service import describe_duplicate_ts_names, describe_long_ts_names
 from services.configs.user_prefs_service import get_prefs_service
 
-from ui.components.buttons import house_button
+from ui.components.buttons import house_button, icon_button
 from ui.components.segmented import render_segmented
 from ui.ui_state import get_ui_state_manager
 from ui.local_file_picker import local_file_picker
@@ -940,7 +940,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
     # DATASET OVERVIEW
     # =========================================================================
 
-    _PROGRESS_BOX = "border-radius: 6px; padding: 8px 10px; background: #eef3f8;"
+    _PROGRESS_BOX = "border-radius: var(--cb-radius, 5px); padding: 8px 10px; background: var(--cb-panel, #ffffff);"
 
     def _render_scan_affordance(msg: str, color: str, *, can_scan: bool):
         """Pre-scan feedback under the path fields: the mdoc count and the Scan
@@ -1260,13 +1260,9 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                                 )
                                 project_path_input.input_el.on("blur", on_project_path_blur)
                                 ui_mgr.panel_refs.project_path_input = project_path_input
-                                with ui.element("div").style("position: relative;"):
-                                    ui.button(icon="folder", on_click=pick_project_path).props(
-                                        "flat dense round size=xs"
-                                    ).classes("text-slate-400 hover:text-slate-600")
-                                    ui.tooltip("New project directory will be created here").style(
-                                        f"{FONT} font-size: {SZ_META};"
-                                    )
+                                icon_button(
+                                    "folder", pick_project_path, tooltip="New project directory will be created here"
+                                )
 
                     # Project creation has no type switches. Leaving the raw-data globs empty is
                     # the request for a data-less project (see is_dataless()), and merging
@@ -1339,9 +1335,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                                 placeholder="/path/to/frames",
                             )
                             ui_mgr.panel_refs.movies_input = movies_input
-                            ui.button(icon="folder", on_click=pick_movies_path).props(
-                                "flat dense round size=xs"
-                            ).classes("text-slate-400 hover:text-slate-600")
+                            icon_button("folder", pick_movies_path, tooltip="Browse for the frames")
                         with ui.row().classes("w-full items-center gap-2").style("margin-top: 2px;"):
                             local_refs["scan_button"] = house_button(
                                 "Scan dataset",
@@ -1400,9 +1394,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                                 placeholder="/path/to/mdocs",
                             )
                             ui_mgr.panel_refs.mdocs_input = mdocs_input
-                            ui.button(icon="folder", on_click=pick_mdocs_path).props(
-                                "flat dense round size=xs"
-                            ).classes("text-slate-400 hover:text-slate-600")
+                            icon_button("folder", pick_mdocs_path, tooltip="Browse for the mdocs")
                         mdocs_hint = ui.label("No pattern").style(
                             f"{FONT} font-size: {SZ_META}; color: {CLR_SUBLABEL}; padding-left: 2px; margin-top: 1px;"
                         )
@@ -1433,9 +1425,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                                 .style(input_mono_style)
                             )
                             local_refs["gain_input"] = gain_input
-                            ui.button(icon="folder", on_click=pick_gain_path).props("flat dense round size=xs").classes(
-                                "text-slate-400 hover:text-slate-600"
-                            )
+                            icon_button("folder", pick_gain_path, tooltip="Browse for the gain reference")
 
                     # The data-less project, stated where the raw-data fields are (the
                     # only place the question comes up). Action sits with its hint.

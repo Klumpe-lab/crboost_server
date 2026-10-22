@@ -44,8 +44,9 @@ from services.particles.coord_merge import CoordSource, clash_report, merge_coor
 from services.particles.list_ref import fs_slug
 from services.models_base import PickListType, PickSourceKind
 from services.project_state import MERGED_DIR_NAME, PickList, get_project_state_for
-from ui.components.buttons import house_button
+from ui.components.buttons import house_button, icon_button
 from ui.components.dialogs import dialog_host
+from ui.components.fields import house_select
 from ui.components.reactive import SingleFlight
 from ui.components.segmented import render_segmented
 from ui.components.svg_icon import load_icon_svg
@@ -61,6 +62,9 @@ STEEL = "#4682b4"
 SLATE = "#475569"
 SLATE_MUTED = "#94a3b8"
 AMBER = "#b45309"
+# The header, toolbar and action bars: a light-blue band ruled off from the body by a hairline.
+_BAR_TOP = "background: #f4f8fc; border-bottom: 1px solid #dbe3ec;"
+_BAR_BOTTOM = "background: #f4f8fc; border-top: 1px solid #dbe3ec;"
 
 # The two payload grades (docs/particle-data-flow.md). The switch between them is a
 # real control in both dialogs' headers, not a text link: they are the two modes of
@@ -905,44 +909,41 @@ def open_aggregate_dialog(project_path) -> None:
         .classes("w-[1060px] max-w-[96vw] max-h-[92vh] overflow-hidden border border-slate-200 bg-white p-0")
         .style("color: #1e293b;"),
     ):
-        with ui.row().classes("w-full items-center gap-3 px-4 py-2 border-b border-slate-200 bg-slate-50"):
+        with ui.row().classes("w-full items-center gap-3 px-4 py-2").style(_BAR_TOP):
             ui.icon("merge_type", size="20px").style(f"color: {SLATE};")
             ui.label("Aggregate").classes("text-sm font-bold text-slate-700")
             render_segmented(GRADE_TABS, GRADE_COORDS, lambda key: _switch_grade(dlg, d.project_path, key))
             ui.space()
-            ui.button(icon="close", on_click=dlg.close).props("flat dense round size=sm").classes("text-slate-500")
+            icon_button("close", dlg.close, tooltip="Close")
 
         # Same vertical order as merge_card, top to bottom: scope selectors (what am I
         # looking at) → the tree → name the output → the action.
-        toolbar = ui.row().classes("w-full items-center gap-3 px-4 py-1.5 border-b border-slate-100 bg-slate-50")
+        toolbar = ui.row().classes("w-full items-center gap-3 px-4 py-1.5").style(_BAR_TOP)
         filter_row = ui.row().classes("w-full items-center gap-2 px-3 pt-2")
         tree = ui.column().classes("w-full px-2 gap-0 overflow-auto bg-white").style("max-height: 48vh;")
         summary_host = ui.column().classes("w-full px-4 pt-2 gap-0")
-        name_bar = ui.row().classes("w-full items-center gap-2 px-3 py-2 border-t border-slate-200 bg-slate-50")
+        name_bar = ui.row().classes("w-full items-center gap-2 px-3 py-2").style(_BAR_BOTTOM)
         footer = ui.row().classes("w-full items-center gap-2 px-4 py-2 border-t border-slate-200")
 
         d.tree = tree
         d.summary_host = summary_host
 
         with toolbar:
-            species_select = (
-                ui.select({}, label="Species", on_change=lambda e: d.on_species(str(e.value or "")))
-                .props("dense outlined")
-                .classes("text-xs")
-                .style("min-width: 200px;")
+            species_select = house_select(
+                "species", {}, width="w-48", on_change=lambda e: d.on_species(str(e.value or ""))
             )
             ui.space()
             ui.switch("Curated only", value=False, on_change=lambda e: d.set_curated_only(bool(e.value))).props(
-                "dense color=blue-grey"
-            ).classes("text-xs").tooltip(
+                "dense"
+            ).tooltip(
                 "Hide machine candidate sets — show only lists a human placed, filtered, imported or already merged. "
                 "Anything already selected stays visible."
             )
 
         with filter_row:
             ui.input(placeholder="Filter projects, tomograms, lists…", on_change=lambda e: d.set_filter(e.value)).props(
-                "dense outlined clearable debounce=200"
-            ).classes("w-full")
+                "dense clearable debounce=200"
+            ).classes("cb-field w-full")
 
         # Name bar: sits above the action, mounted once and never rebuilt, so typing a name
         # survives every checkbox click (the same reason merge_card keeps its there).

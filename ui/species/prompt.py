@@ -23,7 +23,7 @@ from services import species_admin
 from services.jobs._base import SymmetryGroup
 from services.models_base import SpeciesOrigin, species_palette_color
 from services.project_state import ParticleSpecies, TemplateMask, get_project_state_for, slugify
-from ui.components.buttons import house_button
+from ui.components.buttons import house_button, icon_button
 from ui.components.color_swatch import render_color_swatch
 from ui.components.fields import HOUSE_LABEL_CLS, house_field, house_number, house_select
 from ui.species.overview_tab import SYMMETRY_OPTIONS
@@ -77,7 +77,7 @@ def _path_row(label: str, hint: str, on_pick, state: dict, key: str) -> None:
                 _set(picked)
 
         house_button("Choose…", _choose)
-        ui.button(icon="close", on_click=lambda: _set("")).props("flat dense round size=sm").tooltip("clear")
+        icon_button("close", lambda: _set(""), tooltip="clear")
 
 
 async def _pick_volume() -> str | None:

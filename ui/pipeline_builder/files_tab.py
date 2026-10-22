@@ -10,6 +10,7 @@ from pathlib import Path
 from nicegui import ui
 
 from services.project_state import JobType
+from ui.components.buttons import icon_button
 from ui.ui_state import UIStateManager
 
 
@@ -208,12 +209,10 @@ def render_files_tab(job_type: JobType, job_model, ui_mgr: UIStateManager):
             zoom_state["level"] = 1.0
             zoom_box.style("transform: scale(1); transition: transform 0.2s;")
 
-        with ui.row().classes("w-full justify-center gap-1 p-1"):
-            ui.button(icon="zoom_in", on_click=zoom_in).props("flat dense round size=sm")
-            ui.button(icon="zoom_out", on_click=zoom_out).props("flat dense round size=sm")
-            ui.button(icon="center_focus_strong", on_click=reset_zoom).props("flat dense round size=sm").tooltip(
-                "Reset"
-            )
+        with ui.row().classes("w-full justify-center items-center no-wrap p-1").style("gap: 4px;"):
+            icon_button("zoom_in", zoom_in, tooltip="Zoom in")
+            icon_button("zoom_out", zoom_out, tooltip="Zoom out")
+            icon_button("center_focus_strong", reset_zoom, tooltip="Reset")
 
         with (
             ui.element("div")
@@ -296,11 +295,12 @@ def render_files_tab(job_type: JobType, job_model, ui_mgr: UIStateManager):
         with ui.column().style(
             "width: 35%; height: 100%; overflow-y: auto; gap: 0; background: #f8fafc; border-radius: 4px 0 0 4px;"
         ):
-            with ui.row().classes("w-full items-center justify-between no-wrap px-3 py-1"):
+            with ui.row().classes("w-full items-center no-wrap px-3 py-1").style("gap: 6px;"):
                 path_label = ui.label(job_dir.name).classes("text-xs text-gray-600 font-mono truncate")
-                ui.button(
-                    icon="refresh", on_click=lambda: (render_file_list.refresh(), render_preview.refresh())
-                ).props("flat dense round size=sm").classes("text-gray-400 hover:text-blue-500")
+                ui.space()
+                icon_button(
+                    "refresh", lambda: (render_file_list.refresh(), render_preview.refresh()), tooltip="Refresh"
+                )
 
             file_list_container = ui.column().classes("w-full gap-0")
 
@@ -317,9 +317,10 @@ def view_file_dialog(file_path: Path):
         with open(file_path, encoding="utf-8", errors="ignore") as f:
             content = f.read(50000)
         with ui.dialog() as dialog, ui.card().classes("w-[70vw] max-w-4xl"):
-            with ui.row().classes("w-full items-center justify-between mb-2"):
+            with ui.row().classes("w-full items-center no-wrap mb-2").style("gap: 6px;"):
                 ui.label(file_path.name).classes("text-sm font-bold")
-                ui.button(icon="close", on_click=dialog.close).props("flat round dense")
+                ui.space()
+                icon_button("close", dialog.close, tooltip="Close")
             ui.code(content).classes("w-full max-h-[60vh] overflow-auto text-xs")
             dialog.open()
     except Exception as e:

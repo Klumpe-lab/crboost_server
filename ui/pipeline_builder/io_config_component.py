@@ -29,7 +29,7 @@ from services.project_state import get_project_state_for
 from ui.current_project import current_project_state
 from ui.ui_state import get_job_display_name
 from ui.utils import snake_to_title
-from ui.components.buttons import house_button
+from ui.components.buttons import house_button, icon_button
 from ui.components.copyable import copyable_path
 from ui.job_plugins._field_styles import LABEL_STYLE, LABEL_W, config_section
 
@@ -330,13 +330,9 @@ class IOConfigComponent:
                     f"{FONT} font-size: 10px; color: {_MUTED}; font-style: italic; flex: 1 1 0; min-width: 0;"
                 )
             if not self.read_only:
-                ui.button(icon="folder_open", on_click=self._pick_gain).props("flat dense round size=xs").style(
-                    f"color: {_PATH_COLOR}; flex-shrink: 0;"
-                ).tooltip("Browse for gain reference…")
+                icon_button("folder_open", self._pick_gain, tooltip="Browse for gain reference…")
                 if is_set:
-                    ui.button(icon="close", on_click=self._clear_gain).props("flat dense round size=xs").style(
-                        f"color: {_MUTED}; flex-shrink: 0;"
-                    ).tooltip("Clear")
+                    icon_button("close", self._clear_gain, tooltip="Clear", kind="danger")
 
     async def _pick_gain(self):
         from ui.local_file_picker import local_file_picker
@@ -407,12 +403,7 @@ class IOConfigComponent:
                 if not slot.required:
                     ui.label("optional").style(f"{_SMALL} color: {_MUTED}; flex-shrink: 0;")
                 if validation.is_user_override:
-                    (
-                        ui.button(icon="restart_alt", on_click=lambda s=slot: self._clear_override(s))
-                        .props("flat dense round size=xs")
-                        .style(f"color: {_MUTED}; flex-shrink: 0;")
-                        .tooltip("Reset to auto")
-                    )
+                    icon_button("restart_alt", lambda s=slot: self._clear_override(s), tooltip="Reset to auto")
             if current_value is not None:
                 self._input_state_tag(validation)
 
@@ -431,12 +422,10 @@ class IOConfigComponent:
                     'color: #1e293b; padding: 1px 2px; min-height: 0;"'
                 )
                 inp.style("flex: 1 1 0; min-width: 0;")
-                ui.button(icon="folder_open", on_click=lambda s=slot: self._open_file_picker(s)).props(
-                    "flat dense round size=xs"
-                ).style(f"color: {_PATH_COLOR};").tooltip("Browse…")
+                icon_button("folder_open", lambda s=slot: self._open_file_picker(s), tooltip="Browse…")
 
-        # Full resolved input path — always visible (wraps, never truncated) with
-        # a copy icon. Skipped only while the manual editor above already shows it.
+        # Full resolved input path — always visible (wraps, never truncated); a click
+        # copies it. Skipped only while the manual editor above already shows it.
         if validation.resolved_path and not manual_editing:
             with ui.element("div").style(_DETAIL_STYLE + " display: flex;"):
                 copyable_path(validation.resolved_path, color=_PATH_COLOR, copy_tooltip="Copy input path")

@@ -34,7 +34,7 @@ from pathlib import Path
 
 from nicegui import context, ui
 
-from ui.components.buttons import house_button
+from ui.components.buttons import house_button, icon_button
 from ui.particles import session_status
 
 logger = logging.getLogger(__name__)
@@ -134,7 +134,7 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
             t = text_or_getter() if callable(text_or_getter) else text_or_getter
             ui.run_javascript(_copy_js(t or ""))
 
-        ui.button(icon="content_copy", on_click=_do).props("flat dense round size=sm").tooltip(tip)
+        icon_button("content_copy", _do, tooltip=tip)
 
     def _num(n: str) -> None:
         ui.label(n).classes(

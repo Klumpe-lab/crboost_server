@@ -58,9 +58,16 @@ from ui.components.chip import render_method_chip, render_polarity_chip
 from ui.components.path_link import render_path_link
 from ui.components.reactive import SingleFlight
 from ui.components.segmented import render_segmented
-from ui.components.buttons import house_button
+from ui.components.buttons import house_button, icon_button
 from ui.components.fields import house_field as _field
-from ui.job_plugins._field_styles import PANEL_HEAD_STYLE, PANEL_STYLE, PANEL_TITLE_STYLE, SECTION_HEADER_FIRST_STYLE
+from ui.job_plugins._field_styles import (
+    PANEL_HEAD_STYLE,
+    PANEL_STYLE,
+    PANEL_TITLE_STYLE,
+    SECTION_HEADER_FIRST_STYLE,
+    fold_panel,
+    panel_head,
+)
 from ui.components.template_viewer import TemplateViewerController, render_template_viewer
 from ui.local_file_picker import local_file_picker
 from ui.template_import_dialog import open_template_import_dialog
@@ -908,12 +915,16 @@ class TemplateWorkbench:
                                 ).on("click", lambda c=pc, i=iid: self._post_to_viewer("setColor", itemId=i, color=c))
                     color_btn.on("click", color_menu.open)
                     ui.label(iid).classes(_MONO_CLS + " max-w-[120px] truncate")
-                    vis_btn = ui.button(
-                        icon="visibility" if visible else "visibility_off",
-                        on_click=lambda i=iid: self._toggle_visibility_from_ui(i),
-                    ).props("flat round dense size=xs")
-                    ui.button(icon="close", on_click=lambda i=iid: self._post_to_viewer("deleteItem", itemId=i)).props(
-                        "flat round dense size=xs color=red"
+                    vis_btn = icon_button(
+                        "visibility" if visible else "visibility_off",
+                        lambda i=iid: self._toggle_visibility_from_ui(i),
+                        tooltip="Show or hide in the viewer",
+                    )
+                    icon_button(
+                        "close",
+                        lambda i=iid: self._post_to_viewer("deleteItem", itemId=i),
+                        tooltip="Remove from the viewer",
+                        kind="danger",
                     )
 
                 iso_slider, iso_label = None, None
@@ -994,8 +1005,9 @@ class TemplateWorkbench:
                         ui.icon("error_outline", size="12px").classes("text-red-600 shrink-0")
                     ui.label(entry["filename"]).classes(_MONO_CLS + " truncate flex-1 min-w-0")
                     if status == "error":
-                        dismiss = ui.button(icon="close").props("flat round dense size=xs color=grey")
-                        dismiss.on("click", lambda _e, seq=entry["seq"]: self._dismiss_pending_load(seq))
+                        icon_button(
+                            "close", lambda _e, seq=entry["seq"]: self._dismiss_pending_load(seq), tooltip="Dismiss"
+                        )
 
     def _dismiss_pending_load(self, seq: int) -> None:
         self._pending_loads = [e for e in self._pending_loads if e.get("seq") != seq]
@@ -1159,13 +1171,8 @@ class TemplateWorkbench:
         """Eye (load to viewer) + delete X. `click.stop` so an action never selects the
         row as a side effect."""
         with ui.element("div").classes("cb-tw-cell").style("justify-content: flex-end;"):
-            eye = ui.button(icon="visibility").props("flat round dense size=xs color=grey")
-            eye.tooltip("Load into viewer")
-            eye.on("click.stop", lambda _e: on_load_to_viewer())
-
-            close = ui.button(icon="close").props("flat round dense size=xs color=grey")
-            close.tooltip("Delete")
-            close.on("click.stop", lambda _e: on_delete())
+            icon_button("visibility", tooltip="Load into viewer").on("click.stop", lambda _e: on_load_to_viewer())
+            icon_button("close", tooltip="Delete", kind="danger").on("click.stop", lambda _e: on_delete())
 
     def _format_stats_line(self, h) -> tuple[str, str] | None:
         """Return (label, color) for a min/max/σ chip line. None if the
@@ -1670,9 +1677,7 @@ class TemplateWorkbench:
 
     def _render_viewer_panel(self) -> None:
         with ui.column().classes("w-full gap-1").style(PANEL_STYLE):
-            with ui.row().classes("w-full items-baseline gap-2").style(PANEL_HEAD_STYLE):
-                ui.label("Viewer").style(PANEL_TITLE_STYLE)
-                ui.element("div").classes("flex-1")
+            with panel_head("Viewer"):
                 ui.label("mode").classes(_HINT_CLS)
                 # `.cb-field` chrome so the select matches the 10 px label beside it
                 # instead of rendering as a 14 px Quasar field.
@@ -1698,18 +1703,16 @@ class TemplateWorkbench:
                     self._molstar_panel = ui.row().classes("w-full gap-3").style("height: 380px; grid-area: 1 / 1;")
                     with self._molstar_panel:
                         with ui.column().classes("w-44 p-2 bg-white h-full"):
-                            with ui.row().classes("items-center gap-1 mb-1"):
+                            with ui.row().classes("w-full items-center no-wrap mb-1").style("gap: 6px;"):
                                 ui.icon("layers", size="11px").classes("text-gray-400")
                                 ui.label("in viewer").classes(_LABEL_CLS)
-                                ui.element("div").classes("flex-1")
-                                sweep_btn = ui.button(icon="delete_sweep", on_click=self._sweep_viewer).props(
-                                    "flat round dense size=xs color=grey"
+                                ui.space()
+                                icon_button("delete_sweep", self._sweep_viewer, tooltip="Clear loaded items")
+                                icon_button(
+                                    "restart_alt",
+                                    self._hard_reset_viewer,
+                                    tooltip="Reset viewer (remount — use if loads jam)",
                                 )
-                                sweep_btn.tooltip("Clear loaded items")
-                                reset_btn = ui.button(icon="restart_alt", on_click=self._hard_reset_viewer).props(
-                                    "flat round dense size=xs color=grey"
-                                )
-                                reset_btn.tooltip("Reset viewer (remount — use if loads jam)")
                             self._pending_loads_container = ui.column().classes("w-full gap-1")
                             self._session_list_container = ui.column().classes("w-full gap-1 overflow-y-auto flex-1")
                         with ui.column().classes("flex-1 bg-black relative overflow-hidden h-full"):
@@ -1758,9 +1761,9 @@ class TemplateWorkbench:
         # House section header + plain disclosure caret instead of Quasar's boxed
         # ui.expansion — one less bordered widget on the page.
         state = {"open": False}
-        with ui.column().classes("w-full gap-0").style(f"{PANEL_STYLE} padding-bottom: 0;") as panel:
+        with ui.column().classes("w-full gap-0").style(PANEL_STYLE) as panel:
             header = ui.row().classes("w-full items-center gap-1 cursor-pointer select-none")
-            with header.style(f"{PANEL_HEAD_STYLE} border-radius: 6px;"):
+            with header.style(PANEL_HEAD_STYLE):
                 caret = (
                     ui.icon("chevron_right", size="14px")
                     .classes("text-gray-400")
@@ -1769,14 +1772,13 @@ class TemplateWorkbench:
                 ui.label("Activity log").style(PANEL_TITLE_STYLE)
             self._log_container = ui.column().classes("w-full gap-0.5 px-2 py-1 max-h-40 overflow-y-auto")
         self._log_container.set_visibility(False)
+        fold_panel(panel, header, False)
 
         def _toggle() -> None:
             state["open"] = not state["open"]
             self._log_container.set_visibility(state["open"])
             caret.style(f"transform: rotate({90 if state['open'] else 0}deg);")
-            # Folded, the stripe is the whole panel.
-            panel.style(f"padding-bottom: {12 if state['open'] else 0}px;")
-            header.style(f"border-radius: {'6px 6px 0 0' if state['open'] else '6px'};")
+            fold_panel(panel, header, state["open"])
 
         header.on("click", _toggle)
 

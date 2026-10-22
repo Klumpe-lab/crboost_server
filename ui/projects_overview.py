@@ -31,7 +31,7 @@ from services.configs.user_prefs_service import get_prefs_service
 from services.project_disk_usage import BUCKET_OTHER, BUCKET_PARTICLES, BUCKET_PREPROCESSING, BUCKET_TRASH, DiskUsage
 from services.project_state import SHARED_OWNER
 from ui.background_task import BackgroundTask
-from ui.components.buttons import house_button
+from ui.components.buttons import house_button, icon_button
 from ui.components.copyable import copy_on_click
 from ui.components.dialogs import dialog_host
 from ui.components.fields import house_select
@@ -350,7 +350,9 @@ class ProjectsOverview:
             .style(
                 # A pale gray-blue panel, the Journey's section look, holding the list on white. The
                 # border is transparent until deletion mode colours it.
-                "background: #eef3f8; border-radius: 6px; border: 1px solid transparent; "
+                "background: var(--cb-panel, #ffffff); border-radius: var(--cb-radius, 5px); "
+                "border: 1px solid transparent; "
+                "outline: 1px solid var(--cb-panel-line, #dbe3ec); outline-offset: -1px; "
                 "padding: 0 8px 8px; box-sizing: border-box; "
                 # Never wider than the pane it sits in: a narrow landing page clips
                 # here rather than scrolling the whole roster sideways.
@@ -547,22 +549,16 @@ class ProjectsOverview:
             )
 
             if self.on_browse is not None:
-                ui.button(icon="folder_open", on_click=self.on_browse).props("flat dense round size=xs").classes(
-                    "text-slate-400 hover:text-blue-600 shrink-0"
-                ).tooltip("Browse for another base location")
-            # color=None: a Quasar color would paint the glyph with an !important class
-            # and the armed/idle colors below could never show.
-            self._delete_btn = (
-                ui.button(icon="delete_outline", on_click=self._toggle_delete_mode, color=None)
-                .props("flat dense round size=xs")
-                .classes("shrink-0")
-                .tooltip("Deletion mode: arm it, then click the project to delete. Click again to disarm.")
+                icon_button("folder_open", self.on_browse, tooltip="Browse for another base location")
+            self._delete_btn = icon_button(
+                "delete_outline",
+                self._toggle_delete_mode,
+                tooltip="Deletion mode: arm it, then click the project to delete. Click again to disarm.",
+                kind="danger",
             )
             self._style_delete_mode()
             # Refresh button -- explicit re-scan in addition to the timer.
-            ui.button(icon="refresh", on_click=self.refresh).props("flat dense round size=xs").classes(
-                "text-slate-400 hover:text-blue-600 shrink-0"
-            ).tooltip(f"Rescan now (auto every {int(self.auto_refresh_sec)}s)")
+            icon_button("refresh", self.refresh, tooltip=f"Rescan now (auto every {int(self.auto_refresh_sec)}s)")
 
     def _build_column_header(self):
         """Compact view: the column titles, above the scroll area so they stay put. Same widths,
@@ -643,8 +639,10 @@ class ProjectsOverview:
         on = self._delete_mode
         if self._delete_btn is not None:
             self._delete_btn.props(f"icon={'delete' if on else 'delete_outline'}")
-            self._delete_btn.classes(remove="text-slate-400 hover:text-red-500 text-red-600 bg-red-50")
-            self._delete_btn.classes(add="text-red-600 bg-red-50" if on else "text-slate-400 hover:text-red-500")
+            if on:
+                self._delete_btn.classes(add="cb-icon-btn--armed")
+            else:
+                self._delete_btn.classes(remove="cb-icon-btn--armed")
         if self._delete_hint is not None:
             self._delete_hint.set_visibility(on)
         if self._outer_container is not None:
@@ -939,7 +937,11 @@ class ProjectsOverview:
             dot = CLR_GHOST
         live = sum(1 for p in projects if p.get("live_status") == "running")
         queued = sum(1 for p in projects if p.get("live_status") == "queued")
-        header = ui.row().classes("w-full items-center").style("gap: 6px; padding: 5px 12px; background: #eef3f8;")
+        header = (
+            ui.row()
+            .classes("w-full items-center")
+            .style("gap: 6px; padding: 5px 12px; background: var(--cb-panel, #ffffff);")
+        )
         with header:
             ui.element("div").style(f"width: 5px; height: 5px; border-radius: 50%; background: {dot}; flex-shrink: 0;")
             ui.label(label_text).style(
@@ -1438,15 +1440,14 @@ class ProjectsOverview:
         with ui.element("div").style("width: 260px; flex-shrink: 0;"):
             image = ui.html(_preview_img_html(pngs[0], stamp), sanitize=False)
             with ui.element("div").style("display: flex; align-items: center; gap: 2px; margin-top: 6px;"):
-                nav = "flat dense round size=sm"
                 if len(pngs) > 1:
-                    ui.button(icon="chevron_left", on_click=lambda: step(-1)).props(nav).style(f"color: {CLR_LABEL};")
+                    icon_button("chevron_left", lambda: step(-1), tooltip="Previous")
                 caption_label = ui.label(caption(0)).style(
                     f"{MONO} font-size: 10px; color: {CLR_HEADING}; flex: 1 1 0; min-width: 0; "
                     "text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
                 )
                 if len(pngs) > 1:
-                    ui.button(icon="chevron_right", on_click=lambda: step(1)).props(nav).style(f"color: {CLR_LABEL};")
+                    icon_button("chevron_right", lambda: step(1), tooltip="Next")
 
     @staticmethod
     def _render_card_facts(proj: dict) -> None:

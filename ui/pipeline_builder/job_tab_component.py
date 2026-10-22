@@ -8,12 +8,13 @@ from nicegui import ui
 from backend import get_backend
 from services.path_resolution_service import cut_output
 from services.project_state import JobStatus, JobType
-from ui.components.buttons import house_button
+from ui.components.buttons import house_button, icon_button
+from ui.components.copyable import copy_on_click
 from ui.components.reactive import Debounced
 from ui.current_project import current_project_state
 from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
 from ui.job_plugins import get_extra_tabs, get_full_panel_renderer
-from ui.job_plugins._field_styles import PANEL_HEAD_STYLE, PANEL_STYLE, PANEL_TITLE_STYLE, config_section
+from ui.job_plugins._field_styles import PANEL_HEAD_STYLE, PANEL_STYLE, PANEL_TITLE_STYLE, config_section, fold_panel
 from ui.routing import View
 from ui.components.species_pill import render_species_mark
 from ui.status_indicator import BoundStatusDot
@@ -39,6 +40,14 @@ _PATH_STYLE = (
     "font-size: 10px; font-family: 'IBM Plex Mono', monospace; color: #94a3b8; "
     "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;"
 )
+# A mark on that line (Interactive / Automatic, Experimental): the house chip, light blue, or warm for
+# what is still being built.
+_MARK_STYLE = (
+    "display: inline-flex; align-items: center; flex-shrink: 0; border-radius: 3px; padding: 0 6px; "
+    "font: 600 9px 'IBM Plex Sans', sans-serif; line-height: 16px; white-space: nowrap; "
+)
+_MARK_INFO = _MARK_STYLE + "background: #edf4fb; border: 1px solid #c9dbee; color: #1f4e79;"
+_MARK_WARM = _MARK_STYLE + "background: #fff7e6; border: 1px solid #f3d9a4; color: #8a5a00;"
 
 
 def create_save_handler(ui_mgr: UIStateManager) -> Callable:
@@ -67,7 +76,8 @@ def create_save_handler(ui_mgr: UIStateManager) -> Callable:
 # drag taller; its view scrolls inside it.
 _LAZY_BOX_STYLE = (
     "width: 100%; height: 360px; min-height: 140px; resize: vertical; overflow: hidden; "
-    "display: flex; flex-direction: column; background: #fff; border-radius: 4px;"
+    "display: flex; flex-direction: column; background: #fff; border-radius: 4px; "
+    "outline: 1px solid var(--cb-box-line, #dbe3ec); outline-offset: -1px;"
 )
 
 
@@ -88,7 +98,8 @@ def _render_lazy_section(title: str, boxed: bool, *, open_: bool, dom_id: str, b
     """A folded section: its title line opens and closes it; the content is built on the first
     opening. Returns its opener."""
     built = {"done": False}
-    with ui.column().classes("w-full").style(f"gap: 8px; {PANEL_STYLE}").props(f"id={dom_id}") as panel:
+    panel = ui.column().classes("w-full cb-jsec-fold").style(f"gap: 8px; {PANEL_STYLE}")
+    with panel.props(f"id={dom_id}"):
         head_style = f"gap: 5px; cursor: pointer; user-select: none; {PANEL_HEAD_STYLE}"
         with ui.row().classes("items-center no-wrap").style(head_style) as head:
             caret = ui.label("▸").style("font-size: 9px; color: #94a3b8; width: 8px;")
@@ -103,9 +114,7 @@ def _render_lazy_section(title: str, boxed: bool, *, open_: bool, dom_id: str, b
                 build()
         body.set_visibility(on)
         caret.set_text("▾" if on else "▸")
-        # Folded, the stripe is the whole panel.
-        panel.style(f"padding-bottom: {12 if on else 0}px;")
-        head.style(f"border-radius: {'6px 6px 0 0' if on else '6px'};")
+        fold_panel(panel, head, on)
 
     head.on("click", lambda _e: set_open(not body.visible))
     set_open(open_)
@@ -144,10 +153,12 @@ def _render_job_page(
     openers: dict[str, Callable] = {}
     active = ui_mgr.get_job_ui_state(instance_id).active_monitor_tab
     # cb-scroll-tight drops the scroll area's own 1 rem padding, so the panels' left edges line up with
-    # the view's title and the job's line above them (both 14 px in).
-    with ui.scroll_area().classes("w-full h-full cb-scroll-tight"):
-        with ui.column().classes("w-full").style("padding: 4px 14px 16px; gap: 10px;"):
-            with config_section("Parameters"):
+    # the view's title and the job's line above them (both 14 px in). The cb-job* classes place each
+    # section in the two-column grid the styles lay a wide page out in (ui/dashboard/css.py `_THEME_CSS`).
+    with ui.scroll_area().classes("w-full h-full cb-scroll-tight cb-jobscroll"):
+        with ui.column().classes("w-full cb-jobpage").style("padding: 4px 14px 16px; gap: 10px;"):
+            with config_section("Parameters") as params_sec:
+                params_sec.classes("cb-jsec-params")
                 params_refresh = render_config_tab(
                     job_type,
                     job_model,
@@ -162,8 +173,11 @@ def _render_job_page(
                     edit_refreshes.append(params_refresh)
             # An input chosen there changes what the other sections say of it (template matching's
             # search-region note), so it is an edit like theirs.
-            edit_refreshes.append(render_io_tab(job_type, instance_id, job_model, is_frozen, ui_mgr, on_edit))
-            with config_section("SLURM resources"):
+            io_sec = ui.element("div").classes("cb-jsec-io").style("width: 100%;")
+            with io_sec:
+                edit_refreshes.append(render_io_tab(job_type, instance_id, job_model, is_frozen, ui_mgr, on_edit))
+            with config_section("SLURM resources") as slurm_sec:
+                slurm_sec.classes("cb-jsec-slurm")
                 edit_refreshes.append(render_slurm_tab(job_model, is_frozen, on_edit))
 
             builders: dict[str, Callable[[], None]] = {
@@ -211,25 +225,13 @@ def render_job_tab(
             render_species_mark(_species)
 
         if job_type in _EXPERIMENTAL_JOB_TYPES:
-            with (
-                ui.element("div")
-                .style(
-                    "display: inline-flex; align-items: center; flex-shrink: 0; "
-                    "background: #f3e8ff; border: 1px solid #e9d5ff; border-radius: 999px; padding: 1px 8px;"
-                )
-                .tooltip("Experimental — under active development; interface, routing and outputs may change")
-            ):
-                ui.label("Experimental").style(
-                    "font-size: 9px; color: #6b21a8; font-weight: 700; letter-spacing: 0.3px; white-space: nowrap;"
-                )
+            ui.label("Experimental").style(_MARK_WARM).tooltip(
+                "Experimental — under active development; interface, routing and outputs may change"
+            )
 
         if job_model.relion_job_name and ui_mgr.project_path:
             full_path = str(ui_mgr.project_path / job_model.relion_job_name.rstrip("/"))
-            ui.label(full_path).style(_PATH_STYLE)
-            ui.button(
-                icon="content_copy",
-                on_click=lambda p=full_path: ui.run_javascript(f"navigator.clipboard.writeText({p!r})"),
-            ).props("flat dense round size=xs").classes("text-gray-400 hover:text-gray-600").tooltip("Copy path")
+            copy_on_click(ui.label(full_path).style(_PATH_STYLE), full_path)
 
         render_log_progress_chip(job_type, instance_id, ui_mgr)
 
@@ -248,15 +250,15 @@ def render_job_tab(
                 "Cancel", lambda: _handle_stop_job(job_type, instance_id, job_model, backend, ui_mgr, callbacks)
             )
 
-        ui.button(icon="refresh", on_click=lambda: _force_status_refresh(callbacks)).props(
-            "flat dense round size=xs"
-        ).classes("text-gray-400 hover:text-gray-800")
+        icon_button("refresh", lambda: _force_status_refresh(callbacks), tooltip="Refresh the job's status")
 
         if ui_mgr.is_project_created:
-            ui.button(
-                icon="delete",
-                on_click=lambda: _handle_delete(job_type, instance_id, job_model, backend, ui_mgr, callbacks),
-            ).props("flat round dense size=xs color=red").tooltip("Delete this job")
+            icon_button(
+                "delete",
+                lambda: _handle_delete(job_type, instance_id, job_model, backend, ui_mgr, callbacks),
+                tooltip="Delete this job",
+                kind="danger",
+            )
 
     # --- Content ---
     save_handler = create_save_handler(ui_mgr)
@@ -289,26 +291,18 @@ def _render_interactive_job(
     # --- The job's line under the view's title, as on every job page ---
     with ui.row().classes("w-full items-center no-wrap").style(_JOB_LINE_STYLE):
         BoundStatusDot(instance_id)
-        with (
-            ui.element("div")
-            .style(
-                "display: inline-flex; align-items: center; flex-shrink: 0; "
-                "background: #dbeafe; border: 1px solid #bfdbfe; border-radius: 999px; padding: 1px 8px;"
-            )
-            .tooltip(pill_tip)
-        ):
-            ui.label("Interactive" if interactive else "Automatic").style(
-                "font-size: 9px; color: #1e40af; font-weight: 700; letter-spacing: 0.3px; white-space: nowrap;"
-            )
+        ui.label("Interactive" if interactive else "Automatic").style(_MARK_INFO).tooltip(pill_tip)
         if job_model.relion_job_name and ui_mgr.project_path:
             full_path = str(ui_mgr.project_path / job_model.relion_job_name.rstrip("/"))
             ui.label(full_path).style(_PATH_STYLE)
         ui.space()
         if ui_mgr.is_project_created:
-            ui.button(
-                icon="delete",
-                on_click=lambda: _handle_delete(job_type, instance_id, job_model, backend, ui_mgr, callbacks),
-            ).props("flat round dense size=xs color=red").tooltip("Delete this job")
+            icon_button(
+                "delete",
+                lambda: _handle_delete(job_type, instance_id, job_model, backend, ui_mgr, callbacks),
+                tooltip="Delete this job",
+                kind="danger",
+            )
 
     # --- Full panel content ---
     save_handler = create_save_handler(ui_mgr)

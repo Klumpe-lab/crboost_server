@@ -42,7 +42,8 @@ _flight = SingleFlight()
 # shrink-wraps, so the row carries width: 100% itself.
 _ROW = (
     "display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; "
-    "padding: 8px 10px; width: 100%; box-sizing: border-box; background: #eef3f8; border-radius: 6px;"
+    "padding: 8px 10px; width: 100%; box-sizing: border-box; "
+    "background: var(--cb-panel, #ffffff); border-radius: var(--cb-radius, 5px);"
 )
 
 

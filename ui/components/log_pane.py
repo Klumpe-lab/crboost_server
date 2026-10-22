@@ -17,6 +17,7 @@ from pathlib import Path
 from nicegui import ui
 
 from services.array_tasks import escape_html
+from ui.components.buttons import icon_button
 from ui.styles import MONO
 
 # Clipboard payload cap: a runaway log can be hundreds of MB, and the text travels
@@ -54,12 +55,7 @@ def log_pane(title: str, text: str, path: Path, *, max_h: str = "60vh") -> None:
         )
         ui.label(path.name).style(f"{MONO} font-size: 9px; color: #94a3b8;")
         ui.space()
-        (
-            ui.button(icon="content_copy", on_click=lambda p=path: copy_full_log(p))
-            .props("flat dense round size=xs")
-            .style("color: #94a3b8;")
-            .tooltip(f"Copy the full {title} to the clipboard")
-        )
+        icon_button("content_copy", lambda p=path: copy_full_log(p), tooltip=f"Copy the full {title} to the clipboard")
     ui.html(log_html(text), sanitize=False).classes("cb-log-well w-full").style(f"max-height: {max_h};")
 
 

@@ -10,7 +10,7 @@ from services.models_base import JobStatus
 from services.project_state import JobType
 from ui.current_project import current_project_state
 
-from ui.components.buttons import house_button
+from ui.components.buttons import house_button, icon_button
 from ui.components.copyable import copy_on_click
 from ui.components.dialogs import dialog_host
 from ui.components.reactive import FingerprintedView, SingleFlight
@@ -351,9 +351,11 @@ class RosterWidget(FingerprintedView):
         # The panel's title line, in the views' title style (ui/workspace_page.py `_view_frame`).
         with ui.element("div").style(
             "display: flex; align-items: center; min-height: 28px; padding: 3px 8px 3px 14px; "
-            "margin-bottom: 6px; background: #dfe7f0;"
+            "margin-bottom: 6px; background: var(--cb-view-head, linear-gradient(180deg, #ffffff, #edf3f9)); "
+            "box-shadow: 0 var(--cb-view-head-line-w, 1px) 0 var(--cb-view-head-line, #a9c6e4), "
+            "inset 0 1px 0 var(--cb-head-glint, rgba(255, 255, 255, 0.9));"
         ):
-            ui.label("Jobs").style(PANEL_TITLE_STYLE)
+            ui.label("Jobs").style(f"{PANEL_TITLE_STYLE} color: var(--cb-view-head-ink, #12324f);")
         for phase_id, jobs in PHASE_JOBS.items():
             icon_or_svg, phase_label, _ = PHASE_META[phase_id]
             is_flashing = self._flash_phase == phase_id
@@ -445,11 +447,10 @@ class RosterWidget(FingerprintedView):
                                 "Missing: " + ", ".join(get_job_display_name(d) for d in missing)
                             )
                         if addable:
-                            (
-                                ui.button(icon="add", on_click=lambda j=job_type: panel.prompt_species_and_add(j))
-                                .props("flat dense round size=xs")
-                                .style("color: #6b7280; flex-shrink: 0;")
-                                .tooltip(f"Add another {get_job_display_name(job_type)}")
+                            icon_button(
+                                "add",
+                                lambda j=job_type: panel.prompt_species_and_add(j),
+                                tooltip=f"Add another {get_job_display_name(job_type)}",
                             )
 
                     for instance_id in instances:
@@ -592,64 +593,47 @@ class RosterWidget(FingerprintedView):
                     is_running_job = job_model is not None and job_model.execution_status == JobStatus.RUNNING
                     expanded_now = self._expanded_instances.setdefault(instance_id, is_running_job)
                     chevron = "expand_more" if expanded_now else "chevron_right"
-                    (
-                        ui.button(icon=chevron, on_click=lambda iid=instance_id: self._toggle_ts_expansion(iid))
-                        .props("flat dense round size=xs color=grey-7")
-                        .style("flex-shrink: 0;")
-                        .tooltip("Toggle tilt-series list")
+                    icon_button(
+                        chevron,
+                        lambda iid=instance_id: self._toggle_ts_expansion(iid),
+                        tooltip="Toggle tilt-series list",
                     )
                 elif is_filter:
                     # The same chevron opens the filter's settings; collapsed by default.
                     chevron = "expand_more" if self._expanded_instances.get(instance_id) else "chevron_right"
-                    (
-                        ui.button(icon=chevron, on_click=lambda iid=instance_id: self._toggle_ts_expansion(iid))
-                        .props("flat dense round size=xs color=grey-7")
-                        .style("flex-shrink: 0;")
-                        .tooltip("The filter's settings")
+                    icon_button(
+                        chevron, lambda iid=instance_id: self._toggle_ts_expansion(iid), tooltip="The filter's settings"
                     )
                 # Extra tabs other than "tasks" still render as on-row nav buttons.
                 # ("tasks" is the toggle above and stays reachable from the top bar.)
                 for et in get_extra_tabs(job_type):
                     if et.key == "tasks":
                         continue
-                    (
-                        ui.button(
-                            icon=et.icon,
-                            on_click=lambda iid=instance_id, tk=et.key: panel.switch_to_job_subsection(iid, tk),
-                        )
-                        .props("flat dense round size=xs color=grey-7")
-                        .style("flex-shrink: 0;")
-                        .tooltip(et.label)
+                    icon_button(
+                        et.icon,
+                        lambda iid=instance_id, tk=et.key: panel.switch_to_job_subsection(iid, tk),
+                        tooltip=et.label,
                     )
                 if show_add:
-                    (
-                        ui.button(icon="add", on_click=lambda j=job_type: panel.prompt_species_and_add(j))
-                        .props("flat dense round size=xs color=grey-5")
-                        .style("flex-shrink: 0;")
-                        .tooltip(f"Add {get_job_display_name(job_type)}")
+                    icon_button(
+                        "add",
+                        lambda j=job_type: panel.prompt_species_and_add(j),
+                        tooltip=f"Add {get_job_display_name(job_type)}",
                     )
                 # Not the singletons: the tilt filter, the import written at submit.
                 if job_model is not None and not is_filter and job_type != JobType.IMPORT_MOVIES:
-                    (
-                        ui.button(
-                            icon="content_copy",
-                            on_click=lambda _, iid=instance_id, j=job_type, sp=job_model.species_id: (
-                                panel.add_instance_to_pipeline(j, species_id=sp, clone_of=iid)
-                            ),
-                        )
-                        .props("flat dense round size=xs color=grey-5")
-                        .style("flex-shrink: 0;")
-                        .tooltip(
-                            f"Clone: a new {get_job_display_name(job_type)} with these parameters, SLURM "
-                            "settings and inputs set by hand"
-                        )
+                    icon_button(
+                        "content_copy",
+                        lambda _, iid=instance_id, j=job_type, sp=job_model.species_id: panel.add_instance_to_pipeline(
+                            j, species_id=sp, clone_of=iid
+                        ),
+                        tooltip=f"Clone: a new {get_job_display_name(job_type)} with these parameters, SLURM "
+                        "settings and inputs set by hand",
                     )
                 # A job in use by a queued or running one stays until that has finished or been cancelled.
                 if instance_id not in self._in_use:
-                    (
-                        ui.button(icon="close", on_click=lambda _, iid=instance_id: self._on_remove_click(iid))
-                        .props("flat dense round size=xs color=grey-4")
-                        .tooltip("Remove")
+                    icon_button(
+                        "close", lambda _, iid=instance_id: self._on_remove_click(iid), tooltip="Remove", kind="danger"
                     )
 
         # ── Per-TS sub-rows (collapsible, for array jobs) ──

@@ -31,7 +31,7 @@ from nicegui import ui
 from ui.job_plugins._field_styles import _numeric_kind, bind_numeric
 
 # Same voice as the workbench creation forms and the table heads.
-HOUSE_LABEL_CLS = "text-[9px] font-bold text-gray-400 uppercase tracking-wide"
+HOUSE_LABEL_CLS = "text-[9px] font-bold text-[#6b829b] uppercase tracking-wide"
 
 
 def house_field(label: str, build: Callable, *, width: str = "w-20", hint: str | None = None):

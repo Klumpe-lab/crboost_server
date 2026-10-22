@@ -66,8 +66,8 @@ from services.visualization.preview_orchestrator import _find_warp_tomo_preview
 from services.visualization.preview_render import is_output_stale, render_xy_slab_preview
 from services.workers import WorkKind, run_in_worker
 from ui.components.chip import render_chip
-from ui.components.buttons import house_button
-from ui.components.copyable import copy_3dmod_chip
+from ui.components.buttons import house_button, icon_button
+from ui.components.copyable import copy_3dmod_chip, copy_on_click
 from ui.components.feature_layers import FeatureFills, layers_for_ts
 from ui.components.reactive import owned_timer
 from ui.components.recon_compare import matched_slabs, recon_versions_for_ts, retry_match
@@ -634,21 +634,11 @@ def _scroll_section_into_view(section_key: str) -> None:
 
 
 def _info_copy_row(key: str, value: str, copy_value: str | None = None) -> None:
-    """One key/value line in the info popover with a copy-full-value button."""
+    """One key/value line in the info popover; a click on the value copies the full one."""
     cv = copy_value if copy_value is not None else value
     with ui.element("div").classes("cb-info-row"):
         ui.label(key).classes("cb-info-key")
-        ui.label(value).classes("cb-info-val").tooltip(cv)
-        (
-            ui.button(
-                icon="content_copy",
-                on_click=lambda v=cv: (ui.clipboard.write(v), ui.notify("Copied path", type="positive", timeout=800)),
-                color=None,
-            )
-            .props("flat dense round size=sm")
-            .classes("cb-info-copy")
-            .tooltip("Copy full path to clipboard")
-        )
+        copy_on_click(ui.label(value).classes("cb-info-val").tooltip(cv), cv)
 
 
 def _ts_meta_line(species_list: list[dict]) -> str | None:
@@ -669,10 +659,9 @@ def _ts_meta_line(species_list: list[dict]) -> str | None:
 
 def _render_ts_info_popover(ts_name: str, species_list: list[dict], recon_mrc: str | None) -> None:
     """The ⓘ button → click popover: full tomo name, metadata, and the relevant
-    file paths (each with a copy-full-path button). Click-opened so the copy
-    buttons are actually usable (a hover tooltip dismisses as you reach them)."""
-    # color=None: a Quasar colour class would outrank the grey of .cb-ts-info-btn.
-    btn = ui.button(icon="info_outline", color=None).props("flat dense round size=sm").classes("cb-ts-info-btn")
+    file paths (each copies on a click). Click-opened so the values are actually
+    clickable (a hover tooltip dismisses as you reach them)."""
+    btn = icon_button("info_outline")
     # Stop the click bubbling to the row so opening info doesn't also switch TS.
     btn.on("click.stop", lambda: None)
     with btn, ui.menu().props("anchor='bottom right' self='top right'"):
@@ -1550,9 +1539,7 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
             if panel is not None:
                 panel.select_frame(frame)
 
-        _render_ctf_motion_plots(
-            df, cd=cd, ctf_res=ctf_res_series, on_select_tilt=_select, dropped_tilts=dropped_tilts
-        )
+        _render_ctf_motion_plots(df, cd=cd, ctf_res=ctf_res_series, on_select_tilt=_select, dropped_tilts=dropped_tilts)
 
         tracks = fsm_motion_tracks(project_path, instance_id, ts_name)
         for t in tracks:

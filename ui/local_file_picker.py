@@ -5,7 +5,7 @@ import os
 
 from nicegui import ui
 
-from ui.components.buttons import house_button
+from ui.components.buttons import house_button, icon_button
 from ui.components.reactive import Debounced
 from ui.dashboard.css import ensure_assets_loaded
 from ui.styles import MONO as _MONO, SANS as _SANS
@@ -137,8 +137,8 @@ class local_file_picker(ui.dialog):
                 .classes("w-full items-center no-wrap")
                 .style("gap: 2px; padding: 5px 8px; background: #f8fafc; border-bottom: 1px solid #e2e8f0;")
             ):
-                self._up = self._icon("arrow_upward", self._go_up, "Parent folder")
-                self._icon("home", self._go_home, "Home folder")
+                self._up = icon_button("arrow_upward", self._go_up, tooltip="Parent folder")
+                icon_button("home", self._go_home, tooltip="Home folder")
                 self.path_input = (
                     ui.input(on_change=self._on_typed)
                     .props("dense hide-bottom-space autofocus autocomplete=off spellcheck=false")
@@ -177,15 +177,6 @@ class local_file_picker(ui.dialog):
                 self._select = house_button("Select", self._on_ok, kind="accent")
 
             ui.timer(0.01, self._open_start, once=True)
-
-    @staticmethod
-    def _icon(icon: str, handler, tip: str) -> ui.button:
-        return (
-            ui.button(icon=icon, on_click=handler)
-            .props("flat dense round size=xs")
-            .classes("text-slate-400 shrink-0")
-            .tooltip(tip)
-        )
 
     # ── Navigation ────────────────────────────────────────────────────────────
 

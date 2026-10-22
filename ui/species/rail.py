@@ -59,7 +59,7 @@ class SpeciesRail(FingerprintedView):
             n_tpl, n_lists = counts.get(species.id, (0, 0))
             row = ui.element("div").classes("cb-srail-row" + (" selected" if species.id == active else ""))
             row.style(
-                f"border-left-color: {'#6366f1' if species.id == active else 'transparent'}; border-bottom: none;"
+                f"border-left-color: {'#4a8fd4' if species.id == active else 'transparent'}; border-bottom: none;"
             )
             row.on("click", lambda _e, sid=species.id: self._on_select(sid))
             with row:
