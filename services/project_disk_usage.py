@@ -56,6 +56,8 @@ class DiskUsage(BaseModel):
     buckets: dict[str, int] = {}
     # bucket -> {label -> bytes}; label is a job type's display name, or a top-level entry
     parts: dict[str, dict[str, int]] = {}
+    # job folder (`External/job045`) -> bytes; None: measured by code that did not keep them.
+    jobs: dict[str, int] | None = None
     # Directories the walk could not list; the total is then a lower bound.
     unreadable_dirs: int = 0
     error: str | None = None
@@ -137,15 +139,16 @@ def measure(project_dir: Path, jobs: dict[str, Any]) -> DiskUsage:
     """Walk `project_dir` and attribute every byte to a bucket.
 
     Each child of a top-level directory is looked up as `<Top>/<child>` in the jobs'
-    `relion_job_name`s. A hit takes that job's bucket; an unclaimed `jobNNN` dir is
-    "unlisted job dirs"; `Trash/` is trash; everything else is "other" under its
-    top-level name.
+    `relion_job_name`s. A hit takes that job's bucket and is kept as the job folder's size;
+    an unclaimed `jobNNN` dir is "unlisted job dirs"; `Trash/` is trash; everything else is
+    "other" under its top-level name.
     """
     index = _job_dir_index(jobs)
     walk = _Walk()
     usage = DiskUsage(measured_at=time.time())
     buckets = dict.fromkeys(BUCKETS, 0)
     parts: dict[str, dict[str, int]] = {b: {} for b in BUCKETS}
+    job_bytes: dict[str, int] = {}
 
     def add(bucket: str, label: str, n: int) -> None:
         buckets[bucket] += n
@@ -186,6 +189,7 @@ def measure(project_dir: Path, jobs: dict[str, Any]) -> DiskUsage:
             hit = index.get(f"{top.name}/{child.name}")
             if hit is not None:
                 add(hit[0], hit[1], n)
+                job_bytes[f"{top.name}/{child.name}"] = n
             elif _JOB_DIR_RE.fullmatch(child.name) and stat.S_ISDIR(child_stat.st_mode):
                 add(BUCKET_OTHER, "unlisted job dirs", n)
             else:
@@ -193,6 +197,7 @@ def measure(project_dir: Path, jobs: dict[str, Any]) -> DiskUsage:
 
     usage.buckets = buckets
     usage.parts = {b: p for b, p in parts.items() if p}
+    usage.jobs = job_bytes
     usage.total_bytes = sum(buckets.values())
     usage.unreadable_dirs = walk.unreadable_dirs
     return usage
