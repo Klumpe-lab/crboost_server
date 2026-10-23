@@ -31,10 +31,21 @@ class AlignmentMethod(str, Enum):
 class DenoiseMethod(str, Enum):
     """Backend tool for the denoise train/predict steps. Selectable per-job; both
     methods share the same two job types (denoisetrain, denoisepredict) and the same
-    upstream (even/odd half-tomograms from tsReconstruct)."""
+    upstream (even/odd half-tomograms from tsReconstruct). EASYMODE is predict-only:
+    easymode's pretrained denoisers run on the full reconstruction, with no train job."""
 
     CRYOCARE = "cryoCARE"
     ISONET = "IsoNet"
+    EASYMODE = "easymode"
+
+
+class EasymodeDenoiser(str, Enum):
+    """easymode's pretrained denoisers (`easymode denoise --method`): noise2noise, and distilled
+    DeepDeWedge and IsoNet2 students, which also fill the missing wedge."""
+
+    N2N = "n2n"
+    DDW = "ddw"
+    ISO = "iso"
 
 
 class SegmentMethod(str, Enum):

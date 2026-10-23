@@ -3,7 +3,7 @@ from typing import ClassVar
 from pydantic import Field
 
 from services.jobs._base import AbstractJobParams
-from services.models_base import JobType, JobCategory, DenoiseMethod
+from services.models_base import JobType, JobCategory, DenoiseMethod, EasymodeDenoiser
 from services.io_slots import InputSlot, OutputSlot, JobFileType
 from services.computing.slurm_service import SlurmPreset, SlurmConfig
 from services.configs.config_service import get_config_service
@@ -22,7 +22,8 @@ class DenoisePredictParams(AbstractJobParams):
     # run whatever the model was trained as, so an independent setting would only invite a
     # mismatch that fails deep in the run. The one case where the chip cannot answer is a
     # manual `model_path` with no train job behind it — there the row becomes a real select,
-    # since the alternative is being pinned to the cryoCARE default with no way out.
+    # since the alternative is being pinned to the cryoCARE default with no way out. easymode
+    # needs no train job: choosing it drops the model input and shows easymode's own settings.
     USER_PARAMS: ClassVar[set[str]] = {
         "ntiles_x",
         "ntiles_y",
@@ -32,12 +33,26 @@ class DenoisePredictParams(AbstractJobParams):
         "array_throttle",
         "denoise_method",
         "isonet_deconv",
+        "easymode_denoiser",
+        "easymode_tta",
+        "easymode_iter",
     }
     # Owned by render_denoise_inheritance, not the generic parameter grid.
-    INHERITANCE_FIELDS: ClassVar[set[str]] = {"denoise_method", "isonet_deconv"}
+    INHERITANCE_FIELDS: ClassVar[set[str]] = {
+        "denoise_method",
+        "isonet_deconv",
+        "easymode_denoiser",
+        "easymode_tta",
+        "easymode_iter",
+    }
 
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
-        InputSlot(key="model_path", accepts=[JobFileType.DENOISE_MODEL_TAR], preferred_source="denoisetrain"),
+        InputSlot(
+            key="model_path",
+            accepts=[JobFileType.DENOISE_MODEL_TAR],
+            preferred_source="denoisetrain",
+            when="uses_trained_model",
+        ),
         InputSlot(key="input_star", accepts=[JobFileType.TOMOGRAMS_STAR], preferred_source="tsReconstruct"),
         InputSlot(key="reconstruct_base", accepts=[JobFileType.WARP_TILTSERIES_DIR], preferred_source="tsReconstruct"),
     ]
@@ -63,6 +78,22 @@ class DenoisePredictParams(AbstractJobParams):
         "even/odd halves either way, so it only matters for an isonet2 (single-map) model. Only used when "
         "denoise_method = IsoNet.",
     )
+    # easymode-only (ignored by cryoCARE and IsoNet):
+    easymode_denoiser: EasymodeDenoiser = Field(
+        default=EasymodeDenoiser.N2N,
+        title="easymode model",
+        description="n2n: noise2noise. ddw: distilled DeepDeWedge, also fills the missing wedge. "
+        "iso: distilled IsoNet2, also fills the missing wedge.",
+    )
+    easymode_tta: int = Field(
+        default=1, ge=1, le=16, title="TTA", description="Test-time augmentation factor (1–16); higher is slower."
+    )
+    easymode_iter: int = Field(
+        default=1,
+        ge=1,
+        title="Iterations",
+        description="Denoising passes; more may help contrast, but beware of artifacts.",
+    )
 
     def __init__(self, **data):
         super().__init__(**data)
@@ -80,7 +111,14 @@ class DenoisePredictParams(AbstractJobParams):
     def is_driver_job(self) -> bool:
         return True
 
+    @property
+    def uses_trained_model(self) -> bool:
+        """Whether the job reads a model archive from a denoise-train job (cryoCARE, IsoNet)."""
+        return self.denoise_method != DenoiseMethod.EASYMODE
+
     def get_tool_name(self) -> str:
+        if self.denoise_method == DenoiseMethod.EASYMODE:
+            return "easymode"
         return "isonet" if self.denoise_method == DenoiseMethod.ISONET else "cryocare"
 
     def _get_queue_options(self) -> list[tuple[str, str]]:
@@ -112,8 +150,14 @@ class DenoisePredictParams(AbstractJobParams):
         return {"train": "denoisetrain"}
 
     def inherited_from_train(self, project_state) -> tuple[DenoiseMethod | None, bool | None]:
-        """(denoise_method, isonet_deconv) inherited from the denoisetrain job that produced
-        this job's model, or (None, None) if it can't be resolved.
+        """`trained_method`, or (None, None) for an easymode job, which has no model to inherit from."""
+        if self.denoise_method == DenoiseMethod.EASYMODE:
+            return (None, None)
+        return self.trained_method(project_state)
+
+    def trained_method(self, project_state) -> tuple[DenoiseMethod | None, bool | None]:
+        """(denoise_method, isonet_deconv) of the denoisetrain job that produced this job's
+        model, or (None, None) if it can't be resolved.
 
         Predict has no independent method/deconv of its own — both are dictated by the train
         job so the model and the prediction can never disagree. Matched by the resolved
