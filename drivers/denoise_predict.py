@@ -14,11 +14,13 @@ that dispatches on the SLURM_ARRAY_TASK_ID env var.
 
 - Set:    TASK mode. One tomogram per array index. Reads the manifest, resolves this
           tomogram's even/odd halves, idempotently skips if the denoised MRC already exists,
-          otherwise runs cryoCARE_predict.py (or isonet.py predict), and atomically writes
+          otherwise runs cryoCARE_predict.py (or isonet.py predict, or easymode denoise), and atomically writes
           .task_status/{ts}.{ok|fail}.
 
-Denoise method (cryoCARE | IsoNet) is selected per-job via params.denoise_method and only
-affects the per-task work (the `execute` override dispatches the IsoNet multi-command path).
+Denoise method (cryoCARE | IsoNet | easymode) is selected per-job via params.denoise_method and only
+affects the per-task work (the `execute` override dispatches the IsoNet and easymode paths). easymode
+runs its pretrained denoisers on the full reconstruction, with no model from a train job: at 10 Å, the
+voxel size they were trained on, then put back on the reconstruction's grid like the other two.
 
 The mode dispatch, both bootstraps, manifest lookup, exclusions, tally and exit
 code all live in ArrayDriver; this file is the denoise-specific hooks.
@@ -26,6 +28,7 @@ code all live in ArrayDriver; this file is the denoise-specific hooks.
 
 import json
 import os
+import shlex
 import shutil
 import sys
 import tarfile
@@ -35,10 +38,13 @@ import starfile
 from pydantic import BaseModel
 
 from drivers.array_job_base import ArrayDriver, ArrayResults, read_manifest, write_skip_status, STATUS_DIR_NAME
-from drivers.driver_base import DriverContext, ToolCommand, run_tool, require_producer_input
+from drivers.driver_base import DriverContext, ToolCommand, print_cmd_only, run_tool, require_producer_input
 from drivers.isonet_star import annotate_prep_star, log_facts, read_tomo_facts
+from drivers.segment import OFFLINE_PROXY
 from services.job_models import DenoisePredictParams
 from services.models_base import DenoiseMethod
+from services.segmentation.easymode import TOOL_NAME as EASYMODE_TOOL, easymode_cache_dir
+from services.segmentation.grid import map_back, processing_shape, write_resampled
 from services.tilt_series import DenoisePredictTomogramOutput, get_registry_for
 
 # Column in the reconstruct tomograms.star that holds the full reconstructed tomogram path.
@@ -222,7 +228,8 @@ class DenoisePredictDriver(ArrayDriver):
     # ---------------- supervisor ----------------
 
     def enumerate_items(self, ctx: DriverContext[DenoisePredictParams]) -> list[str]:
-        require_producer_input(ctx.paths["model_path"], "Denoise model archive")
+        if ctx.params.uses_trained_model:
+            require_producer_input(ctx.paths["model_path"], "Denoise model archive")
         require_producer_input(ctx.paths["input_star"], "Input tomograms STAR")
 
         ts_names, tomo_basenames = read_tomo_map(ctx.paths["input_star"])
@@ -249,10 +256,26 @@ class DenoisePredictDriver(ArrayDriver):
             self._isonet_model_pt = prepare_isonet_model(ctx.job_dir, ctx.paths["model_path"])
             self.log(f"Staged IsoNet model: {self._isonet_model_pt}")
 
+        # easymode reads its weights from the frozen cache; the file is checked here so a missing
+        # denoiser fails the job before any GPU task starts.
+        self._easymode_cache = self._easymode_weights = None
+        if ctx.params.denoise_method == DenoiseMethod.EASYMODE:
+            self._easymode_cache = easymode_cache_dir()
+            self._easymode_weights = self._easymode_cache / "models" / f"{ctx.params.easymode_denoiser.value}_direct.h5"
+            if not self._easymode_weights.is_file():
+                raise FileNotFoundError(
+                    f"easymode's '{ctx.params.easymode_denoiser.value}' denoiser is not in the cache: "
+                    f"{self._easymode_weights}"
+                )
+            p = ctx.params
+            self.log(f"easymode {p.easymode_denoiser.value}, TTA {p.easymode_tta}, {p.easymode_iter} iteration(s)")
+
     def manifest_extras(self, ctx: DriverContext[DenoisePredictParams], items: list[str]) -> dict:
         extras = {"tomo_basenames": self._tomo_basenames}
         if self._isonet_model_pt is not None:
             extras["isonet_model_pt"] = str(self._isonet_model_pt)
+        if self._easymode_cache is not None:
+            extras["easymode_cache"] = str(self._easymode_cache)
         return extras
 
     def aggregate(self, ctx: DriverContext[DenoisePredictParams], results: ArrayResults) -> None:
@@ -274,7 +297,7 @@ class DenoisePredictDriver(ArrayDriver):
             results.ok,
             self._tomo_basenames,
             ctx.paths["output_dir"],
-            ctx.paths["model_path"],
+            self._easymode_weights or ctx.paths["model_path"],
         )
 
     # ---------------- task ----------------
@@ -307,9 +330,15 @@ class DenoisePredictDriver(ArrayDriver):
             "full": reconstruct_base / "reconstruction" / tomo_basename,
             "out_mrc": output_dir / tomo_basename,
             "isonet_model_pt": manifest.get("isonet_model_pt"),
+            "easymode_cache": manifest.get("easymode_cache"),
         }
 
-        if ctx.params.denoise_method == DenoiseMethod.ISONET:
+        if ctx.params.denoise_method == DenoiseMethod.EASYMODE:
+            if not staged["full"].exists():
+                raise FileNotFoundError(f"Missing reconstruction for {tomo_basename}: {staged['full']}")
+            if not staged["easymode_cache"]:
+                raise RuntimeError("Manifest missing easymode_cache (the supervisor did not settle easymode's cache)")
+        elif ctx.params.denoise_method == DenoiseMethod.ISONET:
             # The isonet2-n2n model predicts on the even/odd halves (averaged); an isonet2 model
             # uses the full (rlnTomoName). Stage all three, exactly as denoise_train did.
             for label in ("full", "even", "odd"):
@@ -327,6 +356,8 @@ class DenoisePredictDriver(ArrayDriver):
     def execute(self, ctx: DriverContext[DenoisePredictParams], item: str, staged) -> None:
         if ctx.params.denoise_method == DenoiseMethod.ISONET:
             self._run_isonet_predict(ctx, item, staged)
+        elif ctx.params.denoise_method == DenoiseMethod.EASYMODE:
+            self._run_easymode_denoise(ctx, item, staged)
         else:
             # Default path: build_command (cryoCARE) → run_tool with
             # tool_name=params.get_tool_name() (method-conditional → "cryocare").
@@ -464,6 +495,103 @@ class DenoisePredictDriver(ArrayDriver):
         with mrcfile.mmap(out_mrc, mode="r+") as dst:
             dst.voxel_size = apix
         self.log(f"IsoNet corrected -> {out_mrc} (voxel size {float(apix.x):g} Å)")
+
+    def _run_easymode_denoise(self, ctx: DriverContext[DenoisePredictParams], item: str, staged) -> None:
+        """Per-tomogram `easymode denoise`. The reconstruction goes into a directory of its own,
+        resampled to 10 Å (spectrum cropped) when it is finer, as the Segment job gives it to easymode;
+        the denoiser writes into another, and its volume is put back on the reconstruction's grid at
+        the canonical denoised path (out_mrc). Each task has its own EASYMODE_CACHE_DIR, with the
+        cache's models/ linked into it, and the offline proxy (both as drivers/segment.py explains)."""
+        import mrcfile
+        import numpy as np
+
+        p = ctx.params
+        full, out_mrc = staged["full"], staged["out_mrc"]
+        stage = ctx.job_dir / ".staging" / f"task_{item}"
+        in_dir, tool_dir, em_dir = stage / "in", stage / "out", stage / "easymode"
+        for d in (in_dir, tool_dir, em_dir):
+            d.mkdir(parents=True, exist_ok=True)
+        # easymode skips outputs that exist, so what an interrupted attempt left must go.
+        for old in tool_dir.glob("*.mrc"):
+            old.unlink()
+        cache = Path(staged["easymode_cache"])
+        models = em_dir / "models"
+        if models.is_symlink() or models.exists():
+            models.unlink()
+        models.symlink_to(cache / "models")
+
+        with mrcfile.open(full, header_only=True, permissive=True) as m:
+            h = m.header
+            shape = (int(h.nz), int(h.ny), int(h.nx))
+            apix = float(m.voxel_size.x)
+        if apix <= 1.0:
+            raise ValueError(f"{full.name}: header voxel size {apix:g} Å; easymode reads 1 Å or less as unset")
+        grid = processing_shape(shape, apix)
+        staged_in = in_dir / full.name
+        if staged_in.is_symlink() or staged_in.exists():
+            staged_in.unlink()
+        if grid is None:
+            staged_in.symlink_to(full.resolve())
+            self.log(f"Denoising at the reconstruction's {apix:g} Å")
+        elif print_cmd_only():
+            self.log(f"Would resample {full.name} to 10 Å: {grid[2]} × {grid[1]} × {grid[0]}")
+        else:
+            self.log(f"Resampling {full.name} ({apix:g} Å) to 10 Å: {grid[2]} × {grid[1]} × {grid[0]}")
+            write_resampled(full, staged_in, grid, tmp_dir=stage)
+
+        env = " ".join(
+            f"{name}={shlex.quote(str(value))}"
+            for name, value in (
+                ("EASYMODE_CACHE_DIR", em_dir),
+                ("HF_HOME", em_dir / "hf"),
+                ("https_proxy", OFFLINE_PROXY),
+                ("HTTPS_PROXY", OFFLINE_PROXY),
+            )
+        )
+        cmd = (
+            ToolCommand(f"{env} easymode denoise")
+            .opt_path("--data", in_dir, quote=True)
+            .opt_path("--output", tool_dir, quote=True)
+            .opt("--method", p.easymode_denoiser.value)
+            .opt("--tta", p.easymode_tta)
+            .opt("--iter", p.easymode_iter)
+            .opt("--gpu", 0)
+        )
+        self.log(f"Command: {cmd}")
+        run_tool(
+            cmd,
+            tool_name=EASYMODE_TOOL,
+            cwd=ctx.job_dir,
+            binds=[*ctx.additional_binds, full.resolve().parent, cache],
+            label=f"{self.job_name} {item}",
+        )
+        if print_cmd_only():
+            return
+
+        mrcs = list(tool_dir.glob("*.mrc"))
+        if len(mrcs) != 1:
+            names = sorted(m.name for m in mrcs)
+            raise FileNotFoundError(f"easymode denoise left {names} in {tool_dir}, expected one MRC")
+        produced = mrcs[0]
+        expected = grid or shape
+        with mrcfile.mmap(produced, mode="r", permissive=True) as m:
+            got = tuple(int(n) for n in m.data.shape)
+            if got != tuple(expected):
+                raise RuntimeError(f"easymode denoise wrote {produced.name} as {got} (z, y, x), expected {expected}")
+            volume = np.array(m.data, dtype=np.float32)
+        if grid is not None:
+            volume = map_back(volume, shape)
+        tmp = stage / f".tmp_{full.name}"
+        with mrcfile.new(tmp, overwrite=True) as m:
+            m.set_data(volume)
+            m.voxel_size = apix
+        out_mrc.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(tmp), str(out_mrc))
+        # The resampled copy and the tool's own volume are not needed once the denoised one is in place.
+        produced.unlink()
+        if not staged_in.is_symlink():
+            staged_in.unlink()
+        self.log(f"easymode {p.easymode_denoiser.value} -> {out_mrc} ({shape[2]} × {shape[1]} × {shape[0]})")
 
     def verify_outputs(self, ctx: DriverContext[DenoisePredictParams], item: str, staged) -> None:
         if not staged["out_mrc"].exists():

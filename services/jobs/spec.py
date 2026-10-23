@@ -190,7 +190,9 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         DenoisePredictParams,
         "Denoise Predict",
         PHASE_PREPROCESSING,
-        dependencies=(JobType.DENOISE_TRAIN, JobType.TS_RECONSTRUCT),
+        # No DENOISE_TRAIN: easymode predicts with pretrained weights. cryoCARE and IsoNet name their
+        # missing model as a missing input instead.
+        dependencies=(JobType.TS_RECONSTRUCT,),
         driver="denoise_predict.py",
         plugins=("array_tasks",),
         items_from="input_star",

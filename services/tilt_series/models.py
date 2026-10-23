@@ -80,7 +80,7 @@ class FsMotionCtfFrameOutput(_OutputBase):
     # per-movie XML (the RELION star writes 1e-6 placeholders for these). Optional
     # because legacy registries lack them and a movie may fail to fit. See
     # services/tilt_series/frameseries_quality.py for the placeholder-trap context.
-    ctf_resolution: float | None = None       # CTFResolutionEstimate (Å; lower = better)
+    ctf_resolution: float | None = None  # CTFResolutionEstimate (Å; lower = better)
     mean_frame_movement: float | None = None  # MeanFrameMovement (beam-induced motion; Warp units)
 
     # (1.4) More of the per-movie fit, for the Journey's per-tilt QC charts: the
@@ -163,15 +163,12 @@ class TsAlignmentTiltSeriesOutput(_OutputBase):
     alignment_method: Literal["aretomo", "imod", "miss_alignment"]
     alignment_angpix: float
     aln_file: Path | None = None  # AreTomo .st.aln
-    xf_file: Path | None = None   # IMOD .xf
+    xf_file: Path | None = None  # IMOD .xf
     tlt_file: Path | None = None  # IMOD .tlt
     per_frame: list[TsAlignmentPerFrame] = Field(default_factory=list)
 
 
-TiltSeriesOutput = Annotated[
-    TsCtfTiltSeriesOutput | TsAlignmentTiltSeriesOutput,
-    Field(discriminator="output_type"),
-]
+TiltSeriesOutput = Annotated[TsCtfTiltSeriesOutput | TsAlignmentTiltSeriesOutput, Field(discriminator="output_type")]
 
 
 # ── Tomogram outputs ─────────────────────────────────────────────────────────
@@ -201,8 +198,8 @@ class DenoisePredictTomogramOutput(_OutputBase):
     output_type: Literal["denoise_predict"] = "denoise_predict"
 
     denoised_mrc: Path
-    denoise_method: Literal["cryoCARE", "IsoNet"]  # matches DenoiseMethod.value
-    model_path: Path  # the trained-model archive this prediction consumed
+    denoise_method: Literal["cryoCARE", "IsoNet", "easymode"]  # matches DenoiseMethod.value
+    model_path: Path  # the trained-model archive this prediction consumed; easymode: its weights file
 
 
 class ModelRef(BaseModel):
@@ -272,7 +269,7 @@ class Frame(BaseModel):
     raw_path: Path
     raw_filename: str  # cached basename for O(1) lookups
 
-    tilt_index: int                # 0-based, matches Warp's <Node Z=...>
+    tilt_index: int  # 0-based, matches Warp's <Node Z=...>
     nominal_tilt_angle_deg: float
     pre_exposure_e_per_a2: float = 0.0
     acquisition_time: datetime | None = None
@@ -282,14 +279,14 @@ class Frame(BaseModel):
     # QC + provenance only — not consumed by compute. Values are the mdoc's own,
     # not re-derived (units per the mdoc convention noted).
     exposure_dose_e_per_a2: float | None = None  # mdoc ExposureDose
-    dose_rate: float | None = None               # mdoc DoseRate (verbatim)
-    exposure_time_s: float | None = None         # mdoc ExposureTime
-    defocus_um: float | None = None              # mdoc Defocus (measured; distinct from TargetDefocus)
-    min_intensity: float | None = None           # mdoc MinMaxMean[0] (dark-tilt detector signal)
-    mean_intensity: float | None = None          # mdoc MinMaxMean[2]
-    max_intensity: float | None = None           # mdoc MinMaxMean[1]
-    image_shift_x: float | None = None           # mdoc ImageShift X
-    image_shift_y: float | None = None           # mdoc ImageShift Y
+    dose_rate: float | None = None  # mdoc DoseRate (verbatim)
+    exposure_time_s: float | None = None  # mdoc ExposureTime
+    defocus_um: float | None = None  # mdoc Defocus (measured; distinct from TargetDefocus)
+    min_intensity: float | None = None  # mdoc MinMaxMean[0] (dark-tilt detector signal)
+    mean_intensity: float | None = None  # mdoc MinMaxMean[2]
+    max_intensity: float | None = None  # mdoc MinMaxMean[1]
+    image_shift_x: float | None = None  # mdoc ImageShift X
+    image_shift_y: float | None = None  # mdoc ImageShift Y
 
     # Per-job artifacts, keyed by job instance_id
     outputs: dict[str, FrameOutput] = Field(default_factory=dict)

@@ -88,7 +88,9 @@ _LOCK_POLL_S = 0.5
 #         class's probability (1.0 after a manual commit), not a P(bad).
 # (1, 6): additive SegmentationTomogramOutput tomogram output. Code older than this
 #         fails to validate a sidecar that holds one and skips that tilt series.
-REGISTRY_SCHEMA_VERSION = (1, 6)
+# (1, 7): additive "easymode" DenoisePredictTomogramOutput.denoise_method. Code older than
+#         this fails to validate a sidecar that holds one and skips that tilt series.
+REGISTRY_SCHEMA_VERSION = (1, 7)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
