@@ -924,6 +924,48 @@ are independent of the rest.
 - The orchestrator decommission (`roadmap_orchestrator-replacement.md`).
 - Adding or removing jobs while a run is live (P-50): S2.1 here.
 
+### 14.7 The first batch (scoped 2026-10-26, own worktree)
+
+Line numbers in §14.1–14.2 predate later edits (`cancel_job` is now `pipeline_runner.py:625`, `stop_and_cleanup`
+`:597`); find sites by name.
+
+**The gap in L4 as written.** L4 checks the recorded `slurm_job_id` and the owner file, and both name the
+supervisor. In the trigger case (the supervisor killed at its time limit, its array still running) the supervisor
+is dead, so both checks pass and Run goes ahead. The check that matters is the array id the supervisor wrote into
+the task manifest: `array_job_id` in `<job_dir>/.task_manifest.json` (`services/array_tasks.py:21`). Today the
+second supervisor's `cancel_previous_array` (`drivers/array_job_base.py`) then scancels those tasks, so their
+in-flight GPU work is thrown away and done again.
+
+Commits, in order:
+1. **L4a, refuse.** In `_submit_chain`, before step 1 allocates: for every instance that would take the `reuse_dir`
+   path, collect the recorded `slurm_job_id` and the manifest's `array_job_id`, and ask `query_jobs_by_ids` once
+   for all of them. When any is live, refuse the whole Run, naming the job dir, the id and the number of live
+   tasks: "job012 is still running as array 1712345 (37 tasks). Run again once it drains; the supervisor then
+   aggregates what finished." `None` (squeue failed) refuses with "could not ask SLURM". A manifest that exists but
+   does not parse refuses too; no manifest (a non-array job) checks the supervisor id only. Refuse rather than
+   cancel-and-rerun: the live tasks are doing the work a rerun would repeat.
+2. **L4b, persist before sbatch.** The counter and every allocated `relion_job_name` reach disk before the first
+   sbatch; each `slurm_job_id` as its sbatch returns.
+3. **L4c, mark FAILED only when SLURM confirms.** `cancel_job` and `stop_and_cleanup` mark FAILED only after
+   `scancel` succeeds; otherwise the job stays live and the toast says why.
+4. **L1, the owner file**, as §14.2. It also records `code_version()` (`services/code_version.py`), and the
+   supervisor prints that and the install path as the first line of `run.out` (roadmap 39 §6 item 3).
+5. **Roadmap 27 commit 2a** (its §6.3), its own commit.
+
+Not in this batch: L2, L3 (it changes every site's `qsub.sh`), L5, L6, the §15 UI, S4 Fork.
+
+Runtime checks (maintainer, after the batch; a throwaway project made with New project, the worktree's own server
+and port):
+1. **L4a, the real trigger.** In the worktree's `config/conf.yaml`, set `supervisor_slurm_defaults.time` to
+   `00:05:00`; restart; Run one array job whose tasks take longer than 5 min (tsReconstruct or TM). After the
+   supervisor dies (`run.err`: `DUE TO TIME LIMIT`) and the job reads Failed, press Run: it refuses naming the
+   array id, and `squeue -j <array id>` shows the same tasks still running. Once they drain, Run aggregates in
+   minutes. Put the time back.
+2. **L4b.** Kill the server (Ctrl-C) during a 5-job Run; restart; Run again: no `jobNNN` dir is reused.
+3. **L1.** `sbatch run_submit.script` a second time from inside a running job's dir: the second `run.out` names the
+   owner and exits; the first runs on and the job's status is unchanged.
+4. **2a.** Exclude a TS in the Journey, Run a job, restore the TS, Run again: the TS is dispatched.
+
 **Modern-Python weave-in:** the owner file as a frozen `dataclass SupervisorOwner(slurm_job_id, host, started)`
 with `acquire(job_dir)` returning `ok()`/`err()`; liveness as one function next to `JobStatus` rather than a new
 member (13 §3).

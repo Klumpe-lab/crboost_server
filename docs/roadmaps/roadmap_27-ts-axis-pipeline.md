@@ -14,6 +14,7 @@ of how it looks (§12).
 
 **Can land any time:** commit 2a (§6.3, §6.7). Clearing the stale `excluded from processing` `.skip` markers is a
 standalone bug fix: today a TS restored in the Journey never runs again. It needs nothing else from this roadmap.
+Scheduled 2026-10-26 in roadmap 32's first liveness batch (32 §14.7).
 
 **In one line.** A tilt-series that fails leaves only itself behind (stage 1). It can catch up later without
 recomputing anyone else (stage 2). Eventually no tilt-series waits for the slowest of the others at every stage
