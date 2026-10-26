@@ -3,13 +3,13 @@ Reconstruct card and the pick viewer's slabs.
 
 A layer is one feature of one producer (a Segment job, or an import batch). It is drawn as a fill
 in the feature's colour, cut out by the overlay mask the producer wrote (p ≥ 0.5 over the slab a
-picture shows, `services/segmentation/volumes.py`), under the pick dots. A layer fills only a
-picture of the reconstruction its density traces to (a denoised version counts as the one it was
-denoised from); over another it is hidden, and its menu row says so. Which layers show and how
-opaque the fills are is one setting per project for all these views
-(`services/segmentation/display.py`); a feature's colour is kept with the project. Colours and the
-opacity are CSS variables on the element holding the pictures (`css_vars`), so changing them
-repaints no picture.
+picture shows, `services/segmentation/volumes.py`), under the pick dots. In the layers menu it is a
+row beside the pick layers (`ui/components/layer_menu.py`) and follows the version as they do: it
+fills a picture of the reconstruction its density traces to (a denoised version counts as the one it
+was denoised from) and not one of another, unless switched by hand. Which layers show and how opaque
+the fills are is one setting per project for all these views (`services/segmentation/display.py`); a
+feature's colour is kept with the project. Colours and the opacity are CSS variables on the element
+holding the pictures (`css_vars`), so changing them repaints no picture.
 """
 
 from __future__ import annotations
@@ -22,18 +22,13 @@ from nicegui import ui
 
 from services.dashboard_data import vis_asset_url
 from services.job_lineage import recon_of
-from services.models_base import SPECIES_OVERLAY_COLORS, FeatureOrigin, species_palette_color
+from services.models_base import FeatureOrigin, species_palette_color
 from services.project_state import get_project_state_for
 from services.segmentation import display
 from services.segmentation.ingest import batch_of
+from ui.components.layer_menu import LayerRow, layers_tool
 from ui.components.recon_compare import recon_version_labels
-from ui.components.segmented import render_segmented
 
-OPACITIES: tuple[tuple[str, str], ...] = (("0.25", "25%"), ("0.4", "40%"), ("0.6", "60%"))
-TIP = (
-    "Segmented features: each fills where its probability is at least 0.5 in any plane of the slab the "
-    "picture shows, so a membrane thinner than the slab still shows."
-)
 _ORIGIN_OF_TOOL = {"easymode": FeatureOrigin.EASYMODE, "ais": FeatureOrigin.AIS}
 
 
@@ -149,17 +144,6 @@ def fraction_text(fraction: float | None) -> str:
     return f"{fraction:.0f}%" if fraction >= 10 else f"{fraction:.1f}%"
 
 
-def swatch_svg(color: str, size: int = 10) -> str:
-    """A feature's key in the layer lists: a square, where a pick layer's is a dot."""
-    return (
-        f'<svg width="{size}" height="{size}" style="display: block;"><rect x="1" y="1" width="{size - 2}" '
-        f'height="{size - 2}" rx="2" fill="{color}" stroke="rgba(15,23,42,0.35)" stroke-width="1"/></svg>'
-    )
-
-
-# ── The layer list ───────────────────────────────────────────────────────────
-
-
 def set_feature_color(project_path, layer: dict, color: str) -> None:
     """Recolour a feature everywhere it is drawn; the colour is the project's, so it is saved. A
     feature not registered yet (one that landed while this server was not watching) is registered."""
@@ -176,100 +160,28 @@ def set_feature_color(project_path, layer: dict, color: str) -> None:
             asyncio.create_task(backend.save_project(Path(project_path), debounce_s=1.0))
 
 
-def render_layer_rows(
-    project_path,
-    layers: list[dict],
-    *,
-    count_of: Callable[[dict], str],
-    off_source: Callable[[dict], bool],
-    on_change: Callable[[], None],
-) -> None:
-    """A features menu's rows: a click on a row shows or hides the layer, a click on its swatch picks
-    the feature's colour; beside the name, `count_of(layer)`. A layer made on another reconstruction
-    than the picture shows (`off_source`) is hidden there, and its row says so. Under the rows, the
-    fills' opacity. `on_change` runs after any change, for the view to repaint what it draws."""
-
-    def _toggle(lid: str) -> None:
-        display.set_shown(project_path, lid, not display.is_shown(project_path, lid))
-        on_change()
+def feature_rows(
+    project_path, layers: list[dict], count_of: Callable[[dict], str], on_change: Callable[[], None]
+) -> list[LayerRow]:
+    """The segmentation layers as rows of the layers list (`layer_menu`): beside each name,
+    `count_of(layer)`; a colour picked recolours the feature, then `on_change` runs."""
 
     def _recolor(layer: dict, color: str) -> None:
         set_feature_color(project_path, layer, color)
         on_change()
 
-    def _opacity(value: str) -> None:
-        display.set_opacity(project_path, value)
-        on_change()
-
-    for layer in layers:
-        on = display.is_shown(project_path, layer["id"])
-        hidden = off_source(layer)
-        item = ui.element("div").classes("cb-gal-pk-row" + ("" if on and not hidden else " off"))
-        item.on("click", lambda _e, lid=layer["id"]: _toggle(lid))
-        with item:
-            ui.icon("check_box" if on else "check_box_outline_blank", size="14px")
-            swatch = ui.element("div").classes("cb-gal-pk-marker")
-            swatch.on("click.stop", lambda: None)
-            with swatch:
-                ui.html(swatch_svg(feature_color(project_path, layer["feature"])), sanitize=False)
-                ui.tooltip("Pick this feature's colour")
-                with ui.menu().props("anchor='bottom left' self='top left'"):
-                    with ui.element("div").classes("cb-gal-pk-palette"):
-                        for color in SPECIES_OVERLAY_COLORS:
-                            pick = ui.html(swatch_svg(color, 14), sanitize=False).classes("cb-gal-pk-marker")
-                            pick.on("click.stop", lambda _e, lay=layer, c=color: _recolor(lay, c))
-            ui.label(feature_name(project_path, layer)).classes("cb-gal-pk-name")
-            ui.label(count_of(layer)).classes("cb-gal-pk-n")
-            if on and hidden:
-                ui.icon("visibility_off", size="12px").classes("cb-gal-pk-warn").tooltip(
-                    f"Segmented on {layer['recon_label'] or layer['recon']}, a different reconstruction from the one "
-                    "this picture shows, so it is hidden here: another alignment puts the specimen elsewhere in the "
-                    "volume."
-                )
-    with ui.element("div").classes("cb-gal-feat-opacity"):
-        ui.label("opacity")
-        render_segmented(list(OPACITIES), display.opacity(project_path), _opacity)
-
-
-def layers_summary(project_path, layers: list[dict], off_source: Callable[[dict], bool]) -> str:
-    """A features menu's trigger text: the one layer showing, or how many of how many."""
-    shown = [layer for layer in layers if display.is_shown(project_path, layer["id"]) and not off_source(layer)]
-    if len(shown) == 1:
-        return feature_name(project_path, shown[0])
-    return f"{len(shown)} of {len(layers)} layers"
-
-
-def render_features_menu(
-    project_path,
-    layers: list[dict],
-    *,
-    count_of: Callable[[dict], str],
-    off_source: Callable[[dict], bool],
-    on_change: Callable[[], None],
-) -> Callable[[], None]:
-    """A "features ▾" trigger whose menu holds `render_layer_rows`. Returns the repaint of the
-    trigger's text and the rows, which runs after each change before `on_change`."""
-    with ui.element("div").classes("cb-gal-picks-btn") as trigger:
-        summary = ui.label("")
-        ui.icon("expand_more", size="13px")
-        with ui.menu().props("anchor='bottom left' self='top left'"):
-            body = ui.element("div").classes("cb-gal-picks-menu")
-    trigger.tooltip(TIP)
-
-    def _changed() -> None:
-        repaint()
-        on_change()
-
-    def repaint() -> None:
-        if body.is_deleted:
-            return
-        summary.set_text(layers_summary(project_path, layers, off_source))
-        body.clear()
-        with body:
-            render_layer_rows(project_path, layers, count_of=count_of, off_source=off_source, on_change=_changed)
-
-    repaint()
-    return repaint
+    return [
+        LayerRow(
+            id=layer["id"],
+            name=feature_name(project_path, layer),
+            count=count_of(layer),
+            color=feature_color(project_path, layer["feature"]),
+            recon=layer["recon"],
+            recon_label=layer["recon_label"],
+            on_color=lambda c, lay=layer: _recolor(lay, c),
+        )
+        for layer in layers
+    ]
 
 
 # ── One tomogram's pictures: the Journey's Reconstruct card, the pick viewer's slabs ─────────────
@@ -290,10 +202,9 @@ def layers_for_ts(state, project_path, ts_name: str) -> tuple[list[dict], list[d
 
 class FeatureFills:
     """The segmentation fills a view draws over one tomogram's pictures, kept by layer so that the
-    view's features menu shows or hides them in place (`apply`) instead of rebuilding the pictures.
+    view's layers menu shows or hides them in place (`apply`) instead of rebuilding the pictures.
     `holder` is the element around the pictures that carries the colour and opacity variables;
-    `recon` the reconstruct instance the view's main picture shows, which the menu's hidden-here
-    note is read against."""
+    `recon` the reconstruct instance the view's main picture shows, which the menu is read against."""
 
     def __init__(self, project_path, layers: list[dict], entries: list[dict], holder, recon: str | None) -> None:
         self.project_path = project_path
@@ -301,7 +212,7 @@ class FeatureFills:
         self.entries = {e["id"]: e for e in entries}
         self.holder = holder
         self.recon = recon
-        self._els: dict[str, list] = {}
+        self._els: list[tuple[str, str | None, ui.element]] = []  # (layer, picture's reconstruction, fill)
         holder.style(css_vars(project_path, (layer["feature"] for layer in layers)))
 
     @property
@@ -309,44 +220,43 @@ class FeatureFills:
         """The tomogram's extent (x, y, z), from its volumes' grid."""
         return next((e["dims"] for e in self.entries.values() if e.get("dims")), None)
 
-    def off_source(self, layer: dict, recon: str | None = None) -> bool:
-        """The layer was segmented on another reconstruction than `recon` (the view's by default)."""
-        shows = self.recon if recon is None else recon
-        return layer["recon"] is not None and shows is not None and layer["recon"] != shows
-
-    def any_for(self, recon: str | None) -> bool:
-        """Whether a picture of reconstruction `recon` has a layer to fill."""
-        return any(not self.off_source(layer, recon) for layer in self.layers)
+    def _shown(self, layer: dict, recon: str | None) -> bool:
+        return display.is_shown(self.project_path, layer["id"], display.on_source(layer["recon"], recon))
 
     def draw(self, plane: str, recon: str | None = None) -> None:
         """Every layer's fill for a picture of `plane` ("xy" or "xz") of reconstruction `recon` (the
-        view's by default), into the current container, which must be the picture's box. Hidden
-        layers are drawn invisible, so the menu shows them without a rebuild."""
+        view's by default), into the current container, which must be the picture's box. A layer the
+        picture does not show is drawn invisible, so the menu shows it without a rebuild."""
+        recon = self.recon if recon is None else recon
         for layer in self.layers:
             entry = self.entries.get(layer["id"])
             url = entry.get(plane) if entry is not None else None
-            if not url or self.off_source(layer, recon):
+            if not url:
                 continue
             el = ui.element("div").style(fill_style(layer["feature"], url))
-            el.set_visibility(display.is_shown(self.project_path, layer["id"]))
-            self._els.setdefault(layer["id"], []).append(el)
+            el.set_visibility(self._shown(layer, recon))
+            self._els.append((layer["id"], recon, el))
 
     def apply(self) -> None:
-        """After a change in the menu: each layer's visibility, and the colours and opacity."""
-        for lid, els in self._els.items():
-            shown = display.is_shown(self.project_path, lid)
-            for el in els:
-                if not el.is_deleted:
-                    el.set_visibility(shown)
+        """After a change in the menu: each fill's visibility, and the colours and opacity."""
+        by_id = {layer["id"]: layer for layer in self.layers}
+        for lid, recon, el in self._els:
+            if not el.is_deleted:
+                el.set_visibility(self._shown(by_id[lid], recon))
         if not self.holder.is_deleted:
             self.holder.style(css_vars(self.project_path, (layer["feature"] for layer in self.layers)))
 
-    def menu(self) -> None:
-        """The view's "features ▾" menu, each layer with its share of this tomogram's volume."""
-        render_features_menu(
+    def rows(self, on_change: Callable[[], None]) -> list[LayerRow]:
+        """The layers as rows of a layers list, each with its share of this tomogram's volume."""
+        return feature_rows(
             self.project_path,
             self.layers,
-            count_of=lambda layer: fraction_text(self.entries[layer["id"]]["fraction"]),
-            off_source=self.off_source,
-            on_change=self.apply,
+            lambda layer: fraction_text(self.entries[layer["id"]]["fraction"]),
+            on_change,
+        )
+
+    def menu(self) -> None:
+        """The view's layers menu, of the segmentations only."""
+        layers_tool(
+            self.project_path, lambda changed: ([], self.rows(changed)), shows=lambda: self.recon, on_change=self.apply
         )

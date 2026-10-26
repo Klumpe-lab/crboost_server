@@ -814,8 +814,7 @@ def _render_main_pane_for_ts(
             rendered_any = True
 
     # Particles — one unified section: a shared tomogram canvas with every
-    # species' picks overlaid (toggleable), plus a per-species tab carrying
-    # that species' TM sanity strip + gallery / scatter.
+    # species' picks overlaid (toggleable), plus the gallery / scatter of one list.
     if "particles" in visible:
         # Candidate-extract path first; if it renders nothing (no TEMPLATE_EXTRACT
         # jobs — e.g. a particle-only project), fall back to the imported-tomogram
@@ -2278,8 +2277,8 @@ def _render_reconstruct_section(ts_name: str, project_state, project_path: Path,
 
 
 def _features_menu(slot, fills: FeatureFills | None) -> None:
-    """The card's segmentation menu, in the chip strip. Built after the previews, which set the
-    reconstruction the menu reads its hidden-here notes against (the version shown)."""
+    """The card's layers menu (its segmentations), in the chip strip. Built after the previews, which set
+    the reconstruction the menu is read against (the version shown)."""
     if fills is not None:
         with slot:
             fills.menu()
@@ -2301,9 +2300,10 @@ def _framed_preview(url: str, alt: str, fills: FeatureFills, recon: str | None) 
         fills.draw("xy", recon)
 
 
-def _fills_over(fills: FeatureFills | None, recon: str | None) -> bool:
-    """Whether a preview of reconstruction `recon` gets segmentation fills."""
-    return fills is not None and fills.dims is not None and fills.any_for(recon)
+def _fills_over(fills: FeatureFills | None) -> bool:
+    """Whether a preview gets segmentation fills: each layer drawn, shown or not, so the layers menu
+    switches them in place."""
+    return fills is not None and fills.dims is not None and bool(fills.layers)
 
 
 def _render_recon_big_preview(
@@ -2371,7 +2371,7 @@ def _render_recon_big_preview(
                 ui.label("recon").classes("cb-recon-pane-tag")
                 if png_path and png_path.exists():
                     with ui.element("div").classes("cb-recon-preview").style("position: relative;"):
-                        if _fills_over(fills, None):
+                        if _fills_over(fills):
                             _framed_preview(vis_asset_url(str(png_path)), f"{ts_name} WarpTools recon", fills, None)
                         else:
                             ui.html(
@@ -2407,7 +2407,7 @@ def _render_recon_big_preview(
                         ui.label(selected).classes("cb-recon-pane-method")
                 if dn_png is not None:
                     with ui.element("div").classes("cb-recon-preview").style("position: relative;"):
-                        if _fills_over(fills, dn_recon):
+                        if _fills_over(fills):
                             _framed_preview(
                                 vis_asset_url(str(dn_png)), f"{ts_name} {selected} denoised", fills, dn_recon
                             )
@@ -2464,7 +2464,7 @@ def _render_recon_version(v: dict, ts_name: str, fills: FeatureFills | None = No
         ui.label(f"recon · {v['label']}").classes("cb-recon-pane-tag")
         if warp_png.exists():
             with ui.element("div").classes("cb-recon-preview").style("position: relative;"):
-                if _fills_over(fills, v["iid"]):
+                if _fills_over(fills):
                     _framed_preview(vis_asset_url(str(warp_png)), f"{ts_name} {v['job']}", fills, v["iid"])
                 else:
                     ui.html(f"<img src='{vis_asset_url(str(warp_png))}' alt='{ts_name} {v['job']}' />", sanitize=False)
