@@ -360,9 +360,10 @@ class PipelineOrchestratorService:
         completion. The chain executes in SLURM regardless of the headnode process.
 
         Failure handling: the counter is committed once pass 3 starts, however it ends, because a
-        job dir may then exist on disk and its number must never be handed out again; whatever
-        reaches SLURM is always persisted, so no slurm_job_id handle is lost on a mid-chain sbatch
-        error.
+        job dir may then exist on disk and its number must never be handed out again. It reaches
+        disk before the first sbatch, with every job's dir and paths, and each slurm_job_id as its
+        sbatch returns, so neither a mid-chain sbatch error nor a server that dies mid-submit loses
+        a handle or hands out a dir something was submitted into.
         """
         server_dir = Path(__file__).parent.parent.parent.resolve()
 
@@ -608,15 +609,16 @@ class PipelineOrchestratorService:
                     prepared[instance_id] = script_path
         finally:
             state.job_dir_counter = next_job_num
+        # Saved before the first sbatch, and when this pass stopped short: the counter has moved past
+        # dirs that may exist now (a restart must not hand their numbers out again), each job holds
+        # its dir, and a driver reads its paths from this file when it starts.
+        state.mark_dirty()
+        await self.backend.state_service.save_project(project_path=project_dir, force=True)
         if failed is not None:
-            # Nothing reached SLURM, but the counter has moved past dirs that may exist now: it is
-            # saved here, or a restart would hand their numbers out again.
-            state.mark_dirty()
-            await self.backend.state_service.save_project(project_path=project_dir, force=True)
             return err(failed)
 
         # Submit each supervisor in topo order, gating on its producers' supervisor ids. On a
-        # mid-chain sbatch error, stop the loop but still persist what already reached SLURM below.
+        # mid-chain sbatch error, stop the loop; what already reached SLURM is saved.
         instance_to_slurm: dict[str, str] = {}
         submitted: list[dict[str, Any]] = []
         submit_error: tuple | None = None
@@ -639,18 +641,15 @@ class PipelineOrchestratorService:
             job_model = state.jobs[instance_id]
             job_model.slurm_job_id = slurm_id
             job_model.execution_status = JobStatus.QUEUED
+            # The run is active (the monitor ticks it -> reconcile_afterok, which winds it back down
+            # when every job has ended) and saved as each sbatch returns: a server that dies
+            # mid-chain leaves no live supervisor unrecorded, and a restart re-observes the chain.
+            state.pipeline_active = True
             submitted.append({"instance_id": instance_id, "slurm_job_id": slurm_id, "afterok": after_ids})
             after = f" after {', '.join(after_ids)}" if after_ids else ""
             events.info("%s · %s queued as SLURM %s%s", project_dir.name, instance_id, slurm_id, after)
-
-        # Mark the run active (so the monitor ticks it -> reconcile_afterok) and persist the
-        # committed counter + every submitted handle (on success OR partial failure) so no live
-        # SLURM job is left unrecorded and a restart can re-observe the chain. reconcile_afterok
-        # owns winding pipeline_active back down when every job reaches a terminal state.
-        if submitted:
-            state.pipeline_active = True
-        state.mark_dirty()
-        await self.backend.state_service.save_project(project_path=project_dir, force=True)
+            state.mark_dirty()
+            await self.backend.state_service.save_project(project_path=project_dir, force=True)
 
         if submit_error is not None:
             failed_iid, exc = submit_error
