@@ -3,9 +3,9 @@
 **Status:** scoped 2026-10-14 from the branching survey
 (`docs/reports/pipeline-graph/branching-survey-2026-10-12.md`). Stage 0 answered; stage 1, the §8 table,
 stage 2 (without S2.3) and stage 3 (the Subset job) built 2026-10-15, all NOT RUN (records §3.1, §8, §4.1, §6.1;
-runtime checks §11). The `relion_schemer` path deleted 2026-10-15, NOT RUN (§13). Next: the §11 and §13
-runtime checks; the liveness prerequisite (§14, L4 + L1); stage 4 once §9.6 is answered. §9.5 decided
-2026-10-26; §9.6–9.7 open.
+runtime checks §11). The `relion_schemer` path deleted 2026-10-15, NOT RUN (§13). The liveness prerequisite
+(§14, L4 + L1) built 2026-10-26, NOT RUN (§14.7). Next: the §11, §13 and §14.7 runtime checks; stage 4 once
+§9.6 is answered. §9.5 decided 2026-10-26; §9.6–9.7 open.
 
 **Pending (maintainer, 2026-10-26):** wanted, priority raised; to be built in its own worktree. Roadmap 33 (job
 liveness) is merged in as §14. The UI is the hard part and gets its own design pass first (§15).
@@ -678,9 +678,10 @@ rewrites the same code. Merged into main with `token_auth` the same day; that ro
 
 Roadmap 33 (2026-10-15; itself a merge of roadmaps 13 and 15) is folded in here because stage 2 of this roadmap
 (staging while running) shipped without it, and stage 2 is what makes its incident easy to reach. Its stages keep
-their numbers with an L prefix (L = liveness): "33 S1" elsewhere = L1 here. Nothing of it is built. The text below
-is 33's as re-checked against main on 2026-10-15; its `pipeline_orchestrator_service.py` anchors predate the
-schemer deletion (the reuse test is now `reuse_dir` at `:353`).
+their numbers with an L prefix (L = liveness): "33 S1" elsewhere = L1 here. L4 and L1 are built (2026-10-26, NOT
+RUN, §14.7); L2, L3, L5 and L6 are not. The text below is 33's as re-checked against main on 2026-10-15; its
+`pipeline_orchestrator_service.py` anchors predate the schemer deletion (the reuse test is now `reuse_dir` at
+`:353`).
 
 **Scope (2026-10-26).** The smallest useful slice, and a prerequisite stage of everything left in this roadmap
 (stage 4, the §11/§13 runtime round, and roadmap 27 stage 2):
@@ -969,6 +970,87 @@ and port):
 **Modern-Python weave-in:** the owner file as a frozen `dataclass SupervisorOwner(slurm_job_id, host, started)`
 with `acquire(job_dir)` returning `ok()`/`err()`; liveness as one function next to `JobStatus` rather than a new
 member (13 §3).
+
+#### Stage log — built 2026-10-26 on `uv_and_UI`, NOT RUN
+
+Five commits, in the order above.
+
+1. **L4a.** `_submit_chain` asks `_live_in_reused_dirs` before it allocates. For every job of the run that would
+   be retried in its own dir (`_reused_dir`, now also pass 1's test), it collects the recorded `slurm_job_id` and
+   the manifest's `array_job_id` (`services/array_tasks.recorded_array_job_id`, which raises on a manifest that
+   does not parse) and asks SLURM once (`SlurmService.live_task_counts`, `squeue -r`). Anything live refuses the
+   whole Run: "tsCtf (job012) is still running as array 1712345 (37 tasks). Run again once it drains; the
+   supervisor then aggregates what finished. If it never drains, scancel 1712345.", or "… is still running as
+   slurm N; if it never ends, scancel N." for a live supervisor. A failed squeue or an unparseable manifest
+   refuses with the reason. A refused Run or Approve puts the tilt-filter review hold back as it was.
+   - Not `query_jobs_by_ids`: it keeps one row per job, so it cannot count tasks, and squeue lists a job for a
+     few minutes after it ended. `live_task_counts` counts the rows whose state is not an ended one
+     (`SLURM_ENDED_STATES`, `slurm_service.py`; an unfamiliar state counts as live).
+   - Every Failed job with a dir is checked, including one whose inputs moved and that pass 2 then sends to a
+     fresh dir.
+2. **L4b.** The save after the sbatch loop is split in two: one after pass 3, before the first sbatch (the
+   counter, every job's dir, its paths and recorded inputs; also when pass 3 stops short, as before), and one
+   per sbatch with that job's `slurm_job_id`, QUEUED and `pipeline_active`.
+   - Side effect: a supervisor that started before the loop ended used to read the previous
+     `project_params.json` (old paths, no record) and resolve its inputs again; it now reads what was submitted.
+   - Cost: one `project_params.json` write per job submitted.
+3. **L4c.** `_cancel_and_mark` scancels each supervisor on its own (concurrently) and returns the jobs whose
+   cancel SLURM accepted. Only those (and jobs with no SLURM id) get their arrays cancelled and stopped tasks
+   marked, and only those are marked Failed.
+   - Stop keeps `pipeline_active` up while any job was not cancelled, so the reconciler goes on following it.
+     The Stop handler then restarts the tab's poller and says "Not everything stopped: tsCtf: scancel N failed
+     (…), so it is left as it is".
+   - Cancel on one job returns that error and leaves the job as it is.
+4. **L1.** `services/supervisor_owner.py`: `SupervisorOwner(slurm_job_id, host, started, code_version)`,
+   `acquire(job_dir, slurm_job_id)` → `ok(owner=, took_over_from=)` / `err`, `release`, `read_owner`.
+   - `drivers/driver_base.start_supervisor()` is the first call of `ArrayDriver.main`'s supervisor branch and of
+     the eight non-array drivers' `main` (ts_import, tilt_filter, miss_align, denoise_train,
+     reconstruct_particle, class3d, refine3d, extract_pick_list). Array tasks never claim.
+   - It prints `[DRIVER] crboost <branch>@<sha> from <install path>`: the first line the driver writes to
+     `run.out`, after qsub.sh's own header lines.
+   - It then creates `.supervisor.owner` exclusively: written whole under a name of its own, then `os.link`ed
+     into place, which fails on an existing name as O_EXCL does, so the file never exists empty or half
+     written. A live owner gives `another supervisor (slurm N on host, started …) owns this job dir; exiting
+     without touching it` and exit 1; a failed squeue refuses the same way, saying so. An owner SLURM no
+     longer runs, or one with this job's own id (a requeue, or a link whose NFS reply was lost), is taken over
+     and named.
+   - Released at exit (`atexit`: every `sys.exit` and the fatal paths; an array supervisor's SIGTERM handler
+     exits through it too), and only while the file still names this supervisor. A file left by a killed
+     supervisor is taken over by the next one. A driver started outside SLURM claims nothing and says so.
+   - Run's pre-flight also asks about the supervisor the owner file names (§14.2 L4's second check).
+5. **Roadmap 27 commit 2a.** `apply_exclusions` first removes every `.skip` of this run's items whose content is
+   `excluded from processing` and whose tilt series is no longer excluded, and prints which. Skips with another
+   reason stay. A Succeeded job is still not re-run: that is 27's catch-up (2e).
+
+**Open, for L3.** The second supervisor exits 1, so its qsub trailer still touches `RELION_JOB_EXIT_FAILURE` in
+the shared dir, and `reconcile_afterok` reads that as the job failing while its owner runs on (runtime check 3
+sees the job turn Failed; L4a then refuses a Run while the owner lives). A cheaper L3 than a new `qsub.sh` at
+every site: the owner releases its file before the trailer writes the marker (atexit runs before the shell
+continues), so pass 1 can ignore a marker while the dir's owner file still names the job's recorded supervisor,
+and ask squeue instead. Also open: SLURM truncates `run.out`/`run.err` when the second supervisor starts.
+`#SBATCH --open-mode=append`, added by `write_sbatch_script` like `--qos`, would avoid that without a `qsub.sh`
+change, but retries would then append to the earlier attempt's log.
+
+**Left open after a read-only review (2026-10-26).**
+- Two supervisors taking over the same dead owner within one squeue call can both win (read, then unlink). Fix:
+  take over by renaming the file aside to a name of one's own, then check what was moved. Needs a hand `sbatch`.
+- Non-array drivers die by SIGTERM's default action (Cancel, Stop, time limit), so they never release the
+  file; the next supervisor needs squeue on its node to take over. A SIGTERM handler in `start_supervisor`
+  that calls `sys.exit` would release it.
+- scancel exits 0 for a job that has already ended, so Stop/Cancel still marks Failed a job that succeeded
+  seconds before (as before L4c).
+- L4a can refuse indefinitely when what is left never ends (tasks held or blocked by a limit, a dependent left
+  pending): the app offers no cancel for a Failed job's array; the message names the scancel.
+- Re-extracting a pick list while its earlier extraction runs now always fails (the owner file survives
+  `_clear_previous_output`) and writes no `result.json`; §14.3.1 is still the decision owed.
+- 2a removes exclusion skips if the registry read fails (`load_excluded_ts` returns an empty set);
+  `preflight_registry` reads the same registry first, so this needs a failure between the two.
+- `query_jobs_by_ids` takes any "invalid job id" error as "all gone"; `live_task_counts` now accepts only
+  "Invalid job id specified".
+
+**Checked:** `ruff check` and `ruff format --diff` on the touched files (`drivers/ts_import.py` has an older,
+unrelated format diff). Not run: no Python in the sandbox. For runtime check 4, the job must be retried in
+place: Run skips a Succeeded job, so make it Failed first (Cancel it once its array is dispatched).
 
 ---
 
