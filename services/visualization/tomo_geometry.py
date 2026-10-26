@@ -131,6 +131,12 @@ def _read_mrc_header(mrc_path: Path) -> tuple[tuple[int, int, int], float] | Non
     return val
 
 
+def volume_dims(mrc_path: Path) -> tuple[int, int, int] | None:
+    """A volume's ``(nx, ny, nz)`` from its header (mtime-memoized), or None when it is not readable."""
+    header = _read_mrc_header(mrc_path)
+    return header[0] if header is not None else None
+
+
 def tomogram_star_sources(project_state, project_path: Path) -> list[tuple[str, Path]]:
     """The ``tomograms.star`` files that can describe this project's tomograms, in
     precedence order: the TS_RECONSTRUCT job's, then the project-level imported star.

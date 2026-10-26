@@ -18,16 +18,15 @@ all of them just re-render from the already-collected rows:
     reconstruction itself (``raw``: the WarpTools PNG) and each denoised X/Y slab made from it
     (cryoCARE / IsoNet / any other denoisepredict job that has a volume for the tomogram). Only
     versions that actually produced something appear.
-  · **picks** — the pick layers, by species: each candidate-extract job's picks, and each species'
-    registered lists, are a layer with its own dot color (pickable). By default the layers follow
-    the source: a layer shows over the version that shows the reconstruction its picks were made
-    on, so two picking arms on two alignments each sit on their own. Switching a layer by hand
-    leaves that mode; a layer shown over another reconstruction is flagged. Nothing picked yet ⇒ no
-    tool and plain slices, the de-novo project's normal state.
-  · **segmentations** — the segmentation layers (a Segment job's membranes, void, …): each is a
-    transparent fill where p ≥ 0.5 over the central slab, in the feature's colour, under the dots.
-    A layer fills only over the version that shows the reconstruction it was computed on. The same
-    menu imports segmentations made outside crboost.
+  · **layers** — the pick layers, by species, and the segmentations, in one list
+    (``ui/components/layer_menu.py``, the same list as the Journey's and the pick viewer's). Each
+    candidate-extract job's picks, and each species' registered lists, are a pick layer with its own
+    dot color (pickable); each segmentation (a Segment job's membranes, void, …) is a transparent fill
+    where p ≥ 0.5 over the central slab, in the feature's colour, under the dots. Every layer follows
+    the version: it shows over the versions of the reconstruction it was made on, so two picking arms
+    on two alignments each sit on their own. Switching a layer by hand sets it apart from that; a
+    layer shown over another reconstruction is flagged. The same menu imports segmentations made
+    outside crboost.
   · **size** — how many tiles (and tilt cards) fit across.
 
 Tiles show a downscaled JPEG of each picture, and the browser fetches the other sources'
@@ -41,8 +40,8 @@ tab changes or the view comes back, the wall scrolls to it if it is out of view.
 A click on the selected tile's image opens the zoom view: the slice as large as the screen allows,
 its pick count and 3dmod chip in its corners, and beside it a column with the tilts summed up (how
 many are in the tomogram, the stage-tilt range in use, the series' CTF fit, the dark exposures in
-use) and the same three lists for this tomogram (its versions, ↑ ↓; the pick layers, matched to the
-zoom's own version; the segmentations, with each one's share of the volume) and the Journey button.
+use) and the wall's two lists for this tomogram (its versions, ↑ ↓; its layers, matched to the zoom's
+own version, with its picks of each and each segmentation's share of the volume) and the Journey button.
 The zoom's version never changes the wall's; its layers are the wall's; ← → step the selection
 through the wall. The toggle in a tile's top-left corner swaps the slice for a mosaic of that
 series' tilts, in the same box; a tilt opens the full-size tilt viewer. The caption under a tile is
@@ -82,6 +81,7 @@ from ui.components.copyable import copy_3dmod_chip
 from ui.components import feature_layers as fl
 from ui.components.dialogs import dialog_host
 from ui.components.hover_menu import Choice, ChoiceRows, hover_menu, tool_trigger
+from ui.components.layer_menu import LayerRow, render_layer_list
 from ui.components.reactive import SingleFlight, owned_timer
 from services.job_lineage import job_dirs, recon_of
 from ui.components.recon_compare import recon_version_labels
@@ -588,24 +588,19 @@ class TomoGalleryPage:
         self.rows: list[dict] = []
         self.source: str = RECON_SOURCE
         self.size: str = DEFAULT_SIZE
-        # Pick overlays (`_pick_layers`). Following the source, a layer shows on the source that
-        # shows the reconstruction its picks were made on; once a layer is switched by hand,
-        # `layer_on` decides.
+        # Pick overlays (`_pick_layers`) and segmentation overlays (`feature_layers.collect_layers`). A layer
+        # follows the version, showing on the sources of the reconstruction it was made on, unless switched
+        # by hand (`services.segmentation.display`, shared with the Journey and the pick viewer). The
+        # segmentations' colours and opacity are CSS variables on the page and the zoom (`_feature_vars`):
+        # changing them repaints no tile.
         self.layers: list[dict] = []
         self._layer_by_id: dict[str, dict] = {}
         # source key -> {recon, group, variant}: the reconstruct instance it shows, and its place in the version menu.
         self._source_meta: dict[str, dict] = {}
-        self.picks_follow = True
-        self.layer_on: dict[str, bool] = {}
-        # Live pick-layer lists, "wall" (the title line's menu) and "zoom": (body, source getter).
-        self._picks_menus: dict[str, tuple[Any, Any]] = {}
-        # Segmentation overlays (`feature_layers.collect_layers`): a layer shows on the source that shows
-        # the reconstruction its density traces to, unless it is hidden (`services.segmentation.display`,
-        # shared with the Journey and the pick viewer). Colours and the opacity are CSS variables on the
-        # page and the zoom (`_feature_vars`): changing them repaints no tile.
         self.feature_layers: list[dict] = []
         self._feature_layer_by_id: dict[str, dict] = {}
-        self._features_menus: dict[str, tuple[Any, Any]] = {}  # as _picks_menus
+        # Live layers lists, "wall" (the title line's menu) and "zoom": (body, source getter).
+        self._layer_menus: dict[str, tuple[Any, Any]] = {}
         self._overlays: dict[str, Any] = {}  # each tile's feature fills and dot layers
         self._overlay_keys: dict[str, tuple] = {}  # the layer ids each tile's overlay draws
         self._imgs: dict[str, Any] = {}  # each tile's <img>, re-pointed on a source switch
@@ -897,18 +892,15 @@ class TomoGalleryPage:
 
     # ── Derived state ─────────────────────────────────────────────────────────
 
-    def _layer_shown(self, layer: dict, source: str) -> bool:
-        """Whether a pick layer draws over `source`. Following the source: when the picks were
-        made on the reconstruction it shows, or when either side's reconstruction is unknown."""
-        if not self.picks_follow:
-            return self.layer_on.get(layer["id"], True)
-        shows = self._source_meta.get(source, {}).get("recon")
-        return layer["recon"] is None or shows is None or layer["recon"] == shows
+    def _shows(self, source: str) -> str | None:
+        """The reconstruct instance `source` shows (a denoised version: the one it was denoised from)."""
+        return self._source_meta.get(source, {}).get("recon")
 
-    def _off_source(self, layer: dict, source: str) -> bool:
-        """The layer (picks, or a segmentation) was made on another reconstruction than `source` shows."""
-        shows = self._source_meta.get(source, {}).get("recon")
-        return layer["recon"] is not None and shows is not None and layer["recon"] != shows
+    def _layer_shown(self, layer: dict, source: str) -> bool:
+        """Whether a layer (picks, or a segmentation) draws over `source`: switched by hand, or following
+        the version, made on the reconstruction it shows (or either side's reconstruction not known)."""
+        following = display.on_source(layer["recon"], self._shows(source))
+        return display.is_shown(self.project_path, layer["id"], following)
 
     def _visible_picks(self, row: dict, source: str) -> list[dict]:
         """The row's pick entries that draw over `source`, each with its layer's meta."""
@@ -919,18 +911,12 @@ class TomoGalleryPage:
                 out.append({**layer, **entry})
         return out
 
-    def _feature_shown(self, layer: dict, source: str) -> bool:
-        """Whether a segmentation layer fills over `source`: switched on, and made on the
-        reconstruction the source shows (a denoised version counts as the one it was denoised from).
-        Over another reconstruction it is hidden, and its menu row says so."""
-        return display.is_shown(self.project_path, layer["id"]) and not self._off_source(layer, source)
-
     def _visible_features(self, row: dict, source: str) -> list[dict]:
         """The row's segmentation entries that fill over `source`."""
         return [
             entry
             for entry in row["features"]
-            if (layer := self._feature_layer_by_id.get(entry["id"])) is not None and self._feature_shown(layer, source)
+            if (layer := self._feature_layer_by_id.get(entry["id"])) is not None and self._layer_shown(layer, source)
         ]
 
     def _pending_count(self) -> int:
@@ -1123,27 +1109,24 @@ class TomoGalleryPage:
                 self.tilt_gallery.render_controls()
 
     def _render_wall_tools(self) -> None:
-        """The Tomograms tab's tools on the title line: the version every tile shows, the pick layers
-        and the segmentations, each a glyph whose dropdown opens under the pointer. The Tilts tab has
-        none there."""
+        """The Tomograms tab's tools on the title line: the version every tile shows and the layers (the
+        picks and the segmentations), each a glyph whose dropdown opens under the pointer. The Tilts tab
+        has none there."""
         tools = self._refs.get("tab_controls")
         if tools is None or tools.is_deleted:
             return
         tools.clear()
-        for menus in (self._picks_menus, self._features_menus):
-            menus.pop("wall", None)
-        for ref in ("source_rows", "source_text", "features_menu"):
+        self._layer_menus.pop("wall", None)
+        for ref in ("source_rows", "source_text", "layers_menu"):
             self._refs.pop(ref, None)
         if self.tab != TOMOGRAMS_TAB:
             return
         with tools:
             if len(self._source_keys()) > 1:
                 self._render_source_tool()
-            if self.layers:
-                self._render_picks_tool()
             if self.rows:
                 # Without a layer yet it still holds the import.
-                self._render_features_tool()
+                self._render_layers_tool()
 
     def _render_source_tool(self) -> None:
         trigger, label = tool_trigger("filter_none", self._source_text(self.source))
@@ -1153,20 +1136,14 @@ class TomoGalleryPage:
             ui.label("Version on every tile").classes("cb-hmenu-title")
             self._refs["source_rows"] = ChoiceRows(self._source_choices(), self.source, self._select_source)
 
-    def _render_picks_tool(self) -> None:
-        trigger, _ = tool_trigger("particle.svg")
-        _menu, body = hover_menu(trigger, align="right")
-        self._picks_menus["wall"] = (body, lambda: self.source)
-        self._refresh_picks_lists()
-
-    def _render_features_tool(self) -> None:
-        trigger, _ = tool_trigger("segmentation.svg")
+    def _render_layers_tool(self) -> None:
+        trigger, _ = tool_trigger("layers.svg")
         menu, body = hover_menu(trigger, align="right")
-        self._refs["features_menu"] = menu
-        self._features_menus["wall"] = (body, lambda: self.source)
-        self._refresh_features_lists()
+        self._refs["layers_menu"] = menu
+        self._layer_menus["wall"] = (body, lambda: self.source)
+        self._refresh_layer_lists()
 
-    # ── Segmentation layers ───────────────────────────────────────────────────
+    # ── Layers ────────────────────────────────────────────────────────────────
 
     def _feature_vars(self) -> str:
         """The CSS variables the segmentation fills and badges read (`feature_layers.css_vars`). Set on
@@ -1180,22 +1157,21 @@ class TomoGalleryPage:
             if el is not None and not el.is_deleted:
                 el.style(style)
 
-    def _refresh_features_lists(self) -> None:
-        """Repaint every live segmentation-layer list (the title line's menu, with the import; the
-        zoom's side column)."""
-        for name, (body, source_of) in list(self._features_menus.items()):
+    def _refresh_layer_lists(self) -> None:
+        """Repaint every live layers list (the title line's menu, with the import; the zoom's side column);
+        they are a few rows each."""
+        for name, (body, source_of) in list(self._layer_menus.items()):
             if body.is_deleted:
-                del self._features_menus[name]
+                del self._layer_menus[name]
                 continue
             row = self._zoom_row() if name == "zoom" else None
             if name == "zoom" and row is None:
                 continue
-            source = source_of()
             body.clear()
             with body:
                 if name == "wall":
-                    ui.label("Segmentations on the wall").classes("cb-hmenu-title").props["title"] = fl.TIP
-                self._render_features_list(source, row)
+                    ui.label("Layers on the wall").classes("cb-hmenu-title")
+                self._render_layer_list(source_of(), row)
                 if name == "wall":
                     self._render_import_row()
 
@@ -1210,113 +1186,51 @@ class TomoGalleryPage:
             ui.label("Import segmentations…")
 
     def _import_from_menu(self) -> None:
-        menu = self._refs.get("features_menu")
+        menu = self._refs.get("layers_menu")
         if menu is not None and not menu.is_deleted:
             menu.close()
         self._import_segmentations()
 
-    def _render_features_list(self, source: str, row: dict | None = None) -> None:
-        """The segmentation layers (`feature_layers.render_layer_rows`). The count is the tomograms a
-        layer covers, or, for one tomogram (`row`, the zoom), the feature's share of its volume."""
-        fractions = {e["id"]: e["fraction"] for e in row["features"]} if row is not None else {}
-        layers = [layer for layer in self.feature_layers if row is None or layer["id"] in fractions]
-        if not layers:
-            ui.label("No segmentations yet: run Segment, or import them.").classes("cb-hmenu-empty")
-            return
-        fl.render_layer_rows(
+    def _render_layer_list(self, source: str, row: dict | None = None) -> None:
+        """The layers (`layer_menu.render_layer_list`) read against `source`: the pick layers, by species,
+        and the segmentations. On the wall a count is a layer's picks, or the tomograms a segmentation
+        covers; for one tomogram (`row`, the zoom), the layers on it, with its picks of each and each
+        feature's share of its volume."""
+        picks_n = {e["id"]: e["n"] for e in row["picks"]} if row is not None else None
+        fractions = {e["id"]: e["fraction"] for e in row["features"]} if row is not None else None
+        picks = [
+            LayerRow(
+                id=layer["id"],
+                name=layer["label"],
+                count=str(layer["n"] if picks_n is None else picks_n[layer["id"]]),
+                color=layer["color"],
+                recon=layer["recon"],
+                recon_label=layer["recon_label"],
+                group=layer["species"],
+                on_color=lambda c, lid=layer["id"]: self._set_color(lid, c),
+            )
+            for layer in self.layers
+            if picks_n is None or layer["id"] in picks_n
+        ]
+        features = fl.feature_rows(
             self.project_path,
-            layers,
-            count_of=lambda layer: fl.fraction_text(fractions.get(layer["id"])) if row is not None else str(layer["n"]),
-            off_source=lambda layer: self._off_source(layer, source),
-            on_change=self._feature_display_changed,
+            [layer for layer in self.feature_layers if fractions is None or layer["id"] in fractions],
+            lambda layer: str(layer["n"]) if fractions is None else fl.fraction_text(fractions[layer["id"]]),
+            self._layers_changed,
         )
-
-    def _feature_display_changed(self) -> None:
-        """A layer shown or hidden, a colour picked, the opacity switched."""
-        self._apply_feature_vars()
-        self._features_changed()
-
-    def _features_changed(self) -> None:
-        self._refresh_features_lists()
-        self._refresh_overlays()
-        if self._zoom_ts is not None and self._refs.get("zoom") is not None and self._refs["zoom"].value:
-            self._render_zoom_overlay()
-
-    # ── Pick layers ───────────────────────────────────────────────────────────
-
-    def _refresh_picks_lists(self) -> None:
-        """Repaint every live pick-layer list (the title line's menu; the zoom's side column); they are
-        a few rows each."""
-        for name, (body, source_of) in list(self._picks_menus.items()):
-            if body.is_deleted:
-                del self._picks_menus[name]
-                continue
-            source = source_of()
-            body.clear()
-            with body:
-                if name == "wall":
-                    ui.label("Picks on the wall").classes("cb-hmenu-title")
-                self._render_picks_list(source)
-
-    def _render_picks_list(self, source: str) -> None:
-        """The pick layers, by species: a click on a row shows or hides it (and stops following the
-        source), a click on its marker opens the colours under it. "Follow the source" puts the layers
-        back on what the source shows."""
-        follow = ui.element("div").classes("cb-gal-pk-row cb-gal-pk-follow")
-        follow.on("click", lambda _e: self._set_follow(not self.picks_follow))
-        follow.tooltip(
-            "Show the picks made on the reconstruction the source shows (a denoised version counts as the "
-            "reconstruction it was denoised from). Lists whose reconstruction is not known show on every source."
-        )
-        with follow:
-            ui.icon("check_box" if self.picks_follow else "check_box_outline_blank", size="14px")
-            ui.label("Follow the source")
-        species = None
-        for layer in self.layers:
-            if layer["species_id"] != species:
-                species = layer["species_id"]
-                with ui.element("div").classes("cb-gal-pk-species"):
-                    ui.html(load_icon_svg("particle.svg", "#94a3b8", size=11), sanitize=False).style("display: flex;")
-                    ui.label(layer["species"])
-            shown = self._layer_shown(layer, source)
-            row = ui.element("div").classes("cb-gal-pk-row" + ("" if shown else " off"))
-            row.on("click", lambda _e, lid=layer["id"]: self._toggle_layer(lid, source))
-            with row:
-                ui.icon("check_box" if shown else "check_box_outline_blank", size="14px")
-                marker = ui.html(_marker_svg(layer["color"]), sanitize=False).classes("cb-gal-pk-marker")
-                marker.props["title"] = "Pick this layer's colour"
-                ui.label(layer["label"]).classes("cb-gal-pk-name")
-                ui.label(str(layer["n"])).classes("cb-gal-pk-n")
-                if shown and self._off_source(layer, source):
-                    ui.icon("warning", size="12px").classes("cb-gal-pk-warn").tooltip(
-                        f"Picked on {layer['recon_label'] or layer['recon']}, a different reconstruction from the "
-                        "one this source shows: another alignment puts the specimen elsewhere in the volume, so "
-                        "these dots can sit off their particles."
-                    )
-            palette = fl.palette_row(lambda c, lid=layer["id"]: self._set_color(lid, c), _marker_svg)
-            marker.on("click.stop", lambda _e, p=palette: p.set_visibility(not p.visible))
-
-    def _set_follow(self, on: bool) -> None:
-        self.picks_follow = on
-        self._picks_changed()
-
-    def _toggle_layer(self, layer_id: str, source: str) -> None:
-        if self.picks_follow:
-            # Switching one layer by hand starts from what was showing.
-            self.layer_on = {layer["id"]: self._layer_shown(layer, source) for layer in self.layers}
-            self.picks_follow = False
-        self.layer_on[layer_id] = not self.layer_on.get(layer_id, True)
-        self._picks_changed()
+        render_layer_list(self.project_path, picks, features, shows=self._shows(source), on_change=self._layers_changed)
 
     def _set_color(self, layer_id: str, color: str) -> None:
         layer = self._layer_by_id.get(layer_id)
         if layer is None or layer["color"] == color:
             return
         layer["color"] = color
-        self._picks_changed()
+        self._layers_changed()
 
-    def _picks_changed(self) -> None:
-        self._refresh_picks_lists()
+    def _layers_changed(self) -> None:
+        """A layer shown or hidden, a colour picked, the opacity switched."""
+        self._apply_feature_vars()
+        self._refresh_layer_lists()
         self._refresh_overlays()
         if self._zoom_ts is not None and self._refs.get("zoom") is not None and self._refs["zoom"].value:
             self._render_zoom_overlay()
@@ -1661,8 +1575,7 @@ class TomoGalleryPage:
                 with picture:
                     kicks += self._render_picture(row, now, kicked=kicks < _MAX_KICKS_PER_RENDER)
         self._refresh_overlays()
-        self._refresh_picks_lists()
-        self._refresh_features_lists()
+        self._refresh_layer_lists()
         self._prefetch_other_sources()
 
     def _select_size(self, key: str) -> None:
@@ -1891,24 +1804,19 @@ class TomoGalleryPage:
                     self._refs["zoom_versions"] = ui.element("div").classes("cb-gal-zoom-list")
                     self._render_zoom_versions()
                 self._refs["zoom_caption"] = ui.label(src["caption"] if src else "").classes("cb-gal-zoom-src")
-                if self.layers:
-                    _zoom_section("particle.svg", "Picks")
-                    picks = ui.element("div").classes("cb-gal-zoom-list")
-                    self._picks_menus["zoom"] = (picks, lambda: self._zoom_source)
-                    with picks:
-                        self._render_picks_list(self._zoom_source)
-                if row["features"]:
+                if row["picks"] or row["features"]:
                     _zoom_section(
-                        "segmentation.svg",
-                        "Segmentations",
-                        f"{fl.TIP} Beside each, its share of the volume: the mean probability over the whole tomogram.",
+                        "layers.svg",
+                        "Layers",
+                        "Beside each pick layer, its picks on this tomogram; beside each segmentation, its share of "
+                        "the volume: the mean probability over the whole tomogram.",
                     )
-                    features = ui.element("div").classes("cb-gal-zoom-list")
-                    self._features_menus["zoom"] = (features, lambda: self._zoom_source)
-                    with features:
-                        self._render_features_list(self._zoom_source, row)
+                    layers = ui.element("div").classes("cb-gal-zoom-list")
+                    self._layer_menus["zoom"] = (layers, lambda: self._zoom_source)
+                    with layers:
+                        self._render_layer_list(self._zoom_source, row)
                 else:
-                    self._features_menus.pop("zoom", None)
+                    self._layer_menus.pop("zoom", None)
 
                 async def _go(ts: str = row["ts"]) -> None:
                     dlg.close()
@@ -1980,8 +1888,7 @@ class TomoGalleryPage:
         if rows is not None:
             rows.set_active(key)
         self._render_zoom_overlay()
-        self._refresh_picks_lists()
-        self._refresh_features_lists()
+        self._refresh_layer_lists()
 
     def _render_zoom_chevron(self, side: str) -> None:
         chev = (
@@ -2006,15 +1913,6 @@ def _zoom_section(glyph: str, title: str, tip: str | None = None) -> None:
         ui.label(title)
     if tip:
         head.props["title"] = tip
-
-
-def _marker_svg(color: str, size: int = 10) -> str:
-    """A layer's dot as its key in the pick lists: the dot the overlay draws, at list size."""
-    r = size / 2 - 1
-    return (
-        f'<svg width="{size}" height="{size}" style="display: block;"><circle cx="{size / 2}" cy="{size / 2}" '
-        f'r="{r}" fill="{color}" stroke="rgba(15,23,42,0.35)" stroke-width="1"/></svg>'
-    )
 
 
 def _dots_svg(dots: list[tuple[float, float]], color: str, radius: float) -> str:

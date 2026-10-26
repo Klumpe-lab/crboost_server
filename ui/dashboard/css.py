@@ -311,14 +311,6 @@ _CB_CSS = """
  * narrow viewport the gallery wraps below. */
 .cb-particles-canvas-col { flex: 0 0 auto; }
 .cb-particles-detail-col { flex: 1 1 360px; min-width: 360px; }
-/* The lists strip runs full width above the slabs/gallery row; inside the right column
- * it would push the gallery a strip's height below the slabs. */
-.cb-lists-strip { min-width: 0; margin-bottom: 8px; }
-/* The pick-list workbench header sits ABOVE the selected list's gallery: a
- * compact aligned TABLE of lists (one row each) on the left + a vertical action
- * toolbox on the right. Every row shares one grid template so the
- * swatch / name / count / extract mark / eye line up into columns. */
-.cb-list-top { display: flex; flex-direction: row; align-items: stretch; gap: 8px; width: 100%; }
 .cb-ltable {
     flex: 1 1 auto; min-width: 0;
     display: flex; flex-direction: column; gap: 1px;
@@ -378,10 +370,10 @@ _CB_CSS = """
  * group settle on its own column widths, staggering the columns between groups.
  * `fr` depends only on the container width, which every group shares, so the columns line
  * up across groups and the row always spans the full line. */
-/* `.cb-ltable`'s `flex: 1 1 auto` only sizes it inside the pick viewer's row (.cb-list-top);
- * here it is a direct child of a ui.column, and NiceGUI's .nicegui-column sets
- * `align-items: flex-start`, so without an explicit width the box shrinks to fit, the `fr`
- * tracks resolve against max-content, and every tomogram group ends at its own x. */
+/* `.cb-ltable`'s `flex: 1 1 auto` sizes nothing here: it is a direct child of a ui.column, and
+ * NiceGUI's .nicegui-column sets `align-items: flex-start`, so without an explicit width the box
+ * shrinks to fit, the `fr` tracks resolve against max-content, and every tomogram group ends at
+ * its own x. */
 .cb-ptable { width: 100%; }
 /* The `ext` track is 60px to fit the spelled-out `Extracted` header; an abbreviation over
  * a one-glyph column doesn't say what the glyph means. */
@@ -426,38 +418,8 @@ _CB_CSS = """
 .cb-tt-line { font-family: 'IBM Plex Mono', monospace; color: #334155; }
 .cb-tt-sub { font-size: 10px; color: #94a3b8; }
 .cb-tt-sep { margin: 5px 0; background: #e2e8f0; }
-/* Visibility eye — per-list (rail chip) + per-species master (tab); both toggle
- * that scope's canvas dot layers. Shared base + a tab-placement variant. */
-.cb-eye { color: #8aa0b8; cursor: pointer; flex: 0 0 auto; transition: color 0.12s; }
-.cb-eye:hover { color: var(--cb-head-ink, #12324f); }
-.cb-tab-eye { margin-left: 4px; align-self: center; }
-/* Per-species tabs beside the canvas. Matched to the journey aesthetic:
- * small, slate, no-caps, a thin slate indicator (the tab's own colour: the tabs
- * set no indicator colour) and no tinted fill, and a per-species color swatch
- * tying each tab to its overlay color on the shared canvas. */
-.cb-species-tabs { min-height: 28px; }
-.cb-species-panels .q-tab-panel { padding: 8px 0 0 0; }
-.cb-species-tabs .q-tab {
-    min-height: 28px; padding: 0 10px; text-transform: none; color: #475569;
-    border-radius: 6px 6px 0 0; transition: background 0.12s;
-}
-.cb-species-tabs .q-tab:hover { background: #f8fafc; }
-/* Quasar stacks a tab's children in a column by default; force one inline row
- * so the color dot, label, and master-eye sit side by side at a consistent height. */
-.cb-species-tab .q-tab__content { flex-direction: row; align-items: center; flex-wrap: nowrap; }
-.cb-species-tab .q-tab__label {
-    font-size: 10px; font-weight: 600; color: #64748b; line-height: 1.15; white-space: nowrap;
-}
-.cb-species-tabs .q-tab--active .q-tab__label { color: #1e293b; }
-/* Per-species color dot before the label, tying the tab to its canvas overlay
- * color (--sp-color set inline per tab). Uses Quasar's stable tab internals. */
-.cb-species-tab .q-tab__content::before {
-    content: ''; width: 8px; height: 8px; border-radius: 50%;
-    background: var(--sp-color, #94a3b8); box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.2);
-    margin-right: 6px; flex: 0 0 auto; align-self: center;
-}
-/* Per-species admin icons in the Particles panel title bar, following the active
- * tab; sits left of the canvas-wide Invert switch with a little breathing room. */
+/* Per-species admin icons in the Particles panel title bar, following the shown
+ * list's species; sits left of the canvas-wide Invert switch with a little breathing room. */
 .cb-section-admin { margin-right: 4px; }
 .cb-preview-toolbar {
     display: flex; align-items: center; gap: 10px;
@@ -1323,15 +1285,8 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
     line-height: 16px;
 }
 .cb-gal-toolbar-label:first-child { margin-left: 0; padding-left: 0; border-left: none; }
-/* The wall's pick-layer menu (and the zoom's list): a trigger in the toolbar, rows by species. */
-.cb-gal-picks-btn {
-    display: inline-flex; align-items: center; gap: 2px; cursor: pointer; user-select: none;
-    border: 1px solid var(--cb-field-line, #d3dde8); border-radius: var(--cb-field-radius, 4px); background: #ffffff;
-    padding: 1px 4px 1px 8px; min-height: 20px; box-sizing: border-box;
-    font-size: 10px; color: #24405e; white-space: nowrap;
-}
-.cb-gal-picks-btn:hover { background: #f4f8fc; border-color: var(--cb-field-line-hover, #a9c6e4); }
-.cb-gal-picks-menu { padding: 4px 0; min-width: 240px; }
+/* The layers list's rows (ui/components/layer_menu.py), in the wall's menu, the zoom's side column,
+ * the Journey's Reconstruct card and the pick viewer. */
 .cb-gal-pk-species {
     display: flex; align-items: center; gap: 5px; padding: 6px 10px 2px;
     font-size: 10px; font-weight: 600; color: #334155;
@@ -1353,6 +1308,16 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 .cb-gal-pk-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .cb-gal-pk-n { font-family: ui-monospace, monospace; font-size: 9px; color: #94a3b8; }
 .cb-gal-pk-row .cb-gal-pk-warn { color: #d97706; }
+/* The layers list (ui/components/layer_menu.py): a head per kind (picks, segmentations), a species
+ * head that switches all its layers, and a key that is not this list's to recolour. */
+.cb-lyr-sec {
+    display: flex; align-items: center; gap: 5px; padding: 7px 10px 1px;
+    font-size: 9px; font-weight: 600; color: #6b829b;
+}
+.cb-lyr-group { cursor: pointer; user-select: none; padding-left: 14px; }
+.cb-lyr-group:hover { background: var(--cb-hover, #e6eff8); }
+.cb-gal-pk-marker.fixed { cursor: inherit; }
+.cb-gal-pk-marker.fixed:hover { box-shadow: none; }
 /* Segmentation layers: the opacity row under the list. */
 .cb-gal-feat-opacity {
     display: flex; align-items: center; gap: 6px; padding: 6px 10px 2px 16px;
@@ -1570,7 +1535,7 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
     flex: 0 0 auto; display: flex; flex-direction: column; gap: 4px; min-height: 0; overflow-y: auto;
     background: #ffffff; border-radius: 5px; padding: 8px 4px 8px 8px;
 }
-.cb-gal-zoom-side .cb-gal-pk-row, .cb-gal-zoom-side .cb-gal-pk-species { padding-left: 2px; }
+.cb-gal-zoom-side :is(.cb-gal-pk-row, .cb-gal-pk-species, .cb-lyr-sec) { padding-left: 2px; }
 .cb-gal-zoom-side .cb-gal-pk-palette { padding-left: 24px; }
 .cb-gal-zoom-side .cb-hmenu-item, .cb-gal-zoom-side .cb-hmenu-group { padding-left: 2px; padding-right: 4px; }
 .cb-gal-zoom-side .cb-hmenu-item.nested { padding-left: 8px; }
@@ -1814,15 +1779,12 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 /* Species on light chrome at half saturation. The slabs' dots keep their colours; so do the pick
  * lists' swatches, which are the slab dots' legend. */
 .cb-journey .cb-jsp-dot { filter: saturate(0.5); }
-.cb-journey .cb-species-tab .q-tab__content::before { filter: saturate(0.5); }
 /* Red for what is wrong: the dropped tilts' angles, out of the amber box. */
 .cb-journey .cb-drop-list { background: transparent; border: none; padding: 2px 0; }
 .cb-journey .cb-drop-list .cb-drop-row { border-bottom: none; }
 .cb-journey .cb-drop-list .cb-drop-tilt { color: #dc2626; }
-/* The Particles section's leftover indigo: the selected list row, a cutout's hover ring and
- * rank tag, and the kept counts, in slate; the list table without its box. */
-.cb-journey .cb-ltable { background: transparent; border-color: transparent; }
-.cb-journey .cb-ltable-row.selected { background: #f1f5f9; border-color: #e2e8f0; box-shadow: inset 2px 0 0 #475569; }
+/* The Particles section's leftover indigo: a cutout's hover ring and rank tag, and the kept counts,
+ * in slate. */
 .cb-journey .cb-gallery-tile:hover { border-color: #cbd5e1; }
 .cb-journey .cb-gallery-tile .cb-tile-rank { background: rgba(51, 65, 85, 0.85); }
 .cb-journey .cb-jsp-kept { color: #64748b; }
@@ -1901,12 +1863,7 @@ _PARTICLES_CSS = """
 .cb-particles-root.cb-pv > .cb-section-card-header {
     margin-bottom: 10px; flex-wrap: wrap; row-gap: 4px;
 }
-.cb-particles-root.cb-pv .cb-species-tabs .q-tab--active .q-tab__label { color: var(--cb-head-ink, #12324f); }
 .cb-particles-root.cb-pv .cb-particles-split { gap: 14px; }
-.cb-particles-root.cb-pv .cb-ltable {
-    flex-direction: row; flex-wrap: wrap; gap: 4px; background: transparent; border: none; padding: 0;
-}
-.cb-particles-root.cb-pv .cb-ltable-name { font-weight: 500; color: #334155; }
 .cb-particles-root.cb-pv .cb-gallery-head { padding: 0 0 4px; }
 .cb-particles-root.cb-pv .cb-gallery-head .cb-section-title { font-size: 10px; color: #4a6584; }
 .cb-particles-root.cb-pv .cb-gallery-count { font-size: 9px; }
@@ -1941,44 +1898,9 @@ _PARTICLES_CSS = """
     width: 12px; height: 12px; background: transparent; border: 2px solid #ffffff;
     box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.8), inset 0 0 0 1px rgba(15, 23, 42, 0.8);
 }
-/* The list's copy-path and delete icons show on the chip under the pointer. */
-.cb-particles-root.cb-pv .cb-ltable-row:not(:hover) .cb-ltable-cell:has(.cb-icon-btn) {
-    opacity: 0;
-}
-
-/* The species as a segmented strip and the lists as chips beside it, one line
- * (wrapping when narrow) above the slabs and the gallery. */
-.cb-particles-root.cb-pv .cb-pv-bar {
-    display: flex; align-items: center; flex-wrap: wrap; gap: 6px 16px; margin-bottom: 12px;
-}
-.cb-particles-root.cb-pv .cb-pv-bar > .cb-pv-tabs { width: auto; flex: 0 0 auto; }
-.cb-particles-root.cb-pv .cb-pv-bar > .cb-lists-strip { width: auto; flex: 1 1 320px; margin: 0; }
-.cb-particles-root.cb-pv .cb-species-tabs {
-    min-height: 0; border: 1px solid var(--cb-field-line, #d3dde8); border-radius: var(--cb-field-radius, 4px);
-    background: #ffffff; box-shadow: 0 1px 1px rgba(16, 42, 67, 0.04);
-}
-.cb-particles-root.cb-pv .cb-species-tabs .q-tab {
-    min-height: 22px; padding: 0 8px; border-radius: 0; border-right: 1px solid #e3eaf2;
-}
-.cb-particles-root.cb-pv .cb-species-tabs .q-tab:last-child { border-right: none; }
-.cb-particles-root.cb-pv .cb-species-tabs .q-tab--active {
-    background: var(--cb-head, #edf4fb); box-shadow: inset 0 -2px 0 var(--cb-accent, #4a8fd4);
-}
-.cb-particles-root.cb-pv .cb-species-tabs .q-tab__indicator { display: none; }
-.cb-particles-root.cb-pv .cb-ltable-head { display: none; }
-.cb-particles-root.cb-pv .cb-ltable-row {
-    display: inline-flex; align-items: center; gap: 6px; padding: 0 3px 0 7px;
-    background: #ffffff; border: 1px solid var(--cb-field-line, #d3dde8); border-radius: var(--cb-field-radius, 4px);
-}
-.cb-particles-root.cb-pv .cb-ltable-row:not(.cb-ltable-head, .selected):hover {
-    background: #ffffff; border-color: var(--cb-field-line-hover, #a9c6e4);
-}
-.cb-particles-root.cb-pv .cb-ltable-row.selected {
-    background: var(--cb-head, #edf4fb); border-color: var(--cb-field-line-hover, #a9c6e4);
-    box-shadow: inset 0 -2px 0 var(--cb-accent, #4a8fd4);
-}
-.cb-particles-root.cb-pv .cb-ltable-name { max-width: 180px; }
-.cb-particles-root.cb-pv .cb-ltable-cell:empty { display: none; }
+/* Beside the list tool on the title line: the shown list's kept/total, extraction mark, path and delete. */
+.cb-particles-root.cb-pv .cb-pv-list-extras { color: #4f6782; }
+.cb-pv-list-count { font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b829b; margin-right: 2px; }
 """
 
 

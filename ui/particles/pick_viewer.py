@@ -8,8 +8,8 @@ One component with two mounts:
   tab, filling the workspace main area: bigger slabs, curation mode, the per-list
   extraction verb, fullscreen.
 
-Layout (both mounts): the lists strip runs full width across the top, and below it one row
-with the slabs left and the gallery right, tops aligned.
+Layout (both mounts): the tools on the title line (the version on the slabs, the layers, the list
+in the gallery), and below it one row with the slabs left and the gallery right, tops aligned.
 
 Two gallery backends share one chrome: the auto (PyTOM) list renders the subtomo atlas with
 a Save/Reset dirty model, a workbench list (manual/imported/merged) renders a contact sheet
@@ -23,6 +23,7 @@ import asyncio
 import json
 import logging
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 from nicegui import ui
@@ -54,11 +55,15 @@ from services.visualization.preview_orchestrator import (
 from services.visualization.cutout_filters import keyed_path, offered_presets, render_variant, variant_is_current
 from services.visualization.preview_render import is_output_stale, render_recon_slabs
 from services.workers import WorkKind, run_in_worker
-from services.visualization.tomo_geometry import APIX_MRC_HEADER, TomoGeometry, geometry_for_ts
+from services.segmentation import display
+from services.visualization.tomo_geometry import APIX_MRC_HEADER, TomoGeometry, geometry_for_ts, volume_dims
 from services.job_lineage import job_dirs, recon_of
 from ui.components.buttons import house_button, icon_button
 from ui.components.feature_layers import FeatureFills, layers_for_ts
+from ui.components.hover_menu import Choice, ChoiceRows, hover_menu, tool_trigger
+from ui.components.layer_menu import LayerRow, layers_tool
 from ui.components.reactive import SingleFlight, slot_is_gone
+from ui.components.recon_compare import recon_version_labels, recon_versions_for_ts
 from ui.components.segmented import render_segmented
 from ui.current_project import current_project_state
 from ui.dashboard.figures import (
@@ -84,7 +89,7 @@ _curation_flight = SingleFlight()
 
 
 # Sticky per-(species_id, tomo) selected list slug so a background-render refresh
-# (which rebuilds the whole tab body) doesn't bounce the user back to the auto list.
+# (which rebuilds the whole section) doesn't bounce the user back to the auto list.
 _SELECTED_LIST_SLUG: dict[tuple[str, str], str] = {}
 
 # Rendered edge of one cutout tile, in px. It is also the sprite step used to read the
@@ -318,7 +323,7 @@ def _read_atlas_index(index_path: Path) -> dict | None:
 
 # Keep/drop derive cache: derive_keep_state_for_list reads two stars
 # (source + <slug>_filtered.star) to recover which rows survived curation. Both the
-# rail count and the cutout sheet's keep overlay need it, and collect runs
+# list count and the cutout sheet's keep overlay need it, and collect runs
 # on every 4s refresh — so memoize by (source mtime, filtered mtime) to avoid
 # re-reading two stars per list per tick. None = no filter committed (all kept).
 _KEEP_STATE_MEMO: dict[str, tuple[tuple, set[int] | None]] = {}
@@ -711,7 +716,7 @@ def _render_list_cutout_sheet(
     list's own `_lid_xy/_lid_xz` canvas layers). Each toggle AUTO-COMMITS the kept
     subset to `<slug>_filtered.star` (no Save click) — so the selection persists across
     navigation and the merge + per-list extraction consume exactly the kept picks; the
-    rail table's count cell live-updates to kept/total. "Reset" clears the filter (all
+    count beside the list tool live-updates to kept/total. "Reset" clears the filter (all
     kept). These lists are scoreless, so keep/discard is the filter; there is no score
     threshold."""
     from services.particles import picks_filter
@@ -777,14 +782,14 @@ def _render_list_cutout_sheet(
         return f"kept {kept}/{len(all_idx)}"
 
     def _update_count_cell(total: int, fc) -> None:
-        # Live-update this list's count cell in the rail table (shared `lst` dict).
+        # Live-update this list's count beside the list tool (shared `lst` dict).
         el = lst.get("_count_el")
         if el is None:
             return
         try:
             el.set_text(_list_count_text(total, fc))
         except Exception:
-            pass  # rail torn down — best-effort cosmetic
+            pass  # header torn down — best-effort cosmetic
 
     async def _commit_loop() -> None:
         """Auto-commit the current keep/drop to <slug>_filtered.star, serialized so
@@ -1249,7 +1254,7 @@ async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, r
         )
         # Existing keep/drop curation for this list (centered-Å match against
         # <slug>_filtered.star), derived off-loop here so the interactive sheet opens
-        # already reflecting saved drops. Memoized by mtime (shared with the rail
+        # already reflecting saved drops. Memoized by mtime (shared with the list
         # count). None = no filter yet (all kept).
         keep = _memoized_keep_state(Path(star_path)) if star_path else None
         return {
@@ -1385,7 +1390,7 @@ def _read_pick_list_voxels(star_path: Path, dims: list | None, pixel_size: float
 
 def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> list[dict]:
     """The pick lists overlaid for one species on this TS, each render-ready:
-    {slug, label, list_type, color, shape, picks, dims, visible}.
+    {slug, label, list_type, color, shape, picks, dims, filtered_count, source_kind, source_ref}.
 
     The `auto` PyTOM list comes from picks.json (always present when picked).
     Workbench-authored lists (manual/imported/merged) come from the ProjectState
@@ -1405,7 +1410,6 @@ def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> li
                 "shape": glyph_for(PickListType.AUTO),
                 "picks": auto_picks,
                 "dims": sp["dims"],
-                "visible": True,
                 "filtered_count": sp.get("auto_kept_count"),
                 "source_kind": PickSourceKind.TM.value,
                 "source_ref": sp.get("iid") or "",
@@ -1421,7 +1425,7 @@ def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> li
         for pl in project_state.get_pick_lists(species_id, ts_name):
             picks = _read_pick_list_voxels(Path(pl.path), dims, pixel_size)
             if picks is None:
-                # A persisted list that reads back unreadable is kept in the rail
+                # A persisted list that reads back unreadable is kept in the lists
                 # (visible, selectable, debuggable) with the cause logged: dropping it
                 # would make an unreadable star look identical to "no list".
                 # A list that parsed to zero rows (`[]`, the seeded default before its
@@ -1469,7 +1473,6 @@ def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> li
                     "shape": glyph_for(pl.list_type),
                     "picks": picks,
                     "dims": dims,
-                    "visible": pl.visible,
                     "path": pl.path,
                     "parent_slugs": pl.parent_slugs,
                     "filtered_count": filtered_count,
@@ -1597,7 +1600,7 @@ def _ce_species_entry(
 def _collect_species_data_for_ts(project_state, project_path: Path, ts_name: str, refresh) -> list[dict]:
     """One entry per species the Particles section renders for this TS, with
     everything it needs (row, manifest, entry, picks, color, lists).
-    Drives both the shared canvas overlay and the per-species tabs.
+    Drives both the shared canvas overlay and the list tool.
 
     Enumerates `species_render_plan` (the registry, not the candidate-extract jobs):
     a species with a CE instance gets the job-backed entry; a species without one
@@ -1621,60 +1624,6 @@ def _collect_species_data_for_ts(project_state, project_path: Path, ts_name: str
         sp_entry["lists"] = _collect_pick_lists_for_species(sp_entry, project_state, ts_name)
         out.append(sp_entry)
     return out
-
-
-def _eye_name(visible: bool) -> str:
-    return "visibility" if visible else "visibility_off"
-
-
-def _apply_pick_list_visibility(lst: dict) -> None:
-    """Show/hide one pick list's canvas dot layers per its ``visible`` flag and
-    keep that list's rail-chip eye glyph in sync. The dot layers (``_layer_els``)
-    and the chip eye (``_eye_el``) are stashed on the list dict by the canvas /
-    rail renderers, so this reaches both from either eye."""
-    vis = lst.get("visible", True)
-    for layer in lst.get("_layer_els") or []:
-        if vis:
-            layer.classes(remove="cb-pick-layer-hidden")
-        else:
-            layer.classes(add="cb-pick-layer-hidden")
-    eye = lst.get("_eye_el")
-    if eye is not None:
-        eye.name = _eye_name(vis)
-
-
-def _sync_species_master_eye(sp: dict) -> None:
-    """Re-point a species' tab master-eye at whether ANY of its lists is visible,
-    so toggling an individual chip eye keeps the master glyph honest."""
-    eye = sp.get("_master_eye_el")
-    if eye is None:
-        return
-    vis = any(lst.get("visible", True) for lst in (sp.get("lists") or []))
-    sp["_master_visible"] = vis
-    eye.name = _eye_name(vis)
-
-
-def _render_species_master_eye(sp: dict, tab) -> None:
-    """A master visibility eye inside a species tab: one click toggles ALL that
-    species' canvas overlay layers. It lives on the tab strip (not the rail) so a
-    species' overlay can be toggled even while another species' tab is open.
-    ``click.stop`` keeps the click from also switching tabs."""
-    vis0 = any(lst.get("visible", True) for lst in (sp.get("lists") or []))
-    sp["_master_visible"] = vis0
-    with tab:
-        eye = ui.icon(_eye_name(vis0), size="14px").classes("cb-eye cb-tab-eye")
-        eye.tooltip("Show / hide all of this species' picks on the canvas")
-    sp["_master_eye_el"] = eye
-
-    def _toggle(_e, _sp=sp, _eye=eye):
-        vis = not _sp.get("_master_visible", True)
-        _sp["_master_visible"] = vis
-        for lst in _sp.get("lists") or []:
-            lst["visible"] = vis
-            _apply_pick_list_visibility(lst)
-        _eye.name = _eye_name(vis)
-
-    eye.on("click.stop", _toggle)
 
 
 # Slab height cap (vh) for the Particles canvas: the X/Y slab is capped at this
@@ -1897,6 +1846,108 @@ def _render_no_species_empty_state(project_path: Path, refresh) -> None:
         house_button("New species", lambda: _prompt_new_species(project_path, refresh), kind="accent")
 
 
+# The version of a tomogram the Particles slabs show, by project: a version's key (`_canvas_versions`),
+# held across tilt series and rebuilds.
+_CANVAS_VERSION: dict[str, str] = {}
+# The species (its iid) whose list the Particles panel shows, by project, held across tilt series.
+_ACTIVE_SPECIES: dict[str, str] = {}
+_LIST_KEY_SEP = "\x1f"
+
+
+def _canvas_versions(project_state, project_path: Path, ts_name: str, geom: TomoGeometry) -> list[dict]:
+    """The versions of this tomogram the slabs can show, as ``{key, label, group, recon, mrc, slab_dir}``:
+    each reconstruct job's reconstruction (``raw``) and each denoised volume made from one, grouped by the
+    reconstruction (named by the alignment it traces back to) as the wall's version menu groups them.
+    ``slab_dir`` is where the version's slabs are cached, and its key. A tomogram no reconstruct job
+    lists by name (an imported one) is its geometry's volume alone."""
+    from ui.tomo_dashboard_dialog import _available_denoise_methods_for_ts
+
+    def _version(slab_dir, label: str, group: str, recon: str | None, mrc) -> dict:
+        return {
+            "key": str(slab_dir),
+            "label": label,
+            "group": group,
+            "recon": recon,
+            "mrc": Path(mrc),
+            "slab_dir": Path(slab_dir),
+        }
+
+    dirs = job_dirs(project_state)
+    versions = [
+        _version(v["dir"], "raw", v["label"], v["iid"], v["mrc"]) for v in recon_versions_for_ts(project_state, ts_name)
+    ]
+    if not versions and geom.recon_mrc is not None:
+        iid = dirs.get(geom.tomograms_star.parent)
+        recon = recon_of(project_state, iid, dirs) if iid else None
+        versions.append(_version(geom.tomograms_star.parent, "raw", geom.source, recon, geom.recon_mrc))
+    for label, job_dir, mrc in _available_denoise_methods_for_ts(project_state, project_path, ts_name):
+        iid = dirs.get(Path(job_dir))
+        recon = recon_of(project_state, iid, dirs) if iid else None
+        group = next((v["group"] for v in versions if v["recon"] == recon), "reconstruction not known")
+        versions.append(_version(job_dir, label, group, recon, mrc))
+    groups: list[str] = []
+    for v in versions:
+        if v["group"] not in groups:
+            groups.append(v["group"])
+    return sorted(versions, key=lambda v: (groups.index(v["group"]), v["label"] != "raw", v["label"].lower()))
+
+
+def _canvas_version(versions: list[dict], geom: TomoGeometry, project_path: Path) -> dict | None:
+    """The version the slabs show: the one picked last in this project, else the geometry's volume."""
+    if not versions:
+        return None
+    picked = next((v for v in versions if v["key"] == _CANVAS_VERSION.get(str(project_path))), None)
+    return picked or next((v for v in versions if v["mrc"] == geom.recon_mrc), versions[0])
+
+
+def _version_text(version: dict, versions: list[dict]) -> str:
+    one_group = len({v["group"] for v in versions}) <= 1
+    return version["label"] if one_group else f"{version['group']} · {version['label']}"
+
+
+def _render_version_tool(versions: list[dict], version: dict, project_path: Path, refresh) -> None:
+    """The slabs' version, as the wall's: a pick re-renders the section on it."""
+
+    def _pick(key: str) -> None:
+        if key != version["key"]:
+            _CANVAS_VERSION[str(project_path)] = key
+            refresh()
+
+    trigger, _ = tool_trigger("filter_none", _version_text(version, versions))
+    _menu, body = hover_menu(trigger, auto_close=True)
+    with body:
+        ui.label("Version on the slabs").classes("cb-hmenu-title")
+        ChoiceRows(
+            [Choice(v["key"], v["label"], v["group"], tip=str(v["mrc"])) for v in versions], version["key"], _pick
+        )
+
+
+def _list_recon(project_state, lst: dict, dirs: dict) -> str | None:
+    """The reconstruct instance a list's picks were made on: followed back from the candidate-extract
+    job they came from; None when it is not known (a list picked in ArtiaX or imported)."""
+    ref = lst.get("source_ref")
+    if lst.get("source_kind") == PickSourceKind.TM and ref in project_state.jobs:
+        return recon_of(project_state, ref, dirs)
+    return None
+
+
+def _list_name(lst: dict) -> str:
+    return lst.get("name") or ("TM picks" if lst["slug"] == "auto" else lst["label"])
+
+
+def _name_auto_lists(species_data: list[dict], recon_labels: dict[str, str]) -> None:
+    """Name each auto list for the lists and the layers: "TM picks", after the reconstruction its picks
+    were made on when the project has several, and by instance when one species has two such lists on one."""
+    autos = [(sp, lst) for sp in species_data for lst in sp["lists"] if lst["slug"] == "auto"]
+    for _sp, lst in autos:
+        where = recon_labels.get(lst["recon"], "") if len(recon_labels) > 1 else ""
+        lst["name"] = f"TM picks · {where}" if where else "TM picks"
+    names = [(sp["label"], lst["name"]) for sp, lst in autos]
+    for sp, lst in autos:
+        if names.count((sp["label"], lst["name"])) > 1:
+            lst["name"] = f"TM picks · {sp['iid']}"
+
+
 def render_particles_section(
     ts_name: str,
     project_state,
@@ -1910,20 +1961,24 @@ def render_particles_section(
     open_viewer=None,
     on_species_change=None,
 ) -> bool:
-    """The pick viewer, in either mount: a shared tomogram canvas with every species'
-    picks overlaid (toggleable), the lists strip across the top, and the selected list's
-    gallery beside the slabs.
+    """The pick viewer, in either mount: the slabs of one version of the tomogram with every species'
+    pick lists and the segmentations over them, and the gallery of one list beside the slabs.
+
+    Its tools sit on its title line, each a glyph whose dropdown opens under the pointer, bounded however
+    many species and lists there are: the version on the slabs (as the wall's), the layers (the pick
+    lists by species and the segmentations, `ui/components/layer_menu.py`, following the version as on
+    the wall), and the list in the gallery (by species), with that list's kept count, extraction state,
+    path and delete beside it.
 
     `mode="slim"` is the Journey's Particles section — look, filter, select, cross-link.
     `mode="full"` is the page reached from the Particles registry: bigger slabs, curation
     mode, the per-list extraction verb, fullscreen and the slab lightbox.
 
-    Merge / dedup / import / delete live on the Species page, so the header carries the
-    route there (``manage_species``).
-    `open_viewer(species_id, tomo_name)` is the slim mount's route into the full page;
-    `initial_species_id` preselects a species tab when the full page was opened on one, and
-    `on_species_change(species_id)` reports a later tab switch back to the mount (the full
-    page uses it to keep its address bar in step)."""
+    Merge / dedup / import live on the Species page, so the header carries the route there
+    (``manage_species``). `open_viewer(species_id, tomo_name)` is the slim mount's route into the full
+    page; `initial_species_id` preselects a species when the full page was opened on one, and
+    `on_species_change(species_id)` reports a later switch back to the mount (the full page uses it to
+    keep its address bar in step)."""
     geom = geometry_for_ts(project_state, project_path, ts_name)
     species_data = _collect_species_data_for_ts(project_state, project_path, ts_name, refresh)
     if not species_data:
@@ -1939,32 +1994,43 @@ def render_particles_section(
             _render_no_species_empty_state(project_path, refresh)
         return True
 
-    mrc_path = geom.recon_mrc if geom else None
+    pkey = str(project_path)
+    versions = _canvas_versions(project_state, project_path, ts_name, geom) if geom is not None else []
+    version = _canvas_version(versions, geom, project_path) if geom is not None else None
+    if version is not None:
+        geom = replace(geom, recon_mrc=version["mrc"], dims_xyz_px=volume_dims(version["mrc"]) or geom.dims_xyz_px)
+    shows = version["recon"] if version is not None else None
+    dirs = job_dirs(project_state)
+    recon_labels = recon_version_labels(project_state)
+    for sp in species_data:
+        for lst in sp["lists"]:
+            # The auto list is its candidate-extract job's picks, the wall's layer of the same id.
+            lst["layer_id"] = sp["iid"] if lst["slug"] == "auto" else f"list:{sp.get('species_id') or ''}:{lst['slug']}"
+            lst["recon"] = _list_recon(project_state, lst, dirs)
+    _name_auto_lists(species_data, recon_labels)
 
     root_cls = "cb-section-card cb-particles-root cb-pv w-full" + (" cb-viewer-full" if mode == "full" else "")
     with ui.element("div").classes(root_cls) as card:
         card._props["data-section"] = "particles"
-        fills = _canvas_fills(project_state, project_path, ts_name, geom, card)
+        fills = _canvas_fills(project_state, project_path, ts_name, geom, card, shows)
         with ui.element("div").classes("cb-section-card-header"):
             ui.label("Particles").classes("cb-section-title")
-            ui.label(f"{len(species_data)} species").classes("text-[10px] text-gray-500")
             _render_geometry_chip(geom)
-            # Route to the tab that owns this species' pick-list actions; follows the
-            # active species tab, like the admin buttons.
+            tools = ui.element("div").classes("cb-head-tools")
+            # The shown list's kept count, extraction state, path and delete, beside the list tool.
+            extras_host = ui.row().classes("cb-pv-list-extras items-center gap-1 no-wrap")
+            # Route to the tab that owns this species' pick-list actions; follows the shown list's species.
             manage_host = ui.row().classes("items-center gap-0")
             viewer_host = ui.row().classes("items-center gap-0")
             ui.space()
-            # Per-species generate controls (Render previews · Re-render · IMOD)
-            # live in the panel toolbar, following the active tab; the canvas-wide
-            # polarity switch is section-level (shared across species).
+            # Per-species generate controls (Render previews · Re-render · IMOD) follow the shown
+            # list's species; the polarity switch is section-level (shared across species).
             admin_host = ui.row().classes("items-center gap-0.5 cb-section-admin")
-            if fills is not None:
-                fills.menu()
-            if mrc_path is not None:
+            if geom is not None and geom.recon_mrc is not None:
                 _render_invert_switch(card)
 
         def _show_manage_link_for(sp: dict) -> None:
-            """'manage in Particles registry ↗' for the active species: the one-click route to
+            """'manage in Particles registry ↗' for the shown species: the one-click route to
             merge / dedup / extract / import (the Picks & curation tab, selected by
             `manage_species`). Absent when the workspace gave us no route (a standalone
             journey mount) or the species has no id."""
@@ -1982,7 +2048,7 @@ def render_particles_section(
 
         def _show_viewer_link_for(sp: dict) -> None:
             """`full viewer ↗` — the slim mount's route into the full page, on the
-            active species + this tomogram. Absent in the full page (already there) and
+            shown species + this tomogram. Absent in the full page (already there) and
             when the workspace gave us no route."""
             viewer_host.clear()
             sid = sp.get("species_id")
@@ -1996,117 +2062,168 @@ def render_particles_section(
                     "the per-list extraction verb and fullscreen."
                 )
 
-        def _show_admin_for(sp: dict) -> None:
-            admin_host.clear()
-            with admin_host:
-                _render_species_admin_buttons(sp, project_path, refresh)
-            _show_manage_link_for(sp)
-            _show_viewer_link_for(sp)
-
-        # Layout: species tabs and the lists strip on one line (wrapping when narrow), then
-        # one row with the slabs left and the gallery right, both starting at the same y.
-        with ui.element("div").classes("cb-pv-bar"):
-            tabs_host = ui.element("div").classes("cb-pv-tabs w-full")
-            lists_host = ui.element("div").classes("cb-lists-strip w-full")
         with ui.element("div").classes("cb-particles-split"):
             canvas_col = ui.element("div").classes("cb-particles-canvas-col")
             detail_host = ui.element("div").classes("cb-particles-detail-col")
         # Width = the slab's natural height-capped width, but never more than the
         # mode's % of the row — so the gallery column beside it always gets the
         # majority instead of the slab eating ~half the row by its vh·aspect width.
-        # All species share the TS's reconstructed tomogram → first real dims win.
         slab_vh, slab_pct = _slab_caps(mode)
-        cdims = next((sp["dims"] for sp in species_data if sp.get("dims")), None)
+        cdims = _canvas_dims(species_data, geom)
         cx, cy = (max(int(cdims[0]), 1), max(int(cdims[1]), 1)) if cdims else (1, 1)
         canvas_col.style(f"width: min(1400px, calc({slab_vh}vh * {cx} / {cy})); max-width: {slab_pct}%")
         with canvas_col:
-            # Shared canvas: lazily renders the recon slab and overlays EVERY species'
-            # picks. Rendered before the tab strip is built (though it sits below it in
-            # the DOM) because the master-eye on each tab only appears once that
-            # species' dot layers exist. Returns {iid: {"xy": lid, "xz": lid}} so the
-            # active species' gallery cross-links to its own dots.
+            # The slabs, with every list's dots over them. Returns {iid: {"xy": lid, "xz": lid}} so the
+            # shown list's gallery cross-links to its species' dots.
             canvas_layers = _render_particles_canvas(
-                species_data, geom, ts_name, project_path, refresh, slab_vh, fills=fills
+                species_data, geom, version, ts_name, project_path, refresh, slab_vh, fills=fills
             )
 
-        # Species-switch generation. The two hosts are shared by every species, and the
-        # detail pane renders one tick late off a once-timer, so without this, switching
-        # species twice quickly lets the first species' pending timer paint its gallery
-        # into the second's pane.
-        gen = {"n": 0}
+        def _apply_layers() -> None:
+            """Each list's dots and each segmentation's fill shown or hidden as the layers list has them."""
+            for sp in species_data:
+                for lst in sp["lists"]:
+                    on = display.is_shown(project_path, lst["layer_id"], display.on_source(lst["recon"], shows))
+                    for el in lst.get("_layer_els") or []:
+                        el.classes(remove="cb-pick-layer-hidden") if on else el.classes(add="cb-pick-layer-hidden")
+            if fills is not None:
+                fills.apply()
 
-        def _show_species(sp: dict) -> None:
-            """Swap the whole per-species half of the surface: toolbar, lists strip,
-            detail. Only the active species is built."""
+        def _layer_rows(changed) -> tuple[list[LayerRow], list[LayerRow]]:
+            picks = [
+                LayerRow(
+                    id=lst["layer_id"],
+                    name=_list_name(lst),
+                    count=str(len(lst.get("picks") or [])),
+                    color=lst["color"],
+                    recon=lst["recon"],
+                    recon_label=recon_labels.get(lst["recon"], "") if len(recon_labels) > 1 else "",
+                    group=sp["label"],
+                    shape=lst["shape"],
+                )
+                for sp in species_data
+                for lst in sp["lists"]
+                if lst.get("_layer_els")
+            ]
+            return picks, fills.rows(changed) if fills is not None else []
+
+        _apply_layers()
+
+        # Species-switch generation. The detail pane renders one tick late off a once-timer, so
+        # without this, switching lists twice quickly lets the first list's pending timer paint
+        # its gallery into the second's pane.
+        gen = {"n": 0, "species": None}
+        sp_by_iid = {s["iid"]: s for s in species_data}
+        lists_of = {s["iid"]: _species_lists(s) for s in species_data}
+
+        def _key(sp: dict, lst: dict | None) -> str:
+            return f"{sp['iid']}{_LIST_KEY_SEP}{lst['slug'] if lst else ''}"
+
+        def _title(sp: dict, lst: dict | None) -> str:
+            return f"{sp['label']} · {_list_name(lst) if lst else 'no lists yet'}"
+
+        def _show(sp: dict, slug: str | None) -> None:
+            """Swap the shown list: its title on the tool, the line beside it, the species' toolbar and
+            links, and the gallery. Only the shown list's gallery is built."""
             gen["n"] += 1
             mine = gen["n"]
-            if on_species_change is not None:
-                on_species_change(sp.get("species_id"))
-            _show_admin_for(sp)
-            lists_host.clear()
+            lst = next((x for x in lists_of[sp["iid"]] if x["slug"] == slug), None)
+            list_rows.set_active(_key(sp, lst))
+            list_text.set_text(_title(sp, lst))
+            _ACTIVE_SPECIES[pkey] = sp["iid"]
+            if lst is not None:
+                _SELECTED_LIST_SLUG[(sp.get("species_id") or "", ts_name)] = lst["slug"]
+            if gen["species"] != sp["iid"]:
+                gen["species"] = sp["iid"]
+                if on_species_change is not None:
+                    on_species_change(sp.get("species_id"))
+                admin_host.clear()
+                with admin_host:
+                    _render_species_admin_buttons(sp, project_path, refresh)
+                _show_manage_link_for(sp)
+                _show_viewer_link_for(sp)
+            extras_host.clear()
+            with extras_host:
+                _render_list_extras(sp, lst, project_path, refresh)
             detail_host.clear()
-            _render_species_tab_body(
-                sp,
-                canvas_layers.get(sp["iid"]),
-                project_path,
-                refresh,
-                refresh_roster,
-                mode=mode,
-                lists_host=lists_host,
-                detail_host=detail_host,
-                is_current=lambda: gen["n"] == mine,
-            )
 
-        sp_by_iid = {s["iid"]: s for s in species_data}
-        # The full page opens ON the species whose registry row was clicked; the Journey
-        # (and a full page opened on a species that isn't on this tomogram) starts on the
-        # first tab rather than an empty one.
-        active_sp = next((s for s in species_data if s.get("species_id") == initial_species_id), species_data[0])
+            async def _render_detail() -> None:
+                # The list may have been switched out from under this once-timer.
+                if gen["n"] != mine:
+                    return
+                with detail_host:
+                    await _render_list_detail(
+                        sp, lst, canvas_layers.get(sp["iid"]), project_path, refresh, refresh_roster, mode=mode
+                    )
 
-        def _on_species_tab(e) -> None:
-            sp = sp_by_iid.get(e.value)
-            if sp is not None:
-                _show_species(sp)
+            with detail_host:
+                if sp["row"]["status"] == "missing-volume":
+                    ui.label("No reconstructed tomogram on disk for 3dmod — picks plot still works.").classes(
+                        "text-[10px] text-amber-700 italic"
+                    )
+                # _render_list_detail is async (a workbench list probes disk off-loop), so it can't be
+                # called inline from this sync builder; a once-timer schedules it onto the event loop.
+                ui.timer(0.05, _render_detail, once=True)
 
-        with tabs_host:
-            tabs = (
-                ui.tabs(value=active_sp["iid"])
-                .props("dense align=left")
-                .classes("cb-species-tabs")
-                .on_value_change(_on_species_tab)
-            )
-            with tabs:
-                for sp in species_data:
-                    # Name + a master-eye toggling all of this species' canvas overlays
-                    # at once. A CSS ::before dot (driven by the inline --sp-color) ties each tab
-                    # to its canvas overlay color.
-                    tab = ui.tab(sp["iid"], label=sp["label"]).classes("cb-species-tab")
-                    tab.style(f"--sp-color: {sp['color']};")
-                    if any(lst.get("_layer_els") for lst in sp.get("lists") or []):
-                        _render_species_master_eye(sp, tab)
+        def _pick(key: str) -> None:
+            iid, _, slug = key.partition(_LIST_KEY_SEP)
+            if iid in sp_by_iid:
+                _show(sp_by_iid[iid], slug or None)
 
-        # `ui.tabs(value=…)` does not fire on_value_change, so paint the active species.
-        _show_species(active_sp)
+        # The full page opens ON the species whose registry row was clicked; the Journey on the species
+        # shown last (on any tilt series), else the first.
+        active_sp = (
+            next((s for s in species_data if initial_species_id and s.get("species_id") == initial_species_id), None)
+            or sp_by_iid.get(_ACTIVE_SPECIES.get(pkey, ""))
+            or species_data[0]
+        )
+        active_lst = _default_list(active_sp, lists_of[active_sp["iid"]], ts_name)
+        choices = []
+        for s in species_data:
+            if not lists_of[s["iid"]]:
+                choices.append(Choice(_key(s, None), "no lists yet", s["label"]))
+            for lst in lists_of[s["iid"]]:
+                count = _list_count_text(len(lst.get("picks") or []), lst.get("filtered_count"))
+                choices.append(Choice(_key(s, lst), _list_name(lst), s["label"], count))
+        with tools:
+            if len(versions) > 1:
+                _render_version_tool(versions, version, project_path, refresh)
+            if any(lst.get("_layer_els") for s in species_data for lst in s["lists"]) or fills is not None:
+                layers_tool(project_path, _layer_rows, shows=lambda: shows, on_change=_apply_layers)
+            trigger, list_text = tool_trigger("particle.svg", _title(active_sp, active_lst))
+            _menu, body = hover_menu(trigger, auto_close=True)
+            with body:
+                ui.label("List in the gallery").classes("cb-hmenu-title")
+                list_rows = ChoiceRows(choices, _key(active_sp, active_lst), _pick)
+        _show(active_sp, active_lst["slug"] if active_lst else None)
     if mode == "full":
         ui.run_javascript(_SLAB_LIGHTBOX_JS)
     return True
 
 
-def _canvas_fills(project_state, project_path: Path, ts_name: str, geom: TomoGeometry | None, holder):
-    """The segmentation fills of the slab canvas (`FeatureFills`, colours on `holder`): None without a
-    reconstruction on disk, which the slabs are rendered from, or without a segmentation of the tomogram."""
+def _canvas_dims(species_data: list[dict], geom: TomoGeometry | None) -> list | None:
+    """The slabs' extent: the shown volume's, else the extent any species' picks were placed against."""
+    if geom is not None and geom.dims_xyz_px:
+        return list(geom.dims_xyz_px)
+    return next((sp["dims"] for sp in species_data if sp.get("dims")), None)
+
+
+def _canvas_fills(project_state, project_path: Path, ts_name: str, geom: TomoGeometry | None, holder, recon):
+    """The segmentation fills of the slab canvas (`FeatureFills`, colours on `holder`) over a version of
+    reconstruction `recon`: None without a volume on disk, which the slabs are rendered from, or without a
+    segmentation of the tomogram."""
     if geom is None or geom.recon_mrc is None:
         return None
     layers, entries = layers_for_ts(project_state, project_path, ts_name)
     if not layers:
         return None
-    shown = job_dirs(project_state).get(geom.tomograms_star.parent)
-    return FeatureFills(project_path, layers, entries, holder, recon_of(project_state, shown) if shown else None)
+    return FeatureFills(project_path, layers, entries, holder, recon)
 
 
 def _render_particles_canvas(
     species_data: list[dict],
     geom: TomoGeometry | None,
+    version: dict | None,
     ts_name: str,
     project_path: Path,
     refresh,
@@ -2114,20 +2231,20 @@ def _render_particles_canvas(
     *,
     fills: FeatureFills | None = None,
 ) -> dict:
-    """Maximized shared slab canvas with each species' picks overlaid as a
-    color-coded, toggleable layer, over the segmentation fills (`fills`). Returns {iid: {"xy": layer_id,
-    "xz": layer_id|None}} so each tab's gallery can cross-link to its dots."""
+    """Maximized slab canvas of `version` with each list's picks overlaid as a color-coded layer, over the
+    segmentation fills (`fills`); the layers list shows and hides them. Returns {iid: {"xy": layer_id,
+    "xz": layer_id|None}} so each species' gallery can cross-link to its dots."""
     layer_ids: dict[str, dict] = {}
 
-    if geom is None or geom.recon_mrc is None:
+    if geom is None or geom.recon_mrc is None or version is None:
         ui.label("No reconstructed tomogram on disk — canvas unavailable; per-species galleries below.").classes(
             "cb-section-placeholder"
         )
         return layer_ids
 
-    # The slabs cache next to the star that declared the volume — the recon job dir
-    # for a pipeline tomogram, the Tomograms dir for an imported one.
-    slab_dir, mrc_path = geom.tomograms_star.parent, geom.recon_mrc
+    # The slabs cache beside the version: its reconstruct or denoise job dir, or the Tomograms dir
+    # of an imported volume.
+    slab_dir, mrc_path = version["slab_dir"], version["mrc"]
     slab_state = _auto_kick_recon_slabs(slab_dir, ts_name, mrc_path, project_path, refresh)
     xy_png, xz_png = _recon_slab_paths(slab_dir, ts_name)
     # Canvas states: a spinner only while a render is actually in flight.
@@ -2171,12 +2288,9 @@ def _render_particles_canvas(
             ui.image(vis_asset_url(str(xy_png)))
         return layer_ids
 
-    # All species on this TS share the one volume, so any species that resolved dims
-    # gives the canvas its aspect; the geometry provider is the backstop. Unknown
-    # extent ⇒ bare slab, no overlay (never dots placed against a stand-in size).
-    dims = next((sp["dims"] for sp in with_picks if sp.get("dims")), None) or (
-        list(geom.dims_xyz_px) if geom.dims_xyz_px else None
-    )
+    # The shown volume's extent gives the canvas its aspect, else the extent any species' picks were
+    # placed against. Unknown extent ⇒ bare slab, no overlay (never dots placed against a stand-in size).
+    dims = _canvas_dims(with_picks, geom)
     if dims is None:
         with ui.element("div").classes("cb-recon-preview cb-recon-canvas").style(f"max-height: {slab_vh}vh;"):
             ui.image(vis_asset_url(str(xy_png)))
@@ -2186,9 +2300,7 @@ def _render_particles_canvas(
     z_dim = max(int(dims[2]), 1)
     nonce = uuid.uuid4().hex[:8]
 
-    # Visibility is driven by the per-tab master-eye + per-chip eyes. Both eyes
-    # toggle each list's `_layer_els` (populated just below) through
-    # `_apply_pick_list_visibility`.
+    # The layers list shows and hides each list's `_layer_els` (populated just below).
 
     # X/Y and X/Z share ONE stack that fills the (per-tomo width-capped) canvas
     # column — each child is width:100% of the stack and derives its height from
@@ -2238,8 +2350,8 @@ def _render_particles_canvas(
 
 def _tm_essentials_for_species(sp: dict) -> dict:
     """Resolve the Template-Match instance matched to this candidate-extract
-    species (by species_id) and pull the interpretive essentials shown in the
-    tab header: matched TM instance id, angular search θ, and symmetry."""
+    species (by species_id) and pull the interpretive essentials shown on the
+    auto list's count: matched TM instance id, angular search θ, and symmetry."""
     state = current_project_state()
     # The collector already ran the resolve chain; re-running it here would have to
     # cope with a de-novo species' synthetic instance id and its `jm=None`.
@@ -2267,8 +2379,8 @@ def _render_species_admin_buttons(sp: dict, project_path: Path, refresh) -> None
     """The three per-species preview/overlay generate controls as icon buttons —
     Render previews (gen-missing) · Re-render all (cache-bypass) · (Re)generate
     IMOD overlays. Rendered into the Particles section title bar (next to the
-    canvas-wide Invert switch), following the active species tab — so they sit in
-    the panel toolbar, not crammed into the tab body.
+    canvas-wide Invert switch), following the shown list's species — so they sit in
+    the panel toolbar, not crammed into the gallery.
 
     All three act on a candidate-extract job; a species picked de novo has none, so
     the toolbar is simply empty for it."""
@@ -2294,41 +2406,12 @@ def _render_species_admin_buttons(sp: dict, project_path: Path, refresh) -> None
     ).classes("cb-tb-btn")
 
 
-def _render_species_tab_body(
-    sp: dict,
-    layer_ids: dict | None,
-    project_path: Path,
-    refresh,
-    refresh_roster=None,
-    *,
-    mode: str = "slim",
-    lists_host,
-    detail_host,
-    is_current=lambda: True,
-) -> None:
-    """One species' half of the viewer, painted into two caller-owned hosts: the LISTS
-    STRIP (`lists_host`, full width across the top) and the DETAIL pane (`detail_host`,
-    the right column of the slabs/gallery row).
-
-    The strip is a table — one row per pick list (auto + manual/imported/merged): swatch ·
-    name · count · auth · extraction badge · path · eye. Clicking a row drives the detail
-    below it: the auto list → the subtomo gallery/scatter cross-linked to this species'
-    canvas dots via `layer_ids`; a workbench list → its recon cutout sheet.
-
-    Both hosts belong to the section (not to a `ui.tab_panel`), which lets the strip span
-    the full width while the gallery's top edge lines up with the slabs'."""
-    tm_info = _tm_essentials_for_species(sp)
-    if sp["row"]["status"] == "missing-volume":
-        with lists_host:
-            ui.label("No reconstructed tomogram on disk for 3dmod — picks plot still works.").classes(
-                "text-[10px] text-amber-700 italic"
-            )
-
-    # Always present an `auto` entry so the PyTOM section (incl. its zero-picks /
-    # errored / generating states) stays reachable even when there are no auto
-    # picks (the collector omits a 0-pick auto list to keep the canvas overlay clean).
-    # Only for a species that HAS a candidate-extract job — a de-novo species has no
-    # PyTOM section behind the chip, and an empty one would read as a failed run.
+def _species_lists(sp: dict) -> list[dict]:
+    """A species' lists as the list tool offers them. A species with a candidate-extract job always has
+    an `auto` entry, first, so the PyTOM gallery (incl. its zero-picks / errored / generating states)
+    stays reachable when there are no auto picks (the collector omits a 0-pick auto list to keep the
+    slabs clean). A de-novo species has no PyTOM section behind one, and an empty one would read as a
+    failed run."""
     lists = list(sp.get("lists") or [])
     if sp.get("job_dir") is not None and not any(lst["slug"] == "auto" for lst in lists):
         lists.insert(
@@ -2341,76 +2424,24 @@ def _render_species_tab_body(
                 "shape": glyph_for(PickListType.AUTO),
                 "picks": sp.get("picks") or [],
                 "dims": sp.get("dims"),
-                "visible": True,
                 "filtered_count": sp.get("auto_kept_count"),
             },
         )
+    return lists
 
-    key = (sp.get("species_id") or "", sp["row"]["tomo_name"])
+
+def _default_list(sp: dict, lists: list[dict], ts_name: str) -> dict | None:
+    """The list a species opens on: the one shown last on this tomogram, else its auto list, else the first.
+    Sticky across rebuilds, so a background render's refresh doesn't bounce the user back to auto."""
     slugs = {lst["slug"] for lst in lists}
-    default_slug = "auto" if "auto" in slugs else (lists[0]["slug"] if lists else None)
-    cur = _SELECTED_LIST_SLUG.get(key, default_slug)
+    cur = _SELECTED_LIST_SLUG.get((sp.get("species_id") or "", ts_name))
     if cur not in slugs:
-        cur = default_slug
-    sel = {"slug": cur}
-    chip_els: dict[str, object] = {}
-
-    async def _render_detail() -> None:
-        # The species may have been switched out from under this once-timer / click.
-        if not is_current():
-            return
-        detail_host.clear()
-        lst = next((x for x in lists if x["slug"] == sel["slug"]), None)
-        with detail_host:
-            await _render_list_detail(sp, lst, layer_ids, project_path, refresh, refresh_roster, mode=mode)
-
-    async def _select(slug: str) -> None:
-        if slug == sel["slug"] or slug not in slugs:
-            return
-        if sel["slug"] in chip_els:
-            chip_els[sel["slug"]].classes(remove="selected")
-        sel["slug"] = slug
-        _SELECTED_LIST_SLUG[key] = slug
-        if slug in chip_els:
-            chip_els[slug].classes(add="selected")
-        await _render_detail()
-
-    with lists_host:
-        _render_list_rail(
-            sp,
-            lists,
-            project_path,
-            tm_info=tm_info,
-            selected_slug=sel["slug"],
-            on_select=_select,
-            chip_els=chip_els,
-            refresh=refresh,
-        )
-    # The detail pane renders one tick later via a once-timer: _render_detail is
-    # async (its workbench-list branch probes disk off-loop), so it can't be
-    # called inline from this sync builder — schedule it onto the event loop.
-    ui.timer(0.05, _render_detail, once=True)
-
-
-def _render_list_eye(lst: dict, sp: dict) -> None:
-    """Per-list visibility eye on a rail chip: toggles just this list's canvas dot
-    layers. ``click.stop`` so toggling visibility doesn't also select the chip;
-    the species tab's master-eye is re-synced after each toggle."""
-    vis0 = lst.get("visible", True)
-    eye = ui.icon(_eye_name(vis0), size="14px").classes("cb-eye")
-    eye.tooltip("Show / hide this list on the canvas")
-    lst["_eye_el"] = eye
-
-    def _toggle(_e, _lst=lst, _sp=sp):
-        _lst["visible"] = not _lst.get("visible", True)
-        _apply_pick_list_visibility(_lst)
-        _sync_species_master_eye(_sp)
-
-    eye.on("click.stop", _toggle)
+        cur = "auto" if "auto" in slugs else (lists[0]["slug"] if lists else None)
+    return next((lst for lst in lists if lst["slug"] == cur), None)
 
 
 def _attach_auto_chip_tooltip(el, sp: dict, tm_info: dict) -> None:
-    """Rich hover tooltip for the pytom (auto) chip's type tag: the per-tomo
+    """Rich hover tooltip for the auto (PyTOM) list's count: the per-tomo
     auto-pick stats + the template-match run params. Two labeled sections so it's
     clear the stats describe the auto pick set and the TM line the template-match run."""
     row = sp["row"]
@@ -2456,125 +2487,55 @@ def _list_count_text(total: int, filtered_count: int | None) -> str:
     return str(total)
 
 
-def _render_list_rail(
-    sp: dict,
-    lists: list[dict],
-    project_path: Path,
-    *,
-    tm_info: dict,
-    selected_slug,
-    on_select,
-    chip_els: dict,
-    refresh=None,
-) -> None:
-    """The lists strip: a compact aligned TABLE (header + one row per
-    list: swatch · name · count(kept/total) · extracted-mark · copy-path · delete · visibility
-    eye). The route into the registry is on the species header, not here.
-    Every row shares one grid template so the columns line up under the header. The auto
-    (pytom) row's name carries a hover tooltip with its pick stats + template-match
-    essentials. Clicking a row selects it → drives the detail; the copy, delete and
-    eye controls use click.stop so they don't also select. `chip_els` is filled {slug:
-    row-element} so selection can re-highlight without rebuilding the table.
+def _render_list_extras(sp: dict, lst: dict | None, project_path: Path, refresh) -> None:
+    """Beside the list tool, for the shown list: its kept/total (the cutout sheet live-updates it), its
+    subtomo-extraction state, a copy of its backing file's path (auto → candidates.star) and its delete.
+    The auto (PyTOM) list's count carries its pick stats and the template-match essentials on hover.
 
-    Otherwise look only: curate / dedup / extract / import stay on the Particles registry's
-    Picks & curation tab, where they act across every tomogram at once. Delete is the
-    exception: you decide a list is junk while looking at its dots, and routing that
-    through another page loses which list you meant. It runs `list_actions.delete_list`,
-    the same confirm the Picks tab's row uses."""
+    Otherwise look only: curate / dedup / extract / import stay on the Particles registry's Picks &
+    curation tab, where they act across every tomogram at once. Delete is the exception: you decide a
+    list is junk while looking at its dots, and routing that through another page loses which list you
+    meant. It runs `list_actions.delete_list`, the same confirm the Picks tab's row uses. Not offered for
+    `auto`: that set is its candidate-extract job's output, not a registered list."""
+    if lst is None:
+        return
     from backend import get_backend  # local: ui -> backend is a one-way edge at import time
 
-    state_obj = current_project_state()
     species_id = sp.get("species_id") or ""
     tomo_name = sp["row"]["tomo_name"]
-
-    with ui.element("div").classes("cb-list-top"):
-        # The list TABLE: one aligned row per pick list — [swatch · name ·
-        # count(kept/total) · extracted-mark · path · delete · eye]. A row click selects it →
-        # drives the detail gallery; the copy, delete and eye controls use click.stop so they
-        # don't also select. Every row shares the .cb-ltable-row grid template, so the columns
-        # line up under the header.
-        with ui.element("div").classes("cb-ltable"):
-            with ui.element("div").classes("cb-ltable-row cb-ltable-head"):
-                ui.element("div")  # swatch col
-                ui.label("list").classes("cb-ltable-h-name")
-                ui.label("picks").classes("cb-ltable-h-num")
-                ui.label("ext").classes("cb-ltable-h-cell").tooltip("Subtomo-extracted state")
-                ui.label("path").classes("cb-ltable-h-cell").tooltip("Copy the full path to this list's backing file")
-                ui.element("div")  # delete col
-                ui.element("div")  # eye col
-            for lst in lists:
-                slug = lst["slug"]
-                row = ui.element("div").classes("cb-ltable-row")
-                chip_els[slug] = row
-                if slug == selected_slug:
-                    row.classes(add="selected")
-                row.on("click", lambda e, s=slug: on_select(s))
-                with row:
-                    ui.element("div").classes(f"cb-ltable-swatch cb-swatch-{lst['shape']}").style(
-                        f"background: {lst['color']};"
-                    )
-                    name = ui.label(lst["label"]).classes("cb-ltable-name")
-                    if slug == "auto":
-                        name.style("cursor: help;")
-                        _attach_auto_chip_tooltip(name, sp, tm_info)
-                    total = len(lst.get("picks") or [])
-                    cnt = ui.label(_list_count_text(total, lst.get("filtered_count"))).classes("cb-ltable-count")
-                    cnt.tooltip("kept / total picks after keep-drop curation")
-                    lst["_count_el"] = cnt  # so the cutout sheet can live-update it on keep/drop
-                    with ui.element("div").classes("cb-ltable-cell"):
-                        if slug != "auto":
-                            pl = state_obj.get_pick_list(slug, species_id, tomo_name)
-                            est = pl.extraction_state() if pl is not None else ListExtractionState.NOT_EXTRACTED
-                            text, cls = extraction_badge(est)
-                            if text:
-                                # Symbol only in the table (○/✓/⚠); full label on hover.
-                                ui.label(text.split(" ", 1)[0]).classes(f"cb-ltable-badge {cls}").tooltip(text)
-                    with ui.element("div").classes("cb-ltable-cell"):
-                        # Copy the full path to this list's backing file (auto →
-                        # candidates.star; workbench → its star). Tooltip shows it; the
-                        # click copies. click.stop so copying doesn't also select the row.
-                        copy_path = (
-                            str(Path(sp["job_dir"]) / "candidates.star") if slug == "auto" else (lst.get("path") or "")
-                        )
-                        if copy_path:
-                            cbtn = icon_button("content_copy", tooltip=copy_path)
-                            cbtn.on(
-                                "click.stop",
-                                lambda e, v=copy_path: (
-                                    ui.clipboard.write(v),
-                                    ui.notify("Copied path", type="positive", timeout=800),
-                                ),
-                            )
-                    with ui.element("div").classes("cb-ltable-cell"):
-                        # Delete THIS list, from where you can see its dots. Not offered for
-                        # `auto`: that set is its candidate-extract job's output, not a
-                        # registered list, and there is nothing here to unregister.
-                        if slug != "auto":
-                            del_label = lst.get("label") or slug
-                            dbtn = icon_button(
-                                "delete_outline",
-                                tooltip="Delete this list (its star, curated subset, extraction output and saves)",
-                                kind="danger",
-                            )
-                            dbtn.on(
-                                "click.stop",
-                                lambda e, s=slug, la=del_label: list_actions.delete_list(
-                                    get_backend(),
-                                    project_path,
-                                    species_id,
-                                    tomo_name,
-                                    s,
-                                    la,
-                                    on_done=refresh or (lambda: None),
-                                ),
-                            )
-                    with ui.element("div").classes("cb-ltable-cell"):
-                        if lst.get("_layer_els"):
-                            _render_list_eye(lst, sp)
-        # No launch and no route here: the app has one door to ArtiaX — `Curate picks` on
-        # a tomogram group of the Particles registry's "Picks & curation" tab — and the
-        # species header above carries the link to that registry
-        # (`manage in Particles registry ↗`).
+    slug = lst["slug"]
+    count = ui.label(_list_count_text(len(lst.get("picks") or []), lst.get("filtered_count")))
+    count.classes("cb-pv-list-count")
+    lst["_count_el"] = count
+    if slug == "auto":
+        count.style("cursor: help;")
+        _attach_auto_chip_tooltip(count, sp, _tm_essentials_for_species(sp))
+    else:
+        count.tooltip("kept / total picks after keep-drop curation")
+        pl = current_project_state().get_pick_list(slug, species_id, tomo_name)
+        est = pl.extraction_state() if pl is not None else ListExtractionState.NOT_EXTRACTED
+        text, cls = extraction_badge(est)
+        if text:
+            # The symbol only (○/✓/⚠); the full label on hover.
+            ui.label(text.split(" ", 1)[0]).classes(f"cb-ltable-badge {cls}").tooltip(text)
+    copy_path = str(Path(sp["job_dir"]) / "candidates.star") if slug == "auto" else (lst.get("path") or "")
+    if copy_path:
+        icon_button("content_copy", tooltip=copy_path).on(
+            "click.stop",
+            lambda e, v=copy_path: (ui.clipboard.write(v), ui.notify("Copied path", type="positive", timeout=800)),
+        )
+    if slug != "auto":
+        label = lst.get("label") or slug
+        icon_button(
+            "delete_outline",
+            tooltip="Delete this list (its star, curated subset, extraction output and saves)",
+            kind="danger",
+        ).on(
+            "click.stop",
+            lambda e: list_actions.delete_list(
+                get_backend(), project_path, species_id, tomo_name, slug, label, on_done=refresh or (lambda: None)
+            ),
+        )
 
 
 async def _render_list_detail(
@@ -2587,7 +2548,7 @@ async def _render_list_detail(
     *,
     mode: str = "slim",
 ) -> None:
-    """Detail pane for the selected rail chip: the auto list shows the status-aware
+    """Detail pane for the shown list: the auto list shows the status-aware
     subtomo gallery / scatter; a workbench list shows its recon cutout sheet (whose
     disk probes run off-loop, hence async)."""
     if lst is None:
@@ -2604,11 +2565,9 @@ async def _render_list_detail(
 def _render_species_auto_section(
     sp: dict, layer_ids: dict | None, project_path: Path, refresh, refresh_roster=None, *, mode: str = "slim"
 ) -> None:
-    """The status-aware AUTO (PyTOM) gallery for a species tab: the subtomo
+    """The status-aware AUTO (PyTOM) gallery of a species' auto list: the subtomo
     cutout gallery when extracted, else the scatter fallback, or an
-    error/empty/spinner state. Factored out of `_render_species_tab_body` so the
-    workbench lists' cutouts render after it without being skipped by its early
-    returns."""
+    error/empty/spinner state. A workbench list's gallery is `_render_single_list_cutouts`."""
     row, manifest, entry = sp["row"], sp["manifest"], sp["entry"]
     status = row["status"]
     if status == "errored":
@@ -4332,7 +4291,7 @@ class PickViewerPage:
             self.render()
 
     def _species_changed(self, species_id: str | None) -> None:
-        """A species tab inside the viewer was clicked. Keep the page's own idea of the
+        """A list of another species was shown in the viewer. Keep the page's own idea of the
         selection — and the address bar — on the species actually shown, so copying the
         link does not send someone to the one it was opened on."""
         if not species_id or species_id == self.species_id:
