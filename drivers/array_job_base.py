@@ -325,6 +325,9 @@ def load_excluded_ts(project_path: Path) -> set:
         return set()
 
 
+EXCLUDED_REASON = "excluded from processing"
+
+
 def apply_exclusions(job_dir: Path, project_path: Path, ts_names: list[str]) -> list[str]:
     """Pre-mark user-excluded tilt-series as `.skip` so the array never
     dispatches them and `collect_task_results` counts them as settled (not
@@ -336,21 +339,44 @@ def apply_exclusions(job_dir: Path, project_path: Path, ts_names: list[str]) -> 
     manifest still lists ALL ts_names, so the excluded TS stays visible in the
     per-TS strip as a deliberate skip rather than vanishing.
 
+    A TS an earlier run of this job skipped as excluded, and that is no longer
+    excluded (restored in the Journey), loses that skip, so this run dispatches
+    it. A skip written for another reason (nothing to do) stays.
+
     Forward-only: on-disk STARs are untouched. Returns the excluded names
     (subset of ts_names) so callers can also drop them from glob/merge-based
     aggregation.
     """
     excluded_set = load_excluded_ts(project_path)
+    status_dir = job_dir / STATUS_DIR_NAME
+    restored = []
+    if status_dir.is_dir():
+        names = set(ts_names)
+        for marker in status_dir.glob("*.skip"):
+            if marker.stem not in names or marker.stem in excluded_set:
+                continue
+            try:
+                reason = marker.read_text().strip()
+            except FileNotFoundError:
+                continue  # removed meanwhile
+            if reason == EXCLUDED_REASON:
+                marker.unlink(missing_ok=True)
+                restored.append(marker.stem)
+    if restored:
+        print(
+            f"[SUPERVISOR] Restored {len(restored)}/{len(ts_names)} tilt-series to processing (no longer "
+            f"excluded; their skip markers removed): {sorted(restored)}",
+            flush=True,
+        )
     excluded = [t for t in ts_names if t in excluded_set]
     if excluded:
-        status_dir = job_dir / STATUS_DIR_NAME
         status_dir.mkdir(parents=True, exist_ok=True)
         for t in excluded:
             for suffix in ("ok", "fail"):
                 stale = status_dir / f"{t}.{suffix}"
                 if stale.exists():
                     stale.unlink()
-            write_skip_status(status_dir, t, reason="excluded from processing")
+            write_skip_status(status_dir, t, reason=EXCLUDED_REASON)
         print(
             f"[SUPERVISOR] Excluded {len(excluded)}/{len(ts_names)} tilt-series from processing "
             f"(pre-marked skip): {excluded}",
