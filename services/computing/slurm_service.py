@@ -230,6 +230,12 @@ def _gpu_from_tres(tres: str) -> int:
     return int(m.group(1)) if m else 0
 
 
+# squeue/sacct states of a job that has ended. Any other state counts as live, an unfamiliar one too.
+SLURM_ENDED_STATES = frozenset(
+    {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "BOOT_FAIL", "DEADLINE", "PREEMPTED"}
+)
+
+
 def normalize_slurm_ids(job_ids: list[str]) -> list[str]:
     """
     Deduplicate SLURM job IDs by normalizing array task IDs to their parent.
@@ -552,6 +558,32 @@ class SlurmService:
             reason = parts[2].strip() if len(parts) > 2 else ""
             result.setdefault(jid, (state, reason))
         return result
+
+    async def live_task_counts(self, job_ids: list[str]) -> dict[str, int] | None:
+        """How many tasks of each of these jobs SLURM still has queued or running (1 for a job that
+        is not an array); a job with none is absent. None when squeue failed, which the caller must
+        not read as "ended". ``-r`` puts every pending array task on a line of its own, and rows of
+        tasks that have ended (squeue keeps them a few minutes) are not counted."""
+        ids = normalize_slurm_ids(job_ids)
+        if not ids:
+            return {}
+        success, stdout, stderr = await self._run_command(
+            ["squeue", "-r", "-j", ",".join(ids), "-o", "%i|%T", "--noheader"]
+        )
+        if not success:
+            # A single id SLURM has forgotten fails the call (with several, squeue leaves it out); a
+            # malformed id ("Invalid job id: x") is a failure like any other.
+            if "invalid job id specified" in (stderr or "").lower():
+                return {}
+            logger.error("live_task_counts: squeue failed: %s", stderr)
+            return None
+        counts: dict[str, int] = {}
+        for line in stdout.splitlines():
+            jid, _, state = line.partition("|")
+            jid = jid.split("_", 1)[0].strip()
+            if jid and state.split() and state.split()[0] not in SLURM_ENDED_STATES:
+                counts[jid] = counts.get(jid, 0) + 1
+        return counts
 
     async def query_terminal_states(self, job_ids: list[str]) -> dict[str, tuple[str, str]] | None:
         """``sacct`` terminal State + ExitCode for jobs that have left the queue. Returns
