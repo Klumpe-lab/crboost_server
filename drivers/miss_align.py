@@ -45,6 +45,7 @@ try:
         get_driver_context,
         run_tool,
         require_producer_input,
+        start_supervisor,
     )
     from services.analysis.alignment_changes import compare_alignments
     from services.analysis.lamella_slab import centred_box_z, fit_slab, z_profile
@@ -515,6 +516,7 @@ def write_changes_report(
 
 
 def main():
+    start_supervisor()
     print("Python", sys.version, flush=True)
     print("--- SLURM JOB START (miss_align) ---", flush=True)
 

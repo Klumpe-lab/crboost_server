@@ -31,7 +31,7 @@ from pathlib import Path
 
 server_dir = Path(__file__).parent.parent
 
-from drivers.driver_base import PRINT_CMD_ENV, DriverContext, print_cmd_only, run_tool
+from drivers.driver_base import PRINT_CMD_ENV, DriverContext, print_cmd_only, run_tool, start_supervisor
 from services.computing.slurm_service import SlurmConfig, write_sbatch_script
 from services.configs.starfile_service import StarfileService
 from services.jobs.spec import driver_invocation
@@ -845,13 +845,15 @@ class ArrayDriver(ABC):
     # ---------------- driver skeleton ----------------
 
     def main(self) -> None:
-        print("Python", sys.version, flush=True)
         array_idx_env = os.environ.get("SLURM_ARRAY_TASK_ID")
         if array_idx_env is None:
+            start_supervisor()
+            print("Python", sys.version, flush=True)
             self._prefix = "[SUPERVISOR]"
             print(f"--- {self.job_name}: SUPERVISOR mode ---", flush=True)
             self.run_supervisor()
         else:
+            print("Python", sys.version, flush=True)
             self._prefix = f"[TASK {array_idx_env}]"
             print(f"--- {self.job_name}: TASK mode (array idx {array_idx_env}) ---", flush=True)
             self.run_task(int(array_idx_env))

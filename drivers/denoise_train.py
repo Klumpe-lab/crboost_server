@@ -26,6 +26,7 @@ try:
         get_driver_context,
         run_command,
         run_tool,
+        start_supervisor,
     )
     from drivers.isonet_star import annotate_prep_star, log_facts, read_tomo_facts
     from services.job_models import DenoiseTrainParams
@@ -333,6 +334,7 @@ def validate_extracted_data(train_data_path: Path):
 
 
 def main():
+    start_supervisor()
     print("Python", sys.version, flush=True)
     print("--- SLURM JOB START ---", flush=True)
 
