@@ -1,5 +1,6 @@
 # Roadmap 39 — Python environment and setup: a locked, self-contained environment built with uv
 
+**Pending (maintainer, 2026-10-26):** wanted; move to uv, plus §6 (start-up cost of every array task first).
 **Status:** scoped 2026-10-22; nothing built. Stage 0 needs one command run on the headnode (§3). Decisions
 owed in §2.
 
@@ -155,3 +156,32 @@ and the commentary sees the risk as drift in its direction, not its disappearanc
 is a plain `requirements.txt` and an ordinary venv. Leaving uv means `python -m venv` plus
 `pip install -r requirements.txt` on a Python 3.11 of the site's choosing; only S2's self-contained interpreter
 would be lost.
+
+## 6. Speed and robustness beyond the lock (added 2026-10-26)
+
+**Pending (maintainer, 2026-10-26):** wanted, with item 1 first.
+
+1. **What every array task pays before it does any work.** Each task starts a driver, and
+   `drivers/driver_base.py:18` imports `services.project_state`, which pulls `services.job_models` (every job's
+   param class), `services/jobs/_base.py:8` (`import pandas`) and the rest of that graph, from a venv on the
+   shared filesystem; then it parses and validates the whole `project_params.json` for its one job. A 114-TS job
+   pays that 114 times, and a campaign tens of thousands of times.
+   - Measure first, on a compute node: `python -X importtime drivers/ts_ctf.py --help 2> imp.txt`, plus the time
+     of `get_driver_context` alone. pandas is not free to drop everywhere: starfile I/O needs it, and most drivers
+     read a star. The likelier wins are the import graph (lazy imports of what a driver does not touch) and
+     validating only the job the task runs.
+   - `uv pip sync --compile-bytecode` ships the `.pyc` files with the venv. Today each user compiles every module
+     on first import into their own `~/.cache/crboost/pycache` (`pycache_setup.py`), so the first job of each
+     user pays the compile on a compute node.
+   - A smaller venv (S3) means fewer files to stat on NFS at every import.
+2. **Queued jobs run the code that is on disk when they start, not when they were submitted.**
+   `config/qsub.sh` points the driver interpreter and `PYTHONPATH` at the checkout, so an edit (or a `git pull`)
+   mid-campaign changes jobs already in the queue. At least: write `code_version()` (`services/code_version.py`)
+   into `run_submit.script` at submit and have the driver log a warning when the checkout moved since. Stronger:
+   production jobs from the release install only (roadmap 23 stage 6).
+3. **Version skew between installs.** Built 2026-10-26 for projects (roadmap 23 stage log): `saved_by` on every
+   save, a warning and a one-time backup when older code saves a newer file; jobs are never blocked (the
+   maintainer's rule). Still open: the drivers print `code_version()` in their run.out header, and the registry
+   index records it too.
+4. **CI** — S4 above; it also runs `python -c "import main"`, which catches the import error at startup that
+   the assistant sandbox cannot.

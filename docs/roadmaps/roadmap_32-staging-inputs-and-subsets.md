@@ -4,7 +4,11 @@
 (`docs/reports/pipeline-graph/branching-survey-2026-10-12.md`). Stage 0 answered; stage 1, the §8 table,
 stage 2 (without S2.3) and stage 3 (the Subset job) built 2026-10-15, all NOT RUN (records §3.1, §8, §4.1, §6.1;
 runtime checks §11). The `relion_schemer` path deleted 2026-10-15, NOT RUN (§13). Next: the §11 and §13
-runtime checks; stage 4 once §9.5–9.6 are answered. §9.5–9.7 open.
+runtime checks; the liveness prerequisite (§14, L4 + L1); stage 4 once §9.6 is answered. §9.5 decided
+2026-10-26; §9.6–9.7 open.
+
+**Pending (maintainer, 2026-10-26):** wanted, priority raised; to be built in its own worktree. Roadmap 33 (job
+liveness) is merged in as §14. The UI is the hard part and gets its own design pass first (§15).
 
 **In one line.** Jobs can be added and started while others run; a submitted job's inputs never move; and a
 "fork" is one defined thing, a subset of some job's output, used either inside the project or as the start of a
@@ -12,7 +16,7 @@ new one, so in-project branches and "import tomograms from another project" are 
 
 **Not in this roadmap:** an interactive graph builder (dropped: drag-to-wire is a lot of machinery for little
 gain). A read-only pipeline table comes right after stage 1 (§8). Per-TS streaming stays in roadmap 27 stage 3;
-§7 is the assessment asked for.
+its assessment moved there on 2026-10-26 (§7 here is a pointer).
 
 ## Before → After
 
@@ -208,10 +212,11 @@ slot shows Run and Stop side by side while something is live.
 - Deploy stops rewriting `pipeline_order` (add/remove already keep it, `pipeline_builder_panel.py:341`, `:486`).
 - The review hold is cleared only by a run that contains the held alignment.
 - The submit lock stays (`_submit_lock`, `pipeline_orchestrator_service.py:155`): two clicks never submit twice.
-- Prerequisites: roadmap 33 S1 + S4 (with the project-wide lock gone, nothing else stops a resubmit into a dir
-  whose supervisor still runs; the submit lock is in-process only) and 33 S5 (staged jobs then sit beside live ones).
-  Stage 2 was built without them: a job is skipped while its status reads queued or running, which a job saved
-  Running without a SLURM id defeats (33 S4).
+- Prerequisites: §14 L1 + L4 (with the project-wide lock gone, nothing else stops a resubmit into a dir
+  whose supervisor still runs; the submit lock is in-process only) and §14 L5 (staged jobs then sit beside live
+  ones). Stage 2 shipped (main, 2026-10-16) without them: a job is skipped while its status reads queued or
+  running, which a job that reads Failed while its array still runs, or one saved Running without a SLURM id,
+  defeats (§14 L4).
 
 **S2.3 Run to here.** DEFERRED (§9.3): not in stage 2; one Run button. On a job row (and the job tab): the job and its unfinished upstream, nothing else. Run keeps
 meaning "everything unfinished on the roster". Stop stays "cancel everything"; cancel on a job stops it and,
@@ -220,7 +225,7 @@ through afterok, what waits on it.
 **S2.4 Clone.** On a job row: same type, USER_PARAMS + SLURM settings + species copied through the typed setters
 (`numeric_forward` / `enum_forward`), same hand-set inputs. The A/B primitive; today every variant is retyped.
 
-**S2.5 Registry writes from concurrent jobs.** A lock file (O_EXCL, as roadmap 33 S1) around a supervisor's
+**S2.5 Registry writes from concurrent jobs.** A lock file (O_EXCL, as §14 L1) around a supervisor's
 load → ingest → save, and the save re-reads a sidecar that changed on disk since load before writing it. Server
 writes (exclusion toggles, verdicts) take the same lock.
 
@@ -443,26 +448,7 @@ cuts are a later stage.
 
 ## 7. Per-TS pacing (streaming) — assessment
 
-Not a stupid feature, and it is already scoped: roadmap 27 stage 3, mechanism (B), streaming supervisors (§7.2
-there), with a barrier inventory (§7.1).
-
-What it buys, honestly:
-- **Time to the first tomograms** drops from "the slowest TS of every stage, plus a queue wait per stage" to
-  about one TS through the chain. This is the real gain: wrong parameters show in minutes, not after a day.
-- **Total time** drops less than it feels. Arrays already run in throttle-sized waves; the GPUs are the limit.
-  The saving is the tail of each stage overlapping the head of the next and one queue wait per stage — a modest
-  fraction of a long run.
-- **A stuck TS stops holding the others** — but roadmap 27 stage 1 (drop with a reason) and stage 2 (catch-up)
-  already give most of this.
-
-What it costs: registry-authoritative enumeration (registry-consolidation phase 4), per-item task records
-(task-status-state-machine §5), one supervisor slot per streaming job for the whole run, and four barriers to
-handle (tsImport, the defocus hand, denoise training, the tilt-filter review — the last one is human and blocks
-streaming through alignment whenever a review is on).
-
-Recommendation: keep it after roadmap 27 stage 2. The cheap 80 %: the Subset job of stage 3 gives "first
-tomograms early" without new machinery — fork a handful of TS, run the chain on them, then Run the full set with
-the same parameters. That is an option the user can take, not a step the pipeline imposes.
+Moved to roadmap 27 (§ per-TS execution) on 2026-10-26; 32 only needs 27's stage 2 to respect Subsets.
 
 ---
 
@@ -539,7 +525,8 @@ Also later: read-side views follow a chosen chain instead of "the first job of e
    verb reads more obviously.
 4. **Subset selection.** DECIDED 2026-10-15: a list of tilt series only; saved rules once the per-TS readouts they
    would filter on are settled. Cut points from the aligned tilt series onward (§6.1).
-5. **Fork destination rule of thumb (§5):** accept as the dialog's default hint?
+5. **Fork destination rule of thumb (§5).** DECIDED 2026-10-26: a Subset goes to the same project by default.
+   Fork into a new project stays available, but is not the default.
 6. **Unify Import tomograms and aggregation sources into imported outputs (§5)** — recommended; it is a migration
    of two records.
 7. **Streaming (§7):** keep it in roadmap 27 after stage 2.
@@ -667,7 +654,7 @@ rewrites the same code. Merged into main with `token_auth` the same day; that ro
   (the type-wide delete fallback; every caller passes an instance id). `deploy_and_run_scheme` and the UI's
   `scheme_name` keep their names.
 - **Risk:** a job saved as Running without a SLURM id (possible in old schemer-era projects) is never tracked;
-  Run treats it as live and skips it. Already true under afterok; roadmap 33 S4 covers it.
+  Run treats it as live and skips it. Already true under afterok; §14 L4 covers it.
 - Docs: `docs/architecture.md` (monitor, recovery, file map; the "Replacing relion_schemer" section is done and
   went), CLAUDE.md's two service lines, `config/conf.template.yaml`.
 - **Merge with `token_auth`:** README *Upgrading an existing install* and roadmap 20's S5 checklist say the key is
@@ -684,3 +671,298 @@ rewrites the same code. Merged into main with `token_auth` the same day; that ro
   5. Restart the server while a chain runs: the chain keeps going and the statuses catch up within a tick.
   6. Open a project last run before June and Run something: the new job dir numbers continue after the existing
      `External/jobNNN`, none reused.
+
+---
+
+## 14. Job liveness (was roadmap 33, merged 2026-10-26)
+
+Roadmap 33 (2026-10-15; itself a merge of roadmaps 13 and 15) is folded in here because stage 2 of this roadmap
+(staging while running) shipped without it, and stage 2 is what makes its incident easy to reach. Its stages keep
+their numbers with an L prefix (L = liveness): "33 S1" elsewhere = L1 here. Nothing of it is built. The text below
+is 33's as re-checked against main on 2026-10-15; its `pipeline_orchestrator_service.py` anchors predate the
+schemer deletion (the reuse test is now `reuse_dir` at `:353`).
+
+**Scope (2026-10-26).** The smallest useful slice, and a prerequisite stage of everything left in this roadmap
+(stage 4, the §11/§13 runtime round, and roadmap 27 stage 2):
+1. **L4 first** — a submit-side pre-flight. Before reusing a FAILED job's dir, ask squeue for the job's recorded
+   supervisor id and the array id in its task manifest; while either is live, refuse and name it ("still running
+   as slurm N").
+2. **L1 next** — the owner file each supervisor creates before touching its dir.
+3. L2, L3, L5, L6 are lower; L5 matters once the §15 UI puts staged and live jobs side by side.
+
+**The concrete trigger.** `reuse_dir` (`services/scheduling_and_orchestration/pipeline_orchestrator_service.py:353`)
+resubmits any FAILED job into its own dir with no SLURM check. The commonest way a live job reads FAILED is the 8 h
+supervisor time-out: the supervisor dies, its array keeps running, and the job shows Failed. A Run before the
+array drains dispatches the still-running tilt series a second time, and a second supervisor rebuilds the dir's
+shared inputs (archived [roadmap 29](completed/roadmap_29-agg412-sta.md) §6.3.5 hit exactly this). The only
+containment today is `is_superseded_task` (`drivers/array_job_base.py:89`): tasks of the older submission stop
+writing status, but the GPU work still runs twice.
+
+### Before → After
+
+**Before:** Run resubmits a FAILED job into its own dir (`pipeline_orchestrator_service.py:540-550`) without
+asking SLURM whether that job's supervisor still runs, and a live job reads FAILED in four ways (§14.1.2). Two
+supervisors then share one `run.out`, one `tomostar/`, one `.task_status/`; §14.1.1 lost 62 of 114 tilt series that
+way. Delete moves a live job's dir to Trash; removing it from the roster orphans its SLURM job. Staged jobs count
+as live in the readers of §14.1.6, and a queued job looks editable while its edits are dropped.
+
+**After:** a job dir has one owner, named on disk and checked against SLURM. A second supervisor exits without
+touching anything or speaking for the job, and the submitter refuses before sbatch, naming the live job id.
+Shared inputs are rebuilt atomically. Live means QUEUED or RUNNING everywhere: staged jobs never count as live,
+and live jobs cannot be edited, deleted or removed, with the UI saying why. The tilt-series registry fails loudly
+on what it cannot read. **Gain:** the double-supervisor class is unreachable, and the two roadmaps that multiply
+resubmits and concurrent runs (27 stage 2, stage 2 here) get their prerequisite.
+
+---
+
+### 14.1 Facts (main, 2026-10-15)
+
+#### 14.1.1 The incident (2026-08-28, from roadmap 15)
+Project `<user>_Aug27`, job `External/job004` (`aligntiltsWarp`, 114 tilt series). 62 array tasks failed with
+`registry TS '…' missing from: tomostar dir (producer drift)`. The producer was innocent: `job003/tomostar/` held
+all 114 files. The consumer's own copy, `job004/tomostar/`, held 52, and the 62 missing names were exactly the
+first 62 in sort order: a directory deleted underneath a sorted rebuild loop. Two supervisors ran in that dir:
+
+| evidence | where |
+|---|---|
+| Two `SLURM JOB BEGAN` / `SUPERVISOR mode` blocks, interleaved at conflicting offsets (each job reopens `run.out` with `O_TRUNC` while the older one keeps writing) | `job004/run.out` |
+| Two array submissions from one dir: `1548806`, then `1548927` | `job004/run.out` |
+| The second took the resume path: `52 tilt-series already succeeded; 62 to (re)run` | `job004/run.out` |
+| The loser died mid-`rmtree`: `OSError: [Errno 39] Directory not empty: '…/job004/tomostar'` | `job004/run.err` |
+
+That run was on the schemer path (`launch_retries`, now dead code). The class is the same under afterok.
+
+#### 14.1.2 How a live job reads FAILED
+- Cancel and Stop mark FAILED even when `scancel` fails: `cancel_job` (`pipeline_runner.py:1429-1454`, a warning
+  only) and `stop_and_cleanup` (`:1263-1293`).
+- The 90 s absence grace (`_AFTEROK_ABSENT_GRACE_SEC`, `pipeline_runner.py:55`; applied `:493-498`).
+- A `RELION_JOB_EXIT_FAILURE` on disk wins over SLURM (`reconcile_afterok` pass 1, `:439-455`), and a duplicate
+  supervisor's trailer writes one into the shared dir.
+- sacct NODE_FAIL / PREEMPTED map to FAILED (`:36-37`); qsub sets no `--no-requeue`, so a requeued job may come
+  back while the app has moved on (unverified).
+
+Once FAILED, a job leaves the tracked set (`:430-434`), and Run's reuse test (FAILED + recorded dir exists,
+`pipeline_orchestrator_service.py:541-546`) resubmits into that dir.
+
+#### 14.1.3 What guards exist
+- `_submit_lock` (`pipeline_orchestrator_service.py:153-159`): an in-process `asyncio.Lock` per project. It stops
+  two Runs in one process; it never looks at job dirs or SLURM. No `O_EXCL`, `flock` or owner file exists anywhere.
+- Run refuses while `pipeline_active` (`:175-176`). That protects a FAILED-but-live dir only while a sibling job is
+  live, and S2.2 here removed it.
+- Driver side, array jobs only: `cancel_previous_array` (`drivers/array_job_base.py:659`, called `:615`) scancels
+  the previous submission's array, and `is_superseded_task` (`:89`) mutes status writes from its tasks. Net effect
+  today: the second supervisor kills the first one's array; the first then marks the missing items `.fail`
+  (`:917-924`) and its trailer writes a marker into the shared dir. Non-array drivers (miss_align, refine3d,
+  class3d, reconstruct_particle, denoise_train, ts_import, tilt_filter, extract_pick_list, isonet_star) have
+  neither.
+- **Crash window:** the job-dir counter is advanced in memory after the prepare pass (`:665-666`); it, the slurm
+  ids and `pipeline_active` reach disk only after the whole sbatch loop (`:699-702`). A server that dies mid-loop
+  re-allocates the same `jobNNN` dirs on the next Run, over live supervisors (code reading, unverified).
+
+#### 14.1.4 Exit markers
+- Written only by the rendered qsub trailer (`QSUB_EXIT_MARKERS`, `services/computing/slurm_service.py:90-98`,
+  enforced byte for byte by `write_sbatch_script`, `:101`; template `config/qsub.template.sh:50-58`), plus the
+  inline Import (`pipeline_orchestrator_service.py:654`).
+- Changing the block means changing every site's `qsub.sh` (the lab install, Munich). A stale one is refused
+  loudly, not ignored.
+
+#### 14.1.5 Shared inputs rebuilt in place
+- Whole job-local dir, `rmtree` then rebuild: alignment `tomostar/` (`drivers/ts_alignment.py:217-221`), tsCtf
+  `tomostar/` (`drivers/ts_ctf.py:248-258`, roadmap 27 §4.4 item 9), miss-alignment `warp_tiltseries/`
+  (`drivers/miss_align.py:277-278`).
+- Per-TS replace into a shared dir: `ts_alignment.py:131-133`, `warp_export.py:326-328`,
+  `subtomo_extraction.py:169-171`.
+- In-place overwrites: `ts_alignment.py:224-225` (settings copy), `ts_ctf.py:213-230` (XML copies), the
+  manifest writes in `array_job_base.py:66`, `:76-81`.
+
+#### 14.1.6 Staged, queued, parked — the vocabulary
+- **Readers that count a staged job as live:** `path_resolution_service.py:667-670` (`source_in_flight` →
+  `expect_file_later`: any unrelated live run hides a missing input), `services/dashboard_data.py:460`, `:503`,
+  `:688` (all → "running"), the afterok Stop's live set (`pipeline_runner.py:1263-1293`, SCHEDULED jobs that carry
+  a slurm id, marked FAILED with the rest). The landing page already gets it right: Queued and Running are live,
+  Scheduled is not (`backend.py:1832-1842`).
+- **QUEUED is missing** from the candidate ranking used by automatic input selection
+  (`path_resolution_service.py:537-542`: it ranks after FAILED) and from `display_name` (`:72-77`: shows `?`).
+- **Queued jobs look editable but drop edits.** The model refuses USER_PARAMS writes unless SCHEDULED or FAILED
+  (`services/jobs/_base.py:413-423`, an INFO log), while the form freezes only RUNNING and SUCCEEDED
+  (`is_job_frozen`, `ui/pipeline_builder/config_tab.py:11-16`). Source and SLURM overrides do reach a queued job:
+  drivers re-read the project file at start (`drivers/driver_base.py:83-139`).
+- **No liveness gate on Delete or remove.** Job-tab Delete moves the dir to Trash with no scancel
+  (`ui/pipeline_builder/job_tab_component.py:196-200` → `pipeline_deletion_service.py:153-163`). Removing a
+  non-succeeded job from the roster deletes it from state (`pipeline_builder_panel.py:480-483`) and orphans its
+  SLURM job.
+- **Per-job Cancel** is offered only for RUNNING (`job_tab_component.py:138`, `:188-191`), not QUEUED. Confirming
+  it sets `is_running` False and stops the tab's timers (`:357-361`), while `cancel_job` deliberately keeps
+  `pipeline_active` up (`pipeline_runner.py:1429-1435`): the tab stops following the rest of the chain and shows a
+  Run the backend refuses.
+- **Removed jobs come back.** Removing a succeeded job drops it from `pipeline_order` only
+  (`pipeline_builder_panel.py:480-486`); opening the project rebuilds the roster from `state.jobs.keys()`
+  (`ui/open_project.py:61-63`, `ui/main_ui.py:267-271`).
+- **One deliberate exception:** a confirmed re-extract of a pick list wipes `out/` (`backend.py:628-631`, confirm
+  at `ui/particles/list_actions.py:130-155`) without cancelling the earlier extraction (decision §14.3.1).
+
+---
+
+### 14.2 Stages
+
+Each stage is one commit. L1 stops the damage; L3 stops the status flip; L4 gives the refusal in the UI. L5 and L6
+are independent of the rest.
+
+#### L1 — An owner file in every supervisor (the load-bearing stage)
+- Before any dir mutation: create `job_dir/.supervisor.owner` with `O_CREAT|O_EXCL`, holding `SLURM_JOB_ID`, host
+  and an ISO timestamp. In `ArrayDriver.run_supervisor` (`drivers/array_job_base.py:859`; its first mutations are
+  at `:874-895`) and at the entry of each non-array driver. Not in `driver_base.get_driver_context` as it stands:
+  array tasks call it too and would contend with their own supervisor (a task has `SLURM_ARRAY_TASK_ID`).
+- On `FileExistsError`: read it and ask SLURM (`squeue -h -j <id>`; supervisors already call squeue,
+  `array_job_base.py:559`, `:679-689`).
+  - **live** → log `another supervisor (slurm <id> on <host>, started <ts>) owns this job dir` and exit without
+    touching anything;
+  - **dead** → take it over, logging whose it was;
+  - **squeue failed** → treat as live.
+- Release on normal exit and in the fatal path.
+- **Why `O_EXCL`, not `flock`:** job dirs live on the group's shared mount. `O_EXCL` plus an explicit SLURM
+  liveness check survives NFS semantics and stale locks, and it names the owner in the error.
+- Same pattern as roadmap 23's project lease (§3.2) and S2.5's registry lock here, but those holders are
+  server processes with no SLURM id: they need a host/pid rule instead of squeue.
+- *Done when:* `sbatch run_submit.script` twice into one dir leaves the first untouched, and the second exits
+  naming the owner in `run.out`.
+
+#### L2 — Atomic rebuilds; never mutate a shared input in place
+- Build into `<dir>.tmp.<slurm_job_id>/`, then `os.replace()` onto the real name (rename the old one aside and
+  `rmtree` it after the swap). Atomic writes (temp file + `os.replace`) for the overwrites.
+- Sites: §14.1.5.
+- *Done when:* no job-local input dir ever exists half-populated.
+
+#### L3 — A marker names the job that wrote it
+- The trailer writes `$SLURM_JOB_ID` into the marker instead of `touch`ing it. `reconcile_afterok` pass 1
+  (`pipeline_runner.py:439-455`) ignores a marker whose id is not the job's recorded `slurm_job_id`. An empty
+  marker, from an old trailer or the inline Import, is accepted as today. RELION only checks that the file exists.
+- This changes `QSUB_EXIT_MARKERS`, so every site's `qsub.sh` changes with it (§14.1.4). Land it before Munich's
+  re-install, or ship the `qsub.sh` change with a note.
+- *Done when:* a duplicate supervisor's exit, or a crash before its owner check, cannot change the job's status.
+
+#### L4 — Submit-side pre-flight, and nothing marked FAILED that SLURM has not confirmed
+- In `_submit_chain`, per job and before its sbatch — Run, Run to here (S2.3, deferred), Approve (`submit_parked`) and Clone
+  all go through it — refuse when:
+  - the job's recorded `slurm_job_id` is live per `query_jobs_by_ids` (`slurm_service.py:521`; `None` means squeue
+    failed, which counts as live);
+  - or the dir's owner file names a live SLURM job.
+  - The message names the id: "already running as slurm N".
+  - Not `find_slurm_job_for_directory` / `find_all_slurm_jobs_for_directory` (`slurm_service.py:585`, `:616`):
+    they return nothing when squeue fails, i.e. they fail open.
+- Persist before the first sbatch: the counter and every allocated `relion_job_name`, then each `slurm_job_id` as
+  its sbatch returns (closes the crash window, §14.1.3).
+- Cancel and Stop mark FAILED only after SLURM confirms the cancel; a failed `scancel` leaves the job live and says
+  so (`pipeline_runner.py:1429-1454`, `:1263-1293`).
+- *Done when:*
+  - Run refuses rather than tramples, with the live job id in the message;
+  - a server killed mid-submit and restarted does not reuse a dir it already submitted into.
+
+#### L5 — Live means QUEUED or RUNNING, everywhere (roadmap 13, re-scoped)
+- One predicate next to `JobStatus`: live = QUEUED or RUNNING. No new enum member: SCHEDULED is "staged" on the
+  afterok path already, and 13 §3's cost of a new member still holds.
+- The readers of §14.1.6 narrow to it. QUEUED joins the candidate ranking (next to RUNNING) and `display_name`.
+- The form freezes QUEUED like RUNNING (`is_job_frozen`), matching the model's gate — no more silently dropped
+  edits. What a queued job reads at start is settled by stage 1 here (§3).
+- Delete and roster-remove refuse a live job and say why (decision §14.3.2).
+- Per-job Cancel is offered for QUEUED too and leaves `is_running` and the tab's timers alone; the reconciler winds
+  `pipeline_active` down. This is the same item as the orchestrator roadmap's P1.D Cancel UI.
+- Opening a project builds the roster from `pipeline_order`, not `state.jobs.keys()`.
+- The run-slot tooltip's done/total (`pipeline_roster.py:1645-1666`) stops folding staged jobs into the total:
+  `3/8 · 5 staged`.
+- *Done when:*
+  - nothing reads a staged job as live;
+  - a queued job cannot be edited, deleted or removed, and the UI says so;
+  - Cancel on a queued job works and the roster keeps following the rest of the chain;
+  - a removed job stays removed after reopening.
+
+#### L6 — The registry fails loudly (roadmap 15's A1–A3)
+- **A1, data loss, open.** `TiltSeriesRegistry.load()` drops a sidecar it cannot parse with a warning
+  (`services/tilt_series/registry.py:288-298`); `refresh_from_disk` does the same and forgets tilt series missing
+  from the index (`:341-345`). `save()` then writes the index from the survivors (`:371-377`). Fix: an unparseable
+  sidecar fails the load naming the file, and `save()` never writes an index smaller than the one it loaded
+  without an explicit deletion.
+- **A2, open.** Only a newer MAJOR schema is noticed, and only warned (`registry.py:279-285`; code schema (1, 5),
+  `:48`); with `extra="forbid"` on the models, a newer minor surfaces as A1's silent drop. Fix: refuse when the
+  on-disk minor is ahead, naming both versions.
+- **A3, mitigated.** Drivers now run from the submitting server's tree (roadmap 20; `services/jobs/spec.py:279-300`),
+  so the dev-vs-shared-install skew of the incident needs two servers from two installs. Still worth one line at
+  the top of `run.out` naming the install path and the registry schema version.
+- *Done when:* a sidecar the code cannot read stops the job with its name and version, and no save shrinks the
+  index.
+
+### 14.3 Decisions owed
+1. **Re-extracting a live pick list** (§14.1.6): cancel the earlier extraction, then wipe `out/` (recommended), or
+   refuse while it is live.
+2. **Delete / remove on a live job:** refuse with "Cancel first" (recommended), or one confirm that cancels and
+   deletes.
+3. **Empty markers** (L3): accepted as today (recommended), so old trailers keep working; the alternative breaks
+   every site's `qsub.sh` at once.
+
+### 14.4 Order and dependencies
+- L1 → L3 → L4 close the class; L2, L5 and L6 stand alone.
+- Roadmap 27 stage 2 (catch-up) needs L1 + L4: a second click on a running top-up is §14.1.1's incident.
+- Stage 2 here (staging while running) needs L1 + L4 — with the project-wide run lock gone, nothing else
+  stops a resubmit into a dir whose supervisor still runs — and L5, because staged jobs then sit beside live ones.
+- The orchestrator decommission deletes the schemer path, where 13's old conflation (deploy writes SCHEDULED,
+  `pipeline_orchestrator_service.py:395-400`) and 15's `launch_retries` still live.
+
+### 14.5 Runtime checklist
+1. `sbatch run_submit.script` twice into one dir: the second exits naming the owner; the first and the job's status
+   are unaffected.
+2. Cancel a job while `scancel` cannot succeed: the job stays live and says so; Run then refuses with its id.
+3. Kill the server in the middle of a 5-job Run; restart; Run again: no dir is reused.
+4. Re-run alignment while listing its `tomostar/` in a loop: never a partial set.
+5. A queued job: the form is frozen, Delete and remove refuse with a reason, Cancel works and the roster keeps
+   following the rest of the chain.
+6. A registry sidecar with a field the code does not know: the job fails naming the file and both versions; the
+   index on disk is unchanged.
+
+### 14.6 Not in scope
+- Recovering tilt series lost in past incidents: the arrays are idempotent (`task_already_done`,
+  `ts_alignment.py:302-312`); one clean re-run after L1 handles them.
+- The orchestrator decommission (`roadmap_orchestrator-replacement.md`).
+- Adding or removing jobs while a run is live (P-50): S2.1 here.
+
+**Modern-Python weave-in:** the owner file as a frozen `dataclass SupervisorOwner(slurm_job_id, host, started)`
+with `acquire(job_dir)` returning `ok()`/`err()`; liveness as one function next to `JobStatus` rather than a new
+member (13 §3).
+
+---
+
+## 15. The UI is the hard part (maintainer, 2026-10-26)
+
+**Crucial:** even with the best backend wiring, subsets, forks and branches are unusable without a much better UI.
+The backend stages above are necessary, not sufficient. The UI gets designed separately, when the maintainer comes
+back to this roadmap (in its own worktree); nothing below is decided.
+
+**First: retire the waterfall roster.** Today the roster is one list grouped by job type, a waterfall. It should
+become a branched structure in the manner of CryoSPARC's job graph. The §8 pipeline table started this, but it
+has to be far more interactive: select a job or one of its outputs and act on it in place (Subset, Fork…, Add
+after, Clone), not in a separate dialog chain.
+
+**Second: a purely operational view of the data.** One place that answers:
+- how the project divides into tilt series;
+- which tilt series made the cut at which job, and why the others did not (dropped with a reason, skipped,
+  excluded);
+- which subsets exist and which jobs read them;
+- and where the user selects tilt series, makes a subset, and forks a job off.
+
+It is distinct from the Tomograms and Tilts galleries and the Journey, which are the scientific view (the content a
+user looks at with a scientist's eye). This one is operational. Priorities: flexibility, informativeness,
+presentation. Polish and differentiate it for a single monolithic project first; it may later merge with the
+graphical pipeline view.
+
+**Deferred: species, particles, segmentations.** They can stream in from several projects, datasets and
+tomograms, each with different filters applied (denoising and so on), which makes the operational picture much
+harder. Not before the maintainer finishes the species/particles curation UI/UX work.
+
+**Sketch for the later design session (not a decision).** A tilt-series × job grid:
+- rows = tilt series; columns = jobs in pipeline order, grouped by branch (the §8 lanes);
+- cells = ok / dropped (reason on hover) / skipped / excluded / not in this branch's subset;
+- column headers carry the subset a branch reads ("Subset · 12 of 48");
+- a row selection offers "Subset from these" and "Fork…"; a column offers the job's own actions.
+
+The data already exists, so this is mostly a view: per-TS states in `.task_status/` markers (read through
+`services/array_status_cache.py`, never a per-view scan), `is_excluded` in the tilt-series registry, and the
+Subset jobs' stars for membership.

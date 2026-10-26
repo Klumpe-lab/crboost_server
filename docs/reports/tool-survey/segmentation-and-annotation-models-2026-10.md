@@ -84,7 +84,7 @@ even/odd, cryoCARE, IsoNet, N2N) share its frame; a different alignment is a dif
 ### 2.1 easymode
 Pretrained general networks, no per-dataset training (bioRxiv 2026). Trained on 4,100–4,700 tilt series (the
 number grows across preprint, README and docs), aligned with AreTomo3 and reconstructed by Warp at 10 Å/px as
-raw, even/odd and N2N flavours; missing-wedge-corrected volumes were not in the training data. GPL-3.
+raw, even/odd and N2N flavours, plus its own iso (distilled IsoNet2) denoisings: easymode's docs (`general_denoisers.md`) say both n2n and iso tomograms were used to train every segmentation model. Prefiltered input (low-pass, deconvolution, other denoisers) is out of distribution. GPL-3.
 
 - **Features (24):** actin, atp_synthase, chromatin, cytoplasm, cytoplasmic_granule, ferritin, hfimpdh,
   ice_particle, intermediate_filament, lipid_droplet, membrane, microtubule, mip, mitochondrial_granule,

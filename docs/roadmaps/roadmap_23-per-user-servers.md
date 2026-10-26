@@ -3,7 +3,7 @@
 **Status:** rev 2, 2026-10-15: every anchor re-checked against main, and the stages re-ordered so the token gate
 comes first. It is what the Munich install needs, and it does not depend on the lease. Approved 2026-09-29.
 **Stage 1 done 2026-10-15** (built on `token_auth`, merged into main the same day; curl probes of the six checks pass, browser halves not exercised;
-see the stage log). Munich handoff docs written (README *Upgrading an existing install*, roadmap 20 S5). **Pickup: stage 2.** Munich ships after stage 1;
+see the stage log). Munich handoff docs written (README *Upgrading an existing install*, roadmap 20 S5). **Munich slice of stages 3–4 built 2026-10-26** (file modes, version warning; stage log). **Pickup: stage 2.** Munich ships after stage 1 + that slice;
 stages 2–7 are the multi-user CBE work.
 
 Release item: "token-based authentication — two users on the same port interfere; per-member ports are too
@@ -182,7 +182,7 @@ One new module (e.g. `services/server_auth.py`, stdlib only) and edits to `main.
 - `<project>/.crboost/lease.json`, atomic write. Taken when a server opens a project for writing (open,
   create, recovery). Free = absent, stale (heartbeat > 3 min) or ours. Heartbeat every 60 s from the
   monitor tick (`TICK_INTERVAL_SEC` = 3 s, `pipeline_monitor.py:52`). Same pattern as the job-dir owner file in
-  roadmap 33 S1: atomic create, a liveness check, steal only when dead.
+  roadmap 32 §14 L1 (was 33 S1): atomic create, a liveness check, steal only when dead.
 - Held and fresh → read-only. Stale → read-only with **Take over editing** (confirmation; written to the
   project's event log). Released on close/shutdown.
 - `ProjectState.save()` (`project_state.py:1100`) raises `ReadOnlyProject` without the lease — never a silent
@@ -391,3 +391,21 @@ stopped / unanswering / portless CryoBoost servers, workers whose server is gone
 and answering → its links, exit 0. Tunnel command: `ExitOnForwardFailure=yes`, `ServerAliveInterval=30`,
 `127.0.0.1`. 401 page names the owner (`x-cryoboost-user` header, which the survey reads). Workers get
 `PR_SET_PDEATHSIG`; uvicorn `timeout_graceful_shutdown` 5 s. Startup spinner (`services/startup_spinner.py`).
+
+**Munich slice, 2026-10-26 (ruff-clean, not run).** What the Munich handoff needs from stages 3–4, without the lease:
+- *File modes (§3.6).* `services/shared_files.py` `make_shared(fd)` = `fchmod(0o666 & ~umask)` after every
+  `mkstemp` that writes a project file: `ProjectState.save`, the registry's `_atomic_write`, the segmentation
+  manifest and the Segment driver's sidecars. A save is 0644 / 0664 again, not 0600.
+- *Version skew, warn instead of read-only (§3.5 amended by the maintainer: it must not stop jobs).*
+  `services/code_version.py` reads `<branch>@<sha>` from `.git` (worktrees included; None outside a checkout).
+  Every save stamps it as `ProjectState.saved_by` (schema 3.12). A file with a newer schema than the code loads
+  as before, but sets `version_skew` (console event + a sticky warning toast on every open, naming both
+  versions) and the first save by the older code copies the newer file to
+  `project_params.json.schema-<x.y>.bak` before overwriting it. The registry warns the same way on any newer
+  schema (was: major only) and says how many tilt series it could not read. `load_warnings` — documented as
+  "shown once in the UI after project open" but read nowhere — now reach that toast too, once.
+- The startup summary shows the running checkout (`code` row).
+- *Not done:* the ChimeraX REST command port (§2 item 6). ChimeraX's `remotecontrol rest` has no
+  authentication, so the only fixes are `curation.rest_enabled: false` (the control center then offers Restart
+  only) or accepting it: it listens on the curation node's loopback, reachable only by jobs on that node while
+  a session runs. Left as a site choice for now.

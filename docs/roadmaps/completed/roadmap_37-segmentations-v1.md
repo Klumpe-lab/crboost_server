@@ -143,8 +143,9 @@ imports; the driver imports it on compute nodes). `config/conf.template.yaml:224
   a hard-coded list), `ais_model_path` (AIS_MODEL), `tta` (easymode default 2), `output_format` (`int8`),
   `array_throttle`, GPU resources.
 - Input slot `input_tomograms` accepts `[TOMOGRAMS_STAR, DENOISED_TOMOGRAMS_STAR]`, preferred `tsReconstruct`:
-  easymode was trained on raw / even-odd / N2N Warp reconstructions, not missing-wedge-corrected ones. Choosing
-  an IsoNet input shows a warning marker (not a block).
+  easymode was trained on raw / even-odd Warp reconstructions and its own n2n and iso (distilled IsoNet2) denoisings
+  of them (corrected 2026-10-26; this said no wedge-corrected data before). An input from our IsoNet job shows a
+  note (not a block): close to, not the same as, the iso flavour.
 - Driver `drivers/segment.py` on `ArrayDriver` (`drivers/array_job_base.py:714`):
   - `stage`: symlink the tomogram as `<tomo>.mrc` into a per-task input dir (Warp's float16 is read as is, S0.3).
   - Resources: one GPU per task; the default must ask for a ≥ 24 GB card (peak 22.2 GB at 530×530×264, S0.3).

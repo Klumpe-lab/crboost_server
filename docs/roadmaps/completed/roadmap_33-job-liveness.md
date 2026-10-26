@@ -1,5 +1,7 @@
 # Roadmap 33 — Job liveness: one supervisor per job dir, and live means QUEUED or RUNNING
 
+**Superseded 2026-10-26: merged into [roadmap 32 §14](../roadmap_32-staging-inputs-and-subsets.md) (stages renumbered L1–L6).**
+
 **Status:** scoped 2026-10-15 by merging roadmap 13 (roster staged vs queued, 2026-08-23) and roadmap 15 (job-dir
 ownership, 2026-08-28), both re-checked against main the same day and moved to `completed/` as superseded.
 **Nothing built.** Stage numbers S1–S4 are 15's, so "15 S1" elsewhere means "33 S1".

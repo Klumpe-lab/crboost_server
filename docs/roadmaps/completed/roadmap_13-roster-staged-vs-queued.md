@@ -1,6 +1,6 @@
 # Roadmap 13 — Roster: staged vs queued
 
-**Superseded 2026-10-15 by [roadmap 33](../roadmap_33-job-liveness.md)**, never built. On the afterok path the
+**Superseded 2026-10-15 by [roadmap 33](roadmap_33-job-liveness.md) (itself merged into [roadmap 32 §14](../roadmap_32-staging-inputs-and-subsets.md) on 2026-10-26)**, never built. On the afterok path the
 complaint below is already fixed (`JobStatus.QUEUED` paints purple, staged stays amber); the predicate in §2 no
 longer holds (`pipeline_order` is roster membership now). What survives is 33 S5. Anchors below are as of
 2026-08-23.

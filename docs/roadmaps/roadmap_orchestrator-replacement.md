@@ -89,7 +89,7 @@ D5 any time. Anchors are current as of 2026-10-15.
   Failed job. Call it in the afterok branches (`:1263-1293`, `:1429-1454`) before R4 deletes the only caller.
 - **D1:** a failed `squeue` reaches only the log (`pipeline_runner.py:461-465`): show "status last checked N s ago"
   when observations fail.
-- **D3:** the per-job Cancel UI (offered only for RUNNING; stops following the rest of the chain) is roadmap 33 S5.
+- **D3:** the per-job Cancel UI (offered only for RUNNING; stops following the rest of the chain) is roadmap 32 §14 L5 (was 33 S5).
 - **D5 leftovers:** "Pipeline started (PID: 0)" (`pipeline_builder_panel.py:630`); no-op `sync_all_jobs` calls after
   Stop/Cancel (`:687`, `job_tab_component.py:357`); the Stop dialog lists jobs by squeue path prefix
   (`pipeline_builder_panel.py:648-661`) while afterok Stop cancels the persisted ids; unused `scheme_name` /
@@ -128,7 +128,7 @@ D5 any time. Anchors are current as of 2026-10-15.
   - mixed versions — R1's transition;
   - old schemer projects need C8 and keep their star rows as the only record of legacy jobs until C5/C6;
   - a RUNNING job saved without a slurm id is never tracked (`pipeline_runner.py:430-434`), and Run would resubmit
-    it. That is already true today; roadmap 33 S4 covers it.
+    it. That is already true today; roadmap 32 §14 L4 (was 33 S4) covers it.
 - *Done when:* `relion_schemer` appears nowhere in the code, and `pipeline_active` means only "a tracked job is
   QUEUED or RUNNING" (`pipeline_runner.py:528-537`).
 

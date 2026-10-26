@@ -66,8 +66,8 @@ From the easymode v1.2.5 and Ais v1.2.38 sources, and the models' metadata in th
   first, so the tools no longer see the finished volumes and skip them by themselves.
 - **Not here:**
   - a soft (p-weighted) fill on the wall;
-  - denoised input as the default (the job accepts cryoCARE output already, and easymode's training included
-    noise2noise reconstructions);
+  - denoised input as the default (the job accepts denoised input already; easymode's training included its own n2n and iso
+    denoisings, and Denoise predict method easymode now produces those flavours);
   - masking the frame along the volume's edges;
   - training Ais networks for samples unlike easymode's training set (roadmap 37 §T.2).
 

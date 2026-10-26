@@ -6,6 +6,15 @@ landed 2026-10-04 and is not run. Stages 2 (catch-up) and 3 (streaming) were sco
 started**. **Supersedes roadmap 05 (per-ts-top-up):** stage 2 is 05's scope. The trigger was a production
 incident on eight AGG412 projects (§2).
 
+**Pending (maintainer, 2026-10-26):** wanted ("a cool feature"). Build it after roadmap 32 (staging, subsets, the
+branched roster and operational TS view, and job liveness, which is now 32 §14 with its stages renamed L1–L6:
+"33 S1 / S4" = "32 L1 / L4"). This roadmap is also the home of per-TS execution, the project run per tilt series
+instead of as one front stage by stage: stage 3 below, the assessment moved here from 32 §7 (§7.6), and a sketch
+of how it looks (§12).
+
+**Can land any time:** commit 2a (§6.3, §6.7). Clearing the stale `excluded from processing` `.skip` markers is a
+standalone bug fix: today a TS restored in the Journey never runs again. It needs nothing else from this roadmap.
+
 **In one line.** A tilt-series that fails leaves only itself behind (stage 1). It can catch up later without
 recomputing anyone else (stage 2). Eventually no tilt-series waits for the slowest of the others at every stage
 (stage 3).
@@ -292,8 +301,8 @@ Seven driver files changed; nothing outside `drivers/` was touched.
      already dispatches only unsettled items.
    - The cost is a second array round on a bad-node day; maintainer's call.
 9. **The tsCtf tomostar rebuild mutates a shared input in place** (`rmtree` then copy, `drivers/ts_ctf.py:250-258`).
-   - This is the hazard roadmap 33 S2 (was 15 S2) names for alignment's identical rebuild.
-   - Listed in 33 S2's atomic-swap sweep (§1.5 there).
+   - This is the hazard roadmap 32 §14 L2 (was 33 S2, earlier 15 S2) names for alignment's identical rebuild.
+   - Listed in L2's atomic-swap sweep (32 §14, its §1.5).
 10. **Restoring an excluded TS does not bring it back** (§6.3).
 
 ---
@@ -426,12 +435,13 @@ Both are right for "run the pipeline". Neither can say "re-open a succeeded job 
   exclude toggle.
 - **Project:** one line when a run left TS behind: "12 tilt-series dropped across 3 jobs — Catch up".
 
-### 6.6 Interaction with roadmap 33 (was 15)
+### 6.6 Interaction with job liveness (roadmap 32 §14; was 33, earlier 15)
 
 - Catch-up turns in-place reruns of succeeded jobs from an exception into a button.
-- A second click while a top-up is running would put two supervisors in one dir: exactly the incident in 33 §1.1.
-- So 33 S1 (the ownership lock) is a prerequisite of stage 2.
-- 33 S4 (the submit-side pre-flight) gives the button its "already running as slurm N" refusal.
+- A second click while a top-up is running would put two supervisors in one dir: exactly the incident in 32 §14
+  (its §1.1).
+- So roadmap 32 §14 L1 (the ownership lock; was 33 S1) is a prerequisite of stage 2.
+- 32 §14 L4 (the submit-side pre-flight; was 33 S4) gives the button its "already running as slurm N" refusal.
 
 ### 6.7 Commits
 
@@ -567,14 +577,36 @@ What it costs:
 - **3e.** Start denoise_train when N tomograms are ready.
 - **3f.** UI: per-TS progress across jobs.
 
+### 7.6 Assessment (moved from roadmap 32 §7, 2026-10-26)
+
+How much of the gain listed at the top of §7 is real:
+- **Time to the first tomograms** is the real gain. It drops from "the slowest TS of every stage, plus a queue
+  wait per stage" to about one TS through the chain, so wrong parameters show in minutes, not after a day.
+- **Total time drops less than it feels.** Arrays already run in throttle-sized waves and the GPUs are the limit.
+  The saving is the tail of each stage overlapping the head of the next, plus one queue wait per stage: a modest
+  fraction of a long run.
+- **A stuck TS stops holding the others**, but stage 1 (drop with a reason) and stage 2 (catch-up) already give
+  most of that.
+
+The costs are the ones in §7.1–§7.2 and §8: registry-authoritative enumeration (registry-consolidation phase 4),
+per-item task records (task-status-state-machine §5), one supervisor slot per streaming job for the whole run, and
+the barriers of §7.1. Of those, the tilt-filter review is human and blocks streaming through alignment whenever a
+review is on.
+
+**Order:** stage 3 comes after stage 2. **The cheap 80 % without new machinery:** the Subset job (roadmap 32 stage
+3) already gives "first tomograms early". Cut a handful of TS, run the chain on them, then Run the full set with
+the same parameters. That is an option the user can take, not a step the pipeline imposes.
+
 ---
 
 ## 8. Dependencies
 
 - **task-status-state-machine §5:** stage 2b (or the append-only manifest), and stage 3c.
-- **Roadmap 33 (was 15; same stage numbers):**
-  - S1 (ownership lock) and S4 (submit-side pre-flight) before stage 2e.
-  - S2 (atomic rebuilds) covers §4.4 item 9.
+- **Roadmap 32, whole:** build this roadmap after it (pending note at the top). Its Subset job is a lane filter
+  for streaming (§12.4).
+- **Roadmap 32 §14, job liveness (was 33, earlier 15; S1–S6 renamed L1–L6):**
+  - roadmap 32 §14 L1 + L4 (was 33 S1 + S4: ownership lock, submit-side pre-flight) before stage 2e.
+  - L2 (was 33 S2, atomic rebuilds) covers §4.4 item 9.
 - **registry-consolidation phase 4:** stage 3b.
 - **orchestrator-replacement:**
   - The afterok DAG stays the outer engine.
@@ -644,3 +676,94 @@ What it costs:
 **Stage 3 is done when:**
 - On a fresh project, the first tomogram is written while alignment is still running on other TS.
 - A TS that fails alignment never blocks the TS behind it.
+
+---
+
+## 12. Vision: the pipeline per tilt series (recorded 2026-10-26, for later)
+
+**A sketch for the design session that opens this roadmap again, not decisions.** Today a project moves as one
+front: every TS finishes motion correction before any is aligned, every TS is aligned before any CTF fit, and so
+on. Here each TS moves on its own and the stages are columns it passes through.
+
+### 12.1 What the user sees
+
+```
+                 Motion   Tilt filt.  Align    tsCtf    Recon    Denoise* TM
+Position_1       ●        ●           ●        ●        ●        ·        ·
+Position_1_2     ●        ●           ●        ◐        ·        ·        ·
+Position_3       ●        ●           ✕ AreTomo exited 134   [Retry]
+Position_7       ●        ⏸ review    ·        ·        ·        ·        ·
+Position_9       ◐        ·           ·        ·        ·        ·        ·
+Position_9_4     –  excluded                                   [Restore]
+                 ────────────────────────────────────────────────────────────
+column filled    5/6      3/5         2/4      1/3      1/2      gate: 1 of ≥ 8 ready
+● done  ◐ running  · waiting  ✕ dropped (reason)  ⏸ held at a gate  – excluded   * whole-dataset gate
+```
+
+- **Each TS is a lane** that moves left to right. A stage column fills TS by TS instead of switching from empty to
+  full.
+- **The first tomograms exist after one TS's latency** through the chain, not after the slowest TS of every stage.
+- **A dropped TS stays visible where it left**, with the reason (the stage-1 channel) and a Retry on the row. A
+  retry is the stage-2 catch-up, cut to one lane.
+- **Its home is roadmap 32's operational TS × job view (§15 there):** the same grid, now with live lanes. The
+  Journey and the galleries stay the scientific views of the content. This is the operational one.
+- The roster's job rows show counts that grow (`Recon 41/137, 3 dropped`) instead of one status per job.
+
+### 12.2 What runs
+
+- **Mechanism (B) of §7.2: streaming supervisors.** Each per-TS job's supervisor starts with `after:<upstream
+  supervisor>`, polls the upstream's per-item states, dispatches the newly ready TS as sparse arrays (the re-run path
+  `submit_array_job` already uses, `drivers/array_job_base.py:624-632`), and aggregates once the upstream is terminal
+  and every item has settled. The chain lives in SLURM, as the afterok DAG does today.
+- **The per-item record** (task-status-state-machine §5, commit 2b) is the readiness signal: one record per TS per
+  job, holding state, array id, attempt and reason. Several arrays per job make it necessary, because
+  `is_superseded_task` compares against one manifest id (`drivers/array_job_base.py:89-113`).
+- **Global steps become explicit gates** on the lane view, each with its policy:
+  - **Defocus hand:** decided once per project and recorded (§7.3). Streaming TS apply it and never re-decide it.
+  - **Tilt filter:** DL auto streams per TS. Manual or DL review holds each TS at the gate until approved. Whether
+    "approve what's been reviewed so far" exists decides how far a review session lets the lanes move (§8, 06/26).
+  - **Whole-dataset jobs** (denoise train, missAlign train, Reconstruct Particle, Class 3D, Refine 3D): a gate that
+    shows how many TS are ready and offers **run on what's ready now** or **wait for all**. Denoise train on the first
+    N tomograms is commit 3e. Predict-style per-TS jobs downstream of a trained model stream again after it.
+
+### 12.3 Failure and catch-up
+
+- Stage 2's catch-up and streaming become one mechanism. A retried or restored TS is just an item that becomes
+  ready again, and every streaming supervisor downstream picks it up. Supervisors that already finished are
+  re-opened as in §6.2.
+- A drop is an item that never becomes ready. Nothing waits on it, nothing has to cancel it.
+
+### 12.4 Subsets and forks (roadmap 32)
+
+- **A Subset is a lane filter.** A chain below a Subset streams only the TS in it. A TS outside the Subset is not
+  dropped there; it is not in that chain.
+- A fork into a new project starts its own lanes from the referenced cut point. Lanes that are already done there
+  arrive ready at once.
+
+### 12.5 Costs
+
+- **One CPU slot per running supervisor for the whole run**, 6–8 per project, on top of today's short supervisors.
+  A QOS or a small supervisor partition may be needed if several projects stream at once.
+- **More sbatch calls:** one sparse array per wave per job instead of one array per job.
+- **Readiness across nodes cannot trust `stat()`.** Attribute caching on the project filesystem can lag ~60 s,
+  node to node too. Readiness must come from the per-item records read with `open()`, never from mtimes or
+  directory listings.
+- Aggregate STARs are rewritten as items arrive, so every writer goes tmp + `os.replace` (commit 2c), and the RELION
+  export must tolerate STARs that grow (orchestrator P1.C).
+
+### 12.6 What not to do
+
+- **No dispatch from the headnode** (mechanism (C), §7.2). The pipeline must keep moving while the server is down.
+- **No `aftercorr` index coupling as the base** (mechanism (A)). It fixes one index space at deploy time and takes
+  run-time decisions (exclusions, skips, filter verdicts) away from the supervisors. It could come back later as an
+  optimization inside (B), for chains with no global step.
+
+### 12.7 Open questions it raises
+
+1. Is streaming per job (a flag, commit 3c) or per project (everything streams or nothing does)?
+2. At a whole-dataset gate, who decides "ready enough": a threshold on the job, or the user each time?
+3. What does a parameter edit on a streaming job mean while lanes are mid-flight: new lanes only, or a restart?
+4. How are lanes drawn when a project has 900 TS: grouped by state, collapsed to counts, or paged?
+5. Does a TS that finishes the chain early unlock per-TS particle work (TM, candidates) before the others reach
+   reconstruction, or does the particle half stay whole-dataset?
+6. How many supervisor slots can the cluster spare per user, and does that cap the number of projects streaming?
