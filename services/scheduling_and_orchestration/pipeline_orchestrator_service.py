@@ -4,6 +4,7 @@ import pandas as pd
 from pathlib import Path
 from typing import Any, ClassVar
 
+from services.array_tasks import recorded_array_job_id
 from services.computing.slurm_service import SlurmConfig, normalize_slurm_ids, write_sbatch_script
 from services.configs.config_service import get_config_service
 from services.configs.starfile_service import StarfileService
@@ -76,6 +77,21 @@ def _restore_allocation(state, previous: dict[str, tuple]) -> None:
             state.job_path_mapping.pop(instance_id, None)
         else:
             state.job_path_mapping[instance_id] = mapped
+
+
+def _reused_dir(job_model: AbstractJobParams, project_dir: Path) -> str | None:
+    """The dir a FAILED job is retried in, in place, when a run reaches it: its own, where
+    `.task_status/*.ok` keeps the tilt series its last attempt finished. None for a job that
+    takes a fresh dir."""
+    rel = (job_model.relion_job_name or "").rstrip("/")
+    if (
+        job_model.execution_status == JobStatus.FAILED
+        and rel
+        and job_model.relion_job_number is not None
+        and (project_dir / rel).is_dir()
+    ):
+        return rel
+    return None
 
 
 def _inputs_moved(job_model: AbstractJobParams, resolved: dict[str, str]) -> bool:
@@ -183,13 +199,12 @@ class PipelineOrchestratorService:
             # the hold; its submit_parked waits on the lock for this submit to finish.
             state.review_hold = ReviewHold(barrier=barrier, parked=parked)
         res = await self._submit_chain(project_dir=project_dir, instances_to_run=instances_to_run, state=state)
-        if parked:
-            if res["success"]:
-                res["parked"] = parked
-            elif not res.get("submitted"):
-                # Nothing reached SLURM, so no run is waiting for the review either.
-                state.review_hold = None
-                state.mark_dirty()
+        if parked and res["success"]:
+            res["parked"] = parked
+        elif not res["success"] and not res.get("submitted"):
+            # Nothing reached SLURM: the review holds what it held before this Run.
+            state.review_hold = hold
+            state.mark_dirty()
         if state.review_hold is not None:
             # DL review scores the tilts by itself: now when fsMotion has run, else on its SUCCEEDED edge.
             await self.backend.autostart_tilt_filter_predict(project_dir)
@@ -261,7 +276,65 @@ class PipelineOrchestratorService:
                 return ok(submitted=[], message="None of the parked jobs is left to run.")
             why = "runs in DL auto" if auto else "approved"
             events.info("%s · %s %s; submitting %s", project_dir.name, hold.barrier, why, ", ".join(parked))
-            return await self._submit_chain(project_dir=project_dir, instances_to_run=parked, state=state)
+            res = await self._submit_chain(project_dir=project_dir, instances_to_run=parked, state=state)
+            if not res["success"] and not res.get("submitted"):
+                # Nothing reached SLURM: the parked jobs go on waiting for Approve.
+                state.review_hold = hold
+                state.mark_dirty()
+            return res
+
+    async def _live_in_reused_dirs(self, project_dir: Path, state, instances_to_run: list[str]) -> str | None:
+        """Why the run must wait, or None: a FAILED job it would retry in its own dir still has work
+        in SLURM there. Its supervisor can be alive while its status reads Failed; more often a
+        supervisor killed at its time limit has left its array running, and a resubmit would
+        dispatch those tilt series a second time while a second supervisor rebuilt the inputs they
+        read. Refused rather than cancelled: the live tasks are doing the work a rerun would repeat.
+        One squeue for every id; a failed squeue, or a task manifest that does not parse, refuses
+        too."""
+        reused = {
+            iid: rel
+            for iid in instances_to_run
+            if (jm := state.jobs.get(iid)) is not None and (rel := _reused_dir(jm, project_dir))
+        }
+        if not reused:
+            return None
+
+        def read_array_ids() -> tuple[dict[str, str | None], list[str]]:
+            arrays: dict[str, str | None] = {}
+            unreadable: list[str] = []
+            for iid, rel in reused.items():
+                try:
+                    arrays[iid] = recorded_array_job_id(project_dir / rel)
+                except (OSError, ValueError) as e:
+                    unreadable.append(f"{iid} ({Path(rel).name}): {e}, so whether its array still runs is unknown.")
+            return arrays, unreadable
+
+        arrays, unreadable = await asyncio.to_thread(read_array_ids)
+        if unreadable:
+            return " ".join(unreadable)
+        # Per job, its supervisor first (a live one is the job itself still running), then its array.
+        watched: dict[str, list[tuple[str, str]]] = {}
+        for iid in reused:
+            pairs = (("slurm", state.jobs[iid].slurm_job_id), ("array", arrays[iid]))
+            watched[iid] = [(kind, str(jid)) for kind, jid in pairs if jid]
+        ids = [jid for pairs in watched.values() for _, jid in pairs]
+        live = await self.backend.slurm_service.live_task_counts(ids) if ids else {}
+        if live is None:
+            names = ", ".join(f"{iid} ({Path(rel).name})" for iid, rel in reused.items())
+            return f"Could not ask SLURM whether {names} still run (squeue failed); try again."
+        reasons: list[str] = []
+        for iid, pairs in watched.items():
+            name = Path(reused[iid]).name
+            kind, jid = next(((kind, jid) for kind, jid in pairs if jid in live), (None, None))
+            if kind == "slurm":
+                reasons.append(f"{iid} ({name}) is still running as slurm {jid}; if it never ends, scancel {jid}.")
+            elif kind == "array":
+                n = live[jid]
+                reasons.append(
+                    f"{iid} ({name}) is still running as array {jid} ({n} task{'' if n == 1 else 's'}). Run again "
+                    f"once it drains; the supervisor then aggregates what finished. If it never drains, scancel {jid}."
+                )
+        return " ".join(reasons) or None
 
     async def _submit_chain(self, project_dir: Path, instances_to_run: list[str], state) -> dict[str, Any]:
         """Submit the pipeline as a SLURM afterok DAG.
@@ -306,6 +379,10 @@ class PipelineOrchestratorService:
         if not_ready:
             return err("Subset not ready: " + "; ".join(not_ready))
 
+        still_running = await self._live_in_reused_dirs(project_dir, state, instances_to_run)
+        if still_running:
+            return err(still_running)
+
         # Seed the sole job-dir allocator once from the existing RELION counter, then own it.
         if not state.job_dir_counter:
             state.job_dir_counter = max(self._get_current_relion_counter(project_dir), 1)
@@ -349,16 +426,9 @@ class PipelineOrchestratorService:
                 # dir crboost itself allocated and recorded (relion_job_number) and consumes no counter
                 # slot. An off-by-one needs a second allocator assigning the next number while a stale
                 # one is reused; there is none, so reuse here is safe.
-                existing_rel = (job_model.relion_job_name or "").rstrip("/")
-                reuse_dir = (
-                    job_model.execution_status == JobStatus.FAILED
-                    and instance_id not in start_over
-                    and bool(existing_rel)
-                    and job_model.relion_job_number is not None
-                    and (project_dir / existing_rel).is_dir()
-                )
+                reuse_dir = None if instance_id in start_over else _reused_dir(job_model, project_dir)
                 if reuse_dir:
-                    rel = existing_rel
+                    rel = reuse_dir
                     job_num = job_model.relion_job_number
                     reused.append(instance_id)
                 else:

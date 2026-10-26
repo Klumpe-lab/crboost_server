@@ -122,6 +122,22 @@ def manifest_array_job_id(job_dir: Path) -> str | None:
     return str(jid) if jid else None
 
 
+def recorded_array_job_id(job_dir: Path) -> str | None:
+    """manifest_array_job_id for a caller deciding whether the job still runs: a manifest that does
+    not parse (mid-write or damaged) raises ValueError naming the file, since reading it as "no
+    array" would let that caller go ahead over a live one."""
+    path = job_dir / MANIFEST_FILENAME
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
+        return None
+    try:
+        jid = json.loads(text).get("array_job_id")
+    except (ValueError, AttributeError) as e:  # AttributeError: valid JSON that is not an object
+        raise ValueError(f"{path} does not parse ({e})") from None
+    return str(jid) if jid else None
+
+
 def any_task_started(job_dir: Path) -> bool | None:
     """QUEUED-vs-RUNNING refinement for array-dispatching jobs; None = no manifest.
 
