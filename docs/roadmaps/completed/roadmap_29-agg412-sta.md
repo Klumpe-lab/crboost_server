@@ -456,6 +456,122 @@ The job tab will warn in five projects that the full run exceeds the time overri
   job016 23/23, unmilled2 job019 162/162 (Position_22_4 and Position_32 left out, 1 tilt), Grid3 job015 95/95,
   SK job016 133/133: 815 refined. Only missAlign was deployed, so tsCtf__2 / tsReconstruct__2 are still to be
   added (§6.2.3).
+- **2026-10-20** — Grid2's Refine 3D re-runs converged: job036 (baseline chain, 26,335 particles) at 03:10, final
+  resolution 11.23 Å; job037 (missAlign chain, 33,252 particles) at 20:51, final resolution 8.27 Å (RELION's
+  figure without masking).
+- **2026-10-21 13:11–14:48** — tsCtf__2 and tsReconstruct__2 finished in all seven, every task ok: 815 refined
+  tomograms (FCIsolation 138 of its 142). Parameters as Grid2's job023 / job024, `halfmap_frames` 1 included.
+- **2026-10-22** — Template matching on the refined tomograms specified for both species (§6.3). The picking jobs
+  of 2026-10-05 are no longer on the seven rosters. Nothing submitted.
+
+### 6.3 Template matching on the refined tomograms (2026-10-22)
+
+What Grid2 ran from its refined tomograms to the Refine 3D map, and its first step for the other seven: template
+matching on their `tsReconstruct__2` tomograms, both species. Candidates, Warp Export, Reconstruct Particle and
+Refine 3D follow as Grid2's job028 / 030 / 032 / 037; their parameters once matching is through.
+
+#### 6.3.1 The Grid2 chain (`project_params.json` and job logs, read 2026-10-22)
+
+| Step | missAlign chain | Baseline chain |
+|---|---|---|
+| Alignment | aligntiltsWarp job007 | aligntiltsWarp job007 |
+| missAlign | job022 | — |
+| tsCtf | `tsCtf__2` job023 | `tsCtf` job008 |
+| tsReconstruct | `tsReconstruct__2` job024 | `tsReconstruct` job009 |
+| Template matching, ribosome | `templatematching__2` job026 | `templatematching` job025 |
+| Candidates | `tmextractcand__2` job028 | `tmextractcand` job027 |
+| Warp Export | `warpExport__2` job030, 33,252 particles | `warpExport` job029, 26,335 particles |
+| Reconstruct Particle | `reconstructParticle__2` job032 | `reconstructParticle` job031 |
+| Refine 3D | `refine3d__2` job037 | `refine3d` job036 |
+| Final resolution (RELION, without masking) | **8.27 Å** | 11.23 Å |
+
+Grid2 has no 412 job left, and no project has matched the 412 on refined tomograms yet.
+
+#### 6.3.2 Where the seven stand
+
+Compared field by field with Grid2, every job from import to `tsReconstruct__2` is the same, except the tilt
+filter threshold (0.5 in Slot6, unmilled2 and SK, 0.301 in the others and Grid2; plus hand labels on 6 tilts in
+unmilled2 and 4 in SK) and missAlign's `num_gpus` 2 with time `3-00:00:00` (Grid2: `num_gpus` 4 with a `gpu:2`
+override, the same two GPUs).
+
+| Project (`AGG412_…`) | missAlign / tsCtf__2 / tsReconstruct__2 | Refined tomograms | Next free job |
+|---|---|---|---|
+| 20240204_412_Slot6 | job013 / 014 / 015 | 123 | job016 |
+| 20251031_412_FCIsolation | job016 / 017 / 018 | 138 (MA19 left out 17_2, 29_5, 30_3, 32_4) | job019 |
+| 20251113_412 | job013 / 014 / 015 | 141 | job016 |
+| 20260204_412 (pilot) | job016 / 017 / 018 | 23 | job019 |
+| 20260205_412_FCIso_unmilled2 | job019 / 020 / 021 | 162 | job022 |
+| 20260311_412_Grid3 | job015 / 016 / 017 | 95 | job018 |
+| SK_20251017_412 | job016 / 017 / 018 | 133 | job019 |
+| **Total** | | **815** | |
+
+#### 6.3.3 Template matching parameters
+
+Grid2's job026 is every field at its code default plus the species' selected template and mask, so a Template
+matching job created for a species already carries these values; template, mask and symmetry are the rows to check.
+
+| Field | Ribosome: Grid2 job026 (ran) | 412: the 2026-10-05 rollout (playbook §5) |
+|---|---|---|
+| species | `dm_ovary_ribosome` (Ø 310, C1) | `412_particle` (Ø 575, I1) |
+| template | `templates/dm_ovary_ribosome/6xu8_apix6.20_ares10_box96_black.mrc` | `templates/412_particle/run_it015_class001_apix6.20_box128_black.mrc` |
+| mask | `templates/dm_ovary_ribosome/6xu8_apix6.20_ares10_box96_sphere_d350_s5.mrc` | `templates/412_particle/run_it015_class001_apix6.20_box128_sphere_d575_s5.mrc` |
+| symmetry | C1 | I1 |
+| angular_search | 12.0 (9,000 rotations) | 12.0 (I1 list, 3,398 rotations) |
+| bandpass_filter | None | None |
+| defocus_weight / dose_weight | on / on (the driver always weights, W14) | on / on |
+| spectral_whitening / random_phase_correction / non_spherical_mask | off / off / off | off / off / off |
+| gpu_split | auto (`-s 2 2 1`) | auto |
+| perdevice | 1 | 1 |
+| array_throttle | 4 | 4 |
+| every_nth_tomogram | 1 | 1 |
+| search region (include / exclude / dilation) | none / none / 0 | none / none / 0 |
+| IO `input_tomograms` | `tsReconstruct__2`, pinned | `tsReconstruct__2`, pinned |
+| IO `input_tiltseries` | `tsCtf__2`, pinned | `tsCtf__2`, pinned |
+| SLURM per task (profile, no override) | g · `g2\|g3\|g4` · 1 node · 1 task · 4 CPUs · `gpu:1` · 32G · 1:30:00 · default QOS | same |
+| Supervisor (`supervisor_slurm`) | g · `g2\|g3\|g4` · 1 CPU · no GPU · 4G · 8:00:00 | same |
+| Set by the driver | PyTOM 0.10.0; phase-flip CTF model; per-tilt weighting; tilt angles from `rlnTomoYTilt` of `tsCtf__2`, aligned tilts only; per-tilt defocus and dose; 300 kV, Cs 2.7, AC 0.1 | same |
+
+- The template and mask files are byte-identical (md5) in all eight projects (species catalog v1) and are the
+  selected ones of both species everywhere.
+- Grid2's ribosome matching (job025, job026) ran without a band-pass; the 2026-10-05 ribosome matching ran 40:500
+  (playbook §5, D13). The 8.27 Å map comes from the unfiltered run.
+- Both input slots have two producers (the baseline job and its `__2`): a tie the resolver leaves to the user, so
+  pin both, as job026 is.
+- The driver gained the search region on 2026-10-21; with none set, its command is job026's.
+- Per tomogram, job026 logged (`Analytics sidecar` in `task_N.out`): σ 0.011–0.023 (median 0.013), top peak
+  7.2–18.9σ (median 13.2σ), 0–2,191 peaks ≥ FP = 1 (median 678).
+
+#### 6.3.4 Time and disk
+
+Measured: job026 matched 48 tomograms in 6.0 h at throttle 4 on g2/g3 nodes, ~30 min per tomogram; the 412 took
+14 min (g2) and 18 min (g3) per tomogram on 2026-10-05. At throttle 4, with all four tasks running:
+
+| Project | Ribosome | 412 | Score + angle maps, both species (8.6 GB per tomogram) |
+|---|---|---|---|
+| Slot6 | ~15.5 h | ~8.5 h | 1.06 TB |
+| FCIsolation | ~17.5 h | ~9.5 h | 1.19 TB |
+| 20251113 | ~18 h | ~9.5 h | 1.21 TB |
+| pilot | ~3 h | ~1.5 h | 0.20 TB |
+| unmilled2 | ~20.5 h | ~11 h | 1.39 TB |
+| Grid3 | ~12 h | ~6.5 h | 0.82 TB |
+| SK | ~17 h | ~9 h | 1.14 TB |
+| **Total** | ~410 GPU-h | ~215 GPU-h | 7.0 TB (26 TiB free on 2026-10-22) |
+
+The supervisor's 8 h (W19; C1 not built) runs out before every ribosome run except the pilot's, and before the
+412 runs in Slot6, FCIsolation, 20251113, unmilled2 and SK. A higher throttle doesn't avoid it: fourteen jobs at 4
+already ask for 56 GPUs at once. The array outlives its supervisor; the job turns Failed with `DUE TO TIME LIMIT`
+in `run.err`.
+
+#### 6.3.5 Per project, in the app
+
+1. Open the project from the dev server (`~/dev/crboost_server`), as for the trio (MA16).
+2. Add two Template matching jobs, one per species. Check template, mask and symmetry against §6.3.3; leave every
+   other field at its default.
+3. IO tab of each: `input_tomograms` ← `tsReconstruct__2`, `input_tiltseries` ← `tsCtf__2`.
+4. Run with only the two new jobs selected.
+5. A job that turns Failed on the supervisor's limit: once its array has drained (every tomogram `.ok` in
+   `.task_status/`), Run it again without editing it. It finds nothing to submit and aggregates in minutes
+   (2026-10-08). A Run before the array drains submits the still-running tomograms a second time.
 
 ## 7. Code this needs (proposed; nothing built)
 
