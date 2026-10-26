@@ -76,14 +76,16 @@ _CB_CSS = """
         45deg, #cbd5e1, #cbd5e1 2px, #e5e7eb 2px, #e5e7eb 4px
     );
 }
-/* Per-row info popover (the ⓘ): full tomo name + metadata + file paths, each
- * whose value copies on click. Click-opened so the values can be clicked. */
+/* Per-row info popover (the ⓘ): full tomo name + metadata + pick counts + file paths,
+ * each path copying on click. Click-opened so the values can be clicked. */
 .cb-info-card {
     min-width: 300px; max-width: 460px; padding: 6px 4px; display: flex; flex-direction: column; gap: 3px;
     font-family: 'IBM Plex Sans', sans-serif;
 }
 .cb-info-row { display: flex; align-items: center; gap: 6px; }
-.cb-info-key { font-size: 9px; text-transform: uppercase; letter-spacing: 0.3px; color: #94a3b8; flex: 0 0 88px; }
+.cb-info-key {
+    font-size: 9px; color: #8aa0b8; flex: 0 0 88px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .cb-info-val {
     font-size: 10px; font-family: 'IBM Plex Mono', monospace; color: #334155;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -92,6 +94,7 @@ _CB_CSS = """
     direction: rtl; text-align: left;
 }
 .cb-info-meta { font-size: 10px; color: #64748b; font-family: 'IBM Plex Mono', monospace; padding: 1px 0 3px 88px; }
+.cb-info-val.cb-info-count { direction: ltr; font-family: 'IBM Plex Sans', sans-serif; color: #1e293b; }
 .cb-main { padding: 12px; }
 /* (height/flex/overflow set inline at construction time so the dialog viewport
    chain is self-contained; this rule only carries the padding chrome.) */
@@ -885,14 +888,10 @@ _CB_CSS = """
     color: #b45309; background: #fef3c7; border-color: #fde68a;
 }
 
-/* ── Journey header line (ui/dashboard/strip.py) ────────────────────────────
-   One thin line about the selected tilt series: [▾ position · i/N] · four
-   labelled stage dots · per-species pick counts · ⓘ · exclude — and, at the far
-   right (mounted by the journey), the section selector. The name block drops
-   down the tomogram switcher table; the overview lives there, not on screen. It sits under
-   the view's title line, with no rule between them. When the pane is too narrow for one line,
-   the selector wraps onto a second one, right-aligned; narrower still (a query on the
-   header itself, below), the line tightens. */
+/* ── A switcher header line: the Protocols view's (ui/protocols_view.py), and the Journey's when it
+   is mounted outside a view frame ───────────────────────────────────────────────
+   One thin line: [▾ name · version] and what goes with it; the name block drops down the switcher
+   table. When the pane is too narrow for one line, its right part wraps onto a second one. */
 .cb-jhead {
     flex: 0 0 auto; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px; min-height: 30px;
     padding: 5px 12px 5px 14px;
@@ -914,25 +913,8 @@ _CB_CSS = """
 .cb-jswitch-pos { font-size: 12px; font-weight: 600; color: var(--cb-head-ink, #12324f); white-space: nowrap; }
 .cb-jswitch-pos.excluded { text-decoration: line-through; color: #94a3b8; }
 .cb-jswitch-idx { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #64748b; white-space: nowrap; }
-.cb-jstage { display: flex; align-items: center; gap: 4px; }
-.cb-jstage-name { font-size: 10px; color: #475569; white-space: nowrap; }
-/* A narrow pane (the Journey beside other views): the stage dots without their words (each
- * dot names its stage on hover) and the section selector on tighter segments. */
-@container cb-jhead (max-width: 720px) {
-    .cb-jstage-name { display: none; }
-    .cb-jhead-right .cb-seg-btn { padding: 2px 5px; }
-}
-/* Stage dots in the roster's status colours (ui/status_indicator._DOT_COLORS). */
-.cb-jdot { width: 7px; height: 7px; border-radius: 50%; background: #e5e7eb; flex: 0 0 auto; }
-.cb-jdot.ok { background: #10b981; }
-.cb-jdot.fail { background: #ef4444; }
-.cb-jdot.running { background: #3b82f6; }
-.cb-jdot.zero { background: #9ca3af; }
-.cb-jdot.pending { background: #e5e7eb; }
-.cb-jdot.skip { background: repeating-linear-gradient(45deg, #cbd5e1, #cbd5e1 2px, #e5e7eb 2px, #e5e7eb 4px); }
-.cb-jhead-species { display: flex; align-items: center; gap: 5px; }
+/* A species' pick count in the Journey's switcher (ui/dashboard/strip.py), and what curation kept. */
 .cb-jsp-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
-.cb-jsp-name { font-size: 10px; color: #475569; white-space: nowrap; }
 .cb-jsp {
     display: inline-flex; align-items: baseline; gap: 5px; padding: 0 4px;
     border-radius: 3px; white-space: nowrap;
@@ -945,11 +927,12 @@ _CB_CSS = """
 .cb-jsp.fail .cb-jsp-n { color: #b91c1c; }
 .cb-jsp.zero .cb-jsp-n { color: #94a3b8; }
 .cb-jsp.pending .cb-jsp-n { color: #cbd5e1; }
+/* The Journey's exclude switch, on its title line. */
 .cb-jexcl { font-size: 14px; color: #cbd5e1; cursor: pointer; }
 .cb-jexcl:hover { color: #dc2626; }
 .cb-jexcl.on { color: #b45309; }
-/* The switcher dropdown: a full table of tilt series — as wide and tall as it needs
-   to be (the menu caps it at the viewport), one row per tomogram, totals at the foot. */
+/* The switcher dropdown: a full table — as wide and tall as it needs to be (the menu caps it at
+   the viewport), one row per entry. */
 .cb-jmenu {
     display: flex; flex-direction: column; min-width: 480px;
     padding: 4px 0; background: #ffffff; font-family: 'IBM Plex Sans', sans-serif;
@@ -960,19 +943,11 @@ _CB_CSS = """
 }
 .cb-jrow:hover { background: #f8fafc; }
 .cb-jrow.selected { background: #eef2ff; box-shadow: inset 2px 0 0 #6366f1; }
-.cb-jrow.excluded .cb-jname { text-decoration: line-through; color: #94a3b8; }
-.cb-jrow.excluded .cb-jsp, .cb-jrow.excluded .cb-jstage { opacity: 0.35; }
 .cb-jrow-head, .cb-jrow-total { cursor: default; }
 .cb-jrow-head:hover, .cb-jrow-total:hover { background: transparent; }
 .cb-jrow-head { border-bottom: 1px solid #e5e7eb; padding-bottom: 5px; }
 .cb-jrow-total { border-top: 1px solid #e5e7eb; border-bottom: none; margin-top: 2px; padding-top: 6px; }
 .cb-jh { font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: #94a3b8; }
-.cb-jh-c { text-align: center; }
-.cb-jh-sp { display: flex; align-items: center; gap: 5px; min-width: 0; text-transform: none; letter-spacing: 0; }
-.cb-jh-spname {
-    font-size: 10px; font-weight: 600; color: #475569;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
 .cb-jcell { min-width: 0; }
 .cb-jcell-idx { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #94a3b8; }
 .cb-jcell-name { display: flex; flex-direction: column; gap: 0; }
@@ -981,8 +956,62 @@ _CB_CSS = """
     font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #94a3b8;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.cb-jrow .cb-jstage { justify-content: center; }
-.cb-jtotal-name { font-size: 10px; color: #64748b; }
+/* ── The Journey's tilt series on its title line (ui/dashboard/strip.py) ─────────
+ * After the view's name: the tilt series' position, spelled out, whose click drops the switcher
+ * down, and its place among them. The switcher: a search field over one line per tilt series,
+ * grouped by stage position, with every species' pick count; the totals at its foot. */
+.cb-ts-sep { color: #9fb2c8; margin: 0 -2px; }
+.cb-ts-switch {
+    display: flex; align-items: center; gap: 1px; min-width: 0; padding: 1px 2px 1px 6px; border-radius: 4px;
+    cursor: pointer; user-select: none;
+}
+.cb-ts-switch:hover { background: var(--cb-hover, #e6eff8); }
+.cb-ts-name {
+    font-size: 11px; font-weight: 600; color: #24405e; min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cb-ts-name.excluded { text-decoration: line-through; color: #94a3b8; }
+.cb-ts-caret { color: #8aa0b8; flex: 0 0 auto; }
+.cb-ts-idx { font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #8aa0b8; white-space: nowrap; }
+.cb-ts-empty { font-size: 10px; color: #94a3b8; white-space: nowrap; }
+.cb-ts-menu {
+    display: flex; flex-direction: column; min-width: 380px; padding: 0 0 4px;
+    font-family: 'IBM Plex Sans', sans-serif; background: #ffffff;
+}
+.cb-ts-search {
+    position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 6px;
+    padding: 6px 12px; background: #ffffff; border-bottom: 1px solid #eef2f6; color: #8aa0b8;
+}
+.cb-ts-search-input {
+    flex: 1 1 auto; min-width: 0; height: 20px; box-sizing: border-box; padding: 0 6px; outline: none;
+    border: 1px solid var(--cb-field-line, #d3dde8); border-radius: var(--cb-field-radius, 4px); background: #ffffff;
+    font-family: 'IBM Plex Sans', sans-serif; font-size: 10px; color: #1e293b;
+}
+.cb-ts-search-input:focus { border-color: var(--cb-field-focus, #4a8fd4); box-shadow: var(--cb-field-ring); }
+.cb-ts-row {
+    display: grid; grid-template-columns: var(--cb-ts-cols); align-items: center; column-gap: 8px;
+    min-height: 20px; padding: 1px 12px 1px 22px; cursor: pointer;
+}
+.cb-ts-row:hover { background: var(--cb-hover, #e6eff8); }
+.cb-ts-row.selected { background: var(--cb-head, #edf4fb); box-shadow: inset 2px 0 0 var(--cb-accent, #4a8fd4); }
+.cb-ts-row.excluded :is(.cb-ts-beam, .cb-ts-full) { text-decoration: line-through; color: #94a3b8; }
+.cb-ts-row.excluded .cb-jsp { opacity: 0.35; }
+.cb-ts-head, .cb-ts-total { cursor: default; }
+.cb-ts-head:hover, .cb-ts-total:hover { background: transparent; }
+.cb-ts-head { padding-top: 5px; }
+.cb-ts-total { border-top: 1px solid #eef2f6; margin-top: 4px; padding-top: 4px; }
+.cb-ts-group-head { font-size: 10px; font-weight: 600; color: #33506e; padding: 6px 12px 1px; }
+.cb-ts-beam { font-size: 11px; color: #1e293b; white-space: nowrap; }
+.cb-ts-wide { grid-column: 1 / span 2; overflow: hidden; text-overflow: ellipsis; }
+.cb-ts-full {
+    font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #94a3b8; min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cb-ts-sp { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.cb-ts-sp-name {
+    font-size: 10px; font-weight: 600; color: #475569; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cb-ts-total-name { font-size: 10px; color: #64748b; white-space: nowrap; }
 /* ── Species page ──────────────────────────────────────────────────────────── */
 /* Segmented control (`ui/components/segmented.py`): the job tab's flat dense
  * switcher as one bordered strip; the active segment is tinted, never a Quasar tab. */
@@ -1058,6 +1087,9 @@ _CB_CSS = """
     transform: translateX(-50%) rotate(45deg);
 }
 .cb-proj-card[data-side="above"]::before { top: auto; bottom: -5px; transform: translateX(-50%) rotate(225deg); }
+/* The rail avatar's card (`project_card_menu`) opens to the avatar's right: the caret on its left
+ * edge, at the 34 px avatar's middle. */
+.cb-proj-card.cb-proj-card--right::before { top: 17px; left: -5px; transform: translateY(-50%) rotate(-45deg); }
 /* Every tooltip in the app, Quasar's and the native `title` ones (drawn by _TITLE_TIP_JS as
  * .cb-title-tip): see-through, the faintest neutral gray tint and a hairline outline; a touch of blur
  * so the text separates from what it covers. Never wider than about a path and a half; long
@@ -1316,21 +1348,16 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 .cb-gal-pk-marker { display: flex; flex: 0 0 auto; cursor: pointer; border-radius: 50%; padding: 1px; }
 .cb-gal-pk-marker:hover { box-shadow: 0 0 0 1px #94a3b8; }
 .cb-gal-pk-row.off .cb-gal-pk-marker { opacity: 0.4; }
-.cb-gal-pk-palette { display: flex; gap: 4px; padding: 6px; }
+/* A layer's colours, opened in place under its row by a click on its marker. */
+.cb-gal-pk-palette { display: flex; flex-wrap: wrap; gap: 4px; padding: 1px 10px 5px 38px; }
 .cb-gal-pk-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .cb-gal-pk-n { font-family: ui-monospace, monospace; font-size: 9px; color: #94a3b8; }
 .cb-gal-pk-row .cb-gal-pk-warn { color: #d97706; }
-/* Segmentation layers: the opacity row under the list, and a feature's share of the volume in a
- * tile's caption (a swatch in the feature's colour variable, then the number). */
+/* Segmentation layers: the opacity row under the list. */
 .cb-gal-feat-opacity {
     display: flex; align-items: center; gap: 6px; padding: 6px 10px 2px 16px;
     font-size: 9px; color: #94a3b8; border-top: 1px solid #f1f5f9; margin-top: 4px;
 }
-.cb-gal-feat-badge {
-    display: inline-flex; align-items: center; gap: 2px; flex: 0 0 auto;
-    font-family: ui-monospace, monospace; font-size: 9px; color: #64748b; white-space: nowrap;
-}
-.cb-gal-feat-dot { width: 6px; height: 6px; border-radius: 1px; flex: 0 0 auto; }
 .cb-gal-body { flex: 1 1 0; min-height: 0; overflow-y: auto; overflow-x: hidden; }
 .cb-gal-grid { display: grid; gap: 10px; padding: 10px; align-items: start; }
 .cb-gal-tile {
@@ -1339,10 +1366,18 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
     overflow: hidden; background: #ffffff; box-shadow: var(--cb-card-shadow, 0 1px 2px rgba(16, 42, 67, 0.06));
 }
 .cb-gal-tile:hover { border-color: #c7d2fe; box-shadow: 0 2px 8px rgba(15,23,42,0.08); }
+/* The selected tile (shared with the Journey): an accent ring and a tinted caption. A click on its
+ * slice zooms, a click on another tile's selects that one. */
+.cb-gal-tile.selected, .cb-gal-tile.selected:hover {
+    border-color: var(--cb-accent, #4a8fd4); box-shadow: 0 0 0 1px var(--cb-accent, #4a8fd4);
+}
+.cb-gal-tile.selected .cb-gal-cap { background: var(--cb-head, #edf4fb); }
+.cb-gal-tile.selected .cb-gal-name { color: var(--cb-head-ink, #12324f); font-weight: 600; }
 .cb-gal-frame {
     position: relative; width: 100%; min-height: 60px;
-    background: #0f172a; cursor: zoom-in; overflow: hidden;
+    background: #0f172a; cursor: pointer; overflow: hidden;
 }
+.cb-gal-tile.selected .cb-gal-frame { cursor: zoom-in; }
 .cb-gal-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; display: block; }
 /* Unknown tomogram extent: no aspect-ratio to give the frame a height, so the image
  * sizes itself and the tile is as tall as it is. No dots are drawn in this state
@@ -1366,12 +1401,18 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 .cb-gal-badge-warn { background: rgba(180, 83, 9, 0.88); }
 .cb-gal-cap {
     display: flex; align-items: center; gap: 4px; padding: 3px 6px;
-    border-top: 1px solid #f1f5f9; min-width: 0;
+    border-top: 1px solid #f1f5f9; min-width: 0; cursor: pointer;
 }
 .cb-gal-name {
     font-size: 10px; color: #334155; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1;
 }
+/* The Journey glyph at the caption's end: opens the Journey on this tilt series, beside the wall. */
+.cb-gal-jlink {
+    display: flex; flex: 0 0 auto; padding: 1px; margin-right: -2px; border-radius: 3px;
+    color: #8aa0b8; cursor: pointer;
+}
+.cb-gal-jlink:hover { color: var(--cb-head-ink, #12324f); background: var(--cb-hover, #e6eff8); }
 /* The top-left switch between a tile's slice and a mosaic of its tilt series. */
 .cb-gal-mosaic-toggle { background: rgba(15,23,42,0.62); color: #e2e8f0; }
 .cb-gal-mosaic-toggle:hover, .cb-gal-mosaic-toggle.on { background: rgba(37,99,235,0.88); color: #ffffff; }
@@ -1388,6 +1429,12 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
     background: var(--cb-group-head, #edf4fb); box-shadow: 0 1px 0 var(--cb-group-head-line, #dbe3ec);
 }
 .cb-tp-head:hover { background: var(--cb-hover, #e6eff8); }
+/* The selected tilt series on the Tilts tab: its group (grouped by position, its position) ringed in
+ * the accent, with the accent tick on its header. */
+.cb-tp-group.selected { outline-color: var(--cb-accent, #4a8fd4); }
+.cb-tp-group.selected > .cb-tp-head {
+    box-shadow: inset 2px 0 0 var(--cb-accent, #4a8fd4), 0 1px 0 var(--cb-group-head-line, #dbe3ec);
+}
 .cb-tp-chev { font-size: 9px; color: #8aa0b8; transition: transform 0.15s; }
 .cb-tp-chev.open { transform: rotate(90deg); }
 .cb-tp-name { font-size: 10px; font-weight: 600; color: #334155; white-space: nowrap; }
@@ -1498,6 +1545,12 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 /* Grouped by position: a beam's slim line inside its position's box, flush left. */
 .cb-tp-beam { display: flex; align-items: center; gap: 6px; padding: 2px 2px 3px; min-width: 0; }
 .cb-tp-beam:not(:first-child) { margin-top: 6px; }
+/* On the Tilts tab a beam's line selects its tilt series; the selected one carries the accent tick. */
+.cb-tg-select .cb-tp-beam { padding-left: 6px; border-radius: 3px; cursor: pointer; }
+.cb-tg-select .cb-tp-beam:hover { background: var(--cb-hover, #e6eff8); }
+.cb-tp-beam.selected, .cb-tp-beam.selected:hover {
+    background: var(--cb-head, #edf4fb); box-shadow: inset 2px 0 0 var(--cb-accent, #4a8fd4);
+}
 /* The gallery's metrics menu: one checkbox per metric. */
 .cb-tg-menu { padding: 4px 8px 4px 4px; }
 .cb-tg-menu .q-checkbox__label { font-family: 'IBM Plex Sans', sans-serif; font-size: 10px; color: #334155; }
@@ -1518,13 +1571,19 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
     background: #ffffff; border-radius: 5px; padding: 8px 4px 8px 8px;
 }
 .cb-gal-zoom-side .cb-gal-pk-row, .cb-gal-zoom-side .cb-gal-pk-species { padding-left: 2px; }
+.cb-gal-zoom-side .cb-gal-pk-palette { padding-left: 24px; }
+.cb-gal-zoom-side .cb-hmenu-item, .cb-gal-zoom-side .cb-hmenu-group { padding-left: 2px; padding-right: 4px; }
+.cb-gal-zoom-side .cb-hmenu-item.nested { padding-left: 8px; }
 .cb-gal-zoom-headline { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .cb-gal-zoom-title { font-size: 12px; font-weight: 600; color: #1e293b; }
 .cb-gal-zoom-ts { font-family: ui-monospace, monospace; font-size: 9px; color: #64748b; word-break: break-all; }
 .cb-gal-zoom-src { font-family: ui-monospace, monospace; font-size: 9px; color: #94a3b8; word-break: break-all; }
+/* A list's head: the glyph of its tool on the wall's title line, and its name. */
 .cb-gal-zoom-sec {
-    margin-top: 8px; font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; color: #94a3b8;
+    display: flex; align-items: center; gap: 5px; margin-top: 10px; padding-bottom: 1px;
+    font-size: 10px; font-weight: 600; color: #33506e;
 }
+.cb-gal-zoom-sec > :first-child { color: #6b829b; }
 .cb-gal-zoom-list { display: flex; flex-direction: column; }
 .cb-gal-zoom-actions { margin-top: auto; padding-top: 10px; display: flex; gap: 6px; }
 .cb-gal-zoom-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; display: block; }
@@ -1633,16 +1692,63 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
  * its title line. */
 .cb-view-close { color: #8aa0b8; cursor: pointer; border-radius: 3px; width: 16px; height: 16px; }
 .cb-view-close:hover { color: var(--cb-head-ink, #12324f); background: var(--cb-hover, #e6eff8); }
-/* A view's splitter (ui/workspace_page.py `_VIEW_RESIZER_JS`): a 6 px strip on the frame's left
+/* A view's own tools on its title line (ui/components/hover_menu.py `tool_trigger`): a glyph, then
+ * a name or nothing, then a caret; muted until hovered, like the icon buttons beside them. The
+ * dropdown each opens under the pointer is a white card of rows. */
+.cb-head-tools { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.cb-htool {
+    display: inline-flex; align-items: center; gap: 3px; height: 22px; padding: 0 3px 0 5px; min-width: 0;
+    border-radius: var(--cb-field-radius, 4px); color: #4f6782; cursor: pointer; user-select: none;
+    font-family: 'IBM Plex Sans', sans-serif; font-size: 10px; font-weight: 500; white-space: nowrap;
+}
+.cb-htool:hover { background: var(--cb-hover, #e6eff8); color: var(--cb-head-ink, #12324f); }
+.cb-htool-text { min-width: 0; max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+.cb-htool-caret { color: #9fb2c8; margin-left: -1px; }
+.cb-htool:hover .cb-htool-caret { color: #4f6782; }
+.q-menu.cb-hmenu {
+    border: 1px solid var(--cb-panel-line, #dbe3ec); border-radius: 5px;
+    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.10);
+}
+.cb-hmenu-body { padding: 4px 0; min-width: 190px; font-family: 'IBM Plex Sans', sans-serif; }
+.cb-hmenu-title { font-size: 9px; color: #8aa0b8; padding: 2px 12px 3px; }
+.cb-hmenu-group { font-size: 10px; font-weight: 600; color: #33506e; padding: 6px 12px 1px; }
+.cb-hmenu-item {
+    display: flex; align-items: center; gap: 5px; padding: 3px 12px 3px 8px; cursor: pointer; user-select: none;
+    font-size: 10px; color: #334155; white-space: nowrap;
+}
+.cb-hmenu-item.nested { padding-left: 14px; }
+.cb-hmenu-item:hover { background: var(--cb-hover, #e6eff8); }
+.cb-hmenu-item.on { color: var(--cb-head-ink, #12324f); font-weight: 600; }
+.cb-hmenu-check { color: var(--cb-accent, #4a8fd4); visibility: hidden; flex: 0 0 auto; }
+.cb-hmenu-item.on .cb-hmenu-check { visibility: visible; }
+.cb-hmenu-item.off { color: #b8c7d8; cursor: default; }
+.cb-hmenu-item.off:hover { background: transparent; }
+.cb-hmenu-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cb-hmenu-note { margin-left: 10px; font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #94a3b8; }
+.cb-hmenu-action { color: #33506e; border-top: 1px solid #eef2f6; margin-top: 4px; padding-top: 5px; }
+.cb-hmenu-action .q-icon { color: #6b829b; }
+.cb-hmenu-empty { font-size: 10px; color: #94a3b8; padding: 4px 12px; max-width: 240px; }
+/* A switch standing in for a view's name (the Tomograms / Tilts tabs): the shown tab in the title's
+ * face and ink, the other muted, each with its count. */
+.cb-seg.cb-seg-head { border: none; box-shadow: none; background: transparent; overflow: visible; gap: 2px; }
+.cb-seg-head .cb-seg-btn {
+    font-family: 'IBM Plex Sans Condensed', 'IBM Plex Sans', sans-serif; font-size: 13px; font-weight: 600;
+    letter-spacing: 0.01em; line-height: 20px; padding: 0 5px; color: #8aa0b8; background: transparent;
+    border-right: none; border-radius: 4px;
+}
+.cb-seg-head .cb-seg-btn:hover { color: var(--cb-head-ink, #12324f); background: var(--cb-hover, #e6eff8); }
+.cb-seg-head .cb-seg-btn.active { color: var(--cb-view-head-ink, #12324f); background: transparent; box-shadow: none; }
+.cb-seg-head .cb-seg-badge { font-family: 'IBM Plex Mono', monospace; font-size: 9px; font-weight: 500; }
+/* A view's splitter (ui/workspace_page.py `_VIEW_RESIZER_JS`): an 8 px strip in the gap on the frame's left
  * edge that drags the boundary with the view to its left; a double-click splits the pair evenly.
  * Only a frame with a view to its left shows it (.cb-view-split). The roster divider's look. */
 .cb-view-splitter {
-    display: none; position: absolute; left: 0; top: 0; bottom: 0; width: 6px;
+    display: none; position: absolute; left: -8px; top: 0; bottom: 0; width: 8px;
     cursor: col-resize; z-index: 6;
 }
 .cb-view-split > .cb-view-splitter { display: block; }
 .cb-view-splitter::after {
-    content: ''; position: absolute; left: 0; top: 0; width: 1px; height: 100%;
+    content: ''; position: absolute; left: 50%; top: 0; width: 1px; height: 100%; transform: translateX(-50%);
     background: transparent; transition: background .12s ease, width .12s ease;
 }
 .cb-view-splitter:hover::after,
@@ -1727,14 +1833,22 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
  * events: their container carries a hidden <img> of the same atlas (.cb-img-probe), and its
  * tiles breathe until that one is marked. */
 @keyframes cb-img-wait {
-    0%, 100% { background-color: #e6e9ee; }
-    50%      { background-color: #d4dae2; }
+    0%, 100% { background-color: #eceff3; }
+    50%      { background-color: #c9d1dc; }
 }
 :is(.cb-gal-frame, .cb-tomo-preview, .cb-recon-preview, .cb-tp-img):has(img:not([data-cb-img]), .cb-gal-note-wait),
 :is(.cb-gallery-scroll, .cb-gallery-grid, .cb-ref-tiles):has(> .cb-img-probe:not([data-cb-img]))
     > :is(.cb-gallery-tile, .cb-noise-tile, .cb-template-tile) {
     animation: cb-img-wait 1.4s ease-in-out infinite;
 }
+/* Every other picture the same way, on its own box: no alt text while it loads (a failed one
+ * keeps it), and `ui.image`'s q-img breathes in place of Quasar's spinner. */
+img[src]:not([data-cb-img]) {
+    color: transparent;
+    animation: cb-img-wait 1.4s ease-in-out infinite;
+}
+.q-img:has(.q-img__loading) { animation: cb-img-wait 1.4s ease-in-out infinite; }
+.q-img__loading .q-spinner { display: none; }
 .cb-img-probe { display: none; }
 .cb-gal-note.cb-gal-note-wait { color: #64748b; }
 /* ── Harbor controls ─────────────────────────────────────────────────────────
@@ -1754,10 +1868,9 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 .q-checkbox__label, .q-toggle__label, .q-radio__label {
     font-family: 'IBM Plex Sans', sans-serif; font-size: 10px; color: #33506e;
 }
-/* The tool strip under a view's title line (the Tomograms wall's, the Particles registry's, the
- * Journey's): white, a hairline under it, butted against the title line so the two read as one
- * header in two tiers. */
-.cb-gal-toolbar, .cb-species-header, .cb-journey .cb-jhead {
+/* The tool strip under a view's title line (the Tilts tab's, the Particles registry's): white, a
+ * hairline under it, butted against the title line so the two read as one header in two tiers. */
+.cb-gal-toolbar, .cb-species-header {
     background: var(--cb-surface, #ffffff); border-bottom: 1px solid var(--cb-panel-line, #dbe3ec);
     margin-top: -6px; margin-bottom: 6px; min-height: 31px; box-sizing: border-box;
 }
@@ -1869,6 +1982,14 @@ _PARTICLES_CSS = """
 """
 
 
+# The panels' names are set in the condensed cut of the house face (`VIEW_TITLE_STYLE`,
+# ui/job_plugins/_field_styles.py); without it they fall back to IBM Plex Sans.
+_TITLE_FONT_LINK = (
+    '<link rel="stylesheet" '
+    'href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@500;600&display=swap">'
+)
+
+
 def ensure_assets_loaded() -> None:
     """Inject the stylesheet once per client. The Species page (built with the workspace)
     and the Journey / tomogram-import dialog (built later, lazily) share it, so a second
@@ -1877,6 +1998,7 @@ def ensure_assets_loaded() -> None:
     if getattr(client, "_cb_assets_loaded", False):
         return
     client._cb_assets_loaded = True
+    ui.add_head_html(_TITLE_FONT_LINK)
     ui.add_head_html(f"<style>{_THEME_CSS}{_CB_CSS}{_PARTICLES_CSS}</style>")
     client.run_javascript(_TITLE_TIP_JS)
     client.run_javascript(_IMG_STATE_JS)
@@ -1952,13 +2074,13 @@ _IMG_STATE_JS = """
 # blue tick, a glassy title line on each view ruled off in light blue, blue focus rings, navy actions.
 _THEME_CSS = """
 :root {
-    --cb-page: #f6f8fb; --cb-surface: #ffffff; --cb-rail: #eef3f8; --cb-rail-line: #d3dde8;
+    --cb-page: #f6f8fb; --cb-desk: #e9eef4; --cb-surface: #ffffff; --cb-rail: #eef3f8; --cb-rail-line: #d3dde8;
     --cb-panel: #ffffff; --cb-panel-line: #dbe3ec; --cb-panel-shadow: 0 1px 2px rgba(16, 42, 67, 0.06);
     --cb-radius: 5px; --cb-pad-y: 9px; --cb-pad-x: 11px;
     --cb-head: #edf4fb; --cb-head-line: #c9dbee; --cb-head-ink: #12324f; --cb-head-size: 12px;
     --cb-head-track: 0; --cb-head-pad: 5px; --cb-accent: #4a8fd4; --cb-accent-w: 2px;
     --cb-head-glint: rgba(255, 255, 255, 0.9);
-    --cb-view-head: linear-gradient(180deg, #ffffff, #edf3f9); --cb-view-head-line: #a9c6e4;
+    --cb-view-head: #ffffff; --cb-view-head-line: #dbe3ec;
     --cb-view-head-line-w: 1px; --cb-view-head-ink: #12324f;
     --cb-edge: #c9d6e3; --cb-edge-w: 1px; --cb-edge-shadow: -2px 0 6px rgba(16, 42, 67, 0.06);
     --cb-hover: #e6eff8; --cb-card-line: #dbe3ec; --cb-card-radius: 4px; --cb-cap: #f4f8fc;
