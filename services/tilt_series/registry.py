@@ -34,6 +34,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from services.shared_files import make_shared
 from services.tilt_series.models import Frame, FrameOutput, TiltSeries, TiltSeriesOutput, Tomogram, TomogramOutput
 
 logger = logging.getLogger(__name__)
@@ -126,6 +127,8 @@ class TiltSeriesRegistry:
         # is_stale_on_disk() and get_registry_for() reloads. None = loaded with
         # no index on disk (empty/pre-registry project).
         self._loaded_index_mtime_ns: int | None = None
+        # Set by load() when newer code wrote this registry: what to tell the user.
+        self.version_skew: str | None = None
 
     # ── Paths ──────────────────────────────────────────────────────────────
 
@@ -352,12 +355,7 @@ class TiltSeriesRegistry:
             return
 
         version = tuple(index.get("schema_version", (0, 0)))
-        if version[0] > REGISTRY_SCHEMA_VERSION[0]:
-            logger.warning(
-                "Registry schema version %s is newer than code (%s); proceeding with caution",
-                version,
-                REGISTRY_SCHEMA_VERSION,
-            )
+        newer_on_disk = version > REGISTRY_SCHEMA_VERSION
 
         ts_ids = index.get("tilt_series", [])
         with ThreadPoolExecutor(max_workers=_READ_THREADS, thread_name_prefix="registry-read") as pool:
@@ -378,6 +376,15 @@ class TiltSeriesRegistry:
                 logger.warning("Failed to load TS sidecar %s: %s", ts_path, e)
 
         logger.info("Loaded %d tilt-series from %s", loaded, self.registry_dir)
+        self.version_skew = None
+        if newer_on_disk:
+            skipped = len(ts_ids) - loaded
+            self.version_skew = (
+                f"The tilt-series registry was written by newer code (schema {'.'.join(map(str, version))}) than this "
+                f"server runs ({'.'.join(map(str, REGISTRY_SCHEMA_VERSION))}): {skipped} of {len(ts_ids)} tilt-series "
+                "could not be read and are missing here. Update this checkout before running jobs on this project."
+            )
+            logger.warning("%s: %s", self.registry_dir, self.version_skew)
         try:
             self._loaded_index_mtime_ns = self.index_path.stat().st_mtime_ns
         except FileNotFoundError:
@@ -582,6 +589,7 @@ class TiltSeriesRegistry:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp_", suffix=path.suffix)
         try:
+            make_shared(fd)
             with os.fdopen(fd, "w") as f:
                 f.write(content)
             os.replace(tmp, str(path))
