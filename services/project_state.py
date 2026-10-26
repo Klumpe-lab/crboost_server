@@ -30,8 +30,11 @@ from services.models_base import (
     AcquisitionParams,
     species_palette_color,
 )
+from services.code_version import code_version
 from services.computing.slurm_service import SlurmConfig
+from services.event_log import events
 from services.job_models import AbstractJobParams, jobtype_paramclass
+from services.shared_files import make_shared
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +56,8 @@ logger = logging.getLogger(__name__)
 # 3.9: +review_hold (the jobs a run parked behind an unapproved tilt filter)
 # 3.10: +feature_registry (segmentation features)
 # 3.11: +segmentation_imports (segmentations registered from elsewhere)
-SCHEMA_VERSION: tuple[int, int] = (3, 11)
+# 3.12: +saved_by (the checkout that last saved the project)
+SCHEMA_VERSION: tuple[int, int] = (3, 12)
 
 
 # Sentinel `owner` value marking a project as shared/lab-owned rather than
@@ -744,6 +748,13 @@ class ProjectState(BaseModel):
     # project open so silent data loss becomes visible.
     # exclude=True: never persisted; it describes this load, not the project.
     load_warnings: list[str] = Field(default_factory=list, exclude=True)
+    # `<branch>@<sha>` of the checkout that last saved this file (services/code_version.py).
+    saved_by: str | None = None
+    # Set when the file on disk was written by newer code than this process runs: the message the
+    # UI shows on every open, and the schema to name the one-time backup after. Jobs still run;
+    # what this code cannot parse is lost when it saves, so the first such save keeps a copy.
+    version_skew: str | None = Field(default=None, exclude=True)
+    newer_disk_schema: tuple[int, int] | None = Field(default=None, exclude=True)
 
     movies_glob: str = ""
     mdocs_glob: str = ""
@@ -1159,12 +1170,25 @@ class ProjectState(BaseModel):
 
         # Always stamp the current code's schema version on save
         self.schema_version = SCHEMA_VERSION
+        self.saved_by = code_version()
+
+        if self.newer_disk_schema is not None and save_path.exists():
+            major, minor = self.newer_disk_schema
+            backup = save_path.with_name(f"{save_path.name}.schema-{major}.{minor}.bak")
+            if not backup.exists():
+                shutil.copy2(save_path, backup)
+                events.warning(
+                    "%s · saved by older code than wrote it; the newer file is kept as %s",
+                    save_path.parent.name,
+                    backup.name,
+                )
 
         # One native call writes the JSON: Python's json encoder with an indent is pure Python, and it
         # would hold the GIL (and so the event loop) for the whole write.
         text = self.model_dump_json(indent=2, fallback=str)
         fd, tmp_path = tempfile.mkstemp(dir=str(save_path.parent), suffix=".tmp", prefix=".project_params_")
         try:
+            make_shared(fd)
             with os.fdopen(fd, "w") as f:
                 f.write(text)
             os.rename(tmp_path, str(save_path))
@@ -1241,6 +1265,16 @@ class ProjectState(BaseModel):
                 code_major,
                 code_minor,
             )
+        newer_on_disk = (file_major, file_minor) > SCHEMA_VERSION
+        if newer_on_disk:
+            version_skew = (
+                f"This project was saved by newer CryoBoost code ({data.get('saved_by') or 'version unknown'}, "
+                f"project schema {file_major}.{file_minor}) than this server runs "
+                f"({code_version() or 'version unknown'}, schema {code_major}.{code_minor}). Jobs run as usual, "
+                f"but what this version cannot read is dropped when it saves; the first such save keeps the "
+                f"newer file as {path.name}.schema-{file_major}.{file_minor}.bak. Update this checkout."
+            )
+            events.warning("%s · %s", path.parent.name, version_skew)
 
         # Snapshot before each major migration so a user can recover if
         # something downstream is wrong. Backups are written once
@@ -1287,6 +1321,10 @@ class ProjectState(BaseModel):
             pipeline_active=data.get("pipeline_active", False),
         )
 
+        project_state.saved_by = data.get("saved_by")
+        if newer_on_disk:
+            project_state.version_skew = version_skew
+            project_state.newer_disk_schema = (file_major, file_minor)
         project_state.job_path_mapping = data.get("job_path_mapping", {})
         try:
             project_state.species_registry = [ParticleSpecies(**s) for s in data.get("species_registry", [])]

@@ -712,9 +712,18 @@ class ProjectService:
             project_name = state.project_name
             selected_jobs = list(state.jobs.keys())
 
+            # What the user must see on open: version skew every time, load()'s repairs once.
+            warnings = [m for m in (state.version_skew, self.backend.registry_for(project_dir).version_skew) if m]
+            warnings += state.load_warnings
+            state.load_warnings = []
+
             logger.info("%s · opened (%s)", project_dir.name, project_dir)
             return ok(
-                project_name=project_name, selected_jobs=selected_jobs, movies_glob=movies_glob, mdocs_glob=mdocs_glob
+                project_name=project_name,
+                selected_jobs=selected_jobs,
+                movies_glob=movies_glob,
+                mdocs_glob=mdocs_glob,
+                warnings=warnings,
             )
         except Exception as e:
             logger.exception("Loading project %s failed", project_path)
