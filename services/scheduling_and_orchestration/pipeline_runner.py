@@ -566,19 +566,29 @@ class PipelineRunnerService:
         Returns the SLURM job id. Thin wrapper over _sbatch_script."""
         return await self._sbatch_script(script_path, cwd, dependency_after_ids=after_ids)
 
-    async def _cancel_and_mark(self, project_dir: Path, jobs: list) -> tuple[list[str], list[str]]:
-        """scancel these jobs' supervisors, and the arrays they dispatched, then mark each task that
-        was running as failed: a task killed mid-run writes no status marker of its own and would
-        read running on a Failed job. Returns the cancelled supervisor ids and the errors."""
+    async def _cancel_and_mark(self, project_dir: Path, jobs: dict) -> tuple[dict, list[str]]:
+        """scancel each job's supervisor (`jobs`: instance_id -> job model). For every job SLURM
+        accepted the cancel of, and every one without a supervisor id (nothing in SLURM to cancel),
+        scancel the array it dispatched, then mark each task that was running as failed: a task
+        killed mid-run writes no status marker of its own and would read running on a Failed job.
+        Returns those jobs and the errors. A job whose scancel failed is left out and untouched:
+        scancel exits 0 for a job that has ended, so the controller did not answer or refused."""
         from services.computing.slurm_service import normalize_slurm_ids
 
+        slurm = self.backend.slurm_service
+        sids = {iid: str(jm.slurm_job_id) for iid, jm in jobs.items() if getattr(jm, "slurm_job_id", None)}
+        # One scancel per job, so a failure names its job; side by side, so a controller that does
+        # not answer costs one timeout, not one per job.
+        results = dict(zip(sids, await asyncio.gather(*(slurm.scancel_jobs([s]) for s in sids.values())), strict=True))
         errors: list[str] = []
-        cancelled = normalize_slurm_ids([str(jm.slurm_job_id) for jm in jobs if getattr(jm, "slurm_job_id", None)])
-        if cancelled:
-            res = await self.backend.slurm_service.scancel_jobs(cancelled)
-            if not res.get("success"):
-                errors.append(f"scancel failed for {', '.join(cancelled)}: {res.get('error')}")
-        job_dirs = [d for jm in jobs if (d := self._resolve_afterok_job_dir(jm, project_dir)) is not None]
+        stopped = {}
+        for iid, jm in jobs.items():
+            res = results.get(iid)
+            if res is not None and not res["success"]:
+                errors.append(f"{iid}: scancel {sids[iid]} failed ({res['error']}), so it is left as it is")
+            else:
+                stopped[iid] = jm
+        job_dirs = [d for jm in stopped.values() if (d := self._resolve_afterok_job_dir(jm, project_dir)) is not None]
         arrays = normalize_slurm_ids([a for d in job_dirs if (a := manifest_array_job_id(d))])
         if arrays:
             # A stopped supervisor cancels its array itself; this makes sure before the tasks are
@@ -592,56 +602,60 @@ class PipelineRunnerService:
                 continue
             if n:
                 logger.info("Marked %d stopped task(s) as .fail in %s", n, d)
-        return cancelled, errors
+        return stopped, errors
 
     async def stop_and_cleanup(self, project_dir: Path) -> dict[str, Any]:
         """Stop the run: scancel every live job by its persisted slurm_job_id (which covers a
-        still-PENDING dependent with no run.out or manifest), mark them FAILED, and clear
-        pipeline_active."""
+        still-PENDING dependent with no run.out or manifest) and mark FAILED each one SLURM accepted
+        the cancel of. pipeline_active clears only when every one was; a job whose scancel failed
+        keeps its status, and the reconciler goes on following it."""
         state = self.backend.state_service.state_for(project_dir)
         # Interactive jobs are not part of the run being stopped -- they manage their
         # own status and were never deployed by the orchestrator (a per-list extraction
         # submitted from the Species page, a DL tilt filter). Cancelling them here would
         # scancel unrelated live work and leave it reading Failed forever.
-        live = [
-            jm
-            for jm in state.jobs.values()
+        live = {
+            iid: jm
+            for iid, jm in state.jobs.items()
             if getattr(jm, "slurm_job_id", None)
             and not getattr(jm, "IS_INTERACTIVE", False)
             and jm.execution_status in (JobStatus.RUNNING, JobStatus.QUEUED, JobStatus.SCHEDULED)
-        ]
-        cancelled, errors = await self._cancel_and_mark(project_dir, live)
-        for jm in live:
+        }
+        stopped, errors = await self._cancel_and_mark(project_dir, live)
+        for jm in stopped.values():
             jm.execution_status = JobStatus.FAILED
-        state.pipeline_active = False
+        state.pipeline_active = len(stopped) < len(live)
         # A stopped run has nothing left to resume: jobs parked behind a review stay as they
         # are, and Approve no longer submits them.
         state.review_hold = None
         await self.backend.state_service.save_project(project_path=project_dir, force=True)
         if errors:
-            return err("; ".join(errors), cancelled_slurm_jobs=len(cancelled), errors=errors)
-        return ok(cancelled_slurm_jobs=len(cancelled), errors=[])
+            return err("; ".join(errors), cancelled_slurm_jobs=len(stopped), errors=errors)
+        return ok(cancelled_slurm_jobs=len(stopped), errors=[])
 
     async def cancel_job(self, project_dir: Path, instance_id: str) -> dict[str, Any]:
         """Cancel one live job by its persisted slurm_job_id (which works for a still-PENDING
-        dependent with no run.out or manifest) and mark it FAILED. pipeline_active stays:
-        cancelling one supervisor parks its afterok dependents (DependencyNeverSatisfied), which
-        reconcile_afterok scancels, and its pass 4 winds pipeline_active down only when every job
-        is terminal. Clearing it here would stop the monitor ticking and freeze the rest of the
-        live chain."""
+        dependent with no run.out or manifest) and, once SLURM accepted the cancel, mark it FAILED;
+        a failed scancel leaves it as it is and says why. pipeline_active stays: cancelling one
+        supervisor parks its afterok dependents (DependencyNeverSatisfied), which reconcile_afterok
+        scancels, and its pass 4 winds pipeline_active down only when every job is terminal.
+        Clearing it here would stop the monitor ticking and freeze the rest of the live chain."""
         state = self.backend.state_service.state_for(project_dir)
         job_model = state.jobs.get(instance_id)
         if not job_model:
             return err(f"Job '{instance_id}' not found in state")
         if job_model.execution_status not in (JobStatus.RUNNING, JobStatus.QUEUED):
             return err(f"Job is not live (status: {job_model.execution_status})")
-        cancelled, warnings = await self._cancel_and_mark(project_dir, [job_model])
+        stopped, warnings = await self._cancel_and_mark(project_dir, {instance_id: job_model})
+        if not stopped:
+            return err("; ".join(warnings))
         for warning in warnings:
             logger.warning("cancel_job: %s", warning)
         job_model.execution_status = JobStatus.FAILED
         await self.backend.state_service.save_project(project_path=project_dir, force=True)
+        sid = job_model.slurm_job_id
         return ok(
-            cancelled_slurm_ids=cancelled,
-            message=f"Cancelled {instance_id}" + (f" (SLURM {', '.join(cancelled)})" if cancelled else ""),
+            cancelled_slurm_ids=[str(sid)] if sid else [],
+            message=f"Cancelled {instance_id}" + (f" (SLURM {sid})" if sid else ""),
             warnings=warnings,
         )

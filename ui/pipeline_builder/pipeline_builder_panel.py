@@ -777,10 +777,17 @@ class PipelineBuilderPanel:
         self.poller.stop_all_timers()
         self.ui_mgr.set_pipeline_running(False)
         result = await self.backend.pipeline_runner.stop_and_cleanup(project_path)
+        # A job whose cancel SLURM did not accept is still live, and so is the run: keep following it.
+        still_live = bool(get_project_state_for(project_path).pipeline_active)
+        if still_live:
+            self.ui_mgr.set_pipeline_running(True)
+            self.poller.start()
         self.rebuild_pipeline_ui()
 
         if result.get("success"):
             ui.notify("Pipeline stopped.", type="warning", timeout=4000)
+        elif still_live:
+            ui.notify(f"Not everything stopped: {result.get('error')}", type="negative", timeout=10000)
         else:
             ui.notify(f"Stopped (with warnings: {'; '.join(result.get('errors', []))})", type="warning", timeout=6000)
 
