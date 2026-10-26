@@ -13,7 +13,7 @@ import sys
 import traceback
 from pathlib import Path
 
-from drivers.driver_base import ToolCommand, add_gain_options, get_driver_context, run_tool
+from drivers.driver_base import ToolCommand, add_gain_options, get_driver_context, run_tool, start_supervisor
 from services.jobs.ts_import import TsImportParams
 
 
@@ -75,6 +75,7 @@ def build_ts_import_commands(params: TsImportParams, paths: dict, job_dir: Path)
 
 
 def main():
+    start_supervisor()
     print("[DRIVER] ts_import driver started.", flush=True)
 
     try:

@@ -12,7 +12,7 @@ import sys
 import traceback
 from pathlib import Path
 
-from drivers.driver_base import ToolCommand, get_driver_context, run_tool
+from drivers.driver_base import ToolCommand, get_driver_context, run_tool, start_supervisor
 from services.jobs.refine3d import Refine3DParams
 from services.subtomo_merge import _parse_optimisation_set, _read_particles_star, write_optimisation_set
 
@@ -112,6 +112,7 @@ def continue_command(fresh: ToolCommand, optimiser: Path, output_root: Path) -> 
 
 
 def main():
+    start_supervisor()
     print("--- SLURM JOB START (Refine3D) ---", flush=True)
 
     try:

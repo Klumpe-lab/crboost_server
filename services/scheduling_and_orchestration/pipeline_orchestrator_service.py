@@ -19,6 +19,7 @@ from services.result import err, ok
 from services.project_state import AbstractJobParams, JobCategory, JobType, JobStatus, ReviewHold
 from services.segmentation.search_region import search_region_problem
 from services.subsets import subset_problem, write_subset_star
+from services.supervisor_owner import read_owner
 from services.tilt_series import get_registry_for
 from typing import TYPE_CHECKING
 
@@ -285,12 +286,12 @@ class PipelineOrchestratorService:
 
     async def _live_in_reused_dirs(self, project_dir: Path, state, instances_to_run: list[str]) -> str | None:
         """Why the run must wait, or None: a FAILED job it would retry in its own dir still has work
-        in SLURM there. Its supervisor can be alive while its status reads Failed; more often a
-        supervisor killed at its time limit has left its array running, and a resubmit would
-        dispatch those tilt series a second time while a second supervisor rebuilt the inputs they
-        read. Refused rather than cancelled: the live tasks are doing the work a rerun would repeat.
-        One squeue for every id; a failed squeue, or a task manifest that does not parse, refuses
-        too."""
+        in SLURM there. Its supervisor (the one recorded, or the one the dir's owner file names) can
+        be alive while its status reads Failed; more often a supervisor killed at its time limit has
+        left its array running, and a resubmit would dispatch those tilt series a second time while
+        a second supervisor rebuilt the inputs they read. Refused rather than cancelled: the live
+        tasks are doing the work a rerun would repeat. One squeue for every id; a failed squeue, or
+        a task manifest or owner file that does not parse, refuses too."""
         reused = {
             iid: rel
             for iid in instances_to_run
@@ -299,23 +300,28 @@ class PipelineOrchestratorService:
         if not reused:
             return None
 
-        def read_array_ids() -> tuple[dict[str, str | None], list[str]]:
-            arrays: dict[str, str | None] = {}
+        def read_dirs() -> tuple[dict[str, tuple[str | None, str | None]], list[str]]:
+            found: dict[str, tuple[str | None, str | None]] = {}  # iid -> (owner's slurm id, array id)
             unreadable: list[str] = []
             for iid, rel in reused.items():
                 try:
-                    arrays[iid] = recorded_array_job_id(project_dir / rel)
+                    owner = read_owner(project_dir / rel)
+                    found[iid] = (owner.slurm_job_id if owner else None, recorded_array_job_id(project_dir / rel))
                 except (OSError, ValueError) as e:
-                    unreadable.append(f"{iid} ({Path(rel).name}): {e}, so whether its array still runs is unknown.")
-            return arrays, unreadable
+                    unreadable.append(
+                        f"{iid} ({Path(rel).name}): {e}, so whether it still runs is unknown (once squeue shows "
+                        "nothing of it, delete that file)."
+                    )
+            return found, unreadable
 
-        arrays, unreadable = await asyncio.to_thread(read_array_ids)
+        found, unreadable = await asyncio.to_thread(read_dirs)
         if unreadable:
             return " ".join(unreadable)
-        # Per job, its supervisor first (a live one is the job itself still running), then its array.
+        # Per job, its supervisors first (a live one is the job itself still running), then its array.
         watched: dict[str, list[tuple[str, str]]] = {}
         for iid in reused:
-            pairs = (("slurm", state.jobs[iid].slurm_job_id), ("array", arrays[iid]))
+            owner_id, array_id = found[iid]
+            pairs = (("slurm", state.jobs[iid].slurm_job_id), ("slurm", owner_id), ("array", array_id))
             watched[iid] = [(kind, str(jid)) for kind, jid in pairs if jid]
         ids = [jid for pairs in watched.values() for _, jid in pairs]
         live = await self.backend.slurm_service.live_task_counts(ids) if ids else {}

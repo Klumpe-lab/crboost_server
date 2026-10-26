@@ -8,11 +8,12 @@ import sys
 import traceback
 from pathlib import Path
 
-from drivers.driver_base import ToolCommand, get_driver_context, run_tool
+from drivers.driver_base import ToolCommand, get_driver_context, run_tool, start_supervisor
 from services.job_models import Class3DParams
 
 
 def main():
+    start_supervisor()
     print("--- SLURM JOB START (Class3D) ---", flush=True)
 
     try:

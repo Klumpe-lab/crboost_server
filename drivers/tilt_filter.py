@@ -22,7 +22,7 @@ import traceback
 from pathlib import Path
 
 try:
-    from drivers.driver_base import get_driver_context
+    from drivers.driver_base import get_driver_context, start_supervisor
     from services.jobs.tilt_filter import (
         COMMIT_RECORD,
         LIVENESS_MIN_STD,
@@ -184,6 +184,7 @@ def commit(job_model: TiltFilterParams, job_dir: Path, project_path: Path, model
 
 
 def main():
+    start_supervisor()
     print("Python", sys.version, flush=True)
     print("--- SLURM JOB START (tilt_filter) ---", flush=True)
 

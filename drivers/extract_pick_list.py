@@ -34,7 +34,7 @@ import sys
 import traceback
 from pathlib import Path
 
-from drivers.driver_base import ToolCommand, get_driver_context, run_tool
+from drivers.driver_base import ToolCommand, get_driver_context, run_tool, start_supervisor
 from services.job_models import ExtractPickListParams
 from services.particles.list_extraction import (
     build_list_optset,
@@ -113,6 +113,7 @@ def _run(params: ExtractPickListParams, job_dir: Path, project_binds: list[str])
 
 
 def main() -> None:
+    start_supervisor()
     # qsub.sh cd's into the list's out dir before invoking us, so cwd IS the job dir.
     # Resolve it BEFORE the bootstrap: get_driver_context exits the process on a missing
     # or mistyped instance, and a failure with no result.json leaves the awaiter with

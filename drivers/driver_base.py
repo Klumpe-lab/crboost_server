@@ -4,6 +4,7 @@
 Shared bootstrap logic for all CryoBoost drivers.
 """
 
+import atexit
 import subprocess
 import sys
 import os
@@ -16,7 +17,9 @@ from typing import Generic, TypeVar
 
 try:
     from services.project_state import ProjectState, AbstractJobParams, JobType
+    from services.code_version import REPO_ROOT, code_version
     from services.computing.container_service import get_container_service
+    from services.supervisor_owner import acquire, release
 except ImportError as e:
     print("FATAL: driver_base could not import services. Check PYTHONPATH.", file=sys.stderr)
     print(f"PYTHONPATH: {os.environ.get('PYTHONPATH')}", file=sys.stderr)
@@ -40,6 +43,26 @@ def project_binds(state: ProjectState, project_path: Path) -> list[str]:
     if state.acquisition.gain_reference_path:
         paths.append(Path(state.acquisition.gain_reference_path).parent)
     return [str(p.resolve()) for p in paths]
+
+
+def start_supervisor() -> None:
+    """A supervisor's first step (the process qsub.sh starts in the job dir), before anything touches
+    the dir: say which code runs it, then claim the dir until this process exits
+    (services.supervisor_owner). Exits 1, touching nothing, while another supervisor still runs
+    there. A driver started by hand, outside SLURM, claims nothing."""
+    print(f"[DRIVER] crboost {code_version() or '(not a git checkout)'} from {REPO_ROOT}", flush=True)
+    slurm_job_id = os.environ.get("SLURM_JOB_ID")
+    if not slurm_job_id:
+        print("[DRIVER] Not started by SLURM: the job dir is not claimed", flush=True)
+        return
+    job_dir = Path.cwd().resolve()
+    claim = acquire(job_dir, slurm_job_id)
+    if not claim["success"]:
+        print(f"[DRIVER] {claim['error']}; exiting without touching it", flush=True)
+        sys.exit(1)
+    if claim["took_over_from"] is not None:
+        print(f"[DRIVER] Took the job dir over from {claim['took_over_from'].describe()}, which has ended", flush=True)
+    atexit.register(release, job_dir, claim["owner"])
 
 
 def load_project_state(project_path: Path) -> ProjectState:
