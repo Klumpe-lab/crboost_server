@@ -15,7 +15,7 @@ a red border is the one exclusion, whoever set it (a manual label, the confidenc
 threshold, the committed verdict), and what only informs sits over the image as small icons
 (dark exposure, not in alignment's output, an outlier in a ticked metric), each explained on
 hover. A mosaic cell shows the committed exclusion and dots for the same information, a header
-strip one tick per tilt, and a tomogram's caption sums its series up. A card's caption carries
+strip one tick per tilt, and a tomogram's zoom sums its series up. A card's caption carries
 the tilt's recorded numbers, shown as the gallery's metrics menu says, violet where the number
 is an outlier among the project's tilts at the same stage tilt. A dark exposure and an outlier
 are markers only: nothing here excludes a tilt.
@@ -120,14 +120,16 @@ GRID_OUT_JS = """(event) => {
     if (pop && !pop.dataset.pinned) pop.style.display = 'none';
 }"""
 
-# A strip tick (a beam's line, grouped by position) and the magnifier open the viewer; a caption
-# or an info icon pins its popover until the next click elsewhere or Escape; the rest of a card
-# is the card's own click (in the review it toggles the tilt's exclusion, elsewhere it opens the
-# viewer).
+# A strip tick (a beam's line, grouped by position) and the magnifier open the viewer; the rest of a
+# beam's line is its tilt series' click; a caption or an info icon pins its popover until the next
+# click elsewhere or Escape; the rest of a card is the card's own click (in the review it toggles the
+# tilt's exclusion, elsewhere it opens the viewer).
 GRID_CLICK_JS = (
     """(event) => {
     const tick = event.target.closest('.cb-tp-tick');
     if (tick) { emit({key: tick.dataset.key, zoom: true}); return; }
+    const beam = event.target.closest('.cb-tp-beam');
+    if (beam) { emit({ts: beam.dataset.ts}); return; }
     const card = event.target.closest('.cb-tp-card');
     if (!card) return;
     if (event.target.closest('.cb-tp-zoom')) { emit({key: card.dataset.key, zoom: true}); return; }
@@ -1064,17 +1066,16 @@ def _used_title(s: SeriesSummary) -> str:
     return "\n".join(lines)
 
 
-def tomogram_caption_html(group: dict, *, compact: bool) -> str:
-    """A tomogram tile's caption numbers: the tilts used of the series' total; unless
-    ``compact``, the stage-tilt range in use and the series' CTF fit; in amber, the dark
-    exposures in use. The tooltip breaks them down."""
+def tomogram_caption_html(group: dict) -> str:
+    """A tomogram's tilts summed up, in the zoom: the tilts used of the series' total, the
+    stage-tilt range in use and the series' CTF fit; in amber, the dark exposures in use. The
+    tooltip breaks them down."""
     s: SeriesSummary = group["summary"]
     parts = [f"{s.used}/{s.total}" if s.used is not None else f"{s.total} tilts"]
-    if not compact:
-        if s.kept_range is not None:
-            parts.append(f"{_signed(s.kept_range[0], 0)}…{_signed(s.kept_range[1], 0)}°")
-        if group["ctf_fit"] is not None:
-            parts.append(f"{group['ctf_fit']:.1f} Å")
+    if s.kept_range is not None:
+        parts.append(f"{_signed(s.kept_range[0], 0)}…{_signed(s.kept_range[1], 0)}°")
+    if group["ctf_fit"] is not None:
+        parts.append(f"{group['ctf_fit']:.1f} Å")
     text = html.escape(" · ".join(parts))
     if s.dark_in_use:
         text += f' · <span style="color:{_AMBER_TEXT};font-weight:600;">{len(s.dark_in_use)} dark</span>'
@@ -1103,6 +1104,40 @@ def _caption_title(group: dict) -> str:
     elif not group["counts_known"]:
         lines.append("Dark exposures cannot be marked: the registry holds no mdoc counts for this series.")
     return "\n".join(lines)
+
+
+# The least scroll that brings an element into view in its nearest scroll box (never the page around it),
+# once the browser has laid out what the server just changed: its top when that is above the box, else as
+# much of it as fits without its top leaving. Given a tilt series, the element inside it that carries its
+# `data-ts`, when there is one (a beam's line in an open position).
+_SCROLL_INTO_VIEW_JS = """setTimeout(() => {
+    const host = getHtmlElement(__ID__), ts = __TS__;
+    const inner = host && ts ? host.querySelector('[data-ts="' + CSS.escape(ts) + '"]') : null;
+    const el = inner || host;
+    if (!el || !el.offsetParent) return;
+    let box = el.parentElement;
+    while (box && !/(auto|scroll)/.test(getComputedStyle(box).overflowY)) box = box.parentElement;
+    if (!box) return;
+    const r = el.getBoundingClientRect(), b = box.getBoundingClientRect();
+    let dy = 0;
+    if (r.top < b.top) dy = r.top - b.top - 8;
+    else if (r.bottom > b.bottom) dy = Math.max(0, Math.min(r.bottom - b.bottom + 8, r.top - b.top - 8));
+    if (dy) box.scrollBy({top: dy, behavior: 'smooth'});
+}, 80)"""
+
+# Grouped by position, a beam's line is part of its position's HTML: the selected one is marked in the browser.
+_SELECT_BEAM_JS = """(() => {
+    const root = getHtmlElement(__ROOT__), ts = __TS__;
+    if (!root) return;
+    for (const el of root.querySelectorAll('.cb-tp-beam.selected')) el.classList.remove('selected');
+    const el = ts ? root.querySelector('.cb-tp-beam[data-ts="' + CSS.escape(ts) + '"]') : null;
+    if (el) el.classList.add('selected');
+})()"""
+
+
+def scroll_into_view(el: Any, ts: str | None = None) -> None:
+    """Bring `el` (or, given `ts`, its element of that tilt series) into view when it is out of it."""
+    el.client.run_javascript(_SCROLL_INTO_VIEW_JS.replace("__ID__", str(el.id)).replace("__TS__", json.dumps(ts)))
 
 
 # ── The gallery ───────────────────────────────────────────────────────────────
@@ -1137,7 +1172,12 @@ class TiltGallery:
 
     Review mode (the job page): a click on a card calls ``on_toggle(key)`` and the magnifier
     opens the full-size viewer; elsewhere a card click opens the viewer too. Hovering a caption or
-    an info icon shows its popover, and a click pins it. ``on_metrics`` hears the metrics menu."""
+    an info icon shows its popover, and a click pins it. ``on_metrics`` hears the metrics menu.
+
+    With ``on_select`` (the Tilts tab), a click on a series' header, a beam's line or a tilt also
+    calls ``on_select(ts)``; the host marks its selection with ``set_selected`` (the series' group,
+    grouped by position its position and its beam's line) and brings it into view with
+    ``scroll_to_selected``."""
 
     def __init__(
         self,
@@ -1146,6 +1186,7 @@ class TiltGallery:
         review: bool = False,
         on_toggle: Callable[[str], Any] | None = None,
         on_metrics: Callable[[], Any] | None = None,
+        on_select: Callable[[str], Any] | None = None,
         size: str = "m",
         size_control: bool = False,
     ) -> None:
@@ -1153,10 +1194,14 @@ class TiltGallery:
         self.review = review
         self.on_toggle = on_toggle
         self.on_metrics = on_metrics
+        self.on_select = on_select
+        self.selected: str | None = None
         self.size = size
         self.size_control = size_control
         self.groups: list[dict] = []
         self.facts: dict = {}
+        self._group_of: dict[str, dict] = {}
+        self._ts_of_key: dict[str, str] = {}  # every tilt's series, by frame id
         # Kept on the gallery, so a re-render, a Refresh or a host's poll keeps them.
         self.grouping = "series"
         self.expanded: set[str] = set()  # series open, grouped by series
@@ -1179,8 +1224,10 @@ class TiltGallery:
 
     def set_data(self, groups: list[dict], facts: dict) -> None:
         self.groups, self.facts = groups, facts
+        self._group_of = {g["ts"]: g for g in groups}
         self._tilt_by_key = {t["key"]: t for g in groups for t in g["tilts"]}
         self._frame_keys = {s.frame_id for g in groups for s, _title in g["ticks"]}
+        self._ts_of_key = {s.frame_id: g["ts"] for g in groups for s, _title in g["ticks"]}
         if self.sort not in self._sort_options():
             self.sort = "angle"
         if self.show not in dict(self._show_options()):
@@ -1325,6 +1372,8 @@ class TiltGallery:
         classes = ["cb-tg-root", *(f"cb-tg-m-{k}" for k in sorted(self.metrics_on))]
         if self.review:
             classes.append("cb-tg-review")
+        if self.on_select is not None:
+            classes.append("cb-tg-select")
         self.root = (
             ui.element("div")
             .classes(" ".join(classes))
@@ -1389,7 +1438,7 @@ class TiltGallery:
 
     def _render_group(self, group: dict) -> None:
         ts = group["ts"]
-        box = ui.element("div").classes("cb-tp-group")
+        box = ui.element("div").classes("cb-tp-group" + (" selected" if ts == self.selected else ""))
         with box:
             head = ui.element("div").classes("cb-tp-head")
             with head:
@@ -1403,7 +1452,7 @@ class TiltGallery:
             body = ui.element("div").style("padding: 4px; display: none;")
         ref = {"box": box, "body": body, "chevron": chevron, "summary": summary, "group": group, "grid": None}
         self._groups_ui[ts] = ref
-        head.on("click", lambda _e, t=ts: self._set_group_open(t, t not in self.expanded))
+        head.on("click", lambda _e, t=ts: self._click_head(t))
         if not self._shown(group):
             box.set_visibility(False)
         if ts in self.expanded:
@@ -1413,7 +1462,8 @@ class TiltGallery:
         """One box per stage position: the header, and when open each beam's slim line followed
         by its cards, flush with the box's left edge."""
         key = pos["key"]
-        box = ui.element("div").classes("cb-tp-group")
+        held = any(g["ts"] == self.selected for g in pos["groups"])
+        box = ui.element("div").classes("cb-tp-group" + (" selected" if held else ""))
         with box:
             head = ui.element("div").classes("cb-tp-head")
             with head:
@@ -1483,7 +1533,8 @@ class TiltGallery:
         for g in pos["groups"]:
             if not self._shown(g):
                 continue
-            parts.append(f'<div class="cb-tp-beam" data-ts="{html.escape(g["ts"])}">{beam_line_html(g, span)}</div>')
+            cls = "cb-tp-beam" + (" selected" if g["ts"] == self.selected else "")
+            parts.append(f'<div class="{cls}" data-ts="{html.escape(g["ts"])}">{beam_line_html(g, span)}</div>')
             parts.append(self._grid(g))
         return "".join(parts)
 
@@ -1602,13 +1653,63 @@ class TiltGallery:
                 .replace("__BEAMS__", json.dumps(beams))
             )
 
+    # ── Selection ──
+
+    def set_selected(self, ts: str | None) -> None:
+        """Mark `ts` as the host's selection, in place: its group, grouped by position its position and
+        its beam's line."""
+        prev, self.selected = self.selected, ts
+        if prev == ts:
+            return
+        for t, on in ((prev, False), (ts, True)):
+            ref = self._ref_of(t)
+            if ref is None or ref["box"].is_deleted:
+                continue
+            if on:
+                ref["box"].classes(add="selected")
+            else:
+                ref["box"].classes(remove="selected")
+        if self.grouping == "position" and self.root is not None and not self.root.is_deleted:
+            self.root.client.run_javascript(
+                _SELECT_BEAM_JS.replace("__ROOT__", str(self.root.id)).replace("__TS__", json.dumps(ts))
+            )
+
+    def scroll_to_selected(self) -> None:
+        """Bring the selection into view when it is out of it: its series' group, grouped by position its
+        beam's line when its position is open, else its position."""
+        ref = self._ref_of(self.selected)
+        if ref is not None and not ref["box"].is_deleted:
+            scroll_into_view(ref["box"], self.selected if self.grouping == "position" else None)
+
+    def _ref_of(self, ts: str | None) -> dict | None:
+        """The box a tilt series shows in: its group, grouped by position its position's."""
+        group = self._group_of.get(ts) if ts else None
+        if group is None:
+            return None
+        if self.grouping == "position":
+            return self._pos_ui.get(_position_key(group))
+        return self._groups_ui.get(ts)
+
+    def _click_head(self, ts: str) -> None:
+        self._set_group_open(ts, ts not in self.expanded)
+        self._pick(ts)
+
+    def _pick(self, ts: str | None) -> None:
+        if ts and self.on_select is not None:
+            self.on_select(ts)
+
     # ── Clicks ──
 
     def _on_click(self, e) -> None:
         args = e.args or {}
+        if "ts" in args:
+            # A beam's line, grouped by position.
+            self._pick(args["ts"])
+            return None
         key = args.get("key", "")
         if self.review and not args.get("zoom"):
             return self.on_toggle(key) if self.on_toggle is not None else None
+        self._pick(self._ts_of_key.get(key))
         tilt = self._tilt_by_key.get(key)
         if tilt is None:
             if key in self._frame_keys:

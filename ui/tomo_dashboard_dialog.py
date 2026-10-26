@@ -58,7 +58,7 @@ from services.dashboard_data import (
     warp_hand_from_registry,
 )
 from services.job_lineage import job_dirs, recon_of
-from services.models_base import InstanceId, JobType
+from services.models_base import DenoiseMethod, InstanceId, JobType
 from services.tilt_series.warp_curves import CtfFit1D, fit_window_inv_a, normalized_overlay, read_frameseries_fit
 from services.tilt_series_service import ensure_tilt_thumbnails
 from services.pixel_chain import apply_sanity_rules, compute_pixel_chain
@@ -71,7 +71,8 @@ from ui.components.copyable import copy_3dmod_chip, copy_on_click
 from ui.components.feature_layers import FeatureFills, layers_for_ts
 from ui.components.reactive import owned_timer
 from ui.components.recon_compare import matched_slabs, recon_versions_for_ts, retry_match
-from ui.components.segmented import Segmented, render_segmented
+from ui.components.hover_menu import Choice, ChoiceRows, hover_menu, tool_trigger
+from ui.components.segmented import render_segmented
 from ui.current_project import current_project_state
 from ui.dashboard.css import ensure_assets_loaded
 from ui.dashboard.figures import (
@@ -91,6 +92,10 @@ from ui.particles.pick_viewer import render_imported_particles_section, render_p
 
 logger = logging.getLogger(__name__)
 
+# How long a selection made in the Tomograms view rests before the Journey shows it: stepping the
+# zoom with ← → passes through many, and each shown is a full render.
+_FOLLOW_SETTLE_S = 0.3
+
 
 # ---------------------------------------------------------------------------
 # Dashboard panel prefs — user-level, persisted across projects + TS
@@ -98,7 +103,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # (key, label) for every detail section, in render order. The label shows in the
-# section selector at the right end of the header line; the key is the stable pref
+# section selector at the right end of the title line; the key is the stable pref
 # id AND the gate key used in _render_main_pane_for_ts.
 _DASHBOARD_PANEL_KEYS: list[tuple[str, str]] = [
     ("dataset", "Dataset"),
@@ -148,20 +153,24 @@ def _select_panel(key: str, on_change) -> None:
     on_change()
 
 
-def _build_panel_selector(host, on_change) -> Segmented:
-    """Single-select section switch (radio semantics: "All" or exactly one section)
-    at the right end of the header line, in the house segmented chrome. Built once
-    as journey chrome — a click updates the user pref, persists it, and re-renders
-    the detail pane via on_change."""
-    host.clear()
+def _build_panel_selector(host, on_change) -> None:
+    """The section switch at the right end of the title line ("All sections" or exactly one): a tool
+    naming the shown section, its dropdown opening under the pointer. Built once as journey chrome —
+    a pick updates the user pref, persists it, and re-renders the detail pane via on_change."""
+    labels = {_ALL_PANELS: "All sections", **dict(_DASHBOARD_PANEL_KEYS)}
 
     def _switch(key: str) -> None:
-        seg.set_active(key)
+        rows.set_active(key)
+        text.set_text(labels[key])
         _select_panel(key, on_change)
 
+    host.clear()
     with host:
-        seg = Segmented([(_ALL_PANELS, "All"), *_DASHBOARD_PANEL_KEYS], _selected_panel(), _switch)
-    return seg
+        trigger, text = tool_trigger("view_agenda", labels[_selected_panel()])
+        _menu, body = hover_menu(trigger, align="right", auto_close=True)
+        with body:
+            ui.label("Sections shown").classes("cb-hmenu-title")
+            rows = ChoiceRows([Choice(k, lbl) for k, lbl in labels.items()], _selected_panel(), _switch)
 
 
 # ---------------------------------------------------------------------------
@@ -209,34 +218,64 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
     # the active species + this tomogram. None on a standalone journey mount.
     _open_viewer = (callbacks or {}).get("open_pick_viewer")
     _, ts_names0 = collect_dashboard_journey(state, project_path)
-    selected = {"ts": ts_names0[0] if ts_names0 else None}
+    # The workspace's selected tilt series (the Tomograms view may have made one) when the Journey has
+    # it, else the first; whichever it shows becomes the selection (`_publish`).
+    shared = (callbacks or {}).get("selected_ts")
+    chosen = shared() if shared is not None else None
+    selected = {"ts": chosen if chosen in ts_names0 else (ts_names0[0] if ts_names0 else None)}
+
+    def _publish(ts: str | None) -> None:
+        """The tilt series the Journey shows is the workspace's selection: the Tomograms view follows."""
+        select = (callbacks or {}).get("select_ts")
+        if select is not None and ts:
+            select(ts, "journey")
+
+    _publish(selected["ts"])
 
     # Per-mount auto-kick dedup. Cleared on build so a reload after the user
     # fixed a stuck job re-triggers generation.
     reset_auto_kick_state()
     ensure_assets_loaded()
 
+    # Everything about the selected tilt series that is not a section sits on the view's title line:
+    # after its name the tilt series (whose dropdown switches to another), at its right end the ⓘ, the
+    # exclude switch and the section selector. Mounted outside a view frame, a bar above the pane holds them.
+    view_head = (callbacks or {}).get("view_head")
+    head = view_head("journey") if view_head is not None else None
     container.clear()
     # The Journey's own type, colours and chart tiles hang off this class (ui/dashboard/css.py).
     container.classes(add="cb-journey")
     with container:
-        # Column layout: one thin header line about the selected tilt series (its
-        # dropdown holds the whole-project overview) with the section selector at its
-        # right end, and the selected TS's detail pane below.
-        with ui.element("div").classes("cb-jhead"):
-            strip_container = ui.element("div").classes("cb-jhead-left")
-            with ui.element("div").classes("cb-jhead-right"):
-                panel_toggle_container = ui.element("div").style("display: flex;")
+        if head is None:
+            with ui.element("div").classes("cb-jhead"):
+                lead = ui.element("div").classes("cb-jhead-left")
+                tools = ui.element("div").classes("cb-jhead-right")
+        else:
+            lead, tools = head["lead"], head["tools"]
+            lead.clear()
+            tools.clear()
         main_area = (
             ui.element("div")
             .classes("cb-main")
             .style("flex: 1 1 0; min-height: 0; overflow-y: auto; overflow-x: hidden;")
         )
+    with lead:
+        strip_lead = ui.element("div").style("display: contents;")
+    with tools:
+        strip_tools = ui.element("div").classes("cb-head-tools")
+        panel_toggle_container = ui.element("div").classes("cb-head-tools")
 
     _strip_sig: dict[str, object] = {"sig": None}
     _main_sig: dict[str, object] = {"sig": None}
     col_els: dict[str, object] = {}
     _sel_gen = {"n": 0}
+    # A tilt series the Tomograms view selected, waiting to be shown (`_follow_ts`).
+    _follow = {"ts": None, "n": 0, "task": None}
+
+    def _drop_follow() -> None:
+        """A tilt series chosen in the Journey, or for it, supersedes one from the Tomograms view still waiting."""
+        _follow["ts"] = None
+        _follow["n"] += 1
 
     def _registry_sig() -> tuple:
         # Every migrated section (fs-motion, alignment, ts-ctf, tilt-filter,
@@ -337,7 +376,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             journey_data = collect_dashboard_journey(state, project_path)
         if species_data is None:
             species_data = collect_species_journey(state, project_path)
-        journey, ts_names = journey_data
+        _journey, ts_names = journey_data
         species_journey = species_data
         try:
             from services.tilt_series import get_registry_for
@@ -346,8 +385,10 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         except Exception:
             excluded_ids = set()
         # Fold the exclusion set into the signature so toggling a TS forces a
-        # rebuild (the journey data itself doesn't change until the next run).
-        sig = (journey_signature(journey, species_journey, ts_names), selected["ts"], frozenset(excluded_ids))
+        # rebuild (the journey data itself doesn't change until the next run). The
+        # stage statuses are left out (an empty journey): the strip draws none, and a
+        # tilt series finishing a stage must not close the switcher under the pointer.
+        sig = (journey_signature({}, species_journey, ts_names), selected["ts"], frozenset(excluded_ids))
         if col_els and sig == _strip_sig["sig"]:
             return
         _strip_sig["sig"] = sig
@@ -355,8 +396,8 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         col_els.clear()
         col_els.update(
             build_strip(
-                strip_container,
-                journey=journey,
+                strip_lead,
+                strip_tools,
                 species_journey=species_journey,
                 ts_names=ts_names,
                 selected_ts=selected["ts"],
@@ -402,10 +443,13 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         # during the flush. The strip rebuild runs last so any run_javascript in
         # the detail render fires while the clicked column is still alive (the
         # select-ordering pitfall), and it picks up the new selection + filtered.
+        _drop_follow()
         if selected["ts"] == ts:
+            _publish(ts)  # the Tomograms view may hold a selection the Journey had no column for
             return
         prev = selected["ts"]
         selected["ts"] = ts
+        _publish(ts)
         set_url = (callbacks or {}).get("set_url")
         if set_url:
             set_url(View.JOURNEY, ts)
@@ -435,6 +479,8 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         return collect_dashboard_journey(state, project_path), collect_species_journey(state, project_path)
 
     _collecting = {"on": False}
+    # A section asked for before the first paint, scrolled to once it has landed (_show_ts).
+    _after_paint: dict[str, str | None] = {"section": None}
 
     async def refresh_all(force_main: bool = False) -> None:
         # One collect per pass. `render_strip` needs both unfiltered and `_main_signature`
@@ -454,6 +500,9 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             return
         render_strip(journey_data, species_data)
         render_main(force=force_main, journey_data=journey_data, species_data=species_data)
+        if _after_paint["section"]:
+            _scroll_section_into_view(_after_paint["section"])
+            _after_paint["section"] = None
 
     # Coalesce the initial refresh storm. On load several background auto-kicks
     # (preview / IMOD / recon-slabs / coords-ingest / list-cutouts) each fire
@@ -580,6 +629,8 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             set_url = (callbacks or {}).get("set_url")
             if set_url:
                 set_url(View.JOURNEY, selected["ts"])
+        if on and _follow["ts"]:
+            _schedule_follow()  # selected in the Tomograms view while the Journey was off
         try:
             if on:
                 live_timer.activate()
@@ -590,12 +641,44 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         except Exception:
             pass
 
+    # The Tomograms view moving the selection: the Journey shows it once it has rested (`_FOLLOW_SETTLE_S`),
+    # and only while it is on screen; turned off, it shows it when next turned on.
+    def _follow_ts(ts: str) -> None:
+        _follow["ts"] = ts
+        if _active["on"]:
+            _schedule_follow()
+
+    def _schedule_follow() -> None:
+        _follow["n"] += 1
+        _follow["task"] = asyncio.create_task(_follow_later(_follow["n"]))
+
+    async def _follow_later(n: int) -> None:
+        await asyncio.sleep(_FOLLOW_SETTLE_S)
+        ts = _follow["ts"]
+        if n != _follow["n"] or not ts or main_area.is_deleted:
+            return
+        # A task of its own starts with no NiceGUI slot; the pane gives it the client.
+        with main_area:
+            await _show_ts(ts)
+
     async def _show_ts(ts: str, section: str | None = None) -> None:
         """The Species page's "open in Journey": select this
         tilt-series' column and optionally scroll one section card into view. The
         workspace has already switched to (and built) the journey by the time this runs.
         A tomogram with no column is reported, not silently ignored — the strip only
         holds tilt-series the project's array-job manifests describe."""
+        _drop_follow()
+        if not col_els:
+            # Built a moment ago, its first paint still to come (it collects in a thread): that
+            # paint starts on this tilt series, and scrolls to the section once it has landed.
+            if ts:
+                selected["ts"] = ts
+                _publish(ts)
+                set_url = (callbacks or {}).get("set_url")
+                if set_url:
+                    set_url(View.JOURNEY, ts)
+            _after_paint["section"] = section
+            return
         if ts and ts not in col_els:
             ui.notify(f"{ts} has no column in the journey strip yet (no processed data for it).", type="warning")
             return
@@ -607,6 +690,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
     if callbacks is not None:
         callbacks["on_journey_active"] = _set_journey_active
         callbacks["journey_show_ts"] = _show_ts
+        callbacks.setdefault("follow_ts", {})["journey"] = _follow_ts
 
 
 def _render_no_data_empty_state() -> None:
@@ -658,13 +742,13 @@ def _ts_meta_line(species_list: list[dict]) -> str | None:
 
 
 def _render_ts_info_popover(ts_name: str, species_list: list[dict], recon_mrc: str | None) -> None:
-    """The ⓘ button → click popover: full tomo name, metadata, and the relevant
-    file paths (each copies on a click). Click-opened so the values are actually
-    clickable (a hover tooltip dismisses as you reach them)."""
+    """The ⓘ button → click popover: full tomo name, metadata, each species' pick
+    count, and the relevant file paths (each copies on a click). Click-opened so the
+    values are actually clickable (a hover tooltip dismisses as you reach them)."""
     btn = icon_button("info_outline")
     # Stop the click bubbling to the row so opening info doesn't also switch TS.
     btn.on("click.stop", lambda: None)
-    with btn, ui.menu().props("anchor='bottom right' self='top right'"):
+    with btn, ui.menu().props("anchor='bottom right' self='top right'").classes("cb-hmenu"):
         with ui.element("div").classes("cb-info-card"):
             _info_copy_row("tomogram", ts_name, ts_name)
             meta = _ts_meta_line(species_list)
@@ -673,6 +757,13 @@ def _render_ts_info_popover(ts_name: str, species_list: list[dict], recon_mrc: s
             if recon_mrc:
                 _info_copy_row("recon", recon_mrc, recon_mrc)
             for sp in species_list:
+                if sp.get("n_picks") is not None:
+                    kept = sp.get("filtered_count")
+                    with ui.element("div").classes("cb-info-row"):
+                        ui.label(sp["label"]).classes("cb-info-key")
+                        ui.label(f"{sp['n_picks']} picks" + (f" · {kept} kept" if kept is not None else "")).classes(
+                            "cb-info-val cb-info-count"
+                        )
                 if sp.get("ce_star"):
                     _info_copy_row(f"{sp['label']} picks", sp["ce_star"], sp["ce_star"])
                 if sp.get("subtomo_star"):
@@ -2469,7 +2560,12 @@ def _denoise_method_label(job_model, instance_id: str, project_state=None) -> st
                 m = None
     if m is None:
         m = getattr(job_model, "denoise_method", None)
-    return getattr(m, "value", None) or (str(m) if m else instance_id)
+    label = getattr(m, "value", None) or (str(m) if m else instance_id)
+    if m == DenoiseMethod.EASYMODE:
+        # Which of easymode's denoisers ran is the part that tells two such jobs apart.
+        variant = getattr(job_model, "easymode_denoiser", None)
+        label = f"easymode {getattr(variant, 'value', variant)}" if variant else label
+    return label
 
 
 def _available_denoise_methods_for_ts(project_state, project_path: Path, ts_name: str) -> list[tuple[str, Path, Path]]:

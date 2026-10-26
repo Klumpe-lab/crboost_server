@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Callable
 
 from nicegui import ui
 
@@ -6,6 +7,7 @@ from backend import CryoBoostBackend
 from ui.background_task_tray import mount_background_task_tray
 from ui.components.buttons import house_button
 from ui.components.reactive import SingleFlight
+from ui.job_plugins._field_styles import VIEW_HEAD_STYLE, VIEW_TITLE_STYLE, view_head_icon
 from ui.pipeline_builder.pipeline_builder_panel import build_pipeline_builder_panel
 from ui.routing import RouteWriter, View, apply_route, route_of_url
 from ui.species.page import build_species_page
@@ -182,22 +184,25 @@ _VIEW_ORDER = ("pipeline", "table", "workbench", "gallery", "journey", "viewer",
 # (`--cb-vw-<name>`, 1 until a splitter moves it; _VIEW_RESIZER_JS). It holds the view's title
 # line (a stripe: its name, the expand icon and the close cross), the box the view builds into below it
 # and the splitter on its left edge.
-_VIEW_STYLE = "min-width: 0; height: 100%; overflow: hidden; display: none; flex-direction: row; position: relative;"
-_VIEW_COLUMN_STYLE = "flex: 1 1 0; min-width: 0; height: 100%; display: flex; flex-direction: column; overflow: hidden;"
-_VIEW_HEAD_STYLE = (
-    "flex: 0 0 auto; display: flex; align-items: center; gap: 4px; min-height: 28px; padding: 3px 6px 3px 14px; "
-    "margin-bottom: 6px; background: var(--cb-view-head, linear-gradient(180deg, #ffffff, #edf3f9)); "
-    "box-shadow: 0 var(--cb-view-head-line-w, 1px) 0 var(--cb-view-head-line, #a9c6e4), "
-    "inset 0 1px 0 var(--cb-head-glint, rgba(255, 255, 255, 0.9));"
+# The main panels (the roster, each view) are cards on a slightly darker desk, a gap apart, so two
+# panels never butt edge to edge. The frame's overflow is visible: its splitter sits in the gap.
+_PANEL_GAP_PX = 8
+_CARD_EDGE = (
+    "border: 1px solid var(--cb-panel-line, #dbe3ec); border-radius: 6px; "
+    "box-shadow: var(--cb-panel-shadow, 0 1px 2px rgba(16, 42, 67, 0.06));"
 )
-_VIEW_TITLE_STYLE = (
-    "font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; font-weight: 600; "
-    "color: var(--cb-view-head-ink, #12324f); letter-spacing: var(--cb-head-track, 0); "
-    "white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;"
+_VIEW_STYLE = "min-width: 0; height: 100%; overflow: visible; display: none; flex-direction: row; position: relative;"
+_VIEW_COLUMN_STYLE = (
+    "flex: 1 1 0; min-width: 0; height: 100%; display: flex; flex-direction: column; overflow: hidden; "
+    f"box-sizing: border-box; background: var(--cb-page, #f6f8fb); {_CARD_EDGE}"
+)
+# The job page's title line carries its roster row's blue tick on its left (pipeline_roster `_row_paint`),
+# so the page reads as that row opened.
+_JOB_HEAD_STYLE = VIEW_HEAD_STYLE + (
+    " box-shadow: 0 var(--cb-view-head-line-w, 1px) 0 var(--cb-view-head-line, #dbe3ec), "
+    "inset 2px 0 0 var(--cb-accent, #4a8fd4);"
 )
 _VIEW_BODY_STYLE = "flex: 1 1 0; min-width: 0; min-height: 0; overflow: hidden; display: flex; flex-direction: column;"
-# The line between two main panels (views side by side, the roster and the view beside it).
-_VIEW_EDGE = "var(--cb-edge-w, 1px) solid var(--cb-edge, #c9d6e3)"
 # Each view's name on its title line; the pipeline's names the job its page shows (set_view_title).
 _VIEW_TITLES = {
     "pipeline": "Jobs",
@@ -208,6 +213,24 @@ _VIEW_TITLES = {
     "protocols": "Protocols",
     "table": "Pipeline",
 }
+# Each view's glyph before its name: its rail icon. The job page has none: its title line is its roster
+# row opened.
+_VIEW_ICONS = {
+    "workbench": "particle.svg",
+    "journey": "journey.svg",
+    "gallery": "tomo_preview.svg",
+    "viewer": "particle.svg",
+    "protocols": "fact_check",
+    "table": "pipeline_table.svg",
+}
+# The two slots a view fills on its title line (`callbacks["view_head"]`): `lead`, right after its name
+# (what it shows: the Journey's tilt series), and `tools`, at the right end before the expand icon. The
+# tools wrap inside their slot when the view is narrow, so the name and the close cross keep their line.
+_HEAD_LEAD_STYLE = "display: flex; align-items: center; gap: 4px; min-width: 0; flex: 0 1 auto;"
+_HEAD_TOOLS_STYLE = (
+    "display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 2px 4px; "
+    "min-width: 0; flex: 0 1 auto;"
+)
 
 
 def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | None = None) -> dict:
@@ -236,6 +259,8 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
     # address bar names.
     _on: list[str] = ["pipeline"]
     _refs = {}
+    # Whether the pipeline view has a job open: without one its page leaves the main area and the roster stays.
+    _job_open = {"on": True}
 
     if route_writer is None:
         from ui.open_project import disambiguating_base
@@ -271,7 +296,9 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         pipeline, i.e. job roster + job page, leftmost), sharing the width by their weights;
         hide the rest. Every view with a view to its left shows its splitter. The roster comes
         and goes with the pipeline view (the roster's set_active_views), and each view's
-        refresh timers run only while it shows."""
+        refresh timers run only while it shows. The job page shows only while a job is open
+        (set_job_open); the roster stays without one."""
+        shown = [name for name in _on if name != "pipeline" or _job_open["on"]]
         first = True
         for i, name in enumerate(_VIEW_ORDER):
             c = _refs.get(f"{name}_frame")
@@ -280,16 +307,9 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
             expand = _refs.get(f"{name}_expand")
             if expand is not None:
                 # Alone already: nothing to expand over.
-                expand.set_visibility(len(_on) > 1)
-            if name in _on:
-                # A slate edge and a faint shadow cast onto the view to its left, so two views
-                # read as two panels rather than one gray surface.
-                border, shadow = (
-                    ("none", "none")
-                    if first
-                    else (_VIEW_EDGE, "var(--cb-edge-shadow, -2px 0 6px rgba(16, 42, 67, 0.06))")
-                )
-                c.style(f"display: flex; order: {i}; border-left: {border}; box-shadow: {shadow};")
+                expand.set_visibility(len(shown) > 1)
+            if name in shown:
+                c.style(f"display: flex; order: {i};")
                 if first:
                     c.classes(remove="cb-view-split")
                 else:
@@ -300,7 +320,15 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
                 c.classes(remove="cb-view-split")
         empty = _refs.get("empty_container")
         if empty is not None:
-            empty.style(f"display: {'none' if _on else 'flex'};")
+            empty.style(f"display: {'none' if shown else 'flex'};")
+            if not shown:
+                job_only = "pipeline" in _on
+                _refs["empty_title"].set_text("No job open." if job_only else "No view open.")
+                _refs["empty_hint"].set_text(
+                    "Pick a job in the roster, or turn a view on with the icons on the left."
+                    if job_only
+                    else "Turn views on and off with the icons on the left; several can show side by side."
+                )
 
         # Nav-icon highlights + roster hide/restore.
         set_views = callbacks.get("set_active_views")
@@ -361,6 +389,13 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         _apply_views()
         _write_mode_url()
 
+    def _set_job_open(on: bool) -> None:
+        """The pipeline panel opened a job page or closed it (close_job)."""
+        if _job_open["on"] == on:
+            return
+        _job_open["on"] = on
+        _apply_views()
+
     def _solo(name: str) -> None:
         """The expand icon: this view alone fills the main area; every other view turns off."""
         _on[:] = [name]
@@ -380,31 +415,44 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
             title.props.pop("title", None)
         title.update()
 
+    def _view_head(name: str) -> dict:
+        """A view's title line, for the view to build its tools on: ``{"title": its name label, "lead":
+        the slot after the name, "tools": the slot at the right end}``."""
+        return _refs[f"{name}_head"]
+
     def _view_frame(name: str, style: str = _VIEW_STYLE) -> ui.element:
         """A view's frame in the main area, styled by _apply_views; returns the box the view
-        builds into. Its title line names the view and carries, at the right end, the expand
-        icon (this view alone) and the cross that turns it off, the same as its rail icon; the
-        splitter on its left edge resizes it against the view to its left."""
+        builds into. Its title line has the view's glyph and name, the two slots the view builds its
+        tools into (_view_head), and at the right end the expand icon (this view alone) and the cross
+        that turns it off, the same as its rail icon; the splitter on its left edge resizes it
+        against the view to its left."""
         frame = (
             ui.element("div")
             .props(f"id=cb-view-{name}")
             .style(f"flex: calc(var(--cb-vw-{name}, 1) / var(--cb-vw-unit, 1)) 1 0; {style}")
         )
         _refs[f"{name}_frame"] = frame
+        # The job page's cross closes the job, not the roster beside it.
+        is_job = name == "pipeline"
         with frame:
             with ui.element("div").style(_VIEW_COLUMN_STYLE):
-                with ui.element("div").style(_VIEW_HEAD_STYLE):
-                    _refs[f"{name}_title"] = ui.label(_VIEW_TITLES[name]).style(_VIEW_TITLE_STYLE)
+                with ui.element("div").style(_JOB_HEAD_STYLE if is_job else VIEW_HEAD_STYLE):
+                    if name in _VIEW_ICONS:
+                        view_head_icon(_VIEW_ICONS[name])
+                    title = _refs[f"{name}_title"] = ui.label(_VIEW_TITLES[name]).style(VIEW_TITLE_STYLE)
+                    lead = ui.element("div").style(_HEAD_LEAD_STYLE)
                     ui.element("div").style("flex: 1 1 auto;")
+                    tools = ui.element("div").style(_HEAD_TOOLS_STYLE)
+                    _refs[f"{name}_head"] = {"title": title, "lead": lead, "tools": tools}
                     _refs[f"{name}_expand"] = (
                         ui.icon("open_in_full", size="10px")
                         .classes("cb-view-close")
                         .props('title="Show only this view"')
                         .on("click", lambda _e: _solo(name))
                     )
-                    ui.icon("close", size="12px").classes("cb-view-close").props('title="Close this view"').on(
-                        "click", lambda _e: _hide(name)
-                    )
+                    ui.icon("close", size="12px").classes("cb-view-close").props(
+                        f'title="{"Close this job" if is_job else "Close this view"}"'
+                    ).on("click", lambda _e: callbacks["close_job"]() if is_job else _hide(name))
                 body = ui.element("div").style(_VIEW_BODY_STYLE)
             ui.element("div").classes("cb-view-splitter")
         _refs[f"{name}_container"] = body
@@ -595,6 +643,20 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         if page is not None:
             page.invalidate()
 
+    # The tilt series selected in the Tomograms view and in the Journey: one selection, which either moves
+    # (`select_ts(ts, view)`) and the other follows (each registers how in `follow_ts[view]`). A view built
+    # later starts on it (`selected_ts()`).
+    _selection: dict[str, str | None] = {"ts": None}
+    _followers: dict[str, Callable[[str], None]] = {}
+
+    def _select_ts(ts: str, origin: str) -> None:
+        if not ts or ts == _selection["ts"]:
+            return
+        _selection["ts"] = ts
+        for name, follow in list(_followers.items()):
+            if name != origin:
+                follow(ts)
+
     def _on_popstate(e) -> None:
         """Back/Forward: re-dispatch the popped URL onto the views that
         are already built, instead of letting the browser rebuild the page (which is what
@@ -642,6 +704,9 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
     toggle_table = _rail_toggle("table", _show_table, _table_flight)
 
     callbacks["invalidate_gallery"] = _invalidate_gallery
+    callbacks["select_ts"] = _select_ts
+    callbacks["selected_ts"] = lambda: _selection["ts"]
+    callbacks["follow_ts"] = _followers
     callbacks["toggle_pipeline"] = _toggle_pipeline
     callbacks["show_workbench"] = _show_workbench
     callbacks["open_species"] = _open_species
@@ -652,10 +717,12 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
     callbacks["show_table"] = _show_table
     callbacks["open_pick_viewer"] = _open_pick_viewer
     callbacks["set_view_title"] = _set_view_title
+    callbacks["view_head"] = _view_head
+    callbacks["set_job_open"] = _set_job_open
 
     with ui.element("div").style(
         "position: fixed; inset: 0; display: flex; flex-direction: row; "
-        "overflow: hidden; gap: 0; margin: 0; padding: 0;"
+        "overflow: hidden; gap: 0; margin: 0; padding: 0; background: var(--cb-desk, #e9eef4);"
     ):
         primary_sidebar = ui.element("div").style(
             "width: 60px; min-width: 60px; height: 100%; flex-shrink: 0; "
@@ -668,8 +735,10 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
             ui.element("div")
             .props("id=cb-roster-panel")
             .style(
-                "width: 340px; min-width: 340px; height: 100%; flex-shrink: 0; "
-                f"background: var(--cb-surface, #ffffff); border-right: {_VIEW_EDGE}; "
+                # A card like the views (stretched to the row's height inside its margin).
+                f"width: 340px; min-width: 340px; align-self: stretch; margin: {_PANEL_GAP_PX}px 0 "
+                f"{_PANEL_GAP_PX}px {_PANEL_GAP_PX}px; flex-shrink: 0; box-sizing: border-box; "
+                f"background: var(--cb-surface, #ffffff); {_CARD_EDGE} "
                 "overflow-y: auto; overflow-x: hidden; "
                 "flex-direction: column; gap: 0; display: flex;"
             )
@@ -677,14 +746,19 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
 
         # Draggable divider between the job roster and the params/main area.
         # Resize + persistence is client-side JS (see _ROSTER_RESIZER_JS) so the
-        # drag is smooth and survives reloads via localStorage.
-        ui.element("div").props("id=cb-roster-resizer").classes("cb-roster-resizer")
+        # drag is smooth and survives reloads via localStorage. It lies over the start of the
+        # main area's padding, so the gap between the roster and the first view is the same as
+        # the gap between two views.
+        ui.element("div").props("id=cb-roster-resizer").classes("cb-roster-resizer").style("margin-right: -6px;")
 
         # Styled once and never again: the view weights the splitters set on it must survive.
         main_area = (
             ui.element("div")
             .props("id=cb-view-main")
-            .style("flex: 1; min-width: 0; height: 100%; overflow: hidden; display: flex; flex-direction: row; gap: 0;")
+            .style(
+                "flex: 1; min-width: 0; height: 100%; overflow: hidden; display: flex; flex-direction: row; "
+                f"gap: {_PANEL_GAP_PX}px; padding: {_PANEL_GAP_PX}px; box-sizing: border-box;"
+            )
         )
 
         with main_area:
@@ -731,10 +805,10 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
             _refs["empty_container"] = empty_container
             with empty_container:
                 ui.icon("view_column", size="40px").classes("text-gray-400")
-                ui.label("No view open.").classes("text-sm text-gray-500")
-                ui.label("Turn views on and off with the icons on the left; several can show side by side.").classes(
-                    "text-[11px] italic text-gray-400"
-                )
+                _refs["empty_title"] = ui.label("No view open.").classes("text-sm text-gray-500")
+                _refs["empty_hint"] = ui.label(
+                    "Turn views on and off with the icons on the left; several can show side by side."
+                ).classes("text-[11px] italic text-gray-400")
 
     # Floating background-tasks tray at workspace scope so spun-off
     # renders/builds remain visible across dialog open/close and view

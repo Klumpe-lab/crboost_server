@@ -3,41 +3,50 @@
 One tile per tomogram the project knows about (the reconstruct job's
 ``tomograms.star`` first, then imported volumes — see
 ``services.visualization.tomo_geometry.all_geometries``), laid out as a grid the
-way the tilt-filter overview lays out tilts: everything at once, nothing selected.
+way the tilt-filter overview lays out tilts: everything at once.
 The Journey answers "how did THIS tilt-series go"; this answers "how do they all
 look", which is the question you ask before you pick one.
 
-Two tabs: Tomograms (the wall) and Tilts (every tilt preview, grouped by tilt series;
-``ui/tilt_previews.py``). A project with tilts and no tomograms opens on Tilts.
+Two tabs, switched on the view's title line: Tomograms (the wall) and Tilts (every tilt preview,
+grouped by tilt series; ``ui/tilt_previews.py``). A project with tilts and no tomograms opens on Tilts.
 
-Four switches, all of them just re-render from the already-collected rows:
+The wall's tools sit on the title line too, each a glyph whose dropdown opens under the pointer, and
+all of them just re-render from the already-collected rows:
 
-  · **source** — which version of the tomogram: the WarpTools recon PNG (one entry
-    per reconstruct job when there are several, named by the alignment it traces back
-    to), or a denoised X/Y slab (cryoCARE / IsoNet / any other denoisepredict job that
-    has a volume for the tomogram). Only versions that actually produced something appear.
-  · **picks** — a menu of pick layers, by species: each candidate-extract job's picks, and
-    each species' registered lists, are a layer with its own dot color (pickable). By default
-    the layers follow the source: a layer shows over the version that shows the reconstruction
-    its picks were made on, so two picking arms on two alignments each sit on their own.
-    Switching a layer by hand leaves that mode; a layer shown over another reconstruction is
-    flagged. Nothing picked yet ⇒ no menu and plain slices, the de-novo project's normal state.
-  · **features** — a menu of segmentation layers (a Segment job's membranes, void, …): each is a
+  · **version** — which version of the tomograms every tile shows, by reconstruction (one per
+    reconstruct job when there are several, named by the alignment it traces back to): the
+    reconstruction itself (``raw``: the WarpTools PNG) and each denoised X/Y slab made from it
+    (cryoCARE / IsoNet / any other denoisepredict job that has a volume for the tomogram). Only
+    versions that actually produced something appear.
+  · **picks** — the pick layers, by species: each candidate-extract job's picks, and each species'
+    registered lists, are a layer with its own dot color (pickable). By default the layers follow
+    the source: a layer shows over the version that shows the reconstruction its picks were made
+    on, so two picking arms on two alignments each sit on their own. Switching a layer by hand
+    leaves that mode; a layer shown over another reconstruction is flagged. Nothing picked yet ⇒ no
+    tool and plain slices, the de-novo project's normal state.
+  · **segmentations** — the segmentation layers (a Segment job's membranes, void, …): each is a
     transparent fill where p ≥ 0.5 over the central slab, in the feature's colour, under the dots.
-    A layer fills only over the version that shows the reconstruction it was computed on, and the
-    caption gives each feature's share of the volume.
+    A layer fills only over the version that shows the reconstruction it was computed on. The same
+    menu imports segmentations made outside crboost.
   · **size** — how many tiles (and tilt cards) fit across.
 
 Tiles show a downscaled JPEG of each picture, and the browser fetches the other sources'
 while idle, so a source switch re-points images it already holds.
 
-A tile's image opens the zoom view: the slice as large as the screen allows, and beside it a
-column with the tomogram's versions (↑ ↓), its pick layers (the same ones the wall uses, matched
-to the zoom's own version) and the Journey button. The zoom's version never changes the wall's.
-The toggle in a tile's top-left corner swaps the slice for a mosaic of that
-series' tilts, in the same box; a tilt opens the full-size tilt viewer. The caption row
-under a tile sums its tilts up: how many are in the tomogram, the stage-tilt range in use,
-the series' CTF fit, and the dark exposures in use.
+One tilt series is the selection, shared with the Journey: a click on a tile selects it (on the
+Tilts tab, a click on a series), the Journey beside the wall follows, and a tilt series the Journey
+switches to is selected here. The selection holds across the two tabs, and whenever it moves, the
+tab changes or the view comes back, the wall scrolls to it if it is out of view.
+
+A click on the selected tile's image opens the zoom view: the slice as large as the screen allows,
+its pick count and 3dmod chip in its corners, and beside it a column with the tilts summed up (how
+many are in the tomogram, the stage-tilt range in use, the series' CTF fit, the dark exposures in
+use) and the same three lists for this tomogram (its versions, ↑ ↓; the pick layers, matched to the
+zoom's own version; the segmentations, with each one's share of the volume) and the Journey button.
+The zoom's version never changes the wall's; its layers are the wall's; ← → step the selection
+through the wall. The toggle in a tile's top-left corner swaps the slice for a mosaic of that
+series' tilts, in the same box; a tilt opens the full-size tilt viewer. The caption under a tile is
+its position and the Journey glyph, which opens the Journey on that tilt series, beside the wall.
 
 Images come from the same renderers the Journey uses (the WarpTools PNG
 written by ts_reconstruct, else an X/Y slab we render and cache), so a tile and
@@ -61,24 +70,26 @@ from typing import Any
 from nicegui import ui
 
 from services.dashboard_data import job_dir_for, position_label, tilt_thumb_dir, vis_asset_url
-from services.models_base import SPECIES_OVERLAY_COLORS, InstanceId, JobType
+from services.models_base import InstanceId, JobType
 from services.project_state import get_project_state_for
 from services.segmentation import display
 from services.tilt_series_service import ensure_tilt_thumbnails
 from services.visualization.preview_orchestrator import read_preview_manifest
 from services.visualization.preview_render import is_output_stale
 from services.visualization.tomo_geometry import SOURCE_IMPORTED, TomoGeometry, all_geometries
-from ui.components.buttons import house_button
+from ui.components.buttons import house_button, icon_button
 from ui.components.copyable import copy_3dmod_chip
 from ui.components import feature_layers as fl
 from ui.components.dialogs import dialog_host
+from ui.components.hover_menu import Choice, ChoiceRows, hover_menu, tool_trigger
 from ui.components.reactive import SingleFlight, owned_timer
 from services.job_lineage import job_dirs, recon_of
 from ui.components.recon_compare import recon_version_labels
 from ui.components.segmented import render_segmented
-from ui.components.svg_icon import load_icon_svg
+from ui.components.svg_icon import load_icon_svg, render_glyph
 from ui.dashboard.css import ensure_assets_loaded
 from ui.segmentation_import_dialog import open_segmentation_import_dialog
+from ui.styles import WAIT_SPINNER
 from ui.tilt_previews import (
     TILT_CLICK_JS,
     TiltGallery,
@@ -86,6 +97,7 @@ from ui.tilt_previews import (
     mosaic_html,
     open_tilt_viewer,
     registry_tilt_series,
+    scroll_into_view,
     thumbnail_task_key,
     tilt_context,
     tomogram_caption_html,
@@ -94,6 +106,8 @@ from ui.tilt_previews import (
 logger = logging.getLogger(__name__)
 
 RECON_SOURCE = "recon"
+# A reconstruction's own picture in the version menu, beside the denoised versions made from it.
+RAW_VARIANT = "raw"
 TOMOGRAMS_TAB, TILTS_TAB = "tomograms", "tilts"
 
 # Tile column width per size step (CSS grid minmax floor).
@@ -106,6 +120,9 @@ _MOSAIC_ICON = (
     '<rect width="4" height="4"/><rect x="6" width="4" height="4"/>'
     '<rect y="6" width="4" height="4"/><rect x="6" y="6" width="4" height="4"/></svg>'
 )
+
+# Placeholder tiles while the tomograms are being listed, before their number is known.
+_SKELETON_TILES = 12
 
 # Dots kept per (tomogram, species). picks.json is sorted score-descending, so the
 # stride sample the wall draws from this is spread across the whole score range
@@ -326,6 +343,14 @@ def _has_png(src: dict | None) -> bool:
     return src is not None and src["png"] is not None
 
 
+def _meta_of(sources: dict[str, dict]) -> dict[str, dict]:
+    """``{source key: {recon, group, variant}}`` of one tomogram's sources (`_sources_for`)."""
+    return {
+        key: {"recon": src.get("recon"), "group": src.get("group", ""), "variant": src.get("variant", key)}
+        for key, src in sources.items()
+    }
+
+
 def recon_source_key(label: str) -> str:
     """Toolbar key of one reconstruct job's version when the project has several."""
     return f"{RECON_SOURCE} · {label}"
@@ -410,10 +435,10 @@ def _warp_png(prep: dict, geom: TomoGeometry) -> Path | None:
     return max(found) if found else None
 
 
-def _denoised_for_ts(prep: dict, ts_name: str) -> list[tuple[str, Path, Path]]:
-    """(method label, job dir, denoised volume) per denoisepredict job with a volume of this
-    tomogram on disk, by label (``_available_denoise_methods_for_ts``, from the prep). Two jobs
-    of one method are told apart by instance."""
+def _denoised_for_ts(prep: dict, ts_name: str) -> list[tuple[str, str, Path, Path]]:
+    """(source label, method label, job dir, denoised volume) per denoisepredict job with a volume of
+    this tomogram on disk, by label (``_available_denoise_methods_for_ts``, from the prep). Two jobs
+    of one method are told apart by instance in the source label."""
     ts = prep["tilt_series"].get(ts_name)
     outputs = ts.tomogram.outputs if ts is not None and ts.tomogram is not None else {}
     found: list[tuple[str, str, Path, Path]] = []
@@ -428,7 +453,9 @@ def _denoised_for_ts(prep: dict, ts_name: str) -> list[tuple[str, Path, Path]]:
     label_counts: dict[str, int] = {}
     for lbl, *_ in found:
         label_counts[lbl] = label_counts.get(lbl, 0) + 1
-    out_list = [(lbl if label_counts[lbl] == 1 else f"{lbl} ({iid})", job_dir, mrc) for lbl, iid, job_dir, mrc in found]
+    out_list = [
+        (lbl if label_counts[lbl] == 1 else f"{lbl} ({iid})", lbl, job_dir, mrc) for lbl, iid, job_dir, mrc in found
+    ]
     out_list.sort(key=lambda t: t[0].lower())
     return out_list
 
@@ -443,7 +470,8 @@ def _sources_for(project_state, geom: TomoGeometry, prep: dict) -> dict[str, dic
     with a volume for this tomogram adds one entry under its method label. ``kick`` carries the
     (cache dir, source MRC) the renderer needs when the PNG isn't on disk yet; ``mrc`` is the
     volume the picture shows, for the 3dmod chip; ``recon`` the reconstruct instance it is (or
-    was denoised from), which pick layers are matched against.
+    was denoised from), which pick layers are matched against. ``group`` names that reconstruction
+    and ``variant`` the picture of it (``raw``, or the denoising method), for the version menu.
     """
     from ui.tomo_dashboard_dialog import _denoise_slab_path
 
@@ -455,17 +483,21 @@ def _sources_for(project_state, geom: TomoGeometry, prep: dict) -> dict[str, dic
             src = _recon_source(v["dir"], geom.tomo_name, v["mrc"], v["png"])
             src["caption"] = f"{v['label']} · {src['caption']}"
             src["recon"] = v["iid"]
+            src["group"], src["variant"] = v["label"], RAW_VARIANT
             out[recon_source_key(v["label"])] = src
     else:
         src = _recon_source(geom.tomograms_star.parent, geom.tomo_name, geom.recon_mrc, _warp_png(prep, geom))
         src["recon"] = next(iter(recon_labels)) if geom.source != SOURCE_IMPORTED and recon_labels else None
+        src["group"] = "imported" if geom.source == SOURCE_IMPORTED else recon_labels.get(src["recon"], "")
+        src["variant"] = RAW_VARIANT
         out[RECON_SOURCE] = src
 
-    for label, job_dir, mrc in _denoised_for_ts(prep, geom.tomo_name):
+    for label, method, job_dir, mrc in _denoised_for_ts(prep, geom.tomo_name):
         png = _denoise_slab_path(job_dir, geom.tomo_name)
         fresh = png.exists() and not is_output_stale(png, [mrc])
         url, thumb = _png_urls(png if fresh else None)
         denoise_iid = dirs.get(Path(job_dir))
+        recon = recon_of(project_state, denoise_iid, dirs) if denoise_iid else None
         out[label] = {
             "png": png if fresh else None,
             "kick": None if fresh else (job_dir, mrc),
@@ -473,7 +505,9 @@ def _sources_for(project_state, geom: TomoGeometry, prep: dict) -> dict[str, dic
             "mrc": mrc,
             "url": url,
             "thumb": thumb,
-            "recon": recon_of(project_state, denoise_iid, dirs) if denoise_iid else None,
+            "recon": recon,
+            "group": recon_labels.get(recon) or "reconstruction not known",
+            "variant": method,
         }
     return out
 
@@ -559,26 +593,27 @@ class TomoGalleryPage:
         # `layer_on` decides.
         self.layers: list[dict] = []
         self._layer_by_id: dict[str, dict] = {}
-        self._source_recon: dict[str, str | None] = {}  # source key -> the reconstruct instance it shows
+        # source key -> {recon, group, variant}: the reconstruct instance it shows, and its place in the version menu.
+        self._source_meta: dict[str, dict] = {}
         self.picks_follow = True
         self.layer_on: dict[str, bool] = {}
-        # Live pick-layer lists, "wall" (the toolbar menu) and "zoom": (body, summary label, source getter).
-        self._picks_menus: dict[str, tuple[Any, Any, Any]] = {}
+        # Live pick-layer lists, "wall" (the title line's menu) and "zoom": (body, source getter).
+        self._picks_menus: dict[str, tuple[Any, Any]] = {}
         # Segmentation overlays (`feature_layers.collect_layers`): a layer shows on the source that shows
         # the reconstruction its density traces to, unless it is hidden (`services.segmentation.display`,
         # shared with the Journey and the pick viewer). Colours and the opacity are CSS variables on the
         # page and the zoom (`_feature_vars`): changing them repaints no tile.
         self.feature_layers: list[dict] = []
         self._feature_layer_by_id: dict[str, dict] = {}
-        self._features_menus: dict[str, tuple[Any, Any, Any]] = {}  # as _picks_menus
-        self._badges: dict[str, Any] = {}  # each tile's feature fractions, in its caption
-        self._badge_keys: dict[str, tuple] = {}
-        self._overlays: dict[str, Any] = {}  # each tile's feature fills, dot layers and pick badge
+        self._features_menus: dict[str, tuple[Any, Any]] = {}  # as _picks_menus
+        self._overlays: dict[str, Any] = {}  # each tile's feature fills and dot layers
         self._overlay_keys: dict[str, tuple] = {}  # the layer ids each tile's overlay draws
         self._imgs: dict[str, Any] = {}  # each tile's <img>, re-pointed on a source switch
-        self._chips: dict[str, Any] = {}  # each tile's 3dmod chip slot
-        self._captions: dict[str, Any] = {}  # each tile's caption numbers, compact at the smallest size
         self._prefetched: set[str] = set()
+        # The selected tilt series, shared with the Journey (the workspace's `select_ts`): whichever view moves
+        # it, the other follows.
+        selected = self.callbacks.get("selected_ts")
+        self.selected_ts: str | None = selected() if selected is not None else None
         self.tab: str = TOMOGRAMS_TAB
         self._tab_chosen = False
         # Tilt previews (ui/tilt_previews.py): one group per tilt series.
@@ -591,29 +626,35 @@ class TomoGalleryPage:
         self._group_by_ts: dict[str, dict] = {}
         self._tilt_by_key: dict[str, dict] = {}  # tilts that show: a preview or an average
         self._frame_keys: set[str] = set()  # every tilt, as the header strips draw them
-        # The Tilts tab's gallery; it keeps its open groups, sort, show and metrics across renders.
-        self.tilt_gallery = TiltGallery(self.project_path, size=self.size)
+        # The Tilts tab's gallery; it keeps its open groups, sort, show and metrics across renders. A click on a
+        # series selects it.
+        self.tilt_gallery = TiltGallery(self.project_path, size=self.size, on_select=self._select)
+        self.tilt_gallery.selected = self.selected_ts
         # Kept on the page, so a size switch, a Refresh or the pending poll keeps them.
         self.open_mosaics: set[str] = set()  # tiles showing their tilts instead of the slice
         self._tiles: dict[str, Any] = {}
-        self._pictures: dict[str, Any] = {}  # each tile's image-or-note and 3dmod chip, swapped on a source switch
+        self._pictures: dict[str, Any] = {}  # each tile's image-or-note, swapped on a source switch
         self._zoom_ts: str | None = None  # the tomogram the zoom dialog shows
         self._zoom_source: str = RECON_SOURCE  # the zoom's own version, the wall's when the zoom opens
         self._flight = SingleFlight()
         self._refs: dict[str, Any] = {}
         self._collected = False
         self._active = False
+        self._skeleton = 0  # placeholder tiles the grid shows until the tomograms are listed
         # Bumped by every reload: a pass that finds it moved has been superseded and drops its result.
         self._gen = 0
         self._geom_by_ts: dict[str, TomoGeometry] = {}
         self._tilts_pending = False  # the tilts of the running reload have not landed yet
         self._kicks_left = _MAX_KICKS_PER_RENDER  # slab renders the running reload may still submit
-        self._controls_key: tuple = ()  # what the tab controls were last built from
+        self._controls_key: tuple = ()  # what the title line's tools were last built from
+        self._head: dict | None = None  # the view's title line (`callbacks["view_head"]`), filled on the first render
         # Slabs kicked off by this page land minutes later. Poll while the wall is the
         # visible view AND something is still pending — disk work, so 15 s (CLAUDE.md),
         # gated on a signature so a tick that changes nothing never touches the DOM.
         self._timer = owned_timer(15.0, self._tick, container)
         self._timer.deactivate()
+        # The Journey moving the selection moves it here.
+        self.callbacks.setdefault("follow_ts", {})["gallery"] = self._follow_ts
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -635,11 +676,11 @@ class TomoGalleryPage:
         self._gen += 1
         gen = self._gen
         self._collected = False
-        self.container.clear()
-        with self.container, ui.element("div").classes("cb-empty"):
-            ui.spinner(size="lg", color="indigo")
-            ui.label("Reading tomograms…").classes("text-xs")
-        await asyncio.sleep(0.03)  # flush the spinner before the disk pass
+        self._skeleton = len(self.rows) or _SKELETON_TILES
+        self.rows = []
+        self._tilts_pending = True
+        self.render()
+        await asyncio.sleep(0.03)  # flush the skeleton before the disk pass
         started = time.monotonic()
         state = get_project_state_for(self.project_path)
         tilt_series, self.tilt_error = registry_tilt_series(self.project_path)
@@ -652,8 +693,9 @@ class TomoGalleryPage:
         # In wall order, so the tiles fill in from the top.
         geoms.sort(key=lambda g: (position_label(g.tomo_name)[1], g.tomo_name))
         self._geom_by_ts = {g.tomo_name: g for g in geoms}
+        self._skeleton = 0
         self.rows = [compose_row(g, {}, [], [], ready=False) for g in geoms]
-        self._source_recon = {}
+        self._source_meta = {}
         self.tilt_groups, self.tilt_facts = [], {}
         self._group_by_ts, self._tilt_by_key, self._frame_keys = {}, {}, set()
         self._tilts_pending = True
@@ -723,7 +765,8 @@ class TomoGalleryPage:
             if row["ts"] in sources:
                 row["sources"] = sources[row["ts"]]
                 row["ready"] = True
-        self._source_recon.update({key: src.get("recon") for s in sources.values() for key, src in s.items()})
+        for found in sources.values():
+            self._source_meta.update(_meta_of(found))
         before = self.source
         self._sync_controls()
         # The first batch can move the wall's source (the toolbar picks the first one there is):
@@ -757,7 +800,7 @@ class TomoGalleryPage:
         if self.tab == TILTS_TAB:
             self._rerender_body()
             return
-        # Captions and mosaic toggles; a tile still reading gets them with its picture.
+        # Mosaic toggles; a tile still reading gets its toggle with its picture.
         for row in self.rows:
             if row["ready"]:
                 self._refill(row["ts"])
@@ -790,7 +833,9 @@ class TomoGalleryPage:
             return
         self.rows, self.tilt_error = rows, tilt_error
         self._apply_layers(layers, feature_layers)
-        self._source_recon = {key: src.get("recon") for row in self.rows for key, src in row["sources"].items()}
+        self._source_meta = {}
+        for row in self.rows:
+            self._source_meta.update(_meta_of(row["sources"]))
         self._apply_tilts(state, groups, facts)
 
     def _apply_layers(self, layers: list[dict], feature_layers: list[dict]) -> None:
@@ -840,12 +885,15 @@ class TomoGalleryPage:
 
     def set_active(self, on: bool) -> None:
         """The workspace's _apply_views hook: the pending-preview poll runs only while
-        the wall is on screen."""
+        the wall is on screen. On screen (again, or narrowed by a view opening beside it), the wall
+        brings the selection into view."""
         self._active = on
         try:
             self._timer.activate() if on else self._timer.deactivate()
         except Exception:
             pass  # timer torn down with the client
+        if on:
+            self._scroll_to_selected()
 
     # ── Derived state ─────────────────────────────────────────────────────────
 
@@ -854,12 +902,12 @@ class TomoGalleryPage:
         made on the reconstruction it shows, or when either side's reconstruction is unknown."""
         if not self.picks_follow:
             return self.layer_on.get(layer["id"], True)
-        shows = self._source_recon.get(source)
+        shows = self._source_meta.get(source, {}).get("recon")
         return layer["recon"] is None or shows is None or layer["recon"] == shows
 
     def _off_source(self, layer: dict, source: str) -> bool:
         """The layer (picks, or a segmentation) was made on another reconstruction than `source` shows."""
-        shows = self._source_recon.get(source)
+        shows = self._source_meta.get(source, {}).get("recon")
         return layer["recon"] is not None and shows is not None and layer["recon"] != shows
 
     def _visible_picks(self, row: dict, source: str) -> list[dict]:
@@ -925,29 +973,82 @@ class TomoGalleryPage:
         tilts = tuple((g["ts"], len(g["tilts"]), g["n_png"]) for g in self.tilt_groups)
         return tuple(sig), tilts, self.tilt_error
 
-    def _source_options(self) -> list[tuple[str, str]]:
-        """(key, label) for every source at least one tomogram can show."""
+    def _source_keys(self) -> list[str]:
+        """Every source at least one tomogram can show, in the version menu's order: by reconstruction
+        (in the order the tomograms list them, by job dir), each one's own picture first, then the
+        versions denoised from it by name."""
         keys: list[str] = []
         for row in self.rows:
             for key in row["sources"]:
                 if key not in keys:
                     keys.append(key)
-        # Reconstructions first, in the order the tomograms list them (by job dir), then the rest.
-        keys.sort(key=lambda k: (not k.startswith(RECON_SOURCE), "" if k.startswith(RECON_SOURCE) else k.lower()))
-        return [(k, k) for k in keys]
+        meta = self._source_meta
+        groups: list[str] = []
+        # The reconstructions' own pictures first, in the order listed: they order the groups.
+        for key in sorted(keys, key=lambda k: not k.startswith(RECON_SOURCE)):
+            group = meta.get(key, {}).get("group", "")
+            if group not in groups:
+                groups.append(group)
+        return sorted(
+            keys,
+            key=lambda k: (groups.index(meta.get(k, {}).get("group", "")), not k.startswith(RECON_SOURCE), k.lower()),
+        )
+
+    def _source_groups(self) -> set[str]:
+        return {self._source_meta.get(k, {}).get("group", "") for k in self._source_keys()}
+
+    def _source_text(self, key: str) -> str:
+        """A version's name on the tool: its picture (`raw`, a method), after its reconstruction when
+        the project has several."""
+        meta = self._source_meta.get(key)
+        if meta is None:
+            return key
+        return meta["variant"] if len(self._source_groups()) <= 1 else f"{meta['group']} · {meta['variant']}"
+
+    def _source_choices(self, row: dict | None = None) -> list[Choice]:
+        """The version menu's rows, grouped by reconstruction. On the wall, a version only some
+        tomograms have says how many; for one tomogram (`row`, the zoom), a version it lacks is grey."""
+        keys = self._source_keys()
+        named: dict[tuple, int] = {}
+        for k in keys:
+            meta = self._source_meta.get(k, {})
+            named[(meta.get("group"), meta.get("variant"))] = named.get((meta.get("group"), meta.get("variant")), 0) + 1
+        out = []
+        for k in keys:
+            meta = self._source_meta.get(k, {})
+            # Two jobs of one method on one reconstruction keep the key, which names the instance.
+            label = meta.get("variant", k) if named[(meta.get("group"), meta.get("variant"))] == 1 else k
+            if row is None:
+                have = sum(1 for r in self.rows if k in r["sources"])
+                note = f"{have}/{len(self.rows)}" if have < len(self.rows) else ""
+                out.append(Choice(k, label, meta.get("group", ""), note))
+            else:
+                src = row["sources"].get(k)
+                tip = src["caption"] if src else "This version has no volume of this tomogram"
+                out.append(Choice(k, label, meta.get("group", ""), enabled=src is not None, tip=tip))
+        return out
 
     # ── Render ────────────────────────────────────────────────────────────────
 
     def render(self) -> None:
         ensure_assets_loaded()
+        self._render_head()
+        tabs = self._refs["seg_tab"]
+        tabs.set_badge(TOMOGRAMS_TAB, str(len(self.rows)))
+        tabs.set_badge(TILTS_TAB, "" if self._tilts_pending else str(len(self._tilt_by_key)))
+        self._settle_source()
         self.container.clear()
         with self.container, ui.element("div").classes("cb-gal-page").style(self._feature_vars()) as page:
             self._refs["page"] = page
-            self._render_toolbar()
+            self._refs["tilt_strip"] = ui.element("div").classes("cb-gal-toolbar")
             body = ui.element("div").classes("cb-gal-body")
             self._refs["body"] = body
             with body:
                 self._render_body()
+        self._render_tilt_strip()
+        self._sync_controls()
+        # A new page starts at the top: the selection is brought back into view.
+        self._scroll_to_selected()
 
     def _render_body(self) -> None:
         if self.tab == TILTS_TAB:
@@ -962,87 +1063,110 @@ class TomoGalleryPage:
         body.clear()
         with body:
             self._render_body()
+        self._scroll_to_selected()
 
-    def _render_toolbar(self) -> None:
-        with ui.element("div").classes("cb-gal-toolbar"):
-            tabs = render_segmented([(TOMOGRAMS_TAB, "Tomograms"), (TILTS_TAB, "Tilts")], self.tab, self._select_tab)
-            tabs.set_badge(TOMOGRAMS_TAB, str(len(self.rows)))
-            tabs.set_badge(TILTS_TAB, "" if self._tilts_pending else str(len(self._tilt_by_key)))
-            self._refs["seg_tab"] = tabs
-            # The active tab's own controls: a tab switch rebuilds them, never the strip that was clicked.
-            controls = ui.element("div").style("display: flex; align-items: center; gap: 8px; flex-wrap: wrap;")
-            self._refs["tab_controls"] = controls
-            with controls:
-                self._render_tab_controls()
-            ui.element("div").style("flex: 1;")
-            ui.label("size").classes("cb-gal-toolbar-label")
-            self._refs["seg_size"] = render_segmented([(k, lbl) for k, lbl, _w in _SIZES], self.size, self._select_size)
-            house_button("Refresh", self._reload_click, tooltip="Re-read the tomograms, tilts and previews from disk")
+    def _render_head(self) -> None:
+        """The view's title line, built once: the Tomograms / Tilts switch in place of its name, and at
+        its right end the wall's tools (`_render_wall_tools`), the size and Refresh."""
+        if self._head is not None:
+            return
+        head = self._head = self.callbacks["view_head"]("gallery")
+        head["title"].set_visibility(False)
+        with head["lead"]:
+            self._refs["seg_tab"] = render_segmented(
+                [(TOMOGRAMS_TAB, "Tomograms"), (TILTS_TAB, "Tilts")], self.tab, self._select_tab, classes="cb-seg-head"
+            )
+        with head["tools"]:
+            self._refs["tab_controls"] = ui.element("div").classes("cb-head-tools")
+            self._refs["seg_size"] = render_segmented(
+                [(k, lbl) for k, lbl, _w in _SIZES], self.size, self._select_size, classes="cb-seg-sm"
+            )
+            icon_button("refresh", self._reload_click, tooltip="Re-read the tomograms, tilts and previews from disk")
 
     def _controls_signature(self) -> tuple:
         return (
             self.tab,
-            tuple(k for k, _label in self._source_options()),
+            tuple(self._source_keys()),
             tuple(layer["id"] for layer in self.layers),
             tuple(layer["id"] for layer in self.feature_layers),
             bool(self.rows),
             bool(self.tilt_groups),
         )
 
-    def _sync_controls(self) -> None:
-        """Rebuild the tab controls when what they offer changed (a source, a layer or the
-        tilts landed), and only then."""
-        controls = self._refs.get("tab_controls")
-        if controls is None or controls.is_deleted or self._controls_signature() == self._controls_key:
-            return
-        controls.clear()
-        with controls:
-            self._render_tab_controls()
+    def _settle_source(self) -> None:
+        """A source gone from the project (or not landed yet) gives way to the first there is."""
+        keys = self._source_keys()
+        if keys and self.source not in keys:
+            self.source = keys[0]
 
-    def _render_tab_controls(self) -> None:
-        self._controls_key = self._controls_signature()
-        if self.tab == TILTS_TAB:
-            if self.tilt_groups:
-                self.tilt_gallery.render_controls()
+    def _sync_controls(self) -> None:
+        """Rebuild the title line's tools and the Tilts strip when what they offer changed (a source,
+        a layer or the tilts landed, the tab switched), and only then."""
+        self._settle_source()
+        key = self._controls_signature()
+        if key == self._controls_key:
             return
-        sources = self._source_options()
-        if sources and self.source not in dict(sources):
-            self.source = sources[0][0]
-        if len(sources) > 1:
-            ui.label("source").classes("cb-gal-toolbar-label")
-            self._refs["seg_source"] = render_segmented(sources, self.source, self._select_source)
-        if self.layers:
-            ui.label("picks").classes("cb-gal-toolbar-label")
-            trigger = ui.element("div").classes("cb-gal-picks-btn")
-            with trigger:
-                summary = ui.label("")
-                ui.icon("expand_more", size="13px")
-                with ui.menu().props("anchor='bottom left' self='top left'"):
-                    body = ui.element("div").classes("cb-gal-picks-menu")
-            self._picks_menus["wall"] = (body, summary, lambda: self.source)
-            self._refresh_picks_lists()
-        if self.feature_layers:
-            ui.label("features").classes("cb-gal-toolbar-label").tooltip(fl.TIP)
-            trigger = ui.element("div").classes("cb-gal-picks-btn")
-            with trigger:
-                summary = ui.label("")
-                ui.icon("expand_more", size="13px")
-                with ui.menu().props("anchor='bottom left' self='top left'"):
-                    body = ui.element("div").classes("cb-gal-picks-menu")
-            self._features_menus["wall"] = (body, summary, lambda: self.source)
-            self._refresh_features_lists()
-        if self.rows:
-            house_button(
-                "Import segmentations…",
-                self._import_segmentations,
-                tooltip="Register volumes segmented outside crboost (MemBrain, easymode or Ais run by hand) on "
-                "these tomograms",
-            )
+        self._controls_key = key
+        self._render_wall_tools()
+        self._render_tilt_strip()
+
+    def _render_tilt_strip(self) -> None:
+        """The Tilts tab's controls (sort, show, group, metrics, the legend) on a strip under the title line."""
+        strip = self._refs.get("tilt_strip")
+        if strip is None or strip.is_deleted:
+            return
+        strip.clear()
+        on = self.tab == TILTS_TAB and bool(self.tilt_groups)
+        strip.set_visibility(on)
+        if on:
+            with strip:
+                self.tilt_gallery.render_controls()
+
+    def _render_wall_tools(self) -> None:
+        """The Tomograms tab's tools on the title line: the version every tile shows, the pick layers
+        and the segmentations, each a glyph whose dropdown opens under the pointer. The Tilts tab has
+        none there."""
+        tools = self._refs.get("tab_controls")
+        if tools is None or tools.is_deleted:
+            return
+        tools.clear()
+        for menus in (self._picks_menus, self._features_menus):
+            menus.pop("wall", None)
+        for ref in ("source_rows", "source_text", "features_menu"):
+            self._refs.pop(ref, None)
+        if self.tab != TOMOGRAMS_TAB:
+            return
+        with tools:
+            if len(self._source_keys()) > 1:
+                self._render_source_tool()
+            if self.layers:
+                self._render_picks_tool()
+            if self.rows:
+                # Without a layer yet it still holds the import.
+                self._render_features_tool()
+
+    def _render_source_tool(self) -> None:
+        trigger, label = tool_trigger("filter_none", self._source_text(self.source))
+        self._refs["source_text"] = label
+        _menu, body = hover_menu(trigger, auto_close=True)
+        with body:
+            ui.label("Version on every tile").classes("cb-hmenu-title")
+            self._refs["source_rows"] = ChoiceRows(self._source_choices(), self.source, self._select_source)
+
+    def _render_picks_tool(self) -> None:
+        trigger, _ = tool_trigger("particle.svg")
+        _menu, body = hover_menu(trigger, align="right")
+        self._picks_menus["wall"] = (body, lambda: self.source)
+        self._refresh_picks_lists()
+
+    def _render_features_tool(self) -> None:
+        trigger, _ = tool_trigger("segmentation.svg")
+        menu, body = hover_menu(trigger, align="right")
+        self._refs["features_menu"] = menu
+        self._features_menus["wall"] = (body, lambda: self.source)
+        self._refresh_features_lists()
 
     # ── Segmentation layers ───────────────────────────────────────────────────
-
-    def _feature_name(self, layer: dict) -> str:
-        return fl.feature_name(self.project_path, layer)
 
     def _feature_vars(self) -> str:
         """The CSS variables the segmentation fills and badges read (`feature_layers.css_vars`). Set on
@@ -1056,30 +1180,49 @@ class TomoGalleryPage:
             if el is not None and not el.is_deleted:
                 el.style(style)
 
-    def _features_summary(self, source: str) -> str:
-        return fl.layers_summary(self.project_path, self.feature_layers, lambda layer: self._off_source(layer, source))
-
     def _refresh_features_lists(self) -> None:
-        """Repaint every live segmentation-layer list (the toolbar's menu, the zoom's side column)
-        and its summary."""
-        for name, (body, summary, source_of) in list(self._features_menus.items()):
+        """Repaint every live segmentation-layer list (the title line's menu, with the import; the
+        zoom's side column)."""
+        for name, (body, source_of) in list(self._features_menus.items()):
             if body.is_deleted:
                 del self._features_menus[name]
                 continue
             row = self._zoom_row() if name == "zoom" else None
             if name == "zoom" and row is None:
                 continue
-            if summary is not None:
-                summary.set_text(self._features_summary(source_of()))
+            source = source_of()
             body.clear()
             with body:
-                self._render_features_list(source_of(), row)
+                if name == "wall":
+                    ui.label("Segmentations on the wall").classes("cb-hmenu-title").props["title"] = fl.TIP
+                self._render_features_list(source, row)
+                if name == "wall":
+                    self._render_import_row()
+
+    def _render_import_row(self) -> None:
+        item = ui.element("div").classes("cb-hmenu-item cb-hmenu-action")
+        item.props["title"] = (
+            "Register volumes segmented outside crboost (MemBrain, easymode or Ais run by hand) on these tomograms"
+        )
+        item.on("click", lambda _e: self._import_from_menu())
+        with item:
+            ui.icon("add", size="12px")
+            ui.label("Import segmentations…")
+
+    def _import_from_menu(self) -> None:
+        menu = self._refs.get("features_menu")
+        if menu is not None and not menu.is_deleted:
+            menu.close()
+        self._import_segmentations()
 
     def _render_features_list(self, source: str, row: dict | None = None) -> None:
         """The segmentation layers (`feature_layers.render_layer_rows`). The count is the tomograms a
         layer covers, or, for one tomogram (`row`, the zoom), the feature's share of its volume."""
         fractions = {e["id"]: e["fraction"] for e in row["features"]} if row is not None else {}
         layers = [layer for layer in self.feature_layers if row is None or layer["id"] in fractions]
+        if not layers:
+            ui.label("No segmentations yet: run Segment, or import them.").classes("cb-hmenu-empty")
+            return
         fl.render_layer_rows(
             self.project_path,
             layers,
@@ -1101,29 +1244,24 @@ class TomoGalleryPage:
 
     # ── Pick layers ───────────────────────────────────────────────────────────
 
-    def _picks_summary(self, source: str) -> str:
-        shown = [layer for layer in self.layers if self._layer_shown(layer, source)]
-        if len(shown) == 1:
-            return shown[0]["label"]
-        return f"{len(shown)} of {len(self.layers)} layers"
-
     def _refresh_picks_lists(self) -> None:
-        """Repaint every live pick-layer list (the toolbar's menu, the zoom's side column) and
-        its summary; they are a few rows each."""
-        for name, (body, summary, source_of) in list(self._picks_menus.items()):
+        """Repaint every live pick-layer list (the title line's menu; the zoom's side column); they are
+        a few rows each."""
+        for name, (body, source_of) in list(self._picks_menus.items()):
             if body.is_deleted:
                 del self._picks_menus[name]
                 continue
-            if summary is not None:
-                summary.set_text(self._picks_summary(source_of()))
+            source = source_of()
             body.clear()
             with body:
-                self._render_picks_list(source_of())
+                if name == "wall":
+                    ui.label("Picks on the wall").classes("cb-hmenu-title")
+                self._render_picks_list(source)
 
     def _render_picks_list(self, source: str) -> None:
         """The pick layers, by species: a click on a row shows or hides it (and stops following the
-        source), a click on its marker picks its color. "Follow the source" puts the layers back
-        on what the source shows."""
+        source), a click on its marker opens the colours under it. "Follow the source" puts the layers
+        back on what the source shows."""
         follow = ui.element("div").classes("cb-gal-pk-row cb-gal-pk-follow")
         follow.on("click", lambda _e: self._set_follow(not self.picks_follow))
         follow.tooltip(
@@ -1145,17 +1283,8 @@ class TomoGalleryPage:
             row.on("click", lambda _e, lid=layer["id"]: self._toggle_layer(lid, source))
             with row:
                 ui.icon("check_box" if shown else "check_box_outline_blank", size="14px")
-                # A box around the drawn dot: an html element's content would replace a menu inside it.
-                marker = ui.element("div").classes("cb-gal-pk-marker")
-                marker.on("click.stop", lambda: None)
-                with marker:
-                    ui.html(_marker_svg(layer["color"]), sanitize=False)
-                    ui.tooltip("Pick this layer's color")
-                    with ui.menu().props("anchor='bottom left' self='top left'"):
-                        with ui.element("div").classes("cb-gal-pk-palette"):
-                            for color in SPECIES_OVERLAY_COLORS:
-                                swatch = ui.html(_marker_svg(color, 14), sanitize=False).classes("cb-gal-pk-marker")
-                                swatch.on("click.stop", lambda _e, lid=layer["id"], c=color: self._set_color(lid, c))
+                marker = ui.html(_marker_svg(layer["color"]), sanitize=False).classes("cb-gal-pk-marker")
+                marker.props["title"] = "Pick this layer's colour"
                 ui.label(layer["label"]).classes("cb-gal-pk-name")
                 ui.label(str(layer["n"])).classes("cb-gal-pk-n")
                 if shown and self._off_source(layer, source):
@@ -1164,6 +1293,8 @@ class TomoGalleryPage:
                         "one this source shows: another alignment puts the specimen elsewhere in the volume, so "
                         "these dots can sit off their particles."
                     )
+            palette = fl.palette_row(lambda c, lid=layer["id"]: self._set_color(lid, c), _marker_svg)
+            marker.on("click.stop", lambda _e, p=palette: p.set_visibility(not p.visible))
 
     def _set_follow(self, on: bool) -> None:
         self.picks_follow = on
@@ -1192,11 +1323,13 @@ class TomoGalleryPage:
 
     def _render_grid(self) -> None:
         if not self.rows:
-            self._render_empty()
+            if self._skeleton:
+                self._render_skeleton()
+            else:
+                self._render_empty()
             return
         kicks = 0
-        self._tiles, self._pictures, self._imgs, self._chips, self._captions = {}, {}, {}, {}, {}
-        self._overlays, self._overlay_keys, self._badges, self._badge_keys = {}, {}, {}, {}
+        self._tiles, self._pictures, self._imgs, self._overlays, self._overlay_keys = {}, {}, {}, {}, {}
         grid = ui.element("div").classes("cb-gal-grid").style(self._grid_columns())
         self._refs["grid"] = grid
         with grid:
@@ -1207,6 +1340,18 @@ class TomoGalleryPage:
     def _grid_columns(self) -> str:
         width = next(w for k, _lbl, w in _SIZES if k == self.size)
         return f"grid-template-columns: repeat(auto-fill, minmax({width}px, 1fr));"
+
+    def _render_skeleton(self) -> None:
+        """Placeholder tiles while the tomograms are listed: a breathing square frame and a caption bar."""
+        with ui.element("div").classes("cb-gal-grid").style(self._grid_columns()):
+            for _ in range(self._skeleton):
+                with ui.element("div").classes("cb-gal-tile"):
+                    with ui.element("div").classes("cb-gal-frame").style("aspect-ratio: 1/1; cursor: default;"):
+                        self._render_wait_note()
+                    with ui.element("div").classes("cb-gal-cap").style("cursor: default;"):
+                        ui.element("div").style(
+                            "width: 45%; height: 8px; margin: 3.5px 0; border-radius: 2px; background: #e2e8f0;"
+                        )
 
     def _render_empty(self) -> None:
         with ui.element("div").classes("cb-empty"):
@@ -1220,51 +1365,36 @@ class TomoGalleryPage:
     def _render_tile(self, row: dict, *, kicked: bool) -> int:
         """One tile. Returns 1 when it submitted a slab render, so the caller can cap
         how many a single pass kicks off."""
-        tile = ui.element("div").classes("cb-gal-tile")
+        tile = ui.element("div").classes("cb-gal-tile" + (" selected" if row["ts"] == self.selected_ts else ""))
         self._tiles[row["ts"]] = tile
         with tile:
             return self._fill_tile(row, kicked=kicked)
 
     def _fill_tile(self, row: dict, *, kicked: bool) -> int:
         """A tile's frame and caption row: the slice, or, toggled, a mosaic of the series'
-        tilts in the same box. The caption row has the position label and, for a tomogram
-        with tilts (an imported one has none), its tilts summed up."""
+        tilts in the same box. The caption row is the position label and at its end the Journey
+        glyph; a click on it selects the tile."""
         group = self._group_by_ts.get(row["ts"])
         spent = 0
         if group is not None and row["ts"] in self.open_mosaics:
             self._render_mosaic_frame(row, group)
         else:
             spent = self._render_slice_frame(row, group, kicked=kicked)
-        with ui.element("div").classes("cb-gal-cap"):
+        cap = ui.element("div").classes("cb-gal-cap")
+        cap.on("click", lambda _e, t=row["ts"]: self._select(t))
+        with cap:
             ui.label(row["label"]).classes("cb-gal-name").tooltip(row["ts"])
-            badges = ui.element("div").style("display: contents;")
-            self._badges[row["ts"]] = badges
-            with badges:
-                self._render_feature_badges(row)
-            if group is not None:
-                caption = ui.html(tomogram_caption_html(group, compact=self.size == "s"), sanitize=False)
-                self._captions[row["ts"]] = caption.style("flex: 0 0 auto;")
+            journey = ui.html(load_icon_svg("journey.svg", size=11), sanitize=False).classes("cb-gal-jlink")
+            journey.props["title"] = "Open this tilt series in the Journey, beside the wall"
+            journey.on("click.stop", lambda _e, t=row["ts"]: self._open_journey(t))
         return spent
-
-    def _render_feature_badges(self, row: dict) -> None:
-        """The share of the volume each feature filling the tile takes (mean p), in its colour."""
-        visible = self._visible_features(row, self.source)
-        self._badge_keys[row["ts"]] = tuple(f["id"] for f in visible)
-        for f in visible:
-            if f["fraction"] is None:
-                continue
-            layer = self._feature_layer_by_id[f["id"]]
-            with ui.element("div").classes("cb-gal-feat-badge"):
-                ui.element("div").classes("cb-gal-feat-dot").style(f"background: var({fl.feature_var(f['feature'])});")
-                ui.label(fl.fraction_text(f["fraction"]))
-                ui.tooltip(f"{self._feature_name(layer)}: {f['fraction']:.1f} % of the volume (mean probability)")
 
     def _render_slice_frame(self, row: dict, group: dict | None, *, kicked: bool) -> int:
         src = row["sources"].get(self.source)
         frame = ui.element("div").classes("cb-gal-frame" + ("" if row["aspect"] else " cb-gal-frame-auto"))
         if row["aspect"]:
             frame.style(f"aspect-ratio: {row['aspect'][0]}/{row['aspect'][1]};")
-        frame.on("click", lambda _e, r=row: self._zoom(r))
+        frame.on("click", lambda _e, r=row: self._click_tile(r))
         with frame:
             # `display: contents`: a box of its own would come between the frame and the image.
             picture = ui.element("div").style("display: contents;")
@@ -1275,11 +1405,6 @@ class TomoGalleryPage:
             self._overlays[row["ts"]] = overlay
             with overlay:
                 self._render_tile_overlay(row)
-            chip = ui.element("div").style("display: contents;")
-            self._chips[row["ts"]] = chip
-            with chip:
-                if src is not None and src.get("mrc"):
-                    copy_3dmod_chip(src["mrc"])
             if group is not None:
                 self._render_mosaic_toggle(row["ts"], len(group["tilts"]), on=False)
         return spent
@@ -1289,10 +1414,10 @@ class TomoGalleryPage:
         is none. Returns 1 when it submitted a slab render."""
         spent = 0
         self._imgs.pop(row["ts"], None)
-        if src is None:
-            self._render_frame_note(
-                "not produced by this source" if row["ready"] else "reading…", wait=not row["ready"]
-            )
+        if src is None and not row["ready"]:
+            self._render_wait_note()
+        elif src is None:
+            self._render_frame_note("not produced by this source")
         elif src["png"] is not None:
             img = ui.element("img").classes("cb-gal-img")
             img.props.update(src=src["thumb"], alt=row["ts"], loading="lazy", decoding="async")
@@ -1314,15 +1439,12 @@ class TomoGalleryPage:
         return has_png, picks, tuple(f["id"] for f in self._visible_features(row, source))
 
     def _render_tile_overlay(self, row: dict) -> None:
-        """A tile's segmentation fills and dot layers (over an image only) and its pick badge, for
-        the wall's source."""
+        """A tile's segmentation fills and dot layers, over an image only, for the wall's source."""
         key = self._overlay_key(row, self.source)
         self._overlay_keys[row["ts"]] = key
-        visible = self._visible_picks(row, self.source)
         if key[0]:
             self._render_feature_fills(row, self.source)
-            self._render_dot_layers(row, visible, _DOT_R_WALL)
-        self._render_pick_badge(visible)
+            self._render_dot_layers(row, self._visible_picks(row, self.source), _DOT_R_WALL)
 
     def _render_feature_fills(self, row: dict, source: str) -> None:
         """One fill per segmentation layer over the frame, beneath the dots. Without the tomogram's
@@ -1334,15 +1456,9 @@ class TomoGalleryPage:
 
     def _refresh_overlays(self) -> None:
         """Repaint the overlay of each tile whose drawn layers changed (a source switch while
-        following the source, a layer switched, a color picked), and its feature badges."""
+        following the source, a layer switched, a color picked)."""
         for row in self.rows:
             ts = row["ts"]
-            badges = self._badges.get(ts)
-            if badges is not None and not badges.is_deleted:
-                if self._badge_keys.get(ts) != tuple(f["id"] for f in self._visible_features(row, self.source)):
-                    badges.clear()
-                    with badges:
-                        self._render_feature_badges(row)
             overlay = self._overlays.get(ts)
             if overlay is None or overlay.is_deleted or ts in self.open_mosaics:
                 continue
@@ -1369,20 +1485,19 @@ class TomoGalleryPage:
             )
 
     def _render_mosaic_frame(self, row: dict, group: dict) -> None:
-        """The series' tilts in the box the slice occupies, with no zoom click, dots or pick
-        badge. A tilt opens the full-size tilt viewer."""
+        """The series' tilts in the box the slice occupies, with no zoom click or dots. A tilt
+        selects the tile and opens the full-size tilt viewer."""
         aspect = row["aspect"]
         cells, own_aspect = mosaic_html(group["tilts"], aspect[0] / max(aspect[1], 1) if aspect else None)
         ratio = f"{aspect[0]}/{aspect[1]}" if aspect else own_aspect
         frame = ui.element("div").classes("cb-gal-frame").style(f"aspect-ratio: {ratio}; cursor: default;")
         with frame:
             mosaic = ui.html(cells, sanitize=False).style("position: absolute; inset: 0;")
-            mosaic.on("click", handler=self._on_tilt_click, js_handler=TILT_CLICK_JS)
+            mosaic.on("click", handler=lambda e, t=row["ts"]: self._on_tilt_click(e, t), js_handler=TILT_CLICK_JS)
             self._render_mosaic_toggle(row["ts"], len(group["tilts"]), on=True)
 
     def _render_mosaic_toggle(self, ts: str, n: int, *, on: bool) -> None:
-        """The top-left corner switch between a tile's slice and its tilts (the pick badge
-        holds the top-right)."""
+        """The top-left corner switch between a tile's slice and its tilts."""
         toggle = (
             ui.element("div")
             .classes("cb-gal-mosaic-toggle" + (" on" if on else ""))
@@ -1400,7 +1515,7 @@ class TomoGalleryPage:
             ui.html(_MOSAIC_ICON, sanitize=False)
 
     def _render_pick_badge(self, visible: list[dict]) -> None:
-        """Pick count in the tile's corner. Counted-but-not-drawn is stated, not
+        """Pick count in the zoom's top-right corner. Counted-but-not-drawn is stated, not
         rounded away: without the tomogram's extent (or with picks written against a
         different one) there is no honest place to put a dot, and a bare count over an
         empty slice would read as a rendering bug."""
@@ -1414,7 +1529,7 @@ class TomoGalleryPage:
             )
             return
         ui.label(f"{total} ⚠").classes("cb-gal-badge cb-gal-badge-warn").tooltip(
-            f"{unplaced} of {total} picks can't be placed on this tile — the tomogram's binned extent "
+            f"{unplaced} of {total} picks can't be placed on this slice — the tomogram's binned extent "
             "is unresolved (no volume on disk and no size in tomograms.star), so no dot position is "
             "trustworthy. Open the Journey's Reconstruct card for this tilt-series."
         )
@@ -1425,6 +1540,11 @@ class TomoGalleryPage:
             if spinner:
                 ui.spinner(size="18px", color="indigo-400")
             ui.label(text)
+
+    def _render_wait_note(self) -> None:
+        """A frame still reading: the loading look and a small spinner, no words."""
+        with ui.element("div").classes("cb-gal-note cb-gal-note-wait"):
+            ui.html(WAIT_SPINNER, sanitize=False)
 
     def _render_dot_layers(
         self, row: dict, visible: list[dict], radius: float, *, cap: int | None = _WALL_DOTS
@@ -1458,17 +1578,73 @@ class TomoGalleryPage:
             notes.append((f"{self.tilt_awaiting} tilts have no preview image yet{tail}", "#94a3b8", running))
         self.tilt_gallery.render(notes)
 
+    # ── Selection ─────────────────────────────────────────────────────────────
+
+    def _click_tile(self, row: dict) -> None:
+        """A click on a tile's slice selects the tile; on the selected tile it opens the zoom."""
+        if row["ts"] == self.selected_ts:
+            self._zoom(row)
+        else:
+            self._select(row["ts"])
+
+    def _select(self, ts: str, *, scroll: bool = False) -> None:
+        """Make `ts` the selection, which the Journey follows. `scroll`: bring it into view (the zoom's
+        steps; a click is on what is on screen)."""
+        self._mark_selected(ts)
+        publish = self.callbacks.get("select_ts")
+        if publish is not None:
+            publish(ts, "gallery")
+        if scroll:
+            self._scroll_to_selected()
+
+    def _follow_ts(self, ts: str) -> None:
+        """The Journey moved the selection: mark it here and bring it into view."""
+        self._mark_selected(ts)
+        self._scroll_to_selected()
+
+    def _mark_selected(self, ts: str) -> None:
+        """Move the selection's mark: the ring on its tile, and its series' on the Tilts tab."""
+        prev, self.selected_ts = self.selected_ts, ts
+        if prev == ts:
+            return
+        for t, on in ((prev, False), (ts, True)):
+            tile = self._tiles.get(t)
+            if tile is None or tile.is_deleted:
+                continue
+            if on:
+                tile.classes(add="selected")
+            else:
+                tile.classes(remove="selected")
+        self.tilt_gallery.set_selected(ts)
+
+    def _scroll_to_selected(self) -> None:
+        """Bring the selection into view when it is out of it: its tile, or on the Tilts tab its series.
+        With nothing of it on screen yet (the view hidden, the wall still being listed), the view turning
+        on or the render that builds it does."""
+        if self.selected_ts is None or not self._active:
+            return
+        if self.tab == TILTS_TAB:
+            self.tilt_gallery.scroll_to_selected()
+            return
+        tile = self._tiles.get(self.selected_ts)
+        if tile is not None and not tile.is_deleted:
+            scroll_into_view(tile)
+
     # ── Actions ───────────────────────────────────────────────────────────────
 
     def _select_source(self, key: str) -> None:
         """Point every tile at another source. A tile with an image under both only re-points its
         <img> (whose thumbnail the browser prefetched); one gaining or losing its image swaps its
-        picture slot. The 3dmod chip follows, and the dot layers and badge repaint only where
-        the layers drawn change. Nothing else of a tile is rebuilt: rebuilding the whole grid
-        re-sent every tile's dot layers and froze the page."""
+        picture slot. The dot layers repaint only where the layers drawn change. Nothing else of a
+        tile is rebuilt: rebuilding the whole grid re-sent every tile's dot layers and froze the
+        page."""
         self.source = key
-        # The segmented control flips its own highlight only when told to (it never rebuilds itself).
-        self._refs["seg_source"].set_active(key)
+        # The version menu moves its check, and the tool its name, only when told to (neither rebuilds).
+        rows, label = self._refs.get("source_rows"), self._refs.get("source_text")
+        if rows is not None:
+            rows.set_active(key)
+        if label is not None and not label.is_deleted:
+            label.set_text(self._source_text(key))
         kicks = 0
         for row in self.rows:
             ts = row["ts"]
@@ -1484,41 +1660,27 @@ class TomoGalleryPage:
                 picture.clear()
                 with picture:
                     kicks += self._render_picture(row, now, kicked=kicks < _MAX_KICKS_PER_RENDER)
-            chip = self._chips.get(ts)
-            if chip is not None and not chip.is_deleted:
-                chip.clear()
-                with chip:
-                    if now is not None and now.get("mrc"):
-                        copy_3dmod_chip(now["mrc"])
         self._refresh_overlays()
         self._refresh_picks_lists()
         self._refresh_features_lists()
         self._prefetch_other_sources()
 
     def _select_size(self, key: str) -> None:
-        was_compact = self.size == "s"
         self.size = key
         self._refs["seg_size"].set_active(key)
-        # The tilt cards follow by one CSS variable; the wall by its column width and, across the
-        # smallest size, its captions, set in place: a re-render would rebuild every tile.
+        # The tilt cards follow by one CSS variable, the wall by its column width, set in place: a
+        # re-render would rebuild every tile. The reflow can move the selection out of view.
         self.tilt_gallery.set_size(key)
         grid = self._refs.get("grid")
-        if grid is None or grid.is_deleted:
-            return  # the wall is not showing; its next render reads `self.size`
-        grid.style(self._grid_columns())
-        if (key == "s") != was_compact:
-            for ts, caption in self._captions.items():
-                group = self._group_by_ts.get(ts)
-                if group is not None and not caption.is_deleted:
-                    caption.content = tomogram_caption_html(group, compact=key == "s")
+        if grid is not None and not grid.is_deleted:
+            grid.style(self._grid_columns())
+        self._scroll_to_selected()
 
     def _select_tab(self, key: str) -> None:
         self.tab = key
         self._refs["seg_tab"].set_active(key)
-        controls = self._refs["tab_controls"]
-        controls.clear()
-        with controls:
-            self._render_tab_controls()
+        # The tab's own tools first: they settle the source the wall then draws.
+        self._sync_controls()
         self._rerender_body()
 
     def _toggle_mosaic(self, ts: str) -> None:
@@ -1535,7 +1697,9 @@ class TomoGalleryPage:
         with tile:
             self._fill_tile(row, kicked=True)
 
-    def _on_tilt_click(self, e) -> None:
+    def _on_tilt_click(self, e, ts: str) -> None:
+        """A tilt of a tile's mosaic: the tile is selected and the tilt opens in the viewer."""
+        self._select(ts)
         key = (e.args or {}).get("key", "")
         tilt = self._tilt_by_key.get(key)
         if tilt is None:
@@ -1593,7 +1757,10 @@ class TomoGalleryPage:
             dedup_key=f"{'recon-slabs' if is_recon else 'denoise-slab'}:{cache_dir}:{row['ts']}",
         ).submit(_run, show_start_toast=False)
 
-    async def _open_journey(self, ts: str) -> None:
+    async def _open_journey(self, ts: str, section: str | None = None) -> None:
+        """Select this tilt series and turn the Journey on beside the wall, on it (and scrolled to
+        `section`)."""
+        self._select(ts)
         async with self._flight("journey") as acquired:
             if not acquired:
                 return
@@ -1604,15 +1771,17 @@ class TomoGalleryPage:
             await toggle()
             show = self.callbacks.get("journey_show_ts")
             if show is not None:
-                await show(ts, section="reconstruct")
+                await show(ts, section=section)
 
     def _zoom(self, row: dict) -> None:
         """Full-size view of one tile — same image, same dots, as tall as the screen allows —
-        stepping through the wall in its order with ←/→ or the side chevrons. A dialog and not
-        a mode: zooming is a look, and the routes onward (Journey, 3dmod) are one click away
-        either way. One dialog per page, re-filled per tomogram, so a step never closes it."""
+        stepping the selection through the wall in its order with ←/→ or the side chevrons. A
+        dialog and not a mode: zooming is a look, and the routes onward (Journey, 3dmod) are one
+        click away either way. One dialog per page, re-filled per tomogram, so a step never closes
+        it."""
         if not row["ready"]:
             return  # its pictures are still being read
+        self._select(row["ts"])
         dlg = self._refs.get("zoom")
         if dlg is None or dlg.is_deleted:
             with dialog_host():
@@ -1635,15 +1804,19 @@ class TomoGalleryPage:
         i = order.index(self._zoom_ts) + delta
         if 0 <= i < len(order):
             self._zoom_ts = order[i]
+            self._select(order[i], scroll=True)
             self._fill_zoom()
 
     def _on_zoom_key(self, e) -> None:
         key = (e.args or {}).get("key")
         if key in ("ArrowUp", "ArrowDown"):
-            keys = [k for k, _label in self._source_options()]
-            if len(keys) > 1 and self._zoom_source in keys:
+            # The versions this tomogram has, in the menu's order (the others are grey there).
+            row = self._zoom_row()
+            keys = [k for k in self._source_keys() if row is not None and k in row["sources"]]
+            if keys:
                 step = -1 if key == "ArrowUp" else 1
-                self._select_zoom_source(keys[(keys.index(self._zoom_source) + step) % len(keys)])
+                at = keys.index(self._zoom_source) + step if self._zoom_source in keys else (0 if step > 0 else -1)
+                self._select_zoom_source(keys[at % len(keys)])
             return
         self._step_zoom(-1 if key == "ArrowLeft" else 1)
 
@@ -1651,8 +1824,9 @@ class TomoGalleryPage:
         return next((r for r in self.rows if r["ts"] == self._zoom_ts), None)
 
     def _fill_zoom(self) -> None:
-        """The zoom dialog: the slice as large as the screen holds on the left, and on its right a
-        column with the tomogram's name, its versions, the pick layers and the routes onward."""
+        """The zoom dialog: the slice as large as the screen holds on the left, with its pick count and
+        3dmod chip, and on its right a column with the tomogram's name, its tilts summed up, its
+        versions, the pick layers, the segmentations and the routes onward."""
         body = self._refs.get("zoom_body")
         dlg = self._refs.get("zoom")
         order = [r["ts"] for r in self.rows]
@@ -1704,28 +1878,33 @@ class TomoGalleryPage:
                     ui.label(row["label"]).classes("cb-gal-zoom-title")
                     ui.label(f"{i + 1} / {len(order)}").classes("cb-gal-zoom-src").tooltip("← → step through the wall")
                 ui.label(row["ts"]).classes("cb-gal-zoom-ts")
+                group = self._group_by_ts.get(row["ts"])
+                if group is not None:
+                    ui.html(tomogram_caption_html(group), sanitize=False)
                 if row["source_label"] == SOURCE_IMPORTED:
                     ui.label("imported").classes("cb-gal-zoom-src").tooltip(
                         "Volume imported into this project rather than reconstructed by its own pipeline"
                     )
-                sources = self._source_options()
-                if len(sources) > 1:
-                    ui.label("version").classes("cb-gal-zoom-sec").tooltip("↑ ↓ switch versions")
+                # The wall's three tools, as lists: the same rows, for this tomogram.
+                if len(self._source_keys()) > 1:
+                    _zoom_section("filter_none", "Version", "↑ ↓ step through this tomogram's versions")
                     self._refs["zoom_versions"] = ui.element("div").classes("cb-gal-zoom-list")
                     self._render_zoom_versions()
                 self._refs["zoom_caption"] = ui.label(src["caption"] if src else "").classes("cb-gal-zoom-src")
                 if self.layers:
-                    ui.label("picks").classes("cb-gal-zoom-sec")
+                    _zoom_section("particle.svg", "Picks")
                     picks = ui.element("div").classes("cb-gal-zoom-list")
-                    self._picks_menus["zoom"] = (picks, None, lambda: self._zoom_source)
+                    self._picks_menus["zoom"] = (picks, lambda: self._zoom_source)
                     with picks:
                         self._render_picks_list(self._zoom_source)
                 if row["features"]:
-                    ui.label("features").classes("cb-gal-zoom-sec").tooltip(
-                        f"{fl.TIP} Beside each, its share of the volume: the mean probability over the whole tomogram."
+                    _zoom_section(
+                        "segmentation.svg",
+                        "Segmentations",
+                        f"{fl.TIP} Beside each, its share of the volume: the mean probability over the whole tomogram.",
                     )
                     features = ui.element("div").classes("cb-gal-zoom-list")
-                    self._features_menus["zoom"] = (features, None, lambda: self._zoom_source)
+                    self._features_menus["zoom"] = (features, lambda: self._zoom_source)
                     with features:
                         self._render_features_list(self._zoom_source, row)
                 else:
@@ -1733,7 +1912,7 @@ class TomoGalleryPage:
 
                 async def _go(ts: str = row["ts"]) -> None:
                     dlg.close()
-                    await self._open_journey(ts)
+                    await self._open_journey(ts, "reconstruct")
 
                 with ui.element("div").classes("cb-gal-zoom-actions"):
                     house_button(
@@ -1745,7 +1924,8 @@ class TomoGalleryPage:
         # The other versions of this tomogram, fetched while the user looks, so a switch is instant.
         others = [s["url"] for k, s in row["sources"].items() if k != self._zoom_source and s.get("url")]
         if others:
-            ui.run_javascript(
+            # The body's client, not the context's: a chevron click runs in the chevron's slot, gone with body.clear().
+            body.client.run_javascript(
                 f"for (const u of {json.dumps(others)}) {{ const i = new Image(); i.decoding = 'async'; i.src = u; }}"
             )
 
@@ -1756,29 +1936,24 @@ class TomoGalleryPage:
             return
         box.clear()
         with box:
-            for key, label in self._source_options():
-                src = row["sources"].get(key)
-                on = key == self._zoom_source
-                item = ui.element("div").classes("cb-gal-pk-row" + ("" if src else " off"))
-                item.on("click", lambda _e, k=key: self._select_zoom_source(k))
-                with item:
-                    ui.icon("radio_button_checked" if on else "radio_button_unchecked", size="14px")
-                    ui.label(label).classes("cb-gal-pk-name")
-                item.tooltip(src["caption"] if src else "This version has no volume of this tomogram")
+            self._refs["zoom_version_rows"] = ChoiceRows(
+                self._source_choices(row), self._zoom_source, self._select_zoom_source
+            )
 
     def _render_zoom_overlay(self) -> None:
-        """The zoom's segmentation fills and dot layers, for the zoom's own version: every stored
-        dot, not the wall's sample."""
+        """The zoom's segmentation fills and dot layers (over an image only) and its pick count, for the
+        zoom's own version: every stored dot, not the wall's sample."""
         overlay = self._refs.get("zoom_overlay")
         row = self._zoom_row()
         if overlay is None or overlay.is_deleted or row is None:
             return
         overlay.clear()
-        if not _has_png(row["sources"].get(self._zoom_source)):
-            return
+        visible = self._visible_picks(row, self._zoom_source)
         with overlay:
-            self._render_feature_fills(row, self._zoom_source)
-            self._render_dot_layers(row, self._visible_picks(row, self._zoom_source), _DOT_R_ZOOM, cap=None)
+            if _has_png(row["sources"].get(self._zoom_source)):
+                self._render_feature_fills(row, self._zoom_source)
+                self._render_dot_layers(row, visible, _DOT_R_ZOOM, cap=None)
+            self._render_pick_badge(visible)
 
     def _select_zoom_source(self, key: str) -> None:
         """Show the zoomed tomogram under another version; the wall keeps its own. With an image
@@ -1801,7 +1976,9 @@ class TomoGalleryPage:
         with chip:
             if now.get("mrc"):
                 copy_3dmod_chip(now["mrc"])
-        self._render_zoom_versions()
+        rows = self._refs.get("zoom_version_rows")
+        if rows is not None:
+            rows.set_active(key)
         self._render_zoom_overlay()
         self._refresh_picks_lists()
         self._refresh_features_lists()
@@ -1819,6 +1996,16 @@ class TomoGalleryPage:
         chev.on("click.stop", lambda: self._step_zoom(-1 if side == "left" else 1))
         with chev:
             ui.icon(f"chevron_{side}", size="34px")
+
+
+def _zoom_section(glyph: str, title: str, tip: str | None = None) -> None:
+    """A list's head in the zoom's side column: the glyph of its tool on the wall's title line, and its name."""
+    head = ui.element("div").classes("cb-gal-zoom-sec")
+    with head:
+        render_glyph(glyph, size=12)
+        ui.label(title)
+    if tip:
+        head.props["title"] = tip
 
 
 def _marker_svg(color: str, size: int = 10) -> str:
