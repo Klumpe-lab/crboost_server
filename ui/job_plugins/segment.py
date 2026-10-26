@@ -221,8 +221,8 @@ def _model_note(path: str) -> tuple[str, bool]:
 
 
 def _render_input_note(ui_mgr, instance_id: str | None) -> None:
-    """Marks an input denoised with IsoNet, which corrects the missing wedge: easymode's training
-    data had none of that."""
+    """Marks an input denoised with our IsoNet job: easymode trained on its own n2n and iso (distilled
+    IsoNet2) denoisings of raw reconstructions, and our IsoNet output is a close cousin, not that flavour."""
     if ui_mgr is None or not ui_mgr.project_path or not instance_id:
         return
     state = get_project_state_for(ui_mgr.project_path)
@@ -234,7 +234,7 @@ def _render_input_note(ui_mgr, instance_id: str | None) -> None:
     if method != DenoiseMethod.ISONET:
         return
     _note(
-        f"The input, {source}, is denoised with IsoNet (missing wedge corrected). easymode was trained on raw, "
-        "even/odd and noise2noise reconstructions: check its result on these before relying on it.",
-        warn=True,
+        f"The input, {source}, is denoised with IsoNet. easymode was trained on raw reconstructions and on its own "
+        "n2n and iso (distilled IsoNet2) denoisings of them; this IsoNet output is close to, not the same as, "
+        "that flavour. Denoise predict with method easymode gives the flavour it was trained on."
     )
