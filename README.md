@@ -33,6 +33,9 @@ The server picks its own port. On your laptop, run the `ssh …` tunnel command 
 (see *Starting the server* below). Updating an install whose `config/` came from older templates: see
 *Upgrading an existing install* below.
 
+`requirements.txt` is a generated lock: to change a dependency, edit `requirements.in` and recompile with the
+`uv pip compile` line at the top of that file.
+
 ---
 
 <details>
@@ -53,7 +56,8 @@ If your cluster's Python ships its own packages and versions conflict, prefer th
 `venv/bin/python3 preflight.py` creates `config/conf.yaml` and `config/qsub.sh` from their templates on
 the first run and stops. Every later run only verifies (it never edits):
 
-- Python version, and that every package in `requirements.txt` imports
+- Python version, and that every package in `requirements.txt` imports; one imported from outside the venv (a
+  cluster module on `PYTHONPATH`) is a warning naming its path
 - `config/conf.yaml` loads, `DefaultProjectBase` is writable, every `tools:` path and `container_binds`
   entry exists, the partitions are set; a key no setting reads (a misspelling) is a warning
 - `sbatch`/`squeue`/`sacct`/`sinfo` and `apptainer` are on PATH, and every configured partition exists

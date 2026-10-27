@@ -81,15 +81,24 @@ def check_python() -> None:
         ok(f"Python {version} ({sys.executable})")
 
     missing = []
+    outside = []
     for name in REQUIRED_MODULES:
         try:
-            importlib.import_module(name)
+            module = importlib.import_module(name)
         except ImportError as e:
             missing.append(f"{name} ({e})")
+            continue
+        # A module found through PYTHONPATH (a cluster module's site-packages) is not the venv's: the
+        # install then depends on module loads the lock does not record.
+        origin = getattr(module, "__file__", None)
+        if origin and not Path(origin).resolve().is_relative_to(Path(sys.prefix).resolve()):
+            outside.append(f"{name} from {origin}")
     if missing:
         fail("cannot import: " + "; ".join(missing))
     else:
         ok("imports: " + ", ".join(REQUIRED_MODULES))
+    for found in outside:
+        warn(f"not from this environment ({sys.prefix}): {found}")
 
 
 def check_config():

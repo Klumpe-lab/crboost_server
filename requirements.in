@@ -1,0 +1,31 @@
+# Top-level dependencies. requirements.txt is generated from this file; edit here, then recompile:
+#   uv pip compile requirements.in -o requirements.txt   (Python and platform come from uv.toml)
+nicegui==3.0.3
+fastapi==0.118.0
+uvicorn==0.37.0
+pydantic==2.12.3
+pyyaml==6.0.3
+requests==2.31.0
+
+# numpy, pandas, scipy and requests are the versions the cluster's scipy-bundle/2023.11 and
+# python-bundle-pypi/2023.10 modules provide today (roadmap 39 S0), so the lock reproduces what runs.
+numpy==1.26.2
+pandas==2.1.3
+scipy==1.11.4
+biopython==1.86
+scikit-image==0.26.0
+Pillow==12.0.0
+matplotlib==3.10.9
+
+starfile==0.5.13
+mrcfile==1.5.4
+tifffile==2025.12.20
+
+# DL tilt filter (drivers/tilt_filter.py runs on the host venv, not in a container).
+# The 2.6.0 Linux wheel bundles CUDA 12.4 and needs only glibc 2.16, so it runs on
+# CentOS 7 compute nodes; check the nodes' glibc before moving to a newer torch.
+torch==2.6.0
+torchvision==0.21.0
+
+# Self-test: `pytest` (headnode, seconds) and `pytest -m cluster` (one job per tool)
+pytest>=7
