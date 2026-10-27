@@ -130,18 +130,17 @@ async def extract_list(backend, ref: ListRef, *, on_done: OnDone) -> None:
 async def _confirm_reextract(ref: ListRef, job) -> bool:
     """Ask before re-extracting a list whose own extraction is still in flight.
 
-    A question, not a block: submitting again deletes the out dir the queued/running job is
-    writing into, so the user has to mean it — but a watcher lost to a server restart leaves
-    the instance reading Running with nothing left to move it, and disabling the action
-    there would strand the list for good."""
+    A question, not a block: re-extracting cancels the queued/running job and re-cuts once
+    SLURM has let it go (`backend.extract_pick_list`), so the user has to mean it — but a
+    watcher lost to a server restart leaves the instance reading Running with nothing left to
+    move it, and disabling the action there would strand the list for good."""
     with dialog_host(), ui.dialog() as confirm, ui.card().classes("w-[28rem] max-w-full gap-2"):
         ui.label(f"An extraction for '{ref.label}' is already {job.execution_status.value.lower()}").classes(
             "text-sm font-bold"
         )
         ui.label(
-            f"SLURM {job.slurm_job_id or '—'} · {ref.tomo_name}. Submitting again deletes this run's output "
-            "directory and re-cuts from scratch, so the job already in the queue would be writing into a "
-            "directory pulled out from under it."
+            f"SLURM {job.slurm_job_id or '—'} · {ref.tomo_name}. Re-extracting cancels that job, waits until "
+            "SLURM has ended it, then deletes its output and re-cuts from scratch."
         ).classes("text-[12px] text-gray-600")
         ui.label(
             "If the server was restarted while an extraction was in flight, the status stays here with nothing "
@@ -149,7 +148,7 @@ async def _confirm_reextract(ref: ListRef, job) -> bool:
         ).classes("text-[10px] text-gray-400")
         with ui.row().classes("w-full justify-end gap-2"):
             house_button("Cancel", lambda: confirm.submit(None))
-            house_button("Re-extract anyway", lambda: confirm.submit(True), kind="accent")
+            house_button("Cancel it and re-extract", lambda: confirm.submit(True), kind="accent")
     go = await confirm
     confirm.delete()
     return bool(go)
@@ -176,7 +175,9 @@ def _submit_list_extraction(
     produce no submit at all."""
 
     async def _run(progress_cb):
-        progress_cb(0, 0, "extracting subtomograms…")
+        progress_cb(
+            0, 0, "cancelling the earlier extraction, then extracting…" if replacing else "extracting subtomograms…"
+        )
         res = await backend.extract_pick_list_and_wait(
             ref.project_path,
             candidate_optset,
