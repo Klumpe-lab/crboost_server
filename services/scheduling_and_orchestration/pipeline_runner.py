@@ -13,6 +13,7 @@ from services.project_state import JobStatus
 from services.event_log import events
 from services.result import err, ok
 from services.segmentation.manifest import read_manifest as read_segmentation_manifest
+from services.supervisor_owner import read_owner
 from services.tilt_series import reload_registry
 from services.tilt_series_service import ensure_tilt_thumbnails
 
@@ -35,6 +36,18 @@ def _afterok_state_to_status(slurm_state: str) -> JobStatus:
     if s in ("FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "BOOT_FAIL", "DEADLINE", "PREEMPTED"):
         return JobStatus.FAILED
     return JobStatus.UNKNOWN
+
+
+def _owner_holds(job_dir: Path, jm) -> bool:
+    """Whether the job dir's owner file still names the job's recorded supervisor. A failure marker
+    is then not that supervisor's (it gives the file back before its trailer writes one) but a refused
+    second supervisor's, whose trailer wrote it all the same: squeue and sacct decide instead. Disk
+    only, for a thread; the owner file is opened, so the NFS attribute cache cannot keep it alive."""
+    try:
+        owner = read_owner(job_dir)
+    except ValueError:
+        return False  # a damaged owner file names no supervisor, so the marker stands
+    return owner is not None and owner.slurm_job_id == str(jm.slurm_job_id)
 
 
 def _driver_fatal_line(job_dir: Path) -> str:
@@ -123,7 +136,8 @@ class PipelineRunnerService:
 
     def _exit_sentinels(self, tracked: dict, proj: Path) -> dict[str, str | None]:
         """{instance: "success" / "failure" / None} from each tracked job's exit sentinels; jobs with
-        no job dir are left out. Disk only, for a thread."""
+        no job dir are left out. A failure marker a refused second supervisor wrote reads None
+        (_owner_holds). Disk only, for a thread."""
         out: dict[str, str | None] = {}
         for iid, jm in tracked.items():
             job_dir = self._resolve_afterok_job_dir(jm, proj)
@@ -131,7 +145,7 @@ class PipelineRunnerService:
                 continue
             if (job_dir / "RELION_JOB_EXIT_SUCCESS").exists():
                 out[iid] = "success"
-            elif (job_dir / "RELION_JOB_EXIT_FAILURE").exists():
+            elif (job_dir / "RELION_JOB_EXIT_FAILURE").exists() and not _owner_holds(job_dir, jm):
                 out[iid] = "failure"
             else:
                 out[iid] = None
@@ -141,7 +155,8 @@ class PipelineRunnerService:
         """Status reconciler, ticked by the monitor while a project's pipeline is active. Per
         non-terminal tracked job (submit_chain set slurm_job_id), in order of authority:
           1. disk RELION_JOB_EXIT_SUCCESS/FAILURE sentinels (written by the supervisor/qsub
-             trailer; survive sacct purge),
+             trailer; survive sacct purge; a failure marker the owner file shows is not the
+             recorded supervisor's is skipped, _owner_holds),
           2. targeted ``squeue -j`` -> QUEUED-vs-RUNNING + DependencyNeverSatisfied,
           3. ``sacct`` terminal state for jobs that left the queue without a sentinel,
           4. a grace window: a job absent from squeue with no sentinel and no sacct row is
