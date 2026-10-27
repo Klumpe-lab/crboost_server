@@ -95,8 +95,9 @@ class ImageProcessor:
                     save_png_path = Path(save_png_path)
                     save_png_path.parent.mkdir(parents=True, exist_ok=True)
                     # Written under a name outside the *.png glob, then renamed into place: a reader (the
-                    # DL run that starts on the same fsMotion edge) sees a complete PNG or none.
-                    part_path = save_png_path.with_name(save_png_path.name + '.part')
+                    # DL run that starts on the same fsMotion edge) sees a complete PNG or none. The pid keeps the
+                    # server's conversion and the driver's, which run at once, off each other's part file.
+                    part_path = save_png_path.with_name(f"{save_png_path.name}.{os.getpid()}.part")
                     pil_image.save(part_path, format='PNG')
                     os.replace(part_path, save_png_path)
                 
