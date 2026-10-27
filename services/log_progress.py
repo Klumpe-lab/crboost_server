@@ -47,6 +47,8 @@ class LogProgress:
     stage: str  # where the run is, in the tool's terms: "iteration 3/9 · training"
     short: str  # a few characters for a cramped cell: the overall percentage, else the stage's gist
     fraction: float | None  # of the whole job, when the log says how much there is in all
+    # What `short` states as a fraction, for a bar beside it: `fraction`, else the current step's.
+    shown_fraction: float | None
     eta: str | None  # the whole job's rest at its current pace, rounded: "14 h 20 min"
     quiet_min: int | None  # minutes since run.out last grew, once that is over 10
     # The last progress line as printed. Not compared: it moves on every tick, the rest rarely.
@@ -105,7 +107,7 @@ def _hms(text: str | None) -> float | None:
     return s
 
 
-def _human(seconds: float | None) -> str | None:
+def human_duration(seconds: float | None) -> str | None:
     """Rounded to the minute below an hour, to ten minutes above."""
     if seconds is None:
         return None
@@ -153,6 +155,7 @@ class _Summary:
     short: str  # shown when there is no overall fraction
     fraction: float | None = None
     eta_s: float | None = None
+    step: float | None = None  # the current step's fraction, when that is all the log says
 
 
 Facts = dict
@@ -180,7 +183,7 @@ def _sum_generic(f: Facts) -> _Summary | None:
     if bar is None or bar.pct is None:
         return None
     count = f" ({int(bar.done)}/{int(bar.total)})" if bar.kind != "relion" else ""
-    return _Summary(f"{bar.desc or 'step'} {bar.pct}%{count}", f"{bar.pct}%")
+    return _Summary(f"{bar.desc or 'step'} {bar.pct}%{count}", f"{bar.pct}%", step=bar.frac)
 
 
 # ── miss-alignment: Iteration k/n headers, a training bar, then an alignment bar ─
@@ -452,7 +455,8 @@ def read(job_type: JobType | str, job_dir: Path | str) -> LogProgress | None:
         stage=s.stage,
         short=f"{int(s.fraction * 100)}%" if s.fraction is not None else s.short,
         fraction=s.fraction,
-        eta=_human(s.eta_s),
+        shown_fraction=s.fraction if s.fraction is not None else s.step,
+        eta=human_duration(s.eta_s),
         quiet_min=int(age // 60) if age > _QUIET_AFTER_S else None,
         last_line=last.line.strip() if last is not None else "",
     )
