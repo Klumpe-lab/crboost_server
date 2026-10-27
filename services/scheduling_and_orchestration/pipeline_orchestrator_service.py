@@ -567,9 +567,11 @@ class PipelineOrchestratorService:
                 # Clear stale exit sentinels so the reconciler's pass-1 can't latch a prior run's
                 # terminal status. On a reused FAILED dir this is what lets the rerun proceed;
                 # `.task_status/*.ok` is left intact so the supervisor (clean_status_dir
-                # keep_ok=True) skips already-done items and resubmits only what failed.
-                for _marker in ("RELION_JOB_EXIT_SUCCESS", "RELION_JOB_EXIT_FAILURE"):
-                    (job_dir / _marker).unlink(missing_ok=True)
+                # keep_ok=True) skips already-done items and resubmits only what failed. The logs go
+                # too: SLURM appends to them (write_sbatch_script), and the log readers would read the
+                # last attempt's lines as this one's.
+                for _stale in ("RELION_JOB_EXIT_SUCCESS", "RELION_JOB_EXIT_FAILURE", "run.out", "run.err"):
+                    (job_dir / _stale).unlink(missing_ok=True)
                 job_model.paths = resolved[instance_id]
                 job_model.submitted_inputs = recorded[instance_id]
 

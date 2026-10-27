@@ -109,7 +109,13 @@ def write_sbatch_script(script_path: Path, cfg: SlurmConfig, command: str, *, ar
         # Straight under the shebang: sbatch stops reading #SBATCH lines at the first command.
         shebang, body = script.split("\n", 1)
         script = f"{shebang}\n#SBATCH --qos={cfg.qos.strip()}\n{body}"
-    if array is not None:
+    if array is None:
+        # A second supervisor started in a running job's dir (refused by its owner file) would truncate
+        # the owner's run.out/.err by starting; appended to, they keep both. Callers that reuse a dir
+        # remove the previous attempt's logs before submitting.
+        shebang, body = script.split("\n", 1)
+        script = f"{shebang}\n#SBATCH --open-mode=append\n{body}"
+    else:
         shebang, body = script.split("\n", 1)
         script = f"{shebang}\n#SBATCH --array={array}\n{body}"
         script = script.replace(
