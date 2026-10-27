@@ -10,6 +10,7 @@ conf.yaml sets crboost_python, the drivers):
 Never edits an existing config file. Exits 1 when any check fails.
 """
 
+import clean_env  # noqa: F401  (first: check the environment main.py will run in)
 import importlib
 import os
 import shutil
