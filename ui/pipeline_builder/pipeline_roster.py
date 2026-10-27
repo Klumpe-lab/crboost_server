@@ -15,7 +15,8 @@ from ui.components.copyable import copy_on_click
 from ui.components.dialogs import dialog_host
 from ui.components.reactive import FingerprintedView, SingleFlight
 from ui.components.svg_icon import load_icon_svg
-from ui.job_plugins._field_styles import PANEL_TITLE_STYLE
+from ui.job_plugins._field_styles import VIEW_HEAD_STYLE, VIEW_TITLE_STYLE, view_head_icon
+from ui.projects_overview import project_card_menu
 from ui.protocols_view import protocol_light
 from ui.styles import MONO, SANS as FONT
 from ui.status_indicator import BoundStatusDot, _dot_html, _running_led_html
@@ -60,8 +61,8 @@ _NEST_INDENT = 18
 _SPECIES_GLYPH = "#94a3b8"
 
 
-# The Journey nav glyph (three ascending bars) lives in static/icons/journey.svg since
-# 13-S3, so the Picks & curation tab's journey button draws the same asset.
+# The Journey glyph (a route from one point to another) is static/icons/journey.svg, the asset the
+# Picks & curation tab's journey button and the Tomograms wall's tiles draw too.
 _SB_INFO = "#c0cad4"
 _AVATAR_PALETTE = ["#3b82f6", "#8b5cf6", "#06b6d4", "#10b981", "#f59e0b", "#ec4899"]
 
@@ -137,14 +138,18 @@ def _inject_svg_color(svg: str, color: str) -> str:
 
 
 def _row_paint(active: bool) -> tuple[str, str]:
-    """(row css, name css) of a job row, active or not."""
+    """(row css, name css) of a job row, active or not. The open job's row: a light-blue fill and a blue tick,
+    the tick the job page's title line carries (ui/workspace_page.py `_JOB_HEAD_STYLE`)."""
     if active:
-        return "background: #f0f4f8; border-left: 2px solid #475569;", "font-weight: 600;"
-    return "background: white; border-left: 2px solid transparent;", "font-weight: 400;"
+        return (
+            "background: var(--cb-head, #edf4fb); border-left: 2px solid var(--cb-accent, #4a8fd4);",
+            "font-weight: 600; color: var(--cb-head-ink, #12324f);",
+        )
+    return "background: white; border-left: 2px solid transparent;", "font-weight: 400; color: #1e293b;"
 
 
 def _header_border(active: bool) -> str:
-    return "#3b82f6" if active else "transparent"
+    return "var(--cb-accent, #4a8fd4)" if active else "transparent"
 
 
 class RosterWidget(FingerprintedView):
@@ -348,14 +353,15 @@ class RosterWidget(FingerprintedView):
         self._rows, self._headers = {}, []
         # Read by every row: which jobs a queued or running one depends on (their × is hidden).
         self._in_use = jobs_in_use(current_project_state())
-        # The panel's title line, in the views' title style (ui/workspace_page.py `_view_frame`).
-        with ui.element("div").style(
-            "display: flex; align-items: center; min-height: 28px; padding: 3px 8px 3px 14px; "
-            "margin-bottom: 6px; background: var(--cb-view-head, linear-gradient(180deg, #ffffff, #edf3f9)); "
-            "box-shadow: 0 var(--cb-view-head-line-w, 1px) 0 var(--cb-view-head-line, #a9c6e4), "
-            "inset 0 1px 0 var(--cb-head-glint, rgba(255, 255, 255, 0.9));"
-        ):
-            ui.label("Jobs").style(f"{PANEL_TITLE_STYLE} color: var(--cb-view-head-ink, #12324f);")
+        # The panel's title line, the same as every view's (ui/workspace_page.py `_view_frame`); its cross
+        # turns the pipeline view off, the roster and the job page together, as the rail's Jobs icon does.
+        with ui.element("div").style(VIEW_HEAD_STYLE):
+            view_head_icon("layers.svg")
+            ui.label("Jobs").style(VIEW_TITLE_STYLE)
+            ui.element("div").style("flex: 1 1 auto;")
+            ui.icon("close", size="12px").classes("cb-view-close").props(
+                'title="Close the job roster and the job page"'
+            ).on("click", lambda _e: self._on_pipeline_icon())
         for phase_id, jobs in PHASE_JOBS.items():
             icon_or_svg, phase_label, _ = PHASE_META[phase_id]
             is_flashing = self._flash_phase == phase_id
@@ -501,7 +507,7 @@ class RosterWidget(FingerprintedView):
                 .on("click", lambda iid=instance_id: panel.switch_tab(iid))
             ):
                 name_el = ui.label(base_name).style(
-                    f"{MONO} font-size: 10px; {name_paint} color: #1e293b; "
+                    f"{MONO} font-size: 10px; {name_paint} "
                     f"flex: 0 1 {_NAME_COL_CH}ch; min-width: 0; "
                     "white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
                 )
@@ -1132,13 +1138,14 @@ class RosterWidget(FingerprintedView):
                 f"cursor: pointer; flex-shrink: 0;"
             )
             .on("click", self._open_project_hub)
-            .tooltip(name)
         )
         with avatar:
             ui.label(initials).style(
                 f"font-size: 9px; font-weight: 700; color: {color}; "
                 "letter-spacing: 0.04em; line-height: 1; pointer-events: none;"
             )
+        # The projects roster's hover card for this project, read fresh on the first hover.
+        project_card_menu(avatar, lambda: self.panel.backend.scan_project(self.panel.ui_mgr.project_path))
         return avatar
 
     async def _open_project_hub(self):

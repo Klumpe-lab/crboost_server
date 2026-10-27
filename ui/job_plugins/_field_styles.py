@@ -14,6 +14,8 @@ from typing import get_args
 
 from nicegui import ui
 
+from ui.components.svg_icon import render_glyph
+
 # ── Tokens ──────────────────────────────────────────────────────────────────
 MONO = "font-family: 'IBM Plex Mono', monospace;"
 SANS = "font-family: 'IBM Plex Sans', sans-serif;"
@@ -89,6 +91,31 @@ PANEL_HEAD_STYLE = (
     "inset var(--cb-accent-w, 2px) 0 0 var(--cb-accent, #4a8fd4), "
     "inset 0 1px 0 var(--cb-head-glint, rgba(255, 255, 255, 0.9));"
 )
+
+
+# The title line on top of each main panel (the job roster, the job page, every view): plain white,
+# a hairline under it. One style, so no panel's title line reads different from the others. It leads
+# with the panel's glyph (`view_head_icon`); a view puts its own tools on it (ui/workspace_page.py
+# `_view_frame`), which wrap inside their slot when the panel is narrow.
+VIEW_HEAD_STYLE = (
+    "flex: 0 0 auto; display: flex; align-items: center; gap: 4px; min-height: 30px; padding: 3px 6px 3px 12px; "
+    "margin-bottom: 6px; background: var(--cb-view-head, #ffffff); "
+    "box-shadow: 0 var(--cb-view-head-line-w, 1px) 0 var(--cb-view-head-line, #dbe3ec);"
+)
+# A panel's name, in the condensed cut of the house face (loaded in ui/dashboard/css.py) a size above
+# the page's titles, so it reads apart from the tools beside it.
+VIEW_TITLE_STYLE = (
+    "font-family: 'IBM Plex Sans Condensed', 'IBM Plex Sans', sans-serif; font-size: 13px; font-weight: 600; "
+    "color: var(--cb-view-head-ink, #12324f); letter-spacing: 0.01em; white-space: nowrap; overflow: hidden; "
+    "text-overflow: ellipsis; min-width: 0;"
+)
+VIEW_ICON_COLOR = "#4a6584"
+
+
+def view_head_icon(icon: str):
+    """A panel's glyph at the start of its title line: its rail icon (a `static/icons` asset or a
+    Material name)."""
+    return render_glyph(icon, size=14, color=VIEW_ICON_COLOR).style("margin-right: 2px;")
 
 
 def fold_panel(panel, head, open_: bool) -> None:
@@ -410,6 +437,7 @@ def choice_row(
     hint: str | None = None,
     placeholder: str = "none registered",
     empty_value: str = "",
+    on_change: Callable[[str], None] | None = None,
 ):
     """A select over a RUNTIME options dict (value -> display label), in the same row
     chrome as every other field. `enum_field` covers the static-Enum case; this covers
@@ -424,6 +452,7 @@ def choice_row(
     absent is stated in the same shape as present, never silently preselected
     (CLAUDE.md "Surfacing uncertainty"). Writes go through an explicit change handler
     rather than `bind_value` so `empty_value` decides what "nothing chosen" means.
+    `on_change`, when given, takes the chosen value instead of the write to `attr`.
     """
     with ui.element("div").style(ROW_STYLE):
         _label(label, hint)
@@ -441,6 +470,9 @@ def choice_row(
         else:
 
             def _on_change(e):
+                if on_change is not None:
+                    on_change(e.value or empty_value)
+                    return
                 setattr(job_model, attr, e.value or empty_value)
                 save_handler()
 
