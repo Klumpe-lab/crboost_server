@@ -600,6 +600,21 @@ class CryoBoostBackend:
             return err("extract_pick_list needs exactly one of candidate_optset / tomograms_star")
         out_dir = Path(list_star).parent / slug
         out_dir.mkdir(parents=True, exist_ok=True)
+        state = self.state_service.state_for(project_path)
+        instance_id = extract_pick_list_instance_id(species_id, tomo_name, slug)
+
+        # A re-extract over a live extraction cancels it and goes on only once SLURM no longer
+        # runs it: wiping out/ under it would break both runs, and the new supervisor would find
+        # the dir still owned and exit.
+        prior = state.jobs.get(instance_id)
+        if (
+            prior is not None
+            and prior.slurm_job_id
+            and prior.execution_status in (JobStatus.SCHEDULED, JobStatus.QUEUED, JobStatus.RUNNING)
+        ):
+            ended = await self._cancel_and_await_end(str(prior.slurm_job_id), project_path.name)
+            if not ended["success"]:
+                return ended
 
         # ── job identity ────────────────────────────────────────────────────────
         # Create/update the per-list instance before sbatch: the driver bootstraps
@@ -620,8 +635,6 @@ class CryoBoostBackend:
         # but only while the project has a real pipeline job live: this job never sets
         # `pipeline_active` itself, so once the chain ends the monitor drops the project
         # and stops looking. `reconcile_pick_list_extractions` is what covers the rest.
-        state = self.state_service.state_for(project_path)
-        instance_id = extract_pick_list_instance_id(species_id, tomo_name, slug)
         state.ensure_job_initialized(JobType.EXTRACT_PICK_LIST, instance_id=instance_id)
         jm = state.jobs[instance_id]
         jm.execution_status = JobStatus.SCHEDULED
@@ -1132,6 +1145,31 @@ class CryoBoostBackend:
             changed = True
         if changed:
             await self.state_service.save_project(project_path=project_path, force=True)
+
+    async def _cancel_and_await_end(self, sid: str, project_name: str, *, wait_s: float = 180.0) -> dict[str, Any]:
+        """scancel an earlier extraction and return once SLURM no longer runs it (a COMPLETING job
+        still does: its processes may be writing). err when squeue cannot say, when the scancel
+        failed on a job still live, or when it outlives ``wait_s``."""
+        live = await self.slurm_service.live_task_counts([sid])
+        if live is None:
+            return err(f"could not ask SLURM whether the earlier extraction (SLURM {sid}) still runs")
+        if not live:
+            return ok()
+        cancel = await self.slurm_service.scancel_jobs([sid])
+        events.info("%s · re-extract: cancelling the earlier extraction, SLURM %s", project_name, sid)
+        deadline = time.monotonic() + wait_s
+        while True:
+            await asyncio.sleep(3)
+            live = await self.slurm_service.live_task_counts([sid])
+            if live == {}:
+                return ok()
+            if live and not cancel["success"]:
+                return err(f"scancel of the earlier extraction (SLURM {sid}) failed: {cancel['error']}")
+            if time.monotonic() > deadline:
+                return err(
+                    f"the earlier extraction (SLURM {sid}) still runs {wait_s:.0f} s after its cancel; "
+                    "re-extract once it has ended"
+                )
 
     async def cancel_pick_list_extraction(
         self, project_path: Path, species_id: str, tomo_name: str, slug: str
