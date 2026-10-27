@@ -42,7 +42,7 @@ COL_WIDTHS = "24px 44px 40px 40px 110px 58px 50px 50px 50px 1fr"
 _WARNINGS_SHOWN = 3
 
 
-def _render_parse_warnings(warnings: list[str]) -> None:
+def render_parse_warnings(warnings: list[str]) -> None:
     """Three lines, then a count that unfolds into a scroll box. A wrong directory
     yields one warning per mdoc — hundreds of red lines are a wall, not a message."""
     if not warnings:
@@ -69,14 +69,20 @@ def _render_parse_warnings(warnings: list[str]) -> None:
         more.on("click", _toggle)
 
 
-def build_dataset_overview_panel(overview: DatasetOverview, on_change: Callable[[], None] | None = None) -> None:
+def build_dataset_overview_panel(
+    overview: DatasetOverview,
+    on_change: Callable[[], None] | None = None,
+    *,
+    title: str = "Dataset overview",
+    title_tooltip: str | None = None,
+) -> None:
     """Render the dataset overview with collapsible positions and selection."""
 
     if not overview.positions:
         ui.label("No tilt-series recognised in this directory").style(
             f"{FONT} font-size: 10px; color: {CLR_GHOST}; font-style: italic;"
         )
-        _render_parse_warnings(overview.parse_warnings)
+        render_parse_warnings(overview.parse_warnings)
         return
 
     # Registry: ts_label -> row element (for scroll-to-highlight)
@@ -87,7 +93,9 @@ def build_dataset_overview_panel(overview: DatasetOverview, on_change: Callable[
 
     # --- Header: the title and the selection counts ---
     with ui.row().classes("w-full items-baseline justify-between").style(PANEL_HEAD_STYLE):
-        ui.label("Dataset overview").style(PANEL_TITLE_STYLE)
+        title_lbl = ui.label(title).style(PANEL_TITLE_STYLE)
+        if title_tooltip:
+            title_lbl.tooltip(title_tooltip)
         summary_label = ui.label("")
     summary_label.style(f"{MONO} font-size: 10px; color: {CLR_SUBLABEL};")
 
@@ -169,7 +177,7 @@ def build_dataset_overview_panel(overview: DatasetOverview, on_change: Callable[
             all_pos_cbs.append((pos, pos_cb))
 
     # --- Parse warnings ---
-    _render_parse_warnings(overview.parse_warnings)
+    render_parse_warnings(overview.parse_warnings)
 
 
 def _flash_row(row_el: ui.element, highlight_color: str):
