@@ -63,6 +63,7 @@ JOURNEY_SECTIONS: tuple[str, ...] = (
     "fs_ctf",
     "tilt_filter",
     "ts_align",
+    "ts_refine",
     "ts_ctf",
     "tilt_qc",
     "reconstruct",
