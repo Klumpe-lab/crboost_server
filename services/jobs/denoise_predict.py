@@ -17,13 +17,10 @@ class DenoisePredictParams(AbstractJobParams):
 
     # denoise_method and isonet_deconv are in USER_PARAMS for the dirty-marking and the
     # freeze-once-scheduled that entails, but they are not rendered by the generic grid —
-    # render_denoise_inheritance owns them, and shows them as a read-only chip whenever a
-    # denoisetrain job produced this job's model (see inherited_from_train). Predict must
-    # run whatever the model was trained as, so an independent setting would only invite a
-    # mismatch that fails deep in the run. The one case where the chip cannot answer is a
-    # manual `model_path` with no train job behind it — there the row becomes a real select,
-    # since the alternative is being pinned to the cryoCARE default with no way out. easymode
-    # needs no train job: choosing it drops the model input and shows easymode's own settings.
+    # render_denoise_inheritance owns them: one Denoiser choice among the project's train jobs
+    # (each brings its method and deconv and wires the model input), cryoCARE or IsoNet for a
+    # model file set by hand, and easymode, which needs no train job and has no model input.
+    # Predict must run a trained model as it was trained (see inherited_from_train).
     USER_PARAMS: ClassVar[set[str]] = {
         "ntiles_x",
         "ntiles_y",
@@ -150,29 +147,24 @@ class DenoisePredictParams(AbstractJobParams):
         return {"train": "denoisetrain"}
 
     def inherited_from_train(self, project_state) -> tuple[DenoiseMethod | None, bool | None]:
-        """`trained_method`, or (None, None) for an easymode job, which has no model to inherit from."""
+        """(denoise_method, isonet_deconv) of the denoisetrain job that made the model this job's
+        `model_path` holds, or (None, None): an easymode job, a model input not resolved yet, or a
+        model file no train job of the project made.
+
+        Predict must run a trained model as it was trained, so both come from the train job. Matched
+        by the resolved model_path only; with nothing resolved there is no train job to name. Used by
+        the UI (labels, notes) and the driver (authoritative at run time)."""
         if self.denoise_method == DenoiseMethod.EASYMODE:
             return (None, None)
-        return self.trained_method(project_state)
-
-    def trained_method(self, project_state) -> tuple[DenoiseMethod | None, bool | None]:
-        """(denoise_method, isonet_deconv) of the denoisetrain job that produced this job's
-        model, or (None, None) if it can't be resolved.
-
-        Predict has no independent method/deconv of its own — both are dictated by the train
-        job so the model and the prediction can never disagree. Matched by the resolved
-        model_path (falls back to the sole train job if the path isn't resolved yet). Used by
-        both the UI (read-only display) and the driver (authoritative override at run time)."""
         model_s = str(self.paths.get("model_path", "") or "")
         train = None
         for jm in (getattr(project_state, "jobs", {}) or {}).values():
             if getattr(jm, "job_type", None) != JobType.DENOISE_TRAIN:
                 continue
-            rel = (getattr(jm, "relion_job_name", None) or "").rstrip("/")
-            if rel and rel in model_s:
+            rel = (getattr(jm, "relion_job_name", None) or "").strip("/")
+            if rel and f"/{rel}/" in model_s:
                 train = jm
                 break
-            train = train or jm  # single-train fallback when model_path isn't resolved yet
         if train is None:
             return (None, None)
         # Coerce, don't isinstance-check: a str-Enum job param that was last written by a

@@ -389,6 +389,11 @@ class UIStateManager:
             self._state.active_job_tab = instance_id
             self._notify()
 
+    def clear_active_instance(self):
+        """No job open: the job page is closed, the roster stays."""
+        self._state.active_job_tab = None
+        self._notify()
+
     def set_active_job(self, job_type: JobType):
         """Backward compat: activate the first instance of a type."""
         instances = self.get_instances_for_type(job_type)
