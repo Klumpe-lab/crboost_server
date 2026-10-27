@@ -19,6 +19,7 @@ from services.project_state import JobType, get_project_state_for
 from services.subsets import add_refusal
 
 from ui.components.buttons import house_button
+from ui.components.dialogs import dialog_host
 from ui.components.reactive import SingleFlight
 from ui.current_project import current_project_state
 from ui.pipeline_builder.config_tab import in_use_notice
@@ -730,12 +731,42 @@ class PipelineBuilderPanel:
                     if live or parked:
                         self.poller.start()
                     self.rebuild_pipeline_ui()
+                elif result.get("still_live"):
+                    await self._offer_cancel_leftovers(result["error"], result["still_live"])
                 else:
                     logger.warning("start_pipeline failed: %s", result.get("error"))
                     _safe_notify(f"Failed to start: {result.get('error')}", type="negative")
             except Exception as e:
                 logger.exception("handle_run_pipeline error")
                 _safe_notify(f"Error: {e}", type="negative")
+
+    async def _offer_cancel_leftovers(self, reason: str, slurm_ids: list[str]) -> None:
+        """Run refused because a Failed job still has work in SLURM. Usually that work drains by
+        itself and Run then aggregates it; work that never does (tasks held, a dependent left
+        pending) would refuse every Run, so the refusal offers to scancel it."""
+        ids = ", ".join(slurm_ids)
+        with (
+            dialog_host(),
+            ui.dialog() as dialog,
+            ui.card().style("min-width: 360px; max-width: 34rem; padding: 16px;"),
+        ):
+            ui.label("Not started").classes("text-base font-bold text-gray-800")
+            ui.label(reason).classes("text-sm text-gray-600 mt-2")
+            ui.label(
+                f"Cancelling SLURM {ids} throws away what those tasks have not finished; Run then redoes it."
+            ).classes("text-xs text-amber-600 mt-3")
+            with ui.row().classes("mt-4 gap-2 justify-end w-full"):
+                house_button("Close", lambda: dialog.submit(False))
+                house_button(f"Cancel SLURM {ids}", lambda: dialog.submit(True), kind="danger")
+        confirmed = await dialog
+        dialog.delete()
+        if not confirmed:
+            return
+        res = await self.backend.slurm_service.scancel_jobs(slurm_ids)
+        if res["success"]:
+            _safe_notify(f"Cancelled SLURM {ids}. Run again once squeue no longer lists them.", type="info")
+        else:
+            _safe_notify(f"scancel {ids} failed: {res['error']}", type="negative")
 
     async def handle_stop_pipeline(self):
         project_path = self.ui_mgr.project_path
