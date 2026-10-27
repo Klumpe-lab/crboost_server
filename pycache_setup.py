@@ -1,4 +1,4 @@
-"""Where the server's compiled bytecode goes; imported first by main.py, before any other module.
+"""Where the server's compiled bytecode goes; imported first by crboost, before any other module.
 
 Bytecode goes to a per-user cache instead of next to the sources (which stay as they are), so the
 server does not compile every module from source on each start and again on the first click that

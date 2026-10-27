@@ -63,7 +63,13 @@ def render_config_tab(
             instance_id=instance_id,
             callbacks=callbacks,
         )
-    render_default_params_card(
-        job_type, job_model, is_frozen, save_handler, exclude=exclude, ui_mgr=ui_mgr, callbacks=callbacks
+    return render_default_params_card(
+        job_type,
+        job_model,
+        is_frozen,
+        save_handler,
+        exclude=exclude,
+        ui_mgr=ui_mgr,
+        instance_id=instance_id,
+        callbacks=callbacks,
     )
-    return None

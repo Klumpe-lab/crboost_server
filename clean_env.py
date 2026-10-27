@@ -1,4 +1,4 @@
-"""Leave out what a cluster module put on PYTHONPATH; imported first by main.py and preflight.py.
+"""Leave out what a cluster module put on PYTHONPATH; imported first by crboost and preflight.py.
 
 A venv that has its own packages (the uv quick start) can only be shadowed by a module's site-packages on
 PYTHONPATH, and sbatch hands the server's environment to every job it submits. When this interpreter's own

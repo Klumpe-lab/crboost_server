@@ -11,7 +11,7 @@ and never chosen by the user.
 import glob
 import logging
 import os
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 from collections.abc import Callable
 
@@ -21,9 +21,9 @@ from services.tilt_series.preimport import (
     AcquisitionSummary,
     DatasetOverview,
     SourceKind,
-    StagePositionInfo,
     TiltInfo,
     TiltSeriesInfo,
+    aggregate_to_positions,
 )
 from services.tilt_series.build import parse_position
 
@@ -131,7 +131,7 @@ class DatasetParsingService:
             warnings.append(f"Skipped {skipped_no_sections} mdocs without [ZValue] sections (per-movie mdocs)")
 
         frame_ext = self._frame_extension(tilt_series_list, resolved_frames_dir, warnings)
-        positions = self._aggregate_to_positions(tilt_series_list)
+        positions = aggregate_to_positions(tilt_series_list)
         first_with_software = next((ts for ts in tilt_series_list if ts.acquisition_software), None)
         first_with_dims = next((ts for ts in tilt_series_list if ts.detector_dimensions), None)
 
@@ -317,23 +317,6 @@ class DatasetParsingService:
             mdoc_stats=mdoc_stats,
             date_time=section.get("DateTime"),
         )
-
-    def _aggregate_to_positions(self, tilt_series_list: list[TiltSeriesInfo]) -> list[StagePositionInfo]:
-        """Group tilt-series by stage position when every series has one (Tomo5 names);
-        otherwise a single flat group, `stage_position=None`, sorted by name."""
-        if not all(ts.stage_position is not None for ts in tilt_series_list):
-            flat = sorted(tilt_series_list, key=lambda ts: ts.ts_name)
-            return [StagePositionInfo(stage_position=None, tilt_series=flat)] if flat else []
-
-        groups: dict[int, list[TiltSeriesInfo]] = defaultdict(list)
-        for ts in tilt_series_list:
-            groups[ts.stage_position].append(ts)
-
-        positions = []
-        for stage_pos in sorted(groups.keys()):
-            series = sorted(groups[stage_pos], key=lambda ts: ts.beam_position or 1)
-            positions.append(StagePositionInfo(stage_position=stage_pos, tilt_series=series))
-        return positions
 
 
 _dataset_parsing_service: DatasetParsingService | None = None

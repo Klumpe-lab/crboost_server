@@ -9,12 +9,46 @@ No GPU work — purely metadata assembly. Runs as a single SLURM job (not an arr
 """
 
 import os
+import shutil
 import sys
 import traceback
 from pathlib import Path
 
+from drivers.array_job_base import read_tilt_series_names_from_input_star
 from drivers.driver_base import ToolCommand, add_gain_options, get_driver_context, run_tool, start_supervisor
 from services.jobs.ts_import import TsImportParams
+
+
+def stage_upstream_mdocs(mdoc_dir: Path, input_star: Path, pattern: str, job_dir: Path) -> Path:
+    """Copy into job_dir/mdoc the mdocs of the tilt series listed in the input STAR.
+
+    ts_import exits 1 when any mdoc names a frame series it cannot find, so a single tilt series
+    that failed motion correction would fail the whole import. The input STAR lists the ones that
+    made it; only their mdocs go to ts_import.
+    """
+    ts_names = set(read_tilt_series_names_from_input_star(input_star))
+    if not ts_names:
+        raise RuntimeError(f"No tilt series listed in {input_star}")
+
+    mdocs = sorted(mdoc_dir.glob(pattern))
+    kept = [m for m in mdocs if m.name.removesuffix(".mdoc") in ts_names]
+    left_out = [m.name for m in mdocs if m not in kept]
+    no_mdoc = sorted(ts_names - {m.name.removesuffix(".mdoc") for m in kept})
+    if not kept:
+        raise FileNotFoundError(f"No mdoc in {mdoc_dir} matching '{pattern}' belongs to a tilt series in {input_star}")
+    if left_out:
+        print(f"[DRIVER] Leaving out {len(left_out)} mdoc(s) not in the input STAR: {', '.join(left_out)}", flush=True)
+    if no_mdoc:
+        print(f"[DRIVER] WARNING: no mdoc matching '{pattern}' for: {', '.join(no_mdoc)}", flush=True)
+
+    staged = job_dir / "mdoc"
+    if staged.exists():
+        shutil.rmtree(staged)
+    staged.mkdir()
+    for m in kept:
+        shutil.copy2(m, staged / m.name)
+    print(f"[DRIVER] Staged {len(kept)} mdoc(s) in {staged}", flush=True)
+    return staged
 
 
 def build_ts_import_commands(params: TsImportParams, paths: dict, job_dir: Path) -> str:
@@ -91,6 +125,7 @@ def main():
         print(f"[DRIVER] Params loaded for job type {job_type} in {job_dir}", flush=True)
         paths = {k: Path(v) for k, v in local_params_data["paths"].items()}
         additional_binds = local_params_data["additional_binds"]
+        paths["mdoc_dir"] = stage_upstream_mdocs(paths["mdoc_dir"], paths["input_star"], params.mdoc_pattern, job_dir)
 
         # Build and run the WarpTools commands
         command_str = build_ts_import_commands(params, paths, job_dir)

@@ -8,13 +8,14 @@ One component with two mounts:
   tab, filling the workspace main area: bigger slabs, curation mode, the per-list
   extraction verb, fullscreen.
 
-Layout (both mounts): the tools on the title line (the version on the slabs, the layers, the list
-in the gallery), and below it one row with the slabs left and the gallery right, tops aligned.
+Layout (both mounts): the slabs on the left under their tools (the version they show, the layers drawn
+on them), the gallery on the right under its own (the list it shows, then its count and toolbelt). The
+two tool rows are one height, so the slab and the first row of cutouts start level.
 
 Two gallery backends share one chrome: the auto (PyTOM) list renders the subtomo atlas with
 a Save/Reset dirty model, a workbench list (manual/imported/merged) renders a contact sheet
 cut from the binned recon that auto-commits per click. Everything else — the slab canvas,
-the ghost-dot layers, the hover bridge, the reference strip — is shared.
+the ghost-dot layers, the hover bridge — is shared.
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ from services.dashboard_data import (
     read_tomograms_table,
     resolve_species,
     resolve_volume_for_3dmod,
+    species_color,
     species_render_plan,
     split_species_id,
     template_match_instances,
@@ -56,7 +58,7 @@ from services.visualization.cutout_filters import keyed_path, offered_presets, r
 from services.visualization.preview_render import is_output_stale, render_recon_slabs
 from services.workers import WorkKind, run_in_worker
 from services.segmentation import display
-from services.visualization.tomo_geometry import APIX_MRC_HEADER, TomoGeometry, geometry_for_ts, volume_dims
+from services.visualization.tomo_geometry import TomoGeometry, geometry_for_ts, volume_dims
 from services.job_lineage import job_dirs, recon_of
 from ui.components.buttons import house_button, icon_button
 from ui.components.feature_layers import FeatureFills, layers_for_ts
@@ -93,9 +95,9 @@ _curation_flight = SingleFlight()
 _SELECTED_LIST_SLUG: dict[tuple[str, str], str] = {}
 
 # Rendered edge of one cutout tile, in px. It is also the sprite step used to read the
-# atlas PNG (`background-position: -col*TILE -row*TILE`), so the atlases and every tile
-# CSS rule (.cb-gallery-tile / .cb-noise-tile / .cb-template-tile in ui/dashboard/css.py)
-# are locked to this number together — it is not a free display knob.
+# atlas PNG (`background-position: -col*TILE -row*TILE`), so the atlases and the tile
+# CSS rule (.cb-gallery-tile in ui/dashboard/css.py) are locked to this number together —
+# it is not a free display knob.
 _DISPLAY_TILE_PX = 96
 
 # Box-select arms only in curation mode: the grid carries `.cb-curating`
@@ -670,26 +672,11 @@ def _auto_kick_list_cutouts(
     return False
 
 
-def _render_list_header(lst: dict, sp: dict, project_path: Path) -> None:
-    """Swatch + label (+ merge provenance) for one workbench list, rendered inside a
-    caller-provided row so the contact sheet and the building/empty states share one
-    header. Opening the tomo in ArtiaX is the rail toolbox's ⚡; re-saving a `.coords`
-    under the same name updates that list."""
-    ui.element("div").classes(f"cb-species-swatch cb-swatch-{lst['shape']}").style(f"background: {lst['color']};")
-    ui.label(lst["label"]).classes("cb-section-title")
-    parents = lst.get("parent_slugs") or []
-    if parents:
-        ui.label("⋃ " + ", ".join(parents)).classes("cb-detail-meta").tooltip(
-            "Merged from these lists (row order = type priority: manual/imported before auto)"
-        )
-
-
-def _render_list_cutouts_status(lst: dict, sp: dict, project_path: Path, *, building: bool) -> None:
-    """Slim header row shown while a list's cutouts build (spinner) or when the
-    build produced nothing (picks outside the recon / recon unreadable)."""
-    with ui.element("div").classes("w-full").style("margin-top: 10px;"), ui.row().classes("items-center gap-2"):
-        _render_list_header(lst, sp, project_path)
-        ui.label(f"· {len(lst.get('picks', []))} picks").classes("cb-detail-meta")
+def _render_list_cutouts_status(lst: dict, *, building: bool) -> None:
+    """The line in place of a list's cutouts while they build (spinner), or when the build produced
+    nothing (picks outside the recon / recon unreadable)."""
+    with ui.row().classes("items-center gap-2"):
+        ui.label(f"{len(lst.get('picks', []))} picks").classes("cb-detail-meta")
         if building:
             ui.spinner(size="16px", color="#94a3b8")
             ui.label("rendering cutouts from the recon…").style("font-size: 10px; color: #94a3b8;")
@@ -707,6 +694,7 @@ def _render_list_cutout_sheet(
     atlas_path: str,
     initial_keep,
     refresh,
+    head,
     *,
     mode: str = "slim",
 ) -> None:
@@ -718,7 +706,7 @@ def _render_list_cutout_sheet(
     navigation and the merge + per-list extraction consume exactly the kept picks; the
     count beside the list tool live-updates to kept/total. "Reset" clears the filter (all
     kept). These lists are scoreless, so keep/discard is the filter; there is no score
-    threshold."""
+    threshold. The sheet's tile count and toolbelt go into `head`, the gallery's tool row."""
     from services.particles import picks_filter
 
     index = atlas_meta.get("index", {})
@@ -1055,7 +1043,8 @@ def _render_list_cutout_sheet(
         else:
             grid_el.classes(remove="cb-curating")
         curation_bar.set_visibility(bool(on))
-        hint.set_text(_hint_text())
+        tile_count.props["title"] = _hint_text()
+        tile_count.update()
 
     def _hint_text() -> str:
         if state["curating"]:
@@ -1064,49 +1053,49 @@ def _render_list_cutout_sheet(
             return "click a tile to select it · hover to find it on the slab · arm ✎ to keep/drop"
         return "click a tile to select it · hover to find it on the slab · curate on the full viewer"
 
-    with ui.element("div").classes("cb-cutouts-box w-full").style("margin-top: 10px;"):
-        with ui.row().classes("cb-gallery-head w-full items-center gap-2 no-wrap"):
-            _render_list_header(lst, sp, project_path)
-            counter = ui.label(_counter_txt()).classes("cb-filter-counter")
-            ui.space()
-            with ui.row().classes("cb-toolbelt items-center gap-0.5 no-wrap"):
-                if len(_list_filter_presets) >= 2:
-                    fbtn = _toolbelt_button("tune", "Display filter — how the cutouts are rendered, never the data")
-                    with fbtn, ui.menu().props("anchor='bottom right' self='top right'"):
-                        with ui.element("div").classes("cb-info-card cb-tb-card"):
-                            with ui.row().classes("items-center gap-2 no-wrap"):
-                                # The index sits beside the atlas (`_list_cutout_paths`).
-                                _render_cutout_filter_controls(
-                                    _list_filter_presets,
-                                    _apix,
-                                    _apix_source,
-                                    Path(atlas_path),
-                                    Path(atlas_path).with_suffix(".json"),
-                                    _on_list_select,
-                                )
-                # A workbench list has no per-pick peek (no subtomo extraction behind
-                # it), so the popover carries the per-tomogram command only.
-                _render_3dmod_popover(sp["row"], with_peek=False)
-                curate_btn = None
-                if mode == "full":
-                    # Curation belongs to the full page: the Journey's mount is
-                    # look-and-filter, and a keep/drop there would be a second place to
-                    # change what downstream consumes.
-                    curate_btn = _toolbelt_button(
-                        "edit",
-                        "Curation mode — while armed, clicking a tile or a slab dot keeps/drops it and the "
-                        "kept subset auto-saves to this list's filtered star. Off, a click only selects.",
-                    )
-                    curate_btn.on("click", lambda: _set_curating(not state["curating"]))
-                    _toolbelt_button("fullscreen", "Fill the browser window with the viewer (Esc exits)").on(
-                        "click", js_handler=_FULLSCREEN_JS
-                    )
+    with head:
+        tile_count = ui.label(f"{len(all_idx)} cutouts").classes("cb-gallery-count")
+        tile_count.props["title"] = _hint_text()
+        with ui.row().classes("cb-toolbelt items-center gap-0.5 no-wrap"):
+            if len(_list_filter_presets) >= 2:
+                fbtn = _toolbelt_button("tune", "Display filter — how the cutouts are rendered, never the data")
+                with fbtn, ui.menu().props("anchor='bottom right' self='top right'"):
+                    with ui.element("div").classes("cb-info-card cb-tb-card"):
+                        with ui.row().classes("items-center gap-2 no-wrap"):
+                            # The index sits beside the atlas (`_list_cutout_paths`).
+                            _render_cutout_filter_controls(
+                                _list_filter_presets,
+                                _apix,
+                                _apix_source,
+                                Path(atlas_path),
+                                Path(atlas_path).with_suffix(".json"),
+                                _on_list_select,
+                            )
+            # A workbench list has no per-pick peek (no subtomo extraction behind
+            # it), so the popover carries the per-tomogram command only.
+            _render_3dmod_popover(sp["row"], with_peek=False)
+            curate_btn = None
+            if mode == "full":
+                # Curation belongs to the full page: the Journey's mount is
+                # look-and-filter, and a keep/drop there would be a second place to
+                # change what downstream consumes.
+                curate_btn = _toolbelt_button(
+                    "edit",
+                    "Curation mode — while armed, clicking a tile or a slab dot keeps/drops it and the "
+                    "kept subset auto-saves to this list's filtered star. Off, a click only selects.",
+                )
+                curate_btn.on("click", lambda: _set_curating(not state["curating"]))
+                _toolbelt_button("fullscreen", "Fill the browser window with the viewer (Esc exits)").on(
+                    "click", js_handler=_FULLSCREEN_JS
+                )
+    with ui.element("div").classes("cb-cutouts-box w-full"):
+        # The kept count and Reset show while curation mode is armed, as the subtomo gallery's do.
         curation_bar = ui.row().classes("cb-curation-bar w-full items-center gap-2")
         curation_bar.set_visibility(False)
         with curation_bar:
+            counter = ui.label(_counter_txt()).classes("cb-filter-counter")
             ui.space()
             house_button("Reset", _on_reset, tooltip="Clear this list's keep/drop — revert to all picks kept")
-        hint = ui.label(_hint_text()).style("font-size: 9px; color: #94a3b8; margin-bottom: 4px;")
         grid_el = ui.element("div").classes("cb-gallery-scroll").style("display: flex; flex-wrap: wrap; gap: 4px;")
         grid_el._props["id"] = grid_id
         with grid_el:
@@ -1138,19 +1127,23 @@ def _render_list_cutout_sheet(
     ui.run_javascript(_MARQUEE_JS)
 
 
-def _render_list_extraction_line(sp: dict, lst: dict, project_path: Path, refresh) -> None:
-    """One line above a workbench list's contact sheet naming its subtomo-extraction state
-    and, in the full viewer, offering the verb.
+def _render_list_extract_button(sp: dict, lst: dict, project_path: Path, refresh) -> None:
+    """The full viewer's extraction verb for a workbench list, on the gallery's tool row; the list's
+    extraction state is the mark beside the list tool.
 
-    The tiles below are cut from the binned recon, so a sheet full of them says nothing
-    about whether subtomograms were ever extracted; this line states it. The button calls the same
+    The tiles are cut from the binned recon, so a sheet full of them says nothing about whether
+    subtomograms were ever extracted; the button's tooltip states it. It calls the same
     ``list_actions.extract_list`` the registry row does; the ref is built at click time
     because ``tomograms_star_for`` reads stars."""
     species_id = sp.get("species_id") or ""
     tomo_name = sp["row"]["tomo_name"]
     pl = current_project_state().get_pick_list(lst["slug"], species_id, tomo_name)
     est = pl.extraction_state() if pl is not None else ListExtractionState.NOT_EXTRACTED
-    text, cls = extraction_badge(est)
+    state = (
+        "Subtomograms are extracted for this list."
+        if est == ListExtractionState.EXTRACTED
+        else "No subtomograms are extracted for this list."
+    )
 
     async def _extract() -> None:
         from backend import get_backend
@@ -1173,28 +1166,22 @@ def _render_list_extraction_line(sp: dict, lst: dict, project_path: Path, refres
         )
         await list_actions.extract_list(get_backend(), ref, on_done=refresh)
 
-    with ui.row().classes("w-full items-center gap-2").style("margin-top: 8px;"):
-        if text:
-            ui.label(text).classes(f"cb-ltable-badge {cls}")
-        if est == ListExtractionState.EXTRACTED:
-            ui.label("subtomograms extracted for this list").classes("cb-detail-meta")
-        else:
-            ui.label("no subtomograms extracted for this list").classes("cb-detail-meta")
-        ui.space()
-        house_button(
-            "Re-extract" if est != ListExtractionState.NOT_EXTRACTED else "Extract",
-            _extract,
-            tooltip=(
-                "Cut this list's subtomograms with the species' committed extraction geometry — the same "
-                "action as the Particles registry's per-row ⚗, on the kept subset when a keep/drop filter exists."
-            ),
-        )
+    house_button(
+        "Re-extract" if est != ListExtractionState.NOT_EXTRACTED else "Extract",
+        _extract,
+        tooltip=(
+            f"{state} Cut this list's subtomograms with the species' committed extraction geometry — the same "
+            "action as the Particles registry's per-row ⚗, on the kept subset when a keep/drop filter exists."
+        ),
+    )
 
 
-async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, refresh, *, mode: str = "slim") -> None:
+async def _render_single_list_cutouts(
+    sp: dict, lst: dict, project_path: Path, refresh, head, *, mode: str = "slim"
+) -> None:
     """Detail pane for ONE workbench list (manual/imported/merged): a read-only
     recon-sourced cutout sheet (these lists are not subtomo-extracted, so tiles
-    are cut from the binned recon at each pick voxel).
+    are cut from the binned recon at each pick voxel). Its tools go into `head`, the gallery's tool row.
 
     The merged-list overlap/dedup panel lives in the Particles registry's Picks & curation
     tab, which acts on every tomogram at once. The per-list extract verb shows in
@@ -1219,7 +1206,8 @@ async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, r
     species_id = sp.get("species_id") or ""
     tomo_name = sp["row"]["tomo_name"]
     if mode == "full":
-        _render_list_extraction_line(sp, lst, project_path, refresh)
+        with head:
+            _render_list_extract_button(sp, lst, project_path, refresh)
     box_px = _list_cutout_box_px(sp)
     atlas_path, index_path = _list_cutout_paths(project_path, species_id, tomo_name, lst["slug"])
     star_path = lst.get("path")
@@ -1234,7 +1222,7 @@ async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, r
     if warm:
         logger.info("list-cutouts[%s/%s]: atlas cache HIT — rendering without spinner", species_id, lst["slug"])
     else:
-        with ui.element("div").classes("w-full").style("margin-top: 10px;") as pending_box:
+        with ui.element("div").classes("w-full") as pending_box:
             with ui.row().classes("items-center gap-2"):
                 ui.spinner(size="16px", color="#94a3b8")
                 ui.label("loading cutouts…").style("font-size: 10px; color: #94a3b8;")
@@ -1267,6 +1255,8 @@ async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, r
 
     io = await asyncio.to_thread(_probe)
     if pending_box is not None:
+        if pending_box.is_deleted:
+            return  # another list was shown while the probe ran; its own render fills the pane
         pending_box.delete()
 
     if not io["recon_exists"]:
@@ -1292,12 +1282,12 @@ async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, r
             atlas_meta = _read_atlas_index(index_path)  # rare: built between probe and now
     if atlas_meta:
         _render_list_cutout_sheet(
-            lst, sp, project_path, atlas_meta, str(atlas_path), io.get("keep"), refresh, mode=mode
+            lst, sp, project_path, atlas_meta, str(atlas_path), io.get("keep"), refresh, head, mode=mode
         )
     else:
         # No tiles yet: a written index means the build ran (empty result);
         # no index means it's still in flight.
-        _render_list_cutouts_status(lst, sp, project_path, building=not io["index_exists"])
+        _render_list_cutouts_status(lst, building=not io["index_exists"])
 
 
 # Merging and the merged-list overlap/dedup panel are per-list actions, owned by the
@@ -1608,7 +1598,7 @@ def _collect_species_data_for_ts(project_state, project_path: Path, ts_name: str
     geom = geometry_for_ts(project_state, project_path, ts_name)
     out: list[dict] = []
     for idx, (species, species_id, ce) in enumerate(species_render_plan(project_state)):
-        color = getattr(species, "color", "") or SPECIES_OVERLAY_COLORS[idx % len(SPECIES_OVERLAY_COLORS)]
+        color = species_color(species, idx)
         if ce is None:
             # Nothing has reconstructed or imported this tomogram, so there is no
             # frame to pick in — the species simply doesn't appear on this TS.
@@ -1638,6 +1628,10 @@ def _collect_species_data_for_ts(project_state, project_path: Path, ts_name: str
 # Mode-dependent: the Journey's slim mount shares its column with six other section
 # cards; the full page is the viewer, so its slabs get more height and width.
 _SLAB_CAPS = {"slim": (60, 34), "full": (74, 46)}
+
+# The tool row over the slabs and the one over the gallery: one fixed height whatever they hold, so the
+# slab and the first row of cutouts under them start level.
+_TOOL_ROW_STYLE = "display: flex; align-items: center; gap: 6px; height: 22px; margin-bottom: 6px; min-width: 0;"
 
 
 def _slab_caps(mode: str) -> tuple[int, int]:
@@ -1778,15 +1772,12 @@ def render_imported_particles_section(
 
 
 def _render_geometry_chip(geom: TomoGeometry | None) -> None:
-    """The tomogram's binned pixel size + dims in the Particles header, WITH the
-    provenance of the pixel size. A missing apix (or missing dims) is shown red and
-    disables every overlay downstream — the one thing we must never do is present a
-    stand-in scale as if it were measured (CLAUDE.md, 'Surfacing uncertainty')."""
+    """A red marker in the Particles header when the tomogram's dims or binned pixel size are not known,
+    which disables every overlay downstream; nothing when both are. The one thing we must never do is
+    present a stand-in scale as if it were measured (CLAUDE.md, 'Surfacing uncertainty')."""
     if geom is None:
         return
-    if geom.dims_xyz_px:
-        ui.label("×".join(str(int(v)) for v in geom.dims_xyz_px)).classes("text-[10px] font-mono text-gray-500")
-    else:
+    if not geom.dims_xyz_px:
         _imported_wip_marker(
             "dimensions unknown",
             "Neither the reconstruction MRC header nor tomograms.star gives this tomogram's size, "
@@ -1798,14 +1789,6 @@ def _render_geometry_chip(geom: TomoGeometry | None) -> None:
             "tomograms.star has no usable rlnTomoTiltSeriesPixelSize and the reconstruction MRC header "
             "carries no voxel size. Pick overlays are disabled rather than drawn at a guessed scale — "
             "set 'Pixel size' on the Import Tomograms job.",
-        )
-    elif geom.apix_provenance == APIX_MRC_HEADER:
-        ui.label(f"{geom.binned_apix:g} Å/px").classes("text-[10px] font-mono text-amber-600").tooltip(
-            "Pixel size read from the reconstruction MRC header — tomograms.star does not carry one."
-        )
-    else:
-        ui.label(f"{geom.binned_apix:g} Å/px").classes("text-[10px] font-mono text-gray-500").tooltip(
-            "Binned pixel size from tomograms.star (rlnTomoTiltSeriesPixelSize × rlnTomoTomogramBinning)."
         )
 
 
@@ -1913,10 +1896,13 @@ def _render_version_tool(versions: list[dict], version: dict, project_path: Path
             _CANVAS_VERSION[str(project_path)] = key
             refresh()
 
-    trigger, _ = tool_trigger("filter_none", _version_text(version, versions))
+    trigger, _ = tool_trigger("filter_none", _version_text(version, versions), boxed=True)
     _menu, body = hover_menu(trigger, auto_close=True)
     with body:
-        ui.label("Version on the slabs").classes("cb-hmenu-title")
+        ui.label(
+            "The tomogram the slabs are cut from: a reconstruct job's reconstruction or a denoised version of it, "
+            "under the alignment it traces back to."
+        ).classes("cb-hmenu-lede")
         ChoiceRows(
             [Choice(v["key"], v["label"], v["group"], tip=str(v["mrc"])) for v in versions], version["key"], _pick
         )
@@ -1964,11 +1950,12 @@ def render_particles_section(
     """The pick viewer, in either mount: the slabs of one version of the tomogram with every species'
     pick lists and the segmentations over them, and the gallery of one list beside the slabs.
 
-    Its tools sit on its title line, each a glyph whose dropdown opens under the pointer, bounded however
-    many species and lists there are: the version on the slabs (as the wall's), the layers (the pick
-    lists by species and the segmentations, `ui/components/layer_menu.py`, following the version as on
-    the wall), and the list in the gallery (by species), with that list's kept count, extraction state,
-    path and delete beside it.
+    Its tools are dropdowns that open under the pointer, bounded however many species and lists there
+    are, each over what it governs. Over the slabs: the version they show (as the wall's) and the layers
+    drawn on them (the pick lists by species and the segmentations, `ui/components/layer_menu.py`,
+    following the version as on the wall). Over the gallery: the list it shows (by species), with that
+    list's kept count, extraction state, path and delete beside it, and the gallery's own count and
+    toolbelt at the row's end. The two rows are one height, so the slab and the first cutouts start level.
 
     `mode="slim"` is the Journey's Particles section — look, filter, select, cross-link.
     `mode="full"` is the page reached from the Particles registry: bigger slabs, curation
@@ -2016,9 +2003,6 @@ def render_particles_section(
         with ui.element("div").classes("cb-section-card-header"):
             ui.label("Particles").classes("cb-section-title")
             _render_geometry_chip(geom)
-            tools = ui.element("div").classes("cb-head-tools")
-            # The shown list's kept count, extraction state, path and delete, beside the list tool.
-            extras_host = ui.row().classes("cb-pv-list-extras items-center gap-1 no-wrap")
             # Route to the tab that owns this species' pick-list actions; follows the shown list's species.
             manage_host = ui.row().classes("items-center gap-0")
             viewer_host = ui.row().classes("items-center gap-0")
@@ -2064,7 +2048,7 @@ def render_particles_section(
 
         with ui.element("div").classes("cb-particles-split"):
             canvas_col = ui.element("div").classes("cb-particles-canvas-col")
-            detail_host = ui.element("div").classes("cb-particles-detail-col")
+            detail_col = ui.element("div").classes("cb-particles-detail-col")
         # Width = the slab's natural height-capped width, but never more than the
         # mode's % of the row — so the gallery column beside it always gets the
         # majority instead of the slab eating ~half the row by its vh·aspect width.
@@ -2073,11 +2057,23 @@ def render_particles_section(
         cx, cy = (max(int(cdims[0]), 1), max(int(cdims[1]), 1)) if cdims else (1, 1)
         canvas_col.style(f"width: min(1400px, calc({slab_vh}vh * {cx} / {cy})); max-width: {slab_pct}%")
         with canvas_col:
+            # The slabs' tools (filled below): the version they show, the layers drawn on them.
+            canvas_tools = ui.element("div").style(_TOOL_ROW_STYLE)
             # The slabs, with every list's dots over them. Returns {iid: {"xy": lid, "xz": lid}} so the
             # shown list's gallery cross-links to its species' dots.
             canvas_layers = _render_particles_canvas(
                 species_data, geom, version, ts_name, project_path, refresh, slab_vh, fills=fills
             )
+        with detail_col:
+            # The gallery's tools, level with the slabs': the list it shows (filled below), that list's kept
+            # count, extraction state, path and delete, and at the row's end the gallery's own count and
+            # toolbelt, which the gallery puts into `head_host` when it renders.
+            with ui.element("div").style(_TOOL_ROW_STYLE):
+                list_tool = ui.element("div").style("display: contents;")
+                extras_host = ui.row().classes("cb-pv-list-extras items-center gap-1 no-wrap")
+                ui.element("div").style("flex: 1 1 auto;")
+                head_host = ui.row().classes("items-center gap-1 no-wrap")
+            detail_host = ui.element("div").classes("w-full")
 
         def _apply_layers() -> None:
             """Each list's dots and each segmentation's fill shown or hidden as the layers list has them."""
@@ -2100,6 +2096,8 @@ def render_particles_section(
                     recon_label=recon_labels.get(lst["recon"], "") if len(recon_labels) > 1 else "",
                     group=sp["label"],
                     shape=lst["shape"],
+                    on_gallery=lambda s=sp, slug=lst["slug"]: _show(s, slug),
+                    in_gallery=gen["species"] == sp["iid"] and gen["slug"] == lst["slug"],
                 )
                 for sp in species_data
                 for lst in sp["lists"]
@@ -2109,10 +2107,26 @@ def render_particles_section(
 
         _apply_layers()
 
+        # The reconstructions this tomogram has slabs of; with more than one, each layer's row names the
+        # one it was made on, and a click there puts the slabs on it.
+        recons = {v["recon"] for v in versions if v["recon"]}
+
+        def _to_source(recon: str) -> None:
+            """The slabs on reconstruction `recon`: its raw version, else its first. Nothing to do while one
+            of its versions shows."""
+            if recon == shows:
+                return
+            of_recon = [v for v in versions if v["recon"] == recon]
+            _CANVAS_VERSION[pkey] = next((v for v in of_recon if v["label"] == "raw"), of_recon[0])["key"]
+            refresh()
+
+        sources = {r: (lambda r=r: _to_source(r)) for r in recons} if len(recons) > 1 else None
+        layer_menu: dict = {"repaint": None}
+
         # Species-switch generation. The detail pane renders one tick late off a once-timer, so
         # without this, switching lists twice quickly lets the first list's pending timer paint
         # its gallery into the second's pane.
-        gen = {"n": 0, "species": None}
+        gen = {"n": 0, "species": None, "slug": None}
         sp_by_iid = {s["iid"]: s for s in species_data}
         lists_of = {s["iid"]: _species_lists(s) for s in species_data}
 
@@ -2124,13 +2138,14 @@ def render_particles_section(
 
         def _show(sp: dict, slug: str | None) -> None:
             """Swap the shown list: its title on the tool, the line beside it, the species' toolbar and
-            links, and the gallery. Only the shown list's gallery is built."""
+            links, the layers list's gallery mark, and the gallery. Only the shown list's gallery is built."""
             gen["n"] += 1
             mine = gen["n"]
             lst = next((x for x in lists_of[sp["iid"]] if x["slug"] == slug), None)
             list_rows.set_active(_key(sp, lst))
             list_text.set_text(_title(sp, lst))
             _ACTIVE_SPECIES[pkey] = sp["iid"]
+            gen["slug"] = lst["slug"] if lst is not None else None
             if lst is not None:
                 _SELECTED_LIST_SLUG[(sp.get("species_id") or "", ts_name)] = lst["slug"]
             if gen["species"] != sp["iid"]:
@@ -2145,6 +2160,9 @@ def render_particles_section(
             extras_host.clear()
             with extras_host:
                 _render_list_extras(sp, lst, project_path, refresh)
+            if layer_menu["repaint"] is not None:
+                layer_menu["repaint"]()
+            head_host.clear()
             detail_host.clear()
 
             async def _render_detail() -> None:
@@ -2153,7 +2171,14 @@ def render_particles_section(
                     return
                 with detail_host:
                     await _render_list_detail(
-                        sp, lst, canvas_layers.get(sp["iid"]), project_path, refresh, refresh_roster, mode=mode
+                        sp,
+                        lst,
+                        canvas_layers.get(sp["iid"]),
+                        project_path,
+                        refresh,
+                        refresh_roster,
+                        head_host,
+                        mode=mode,
                     )
 
             with detail_host:
@@ -2185,17 +2210,36 @@ def render_particles_section(
             for lst in lists_of[s["iid"]]:
                 count = _list_count_text(len(lst.get("picks") or []), lst.get("filtered_count"))
                 choices.append(Choice(_key(s, lst), _list_name(lst), s["label"], count))
-        with tools:
-            if len(versions) > 1:
+        if len(versions) > 1:
+            with canvas_tools:
                 _render_version_tool(versions, version, project_path, refresh)
-            if any(lst.get("_layer_els") for s in species_data for lst in s["lists"]) or fills is not None:
-                layers_tool(project_path, _layer_rows, shows=lambda: shows, on_change=_apply_layers)
-            trigger, list_text = tool_trigger("particle.svg", _title(active_sp, active_lst))
+        with list_tool:
+            trigger, list_text = tool_trigger("particle.svg", _title(active_sp, active_lst), boxed=True)
             _menu, body = hover_menu(trigger, auto_close=True)
             with body:
                 ui.label("List in the gallery").classes("cb-hmenu-title")
                 list_rows = ChoiceRows(choices, _key(active_sp, active_lst), _pick)
         _show(active_sp, active_lst["slug"] if active_lst else None)
+        # After the first list is shown, so the layers list opens with its gallery mark on it.
+        kinds = [
+            name
+            for name, has in (
+                ("Particles", any(lst.get("_layer_els") for s in species_data for lst in s["lists"])),
+                ("Segmentations", fills is not None),
+            )
+            if has
+        ]
+        if kinds:
+            with canvas_tools:
+                layer_menu["repaint"] = layers_tool(
+                    project_path,
+                    _layer_rows,
+                    shows=lambda: shows,
+                    on_change=_apply_layers,
+                    text=" / ".join(kinds),
+                    boxed=True,
+                    sources=sources,
+                )
     if mode == "full":
         ui.run_javascript(_SLAB_LIGHTBOX_JS)
     return True
@@ -2489,8 +2533,9 @@ def _list_count_text(total: int, filtered_count: int | None) -> str:
 
 def _render_list_extras(sp: dict, lst: dict | None, project_path: Path, refresh) -> None:
     """Beside the list tool, for the shown list: its kept/total (the cutout sheet live-updates it), its
-    subtomo-extraction state, a copy of its backing file's path (auto → candidates.star) and its delete.
-    The auto (PyTOM) list's count carries its pick stats and the template-match essentials on hover.
+    subtomo-extraction state, the lists a merged one was made from, a copy of its backing file's path
+    (auto → candidates.star) and its delete. The auto (PyTOM) list's count carries its pick stats and the
+    template-match essentials on hover.
 
     Otherwise look only: curate / dedup / extract / import stay on the Particles registry's Picks &
     curation tab, where they act across every tomogram at once. Delete is the exception: you decide a
@@ -2518,6 +2563,11 @@ def _render_list_extras(sp: dict, lst: dict | None, project_path: Path, refresh)
         if text:
             # The symbol only (○/✓/⚠); the full label on hover.
             ui.label(text.split(" ", 1)[0]).classes(f"cb-ltable-badge {cls}").tooltip(text)
+        parents = lst.get("parent_slugs") or []
+        if parents:
+            ui.label("⋃ " + ", ".join(parents)).classes("cb-detail-meta").tooltip(
+                "Merged from these lists (row order = type priority: manual/imported before auto)"
+            )
     copy_path = str(Path(sp["job_dir"]) / "candidates.star") if slug == "auto" else (lst.get("path") or "")
     if copy_path:
         icon_button("content_copy", tooltip=copy_path).on(
@@ -2545,25 +2595,27 @@ async def _render_list_detail(
     project_path: Path,
     refresh,
     refresh_roster,
+    head,
     *,
     mode: str = "slim",
 ) -> None:
     """Detail pane for the shown list: the auto list shows the status-aware
     subtomo gallery / scatter; a workbench list shows its recon cutout sheet (whose
-    disk probes run off-loop, hence async)."""
+    disk probes run off-loop, hence async). A gallery's own tools go into `head`, the gallery's
+    tool row."""
     if lst is None:
         with ui.element("div").classes("cb-empty"):
             ui.icon("inbox", size="28px").classes("text-gray-400")
             ui.label("No pick lists yet for this species.").classes("text-[10px]")
         return
     if lst["slug"] == "auto":
-        _render_species_auto_section(sp, layer_ids, project_path, refresh, refresh_roster, mode=mode)
+        _render_species_auto_section(sp, layer_ids, project_path, refresh, refresh_roster, head, mode=mode)
     else:
-        await _render_single_list_cutouts(sp, lst, project_path, refresh, mode=mode)
+        await _render_single_list_cutouts(sp, lst, project_path, refresh, head, mode=mode)
 
 
 def _render_species_auto_section(
-    sp: dict, layer_ids: dict | None, project_path: Path, refresh, refresh_roster=None, *, mode: str = "slim"
+    sp: dict, layer_ids: dict | None, project_path: Path, refresh, refresh_roster, head, *, mode: str = "slim"
 ) -> None:
     """The status-aware AUTO (PyTOM) gallery of a species' auto list: the subtomo
     cutout gallery when extracted, else the scatter fallback, or an
@@ -2616,6 +2668,7 @@ def _render_species_auto_section(
                 sp["job_dir"],
                 sp.get("subtomo_job_dir"),
                 refresh_roster,
+                head=head,
                 mode=mode,
             )
             return
@@ -2764,120 +2817,6 @@ def _render_3dmod_popover(row: dict, *, with_peek: bool) -> dict:
     return refs
 
 
-def _render_anchor_tiles(
-    indices: list[int], picks: list, cutout_index: dict, atlas_url: str, cols: int, rows: int, tag: str, note: str
-) -> None:
-    """One row of calibration tiles cut from the same atlas as the grid. `tag` is the
-    per-tile rank prefix (H1…/L1…) and `note` the tooltip's role word."""
-    tile_px = _DISPLAY_TILE_PX
-    bg_w, bg_h = cols * tile_px, rows * tile_px
-    with ui.element("div").classes("cb-ref-tiles"):
-        _atlas_probe(atlas_url)
-        for n, pick_idx in enumerate(indices):
-            pos = cutout_index.get(str(pick_idx))
-            if not pos:
-                continue
-            r, c = pos
-            pick = picks[pick_idx] if 0 <= pick_idx < len(picks) else None
-            tile = ui.element("div").classes("cb-noise-tile")
-            tile.style(
-                f"background-image: url({atlas_url}); background-size: {bg_w}px {bg_h}px; "
-                f"background-position: {-c * tile_px}px {-r * tile_px}px;"
-            )
-            tip = [f"#{pick_idx} ({note})"]
-            if pick and pick.get("score") is not None:
-                tip.append(_score_detail(pick))
-            tile._props["title"] = " · ".join(tip)
-            with tile:
-                ui.html(f"{tag}{n + 1}", sanitize=False).classes("cb-tile-rank")
-                if pick and pick.get("score") is not None:
-                    ui.html(_score_label(pick), sanitize=False).classes("cb-tile-score")
-
-
-def _render_reference_strip(
-    picks: list, cutout_index: dict, atlas_url: str, cols: int, rows: int, manifest: dict, ref_state: dict
-) -> None:
-    """Calibration anchors for the gallery: template tile · best-4 · worst-4.
-
-    Three pedagogical anchors: what the picker thinks "particle" looks like (the
-    template's central X/Y slice through the same percentile pipeline), the highest-
-    scoring picks it found here, and the worst-scoring ones that still cleared the
-    cutoff — the practical noise floor. The user evaluates the ambiguous middle band
-    against all three.
-
-    Collapsible and closed by default: three tile rows permanently above
-    the grid cost more vertical space than they earn once the user has calibrated. The
-    open/closed flag lives in `ref_state` (owned by the gallery) so a display-filter
-    switch — which re-renders this strip so the anchors match the grid's filter —
-    doesn't slam it shut again.
-    """
-    template_block = (manifest or {}).get("template") if isinstance(manifest, dict) else None
-    template_thumb_path = template_block.get("thumb_path") if template_block else None
-    template_url = vis_asset_url(template_thumb_path) if template_thumb_path else None
-
-    # The pick index IS the score rank (the picker writes candidates best-first), so
-    # the two extremes are the two ends of the sorted index list.
-    ranked = sorted(int(k) for k in cutout_index.keys())
-    n_anchor = min(4, len(ranked))
-    best_indices = ranked[:n_anchor]
-    worst_indices = list(reversed(ranked[-n_anchor:]))
-
-    if not template_url and not ranked:
-        return
-
-    caret = ui.label("references ▸").classes("cb-ref-toggle")
-    caret.tooltip("Template · highest-scoring · lowest-scoring picks — the calibration anchors for the grid below")
-    body = ui.element("div").classes("cb-reference-strip")
-
-    def _sync() -> None:
-        on = bool(ref_state.get("refs_open"))
-        caret.set_text("references ▾" if on else "references ▸")
-        body.set_visibility(on)
-
-    def _toggle(_e=None) -> None:
-        ref_state["refs_open"] = not ref_state.get("refs_open")
-        _sync()
-
-    caret.on("click", _toggle)
-
-    with body:
-        if template_url:
-            with ui.element("div").classes("cb-ref-group"):
-                ui.label("Template").classes("cb-ref-label")
-                with ui.element("div").classes("cb-ref-tiles"):
-                    _atlas_probe(template_url)
-                    tile = ui.element("div").classes("cb-template-tile")
-                    tile.style(f"background-image: url({template_url});")
-                    apix = template_block.get("pixel_size_ang") if template_block else None
-                    name = template_block.get("species_name") if template_block else None
-                    tip_parts = [str(name or "template")]
-                    if apix:
-                        tip_parts.append(f"{apix:.2f} Å/px")
-                    box = template_block.get("box_px") if template_block else None
-                    if box:
-                        tip_parts.append(f"box {box}")
-                    tile._props["title"] = " · ".join(tip_parts)
-                    with tile:
-                        ui.html("REF", sanitize=False).classes("cb-tile-rank")
-        if template_url and ranked:
-            ui.element("div").classes("cb-ref-divider")
-        if best_indices:
-            with ui.element("div").classes("cb-ref-group"):
-                ui.label(f"Highest scores ({len(best_indices)})").classes("cb-ref-label")
-                _render_anchor_tiles(
-                    best_indices, picks, cutout_index, atlas_url, cols, rows, "H", "high score reference"
-                )
-        if best_indices and worst_indices:
-            ui.element("div").classes("cb-ref-divider")
-        if worst_indices:
-            with ui.element("div").classes("cb-ref-group"):
-                ui.label(f"Lowest scores · noise floor ({len(worst_indices)})").classes("cb-ref-label")
-                _render_anchor_tiles(
-                    worst_indices, picks, cutout_index, atlas_url, cols, rows, "L", "low score reference"
-                )
-    _sync()
-
-
 async def _trigger_peek_for_pick(
     pick_idx: int,
     picks: list,
@@ -2964,8 +2903,11 @@ def _render_gallery_body(
     subtomo_job_dir: Path | None,
     refresh_roster=None,
     *,
+    head,
     mode: str = "slim",
 ) -> None:
+    """The subtomo cutout gallery of an auto list: its tile count and toolbelt in `head` (the gallery's
+    tool row), the curation bar while curation mode is armed, then the grid."""
     picks_json_path = entry.get("picks_json")
     picks_data = (
         _read_picks_json(Path(picks_json_path)) if picks_json_path else {"picks": [], "tomo_dims_xyz_px": [0, 0, 0]}
@@ -2981,8 +2923,8 @@ def _render_gallery_body(
     failures = entry.get("cutout_failures") or atlas_meta.get("failures") or []
 
     # Display-filter variants. Each variant is a sibling atlas PNG that shares this
-    # exact tile index, so switching filters just swaps the atlas URL the tiles +
-    # noise-reference tiles point at — no re-layout. A variant is rendered the first
+    # exact tile index, so switching filters just swaps the atlas URL the tiles
+    # point at — no re-layout. A variant is rendered the first
     # time it is picked (`_render_cutout_filter_controls`). apix is read from the
     # cutout file's OWN header (subtomo and recon use different bins), so the Å→px
     # conversion in the unit toggle/tooltip is always correct.
@@ -2991,11 +2933,10 @@ def _render_gallery_body(
     _filter_presets = offered_presets(cutout_apix)
 
     def _on_filter_select(key: str, variant_atlas: Path) -> None:
-        # Swap the atlas the tiles + noise-reference tiles point at, then re-render
-        # (positions are identical across filters — only the pixels differ).
+        # Swap the atlas the tiles point at, then re-render (positions are identical
+        # across filters — only the pixels differ).
         nonlocal atlas_url
         atlas_url = vis_asset_url(str(variant_atlas))
-        _refresh_reference_strip()
         _refresh_grid()
 
     x_dim = max(int(tomo_dims[0]), 1)
@@ -3071,14 +3012,12 @@ def _render_gallery_body(
         # Tracks the saved state of the "exclude degenerate" checkbox so toggling
         # it alone counts as a dirty change worth saving.
         "saved_exclude_degen": True,
-        # Reference strip open/closed — survives the re-render a filter switch forces.
-        "refs_open": False,
     }
     can_filter = bool(subtomo_job_dir is not None and ce_job_dir is not None and ts_name)
     can_curate = can_filter and mode == "full"
 
-    # Layout: header row with the toolbelt, a curation bar that exists only
-    # while curation mode is armed, the collapsible reference strip, then the grid.
+    # Layout: the count and toolbelt in `head`, a curation bar that exists only
+    # while curation mode is armed, then the grid.
     counter_label = None
     save_btn = None
     discard_btn = None
@@ -3181,13 +3120,11 @@ def _render_gallery_body(
             logger.exception("Discard filter failed")
             ui.notify(f"Discard failed: {e}", type="negative", timeout=4000)
 
+    with head:
+        ui.label(f"{len(all_pick_indices)} cutouts").classes("cb-gallery-count")
+        toolbelt = ui.row().classes("cb-toolbelt items-center gap-0.5 no-wrap")
     gallery_box = ui.element("div").classes("cb-cutouts-box w-full")
     with gallery_box:
-        with ui.row().classes("cb-gallery-head w-full items-center gap-2 no-wrap"):
-            ui.label("Subtomo gallery").classes("cb-section-title")
-            ui.label(f"{len(all_pick_indices)} cutouts").classes("cb-gallery-count")
-            ui.space()
-            toolbelt = ui.row().classes("cb-toolbelt items-center gap-0.5 no-wrap")
         # The curation bar exists only while curation mode is armed: counter, the
         # degenerate-picks toggle, Reset and Save. With the mode off there is nothing
         # to save, so showing a disabled Save pair would only be noise.
@@ -3227,18 +3164,6 @@ def _render_gallery_body(
                         "filtered file via the IO-slot resolver when it exists."
                     ),
                 )
-
-        # Wrapped so a filter switch re-renders the noise-floor reference tiles
-        # under the same filter as the grid (the template thumb is its own clean
-        # reference and stays raw).
-        ref_strip_container = ui.element("div").classes("w-full")
-
-        def _refresh_reference_strip():
-            ref_strip_container.clear()
-            with ref_strip_container:
-                _render_reference_strip(picks, cutout_index, atlas_url, cols, rows, manifest, state)
-
-        _refresh_reference_strip()
 
         grid_container = ui.element("div").classes("cb-gallery-scroll w-full")
         grid_container._props["id"] = gallery_id
@@ -3471,7 +3396,7 @@ def _render_gallery_body(
         grid_container.clear()
         with grid_container, ui.element("div").classes("cb-gallery-grid"):
             _atlas_probe(atlas_url)
-            for rank, pick_idx in enumerate(_sorted_pick_indices()):
+            for pick_idx in _sorted_pick_indices():
                 pos = cutout_index.get(str(pick_idx))
                 if not pos:
                     continue
@@ -3493,7 +3418,7 @@ def _render_gallery_body(
                 tile._props["data-pick-idx"] = str(pick_idx)
                 if pick is not None:
                     # The tile's own tooltip carries the pick's numbers (score, coords).
-                    parts = [f"#{pick_idx}"]
+                    parts = [f"pick {pick_idx}"]
                     if pick.get("score") is not None:
                         parts.append(_score_detail(pick))
                     parts.append(f"x={int(pick.get('x', 0))}")
@@ -3510,7 +3435,6 @@ def _render_gallery_body(
                     js_handler="(event) => { emit({shift: event.shiftKey}); }",
                 )
                 with tile:
-                    ui.html(f"#{rank + 1}", sanitize=False).classes("cb-tile-rank")
                     ui.html(f"{pick_idx}", sanitize=False).classes("cb-tile-idx")
                     if pick is not None and pick.get("z") is not None:
                         ui.html(f"z{int(pick['z'])}", sanitize=False).classes("cb-tile-z")

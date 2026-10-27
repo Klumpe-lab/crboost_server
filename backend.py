@@ -22,8 +22,8 @@ from services.scheduling_and_orchestration.pipeline_orchestrator_service import 
 from services.computing.container_service import get_container_service
 from services.scheduling_and_orchestration.pipeline_runner import PipelineRunnerService
 from services.scheduling_and_orchestration.pipeline_monitor import PipelineMonitor
-from services.array_tasks import manifest_items, progress as task_progress
-from services.log_progress import read as read_log_progress
+from services.array_tasks import eta_s as task_eta_s, manifest_items, progress as task_progress
+from services.log_progress import human_duration, read as read_log_progress
 from services.jobs.spec import PIPELINE_ORDER, display_name, driver_invocation
 from services.jobs.tilt_filter import FilterMode
 from services.models_base import JobStatus, JobType
@@ -45,7 +45,7 @@ from services.tilt_series import TiltSeriesRegistry, get_registry_for
 
 logger = logging.getLogger(__name__)
 
-# The process-wide backend. main.py constructs one at startup; UI surfaces opened
+# The process-wide backend. server_app.py constructs one at startup; UI surfaces opened
 # without a threaded-through reference (e.g. the tomo dashboard, which is a function
 # module) reach it via get_backend(). Same idiom as get_config_service()/get_state_service().
 _backend_instance: CryoBoostBackend | None = None
@@ -204,15 +204,18 @@ def _live_progress(project_dir: Path, jobs: dict[str, Any]) -> dict[str, Any] | 
         "failed": sum(n for _, _, n in failed),
         "failed_by_stage": [(label, n) for _, label, n in sorted(failed)],
         "log": None,
+        "eta": None,  # the current job's time left at its pace so far, "14 h 20 min"
     }
     counts = counts_by_dir.get(current[4])
     if current[3] == "running" and counts is not None:
         out["ok"] = counts.n_ok
         out["total"] = counts.total - counts.n_skip
         out["running"] = counts.n_running
+        out["eta"] = human_duration(task_eta_s(current[4], counts))
     elif current[3] == "running":
         # No per-TS counts (not an array job): how far its tool says it is (services/log_progress.py).
         out["log"] = read_log_progress(current[5], current[4])
+        out["eta"] = out["log"].eta if out["log"] is not None else None
     return out
 
 
@@ -260,7 +263,7 @@ class CryoBoostBackend:
         self.template_service = TemplateService(self)
         self.pdb_service = PDBService(self)
         # PipelineMonitor is the single server-side observer of pipeline
-        # status across all projects. Started in main.py's FastAPI startup
+        # status across all projects. Started in server_app.py's FastAPI startup
         # hook; not auto-started here so unit-test / one-shot driver paths
         # that construct a backend don't spawn a background task.
         self.pipeline_monitor = PipelineMonitor(self)
@@ -268,7 +271,7 @@ class CryoBoostBackend:
             server_dir=self.server_dir, username=self.username, slurm_service=self.slurm_service
         )
         # CurationWatcher registers ArtiaX .coords saves as `manual` pick lists server-side;
-        # same lifecycle as the monitor — started/stopped in main.py.
+        # same lifecycle as the monitor — started/stopped in server_app.py.
         self.curation_watcher = CurationWatcher(self)
         # Pending debounced saves, keyed by project path — see save_project().
         self._pending_saves: dict[str, asyncio.Task] = {}
@@ -1828,217 +1831,11 @@ class CryoBoostBackend:
             return []
 
         try:
-
-            def scan_one(item: Path) -> dict[str, Any] | None:
-                if not item.is_dir():
-                    return None
-                if is_being_deleted(item.name):
-                    # A project mid-deletion (services/project_delete.py) is gone as far as the list goes.
-                    return None
-                params_file = item / "project_params.json"
-                if not params_file.exists():
-                    if not item.name.startswith("."):
-                        logger.debug("Skipped '%s' - missing project_params.json", item.name)
-                    return None
-                try:
-                    stats = params_file.stat()
-                    mod_time = datetime.fromtimestamp(stats.st_mtime)
-
-                    created_at = None
-                    created_ts = None
-                    creator = None
-                    owner_raw = None
-                    pipeline_active = False
-                    total_jobs_planned = 0
-                    # Initialized outside the try below: an unreadable project_params.json
-                    # still reaches the fallback path, and _derive_live_status is called
-                    # unconditionally at the bottom of this block.
-                    jobs_dict: dict[str, Any] = {}
-                    ts_count = 0
-                    mnemonic = ""
-                    # As the project recorded them; None when it recorded none (never the model defaults).
-                    apix: float | None = None
-                    voltage_kv: float | None = None
-                    dose_per_tilt: float | None = None
-                    dose_source = ""
-                    source_directory = ""
-                    species: list[dict[str, str]] = []
-                    review_hold: dict[str, Any] | None = None
-                    n_picks = 0
-                    n_pick_lists = 0
-                    protocol = ""
-                    # What only the roster's hover card shows: the globs, and the acquisition and
-                    # import facts the row has no column for. As recorded.
-                    card: dict[str, Any] = {}
-                    try:
-                        with open(params_file) as f:
-                            data = json.load(f)
-                        raw_created = data.get("created_at")
-                        if raw_created:
-                            created_at = str(raw_created)[:16]
-                            try:
-                                created_ts = datetime.fromisoformat(str(raw_created)).timestamp()
-                            except ValueError:
-                                # Unparsable created_at string -- ctime fallback below kicks in.
-                                created_ts = None
-                        creator = data.get("created_by")
-                        owner_raw = data.get("owner")
-                        pipeline_active = bool(data.get("pipeline_active", False))
-                        review_hold = data.get("review_hold")
-                        jobs_dict = {
-                            iid: job for iid, job in (data.get("jobs") or {}).items() if _is_pipeline_job_dict(job)
-                        }
-                        total_jobs_planned = len(jobs_dict)
-                        ts_count = data.get("import_selected_tilt_series") or data.get("import_total_tilt_series") or 0
-                        mnemonic = data.get("mnemonic") or ""
-                        microscope = data.get("microscope") or {}
-                        acquisition = data.get("acquisition") or {}
-                        apix = microscope.get("pixel_size_angstrom")
-                        voltage_kv = microscope.get("acceleration_voltage_kv")
-                        dose_per_tilt = acquisition.get("dose_per_tilt")
-                        dose_source = acquisition.get("dose_per_tilt_source") or ""
-                        # Registered particle species, so the roster can answer "which projects
-                        # have a ribosome in them". id/name/color only.
-                        species = [
-                            {"id": s["id"], "name": s.get("name") or s["id"], "color": s.get("color") or "#3b82f6"}
-                            for s in (data.get("species_registry") or [])
-                            if isinstance(s, dict) and s.get("id")
-                        ]
-                        # Each pick list caches its pick count for display; the roster sums them.
-                        pick_lists = [pl for pl in (data.get("pick_lists") or []) if isinstance(pl, dict)]
-                        n_pick_lists = len(pick_lists)
-                        n_picks = sum(int(pl.get("count") or 0) for pl in pick_lists)
-                        protocol = (data.get("protocol_origin") or {}).get("name") or ""
-                        # Where the raw data came from. Prefer the resolved
-                        # frames dir; fall back to the movies glob's parent.
-                        source_directory = data.get("import_source_directory") or ""
-                        if not source_directory:
-                            mg = data.get("movies_glob") or ""
-                            if mg:
-                                source_directory = str(Path(mg).parent) if "*" in mg else mg
-                        card = {
-                            "movies_glob": data.get("movies_glob") or "",
-                            "mdocs_glob": data.get("mdocs_glob") or "",
-                            "cs_mm": microscope.get("spherical_aberration_mm"),
-                            "amp_contrast": microscope.get("amplitude_contrast"),
-                            "tilt_axis_deg": acquisition.get("tilt_axis_degrees"),
-                            "frame_extension": data.get("import_frame_extension") or "",
-                            "source_kind": data.get("import_source_kind") or "",
-                            "ts_selected": data.get("import_selected_tilt_series") or 0,
-                            "ts_total": data.get("import_total_tilt_series") or 0,
-                        }
-                    except Exception as e:
-                        logger.warning("Unreadable project_params.json for %s -- using fallbacks: %s", item.name, e)
-
-                    if not ts_count:
-                        ts_count = _registry_ts_count(item)
-
-                    # Legacy projects (no `mnemonic` persisted) get a
-                    # deterministic fallback so the UI always has something
-                    # to show. Seed is the resolved project dir — stable
-                    # across reloads, independent of project_name renames.
-                    if not mnemonic:
-                        try:
-                            from services.project_nickname import nickname_for
-
-                            mnemonic = nickname_for(str(item.resolve()))
-                        except Exception as e:
-                            logger.warning("Nickname fallback failed for %s: %s", item.name, e)
-                            mnemonic = ""
-
-                    if creator is None:
-                        try:
-                            creator = pwd.getpwuid(stats.st_uid).pw_name
-                        except KeyError:
-                            # uid absent from the passwd db (LDAP/SSSD miss, foreign uid) -- creator stays unknown.
-                            creator = None
-
-                    if created_ts is None:
-                        # Stable fallback: directory ctime (creation on most filesystems).
-                        try:
-                            created_ts = item.stat().st_ctime
-                        except OSError:
-                            # Directory vanished/unstat-able mid-scan -- fall back to the scan-time mtime.
-                            created_ts = stats.st_mtime
-
-                    derived = self._derive_live_status(item, jobs_dict, review_hold)
-                    derived["pipeline_active_flag"] = pipeline_active
-                    live_progress = None
-                    if derived["live_status"] in ("running", "queued"):
-                        try:
-                            live_progress = _live_progress(item, jobs_dict)
-                        except OSError:  # a job dir changing under the scan: the row shows, just without it
-                            live_progress = None
-
-                    last_activity_ts = max(stats.st_mtime, derived.get("last_activity_ts", 0.0))
-                    # A directory listing, so only redone when the project shows new activity.
-                    cached_preview = self._tomo_preview_cache.get(str(item))
-                    if cached_preview is not None and cached_preview[0] == last_activity_ts:
-                        tomo_preview = cached_preview[1]
-                    else:
-                        tomo_preview = _find_tomo_preview(item, jobs_dict)
-                        self._tomo_preview_cache[str(item)] = (last_activity_ts, tomo_preview)
-                    disk_usage = get_disk_usage_service().cached(item)
-                    trash_count, trash_mtime = trash_summary(item)
-                    disk_usage_stale = is_disk_usage_stale(
-                        disk_usage,
-                        # Clearing the trash changes nothing else in the project.
-                        last_activity_ts=max(last_activity_ts, trash_mtime),
-                        running=derived["live_status"] in ("running", "queued"),
-                        now=time.time(),
-                    )
-
-                    try:
-                        resolved_path = str(item.resolve())
-                    except OSError:
-                        # Unreachable mount mid-scan: the unresolved path still matches what was opened from this base.
-                        resolved_path = str(item)
-
-                    return {
-                        "name": item.name,
-                        "path": str(item),
-                        # Compared per row on every roster render; resolving there would stat the mount on the loop.
-                        "resolved_path": resolved_path,
-                        "mnemonic": mnemonic,
-                        "apix": apix,
-                        "voltage_kv": voltage_kv,
-                        "dose_per_tilt": dose_per_tilt,
-                        "dose_source": dose_source,
-                        "modified": mod_time.strftime("%Y-%m-%d %H:%M"),
-                        "modified_timestamp": stats.st_mtime,
-                        "created_at": created_at,
-                        "created_timestamp": created_ts,
-                        "creator": creator,
-                        "owner": owner_raw,
-                        "pipeline_active": pipeline_active,
-                        "total_jobs_planned": total_jobs_planned,
-                        "ts_count": ts_count,
-                        "species": species,
-                        "source_directory": source_directory,
-                        "last_activity_ts": last_activity_ts,
-                        "last_activity": datetime.fromtimestamp(last_activity_ts).strftime("%Y-%m-%d %H:%M"),
-                        "disk_usage": disk_usage,
-                        "disk_usage_stale": disk_usage_stale,
-                        "trash_count": trash_count,
-                        "trash_mtime": trash_mtime,
-                        "tomo_preview": tomo_preview,
-                        "live_progress": live_progress,
-                        "furthest_done": _furthest_done(jobs_dict),
-                        "n_picks": n_picks,
-                        "n_pick_lists": n_pick_lists,
-                        "protocol": protocol,
-                        "card": card,
-                        **derived,
-                    }
-                except Exception as e:
-                    logger.info("Error reading %s: %s", item.name, e)
-                    return None
-
             # Each project costs a dozen metadata round-trips; on a cold NFS cache, one project
             # after the other adds up to seconds for a full base.
             projects: list[dict[str, Any]] = []
             with ThreadPoolExecutor(max_workers=16) as pool:
-                futures = [pool.submit(scan_one, item) for item in path.iterdir()]
+                futures = [pool.submit(self._scan_project_sync, item) for item in path.iterdir()]
                 last_partial = time.monotonic()
                 for future in as_completed(futures):
                     found = future.result()
@@ -2057,6 +1854,214 @@ class CryoBoostBackend:
         projects.sort(key=_scan_order)
         logger.debug("Found %d valid projects.", len(projects))
         return projects
+
+    async def scan_project(self, project_dir: str | Path) -> dict[str, Any] | None:
+        """One project's scan_for_projects row, read off the loop; None when it is not a project."""
+        return await asyncio.to_thread(self._scan_project_sync, Path(project_dir))
+
+    def _scan_project_sync(self, item: Path) -> dict[str, Any] | None:
+        """The roster row of one directory: None when it is not a project (or is being deleted)."""
+        if not item.is_dir():
+            return None
+        if is_being_deleted(item.name):
+            # A project mid-deletion (services/project_delete.py) is gone as far as the list goes.
+            return None
+        params_file = item / "project_params.json"
+        if not params_file.exists():
+            if not item.name.startswith("."):
+                logger.debug("Skipped '%s' - missing project_params.json", item.name)
+            return None
+        try:
+            stats = params_file.stat()
+            mod_time = datetime.fromtimestamp(stats.st_mtime)
+
+            created_at = None
+            created_ts = None
+            creator = None
+            owner_raw = None
+            pipeline_active = False
+            total_jobs_planned = 0
+            # Initialized outside the try below: an unreadable project_params.json
+            # still reaches the fallback path, and _derive_live_status is called
+            # unconditionally at the bottom of this block.
+            jobs_dict: dict[str, Any] = {}
+            ts_count = 0
+            mnemonic = ""
+            # As the project recorded them; None when it recorded none (never the model defaults).
+            apix: float | None = None
+            voltage_kv: float | None = None
+            dose_per_tilt: float | None = None
+            dose_source = ""
+            source_directory = ""
+            species: list[dict[str, str]] = []
+            review_hold: dict[str, Any] | None = None
+            n_picks = 0
+            n_pick_lists = 0
+            protocol = ""
+            # What only the roster's hover card shows: the globs, and the acquisition and
+            # import facts the row has no column for. As recorded.
+            card: dict[str, Any] = {}
+            try:
+                with open(params_file) as f:
+                    data = json.load(f)
+                raw_created = data.get("created_at")
+                if raw_created:
+                    created_at = str(raw_created)[:16]
+                    try:
+                        created_ts = datetime.fromisoformat(str(raw_created)).timestamp()
+                    except ValueError:
+                        # Unparsable created_at string -- ctime fallback below kicks in.
+                        created_ts = None
+                creator = data.get("created_by")
+                owner_raw = data.get("owner")
+                pipeline_active = bool(data.get("pipeline_active", False))
+                review_hold = data.get("review_hold")
+                jobs_dict = {iid: job for iid, job in (data.get("jobs") or {}).items() if _is_pipeline_job_dict(job)}
+                total_jobs_planned = len(jobs_dict)
+                ts_count = data.get("import_selected_tilt_series") or data.get("import_total_tilt_series") or 0
+                mnemonic = data.get("mnemonic") or ""
+                microscope = data.get("microscope") or {}
+                acquisition = data.get("acquisition") or {}
+                apix = microscope.get("pixel_size_angstrom")
+                voltage_kv = microscope.get("acceleration_voltage_kv")
+                dose_per_tilt = acquisition.get("dose_per_tilt")
+                dose_source = acquisition.get("dose_per_tilt_source") or ""
+                # Registered particle species, so the roster can answer "which projects
+                # have a ribosome in them". id/name/color only.
+                species = [
+                    {"id": s["id"], "name": s.get("name") or s["id"], "color": s.get("color") or "#3b82f6"}
+                    for s in (data.get("species_registry") or [])
+                    if isinstance(s, dict) and s.get("id")
+                ]
+                # Each pick list caches its pick count for display; the roster sums them.
+                pick_lists = [pl for pl in (data.get("pick_lists") or []) if isinstance(pl, dict)]
+                n_pick_lists = len(pick_lists)
+                n_picks = sum(int(pl.get("count") or 0) for pl in pick_lists)
+                protocol = (data.get("protocol_origin") or {}).get("name") or ""
+                # Where the raw data came from. Prefer the resolved
+                # frames dir; fall back to the movies glob's parent.
+                source_directory = data.get("import_source_directory") or ""
+                if not source_directory:
+                    mg = data.get("movies_glob") or ""
+                    if mg:
+                        source_directory = str(Path(mg).parent) if "*" in mg else mg
+                card = {
+                    "movies_glob": data.get("movies_glob") or "",
+                    "mdocs_glob": data.get("mdocs_glob") or "",
+                    "cs_mm": microscope.get("spherical_aberration_mm"),
+                    "amp_contrast": microscope.get("amplitude_contrast"),
+                    "tilt_axis_deg": acquisition.get("tilt_axis_degrees"),
+                    "frame_extension": data.get("import_frame_extension") or "",
+                    "source_kind": data.get("import_source_kind") or "",
+                    "ts_selected": data.get("import_selected_tilt_series") or 0,
+                    "ts_total": data.get("import_total_tilt_series") or 0,
+                }
+            except Exception as e:
+                logger.warning("Unreadable project_params.json for %s -- using fallbacks: %s", item.name, e)
+
+            if not ts_count:
+                ts_count = _registry_ts_count(item)
+
+            # Legacy projects (no `mnemonic` persisted) get a
+            # deterministic fallback so the UI always has something
+            # to show. Seed is the resolved project dir — stable
+            # across reloads, independent of project_name renames.
+            if not mnemonic:
+                try:
+                    from services.project_nickname import nickname_for
+
+                    mnemonic = nickname_for(str(item.resolve()))
+                except Exception as e:
+                    logger.warning("Nickname fallback failed for %s: %s", item.name, e)
+                    mnemonic = ""
+
+            if creator is None:
+                try:
+                    creator = pwd.getpwuid(stats.st_uid).pw_name
+                except KeyError:
+                    # uid absent from the passwd db (LDAP/SSSD miss, foreign uid) -- creator stays unknown.
+                    creator = None
+
+            if created_ts is None:
+                # Stable fallback: directory ctime (creation on most filesystems).
+                try:
+                    created_ts = item.stat().st_ctime
+                except OSError:
+                    # Directory vanished/unstat-able mid-scan -- fall back to the scan-time mtime.
+                    created_ts = stats.st_mtime
+
+            derived = self._derive_live_status(item, jobs_dict, review_hold)
+            derived["pipeline_active_flag"] = pipeline_active
+            live_progress = None
+            if derived["live_status"] in ("running", "queued"):
+                try:
+                    live_progress = _live_progress(item, jobs_dict)
+                except OSError:  # a job dir changing under the scan: the row shows, just without it
+                    live_progress = None
+
+            last_activity_ts = max(stats.st_mtime, derived.get("last_activity_ts", 0.0))
+            # A directory listing, so only redone when the project shows new activity.
+            cached_preview = self._tomo_preview_cache.get(str(item))
+            if cached_preview is not None and cached_preview[0] == last_activity_ts:
+                tomo_preview = cached_preview[1]
+            else:
+                tomo_preview = _find_tomo_preview(item, jobs_dict)
+                self._tomo_preview_cache[str(item)] = (last_activity_ts, tomo_preview)
+            disk_usage = get_disk_usage_service().cached(item)
+            trash_count, trash_mtime = trash_summary(item)
+            disk_usage_stale = is_disk_usage_stale(
+                disk_usage,
+                # Clearing the trash changes nothing else in the project.
+                last_activity_ts=max(last_activity_ts, trash_mtime),
+                running=derived["live_status"] in ("running", "queued"),
+                now=time.time(),
+            )
+
+            try:
+                resolved_path = str(item.resolve())
+            except OSError:
+                # Unreachable mount mid-scan: the unresolved path still matches what was opened from this base.
+                resolved_path = str(item)
+
+            return {
+                "name": item.name,
+                "path": str(item),
+                # Compared per row on every roster render; resolving there would stat the mount on the loop.
+                "resolved_path": resolved_path,
+                "mnemonic": mnemonic,
+                "apix": apix,
+                "voltage_kv": voltage_kv,
+                "dose_per_tilt": dose_per_tilt,
+                "dose_source": dose_source,
+                "modified": mod_time.strftime("%Y-%m-%d %H:%M"),
+                "modified_timestamp": stats.st_mtime,
+                "created_at": created_at,
+                "created_timestamp": created_ts,
+                "creator": creator,
+                "owner": owner_raw,
+                "pipeline_active": pipeline_active,
+                "total_jobs_planned": total_jobs_planned,
+                "ts_count": ts_count,
+                "species": species,
+                "source_directory": source_directory,
+                "last_activity_ts": last_activity_ts,
+                "last_activity": datetime.fromtimestamp(last_activity_ts).strftime("%Y-%m-%d %H:%M"),
+                "disk_usage": disk_usage,
+                "disk_usage_stale": disk_usage_stale,
+                "trash_count": trash_count,
+                "trash_mtime": trash_mtime,
+                "tomo_preview": tomo_preview,
+                "live_progress": live_progress,
+                "furthest_done": _furthest_done(jobs_dict),
+                "n_picks": n_picks,
+                "n_pick_lists": n_pick_lists,
+                "protocol": protocol,
+                "card": card,
+                **derived,
+            }
+        except Exception as e:
+            logger.info("Error reading %s: %s", item.name, e)
+            return None
 
     @staticmethod
     def _derive_live_status(
@@ -2166,6 +2171,7 @@ class CryoBoostBackend:
         detected_params: dict[str, Any] | None = None,
         shared: bool = False,
         progress_cb=None,
+        ts_names_by_folder: bool = False,
     ):
         return await self.project_service.initialize_new_project(
             project_name=project_name,
@@ -2178,6 +2184,7 @@ class CryoBoostBackend:
             detected_params=detected_params,
             shared=shared,
             progress_cb=progress_cb,
+            ts_names_by_folder=ts_names_by_folder,
         )
 
     async def delete_project(self, project_path: Path, progress_cb: ProgressCallback | None = None) -> dict[str, Any]:

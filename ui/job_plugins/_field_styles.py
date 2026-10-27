@@ -437,6 +437,7 @@ def choice_row(
     hint: str | None = None,
     placeholder: str = "none registered",
     empty_value: str = "",
+    on_change: Callable[[str], None] | None = None,
 ):
     """A select over a RUNTIME options dict (value -> display label), in the same row
     chrome as every other field. `enum_field` covers the static-Enum case; this covers
@@ -451,6 +452,7 @@ def choice_row(
     absent is stated in the same shape as present, never silently preselected
     (CLAUDE.md "Surfacing uncertainty"). Writes go through an explicit change handler
     rather than `bind_value` so `empty_value` decides what "nothing chosen" means.
+    `on_change`, when given, takes the chosen value instead of the write to `attr`.
     """
     with ui.element("div").style(ROW_STYLE):
         _label(label, hint)
@@ -468,6 +470,9 @@ def choice_row(
         else:
 
             def _on_change(e):
+                if on_change is not None:
+                    on_change(e.value or empty_value)
+                    return
                 setattr(job_model, attr, e.value or empty_value)
                 save_handler()
 

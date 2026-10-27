@@ -6,7 +6,8 @@ both, on Esc, or on a click elsewhere. A click on the trigger opens it at once. 
 run in the browser, with no server round-trip; one shared timer, so opening one closes any other.
 The rows inside are the caller's. `ChoiceRows` is the single-choice list: a check on the chosen row,
 a header over each group when there are several, a note at a row's end; a pick moves the check in
-place. `tool_trigger` is the trigger's look: a glyph, then a label when it has one, then a caret.
+place. `tool_trigger` is the trigger's look: a glyph, then a label when it has one, then a caret; boxed
+like a field when it sits among a panel's content rather than on a title line.
 """
 
 from __future__ import annotations
@@ -60,10 +61,11 @@ def hover_menu(trigger: ui.element, *, align: str = "left", auto_close: bool = F
     return menu, body
 
 
-def tool_trigger(glyph: str, text: str | None = None) -> tuple[ui.element, ui.label | None]:
+def tool_trigger(glyph: str, text: str | None = None, *, boxed: bool = False) -> tuple[ui.element, ui.label | None]:
     """A title-line tool: `glyph` (a `static/icons` asset or a Material name), then `text` (a label the
-    caller can re-set) when given, then a caret. Returns ``(trigger, label or None)``."""
-    trigger = ui.element("div").classes("cb-htool")
+    caller can re-set) when given, then a caret; `boxed` draws it in a field's box. Returns ``(trigger,
+    label or None)``."""
+    trigger = ui.element("div").classes("cb-htool" + (" cb-htool--box" if boxed else ""))
     with trigger:
         render_glyph(glyph, size=13).classes("cb-htool-glyph")
         label = ui.label(text).classes("cb-htool-text") if text is not None else None

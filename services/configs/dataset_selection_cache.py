@@ -46,7 +46,7 @@ def save_selections(mdocs_glob: str, overview: DatasetOverview):
     selections = {}
     for pos in overview.positions:
         for ts in pos.tilt_series:
-            selections[ts.mdoc_filename] = ts.selected
+            selections[str(ts.mdoc_path)] = ts.selected
 
     cache = _load_cache()
     cache[mdocs_glob] = {
@@ -81,8 +81,11 @@ def apply_selections(mdocs_glob: str, overview: DatasetOverview) -> bool:
     for pos in overview.positions:
         any_selected = False
         for ts in pos.tilt_series:
-            if ts.mdoc_filename in selections:
-                ts.selected = selections[ts.mdoc_filename]
+            # Keyed by mdoc path: two acquisition folders may both hold `Position_1.mdoc`.
+            # Entries saved before that are keyed by file name.
+            key = str(ts.mdoc_path) if str(ts.mdoc_path) in selections else ts.mdoc_filename
+            if key in selections:
+                ts.selected = selections[key]
                 applied += 1
             if ts.selected:
                 any_selected = True

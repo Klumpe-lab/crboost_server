@@ -104,6 +104,7 @@ class PipelineBuilderPanel:
         self.callbacks["invalidate_tm_tabs"] = self.invalidate_tm_tabs
         self.callbacks["set_active_views"] = self.roster.set_active_views
         self.callbacks["on_pipeline_active"] = self.set_view_active
+        self.callbacks["close_job"] = self.close_job
         # Species page: open a job in the pipeline view / add one for a species.
         self.callbacks["open_job"] = self.switch_tab
         self.callbacks["open_job_subsection"] = self.switch_to_job_subsection
@@ -274,6 +275,24 @@ class PipelineBuilderPanel:
         set_title = self.callbacks.get("set_view_title")
         if set_title:
             set_title("pipeline", get_instance_display_name(instance_id, current_project_state().jobs.get(instance_id)))
+        self._set_job_open(True)
+
+    def _set_job_open(self, on: bool) -> None:
+        set_open = self.callbacks.get("set_job_open")
+        if set_open:
+            set_open(on)
+
+    def close_job(self) -> None:
+        """The job page's close cross: no job open, the page leaves the main area, the roster stays."""
+        self.ui_mgr.clear_active_instance()
+        for c in self._job_content_containers.values():
+            c.set_visibility(False)
+        self._sync_job_scopes()
+        self._set_job_open(False)
+        set_url = self.callbacks.get("set_url")
+        if set_url:
+            set_url(View.PIPELINE)
+        self.roster.paint_active()
 
     def _drop_job_page(self, instance_id: str) -> None:
         container = self._job_content_containers.pop(instance_id, None)
@@ -664,9 +683,11 @@ class PipelineBuilderPanel:
                 set_title("pipeline", "Jobs")
             with tabs_container:
                 ui.label("Select jobs from the left panel.").classes("text-xs text-gray-400 italic p-8")
+            self._set_job_open(False)
             return
 
-        if self.ui_mgr.active_instance_id not in selected:
+        # None is a closed job page (close_job), which a rebuild leaves closed.
+        if self.ui_mgr.active_instance_id is not None and self.ui_mgr.active_instance_id not in selected:
             self.ui_mgr.set_active_instance(selected[0])
 
         with tabs_container:
@@ -678,6 +699,8 @@ class PipelineBuilderPanel:
         active = self.ui_mgr.active_instance_id
         if active:
             self._show_job(active)
+        else:
+            self._set_job_open(False)
 
         if self.ui_mgr.is_running:
             try:
