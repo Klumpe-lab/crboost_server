@@ -619,11 +619,21 @@ class PipelineRunnerService:
                 logger.info("Marked %d stopped task(s) as .fail in %s", n, d)
         return stopped, errors
 
+    async def _settle_cancelled(self, project_dir: Path, jobs: dict) -> None:
+        """Mark Failed the jobs whose cancel SLURM accepted, except one whose success marker is there:
+        scancel exits 0 for a job that has ended, and that one succeeded before the cancel reached it."""
+        sentinels = await asyncio.to_thread(self._exit_sentinels, jobs, project_dir)
+        for iid, jm in jobs.items():
+            new = JobStatus.SUCCEEDED if sentinels.get(iid) == "success" else JobStatus.FAILED
+            if new == JobStatus.SUCCEEDED:
+                await self._land_job(project_dir, jm, new)
+            jm.execution_status = new
+
     async def stop_and_cleanup(self, project_dir: Path) -> dict[str, Any]:
         """Stop the run: scancel every live job by its persisted slurm_job_id (which covers a
         still-PENDING dependent with no run.out or manifest) and mark FAILED each one SLURM accepted
-        the cancel of. pipeline_active clears only when every one was; a job whose scancel failed
-        keeps its status, and the reconciler goes on following it."""
+        the cancel of (_settle_cancelled). pipeline_active clears only when every one was; a job
+        whose scancel failed keeps its status, and the reconciler goes on following it."""
         state = self.backend.state_service.state_for(project_dir)
         # Interactive jobs are not part of the run being stopped -- they manage their
         # own status and were never deployed by the orchestrator (a per-list extraction
@@ -637,8 +647,7 @@ class PipelineRunnerService:
             and jm.execution_status in (JobStatus.RUNNING, JobStatus.QUEUED, JobStatus.SCHEDULED)
         }
         stopped, errors = await self._cancel_and_mark(project_dir, live)
-        for jm in stopped.values():
-            jm.execution_status = JobStatus.FAILED
+        await self._settle_cancelled(project_dir, stopped)
         state.pipeline_active = len(stopped) < len(live)
         # A stopped run has nothing left to resume: jobs parked behind a review stay as they
         # are, and Approve no longer submits them.
@@ -650,11 +659,12 @@ class PipelineRunnerService:
 
     async def cancel_job(self, project_dir: Path, instance_id: str) -> dict[str, Any]:
         """Cancel one live job by its persisted slurm_job_id (which works for a still-PENDING
-        dependent with no run.out or manifest) and, once SLURM accepted the cancel, mark it FAILED;
-        a failed scancel leaves it as it is and says why. pipeline_active stays: cancelling one
-        supervisor parks its afterok dependents (DependencyNeverSatisfied), which reconcile_afterok
-        scancels, and its pass 4 winds pipeline_active down only when every job is terminal.
-        Clearing it here would stop the monitor ticking and freeze the rest of the live chain."""
+        dependent with no run.out or manifest) and, once SLURM accepted the cancel, mark it FAILED
+        (_settle_cancelled); a failed scancel leaves it as it is and says why. pipeline_active
+        stays: cancelling one supervisor parks its afterok dependents (DependencyNeverSatisfied),
+        which reconcile_afterok scancels, and its pass 4 winds pipeline_active down only when every
+        job is terminal. Clearing it here would stop the monitor ticking and freeze the rest of the
+        live chain."""
         state = self.backend.state_service.state_for(project_dir)
         job_model = state.jobs.get(instance_id)
         if not job_model:
@@ -666,9 +676,11 @@ class PipelineRunnerService:
             return err("; ".join(warnings))
         for warning in warnings:
             logger.warning("cancel_job: %s", warning)
-        job_model.execution_status = JobStatus.FAILED
+        await self._settle_cancelled(project_dir, stopped)
         await self.backend.state_service.save_project(project_path=project_dir, force=True)
         sid = job_model.slurm_job_id
+        if job_model.execution_status == JobStatus.SUCCEEDED:
+            return ok(cancelled_slurm_ids=[], message=f"{instance_id} had already succeeded", warnings=warnings)
         return ok(
             cancelled_slurm_ids=[str(sid)] if sid else [],
             message=f"Cancelled {instance_id}" + (f" (SLURM {sid})" if sid else ""),

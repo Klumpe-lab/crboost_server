@@ -312,17 +312,13 @@ def log_dropped(job_dir: Path, results: ArrayResults, n_items: int) -> None:
 def load_excluded_ts(project_path: Path) -> set:
     """Return the set of TS ids the user has marked excluded-from-processing.
 
-    Registry-backed. Late import so task mode stays light. Never raises — a
-    registry read failure degrades to "nothing excluded" (the job runs on
-    everything, which is the safe direction) with a warning.
+    Registry-backed. Late import so task mode stays light. A registry that
+    cannot be read raises: read as "nothing excluded", the job would process
+    tilt series the user excluded, and apply_exclusions would drop their skips.
     """
-    try:
-        from services.tilt_series import get_registry_for
+    from services.tilt_series import get_registry_for
 
-        return set(get_registry_for(project_path).excluded_ids())
-    except Exception as e:
-        print(f"[SUPERVISOR] WARN: could not load TS exclusion set: {e}", flush=True)
-        return set()
+    return set(get_registry_for(project_path).excluded_ids())
 
 
 EXCLUDED_REASON = "excluded from processing"

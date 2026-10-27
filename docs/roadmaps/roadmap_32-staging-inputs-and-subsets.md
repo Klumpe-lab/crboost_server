@@ -987,6 +987,8 @@ Five commits, in the order above.
    - Not `query_jobs_by_ids`: it keeps one row per job, so it cannot count tasks, and squeue lists a job for a
      few minutes after it ended. `live_task_counts` counts the rows whose state is not an ended one
      (`SLURM_ENDED_STATES`, `slurm_service.py`; an unfamiliar state counts as live).
+   - Only "Invalid job id specified" (one id SLURM has forgotten) reads as gone, here and now also in
+     `query_jobs_by_ids`; a malformed id is a failure like any other.
    - Every Failed job with a dir is checked, including one whose inputs moved and that pass 2 then sends to a
      fresh dir.
 2. **L4b.** The save after the sbatch loop is split in two: one after pass 3, before the first sbatch (the
@@ -997,7 +999,9 @@ Five commits, in the order above.
    - Cost: one `project_params.json` write per job submitted.
 3. **L4c.** `_cancel_and_mark` scancels each supervisor on its own (concurrently) and returns the jobs whose
    cancel SLURM accepted. Only those (and jobs with no SLURM id) get their arrays cancelled and stopped tasks
-   marked, and only those are marked Failed.
+   marked, and only those are marked Failed (`_settle_cancelled`).
+   - scancel exits 0 for a job that has already ended, so a job whose success marker is there once the cancel
+     returns is marked Succeeded instead (landed like the reconciler lands it).
    - Stop keeps `pipeline_active` up while any job was not cancelled, so the reconciler goes on following it.
      The Stop handler then restarts the tab's poller and says "Not everything stopped: tsCtf: scancel N failed
      (…), so it is left as it is".
@@ -1013,15 +1017,22 @@ Five commits, in the order above.
      into place, which fails on an existing name as O_EXCL does, so the file never exists empty or half
      written. A live owner gives `another supervisor (slurm N on host, started …) owns this job dir; exiting
      without touching it` and exit 1; a failed squeue refuses the same way, saying so. An owner SLURM no
-     longer runs, or one with this job's own id (a requeue, or a link whose NFS reply was lost), is taken over
-     and named.
-   - Released at exit (`atexit`: every `sys.exit` and the fatal paths; an array supervisor's SIGTERM handler
-     exits through it too), and only while the file still names this supervisor. A file left by a killed
-     supervisor is taken over by the next one. A driver started outside SLURM claims nothing and says so.
+     longer runs, or one with this job's own id (a requeue), is taken over and named. A link whose NFS reply
+     was lost reads back as this very claim and counts as made.
+   - A takeover first renames the file aside to a name of its own and then checks what it moved, so of two
+     supervisors taking over the same ended owner only one wins; one that moved the winner's file puts it back.
+   - Released at exit (`atexit`: every `sys.exit` and the fatal paths), and only while the file still names
+     this supervisor. `start_supervisor` turns SIGTERM (Cancel, Stop, the time limit) into an exit, so a
+     non-array driver releases too; an array supervisor's own SIGTERM handler exits the same way. A file left
+     by a killed supervisor (SIGKILL, a lost node) is taken over by the next one. A driver started outside
+     SLURM claims nothing and says so.
    - Run's pre-flight also asks about the supervisor the owner file names (§14.2 L4's second check).
 5. **Roadmap 27 commit 2a.** `apply_exclusions` first removes every `.skip` of this run's items whose content is
    `excluded from processing` and whose tilt series is no longer excluded, and prints which. Skips with another
-   reason stay. A Succeeded job is still not re-run: that is 27's catch-up (2e).
+   reason stay. `load_excluded_ts` now raises on a registry it cannot read, failing the supervisor: read as
+   "nothing excluded" it would drop the skips of tilt series still excluded, and its other callers (`ts_ctf`,
+   `subtomo_extraction`, `warp_export`) would process them. A Succeeded job is still not re-run: that is 27's
+   catch-up (2e).
 
 **Open, for L3.** The second supervisor exits 1, so its qsub trailer still touches `RELION_JOB_EXIT_FAILURE` in
 the shared dir, and `reconcile_afterok` reads that as the job failing while its owner runs on (runtime check 3
@@ -1032,22 +1043,13 @@ and ask squeue instead. Also open: SLURM truncates `run.out`/`run.err` when the 
 `#SBATCH --open-mode=append`, added by `write_sbatch_script` like `--qos`, would avoid that without a `qsub.sh`
 change, but retries would then append to the earlier attempt's log.
 
-**Left open after a read-only review (2026-10-26).**
-- Two supervisors taking over the same dead owner within one squeue call can both win (read, then unlink). Fix:
-  take over by renaming the file aside to a name of one's own, then check what was moved. Needs a hand `sbatch`.
-- Non-array drivers die by SIGTERM's default action (Cancel, Stop, time limit), so they never release the
-  file; the next supervisor needs squeue on its node to take over. A SIGTERM handler in `start_supervisor`
-  that calls `sys.exit` would release it.
-- scancel exits 0 for a job that has already ended, so Stop/Cancel still marks Failed a job that succeeded
-  seconds before (as before L4c).
+**Left open after a read-only review (2026-10-26).** Its other findings are fixed above (the takeover race,
+SIGTERM release, Stop/Cancel on a job that had just succeeded, an unreadable registry in 2a and
+`load_excluded_ts`, `query_jobs_by_ids`).
 - L4a can refuse indefinitely when what is left never ends (tasks held or blocked by a limit, a dependent left
   pending): the app offers no cancel for a Failed job's array; the message names the scancel.
 - Re-extracting a pick list while its earlier extraction runs now always fails (the owner file survives
   `_clear_previous_output`) and writes no `result.json`; §14.3.1 is still the decision owed.
-- 2a removes exclusion skips if the registry read fails (`load_excluded_ts` returns an empty set);
-  `preflight_registry` reads the same registry first, so this needs a failure between the two.
-- `query_jobs_by_ids` takes any "invalid job id" error as "all gone"; `live_task_counts` now accepts only
-  "Invalid job id specified".
 
 **Checked:** `ruff check` and `ruff format --diff` on the touched files (`drivers/ts_import.py` has an older,
 unrelated format diff). Not run: no Python in the sandbox. For runtime check 4, the job must be retried in

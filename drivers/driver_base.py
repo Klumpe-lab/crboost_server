@@ -5,6 +5,7 @@ Shared bootstrap logic for all CryoBoost drivers.
 """
 
 import atexit
+import signal
 import subprocess
 import sys
 import os
@@ -63,6 +64,9 @@ def start_supervisor() -> None:
     if claim["took_over_from"] is not None:
         print(f"[DRIVER] Took the job dir over from {claim['took_over_from'].describe()}, which has ended", flush=True)
     atexit.register(release, job_dir, claim["owner"])
+    # SIGTERM (Cancel, Stop, the time limit) kills by default, skipping atexit; exiting through it
+    # releases the dir. An array supervisor replaces this with its own handler, which exits too.
+    signal.signal(signal.SIGTERM, lambda signum, _frame: sys.exit(128 + signum))
 
 
 def load_project_state(project_path: Path) -> ProjectState:

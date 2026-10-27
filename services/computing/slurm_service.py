@@ -548,7 +548,8 @@ class SlurmService:
             ["squeue", "-j", ",".join(ids), "-o", "%i|%T|%r", "--noheader"]
         )
         if not success:
-            if "invalid job id" in (stderr or "").lower():
+            # As in live_task_counts: a malformed id ("Invalid job id: x") is a failure, not "gone".
+            if "invalid job id specified" in (stderr or "").lower():
                 return {}
             logger.error("query_jobs_by_ids: squeue failed: %s", stderr)
             return None
