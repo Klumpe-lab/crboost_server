@@ -213,6 +213,24 @@ def progress(job_dir: Path, items: list[str]) -> TaskProgress:
     return TaskProgress.from_statuses(scan_statuses(job_dir, items))
 
 
+def eta_s(job_dir: Path, p: TaskProgress) -> float | None:
+    """Seconds until the rest of the items settle, at the pace this submission's .ok markers have kept
+    from the first to the latest. Markers older than the manifest are an earlier submission's and do not
+    count. None before two have landed, or when nothing is left."""
+    remaining = p.total - p.n_settled
+    if remaining <= 0:
+        return None
+    try:
+        since = (job_dir / MANIFEST_FILENAME).stat().st_mtime
+        marks = [e.stat().st_mtime for e in os.scandir(job_dir / STATUS_DIR_NAME) if e.name.endswith(".ok")]
+    except FileNotFoundError:  # no manifest or no markers yet: nothing to time
+        return None
+    times = sorted(t for t in marks if t >= since)
+    if len(times) < 2 or times[-1] <= times[0]:
+        return None
+    return remaining * (times[-1] - times[0]) / (len(times) - 1)
+
+
 def mark_stopped_tasks_failed(job_dir: Path) -> int:
     """For each manifest item without a status marker but with task_{idx}.out on
     disk (i.e. it was actively running when the pipeline got stopped), write a

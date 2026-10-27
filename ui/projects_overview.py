@@ -38,7 +38,7 @@ from ui.components.fields import house_select
 from ui.components.reactive import SingleFlight
 from ui.components.segmented import render_segmented
 from ui.routing import Route, route_to_path
-from ui.styles import MONO, SANS as FONT
+from ui.styles import MONO, SANS as FONT, WAIT_SPINNER
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +175,12 @@ _STATUS_STYLES = {
     "failed": {"color": CLR_FAILED, "label": "failed"},
     "done": {"color": CLR_DONE, "label": "done"},
 }
+
+# The Running cell's segmented progress bar (`_progress_bar`).
+_SEG_N = 10
+_SEG_W = 3
+_SEG_GAP = 1
+_SEG_BAR_W = _SEG_N * _SEG_W + (_SEG_N - 1) * _SEG_GAP
 
 # Disk size: quiet up to _SIZE_QUIET, warming on a log scale to full strength at
 # _SIZE_HEAVY. No red anywhere on the ramp: red is FAILED on the same row.
@@ -983,7 +989,7 @@ class ProjectsOverview:
     _W_DOSE = 62
     _W_ACTIVITY = 76
     _W_TRASH = 52
-    _W_LIVE = 120
+    _W_LIVE = 250  # bar + count + time left + "Reconstruct Particle", the longest job name
 
     # The compact view's columns after the name, in row order (`_render_compact_body`):
     # (sort key, title, width, right-aligned, tier). A narrow roster hides tier 1 first, then 2,
@@ -1097,8 +1103,11 @@ class ProjectsOverview:
                                 "letter-spacing: 0.05em;"
                             )
                         self._render_hover_card(proj, zone, row)
-                    self._render_live_progress(proj)
-                    self._render_status(proj)
+                    # Fixed slots, filled or not, so the running job and the status line up across rows.
+                    with ui.element("div").style(f"width: {self._W_LIVE}px; flex-shrink: 0; display: flex;"):
+                        self._render_live_progress(proj)
+                    with ui.element("div").style(f"width: {self._W_STATUS}px; flex-shrink: 0; display: flex;"):
+                        self._render_status(proj)
 
                 # ---- Lines 2-3: where the project lives, where its data came from ----
                 self._render_path_line(path_str, color=CLR_LABEL, what="Project directory")
@@ -1406,14 +1415,8 @@ class ProjectsOverview:
         def fill() -> None:
             if menu.is_deleted or menu.default_slot.children:
                 return
-            with menu:
-                card = ui.element("div").style("display: flex; align-items: flex-start; gap: 14px; padding: 10px;")
-                card.on("mouseenter", js_handler=_HOVER_STAY)
-                card.on("mouseleave", js_handler=_HOVER_CLOSE)
-                with card:
-                    if proj.get("tomo_preview"):
-                        self._render_card_previews(proj)
-                    self._render_card_facts(proj)
+            with menu, _card_box():
+                _render_card_content(proj)
 
         zone.on("mouseenter", fill, js_handler=_hover_open_js(menu.id))
         row.on("mouseenter", js_handler=_hover_stay_js(menu.id))
@@ -1535,39 +1538,57 @@ class ProjectsOverview:
     def _render_live_progress(proj: dict):
         """A live run at a glance (backend._live_progress): the job at work, its tilt-series
         done out of those in scope (or, without per-TS counts, how far its run.out says it is),
-        and a red dot when the run has failed some, since each is dropped from every job after
-        it. Live projects only; the hover lays it out as a small key/value card."""
+        and its time left. Live projects only; the hover lays it out as a small key/value card,
+        failed tilt-series included."""
         lp = proj.get("live_progress")
         if not lp or proj.get("live_status") not in ("running", "queued"):
             return
         log = lp.get("log")  # services/log_progress.py, for a job without per-TS counts
-        cell = f"{MONO} font-size: 9px; white-space: nowrap; flex-shrink: 0;"
-        with ui.element("div").style("display: flex; align-items: baseline; gap: 5px; min-width: 0;"):
-            ui.label(lp["stage"]).style(
-                f"{FONT} font-size: 9px; font-weight: 600; color: {CLR_RUNNING}; white-space: nowrap; "
-                "overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto;"
-            )
+        # Fixed tracks (bar | count | time left | job) so each lines up from row to row. The count and time
+        # tracks are in `ch` of the cell's mono font: wide enough for "1200/1200" and "≈14h20m", never clipped.
+        with ui.element("div").style(
+            f"{MONO} font-size: 9px; display: grid; "
+            f"grid-template-columns: {_SEG_BAR_W}px 9ch 7ch minmax(0, 1fr); column-gap: 6px; "
+            "align-items: center; width: 100%; min-width: 0;"
+        ):
+            text, fraction, colour = "", None, CLR_LABEL
             if lp["state"] == "queued":
-                ui.label("queued").style(f"{cell} color: {CLR_SUBLABEL};")
+                text, colour = "queued", CLR_SUBLABEL
             elif lp["total"]:
-                ui.label(f"{lp['ok']}/{lp['total']}").style(f"{cell} color: {CLR_LABEL};")
+                text, fraction = f"{lp['ok']}/{lp['total']}", lp["ok"] / lp["total"]
             elif log is not None:
                 # Amber once run.out has gone quiet: a hung tool looks like a running one otherwise.
-                ui.label(log.short).style(f"{cell} color: {CLR_REVIEW if log.quiet_min else CLR_LABEL};")
-            if lp["failed"]:
-                # A superscript dot, the count in the hover.
-                ui.element("div").style(
-                    f"width: 5px; height: 5px; border-radius: 50%; background: {CLR_FAILED}; "
-                    "align-self: flex-start; margin: 1px 0 0 -3px; flex-shrink: 0;"
-                )
+                text, fraction = log.short, log.shown_fraction
+                colour = CLR_REVIEW if log.quiet_min else CLR_LABEL
+            if fraction is not None:
+                ProjectsOverview._progress_bar(fraction, CLR_REVIEW if colour == CLR_REVIEW else CLR_RUNNING)
+            # Without a bar the text starts where the bar would.
+            span = "grid-column: 2;" if fraction is not None else "grid-column: 1 / 3;"
+            ui.label(text).style(f"{span} color: {colour}; white-space: nowrap;")
+            eta = lp.get("eta")
+            # "14 h 20 min" → "≈14h20m"; the hover spells it out.
+            short_eta = "≈" + eta.replace(" min", "m").replace(" h", "h").replace(" ", "") if eta else ""
+            ui.label(short_eta).style(f"grid-column: 3; color: {CLR_SUBLABEL}; white-space: nowrap;")
+            ui.label(lp["stage"]).style(
+                f"{FONT} font-size: 9px; font-weight: 600; color: {CLR_RUNNING}; white-space: nowrap; "
+                "overflow: hidden; text-overflow: ellipsis; min-width: 0; grid-column: 4;"
+            )
             ProjectsOverview._live_progress_card(proj, lp, log)
+
+    @staticmethod
+    def _progress_bar(fraction: float, colour: str) -> None:
+        """A segmented bar, terminal style: square cells lit in whole cells only."""
+        lit = max(0, min(_SEG_N, int(fraction * _SEG_N)))
+        with ui.element("div").style(f"display: flex; gap: {_SEG_GAP}px; height: 7px;"):
+            for i in range(_SEG_N):
+                ui.element("div").style(f"width: {_SEG_W}px; background: {colour if i < lit else CLR_BORDER};")
 
     @staticmethod
     def _live_progress_card(proj: dict, lp: dict, log) -> None:
         """The Running cell's hover: job · where it is · overall bar · time left · warnings, as the
         key/value grid of the app's parameter tooltips (`.cb-params-tt`, ui/dashboard/css.py)."""
         rows: list[tuple[str, str, str | None]] = []  # (key, value, colour)
-        fraction = None
+        fraction, bar_key = None, "overall"
         if lp["state"] == "queued":
             rows.append(("state", "queued on the cluster", None))
         elif lp["total"]:
@@ -1575,11 +1596,13 @@ class ProjectsOverview:
             fraction = lp["ok"] / lp["total"]
         elif log is not None:
             rows.append(("at", log.stage, None))
-            fraction = log.fraction
+            fraction = log.shown_fraction
+            if log.fraction is None:
+                bar_key = "this step"  # the log gives the current step's progress only
         else:
             rows.append(("state", "running", None))
-        if log is not None and log.eta:
-            rows.append(("left", f"≈ {log.eta}", None))
+        if lp.get("eta"):
+            rows.append(("left", f"≈ {lp['eta']}", None))
         if log is not None and log.quiet_min is not None:
             rows.append(("log", f"no output for {log.quiet_min} min", CLR_REVIEW))
         if lp["failed_by_stage"]:
@@ -1595,21 +1618,20 @@ class ProjectsOverview:
                 ui.label(key).classes("cb-params-k")
                 ui.label(value).classes("cb-params-v").style(f"color: {colour};" if colour else "")
             if fraction is not None:
-                pct = round(fraction * 100)
-                ui.label("overall").classes("cb-params-k")
+                ui.label(bar_key).classes("cb-params-k")
                 with ui.element("div").style("display: flex; align-items: center; gap: 6px;"):
-                    with ui.element("div").style(
-                        f"width: 90px; height: 4px; border-radius: 2px; background: {CLR_BORDER}; overflow: hidden;"
-                    ):
-                        ui.element("div").style(f"width: {pct}%; height: 100%; background: {CLR_RUNNING};")
-                    ui.label(f"{pct}%").classes("cb-params-v")
+                    ProjectsOverview._progress_bar(fraction, CLR_RUNNING)
+                    ui.label(f"{int(fraction * 100)}%").classes("cb-params-v")
             for key, value, colour in rows[1:]:
                 ui.label(key).classes("cb-params-k")
                 ui.label(value).classes("cb-params-v").style(f"color: {colour};" if colour else "")
+            note = None
             if log is not None:
-                ui.label("from the job's run.out; the time left assumes the current pace").style(
-                    f"grid-column: 1 / -1; margin-top: 3px; font-size: 9px; color: {CLR_LABEL};"
-                )
+                note = "from the job's run.out; the time left assumes the current pace"
+            elif lp.get("eta"):
+                note = "the time left assumes the pace the tilt-series have finished at so far"
+            if note:
+                ui.label(note).style(f"grid-column: 1 / -1; margin-top: 3px; font-size: 9px; color: {CLR_LABEL};")
 
     @staticmethod
     def _render_status(proj: dict):
@@ -1907,3 +1929,57 @@ class ProjectsOverview:
     @staticmethod
     def _eff_owner_of(p: dict) -> str:
         return p.get("owner") or p.get("creator") or "unknown"
+
+
+def _card_box() -> ui.element:
+    """The hover card's box in its menu: moving onto it keeps the card open, leaving it closes it."""
+    card = ui.element("div").style("display: flex; align-items: flex-start; gap: 14px; padding: 10px;")
+    card.on("mouseenter", js_handler=_HOVER_STAY)
+    card.on("mouseleave", js_handler=_HOVER_CLOSE)
+    return card
+
+
+def _render_card_content(proj: dict) -> None:
+    if proj.get("tomo_preview"):
+        ProjectsOverview._render_card_previews(proj)
+    ProjectsOverview._render_card_facts(proj)
+
+
+def project_card_menu(anchor: ui.element, load: Callable[[], Awaitable[dict | None]]) -> None:
+    """The roster's project hover card on another anchor (the workspace rail's project avatar),
+    opening to its right with the caret on its left edge at the anchor's middle. `load` reads the
+    project's roster row; it runs the first time the anchor is entered, and the card spins until
+    it lands."""
+    with anchor:
+        menu = (
+            ui.menu()
+            .props(
+                'no-parent-event no-focus no-refocus anchor="top right" self="top left" '
+                ':offset="[10, 0]" transition-show="fade" transition-hide="fade" :transition-duration="80"'
+            )
+            .classes("cb-proj-card cb-proj-card--right cb-glass")
+            .style("overflow: visible; max-height: none;")
+        )
+
+    async def fill() -> None:
+        if menu.is_deleted or menu.default_slot.children:
+            return
+        with menu:
+            card = _card_box()
+        with card:
+            ui.html(WAIT_SPINNER, sanitize=False)
+        proj = await load()
+        if card.is_deleted:
+            return
+        card.clear()
+        with card:
+            if proj is None:
+                ui.label("This project's parameters could not be read.").style(
+                    f"{FONT} font-size: 10px; color: {CLR_META};"
+                )
+            else:
+                _render_card_content(proj)
+        menu.run_method("updatePosition")
+
+    anchor.on("mouseenter", fill, js_handler=_hover_open_js(menu.id))
+    anchor.on("mouseleave", js_handler=_HOVER_CLOSE)
