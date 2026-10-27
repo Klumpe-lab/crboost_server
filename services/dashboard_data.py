@@ -461,7 +461,7 @@ def _coarse_job_status(jm) -> str:
         return "ok"
     if es == JobStatus.FAILED:
         return "fail"
-    if es in (JobStatus.RUNNING, JobStatus.QUEUED, JobStatus.SCHEDULED):
+    if es is not None and es.is_live:
         return "running"
     return "pending"
 
@@ -504,7 +504,7 @@ def _job_running_or_failed(jm) -> str | None:
     """For non-array jobs, derive a coarse status from execution_status. Returns
     'running' / 'fail' / None (None means "fall back to per-TS data check")."""
     es = getattr(jm, "execution_status", None)
-    if es == JobStatus.RUNNING or es == JobStatus.QUEUED or es == JobStatus.SCHEDULED:
+    if es is not None and es.is_live:
         return "running"
     if es == JobStatus.FAILED:
         return "fail"
@@ -689,7 +689,7 @@ def _subtomo_extract_status_per_ts(job_dir: Path, jm, expected_ts: set[str] | No
 
     if expected_ts:
         es = getattr(jm, "execution_status", None)
-        job_running = es in (JobStatus.RUNNING, JobStatus.QUEUED, JobStatus.SCHEDULED)
+        job_running = es is not None and es.is_live
         job_succeeded = es == JobStatus.SUCCEEDED
         for ts in expected_ts:
             if ts in extracted:

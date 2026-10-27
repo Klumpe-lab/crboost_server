@@ -638,13 +638,14 @@ class PipelineRunnerService:
         # Interactive jobs are not part of the run being stopped -- they manage their
         # own status and were never deployed by the orchestrator (a per-list extraction
         # submitted from the Species page, a DL tilt filter). Cancelling them here would
-        # scancel unrelated live work and leave it reading Failed forever.
+        # scancel unrelated live work and leave it reading Failed forever. A staged (Scheduled)
+        # job is not live either: the slurm id it may carry is an earlier run's, and it stays staged.
         live = {
             iid: jm
             for iid, jm in state.jobs.items()
             if getattr(jm, "slurm_job_id", None)
             and not getattr(jm, "IS_INTERACTIVE", False)
-            and jm.execution_status in (JobStatus.RUNNING, JobStatus.QUEUED, JobStatus.SCHEDULED)
+            and jm.execution_status.is_live
         }
         stopped, errors = await self._cancel_and_mark(project_dir, live)
         await self._settle_cancelled(project_dir, stopped)

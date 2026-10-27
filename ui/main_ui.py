@@ -293,9 +293,7 @@ def create_ui_router(backend: CryoBoostBackend):
         if not ui_mgr.is_project_created:
             recovered_state = get_project_state_for(ui_mgr.project_path)
             ui_mgr.load_from_project(
-                project_path=recovered_state.project_path,
-                scheme_name="recovered",
-                jobs=list(recovered_state.jobs.keys()),
+                project_path=recovered_state.project_path, scheme_name="recovered", jobs=recovered_state.roster()
             )
         ui.navigate.to(workspace_url(ui_mgr.project_path))
 

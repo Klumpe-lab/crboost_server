@@ -850,6 +850,12 @@ class ProjectState(BaseModel):
     def mark_dirty(self):
         self._dirty = True
 
+    def roster(self) -> list[str]:
+        """The jobs on the roster, in order: `pipeline_order`, which adding and removing a job keep,
+        or every job of a project that has none yet. A finished job taken off the roster stays in
+        `jobs` (its outputs may be read) and must not come back when the project is opened."""
+        return [iid for iid in self.pipeline_order if iid in self.jobs] or list(self.jobs)
+
     @property
     def is_dirty(self) -> bool:
         return self._dirty
