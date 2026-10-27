@@ -1,8 +1,7 @@
 # Roadmap 39 — Python environment and setup: a locked, self-contained environment built with uv
 
 **Pending (maintainer, 2026-10-26):** wanted; move to uv, plus §6 (start-up cost of every array task first).
-**Status:** scoped 2026-10-22; nothing built. Stage 0 needs one command run on the headnode (§3). Decisions
-owed in §2.
+**Status:** scoped 2026-10-22; nothing built. S0 inventory run and §2 answered 2026-10-27 (records in §2, §3).
 
 **In one line.** Today the server's environment is a venv built on the cluster's Python module. Some of its packages
 are probably not in the venv at all, and most of its versions are not pinned. This roadmap makes that environment
@@ -41,6 +40,10 @@ checksummed weights.
 
 ## 2. Decisions owed
 
+**Answered 2026-10-27 (maintainer):** D1, D2, D3, D5, D6 as recommended. D4: uv's Python and cache go under
+`/groups/klumpe/software/cache_and_artifacts/uv/{python,cache}`. D7: the weights are not published yet; Hugging
+Face is the likely place, licence still to check.
+
 | # | Question | Recommendation |
 |---|---|---|
 | D1 | Lock format: `requirements.in` compiled to a pinned `requirements.txt` (`uv pip compile`), or `pyproject.toml` + `uv.lock` + `uv sync` | The compiled `requirements.txt`. pip keeps working on it unchanged, and it is the smaller step; `pyproject.toml` can follow if the repo ever becomes an installable package |
@@ -68,6 +71,19 @@ module show arrow/16.1.0-gfbf-2023b 2>&1 | grep -i -E "pythonpath|scipy|depends"
 
 The versions this prints are the known-good set: the lock in S1 starts from them, not from whatever is newest. Any
 path outside `venv/` confirms the mixed environment described in §1.
+
+#### S0 record (2026-10-27, `tmpOut/uv_s0_probe.sh` on clip-login-1 and compute node clip-c2-28)
+
+- Confirmed: the venv (`include-system-site-packages = false`) is bypassed by `PYTHONPATH`. The `arrow` module
+  prepends seven module site-packages, so numpy 1.26.2, pandas 2.1.3, scipy 1.11.4 (scipy-bundle/2023.11) and
+  requests 2.31.0 (python-bundle-pypi/2023.10) come from `/software`. pyarrow (arrow 16.1.0) loads with pandas.
+- The venv holds 79 distributions, 5.6 GB, of which torch 2.6.0+cu124, nvidia-* and triton are 5.0 GB.
+  The rest of the server's own packages are in the venv: nicegui 3.0.3, fastapi 0.118.0, uvicorn 0.37.0,
+  pydantic 2.12.3, matplotlib 3.10.9, Pillow 12.0.0, scikit-image 0.26.0, mrcfile 1.5.4, biopython 1.86, PyYAML 6.0.3.
+- `pip freeze` through the job's environment lists 298 packages (venv plus the module bundles), so the lock in
+  S1 starts from the venv's 79 plus the four module packages above, not from that freeze.
+- Same on both hosts. Start-up (§6 item 1): `import drivers.driver_base` takes 1.3 s warm, 1.85 s cold on the
+  compute node; pandas is 0.58 s of it, pulled in by `services/jobs/_base.py`.
 
 ### S1 — Lock the dependencies
 
