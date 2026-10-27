@@ -45,7 +45,10 @@ class SupervisorOwner:
 def read_owner(job_dir: Path) -> SupervisorOwner | None:
     """The supervisor the job dir's owner file names; None when it has none. Raises ValueError,
     naming the file, for one that does not parse (damaged: acquire never leaves one half written)."""
-    path = job_dir / OWNER_FILENAME
+    return _read_owner_file(job_dir / OWNER_FILENAME)
+
+
+def _read_owner_file(path: Path) -> SupervisorOwner | None:
     try:
         text = path.read_text()
     except FileNotFoundError:
@@ -76,7 +79,7 @@ def acquire(job_dir: Path, slurm_job_id: str) -> dict[str, Any]:
     path = job_dir / OWNER_FILENAME
     # Written whole under a name of this job's own, then linked into place: link() fails on an existing
     # name as O_EXCL does, and the owner file never exists empty or half written (a full quota, a kill).
-    # A link whose reply NFS lost reads back as this job's own and is taken over like a requeue.
+    # A link whose reply NFS lost fails as if the name existed, and reads back as this very claim.
     tmp = job_dir / f"{OWNER_FILENAME}.{slurm_job_id}.tmp"
     took_over: SupervisorOwner | None = None
     try:
@@ -91,6 +94,8 @@ def acquire(job_dir: Path, slurm_job_id: str) -> dict[str, Any]:
                     return err(f"{e}; delete it if no supervisor runs in this job dir")
                 if holder is None:
                     continue  # released meanwhile
+                if holder == me:
+                    return ok(owner=me, took_over_from=took_over)
                 if holder.slurm_job_id != slurm_job_id:
                     live = _slurm_job_live(holder.slurm_job_id)
                     if live is None:
@@ -99,8 +104,8 @@ def acquire(job_dir: Path, slurm_job_id: str) -> dict[str, Any]:
                         )
                     if live:
                         return err(f"another supervisor ({holder.describe()}) owns this job dir")
-                _unlink_if_owned_by(job_dir, holder)
-                took_over = holder
+                if _take_over(job_dir, holder, slurm_job_id):
+                    took_over = holder
                 continue
             return ok(owner=me, took_over_from=took_over)
         return err(f"could not claim this job dir: {path} kept changing hands")
@@ -114,6 +119,30 @@ def release(job_dir: Path, owner: SupervisorOwner) -> None:
         _unlink_if_owned_by(job_dir, owner)
     except OSError:
         pass  # a file left behind is taken over by the next supervisor, once SLURM says this one ended
+
+
+def _take_over(job_dir: Path, holder: SupervisorOwner, slurm_job_id: str) -> bool:
+    """Remove the owner file naming `holder`, which has ended; True when this call removed it. The
+    file is moved aside first, so of two supervisors taking it over at once only one gets it. One that
+    moved the file the other has linked in since puts it back (if a third has claimed the dir in that
+    instant, it cannot, and two supervisors run)."""
+    path = job_dir / OWNER_FILENAME
+    aside = job_dir / f"{OWNER_FILENAME}.{slurm_job_id}.ended"
+    try:
+        os.rename(path, aside)
+    except FileNotFoundError:
+        return False  # another supervisor moved it first
+    try:
+        moved = _read_owner_file(aside)
+    except ValueError:
+        moved = None  # not the file read a moment ago, which parsed
+    if moved != holder:
+        try:
+            os.link(aside, path)
+        except FileExistsError:
+            pass  # a third supervisor claimed the dir meanwhile (see the docstring)
+    aside.unlink()
+    return moved == holder
 
 
 def _unlink_if_owned_by(job_dir: Path, owner: SupervisorOwner) -> None:
