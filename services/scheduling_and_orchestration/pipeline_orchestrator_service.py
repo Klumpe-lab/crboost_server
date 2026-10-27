@@ -284,14 +284,17 @@ class PipelineOrchestratorService:
                 state.mark_dirty()
             return res
 
-    async def _live_in_reused_dirs(self, project_dir: Path, state, instances_to_run: list[str]) -> str | None:
-        """Why the run must wait, or None: a FAILED job it would retry in its own dir still has work
-        in SLURM there. Its supervisor (the one recorded, or the one the dir's owner file names) can
-        be alive while its status reads Failed; more often a supervisor killed at its time limit has
-        left its array running, and a resubmit would dispatch those tilt series a second time while
-        a second supervisor rebuilt the inputs they read. Refused rather than cancelled: the live
-        tasks are doing the work a rerun would repeat. One squeue for every id; a failed squeue, or
-        a task manifest or owner file that does not parse, refuses too."""
+    async def _live_in_reused_dirs(
+        self, project_dir: Path, state, instances_to_run: list[str]
+    ) -> tuple[str, list[str]] | None:
+        """Why the run must wait and the SLURM ids still live there, or None: a FAILED job it would
+        retry in its own dir still has work in SLURM there. Its supervisor (the one recorded, or the
+        one the dir's owner file names) can be alive while its status reads Failed; more often a
+        supervisor killed at its time limit has left its array running, and a resubmit would
+        dispatch those tilt series a second time while a second supervisor rebuilt the inputs they
+        read. Refused rather than cancelled: the live tasks are doing the work a rerun would repeat;
+        the user may cancel them from the refusal. One squeue for every id; a failed squeue, or a
+        task manifest or owner file that does not parse, refuses too (with no ids)."""
         reused = {
             iid: rel
             for iid in instances_to_run
@@ -316,7 +319,7 @@ class PipelineOrchestratorService:
 
         found, unreadable = await asyncio.to_thread(read_dirs)
         if unreadable:
-            return " ".join(unreadable)
+            return " ".join(unreadable), []
         # Per job, its supervisors first (a live one is the job itself still running), then its array.
         watched: dict[str, list[tuple[str, str]]] = {}
         for iid in reused:
@@ -327,11 +330,14 @@ class PipelineOrchestratorService:
         live = await self.backend.slurm_service.live_task_counts(ids) if ids else {}
         if live is None:
             names = ", ".join(f"{iid} ({Path(rel).name})" for iid, rel in reused.items())
-            return f"Could not ask SLURM whether {names} still run (squeue failed); try again."
+            return f"Could not ask SLURM whether {names} still run (squeue failed); try again.", []
         reasons: list[str] = []
+        live_ids: list[str] = []
         for iid, pairs in watched.items():
             name = Path(reused[iid]).name
             kind, jid = next(((kind, jid) for kind, jid in pairs if jid in live), (None, None))
+            if jid:
+                live_ids.append(jid)
             if kind == "slurm":
                 reasons.append(f"{iid} ({name}) is still running as slurm {jid}; if it never ends, scancel {jid}.")
             elif kind == "array":
@@ -340,7 +346,7 @@ class PipelineOrchestratorService:
                     f"{iid} ({name}) is still running as array {jid} ({n} task{'' if n == 1 else 's'}). Run again "
                     f"once it drains; the supervisor then aggregates what finished. If it never drains, scancel {jid}."
                 )
-        return " ".join(reasons) or None
+        return (" ".join(reasons), live_ids) if reasons else None
 
     async def _submit_chain(self, project_dir: Path, instances_to_run: list[str], state) -> dict[str, Any]:
         """Submit the pipeline as a SLURM afterok DAG.
@@ -388,7 +394,8 @@ class PipelineOrchestratorService:
 
         still_running = await self._live_in_reused_dirs(project_dir, state, instances_to_run)
         if still_running:
-            return err(still_running)
+            # still_live: what the Run refusal offers to scancel when it never drains by itself.
+            return err(still_running[0], still_live=still_running[1])
 
         # Seed the sole job-dir allocator once from the existing RELION counter, then own it.
         if not state.job_dir_counter:
