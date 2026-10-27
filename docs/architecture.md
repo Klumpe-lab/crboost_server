@@ -65,7 +65,7 @@ handles startup recovery (see below).
 ## Startup recovery
 
 When `PipelineMonitor.start()` runs in the FastAPI `startup` event hook
-(`main.py`), it first walks the configured project base
+(`server_app.py`), it first walks the configured project base
 (`config_service.default_project_base`) looking for projects whose
 persisted `project_params.json` has `pipeline_active: true`, and loads
 each one into `_project_states`. That is all recovery takes: the chain
@@ -148,7 +148,7 @@ the code to move.
   reconciler).
 - `ui/projects_overview.py` — shared project list widget (landing +
   project-hub dialog).
-- `main.py:setup_app` — FastAPI startup/shutdown hooks for the monitor.
+- `server_app.py:setup_app` — FastAPI startup/shutdown hooks for the monitor.
 - `services/workers.py` — the worker processes for CPU-bound work.
 - `services/array_status_cache.py` — the array jobs' statuses, one scan per tick.
 - `services/loop_watchdog.py` — the event-loop stall log.

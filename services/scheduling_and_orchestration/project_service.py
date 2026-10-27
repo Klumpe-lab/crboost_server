@@ -14,6 +14,7 @@ from services.configs.mdoc_service import (
     acquisition_from_mdoc,
     describe_duplicate_ts_names,
     duplicate_ts_names,
+    folder_tag,
     get_mdoc_service,
     ts_name_from_mdoc,
 )
@@ -38,6 +39,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Per series of a project: the absolute path of its source mdoc, the layer it came from, the
+# stack it was split from, and the source file behind each frame link — written by the import.
+IMPORT_SOURCES_FILENAME = "import_sources.json"
+
 
 def _read_json(path: Path) -> dict:
     with open(path) as f:
@@ -56,13 +61,16 @@ class DataImportService:
         import_prefix: str,
         selected_mdoc_paths: list[str] | None = None,
         progress_cb: Callable[[str], None] | None = None,
+        ts_names_by_folder: bool = False,
     ) -> dict[str, Any]:
         """Synchronous core of data import — runs in thread pool to avoid blocking the event loop.
 
         Per mdoc, the source layer is re-derived from disk with the scan's rule (the
         overview is not passed down): movies are symlinked into `frames/` (looked
         for in the movies dir, then beside the mdoc), a SerialEM stack is split into one
-        `.mrc` per tilt. The mdoc copy is `mdoc/<prefix><ts_name>.mdoc`. Returns
+        `.mrc` per tilt. The mdoc copy is `mdoc/<prefix><ts_name>.mdoc`; with `ts_names_by_folder`
+        the series name and its frames' names lead with the mdoc folder's `folder_tag`. Where
+        every series came from is written to `IMPORT_SOURCES_FILENAME`. Returns
         `ok(layer=…, frame_extension=…, n_frames=…)`; `progress_cb` receives short status
         strings for the Create spinner.
         """
@@ -91,6 +99,7 @@ class DataImportService:
             extensions: Counter[str] = Counter()
             n_frames = 0
             n_series = len(mdoc_files)
+            sources: dict[str, dict[str, Any]] = {}
             for idx, mdoc_path_str in enumerate(sorted(mdoc_files)):
                 mdoc_path = Path(mdoc_path_str)
                 parsed_mdoc = self.mdoc_service.parse_mdoc_file(mdoc_path)
@@ -98,26 +107,29 @@ class DataImportService:
                     logger.warning("Skipping %s: no [ZValue] sections", mdoc_path.name)
                     continue
                 facts = acquisition_from_mdoc(parsed_mdoc)
-                ts_name = ts_name_from_mdoc(mdoc_path.name)
-                new_mdoc_path = mdoc_dir / f"{import_prefix}{ts_name}.mdoc"
+                series_prefix = import_prefix + (f"{folder_tag(mdoc_path.parent)}_" if ts_names_by_folder else "")
+                new_mdoc_path = mdoc_dir / f"{series_prefix}{ts_name_from_mdoc(mdoc_path.name)}.mdoc"
+                record: dict[str, Any] = {"mdoc": str(mdoc_path.absolute()), "layer": None, "stack": None, "frames": {}}
+                sources[new_mdoc_path.stem] = record
 
-                sources: list[tuple[dict, Path | None]] = []
+                movies: list[tuple[dict, Path | None]] = []
                 for section in parsed_mdoc["data"]:
                     if "SubFramePath" not in section:
                         continue
                     name = Path(section["SubFramePath"].replace("\\", "/")).name
                     found = next((d / name for d in (source_movie_dir, mdoc_path.parent) if (d / name).exists()), None)
-                    sources.append((section, found))
-                movies_complete = bool(sources) and all(p is not None for _, p in sources)
-                movies_partial = any(p is not None for _, p in sources)
+                    movies.append((section, found))
+                movies_complete = bool(movies) and all(p is not None for _, p in movies)
+                movies_partial = any(p is not None for _, p in movies)
                 stack = resolve_stack(mdoc_path, facts.image_file, facts.n_sections)
                 layer = choose_source_layer(facts.software, movies_complete, movies_partial, stack is not None)
 
                 if layer == "stack":
                     if progress_cb:
                         progress_cb(f"splitting stack {idx + 1}/{n_series}")
-                    result = split_stack(mdoc_path, frames_dir, prefix=import_prefix, progress=progress_cb)
+                    result = split_stack(mdoc_path, frames_dir, prefix=series_prefix, progress=progress_cb)
                     new_mdoc_path.write_text(result.mdoc_text)
+                    record["layer"], record["stack"] = "stack", str(stack[0].absolute())
                     layers["stacks"] += 1
                     extensions[".mrc"] += 1
                     n_frames += result.n_frames
@@ -125,10 +137,14 @@ class DataImportService:
 
                 if progress_cb:
                     progress_cb(f"linking movies {idx + 1}/{n_series}")
-                for section, source_movie_path in sources:
+                record["layer"] = "movies"
+                for section, source_movie_path in movies:
                     original_movie_name = Path(section["SubFramePath"].replace("\\", "/")).name
-                    prefixed_movie_name = f"{import_prefix}{original_movie_name}"
+                    prefixed_movie_name = f"{series_prefix}{original_movie_name}"
                     section["SubFramePath"] = prefixed_movie_name
+                    record["frames"][prefixed_movie_name] = (
+                        str(source_movie_path.absolute()) if source_movie_path else None
+                    )
                     if source_movie_path is None:
                         logger.warning("Source movie not found: %s", source_movie_dir / original_movie_name)
                         continue
@@ -142,6 +158,9 @@ class DataImportService:
 
             if not layers:
                 return err("No tilt-series imported: every selected mdoc lacks [ZValue] sections.")
+            (project_dir / IMPORT_SOURCES_FILENAME).write_text(
+                json.dumps({"ts_names_by_folder": ts_names_by_folder, "series": sources}, indent=1)
+            )
             if len(layers) > 1:
                 logger.warning("Mixed source layers imported into %s: %s", project_dir, dict(layers))
             return ok(
@@ -162,6 +181,7 @@ class DataImportService:
         import_prefix: str,
         selected_mdoc_paths: list[str] | None = None,
         progress_cb: Callable[[str], None] | None = None,
+        ts_names_by_folder: bool = False,
     ) -> dict[str, Any]:
         """Async wrapper — offloads blocking file I/O to a thread."""
         return await asyncio.to_thread(
@@ -172,6 +192,7 @@ class DataImportService:
             import_prefix,
             selected_mdoc_paths,
             progress_cb,
+            ts_names_by_folder,
         )
 
 
@@ -341,6 +362,7 @@ class ProjectService:
         import_prefix: str,
         selected_mdoc_paths: list[str] | None = None,
         progress_cb: Callable[[str], None] | None = None,
+        ts_names_by_folder: bool = False,
     ) -> dict[str, Any]:
         """Creates the project directory structure and imports the raw data. On success the
         import result is returned as is (it carries `layer` / `frame_extension` / `n_frames`)."""
@@ -353,7 +375,13 @@ class ProjectService:
             await self._setup_qsub_templates(project_dir)
 
             return await self.data_importer.setup_project_data(
-                project_dir, movies_glob, mdocs_glob, import_prefix, selected_mdoc_paths, progress_cb
+                project_dir,
+                movies_glob,
+                mdocs_glob,
+                import_prefix,
+                selected_mdoc_paths,
+                progress_cb,
+                ts_names_by_folder,
             )
         except Exception as e:
             return err(f"Failed during directory setup: {e!s}")
@@ -445,6 +473,7 @@ class ProjectService:
         detected_params: dict[str, Any] | None = None,
         shared: bool = False,
         progress_cb: Callable[[str], None] | None = None,
+        ts_names_by_folder: bool = False,
     ):
         try:
             project_dir = Path(project_base_path).expanduser() / project_name
@@ -457,7 +486,7 @@ class ProjectService:
             # so a collision would silently keep only one of each.
             if selected_mdoc_paths is not None or mdocs_glob:
                 mdoc_files = selected_mdoc_paths if selected_mdoc_paths is not None else glob.glob(mdocs_glob)
-                duplicates = duplicate_ts_names(mdoc_files)
+                duplicates = duplicate_ts_names(mdoc_files, by_folder=ts_names_by_folder)
                 if duplicates:
                     return err(describe_duplicate_ts_names(duplicates))
 
@@ -565,7 +594,13 @@ class ProjectService:
             # Create Dirs & Import Data (runs blocking I/O in thread pool)
             import_prefix = f"{project_name}_"
             structure_result = await self.create_project_structure(
-                project_dir, movies_glob, mdocs_glob, import_prefix, selected_mdoc_paths, progress_cb
+                project_dir,
+                movies_glob,
+                mdocs_glob,
+                import_prefix,
+                selected_mdoc_paths,
+                progress_cb,
+                ts_names_by_folder,
             )
             if not structure_result["success"]:
                 return structure_result

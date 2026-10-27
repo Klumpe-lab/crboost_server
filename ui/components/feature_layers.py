@@ -33,7 +33,7 @@ _ORIGIN_OF_TOOL = {"easymode": FeatureOrigin.EASYMODE, "ais": FeatureOrigin.AIS}
 
 
 def collect_layers(state, tilt_series: Iterable, dirs: dict[Path, str]) -> tuple[list[dict], dict[str, list[dict]]]:
-    """``(layers, {ts: [{id, feature, xy, xz, fraction, dims}, ...]})`` from the registry's `tilt_series`.
+    """``(layers, {ts: [{id, feature, xy, xz, dims}, ...]})`` from the registry's `tilt_series`.
 
     ``layers`` = ``[{id, feature, producer, producer_label, shared, origin, recon, recon_label, n}]``
     by feature: two producers of one feature are two layers in the feature's one colour, named by
@@ -77,7 +77,6 @@ def collect_layers(state, tilt_series: Iterable, dirs: dict[Path, str]) -> tuple
                         "feature": feature,
                         "xy": vis_asset_url(str(vol.overlay_xy)),
                         "xz": vis_asset_url(str(xz)) if xz is not None else None,
-                        "fraction": vol.fraction_pct,
                         "dims": [int(out.shape_zyx[2]), int(out.shape_zyx[1]), int(out.shape_zyx[0])],
                     }
                 )
@@ -136,12 +135,6 @@ def css_vars(project_path, features: Iterable[str]) -> str:
     """The variables the fills and badges read: one colour per feature, and the fills' opacity."""
     variables = [f"{feature_var(f)}: {feature_color(project_path, f)};" for f in sorted(set(features))]
     return " ".join([*variables, f"--cb-feat-opacity: {display.opacity(project_path)};"])
-
-
-def fraction_text(fraction: float | None) -> str:
-    if fraction is None:
-        return "–"
-    return f"{fraction:.0f}%" if fraction >= 10 else f"{fraction:.1f}%"
 
 
 def set_feature_color(project_path, layer: dict, color: str) -> None:
@@ -247,13 +240,8 @@ class FeatureFills:
             self.holder.style(css_vars(self.project_path, (layer["feature"] for layer in self.layers)))
 
     def rows(self, on_change: Callable[[], None]) -> list[LayerRow]:
-        """The layers as rows of a layers list, each with its share of this tomogram's volume."""
-        return feature_rows(
-            self.project_path,
-            self.layers,
-            lambda layer: fraction_text(self.entries[layer["id"]]["fraction"]),
-            on_change,
-        )
+        """The layers as rows of a layers list."""
+        return feature_rows(self.project_path, self.layers, lambda _layer: "", on_change)
 
     def menu(self) -> None:
         """The view's layers menu, of the segmentations only."""

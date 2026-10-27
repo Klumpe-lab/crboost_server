@@ -62,6 +62,7 @@ from services.segmentation.manifest import (
     write_manifest,
 )
 from services.segmentation.volumes import summarize_volume, volume_problem
+from services.shared_files import make_shared
 from services.tilt_series import ModelRef, get_registry_for
 
 OUTPUT_DIR = "segmentations"
@@ -158,6 +159,7 @@ def _relink(link: Path, target: Path) -> None:
 def _write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp_", suffix=".json")
+    make_shared(fd)
     with os.fdopen(fd, "w") as f:
         json.dump(data, f, indent=2)
     os.replace(tmp, path)

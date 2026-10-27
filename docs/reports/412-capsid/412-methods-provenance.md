@@ -29,7 +29,7 @@ Container images (all under `/groups/klumpe/software/Setup/cryoboost_containers/
 
 ## 2. Per-dataset processing (identical parameters in every source project)
 
-Data: 300 kV, Cs 2.7 mm, 1.55 Å/px, EER, SerialEM, 4096 × 4096, tilt axis 84.4°, typically
+Data: 300 kV, Cs 2.7 mm, 1.55 Å/px, EER, Tomography 5 (TITAN52339720; crboost labels it SerialEM), 4096 × 4096, tilt axis 84.4°, typically
 41 tilts. Dose per tilt differs by session: 1.9 (20260122), 2.9–3.0 (Slot6, FCIsolation, 20251113),
 4.8 e⁻/Å² (MyrGFP_Grid2).
 
@@ -101,27 +101,82 @@ Full commands: `412-capsid-aggregation-handoff.md` (1–3), `412-sta-refinement-
 | sphere template 300 or 500 Å | I1 subtomogram average, Ø 575 Å mask; a 550 Å sphere chain ran alongside but did not feed the curated set (checked for one source) |
 | cleaned in ArtiaX | gallery curation in crboost, then Class3D |
 
-## 6. The draft paragraph, corrected in place
+## 6. The draft paragraph, corrected in place (DAV = `try1` job121, 23 particles; copia = §7)
 
-Sentence structure kept; only what the record contradicts is changed. Copia and the ~30 nm capsid are outside
-this record, so their parts stay as drafted (brackets).
+Sentence structure kept; only what the record contradicts is changed. Brackets = not in the record.
 
-> **Subtomogram averaging**
-> Subtomogram averaging was performed using an in-house developed pipeline
-> (https://github.com/Klumpe-lab/crboost_server). In brief, EER files were rendered as frames of 32 EER
-> fractions, corresponding to ~0.4–0.5 e⁻/Å² dose per frame, and motion-corrected using WarpTools version
-> 2.0.0dev36 [80]. The CTF estimation was performed per tilt and per tilt series using WarpTools version
-> 2.0.0dev36 [80]. Bad tilts were removed manually or using an experimental binary classification machine
-> learning model. Dose weighting was performed in WarpTools version 2.0.0dev36 [80]. Tomograms for initial
-> subtomogram averaging were reconstructed in WarpTools after automated tilt-series alignment in AreTomo2
-> version 1.0.0 [81] at bin4, resulting in a tomogram voxel size of 6.2 Å. Particle picking was performed
-> using a previous subtomogram average of the ~50 nm capsid (I1 symmetry, 575 Å spherical mask) [or a sphere
-> of 300 Å in diameter] as template, depending on the viral assembly to be detected, in PyTOM-tm version
-> 0.10.0. Subtomogram averaging was performed in Relion 5.0.1 using [XX] particles for copia, 94 particles for
-> the unidentified ~50 nm capsid, and [XX] particles for the unidentified ~30 nm capsid. Particle positions
-> extracted from template matching were manually cleaned [in ArtiaX / for the ~50 nm capsid in the
-> pipeline's particle gallery, followed by 3D classification]. Subtomograms were extracted and averaged in
-> Relion 5.0.1. [Final particle positions were mapped back onto the tomogram using ArtiaX.]
+**Subtomogram averaging**
+
+Subtomogram averaging was performed using an in-house developed pipeline
+(https://github.com/Klumpe-lab/crboost_server); it runs WarpTools, AreTomo2, pytom-match-pick and RELION 5.0
+as one workflow. In brief, EER files were rendered as frames of 32 EER fractions, corresponding to
+~0.46 e⁻/Å² dose per frame. Motion correction, per-tilt and per-tilt-series CTF estimation, dose weighting
+and tomogram reconstruction at bin4 were performed in WarpTools (version 2.0.0dev36 for the ~50 nm capsid and
+2.0.0dev29 for copia) [80], with tilt series aligned in AreTomo2 version 1.0.0 [81], resulting in a tomogram
+voxel size of 6.2 Å. Bad tilts were removed using a U-Net-based classifier with manual vetting. Particle
+picking was performed using a sphere of 550 Å in diameter as template in pytom-match-pick version 0.10.0
+[ref]. Subtomograms were extracted and averaged in RELION 5.0. For the unidentified ~50 nm capsid, particle
+positions extracted from template matching were manually cleaned in ArtiaX, leaving 23 particles from 21
+tomograms. For copia, 124 template-matching candidates from one tomogram were reduced to 120 by visual
+inspection after CTF refinement and to 76 by 3D classification. Final particle positions were mapped back
+onto the tomogram using ArtiaX.
 
 References: [78] (MotionCor2) and [79] (CTFFIND4) drop out. [80] was the Warp 1 paper; check whether WarpTools
 2 should cite something else.
+
+## 7. Sources chosen for the paper (2026-10-22) — supersedes the 94-particle set above
+
+- **~50 nm capsid:** the PI's v1 project, `…/Processing/412/try1/Class3D/job121/run_it015_class001.mrc`.
+- **Copia:** `/groups/klumpe/crboost_data/copia-tutorial-20261015-1551` (protocol `copia-tutorial` v1).
+- The ~30 nm capsid is left out.
+
+| | ~50 nm capsid (try1, CryoBoost v1) | Copia (crboost_server) |
+| --- | --- | --- |
+| Data | 39 tilt series, 1.55 Å/px, 3.0 e⁻/Å² per tilt (Import), Tomography 5 mdocs (imported in SerialEM mode) | 1 tilt series (28 tilts), 2.95 Å/px, 2.07 e⁻/Å² per tilt, Tomo5 |
+| EER frames | 32 fractions per frame, 7 frames per tilt → ~0.43 e⁻/Å² per frame | 32 fractions per frame, 23 frames per tilt → ~0.09 e⁻/Å² per frame |
+| Motion + CTF | WarpTools `fs_motion_and_ctf`, `ts_ctf` (set_flip); Warp from the cluster EM module, conda build of 2025-06-26, version string not logged | WarpTools 2.0.0dev41 (`warp_2.0.0dev41_aretomo1.0.0_cuda12.9.sif`); CTF band 30–10 Å |
+| Bad tilts | no tilt-filter job in the project | no tilt-filter stage |
+| Alignment | AreTomo2 via WarpTools, 6.2 Å/px, AlignZ 2000 Å, tilt-axis refinement 3 × 5 | AreTomo2 via WarpTools, 11.8 Å/px, AlignZ 1800 Å |
+| Reconstruction | WarpTools, 6.2 Å/px (bin 4), 1024 × 1024 × 512 | WarpTools, 11.8 Å/px (bin 4) |
+| Denoising | cryoCARE (Denoise job006/007), not used for template matching | none |
+| Template matching | pytom-match-pick 0.10.0 (`PyTom_tm.sif`), 550 Å sphere, non-spherical mask, C1, 90° (48 rotations), CTF + dose weighting, split 4:4:2 | pytom-match-pick 0.10.0, v1 "basic shape 550" sphere (11.8 Å/px, box 96, low-pass 45 Å), C1, 90° |
+| Candidates | FP = 1, ≤ 10 per tomogram, diameter 550 Å (External job009/010) | FP = 1, ≤ 1,500, diameter 550 Å → 1,028 |
+| Cleaning | manual: 24 picks in 21 tomograms (`ManualPicking/*_6.20Apx.star`, naming matches an ArtiaX export; not logged) → adjusted → 28 extracted (Extract job117) → **23** (job120) | none; 1,016 subtomograms all go into the average |
+| Subtomograms | RELION 5.0.0, box 768 / crop 448, bin 1, 1.55 Å/px | RELION 5.0.1, box 384 / crop 224, bin 1, 2.95 Å/px |
+| Average | Class3D K = 1, I1, Ø 550 Å, 7.5°, 15 iterations, ref = Reconstruct job118; **23 particles in 21 tomograms**; single-map estimate 19.3 Å | Class3D K = 1, I1, Ø 575 Å, 7.5°, T = 4, 15 iterations; **1,016 particles**; single-map estimate 8.69 Å |
+| RELION | 5.0.0 (module `relion/ja241203_5.0-140fb8f`) | 5.0.1 (`relion5.0_tomo.sif`) |
+
+Both resolutions are Class3D single-map estimates, not gold-standard FSC; on the 412 such an estimate read
+16.3 Å for a map whose gold-standard FSC cliff sits at ~35 Å.
+
+## 8. All averages in the PI's `Processing/412/` (surveyed 2026-10-22)
+
+Only two projects there contain subtomogram averages (the rest are crboost preprocessing runs, a segmentation
+test and an actin test):
+
+| | `try1` | `second_particle/old_version` |
+| --- | --- | --- |
+| Particle | ~50 nm (550 Å sphere template, Ø 550 Å) | ~33–41 nm (400 Å sphere template, Ø 410 → 330 Å) |
+| Data | 39 tomograms, SK_20251017_412 session | 1 tomogram (Position_32_3, 20260205 FCIso_unmilled2 session) |
+| Particles | 180 candidates → 30–32 after classification → 28–29 hand-cleaned → **23** final | 58 template-matching picks → **210** after manual picking (`Manual/`) |
+| Best map | Class3D job121 (single-map 19.3 Å); Refine3D job135 gold-standard 34.7 Å, final combine never written | Refine3D job030, I, gold-standard **19.84 Å**; PostProcess job031 19.84 Å (no sharpening) |
+| Pipeline | CryoBoost v1, RELION 5.0.0 | CryoBoost v1, RELION 5.0.0 |
+
+No set anywhere in the folder has ~50 particles; the nearest is the second particle's first 58 picks.
+
+## 9. Correction (2026-10-22): copia = the PI's `Processing/Copia/try2`
+
+`copia-tutorial-20261015-1551` (§7) is the EMPIAR tutorial set at 2.95 Å/px and is not the paper's copia.
+The paper's copia is the PI's `Copia/try2`:
+
+- one tomogram, Position_11_2, same session (20251017, Tomography 5.23 on TITAN52339720 per the mdoc header) as the ~50 nm capsid's `try1`; 1.55 Å/px,
+  39 tilts; template-matching tomograms at 6.2 Å/px
+- EER: 225 fractions per tilt movie (counted from the TIFF directories), 32 per frame → 7 frames per tilt
+  (Warp XML `Dimensions` z = 7, `EERGroupFrames` = 32); mdoc 3.2 e⁻/Å² per tilt → ~0.46 e⁻/Å² per frame,
+  ~0.014 per fraction. Same numbers for `try1`. The PI's imports used 3.0 (`try1`) and **4.8** (`try2`)
+  e⁻/Å² per tilt for this one session, and the 4.8 went into Warp's dose weighting for copia.
+- template: a solid 550 Å sphere (`template_box128.0_apix6.2_black.mrc`, measured edge-to-edge ~546 Å),
+  C1, 90°, 48 rotations, pytom-match-pick 0.10.0
+- particles (final lineage, traced from Refine3D job054): 124 candidates (FP = 1, Ø 550 Å) extracted (job008) → Class3D K = 1 (job011) → Refine3D job037 → CtfRefine job042 → re-extract job043 (124) → visual selection Select job046 (**120**) → Refine3D job047 → Class3D K = 3 job051 → Select job053 (**76**) → Refine3D job054. The ArtiaX-cleaned `ManuallyCleaned*.star` sets (105–106, 2025-10-21) are a side branch, not in this lineage. Old note:
+  2025-10-21) → **76** in the final Refine3D (job054, via Select job053), all from Position_11_2
+- RELION 5.0.0; Warp version not in the logs (the user gives 2.0.0dev29)

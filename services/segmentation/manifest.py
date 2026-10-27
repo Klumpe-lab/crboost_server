@@ -16,6 +16,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from services.shared_files import make_shared
 from services.tilt_series.models import ModelRef, SegmentationTomogramOutput, SegVolume
 
 MANIFEST_NAME = "segmentations.json"
@@ -73,6 +74,7 @@ def write_manifest(directory: Path, manifest: SegmentationManifest) -> Path:
     path = manifest_path(directory)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp_", suffix=".json")
     try:
+        make_shared(fd)
         with os.fdopen(fd, "w") as f:
             f.write(manifest.model_dump_json(indent=2))
         os.replace(tmp, path)

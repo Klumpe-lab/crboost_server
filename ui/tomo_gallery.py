@@ -20,11 +20,11 @@ all of them just re-render from the already-collected rows:
     versions that actually produced something appear.
   · **layers** — the pick layers, by species, and the segmentations, in one list
     (``ui/components/layer_menu.py``, the same list as the Journey's and the pick viewer's). Each
-    candidate-extract job's picks, and each species' registered lists, are a pick layer with its own
-    dot color (pickable); each segmentation (a Segment job's membranes, void, …) is a transparent fill
-    where p ≥ 0.5 over the central slab, in the feature's colour, under the dots. Every layer follows
-    the version: it shows over the versions of the reconstruction it was made on, so two picking arms
-    on two alignments each sit on their own. Switching a layer by hand sets it apart from that; a
+    candidate-extract job's picks, and each species' registered lists, are a pick layer, its dots in
+    the species' colour (the same everywhere); each segmentation (a Segment job's membranes, void, …)
+    is a transparent fill where p ≥ 0.5 over the central slab, in the feature's colour, under the dots.
+    Every layer follows the version: it shows over the versions of the reconstruction it was made on,
+    so two picking arms on two alignments each sit on their own. Switching a layer by hand sets it apart from that; a
     layer shown over another reconstruction is flagged. The same menu imports segmentations made
     outside crboost.
   · **size** — how many tiles (and tilt cards) fit across.
@@ -210,14 +210,14 @@ def _pick_layers(project_state, project_path: Path, geoms: list[TomoGeometry]) -
 
     A layer is one set of picks with one origin: each candidate-extract job's picks, and each
     species' registered lists (hand-picked, imported, merged) per reconstruction they trace back
-    to. Two picking arms of one species are two layers. ``layers`` =
+    to. Two picking arms of one species are two layers, in the species' one colour. ``layers`` =
     ``[{id, species_id, species, label, recon, recon_label, color, n}]`` in the render plan's
     species order. ``recon`` is the reconstruct instance the picks were made on, which the toolbar
     matches against the source on show; None when it is not known (a list picked in ArtiaX).
-    Each layer gets its own overlay color, so two layers on one tile can be told apart."""
+    Each layer is drawn in its species' colour (`species_color`), as the Journey and the roster draw it."""
     # The Journey's own readers, so the wall's dots and the viewer's dots can never
     # disagree about where a pick is.
-    from services.dashboard_data import SPECIES_OVERLAY_COLORS, job_dir_for, species_render_plan
+    from services.dashboard_data import job_dir_for, species_color, species_render_plan
     from services.models_base import PickSourceKind
     from ui.particles.pick_viewer import _read_pick_list_voxels, _read_picks_json
 
@@ -234,7 +234,6 @@ def _pick_layers(project_state, project_path: Path, geoms: list[TomoGeometry]) -
         entries = {ts: e for ts, e in entries.items() if e["n"]}
         if not entries:
             return
-        layer["color"] = SPECIES_OVERLAY_COLORS[len(layers) % len(SPECIES_OVERLAY_COLORS)]
         layer["n"] = sum(e["n"] for e in entries.values())
         layer["recon_label"] = _recon_label(layer["recon"])
         layers.append(layer)
@@ -242,8 +241,9 @@ def _pick_layers(project_state, project_path: Path, geoms: list[TomoGeometry]) -
             per_ts.setdefault(ts, []).append({"id": layer["id"], **e})
 
     lists_done: set[str] = set()
-    for species, species_id, ce in species_render_plan(project_state):
+    for idx, (species, species_id, ce) in enumerate(species_render_plan(project_state)):
         name = str(getattr(species, "name", "") or species_id or "")
+        color = species_color(species, idx)
         if ce is not None:
             iid, jm = ce
             recon = recon_of(project_state, iid, dirs)
@@ -265,7 +265,17 @@ def _pick_layers(project_state, project_path: Path, geoms: list[TomoGeometry]) -
                     "dims": [int(dims[0]), int(dims[1])] if dims else None,
                 }
             label = f"TM picks · {_recon_label(recon) or iid}"
-            _add({"id": iid, "species_id": species_id, "species": name or iid, "label": label, "recon": recon}, entries)
+            _add(
+                {
+                    "id": iid,
+                    "species_id": species_id,
+                    "species": name or iid,
+                    "label": label,
+                    "recon": recon,
+                    "color": color,
+                },
+                entries,
+            )
         if not species_id or species_id in lists_done:
             continue
         lists_done.add(species_id)
@@ -301,7 +311,17 @@ def _pick_layers(project_state, project_path: Path, geoms: list[TomoGeometry]) -
             entries = dict(_pmap(_list_entry, list(by_ts.items())))
             label = "pick lists" + (f" · {_recon_label(recon)}" if _recon_label(recon) else "")
             layer_id = f"lists:{species_id}:{recon or ''}"
-            _add({"id": layer_id, "species_id": species_id, "species": name, "label": label, "recon": recon}, entries)
+            _add(
+                {
+                    "id": layer_id,
+                    "species_id": species_id,
+                    "species": name,
+                    "label": label,
+                    "recon": recon,
+                    "color": color,
+                },
+                entries,
+            )
     # Two candidate-extract jobs of one species on one reconstruction: name them by instance.
     counts: dict[tuple, int] = {}
     for layer in layers:
@@ -1194,10 +1214,9 @@ class TomoGalleryPage:
     def _render_layer_list(self, source: str, row: dict | None = None) -> None:
         """The layers (`layer_menu.render_layer_list`) read against `source`: the pick layers, by species,
         and the segmentations. On the wall a count is a layer's picks, or the tomograms a segmentation
-        covers; for one tomogram (`row`, the zoom), the layers on it, with its picks of each and each
-        feature's share of its volume."""
+        covers; for one tomogram (`row`, the zoom), the layers on it, with its picks of each."""
         picks_n = {e["id"]: e["n"] for e in row["picks"]} if row is not None else None
-        fractions = {e["id"]: e["fraction"] for e in row["features"]} if row is not None else None
+        on_tomo = {e["id"] for e in row["features"]} if row is not None else None
         picks = [
             LayerRow(
                 id=layer["id"],
@@ -1207,25 +1226,17 @@ class TomoGalleryPage:
                 recon=layer["recon"],
                 recon_label=layer["recon_label"],
                 group=layer["species"],
-                on_color=lambda c, lid=layer["id"]: self._set_color(lid, c),
             )
             for layer in self.layers
             if picks_n is None or layer["id"] in picks_n
         ]
         features = fl.feature_rows(
             self.project_path,
-            [layer for layer in self.feature_layers if fractions is None or layer["id"] in fractions],
-            lambda layer: str(layer["n"]) if fractions is None else fl.fraction_text(fractions[layer["id"]]),
+            [layer for layer in self.feature_layers if on_tomo is None or layer["id"] in on_tomo],
+            lambda layer: str(layer["n"]) if on_tomo is None else "",
             self._layers_changed,
         )
         render_layer_list(self.project_path, picks, features, shows=self._shows(source), on_change=self._layers_changed)
-
-    def _set_color(self, layer_id: str, color: str) -> None:
-        layer = self._layer_by_id.get(layer_id)
-        if layer is None or layer["color"] == color:
-            return
-        layer["color"] = color
-        self._layers_changed()
 
     def _layers_changed(self) -> None:
         """A layer shown or hidden, a colour picked, the opacity switched."""
@@ -1805,12 +1816,7 @@ class TomoGalleryPage:
                     self._render_zoom_versions()
                 self._refs["zoom_caption"] = ui.label(src["caption"] if src else "").classes("cb-gal-zoom-src")
                 if row["picks"] or row["features"]:
-                    _zoom_section(
-                        "layers.svg",
-                        "Layers",
-                        "Beside each pick layer, its picks on this tomogram; beside each segmentation, its share of "
-                        "the volume: the mean probability over the whole tomogram.",
-                    )
+                    _zoom_section("layers.svg", "Layers", "Beside each pick layer, its picks on this tomogram.")
                     layers = ui.element("div").classes("cb-gal-zoom-list")
                     self._layer_menus["zoom"] = (layers, lambda: self._zoom_source)
                     with layers:

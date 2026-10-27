@@ -74,16 +74,36 @@ def ts_name_from_mdoc(mdoc_name: str) -> str:
     return name
 
 
-def duplicate_ts_names(mdoc_paths) -> dict[str, list[Path]]:
-    """Series names that more than one of `mdoc_paths` maps to, with the colliding mdocs.
+# Runs of characters a file name or a shell command would trip on, in a folder name.
+_UNSAFE_NAME_CHARS = re.compile(r"[^A-Za-z0-9_-]+")
+
+
+def folder_tag(folder) -> str:
+    """`folder`'s name as a series-name prefix (`20260820_B1G4_Tir_Env_mutant`), every run of
+    characters outside `[A-Za-z0-9_-]` (spaces, dots) turned into one `_`."""
+    return _UNSAFE_NAME_CHARS.sub("_", Path(folder).name)
+
+
+def import_ts_name(mdoc_path, *, by_folder: bool = False) -> str:
+    """The name a series imports under: `ts_name_from_mdoc`, led by `folder_tag` of the mdoc's
+    folder when `by_folder` — how one project holds several acquisition folders that each
+    restart SerialEM's `Position_N` names."""
+    path = Path(mdoc_path)
+    name = ts_name_from_mdoc(path.name)
+    return f"{folder_tag(path.parent)}_{name}" if by_folder else name
+
+
+def duplicate_ts_names(mdoc_paths, *, by_folder: bool = False) -> dict[str, list[Path]]:
+    """Series names (`import_ts_name`) that more than one of `mdoc_paths` maps to, with the
+    colliding mdocs.
 
     The import flattens every series into `mdoc/<prefix><ts_name>.mdoc`, so two folders
     that both hold `Position_1.mdoc` would overwrite each other; a non-empty result
-    means the selection cannot be imported as one project."""
+    means the selection cannot be imported as one project under those names."""
     by_name: dict[str, list[Path]] = {}
     for p in mdoc_paths:
         path = Path(p)
-        by_name.setdefault(ts_name_from_mdoc(path.name), []).append(path)
+        by_name.setdefault(import_ts_name(path, by_folder=by_folder), []).append(path)
     return {name: paths for name, paths in by_name.items() if len(paths) > 1}
 
 
@@ -94,35 +114,16 @@ def describe_duplicate_ts_names(duplicates: dict[str, list[Path]]) -> str:
     examples = ", ".join(sorted(duplicates)[:3]) + (", …" if len(duplicates) > 3 else "")
     return (
         f"{len(duplicates)} tilt-series names ({examples}) occur in more than one folder "
-        f"({', '.join(folders)}); one project holds each name once — import one folder per "
-        f"project, or deselect one of each pair"
+        f"({', '.join(folders)}); one project holds each name once — create a project per folder, "
+        f"or one project with each series named after its folder"
     )
 
 
 # AreTomo 1.0, the aligner in our Warp container, writes no IMOD `.tlt` for a tilt-series name
 # longer than this, and WarpTools then drops the series as unselected (docs/known_bugs.md #3).
 # Every 44-character name in the AGG412 projects aligned and no 45+ one did (2026-10-04).
+# Alignment runs a longer name under a short alias (drivers/ts_alignment.py `staged_ts_name`).
 ARETOMO_TS_NAME_MAX = 44
-
-
-def describe_long_ts_names(project_name: str, ts_names) -> str | None:
-    """Why `project_name` makes tilt-series names too long for AreTomo; None when all fit.
-
-    The import prefixes every series with the project name (`<project>_<series>`), so the
-    project name spends the budget of every series at once."""
-    longest = max((f"{project_name}_{n}" for n in ts_names), key=len, default="")
-    if len(longest) <= ARETOMO_TS_NAME_MAX:
-        return None
-    budget = ARETOMO_TS_NAME_MAX - (len(longest) - len(project_name))
-    fix = (
-        f"shorten the project name to {budget} characters or fewer"
-        if budget > 0
-        else "the series names alone are too long, so rename the mdocs"
-    )
-    return (
-        f"Tilt-series names would reach {len(longest)} characters, and AreTomo cannot align a name "
-        f"over {ARETOMO_TS_NAME_MAX} (docs/known_bugs.md #3): {fix}"
-    )
 
 
 _T_LINE_RE = re.compile(r"^\[T\s*=\s*(.*?)\]?$")

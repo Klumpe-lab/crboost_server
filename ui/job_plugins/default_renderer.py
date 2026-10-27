@@ -20,6 +20,7 @@ from ui.job_plugins._field_styles import (
     text_field,
     numeric_field,
     enum_field,
+    choice_row,
     toggle_field,
     path_row,
     is_enum_type,
@@ -99,65 +100,128 @@ def render_species_badge(job_model, project_path: Path | None, *, callbacks: dic
     render_species_line(species, on_open=species_opener(callbacks, species.id))
 
 
-def render_denoise_inheritance(job_model, project_path: Path | None, *, is_frozen: bool, save_handler: Callable):
-    """The denoiser row on denoise-predict.
+def render_denoise_inheritance(
+    job_model, project_path: Path | None, instance_id: str | None, *, is_frozen: bool, save_handler: Callable
+) -> Callable[[], None]:
+    """The Denoiser row on denoise-predict: which model the job runs, as one choice.
 
-    Normal case: the method and its deconv setting come from the denoise-train job that
-    produced the model — a chip, not a knob, because predict must run whatever the model
-    was trained as. But `model_path` also takes a manual path (an IsoNet tar from another
-    project, say), and then there is no train job to inherit from. Rather than pinning
-    those runs to the cryoCARE default with no way out, the row turns into a real select.
-    The driver's `_apply_inherited_method` no-ops on an unresolvable method, so the choice
-    made here survives to run time — and can still never contradict a train job that exists.
+    A cryoCARE or IsoNet model must run as it was trained, so each denoise-train job of the project is
+    one entry carrying its method and IsoNet deconv; choosing it wires the model input to that job. A
+    model file set by hand in Inputs has no train job behind it, so then cryoCARE and IsoNet are offered
+    for the user to say which it is. easymode runs its pretrained denoisers, with no train job and no
+    model input. The row shows what Inputs has wired and never picks for the user. Returns the row's
+    refresh, a no-op unless what it shows changed (an input chosen in Inputs, say).
     """
-    from services.models_base import DenoiseMethod
+    from services.models_base import DenoiseMethod, EasymodeDenoiser
+    from services.path_resolution_service import PathResolutionService, instance_override_key
+    from services.project_state import get_project_state_for
 
-    method = None
-    if project_path:
-        from services.project_state import get_project_state_for
+    box = ui.column().classes("w-full gap-0")
+    shown_key: list = [None]
 
-        # inherited_from_train returns (None, None) when it can't resolve — no except needed.
-        method, _ = job_model.inherited_from_train(get_project_state_for(project_path))
+    def state():
+        return get_project_state_for(project_path) if project_path else None
 
-    if method is None:
+    def is_manual() -> bool:
+        return (job_model.source_overrides or {}).get("model_path", "").startswith("manual:")
+
+    def choices() -> tuple[dict[str, str], str]:
+        st = state()
+        options: dict[str, str] = {}
+        for iid, jm in (st.jobs if st else {}).items():
+            if jm.job_type != JobType.DENOISE_TRAIN:
+                continue
+            method = DenoiseMethod(jm.denoise_method)
+            deconv = " (deconv)" if method == DenoiseMethod.ISONET and jm.isonet_deconv else ""
+            folder = (jm.relion_job_name or "").strip("/").rsplit("/", 1)[-1] or "not run yet"
+            options[f"train:{iid}"] = f"{method.value}{deconv} · model from {iid}, {folder}"
+        if is_manual():
+            for m in (DenoiseMethod.CRYOCARE, DenoiseMethod.ISONET):
+                options[f"manual:{m.value}"] = f"{m.value} · the model file set in Inputs"
+        options[DenoiseMethod.EASYMODE.value] = "easymode · pretrained, no train job"
+
+        if job_model.denoise_method == DenoiseMethod.EASYMODE:
+            shown = DenoiseMethod.EASYMODE.value
+        elif is_manual():
+            shown = f"manual:{DenoiseMethod(job_model.denoise_method).value}"
+        else:
+            source = PathResolutionService(st).source_of(instance_id, "model_path") if st and instance_id else None
+            shown = f"train:{source}" if source else ""
+        return options, shown
+
+    def pick(value: str) -> None:
+        kind, _, name = value.partition(":")
+        if value == DenoiseMethod.EASYMODE.value:
+            job_model.denoise_method = DenoiseMethod.EASYMODE
+        elif kind == "manual":
+            job_model.denoise_method = DenoiseMethod(name)
+        elif kind == "train":
+            train = state().jobs[name]
+            job_model.denoise_method = DenoiseMethod(train.denoise_method)
+            job_model.isonet_deconv = bool(train.isonet_deconv)
+            if job_model.source_overrides is None:
+                job_model.source_overrides = {}
+            job_model.source_overrides["model_path"] = instance_override_key(JobType.DENOISE_TRAIN, name)
+        save_handler()
+        refresh()
+
+    def build(options: dict[str, str], shown: str) -> None:
+        fields = type(job_model).model_fields
         with field_grid():
-            enum_field(
+            choice_row(
                 "Denoiser",
                 job_model,
                 "denoise_method",
-                DenoiseMethod,
+                options,
                 is_frozen=is_frozen,
                 save_handler=save_handler,
-                hint="No denoise-train job produced this model, so there is nothing to inherit from — "
-                "pick the denoiser the model at `model_path` was actually trained with. Add a "
-                "denoisetrain job and this becomes read-only again.",
+                value=shown,
+                hint="A trained model runs as it was trained: choose the denoise-train job that made it, and "
+                "Inputs reads its model. A model file set by hand in Inputs: say whether cryoCARE or IsoNet "
+                "trained it. easymode: its pretrained denoisers on the full reconstruction, no model input.",
+                on_change=pick,
             )
-            if job_model.denoise_method == DenoiseMethod.ISONET:
+            if shown == DenoiseMethod.EASYMODE.value:
+                enum_field(
+                    "easymode model",
+                    job_model,
+                    "easymode_denoiser",
+                    EasymodeDenoiser,
+                    is_frozen=is_frozen,
+                    save_handler=save_handler,
+                    hint=fields["easymode_denoiser"].description,
+                )
+                for attr in ("easymode_tta", "easymode_iter"):
+                    numeric_field(
+                        fields[attr].title,
+                        job_model,
+                        attr,
+                        is_frozen=is_frozen,
+                        save_handler=save_handler,
+                        hint=fields[attr].description,
+                    )
+            elif shown == f"manual:{DenoiseMethod.ISONET.value}":
                 toggle_field(
                     "IsoNet deconv",
                     job_model,
                     "isonet_deconv",
                     is_frozen=is_frozen,
                     save_handler=save_handler,
-                    hint=type(job_model).model_fields["isonet_deconv"].description,
+                    hint=fields["isonet_deconv"].description,
                 )
-        return
 
-    with ui.row().classes("items-center gap-2").style("margin-bottom: 8px;"):
-        ui.label("Denoiser").style(
-            f"{SANS} font-size: 9px; font-weight: 700; color: {CLR_SUBLABEL}; "
-            "letter-spacing: 0.06em; text-transform: uppercase;"
-        )
-        with (
-            ui.element("div")
-            .style(
-                "display: inline-flex; align-items: center; background: var(--cb-hover, #e6eff8); "
-                "border-radius: 999px; padding: 1px 8px;"
-            )
-            .tooltip("Inherited from the denoise-train job — set the method there; predict follows it automatically.")
-        ):
-            ui.label(method.value).style("font-size: 10px; color: var(--cb-head-ink, #12324f); font-weight: 600;")
-        ui.label("inherited from denoise-train").style(f"{SANS} font-size: 9px; color: {CLR_SUBLABEL};")
+    def refresh() -> None:
+        options, shown = choices()
+        key = (tuple(options.items()), shown)
+        if key == shown_key[0] or box.is_deleted:
+            return
+        shown_key[0] = key
+        box.clear()
+        with box:
+            build(options, shown)
+
+    refresh()
+    return refresh
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -269,7 +333,8 @@ def render_default_params(
 def render_default_params_card(
     job_type, job_model, is_frozen: bool, save_handler: Callable, exclude: set[str] | None = None, **_ctx
 ):
-    """render_default_params with an optional species badge prefix."""
+    """render_default_params with an optional species badge prefix. Returns the denoiser row's refresh on
+    denoise-predict, None elsewhere."""
     ui_mgr = _ctx.get("ui_mgr")
     # A Path, not str: get_project_state_for() calls .resolve() on it. The old str
     # here made both helpers below raise AttributeError inside their (since removed)
@@ -279,11 +344,15 @@ def render_default_params_card(
 
     render_species_badge(job_model, project_path, callbacks=_ctx.get("callbacks"))
     render_config_preamble(job_model)
+    refresh = None
     if job_type == JobType.DENOISE_PREDICT:
-        render_denoise_inheritance(job_model, project_path, is_frozen=is_frozen, save_handler=save_handler)
+        refresh = render_denoise_inheritance(
+            job_model, project_path, _ctx.get("instance_id"), is_frozen=is_frozen, save_handler=save_handler
+        )
         # The denoiser row above owns these; the generic grid must not render them twice.
         exclude = (exclude or set()) | getattr(job_model, "INHERITANCE_FIELDS", set())
     render_default_params(job_type, job_model, is_frozen, save_handler, exclude=exclude)
+    return refresh
 
 
 def _label_for(job_model, name: str) -> str:

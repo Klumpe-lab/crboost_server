@@ -13,7 +13,7 @@ CRBOOST_TRACE_STALLS=1 it is 250 ms, and as a stall passes it the thread also lo
 thread is, plus any other thread that is busy rather than waiting (a thread holding the GIL stalls
 the loop from outside it): the stacks for fixing one.
 
-One per process, started at app startup (main.py). Its lines go to the log file; the console shows
+One per process, started at app startup (server_app.py). Its lines go to the log file; the console shows
 them only with CRBOOST_TRACE_STALLS=1 (services/log_setup.py).
 """
 

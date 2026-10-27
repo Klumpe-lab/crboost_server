@@ -13,7 +13,7 @@ from collections.abc import Callable
 from nicegui import ui, app
 
 from backend import CryoBoostBackend
-from services.configs.mdoc_service import describe_duplicate_ts_names, describe_long_ts_names
+from services.configs.mdoc_service import describe_duplicate_ts_names
 from services.configs.user_prefs_service import get_prefs_service
 
 from ui.components.buttons import house_button, icon_button
@@ -22,6 +22,7 @@ from ui.ui_state import get_ui_state_manager
 from ui.local_file_picker import local_file_picker
 from ui.glob_directory_input import GlobDirectoryInput
 from ui.dataset_overview_panel import build_dataset_overview_panel, build_dry_run_summary
+from ui.dataset_split_panel import SPLIT_ONE_PROJECT, SPLIT_PER_FOLDER, FolderSplit, FolderSplitPanel
 from ui.projects_overview import ProjectsOverview
 from ui.job_plugins._field_styles import PANEL_HEAD_STYLE, PANEL_STYLE, PANEL_TITLE_STYLE
 from ui.styles import MONO, SANS as FONT
@@ -85,6 +86,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         "save_timer": None,
         "dataset_overview_container": None,
         "current_dataset_overview": None,
+        "folder_split": None,  # FolderSplit when the overview's folders reuse series names
+        "folder_split_panel": None,
         "overview_glob": None,  # mdocs glob the displayed overview was parsed for
         "parse_gen": 0,  # bumps per dataset scan; stale scans never touch the DOM
         "mdocs_separate": False,
@@ -320,7 +323,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         sync_state_from_inputs()
         di = ui_mgr.data_import
         missing = []
-        if not (di.project_name and di.project_name.strip()):
+        if not (di.project_name and di.project_name.strip()) and not _per_folder():
             missing.append("Project Name")
         if not (di.project_base_path and di.project_base_path.strip()):
             missing.append("Project Path")
@@ -342,8 +345,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             missing.append("Valid Mdocs")
         if _duplicate_names_message():
             missing.append(_UNIQUE_NAMES)
-        if _long_names_message():
-            missing.append(_SHORT_NAME)
+        if _folder_names_message():
+            missing.append(_FOLDER_NAMES)
         # The dose row is only in play when the mdocs record no dose; then it must hold a
         # number (the estimate prefills it, the user may clear it — never a silent 3.0).
         if _dose_row_needed() and di.dose_per_tilt_override is None:
@@ -352,23 +355,51 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
 
     _UNIQUE_NAMES = "Unique tilt-series names"
 
-    def _duplicate_names_message() -> str | None:
-        """Why Create is blocked when selected series from different folders share a name
-        (the import would keep one of each); None when the selection is clean."""
+    def _folder_split() -> FolderSplit | None:
+        """The split question of the overview in the form, when its folders reuse series names."""
         ov = _current_overview()
-        duplicates = ov.duplicate_selected_names() if ov is not None else {}
+        split = local_refs.get("folder_split")
+        return split if ov is not None and split is not None and split.overview is ov else None
+
+    def _per_folder() -> bool:
+        split = _folder_split()
+        return split is not None and split.choice == SPLIT_PER_FOLDER
+
+    def _duplicate_names_message() -> str | None:
+        """Why Create is blocked when selected series share a name on import (the import
+        would keep one of each); None when the selection is clean. While the folders' split
+        question is open, the answer is what is missing."""
+        ov = _current_overview()
+        if ov is None:
+            return None
+        split = _folder_split()
+        if split is not None and split.choice is None:
+            return (
+                "The folders reuse series names: choose a project per folder, or one project with each "
+                "series named after its folder"
+            )
+        if split is not None and split.choice == SPLIT_PER_FOLDER:
+            duplicates = {k: v for f in split.folders for k, v in f.duplicate_selected_names().items()}
+        else:
+            duplicates = ov.duplicate_selected_names(by_folder=split is not None)
         return describe_duplicate_ts_names(duplicates) if duplicates else None
 
-    _SHORT_NAME = "Shorter project name"
+    _FOLDER_NAMES = "Project name per folder"
 
-    def _long_names_message() -> str | None:
-        """Why Create is blocked when `<project name>_<series name>` would be longer than
-        AreTomo can align (docs/known_bugs.md #3); None when every selected series fits."""
-        ov = _current_overview()
-        name = (ui_mgr.data_import.project_name or "").strip()
-        if ov is None or not name:
+    def _folder_names_message() -> str | None:
+        """Why Create is blocked when a project per folder is chosen and a folder with
+        selected series has no name, or two share one; None otherwise."""
+        if not _per_folder():
             return None
-        return describe_long_ts_names(name, (ts.ts_label for ts in ov.get_selected_tilt_series()))
+        split = _folder_split()
+        names = [split.names.get(f.source_directory, "") for f in split.folders_to_create()]
+        if not names:
+            return "No series selected in any folder"
+        if not all(names):
+            return "Every folder with selected series needs a project name"
+        if len(set(names)) < len(names):
+            return "Two folders have the same project name"
+        return None
 
     def _dose_row_needed() -> bool:
         ov = _current_overview()
@@ -380,7 +411,6 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
     # itself the moment it stops being missing.
     _FIELD_FOR_REQUIREMENT = {
         "Project Name": "project_name_input",
-        _SHORT_NAME: "project_name_input",
         "Project Path": "project_path_input",
         "Data Path": "movies_input",
         "Valid Frames": "movies_input",
@@ -429,15 +459,17 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             return
         btn.enable()
         btn.classes(remove="opacity-50 cursor-not-allowed")
+        n_split = len(_folder_split().folders_to_create()) if _per_folder() else 0
+        btn.set_text(f"Create {n_split} projects" if n_split > 1 else "Create project")
         if not status_label:
             return
         duplicates_msg = _duplicate_names_message() if _UNIQUE_NAMES in missing else None
-        long_names_msg = _long_names_message() if _SHORT_NAME in missing else None
+        folder_names_msg = _folder_names_message() if _FOLDER_NAMES in missing else None
         if duplicates_msg:
             status_label.set_text(duplicates_msg)
             status_label.style(f"{FONT} font-size: 10px; color: {CLR_ERROR};")
-        elif long_names_msg:
-            status_label.set_text(long_names_msg)
+        elif folder_names_msg:
+            status_label.set_text(folder_names_msg)
             status_label.style(f"{FONT} font-size: 10px; color: {CLR_ERROR};")
         elif missing:
             status_label.set_text("Enter details to begin…")
@@ -588,6 +620,9 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
     def on_project_name_change(e):
         value = e.value if hasattr(e, "value") else str(e) if e else ""
         ui_mgr.update_data_import(project_name=value or "")
+        panel = local_refs["folder_split_panel"]
+        if _folder_split() is not None and panel is not None:
+            panel.refresh()
         update_create_button_state()
 
     def on_project_path_change(value: str):
@@ -718,46 +753,14 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
 
             save_selections(di.mdocs_glob, overview)
 
-        # Collect import data from the already-parsed dataset overview
-        selected_mdoc_paths = None
-        import_summary = None
-        detected_params = None
-        if overview and not is_dataless():
-            selected_ts = overview.get_selected_tilt_series()
-            selected_mdoc_paths = [str(ts.mdoc_path) for ts in selected_ts]
-            # Scalar counts only — per-position/per-TS details and per-tilt mdoc
-            # stats live in the TiltSeriesRegistry, not in a ProjectState mirror.
-            import_summary = {
-                "total_positions": len(overview.positions),
-                "selected_positions": sum(1 for p in overview.positions if p.selected),
-                "total_tilt_series": overview.total_tilt_series,
-                "selected_tilt_series": overview.selected_tilt_series,
-                "source_directory": overview.source_directory or "",
-                "frame_extension": overview.frame_extension or "",
-            }
-            sel_summary = overview.selected_acquisition_summary()
-            detected_params = {}
-            if sel_summary.pixel_sizes:
-                detected_params["pixel_size_angstrom"] = sel_summary.pixel_sizes[0]
-            if sel_summary.voltages:
-                detected_params["acceleration_voltage_kv"] = sel_summary.voltages[0]
-            # Dose with its provenance: the mdoc's value, else the row —
-            # the scan's estimate or the user's number. Never the model default.
-            if sel_summary.dose_missing > 0:
-                if di.dose_per_tilt_override is not None:
-                    detected_params["dose_per_tilt"] = di.dose_per_tilt_override
-                    detected_params["dose_per_tilt_source"] = di.dose_per_tilt_source or "estimated"
-            elif sel_summary.doses:
-                detected_params["dose_per_tilt"] = sel_summary.doses[0]
-                detected_params["dose_per_tilt_source"] = "mdoc"
-            if sel_summary.tilt_axes:
-                detected_params["tilt_axis_degrees"] = sel_summary.tilt_axes[0]
-            if overview.acquisition_software:
-                detected_params["acquisition_software"] = overview.acquisition_software
-            if overview.detector_dimensions:
-                detected_params["detector_dimensions"] = overview.detector_dimensions
-            if di.gain_reference_path:
-                detected_params["gain_reference_path"] = di.gain_reference_path
+        # What to create: one project from the whole overview, or — when the folders reuse
+        # series names and a project per folder was chosen — one per folder with a selection.
+        split = _folder_split()
+        if _per_folder():
+            plans = [(split.names[f.source_directory], f) for f in split.folders_to_create()]
+        else:
+            plans = [(di.project_name, overview)]
+        ts_names_by_folder = split is not None and split.choice == SPLIT_ONE_PROJECT
 
         # Show progress overlay in the dataset overview area. The import thread reports
         # short status strings ("splitting stack 2/4") into a plain dict; a ui.timer
@@ -770,7 +773,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             with progress_container:
                 with ui.row().classes("w-full justify-center items-center py-6"):
                     ui.spinner("dots", size="md").style(f"color: {CLR_ACCENT};")
-                    ui.label("Creating project — importing data and initializing...").style(
+                    what = "project" if len(plans) == 1 else f"{len(plans)} projects"
+                    ui.label(f"Creating {what} — importing data and initializing...").style(
                         f"{FONT} font-size: {SZ_BODY}; color: {CLR_LABEL}; margin-left: 8px;"
                     )
                     create_step_lbl = ui.label("").style(
@@ -778,30 +782,46 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                     )
                 progress_timer = ui.timer(0.5, lambda: create_step_lbl.set_text(create_progress["text"]))
 
-        def _on_create_progress(text: str):
-            create_progress["text"] = text
-
         if btn:
             btn.props("loading")
             btn.disable()
 
+        created: list[tuple[str, Path]] = []
         try:
-            result = await backend.create_project_and_scheme(
-                project_name=di.project_name,
-                project_base_path=di.project_base_path,
-                selected_jobs=[j.value for j in ui_mgr.selected_jobs],
-                movies_glob=di.movies_glob,
-                mdocs_glob=di.mdocs_glob,
-                selected_mdoc_paths=selected_mdoc_paths,
-                import_summary=import_summary,
-                detected_params=detected_params,
-                shared=di.is_shared,
-                progress_cb=_on_create_progress,
-            )
-            if result.get("success"):
-                project_path = Path(result["project_path"])
-                scheme_name = f"scheme_{di.project_name}"
-                ui_mgr.set_project_created(project_path, scheme_name)
+            for i, (name, plan_overview) in enumerate(plans):
+                step = f"{name} ({i + 1}/{len(plans)}): " if len(plans) > 1 else ""
+
+                def _on_create_progress(text: str, step=step):
+                    create_progress["text"] = step + text
+
+                selected_mdoc_paths, import_summary, detected_params = (
+                    _import_payload(plan_overview) if plan_overview and not is_dataless() else (None, None, None)
+                )
+                result = await backend.create_project_and_scheme(
+                    project_name=name,
+                    project_base_path=di.project_base_path,
+                    selected_jobs=[j.value for j in ui_mgr.selected_jobs],
+                    movies_glob=di.movies_glob,
+                    mdocs_glob=di.mdocs_glob,
+                    selected_mdoc_paths=selected_mdoc_paths,
+                    import_summary=import_summary,
+                    detected_params=detected_params,
+                    shared=di.is_shared,
+                    progress_cb=_on_create_progress,
+                    ts_names_by_folder=ts_names_by_folder,
+                )
+                if not result.get("success"):
+                    done = f" ({', '.join(n for n, _ in created)} created)" if created else ""
+                    ui.notify(f"Failed: {name}: {result.get('error')}{done}", type="negative", timeout=15000)
+                    break
+                created.append((name, Path(result["project_path"])))
+                prefs_service.prefs.add_recent_root(di.project_base_path, label=name)
+                prefs_service.prefs.add_recent_project(str(result["project_path"]), label=name)
+                prefs_service.save_to_app_storage(app.storage.user)
+
+            if len(created) == len(plans) == 1:
+                name, project_path = created[0]
+                ui_mgr.set_project_created(project_path, f"scheme_{name}")
 
                 # Show success state before navigating
                 if progress_container:
@@ -809,23 +829,28 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                     with progress_container:
                         with ui.row().classes("w-full justify-center items-center py-6"):
                             ui.icon("check_circle", size="md").style(f"color: {CLR_SUCCESS};")
-                            ui.label(f"Project '{di.project_name}' created — opening workspace...").style(
+                            ui.label(f"Project '{name}' created — opening workspace...").style(
                                 f"{FONT} font-size: {SZ_BODY}; color: {CLR_SUCCESS}; margin-left: 8px;"
                             )
-
-                prefs_service.prefs.add_recent_root(di.project_base_path, label=di.project_name)
-                prefs_service.prefs.add_recent_project(str(project_path), label=di.project_name)
-                prefs_service.save_to_app_storage(app.storage.user)
                 await asyncio.sleep(0.8)
                 # Navigate via JS — the NiceGUI slot context may be stale after the sleep
                 ui.run_javascript('window.location.href = "/workspace"')
                 return
-            else:
-                ui.notify(f"Failed: {result.get('error')}", type="negative")
+            if len(created) == len(plans):
+                # Several projects: none is "the" project to open; the roster shows them all.
+                if progress_container:
+                    progress_container.clear()
+                    with progress_container:
+                        with ui.row().classes("w-full justify-center items-center py-6"):
+                            ui.icon("check_circle", size="md").style(f"color: {CLR_SUCCESS};")
+                            ui.label(f"Created {', '.join(n for n, _ in created)}").style(
+                                f"{FONT} font-size: {SZ_BODY}; color: {CLR_SUCCESS}; margin-left: 8px;"
+                            )
+                await scan_and_display_projects(di.project_base_path)
+                show_view("overview")
+                return
         except Exception as e:
-            import traceback
-
-            traceback.print_exc()
+            logger.exception("Creating project failed")
             try:
                 ui.notify(f"Error creating project: {e}", type="negative")
             except RuntimeError:
@@ -839,6 +864,49 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                 update_locking_state()
             except RuntimeError:
                 pass
+        # Not everything was created: the form is still the way to fix it, so the
+        # overview (and its selection) comes back.
+        if overview is not None and _current_overview() is overview and progress_container is not None:
+            _render_overview(overview, restored=False)
+
+    def _import_payload(overview) -> tuple[list[str], dict, dict]:
+        """(selected mdoc paths, import summary, detected params) of `overview`'s selection."""
+        di = ui_mgr.data_import
+        selected_mdoc_paths = [str(ts.mdoc_path) for ts in overview.get_selected_tilt_series()]
+        # Scalar counts only — per-position/per-TS details and per-tilt mdoc
+        # stats live in the TiltSeriesRegistry, not in a ProjectState mirror.
+        import_summary = {
+            "total_positions": len(overview.positions),
+            "selected_positions": sum(1 for p in overview.positions if any(ts.selected for ts in p.tilt_series)),
+            "total_tilt_series": overview.total_tilt_series,
+            "selected_tilt_series": overview.selected_tilt_series,
+            "source_directory": overview.source_directory or "",
+            "frame_extension": overview.frame_extension or "",
+        }
+        sel_summary = overview.selected_acquisition_summary()
+        detected_params = {}
+        if sel_summary.pixel_sizes:
+            detected_params["pixel_size_angstrom"] = sel_summary.pixel_sizes[0]
+        if sel_summary.voltages:
+            detected_params["acceleration_voltage_kv"] = sel_summary.voltages[0]
+        # Dose with its provenance: the mdoc's value, else the row —
+        # the scan's estimate or the user's number. Never the model default.
+        if sel_summary.dose_missing > 0:
+            if di.dose_per_tilt_override is not None:
+                detected_params["dose_per_tilt"] = di.dose_per_tilt_override
+                detected_params["dose_per_tilt_source"] = di.dose_per_tilt_source or "estimated"
+        elif sel_summary.doses:
+            detected_params["dose_per_tilt"] = sel_summary.doses[0]
+            detected_params["dose_per_tilt_source"] = "mdoc"
+        if sel_summary.tilt_axes:
+            detected_params["tilt_axis_degrees"] = sel_summary.tilt_axes[0]
+        if overview.acquisition_software:
+            detected_params["acquisition_software"] = overview.acquisition_software
+        if overview.detector_dimensions:
+            detected_params["detector_dimensions"] = overview.detector_dimensions
+        if di.gain_reference_path:
+            detected_params["gain_reference_path"] = di.gain_reference_path
+        return selected_mdoc_paths, import_summary, detected_params
 
     async def handle_load_project_click():
         start = ui_mgr.data_import.project_base_path or "~"
@@ -1111,7 +1179,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             local_refs["parse_progress_timer"] = ui.timer(0.15, _tick)
 
         try:
-            from services.configs.dataset_selection_cache import apply_selections, save_selections
+            from services.configs.dataset_selection_cache import apply_selections
 
             overview = await backend.parse_dataset_overview(mdocs_glob, frames_dir, progress_cb=_on_progress)
             if gen != local_refs["parse_gen"]:
@@ -1121,33 +1189,11 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
 
             local_refs["current_dataset_overview"] = overview
             local_refs["overview_glob"] = mdocs_glob
+            # Folders that reuse series names (one SerialEM session each) are a question for
+            # the user, asked in place of the overview; a rescan asks it afresh.
+            local_refs["folder_split"] = FolderSplit(overview) if overview.folder_name_collisions() else None
             _stop_parse_timer()
-            container.clear()
-            # One panel: the overview with its title, then the selection's save action under it.
-            with container, ui.column().classes("w-full").style(f"gap: 6px; {PANEL_STYLE}"):
-
-                def _on_selection_change():
-                    _refresh_dose_row()
-                    update_create_button_state()
-
-                build_dataset_overview_panel(overview, on_change=_on_selection_change)
-
-                with ui.row().classes("w-full items-center justify-between"):
-                    if restored:
-                        ui.label("Restored saved selection").style(
-                            f"{FONT} font-size: 9px; color: {CLR_SUCCESS}; font-style: italic;"
-                        )
-                    else:
-                        ui.element("div")  # spacer
-
-                    def _do_save_selection():
-                        ov = local_refs.get("current_dataset_overview")
-                        mg = ui_mgr.data_import.mdocs_glob
-                        if ov and mg:
-                            save_selections(mg, ov)
-                            ui.notify("Selection saved", type="positive")
-
-                    house_button("Save selection", _do_save_selection)
+            _render_overview(overview, restored)
             _apply_overview_to_fields(overview)
         except Exception as e:
             logger.exception("Dataset parsing failed for %s", mdocs_glob)
@@ -1158,6 +1204,54 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             local_refs["current_dataset_overview"] = None
             with container:
                 ui.label(f"Dataset scan failed: {e}").style(f"{FONT} font-size: 9px; color: {CLR_ERROR};")
+
+    def _render_overview(overview, restored: bool) -> None:
+        """The scanned overview into its container: one panel with the selection's save action
+        under it, or — when its folders reuse series names — the split question with one
+        overview per folder."""
+        from services.configs.dataset_selection_cache import save_selections
+
+        container = local_refs["dataset_overview_container"]
+        container.clear()
+
+        def _on_selection_change():
+            _refresh_dose_row()
+            panel = local_refs["folder_split_panel"]
+            if _folder_split() is not None and panel is not None:
+                panel.refresh()
+            update_create_button_state()
+
+        def _save_row():
+            with ui.row().classes("w-full items-center justify-between"):
+                if restored:
+                    ui.label("Restored saved selection").style(
+                        f"{FONT} font-size: 9px; color: {CLR_SUCCESS}; font-style: italic;"
+                    )
+                else:
+                    ui.element("div")  # spacer
+
+                def _do_save_selection():
+                    ov = local_refs.get("current_dataset_overview")
+                    mg = ui_mgr.data_import.mdocs_glob
+                    if ov and mg:
+                        save_selections(mg, ov)
+                        ui.notify("Selection saved", type="positive")
+
+                house_button("Save selection", _do_save_selection)
+
+        split = _folder_split()
+        if split is not None:
+            with container, ui.column().classes("w-full").style("gap: 10px;"):
+                local_refs["folder_split_panel"] = FolderSplitPanel(
+                    split, project_name=lambda: ui_mgr.data_import.project_name or "", on_change=_on_selection_change
+                )
+                _save_row()
+            return
+        local_refs["folder_split_panel"] = None
+        # One panel: the overview with its title, then the selection's save action under it.
+        with container, ui.column().classes("w-full").style(f"gap: 6px; {PANEL_STYLE}"):
+            build_dataset_overview_panel(overview, on_change=_on_selection_change)
+            _save_row()
 
     async def show_dry_run_dialog():
         overview = local_refs.get("current_dataset_overview")

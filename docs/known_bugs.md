@@ -85,10 +85,12 @@ description and the UI label in GUI terms (order + 1 at oversampling 1); correct
 ## 3. Long tilt-series names break AreTomo's IMOD output; Warp drops the series and the pipeline runs on unaligned angles
 
 **Status:** WORKED AROUND 2026-10-04, NOT RUN. Alignment runs a name over 44 characters under a short alias
-(`drivers/ts_alignment.py` `staged_ts_name`, `rename_alias_files`). Project creation refuses names that would need
-it: the landing form and the protocol create dialog check `describe_long_ts_names` against
-`ARETOMO_TS_NAME_MAX = 44` (`services/configs/mdoc_service.py`). Earlier: driver guard + creation warning
-2026-09-09 (`warp_marked_unselected`). The AreTomo bug itself is not ours.
+(`drivers/ts_alignment.py` `staged_ts_name`, `rename_alias_files`, limit `ARETOMO_TS_NAME_MAX = 44` in
+`services/configs/mdoc_service.py`). Project creation no longer refuses long names (2026-10-27; it did from
+2026-10-04, `describe_long_ts_names`): the alias carries them. The first project that relies on it is the check —
+its alignment `task_*.out` says `runs as '<alias>'`, and `warp_tiltseries/<ts>.xml` must not carry
+`UnselectManual="True"`. Earlier: driver guard + creation warning 2026-09-09 (`warp_marked_unselected`). The AreTomo
+bug itself is not ours.
 **Seen:** `/groups/klumpe/crboost_data/copia-empiar12580-tutorial-20260909-1414` (2026-09-09), tilt-series name
 `copia-empiar12580-tutorial-20260909-1414_Position_1` (51 chars). The 42-char name of
 `copia-empiar12580-20260908-1447_Position_1` works.

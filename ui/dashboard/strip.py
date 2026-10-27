@@ -1,15 +1,14 @@
-"""Journey dashboard — the tomogram header line + the tomogram switcher.
+"""Journey — the tilt series it shows, on the view's title line, and the switcher behind it.
 
-The Journey's header is one thin line about the selected tilt series: its position
-label and index (``Pos 3 · Beam 2``, ``3 / 14``), the four preparation stages as
-labelled status dots, and every species' pick count in it. The line is clickable: it
-drops down a table of every tilt series in the project (the same facts per row, plus
-project-wide pick totals) to switch the journey to another one. The overview lives in
-that dropdown — it is not on screen while a single tomogram is being inspected.
+The title line names the selected tilt series by its position, spelled out (``Stage position 3 ·
+Beam position 2``), and where it sits among them (``3 / 14``). A click on the name drops down every
+tilt series in the project: a search field, then one line per tilt series, grouped by stage
+position, with every species' pick count in it, and the totals at the foot. The ⓘ (its files and
+pick counts) and the exclude switch go with the title line's tools.
 
 Pure presentation over ``services.dashboard_data``'s collectors — no new disk reads, and no
-back-import into ``tomo_dashboard_dialog`` (the ⓘ info popover arrives as a callback,
-keeping the package DAG one-directional).
+back-import into ``tomo_dashboard_dialog`` (the ⓘ info popover arrives as a callback, keeping the
+package DAG one-directional).
 """
 
 from __future__ import annotations
@@ -18,9 +17,9 @@ from collections.abc import Callable
 
 from nicegui import ui
 
-from services.dashboard_data import PREP_STAGES, position_label
+from services.dashboard_data import spelled_position
 
-# status → human word, for dot tooltips.
+# status → human word, for the pick-count tooltips.
 _STATUS_WORD = {
     "ok": "done",
     "fail": "failed",
@@ -31,8 +30,39 @@ _STATUS_WORD = {
     "skip": "skipped",
 }
 
-# Full words for the four preparation stages — the header has room for them.
-_STAGE_WORD = {"fs_ctf": "Motion & CTF", "align": "Alignment", "ctf": "CTF", "recon": "Reconstruction"}
+# The search field filters the rows in the browser: every word typed must be in a row's
+# `data-q` (its name and its position, both ways of writing it); a group with no row left hides.
+_FILTER_JS = """(e) => {
+    const box = e.target.closest('.cb-ts-menu');
+    if (!box) return;
+    const words = e.target.value.toLowerCase().split(/\\s+/).filter(Boolean);
+    for (const group of box.querySelectorAll('.cb-ts-group')) {
+        let any = false;
+        for (const row of group.querySelectorAll('.cb-ts-row[data-q]')) {
+            const hit = words.every((w) => row.dataset.q.includes(w));
+            row.style.display = hit ? '' : 'none';
+            any = any || hit;
+        }
+        group.style.display = any ? '' : 'none';
+    }
+}"""
+# Enter takes the first tilt series left.
+_ENTER_JS = """(e) => {
+    if (e.key !== 'Enter') return;
+    const box = e.target.closest('.cb-ts-menu');
+    const row = box && [...box.querySelectorAll('.cb-ts-row[data-q]')].find((r) => r.offsetParent !== null);
+    if (row) row.click();
+}"""
+
+
+def _on_show_js(search_id: int) -> str:
+    """The dropdown opens with an empty search field, the cursor in it and the selected row in view."""
+    return (
+        f"() => {{ const i = getHtmlElement({search_id}); if (!i) return; "
+        "i.value = ''; i.dispatchEvent(new Event('input')); i.focus(); "
+        "const sel = i.closest('.cb-ts-menu').querySelector('.cb-ts-row.selected'); "
+        "if (sel) sel.scrollIntoView({block: 'nearest'}); }"
+    )
 
 
 def _aggregate_species(species_journey: dict, ts_names: list) -> list[dict]:
@@ -79,18 +109,8 @@ def _pick_tooltip(s: dict) -> str:
     return f"{s['label']} — picking: {pk} ({npart}); extraction: {sub}"
 
 
-def _prep_dots(jr: dict, *, labelled: bool) -> None:
-    for key, _slabel, _jt in PREP_STAGES:
-        st = jr.get(key, "pending")
-        word = _STAGE_WORD.get(key, _slabel)
-        with ui.element("div").classes("cb-jstage").tooltip(f"{word}: {_STATUS_WORD.get(st, st)}"):
-            ui.element("div").classes(f"cb-jdot {st}")
-            if labelled:
-                ui.label(word).classes("cb-jstage-name")
-
-
 def _species_count(s: dict | None, sp: dict) -> None:
-    """One species cell: swatch · count (· kept after curation)."""
+    """One species cell: count (· kept after curation)."""
     if s is None:
         with ui.element("div").classes("cb-jsp pending").tooltip(f"{sp['label']}: not in this tilt series"):
             ui.label("—").classes("cb-jsp-n")
@@ -103,10 +123,26 @@ def _species_count(s: dict | None, sp: dict) -> None:
             ui.label(f"{fc} kept").classes("cb-jsp-kept").tooltip(f"{fc} kept after curation")
 
 
+def _ordered(ts_names: list) -> list[str]:
+    """By stage position, then beam; names without a position after them, by name."""
+
+    def key(ts: str) -> tuple:
+        spelled = spelled_position(ts)
+        return (0, spelled[2], ts) if spelled else (1, (0, 0), ts)
+
+    return sorted(ts_names, key=key)
+
+
+def _ts_title(ts: str) -> str:
+    """The tilt series as the title line names it: its position spelled out, else its name."""
+    spelled = spelled_position(ts)
+    return f"{spelled[0]} · {spelled[1]}" if spelled else ts
+
+
 def build_strip(
-    container,
+    lead,
+    tools,
     *,
-    journey: dict,
     species_journey: dict,
     ts_names: list,
     selected_ts: str | None,
@@ -116,63 +152,48 @@ def build_strip(
     excluded_ids: set | None = None,
     on_toggle_exclude: Callable[[str], object] | None = None,
 ) -> dict:
-    """Build the header line for ``selected_ts`` into ``container`` (with the
-    tomogram-switcher dropdown behind it); return ``{ts: row element}`` of the
-    dropdown so the caller can tell which tilt series have a row.
+    """Build the selected tilt series' name (with the switcher behind it) into ``lead`` and its ⓘ and
+    exclude switch into ``tools``; return ``{ts: row element}`` of the switcher, so the caller can
+    tell which tilt series have a row.
 
-    ``on_select(ts)`` is the row-click handler; ``info_popover(ts, species,
-    recon_mrc)`` (optional) renders the ⓘ file-paths popover — passed in so this
-    module never imports the shell.
+    ``on_select(ts)`` is the row-click handler; ``info_popover(ts, species, recon_mrc)`` (optional)
+    renders the ⓘ popover — passed in so this module never imports the shell.
     """
     species = _aggregate_species(species_journey, ts_names)
     excluded = excluded_ids or set()
+    order = _ordered(ts_names)
     row_els: dict[str, object] = {}
 
-    container.clear()
-    with container:
-        if selected_ts is None or not ts_names:
-            ui.label("No tilt series yet").classes("cb-jhead-empty")
-            return row_els
+    lead.clear()
+    tools.clear()
+    if selected_ts is None or not ts_names:
+        with lead:
+            ui.label("No tilt series yet").classes("cb-ts-empty")
+        return row_els
 
-        sel_idx = ts_names.index(selected_ts) + 1 if selected_ts in ts_names else 0
-        pos, _ = position_label(selected_ts)
-        is_excl = selected_ts in excluded
-
-        # ── The switcher: the current tomogram's name, clickable ───────────
-        switch = ui.element("div").classes("cb-jswitch")
+    with lead:
+        ui.icon("chevron_right", size="14px").classes("cb-ts-sep")
+        switch = ui.element("div").classes("cb-ts-switch")
+        switch.props["title"] = selected_ts
         with switch:
-            ui.label("▾").classes("cb-jswitch-caret")
-            ui.label(pos).classes("cb-jswitch-pos" + (" excluded" if is_excl else "")).tooltip(selected_ts)
-            ui.label(f"{sel_idx} / {len(ts_names)}").classes("cb-jswitch-idx").tooltip("Switch tomogram")
-            # QMenu opens on its parent's click — the whole switch block is the trigger.
-            menu = ui.menu().props("anchor='bottom left' self='top left' max-height=85vh max-width=96vw")
+            ui.label(_ts_title(selected_ts)).classes("cb-ts-name" + (" excluded" if selected_ts in excluded else ""))
+            ui.icon("expand_more", size="13px").classes("cb-ts-caret")
+            # QMenu opens on its parent's click — the whole name is the trigger.
+            menu = (
+                ui.menu()
+                .props("anchor='bottom left' self='top left' :offset='[0, 3]' max-height=80vh max-width=96vw")
+                .classes("cb-hmenu")
+            )
             with menu:
-                row_els.update(
-                    _build_switcher_table(
-                        journey, species_journey, species, ts_names, selected_ts, excluded, on_select, menu
-                    )
-                )
+                row_els.update(_build_switcher(species_journey, species, order, selected_ts, excluded, on_select, menu))
+        if selected_ts in order:
+            ui.label(f"{order.index(selected_ts) + 1} / {len(order)}").classes("cb-ts-idx")
 
-        ui.element("div").classes("cb-jsep")
-        _prep_dots(journey.get(selected_ts, {}), labelled=True)
-
-        sp_rows = species_journey.get(selected_ts, [])
-        if sp_rows:
-            ui.element("div").classes("cb-jsep")
-            by_idx = {s["idx"]: s for s in sp_rows}
-            for sp in species:
-                s = by_idx.get(sp["idx"])
-                if s is None:
-                    continue
-                with ui.element("div").classes("cb-jhead-species"):
-                    ui.element("div").classes("cb-jsp-dot").style(f"background: {sp['color']};")
-                    ui.label(sp["label"]).classes("cb-jsp-name")
-                    _species_count(s, sp)
-
+    with tools:
         if info_popover is not None:
-            ui.element("div").classes("cb-jsep")
-            info_popover(selected_ts, sp_rows, recon_mrc_map.get(selected_ts))
+            info_popover(selected_ts, species_journey.get(selected_ts, []), recon_mrc_map.get(selected_ts))
         if on_toggle_exclude is not None:
+            is_excl = selected_ts in excluded
             tog = ui.icon("undo" if is_excl else "block").classes("cb-jexcl" + (" on" if is_excl else ""))
             tog.tooltip(
                 "Restore this tilt series to processing"
@@ -183,39 +204,55 @@ def build_strip(
     return row_els
 
 
-def _build_switcher_table(
-    journey: dict,
+def _build_switcher(
     species_journey: dict,
     species: list[dict],
-    ts_names: list,
+    order: list[str],
     selected_ts: str | None,
     excluded: set,
     on_select: Callable[[str], object],
     menu,
 ) -> dict:
-    """The dropdown: one row per tilt series with the same facts as the header line,
-    plus a totals row. Clicking a row selects it and closes the menu."""
+    """The dropdown: a search field, then the tilt series grouped by stage position, one line each
+    (its beam position, its full name, every species' pick count), and a totals line. Clicking a row
+    selects it and closes the menu."""
     row_els: dict[str, object] = {}
-    # `repeat(0, …)` is invalid CSS and would void the whole template — only add
-    # the species tracks when there are species.
-    cols = "36px minmax(150px, 1fr) repeat(4, max-content)"
-    if species:
-        cols += f" repeat({len(species)}, minmax(84px, max-content))"
-    with ui.element("div").classes("cb-jmenu").style(f"--cb-jcols: {cols};"):
-        with ui.element("div").classes("cb-jrow cb-jrow-head"):
-            ui.label("#").classes("cb-jh")
-            ui.label("Tomogram").classes("cb-jh")
-            for key, _slabel, _jt in PREP_STAGES:
-                ui.label(_STAGE_WORD.get(key, _slabel)).classes("cb-jh cb-jh-c")
-            for sp in species:
-                with ui.element("div").classes("cb-jh cb-jh-sp").tooltip(sp["label"]):
-                    ui.element("div").classes("cb-jsp-dot").style(f"background: {sp['color']};")
-                    ui.label(sp["label"]).classes("cb-jh-spname")
-        for i, ts in enumerate(ts_names, start=1):
-            is_sel = ts == selected_ts
-            is_excl = ts in excluded
-            cls = "cb-jrow" + (" selected" if is_sel else "") + (" excluded" if is_excl else "")
-            row = ui.element("div").classes(cls)
+    # Fixed tracks: every line is a grid of its own, so only fixed widths keep the columns lined up.
+    cols = "104px minmax(90px, 1fr)" + (f" repeat({len(species)}, 84px)" if species else "")
+    with ui.element("div").classes("cb-ts-menu").style(f"--cb-ts-cols: {cols};"):
+        with ui.element("div").classes("cb-ts-search"):
+            ui.icon("search", size="13px")
+            search = ui.element("input").classes("cb-ts-search-input")
+            search.props.update(type="search", placeholder="Search tilt series", autocomplete="off", spellcheck="false")
+            search.on("input", js_handler=_FILTER_JS)
+            search.on("keydown", js_handler=_ENTER_JS)
+        if species:
+            with ui.element("div").classes("cb-ts-row cb-ts-head"):
+                ui.label("")
+                ui.label("")
+                for sp in species:
+                    with ui.element("div").classes("cb-ts-sp").tooltip(sp["label"]):
+                        ui.element("div").classes("cb-jsp-dot").style(f"background: {sp['color']};")
+                        ui.label(sp["label"]).classes("cb-ts-sp-name")
+        group_of: str | None = None
+        holder = None
+        for ts in order:
+            spelled = spelled_position(ts)
+            group = spelled[0] if spelled else None
+            if holder is None or group != group_of:
+                group_of = group
+                holder = ui.element("div").classes("cb-ts-group")
+                if group is not None:
+                    with holder:
+                        ui.label(group).classes("cb-ts-group-head")
+            cls = "cb-ts-row" + (" selected" if ts == selected_ts else "") + (" excluded" if ts in excluded else "")
+            with holder:
+                row = ui.element("div").classes(cls)
+            if spelled:
+                stage, beam = spelled[2]
+                row.props["data-q"] = f"{ts} {_ts_title(ts)} pos {stage} beam {beam}".lower()
+            else:
+                row.props["data-q"] = ts.lower()
             row_els[ts] = row
 
             def _pick(_e=None, t=ts):
@@ -226,20 +263,17 @@ def _build_switcher_table(
 
             row.on("click", _pick)
             with row:
-                ui.label(str(i)).classes("cb-jcell cb-jcell-idx")
-                pos, _ = position_label(ts)
-                with ui.element("div").classes("cb-jcell cb-jcell-name").tooltip(ts):
-                    ui.label(pos).classes("cb-jname")
-                    ui.label(ts).classes("cb-jname-full")
-                _prep_dots(journey.get(ts, {}), labelled=False)
+                if spelled:
+                    ui.label(spelled[1]).classes("cb-ts-beam")
+                    ui.label(ts).classes("cb-ts-full")
+                else:
+                    ui.label(ts).classes("cb-ts-beam cb-ts-wide")
                 by_idx = {s["idx"]: s for s in species_journey.get(ts, [])}
                 for sp in species:
                     _species_count(by_idx.get(sp["idx"]), sp)
-        with ui.element("div").classes("cb-jrow cb-jrow-total"):
-            ui.label("").classes("cb-jcell")
-            ui.label(f"{len(ts_names)} tilt series").classes("cb-jcell cb-jtotal-name")
-            for _ in PREP_STAGES:
-                ui.label("").classes("cb-jcell")
+        with ui.element("div").classes("cb-ts-row cb-ts-total"):
+            ui.label(f"{len(order)} tilt series").classes("cb-ts-total-name")
+            ui.label("")
             for sp in species:
                 with (
                     ui.element("div")
@@ -253,4 +287,5 @@ def _build_switcher_table(
                     ui.label(str(sp["picks"])).classes("cb-jsp-n")
                     if sp["has_filt"]:
                         ui.label(f"{sp['filt']} kept").classes("cb-jsp-kept")
+    menu.on("show", js_handler=_on_show_js(search.id))
     return row_els

@@ -156,6 +156,15 @@ def position_label(tomo_name: str) -> tuple[str, tuple[int, int]]:
     return f"Pos {stage} · Beam {beam}", (stage, beam)
 
 
+def spelled_position(tomo_name: str) -> tuple[str, str, tuple[int, int]] | None:
+    """``("Stage position 3", "Beam position 2", (3, 2))`` for a name ending in the position suffix,
+    else None."""
+    stage, beam = infer_position(tomo_name)
+    if stage == 0:
+        return None
+    return f"Stage position {stage}", f"Beam position {beam}", (stage, beam)
+
+
 def has_any_previews_rendered(state) -> bool:
     if state.project_path is None:
         return False
@@ -846,6 +855,12 @@ def ce_instance_for_species(state, species_id: str) -> tuple[str, object] | None
     return instances[0] if instances else None
 
 
+def species_color(species, idx: int) -> str:
+    """A species' overlay colour wherever its picks are drawn (the wall, the Journey, the roster): as
+    registered, else the palette slot of its place `idx` in `species_render_plan`."""
+    return getattr(species, "color", "") or SPECIES_OVERLAY_COLORS[idx % len(SPECIES_OVERLAY_COLORS)]
+
+
 def species_render_plan(state) -> list[tuple[object | None, str | None, tuple[str, object] | None]]:
     """The dashboard's species enumeration: ``[(species, species_id, ce_instance), ...]``.
 
@@ -949,7 +964,7 @@ def collect_species_journey(project_state, project_path: Path, only_ts: str | No
     passes None."""
     out: dict[str, list[dict]] = {}
     for idx, (species, species_id, ce) in enumerate(species_render_plan(project_state)):
-        color = getattr(species, "color", "") or SPECIES_OVERLAY_COLORS[idx % len(SPECIES_OVERLAY_COLORS)]
+        color = species_color(species, idx)
         if ce is None:
             for ts, n_picks in pick_list_counts_for_species(project_state, species_id).items():
                 if only_ts is not None and ts != only_ts:

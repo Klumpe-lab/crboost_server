@@ -1,6 +1,6 @@
 """Which port the server takes, what holds the others, and what of the user's own is left over on this host.
 
-Stdlib only: main.py runs it before the heavy imports, so a port problem is reported within a second of
+Stdlib only: crboost runs it before the heavy imports, so a port problem is reported within a second of
 starting. Linux only: listening sockets come from /proc/net/tcp{,6}, which give every socket's owner uid; the
 process behind a socket is found through /proc/<pid>/fd, which is readable for the user's own processes only.
 
@@ -199,11 +199,12 @@ def own_processes(socket_ports: dict[int, int]) -> list[Proc]:
 
 
 def _install_of(proc: Proc) -> Path | None:
-    """The checkout a CryoBoost server runs from: the main.py it was started with, next to a backend.py."""
+    """The checkout a CryoBoost server runs from: the crboost launcher it was started with, next to a backend.py.
+    main.py is the launcher's old name, still running from checkouts that predate the rename."""
     if any("multiprocessing" in a for a in proc.args):
         return None
     for arg in proc.args[1:4]:
-        if arg.endswith("main.py"):
+        if Path(arg).name in ("crboost", "main.py"):
             path = Path(proc.cwd, arg)
             if (path.parent / "backend.py").is_file():
                 return path.parent.resolve()

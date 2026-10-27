@@ -29,13 +29,22 @@ venv/bin/python3 preflight.py        # 1st run writes config/conf.yaml + config/
 $EDITOR config/conf.yaml config/qsub.sh
 venv/bin/python3 preflight.py        # must exit 0
 venv/bin/python3 -m pytest -m cluster   # one short SLURM job per tool (minutes); must pass
-venv/bin/python3 main.py
+venv/bin/python3 crboost             # or, with the environment active: ./crboost
 ```
 
-The server picks its own port. On your laptop, run the `ssh …` tunnel command it printed and open the
-`http://localhost:<port>/?token=…` link it printed. Without the token every page answers 401
-(see *Starting the server* below). Updating an install whose `config/` came from older templates: see
-*Upgrading an existing install* below.
+No `--port` needed: the server finds a free port by itself. On your laptop, run the `ssh …` tunnel
+command it printed and open the `http://localhost:<port>/?token=…` link it printed. Without the token
+every page answers 401 (see *Starting the server* below). Updating an install whose `config/` came from
+older templates: see *Upgrading an existing install* below.
+
+<details>
+<summary>How the port is chosen</summary>
+
+Each checkout tries the same port from the block 24300–24331 every time (remembered in
+`~/.crboost/ports.json`), skips any port another process holds, and takes the next free one. If this
+checkout's server is already running it prints that server's links instead of starting a second one.
+
+</details>
 
 `requirements.txt` is a generated lock: to change a dependency, edit `requirements.in` and recompile with the
 `uv pip compile` line at the top of that file.
@@ -45,7 +54,7 @@ The server picks its own port. On your laptop, run the `ssh …` tunnel command 
 <details>
 <summary><b>Python environment — venv, conda or uv</b></summary>
 
-Pipeline drivers running inside SLURM jobs are launched with the interpreter that runs `main.py`
+Pipeline drivers running inside SLURM jobs are launched with the interpreter that runs `crboost`
 (or `crboost_python` in `config/conf.yaml`, if you set it). Any environment works — a venv, a
 conda/mamba env, uv — as long as it and the repo are on a shared filesystem and that interpreter
 starts on a compute node with the modules loaded in `config/qsub.sh`.
@@ -55,7 +64,7 @@ that Python in `~/.local/share/uv/python` and its cache in `~/.cache/uv`; both m
 the compute nodes see (a shared home is). For an install several people use, set `UV_PYTHON_INSTALL_DIR`
 and `UV_CACHE_DIR` to a shared place before `uv python install`, e.g.
 `/groups/<lab>/software/cache_and_artifacts/uv/{python,cache}`.
-A module loaded in your shell does no harm to such a venv: `main.py` and `preflight.py` start themselves
+A module loaded in your shell does no harm to such a venv: `crboost` and `preflight.py` start themselves
 again without the shell's `PYTHONPATH` when the venv has its own packages (`clean_env.py`), so the server and
 every job it submits (sbatch passes the server's environment on) see only the venv.
 
@@ -227,8 +236,8 @@ stop the server and let running jobs finish (they run the venv's interpreter), t
 delete the Python module lines from `config/qsub.sh`.
 
 **Then:** `uv pip sync -p venv/bin/python3 requirements.txt` (or `venv/bin/pip install -r requirements.txt`),
-`venv/bin/python3 preflight.py` (must exit 0),
-`venv/bin/python3 -m pytest -m cluster`, and restart the server. Every browser needs the newly printed
+`venv/bin/python3 preflight.py` (must exit 0), `venv/bin/python3 -m pytest -m cluster`, and restart the
+server with `venv/bin/python3 crboost` (it was `main.py` before). Every browser needs the newly printed
 `?token=` link once (see *Starting the server* below). The `.nicegui/` folder in the checkout no longer
 holds sessions or browser storage; you can delete it.
 
@@ -238,7 +247,7 @@ holds sessions or browser storage; you can delete it.
 <summary><b>Starting the server and tunnelling in</b></summary>
 
 ```bash
-venv/bin/python3 main.py
+venv/bin/python3 crboost
 ```
 
 ```

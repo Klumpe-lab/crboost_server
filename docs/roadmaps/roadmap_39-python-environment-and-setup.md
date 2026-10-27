@@ -160,7 +160,7 @@ path outside `venv/` confirms the mixed environment described in §1.
   driver's PNG conversions shared one `.png.part` name (one rename failed); the part file now carries the pid.
   This tree's `config/qsub.sh` also unsets `PYTHONPATH` in its header, so a server started from a module shell
   cannot leak the modules into jobs.
-- `clean_env.py`, imported first by `main.py` and `preflight.py`: when the interpreter's own site-packages holds
+- `clean_env.py`, imported first by `crboost` and `preflight.py`: when the interpreter's own site-packages holds
   numpy and `PYTHONPATH` is set, the process re-executes itself without it (one console line says so). Nobody
   needs `module purge` before starting the server; a venv on a module Python (no numpy of its own) is untouched.
 
