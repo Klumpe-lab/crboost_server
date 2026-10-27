@@ -10,7 +10,7 @@ These models represent the hierarchical naming convention from the microscope:
   Position_{stage}_{beam}.mdoc (beam 2+)
 
 They are transient parse results (never persisted; the selection cache stores only
-{mdoc_filename: bool}). The registry entities in `services.tilt_series.models`
+{mdoc path: bool}). The registry entities in `services.tilt_series.models`
 (`TiltSeries`/`Frame`) are the post-import single source of truth; the conversion
 from this representation lives in `services.tilt_series.build`
 (`build_from_dataset_overview` / `_build_one_ts`, mapping `ts_label` -> `TiltSeries.id`
@@ -21,6 +21,7 @@ importing either from here would create a cycle.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from pathlib import Path
 from statistics import median
 from typing import Literal
@@ -112,6 +113,24 @@ class StagePositionInfo(BaseModel):
     @property
     def total_tilts(self) -> int:
         return sum(ts.tilt_count for ts in self.tilt_series)
+
+
+def aggregate_to_positions(tilt_series_list: list[TiltSeriesInfo]) -> list[StagePositionInfo]:
+    """Group tilt-series by stage position when every series has one (Tomo5 names);
+    otherwise a single flat group, `stage_position=None`, sorted by name."""
+    if not all(ts.stage_position is not None for ts in tilt_series_list):
+        flat = sorted(tilt_series_list, key=lambda ts: ts.ts_name)
+        return [StagePositionInfo(stage_position=None, tilt_series=flat)] if flat else []
+
+    groups: dict[int, list[TiltSeriesInfo]] = defaultdict(list)
+    for ts in tilt_series_list:
+        groups[ts.stage_position].append(ts)
+
+    positions = []
+    for stage_pos in sorted(groups.keys()):
+        series = sorted(groups[stage_pos], key=lambda ts: ts.beam_position or 1)
+        positions.append(StagePositionInfo(stage_position=stage_pos, tilt_series=series))
+    return positions
 
 
 class AcquisitionSummary(BaseModel):
@@ -283,9 +302,45 @@ class DatasetOverview(BaseModel):
     def get_selected_tilt_series(self) -> list[TiltSeriesInfo]:
         return [ts for p in self.positions for ts in p.tilt_series if ts.selected]
 
-    def duplicate_selected_names(self) -> dict[str, list[Path]]:
+    def duplicate_selected_names(self, *, by_folder: bool = False) -> dict[str, list[Path]]:
         """Selected series whose names collide on import (see `duplicate_ts_names`)."""
-        return duplicate_ts_names(ts.mdoc_path for ts in self.get_selected_tilt_series())
+        return duplicate_ts_names((ts.mdoc_path for ts in self.get_selected_tilt_series()), by_folder=by_folder)
+
+    def folder_name_collisions(self) -> dict[str, list[Path]]:
+        """Series names that mdocs of different folders share. Every series counts, selected
+        or not: this is the shape of the dataset (several acquisition sessions, each
+        restarting `Position_N`), not of the current selection."""
+        everything = duplicate_ts_names(ts.mdoc_path for p in self.positions for ts in p.tilt_series)
+        return {name: paths for name, paths in everything.items() if len({p.parent for p in paths}) > 1}
+
+    def folder_overviews(self) -> list[DatasetOverview]:
+        """One overview per mdoc folder, in path order. They hold this overview's own
+        `TiltSeriesInfo` objects, so a selection made in one is the selection here. Parse
+        warnings stay with this overview."""
+        by_folder: dict[Path, list[TiltSeriesInfo]] = defaultdict(list)
+        for p in self.positions:
+            for ts in p.tilt_series:
+                by_folder[ts.mdoc_path.parent].append(ts)
+        out: list[DatasetOverview] = []
+        for folder in sorted(by_folder):
+            series = by_folder[folder]
+            positions = aggregate_to_positions(series)
+            for pos in positions:
+                pos.selected = any(ts.selected for ts in pos.tilt_series)
+            software = next((ts for ts in series if ts.acquisition_software), None)
+            dims = next((ts.detector_dimensions for ts in series if ts.detector_dimensions), None)
+            out.append(
+                DatasetOverview(
+                    source_directory=str(folder),
+                    frame_extension=self.frame_extension,
+                    positions=positions,
+                    acquisition_summary=AcquisitionSummary.from_tilt_series(series),
+                    acquisition_software=software.acquisition_software if software else "",
+                    software_version=software.software_version if software else "",
+                    detector_dimensions=dims,
+                )
+            )
+        return out
 
     def selected_acquisition_summary(self) -> AcquisitionSummary:
         """Compute summary only from selected tilt-series."""

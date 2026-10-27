@@ -20,7 +20,6 @@ from pydantic import TypeAdapter, ValidationError
 
 from services import species_admin
 from services.configs.config_service import get_config_service
-from services.configs.mdoc_service import describe_long_ts_names, ts_name_from_mdoc
 from services.jobs.spec import JOB_SPEC_BY_TYPE
 from services.models_base import JobType, SpeciesOrigin
 from services.project_state import ExtractionParams, ProjectState, ProtocolOrigin, TemplateMask
@@ -193,7 +192,6 @@ async def apply_protocol(
 
     assets, warnings = register_protocol_species(state, protocol, project_dir)
     warnings += instantiate_stages(state, protocol, assets)
-    warnings += long_tilt_series_name_warnings(project_name, mdoc_files)
     state.pipeline_order = protocol.stage_ids()
     state.protocol_origin = ProtocolOrigin(
         name=protocol.name,
@@ -216,12 +214,6 @@ async def apply_protocol(
         warnings=warnings,
         load_warnings=list(state.load_warnings),
     )
-
-
-def long_tilt_series_name_warnings(project_name: str, mdoc_files: list[str]) -> list[str]:
-    # The create dialog refuses such a name before this runs; this covers other callers.
-    msg = describe_long_ts_names(project_name, (ts_name_from_mdoc(Path(m).name) for m in mdoc_files))
-    return [msg] if msg else []
 
 
 def register_protocol_species(
