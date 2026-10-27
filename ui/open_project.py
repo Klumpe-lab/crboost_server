@@ -57,6 +57,15 @@ async def load_project_into_tab(backend, ui_mgr, target: Path | str) -> bool:
     if not res.get("success"):
         ui.notify(f"Failed to load {target.name}: {res.get('error')}", type="negative")
         return False
+    if res.get("warnings"):
+        ui.notify(
+            "\n\n".join(res["warnings"]),
+            type="warning",
+            timeout=0,
+            close_button=True,
+            multi_line=True,
+            classes="whitespace-pre-line",
+        )
     state = get_project_state_for(target)
     ui_mgr.load_from_project(
         project_path=state.project_path or target, scheme_name="loaded", jobs=list(state.jobs.keys())
