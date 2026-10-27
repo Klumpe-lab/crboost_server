@@ -4,8 +4,8 @@
 (`docs/reports/pipeline-graph/branching-survey-2026-10-12.md`). Stage 0 answered; stage 1, the §8 table,
 stage 2 (without S2.3) and stage 3 (the Subset job) built 2026-10-15, all NOT RUN (records §3.1, §8, §4.1, §6.1;
 runtime checks §11). The `relion_schemer` path deleted 2026-10-15, NOT RUN (§13). The liveness prerequisite
-(§14, L4 + L1) built 2026-10-26, NOT RUN (§14.7). Next: the §11, §13 and §14.7 runtime checks; stage 4 once
-§9.6 is answered. §9.5 decided 2026-10-26; §9.6–9.7 open.
+(§14: L4 + L1, then L3, L6 and L5) built 2026-10-26, NOT RUN (§14.7, §14.8); L2 not built (§14.8). Next: the
+§11, §13, §14.7 and §14.8 runtime checks; stage 4 once §9.6 is answered. §9.5 decided 2026-10-26; §9.6–9.7 open.
 
 **Pending (maintainer, 2026-10-26):** wanted, priority raised; to be built in its own worktree. Roadmap 33 (job
 liveness) is merged in as §14. The UI is the hard part and gets its own design pass first (§15).
@@ -678,10 +678,10 @@ rewrites the same code. Merged into main with `token_auth` the same day; that ro
 
 Roadmap 33 (2026-10-15; itself a merge of roadmaps 13 and 15) is folded in here because stage 2 of this roadmap
 (staging while running) shipped without it, and stage 2 is what makes its incident easy to reach. Its stages keep
-their numbers with an L prefix (L = liveness): "33 S1" elsewhere = L1 here. L4 and L1 are built (2026-10-26, NOT
-RUN, §14.7); L2, L3, L5 and L6 are not. The text below is 33's as re-checked against main on 2026-10-15; its
-`pipeline_orchestrator_service.py` anchors predate the schemer deletion (the reuse test is now `reuse_dir` at
-`:353`).
+their numbers with an L prefix (L = liveness): "33 S1" elsewhere = L1 here. L4 and L1 (§14.7), then L3, L6
+and L5 (§14.8) are built (2026-10-26, NOT RUN); L2 is not (§14.8). The text below is 33's as re-checked against
+main on 2026-10-15; its `pipeline_orchestrator_service.py` anchors predate the schemer deletion (the reuse test is
+now `reuse_dir` at `:353`).
 
 **Scope (2026-10-26).** The smallest useful slice, and a prerequisite stage of everything left in this roadmap
 (stage 4, the §11/§13 runtime round, and roadmap 27 stage 2):
@@ -835,6 +835,8 @@ are independent of the rest.
 - *Done when:* no job-local input dir ever exists half-populated.
 
 #### L3 — A marker names the job that wrote it
+- **Built 2026-10-26 another way, with no `qsub.sh` change (§14.8):** the owner file tells a refused
+  supervisor's marker from the owner's. The design below is kept for the record.
 - The trailer writes `$SLURM_JOB_ID` into the marker instead of `touch`ing it. `reconcile_afterok` pass 1
   (`pipeline_runner.py:439-455`) ignores a marker whose id is not the job's recorded `slurm_job_id`. An empty
   marker, from an old trailer or the inline Import, is accepted as today. RELION only checks that the file exists.
@@ -897,8 +899,7 @@ are independent of the rest.
    refuse while it is live.
 2. **Delete / remove on a live job:** refuse with "Cancel first" (recommended), or one confirm that cancels and
    deletes.
-3. **Empty markers** (L3): accepted as today (recommended), so old trailers keep working; the alternative breaks
-   every site's `qsub.sh` at once.
+3. **Empty markers** (L3): moot since L3 was built without a marker change (§14.8).
 
 ### 14.4 Order and dependencies
 - L1 → L3 → L4 close the class; L2, L5 and L6 stand alone.
@@ -1052,9 +1053,75 @@ change, but retries would then append to the earlier attempt's log.
 unrelated format diff). Not run: no Python in the sandbox. For runtime check 4, the job must be retried in
 place: Run skips a Succeeded job, so make it Failed first (Cancel it once its array is dispatched).
 
+### 14.8 The second batch (built 2026-10-26 on `uv_and_UI`, NOT RUN)
+
+Three commits on top of §14.7's: L3, L6, L5. L2 is not built (below).
+
+1. **L3, without a `qsub.sh` change.** `reconcile_afterok` pass 1 skips a failure marker while the job dir's owner
+   file still names the job's recorded supervisor (`_owner_holds`, `pipeline_runner.py`); squeue and sacct decide
+   instead, as for a job with no marker.
+   - Why that is sound: the owner gives the file back at exit (atexit, SIGTERM included) before its trailer writes
+     the marker. A failure marker beside a file that still names the owner is a refused second supervisor's. An
+     owner killed outright (SIGKILL, a lost node) keeps the file but leaves squeue, and sacct gives its end.
+   - The file is opened, not stat-ed, so the NFS attribute cache cannot keep a released owner alive.
+   - `write_sbatch_script` adds `#SBATCH --open-mode=append` to every non-array script, so a refused second
+     supervisor no longer truncates the owner's `run.out`/`run.err`; it appends its lines. Array task logs are
+     unchanged. A Run that reuses a dir deletes its `run.out`/`run.err` with the exit markers, so a retry does not
+     append to the last attempt's log.
+   - §14.2 L3's marker carrying `$SLURM_JOB_ID` is not needed, and neither is a new `qsub.sh` at every site;
+     decision §14.3.3 is moot.
+2. **L6, the registry says what it could not read.** `TiltSeriesRegistry.load()` and `refresh_from_disk()` record
+   `load_problem` naming each sidecar (or the index) they could not read and why. Their excepts are narrowed to
+   `OSError`/`ValueError`.
+   - `raise_if_unreadable()` fails the job naming the files: in `preflight_registry` (every array supervisor), in
+     miss_align, and in tilt_filter's predict and commit. The preflight line also prints the schema on disk and
+     the one the code reads (A3).
+   - Opening the project warns with it every time, and no longer rebuilds the registry from the mdocs over an
+     unreadable one. When every sidecar failed (older code opening a registry newer code wrote) it read as absent,
+     and the forced rebuild would have overwritten every job's outputs in it.
+   - `save()` is unchanged: a non-forced save already lists every on-disk id whose sidecar exists, so it never
+     shrinks the index; the forced save is that rebuild, now guarded.
+3. **L5, live means queued or running.** `JobStatus.is_live`.
+   - Narrowed to it: an input slot's "awaiting upstream" (`source_in_flight`; a staged producer no longer passes
+     because some other run is active), the three coarse statuses in `dashboard_data.py` (staged reads pending),
+     `jobs_in_use`, and Stop's live set (a staged job carrying an earlier run's slurm id is no longer scancelled
+     and marked Failed).
+   - QUEUED ranks with RUNNING in automatic input selection and reads "queued" in `display_name`.
+   - Cancel is offered on a queued job.
+   - Opening a project builds the roster from `ProjectState.roster()` (`pipeline_order`, or every job when it is
+     empty), so a finished job taken off the roster stays off; re-adding an existing interactive job updates
+     `pipeline_order` too.
+   - The run slot's tooltip: "3/5 jobs finished · 2 staged".
+   - Already in place before this batch: the form frozen for a queued job, Delete and remove refused on a live
+     job or one it reads (`in_use_notice`; §14.3.2 answered "refuse"), and Cancel leaving the roster following
+     the rest of the chain.
+   - Left as it is: per-list extractions use Scheduled for "submitting" (`list_actions.py`, `picks_tab.py`,
+     `species_overview.py`, `backend.py`), their own lifecycle rather than pipeline staging.
+     `get_pipeline_overview`'s `is_complete` still counts staged jobs, and nothing reads it.
+
+**L2 not built.** With L1 one supervisor owns a dir, so the in-place rebuilds of §14.1.5 no longer race another
+supervisor. A supervisor killed mid-rebuild leaves a partial dir, and its successor deletes and rebuilds it first.
+Atomic swaps would only protect a reader during the rebuild: the array of a dead supervisor, which L4a refuses to
+run over and only a hand `sbatch` reaches. Not worth six driver edits; reopen if such a reader turns up.
+
+**Still open:** L4a can refuse indefinitely with no in-app cancel for a Failed job's live array (§14.7); §14.3.1,
+re-extracting a live pick list.
+
+**Runtime checks** (after §14.7's):
+1. **L3.** §14.7 check 3 again: the job stays Running, `run.out` holds both supervisors' lines (the second's
+   "owns this job dir" appended), and once the first ends the job reads its real outcome.
+2. **L6.** In a throwaway project, add an unknown field to one `registry/tilt_series/<ts>.json`: opening warns
+   naming the file, an array job's Run fails at PREFLIGHT naming it, and `index.json` is unchanged. Then make
+   `index.json` invalid JSON and open: the log says the registry was not rebuilt.
+3. **L5.** Cancel a queued job. Stage a job beside a running one and Stop: it stays Scheduled. Remove a finished
+   job from the roster and reopen the project: it stays off.
+
+**Checked:** `ruff check` and `ruff format --check` on the touched files. Not run.
+
 ---
 
-## 15. The UI is the hard part (maintainer, 2026-10-26)
+## 15. The UI is the hard part
+ (maintainer, 2026-10-26)
 
 **Crucial:** even with the best backend wiring, subsets, forks and branches are unusable without a much better UI.
 The backend stages above are necessary, not sufficient. The UI gets designed separately, when the maintainer comes
