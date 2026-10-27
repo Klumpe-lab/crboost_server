@@ -4,8 +4,9 @@
 (`docs/reports/pipeline-graph/branching-survey-2026-10-12.md`). Stage 0 answered; stage 1, the §8 table,
 stage 2 (without S2.3) and stage 3 (the Subset job) built 2026-10-15, all NOT RUN (records §3.1, §8, §4.1, §6.1;
 runtime checks §11). The `relion_schemer` path deleted 2026-10-15, NOT RUN (§13). The liveness prerequisite
-(§14: L4 + L1, then L3, L6 and L5) built 2026-10-26, NOT RUN (§14.7, §14.8); L2 not built (§14.8). Next: the
-§11, §13, §14.7 and §14.8 runtime checks; stage 4 once §9.6 is answered. §9.5 decided 2026-10-26; §9.6–9.7 open.
+(§14: L4 + L1, then L3, L6 and L5) built 2026-10-26, NOT RUN (§14.7, §14.8); L2 not built (§14.8). The
+re-extract cancel and Run's cancel offer built 2026-10-27, NOT RUN (§14.9). Next: the §11, §13 and §14.7–§14.9
+runtime checks; stage 4 once §9.6 is answered. §9.5 decided 2026-10-26; §9.6–9.7 open.
 
 **Pending (maintainer, 2026-10-26):** wanted, priority raised; to be built in its own worktree. Roadmap 33 (job
 liveness) is merged in as §14. The UI is the hard part and gets its own design pass first (§15).
@@ -895,10 +896,9 @@ are independent of the rest.
   index.
 
 ### 14.3 Decisions owed
-1. **Re-extracting a live pick list** (§14.1.6): cancel the earlier extraction, then wipe `out/` (recommended), or
-   refuse while it is live.
-2. **Delete / remove on a live job:** refuse with "Cancel first" (recommended), or one confirm that cancels and
-   deletes.
+1. **Re-extracting a live pick list** (§14.1.6): DECIDED 2026-10-27, cancel the earlier extraction, then wipe
+   `out/`; built in §14.9.
+2. **Delete / remove on a live job:** DECIDED, refuse with "Cancel first" (already in place, §14.8 L5).
 3. **Empty markers** (L3): moot since L3 was built without a marker change (§14.8).
 
 ### 14.4 Order and dependencies
@@ -1107,7 +1107,7 @@ Atomic swaps would only protect a reader during the rebuild: the array of a dead
 run over and only a hand `sbatch` reaches. Not worth six driver edits; reopen if such a reader turns up.
 
 **Still open:** L4a can refuse indefinitely with no in-app cancel for a Failed job's live array (§14.7); §14.3.1,
-re-extracting a live pick list.
+re-extracting a live pick list. Both built in §14.9.
 
 **Runtime checks** (after §14.7's):
 1. **L3.** §14.7 check 3 again: the job stays Running, `run.out` holds both supervisors' lines (the second's
@@ -1117,6 +1117,36 @@ re-extracting a live pick list.
    `index.json` invalid JSON and open: the log says the registry was not rebuilt.
 3. **L5.** Cancel a queued job. Stage a job beside a running one and Stop: it stays Scheduled. Remove a finished
    job from the roster and reopen the project: it stays off.
+
+**Checked:** `ruff check` and `ruff format --check` on the touched files. Not run.
+
+### 14.9 The third batch (built 2026-10-27 on `uv_and_UI`, NOT RUN)
+
+1. **Re-extract over a live extraction cancels it first** (§14.3.1). `backend.extract_pick_list` asks SLURM about
+   the list's recorded extraction before it touches the instance or `out/` (`_cancel_and_await_end`): while it
+   is queued or running (COMPLETING counts), it is scancelled and the submit waits, polling every 3 s, until
+   squeue no longer runs it; only then are `out/`, the markers and the logs deleted and the new job submitted.
+   - Waiting matters: the cancelled supervisor releases `.supervisor.owner` on its way out, and one killed
+     outright leaves a file the next supervisor takes over only once SLURM says it ended. Wiping first broke
+     both runs, and the new supervisor found the dir still owned and exited.
+   - Refused, with `out/` untouched: squeue fails, the scancel fails on a job still live, or the job still
+     runs 180 s after its cancel. A stored status SLURM no longer backs (a server restart) goes straight on.
+   - The confirm reads "Cancel it and re-extract"; the tray task says "cancelling the earlier extraction, then
+     extracting…". The batch path (`extract_pending_lists`) already skips lists SLURM still runs.
+2. **Run's refusal offers the cancel.** `_live_in_reused_dirs` also returns the ids it found live, and
+   `_submit_chain` hands them back as `still_live`. The Run handler then opens a dialog with the reason and
+   `[Close] [Cancel SLURM <ids>]` (danger): cancelling throws away what those tasks had not finished, and the
+   next Run redoes it. Approve still shows the text only.
+3. **`check_boundaries.py` R4.** The log progress parser's table keyed by five job types became
+   `JobSpec.log_format` ("miss_align", "relion", "reconstruct", "denoise"); `log_progress.read` looks the
+   format up in the spec.
+
+**Runtime checks:**
+1. Re-extract a list while its extraction runs: the tray says it is cancelling, `squeue` drops the old id,
+   then the new job runs and the list ends extracted with the new geometry. Again while it is only queued.
+2. §14.7 check 1's setup (a supervisor killed at its time limit, its array running): Run opens the dialog;
+   Cancel; once squeue is empty, Run aggregates or resubmits.
+3. `python check_boundaries.py` reports nothing.
 
 **Checked:** `ruff check` and `ruff format --check` on the touched files. Not run.
 
