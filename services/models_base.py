@@ -13,6 +13,11 @@ class JobStatus(str, Enum):
     SCHEDULED = "Scheduled"
     UNKNOWN = "Unknown"
 
+    @property
+    def is_live(self) -> bool:
+        """Queued or running in SLURM. A Scheduled pipeline job is staged: nothing of it runs."""
+        return self in (JobStatus.QUEUED, JobStatus.RUNNING)
+
 
 class MicroscopeType(str, Enum):
     KRIOS_G3 = "Krios_G3"

@@ -359,6 +359,8 @@ class PipelineBuilderPanel:
             if existing:
                 if existing not in self.ui_mgr.selected_jobs:
                     self.ui_mgr.add_instance(existing, job_type)
+                    state.pipeline_order = list(self.ui_mgr.selected_jobs)
+                    state.mark_dirty()
                     self.rebuild_pipeline_ui()
                 self.ui_mgr.set_active_instance(existing)
                 self.rebuild_pipeline_ui()

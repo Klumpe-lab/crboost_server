@@ -214,7 +214,7 @@ def render_job_tab(
 
     widget_refs = ui_mgr.get_job_widget_refs(instance_id)
     frozen = is_job_frozen(instance_id)
-    is_running = job_model.execution_status == JobStatus.RUNNING
+    is_live = job_model.execution_status.is_live
 
     # --- The job's line under the view's title (which names the job): its marks, folder and actions ---
     with ui.row().classes("w-full items-center no-wrap").style(_JOB_LINE_STYLE):
@@ -247,7 +247,7 @@ def render_job_tab(
                 "added after it. Needs this job finished.",
             )
 
-        if is_running:
+        if is_live:
             house_button(
                 "Cancel", lambda: _handle_stop_job(job_type, instance_id, job_model, backend, ui_mgr, callbacks)
             )

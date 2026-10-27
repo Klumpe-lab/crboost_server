@@ -58,9 +58,7 @@ async def load_project_into_tab(backend, ui_mgr, target: Path | str) -> bool:
         ui.notify(f"Failed to load {target.name}: {res.get('error')}", type="negative")
         return False
     state = get_project_state_for(target)
-    ui_mgr.load_from_project(
-        project_path=state.project_path or target, scheme_name="loaded", jobs=list(state.jobs.keys())
-    )
+    ui_mgr.load_from_project(project_path=state.project_path or target, scheme_name="loaded", jobs=state.roster())
     if state.pipeline_active:
         ui_mgr.set_pipeline_running(True)
     remember_project_opened(state.project_path or target, label=state.project_name)

@@ -83,6 +83,7 @@ class OutputCandidate:
         status_icon = {
             JobStatus.SUCCEEDED: "ok",
             JobStatus.RUNNING: "running",
+            JobStatus.QUEUED: "queued",
             JobStatus.FAILED: "failed",
             JobStatus.SCHEDULED: "scheduled",
         }.get(self.execution_status, "?")
@@ -674,6 +675,7 @@ class PathResolutionService:
             status_order = {
                 JobStatus.SUCCEEDED: 0,
                 JobStatus.RUNNING: 1,
+                JobStatus.QUEUED: 1,
                 JobStatus.SCHEDULED: 2,
                 JobStatus.FAILED: 3,
             }.get(c.execution_status, 4)
@@ -821,7 +823,7 @@ class PathResolutionService:
             )
 
         is_pending = "pending_" in chosen.path
-        source_in_flight = chosen.execution_status in (JobStatus.RUNNING, JobStatus.SCHEDULED, JobStatus.QUEUED)
+        source_in_flight = chosen.execution_status.is_live
         pipeline_active = getattr(self.state, "pipeline_active", False)
 
         expect_file_later = is_pending or (source_in_flight and pipeline_active)
@@ -1719,7 +1721,7 @@ def jobs_in_use(state: ProjectState) -> dict[str, str]:
     """The jobs a queued or running job depends on, each mapped to such a job: the live jobs
     themselves (to themselves) and every job upstream of one. Their outputs or inputs are in use,
     so none of them is removed, deleted or edited while it runs; every other job is."""
-    live = [iid for iid, jm in state.jobs.items() if jm.execution_status in (JobStatus.QUEUED, JobStatus.RUNNING)]
+    live = [iid for iid, jm in state.jobs.items() if jm.execution_status.is_live]
     if not live:
         return {}
     producers: dict[str, set[str]] = {}

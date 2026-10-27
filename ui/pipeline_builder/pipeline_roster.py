@@ -1269,7 +1269,9 @@ class RosterWidget(FingerprintedView):
         _hidden = {JobType.IMPORT_MOVIES.value, JobType.TS_IMPORT.value}
         visible_selected = sum(1 for iid in self.panel.ui_mgr.selected_jobs if InstanceId.split(iid)[0] not in _hidden)
         total = overview.get("total", visible_selected) if overview else visible_selected
-        text = f"{done}/{total} jobs finished"
+        # Staged jobs are not part of what runs, so not of its total.
+        staged = (overview or {}).get("scheduled", 0)
+        text = f"{done}/{total - staged} jobs finished" + (f" · {staged} staged" if staged else "")
         # Surface SLURM queue waits so a long pending time reads as a cluster
         # wait, not a hung orchestrator. This runs on every poll tick (it is NOT
         # signature-gated), so the elapsed minutes stay live.
