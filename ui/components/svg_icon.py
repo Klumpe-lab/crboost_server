@@ -12,6 +12,8 @@ from __future__ import annotations
 import functools
 import re
 
+from nicegui import ui
+
 from services.configs.config_service import REPO_ROOT
 
 _ICON_DIR = REPO_ROOT / "static" / "icons"
@@ -42,3 +44,15 @@ def load_icon_svg(name: str, color: str | None = None, *, size: int | None = Non
         head, sep, tail = svg.partition(">")
         svg = _SIZE_ATTR.sub(lambda m: f'{m.group(1)}="{size}"', head) + sep + tail
     return svg
+
+
+def render_glyph(icon: str, *, size: int, color: str | None = None):
+    """A glyph in the current slot: a `static/icons` asset (a name ending in `.svg`) or a Material
+    icon name, `size` px square, in `color`, else in the text colour around it."""
+    if icon.endswith(".svg"):
+        el = ui.html(load_icon_svg(icon, color, size=size), sanitize=False)
+    else:
+        el = ui.icon(icon, size=f"{size}px")
+        if color:
+            el.style(f"color: {color};")
+    return el.style("display: flex; flex: 0 0 auto;")
