@@ -1,0 +1,5 @@
+# uv settings for this checkout. `uv pip compile` resolves for the cluster (Python 3.11, x86-64 Linux)
+# from any machine, torch's nvidia-* dependencies included.
+[pip]
+python-version = "3.11"
+python-platform = "x86_64-unknown-linux-gnu"

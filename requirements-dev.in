@@ -1,0 +1,4 @@
+# Development tools, constrained to the runtime lock. Recompile after requirements.txt:
+#   uv pip compile requirements-dev.in -o requirements-dev.txt
+-c requirements.txt
+ruff==0.15.12

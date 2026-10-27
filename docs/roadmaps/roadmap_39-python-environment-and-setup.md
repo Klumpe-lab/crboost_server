@@ -83,7 +83,10 @@ path outside `venv/` confirms the mixed environment described in §1.
 - `pip freeze` through the job's environment lists 298 packages (venv plus the module bundles), so the lock in
   S1 starts from the venv's 79 plus the four module packages above, not from that freeze.
 - Same on both hosts. Start-up (§6 item 1): `import drivers.driver_base` takes 1.3 s warm, 1.85 s cold on the
-  compute node; pandas is 0.58 s of it, pulled in by `services/jobs/_base.py`.
+  compute node; pandas is 0.58 s of it, pulled in by `services/jobs/_base.py`. Loading and validating a 636 KB
+  `project_params.json` (9 jobs) adds 0.31 s. So a task starts working ~1.6–2 s after it starts.
+- Not on `sys.path` at all: `tqdm` (filterTilts imports it optionally). pyarrow 16.1.0 is the arrow module's;
+  pandas 2.1 does not need it, so the lock leaves it out (it is 0.06 s of the import).
 
 ### S1 — Lock the dependencies
 
@@ -98,6 +101,18 @@ path outside `venv/` confirms the mixed environment described in §1.
   naming the path. That is the mixed environment of §1, made visible on every install.
 - README: the quick start installs with `uv pip sync requirements.txt`. One line says how to change a dependency:
   edit `requirements.in`, then recompile.
+
+#### S1 record (2026-10-27, compile owed)
+
+- `requirements.in`: the old `requirements.txt` with numpy 1.26.2, pandas 2.1.3, scipy 1.11.4, requests 2.31.0,
+  matplotlib 3.10.9 and PyYAML 6.0.3 pinned to the S0 versions; the compile command in its header.
+- `requirements-dev.in`: `-c requirements.txt` plus ruff 0.15.12.
+- `uv.toml` (`[pip]` python-version 3.11, python-platform x86_64-unknown-linux-gnu), so the compile line needs
+  no flags.
+- preflight `check_python` warns for each required module imported from outside `sys.prefix`, naming the path.
+- README: one line on editing `requirements.in` and recompiling; the preflight bullet mentions the warning.
+- Owed: the two `uv pip compile` runs (the maintainer's, on the headnode), which overwrite `requirements.txt`
+  and create `requirements-dev.txt`. The quick start moves to `uv pip sync` with S2, when the venv is rebuilt.
 
 ### S2 — The environment's own Python (uv-managed)
 
