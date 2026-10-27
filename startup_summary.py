@@ -26,7 +26,7 @@ _PROBE_TIMEOUT_SEC = 8
 
 # SGR 2 (faint) is as small as a terminal gets: there is no escape for a smaller font.
 _DIM, _RESET = "\x1b[2m", "\x1b[0m"
-# The project links stand out of the faint block in the banner links' bold cyan (main.py).
+# The project links stand out of the faint block in the banner links' bold cyan (crboost).
 _LINK = "\x1b[1;36m"
 _STATUS_COLOR = {
     "running": "\x1b[2;36m",

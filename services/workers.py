@@ -182,7 +182,7 @@ async def run_in_worker(
 
 def warm_up() -> None:
     """Start one worker at server startup, in the background: a spawned worker starts a fresh interpreter
-    (Python's spawn re-imports main.py, as `__mp_main__`) before its first task, which would otherwise
+    (Python's spawn re-imports crboost, as `__mp_main__`) before its first task, which would otherwise
     delay the first render."""
     _get_pool().submit(os.getpid)
 

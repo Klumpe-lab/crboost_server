@@ -25,20 +25,29 @@ venv/bin/python3 preflight.py        # 1st run writes config/conf.yaml + config/
 $EDITOR config/conf.yaml config/qsub.sh
 venv/bin/python3 preflight.py        # must exit 0
 venv/bin/python3 -m pytest -m cluster   # one short SLURM job per tool (minutes); must pass
-venv/bin/python3 main.py
+venv/bin/python3 crboost             # or, with the environment active: ./crboost
 ```
 
-The server picks its own port. On your laptop, run the `ssh …` tunnel command it printed and open the
-`http://localhost:<port>/?token=…` link it printed. Without the token every page answers 401
-(see *Starting the server* below). Updating an install whose `config/` came from older templates: see
-*Upgrading an existing install* below.
+No `--port` needed: the server finds a free port by itself. On your laptop, run the `ssh …` tunnel
+command it printed and open the `http://localhost:<port>/?token=…` link it printed. Without the token
+every page answers 401 (see *Starting the server* below). Updating an install whose `config/` came from
+older templates: see *Upgrading an existing install* below.
+
+<details>
+<summary>How the port is chosen</summary>
+
+Each checkout tries the same port from the block 24300–24331 every time (remembered in
+`~/.crboost/ports.json`), skips any port another process holds, and takes the next free one. If this
+checkout's server is already running it prints that server's links instead of starting a second one.
+
+</details>
 
 ---
 
 <details>
 <summary><b>Python environment — venv, conda or uv</b></summary>
 
-Pipeline drivers running inside SLURM jobs are launched with the interpreter that runs `main.py`
+Pipeline drivers running inside SLURM jobs are launched with the interpreter that runs `crboost`
 (or `crboost_python` in `config/conf.yaml`, if you set it). Any environment works — a venv, a
 conda/mamba env, uv — as long as it and the repo are on a shared filesystem and that interpreter
 starts on a compute node with the modules loaded in `config/qsub.sh`.
@@ -202,7 +211,8 @@ values across. If you edit the old files instead, compare them with `config/conf
 - The old `ENV PATHS` block (`CRBOOST_SERVER_DIR`, `CRBOOST_PYTHON`) is no longer read; delete it.
 
 **Then:** `venv/bin/pip install -r requirements.txt`, `venv/bin/python3 preflight.py` (must exit 0),
-`venv/bin/python3 -m pytest -m cluster`, and restart the server. Every browser needs the newly printed
+`venv/bin/python3 -m pytest -m cluster`, and restart the server with `venv/bin/python3 crboost` (it was
+`main.py` before). Every browser needs the newly printed
 `?token=` link once (see *Starting the server* below). The `.nicegui/` folder in the checkout no longer
 holds sessions or browser storage; you can delete it.
 
@@ -212,7 +222,7 @@ holds sessions or browser storage; you can delete it.
 <summary><b>Starting the server and tunnelling in</b></summary>
 
 ```bash
-venv/bin/python3 main.py
+venv/bin/python3 crboost
 ```
 
 ```
