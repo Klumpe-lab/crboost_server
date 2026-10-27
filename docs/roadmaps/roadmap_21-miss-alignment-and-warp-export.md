@@ -1,7 +1,8 @@
 # Roadmap 21 — Miss-alignment as a transparent refinement stage, and what Warp export is for
 
 **Status:** rev 2, approved 2026-09-29. Stages 1–3 **code-complete, NOT RUN** (branch `missalignmnet`,
-2026-09-29); first run = `bullseye_artifact_two` (7 TS). Stages 4–6 open. Tool reference: `docs/miss-alignment.md`.
+2026-09-29); first run = `bullseye_artifact_two` (7 TS). Stages 4–6 open. Stage 7 (§7, what a run changed, shown in
+the Journey) scoped 2026-10-27, not built. Tool reference: `docs/miss-alignment.md`.
 
 **Progress 2026-09-29 (read before the first run):**
 - **Every earlier run trained on mis-projected data.** The dim stamp took the image size from the settings'
@@ -228,6 +229,14 @@ miss-alignment), including the stamp step.
   a RELION 5 star built around Warp's particle stacks; compared with RELION extraction on the same particles
   (gold-standard FSC). **Built 2026-10-11 as roadmap 24 stage 4 (NOT RUN).**
 
+### Stage 7 — What a run changed, in the Journey (§7)
+- 7a: the Refinement section: stat tiles, the change-per-tilt chart, the warp strip and its zoom.
+- 7b: blink / wipe between the registered reconstructions in the Reconstruct card.
+- 7c: the iteration scrubber (only if 7a reads well).
+- *Success:* on AGG412 Grid2 (job022) Position_6 shows its 121.8 Å tilt ringed and its 3×3 arrows; a series
+  refined without `[3,3]` rounds says "no local warp" and shows no arrows; the blink makes the refined slab's
+  sharper features visible without reading a number.
+
 ## 6. Side finding (outside this roadmap — verify)
 Species match in candidate scoring only counts for **succeeded** candidates
 (`path_resolution_service.py:944`). In a fresh multi-species afterok run nothing has succeeded yet, so
@@ -238,3 +247,76 @@ species and stage order are hard filters, ties are stated, and job numbers no lo
 
 **Modern-Python weave-in:** `refines` as a `tuple[JobFileType, ...]` on the frozen `JobSpec`;
 `_follow_refinements` as a small pure function (candidate, pipeline, specs) → candidate, trivially testable.
+
+## 7. What a run changed, shown in the Journey (scoped 2026-10-27, not built)
+
+The maintainer asked for a per-tilt-series view, in the Journey, of how missAlign changed an alignment: the local
+deformations and the finer per-tilt corrections, visual rather than a table of numbers.
+
+**Data — all on disk after every run, nothing new for the job to write:**
+- The missAlign job's `warp_tiltseries/iter0/<ts>.xml` (the alignment as the tool got it), `iter<k>/<ts>.xml`
+  (after macro-iteration k) and `<ts>.xml` (final). Per tilt: the rigid `AxisOffsetX/Y` (Å) and, after `[N,N]`
+  rounds, `GridMovementX/Y`: W×H×tilts nodes (Å), one 2D B-spline image warp per tilt on a W×H lattice over
+  the image. `[N,N]` rounds do not touch `AxisOffset`, so any whole-tilt shift they want lands in the grid's mean.
+- `missalign_changes.json`: per tilt, the shift change with the rigid volume shift removed
+  (`services/analysis/alignment_changes.py`), the 2-px threshold, the warp's rms / max.
+- The tilt thumbnails the Alignment section's hover cards already use (`tilt_thumb_urls`).
+- Both reconstructions (baseline tsReconstruct, tsReconstruct__2), which the Reconstruct card's compare mode
+  already registers onto one plane (`matched_slabs`, `vis/compare/*.png`).
+- Scale, from the Grid2 run (roadmap 29 §6.2): rigid-removed per-tilt change median 16.7 Å rms, max 121.8 Å;
+  3×3 warps 8–44 Å rms per series on 12.4 Å stacks, i.e. 1–3.5 px. Big enough to see.
+
+**Look — a "Refinement" section after Alignment, on tilt series a missAlign job refined** (the sketch's
+numbers are made up):
+```
+ Refinement · missAlign job022 · PAPER                                                   ⓘ
+ [change 16.7 Å rms] [max 121.8 Å @ +54°] [re-centring 140 Å] [warp 16 Å rms, 44 max] [4 tilts > 2 px]
+
+ Change per tilt (Å)       ● shift change, rigid removed    ▲ warp rms     - - 2 px
+  120 ┤                                                             ●
+   40 ┤ ●                                                        ▲  ●
+   20 ┤ ▲ ●  ▲ ●    ●  ▲    ▲  ●   ▲ ●   ●  ▲   ●  ▲  ● ▲  ●  ▲
+    0 ┼──────────────────────────────────────────────────────────────
+      -60          -30            0            +30           +60
+
+ Local warp per tilt (arrows ×20; ⟶ = 20 Å)
+ ┌─────┐┌─────┐┌─────┐┌─────┐┌─────┐┌─────┐┌─────┐ ...   one tile per tilt, angle order
+ │↗ → ↘││→ → ↘││↗ ↗ →││  ·  ││· · ·││· → ·││↘ ↓ ↓│       tilt thumbnail faint underneath
+ │↗ ⇢ →││→ ⇢ ↘││→ ⇢ →││· ⇢ ·││· · ·││· · ·││↘ ↓ ↙│       ⇢ = the tile's whole-tilt shift
+ │↑ ↗ →││→ ↘ ↓││→ → →││  ·  ││· · ·││· · ·││↓ ↓ ↙│       ringed = over 2 px
+ └─────┘└─────┘└─────┘└─────┘└─────┘└─────┘└─────┘
+  -60°   -57°   -54°   ...     0°            +54°
+```
+1. Stat tiles: rigid-removed change rms / max (and its tilt), the re-centring (gauge) rms, warp rms / max, tilts
+   over 2 px; the job's schedule in the ⓘ.
+2. Change per tilt, markers only (dashboard plot rules): x = tilt angle, y = Å; the rigid-removed shift change and
+   the warp's rms over its nodes; dashed 2-px line; hover = tilt #, movie, both numbers.
+3. The warp strip: one ~72 px tile per tilt in angle order, wrapping to 2–3 rows; the thumbnail faint under an
+   arrow per grid node (the node's displacement with the tile's mean removed), one exaggeration for the whole
+   tomogram stated once with a scale arrow, one sequential colour ramp by magnitude; the tile's whole-tilt shift
+   (rigid change + grid mean) as one hollow arrow from the centre; tilts over the threshold ringed. A click opens
+   a zoom: the tilt at full size with the field interpolated from the B-spline (a ~12×12 quiver, or a magnitude
+   map), ← → stepping the tilts.
+4. Blink in the Reconstruct card: the registered baseline and refined slabs stacked in one box; holding the
+   pointer on it (or a key) shows the other, or a wipe handle drags between them. Uses the PNGs `matched_slabs`
+   already writes.
+5. Iteration scrubber (7c): a slider over the macro-iterations redraws 2 and 3 from `iter0 → iter<k>`, so the
+   anchoring / global rounds moving tilts and the `[3,3]` rounds bending them read apart.
+
+**Rules:** the rigid volume shift is removed before anything is drawn (it only moves the tomogram in its box);
+the grid's per-tilt mean is shown apart from its deformation; the exaggeration is on screen; 2D only, no volume
+rendering. Arrow direction follows Warp's sign convention, checked once against a tilt whose `AxisOffset` moved.
+
+**Where it runs:** the XML parse (iter0 + final, k+1 with the scrubber; a few kB each) off the loop
+(`asyncio.to_thread`), cached by XML mtime; arrows as inline SVG over the thumbnails in the browser (~41 tiles ×
+9 arrows); the zoom's interpolation in `run_in_worker(WorkKind.RENDER, …)`.
+
+**Files:** `services/analysis/alignment_changes.py` (`movement_grid(xml)` → W, H and per-tilt node vectors; the
+mean / deformation split), `ui/tomo_dashboard_dialog.py` (`_render_ts_refine_section`, section key `ts_refine`),
+`ui/dashboard/figures.py` (the chart), a new `ui/dashboard/warp_strip.py` (strip + zoom), the blink in
+`_render_recon_versions`.
+
+**Not in scope:** `GridVolumeWarp` / M's 4D warps; changing the job; Warp export (§3, stage 6).
+
+**Decisions owed:** (a) exaggeration per project (tilt series comparable) or per tilt series (tiles filled) —
+recommend per project; (b) blink or wipe — recommend blink, it shows a change best; (c) 7c now or later.
