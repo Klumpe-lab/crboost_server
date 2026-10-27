@@ -27,6 +27,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from services.jobs.spec import JOB_SPEC_BY_TYPE
 from services.models_base import JobType
 
 logger = logging.getLogger(__name__)
@@ -356,12 +357,12 @@ def _sum_denoise(f: Facts) -> _Summary | None:
     )
 
 
+# Keyed by JobSpec.log_format.
 _PARSERS: dict[str, tuple[Feed, Summarize]] = {
-    JobType.MISS_ALIGN.value: (_feed_miss_align, _sum_miss_align),
-    JobType.REFINE3D.value: (_feed_relion, _sum_relion),
-    JobType.CLASS3D.value: (_feed_relion, _sum_relion),
-    JobType.RECONSTRUCT_PARTICLE.value: (_feed_reconstruct, _sum_reconstruct),
-    JobType.DENOISE_TRAIN.value: (_feed_denoise, _sum_denoise),
+    "miss_align": (_feed_miss_align, _sum_miss_align),
+    "relion": (_feed_relion, _sum_relion),
+    "reconstruct": (_feed_reconstruct, _sum_reconstruct),
+    "denoise": (_feed_denoise, _sum_denoise),
 }
 
 
@@ -421,7 +422,11 @@ def read(job_type: JobType | str, job_dir: Path | str) -> LogProgress | None:
         st = os.stat(path)
     except FileNotFoundError:  # not started yet, or a job that writes no run.out
         return None
-    feed, summarize = _PARSERS.get(jt, (_feed_generic, _sum_generic))
+    try:
+        log_format = JOB_SPEC_BY_TYPE[JobType(jt)].log_format
+    except (ValueError, KeyError):  # not a job type with a spec row: the generic reader
+        log_format = None
+    feed, summarize = _PARSERS.get(log_format, (_feed_generic, _sum_generic))
     now = time.monotonic()
     with _lock:
         for k in [k for k, t in _tails.items() if now - t.seen > _FORGET_AFTER_S]:

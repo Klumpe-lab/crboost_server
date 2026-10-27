@@ -88,6 +88,9 @@ class JobSpec:
     # False: never added from the roster's add rows; made elsewhere (a Subset, from the tab of the
     # job it cuts).
     roster_add: bool = True
+    # How services/log_progress reads this job's run.out ("relion", "miss_align", ...); None = its
+    # generic reader (the last progress bar of any kind).
+    log_format: str | None = None
 
 
 JOB_SPECS: Final[tuple[JobSpec, ...]] = (
@@ -153,6 +156,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         plugins=("miss_align",),
         refines=(JobFileType.ALIGNED_TILT_SERIES_STAR, JobFileType.WARP_TILTSERIES_DIR),
         items_from="input_star",
+        log_format="miss_align",
     ),
     JobSpec(
         JobType.TS_CTF,
@@ -184,6 +188,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         dependencies=(JobType.TS_RECONSTRUCT,),
         driver="denoise_train.py",
         items_from="input_star",
+        log_format="denoise",
     ),
     JobSpec(
         JobType.DENOISE_PREDICT,
@@ -265,6 +270,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         dependencies=(JobType.SUBTOMO_EXTRACTION,),
         driver="reconstruct_particle.py",
         plugins=("particle_results",),
+        log_format="reconstruct",
     ),
     JobSpec(
         JobType.CLASS3D,
@@ -274,6 +280,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         dependencies=(JobType.RECONSTRUCT_PARTICLE,),
         driver="class3d.py",
         plugins=("particle_results",),
+        log_format="relion",
     ),
     JobSpec(
         JobType.REFINE3D,
@@ -282,6 +289,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         PHASE_PARTICLES,
         dependencies=(JobType.RECONSTRUCT_PARTICLE,),
         driver="refine3d.py",
+        log_format="relion",
     ),
 )
 
