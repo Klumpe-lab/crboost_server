@@ -128,6 +128,12 @@ def render_layer_list(
         display.set_opacity(project_path, value)
         on_change()
 
+    # One set of columns for both tables, so the segmentations line up under the pick layers.
+    cols = _Columns(
+        count=any(r.count for r in rows),
+        source=sources is not None,
+        gallery=any(r.on_gallery is not None for r in rows),
+    )
     following = not any(display.is_pinned(project_path, r.id) for r in rows)
     follow = ui.element("div").classes("cb-gal-pk-row cb-gal-pk-follow")
     follow.on("click", lambda _e: _follow())
@@ -137,12 +143,28 @@ def render_layer_list(
         ui.label("Follow the version")
 
     if picks:
-        _table(project_path, "Particles", picks, shows, _set, sources, shaped=True, verb="Picked", count_head="picks")
+        _table(
+            project_path, "Particles", picks, shows, _set, sources, cols, shaped=True, verb="Picked", count_head="picks"
+        )
     if features:
-        _table(project_path, "Segmentations", features, shows, _set, sources, verb="Segmented", tip=FEATURES_TIP)
+        _table(project_path, "Segmentations", features, shows, _set, sources, cols, verb="Segmented", tip=FEATURES_TIP)
         with ui.element("div").classes("cb-gal-feat-opacity"):
             ui.label("opacity")
             render_segmented(list(OPACITIES), display.opacity(project_path), _opacity)
+
+
+class _Columns(NamedTuple):
+    """The columns after a row's eye, key and name, which the pick layers' and the segmentations'
+    tables share: a count, the reconstruction the layer was made on, the gallery button."""
+
+    count: bool
+    source: bool
+    gallery: bool
+
+    def template(self) -> str:
+        widths = ["16px", "14px", "minmax(0, 1fr)"]
+        widths += (["40px"] if self.count else []) + (["110px"] if self.source else [])
+        return " ".join(widths + (["36px"] if self.gallery else []))
 
 
 def _table(
@@ -152,6 +174,7 @@ def _table(
     shows: str | None,
     set_shown: Callable[[list[LayerRow], bool], None],
     sources: dict[str, Callable[[], None]] | None,
+    cols: _Columns,
     *,
     verb: str,
     shaped: bool = False,
@@ -159,18 +182,15 @@ def _table(
     tip: str | None = None,
 ) -> None:
     """One kind's table. Its head is an eye that shows or hides every layer of the kind (any shown: it
-    hides them all) and the kind's name, with the columns' names when the table has more than counts;
-    then a row per layer, under its group's name (a pick layer's species, a click on which switches all
-    of the species' layers). Every row lays out on the table's columns (`--cb-lyr-cols`), so they line up."""
+    hides them all) and the kind's name, with the names of the columns this kind fills; then a row per
+    layer, under its group's name (a pick layer's species, a click on which switches all of the species'
+    layers). Every row lays out on `cols`, which both tables share, so their columns line up."""
     has_count = any(r.count for r in rows)
     has_gallery = any(r.on_gallery is not None for r in rows)
-    wide = sources is not None or has_gallery
-    columns = ["14px", "12px", "minmax(0, 1fr)"]
-    columns += (["40px"] if has_count else []) + (["110px"] if sources is not None else [])
-    columns += ["36px"] if has_gallery else []
+    wide = cols.source or cols.gallery
     any_on = any(shown(project_path, r, shows) for r in rows)
     table = ui.element("div").classes("cb-lyr-table" + (" cb-lyr-wide" if wide else ""))
-    table.style(f"--cb-lyr-cols: {' '.join(columns)};")
+    table.style(f"--cb-lyr-cols: {cols.template()};")
     with table:
         with ui.element("div").classes("cb-lyr-tr cb-lyr-head"):
             eye = ui.icon("visibility" if any_on else "visibility_off", size="14px")
@@ -180,11 +200,13 @@ def _table(
             name = ui.label(title).classes("cb-lyr-title")
             if tip:
                 name.props["title"] = tip
+            # A head cell per shared column, empty where this kind has nothing in it, so each name
+            # sits over its column.
             if wide:
                 for on, head, cls in (
-                    (has_count, count_head, "cb-lyr-col num"),
-                    (sources is not None, "made on", "cb-lyr-col"),
-                    (has_gallery, "gallery", "cb-lyr-col"),
+                    (cols.count, count_head if has_count else "", "cb-lyr-col num"),
+                    (cols.source, "made on", "cb-lyr-col"),
+                    (cols.gallery, "gallery" if has_gallery else "", "cb-lyr-col"),
                 ):
                     if on:
                         ui.label(head).classes(cls)
@@ -202,7 +224,7 @@ def _table(
                 with group_row:
                     ui.label(group).style("grid-column: 2 / -1;")
             mark = (lambda c, size=10, s=r.shape: shape_svg(s, c, size)) if shaped else swatch_svg
-            _row(project_path, r, shows, mark, verb, set_shown, count=has_count, sources=sources, gallery=has_gallery)
+            _row(project_path, r, shows, mark, verb, set_shown, cols, sources=sources)
 
 
 def _row(
@@ -212,10 +234,9 @@ def _row(
     mark: Callable[..., str],
     verb: str,
     set_shown,
+    cols: _Columns,
     *,
-    count: bool,
     sources: dict[str, Callable[[], None]] | None,
-    gallery: bool,
 ) -> None:
     on = shown(project_path, r, shows)
     item = ui.element("div").classes("cb-lyr-tr cb-gal-pk-row" + ("" if on else " off"))
@@ -231,11 +252,11 @@ def _row(
                     "shows: another alignment puts the specimen elsewhere in the volume, so it can sit off what it "
                     "marks."
                 )
-        if count:
+        if cols.count:
             ui.label(r.count).classes("cb-gal-pk-n")
         if sources is not None:
             _source_cell(r, shows, sources)
-        if gallery:
+        if cols.gallery:
             _gallery_cell(r)
     if r.on_color is None:
         marker.classes(add="fixed")

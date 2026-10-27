@@ -24,15 +24,18 @@ historical.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 from collections.abc import Callable
-from functools import partial
+from functools import lru_cache, partial
 from pathlib import Path
+from xml.etree.ElementTree import ParseError
 
 import pandas as pd
 from nicegui import app, ui
 
+from services.analysis.alignment_changes import refinement_changes
 from services.configs.config_service import get_config_service
 from services.configs.user_prefs_service import get_prefs_service
 from services.dashboard_data import (
@@ -49,6 +52,7 @@ from services.dashboard_data import (
     journey_signature,
     read_tomograms_table,
     recon_mrc_map,
+    registry_ts_for,
     resolve_volume_for_3dmod,
     tilt_filter_committed,
     tilt_thumb_urls,
@@ -85,6 +89,7 @@ from ui.dashboard.figures import (
     build_motion_track_chart,
     build_per_tilt_chart,
 )
+from ui.dashboard import warp_strip
 from ui.dashboard.pixel_sanity import render_pixel_sanity_table
 from ui.dashboard.strip import build_strip
 from ui.routing import View
@@ -110,6 +115,7 @@ _DASHBOARD_PANEL_KEYS: list[tuple[str, str]] = [
     ("fs_ctf", "Motion & CTF"),
     ("tilt_filter", "Tilt filter"),
     ("ts_align", "Alignment"),
+    ("ts_refine", "Refinement"),
     ("ts_ctf", "CTF"),
     ("tilt_qc", "Tilt QC"),
     ("reconstruct", "Reconstruction"),
@@ -803,6 +809,7 @@ def _render_main_pane_for_ts(
         ("fs_ctf", _render_fs_motion_ctf_section),
         ("tilt_filter", _render_tilt_filter_section),
         ("ts_align", _render_ts_alignment_section),
+        ("ts_refine", _render_ts_refine_section),
         ("ts_ctf", _render_ts_ctf_section),
         ("tilt_qc", _render_tilt_qc_section),
         ("reconstruct", _render_reconstruct_section),
@@ -1771,6 +1778,195 @@ def _render_ts_alignment_section(ts_name: str, project_state, project_path: Path
     return True
 
 
+_HINT_REFINE_CHANGE = (
+    "Per tilt, what the refinement changed: the whole-tilt shift (the axis offset and the mean of the "
+    "tilt's warp grid) with the rigid shift of the whole volume removed, which only moves the tomogram in "
+    "its box; and the rms over the grid's nodes of the warp proper (each tilt's mean removed). The dashed "
+    "line is 2 px of the stacks the refinement read."
+)
+
+
+@lru_cache(maxsize=64)
+def _changes_report(path: str, _mtime_ns: int) -> dict:
+    return json.loads(Path(path).read_text())
+
+
+def _read_changes_report(path: Path) -> dict | None:
+    """A missAlign job's missalign_changes.json, parsed once per mtime; None while it has none."""
+    try:
+        mtime = path.stat().st_mtime_ns
+    except FileNotFoundError:
+        return None  # the job has not finished; its section says what is missing
+    return _changes_report(str(path), mtime)
+
+
+def _read_refinement(project_state, project_path: Path, ts_name: str, job_dir: Path, reports: list[Path]) -> dict:
+    """Disk only (a thread): what missAlign job `job_dir` changed in `ts_name`, from its iter0/ XML (the
+    alignment as the tool got it) and its final one; the threshold from its report; the largest local warp
+    of every missAlign report of the project (`reports`), which sets the one exaggeration; thumbnails."""
+    staged = job_dir / "warp_tiltseries"
+    before, after = staged / "iter0" / f"{ts_name}.xml", staged / f"{ts_name}.xml"
+    missing = [p for p in (before, after) if not p.is_file()]
+    if missing:
+        return {"note": f"Not on disk: {', '.join(str(p.relative_to(job_dir)) for p in missing)}"}
+    changes = refinement_changes(before, after)
+    own = _read_changes_report(job_dir / "missalign_changes.json") or {}
+    threshold = (own.get("tilt_series") or {}).get(ts_name, {}).get("threshold_angstrom")
+    largest = 0.0
+    for report in reports:
+        rows = ((_read_changes_report(report) or {}).get("tilt_series") or {}).values()
+        largest = max([largest, *(r["local_warp"]["max_angstrom"] for r in rows if r.get("local_warp"))])
+    thumbs = tilt_thumb_urls(project_state, project_path, [t.movie for t in changes.tilts])
+    return {
+        "changes": changes,
+        "threshold": threshold,
+        "largest_warp": largest or max((t.warp_max for t in changes.tilts), default=0.0),
+        "thumbs": [thumbs.get(t.movie, "") for t in changes.tilts],
+    }
+
+
+def _render_ts_refine_section(ts_name: str, project_state, project_path: Path, refresh) -> bool:
+    """What each missAlign job that refined this tilt series changed in its alignment: stat tiles, the
+    change per tilt and the warp strip (`ui/dashboard/warp_strip.py`). A job counts when the registry holds
+    its alignment output for the series. The section renders at once and fills from a thread."""
+    missalign = {
+        iid: jm for iid, jm in (project_state.jobs or {}).items() if getattr(jm, "job_type", None) == JobType.MISS_ALIGN
+    }
+    refined = sorted(iid for iid in missalign if alignment_registry_df(project_path, iid, ts_name) is not None)
+    if not refined:
+        return False
+    reports = [
+        project_path / jm.relion_job_name.rstrip("/") / "missalign_changes.json"
+        for jm in missalign.values()
+        if jm.relion_job_name
+    ]
+    ts = registry_ts_for(project_path, ts_name)
+    frames = ts.frames if ts is not None else []
+    numbers = {Path(f.raw_filename).name: f.tilt_index + 1 for f in frames if f.raw_filename}
+    for iid in refined:
+        jm = missalign[iid]
+        try:
+            schedule = ", ".join(str(e) for e in jm.schedule())
+        except ValueError as e:
+            schedule = f"unreadable ({e})"
+        param_rows = [
+            ("preset", getattr(jm.iteration_preset, "value", str(jm.iteration_preset))),
+            ("schedule", schedule),
+        ]
+        status_label = getattr(jm.execution_status, "value", str(jm.execution_status))
+        with ui.element("div").classes("cb-section-card w-full") as card:
+            card._props["data-section"] = "ts_refine"
+            card._props["data-instance"] = iid
+            title = "Refinement" + (f" · {iid}" if len(refined) > 1 else "")
+            _section_header(title, params=param_rows, status_label=status_label, instance_id=iid)
+            host = ui.element("div").classes("w-full")
+            with host:
+                ui.label("reading the refined alignment…").classes("cb-section-placeholder")
+            if not jm.relion_job_name:
+                host.clear()
+                with host:
+                    ui.label("The job has no directory yet.").classes("cb-section-placeholder")
+                continue
+            job_dir = project_path / jm.relion_job_name.rstrip("/")
+            owned_timer(
+                0.05,
+                partial(_fill_refinement, host, project_state, project_path, ts_name, job_dir, reports, numbers),
+                host,
+                once=True,
+            )
+    return True
+
+
+async def _fill_refinement(
+    host, project_state, project_path: Path, ts_name: str, job_dir: Path, reports: list[Path], numbers: dict
+) -> None:
+    try:
+        data = await asyncio.to_thread(_read_refinement, project_state, project_path, ts_name, job_dir, reports)
+    except (OSError, ParseError, ValueError, KeyError) as e:
+        logger.exception("Refinement section: %s in %s", ts_name, job_dir)
+        data = {"error": f"{type(e).__name__}: {e}"}
+    if host.is_deleted:
+        return
+    host.clear()
+    with host:
+        if "note" in data or "error" in data:
+            ui.label(data.get("note") or f"Could not read the refined alignment: {data['error']}").classes(
+                "cb-section-placeholder" + (" text-amber-700" if "error" in data else "")
+            )
+            return
+        _render_refinement(data, [numbers.get(t.movie) for t in data["changes"].tilts])
+
+
+def _render_refinement(data: dict, numbers: list[int | None]) -> None:
+    changes = data["changes"]
+    threshold = data["threshold"]
+    tilts = changes.tilts
+    shifts = [t.shift for t in tilts]
+    worst = max(tilts, key=lambda t: t.shift)
+    rms = math.sqrt(sum(s * s for s in shifts) / len(shifts))
+    tiles: list[tuple] = [
+        ("Change", f"{rms:.1f} Å rms", "Whole-tilt shift change with the rigid volume shift removed, rms over tilts"),
+        ("Largest change", f"{worst.shift:.1f} Å at {worst.angle:+.0f}°"),
+        (
+            "Re-centring",
+            f"{changes.gauge_rms:.1f} Å rms",
+            "The rigid shift of the whole volume, removed first: it only moves the tomogram in its box",
+        ),
+    ]
+    if changes.has_warp:
+        warp_rms = math.sqrt(sum(t.warp_rms**2 for t in tilts) / len(tilts))
+        tiles.append(
+            (
+                "Local warp",
+                f"{warp_rms:.1f} Å rms, {max(t.warp_max for t in tilts):.1f} max",
+                f"The {changes.width}×{changes.height} image-warp grid with each tilt's mean removed, over all nodes",
+            )
+        )
+    else:
+        tiles.append(("Local warp", "none", "The run wrote no image-warp grid for this series"))
+    if threshold is not None:
+        over = sum(s > threshold for s in shifts)
+        tiles.append(("Over 2 px", f"{over} of {len(tilts)} tilts", f"Whole-tilt shift change over {threshold:.3g} Å"))
+    _stat_tiles(tiles)
+
+    customdata = [[n, t.movie, "", thumb] for n, t, thumb in zip(numbers, tilts, data["thumbs"], strict=True)]
+    series = [{"name": "Shift change, rigid removed", "y": shifts}]
+    if changes.has_warp:
+        series.append({"name": "Warp rms", "y": [t.warp_rms for t in tilts]})
+    if threshold is not None:
+        series.append({"name": "2 px", "y": [threshold] * len(tilts), "ref": True})
+    fig = build_per_tilt_chart(
+        [t.angle for t in tilts],
+        series,
+        x_label="Tilt (°)",
+        y_label="Change (Å)",
+        customdata=customdata,
+        y_unit=" Å",
+        theme=JOURNEY_THEME,
+    )
+    with ui.element("div").classes("cb-plot-row"):
+        _plot_cell("Change per tilt", fig, hint=_HINT_REFINE_CHANGE)
+
+    if not changes.has_warp:
+        ui.label("No local warp: this run bent no tilt, it only moved whole tilts.").classes("cb-section-placeholder")
+        return
+    image_x = changes.image_angstrom[0]
+    spacing = warp_strip.TILE_IMG_PX / max(1, max(changes.width, changes.height) - 1)
+    factor = warp_strip.exaggeration(data["largest_warp"], image_x, spacing, warp_strip.TILE_IMG_PX)
+    zoom_spacing = warp_strip.ZOOM_IMG_PX / warp_strip.ZOOM_SAMPLES
+    zoom_factor = warp_strip.exaggeration(data["largest_warp"], image_x, 2 * zoom_spacing, warp_strip.ZOOM_IMG_PX)
+    scale = warp_strip.nice_down(16 / (warp_strip.TILE_IMG_PX / image_x * factor))
+    warp_strip.render_warp_strip(
+        changes,
+        numbers,
+        data["thumbs"],
+        factor=factor,
+        zoom_factor=zoom_factor,
+        scale_angstrom=scale,
+        threshold=threshold,
+    )
+
+
 def _render_ts_ctf_section(ts_name: str, project_state, project_path: Path, refresh) -> bool:
     found = find_job_by_type(project_state, JobType.TS_CTF)
     if not found:
@@ -2492,6 +2688,28 @@ def _plane_caption(plane: dict, ref_job: str) -> str:
     )
 
 
+# The blink's switches, inline on its box: the reference slab shows while the pointer is held on it
+# or Space is held with the box focused (a click focuses it), and hides on release or leaving.
+_BLINK_SHOW = "this.lastElementChild.style.visibility='visible'"
+_BLINK_HIDE = "this.lastElementChild.style.visibility='hidden'"
+
+
+def _blink_html(v: dict, ref: dict, ts_name: str) -> str:
+    """Version `v`'s matched slab with the reference's stacked on it, hidden until held: the two planes
+    are registered, so what changes under the pointer is what the refinement changed. Browser only."""
+    space = "if(event.key===' '){event.preventDefault();%s}"
+    stack = "draggable='false' style='grid-area: 1 / 1;"
+    return (
+        f'<div class="cb-blink" tabindex="0" style="display: grid; width: 100%; user-select: none;" '
+        f'onpointerdown="{_BLINK_SHOW}" onpointerup="{_BLINK_HIDE}" onpointerleave="{_BLINK_HIDE}" '
+        f'onpointercancel="{_BLINK_HIDE}" onblur="{_BLINK_HIDE}" '
+        f'onkeydown="{space % _BLINK_SHOW}" onkeyup="{space % _BLINK_HIDE}">'
+        f"<img src='{vis_asset_url(str(v['slab']))}' alt='{ts_name} {v['job']}' {stack}' />"
+        f"<img src='{vis_asset_url(str(ref['slab']))}' alt='{ts_name} {ref['job']}' {stack} visibility: hidden;' />"
+        "</div>"
+    )
+
+
 def _render_recon_versions(versions: list[dict], ts_name: str, project_path: Path, refresh) -> None:
     """One pane per reconstruct job of this TS, every slab on the first job's plane. Until the
     registration lands the panes wait; if it fails they fall back to each job's own WarpTools
@@ -2501,10 +2719,18 @@ def _render_recon_versions(versions: list[dict], ts_name: str, project_path: Pat
         with ui.element("div").classes("cb-recon-compare-pane"):
             ui.label(f"recon · {v['job']}").classes("cb-recon-pane-tag")
             if state == "fresh":
+                ref = versions[0]
                 with ui.element("div").classes("cb-recon-preview").style("position: relative;").tooltip(_PLANE_TIP):
-                    ui.html(f"<img src='{vis_asset_url(str(v['slab']))}' alt='{ts_name} {v['job']}' />", sanitize=False)
+                    if v is ref:
+                        slab = f"<img src='{vis_asset_url(str(v['slab']))}' alt='{ts_name} {v['job']}' />"
+                        ui.html(slab, sanitize=False)
+                    else:
+                        ui.html(_blink_html(v, ref, ts_name), sanitize=False).style("width: 100%;")
                     copy_3dmod_chip(v["mrc"])
-                ui.label(_plane_caption(v["plane"], versions[0]["job"])).classes("cb-recon-preview-caption")
+                caption = _plane_caption(v["plane"], ref["job"])
+                if v is not ref:
+                    caption += f" · hold the pointer on it (or Space) to see {ref['job']}"
+                ui.label(caption).classes("cb-recon-preview-caption")
             elif state == "failed":
                 warp_png = v["mrc"].with_suffix(".png")
                 if warp_png.exists():

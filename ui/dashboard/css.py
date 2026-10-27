@@ -616,6 +616,26 @@ _CB_CSS = """
     font-family: ui-monospace, monospace; font-size: 10px;
     color: #6b7280; padding: 2px 4px 6px 4px;
 }
+/* The compare mode's blink (ui/tomo_dashboard_dialog.py `_blink_html`): the box shows it can be
+ * held, and keeps no focus ring of its own. */
+.cb-blink { cursor: pointer; outline: none; }
+.cb-blink:focus-visible { box-shadow: inset 0 0 0 2px #93c5fd; }
+/* The Refinement section's warp strip (ui/dashboard/warp_strip.py): its legend line, a tile per
+ * tilt (ringed inline when over the threshold), the angle under it, and the zoom. */
+.cb-warp-legend {
+    display: flex; align-items: center; gap: 5px; flex-wrap: wrap; margin: 4px 2px 6px;
+    font-size: 9px; color: #5b6f8a;
+}
+.cb-warp-tile { background: #ffffff; cursor: pointer; padding-bottom: 2px; }
+.cb-warp-tile:hover { background: var(--cb-hover, #e6eff8); }
+.cb-warp-angle { font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b829b; line-height: 11px; }
+.cb-warp-zoom-dialog .q-dialog__inner--minimized > div { max-width: none; }
+.cb-warp-zoom {
+    background: #ffffff; padding: 10px 12px; border-radius: 6px; font-family: 'IBM Plex Sans', sans-serif;
+    display: flex; flex-direction: column; gap: 6px;
+}
+.cb-warp-zoom-title { font-size: 12px; font-weight: 600; color: var(--cb-head-ink, #12324f); }
+.cb-warp-zoom-note { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #5b6f8a; }
 /* Side-by-side recon | denoised comparison in the Reconstruct section. Two equal
  * panes, each hosting a .cb-recon-preview canvas. Panes shrink (min-width:0) so the
  * contained images scale down instead of overflowing. When denoise hasn't run, only
@@ -1256,6 +1276,9 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 .cb-lyr-col { white-space: nowrap; }
 .cb-lyr-col.num { text-align: right; }
 .cb-lyr-eye { color: var(--cb-accent, #4a8fd4); cursor: pointer; }
+/* A row's eye and key sit in their own columns, centred, whatever the cells after them hold. */
+.cb-lyr-table > .cb-lyr-tr > .cb-lyr-eye { grid-column: 1; justify-self: center; }
+.cb-lyr-table > .cb-lyr-tr > .cb-gal-pk-marker { grid-column: 2; justify-self: center; }
 .cb-lyr-eye.off { color: #b8c7d8; }
 .cb-lyr-head .cb-lyr-eye:hover { color: var(--cb-head-ink, #12324f); }
 .cb-lyr-table > .cb-lyr-group {

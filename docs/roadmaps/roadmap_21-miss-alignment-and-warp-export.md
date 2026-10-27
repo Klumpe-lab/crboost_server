@@ -2,7 +2,7 @@
 
 **Status:** rev 2, approved 2026-09-29. Stages 1–3 **code-complete, NOT RUN** (branch `missalignmnet`,
 2026-09-29); first run = `bullseye_artifact_two` (7 TS). Stages 4–6 open. Stage 7 (§7, what a run changed, shown in
-the Journey) scoped 2026-10-27, not built. Tool reference: `docs/miss-alignment.md`.
+the Journey): 7a and 7b built 2026-10-27, NOT RUN; 7c open. Tool reference: `docs/miss-alignment.md`.
 
 **Progress 2026-09-29 (read before the first run):**
 - **Every earlier run trained on mis-projected data.** The dim stamp took the image size from the settings'
@@ -236,6 +236,29 @@ miss-alignment), including the stamp step.
 - *Success:* on AGG412 Grid2 (job022) Position_6 shows its 121.8 Å tilt ringed and its 3×3 arrows; a series
   refined without `[3,3]` rounds says "no local warp" and shows no arrows; the blink makes the refined slab's
   sharper features visible without reading a number.
+- **Progress 2026-10-27 — 7a + 7b built, NOT RUN** (ruff only). Decisions: one exaggeration per project (from
+  the largest `local_warp.max_angstrom` over every missAlign report of the project), blink (no wipe), 7c later.
+  - Checked against the source and job022's XMLs: `<Node>` carries `X`/`Y`/`Z` (Z = the XML's tilt row, X
+    fastest); node i of N sits at `margin + i·(1 − 2·margin)/(N − 1)`, margins 0 here, so a 3×3 grid has nodes
+    on the image's corners, edge midpoints and centre; `iter0/` holds a 1×1×1 zero grid. warpylib
+    `get_position_in_all_tilts` **adds** `AxisOffset` and **subtracts** the movement grid, so the whole-tilt
+    shift drawn is ΔAxisOffset **minus** the change of the grid's mean (the handoff said plus), and the warp
+    arrows are minus the deformation: every arrow shows where image content moved. Thumbnails are not flipped
+    (filterTilts `ImageProcessor`), so grid Y runs down the tile.
+  - `services/analysis/alignment_changes.py`: `movement_grid`, `tilt_geometry` (parse cached by mtime),
+    `refinement_changes` (rigid fit over the total whole-tilt shift), `interpolated_field` (natural cubic
+    splines through the nodes; Warp's B-spline ends may differ — display only).
+  - `ui/tomo_dashboard_dialog.py`: section `ts_refine` after Alignment, one card per missAlign job with a
+    registry alignment output for the series; renders a placeholder and fills from a thread. Tiles: change
+    rms, largest change and its tilt, re-centring, local warp, tilts over 2 px. Chart: shift change and warp
+    rms, 2-px `ref` line. Because the grid mean is included, the numbers can differ slightly from
+    `missalign_changes.json`'s (AxisOffset only).
+  - `ui/dashboard/warp_strip.py`: the strip (64 px thumbnails, warm node arrows, gray-blue hollow whole-tilt
+    arrow stopped at the tile's edge, ringed over the threshold) and the zoom (12×12 field from a worker,
+    ← →).
+  - 7b: in compare mode each non-reference pane stacks the reference slab under its own; holding the
+    pointer, or Space with the box focused, shows the reference.
+  - Owed at runtime: the success checks above; whether the arrow lengths read at ×N on a 64 px tile.
 
 ## 6. Side finding (outside this roadmap — verify)
 Species match in candidate scoring only counts for **succeeded** candidates
@@ -248,7 +271,7 @@ species and stage order are hard filters, ties are stated, and job numbers no lo
 **Modern-Python weave-in:** `refines` as a `tuple[JobFileType, ...]` on the frozen `JobSpec`;
 `_follow_refinements` as a small pure function (candidate, pipeline, specs) → candidate, trivially testable.
 
-## 7. What a run changed, shown in the Journey (scoped 2026-10-27, not built)
+## 7. What a run changed, shown in the Journey (scoped 2026-10-27; 7a + 7b built, not run)
 
 The maintainer asked for a per-tilt-series view, in the Journey, of how missAlign changed an alignment: the local
 deformations and the finer per-tilt corrections, visual rather than a table of numbers.
