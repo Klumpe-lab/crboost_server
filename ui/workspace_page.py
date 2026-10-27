@@ -1,4 +1,5 @@
 import asyncio
+import json
 from collections.abc import Callable
 
 from nicegui import ui
@@ -141,24 +142,48 @@ _VIEW_RESIZER_JS = """
 })();
 """
 
-# Esc closes the views one at a time, the last turned on first (_on_escape). A capturing
-# listener on the window, so it runs before the Escapes that dismiss something smaller (the
-# slab lightbox, a pinned tilt popover, a pick selection on screen) and leaves the key to them,
-# as it does to an open dialog or menu.
-_VIEW_ESCAPE_JS = """
+# Esc closes the pane the pointer last went down in (_on_escape), as that pane's cross does: a view,
+# the job page, or the job roster (named "roster"; the rest by their frame's view name). That pane
+# carries `data-cb-focus`, which lights its title line (ui/dashboard/css.py). The server moves it too
+# (_focus_pane): a view turned on takes it, and when the pane holding it goes, the pane of the view
+# turned on last before it does (window.cbPaneKeep). The keydown listener captures on the window, so it
+# runs before the Escapes that dismiss something smaller (the slab lightbox, a pinned tilt popover, a
+# pick selection on screen) and leaves the key to them, as it does to an open dialog or menu.
+_PANE_FOCUS_JS = """
 (function(){
-  if (window.__cbViewEscape) return;
-  window.__cbViewEscape = true;
+  if (window.__cbPaneFocus) return;
+  window.__cbPaneFocus = true;
   const busy = '.q-dialog, .q-menu, .cb-slab-lightbox, .cb-tp-popover[data-pinned], .cb-gallery-tile.selected';
+  const paneOf = (name) => document.getElementById(name === 'roster' ? 'cb-roster-panel' : 'cb-view-' + name);
+  const nameOf = (el) => el.id === 'cb-roster-panel' ? 'roster' : el.id.slice('cb-view-'.length);
+  const focused = () => document.querySelector('[data-cb-focus]');
+  const focus = (el) => {
+    const cur = focused();
+    if (cur === el) return;
+    if (cur) cur.removeAttribute('data-cb-focus');
+    if (el) el.setAttribute('data-cb-focus', '');
+  };
+  window.cbPaneFocus = (name) => focus(name ? paneOf(name) : null);
+  // The panes showing changed: the lit one stays lit while it shows, else `next` takes it.
+  window.cbPaneKeep = (shown, next) => {
+    const cur = focused();
+    if (!cur || !shown.includes(nameOf(cur))) focus(next ? paneOf(next) : null);
+  };
+  document.addEventListener('pointerdown', (e) => {
+    const pane = e.target.closest && e.target.closest('#cb-roster-panel, #cb-view-main > [id^="cb-view-"]');
+    if (pane) focus(pane);
+  }, true);
   window.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || e.repeat) return;
     // Only what is on screen counts: a hidden view keeps its selections.
     if ([...document.querySelectorAll(busy)].some((el) => el.getClientRects().length)) return;
-    // Esc in a field leaves the field, then closes the view like anywhere else.
+    const pane = focused();
+    if (!pane) return;
+    // Esc in a field leaves the field, then closes the pane like anywhere else.
     const a = document.activeElement;
     const fields = 'input, textarea, select, [contenteditable="true"]';
     if (a && a !== document.body && a.closest && a.closest(fields)) a.blur();
-    emitEvent('cb_view_escape');
+    emitEvent('cb_view_escape', nameOf(pane));
   }, true);
 })();
 """
@@ -261,6 +286,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
     _refs = {}
     # Whether the pipeline view has a job open: without one its page leaves the main area and the roster stays.
     _job_open = {"on": True}
+    client = ui.context.client
 
     if route_writer is None:
         from ui.open_project import disambiguating_base
@@ -290,6 +316,17 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
             route_writer.write(View.PICKS, page.species_id, page.tomo_name)
             return
         route_writer.write(view)
+
+    def _panes_of(name: str) -> list[str]:
+        """A view's panes, by the names _PANE_FOCUS_JS knows them by: the Jobs view's are the roster and,
+        while a job is open, the job page."""
+        if name != "pipeline":
+            return [name]
+        return ["roster", "pipeline"] if _job_open["on"] else ["roster"]
+
+    def _focus_pane(pane: str) -> None:
+        """Light `pane`'s title line: the pane Esc closes."""
+        client.run_javascript(f"window.cbPaneFocus && window.cbPaneFocus({json.dumps(pane)})")
 
     def _apply_views() -> None:
         """Show every view that is on, side by side in the rail's order (_VIEW_ORDER: the
@@ -363,6 +400,12 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
             if page is not None:
                 page.set_active(name in _on)
 
+        # The lit pane stays lit while it shows; once it is gone, the pane of the view turned on last is.
+        panes = [pane for name in _on for pane in _panes_of(name)]
+        client.run_javascript(
+            f"window.cbPaneKeep && window.cbPaneKeep({json.dumps(panes)}, {json.dumps(panes[-1] if panes else '')})"
+        )
+
     def _show(name: str) -> None:
         """Turn a view on (a no-op for its layout when it already shows) and make it the
         one the address bar names."""
@@ -380,6 +423,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         # what makes the history entry come out right: the view change pushes, the
         # refinement replaces.
         _write_mode_url()
+        _focus_pane(_panes_of(name)[-1])
 
     def _hide(name: str) -> None:
         """Turn a view off; the address bar then names the view turned on before it."""
@@ -401,6 +445,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         _on[:] = [name]
         _apply_views()
         _write_mode_url()
+        _focus_pane(_panes_of(name)[-1])
 
     def _set_view_title(name: str, text: str, tooltip: str | None = None) -> None:
         """A view names itself on its title line (the pipeline: the job its page shows); the
@@ -680,10 +725,20 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
 
         ui.timer(0, _apply, once=True)
 
-    def _on_escape(_e) -> None:
-        """Esc turns off the view turned on last; the one left showing stays."""
-        if len(_on) > 1:
-            _hide(_on[-1])
+    def _on_escape(e) -> None:
+        """Esc closes the lit pane (_PANE_FOCUS_JS) as its cross does: the job page closes its job, the
+        roster the Jobs view (the roster and the job page), any other pane its view."""
+        raw = e.args
+        if isinstance(raw, list):
+            raw = raw[0] if raw else ""
+        pane = str(raw or "")
+        if pane == "pipeline":
+            if "pipeline" in _on and _job_open["on"]:
+                callbacks["close_job"]()
+        elif pane == "roster":
+            _hide("pipeline")
+        else:
+            _hide(pane)
 
     ui.on("cb_view_escape", _on_escape)
     ui.on("cb_popstate", _on_popstate)
@@ -817,7 +872,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
     mount_background_task_tray(project_path_provider=lambda: str(ui_mgr.project_path) if ui_mgr.project_path else None)
 
     # Wire the roster resizer, the view splitters and Esc once the DOM for this page exists on the client.
-    ui.timer(0.1, lambda: ui.run_javascript(_ROSTER_RESIZER_JS + _VIEW_RESIZER_JS + _VIEW_ESCAPE_JS), once=True)
+    ui.timer(0.1, lambda: ui.run_javascript(_ROSTER_RESIZER_JS + _VIEW_RESIZER_JS + _PANE_FOCUS_JS), once=True)
 
     # The opening layout (the pipeline alone) through the same path every toggle takes, so
     # its rail icon is lit the way a toggled one is.

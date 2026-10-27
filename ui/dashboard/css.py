@@ -154,7 +154,7 @@ _CB_CSS = """
 .cb-hover-card.cb-hover-empty { color: #9ca3af; font-style: italic; }
 .cb-gallery-grid {
     display: grid; grid-template-columns: repeat(auto-fill, 96px);
-    gap: 4px; padding: 6px 2px 6px 2px; justify-content: start;
+    gap: 4px; padding: 0 2px 6px 2px; justify-content: start;
 }
 .cb-gallery-tile {
     position: relative; width: 96px; height: 96px;
@@ -197,59 +197,6 @@ _CB_CSS = """
 .cb-gallery-empty {
     padding: 18px; text-align: center; font-size: 11px; color: #6b7280;
     background: #f8fafc; border-radius: 4px; border: 1px dashed #cbd5e1;
-}
-.cb-reference-strip {
-    display: flex; gap: 8px; align-items: stretch;
-    padding: 6px 2px; border-bottom: 1px dashed #e5e7eb;
-    margin-bottom: 4px;
-}
-.cb-reference-strip .cb-ref-group {
-    display: flex; flex-direction: column; gap: 2px;
-}
-.cb-reference-strip .cb-ref-label {
-    font-size: 9px; color: #6b7280; text-transform: uppercase;
-    font-weight: 700; letter-spacing: 0.4px; padding: 0 2px;
-}
-.cb-reference-strip .cb-ref-tiles {
-    display: flex; gap: 4px;
-}
-.cb-reference-strip .cb-ref-divider {
-    width: 1px; background: #e5e7eb; margin: 0 2px;
-}
-.cb-template-tile {
-    position: relative; width: 96px; height: 96px;
-    background-color: #0f172a; background-repeat: no-repeat;
-    background-size: 96px 96px;
-    border-radius: 3px; overflow: hidden;
-    border: 2px solid #10b981;
-    box-shadow: 0 0 0 1px #10b981;
-}
-.cb-template-tile .cb-tile-rank {
-    position: absolute; top: 0; left: 0;
-    padding: 0 4px; background: rgba(16,185,129,0.92);
-    font-family: ui-monospace, monospace; font-size: 9px; color: white;
-    border-bottom-right-radius: 3px;
-}
-.cb-noise-tile {
-    position: relative; width: 96px; height: 96px;
-    background-color: #0f172a; background-repeat: no-repeat;
-    border-radius: 3px; overflow: hidden; cursor: pointer;
-    border: 2px solid #fb923c;
-    box-shadow: 0 0 0 1px #fb923c;
-    transition: transform 0.06s ease;
-}
-.cb-noise-tile:hover { transform: scale(1.04); }
-.cb-noise-tile .cb-tile-rank {
-    position: absolute; top: 0; left: 0;
-    padding: 0 4px; background: rgba(251,146,60,0.92);
-    font-family: ui-monospace, monospace; font-size: 9px; color: white;
-    border-bottom-right-radius: 3px;
-}
-.cb-noise-tile .cb-tile-score {
-    position: absolute; bottom: 0; right: 0;
-    padding: 1px 4px; background: rgba(15,23,42,0.72);
-    font-family: ui-monospace, monospace; font-size: 9px; color: #f8fafc;
-    border-top-left-radius: 3px;
 }
 .cb-tomo-preview {
     width: 100%; background: #0f172a; border-radius: 4px;
@@ -427,10 +374,9 @@ _CB_CSS = """
     padding: 2px 0 4px 0;
 }
 .cb-gallery-scroll { overflow-y: auto; max-height: 68vh; padding-right: 4px; position: relative; }
-/* Gallery header: title · count on the left, the toolbelt on the right. Sort, filters,
+/* A gallery's count and toolbelt, at the end of the tool row over it. Sort, filters,
  * the 3dmod commands, the hovered-pick info and the filtered-set path are toolbelt
  * icons with popovers. */
-.cb-gallery-head { padding: 0 0 2px 0; }
 .cb-gallery-count { font-size: 10px; color: #94a3b8; font-family: ui-monospace, monospace; }
 .cb-toolbelt { flex-shrink: 0; }
 .cb-tb-btn { color: #6b829b; }
@@ -453,13 +399,6 @@ _CB_CSS = """
 /* Narrow popover for the sort / display-filter controls — .cb-info-card's 300px floor
  * is sized for path rows, and a lone select rattling around in it reads as broken. */
 .cb-tb-card { min-width: auto; padding: 6px 8px; }
-/* The reference strip's collapse line (closed by default). */
-.cb-ref-toggle {
-    font-size: 9px; color: #6b7280; text-transform: uppercase;
-    font-weight: 700; letter-spacing: 0.4px;
-    cursor: pointer; padding: 3px 2px; user-select: none; width: max-content;
-}
-.cb-ref-toggle:hover { color: #475569; }
 /* The full-page viewer: fills the workspace main area and scrolls as one. */
 .cb-viewer-page {
     display: flex; flex-direction: column; gap: 6px;
@@ -700,18 +639,14 @@ _CB_CSS = """
 }
 /* ----------------------------------------------------------------------
  * Polarity invert: a runtime toggle in the section header flips the
- * apparent intensity of template, X/Y slab, X/Z slab, and cutout tiles
- * together — same density convention across all four. Double-invert
+ * apparent intensity of the X/Y slab, X/Z slab, and cutout tiles
+ * together — same density convention across all three. Double-invert
  * trick on tile children keeps overlay labels readable.
  * ---------------------------------------------------------------------- */
 .cb-invert-polarity .cb-tomo-preview > img,
-.cb-invert-polarity .cb-template-tile,
-.cb-invert-polarity .cb-noise-tile,
 .cb-invert-polarity .cb-gallery-tile {
     filter: invert(1) hue-rotate(180deg);
 }
-.cb-invert-polarity .cb-template-tile > *,
-.cb-invert-polarity .cb-noise-tile > *,
 .cb-invert-polarity .cb-gallery-tile > * {
     filter: invert(1) hue-rotate(180deg);
 }
@@ -1287,10 +1222,6 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 .cb-gal-toolbar-label:first-child { margin-left: 0; padding-left: 0; border-left: none; }
 /* The layers list's rows (ui/components/layer_menu.py), in the wall's menu, the zoom's side column,
  * the Journey's Reconstruct card and the pick viewer. */
-.cb-gal-pk-species {
-    display: flex; align-items: center; gap: 5px; padding: 6px 10px 2px;
-    font-size: 10px; font-weight: 600; color: #334155;
-}
 .cb-gal-pk-row {
     display: flex; align-items: center; gap: 6px; padding: 2px 10px 2px 16px; cursor: pointer;
     user-select: none; font-size: 10px; color: #334155; white-space: nowrap;
@@ -1308,14 +1239,47 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 .cb-gal-pk-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .cb-gal-pk-n { font-family: ui-monospace, monospace; font-size: 9px; color: #94a3b8; }
 .cb-gal-pk-row .cb-gal-pk-warn { color: #d97706; }
-/* The layers list (ui/components/layer_menu.py): a head per kind (picks, segmentations), a species
- * head that switches all its layers, and a key that is not this list's to recolour. */
-.cb-lyr-sec {
-    display: flex; align-items: center; gap: 5px; padding: 7px 10px 1px;
-    font-size: 9px; font-weight: 600; color: #6b829b;
+/* The layers list as two tables, the pick layers' and the segmentations' (ui/components/layer_menu.py):
+ * a head per kind whose eye switches all of its layers, a species row that switches all of the
+ * species' layers, a row per layer, all on the table's columns (--cb-lyr-cols, set on the table). In a
+ * view that can switch its picture or has a gallery the table is wide, with the reconstruction each
+ * layer was made on and the button that shows a pick list in the gallery. */
+.cb-lyr-table { padding: 0 4px; }
+.cb-lyr-table.cb-lyr-wide { min-width: 500px; }
+.cb-lyr-table + .cb-lyr-table { margin-top: 4px; }
+.cb-lyr-table > .cb-lyr-tr {
+    display: grid; grid-template-columns: var(--cb-lyr-cols); column-gap: 8px; align-items: center;
+    padding: 2px 6px; border-radius: 3px;
 }
-.cb-lyr-group { cursor: pointer; user-select: none; padding-left: 14px; }
+.cb-lyr-table > .cb-lyr-head { padding-top: 7px; font-size: 9px; color: #8aa0b8; }
+.cb-lyr-title { grid-column: span 2; font-size: 10px; font-weight: 600; color: #33506e; }
+.cb-lyr-col { white-space: nowrap; }
+.cb-lyr-col.num { text-align: right; }
+.cb-lyr-eye { color: var(--cb-accent, #4a8fd4); cursor: pointer; }
+.cb-lyr-eye.off { color: #b8c7d8; }
+.cb-lyr-head .cb-lyr-eye:hover { color: var(--cb-head-ink, #12324f); }
+.cb-lyr-table > .cb-lyr-group {
+    cursor: pointer; user-select: none; padding-top: 5px;
+    font-size: 10px; font-weight: 600; color: #475569;
+}
 .cb-lyr-group:hover { background: var(--cb-hover, #e6eff8); }
+.cb-lyr-name { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.cb-lyr-table .cb-gal-pk-n { text-align: right; }
+.cb-lyr-table > .cb-gal-pk-palette { padding-left: 32px; }
+.cb-lyr-src {
+    justify-self: start; max-width: 100%; box-sizing: border-box; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; font-size: 9px; line-height: 14px; padding: 0 5px; border-radius: 3px; color: #4f6782;
+    background: #ffffff; border: 1px solid var(--cb-field-line, #d3dde8); cursor: pointer;
+}
+.cb-lyr-src:hover { border-color: var(--cb-field-line-hover, #a9c6e4); color: var(--cb-head-ink, #12324f); }
+.cb-lyr-src.here {
+    background: var(--cb-head, #edf4fb); border-color: #c9dbee; color: var(--cb-head-ink, #12324f);
+    font-weight: 600; cursor: default;
+}
+.cb-lyr-src.none { background: transparent; border-color: transparent; color: #94a3b8; cursor: inherit; }
+.cb-gal-pk-row .q-icon.cb-lyr-gal { justify-self: center; color: #9fb2c8; cursor: pointer; border-radius: 3px; }
+.cb-gal-pk-row .q-icon.cb-lyr-gal:hover { color: var(--cb-head-ink, #12324f); background: #ffffff; }
+.cb-gal-pk-row .q-icon.cb-lyr-gal.here { color: var(--cb-accent, #4a8fd4); cursor: default; }
 .cb-gal-pk-marker.fixed { cursor: inherit; }
 .cb-gal-pk-marker.fixed:hover { box-shadow: none; }
 /* Segmentation layers: the opacity row under the list. */
@@ -1535,7 +1499,8 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
     flex: 0 0 auto; display: flex; flex-direction: column; gap: 4px; min-height: 0; overflow-y: auto;
     background: #ffffff; border-radius: 5px; padding: 8px 4px 8px 8px;
 }
-.cb-gal-zoom-side :is(.cb-gal-pk-row, .cb-gal-pk-species, .cb-lyr-sec) { padding-left: 2px; }
+.cb-gal-zoom-side .cb-gal-pk-row { padding-left: 2px; }
+.cb-gal-zoom-side .cb-lyr-table { padding: 0; }
 .cb-gal-zoom-side .cb-gal-pk-palette { padding-left: 24px; }
 .cb-gal-zoom-side .cb-hmenu-item, .cb-gal-zoom-side .cb-hmenu-group { padding-left: 2px; padding-right: 4px; }
 .cb-gal-zoom-side .cb-hmenu-item.nested { padding-left: 8px; }
@@ -1657,6 +1622,12 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
  * its title line. */
 .cb-view-close { color: #8aa0b8; cursor: pointer; border-radius: 3px; width: 16px; height: 16px; }
 .cb-view-close:hover { color: var(--cb-head-ink, #12324f); background: var(--cb-hover, #e6eff8); }
+/* The pane Esc closes, the one the pointer last went down in (ui/workspace_page.py `_PANE_FOCUS_JS`):
+ * its title line takes the title stripes' light blue over an accent rule. */
+[data-cb-focus] {
+    --cb-view-head: var(--cb-head, #edf4fb); --cb-view-head-line: var(--cb-accent, #4a8fd4);
+    --cb-view-head-line-w: 2px;
+}
 /* A view's own tools on its title line (ui/components/hover_menu.py `tool_trigger`): a glyph, then
  * a name or nothing, then a caret; muted until hovered, like the icon buttons beside them. The
  * dropdown each opens under the pointer is a white card of rows. */
@@ -1670,12 +1641,23 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 .cb-htool-text { min-width: 0; max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
 .cb-htool-caret { color: #9fb2c8; margin-left: -1px; }
 .cb-htool:hover .cb-htool-caret { color: #4f6782; }
+/* A tool among a panel's content rather than on a title line (the Particles panel's, over the slabs
+ * and the gallery): in a field's box, as tall as the house fields. */
+.cb-htool.cb-htool--box {
+    height: 20px; box-sizing: border-box; padding: 0 3px 0 6px; gap: 4px; color: #33506e;
+    background: var(--cb-field-bg, #fff); border: 1px solid var(--cb-field-line, #d3dde8);
+    box-shadow: 0 1px 1px rgba(16, 42, 67, 0.04);
+}
+.cb-htool.cb-htool--box:hover { background: #f4f8fc; border-color: var(--cb-field-line-hover, #a9c6e4); }
+.cb-htool--box .cb-htool-glyph { color: #6b829b; }
 .q-menu.cb-hmenu {
     border: 1px solid var(--cb-panel-line, #dbe3ec); border-radius: 5px;
     box-shadow: 0 6px 18px rgba(15, 23, 42, 0.10);
 }
 .cb-hmenu-body { padding: 4px 0; min-width: 190px; font-family: 'IBM Plex Sans', sans-serif; }
 .cb-hmenu-title { font-size: 9px; color: #8aa0b8; padding: 2px 12px 3px; }
+/* A sentence over a menu's rows saying what the choice is. */
+.cb-hmenu-lede { font-size: 10px; line-height: 1.35; color: #4f6782; padding: 3px 12px 5px; max-width: 280px; }
 .cb-hmenu-group { font-size: 10px; font-weight: 600; color: #33506e; padding: 6px 12px 1px; }
 .cb-hmenu-item {
     display: flex; align-items: center; gap: 5px; padding: 3px 12px 3px 8px; cursor: pointer; user-select: none;
@@ -1739,7 +1721,7 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
     .cb-degen-toggle .q-checkbox__label) {
     font-family: 'IBM Plex Sans', sans-serif;
 }
-:is(.cb-journey, .cb-viewer-page) :is(.cb-hover-key, .cb-ref-label, .cb-ref-toggle, .cb-ltable-h-name,
+:is(.cb-journey, .cb-viewer-page) :is(.cb-hover-key, .cb-ltable-h-name,
     .cb-ltable-h-num, .cb-ltable-h-cell, .cb-ltable-badge, .cb-pixel-header, .cb-pixel-species-name,
     .cb-chip-label) {
     font-weight: 600;
@@ -1799,8 +1781,7 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
     50%      { background-color: #c9d1dc; }
 }
 :is(.cb-gal-frame, .cb-tomo-preview, .cb-recon-preview, .cb-tp-img):has(img:not([data-cb-img]), .cb-gal-note-wait),
-:is(.cb-gallery-scroll, .cb-gallery-grid, .cb-ref-tiles):has(> .cb-img-probe:not([data-cb-img]))
-    > :is(.cb-gallery-tile, .cb-noise-tile, .cb-template-tile) {
+:is(.cb-gallery-scroll, .cb-gallery-grid):has(> .cb-img-probe:not([data-cb-img])) > .cb-gallery-tile {
     animation: cb-img-wait 1.4s ease-in-out infinite;
 }
 /* Every other picture the same way, on its own box: no alt text while it loads (a failed one
@@ -1856,32 +1837,14 @@ img[src]:not([data-cb-img]) {
 
 # The Particles panel (root .cb-particles-root.cb-pv); after _CB_CSS, so it wins its ties.
 _PARTICLES_CSS = """
-/* One gray-blue for list selection and the hover brush, the calibration anchors in the charts'
- * pair (template gray-blue, noise floor warm), tile corners quieter (index and z on hover), the
- * gallery's title at label size. Selected picks stay amber, dropped ones red, and species keep
- * their colours on the slabs. */
+/* One gray-blue for list selection and the hover brush, tile corners quieter (index and z on
+ * hover). Selected picks stay amber, dropped ones red, and species keep their colours on the slabs. */
 .cb-particles-root.cb-pv > .cb-section-card-header {
     margin-bottom: 10px; flex-wrap: wrap; row-gap: 4px;
 }
 .cb-particles-root.cb-pv .cb-particles-split { gap: 14px; }
-.cb-particles-root.cb-pv .cb-gallery-head { padding: 0 0 4px; }
-.cb-particles-root.cb-pv .cb-gallery-head .cb-section-title { font-size: 10px; color: #4a6584; }
 .cb-particles-root.cb-pv .cb-gallery-count { font-size: 9px; }
 .cb-particles-root.cb-pv .cb-curation-bar { border-bottom: none; }
-.cb-particles-root.cb-pv .cb-ref-toggle {
-    font-size: 10px; font-weight: 500; text-transform: none; letter-spacing: 0; color: #64748b;
-}
-.cb-particles-root.cb-pv .cb-reference-strip { border-bottom: none; padding: 4px 2px 10px; }
-.cb-particles-root.cb-pv .cb-reference-strip .cb-ref-label {
-    font-size: 9px; font-weight: 600; text-transform: none; letter-spacing: 0; color: #64748b;
-}
-.cb-particles-root.cb-pv .cb-reference-strip .cb-ref-divider { background: #dbe4ee; }
-.cb-particles-root.cb-pv .cb-template-tile { border: 1px solid #4e79a7; box-shadow: none; }
-.cb-particles-root.cb-pv .cb-template-tile .cb-tile-rank {
-    background: rgba(78, 121, 167, 0.92);
-}
-.cb-particles-root.cb-pv .cb-noise-tile { border: 1px solid #dd8452; box-shadow: none; }
-.cb-particles-root.cb-pv .cb-noise-tile .cb-tile-rank { background: rgba(221, 132, 82, 0.92); }
 .cb-particles-root.cb-pv .cb-gallery-tile .cb-tile-rank { background: rgba(44, 74, 107, 0.85); }
 .cb-particles-root.cb-pv .cb-gallery-tile:not(:hover) :is(.cb-tile-idx, .cb-tile-z) {
     opacity: 0;
@@ -1898,7 +1861,7 @@ _PARTICLES_CSS = """
     width: 12px; height: 12px; background: transparent; border: 2px solid #ffffff;
     box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.8), inset 0 0 0 1px rgba(15, 23, 42, 0.8);
 }
-/* Beside the list tool on the title line: the shown list's kept/total, extraction mark, path and delete. */
+/* Beside the list tool over the gallery: the shown list's kept/total, extraction mark, path and delete. */
 .cb-particles-root.cb-pv .cb-pv-list-extras { color: #4f6782; }
 .cb-pv-list-count { font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b829b; margin-right: 2px; }
 """
