@@ -121,6 +121,7 @@ def predict(state, job_model: TiltFilterParams, job_dir: Path, project_path: Pat
     p_bad = loader.predict_p_bad([str(p) for p in inputs], job_model.dl_batch_size)
 
     registry = get_registry_for(project_path)
+    registry.raise_if_unreadable()
     if not registry.tilt_series_ids():
         raise RuntimeError(
             f"The TiltSeries registry of {project_path} is empty. Reload the project in the UI to backfill it "
@@ -165,6 +166,7 @@ def commit(job_model: TiltFilterParams, job_dir: Path, project_path: Path, model
     from services.tilt_series import get_registry_for
 
     registry = get_registry_for(project_path)
+    registry.raise_if_unreadable()
     res = asyncio.run(stamp_verdict(registry, verdict_labels(registry, job_model)))
     if not res["success"]:
         raise RuntimeError(res["error"])

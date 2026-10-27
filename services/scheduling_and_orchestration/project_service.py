@@ -690,13 +690,17 @@ class ProjectService:
             # the project mdoc dir stems. Drift detection catches a registry
             # built from unprefixed source mdocs, whose TS IDs don't match what
             # ts_import writes; such a stale sidecar makes every ingest step
-            # fail with "TS missing from registry".
+            # fail with "TS missing from registry". Never over a registry that
+            # could not be read: it reads as absent or drifted, and the rebuild
+            # would overwrite every job's outputs in it.
             try:
                 registry = self.backend.registry_for(project_dir)
                 reg_ids = set(registry.tilt_series_ids())
                 mdoc_stems = await asyncio.to_thread(lambda: {p.stem for p in (project_dir / "mdoc").glob("*.mdoc")})
                 drift = bool(reg_ids) and bool(mdoc_stems) and reg_ids.isdisjoint(mdoc_stems)
-                if (not reg_ids or drift) and (mdocs_glob or mdoc_stems):
+                if registry.load_problem:
+                    logger.warning("Registry of %s not rebuilt: %s", project_dir, registry.load_problem)
+                elif (not reg_ids or drift) and (mdocs_glob or mdoc_stems):
                     reason = "absent" if not reg_ids else "drifted from project mdocs"
                     logger.info("Registry %s for %s; rebuilding from mdocs", reason, project_dir)
                     if drift:
@@ -712,8 +716,10 @@ class ProjectService:
             project_name = state.project_name
             selected_jobs = list(state.jobs.keys())
 
-            # What the user must see on open: version skew every time, load()'s repairs once.
-            warnings = [m for m in (state.version_skew, self.backend.registry_for(project_dir).version_skew) if m]
+            # What the user must see on open: version skew and an unreadable registry every time,
+            # load()'s repairs once.
+            registry = self.backend.registry_for(project_dir)
+            warnings = [m for m in (state.version_skew, registry.version_skew, registry.load_problem) if m]
             warnings += state.load_warnings
             state.load_warnings = []
 

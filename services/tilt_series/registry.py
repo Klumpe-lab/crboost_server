@@ -129,6 +129,11 @@ class TiltSeriesRegistry:
         self._loaded_index_mtime_ns: int | None = None
         # Set by load() when newer code wrote this registry: what to tell the user.
         self.version_skew: str | None = None
+        # Set by load() and refresh_from_disk() when part of the registry could not be read: which
+        # files and why. The tilt series they hold are missing from this copy.
+        self.load_problem: str | None = None
+        # The schema version the on-disk index was written with, None before a load found one.
+        self.schema_on_disk: tuple[int, ...] | None = None
 
     # ── Paths ──────────────────────────────────────────────────────────────
 
@@ -350,17 +355,20 @@ class TiltSeriesRegistry:
         try:
             with open(self.index_path) as f:
                 index = json.load(f)
-        except Exception as e:
-            logger.warning("Failed to read registry index %s: %s", self.index_path, e)
+        except (OSError, ValueError) as e:
+            self.load_problem = f"The registry index {self.index_path} could not be read ({e}): no tilt series loaded."
+            logger.warning("%s", self.load_problem)
             return
 
         version = tuple(index.get("schema_version", (0, 0)))
+        self.schema_on_disk = version
         newer_on_disk = version > REGISTRY_SCHEMA_VERSION
 
         ts_ids = index.get("tilt_series", [])
         with ThreadPoolExecutor(max_workers=_READ_THREADS, thread_name_prefix="registry-read") as pool:
             sidecars = list(pool.map(self._read_sidecar, ts_ids))
         loaded = 0
+        unreadable: list[str] = []
         for ts_id, sidecar in zip(ts_ids, sidecars, strict=True):
             ts_path = self._ts_path(ts_id)
             if isinstance(sidecar, FileNotFoundError):
@@ -372,10 +380,12 @@ class TiltSeriesRegistry:
                 mtime_ns, raw = sidecar
                 self._load_sidecar(ts_id, ts_path, replacing=False, mtime_ns=mtime_ns, raw=raw)
                 loaded += 1
-            except Exception as e:
+            except (OSError, ValueError) as e:
                 logger.warning("Failed to load TS sidecar %s: %s", ts_path, e)
+                unreadable.append(f"{ts_path.name}: {e}")
 
         logger.info("Loaded %d tilt-series from %s", loaded, self.registry_dir)
+        self.load_problem = self._unreadable_problem(unreadable, len(ts_ids))
         self.version_skew = None
         if newer_on_disk:
             skipped = len(ts_ids) - loaded
@@ -408,12 +418,14 @@ class TiltSeriesRegistry:
         try:
             with open(self.index_path) as f:
                 index = json.load(f)
-        except Exception as e:
-            logger.warning("Failed to re-read registry index %s: %s", self.index_path, e)
+        except (OSError, ValueError) as e:
+            self.load_problem = f"The registry index {self.index_path} could not be read ({e})."
+            logger.warning("%s", self.load_problem)
             return
 
         ts_ids = index.get("tilt_series", [])
         reparsed = 0
+        unreadable: list[str] = []
         for ts_id in ts_ids:
             ts_path = self._ts_path(ts_id)
             try:
@@ -426,8 +438,10 @@ class TiltSeriesRegistry:
             try:
                 self._load_sidecar(ts_id, ts_path, replacing=ts_id in self._tilt_series, mtime_ns=mtime)
                 reparsed += 1
-            except Exception as e:
+            except (OSError, ValueError) as e:
                 logger.warning("Failed to load TS sidecar %s: %s", ts_path, e)
+                unreadable.append(f"{ts_path.name}: {e}")
+        self.load_problem = self._unreadable_problem(unreadable, len(ts_ids))
 
         for gone in set(self._tilt_series) - set(ts_ids):
             self._forget_tilt_series(gone)
@@ -437,6 +451,23 @@ class TiltSeriesRegistry:
             self._loaded_index_mtime_ns = self.index_path.stat().st_mtime_ns
         except FileNotFoundError:
             self._loaded_index_mtime_ns = None
+
+    def _unreadable_problem(self, unreadable: list[str], total: int) -> str | None:
+        """load_problem for the sidecars that could not be read; None when every one could."""
+        if not unreadable:
+            return None
+        shown = "; ".join(unreadable[:3]) + (f"; and {len(unreadable) - 3} more" if len(unreadable) > 3 else "")
+        return (
+            f"{len(unreadable)} of {total} tilt-series files in {self.ts_dir} could not be read, so those tilt "
+            f"series are missing here: {shown}"
+        )
+
+    def raise_if_unreadable(self) -> None:
+        """For a job about to work from this registry: raise, naming the files, when part of it could
+        not be read. The job would otherwise run on the tilt series that could, and leave out the rest
+        without a word."""
+        if self.load_problem:
+            raise RuntimeError(" ".join(m for m in (self.load_problem, self.version_skew) if m))
 
     def save(self, *, force: bool = False) -> None:
         """Flush dirty TS + index to disk atomically (per-file rename), under the registry lock.

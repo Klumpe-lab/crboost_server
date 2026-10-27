@@ -567,6 +567,7 @@ def main():
 
         # Before any GPU time: the emit at the end needs the registry, and the star is the scope.
         registry = get_registry_for(project_path)
+        registry.raise_if_unreadable()
         if not registry.tilt_series_ids():
             raise RuntimeError(
                 f"TiltSeries registry is empty for project {project_path}. Reload the project in the UI to "

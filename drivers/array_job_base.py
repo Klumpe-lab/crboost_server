@@ -396,16 +396,24 @@ def preflight_registry(project_path: Path, expected_ts_names: list[str], job_nam
     surfaces in seconds rather than after the subjobs wasted cluster time
     doing work whose aggregation will then fail.
 
-    Returns the registry on success; raises with a diagnostic dump on failure.
+    Returns the registry on success; raises with a diagnostic dump on failure, and
+    when part of the registry could not be read (newer code wrote it, a damaged file).
     """
     # Late import — services.tilt_series pulls in pandas/pydantic, fine at
     # supervisor time but we don't want it on the task-mode hot path.
     from services.tilt_series import get_registry_for
+    from services.tilt_series.registry import REGISTRY_SCHEMA_VERSION
 
     registry = get_registry_for(project_path)
     reg_ids = registry.tilt_series_ids()
 
-    print(f"[{job_name}] PREFLIGHT: registry has {len(reg_ids)} TS, {registry.frame_count()} frames total", flush=True)
+    on_disk = ".".join(map(str, registry.schema_on_disk)) if registry.schema_on_disk else "none"
+    print(
+        f"[{job_name}] PREFLIGHT: registry has {len(reg_ids)} TS, {registry.frame_count()} frames total "
+        f"(schema {on_disk} on disk, this code reads {'.'.join(map(str, REGISTRY_SCHEMA_VERSION))})",
+        flush=True,
+    )
+    registry.raise_if_unreadable()
     if reg_ids:
         print(f"[{job_name}] PREFLIGHT: registry TS head: {reg_ids[:3]}", flush=True)
 
