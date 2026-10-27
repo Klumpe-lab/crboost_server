@@ -12,15 +12,19 @@ You point it at your movies and mdocs, build a pipeline in the UI (or start from
 and it submits, monitors and reconciles the jobs for you. Everything below assumes you are working on
 the headnode; you reach the UI from your laptop through an SSH tunnel.
 
-> **Requirements:** Python 3.11+ (with dev headers), SLURM, Apptainer/Singularity, CUDA GPUs, SSH
-> access to compute nodes, and a shared filesystem visible from the compute nodes.
+> **Requirements:** [uv](https://docs.astral.sh/uv/) (one static binary; it brings its own Python 3.11),
+> SLURM, Apptainer/Singularity, CUDA GPUs, SSH access to compute nodes, and a shared filesystem visible
+> from the compute nodes.
 
 ## Quick start
 
 ```bash
 git clone https://github.com/Klumpe-lab/crboost_server.git
 cd crboost_server
-python3 -m venv venv && venv/bin/pip install -r requirements.txt
+curl -LsSf https://astral.sh/uv/install.sh | sh   # once per user: uv in ~/.local/bin
+uv python install 3.11
+uv venv -p 3.11 venv
+uv pip sync -p venv/bin/python3 requirements.txt
 venv/bin/python3 preflight.py        # 1st run writes config/conf.yaml + config/qsub.sh, then stops
 $EDITOR config/conf.yaml config/qsub.sh
 venv/bin/python3 preflight.py        # must exit 0
@@ -46,7 +50,19 @@ Pipeline drivers running inside SLURM jobs are launched with the interpreter tha
 conda/mamba env, uv — as long as it and the repo are on a shared filesystem and that interpreter
 starts on a compute node with the modules loaded in `config/qsub.sh`.
 
-If your cluster's Python ships its own packages and versions conflict, prefer the cluster's modules.
+The quick start's uv venv runs on uv's own Python, so a compute node needs no module for it. uv keeps
+that Python in `~/.local/share/uv/python` and its cache in `~/.cache/uv`; both must be on a filesystem
+the compute nodes see (a shared home is). For an install several people use, set `UV_PYTHON_INSTALL_DIR`
+and `UV_CACHE_DIR` to a shared place before `uv python install`, e.g.
+`/groups/<lab>/software/cache_and_artifacts/uv/{python,cache}`.
+A module loaded in your shell does no harm to such a venv: `main.py` and `preflight.py` start themselves
+again without the shell's `PYTHONPATH` when the venv has its own packages (`clean_env.py`), so the server and
+every job it submits (sbatch passes the server's environment on) see only the venv.
+
+pip works on the same lock: `python3 -m venv venv && venv/bin/pip install -r requirements.txt`. The
+interpreter is then whichever `python3` built the venv, and `config/qsub.sh` must make it start on a
+compute node. A cluster module that puts packages on `PYTHONPATH` shadows the venv's; preflight warns
+about each one.
 
 </details>
 
@@ -205,7 +221,13 @@ values across. If you edit the old files instead, compare them with `config/conf
   failed job exits 0 and the jobs after it still run. Preflight checks both.
 - The old `ENV PATHS` block (`CRBOOST_SERVER_DIR`, `CRBOOST_PYTHON`) is no longer read; delete it.
 
-**Then:** `venv/bin/pip install -r requirements.txt`, `venv/bin/python3 preflight.py` (must exit 0),
+**Rebuilding `venv/` on uv's Python** (an install whose venv was made from a cluster module's Python):
+stop the server and let running jobs finish (they run the venv's interpreter), then `rm -rf venv`,
+`uv python install 3.11`, `uv venv -p 3.11 venv`, `uv pip sync -p venv/bin/python3 requirements.txt`, and
+delete the Python module lines from `config/qsub.sh`.
+
+**Then:** `uv pip sync -p venv/bin/python3 requirements.txt` (or `venv/bin/pip install -r requirements.txt`),
+`venv/bin/python3 preflight.py` (must exit 0),
 `venv/bin/python3 -m pytest -m cluster`, and restart the server. Every browser needs the newly printed
 `?token=` link once (see *Starting the server* below). The `.nicegui/` folder in the checkout no longer
 holds sessions or browser storage; you can delete it.

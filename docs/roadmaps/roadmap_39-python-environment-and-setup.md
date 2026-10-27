@@ -107,12 +107,16 @@ path outside `venv/` confirms the mixed environment described in §1.
 - `requirements.in`: the old `requirements.txt` with numpy 1.26.2, pandas 2.1.3, scipy 1.11.4, requests 2.31.0,
   matplotlib 3.10.9 and PyYAML 6.0.3 pinned to the S0 versions; the compile command in its header.
 - `requirements-dev.in`: `-c requirements.txt` plus ruff 0.15.12.
+- First compile (uv 0.13.6, 97 packages): 48 packages not pinned in `requirements.in` resolved newer than what
+  runs today (python-dateutil 3.0.0 under pandas 2.1.3, pyarrow 26 via starfile, pytest 9 among them). Pinning
+  them all to the S0 versions does not resolve: today's set only works because the modules shadow the venv
+  (nicegui 3.0.3 needs jinja2 >= 3.1.6 and runs on the module's 3.1.2). The maintainer keeps the newer ones and
+  pins back whatever breaks (2026-10-27); python-dateutil is the first suspect.
 - `uv.toml` (`[pip]` python-version 3.11, python-platform x86_64-unknown-linux-gnu), so the compile line needs
   no flags.
 - preflight `check_python` warns for each required module imported from outside `sys.prefix`, naming the path.
 - README: one line on editing `requirements.in` and recompiling; the preflight bullet mentions the warning.
-- Owed: the two `uv pip compile` runs (the maintainer's, on the headnode), which overwrite `requirements.txt`
-  and create `requirements-dev.txt`. The quick start moves to `uv pip sync` with S2, when the venv is rebuilt.
+- Compiled by the maintainer 2026-10-27 (uv 0.13.6).
 
 ### S2 — The environment's own Python (uv-managed)
 
@@ -131,6 +135,48 @@ path outside `venv/` confirms the mixed environment described in §1.
   The *Upgrading an existing install* section gets the three commands that rebuild `venv/` in place.
 - Rebuilding an existing venv changes numpy/pandas/scipy from the module's builds to PyPI wheels of the same
   versions. That is the one behavioural risk; the end-of-arc runtime pass (§4) covers it.
+
+#### S2 record (2026-10-27, docs built; the venv rebuild is the maintainer's)
+
+- README: the requirement is uv instead of "Python 3.11+ with dev headers"; the quick start installs uv, its
+  Python 3.11, `uv venv -p 3.11 venv` and `uv pip sync -p venv/bin/python3 requirements.txt`. The *Python
+  environment* dropdown says where uv keeps its Python and cache, the shared-install variables (D4), and the pip
+  route on the same lock. *Upgrading an existing install* gains the in-place rebuild.
+- `config/qsub.template.sh`: the header comment says a uv venv needs no module, only `apptainer` on PATH; ours
+  is kept as the example for a venv on a module Python.
+- Trial in the liveness worktree, whose `venv` was a symlink to the main checkout's (so jobs there keep running
+  on the old one): rebuild it there, point `crboost_python` at it and drop the module lines from that tree's
+  `config/qsub.sh`, then preflight, `pytest -m cluster` and one real chain. Every tool except cisTEM
+  (`exec_mode: binary`) runs in a container, so no driver needs a module library.
+- The server must start from a shell without the modules: sbatch exports the submitting environment
+  (`--export=ALL`), so a leftover `PYTHONPATH` reaches every job. README says so; preflight's warning shows it.
+- Done 2026-10-27: venv rebuilt on uv's CPython 3.11.18 (98 packages); this tree's `crboost_python` points at
+  it and its `config/qsub.sh` module lines are commented out (originals in `tmpOut/*.before-uv`).
+- Same day, from a shell after `module purge` + `unset PYTHONPATH`: preflight all OK (no import from outside
+  the venv), `pytest -m cluster` 12 passed in 10:52. `main.py` then stopped at an ImportError unrelated to uv
+  (main has UI code whose definitions were never committed; the three were copied into this branch).
+- Then the server started (modules 3.3 s) and a fresh 8-TS project ran its chain on the uv venv: fsMotion, the DL
+  tilt filter (torch from the venv on a GPU), alignment, CTF, reconstruction. Seen on the way: the server's and the
+  driver's PNG conversions shared one `.png.part` name (one rename failed); the part file now carries the pid.
+  This tree's `config/qsub.sh` also unsets `PYTHONPATH` in its header, so a server started from a module shell
+  cannot leak the modules into jobs.
+- `clean_env.py`, imported first by `main.py` and `preflight.py`: when the interpreter's own site-packages holds
+  numpy and `PYTHONPATH` is set, the process re-executes itself without it (one console line says so). Nobody
+  needs `module purge` before starting the server; a venv on a module Python (no numpy of its own) is untouched.
+
+#### Rollout (2026-10-27, the maintainer's steps)
+
+1. Commit what is left on `uv_and_UI`; check the committed tree imports cleanly (every `from <repo module>
+   import name` resolves), since main has shipped partial commits before.
+2. `main` is an ancestor of `uv_and_UI`: `git fetch . uv_and_UI:main`, then `git push origin main`. `roadmaps`
+   (another session's work) is not part of it.
+3. Lab install (`/groups/klumpe/software/crboost_server`), with no server or job running from it:
+   `git pull origin main`; `UV_PYTHON_INSTALL_DIR` / `UV_CACHE_DIR` per D4 and `umask 002`;
+   `uv python install 3.11`; `mv venv venv.modules` (the way back); `uv venv -p 3.11 venv`;
+   `uv pip sync -p venv/bin/python3 requirements.txt`; `chmod -R a+rX` the uv Python; in `config/qsub.sh`
+   comment out the module lines and add `unset PYTHONPATH`; then preflight and `pytest -m cluster` (pytest has no
+   `clean_env`, so that one from a shell after `module purge`).
+4. Way back: `rm -rf venv`, `mv venv.modules venv`, restore `config/qsub.sh` from its backup.
 
 ### S3 — The tilt filter in its own container
 

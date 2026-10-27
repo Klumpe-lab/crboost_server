@@ -17,7 +17,9 @@
 # ------------ SLURM HEADER  -----------
 # CLUSTER-SPECIFIC: make the compute node's environment match the headnode's, so that the Python
 # running the server (venv, conda or uv) starts and finds its packages, and `apptainer` is on PATH.
-# Ours, for reference (an Lmod cluster; our venv was built on the module python below):
+# A venv built with uv on its own Python (README quick start) needs nothing here: only `apptainer`
+# has to be on PATH. A venv built on a cluster module's Python needs that module loaded. Ours used
+# to be (an Lmod cluster):
 #
 #   export MODULEPATH=/software/system/modules/core
 #   . /opt/ohpc/admin/lmod/lmod/init/bash
