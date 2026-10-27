@@ -117,7 +117,7 @@ def check_config():
         warn("curation.partition is not set; curation sessions cannot start")
 
     if not cfg.crboost_python:
-        ok(f"drivers run {sys.executable} (this interpreter; start main.py with it too)")
+        ok(f"drivers run {sys.executable} (this interpreter; start crboost with it too)")
     elif os.access(cfg.crboost_python, os.X_OK):
         ok(f"drivers run crboost_python = {cfg.crboost_python}")
     else:
@@ -235,7 +235,7 @@ def main() -> int:
     if failures:
         print(f"{len(failures)} check(s) failed.")
         return 1
-    print(f"All checks passed. Start the server with: {sys.executable} main.py")
+    print(f"All checks passed. Start the server with: {sys.executable} crboost")
     return 0
 
 

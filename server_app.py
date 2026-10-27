@@ -1,5 +1,5 @@
-"""The web app: FastAPI routes, the NiceGUI UI and the background services, and serving it on a port main.py
-has already bound. Heavy to import (NiceGUI, the backend), so main.py imports it only once the port is settled."""
+"""The web app: FastAPI routes, the NiceGUI UI and the background services, and serving it on a port crboost
+has already bound. Heavy to import (NiceGUI, the backend), so crboost imports it only once the port is settled."""
 
 import asyncio
 import functools
@@ -180,7 +180,7 @@ def setup_app(port: int):
 
 
 def serve(app, token: str, port: int, sock: socket.socket) -> None:
-    """Serve `app` behind the token gate on `sock`, which main.py bound and listens on."""
+    """Serve `app` behind the token gate on `sock`, which crboost bound and listens on."""
     # log_config=None: uvicorn otherwise reinstalls its own logging config at
     # run() time, undoing setup_logging() and re-enabling the per-request
     # access log ("GET / 200 OK", "connection open", ...).

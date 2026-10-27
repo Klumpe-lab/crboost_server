@@ -1,5 +1,6 @@
 line-length = 120
 target-version = "py311"
+extend-include = ["crboost"]  # the launcher: Python without a .py
 exclude = ["venv", ".git", ".nicegui", "docs/reports/v1-parity/scripts"]
 
 [lint]

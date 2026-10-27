@@ -10,7 +10,7 @@ CryoBoost Server — a web-based cryo-electron tomography pipeline manager. It r
 
 ```bash
 # Run the server
-python main.py              # picks a free port in 24300–24331; --port N to choose
+./crboost                   # (or python crboost) picks a free port in 24300–24331; --port N to choose
 
 # Validate environment setup
 python preflight.py
@@ -36,7 +36,7 @@ python check_boundaries.py
 
 ### Entry point and request flow
 
-`main.py` → creates `FastAPI` app, mounts `/static`, initializes `CryoBoostBackend`, passes it to `ui/main_ui.py` which defines NiceGUI page routes (`/` landing, `/p/<project>/<view>/<target>` workspace, `/workspace` redirect).
+`crboost` (the launcher: port, logging, banner) → `server_app.py` creates the `FastAPI` app, mounts `/static`, initializes `CryoBoostBackend`, passes it to `ui/main_ui.py` which defines NiceGUI page routes (`/` landing, `/p/<project>/<view>/<target>` workspace, `/workspace` redirect).
 
 ### Backend (`backend.py`)
 
