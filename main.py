@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import clean_env  # noqa: F401  (before anything is imported: it may start the process again)
 import pycache_setup  # noqa: F401  (first: it decides where every later import is compiled to)
 import argparse
 import getpass
