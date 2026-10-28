@@ -1240,7 +1240,10 @@ class ProjectState(BaseModel):
             return model, repairs
 
     @classmethod
-    def load(cls, path: Path):
+    def load(cls, path: Path, *, read_only: bool = False):
+        """The project state in `path`. With `read_only` nothing is written beside it: no schema backups, and
+        a file that needs a migration (which writes template sidecars) raises instead, since reading another
+        project must leave it as it is."""
         if not path.exists():
             raise FileNotFoundError(f"Project params file not found: {path}")
 
@@ -1281,6 +1284,12 @@ class ProjectState(BaseModel):
                 f"newer file as {path.name}.schema-{file_major}.{file_minor}.bak. Update this checkout."
             )
             events.warning("%s · %s", path.parent.name, version_skew)
+
+        if read_only and file_major < 3:
+            raise ValueError(
+                f"{path.parent.name} is saved in project schema {file_major}.{file_minor}; reading it means migrating "
+                "it, which writes into the project. Open it once in a server of its own to upgrade it."
+            )
 
         # Snapshot before each major migration so a user can recover if
         # something downstream is wrong. Backups are written once
