@@ -4,8 +4,9 @@
 it goes). The Journey's Particles panel, the Analytics tab's score and sets panels and the merge / aggregate dialogs are
 expected to be deleted once the kitchen covers them (§9); nothing is removed by this roadmap.
 
-**Status:** scoped 2026-10-28 from a design chat the same day; nothing built. Decisions in §7: D1–D7 were proposed in
-the chat and accepted with "Ok, write it"; D8–D11 were added while writing and wait for a nod.
+**Status:** S0–S5 built 2026-10-28 on `STA_Kitchen`, checked in the sandbox (record in §11), not run in a browser:
+the §10 pass is owed. Decisions in §7: D1–D11 accepted by the handoff of 2026-10-28; D12 (from the S0 facts) waits for
+a nod.
 
 **In one line.** A new tab of the Particles registry where one species' picks from every source (template matching,
 hand-picked, imported, later other pickers), on any reconstruction of any tomogram of any project, sit in one pool;
@@ -25,8 +26,10 @@ set spanning the eight projects that Class 3D / Refine 3D in this project reads.
 Every count on screen says how many particles from which projects and tomograms, and a tilt series reconstructed in two
 projects is flagged before the set is made.
 
-**Use case 2 (one project, many picks).** The AGG412 pilot's ribosome candidates (15,672 at FP=1 in one project)
-reviewed tomogram by tomogram in the by-tomogram stream, worst CTF fits first, with hand verdicts that persist.
+**Use case 2 (one project, many picks).** The ribosome candidates of AGG412 MyrGFP_Grid2 (59,628 rows from two
+extractions on two reconstructions of the same 47 tilt series; S0) reviewed tomogram by tomogram in the by-tomogram
+stream, worst CTF fits first, with hand verdicts that persist. The pilot project has no ribosome extraction of its own,
+so its ribosome pool takes them as sources from MyrGFP_Grid2.
 
 ## 2. Principles
 
@@ -174,9 +177,11 @@ the hand columns. Its version = hash of the member fingerprints + the verdict lo
 
 - `uid` = first 12 hex of sha1(project path, frame key, member key, centred Å rounded to 0.1 Å). Stable across re-reads.
   A re-run of the source makes new picks and new uids; verdicts on vanished uids are orphans the Doctor counts.
-- Frames of one acquisition: `check_transferable` on their tomograms.star rows (+ `read_tomo_hand`). Transferable frames
-  are pooled at Make set and deduplicated by proximity (Ø/2, `pick_merge` priority: a hand pick wins a clash), as
-  `plan_merge` does. Non-transferable frames block Make set until the user picks one (D3).
+- Frames of one acquisition: poolable only when they are one alignment reconstructed alike: the same tilt-series star
+  (`rlnTomoTiltSeriesStarFile`) and `check_transferable` on their tomograms.star rows (+ hand) (D12). Poolable frames
+  (a raw and a denoised volume of one alignment) are pooled at Make set and deduplicated by proximity (Ø/2, `pick_merge`
+  priority: a hand pick wins a clash), as `plan_merge` does. Any other frame of the acquisition blocks Make set until
+  the user picks one (D3); the choice is stored in `pool.json` (`frame_choice`) and sets the other frames' rows aside.
 - Several members on one frame (TM + hand + imported): clashes within Ø/2 are deduplicated at Make set with the same
   priority; the `agreement` column (S6) shows them before that.
 - Acquisition unknown (no raw filename or mdoc time): never equated with anything; the Doctor says so.
@@ -408,6 +413,14 @@ Proposed while writing, waiting for a nod:
 - **D10** A hand keep rescues a pick the filters remove; a hand drop always wins; the count line shows both.
 - **D11** Roadmap 30 decision 6 ("no multi-project page") is superseded by this roadmap.
 
+Accepted by the handoff of 2026-10-28 (D1–D11). Added in S0, waiting for a nod:
+
+- **D12 One alignment per frame group.** Two frames of one acquisition share picks only when they name the same
+  tilt-series star (one alignment) and pass `check_transferable`. `check_transferable` alone passes MyrGFP_Grid2's
+  job009 and job024 reconstructions (same pixel size, binning, size and hand) although they come from different
+  alignment branches (job008 vs job023 tilt-series stars), so pooling them would move picks between alignments. Every
+  other second frame blocks Make set until one is chosen.
+
 ## 8. Stages
 
 Each stage is one commit or a short series, leaves the app runnable, and ends with `ruff check .`, `ruff format`,
@@ -441,9 +454,10 @@ Done when §11 holds the table of facts and timings, and any surprise has re-sco
 - Separate commit, behaviour change: the aggregate dialog reads other projects through `project_view`.
 
 Done when a sandbox script builds the AGG412 412 pool read-only, its rows equal the members' `candidates.star` totals,
-its σ ladder matches the Analytics tab (roadmap 30 §12: ≥ 10σ, 929 picks in 255 tomograms across the seven completed
-extractions), nothing outside the home project's `Analytics/kitchen/` changed (mtimes checked before and after), and a
-second build from the cache takes under a second.
+its σ ladder matches the Analytics tab's records (the sidecars on 2026-10-28: ≥ 10σ, 1,642 picks in 348 tomograms
+across the eight extractions; roadmap 30 §12's 929 in 255 counted seven, before the re-runs), nothing outside the home
+project's `Analytics/kitchen/` changed (mtimes checked before and after), and a second build from the cache takes
+under a second.
 
 ### S2 — The tab, Sources, and the pool-mode gallery
 
@@ -453,7 +467,7 @@ second build from the cache takes under a second.
 - Edits: `ui/species/page.py` (tab, rail toggle, container style, `set_visible` calls), `ui/routing.py` (`kitchen`, and
   `analytics` in its own commit), `ui/dashboard/css.py` (`_KITCHEN_CSS`: hover and polish only; structure inline).
 
-Done when, on a copia tutorial project (about 1,000 candidates) and the AGG412 pilot (412 + ribosome), the tab
+Done when, on a copia tutorial project (about 1,000 candidates) and the AGG412 pilot (412; ribosome from MyrGFP_Grid2), the tab
 opens, the first screen of tiles shows in under 2 s warm, 15k tiles scroll smoothly with a few hundred DOM nodes,
 S / M / L switches at once, a click on a tile focuses its tomogram with the dot lit, and Sources adds another
 project's member read-only.
@@ -483,8 +497,8 @@ tomograms fold, and switching modes keeps the filters, verdicts and scroll targe
 
 Done when, on AGG412, a ≥ 9σ coordinates set over the eight projects is made from the kitchen, shows in an Extract or
 Class 3D job's I/O dropdown of the home project as "Pool set — <name> (8 projects)", the Ledger lists it with counts per
-project and its readers, and a deliberately added second frame of one acquisition blocks Make set until a frame is
-chosen.
+project and its readers, and the pilot's ribosome pool (MyrGFP_Grid2's job027 and job028: 47 acquisitions in two
+frames each, D12) blocks Make set until a frame is chosen.
 
 ### S6 — Extras (each its own commit, in this order)
 
@@ -518,22 +532,195 @@ The Analytics tab's TM health, controls and results stay until the Ledger and Do
 
 ## 10. Runtime checklist (once, after S5)
 
-1. Restart the server; `python check_boundaries.py`.
-2. AGG412 pilot → Particles registry → `412_particle` → STA kitchen: the tab opens with the project's 412 candidates; the
-   rail hides; the URL ends in `/species/412_particle/kitchen`.
-3. Scroll the gallery to the end; switch S / M / L; click tiles from three tomograms: the left half follows.
-4. Drag σ to 9: counts match the Analytics tab's cut at 9σ for this project; the dots go hollow below the cut; the edge
-   strip shows tiles on both sides of the cut.
-5. Sources → Add sources: the other seven projects offer their 412 species (catalog id or a choice); add all; counts and
-   the composition bar update; the Doctor lists any acquisition seen in two projects.
-6. Drop a few tiles by key and by drag; restart the server; the verdicts are still there.
-7. By tomogram: scroll the stream; leaders follow; a tomogram with nothing passing is folded.
-8. Make set at ≥ 9σ: preflight, publish, then a Class 3D job's I/O lists "Pool set — … (8 projects)".
-9. Check that no file in the seven other projects changed (the maintainer's `find -newer` on a marker file).
+1. Restart the server; `python check_boundaries.py`; hard-reload the browser (new CSS and a new JS component).
+2. AGG412 pilot → Particles registry → `412_particle` → STA kitchen: the tab opens with the project's own 412
+   candidates (158; a new pool starts with the home project's members); the species rail hides (the sidebar icon
+   brings it back); the URL ends in `/species/412_particle/kitchen`, and `/species/412_particle/analytics` opens too.
+3. Scroll the gallery to the end; switch S / M / L; click tiles from three tomograms: the left half follows, the
+   clicked tile's dot is ringed; hover a dot and its tile lights.
+4. "+ filter" → σ; drag the low handle to 9: the count line says 13 for the pilot alone (the Analytics tab's 9σ
+   cut); dots below the cut go hollow; the edge strip shows six tiles each side of 9σ; after release the kept and
+   removed means appear beside it within a minute.
+5. Sources → Add sources: the other seven projects offer `412_particle` (catalog id); "Tick every source shown", Add;
+   the state line says it builds the members, then the count line reads ~2,922 of 16,533 at ≥ 9σ across 8 projects
+   and the composition bar splits them. Doctor shows no frame conflict for 412.
+6. Curate: drop a few tiles by `x` and by a drag box, keep one removed tile from a "removes N" view; restart the
+   server; the verdicts and the draft are still there. Tags: add one, press 1 on a tile.
+7. By tomogram: the rows scroll, leaders follow the box's scroll, the hovered pair is solid; "N tomograms with
+   nothing passing" folds; "rows" → worst CTF fit reorders.
+8. Make set… at ≥ 9σ: the plan says 8 projects and no blocker; Make set; a Class 3D or Extract job's I/O dropdown
+   lists "Pool set — … (8 projects)"; the Ledger lists it with per-project counts.
+9. `dm_ovary_ribosome` → STA kitchen → Sources → add MyrGFP_Grid2's two ribosome extractions: Doctor ⚑ lists 47
+   acquisitions in two frames, Make set is off; "prefer AGG412_20260311_MyrGFP_Grid2 · job024" settles them.
+10. Check that no file in the other projects changed (the maintainer's `find -newer` on a marker file).
 
 ## 11. Build record
 
-Empty. S0 writes the facts table here; every stage appends what it built, decisions taken in the build, and deviations.
+### S0 — facts (2026-10-28, read-only)
+
+Read with the venv's python (`ProjectState.load` of schema-3 files writes nothing; registries loaded uninstalled).
+Scripts and outputs: `notes/40-stage-snap/s0/`.
+
+| Project | 412 extraction (rows / tomograms) | Ribosome extractions | TS (acq. key) |
+|---|---|---|---|
+| AGG412_20240204_412_Slot6 | job017: 1,779 / 121 | none | 126 (126) |
+| AGG412_20251031_412_FCIsolation | job020: 1,672 / 132 | none | 163 (163) |
+| AGG412_20251113_412 | job017: 4,336 / 136 | none | 151 (151) |
+| AGG412_20260204_412 (pilot) | job020: 158 / 23 | none | 23 (23) |
+| AGG412_20260205_412_FCIso_unmilled2 | job023: 2,770 / 159 | none | 176 (176) |
+| AGG412_20260311_412_Grid3 | job019: 1,036 / 91 | none | 96 (96) |
+| AGG412_20260311_MyrGFP_Grid2 | job043: 2,891 / 47 | job027: 26,345 / 47 (recon job009); job028: 33,283 / 47 (recon job024) | 50 (50) |
+| AGG412_SK_20251017_412 | job020: 1,891 / 129 | none | 137 (137) |
+| copia-tutorial-20261028-1036 | copia job008: 1,028 / 1; subtomo job009: 1,016 | — | 1 (0) |
+
+- Species: every AGG412 project has `412_particle` (catalog `412_particle`, Ø 575 Å) and `dm_ovary_ribosome` (catalog
+  `dm_ovary_ribosome`, Ø 310 Å); copia has `copia` with no catalog id (Ø 550 Å).
+- Every candidate extraction has its `analytics/candidates.json` sidecar; every TM job its `analytics/tm_tomo/`.
+- No AGG412 project has a subtomo extraction, a pick list or a `_filtered.star`; copia has one subtomo job. So the
+  extracted level and D6 seeding run only on copia today, and list members on no real data.
+- No acquisition is in two projects. MyrGFP_Grid2 reconstructs all 47 of its tilt series twice, on two alignment
+  branches (tilt-series stars of job008 vs job023): 47 acquisitions in two frames, which `check_transferable` alone
+  would call poolable (D12).
+- tomograms.star: 1.55 Å × bin 4 = 6.2 Å, 4096 × 4096 × 2048 unbinned, `rlnTomoHand` −1 stated in every row (copia
+  2.95 Å × 4 = 11.8 Å). Reconstructions: float16, 1024 × 1024 × 512, 1.07 GB.
+- Timings: state load < 0.3 s, registry load 0.2–1.1 s per project; the largest member (job028, 33,283 rows) reads in
+  0.18 s and its σ, plane and NN columns take 2.7 s; 34 tiles from one reconstruction 0.46 s cold, 0.02 s warm; X/Y
+  slab 0.15 s, X/Z 0.77 s.
+- Tile format: PNG 33 KB and 3.6 ms per 192-px tile, JPEG q90 22.5 KB and 0.2 ms, WebP 18.5 KB and 15.5 ms; no visible
+  difference at 96–256 px on noisy cutouts → JPEG q90. Cutout slab: 30 Å (today's 5 px at 6.2 Å/px).
+- A recursive glob over one project for `*_filtered.star` took minutes on NFS: the kitchen reads named paths only.
+
+Re-scoped from these facts: use case 2 and the S2/S5 done lines (ribosome = MyrGFP_Grid2's extractions as sources of
+the pilot's pool); §4.4 and D12; the S1 ladder numbers.
+
+### S1 — data layer (2026-10-28)
+
+Built: `services/kitchen/` `models.py`, `store.py`, `snapshots.py`, `members.py`, `table.py` (worker builder),
+`pool.py` (assembly, frame conflicts, `select`), `payload.py`, `service.py` (the loaded pools: open, rebuild,
+verdict and tag writes, selection, payload). Edits: `ProjectState.load(..., read_only=False)`; `WorkKind.KITCHEN`
+(cap 2) and `KITCHEN_TILE` (cap 3); `tomogram_quality(project_path, registry=None)`. Separate commit (behaviour
+change): the aggregate dialog reads other projects through `project_view`, so they no longer enter `_project_states`.
+
+Checked (`notes/40-stage-snap/s1/build_pool.py`, home = the pilot, kitchen files redirected to scratch): the 412 pool
+has 8 members, 16,533 rows = the sidecars' totals, 838 frames, no frame conflict; ≥ 10σ 1,642 picks in 348 tomograms
+and ≥ 9σ 2,922, both equal to the sidecar ladders once σ is rounded to 0.001 as the records store it; first build
+10 s (members 0.9–2.8 s each, two workers), second build from the cache 0.11 s; payload 2.6 MB. The ribosome pool:
+59,628 rows, 94 frames, 47 conflicted acquisitions, payload 7.0 MB, first build 5 s. Directory and file mtimes in all
+eight projects unchanged; `_project_states` and `_registries` empty afterwards.
+
+Deviations: `read_only` instead of `write_backups` (it also refuses a file that would need the v1/v2 migration, which
+writes template sidecars); no `store=` on the analytics record functions (the builder reads sidecars and job.json
+itself and stores nothing); no `register_readable_root` (S2 serves slabs and tiles through kitchen routes that answer
+only for frames in a loaded pool); verdicts are not in the table or its version (they travel apart, so a key press does
+not refetch the table).
+
+### S2 — the tab, Sources, the pool-mode gallery (2026-10-28)
+
+Built: `ui/kitchen/` `tab.py` (`KitchenTab`: header rows of house controls, a `ViewScope` with the 3-s observe and the
+15-s disk tick, lazy open on first show), `view.py` + `kitchen.js` (store, count line and composition bar,
+virtualized grid with S / M / L, six sorts, five groupings with a pinned group header, slab panel with canvas dots and
+focus), `routes.py` (table, tile and slab routes), `sources.py` (members with state and remove; Add sources over the
+recent project roots plus the projects the pool already reads, species matched by catalog id or chosen, never by
+name). `services/kitchen/tiles.py` (worker cut + `TileBatcher`: requests of one frame within 20 ms share one worker
+call; a tile asked for twice is cut once) and `slabs.py`. Edits: `ui/species/page.py` (tab, `FULL_PANE_TABS`, rail
+hidden while the kitchen shows with a toggle, `set_visible` calls), `ui/species/tab.py` (contract note),
+`ui/routing.py` (`kitchen`, and `analytics` in the same edit: one line of one file, so not a commit of its own),
+`ui/dashboard/css.py` (`_KITCHEN_CSS`: hover and state polish, the narrow-pane stack as a container query).
+
+Checked in the sandbox: `node` runs the store functions against `services/kitchen/pool.select` on the AGG412 412 and
+ribosome tables, 14 drafts each (σ, depth, CTF and category filters, keep_missing off, NN thinning, top N, 400 random
+hand verdicts): identical kept rows, removals, coverage and frame counts in all 28. Filters alone take ≤ 6.3 ms per
+drag frame on 59,628 rows; a release with NN thinning ≤ 70 ms. Service level (home = a scratch copy of the pilot's
+params, so nothing renders into /groups): 120 tiles of the ≥ 9σ screen across 77 frames 1.5 s cold, 0.02 s warm;
+22 KB each; a foreign frame's slabs render into the home kitchen's `slabs/` (1.3 s), no mtime under /groups moved. A
+NiceGUI simulation builds the tab, opens the pool, serves table (2.6 MB, immutable), tile and slab, refuses a pool
+not open in the server, and builds Sources and Add sources. The JavaScript drawing (grid, dots, focus) has not run
+in a browser yet: §10.
+
+Decisions in the build: tiles are flipped to the slabs' Y-up convention (the Journey's recon cutouts are not), so a
+tile and its dot agree; a box that leaves the volume is padded with mid-grey, not shrunk and stretched; the norm sample
+is 8 cutouts (the first batch's own, then the frame's picks), since one cutout read costs ~25 ms on NFS and 64 of them
+made a cold screen take 25 s; slabs and tiles go through kitchen routes, not `/api/vis-asset`; view preferences live
+in the tab object (per browser tab, not kept across a reload). Sources groups by project; the by-acquisition view is
+the Doctor's (S5).
+
+### S3 — filters, live dots, edge strip, verdicts (2026-10-28)
+
+Built in `kitchen.js`: the filter strip (one card per filter: a √-scaled histogram over p0.5–p99.5, 0.25σ bins for σ,
+pale = every row with a value, dark = rows passing every other filter; two handles, drag across to set a range, an
+end dragged off the histogram opens it, double-click clears; the coverage line with keep | drop for rows without a
+value; categorical chips with counts, the twelve largest then "+N more"; "removes N" flips the gallery to exactly
+those rows and back), "+ filter" listing every column with its coverage, the post-ops line, the edge strip (six
+cutouts each side of the σ cut among rows passing the other filters, found in one pass, no sort per frame), live
+counts and dots on every drag frame (the grid re-sorts at most every 120 ms while dragging, fully on release), and
+curation: a Browse | Curate switch (curating, a click toggles drop on a kept tile and keep on a removed one; a drag
+draws a box and applies one direction by majority), keys arrows / k / x / u / 1–9 / Enter; verdicts batch for 250 ms
+before they go to the server. `tab.py`: draft persistence on release with the server's count as the authority (a
+disagreement is logged with both numbers), verdict and tag events, a Tags dialog (up to 32, keys 1–9).
+`services/kitchen/seeds.py` + `service.seed_verdicts`: D6, a member's `particles_filtered.star` /
+`<stem>_filtered.star` read once into drops named `seed:<path>`, never over a hand verdict (`PoolMember.seeded_at`).
+
+Checked: the 28 node cases still agree; a simulated tab takes drop / keep / tag / draft events, and a reopened pool
+(the server's memory cleared) has the draft, the four verdicts and both tags; a cleared verdict stays cleared after
+another reopen; the seeding rule on a synthetic list (two of five missing from `_filtered.star` → two drops). No real
+project has a `_filtered.star` (S0), so seeding has not met real data.
+
+### S4 — by-tomogram stream (2026-10-28)
+
+Built in `kitchen.js`: `streamFrames` (store: one entry per frame with a shown row, its rows ordered by the dot's Y,
+top first, then X; frames with nothing shown apart) and the stream: virtualized rows of variable height (slab card
+280 px wide, 340 at L: X/Y over a half-height X/Z, canvas dots), a cutout box as tall as the card with its own
+virtualized scroll, SVG leaders from each dot to its tile for the tiles in view (faint, species colour; the hovered
+pair solid, white over a dark under-stroke), following the box's scroll; one folded line "N tomograms with nothing
+passing", expandable. `tab.py`: a rows select (most passing, worst CTF fit, project, name) and the element's `mode`
+event (a click on a stream tile while browsing opens its tomogram in pool mode). Switching modes keeps the draft,
+verdicts and focused tomogram; the stream scrolls to the focused tomogram's row.
+
+Checked in node: on the ≥ 9σ draft the 412 pool streams 464 rows + 374 folded tomograms, the rows' kept counts sum to
+the 2,922 kept, every row is ordered by Y; the ribosome pool 84 rows + 10 folded; 5–36 ms per regrouping. The drawing
+(rows, leaders, scrolling) waits for a browser (§10).
+
+Deviation: no `need_slabs` event. A row's slab `<img>` asks the slab route when the row is built; the route waits on
+the one shared Render, so the browser's own request is the "need". Tiles of a row in view go to the server as one
+`need_tiles` batch.
+
+### S5 — Doctor, Make set, Ledger (2026-10-28)
+
+Built: `services/kitchen/doctor.py` (markers from one rule table, each "drops nothing": frames that cannot share picks,
+poolable frames, unknown acquisitions, unknown pixel size, picks with no cutout, unscored rows, mixed levels,
+template-match settings that differ between members, member errors, orphaned verdicts), `services/kitchen/export.py`
+(`plan`: blockers, unverified lines, level, clashes within Ø/2 deduplicated per pooled tomogram with a hand pick first,
+then the higher σ; `write_set` in a worker: one member → a row subset, several → `merge_coordinate_sources` or
+`merge_optimisation_sets_into_jobdir`; parents, recipe, verdict counts and `kitchen_uids.txt` recorded),
+`service.py` (diagnose, choose a frame, prefer a project's reconstruction job for every conflicted acquisition,
+plan, make, ledger with readers' headlines from their readouts), `ui/kitchen/sets.py` (Doctor with the frame choices,
+Make set with the plan shown first and the button off while anything blocks, Ledger with Compare: the gallery shows the
+particles only in A, then only in B, until "back"). `particle_sets.py`: `SetOp.POOL`, `ParentRef.project_path` and kind
+`list`, `SET_SCHEMA` 2, `publish_set(..., write_tomograms=)` so a set carries its own tomograms.star;
+`path_resolution_service.py`: "Pool set — <name> (N projects)" in the I/O dropdowns. The Doctor button counts the
+markers that block or warn.
+
+Checked on scratch homes (copies of the pilot's and copia's params; nothing under /groups moved): the 412 pool at
+≥ 9σ makes `s001` with 2,922 coordinates in 464 tomograms from 8 projects in 21 s (the merge reads each member star
+once per tomogram), its own tomograms.star (464 rows), provenance, summary and uid list; the resolver labels it
+"Pool set — 412 ge9 all (8 projects) · 2,922 coordinates"; the Ledger lists it with the per-project counts. The
+ribosome pool (MyrGFP_Grid2 job027 + job028) blocks with 47 acquisitions in two frames; "prefer … job024" settles all
+47, and ≥ 10σ then makes 7,729 picks in 41 tomograms. Copia (one member, 1,007 of 1,018 kept rows extracted) plans a
+coordinates set by default and makes an extracted one with "only the extracted rows"; its Doctor says acquisition
+unknown and mixed levels. The three dialogs build in a NiceGUI simulation.
+
+Not done in S5: the Doctor's by-acquisition listing shows 30 conflicts and leaves the rest to "prefer"; the Ledger's
+headlines read only readouts a driver already wrote (no backfill from the kitchen).
+
+### S6 — extras (2026-10-28)
+
+1. **Kept vs removed averages: built.** After each release the server cuts a fixed random sample of up to 200 kept
+   and 200 removed cutouts and makes their unaligned means in a worker (`tiles.mean_image`,
+   `service.averages`, route `/api/kitchen/average`); the strip shows them beside the edge strip. On the 412 pool
+   at ≥ 9σ the kept mean is a sharp ring and the removed mean a fainter one (real particles below the cut); 36 s
+   cold, cached after.
+2–8. Not built in this session (heat strip, g(r), agreement, set filters and the extracted-stack toggle, review
+   sample, loupe, fate chart).
 
 **Modern-Python weave-in.** Filters as a pydantic discriminated union (`kind: Literal[...]`); `StrEnum` for member kinds,
 verdicts and sources; frozen dataclasses for per-member column chunks; a `Protocol` for member builders
