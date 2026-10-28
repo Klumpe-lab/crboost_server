@@ -42,8 +42,9 @@ SETS_SUBDIR = "sets"
 SET_FILE = "set.json"
 PARTICLES_FILE = "particles.star"
 OPTSET_FILE = "optimisation_set.star"
+TOMOGRAMS_FILE = "tomograms.star"
 LOG_FILE = "operations.jsonl"
-SET_SCHEMA = 1
+SET_SCHEMA = 2  # 2: ParentRef.project_path and kind "list" (the STA kitchen's members); 1 still reads
 # Synthetic-producer id of a set in the path resolver: `<prefix><set_id>`.
 SET_PRODUCER_PREFIX = "particle_set__"
 
@@ -63,17 +64,20 @@ class SetOp(StrEnum):
     INTERSECTION = "intersection"
     DECOY_POSITIONS = "decoy_positions"
     UNION = "union"
+    POOL = "pool"  # made in the STA kitchen from a pool's members, possibly across projects
 
 
 class ParentRef(BaseModel):
     """A set's parent: a job's output, another set or a cross-project merge, with the file actually
     read."""
 
-    kind: Literal["job", "set", "merge"]
+    kind: Literal["job", "set", "merge", "list"]
     instance_id: str = ""  # kind "job": the producing instance
     output: str = ""  # kind "job": candidates | particles | particles_filtered | class3d_data
     set_id: str = ""  # kind "set"
     merge_slug: str = ""  # kind "merge"
+    list_ref: str = ""  # kind "list": "<species>/<tomo>/<slug>"
+    project_path: str = ""  # the project the parent lives in; "" = this one
     label: str = ""
     particles_star: str
     tomograms_star: str
@@ -87,7 +91,10 @@ class ParentRef(BaseModel):
             return f"set:{self.set_id}"
         if self.kind == "merge":
             return f"merge:{self.merge_slug}"
-        return f"job:{self.instance_id}:{self.output}"
+        prefix = f"{self.project_path}|" if self.project_path else ""
+        if self.kind == "list":
+            return f"{prefix}list:{self.list_ref}"
+        return f"{prefix}job:{self.instance_id}:{self.output}"
 
 
 class RuleKind(StrEnum):
@@ -269,10 +276,12 @@ def allocate_id(project_path: Path, name: str) -> str:
     return f"s{max(numbers) + 1:03d}_{slug or 'set'}"
 
 
-def publish_set(project_path: Path, pset: ParticleSet, write_rows) -> ParticleSet:
+def publish_set(project_path: Path, pset: ParticleSet, write_rows, write_tomograms=None) -> ParticleSet:
     """Materialize `pset` and publish it: `write_rows(particles_path)` writes the rows into a
     temporary directory, which gets the optimisation set and set.json and is then renamed into
-    place. Logs the operation. Returns the set with its final paths."""
+    place. With `write_tomograms(path)` the set carries its own ``tomograms.star`` (a set across
+    projects), which its optimisation set names. Logs the operation. Returns the set with its final
+    paths."""
     from services.subtomo_merge import write_optimisation_set
 
     root = sets_root(project_path)
@@ -284,9 +293,11 @@ def publish_set(project_path: Path, pset: ParticleSet, write_rows) -> ParticleSe
     tmp.mkdir()
     try:
         write_rows(tmp / PARTICLES_FILE)
-        pset = pset.model_copy(
-            update={"particles_star": str(final / PARTICLES_FILE), "optimisation_set": str(final / OPTSET_FILE)}
-        )
+        update = {"particles_star": str(final / PARTICLES_FILE), "optimisation_set": str(final / OPTSET_FILE)}
+        if write_tomograms is not None:
+            write_tomograms(tmp / TOMOGRAMS_FILE)
+            update["tomograms_star"] = str(final / TOMOGRAMS_FILE)
+        pset = pset.model_copy(update=update)
         # The optimisation set names the final paths, which exist once the directory is renamed.
         write_optimisation_set(
             tmp / OPTSET_FILE, particles_star=final / PARTICLES_FILE, tomograms_star=Path(pset.tomograms_star)
