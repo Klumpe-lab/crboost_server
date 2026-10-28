@@ -55,7 +55,7 @@ _TARGETS: dict[View, int] = {View.JOB: 2, View.JOURNEY: 1, View.SPECIES: 2, View
 # be imported back without a cycle. Job subsection keys are not here — those are read at
 # validation time (`_job_tab_keys`), because plugins register new ones.
 # `ui/species/page.py :: TABS`
-SPECIES_TABS: tuple[str, ...] = ("overview", "templates", "picks", "jobs")
+SPECIES_TABS: tuple[str, ...] = ("overview", "templates", "picks", "analytics", "kitchen", "jobs")
 # `ui/tomo_dashboard_dialog.py :: _DASHBOARD_PANEL_KEYS` (also the `data-section` values
 # `_scroll_section_into_view` queries)
 JOURNEY_SECTIONS: tuple[str, ...] = (

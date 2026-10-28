@@ -4,7 +4,8 @@ Detail = header row (active species' mark + segmented tabs) + one container per
 (species, tab), built lazily on first selection and cached; a switch only flips
 visibility. Tabs: Overview (identity editor, status, sanity, delete) · Templates &
 masks (the mounted workbench) · Picks & curation · Analytics (scores in σ, TM health, particle
-sets) · Jobs. The page
+sets) · STA kitchen (one species' picks across tomograms and projects; the rail hides while it
+shows) · Jobs. The page
 owns the 3-s registry observe (species created / deleted elsewhere — roster "+", another
 browser tab, the Overview's delete) and the `on_workbench_active` / `workbench_select_species`
 hooks the workspace registers (`workspace_page._apply_views` / `_open_species`); the
@@ -28,6 +29,7 @@ from ui.components.segmented import Segmented, render_segmented
 from ui.components.species_pill import render_species_mark
 from ui.components.svg_icon import load_icon_svg
 from ui.dashboard.css import ensure_assets_loaded
+from ui.kitchen.tab import KitchenTab
 from ui.routing import View
 from ui.species.analytics_tab import AnalyticsTab
 from ui.species.catalog import import_from_catalog
@@ -47,8 +49,11 @@ TABS: tuple[tuple[str, str], ...] = (
     ("templates", "Templates & masks"),
     ("picks", "Picks & curation"),
     ("analytics", "Analytics"),
+    ("kitchen", "STA kitchen"),
     ("jobs", "Jobs"),
 )
+# Tabs that fill the pane and scroll inside themselves, with the species rail hidden while they show.
+FULL_PANE_TABS = ("kitchen",)
 DEFAULT_TAB = "overview"
 
 
@@ -87,6 +92,8 @@ class SpeciesPage:
         self._pill: _PillView | None = None
         self._segmented: Segmented | None = None
         self._flight = SingleFlight()
+        # The rail toggle of a full-pane tab: the rail shows beside it only when asked for.
+        self._rail_in_full_pane = False
 
     # ── Layout ────────────────────────────────────────────────────────────────
 
@@ -102,7 +109,7 @@ class SpeciesPage:
             .style("display: flex; flex-direction: row; width: 100%; height: 100%; min-height: 0;"),
         ):
             # The rail is a pale gray-blue panel beside the page, not a ruled-off column.
-            rail = (
+            rail = self._refs["rail"] = (
                 ui.element("div")
                 .classes("cb-srail")
                 .style(
@@ -165,9 +172,15 @@ class SpeciesPage:
         # Cross-tab links inside this page (the Picks & curation tab's empty state points
         # at Jobs) — a tab never reaches into the page object itself.
         self.callbacks["species_select_tab"] = self.select_tab
+        self.callbacks["species_toggle_rail"] = self.toggle_rail
+
+    def toggle_rail(self) -> None:
+        self._rail_in_full_pane = not self._rail_in_full_pane
+        self._apply_visibility()
 
     def _set_active(self, on: bool) -> None:
         self.visible = on
+        self._apply_visibility()
         if on:
             self.observe()
             # The workspace has just written the bare `/species` route; refine it to the
@@ -208,7 +221,10 @@ class SpeciesPage:
             return
         body = self._refs["body"]
         with body:
-            container = ui.column().classes("w-full overflow-auto").style("flex: 1 1 0%; min-height: 0;")
+            if key in FULL_PANE_TABS:
+                container = ui.element("div").style("flex: 1 1 0%; min-height: 0; width: 100%; overflow: hidden;")
+            else:
+                container = ui.column().classes("w-full overflow-auto").style("flex: 1 1 0%; min-height: 0;")
         container.set_visibility(False)
         tab = self._make_tab(key, species_id)
         self._tabs[(species_id, key)] = (container, tab)
@@ -231,6 +247,8 @@ class SpeciesPage:
                 return PicksTab(ctx)
             case "analytics":
                 return AnalyticsTab(ctx)
+            case "kitchen":
+                return KitchenTab(ctx)
             case "jobs":
                 return JobsTab(ctx)
         raise KeyError(f"unknown Species tab {key!r}")
@@ -239,8 +257,16 @@ class SpeciesPage:
         has_species = self.active_species_id is not None
         self._refs["empty"].set_visibility(not has_species)
         self._refs["header"].set_visibility(has_species)
-        for (sid, key), (container, _tab) in self._tabs.items():
-            container.set_visibility(has_species and sid == self.active_species_id and key == self.active_tab)
+        for (sid, key), (container, tab) in self._tabs.items():
+            shown = has_species and sid == self.active_species_id and key == self.active_tab
+            container.set_visibility(shown)
+            # A tab with pollers of its own runs them only while it is on screen.
+            set_visible = getattr(tab, "set_visible", None)
+            if set_visible is not None:
+                set_visible(shown and self.visible)
+        rail = self._refs.get("rail")
+        if rail is not None:
+            rail.set_visibility(self.active_tab not in FULL_PANE_TABS or self._rail_in_full_pane or not has_species)
 
     def _refresh_chrome(self) -> None:
         if self._rail is not None:
