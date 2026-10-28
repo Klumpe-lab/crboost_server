@@ -153,11 +153,14 @@ def _rows_for_project(project_path: Path) -> list[_Row]:
     would fail at merge time with a path error instead of at selection time with an
     explanation.
     """
+    from services.kitchen.snapshots import project_view
     from services.particles.list_ref import species_tomo_map
 
     try:
-        state = get_project_state_for(project_path)
-    except Exception:
+        # Read-only: another project's state must not enter this server's registry, where the
+        # pipeline monitor would reconcile and save it.
+        state = project_view(project_path).state
+    except (OSError, ValueError):
         log.warning("Aggregate: cannot read project state at %s", project_path, exc_info=True)
         return []
 
