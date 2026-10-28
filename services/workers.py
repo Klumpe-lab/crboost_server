@@ -50,6 +50,8 @@ class WorkKind(StrEnum):
     PREVIEW = "preview"  # a candidate-extract job's whole preview pass
     THUMBNAILS = "thumbnails"  # a project's tilt preview pass
     SEGMENTATIONS = "segmentations"  # reading a batch of segmentation volumes an import registers
+    KITCHEN = "kitchen"  # one member's column table of an STA kitchen pool
+    KITCHEN_TILE = "kitchen_tile"  # a batch of one reconstruction's cutouts for the STA kitchen
 
 
 # Concurrent tasks per kind. A preview or thumbnail pass is long and walks a whole job, so one at a
@@ -60,6 +62,8 @@ _CAPS: dict[WorkKind, int] = {
     WorkKind.PREVIEW: 1,
     WorkKind.THUMBNAILS: 1,
     WorkKind.SEGMENTATIONS: 1,
+    WorkKind.KITCHEN: 2,
+    WorkKind.KITCHEN_TILE: 3,
 }
 _DEFAULT_WORKERS = 4
 # Added to the workers' nice value: under load the server's loop gets the CPU first.

@@ -733,11 +733,11 @@ def _merge_projects(summary: Path) -> dict[str, str]:
 # ── Data quality per tomogram (the Journey's facts), for yield against quality ────────────────────
 
 
-def tomogram_quality(project_path: Path) -> dict[str, dict[str, Any]]:
+def tomogram_quality(project_path: Path, registry=None) -> dict[str, dict[str, Any]]:
     """{tomogram: facts} from the tilt-series registry: Warp's CTF fit resolution of the series, the
     tilts in the reconstruction, and how many of those are blank or dim exposures. With several
     CTF or alignment runs of a series, the base instance's (tsCtf, aligntiltsWarp) is read and named
-    in the facts."""
+    in the facts. `registry` reads another project's registry without installing it."""
     from services.tilt_series import get_registry_for
     from services.tilt_series.tilt_state import exposure_class, exposure_ratios
 
@@ -748,7 +748,7 @@ def tomogram_quality(project_path: Path) -> dict[str, dict[str, Any]]:
         return next(iter(outs.items()), (None, None))
 
     out: dict[str, dict[str, Any]] = {}
-    for ts in get_registry_for(Path(project_path)).all_tilt_series():
+    for ts in (registry or get_registry_for(Path(project_path))).all_tilt_series():
         ctf_key, ctf = pick(ts, "ts_ctf", JobType.TS_CTF.value)
         aln_key, aln = pick(ts, "ts_alignment", JobType.TS_ALIGNMENT.value)
         used = {e.frame_id for e in aln.per_frame} if aln is not None and aln.per_frame else None
