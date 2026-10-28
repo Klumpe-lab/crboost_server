@@ -109,7 +109,8 @@ class _JobsView(FingerprintedView):
             for iid, jm in rows:
                 status = getattr(jm, "execution_status", JobStatus.UNKNOWN)
                 dot = _dot_html(status, is_orphaned=bool(getattr(jm, "is_orphaned", False)))
-                with ui.row().classes("w-full items-center gap-2").style("min-height: 26px; flex-wrap: nowrap;"):
+                # Wraps in a narrow pane (drift chips are what overflow); "open ↗" keeps the right end.
+                with ui.row().classes("w-full items-center gap-2").style("min-height: 26px; row-gap: 2px;"):
                     ui.html(dot, sanitize=False, tag="span").style("display: inline-flex; align-items: center;")
                     ui.label(display_name(jm.job_type)).style(
                         f"{SANS} font-size: 11px; font-weight: 600; color: #1e293b;"
@@ -124,7 +125,7 @@ class _JobsView(FingerprintedView):
                     if open_job is not None:
                         ui.label("open ↗").style(
                             f"{SANS} font-size: 10px; color: #6366f1; cursor: pointer; "
-                            "text-decoration: underline dotted;"
+                            "text-decoration: underline dotted; margin-left: auto;"
                         ).on("click", lambda _e, i=iid: open_job(i)).tooltip("Show this job in the pipeline view")
             with ui.row().classes("w-full items-center mt-2 flex-wrap").style("gap: 6px;"):
                 ui.label("Add for this species:").classes(_HINT_CLS)

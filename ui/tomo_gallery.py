@@ -49,9 +49,10 @@ its position and the Journey glyph, which opens the Journey on that tilt series,
 
 Images come from the same renderers the Journey uses (the WarpTools PNG
 written by ts_reconstruct, else an X/Y slab we render and cache), so a tile and
-the Journey's Reconstruct card can never show different pictures — and a missing
-slab is auto-kicked here exactly as it is there, capped per render so opening the
-wall on a 100-tomogram project doesn't submit 100 renders at once.
+the Journey's Reconstruct card can never show different pictures. A missing slab is
+one render however many views ask for it (services/renders.py), queued behind the
+pictures asked for one at a time; its tile is a skeleton until it lands, then fills
+in place.
 """
 
 from __future__ import annotations
@@ -72,7 +73,8 @@ from services.dashboard_data import job_dir_for, position_label, tilt_thumb_dir,
 from services.models_base import InstanceId, JobType
 from services.project_state import get_project_state_for
 from services.segmentation import display
-from services.tilt_series_service import ensure_tilt_thumbnails
+from services import renders
+from services.tilt_series_service import ensure_tilt_thumbnails, thumbnail_render_key
 from services.visualization.preview_orchestrator import read_preview_manifest
 from services.visualization.preview_render import is_output_stale
 from services.visualization.tomo_geometry import SOURCE_IMPORTED, TomoGeometry, all_geometries
@@ -83,6 +85,7 @@ from ui.components.dialogs import dialog_host
 from ui.components.hover_menu import Choice, ChoiceRows, hover_menu, tool_trigger
 from ui.components.layer_menu import LayerRow, render_layer_list
 from ui.components.reactive import SingleFlight, owned_timer
+from ui.components.render_slot import RenderSlot
 from services.job_lineage import job_dirs, recon_of
 from ui.components.recon_compare import recon_version_labels
 from ui.components.segmented import render_segmented
@@ -98,7 +101,6 @@ from ui.tilt_previews import (
     open_tilt_viewer,
     registry_tilt_series,
     scroll_into_view,
-    thumbnail_task_key,
     tilt_context,
     tomogram_caption_html,
 )
@@ -145,11 +147,6 @@ _FILL_CHUNK = 24
 # Tiles show a JPEG at most this wide (the zoom shows the PNG itself): a WarpTools PNG is ~1 MB,
 # and a wall of them is tens of MB to fetch and decode on every source switch.
 _TILE_THUMB_PX = 640
-
-# Missing X/Y slabs auto-kicked per render. The wall asks for every tomogram at
-# once; each render reads ~50 MB of MRC, so submit a few and let the next refresh
-# (or the completion callback) take the rest.
-_MAX_KICKS_PER_RENDER = 6
 
 # The zoom's side column, and the room the dialog's padding takes around the slice.
 _ZOOM_SIDE_PX = 300
@@ -660,11 +657,10 @@ class TomoGalleryPage:
         self._gen = 0
         self._geom_by_ts: dict[str, TomoGeometry] = {}
         self._tilts_pending = False  # the tilts of the running reload have not landed yet
-        self._kicks_left = _MAX_KICKS_PER_RENDER  # slab renders the running reload may still submit
         self._controls_key: tuple = ()  # what the title line's tools were last built from
         self._head: dict | None = None  # the view's title line (`callbacks["view_head"]`), filled on the first render
-        # Slabs kicked off by this page land minutes later. Poll while the wall is the
-        # visible view AND something is still pending — disk work, so 15 s (CLAUDE.md),
+        # Tilt previews from the thumbnail pass land minutes later. Poll while the wall is the
+        # visible view AND some are still pending — disk work, so 15 s (CLAUDE.md),
         # gated on a signature so a tick that changes nothing never touches the DOM.
         self._timer = owned_timer(15.0, self._tick, container)
         self._timer.deactivate()
@@ -714,7 +710,6 @@ class TomoGalleryPage:
         self.tilt_groups, self.tilt_facts = [], {}
         self._group_by_ts, self._tilt_by_key, self._frame_keys = {}, {}, set()
         self._tilts_pending = True
-        self._kicks_left = _MAX_KICKS_PER_RENDER
         if not self._tab_chosen and not self.rows:
             # A project with tilts and no tomograms opens on Tilts; which it is waits for the tilts.
             groups, facts = await asyncio.to_thread(collect_tilt_groups, tilt_series, png_dir, ctx)
@@ -828,7 +823,7 @@ class TomoGalleryPage:
             return
         tile.clear()
         with tile:
-            self._kicks_left -= self._fill_tile(row, kicked=self._kicks_left > 0)
+            self._fill_tile(row)
 
     async def _collect(self, gen: int) -> None:
         """Everything at once, for the pending-preview poll (which re-renders only on a change)."""
@@ -940,26 +935,15 @@ class TomoGalleryPage:
         ]
 
     def _pending_count(self) -> int:
-        """Tiles whose current source has no PNG yet but has a volume to render from (a
-        tile showing its tilts kicks no render), plus tilts waiting for a preview while
-        the thumbnail pass runs, or ran at the last collection (its last batch)."""
-        slabs = sum(
-            1
-            for row in self.rows
-            if row["ts"] not in self.open_mosaics
-            and (src := row["sources"].get(self.source))
-            and src["png"] is None
-            and src["kick"] is not None
-        )
-        tilts = self.tilt_awaiting if self._thumbs_live or self._thumbs_running() else 0
-        return slabs + tilts
+        """Tilts waiting for a preview while the thumbnail pass runs, or ran at the last collection
+        (its last batch). A tile whose slab is not on disk waits on its own render instead
+        (`_render_slab_slot`)."""
+        return self.tilt_awaiting if self._thumbs_live or self._thumbs_running() else 0
 
     def _thumbs_running(self) -> bool:
-        from ui.background_task import BackgroundTask
-
         if self._png_dir is None:
             return False
-        return BackgroundTask.existing(thumbnail_task_key(self.project_path, self._png_dir)) is not None
+        return renders.running(thumbnail_render_key(self._png_dir))
 
     def _grid_signature(self) -> tuple:
         """What the wall draws, cheaply: which tiles have an image and how many picks
@@ -1253,13 +1237,12 @@ class TomoGalleryPage:
             else:
                 self._render_empty()
             return
-        kicks = 0
         self._tiles, self._pictures, self._imgs, self._overlays, self._overlay_keys = {}, {}, {}, {}, {}
         grid = ui.element("div").classes("cb-gal-grid").style(self._grid_columns())
         self._refs["grid"] = grid
         with grid:
             for row in self.rows:
-                kicks += self._render_tile(row, kicked=kicks < _MAX_KICKS_PER_RENDER)
+                self._render_tile(row)
         self._prefetch_other_sources()
 
     def _grid_columns(self) -> str:
@@ -1287,24 +1270,22 @@ class TomoGalleryPage:
                 "PARTICLES header of the job roster — both land here."
             ).classes("text-[11px] italic text-gray-400 text-center").style("max-width: 460px;")
 
-    def _render_tile(self, row: dict, *, kicked: bool) -> int:
-        """One tile. Returns 1 when it submitted a slab render, so the caller can cap
-        how many a single pass kicks off."""
+    def _render_tile(self, row: dict) -> None:
+        """One tile."""
         tile = ui.element("div").classes("cb-gal-tile" + (" selected" if row["ts"] == self.selected_ts else ""))
         self._tiles[row["ts"]] = tile
         with tile:
-            return self._fill_tile(row, kicked=kicked)
+            self._fill_tile(row)
 
-    def _fill_tile(self, row: dict, *, kicked: bool) -> int:
+    def _fill_tile(self, row: dict) -> None:
         """A tile's frame and caption row: the slice, or, toggled, a mosaic of the series'
         tilts in the same box. The caption row is the position label and at its end the Journey
         glyph; a click on it selects the tile."""
         group = self._group_by_ts.get(row["ts"])
-        spent = 0
         if group is not None and row["ts"] in self.open_mosaics:
             self._render_mosaic_frame(row, group)
         else:
-            spent = self._render_slice_frame(row, group, kicked=kicked)
+            self._render_slice_frame(row, group)
         cap = ui.element("div").classes("cb-gal-cap")
         cap.on("click", lambda _e, t=row["ts"]: self._select(t))
         with cap:
@@ -1312,9 +1293,8 @@ class TomoGalleryPage:
             journey = ui.html(load_icon_svg("journey.svg", size=11), sanitize=False).classes("cb-gal-jlink")
             journey.props["title"] = "Open this tilt series in the Journey, beside the wall"
             journey.on("click.stop", lambda _e, t=row["ts"]: self._open_journey(t))
-        return spent
 
-    def _render_slice_frame(self, row: dict, group: dict | None, *, kicked: bool) -> int:
+    def _render_slice_frame(self, row: dict, group: dict | None) -> None:
         src = row["sources"].get(self.source)
         frame = ui.element("div").classes("cb-gal-frame" + ("" if row["aspect"] else " cb-gal-frame-auto"))
         if row["aspect"]:
@@ -1325,36 +1305,55 @@ class TomoGalleryPage:
             picture = ui.element("div").style("display: contents;")
             self._pictures[row["ts"]] = picture
             with picture:
-                spent = self._render_picture(row, src, kicked=kicked)
+                self._render_picture(row, src)
             overlay = ui.element("div").style("display: contents;")
             self._overlays[row["ts"]] = overlay
             with overlay:
                 self._render_tile_overlay(row)
             if group is not None:
                 self._render_mosaic_toggle(row["ts"], len(group["tilts"]), on=False)
-        return spent
 
-    def _render_picture(self, row: dict, src: dict | None, *, kicked: bool) -> int:
-        """What a tile shows for one source: its image (the thumbnail), or a note saying why there
-        is none. Returns 1 when it submitted a slab render."""
-        spent = 0
+    def _render_picture(self, row: dict, src: dict | None) -> None:
+        """What a tile shows for one source: its image (the thumbnail), the skeleton of a slab still
+        to render, or a note saying why there is none."""
         self._imgs.pop(row["ts"], None)
         if src is None and not row["ready"]:
             self._render_wait_note()
         elif src is None:
             self._render_frame_note("not produced by this source")
         elif src["png"] is not None:
-            img = ui.element("img").classes("cb-gal-img")
-            img.props.update(src=src["thumb"], alt=row["ts"], loading="lazy", decoding="async")
-            self._imgs[row["ts"]] = img
+            self._render_img(row["ts"], src)
         elif src["kick"] is not None:
-            if kicked:
-                spent = 1
-                self._kick_slab(row, src)
-            self._render_frame_note("rendering slice…", spinner=True, wait=True)
+            self._render_slab_slot(row, src)
         else:
             self._render_frame_note("no volume on disk")
-        return spent
+
+    def _render_img(self, ts: str, src: dict) -> None:
+        img = ui.element("img").classes("cb-gal-img")
+        img.props.update(src=src["thumb"], alt=ts, loading="lazy", decoding="async")
+        self._imgs[ts] = img
+
+    def _render_slab_slot(self, row: dict, src: dict) -> None:
+        """A tile whose X/Y slab is not on disk yet: its skeleton, which fills with the slab once the
+        render lands (`xy_slab_render`, the file the Journey shows for the same version), and draws the
+        tile's layers over it."""
+        from ui.particles.pick_viewer import _recon_slab_paths, xy_slab_render
+
+        cache_dir, mrc = src["kick"]
+        ts = row["ts"]
+        png = _recon_slab_paths(cache_dir, ts)[0]
+
+        def _landed() -> None:
+            src["png"], src["kick"] = png, None
+            src["url"], src["thumb"] = _png_urls(png)
+            self._render_img(ts, src)
+            self._refresh_overlays()
+
+        RenderSlot(
+            xy_slab_render(png, mrc, ts, self.project_path, tile=True),
+            _landed,
+            classes="cb-rslot-fill" if row["aspect"] else "cb-rslot-wide",
+        )
 
     def _overlay_key(self, row: dict, source: str) -> tuple:
         """What a tile's overlay draws over `source`: its image or not, the pick layers with their
@@ -1570,7 +1569,6 @@ class TomoGalleryPage:
             rows.set_active(key)
         if label is not None and not label.is_deleted:
             label.set_text(self._source_text(key))
-        kicks = 0
         for row in self.rows:
             ts = row["ts"]
             picture = self._pictures.get(ts)
@@ -1584,7 +1582,7 @@ class TomoGalleryPage:
             else:
                 picture.clear()
                 with picture:
-                    kicks += self._render_picture(row, now, kicked=kicks < _MAX_KICKS_PER_RENDER)
+                    self._render_picture(row, now)
         self._refresh_overlays()
         self._refresh_layer_lists()
         self._prefetch_other_sources()
@@ -1619,7 +1617,7 @@ class TomoGalleryPage:
             return
         tile.clear()
         with tile:
-            self._fill_tile(row, kicked=True)
+            self._fill_tile(row)
 
     def _on_tilt_click(self, e, ts: str) -> None:
         """A tilt of a tile's mosaic: the tile is selected and the tilt opens in the viewer."""
@@ -1655,31 +1653,6 @@ class TomoGalleryPage:
                 await self._reload_click()
 
         open_segmentation_import_dialog(backend, self.project_path, on_done=lambda: asyncio.create_task(_reload()))
-
-    def _kick_slab(self, row: dict, src: dict) -> None:
-        """Render this tile's missing X/Y slab in the background. Same cache paths and
-        dedup keys the Journey uses, so a slab rendered from either surface serves
-        both and neither renders it twice."""
-        from ui.background_task import BackgroundTask
-        from ui.particles.pick_viewer import _recon_slab_paths
-        from ui.tomo_dashboard_dialog import _denoise_slab_path
-        from services.visualization.preview_render import render_xy_slab_preview
-        from services.workers import WorkKind, run_in_worker
-
-        cache_dir, mrc = src["kick"]
-        is_recon = self.source.startswith(RECON_SOURCE)
-        out_png = _recon_slab_paths(cache_dir, row["ts"])[0] if is_recon else _denoise_slab_path(cache_dir, row["ts"])
-
-        async def _run(progress_cb):
-            progress_cb(0, 0, "rendering X/Y slab…")
-            return await run_in_worker(WorkKind.RENDER, render_xy_slab_preview, Path(mrc), out_png)
-
-        BackgroundTask(
-            title=f"Render tomogram slab · {row['ts']}",
-            subtitle="Tomogram gallery preview",
-            project_path=str(self.project_path),
-            dedup_key=f"{'recon-slabs' if is_recon else 'denoise-slab'}:{cache_dir}:{row['ts']}",
-        ).submit(_run, show_start_toast=False)
 
     async def _open_journey(self, ts: str, section: str | None = None) -> None:
         """Select this tilt series and turn the Journey on beside the wall, on it (and scrolled to
@@ -1784,9 +1757,12 @@ class TomoGalleryPage:
                 else:
                     if not row["aspect"]:
                         frame.style("width: 60vw; height: 60vh;")
-                    self._render_frame_note(
-                        "not produced by this source" if src is None else "no preview on disk for this source yet"
-                    )
+                    if src is not None and src.get("kick") is not None:
+                        self._render_zoom_slab_slot(row, src)
+                    else:
+                        self._render_frame_note(
+                            "not produced by this source" if src is None else "no preview on disk for this source yet"
+                        )
                 self._refs["zoom_overlay"] = ui.element("div").style("display: contents;")
                 self._render_zoom_overlay()
                 chip = self._refs["zoom_chip"] = ui.element("div").style("display: contents;")
@@ -1853,6 +1829,24 @@ class TomoGalleryPage:
             self._refs["zoom_version_rows"] = ChoiceRows(
                 self._source_choices(row), self._zoom_source, self._select_zoom_source
             )
+
+    def _render_zoom_slab_slot(self, row: dict, src: dict) -> None:
+        """The zoom on a version whose slab is not on disk yet: the tile's skeleton, filled with the
+        picture and its layers once the render lands."""
+        from ui.particles.pick_viewer import _recon_slab_paths, xy_slab_render
+
+        cache_dir, mrc = src["kick"]
+        png = _recon_slab_paths(cache_dir, row["ts"])[0]
+
+        def _landed() -> None:
+            src["png"], src["kick"] = png, None
+            src["url"], src["thumb"] = _png_urls(png)
+            img = ui.element("img").classes("cb-gal-zoom-img" + ("" if row["aspect"] else " auto"))
+            img.props.update(src=src["url"], alt=row["ts"])
+            self._refs["zoom_img"] = img
+            self._render_zoom_overlay()
+
+        RenderSlot(xy_slab_render(png, mrc, row["ts"], self.project_path), _landed, classes="cb-rslot-fill")
 
     def _render_zoom_overlay(self) -> None:
         """The zoom's segmentation fills and dot layers (over an image only) and its pick count, for the

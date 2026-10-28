@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -98,6 +99,14 @@ def _nearest_neighbor_distances(coords: np.ndarray, chunk: int = 256) -> np.ndar
             d[j, i] = np.inf  # mask self-pair
         out[start:end] = d.min(axis=1)
     return out
+
+
+def save_png(img, out_path: Path) -> None:
+    """Write a PIL image as `out_path` whole or not at all: a browser fetching it meanwhile, or a second
+    render of the same picture, never sees half a file."""
+    tmp = Path(out_path).with_name(f".{Path(out_path).name}.{os.getpid()}.tmp")
+    img.save(str(tmp), format="PNG", optimize=True)
+    os.replace(tmp, out_path)
 
 
 def is_output_stale(target: Path, sources) -> bool:
@@ -202,7 +211,7 @@ def render_xz_slab_preview(
         new_w = max(1, round(w * scale))
         new_h = max(1, round(h * scale))
         img = img.resize((new_w, new_h), Image.LANCZOS)
-    img.save(str(out_path), format="PNG", optimize=True)
+    save_png(img, out_path)
     return out_path
 
 
@@ -231,8 +240,7 @@ def render_xy_slab_preview(
     byte budget, same uint8 conversion — so template, X/Y slab, X/Z slab, and
     subtomo cutouts all share polarity (low density → dark, high → bright).
     The WarpTools-rendered tomogram PNG follows WarpTools' own convention and
-    can be inverted relative to the other three renderings. The dashboard's
-    invert toggle flips all four at once via CSS.
+    can be inverted relative to the other three renderings.
 
     The slab is centered on Z (since the picker's per-pick z is rarely at the
     z-midplane, but the central Z-slab covers the cellular layer for plunge-
@@ -293,7 +301,7 @@ def render_xy_slab_preview(
         new_w = max(1, round(w * scale))
         new_h = max(1, round(h * scale))
         img = img.resize((new_w, new_h), Image.LANCZOS)
-    img.save(str(out_path), format="PNG", optimize=True)
+    save_png(img, out_path)
     return out_path
 
 
@@ -539,18 +547,83 @@ def render_template_thumb(template_path: Path, out_path: Path, *, tile_px: int =
     norm = np.clip((arr - lo) / (hi - lo), 0.0, 1.0)
     u8 = (norm * 255.0).astype(np.uint8)
     img = Image.fromarray(u8, mode="L").resize((tile_px, tile_px), Image.LANCZOS)
-    img.save(str(out_path), format="PNG", optimize=True)
+    save_png(img, out_path)
     return out_path
 
 
+def render_xy_slab(mrc_path: Path, xy_png: Path) -> str:
+    """The X/Y slab of one reconstruction, for a tile of the tomogram wall; worker-safe. Raises where
+    the renderer returns None (missing deps, a non-3D MRC, a read error)."""
+    if render_xy_slab_preview(Path(mrc_path), Path(xy_png)) is None:
+        raise RuntimeError(
+            f"the X/Y slab renderer wrote nothing for {mrc_path} — unreadable or non-3D MRC, or rendering "
+            "deps unavailable; see the server log"
+        )
+    return "slab rendered"
+
+
 def render_recon_slabs(mrc_path: Path, xy_png: Path, xz_png: Path) -> str:
-    """Both slabs of one reconstruction, for the pick viewer's shared canvas; worker-safe. The two
+    """Both slabs of one reconstruction, for the pick viewer's shared canvas; worker-safe. A slab
+    already on disk and no older than the volume is kept (the wall renders the X/Y alone). The two
     renderers return None, rather than raise, on missing deps, a non-3D MRC or a read error; that
-    must fail the task, or it settles `succeeded` with no PNG and the canvas has nothing to say."""
+    fails the render here, or it would settle with no PNG."""
     for name, fn, png in (("X/Y", render_xy_slab_preview, xy_png), ("X/Z", render_xz_slab_preview, xz_png)):
+        if not is_output_stale(Path(png), [Path(mrc_path)]):
+            continue
         if fn(Path(mrc_path), Path(png)) is None:
             raise RuntimeError(
                 f"{name} slab renderer wrote nothing for {mrc_path} (expected {png}) — "
                 "unreadable / non-3D MRC or rendering deps unavailable; see the server log"
             )
     return "recon slabs rendered"
+
+
+def render_mrc_preview_b64(mrc_path: str, target_size: int = 1024) -> tuple[str, tuple]:
+    """Read an MRC, Fourier-crop it to target_size, normalise it for display and return it as
+    a base64 PNG with the source's shape, for the full-size tilt viewer; worker-safe. target_size 0
+    keeps the full resolution."""
+    import base64
+    import io
+
+    import mrcfile
+    import numpy as np
+    from PIL import Image
+    from scipy.fft import fft2, fftshift, ifft2, ifftshift
+    from scipy.ndimage import gaussian_filter
+
+    with mrcfile.open(mrc_path, permissive=True) as mrc:
+        data = mrc.data.astype(np.float32)
+
+    orig_shape = data.shape
+
+    # Fourier crop if requested and needed
+    if target_size > 0 and (data.shape[0] > target_size or data.shape[1] > target_size):
+        ft = fftshift(fft2(data))
+        new = np.zeros((target_size, target_size), dtype=ft.dtype)
+        cy, cx = [d // 2 for d in data.shape]
+        ny, nx = target_size // 2, target_size // 2
+        sy = slice(cy - min(cy, ny), cy + min(cy, ny))
+        sx = slice(cx - min(cx, nx), cx + min(cx, nx))
+        dy = slice(ny - min(cy, ny), ny + min(cy, ny))
+        dx = slice(nx - min(cx, nx), nx + min(cx, nx))
+        new[dy, dx] = ft[sy, sx]
+        data = ifft2(ifftshift(new)).real
+
+    # Gentle denoise — scale sigma with resolution
+    sigma = 0.4 if data.shape[0] <= 1024 else 0.7
+    data = gaussian_filter(data, sigma=sigma)
+
+    # Percentile-based contrast (robust to hot/dead pixels)
+    p_lo, p_hi = np.percentile(data, [1.0, 99.0])
+    data = np.clip(data, p_lo, p_hi)
+    rng = p_hi - p_lo
+    if rng > 1e-9:
+        data = (data - p_lo) / rng
+    else:
+        data = np.zeros_like(data)
+
+    data = (data * 255).astype(np.uint8)
+    img = Image.fromarray(data, mode="L")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode(), orig_shape

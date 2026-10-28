@@ -30,8 +30,8 @@ from services.dashboard_data import tilt_thumb_dir
 from services.jobs.tilt_filter import DL_MODES, FilterMode, calibrated_threshold, effective_label, prediction_liveness
 from services.models_base import JobStatus
 from services.project_state import get_project_state_for
-from services.tilt_series_service import ensure_tilt_thumbnails
-from ui.background_task import BackgroundTask
+from services import renders
+from services.tilt_series_service import ensure_tilt_thumbnails, thumbnail_render_key
 from ui.components.buttons import house_button
 from ui.components.dialogs import dialog_host
 from ui.components.fields import house_number
@@ -57,7 +57,6 @@ from ui.tilt_previews import (
     TiltGallery,
     collect_tilt_groups,
     registry_tilt_series,
-    thumbnail_task_key,
     tilt_context,
 )
 
@@ -367,7 +366,7 @@ class TiltFilterPage:
     def _thumbs_running(self) -> bool:
         if self._png_dir is None:
             return False
-        return BackgroundTask.existing(thumbnail_task_key(self.project_path, self._png_dir)) is not None
+        return renders.running(thumbnail_render_key(self._png_dir))
 
     async def _observe(self) -> None:
         """A landed DL run, a commit or a re-open changes what the cards show: re-collect, and

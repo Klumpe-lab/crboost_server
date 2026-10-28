@@ -67,14 +67,13 @@ from services.tilt_series.warp_curves import CtfFit1D, fit_window_inv_a, normali
 from services.tilt_series_service import ensure_tilt_thumbnails
 from services.pixel_chain import apply_sanity_rules, compute_pixel_chain
 from services.visualization.preview_orchestrator import _find_warp_tomo_preview
-from services.visualization.preview_render import is_output_stale, render_xy_slab_preview
-from services.workers import WorkKind, run_in_worker
 from ui.components.chip import render_chip
-from ui.components.buttons import house_button, icon_button
+from ui.components.buttons import icon_button
 from ui.components.copyable import copy_3dmod_chip, copy_on_click
 from ui.components.feature_layers import FeatureFills, layers_for_ts
-from ui.components.reactive import owned_timer
-from ui.components.recon_compare import matched_slabs, recon_versions_for_ts, retry_match
+from ui.components.reactive import owned_timer, slot_is_gone
+from ui.components.recon_compare import matched_render, recon_versions_for_ts
+from ui.components.render_slot import RenderSlot
 from ui.components.hover_menu import Choice, ChoiceRows, hover_menu, tool_trigger
 from ui.components.segmented import render_segmented
 from ui.current_project import current_project_state
@@ -93,7 +92,7 @@ from ui.dashboard import warp_strip
 from ui.dashboard.pixel_sanity import render_pixel_sanity_table
 from ui.dashboard.strip import build_strip
 from ui.routing import View
-from ui.particles.pick_viewer import render_imported_particles_section, render_particles_section, reset_auto_kick_state
+from ui.particles.pick_viewer import render_imported_particles_section, render_particles_section, xy_slab_render
 
 logger = logging.getLogger(__name__)
 
@@ -220,9 +219,6 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             select_tab("picks")
 
     manage_species = _manage_species if _open_species is not None else None
-    # `full viewer ↗`: the slim mount's route into the full-page pick viewer on
-    # the active species + this tomogram. None on a standalone journey mount.
-    _open_viewer = (callbacks or {}).get("open_pick_viewer")
     _, ts_names0 = collect_dashboard_journey(state, project_path)
     # The workspace's selected tilt series (the Tomograms view may have made one) when the Journey has
     # it, else the first; whichever it shows becomes the selection (`_publish`).
@@ -240,7 +236,6 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
 
     # Per-mount auto-kick dedup. Cleared on build so a reload after the user
     # fixed a stuck job re-triggers generation.
-    reset_auto_kick_state()
     ensure_assets_loaded()
 
     # Everything about the selected tilt series that is not a section sits on the view's title line:
@@ -362,13 +357,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
                 _render_no_data_empty_state()
             else:
                 _render_main_pane_for_ts(
-                    selected["ts"],
-                    state,
-                    project_path,
-                    request_refresh,
-                    render_strip,
-                    manage_species,
-                    open_viewer=_open_viewer,
+                    selected["ts"], state, project_path, request_refresh, render_strip, manage_species
                 )
 
     def render_strip(journey_data=None, species_data=None) -> None:
@@ -782,14 +771,7 @@ def _render_ts_info_popover(ts_name: str, species_list: list[dict], recon_mrc: s
 
 
 def _render_main_pane_for_ts(
-    ts_name: str,
-    project_state,
-    project_path: Path,
-    refresh,
-    refresh_roster=None,
-    manage_species=None,
-    *,
-    open_viewer=None,
+    ts_name: str, project_state, project_path: Path, refresh, refresh_roster=None, manage_species=None
 ) -> None:
     """Render the main-pane section stack for the selected TS. Sections emit
     in pipeline order; each is a no-op if the corresponding job isn't in the
@@ -826,9 +808,7 @@ def _render_main_pane_for_ts(
         # Candidate-extract path first; if it renders nothing (no TEMPLATE_EXTRACT
         # jobs — e.g. a particle-only project), fall back to the imported-tomogram
         # manual-picking section so the imported tomos still surface.
-        if render_particles_section(
-            ts_name, project_state, project_path, refresh, refresh_roster, manage_species, open_viewer=open_viewer
-        ):
+        if render_particles_section(ts_name, project_state, project_path, refresh, refresh_roster, manage_species):
             rendered_any = True
         elif render_imported_particles_section(ts_name, project_state, project_path, refresh, refresh_roster):
             rendered_any = True
@@ -2272,118 +2252,9 @@ def _render_tilt_filter_section(ts_name: str, project_state, project_path: Path,
     return True
 
 
-# ---------------------------------------------------------------------------
-# Reconstruct section: surfaces per-TS reconstructed-tomogram polarity.
-#
-# The template/mask polarity (BLACK vs WHITE) must match the tomogram
-# polarity. If the WarpTools `TomoFullReconstructInvert` setting changes
-# between runs or projects, the polarity chip flags the mismatch before
-# TM produces meaningless CC scores. Reads a center 1024×1024 Z slice
-# only — full-volume reads are forbidden (too slow / too much memory).
-# ---------------------------------------------------------------------------
-
-
-_TOMO_POLARITY_CACHE: dict[tuple[str, int], dict] = {}
-
-
-def _compute_tomogram_polarity(mrc_path: Path) -> dict | None:
-    """Sample a center 1024×1024 Z slice from a reconstructed tomogram,
-    compute %bright / %dark voxel fractions, classify polarity. Cached by
-    (path, mtime). Returns None on read failure or non-3D volumes."""
-    try:
-        st = mrc_path.stat()
-    except OSError:
-        return None
-    key = (str(mrc_path), int(st.st_mtime))
-    cached = _TOMO_POLARITY_CACHE.get(key)
-    if cached is not None:
-        return cached
-    try:
-        import mrcfile
-        import numpy as np
-
-        with mrcfile.mmap(str(mrc_path), mode="r") as m:
-            data = m.data
-            if data.ndim != 3:
-                return None
-            nz, ny, nx = data.shape
-            cz, cy, cx = nz // 2, ny // 2, nx // 2
-            half = 512
-            y0, y1 = max(0, cy - half), min(ny, cy + half)
-            x0, x1 = max(0, cx - half), min(nx, cx + half)
-            # Materialize a copy so the array survives the mmap close.
-            slab = np.array(data[cz, y0:y1, x0:x1], dtype=np.float32, copy=True)
-    except Exception as e:
-        logger.warning("Could not read tomogram %s for polarity: %s", mrc_path, e)
-        return None
-
-    if slab.size == 0:
-        return None
-    mean = float(slab.mean())
-    std = float(slab.std()) or 1.0
-    upper = mean + 1.5 * std
-    lower = mean - 1.5 * std
-    n = float(slab.size)
-    pct_bright = 100.0 * float((slab > upper).sum()) / n
-    pct_dark = 100.0 * float((slab < lower).sum()) / n
-
-    # Classify. Margins picked from the doc example: GT had 6.6%/6.8% =
-    # essentially symmetric. >1.5x ratio + >8% absolute = clear skew.
-    if pct_bright > 1.5 * pct_dark and pct_bright > 8.0:
-        polarity = "bright"
-    elif pct_dark > 1.5 * pct_bright and pct_dark > 8.0:
-        polarity = "dark"
-    else:
-        polarity = "symmetric"
-
-    result = {"pct_bright": pct_bright, "pct_dark": pct_dark, "polarity": polarity, "slab_shape": list(slab.shape)}
-    _TOMO_POLARITY_CACHE[key] = result
-    return result
-
-
-def _expected_polarity_from_templates(project_state) -> str | None:
-    """Return the consensus selected-template polarity across species
-    ("white" or "black") if every species agrees, else None."""
-    seen: set[str] = set()
-    for sp in project_state.species_registry or []:
-        tpl = sp.get_selected_template() if hasattr(sp, "get_selected_template") else None
-        pol = getattr(tpl, "polarity", None) if tpl else None
-        if pol:
-            seen.add(str(pol).lower())
-    if len(seen) == 1:
-        return next(iter(seen))
-    return None
-
-
-def _tomo_polarity_chip_status(polarity: str, expected: str | None) -> tuple[str, str]:
-    """Return (status, hint) for the polarity chip."""
-    if expected is None:
-        if polarity == "symmetric":
-            return "neutral", "Roughly symmetric distribution — typical reconstruction."
-        return (
-            "info",
-            f"{polarity.capitalize()}-skewed reconstruction. Make sure your template polarity "
-            f"({polarity}) matches this tomogram.",
-        )
-    if expected == "white" and polarity == "dark":
-        return "error", (
-            "Template polarity is WHITE (expects bright particles) but the reconstructed "
-            "tomogram is DARK-skewed. PyTOM is matching inverted contrast — invert the "
-            "template, the tomogram, or both, and re-run TM."
-        )
-    if expected == "black" and polarity == "bright":
-        return "error", (
-            "Template polarity is BLACK (expects dark particles) but the reconstructed "
-            "tomogram is BRIGHT-skewed. PyTOM is matching inverted contrast — invert the "
-            "template, the tomogram, or both, and re-run TM."
-        )
-    return "ok", f"Tomogram polarity ({polarity}) matches template polarity ({expected})."
-
-
 def _render_reconstruct_section(ts_name: str, project_state, project_path: Path, refresh) -> bool:
-    """Per-TS Reconstruct card. Currently surfaces tomogram polarity; the
-    WarpTools PNG + X/Z slab + 3dmod copy command are still hosted in the
-    Candidate Extract section (Slice B refactor pending)."""
+    """Per-TS Reconstruct card: the reconstruction's preview beside the denoised one, under the
+    segmentation fills, with the card's layers menu."""
     rec = find_job_by_type(project_state, JobType.TS_RECONSTRUCT)
     if not rec:
         return False
@@ -2418,56 +2289,12 @@ def _render_reconstruct_section(ts_name: str, project_state, project_path: Path,
         layers, entries = layers_for_ts(project_state, project_path, ts_name)
         fills = FeatureFills(project_path, layers, entries, card, rec_iid) if layers else None
 
-        if mrc_path is None or not Path(mrc_path).exists():
-            with ui.element("div").classes("cb-chip-strip"):
-                render_chip(
-                    "polarity",
-                    "no MRC",
-                    status="neutral",
-                    tooltip="Reconstructed tomogram MRC not on disk for this TS — can't sample for polarity.",
-                )
-                menu_slot = ui.element("div").style("display: contents;")
-            _render_recon_big_preview(ts_name, project_state, project_path, None, refresh, fills=fills)
-            _features_menu(menu_slot, fills)
-            return True
-
-        polarity = _compute_tomogram_polarity(Path(mrc_path))
         with ui.element("div").classes("cb-chip-strip"):
-            if polarity is None:
-                render_chip(
-                    "polarity",
-                    "read error",
-                    status="warn",
-                    tooltip=f"Could not sample center Z slice of {mrc_path} (see server logs).",
-                )
-            else:
-                expected = _expected_polarity_from_templates(project_state)
-                status, hint = _tomo_polarity_chip_status(polarity["polarity"], expected)
-                render_chip(
-                    "polarity",
-                    polarity["polarity"],
-                    status=status,
-                    tooltip=(
-                        f"Reconstructed tomogram polarity: {polarity['polarity'].upper()} "
-                        f"({polarity['pct_bright']:.1f}% bright vs {polarity['pct_dark']:.1f}% "
-                        f"dark voxels in a center {polarity['slab_shape'][0]}×{polarity['slab_shape'][1]} "
-                        f"Z slice). {hint}"
-                    ),
-                )
-                render_chip(
-                    "bright %",
-                    f"{polarity['pct_bright']:.1f}",
-                    status="neutral",
-                    tooltip="Fraction of voxels above mean + 1.5σ in the sampled Z slice.",
-                )
-                render_chip(
-                    "dark %",
-                    f"{polarity['pct_dark']:.1f}",
-                    status="neutral",
-                    tooltip="Fraction of voxels below mean − 1.5σ in the sampled Z slice.",
-                )
             menu_slot = ui.element("div").style("display: contents;")
-        _render_recon_big_preview(ts_name, project_state, project_path, Path(mrc_path), refresh, fills=fills)
+        on_disk = mrc_path is not None and Path(mrc_path).exists()
+        _render_recon_big_preview(
+            ts_name, project_state, project_path, Path(mrc_path) if on_disk else None, refresh, fills=fills
+        )
         _features_menu(menu_slot, fills)
     return True
 
@@ -2534,17 +2361,16 @@ def _render_recon_big_preview(
         selected = labels[0] if labels else None
     sel = next((m for m in methods if m[0] == selected), None)
 
-    dn_png: Path | None = None
+    dn_render = None
     dn_mrc: Path | None = None
     dn_recon: str | None = None
     if sel is not None:
         _, dn_job_dir, dn_mrc = sel
         dn_iid = job_dirs(project_state).get(Path(dn_job_dir)) if fills is not None else None
         dn_recon = recon_of(project_state, dn_iid) if dn_iid else None
-        _auto_kick_denoise_slab(dn_job_dir, ts_name, dn_mrc, project_path, refresh)
-        candidate = _denoise_slab_path(dn_job_dir, ts_name)
-        if candidate.exists():
-            dn_png = candidate
+        # The denoised volume has no WarpTools PNG: its pane is an X/Y slab rendered from it, the file the
+        # wall's denoised tile and the pick viewer's denoised version show too.
+        dn_render = xy_slab_render(_denoise_slab_path(dn_job_dir, ts_name), dn_mrc, ts_name, project_path)
 
     if (not png_path or not png_path.exists()) and not has_denoise:
         ui.label("No tomogram preview on disk for this TS yet.").classes("cb-section-placeholder")
@@ -2558,7 +2384,7 @@ def _render_recon_big_preview(
 
     with ui.element("div").classes("cb-recon-compare"):
         if version == _COMPARE_VERSIONS:
-            _render_recon_versions(versions, ts_name, project_path, refresh)
+            _render_recon_versions(versions, ts_name, project_path)
         elif version is not None:
             _render_recon_version(next(v for v in versions if v["label"] == version), ts_name, fills)
         else:
@@ -2601,21 +2427,21 @@ def _render_recon_big_preview(
                             )
                     else:
                         ui.label(selected).classes("cb-recon-pane-method")
-                if dn_png is not None:
+                dn_png = dn_render.outputs[0]
+
+                def _denoised(png=dn_png, mrc=dn_mrc, label=selected, recon=dn_recon) -> None:
                     with ui.element("div").classes("cb-recon-preview").style("position: relative;"):
                         if _fills_over(fills):
-                            _framed_preview(
-                                vis_asset_url(str(dn_png)), f"{ts_name} {selected} denoised", fills, dn_recon
-                            )
+                            _framed_preview(vis_asset_url(str(png)), f"{ts_name} {label} denoised", fills, recon)
                         else:
                             ui.html(
-                                f"<img src='{vis_asset_url(str(dn_png))}' alt='{ts_name} {selected} denoised' />",
+                                f"<img src='{vis_asset_url(str(png))}' alt='{ts_name} {label} denoised' />",
                                 sanitize=False,
                             )
-                        copy_3dmod_chip(dn_mrc)
-                    ui.label(f"{selected} · denoised X/Y slab · {dn_mrc.name}").classes("cb-recon-preview-caption")
-                else:
-                    ui.label("rendering denoised slab…").classes("cb-section-placeholder")
+                        copy_3dmod_chip(mrc)
+                    ui.label(f"{label} · denoised X/Y slab · {mrc.name}").classes("cb-recon-preview-caption")
+
+                RenderSlot(dn_render, _denoised, classes="cb-rslot-wide", style=_skeleton_shape(fills))
 
 
 # Which reconstruction version the Reconstruct card shows, keyed by project path: a job's
@@ -2710,16 +2536,21 @@ def _blink_html(v: dict, ref: dict, ts_name: str) -> str:
     )
 
 
-def _render_recon_versions(versions: list[dict], ts_name: str, project_path: Path, refresh) -> None:
-    """One pane per reconstruct job of this TS, every slab on the first job's plane. Until the
-    registration lands the panes wait; if it fails they fall back to each job's own WarpTools
-    PNG (its central slice, so NOT the same plane) and say why."""
-    state, error = matched_slabs(versions, ts_name, project_path, refresh)
+def _render_recon_versions(versions: list[dict], ts_name: str, project_path: Path) -> None:
+    """One pane per reconstruct job of this TS, every slab on the first job's plane: each pane's box is
+    a skeleton until the one registration of the set lands (`matched_render`), whose restart button
+    registers them again."""
+    render = matched_render(versions, ts_name, project_path)
+    ref = versions[0]
     for v in versions:
         with ui.element("div").classes("cb-recon-compare-pane"):
             ui.label(f"recon · {v['job']}").classes("cb-recon-pane-tag")
-            if state == "fresh":
-                ref = versions[0]
+
+            async def _pane(v=v) -> None:
+                slot = ui.context.slot
+                plane = await asyncio.to_thread(lambda: json.loads(v["plane_json"].read_text()))
+                if slot_is_gone(slot):
+                    return
                 with ui.element("div").classes("cb-recon-preview").style("position: relative;").tooltip(_PLANE_TIP):
                     if v is ref:
                         slab = f"<img src='{vis_asset_url(str(v['slab']))}' alt='{ts_name} {v['job']}' />"
@@ -2727,40 +2558,31 @@ def _render_recon_versions(versions: list[dict], ts_name: str, project_path: Pat
                     else:
                         ui.html(_blink_html(v, ref, ts_name), sanitize=False).style("width: 100%;")
                     copy_3dmod_chip(v["mrc"])
-                caption = _plane_caption(v["plane"], ref["job"])
+                caption = _plane_caption(plane, ref["job"])
                 if v is not ref:
                     caption += f" · hold the pointer on it (or Space) to see {ref['job']}"
                 ui.label(caption).classes("cb-recon-preview-caption")
-            elif state == "failed":
-                warp_png = v["mrc"].with_suffix(".png")
-                if warp_png.exists():
-                    with ui.element("div").classes("cb-recon-preview").style("position: relative;"):
-                        ui.html(
-                            f"<img src='{vis_asset_url(str(warp_png))}' alt='{ts_name} {v['job']}' />", sanitize=False
-                        )
-                        copy_3dmod_chip(v["mrc"])
-                ui.label(f"own central slice, planes NOT matched — {error}").classes("text-[10px] text-red-600")
-                if v is versions[0]:
 
-                    def _retry(_e=None) -> None:
-                        retry_match(versions, ts_name)
-                        refresh()
-
-                    house_button("Retry", _retry, tooltip="Register the reconstructions again")
-            else:
-                ui.label("matching planes across reconstructions…").classes("cb-section-placeholder")
+            RenderSlot(render, _pane, classes="cb-rslot-wide cb-rslot-tall")
             ui.label(f"{v['iid']} ← {v['lineage']}").classes("cb-recon-preview-caption")
+
+
+def _skeleton_shape(fills: FeatureFills | None) -> str:
+    """A preview skeleton's box: the tomogram's shape when the fills know its extent, else no shape (the
+    slot's own height)."""
+    if fills is not None and fills.dims is not None:
+        return f"aspect-ratio: {max(int(fills.dims[0]), 1)} / {max(int(fills.dims[1]), 1)}; max-height: 75vh;"
+    return "min-height: 30vh;"
 
 
 # ── Denoised tomogram preview (shown side-by-side with the recon in the Reconstruct
 # section) ─────────────────────────────────────────────────────────────────────────
 # cryoCARE/IsoNet write a denoised volume per tomogram but NO WarpTools preview PNG,
 # so the denoised pane is an X/Y slab we render from the denoised MRC ourselves —
-# same renderer + percentile pipeline as the recon slab — background-built and cached
-# under the denoise job's vis/slabs. The denoised tomograms.star repoints
+# same renderer + percentile pipeline as the recon slab — rendered on first view and
+# cached under the denoise job's vis/slabs. The denoised tomograms.star repoints
 # rlnTomoReconstructedTomogram at the denoised volume, so the recon volume resolver
 # (resolve_volume_for_3dmod) works unchanged.
-_AUTO_KICKED_DENOISE_SLAB: set[str] = set()
 
 # Which denoise method's slab the user is currently viewing, keyed by project path.
 # A project can host several denoisepredict jobs (cryoCARE, IsoNet, …); the
@@ -2824,30 +2646,3 @@ def _available_denoise_methods_for_ts(project_state, project_path: Path, ts_name
 
 def _denoise_slab_path(denoise_job_dir: Path, ts_name: str) -> Path:
     return denoise_job_dir / "vis" / "slabs" / f"{ts_name}_xy.png"
-
-
-def _auto_kick_denoise_slab(denoise_job_dir: Path, ts_name: str, mrc_path: Path, project_path: Path, refresh) -> None:
-    """Render the denoised X/Y slab in the background if missing/stale. Mirrors
-    _auto_kick_recon_slabs: module-level dedup set + BackgroundTask dedup_key,
-    refresh-on-complete so the denoised pane fills when the PNG lands."""
-    key = f"{denoise_job_dir}:{ts_name}"
-    if key in _AUTO_KICKED_DENOISE_SLAB:
-        return
-    xy_png = _denoise_slab_path(denoise_job_dir, ts_name)
-    if xy_png.exists() and not is_output_stale(xy_png, [mrc_path]):
-        return
-    _AUTO_KICKED_DENOISE_SLAB.add(key)
-
-    async def _run(progress_cb):
-        progress_cb(0, 0, "rendering denoised slab…")
-        await run_in_worker(WorkKind.RENDER, render_xy_slab_preview, Path(mrc_path), xy_png)
-        return "denoised slab rendered"
-
-    from ui.background_task import BackgroundTask
-
-    BackgroundTask(
-        title=f"Render denoised slab · {ts_name}",
-        subtitle="cryoCARE/IsoNet denoised tomogram preview",
-        project_path=str(project_path),
-        dedup_key=f"denoise-slab:{denoise_job_dir}:{ts_name}",
-    ).submit(_run, on_complete=lambda _t: refresh(), show_start_toast=False)

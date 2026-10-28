@@ -10,16 +10,18 @@ CSS. Use `ui.html(..., sanitize=False)` only when strictly needed.
 Public API: `render_template_viewer(template_path, mask_path=None, ...)`
 mounts the viewer in the current NiceGUI parent. Call `update_paths(...)`
 on the returned controller to swap volumes without re-mounting (workbench
-swaps templates often).
+swaps templates often). The volumes are read in a thread, and the plots fill
+in once they are: a read on the event loop would stall every tab.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from nicegui import ui
+from nicegui import background_tasks, ui
 
 logger = logging.getLogger(__name__)
 
@@ -98,13 +100,15 @@ def render_template_viewer(
         "y": 0,
         "x": 0,
         "show_mask": show_mask_default,
+        # Bumped by every load: a read that finds it moved was superseded by a later swap.
+        "gen": 0,
     }
 
     refs: dict = {}
 
-    def _reload_volumes() -> None:
-        state["vol"] = _load_volume(state["template_path"])
-        state["mask"] = _load_volume(state["mask_path"]) if state["mask_path"] else None
+    def _apply_volumes(vol: _CachedVolume | None, mask: _CachedVolume | None) -> None:
+        state["vol"] = vol
+        state["mask"] = mask
         # Default slice indices to centers
         if state["vol"] is not None:
             state["z"] = state["vol"].nz // 2
@@ -173,16 +177,25 @@ def render_template_viewer(
             plot.figure = _build_slice_fig(slice_fn(), mask_fn(), axis_labels[0], axis_labels[1])
             plot.update()
 
-    def _refresh_full() -> None:
-        # Re-mount the slider row (slider max depends on volume dims) and
-        # all plots.
-        _reload_volumes()
+    async def _load_and_build() -> None:
+        # Re-mount the slider row (slider max depends on volume dims) and all plots, once the
+        # volumes are read.
+        state["gen"] += 1
+        gen = state["gen"]
+        template_path, mask_path = state["template_path"], state["mask_path"]
+        vol, mask = await asyncio.to_thread(
+            lambda: (_load_volume(template_path), _load_volume(mask_path) if mask_path else None)
+        )
         body = refs.get("body")
-        if body is None:
+        if gen != state["gen"] or body is None or body.is_deleted:
             return
+        _apply_volumes(vol, mask)
         body.clear()
         with body:
             _build_body()
+
+    def _refresh_full() -> None:
+        background_tasks.create(_load_and_build(), name="template-viewer load")
 
     def _build_body() -> None:
         v = state["vol"]
@@ -194,8 +207,9 @@ def render_template_viewer(
 
         # Plot row — each cell is a square container (aspect-ratio: 1) so
         # cubic templates render visually cubic without using plotly's
-        # scaleanchor.
-        with ui.row().classes("w-full gap-2 flex-nowrap justify-center"):
+        # scaleanchor. `cb-tv-plots` lets the Particles registry scroll the row in a pane
+        # narrower than the three plots (ui/dashboard/css.py `_REGISTRY_CSS`).
+        with ui.row().classes("cb-tv-plots w-full gap-2 flex-nowrap justify-center"):
             for axis_key, slice_fn, mask_fn, axis_labels in (
                 ("xy", _slice_xy, _mask_xy, ("x", "y")),
                 ("xz", _slice_xz, _mask_xz, ("x", "z")),
@@ -250,10 +264,8 @@ def render_template_viewer(
             ui.label(" • ".join(info_parts)).classes("text-[11px] text-gray-500 font-mono")
 
     # ---- Mount ---------------------------------------------------------------
-    _reload_volumes()
     refs["body"] = ui.column().classes("w-full gap-0")
-    with refs["body"]:
-        _build_body()
+    _refresh_full()
 
     # ---- Controller ---------------------------------------------------------
     def _update_paths(template_path: str, mask_path: str | None = None) -> None:

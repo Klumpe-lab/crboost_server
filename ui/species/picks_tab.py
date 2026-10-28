@@ -338,7 +338,8 @@ class _PicksView(FingerprintedView):
         # One panel per tomogram: its name line over its lists, the table white on the panel.
         with ui.column().classes("w-full gap-1").style(PANEL_STYLE):
             with ui.element("div").classes("cb-ptable-group").style("margin-top: 0; padding: 0 2px 2px;"):
-                ui.label(info.tomo_name).classes("cb-ptable-group-name")
+                # A narrow pane ellipsises a long name (CSS), so the hover carries it whole.
+                ui.label(info.tomo_name).classes("cb-ptable-group-name").tooltip(info.tomo_name)
                 # Copying the save dir is an act on the name beside it — the folder is the
                 # tomogram's — so it sits with the name rather than at the far right with the
                 # navigation verbs, a whole row's width away from what it copies.
@@ -365,8 +366,12 @@ class _PicksView(FingerprintedView):
                         tooltip="user .coords files in this tomogram's curation dir (an untouched pre-seeded list "
                         "is not a save) — the watcher registers EACH as its own pick list, named after the file",
                     )
-                ui.space()
-                self._render_group_actions(info)
+                # One unit at the right end: when the line wraps in a narrow pane, the verbs move under
+                # the name together instead of splitting across lines.
+                with ui.element("div").style(
+                    "display: flex; align-items: center; gap: 8px; margin-left: auto; flex: 0 0 auto;"
+                ):
+                    self._render_group_actions(info)
 
             # The table box is drawn for every tomogram, empty of lists or not, because the
             # import row lives in it and that row is the point of an empty tomogram.

@@ -46,15 +46,17 @@ class WorkKind(StrEnum):
     """What a piece of worker work is, for its cap."""
 
     RENDER = "render"  # one picture from one volume: slabs, matched planes, cutout atlases
+    TILE = "tile"  # one tile of a wall of pictures, so a wall's burst queues apart from the pictures above
     PREVIEW = "preview"  # a candidate-extract job's whole preview pass
     THUMBNAILS = "thumbnails"  # a project's tilt preview pass
     SEGMENTATIONS = "segmentations"  # reading a batch of segmentation volumes an import registers
 
 
 # Concurrent tasks per kind. A preview or thumbnail pass is long and walks a whole job, so one at a
-# time; renders are short and asked for in bursts.
+# time; renders are short and asked for in bursts, a wall's in bigger ones.
 _CAPS: dict[WorkKind, int] = {
     WorkKind.RENDER: 3,
+    WorkKind.TILE: 2,
     WorkKind.PREVIEW: 1,
     WorkKind.THUMBNAILS: 1,
     WorkKind.SEGMENTATIONS: 1,

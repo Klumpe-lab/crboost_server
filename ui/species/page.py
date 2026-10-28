@@ -66,7 +66,7 @@ class _PillView(FingerprintedView):
         sid = self._page.active_species_id
         species = get_project_state_for(self._page.project_path).get_species(sid) if sid else None
         if species is not None:
-            render_species_mark(species, named=True, tooltip=f"id: {species.id}")
+            render_species_mark(species, named=True, tooltip=f"id: {species.id}").classes("cb-species-mark")
 
 
 class SpeciesPage:
@@ -92,7 +92,15 @@ class SpeciesPage:
 
     def build(self) -> None:
         ensure_assets_loaded()
-        with ui.element("div").style("display: flex; flex-direction: row; width: 100%; height: 100%; min-height: 0;"):
+        # The page and its detail column are size containers: the pane's width, not the window's,
+        # decides the layout (`_REGISTRY_CSS` in ui/dashboard/css.py). A narrow pane turns
+        # `.cb-species-split` into a column, the rail a strip above the detail.
+        with (
+            ui.element("div").classes("cb-species-page").style("width: 100%; height: 100%; min-height: 0;"),
+            ui.element("div")
+            .classes("cb-species-split")
+            .style("display: flex; flex-direction: row; width: 100%; height: 100%; min-height: 0;"),
+        ):
             # The rail is a pale gray-blue panel beside the page, not a ruled-off column.
             rail = (
                 ui.element("div")
@@ -110,8 +118,12 @@ class SpeciesPage:
                 on_add=self.add_species,
                 on_add_from_catalog=self.add_species_from_catalog,
             )
-            with ui.element("div").style(
-                "display: flex; flex-direction: column; flex: 1 1 0%; min-width: 0; height: 100%; min-height: 0;"
+            with (
+                ui.element("div")
+                .classes("cb-species-detail")
+                .style(
+                    "display: flex; flex-direction: column; flex: 1 1 0%; min-width: 0; height: 100%; min-height: 0;"
+                )
             ):
                 header = ui.element("div").classes("cb-species-header")
                 self._refs["header"] = header

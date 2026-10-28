@@ -153,10 +153,26 @@ class BackgroundTaskRegistry:
                 self._prune()
 
         record._asyncio_task = asyncio.create_task(runner(), name=f"bg-task:{task_id}")
+        record._asyncio_task.add_done_callback(lambda t: self._settle_unstarted(record, t))
         return task_id
+
+    def _settle_unstarted(self, record: BackgroundTaskRecord, task: asyncio.Task) -> None:
+        """A task cancelled before its runner ran never settles its record; the tray would show it
+        running for good."""
+        if record.is_running:
+            record.status = "cancelled" if task.cancelled() else "failed"
+            record.finished_at = datetime.now()
+            self._prune()
 
     def get(self, task_id: str) -> BackgroundTaskRecord | None:
         return self._tasks.get(task_id)
+
+    def add_done_callback(self, task_id: str, fn: Callable[[BackgroundTaskRecord], None]) -> None:
+        """Call `fn(record)` once the task has settled, however it settled, also when it was cancelled
+        before it ran."""
+        record = self._tasks.get(task_id)
+        if record is not None and record._asyncio_task is not None:
+            record._asyncio_task.add_done_callback(lambda _t: fn(record))
 
     def all(self) -> list[BackgroundTaskRecord]:
         return list(self._tasks.values())

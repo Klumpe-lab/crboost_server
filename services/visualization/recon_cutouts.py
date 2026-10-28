@@ -135,3 +135,18 @@ def render_recon_cutouts_atlas(
         cols=cols,
         source="recon",
     )
+
+
+def render_list_cutouts(recon_mrc: Path, picks: list, out_atlas_path: Path, out_index_path: Path, **kwargs) -> str:
+    """`render_recon_cutouts_atlas` for a render (services/renders.py); worker-safe. Raises where no index
+    came out (no reconstruction, an unreadable or non-3D one, missing deps), which it reports by
+    returning None; every pick outside the volume still writes an atlas and an index, of no tiles."""
+    if not Path(recon_mrc).exists():
+        raise FileNotFoundError(f"no reconstruction at {recon_mrc}")
+    meta = render_recon_cutouts_atlas(recon_mrc, picks, out_atlas_path, out_index_path, **kwargs)
+    if meta is None and not Path(out_index_path).exists():
+        raise RuntimeError(
+            f"no cutouts could be cut from {recon_mrc}: unreadable or non-3D, or rendering deps unavailable; "
+            "see the server log"
+        )
+    return f"{(meta or {}).get('n_ok', 0)} of {len(picks)} cutouts"

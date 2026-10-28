@@ -1,14 +1,15 @@
 """The layers list, as every view's layers menu holds it: the Tomograms wall and its zoom, the
 Journey's Reconstruct card and the pick viewer.
 
-Two kinds of annotation share one list and one logic, each in a table of its own: the pick layers, by
-species, and the segmentations. A table's head has an eye that shows or hides all of its layers. Each
-row is an eye, the layer's key in its colour (a click on it opens the colours, where the view lets it be
-recoloured), its name and a count; a view that can switch its picture adds the reconstruction each
-layer was made on, a view with a gallery a button that shows a pick list in it. Every layer follows the
-version (`services/segmentation/display.py`): it shows over a picture of the reconstruction it was made
-on and is hidden over another; a click on its row switches it by hand, and "Follow the version" at the
-top puts every hand-switched layer back. A layer shown over another reconstruction is flagged.
+Two kinds of annotation share one list and one logic, in one table so that every row's cells line up:
+the pick layers, by species, and the segmentations. A kind's head has an eye that shows or hides all of
+its layers. Each row is an eye, the layer's key in its colour (a click on it opens the colours, where
+the view lets it be recoloured), its name and a count; a view that can switch its picture adds the
+reconstruction each layer was made on, a view with a gallery a button that shows a pick list in it.
+Every layer follows the version (`services/segmentation/display.py`): it shows over a picture of the
+reconstruction it was made on and is hidden over another; a click on its row switches it by hand, and
+"Follow the version" at the top puts every hand-switched layer back. A layer shown over another
+reconstruction is flagged.
 """
 
 from __future__ import annotations
@@ -79,11 +80,11 @@ def swatch_svg(color: str, size: int = 10) -> str:
 
 
 def palette_row(on_pick: Callable[[str], None], mark: Callable[[str, int], str]) -> ui.element:
-    """The colours a layer can take, as a row under the layer's row, hidden until a click on the layer's
-    key shows it: in place, because a menu of its own would close a hover menu the list sits in.
-    `mark(color, size)` draws a colour as the layer's own key."""
+    """The colours a layer can take, as a row of swatches; a click on one calls `on_pick` with it. The
+    list shows it under the layer's row, hidden until a click on the layer's key: in place, because a
+    menu of its own would close a hover menu the list sits in. `mark(color, size)` draws a colour as
+    the layer's own key."""
     row = ui.element("div").classes("cb-gal-pk-palette")
-    row.set_visibility(False)
     with row:
         for color in SPECIES_OVERLAY_COLORS:
             swatch = ui.html(mark(color, 14), sanitize=False).classes("cb-gal-pk-marker")
@@ -106,10 +107,11 @@ def render_layer_list(
     sources: dict[str, Callable[[], None]] | None = None,
 ) -> None:
     """The rows into the current slot, read against a picture of reconstruction `shows`: "Follow the
-    version", the table of pick layers under their species, the table of segmentations and the fills'
-    opacity. `sources` holds the reconstructions the view can show, each with the call that shows it;
-    given, each row names the reconstruction its layer was made on, and a click there shows it.
-    `on_change` runs after any change, for the view to repaint the list and what it draws."""
+    version", the pick layers under their species, the segmentations and the fills' opacity, all in one
+    table, so every row's cells sit in the same columns. `sources` holds the reconstructions the view can
+    show, each with the call that shows it; given, each row names the reconstruction its layer was made
+    on, and a click there shows it. `on_change` runs after any change, for the view to repaint the list
+    and what it draws."""
     rows = [*picks, *features]
     if not rows:
         ui.label("No picks or segmentations yet.").classes("cb-hmenu-empty")
@@ -128,46 +130,75 @@ def render_layer_list(
         display.set_opacity(project_path, value)
         on_change()
 
-    # One set of columns for both tables, so the segmentations line up under the pick layers.
     cols = _Columns(
         count=any(r.count for r in rows),
         source=sources is not None,
         gallery=any(r.on_gallery is not None for r in rows),
     )
     following = not any(display.is_pinned(project_path, r.id) for r in rows)
-    follow = ui.element("div").classes("cb-gal-pk-row cb-gal-pk-follow")
-    follow.on("click", lambda _e: _follow())
-    follow.props["title"] = _FOLLOW_TIP
-    with follow:
-        ui.icon("check_box" if following else "check_box_outline_blank", size="14px")
-        ui.label("Follow the version")
-
-    if picks:
-        _table(
-            project_path, "Particles", picks, shows, _set, sources, cols, shaped=True, verb="Picked", count_head="picks"
-        )
-    if features:
-        _table(project_path, "Segmentations", features, shows, _set, sources, cols, verb="Segmented", tip=FEATURES_TIP)
-        with ui.element("div").classes("cb-gal-feat-opacity"):
-            ui.label("opacity")
-            render_segmented(list(OPACITIES), display.opacity(project_path), _opacity)
+    with ui.element("table").classes("cb-lyr" + (" cb-lyr-wide" if cols.wide else "")):
+        with ui.element("tbody"):
+            follow = ui.element("tr").classes("cb-lyr-follow")
+            follow.on("click", lambda _e: _follow())
+            follow.props["title"] = _FOLLOW_TIP
+            with follow:
+                with _cell("cb-lyr-c-eye"):
+                    ui.icon("check_box" if following else "check_box_outline_blank", size="14px")
+                with _cell(span=cols.n - 1):
+                    ui.label("Follow the version")
+        if picks:
+            _kind(
+                project_path,
+                "Particles",
+                picks,
+                shows,
+                _set,
+                sources,
+                cols,
+                shaped=True,
+                verb="Picked",
+                count_head="picks",
+            )
+        if features:
+            _kind(
+                project_path, "Segmentations", features, shows, _set, sources, cols, verb="Segmented", tip=FEATURES_TIP
+            )
+            with ui.element("tbody"), ui.element("tr").classes("cb-lyr-opacity"):
+                _cell()
+                with _cell(span=cols.n - 1), ui.element("div").classes("cb-lyr-opacity-in"):
+                    ui.label("opacity")
+                    render_segmented(list(OPACITIES), display.opacity(project_path), _opacity)
 
 
 class _Columns(NamedTuple):
-    """The columns after a row's eye, key and name, which the pick layers' and the segmentations'
-    tables share: a count, the reconstruction the layer was made on, the gallery button."""
+    """The columns after a row's eye, key and name, which every row of the list shares: a count, the
+    reconstruction the layer was made on, the gallery button."""
 
     count: bool
     source: bool
     gallery: bool
 
-    def template(self) -> str:
-        widths = ["16px", "14px", "minmax(0, 1fr)"]
-        widths += (["40px"] if self.count else []) + (["110px"] if self.source else [])
-        return " ".join(widths + (["36px"] if self.gallery else []))
+    @property
+    def n(self) -> int:
+        return 3 + self.count + self.source + self.gallery
+
+    @property
+    def wide(self) -> bool:
+        """A view that can switch its picture, or has a gallery: its columns get names."""
+        return self.source or self.gallery
 
 
-def _table(
+def _cell(cls: str = "", span: int = 1) -> ui.element:
+    """A table cell into the current row, `span` columns wide."""
+    td = ui.element("td")
+    if cls:
+        td.classes(cls)
+    if span > 1:
+        td.props["colspan"] = span
+    return td
+
+
+def _kind(
     project_path,
     title: str,
     rows: list[LayerRow],
@@ -181,48 +212,49 @@ def _table(
     count_head: str = "",
     tip: str | None = None,
 ) -> None:
-    """One kind's table. Its head is an eye that shows or hides every layer of the kind (any shown: it
+    """One kind's rows. Its head is an eye that shows or hides every layer of the kind (any shown: it
     hides them all) and the kind's name, with the names of the columns this kind fills; then a row per
     layer, under its group's name (a pick layer's species, a click on which switches all of the species'
-    layers). Every row lays out on `cols`, which both tables share, so their columns line up."""
+    layers)."""
     has_count = any(r.count for r in rows)
     has_gallery = any(r.on_gallery is not None for r in rows)
-    wide = cols.source or cols.gallery
     any_on = any(shown(project_path, r, shows) for r in rows)
-    table = ui.element("div").classes("cb-lyr-table" + (" cb-lyr-wide" if wide else ""))
-    table.style(f"--cb-lyr-cols: {cols.template()};")
-    with table:
-        with ui.element("div").classes("cb-lyr-tr cb-lyr-head"):
-            eye = ui.icon("visibility" if any_on else "visibility_off", size="14px")
-            eye.classes("cb-lyr-eye" + ("" if any_on else " off"))
-            eye.props["title"] = f"{'Hide' if any_on else 'Show'} all {title.lower()}"
-            eye.on("click", lambda _e: set_shown(rows, not any_on))
-            name = ui.label(title).classes("cb-lyr-title")
-            if tip:
-                name.props["title"] = tip
-            # A head cell per shared column, empty where this kind has nothing in it, so each name
-            # sits over its column.
-            if wide:
-                for on, head, cls in (
-                    (cols.count, count_head if has_count else "", "cb-lyr-col num"),
-                    (cols.source, "made on", "cb-lyr-col"),
-                    (cols.gallery, "gallery" if has_gallery else "", "cb-lyr-col"),
-                ):
-                    if on:
-                        ui.label(head).classes(cls)
+    with ui.element("tbody"):
+        with ui.element("tr").classes("cb-lyr-head"):
+            with _cell("cb-lyr-c-eye"):
+                eye = ui.icon("visibility" if any_on else "visibility_off", size="14px")
+                eye.classes("cb-lyr-eye" + ("" if any_on else " off"))
+                eye.props["title"] = f"{'Hide' if any_on else 'Show'} all {title.lower()}"
+                eye.on("click", lambda _e: set_shown(rows, not any_on))
+            with _cell(span=2):
+                name = ui.label(title).classes("cb-lyr-title")
+                if tip:
+                    name.props["title"] = tip
+            # A head cell per shared column, named where the list is wide and this kind fills it.
+            for on, head, cls in (
+                (cols.count, count_head if has_count else "", "cb-lyr-c-num"),
+                (cols.source, "made on", "cb-lyr-c-src"),
+                (cols.gallery, "gallery" if has_gallery else "", "cb-lyr-c-gal"),
+            ):
+                if on:
+                    with _cell(cls):
+                        if cols.wide and head:
+                            ui.label(head)
         group = None
         for r in rows:
             if r.group and r.group != group:
                 group = r.group
                 members = [m for m in rows if m.group == group]
-                group_row = ui.element("div").classes("cb-lyr-tr cb-lyr-group")
+                group_row = ui.element("tr").classes("cb-lyr-group")
                 group_row.props["title"] = "Show or hide all of this species' layers"
                 # Any shown: hide them all; none shown: show them all.
                 group_row.on(
                     "click", lambda _e, ms=members: set_shown(ms, not any(shown(project_path, m, shows) for m in ms))
                 )
                 with group_row:
-                    ui.label(group).style("grid-column: 2 / -1;")
+                    _cell()
+                    with _cell(span=cols.n - 1):
+                        ui.label(group)
             mark = (lambda c, size=10, s=r.shape: shape_svg(s, c, size)) if shaped else swatch_svg
             _row(project_path, r, shows, mark, verb, set_shown, cols, sources=sources)
 
@@ -239,12 +271,14 @@ def _row(
     sources: dict[str, Callable[[], None]] | None,
 ) -> None:
     on = shown(project_path, r, shows)
-    item = ui.element("div").classes("cb-lyr-tr cb-gal-pk-row" + ("" if on else " off"))
+    item = ui.element("tr").classes("cb-lyr-row" + ("" if on else " off"))
     item.on("click", lambda _e: set_shown([r], not on))
     with item:
-        ui.icon("visibility" if on else "visibility_off", size="14px").classes("cb-lyr-eye")
-        marker = ui.html(mark(r.color, 10), sanitize=False).classes("cb-gal-pk-marker")
-        with ui.element("div").classes("cb-lyr-name"):
+        with _cell("cb-lyr-c-eye"):
+            ui.icon("visibility" if on else "visibility_off", size="14px").classes("cb-lyr-eye")
+        with _cell("cb-lyr-c-key"):
+            marker = ui.html(mark(r.color, 10), sanitize=False).classes("cb-gal-pk-marker")
+        with _cell(), ui.element("div").classes("cb-lyr-name"):
             ui.label(r.name).classes("cb-gal-pk-name")
             if on and not display.on_source(r.recon, shows):
                 ui.icon("warning", size="12px").classes("cb-gal-pk-warn").tooltip(
@@ -253,17 +287,25 @@ def _row(
                     "marks."
                 )
         if cols.count:
-            ui.label(r.count).classes("cb-gal-pk-n")
+            with _cell("cb-lyr-c-num"):
+                ui.label(r.count)
         if sources is not None:
-            _source_cell(r, shows, sources)
+            with _cell("cb-lyr-c-src"):
+                _source_cell(r, shows, sources)
         if cols.gallery:
-            _gallery_cell(r)
+            with _cell("cb-lyr-c-gal"):
+                _gallery_cell(r)
     if r.on_color is None:
         marker.classes(add="fixed")
         return
     marker.props["title"] = "Pick this layer's colour"
-    palette = palette_row(r.on_color, mark)
-    marker.on("click.stop", lambda _e: palette.set_visibility(not palette.visible))
+    colours = ui.element("tr").classes("cb-lyr-palette")
+    colours.set_visibility(False)
+    with colours:
+        _cell()
+        with _cell(span=cols.n - 1):
+            palette_row(r.on_color, mark)
+    marker.on("click.stop", lambda _e: colours.set_visibility(not colours.visible))
 
 
 def _source_cell(r: LayerRow, shows: str | None, sources: dict[str, Callable[[], None]]) -> None:
@@ -291,7 +333,6 @@ def _source_cell(r: LayerRow, shows: str | None, sources: dict[str, Callable[[],
 def _gallery_cell(r: LayerRow) -> None:
     """A pick list's way into the view's gallery, lit while its cutouts are there."""
     if r.on_gallery is None:
-        ui.element("div")
         return
     cell = ui.icon("grid_view", size="14px").classes("cb-lyr-gal" + (" here" if r.in_gallery else ""))
     if r.in_gallery:
