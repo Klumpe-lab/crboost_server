@@ -401,9 +401,12 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
                 page.set_active(name in _on)
 
         # The lit pane stays lit while it shows; once it is gone, the pane of the view turned on last is.
+        # A view turned on or off changes every other view's width, which Plotly's responsive figures
+        # only follow on a window resize: one is sent once the layout has settled.
         panes = [pane for name in _on for pane in _panes_of(name)]
         client.run_javascript(
-            f"window.cbPaneKeep && window.cbPaneKeep({json.dumps(panes)}, {json.dumps(panes[-1] if panes else '')})"
+            f"window.cbPaneKeep && window.cbPaneKeep({json.dumps(panes)}, {json.dumps(panes[-1] if panes else '')});"
+            "requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));"
         )
 
     def _show(name: str) -> None:
@@ -659,9 +662,9 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
     _viewer_flight = SingleFlight()
 
     async def _open_pick_viewer(species_id: str | None, tomo_name: str | None) -> None:
-        """The Picks & curation row's `viewer ↗` (and the Journey's `full viewer ↗`):
-        show the full-page pick viewer on this (species, tomogram), building it on first
-        use like the Journey. It has no rail icon; its header's close link turns it off."""
+        """The Picks & curation row's `viewer ↗`: show the full-page pick viewer on this
+        (species, tomogram), building it on first use like the Journey. It has no rail icon;
+        its header's close link turns it off."""
         async with _viewer_flight("open") as acquired:
             if not acquired:
                 return

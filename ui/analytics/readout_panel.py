@@ -97,7 +97,8 @@ class ReadoutPanel:
                         "For each band of template-matching score, the share of its particles in each class: the σ "
                         "below which the good classes stop being the majority is where background takes over."
                     ).style(TOOLTIP_STYLE)
-                ui.html(self._bin_shares_html(), sanitize=False)
+                # One column per class: wider than its chart cell with many classes, so it scrolls in the cell.
+                ui.html(self._bin_shares_html(), sanitize=False).style("overflow-x: auto;")
         ui.html(self._class_table_html(), sanitize=False).classes("cb-atable-wrap").style(
             f"max-height: none; {TABLE_ON_PANEL_STYLE}"
         )
@@ -229,7 +230,8 @@ class ReadoutPanel:
         cols, rows = int(meta.get("cols", 8)), int(meta.get("rows", 1))
         url = vis_asset_url(atlas)
         values = entry.get("values") or []
-        with ui.element("div").style("display: flex; gap: 2px;"):
+        # Eight 48 px tiles and the label need ~430 px; a narrower panel wraps them.
+        with ui.element("div").style("display: flex; flex-wrap: wrap; gap: 2px;"):
             ui.label(end).style(f"{SANS} font-size: 9px; color: #94a3b8; width: 30px;")
             for i in range(len(values)):
                 pos = (meta.get("index") or {}).get(str(i))

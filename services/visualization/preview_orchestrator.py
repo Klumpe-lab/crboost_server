@@ -558,15 +558,28 @@ def generate_candidate_previews(
     }
 
 
+# path -> ((mtime_ns, size), manifest): a Journey render reads a job's manifest several times, and a
+# manifest of a few hundred tomograms is a sizeable parse. Readers do not change what they get.
+_MANIFEST_MEMO: dict[str, tuple[tuple[int, int], dict]] = {}
+
+
 def read_preview_manifest(job_dir: Path) -> dict | None:
     p = Path(job_dir) / PREVIEW_SUBDIR / MANIFEST_NAME
-    if not p.exists():
-        return None
     try:
-        return json.loads(p.read_text())
-    except Exception as e:
+        st = p.stat()
+    except OSError:  # no manifest yet (or none readable): no previews to read
+        return None
+    sig = (st.st_mtime_ns, st.st_size)
+    hit = _MANIFEST_MEMO.get(str(p))
+    if hit is not None and hit[0] == sig:
+        return hit[1]
+    try:
+        manifest = json.loads(p.read_text())
+    except (OSError, ValueError) as e:
         logger.warning("Could not parse preview manifest %s: %s", p, e)
         return None
+    _MANIFEST_MEMO[str(p)] = (sig, manifest)
+    return manifest
 
 
 def generate_candidate_previews_for_job(
@@ -615,9 +628,8 @@ def previews_up_to_date(job_dir: Path, sources: list[Path], cutout_sources: list
     that finished before the manifest was written but was not joined (it is new to the join)
     makes it stale too. For a thread."""
     manifest_path = Path(job_dir) / PREVIEW_SUBDIR / MANIFEST_NAME
-    try:
-        manifest = json.loads(manifest_path.read_text())
-    except (OSError, ValueError):
+    manifest = read_preview_manifest(job_dir)
+    if manifest is None:
         return False
     if manifest.get("version") != MANIFEST_VERSION or not manifest.get("complete"):
         return False

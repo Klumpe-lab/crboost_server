@@ -63,7 +63,7 @@ class SpeciesRail(FingerprintedView):
             )
             row.on("click", lambda _e, sid=species.id: self._on_select(sid))
             with row:
-                render_species_mark(species, named=True)
+                render_species_mark(species, named=True).classes("cb-species-mark")
                 ui.label(f"{n_tpl} tpl · {n_lists} list{'s' if n_lists != 1 else ''}").classes("cb-srail-meta").tooltip(
                     "templates registered · pick lists (hand-picked / imported / merged)"
                 )

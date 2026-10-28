@@ -118,6 +118,16 @@ function with arguments and a result that pickle (paths, numbers, small dicts). 
 state change or UI update happens back in the server from its result. Each `WorkKind` has its own
 cap, and workers run at a lower CPU priority than the server.
 
+A picture rendered for display (slabs, cutout atlases and their filters, a job's preview pass or
+IMOD overlays, matched recon planes, tilt thumbnails) is a `Render` (`services/renders.py`): its
+outputs, its sources, and the worker function that writes them. `renders.ensure` starts it when the
+outputs are missing or older than the sources, and every view asking for the same key waits on that
+one render, whatever was rebuilt meanwhile; a failed render stays failed, with its reason, until it is
+restarted by hand. A view shows it in a `RenderSlot` (`ui/components/render_slot.py`): the picture's
+box is a skeleton (dashed outline, a restart button in its corner) until the render lands, then fills
+in place, with no section rebuild. `keep_current` is the same without a box, for a pass whose result
+several sections read.
+
 A view that is not on screen does no work. Its pollers are made with `ViewScope.timer`
 (`ui/components/reactive.py`): a job page's from `ui_mgr.job_scope(instance_id)`, the roster's from
 `ui_mgr.view_scope("pipeline")`; whole views pause through their `set_active` hook from the

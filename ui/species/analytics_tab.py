@@ -251,7 +251,9 @@ class _AnalyticsView(FingerprintedView):
                 "Scores in σ",
                 tooltip="Template-matching scores divided by each tomogram's noise level σ, so one cut means the "
                 "same everywhere. Rules on this page mark tomograms; nothing is dropped by them.",
-            ):
+            ) as tools:
+                # The hook that lets a narrow pane wrap these tools under the title (`_REGISTRY_CSS`).
+                tools.classes("cb-an-tools")
                 if c is not None and c.sources:
                     house_select(
                         "source",

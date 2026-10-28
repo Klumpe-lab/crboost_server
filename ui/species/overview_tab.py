@@ -141,8 +141,8 @@ def render_identity_editor(backend, project_path: Path, species_id: str) -> None
 
             name_input.on_value_change(_on_name)
 
-        # Row 2 — the two sized-to-content particle facts.
-        with ui.row().classes("w-full items-center gap-6 no-wrap"):
+        # Row 2 — the two sized-to-content particle facts; in a narrow pane Symmetry wraps under Diameter.
+        with ui.row().classes("w-full items-center gap-6").style("row-gap: 4px;"):
             with ui.row().classes("items-center gap-2 no-wrap"):
                 ui.label("Diameter").classes(_LABEL_CLS)
                 diam_input = (
@@ -396,7 +396,8 @@ class ExtractionGeometryPanel:
                 "Subtomo extraction job starts with these values; hand-picked lists that have no such job "
                 "are extracted with them directly, instead of stopping to ask."
             ).classes(_HINT_CLS)
-            with ui.row().classes("w-full items-center gap-3 no-wrap"):
+            # Wraps in a narrow pane: three fields and the unit hint need ~520 px on one line.
+            with ui.row().classes("w-full items-center gap-3").style("row-gap: 4px;"):
                 for attr, label, minimum, step in _GEOMETRY_FIELDS:
                     with ui.row().classes("items-center gap-1 no-wrap"):
                         ui.label(label).classes(_LABEL_CLS)

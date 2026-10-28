@@ -54,9 +54,12 @@ from services.visualization.preview_orchestrator import (
     previews_up_to_date,
     read_preview_manifest,
 )
+from services import renders
+from services.renders import Render
 from services.visualization.cutout_filters import keyed_path, offered_presets, render_variant, variant_is_current
-from services.visualization.preview_render import is_output_stale, render_recon_slabs
-from services.workers import WorkKind, run_in_worker
+from services.visualization.preview_render import render_recon_slabs, render_xy_slab
+from services.visualization.recon_cutouts import render_list_cutouts
+from services.workers import WorkKind
 from services.segmentation import display
 from services.visualization.tomo_geometry import TomoGeometry, geometry_for_ts, volume_dims
 from services.job_lineage import job_dirs, recon_of
@@ -65,8 +68,8 @@ from ui.components.feature_layers import FeatureFills, layers_for_ts
 from ui.components.hover_menu import Choice, ChoiceRows, hover_menu, tool_trigger
 from ui.components.layer_menu import LayerRow, layers_tool
 from ui.components.reactive import SingleFlight, slot_is_gone
+from ui.components.render_slot import RenderSlot, keep_current
 from ui.components.recon_compare import recon_version_labels, recon_versions_for_ts
-from ui.components.segmented import render_segmented
 from ui.current_project import current_project_state
 from ui.dashboard.figures import (
     JOURNEY_THEME,
@@ -362,47 +365,15 @@ def _memoized_keep_state(source_star: Path) -> set[int] | None:
     return keep
 
 
-def _render_invert_switch(root) -> None:
-    """Polarity switch (raw | inverted) wired to add/remove `cb-invert-polarity` on
-    `root`. The CSS flips every `.cb-tomo-preview > img` (and cutout tiles)
-    under that root together, so density convention stays consistent."""
-
-    def _switch(key: str, _root=root) -> None:
-        seg.set_active(key)
-        if key == "inverted":
-            _root.classes(add="cb-invert-polarity")
-        else:
-            _root.classes(remove="cb-invert-polarity")
-
-    ui.label("polarity").classes("cb-gal-toolbar-label")
-    with (
-        ui.element("div")
-        .style("display: flex; flex-shrink: 0;")
-        .tooltip(
-            "Flip the apparent intensity of the tomogram slabs (and cutout tiles). "
-            "The picker uses raw densities — this is viewer-only."
-        )
-    ):
-        seg = render_segmented([("raw", "raw"), ("inverted", "inverted")], "raw", _switch, classes="cb-seg-sm")
-
-
 # ---------------------------------------------------------------------------
 # Shared recon-stage tomogram canvas + multi-species pick overlay
 #
 # One X/Y + X/Z slab rendered from the reconstructed MRC (same percentile +
-# flip pipeline as the cutout tiles, so Invert flips everything together),
-# reused as the backdrop for every species' picks. Each candidate-extract
-# instance's picks are drawn as a color-coded ghost-dot layer the user can
-# toggle by species. Progressive: recon-only shows just the slabs; picks
+# flip pipeline as the cutout tiles), reused as the backdrop for every species'
+# picks. Each candidate-extract instance's picks are drawn as a color-coded
+# ghost-dot layer the user can toggle by species. Progressive: recon-only shows just the slabs; picks
 # appear once candidate-extract has run.
 # ---------------------------------------------------------------------------
-
-
-_AUTO_KICKED_RECON_SLABS: set[str] = set()
-# Why a kicked slab render did not produce its PNGs, per `<recon_job_dir>:<ts>` key.
-# The dedup set above blocks a re-kick for the process lifetime, so without this record a
-# failed render would leave the canvas spinning forever.
-_RECON_SLAB_ERRORS: dict[str, str] = {}
 
 
 def _recon_slab_paths(recon_job_dir: Path, ts_name: str) -> tuple[Path, Path]:
@@ -410,58 +381,45 @@ def _recon_slab_paths(recon_job_dir: Path, ts_name: str) -> tuple[Path, Path]:
     return base / f"{ts_name}_xy.png", base / f"{ts_name}_xz.png"
 
 
-def _auto_kick_recon_slabs(recon_job_dir: Path, ts_name: str, mrc_path: Path, project_path: Path, refresh) -> str:
-    """Render the shared X/Y + X/Z slabs in the background if missing/stale, and say
-    which of four states the canvas is in: ``fresh`` (both PNGs current — draw them),
-    ``failed`` (a kicked render did not produce them; the reason is in
-    `_RECON_SLAB_ERRORS`), ``in-flight`` (kicked earlier in this process, not settled),
-    ``kicked`` (submitted just now). Mirrors the candidate-extract preview auto-kick:
-    module-level dedup set plus BackgroundTask dedup_key, refresh-on-complete so the
-    canvas fills when the PNGs land. The caller must never spin on anything but
-    ``kicked`` / ``in-flight``."""
-    key = f"{recon_job_dir}:{ts_name}"
-    xy_png, xz_png = _recon_slab_paths(recon_job_dir, ts_name)
-    fresh = (
-        xy_png.exists()
-        and xz_png.exists()
-        and not is_output_stale(xy_png, [mrc_path])
-        and not is_output_stale(xz_png, [mrc_path])
-    )
-    if fresh:
-        return "fresh"
-    if key in _RECON_SLAB_ERRORS:
-        return "failed"
-    if key in _AUTO_KICKED_RECON_SLABS:
-        return "in-flight"
-    _AUTO_KICKED_RECON_SLABS.add(key)
-
-    async def _run(progress_cb):
-        progress_cb(0, 0, "rendering tomogram slabs…")
-        return await run_in_worker(WorkKind.RENDER, render_recon_slabs, Path(mrc_path), xy_png, xz_png)
-
-    def _done(task) -> None:
-        # `status` is "succeeded" | "failed" | "cancelled" once settled (services/background_tasks.py).
-        if task.status != "succeeded":
-            _RECON_SLAB_ERRORS[key] = str(task.error or task.status)
-        refresh()
-
-    from ui.background_task import BackgroundTask
-
-    BackgroundTask(
-        title=f"Render tomogram slabs · {ts_name}",
-        subtitle="Shared canvas for the pick overlay",
+def xy_slab_render(png: Path, mrc_path: Path, ts_name: str, project_path: Path, *, tile: bool = False) -> Render:
+    """The X/Y slab of one volume alone (`render_xy_slab`) into `png`: a tile of the tomogram wall
+    (`tile`: quiet, and queued apart from the pictures asked for one at a time) or the Reconstruct
+    card's denoised pane. The same file as the X/Y of `_slabs_render` for the same version."""
+    return Render(
+        key=f"slab-xy:{png}",
+        title=f"Tomogram slab · {ts_name}",
+        fn=render_xy_slab,
+        args=(Path(mrc_path), Path(png)),
+        outputs=(Path(png),),
+        sources=(Path(mrc_path),),
+        kind=WorkKind.TILE if tile else WorkKind.RENDER,
+        quiet=tile,
         project_path=str(project_path),
-        dedup_key=f"recon-slabs:{recon_job_dir}:{ts_name}",
-    ).submit(_run, on_complete=_done, show_start_toast=False)
-    return "kicked"
+    )
+
+
+def _slabs_render(slab_dir: Path, ts_name: str, mrc_path: Path, project_path: Path) -> Render:
+    """The X/Y and X/Z slabs of one version of a tomogram, cached beside the version
+    (`_recon_slab_paths`), under the picks. The wall renders the X/Y alone into the same file; this
+    render keeps an X/Y that is current."""
+    xy_png, xz_png = _recon_slab_paths(slab_dir, ts_name)
+    return Render(
+        key=f"slabs:{xy_png}",
+        title=f"Tomogram slabs · {ts_name}",
+        subtitle="X/Y and X/Z slabs under the picks",
+        fn=render_recon_slabs,
+        args=(Path(mrc_path), xy_png, xz_png),
+        outputs=(xy_png, xz_png),
+        sources=(Path(mrc_path),),
+        project_path=str(project_path),
+    )
 
 
 # ── Per-list recon cutouts (the workbench contact sheet) ───────────────────────
 # Workbench lists (manual/imported/merged) were never subtomo-extracted, so they
 # have no subtomo atlas. We cut tiles straight from the binned recon at each pick
 # voxel via services.visualization.recon_cutouts (same atlas PNG + index schema as
-# the subtomo gallery), background-built like the recon slabs and shown read-only.
-_AUTO_KICKED_LIST_CUTOUTS: set[str] = set()
+# the subtomo gallery), rendered like the slabs and shown read-only.
 
 
 def _list_cutout_paths(project_path: Path, species_id: str, tomo_name: str, slug: str) -> tuple[Path, Path]:
@@ -504,22 +462,19 @@ def _cutout_filter_tooltip(apix, apix_source: str) -> str:
     return base + "Pixel size is unknown (absent from the cutout header), so the frequency filters are hidden."
 
 
-# One render per variant atlas, however many galleries ask for it at once.
-_VARIANT_RENDERS: dict[str, asyncio.Future] = {}
-
-
-async def _render_variant_once(raw_atlas: Path, raw_index: Path, key: str) -> Path | None:
-    """Render the `key` filter's atlas beside `raw_atlas` in a worker (`render_variant`); a render
-    already running for it is joined. None when it cannot be rendered."""
-    target = str(keyed_path(raw_atlas, key))
-    flight = _VARIANT_RENDERS.get(target)
-    if flight is None:
-        flight = asyncio.ensure_future(run_in_worker(WorkKind.RENDER, render_variant, raw_atlas, raw_index, key))
-        _VARIANT_RENDERS[target] = flight
-        flight.add_done_callback(lambda _f: _VARIANT_RENDERS.pop(target, None))
-    # Shielded: a gallery torn down mid-render must not cancel it for the others waiting.
-    result = await asyncio.shield(flight)
-    return Path(result["atlas"]) if result else None
+def _variant_render(raw_atlas: Path, raw_index: Path, key: str) -> Render:
+    """The `key` display filter's atlas beside `raw_atlas`, rendered from its tiles (`render_variant`):
+    one render however many galleries ask for it."""
+    target = keyed_path(raw_atlas, key)
+    return Render(
+        key=f"variant:{target}",
+        title=f"Cutout filter · {key}",
+        fn=render_variant,
+        args=(raw_atlas, raw_index, key),
+        outputs=(target,),
+        sources=(raw_atlas,),
+        quiet=True,
+    )
 
 
 def _render_cutout_filter_controls(
@@ -570,20 +525,23 @@ def _render_cutout_filter_controls(
             status.set_visibility(False)
             on_select(key, keyed_path(raw_atlas, key))
             return
+        render = _variant_render(raw_atlas, raw_index, key)
+        # A pick asks again: a failure on record from an earlier pick is tried once more.
+        if renders.error(render.key):
+            renders.restart(render)
         status.set_text(f"rendering {names.get(key, key)}…")
         status.set_visibility(True)
-        try:
-            path = await _render_variant_once(raw_atlas, raw_index, key)
-        except Exception:
-            logger.exception("Cutout filter %s failed for %s", key, raw_atlas)
-            path = None
+        state = await renders.ensure(render)
+        while state == renders.RUNNING:
+            await renders.wait(render.key)
+            state = await renders.ensure(render)
         if st["key"] != key or status.is_deleted:
             return  # another filter was picked meanwhile, or the gallery is gone
-        if path is None:
-            status.set_text(f"{names.get(key, key)} could not be rendered (server log)")
+        if state == renders.FAILED:
+            status.set_text(f"{names.get(key, key)} could not be rendered: {renders.error(render.key)}")
             return
         status.set_visibility(False)
-        on_select(key, path)
+        on_select(key, keyed_path(raw_atlas, key))
 
     async def _on_type(e) -> None:
         t = e.value or types[0][0]
@@ -608,82 +566,53 @@ def _render_cutout_filter_controls(
         ui.tooltip(_cutout_filter_tooltip(apix, apix_source)).style("font-size: 10px; max-width: 320px;")
 
 
-def _atlas_index_is_current(index_path: Path) -> bool:
-    """A cutout index from an older filter-preset set has a stale (or missing)
-    `filter_schema`; treat those as stale so the current variant atlases get
-    (re)generated."""
+def _index_schema_current(index_path: Path) -> bool:
+    """Whether a list's cutout index was written for the current filter-preset set (an older one lacks
+    the variants it should offer). An index of no tiles is current: every pick sits outside the
+    reconstruction. For a thread."""
     from services.visualization.cutout_filters import FILTER_SCHEMA_VERSION
 
-    meta = _read_atlas_index(index_path)
-    return bool(meta) and meta.get("filter_schema") == FILTER_SCHEMA_VERSION
-
-
-def _auto_kick_list_cutouts(
-    recon_mrc: Path,
-    picks: list,
-    star_path: str | None,
-    atlas_path: Path,
-    index_path: Path,
-    box_px: int,
-    project_path: Path,
-    refresh,
-    dedup_key: str,
-    apix_hint: float | None = None,
-) -> bool:
-    """True if the list's recon-cutout atlas is on disk + fresh (render now); else
-    kick ONE background build (mirrors `_auto_kick_recon_slabs`) and return False
-    so the caller shows a placeholder. `dedup_key` carries the star mtime, so a
-    re-import (new mtime) rebuilds without needing a dashboard reopen."""
-    sources = [Path(recon_mrc)] + ([Path(star_path)] if star_path else [])
-    if (
-        atlas_path.exists()
-        and index_path.exists()
-        and not is_output_stale(atlas_path, sources)
-        and _atlas_index_is_current(index_path)
-    ):
-        return True
-    if dedup_key in _AUTO_KICKED_LIST_CUTOUTS:
+    try:
+        return json.loads(Path(index_path).read_text()).get("filter_schema") == FILTER_SCHEMA_VERSION
+    except (OSError, ValueError):
         return False
-    _AUTO_KICKED_LIST_CUTOUTS.add(dedup_key)
 
-    async def _run(progress_cb):
-        from services.visualization.recon_cutouts import render_recon_cutouts_atlas
 
-        progress_cb(0, 0, "cutting tiles from the recon…")
-        return await run_in_worker(
-            WorkKind.RENDER,
-            render_recon_cutouts_atlas,
-            Path(recon_mrc),
-            picks,
-            Path(atlas_path),
-            Path(index_path),
-            box_px=box_px,
-            apix_hint=apix_hint,
-        )
-
-    from ui.background_task import BackgroundTask
-
-    BackgroundTask(
-        title="Render list cutouts",
-        subtitle="Recon-sourced tiles for a curation list",
+def _list_cutouts_render(
+    lst: dict, sp: dict, project_path: Path, recon: str, atlas_path: Path, index_path: Path
+) -> Render:
+    """A workbench list's cutouts, cut from the reconstruction at each pick (`render_list_cutouts`),
+    current while neither the reconstruction nor the list's star is newer."""
+    star = lst.get("path")
+    return Render(
+        key=f"list-cutouts:{index_path}",
+        title=f"List cutouts · {lst.get('label') or lst['slug']}",
+        subtitle="Tiles cut from the reconstruction at each pick",
+        fn=render_list_cutouts,
+        args=(Path(recon), lst["picks"], atlas_path, index_path),
+        kwargs={"box_px": _list_cutout_box_px(sp), "apix_hint": (sp.get("entry") or {}).get("pixel_size_ang")},
+        outputs=(atlas_path, index_path),
+        sources=(Path(recon),) + ((Path(star),) if star else ()),
+        current=lambda: _index_schema_current(index_path),
         project_path=str(project_path),
-        dedup_key=f"list-cutouts:{dedup_key}",
-    ).submit(_run, on_complete=lambda _t: refresh(), show_start_toast=False)
-    return False
+    )
 
 
-def _render_list_cutouts_status(lst: dict, *, building: bool) -> None:
-    """The line in place of a list's cutouts while they build (spinner), or when the build produced
-    nothing (picks outside the recon / recon unreadable)."""
+def _render_no_list_cutouts(lst: dict) -> None:
+    """In place of a list's cutouts when none could be cut: every pick sits outside the reconstruction."""
     with ui.row().classes("items-center gap-2"):
         ui.label(f"{len(lst.get('picks', []))} picks").classes("cb-detail-meta")
-        if building:
-            ui.spinner(size="16px", color="#94a3b8")
-            ui.label("rendering cutouts from the recon…").style("font-size: 10px; color: #94a3b8;")
-        else:
-            ui.label("no cutouts (picks outside the recon, or recon unreadable)").style(
-                "font-size: 10px; color: #94a3b8;"
-            )
+        ui.label("no cutouts: every pick lies outside the reconstruction").style("font-size: 10px; color: #94a3b8;")
+
+
+def _render_cutout_shortfall(n_cutouts: int, n_picks: int, why: str) -> None:
+    """The gallery's own count, only when some of the list's picks have no cutout: the list's count
+    beside the list tool already says how many picks there are."""
+    if n_cutouts == n_picks:
+        return
+    ui.label(f"{n_cutouts} cutouts").classes("cb-gallery-count").tooltip(
+        f"{n_cutouts} of the list's {n_picks} picks have a cutout; {why}."
+    )
 
 
 def _render_list_cutout_sheet(
@@ -1043,19 +972,9 @@ def _render_list_cutout_sheet(
         else:
             grid_el.classes(remove="cb-curating")
         curation_bar.set_visibility(bool(on))
-        tile_count.props["title"] = _hint_text()
-        tile_count.update()
-
-    def _hint_text() -> str:
-        if state["curating"]:
-            return "click a tile to keep/drop — saved automatically · hover to find it on the slab"
-        if mode == "full":
-            return "click a tile to select it · hover to find it on the slab · arm ✎ to keep/drop"
-        return "click a tile to select it · hover to find it on the slab · curate on the full viewer"
 
     with head:
-        tile_count = ui.label(f"{len(all_idx)} cutouts").classes("cb-gallery-count")
-        tile_count.props["title"] = _hint_text()
+        _render_cutout_shortfall(len(all_idx), len(lst.get("picks") or []), "the rest sit outside the reconstruction")
         with ui.row().classes("cb-toolbelt items-center gap-0.5 no-wrap"):
             if len(_list_filter_presets) >= 2:
                 fbtn = _toolbelt_button("tune", "Display filter — how the cutouts are rendered, never the data")
@@ -1094,6 +1013,7 @@ def _render_list_cutout_sheet(
         curation_bar.set_visibility(False)
         with curation_bar:
             counter = ui.label(_counter_txt()).classes("cb-filter-counter")
+            counter.props["title"] = "click a tile to keep/drop — saved automatically · hover to find it on the slab"
             ui.space()
             house_button("Reset", _on_reset, tooltip="Clear this list's keep/drop — revert to all picks kept")
         grid_el = ui.element("div").classes("cb-gallery-scroll").style("display: flex; flex-wrap: wrap; gap: 4px;")
@@ -1187,107 +1107,49 @@ async def _render_single_list_cutouts(
     tab, which acts on every tomogram at once. The per-list extract verb shows in
     ``mode="full"`` only; it is the same `list_actions.extract_list` the registry row fires.
 
-    The read-only disk probes (recon/star stat, atlas staleness, atlas-index read)
-    run off the event loop via ``asyncio.to_thread`` so selecting a list doesn't
-    freeze the whole UI on Lustre latency — a spinner shows until they return."""
+    The sheet's box is its skeleton until the cutouts are current (`RenderSlot`); the index and the
+    list's keep/drop state are read off the loop once they are."""
     recon = (sp.get("row") or {}).get("vol_path")
-
-    def _no_recon() -> None:
+    if not recon:
         with ui.element("div").classes("cb-empty"):
             ui.icon("image_not_supported", size="24px").classes("text-gray-400")
             ui.label("No reconstructed tomogram on disk — cutouts unavailable.").classes("text-[10px]")
             ui.label("This list's dots still overlay the slab canvas on the left.").classes(
                 "text-[10px] italic text-gray-500"
             )
-
-    if not recon:
-        _no_recon()
         return
     species_id = sp.get("species_id") or ""
     tomo_name = sp["row"]["tomo_name"]
     if mode == "full":
         with head:
             _render_list_extract_button(sp, lst, project_path, refresh)
-    box_px = _list_cutout_box_px(sp)
+    if not lst.get("picks"):
+        with ui.element("div").classes("cb-empty"):
+            ui.label("No picks of this list on this tomogram.").classes("text-[10px]")
+        return
     atlas_path, index_path = _list_cutout_paths(project_path, species_id, tomo_name, lst["slug"])
     star_path = lst.get("path")
 
-    # Spinner while the disk probes run off-loop (Lustre stat/read latency would block
-    # the event loop mid-click). On a warm revisit the atlas index is already in memory
-    # and the keep-state derive is memoized, so the probe returns near-instantly; skip
-    # the "loading cutouts…" spinner, which would flash on every open and read as a
-    # full re-render.
-    warm = str(index_path) in _ATLAS_INDEX_MEMO
-    pending_box = None
-    if warm:
-        logger.info("list-cutouts[%s/%s]: atlas cache HIT — rendering without spinner", species_id, lst["slug"])
-    else:
-        with ui.element("div").classes("w-full") as pending_box:
-            with ui.row().classes("items-center gap-2"):
-                ui.spinner(size="16px", color="#94a3b8")
-                ui.label("loading cutouts…").style("font-size: 10px; color: #94a3b8;")
-
-    def _probe() -> dict:
-        recon_exists = Path(recon).exists()
-        try:
-            star_sig = int(Path(star_path).stat().st_mtime) if star_path and Path(star_path).exists() else 0
-        except OSError:
-            star_sig = 0
-        sources = [Path(recon)] + ([Path(star_path)] if star_path else [])
-        fresh = (
-            atlas_path.exists()
-            and index_path.exists()
-            and not is_output_stale(atlas_path, sources)
-            and _atlas_index_is_current(index_path)
-        )
-        # Existing keep/drop curation for this list (centered-Å match against
-        # <slug>_filtered.star), derived off-loop here so the interactive sheet opens
-        # already reflecting saved drops. Memoized by mtime (shared with the list
-        # count). None = no filter yet (all kept).
+    def _read() -> tuple[dict | None, set[int] | None]:
+        # The list's keep/drop curation (centered-Å match against <slug>_filtered.star), memoized by
+        # mtime and shared with the list count, so the sheet opens with its saved drops. None = no
+        # filter yet (all kept).
         keep = _memoized_keep_state(Path(star_path)) if star_path else None
-        return {
-            "recon_exists": recon_exists,
-            "star_sig": star_sig,
-            "atlas_meta": _read_atlas_index(index_path) if fresh else None,
-            "index_exists": index_path.exists(),
-            "keep": keep,
-        }
+        return _read_atlas_index(index_path), keep
 
-    io = await asyncio.to_thread(_probe)
-    if pending_box is not None:
-        if pending_box.is_deleted:
-            return  # another list was shown while the probe ran; its own render fills the pane
-        pending_box.delete()
+    async def _sheet() -> None:
+        slot = ui.context.slot
+        meta, keep = await asyncio.to_thread(_read)
+        if slot_is_gone(slot):
+            return  # another list was shown while the index was read; its own render fills the pane
+        if meta:
+            _render_list_cutout_sheet(lst, sp, project_path, meta, str(atlas_path), keep, refresh, head, mode=mode)
+        else:
+            _render_no_list_cutouts(lst)
 
-    if not io["recon_exists"]:
-        _no_recon()
-        return
-    atlas_meta = io["atlas_meta"]
-    if atlas_meta is None:
-        # Cold path: kick ONE background build (stays on-loop — it installs a
-        # ui.timer) and fall through to the building/empty status.
-        dedup_key = f"{species_id}:{tomo_name}:{lst['slug']}:{io['star_sig']}"
-        if _auto_kick_list_cutouts(
-            Path(recon),
-            lst["picks"],
-            star_path,
-            atlas_path,
-            index_path,
-            box_px,
-            project_path,
-            refresh,
-            dedup_key,
-            apix_hint=(sp.get("entry") or {}).get("pixel_size_ang"),
-        ):
-            atlas_meta = _read_atlas_index(index_path)  # rare: built between probe and now
-    if atlas_meta:
-        _render_list_cutout_sheet(
-            lst, sp, project_path, atlas_meta, str(atlas_path), io.get("keep"), refresh, head, mode=mode
-        )
-    else:
-        # No tiles yet: a written index means the build ran (empty result);
-        # no index means it's still in flight.
-        _render_list_cutouts_status(lst, building=not io["index_exists"])
+    RenderSlot(
+        _list_cutouts_render(lst, sp, project_path, recon, atlas_path, index_path), _sheet, classes="cb-rslot-sheet"
+    )
 
 
 # Merging and the merged-list overlap/dedup panel are per-list actions, owned by the
@@ -1520,22 +1382,23 @@ def _denovo_species_entry(species, species_id: str, idx: int, color: str, geom: 
 
 
 def _ce_species_entry(
-    ce, species_id, idx: int, color: str, geom, project_state, project_path: Path, ts_name: str, refresh
+    ce, species_id, idx: int, color: str, geom, project_state, project_path: Path, ts_name: str
 ) -> dict | None:
     """Species-section entry backed by a candidate-extract instance."""
     iid, jm = ce
     job_dir = job_dir_for(project_state, iid, jm, project_path)
     if not job_dir:
         return None
-    ce_rows = _collect_tomo_rows_for_instance(job_dir, project_path)
+    ce_rows = _collect_tomo_rows_for_instance(job_dir, project_path, only=ts_name)
     row = next((r for r in ce_rows if r["tomo_name"] == ts_name), None)
     if row is None:
         return None
-    # Lazy-generate previews + IMOD overlays for this species (idempotent;
-    # refresh re-renders the dashboard when the background job lands). A non-empty
-    # note means no preview is coming, and the species section says so.
-    preview_note = _auto_kick_preview_generation(iid, jm, job_dir, project_path, refresh)
-    _auto_kick_imod_generation(iid, jm, job_dir, project_path, refresh)
+    # The job's preview pass and IMOD overlays, kept current while the section is up (render_particles_
+    # section). Without a pass (the job has not finished) the note says why no preview is coming.
+    preview, preview_note = _preview_render(iid, jm, job_dir, project_path)
+    imod = _imod_render(iid, jm, job_dir, project_path) if preview is not None else None
+    # The 3dmod command says whether its overlay is coming or failed.
+    row["imod_key"] = imod.key if imod is not None else None
     manifest = read_preview_manifest(job_dir) or {}
     entry = (manifest.get("tomograms") or {}).get(ts_name) or {}
     picks_data = _read_picks_json(Path(entry["picks_json"])) if entry.get("picks_json") else {}
@@ -1577,6 +1440,8 @@ def _ce_species_entry(
         "label": str(label),
         "color": color,
         "preview_note": preview_note,
+        "preview_render": preview,
+        "imod_render": imod,
         "picks": picks_data.get("picks") or [],
         # picks.json / manifest first, then the geometry provider. Unknown dims disable
         # the overlay; a placeholder extent would collapse every dot into the corner.
@@ -1587,7 +1452,7 @@ def _ce_species_entry(
     }
 
 
-def _collect_species_data_for_ts(project_state, project_path: Path, ts_name: str, refresh) -> list[dict]:
+def _collect_species_data_for_ts(project_state, project_path: Path, ts_name: str) -> list[dict]:
     """One entry per species the Particles section renders for this TS, with
     everything it needs (row, manifest, entry, picks, color, lists).
     Drives both the shared canvas overlay and the list tool.
@@ -1606,9 +1471,7 @@ def _collect_species_data_for_ts(project_state, project_path: Path, ts_name: str
                 continue
             sp_entry = _denovo_species_entry(species, species_id or "", idx, color, geom, ts_name)
         else:
-            sp_entry = _ce_species_entry(
-                ce, species_id, idx, color, geom, project_state, project_path, ts_name, refresh
-            )
+            sp_entry = _ce_species_entry(ce, species_id, idx, color, geom, project_state, project_path, ts_name)
             if sp_entry is None:
                 continue
         sp_entry["lists"] = _collect_pick_lists_for_species(sp_entry, project_state, ts_name)
@@ -1944,7 +1807,6 @@ def render_particles_section(
     *,
     mode: str = "slim",
     initial_species_id: str | None = None,
-    open_viewer=None,
     on_species_change=None,
 ) -> bool:
     """The pick viewer, in either mount: the slabs of one version of the tomogram with every species'
@@ -1962,12 +1824,11 @@ def render_particles_section(
     mode, the per-list extraction verb, fullscreen and the slab lightbox.
 
     Merge / dedup / import live on the Species page, so the header carries the route there
-    (``manage_species``). `open_viewer(species_id, tomo_name)` is the slim mount's route into the full
-    page; `initial_species_id` preselects a species when the full page was opened on one, and
+    (``manage_species``). `initial_species_id` preselects a species when the full page was opened on one, and
     `on_species_change(species_id)` reports a later switch back to the mount (the full page uses it to
     keep its address bar in step)."""
     geom = geometry_for_ts(project_state, project_path, ts_name)
-    species_data = _collect_species_data_for_ts(project_state, project_path, ts_name, refresh)
+    species_data = _collect_species_data_for_ts(project_state, project_path, ts_name)
     if not species_data:
         # A tomogram exists here but no species does — offer to create one rather
         # than leaving the section (and the whole picking path) undiscoverable.
@@ -1999,19 +1860,20 @@ def render_particles_section(
     root_cls = "cb-section-card cb-particles-root cb-pv w-full" + (" cb-viewer-full" if mode == "full" else "")
     with ui.element("div").classes(root_cls) as card:
         card._props["data-section"] = "particles"
+        # A pass that lands while the section is up brings it up to date; the overlays only feed the 3dmod
+        # commands, which name the .mod either way.
+        for sp in species_data:
+            if sp.get("preview_render") is not None:
+                keep_current(sp["preview_render"], card, refresh, on_failed=refresh)
+            if sp.get("imod_render") is not None:
+                keep_current(sp["imod_render"], card)
         fills = _canvas_fills(project_state, project_path, ts_name, geom, card, shows)
         with ui.element("div").classes("cb-section-card-header"):
             ui.label("Particles").classes("cb-section-title")
             _render_geometry_chip(geom)
+            _render_pass_failures(species_data, refresh)
             # Route to the tab that owns this species' pick-list actions; follows the shown list's species.
             manage_host = ui.row().classes("items-center gap-0")
-            viewer_host = ui.row().classes("items-center gap-0")
-            ui.space()
-            # Per-species generate controls (Render previews · Re-render · IMOD) follow the shown
-            # list's species; the polarity switch is section-level (shared across species).
-            admin_host = ui.row().classes("items-center gap-0.5 cb-section-admin")
-            if geom is not None and geom.recon_mrc is not None:
-                _render_invert_switch(card)
 
         def _show_manage_link_for(sp: dict) -> None:
             """'manage in Particles registry ↗' for the shown species: the one-click route to
@@ -2030,22 +1892,6 @@ def render_particles_section(
                     "Picks & curation tab, where all of them live in one place."
                 )
 
-        def _show_viewer_link_for(sp: dict) -> None:
-            """`full viewer ↗` — the slim mount's route into the full page, on the
-            shown species + this tomogram. Absent in the full page (already there) and
-            when the workspace gave us no route."""
-            viewer_host.clear()
-            sid = sp.get("species_id")
-            if mode != "slim" or open_viewer is None or not sid:
-                return
-            with viewer_host:
-                ui.label("full viewer ↗").classes(
-                    "text-[10px] text-slate-500 cursor-pointer underline decoration-dotted"
-                ).style("margin-left: 8px;").on("click", lambda _e, s=sid, t=ts_name: open_viewer(s, t)).tooltip(
-                    "Open this species + tomogram in the full-page pick viewer — bigger slabs, curation mode, "
-                    "the per-list extraction verb and fullscreen."
-                )
-
         with ui.element("div").classes("cb-particles-split"):
             canvas_col = ui.element("div").classes("cb-particles-canvas-col")
             detail_col = ui.element("div").classes("cb-particles-detail-col")
@@ -2062,7 +1908,7 @@ def render_particles_section(
             # The slabs, with every list's dots over them. Returns {iid: {"xy": lid, "xz": lid}} so the
             # shown list's gallery cross-links to its species' dots.
             canvas_layers = _render_particles_canvas(
-                species_data, geom, version, ts_name, project_path, refresh, slab_vh, fills=fills
+                species_data, geom, version, ts_name, project_path, slab_vh, fills=fills
             )
         with detail_col:
             # The gallery's tools, level with the slabs': the list it shows (filled below), that list's kept
@@ -2152,11 +1998,7 @@ def render_particles_section(
                 gen["species"] = sp["iid"]
                 if on_species_change is not None:
                     on_species_change(sp.get("species_id"))
-                admin_host.clear()
-                with admin_host:
-                    _render_species_admin_buttons(sp, project_path, refresh)
                 _show_manage_link_for(sp)
-                _show_viewer_link_for(sp)
             extras_host.clear()
             with extras_host:
                 _render_list_extras(sp, lst, project_path, refresh)
@@ -2245,6 +2087,27 @@ def render_particles_section(
     return True
 
 
+def _render_pass_failures(species_data: list[dict], refresh) -> None:
+    """A red mark in the header for each species whose preview pass did not finish: its galleries show
+    what the last pass wrote, which may be out of date. A click runs the pass again."""
+    for sp in species_data:
+        render = sp.get("preview_render")
+        failure = renders.error(render.key) if render is not None else None
+        if not failure:
+            continue
+
+        def _again(r=render) -> None:
+            renders.restart(r)
+            refresh()
+
+        icon_button(
+            "sync_problem",
+            _again,
+            tooltip=f"{render.title} did not finish: {failure}. Its galleries show what the last pass wrote. "
+            "Click to run it again (progress in the task tray).",
+        ).classes("cb-pass-failed")
+
+
 def _canvas_dims(species_data: list[dict], geom: TomoGeometry | None) -> list | None:
     """The slabs' extent: the shown volume's, else the extent any species' picks were placed against."""
     if geom is not None and geom.dims_xyz_px:
@@ -2270,7 +2133,6 @@ def _render_particles_canvas(
     version: dict | None,
     ts_name: str,
     project_path: Path,
-    refresh,
     slab_vh: int,
     *,
     fills: FeatureFills | None = None,
@@ -2287,57 +2149,23 @@ def _render_particles_canvas(
         return layer_ids
 
     # The slabs cache beside the version: its reconstruct or denoise job dir, or the Tomograms dir
-    # of an imported volume.
-    slab_dir, mrc_path = version["slab_dir"], version["mrc"]
-    slab_state = _auto_kick_recon_slabs(slab_dir, ts_name, mrc_path, project_path, refresh)
-    xy_png, xz_png = _recon_slab_paths(slab_dir, ts_name)
-    # Canvas states: a spinner only while a render is actually in flight.
-    # A failed render says why and offers Retry; a missing PNG with no work behind it is
-    # reported as exactly that, never spun on.
-    if slab_state in ("kicked", "in-flight"):
-        with ui.element("div").classes("cb-empty"):
-            ui.spinner(size="26px", color="#94a3b8")
-            ui.label("Rendering tomogram slices…").classes("text-[10px]")
-            ui.label("Auto-kicked in the background — the canvas fills when the slab PNG lands.").classes(
-                "text-[10px] italic text-gray-500"
-            )
-        return layer_ids
-    if slab_state == "failed":
-        key = f"{slab_dir}:{ts_name}"
+    # of an imported volume. Each slab's box is its skeleton until the render lands, and fills in place.
+    render = _slabs_render(version["slab_dir"], ts_name, version["mrc"], project_path)
+    xy_png, xz_png = render.outputs
 
-        def _retry(_e=None, k=key) -> None:
-            _RECON_SLAB_ERRORS.pop(k, None)
-            _AUTO_KICKED_RECON_SLABS.discard(k)
-            refresh()
-
-        with ui.element("div").classes("cb-empty"):
-            ui.icon("error_outline", size="26px").classes("text-red-500")
-            ui.label(f"Slab render failed — {_RECON_SLAB_ERRORS.get(key, 'unknown')}").classes(
-                "text-[10px] text-red-600"
-            ).tooltip(str(mrc_path))
-            house_button("Retry", _retry, tooltip="Re-render the X/Y + X/Z slabs from the reconstruction")
-        return layer_ids
-    if not xy_png.exists():
-        with ui.element("div").classes("cb-empty"):
-            ui.icon("error_outline", size="26px").classes("text-red-500")
-            ui.label(f"Slab PNG missing after a successful render — expected {xy_png} and {xz_png}").classes(
-                "text-[10px] text-red-600"
-            )
-        return layer_ids
+    def _slab(png: Path, classes: str, style: str = "") -> None:
+        RenderSlot(render, lambda: ui.image(vis_asset_url(str(png))), classes=classes, style=style)
 
     with_picks = [sp for sp in species_data if sp.get("lists")]
-    if not with_picks and fills is None:
-        # Recon slab exists but nothing picked or segmented yet — clean slab, no overlay.
-        with ui.element("div").classes("cb-recon-preview cb-recon-canvas").style(f"max-height: {slab_vh}vh;"):
-            ui.image(vis_asset_url(str(xy_png)))
-        return layer_ids
-
     # The shown volume's extent gives the canvas its aspect, else the extent any species' picks were
-    # placed against. Unknown extent ⇒ bare slab, no overlay (never dots placed against a stand-in size).
-    dims = _canvas_dims(with_picks, geom)
+    # placed against. Nothing to draw over it, or no extent to place the dots against (never dots
+    # placed against a stand-in size): the X/Y slab alone.
+    dims = _canvas_dims(with_picks, geom) if (with_picks or fills is not None) else None
     if dims is None:
+        bare = _canvas_dims([], geom)
+        shape = f"aspect-ratio: {max(int(bare[0]), 1)}/{max(int(bare[1]), 1)};" if bare else ""
         with ui.element("div").classes("cb-recon-preview cb-recon-canvas").style(f"max-height: {slab_vh}vh;"):
-            ui.image(vis_asset_url(str(xy_png)))
+            _slab(xy_png, "cb-rslot-wide" + ("" if bare else " cb-rslot-tall"), f"max-height: {slab_vh}vh; {shape}")
         return layer_ids
     x_dim = max(int(dims[0]), 1)
     y_dim = max(int(dims[1]), 1)
@@ -2357,7 +2185,7 @@ def _render_particles_canvas(
         xy_host = ui.element("div").classes("cb-tomo-preview cb-recon-canvas")
         xy_host.style(f"aspect-ratio: {x_dim}/{y_dim};")
         with xy_host:
-            ui.image(vis_asset_url(str(xy_png)))
+            _slab(xy_png, "cb-rslot-fill")
             if fills is not None:
                 fills.draw("xy")
             for sp in with_picks:
@@ -2372,22 +2200,21 @@ def _render_particles_canvas(
                     if lst["slug"] == "auto" or "xy" not in layer_ids.get(sp["iid"], {}):
                         layer_ids.setdefault(sp["iid"], {})["xy"] = lid
 
-        if xz_png.exists():
-            xz_host = ui.element("div").classes("cb-tomo-preview cb-recon-canvas")
-            xz_host.style(f"aspect-ratio: {x_dim}/{z_dim}; margin-top: 6px;")
-            with xz_host:
-                ui.image(vis_asset_url(str(xz_png)))
-                if fills is not None:
-                    fills.draw("xz")
-                for sp in with_picks:
-                    for lst in sp["lists"]:
-                        lid = f"cb-pl-{nonce}-{sp['idx']}-{lst['slug']}-xz"
-                        lst.setdefault("_layer_els", []).append(
-                            _render_pick_layer(lst["picks"], lst["color"], lst["dims"], "xz", lid, lst["shape"])
-                        )
-                        lst["_lid_xz"] = lid
-                        if lst["slug"] == "auto" or "xz" not in layer_ids.get(sp["iid"], {}):
-                            layer_ids.setdefault(sp["iid"], {})["xz"] = lid
+        xz_host = ui.element("div").classes("cb-tomo-preview cb-recon-canvas")
+        xz_host.style(f"aspect-ratio: {x_dim}/{z_dim}; margin-top: 6px;")
+        with xz_host:
+            _slab(xz_png, "cb-rslot-fill")
+            if fills is not None:
+                fills.draw("xz")
+            for sp in with_picks:
+                for lst in sp["lists"]:
+                    lid = f"cb-pl-{nonce}-{sp['idx']}-{lst['slug']}-xz"
+                    lst.setdefault("_layer_els", []).append(
+                        _render_pick_layer(lst["picks"], lst["color"], lst["dims"], "xz", lid, lst["shape"])
+                    )
+                    lst["_lid_xz"] = lid
+                    if lst["slug"] == "auto" or "xz" not in layer_ids.get(sp["iid"], {}):
+                        layer_ids.setdefault(sp["iid"], {})["xz"] = lid
 
     return layer_ids
 
@@ -2417,37 +2244,6 @@ def _tm_essentials_for_species(sp: dict) -> dict:
             info["sym"] = (getattr(species, "symmetry", None) if species else None) or getattr(tm_jm, "symmetry", None)
             break
     return info
-
-
-def _render_species_admin_buttons(sp: dict, project_path: Path, refresh) -> None:
-    """The three per-species preview/overlay generate controls as icon buttons —
-    Render previews (gen-missing) · Re-render all (cache-bypass) · (Re)generate
-    IMOD overlays. Rendered into the Particles section title bar (next to the
-    canvas-wide Invert switch), following the shown list's species — so they sit in
-    the panel toolbar, not crammed into the gallery.
-
-    All three act on a candidate-extract job; a species picked de novo has none, so
-    the toolbar is simply empty for it."""
-    iid, jm, job_dir = sp["iid"], sp["jm"], sp.get("job_dir")
-    if job_dir is None:
-        return
-    imod_dir = job_dir / "vis" / "imodPartRad"
-    has_imod_models = imod_dir.exists() and any(imod_dir.glob("*.mod"))
-    gen_missing_btn = icon_button(
-        "auto_fix_high",
-        lambda: _handle_generate_for_instance(iid, jm, job_dir, project_path, False, gen_missing_btn, refresh),
-        tooltip="Render previews for tomograms whose manifest entry is missing or stale.",
-    ).classes("cb-tb-btn")
-    regen_btn = icon_button(
-        "refresh",
-        lambda: _handle_generate_for_instance(iid, jm, job_dir, project_path, True, regen_btn, refresh),
-        tooltip="Re-render all: bypass cache and regenerate every tomogram's preview from scratch.",
-    ).classes("cb-tb-btn")
-    imod_btn = icon_button(
-        "scatter_plot",
-        lambda: _handle_generate_imod_for_instance(iid, jm, job_dir, project_path, imod_btn, refresh),
-        tooltip="Regenerate IMOD .mod overlays" if has_imod_models else "Generate IMOD .mod overlays",
-    ).classes("cb-tb-btn")
 
 
 def _species_lists(sp: dict) -> list[dict]:
@@ -2622,30 +2418,31 @@ def _render_species_auto_section(
     error/empty/spinner state. A workbench list's gallery is `_render_single_list_cutouts`."""
     row, manifest, entry = sp["row"], sp["manifest"], sp["entry"]
     status = row["status"]
-    if status == "errored":
-        with ui.element("div").classes("cb-empty"):
-            ui.icon("error_outline", size="28px").classes("text-red-500")
-            ui.label("Render error: " + (row.get("error") or "unknown")).classes("text-[10px] text-red-600")
-        return
+    preview = sp.get("preview_render")
     if status == "zero-picks":
         _render_zero_picks_empty_state(manifest, sp["label"])
         return
-    if status not in ("ok", "missing-volume"):
-        note = sp.get("preview_note") or ""
+    if status not in ("ok", "missing-volume") and preview is None:
+        # No pass can run (the job has not finished, or wrote no stars): say why instead of waiting on a
+        # preview that is not coming.
         with ui.element("div").classes("cb-empty"):
-            if note:
-                # Nothing was submitted and nothing is in flight: say why instead
-                # of spinning on a preview that is not coming.
-                ui.icon("hourglass_empty", size="28px").classes("text-gray-400")
-                ui.label(f"No candidate preview — {note}; run Pick candidates from the Jobs tab").classes(
-                    "text-[10px] text-gray-600"
-                )
-            else:
-                ui.spinner(size="28px", color="#94a3b8")
-                ui.label("Generating preview for this tilt-series…").classes("text-[10px]")
-                ui.label("Auto-kicked in the background — the page refreshes when the manifest lands.").classes(
-                    "text-[10px] italic text-gray-500"
-                )
+            ui.icon("hourglass_empty", size="28px").classes("text-gray-400")
+            ui.label(f"No candidate preview — {sp.get('preview_note')}; run Pick candidates from the Jobs tab").classes(
+                "text-[10px] text-gray-600"
+            )
+        return
+    if status not in ("ok", "missing-volume"):
+        # The gallery's skeleton while the job's preview pass runs; once it lands, the section reads its
+        # manifest again. An errored tomogram starts on its error, a pass that has nothing for this one
+        # says so; either restarts the pass, which renders whatever has no entry.
+        holder: dict = {}
+        holder["slot"] = RenderSlot(
+            preview,
+            lambda: holder["slot"].fail("the preview pass wrote nothing for this tilt-series"),
+            classes="cb-rslot-sheet",
+            on_landed=refresh,
+            failure=("render error: " + (row.get("error") or "unknown")) if status == "errored" else None,
+        )
         return
 
     has_atlas = bool(entry.get("cutout_atlas") and entry.get("cutout_index"))
@@ -2774,6 +2571,9 @@ def _tomo_3dmod_command(row: dict) -> tuple[str, tuple[str, str, str]] | None:
         return f"3dmod {row['vol_path']}", ("info", "text-gray-400", "Open volume only — no IMOD overlay for it.")
     if row.get("mod_exists"):
         return f"3dmod {row['vol_path']} {mod}", ("check_circle", "text-emerald-600", "IMOD overlay ready.")
+    failure = renders.error(row["imod_key"]) if row.get("imod_key") else None
+    if failure:
+        return f"3dmod {row['vol_path']}", ("error_outline", "text-red-600", f"No IMOD overlay: {failure}")
     return f"3dmod {row['vol_path']} {mod}", (
         "hourglass_top",
         "text-amber-600",
@@ -3121,7 +2921,7 @@ def _render_gallery_body(
             ui.notify(f"Discard failed: {e}", type="negative", timeout=4000)
 
     with head:
-        ui.label(f"{len(all_pick_indices)} cutouts").classes("cb-gallery-count")
+        _render_cutout_shortfall(len(all_pick_indices), n_picks_total, "the rest are the ✕ tiles at the end")
         toolbelt = ui.row().classes("cb-toolbelt items-center gap-0.5 no-wrap")
     gallery_box = ui.element("div").classes("cb-cutouts-box w-full")
     with gallery_box:
@@ -3815,9 +3615,12 @@ def _update_hover_card(e, picks: list, pixel_size_ang, labels: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _collect_tomo_rows_for_instance(job_dir: Path, project_path: Path) -> list[dict]:
+def _collect_tomo_rows_for_instance(job_dir: Path, project_path: Path, *, only: str | None = None) -> list[dict]:
+    """The job's tomograms as rows, or the one named `only`."""
     tomograms_star = job_dir / "tomograms.star"
     tomo_df = read_tomograms_table(tomograms_star)
+    if tomo_df is not None and only is not None and "rlnTomoName" in tomo_df.columns:
+        tomo_df = tomo_df[tomo_df["rlnTomoName"].astype(str) == only]
     manifest = read_preview_manifest(job_dir) or {}
     tomo_entries = manifest.get("tomograms") or {}
     summary = manifest.get("summary") or {}
@@ -3904,7 +3707,7 @@ def _collect_tomo_rows_for_instance(job_dir: Path, project_path: Path) -> list[d
 
 
 # ---------------------------------------------------------------------------
-# Generation handlers (regen previews / IMOD models from per-card buttons)
+# A candidate-extract job's preview pass and IMOD overlays, as renders (services/renders.py)
 # ---------------------------------------------------------------------------
 
 
@@ -3926,9 +3729,51 @@ def _make_imod_command_runner():
     return runner
 
 
+# Beside a job's .mod overlays: the signature of the stars they were made from.
+_IMOD_STAMP = ".made_from.json"
+
+
+def _imod_dir(job_dir: Path) -> Path:
+    return job_dir / "vis" / "imodPartRad"
+
+
+def _imod_sources_signature(job_dir: Path) -> list:
+    sig = []
+    for p in (job_dir / "candidates.star", job_dir / "tomograms.star"):
+        try:
+            st = p.stat()
+            sig.append([str(p), st.st_mtime_ns, st.st_size])
+        except OSError:
+            sig.append([str(p), None, None])
+    return sig
+
+
+def _imod_current(job_dir: Path) -> bool:
+    """Whether the job's IMOD overlays were made from its stars as they are: the signature stamped beside
+    them, else (overlays made before the stamp) .mod files none older than candidates.star. Stamped
+    signatures, not mtimes, so a star written on a node whose clock runs ahead still matches. For a
+    thread."""
+    imod_dir = _imod_dir(job_dir)
+    try:
+        return json.loads((imod_dir / _IMOD_STAMP).read_text()) == _imod_sources_signature(job_dir)
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError):
+        return False
+    mods = list(imod_dir.glob("*.mod"))
+    try:
+        star_mtime = (job_dir / "candidates.star").stat().st_mtime
+    except OSError:
+        return bool(mods)
+    return bool(mods) and min(m.stat().st_mtime for m in mods) >= star_mtime
+
+
 def _generate_imod_sync(
     candidates_star: Path, tomograms_star: Path, diameter: float, job_dir: Path, project_path: Path
-) -> None:
+) -> str:
+    """The job's .mod overlays for 3dmod (`generate_candidate_vis`), stamped with the stars they were made
+    from. Raises when not one .mod came out: `point2model` failures are only logged on their way."""
+    made_from = _imod_sources_signature(job_dir)
     generate_candidate_vis(
         candidates_star=candidates_star,
         tomograms_star=tomograms_star,
@@ -3937,235 +3782,84 @@ def _generate_imod_sync(
         command_runner=_make_imod_command_runner(),
         project_root=project_path,
     )
+    imod_dir = _imod_dir(job_dir)
+    if not any(imod_dir.glob("*.mod")):
+        raise RuntimeError(f"no .mod overlay came out in {imod_dir}; see the server log")
+    (imod_dir / _IMOD_STAMP).write_text(json.dumps(made_from))
+    return "IMOD overlays ready; 3dmod commands include them"
 
 
-# Per-mount dedup so the auto-kick helpers don't pile up completion timers
-# when the user clicks between tilt-series in the sidebar. BackgroundTask's
-# own dedup_key prevents redundant *work*, but we still want to avoid
-# installing multiple ui.timer pollers per (job_dir).
-_AUTO_KICKED_PREVIEWS: set[str] = set()
-_AUTO_KICKED_IMOD: set[str] = set()
-
-
-def reset_auto_kick_state() -> None:
-    """Clear the auto-kick dedup sets and the recorded slab-render failures — called by
-    `open_tomo_dashboard` and by `PickViewerPage.show`, so each fresh mount can
-    re-trigger generation and a failed render gets another chance without a restart."""
-    _AUTO_KICKED_PREVIEWS.clear()
-    _AUTO_KICKED_IMOD.clear()
-    _AUTO_KICKED_RECON_SLABS.clear()
-    _RECON_SLAB_ERRORS.clear()
-    _AUTO_KICKED_LIST_CUTOUTS.clear()
-
-
-def _auto_kick_preview_generation(instance_id: str, job_model, job_dir: Path, project_path: Path, refresh) -> str:
-    """If the candidate-extract job has succeeded but some tomograms are
-    missing from the preview manifest, kick off a background 'Render
-    missing' with completion handler that refreshes the page when done.
-    Safe to call on every render — both module-level set and BackgroundTask
-    dedup_key prevent re-submission.
-
-    Returns ``""`` when a kick was submitted or one is already in flight — i.e. a
-    preview may still arrive — else the reason nothing was submitted, which the species
-    section renders instead of a spinner, which would otherwise spin forever with no
-    work behind it."""
-    key = str(job_dir)
-    if key in _AUTO_KICKED_PREVIEWS:
-        return ""
+def _pass_inputs(instance_id: str, job_model, job_dir: Path) -> tuple[Path, Path] | str:
+    """The stars a candidate-extract job's pass reads, or why there is no pass to run."""
     if getattr(job_model, "execution_status", None) != JobStatus.SUCCEEDED:
         return "candidate-extract has not finished for this species"
     candidates_star = job_dir / "candidates.star"
     tomograms_star = job_dir / "tomograms.star"
     if not candidates_star.exists() or not tomograms_star.exists():
         return "candidate-extract has not produced candidates.star / tomograms.star for this tilt-series"
-    _AUTO_KICKED_PREVIEWS.add(key)
+    return candidates_star, tomograms_star
 
-    diameter = float(getattr(job_model, "particle_diameter_ang", 0.0))
+
+def _preview_render(instance_id: str, job_model, job_dir: Path, project_path: Path) -> tuple[Render | None, str]:
+    """A candidate-extract job's preview pass (slabs, picks, cutout atlases per tomogram), current while
+    its manifest was written by a complete pass after every star it reads; else None and why not."""
+    inputs = _pass_inputs(instance_id, job_model, job_dir)
+    if isinstance(inputs, str):
+        return None, inputs
+    candidates_star, tomograms_star = inputs
     state = current_project_state()
-    # The pass is submitted from a task of its own, after a check in a thread, so it is submitted
-    # in the slot of the render that asked for it.
-    slot = ui.context.slot
 
-    async def _run(progress_cb):
-        return await run_in_worker(
-            WorkKind.PREVIEW,
-            generate_candidate_previews_for_job,
+    def _current() -> bool:
+        # A complete manifest newer than its sources: a pass would only re-read candidates.star and every
+        # subtomo particles.star to skip each tomogram.
+        cutout_sources = subtomo_particles_stars(state, project_path, job_dir)
+        return previews_up_to_date(job_dir, [candidates_star, tomograms_star], cutout_sources)
+
+    render = Render(
+        key=f"previews:{job_dir}",
+        title=f"Candidate previews · {instance_id}",
+        subtitle="Slabs, picks and cutouts per tilt-series",
+        fn=generate_candidate_previews_for_job,
+        args=(
             candidates_star,
             tomograms_star,
-            diameter,
+            float(getattr(job_model, "particle_diameter_ang", 0.0)),
             job_dir,
             project_path,
             instance_id,
             False,
-            progress_cb=progress_cb,
-        )
-
-    async def _kick_if_stale() -> None:
-        # A pass over a job whose previews are all current still reads candidates.star and every
-        # subtomo particles.star only to skip each tomogram: on every mount of the Journey or the
-        # pick viewer. Here a complete manifest newer than its sources means there is nothing to do.
-        def _fresh() -> bool:
-            cutout_sources = subtomo_particles_stars(state, project_path, job_dir)
-            return previews_up_to_date(job_dir, [candidates_star, tomograms_star], cutout_sources)
-
-        if await asyncio.to_thread(_fresh) or slot_is_gone(slot):
-            return
-        from ui.background_task import BackgroundTask
-
-        with slot:
-            BackgroundTask(
-                title=f"Auto-render previews · {instance_id}",
-                subtitle="Filling missing tomogram entries",
-                project_path=str(project_path),
-                # The "Render missing" button's key: it is the same pass, so a click during an
-                # auto-render joins it instead of racing it on manifest.json.
-                dedup_key=f"preview-render:{job_dir}:force=False",
-            ).submit(_run, on_complete=lambda _t: refresh(), show_start_toast=False)
-
-    asyncio.create_task(_kick_if_stale())
-    return ""
+        ),
+        kind=WorkKind.PREVIEW,
+        progress=True,
+        current=_current,
+        project_path=str(project_path),
+    )
+    return render, ""
 
 
-def _auto_kick_imod_generation(instance_id: str, job_model, job_dir: Path, project_path: Path, refresh) -> bool:
-    """If candidates.star exists for a succeeded extract but the IMOD .mod
-    overlays aren't on disk, kick off background generation that auto-
-    refreshes the 3dmod command lines on completion. Same dedup semantics
-    as the preview kickoff above."""
-    key = str(job_dir)
-    if key in _AUTO_KICKED_IMOD:
-        return False
-    if getattr(job_model, "execution_status", None) != JobStatus.SUCCEEDED:
-        return False
-    candidates_star = job_dir / "candidates.star"
-    tomograms_star = job_dir / "tomograms.star"
-    if not candidates_star.exists() or not tomograms_star.exists():
-        return False
-    imod_dir = job_dir / "vis" / "imodPartRad"
-    if imod_dir.exists() and any(imod_dir.glob("*.mod")):
-        return False  # already have overlays
-    _AUTO_KICKED_IMOD.add(key)
-
-    diameter = float(getattr(job_model, "particle_diameter_ang", 0.0))
-
-    async def _run(progress_cb):
-        import asyncio as _asyncio
-
-        progress_cb(0, 0, "generating IMOD .mod overlays…")
-        await _asyncio.to_thread(_generate_imod_sync, candidates_star, tomograms_star, diameter, job_dir, project_path)
-        return "IMOD overlays ready; 3dmod commands now include them"
-
-    from ui.background_task import BackgroundTask
-
-    BackgroundTask(
-        title=f"Auto-generate IMOD overlays · {instance_id}",
+def _imod_render(instance_id: str, job_model, job_dir: Path, project_path: Path) -> Render | None:
+    """A candidate-extract job's .mod overlays, current while made from its stars as they are. In a
+    thread: the work waits on container subprocesses."""
+    inputs = _pass_inputs(instance_id, job_model, job_dir)
+    if isinstance(inputs, str):
+        return None
+    candidates_star, tomograms_star = inputs
+    return Render(
+        key=f"imod:{job_dir}",
+        title=f"IMOD overlays · {instance_id}",
         subtitle="Per-tomogram .mod files for 3dmod",
-        project_path=str(project_path),
-        dedup_key=f"imod-models:{job_dir}",
-    ).submit(_run, on_complete=lambda _t: refresh(), show_start_toast=False)
-    return True
-
-
-async def _handle_generate_imod_for_instance(
-    instance_id: str, job_model, job_dir: Path, project_path: Path, btn, refresh
-) -> None:
-    """Submit IMOD model generation to the background task registry. Same
-    pattern as the preview-render handler: fire-and-forget, user tracks
-    via the workspace tray."""
-    import asyncio as _asyncio
-
-    from ui.background_task import BackgroundTask
-
-    candidates_star = job_dir / "candidates.star"
-    tomograms_star = job_dir / "tomograms.star"
-    if not candidates_star.exists() or not tomograms_star.exists():
-        ui.notify(
-            "candidates.star or tomograms.star missing — cannot generate IMOD models", type="negative", timeout=4000
-        )
-        return
-    diameter = float(getattr(job_model, "particle_diameter_ang", 0.0))
-
-    async def _run(progress_cb) -> str:
-        # IMOD generation has no per-tomogram progress hook today; treat as
-        # indeterminate (total=0).
-        progress_cb(0, 0, "generating IMOD .mod overlays…")
-        await _asyncio.to_thread(_generate_imod_sync, candidates_star, tomograms_star, diameter, job_dir, project_path)
-        return "IMOD overlays ready; 3dmod commands now include them"
-
-    BackgroundTask(
-        title=f"IMOD models · {instance_id}",
-        subtitle="Generate .mod overlays for 3dmod",
-        project_path=str(project_path),
-        dedup_key=f"imod-models:{job_dir}",
-    ).submit(_run)
-    refresh()
-
-
-async def _handle_generate_for_instance(
-    instance_id: str, job_model, job_dir: Path, project_path: Path, force: bool, btn, refresh
-) -> None:
-    """Submit a preview-render to the BackgroundTaskRegistry. Returns
-    immediately; user tracks progress via the workspace tray. Multiple
-    clicks on the same (job_dir, force) combo dedupe to a single task to
-    keep concurrent writes to manifest.json from racing each other."""
-    from ui.background_task import BackgroundTask
-
-    candidates_star = job_dir / "candidates.star"
-    tomograms_star = job_dir / "tomograms.star"
-    if not candidates_star.exists() or not tomograms_star.exists():
-        ui.notify("candidates.star or tomograms.star missing — cannot render previews", type="negative", timeout=4000)
-        return
-    diameter = float(getattr(job_model, "particle_diameter_ang", 0.0))
-
-    action = "Re-render all" if force else "Render missing"
-    subtitle = "Bypass cache; regenerate every tomogram" if force else "Skip tomograms with a fresh manifest entry"
-
-    async def _run(progress_cb) -> str:
-        # The pass runs in a worker process (services/workers.py); its per-tomogram progress
-        # (i, total, tomo_name) reaches the registry's (current, total, message).
-        summary = await run_in_worker(
-            WorkKind.PREVIEW,
-            generate_candidate_previews_for_job,
+        fn=_generate_imod_sync,
+        args=(
             candidates_star,
             tomograms_star,
-            diameter,
+            float(getattr(job_model, "particle_diameter_ang", 0.0)),
             job_dir,
             project_path,
-            instance_id,
-            force,
-            progress_cb=progress_cb,
-        )
-        n_new = len(summary["ok"])
-        n_cached = len(summary["skipped_cached"])
-        n_missing = len(summary["missing_volume"])
-        n_err = len(summary["errored"])
-        # Pull zero-pick count from the manifest summary if the orchestrator
-        # recorded it (manifest v10+).
-        try:
-            from services.visualization.preview_orchestrator import read_preview_manifest
-
-            manifest = read_preview_manifest(job_dir) or {}
-            n_zero = len((manifest.get("summary") or {}).get("zero_picks") or [])
-        except Exception:
-            n_zero = 0
-
-        parts = [f"{n_new} rendered", f"{n_cached} cached"]
-        if n_zero:
-            parts.append(f"{n_zero} zero-picks")
-        if n_missing:
-            parts.append(f"{n_missing} missing volume")
-        if n_err:
-            parts.append(f"{n_err} errored")
-        return ", ".join(parts)
-
-    BackgroundTask(
-        title=f"Journey previews · {instance_id}",
-        subtitle=f"{action} — {subtitle}",
+        ),
+        in_thread=True,
+        current=lambda: _imod_current(job_dir),
         project_path=str(project_path),
-        # Dedup keyed by job_dir + force flag so concurrent clicks coalesce
-        # rather than racing on writes to the same manifest.json.
-        dedup_key=f"preview-render:{job_dir}:force={force}",
-    ).submit(_run)
-    refresh()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -4191,11 +3885,10 @@ class PickViewerPage:
         self.species_id: str | None = None
         self.tomo_name: str | None = None
         self._flight = SingleFlight()
-        # Coalesced rebuild, same shape as the Journey's: the auto-kick background
-        # renders (slabs, cutout atlases, previews) each call `refresh` on completion,
-        # and those callbacks run with NO client context — building UI there would
-        # explode. They raise a flag; this timer, created in the client's context, does
-        # the one rebuild once the burst goes quiet.
+        # Coalesced rebuild, same shape as the Journey's: a preview pass that lands calls
+        # `refresh` from a task with NO client context — building UI there would explode.
+        # It raises a flag; this timer, created in the client's context, does the one
+        # rebuild once the burst goes quiet.
         self._req = {"pending": False, "quiet": 0}
         self._timer = ui.timer(0.2, self._flush)
 
@@ -4209,9 +3902,6 @@ class PickViewerPage:
                 self.species_id = species_id
             if tomo_name:
                 self.tomo_name = tomo_name
-            # Like the Journey mount: a fresh show may re-kick a render that failed or was
-            # blocked by the process-lifetime dedup sets.
-            reset_auto_kick_state()
             self.render()
 
     def _species_changed(self, species_id: str | None) -> None:
@@ -4242,8 +3932,8 @@ class PickViewerPage:
 
     def _render_body(self) -> None:
         # Explicit-path resolution, not the tab accessor: `refresh` reaches here from
-        # BackgroundTask completions too, where a bare tab lookup yields a blank
-        # throwaway state (see ui/current_project.py).
+        # landed renders too, where a bare tab lookup yields a blank throwaway state
+        # (see ui/current_project.py).
         state = get_project_state_for(self.project_path)
         with ui.element("div").classes("cb-viewer-page"):
             self._render_header(state)

@@ -1040,10 +1040,12 @@ class TemplateWorkbench:
         # two columns on a wide window, one when the workspace is narrow or the roster
         # is open, with no breakpoint to maintain. `align-items: start` keeps a long
         # template list from stretching the mask column.
-        # Each column is one panel: its list over the Source block that adds to it.
+        # Each column is one panel: its list over the Source block that adds to it. The 560 px
+        # minimum holds a list row (520 px with a readable FILE column, `_REGISTRY_CSS`) plus the
+        # panel's padding; `min()` keeps one column inside a pane narrower than that.
         with ui.column().classes("w-full p-2").style("gap: 10px;"):
             with ui.element("div").style(
-                "display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); "
+                "display: grid; grid-template-columns: repeat(auto-fit, minmax(min(560px, 100%), 1fr)); "
                 "gap: 10px; width: 100%; align-items: start;"
             ):
                 with ui.column().classes("gap-2 min-w-0").style(f"width: 100%; {PANEL_STYLE}"):
@@ -1837,7 +1839,7 @@ class TemplateWorkbench:
             )
             result_holder["res"] = res
             if not res.get("success"):
-                return f"failed: {res.get('error')}"
+                raise RuntimeError(f"shape generation failed: {res.get('error')}")
             return "shape ready"
 
         def _on_complete(task):
@@ -1876,7 +1878,7 @@ class TemplateWorkbench:
             fetch = await self.backend.template_service.fetch_pdb_async(pdb_id, out_folder)
             if not fetch.get("success"):
                 result_holder["fetch_err"] = fetch.get("error")
-                return f"PDB fetch failed: {fetch.get('error')}"
+                raise RuntimeError(f"PDB fetch failed: {fetch.get('error')}")
             pdb_path = fetch.get("path", "")
             progress_cb(0, 0, f"Simulating density from {os.path.basename(pdb_path)}…")
             sim = await self.backend.pdb_service.simulate_map_from_pdb(
@@ -1884,7 +1886,7 @@ class TemplateWorkbench:
             )
             result_holder["sim"] = sim
             if not sim.get("success"):
-                return f"simulation failed: {sim.get('error')}"
+                raise RuntimeError(f"simulation failed: {sim.get('error')}")
             return "density ready"
 
         def _on_complete(task):
@@ -1928,13 +1930,13 @@ class TemplateWorkbench:
             fetch = await self.backend.template_service.fetch_emdb_map_async(emdb_id, out_folder)
             if not fetch.get("success"):
                 result_holder["fetch_err"] = fetch.get("error")
-                return f"EMDB fetch failed: {fetch.get('error')}"
+                raise RuntimeError(f"EMDB fetch failed: {fetch.get('error')}")
             map_path = fetch.get("path", "")
             progress_cb(0, 0, f"Resampling {os.path.basename(map_path)}…")
             res = await self.backend.template_service.process_volume_async(map_path, out_folder, apix, box, lp)
             result_holder["res"] = res
             if not res.get("success"):
-                return f"resample failed: {res.get('error')}"
+                raise RuntimeError(f"resample failed: {res.get('error')}")
             return "volume ready"
 
         def _on_complete(task):
@@ -2040,7 +2042,7 @@ class TemplateWorkbench:
             )
             result_holder["res"] = res
             if not res.get("success"):
-                return f"resample failed: {res.get('error')}"
+                raise RuntimeError(f"resample failed: {res.get('error')}")
             return "resampled volume ready"
 
         def _on_complete(task):
@@ -2090,7 +2092,7 @@ class TemplateWorkbench:
             )
             result_holder["res"] = res
             if not res.get("success"):
-                return f"lowpass failed: {res.get('error')}"
+                raise RuntimeError(f"lowpass failed: {res.get('error')}")
             return "filtered volume ready"
 
         def _on_complete(task):
@@ -2148,7 +2150,9 @@ class TemplateWorkbench:
             progress_cb(0, 0, f"Negating {src_name}…")
             success = await asyncio.to_thread(self._negate_volume_to_disk_at, src_path, target_path)
             result_holder["success"] = success
-            return "flipped" if success else "flip failed"
+            if not success:
+                raise RuntimeError("polarity flip failed; see the server log")
+            return "flipped"
 
         def _on_complete(task):
             if not result_holder.get("success"):
@@ -2257,7 +2261,7 @@ class TemplateWorkbench:
             )
             result_holder["res"] = res
             if not res.get("success"):
-                return f"mask failed: {res.get('error')}"
+                raise RuntimeError(f"mask failed: {res.get('error')}")
             return f"mask: {os.path.basename(output_path)}"
 
         def _on_complete(task):
@@ -2335,7 +2339,7 @@ class TemplateWorkbench:
             )
             result_holder["res"] = res
             if not res.get("success"):
-                return f"sphere failed: {res.get('error')}"
+                raise RuntimeError(f"sphere failed: {res.get('error')}")
             return f"sphere: {os.path.basename(output_path)}"
 
         def _on_complete(task):

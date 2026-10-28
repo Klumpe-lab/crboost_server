@@ -365,9 +365,6 @@ _CB_CSS = """
 .cb-tt-line { font-family: 'IBM Plex Mono', monospace; color: #334155; }
 .cb-tt-sub { font-size: 10px; color: #94a3b8; }
 .cb-tt-sep { margin: 5px 0; background: #e2e8f0; }
-/* Per-species admin icons in the Particles panel title bar, following the shown
- * list's species; sits left of the canvas-wide Invert switch with a little breathing room. */
-.cb-section-admin { margin-right: 4px; }
 .cb-preview-toolbar {
     display: flex; align-items: center; gap: 10px;
     font-size: 10px; color: #475569;
@@ -657,31 +654,6 @@ _CB_CSS = """
     font-family: ui-monospace, monospace; font-size: 10px; font-weight: 600;
     color: #475569; padding: 0 2px 2px 2px;
 }
-/* ----------------------------------------------------------------------
- * Polarity invert: a runtime toggle in the section header flips the
- * apparent intensity of the X/Y slab, X/Z slab, and cutout tiles
- * together — same density convention across all three. Double-invert
- * trick on tile children keeps overlay labels readable.
- * ---------------------------------------------------------------------- */
-.cb-invert-polarity .cb-tomo-preview > img,
-.cb-invert-polarity .cb-gallery-tile {
-    filter: invert(1) hue-rotate(180deg);
-}
-.cb-invert-polarity .cb-gallery-tile > * {
-    filter: invert(1) hue-rotate(180deg);
-}
-/* Shared recon canvas: `ui.image` renders a q-img that nests the <img> a
- * couple levels down, so the `> img` direct-child rule above can miss it.
- * Use a descendant combinator scoped to the canvas so Invert reliably
- * flips the slab. Same filter value → no double-inversion where both match.
- * Pick-dot layers are excluded, so dots keep their species colors. */
-.cb-invert-polarity .cb-recon-canvas img {
-    filter: invert(1) hue-rotate(180deg);
-}
-/* Ghost dots and the pick marker overlay sit on top of the X/Y / X/Z
- * preview img. They aren't part of the inverted set — keep them at
- * their declared color so they don't flicker between hues when toggled. */
-
 /* ----------------------------------------------------------------------
  * Ghost dot restyle: smaller, brighter (cyan), white ring; pointer-events
  * enabled so they're individually hoverable (drives reverse highlight of
@@ -1240,59 +1212,51 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
     line-height: 16px;
 }
 .cb-gal-toolbar-label:first-child { margin-left: 0; padding-left: 0; border-left: none; }
-/* The layers list's rows (ui/components/layer_menu.py), in the wall's menu, the zoom's side column,
- * the Journey's Reconstruct card and the pick viewer. */
-.cb-gal-pk-row {
-    display: flex; align-items: center; gap: 6px; padding: 2px 10px 2px 16px; cursor: pointer;
-    user-select: none; font-size: 10px; color: #334155; white-space: nowrap;
+/* The layers list (ui/components/layer_menu.py), in the wall's menu, the zoom's side column, the
+ * Journey's Reconstruct card and the pick viewer: one table, so every row's cells share its columns —
+ * the eye, the layer's key, its name, then the count, the reconstruction it was made on and the gallery
+ * button where the view has them. The narrow columns are as wide as what they hold; the name takes the
+ * rest. A head row per kind (its eye switches all of its layers), a row per species (a click switches
+ * all of the species' layers), a row per layer. */
+.cb-lyr { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 10px; color: #334155; }
+.cb-lyr.cb-lyr-wide { min-width: 500px; }
+.cb-lyr td { padding: 2px 4px; vertical-align: middle; white-space: nowrap; }
+.cb-lyr td:first-child { padding-left: 8px; border-radius: 3px 0 0 3px; }
+.cb-lyr td:last-child { padding-right: 10px; border-radius: 0 3px 3px 0; }
+.cb-lyr td.cb-lyr-c-eye, .cb-lyr td.cb-lyr-c-key, .cb-lyr td.cb-lyr-c-num,
+.cb-lyr td.cb-lyr-c-src, .cb-lyr td.cb-lyr-c-gal { width: 1px; }
+.cb-lyr td.cb-lyr-c-eye, .cb-lyr td.cb-lyr-c-key, .cb-lyr td.cb-lyr-c-gal { text-align: center; }
+.cb-lyr td.cb-lyr-c-num {
+    text-align: right; font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #94a3b8;
 }
-.cb-gal-pk-row:hover { background: var(--cb-hover, #e6eff8); }
-.cb-gal-pk-row .q-icon { color: var(--cb-accent, #4a8fd4); flex: 0 0 auto; }
-.cb-gal-pk-row.off { color: #8aa0b8; }
-.cb-gal-pk-row.off .q-icon { color: #b8c7d8; }
-.cb-gal-pk-follow { padding-left: 10px; border-bottom: 1px solid #f1f5f9; padding-bottom: 4px; margin-bottom: 2px; }
-.cb-gal-pk-marker { display: flex; flex: 0 0 auto; cursor: pointer; border-radius: 50%; padding: 1px; }
+.cb-lyr .q-icon { color: var(--cb-accent, #4a8fd4); vertical-align: middle; }
+.cb-lyr tr.cb-lyr-follow, .cb-lyr tr.cb-lyr-group, .cb-lyr tr.cb-lyr-row { cursor: pointer; user-select: none; }
+.cb-lyr tr.cb-lyr-follow:hover > td, .cb-lyr tr.cb-lyr-group:hover > td,
+.cb-lyr tr.cb-lyr-row:hover > td { background: var(--cb-hover, #e6eff8); }
+.cb-lyr tr.cb-lyr-follow > td { padding-bottom: 4px; border-bottom: 1px solid #f1f5f9; }
+.cb-lyr tr.cb-lyr-head > td { padding-top: 8px; font-size: 9px; color: #8aa0b8; }
+.cb-lyr-title { font-size: 10px; font-weight: 600; color: #33506e; }
+.cb-lyr tr.cb-lyr-group > td { padding-top: 5px; font-size: 10px; font-weight: 600; color: #475569; }
+.cb-lyr tr.off { color: #8aa0b8; }
+.cb-lyr tr.off .q-icon { color: #b8c7d8; }
+.cb-lyr tr.off .cb-gal-pk-marker { opacity: 0.4; }
+.cb-lyr-eye { cursor: pointer; }
+.cb-lyr .q-icon.cb-lyr-eye.off { color: #b8c7d8; }
+.cb-lyr tr.cb-lyr-head .q-icon.cb-lyr-eye:hover { color: var(--cb-head-ink, #12324f); }
+.cb-lyr-name { display: flex; align-items: center; gap: 4px; max-width: 260px; }
+.cb-gal-pk-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cb-lyr .q-icon.cb-gal-pk-warn { color: #d97706; }
+.cb-gal-pk-marker { display: inline-flex; vertical-align: middle; cursor: pointer; border-radius: 50%; padding: 1px; }
 .cb-gal-pk-marker:hover { box-shadow: 0 0 0 1px #94a3b8; }
-.cb-gal-pk-row.off .cb-gal-pk-marker { opacity: 0.4; }
-/* A layer's colours, opened in place under its row by a click on its marker. */
-.cb-gal-pk-palette { display: flex; flex-wrap: wrap; gap: 4px; padding: 1px 10px 5px 38px; }
-.cb-gal-pk-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.cb-gal-pk-n { font-family: ui-monospace, monospace; font-size: 9px; color: #94a3b8; }
-.cb-gal-pk-row .cb-gal-pk-warn { color: #d97706; }
-/* The layers list as two tables, the pick layers' and the segmentations' (ui/components/layer_menu.py):
- * a head per kind whose eye switches all of its layers, a species row that switches all of the
- * species' layers, a row per layer, all on the table's columns (--cb-lyr-cols, set on the table). In a
- * view that can switch its picture or has a gallery the table is wide, with the reconstruction each
- * layer was made on and the button that shows a pick list in the gallery. */
-.cb-lyr-table { padding: 0 4px; }
-.cb-lyr-table.cb-lyr-wide { min-width: 500px; }
-.cb-lyr-table + .cb-lyr-table { margin-top: 4px; }
-.cb-lyr-table > .cb-lyr-tr {
-    display: grid; grid-template-columns: var(--cb-lyr-cols); column-gap: 8px; align-items: center;
-    padding: 2px 6px; border-radius: 3px;
-}
-.cb-lyr-table > .cb-lyr-head { padding-top: 7px; font-size: 9px; color: #8aa0b8; }
-.cb-lyr-title { grid-column: span 2; font-size: 10px; font-weight: 600; color: #33506e; }
-.cb-lyr-col { white-space: nowrap; }
-.cb-lyr-col.num { text-align: right; }
-.cb-lyr-eye { color: var(--cb-accent, #4a8fd4); cursor: pointer; }
-/* A row's eye and key sit in their own columns, centred, whatever the cells after them hold. */
-.cb-lyr-table > .cb-lyr-tr > .cb-lyr-eye { grid-column: 1; justify-self: center; }
-.cb-lyr-table > .cb-lyr-tr > .cb-gal-pk-marker { grid-column: 2; justify-self: center; }
-.cb-lyr-eye.off { color: #b8c7d8; }
-.cb-lyr-head .cb-lyr-eye:hover { color: var(--cb-head-ink, #12324f); }
-.cb-lyr-table > .cb-lyr-group {
-    cursor: pointer; user-select: none; padding-top: 5px;
-    font-size: 10px; font-weight: 600; color: #475569;
-}
-.cb-lyr-group:hover { background: var(--cb-hover, #e6eff8); }
-.cb-lyr-name { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.cb-lyr-table .cb-gal-pk-n { text-align: right; }
-.cb-lyr-table > .cb-gal-pk-palette { padding-left: 32px; }
+.cb-gal-pk-marker.fixed { cursor: inherit; }
+.cb-gal-pk-marker.fixed:hover { box-shadow: none; }
+/* A layer's colours, opened in place under its row by a click on its key. */
+.cb-gal-pk-palette { display: flex; flex-wrap: wrap; gap: 4px; padding: 1px 0 5px; }
 .cb-lyr-src {
-    justify-self: start; max-width: 100%; box-sizing: border-box; overflow: hidden; text-overflow: ellipsis;
-    white-space: nowrap; font-size: 9px; line-height: 14px; padding: 0 5px; border-radius: 3px; color: #4f6782;
-    background: #ffffff; border: 1px solid var(--cb-field-line, #d3dde8); cursor: pointer;
+    display: inline-block; max-width: 140px; box-sizing: border-box; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; vertical-align: middle; font-size: 9px; line-height: 14px; padding: 0 5px;
+    border-radius: 3px; color: #4f6782; background: #ffffff; border: 1px solid var(--cb-field-line, #d3dde8);
+    cursor: pointer;
 }
 .cb-lyr-src:hover { border-color: var(--cb-field-line-hover, #a9c6e4); color: var(--cb-head-ink, #12324f); }
 .cb-lyr-src.here {
@@ -1300,16 +1264,12 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
     font-weight: 600; cursor: default;
 }
 .cb-lyr-src.none { background: transparent; border-color: transparent; color: #94a3b8; cursor: inherit; }
-.cb-gal-pk-row .q-icon.cb-lyr-gal { justify-self: center; color: #9fb2c8; cursor: pointer; border-radius: 3px; }
-.cb-gal-pk-row .q-icon.cb-lyr-gal:hover { color: var(--cb-head-ink, #12324f); background: #ffffff; }
-.cb-gal-pk-row .q-icon.cb-lyr-gal.here { color: var(--cb-accent, #4a8fd4); cursor: default; }
-.cb-gal-pk-marker.fixed { cursor: inherit; }
-.cb-gal-pk-marker.fixed:hover { box-shadow: none; }
-/* Segmentation layers: the opacity row under the list. */
-.cb-gal-feat-opacity {
-    display: flex; align-items: center; gap: 6px; padding: 6px 10px 2px 16px;
-    font-size: 9px; color: #94a3b8; border-top: 1px solid #f1f5f9; margin-top: 4px;
-}
+.cb-lyr .q-icon.cb-lyr-gal { color: #9fb2c8; cursor: pointer; border-radius: 3px; }
+.cb-lyr .q-icon.cb-lyr-gal:hover { color: var(--cb-head-ink, #12324f); background: #ffffff; }
+.cb-lyr .q-icon.cb-lyr-gal.here { color: var(--cb-accent, #4a8fd4); cursor: default; }
+/* Segmentation layers: the fills' opacity, under the list. */
+.cb-lyr tr.cb-lyr-opacity > td { padding-top: 6px; border-top: 1px solid #f1f5f9; font-size: 9px; color: #94a3b8; }
+.cb-lyr-opacity-in { display: flex; align-items: center; gap: 6px; }
 .cb-gal-body { flex: 1 1 0; min-height: 0; overflow-y: auto; overflow-x: hidden; }
 .cb-gal-grid { display: grid; gap: 10px; padding: 10px; align-items: start; }
 .cb-gal-tile {
@@ -1522,9 +1482,7 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
     flex: 0 0 auto; display: flex; flex-direction: column; gap: 4px; min-height: 0; overflow-y: auto;
     background: #ffffff; border-radius: 5px; padding: 8px 4px 8px 8px;
 }
-.cb-gal-zoom-side .cb-gal-pk-row { padding-left: 2px; }
-.cb-gal-zoom-side .cb-lyr-table { padding: 0; }
-.cb-gal-zoom-side .cb-gal-pk-palette { padding-left: 24px; }
+.cb-gal-zoom-side .cb-lyr td:first-child { padding-left: 2px; }
 .cb-gal-zoom-side .cb-hmenu-item, .cb-gal-zoom-side .cb-hmenu-group { padding-left: 2px; padding-right: 4px; }
 .cb-gal-zoom-side .cb-hmenu-item.nested { padding-left: 8px; }
 .cb-gal-zoom-headline { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
@@ -1817,6 +1775,31 @@ img[src]:not([data-cb-img]) {
 .q-img__loading .q-spinner { display: none; }
 .cb-img-probe { display: none; }
 .cb-gal-note.cb-gal-note-wait { color: #64748b; }
+/* A picture's place while it renders (ui/components/render_slot.py): the box keeps the picture's
+ * shape, a dim dashed outline that breathes while the render runs and turns red when it did not
+ * finish, with a restart button in its corner. A picture already on disk never shows the outline:
+ * it fades in only after a moment. */
+@keyframes cb-rslot-in { from { border-color: transparent; background-color: transparent; } }
+.cb-rslot { position: relative; box-sizing: border-box; min-width: 0; }
+.cb-rslot.cb-rslot--wait, .cb-rslot.cb-rslot--run, .cb-rslot.cb-rslot--failed {
+    border: 1px dashed #c3cfdc; border-radius: 4px; background-color: #eceff3;
+}
+.cb-rslot.cb-rslot--wait { animation: cb-rslot-in 0.3s ease-out 0.3s both; }
+.cb-rslot.cb-rslot--run { animation: cb-img-wait 1.6s ease-in-out infinite; }
+.cb-rslot.cb-rslot--failed { border-color: #e9a3a3; background-color: #fbf4f4; }
+.cb-rslot-tools {
+    position: absolute; top: 4px; right: 4px; z-index: 6; display: flex; align-items: center; gap: 2px;
+}
+.cb-rslot-tools .q-btn.cb-icon-btn { background: rgba(255, 255, 255, 0.85); }
+.cb-rslot-tools .cb-rslot-err { color: #c2410c; }
+/* Where a slot sits: over the whole of a picture's box (a slab under its overlays), across its row, or
+ * as a gallery's sheet; a skeleton with no picture shape yet holds some height. */
+.cb-rslot.cb-rslot-fill { position: absolute; inset: 0; }
+.cb-rslot.cb-rslot-wide, .cb-rslot.cb-rslot-sheet { width: 100%; }
+.cb-rslot.cb-rslot-tall:is(.cb-rslot--wait, .cb-rslot--run, .cb-rslot--failed) { min-height: 30vh; }
+.cb-rslot.cb-rslot-sheet:is(.cb-rslot--wait, .cb-rslot--run, .cb-rslot--failed) { min-height: 210px; }
+/* A preview pass that did not finish, in the Particles header (ui/particles/pick_viewer.py). */
+.q-btn.cb-icon-btn.cb-pass-failed { color: #c2410c !important; }
 /* ── Harbor controls ─────────────────────────────────────────────────────────
  * The house icon button (ui/components/buttons.py `icon_button`): muted, a light-blue tint under
  * the pointer, red only on a delete's hover, navy while armed. Quasar's own hover veil is off. */
@@ -1889,6 +1872,70 @@ _PARTICLES_CSS = """
 .cb-pv-list-count { font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b829b; margin-right: 2px; }
 """
 
+# The Particles registry page (ui/species/, ui/template_workbench.py, ui/analytics/) at any pane width;
+# after _PARTICLES_CSS, so it wins its ties with the rules above.
+_REGISTRY_CSS = """
+/* The page and its detail column are size containers (ui/species/page.py): these rules query the pane's
+ * width, never the window's, since several views share the window side by side. */
+.cb-species-page { container: cb-species / inline-size; }
+.cb-species-detail { container: cb-sdetail / inline-size; }
+/* A narrow pane stacks the rail above the detail: its rows flow as a wrapping strip that scrolls past three
+ * lines. Its bottom margin outruns the species header's -6 px pull-up, so 6 px of page shows between them. */
+@container cb-species (max-width: 820px) {
+    .cb-species-split { flex-direction: column !important; }
+    .cb-species-split > .cb-srail {
+        width: auto; min-width: 0; max-height: 84px; flex-direction: row; flex-wrap: wrap;
+        align-content: flex-start; margin: 0 10px 12px !important;
+    }
+    .cb-species-split > .cb-srail > * { max-width: 100%; }
+}
+/* The species mark is inline `flex-shrink: 0`; here it may shrink, so a long name ellipsises instead of
+ * pushing the rail's counts out of the row or the header past its edge. */
+.cb-species-page .cb-species-mark { flex-shrink: 1 !important; }
+/* The header: the tab strip wraps under the species name when the two do not fit on one line; a strip wider
+ * than its line wraps its segments; below 440 px the segments' padding tightens so that rarely happens. */
+.cb-species-page .cb-species-header { flex-wrap: wrap; row-gap: 4px; }
+.cb-species-page .cb-seg { max-width: 100%; flex-wrap: wrap; }
+@container cb-sdetail (max-width: 440px) {
+    .cb-species-header .cb-seg-btn { padding: 2px 5px; }
+}
+/* House text buttons keep their own width and a one-line label; the rows around them wrap instead of
+ * squeezing the label onto two lines inside a 22 px button. */
+.cb-species-page .q-btn.cb-btn { flex-shrink: 0; }
+.cb-species-page .q-btn.cb-btn .q-btn__content { flex-wrap: nowrap; white-space: nowrap; }
+/* A house field (label + control, ui/components/fields.py) never outgrows its line: the control narrows
+ * (a select ellipsises its value) and the label stays on one line. */
+.cb-species-page .nicegui-row:has(> .cb-field) { min-width: 0; max-width: 100%; }
+.cb-species-page .nicegui-row:has(> .cb-field) > :not(.cb-field) { flex-shrink: 0; }
+.cb-species-page .nicegui-row > .cb-field { min-width: 0; }
+/* A status chip ellipsises its value rather than outgrowing a narrow line. */
+.cb-species-page .cb-chip { max-width: 100%; min-width: 0; }
+.cb-species-page .cb-chip .cb-chip-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* Templates & masks: a list row keeps ~90 px for its FILE column; in a narrower pane the list scrolls
+ * sideways inside its own box (.cb-tw-table is overflow-x: auto). */
+.cb-species-page .cb-tw-head, .cb-species-page .cb-tw-row { min-width: 520px; }
+/* The slice viewer's three plots (ui/components/template_viewer.py) are fixed squares: a row narrower than
+ * them scrolls. Auto margins centre them when they fit; unlike `justify-content: center` they leave no
+ * overflow off the unreachable left edge. */
+.cb-species-page .cb-tv-plots { justify-content: flex-start; overflow-x: auto; }
+.cb-species-page .cb-tv-plots > :first-child { margin-left: auto; }
+.cb-species-page .cb-tv-plots > :last-child { margin-right: auto; }
+/* Picks & curation: a tomogram's name line wraps, its verbs moving under the name as one unit; a long name
+ * ellipsises and keeps the copy button beside it. */
+.cb-species-page .cb-ptable-group { flex-wrap: wrap; row-gap: 4px; }
+.cb-species-page .cb-ptable-group-name {
+    min-width: 0; max-width: calc(100% - 28px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* The list table keeps ~100 px for its name column; narrower, it scrolls sideways inside its own box. Every
+ * group's rows share the one min-width, so the columns still line up across groups. */
+.cb-species-page .cb-ptable { overflow-x: auto; }
+.cb-species-page .cb-ptable-row { min-width: 560px; }
+/* Analytics: the tools on a panel's title line (`.cb-an-tools`, the row panel_head yields) wrap under the
+ * title, at the right, when the two do not fit on one line. */
+.cb-species-page .nicegui-row:has(> .cb-an-tools) { flex-wrap: wrap; }
+.cb-species-page .cb-an-tools { flex-wrap: wrap; justify-content: flex-end; min-width: 0; margin-left: auto; }
+"""
+
 
 # The panels' names are set in the condensed cut of the house face (`VIEW_TITLE_STYLE`,
 # ui/job_plugins/_field_styles.py); without it they fall back to IBM Plex Sans.
@@ -1907,7 +1954,7 @@ def ensure_assets_loaded() -> None:
         return
     client._cb_assets_loaded = True
     ui.add_head_html(_TITLE_FONT_LINK)
-    ui.add_head_html(f"<style>{_THEME_CSS}{_CB_CSS}{_PARTICLES_CSS}</style>")
+    ui.add_head_html(f"<style>{_THEME_CSS}{_CB_CSS}{_PARTICLES_CSS}{_REGISTRY_CSS}</style>")
     client.run_javascript(_TITLE_TIP_JS)
     client.run_javascript(_IMG_STATE_JS)
 

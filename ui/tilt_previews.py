@@ -28,8 +28,6 @@ which re-renders the averaged MRC.
 
 from __future__ import annotations
 
-import asyncio
-import base64
 import html
 import json
 import logging
@@ -60,6 +58,8 @@ from services.tilt_series.tilt_state import (
     series_summary,
     tilt_states,
 )
+from services.visualization.preview_render import render_mrc_preview_b64
+from services.workers import WorkKind, run_in_worker
 from ui.components.buttons import house_button
 from ui.components.dialogs import dialog_host
 from ui.components.segmented import render_segmented
@@ -573,12 +573,6 @@ def _tilt_metrics(ts, ctx: dict) -> dict[str, dict]:
             "median_counts": median_counts,
         }
     return out
-
-
-def thumbnail_task_key(project_path: Path, png_dir: Path) -> str:
-    """The dedup key the thumbnail pass runs under (``ensure_tilt_thumbnails`` and the tilt
-    filter's Generate button), so a page can tell while it runs."""
-    return f"tilt-filter-thumbnails:{project_path}:{png_dir}"
 
 
 # ── Words ─────────────────────────────────────────────────────────────────────
@@ -1753,55 +1747,6 @@ def open_tilt_viewer(tilt: dict, project_path: Path) -> None:
         _show_upsample(tilt["mrc"], tilt["key"], Path(project_path))
 
 
-def _render_mrc_preview(mrc_path: str, target_size: int = 1024) -> tuple[str, tuple]:
-    """Read an MRC, Fourier-crop it to target_size, normalise it for display and return it as
-    a base64 PNG with the source's shape. target_size 0 keeps the full resolution."""
-    import io
-
-    import mrcfile
-    import numpy as np
-    from PIL import Image
-    from scipy.fft import fft2, fftshift, ifft2, ifftshift
-    from scipy.ndimage import gaussian_filter
-
-    with mrcfile.open(mrc_path, permissive=True) as mrc:
-        data = mrc.data.astype(np.float32)
-
-    orig_shape = data.shape
-
-    # Fourier crop if requested and needed
-    if target_size > 0 and (data.shape[0] > target_size or data.shape[1] > target_size):
-        ft = fftshift(fft2(data))
-        new = np.zeros((target_size, target_size), dtype=ft.dtype)
-        cy, cx = [d // 2 for d in data.shape]
-        ny, nx = target_size // 2, target_size // 2
-        sy = slice(cy - min(cy, ny), cy + min(cy, ny))
-        sx = slice(cx - min(cx, nx), cx + min(cx, nx))
-        dy = slice(ny - min(cy, ny), ny + min(cy, ny))
-        dx = slice(nx - min(cx, nx), nx + min(cx, nx))
-        new[dy, dx] = ft[sy, sx]
-        data = ifft2(ifftshift(new)).real
-
-    # Gentle denoise — scale sigma with resolution
-    sigma = 0.4 if data.shape[0] <= 1024 else 0.7
-    data = gaussian_filter(data, sigma=sigma)
-
-    # Percentile-based contrast (robust to hot/dead pixels)
-    p_lo, p_hi = np.percentile(data, [1.0, 99.0])
-    data = np.clip(data, p_lo, p_hi)
-    rng = p_hi - p_lo
-    if rng > 1e-9:
-        data = (data - p_lo) / rng
-    else:
-        data = np.zeros_like(data)
-
-    data = (data * 255).astype(np.uint8)
-    img = Image.fromarray(data, mode="L")
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return base64.b64encode(buf.getvalue()).decode(), orig_shape
-
-
 def _show_upsample(mrc_path: str, key: str, project_path: Path) -> None:
     """Open a dialog with resolution selector and live re-rendering."""
     if not mrc_path:
@@ -1867,7 +1812,8 @@ def _show_upsample(mrc_path: str, key: str, project_path: Path) -> None:
 
         async def _do():
             try:
-                b64, orig = await asyncio.to_thread(_render_mrc_preview, str(abs_mrc), sz)
+                # In a worker: the FFT crop and filter of a whole tilt hold the GIL for seconds.
+                b64, orig = await run_in_worker(WorkKind.RENDER, render_mrc_preview_b64, str(abs_mrc), sz)
                 out_px = orig[0] if sz == 0 else min(sz, orig[0])
                 size_label.text = f"{out_px}px (source: {orig[0]}×{orig[1]})"
                 img_holder.clear()

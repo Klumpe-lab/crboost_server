@@ -91,10 +91,14 @@ class SetsPanel:
     def _row(self, s: ParticleSet, depth: int) -> None:
         stale = self.stale.get(s.id, [])
         readers = self.readers.get(s.id, [])
+        # Wraps in a narrow panel. The recipe's 160 px basis sends it, with the date and the actions, to a
+        # second line instead of letting it shrink to nothing.
         with (
             ui.row()
-            .classes("w-full items-center gap-2 no-wrap")
-            .style(f"min-height: 24px; border-bottom: 1px solid #f1f5f9; padding-left: {8 + 14 * depth}px;")
+            .classes("w-full items-center gap-2")
+            .style(
+                f"min-height: 24px; row-gap: 2px; border-bottom: 1px solid #f1f5f9; padding-left: {8 + 14 * depth}px;"
+            )
         ):
             if depth:
                 ui.label("└").style("color: #cbd5e1; font-size: 10px;")
@@ -111,8 +115,8 @@ class SetsPanel:
             )
             ui.label(s.recipe.describe()).style(
                 f"{SANS} font-size: 10px; color: #475569; overflow: hidden; text-overflow: ellipsis; "
-                "white-space: nowrap;"
-            ).classes("flex-1 min-w-0")
+                "white-space: nowrap; flex: 1 1 160px; min-width: 0;"
+            )
             ui.label(s.created_at[:10]).classes(HINT_CLS).tooltip(f"{s.created_by}, {s.created_at.replace('T', ' ')}")
             if stale:
                 render_chip(

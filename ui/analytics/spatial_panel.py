@@ -81,7 +81,8 @@ class SpatialPanel:
                 )
                 self._depth = ui.echart(self._depth_options()).style(f"height: {CHART_PX}px; width: 100%;")
             with ui.element("div").style(f"flex: 1 1 280px; min-width: 0; {CHART_CELL_STYLE}"):
-                with ui.element("div").style("display: flex; align-items: center; gap: 8px;"):
+                # The metric select wraps under the title when the chart cell is at its 280 px basis.
+                with ui.element("div").style("display: flex; align-items: center; gap: 2px 8px; flex-wrap: wrap;"):
                     self._title(
                         "yield against quality",
                         "One point per tomogram: its picks at or above the cut against a data-quality fact from the "

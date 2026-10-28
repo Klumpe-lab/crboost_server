@@ -11,19 +11,12 @@ each job traces back to (reconstruct <- tsCtf <- alignment/refinement), read fro
 paths the jobs actually ran with.
 """
 
-import json
 import re
 from pathlib import Path
 
 from services.models_base import JobType
-from services.visualization.preview_render import is_output_stale
+from services.renders import Render
 from services.visualization.recon_register import render_matched_slabs
-from services.workers import WorkKind, run_in_worker
-from ui.background_task import BackgroundTask
-
-# Failed plane-matching renders, keyed by reference dir + TS + the version set. What is
-# in flight is whatever the task registry still runs under the same key.
-_MATCH_ERRORS: dict[str, str] = {}
 
 
 def _instance_for_dir(state, job_dir: Path) -> str | None:
@@ -107,59 +100,26 @@ def recon_versions_for_ts(state, ts_name: str) -> list[dict]:
     return out
 
 
-def matched_slabs(versions: list[dict], ts_name: str, project_path: Path, refresh) -> tuple[str, str | None]:
-    """Give each version its X/Y slab on the first version's plane (`slab` PNG and, once
-    rendered, `plane` = the JSON the renderer wrote), rendering the set in the background
-    when any is missing or older than its volumes. Returns the pick viewer's slab state
-    (``fresh`` / ``failed`` / ``in-flight`` / ``kicked``; spin only on the last two) and,
-    when failed, why."""
+def matched_render(versions: list[dict], ts_name: str, project_path: Path) -> Render:
+    """The render that gives each version its X/Y slab on the first version's plane: sets each version's
+    `slab` PNG and `plane_json` (the plane the renderer found) and returns one render for the set,
+    current while no volume is newer than any of its outputs (`render_matched_slabs`)."""
     ref = versions[0]
     tag = ref["job"].replace("/", "_")
     for v in versions:
         stem = f"{ts_name}__ref" if v is ref else f"{ts_name}__on_{tag}"
         base = v["dir"] / "vis" / "compare"
         v["slab"], v["plane_json"] = base / f"{stem}.png", base / f"{stem}.json"
-
-    if all(not is_output_stale(p, [ref["mrc"], v["mrc"]]) for v in versions for p in (v["slab"], v["plane_json"])):
-        for v in versions:
-            v["plane"] = json.loads(v["plane_json"].read_text())
-        return "fresh", None
-
-    key = _match_key(versions, ts_name)
-    if key in _MATCH_ERRORS:
-        return "failed", _MATCH_ERRORS[key]
-    dedup = f"recon-match:{key}"
-    if BackgroundTask.existing(dedup) is not None:
-        return "in-flight", None
-
-    async def _run(progress_cb):
-        progress_cb(0, 0, "registering reconstructions…")
-        await run_in_worker(
-            WorkKind.RENDER,
-            render_matched_slabs,
-            (ref["mrc"], ref["slab"], ref["plane_json"]),
-            [(v["mrc"], v["slab"], v["plane_json"]) for v in versions[1:]],
-        )
-        return "matched slabs rendered"
-
-    def _done(task) -> None:
-        if task.status != "succeeded":
-            _MATCH_ERRORS[key] = str(task.error or task.status)
-        refresh()
-
-    BackgroundTask(
+    return Render(
+        key=f"recon-match:{ref['dir']}:{ts_name}:" + ",".join(v["job"] for v in versions),
         title=f"Match recon planes · {ts_name}",
         subtitle=" vs ".join(v["job"] for v in versions),
+        fn=render_matched_slabs,
+        args=(
+            (ref["mrc"], ref["slab"], ref["plane_json"]),
+            [(v["mrc"], v["slab"], v["plane_json"]) for v in versions[1:]],
+        ),
+        outputs=tuple(p for v in versions for p in (v["slab"], v["plane_json"])),
+        sources=tuple(v["mrc"] for v in versions),
         project_path=str(project_path),
-        dedup_key=dedup,
-    ).submit(_run, on_complete=_done, show_start_toast=False)
-    return "kicked", None
-
-
-def _match_key(versions: list[dict], ts_name: str) -> str:
-    return f"{versions[0]['dir']}:{ts_name}:" + ",".join(v["job"] for v in versions)
-
-
-def retry_match(versions: list[dict], ts_name: str) -> None:
-    """Forget a failed render so the next build kicks it again."""
-    _MATCH_ERRORS.pop(_match_key(versions, ts_name), None)
+    )
