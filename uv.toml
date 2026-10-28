@@ -3,3 +3,6 @@
 [pip]
 python-version = "3.11"
 python-platform = "x86_64-unknown-linux-gnu"
+# `uv pip sync` writes the venv's .pyc files at install time. Drivers on the compute nodes would otherwise
+# compile numpy, pandas and the rest from source in every task wherever they cannot write bytecode.
+compile-bytecode = true
