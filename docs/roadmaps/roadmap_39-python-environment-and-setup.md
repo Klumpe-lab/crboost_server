@@ -178,6 +178,13 @@ path outside `venv/` confirms the mixed environment described in §1.
    `clean_env`, so that one from a shell after `module purge`).
 4. Way back: `rm -rf venv`, `mv venv.modules venv`, restore `config/qsub.sh` from its backup.
 
+Done 2026-10-28 on the lab install at `44375a0`: uv's CPython 3.11.18 under
+`/groups/klumpe/software/cache_and_artifacts/uv/python`, 97 packages, 10313 files byte-compiled at sync. The
+old venv went outside the checkout instead, to `/groups/klumpe/software/crboost_venv.modules` (`.gitignore` covers
+`venv/`, not `venv.modules/`); `config/qsub.sh` module lines commented out, `unset PYTHONPATH` added, original in
+`config/qsub.sh.bak-modules`. Preflight all OK, `pytest -m cluster` 11 passed + 1 skipped in 16:43, `./crboost`
+started (modules 17.1 s on that first start, compiling into the per-user cache).
+
 ### S3 — The tilt filter in its own container
 
 - `container_defs/tilt_filter_torch2.6.0_cu124.def`: torch 2.6.0 + torchvision 0.21.0 + Pillow + numpy, nothing
@@ -265,3 +272,8 @@ would be lost.
    index records it too.
 4. **CI** — S4 above; it also runs `python -c "import main"`, which catches the import error at startup that
    the assistant sandbox cannot.
+5. **A shorter cluster self-test.** `pytest -m cluster` took 16:43 on the lab install (2026-10-28) for 4–26 s of
+   tool calls: every probe asks for `slurm_defaults` (partition `g`, `gpu:1`, 32 G), and they started in batches
+   of one to three about two minutes apart. Wanted (maintainer, 2026-10-28): the probes that do not check a GPU
+   (relion, isonet, imod, pymol, cistem, chimerax) run on `supervisor_slurm`'s resources (no gres, 4 G), so only
+   the GPU probes wait for a GPU and each log stays one tool's. Not built.
