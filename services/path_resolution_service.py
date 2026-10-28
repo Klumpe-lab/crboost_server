@@ -1311,7 +1311,7 @@ class PathResolutionService:
             execution_status=JobStatus.SUCCEEDED,
             relion_job_number=rank,
             species_id=pset.species_id or None,
-            label=f"Particle set — {pset.name} · {pset.n_particles:,} {pset.level.value}",
+            label=_particle_set_label(pset),
             auto_eligible=False,
         )
 
@@ -1803,3 +1803,15 @@ def get_context_paths(job_type: JobType, job_model: AbstractJobParams, job_dir: 
             paths["mask_path"] = str(Path(mask_p))
 
     return paths
+
+
+def _particle_set_label(pset) -> str:
+    """How a particle set reads in a job's I/O dropdown; a set made in the STA kitchen says so, with how
+    many projects it spans."""
+    from services.particles.particle_sets import SetOp
+
+    if pset.recipe.op == SetOp.POOL:
+        n_projects = int(pset.details.get("n_projects") or 1)
+        span = f" ({n_projects} projects)" if n_projects > 1 else ""
+        return f"Pool set — {pset.name}{span} · {pset.n_particles:,} {pset.level.value}"
+    return f"Particle set — {pset.name} · {pset.n_particles:,} {pset.level.value}"
