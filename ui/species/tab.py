@@ -31,6 +31,9 @@ class TabContext:
 
 
 class SpeciesTab(Protocol):
+    """A tab may also define `set_visible(on)`: the page calls it whenever the tab comes on or goes off
+    screen (tab switch, species switch, the page itself shown or hidden), for the timers it owns."""
+
     def build(self, container: ui.element) -> None: ...
 
     def refresh(self) -> None: ...

@@ -1945,6 +1945,34 @@ _TITLE_FONT_LINK = (
 )
 
 
+# The STA kitchen (ui/kitchen/kitchen.js): hover and state polish of its tiles, and the narrow-pane
+# stack. Structure is inline in the element; a container query cannot be, hence the one !important.
+_KITCHEN_CSS = """
+.cbk-tile { outline: 1px solid transparent; outline-offset: -1px; }
+.cbk-tile:hover { outline-color: #9fb6cf; }
+.cbk-tile.cbk-active { outline: 2px solid #ffffff; box-shadow: 0 0 0 1px #0f172a; z-index: 1; }
+.cbk-tile.cbk-cursor { outline: 2px solid var(--cb-accent, #4a8fd4); }
+.cbk-tile.cbk-keep { box-shadow: inset 0 0 0 2px #16a34a; }
+.cbk-tile.cbk-drop { box-shadow: inset 0 0 0 2px #ef4444; }
+.cbk-tile.cbk-drop::after {
+    content: ''; position: absolute; inset: 0; pointer-events: none;
+    background: repeating-linear-gradient(135deg, rgba(239,68,68,0.0) 0 6px, rgba(239,68,68,0.55) 6px 7px);
+}
+.cbk-tile.cbk-none { background: #334155 !important; }
+.cbk-tile.cbk-none::before {
+    content: '∅'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #94a3b8; font-size: 14px;
+}
+.cbk-ttl.cbk-red { color: #dc2626; }
+.cbk-chip { cursor: pointer; }
+.cbk-chip:hover { background: #e2e8f0; }
+.cbk-handle:hover { fill: var(--cb-accent, #4a8fd4); }
+@container (max-width: 1100px) {
+    .cbk-main { grid-template-columns: minmax(0, 1fr) !important; grid-template-rows: auto minmax(0, 1fr); }
+}
+"""
+
+
 def ensure_assets_loaded() -> None:
     """Inject the stylesheet once per client. The Species page (built with the workspace)
     and the Journey / tomogram-import dialog (built later, lazily) share it, so a second
@@ -1954,7 +1982,7 @@ def ensure_assets_loaded() -> None:
         return
     client._cb_assets_loaded = True
     ui.add_head_html(_TITLE_FONT_LINK)
-    ui.add_head_html(f"<style>{_THEME_CSS}{_CB_CSS}{_PARTICLES_CSS}{_REGISTRY_CSS}</style>")
+    ui.add_head_html(f"<style>{_THEME_CSS}{_CB_CSS}{_PARTICLES_CSS}{_REGISTRY_CSS}{_KITCHEN_CSS}</style>")
     client.run_javascript(_TITLE_TIP_JS)
     client.run_javascript(_IMG_STATE_JS)
 
