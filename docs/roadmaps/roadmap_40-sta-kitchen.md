@@ -4,9 +4,12 @@
 it goes). The Journey's Particles panel, the Analytics tab's score and sets panels and the merge / aggregate dialogs are
 expected to be deleted once the kitchen covers them (§9); nothing is removed by this roadmap.
 
-**Status:** S0–S5 built 2026-10-28 on `STA_Kitchen`, checked in the sandbox (record in §11), not run in a browser:
-the §10 pass is owed. Decisions in §7: D1–D11 accepted by the handoff of 2026-10-28; D12 (from the S0 facts) waits for
-a nod.
+**Status:** S0–S5 built 2026-10-28 on `STA_Kitchen`, checked in the sandbox (record in §11). The maintainer's first look
+the same day led to R1 (§11): Tags, Doctor and Ledger taken out (§5.7, §5.8 move to S7), the means made on request, pool
+mode the gallery alone, cutouts at 1.4 × Ø fetched a screen at a time. S6.2–S6.7 built the same evening in a second
+session (σ-by-tomogram strip, pairs chart, agreement column, set filters, extracted pictures, review sample, loupe);
+S6.8 waits for the Ledger. Nothing of S6 is on screen until asked for. The §10 pass is owed (now with items 11–16).
+Decisions in §7: D1–D11 accepted by the handoff of 2026-10-28; D12 (from the S0 facts) waits for a nod.
 
 **In one line.** A new tab of the Particles registry where one species' picks from every source (template matching,
 hand-picked, imported, later other pickers), on any reconstruction of any tomogram of any project, sit in one pool;
@@ -135,6 +138,8 @@ it reads (`services/project_state.py` ~1289–1307), and analytics backfills are
 | `table/<member_key>.npz` + `.json` | Each member's columns and the fingerprint (source paths + mtimes) they were built from. |
 | `tiles/<frame_key>/<uid>.<ext>` + `tiles/<frame_key>/norm.json` | Cutouts rendered on demand; the frame's normalization bounds. |
 | `slabs/<frame_key>/<tomo>_{xy,xz}.png` | Slabs of other projects' reconstructions that have none on disk. |
+| `review.json` | The review sample (S6.6) and its good / bad labels: the reviewer's estimate notes, never verdicts. |
+| `loupe/<uid>-<spec>.png` + `.json` | A pick's loupe (S6.7), made on the first ask. |
 
 One pool per species per home project (D8). View preferences (mode, size, sort, group) live per browser tab in
 `ui_state`, not in `pool.json`.
@@ -167,8 +172,11 @@ into a per-column category list. Each column carries a label, a unit and its cov
 | Tomogram facts | `ctf_res`, `n_tilts`, `n_blank`, `slab_a` (pick-plane thickness), `tm_marker` (σ outlier / no peak / cap bound) |
 | Hand | `verdict` (keep / drop / none), `tags` (int32 bitmask, ≤ 32 tags) |
 
-Later columns (S6, S7): `agreement`, `class`, refine numbers, `p_<feature>` / `d_<feature>` from segmentations,
-`other_a` (to the nearest pick of another species).
+`agreement` (S6.4, built): how many other members have a pick within Ø/2 of the row in its tomogram (frames pooled as
+Make set pools them); NaN where no other member has picks there, and everywhere when the species has no diameter. It is
+computed when the pool is assembled, not per member, so the table version carries the radius. Later columns (S7):
+`class`, refine numbers, `p_<feature>` / `d_<feature>` from segmentations, `other_a` (to the nearest pick of another
+species).
 
 Built per member in a worker, from files only, cached on disk by fingerprint; the pool table is their concatenation plus
 the hand columns. Its version = hash of the member fingerprints + the verdict log length.
@@ -191,7 +199,12 @@ the hand columns. Its version = hash of the member fingerprints + the verdict lo
 1. **Range filter** `{col, lo, hi, keep_missing}`: a row passes when `lo ≤ v ≤ hi`, or when `v` is NaN and
    `keep_missing` (default true for scores, so hand picks are not dropped by a σ cut without saying so).
 2. **Category filter** `{col, allowed}`: passes when the row's code is in `allowed`.
-3. **Set filter** `{set_id, mode: in | out}` (S6): membership by uid, matched through the set's parent member.
+3. **Set filter** `{set_id, mode: in | out}` (S6.5): the set's rows in the table, matched by the server
+   (`services/kitchen/setmatch.py`): a set the kitchen made by its uid list; any other by position, each particle to the
+   home project members' pick on the same tomogram within 0.5 Å. The browser gets the match as bits per table version;
+   until it has them the filter passes everything and says "matching". A set that cannot be read holds nothing.
+3b. **Tomograms filter** `{excluded: [frame keys]}` (S6.2): every row on an excluded reconstruction fails; a frame added
+   to the pool later passes. The σ-by-tomogram strip edits it.
 4. All filters are a conjunction. **Post-ops** then run in order on what passes, per (frame, tomogram), ranked by σ
    (NaN last): NN thinning at r Å (`greedy_keep`), top N.
 5. **Hand verdicts** last: `final = (passes and verdict ≠ drop) or verdict = keep` (D10).
@@ -202,7 +215,7 @@ authoritative count and for Make set. A count mismatch after release is a bug, l
 
 ### 4.6 Verdicts and tags
 
-Keep / drop / clear per uid; tags defined in `pool.json` (`{id, name, key}`, keys 1–9). Seeding (D6): when a member is
+Keep / drop / clear per uid. Tags (taken out in R1, later: S7) were defined in `pool.json` (`{id, name, key}`, keys 1–9). Seeding (D6): when a member is
 added, its existing curation (`particles_filtered.star` of a subtomo job, `<slug>_filtered.star` of a list) is read once
 and appended as drop events with `source: "seed:<path>"`. Verdicts are written by the server only, off the loop, batched.
 
@@ -295,10 +308,9 @@ element keeps one store; there is no cross-element synchronisation to get wrong.
 
 ### 5.4 Pool mode
 
-Left half: the focused tomogram, XY large over a thin XZ, all pool rows on its frame as dots; its title line: tomogram ·
-project · ⧉ when its acquisition sits in another frame · passing / total · CTF fit and tilt count · "Curate picks"
-(ArtiaX, home-project tomograms only: it writes into the project). Right half: the gallery. The first focus is the
-tomogram of the first tile.
+The gallery alone, the pane's full width (R1: the maintainer wants just the picks here; the tomograms are the
+by-tomogram mode's). A click selects a tile; switching modes keeps each view's scroll position, order and tiles.
+Carrying one selected pick across the two modes is for later.
 
 ### 5.5 By-tomogram mode
 
@@ -318,7 +330,9 @@ discoverable projects (`discover_pick_list_projects` over the recent project roo
 `catalog_id` is pre-ticked, otherwise a species select with "not in this project" as the default (no name matching,
 D2); then its members (candidate extractions, lists) with their tomogram counts.
 
-### 5.7 Doctor (S5)
+### 5.7 Doctor (S5; taken out in R1, later: S7)
+
+Built in S5 and removed the same day (the maintainer: not asked for yet). The frame choice it held lives in Make set.
 
 Markers, never drops. Each has a tooltip with the rule, the measured value and "drops nothing", built from one
 constants table:
@@ -334,7 +348,7 @@ constants table:
   `services/jobs/template_match.py:35`): a σ cut does not mean the same on both;
 - stale members; orphaned verdicts; frames with an unknown pixel size (red); picks without a cutout (outside the volume).
 
-### 5.8 Ledger (S5)
+### 5.8 Ledger (S5; taken out in R1, later: S7)
 
 The sets made from this pool (`SetOp.POOL`): name, date, level, counts per project and tomogram, the recipe in one line,
 the jobs reading it (`jobs_reading_set`), and their headline results where a reader has finished (Class 3D shares and
@@ -367,22 +381,27 @@ a few × 10 MB, fetched once per version.
 
 ### 6.3 Tiles
 
-`GET /api/kitchen/tile?home=…&species=…&uid=…&v=…`: from the disk cache, else rendered in a worker (`WorkKind.KITCHEN_TILE`,
-cap 3): `_crop_slab` on the frame's reconstruction (mmap; workers keep a small LRU of open volumes), box 2 × Ø Å and a
-slab of fixed Å thickness (S0 fixes the value from today's 5 px at the commonest pixel size), normalized with the
-frame's bounds (computed once from a sample of ≤ 64 of its picks and cached in `norm.json`: never per tile, so noise
-stays grey), resized to 192 px, encoded (format chosen in S0 by size and look: PNG or JPEG q90). Immutable caching keyed
-by the reconstruction's mtime. A stream row may prefetch its whole tomogram in one worker call. Both kitchen routes
-answer only for a home project installed in this server and for uids in its pool table, so a URL cannot name an
-arbitrary volume.
+R1: `POST /api/kitchen/tiles?home=…&species=…&v=<tile settings>` with up to 600 uids, the visible ones first, answers a
+stream of records (uid, then a JPEG or the reason there is none) as they are found or cut; the browser keeps every
+cutout it got for the session (blob URLs, up to 6,000) and tiles are DOM nodes kept by row and moved, so a re-sort, a
+filter or a mode switch never fetches or decodes a tile again. Server side: the bytes of recently served tiles in memory
+(96 MB) and one directory listing per frame instead of a stat per tile; the rest cut by `TileBatcher`, the frames of
+one request four to a worker call on four threads (`WorkKind.KITCHEN_TILE`, three calls at once). Box
+`CUTOUT_BOX_FACTOR` (1.4) × Ø, the scale of the Journey's extracted cutouts (MyrGFP_Grid2's Warp export: 256 px ×
+3.1 Å = 794 Å for the 412's 575 Å), the same factor for the Journey's list cutouts; a 30 Å slab; normalized with the
+frame's bounds from three cutouts (the batch's own first), cached in `norm.json`, never per tile; 160 px, JPEG q85.
+Both kitchen routes answer only for a home project installed in this server and for uids in its pool table, so a URL
+cannot name an arbitrary volume.
 
 Without a species diameter there is no common physical scale: tiles fall back to a 48-px window per frame and the header
 says scales differ (red marker), as `_list_cutout_box_px` does today for one tomogram.
 
 ### 6.4 Slabs
 
-Home-project frames use the existing slab paths and Render keys (one render shared with the Journey and the wall). Other
-projects' frames read an existing current slab PNG in place; a missing one renders into the home kitchen's `slabs/`.
+The browser gets 560-px JPEG copies (about 140 KB for X/Y, 65 KB for X/Z, against 1 MB and 0.5 MB of PNG) in the home
+kitchen's `slabs/`. Home-project frames make them from the existing slab PNGs and Render keys (one render shared with the
+Journey and the wall); other projects' frames from their current slab PNGs in place, else straight from the volume
+through PNGs that are not kept.
 
 ### 6.5 Loop budget
 
@@ -502,22 +521,25 @@ frames each, D12) blocks Make set until a frame is chosen.
 
 ### S6 — Extras (each its own commit, in this order)
 
-1. Kept vs removed averages (unaligned means of the tiles, in a worker, on release).
-2. σ × tomogram heat strip (rows = tomograms sorted by CTF fit, x = σ); a row brush becomes a tomogram filter.
-3. Pair-distance histogram g(r) within tomograms; the spike below Ø selects those pairs in the gallery.
-4. `agreement` column (sources within Ø/2 on one frame) and its filter.
-5. Set filters (D9) and the extracted-stack picture toggle (subtomo atlases where they exist).
+1. Kept vs removed averages (unaligned means of the tiles, in a worker, on release). Built (R1: on request).
+2. σ × tomogram heat strip (rows = tomograms sorted by CTF fit, x = σ); a row brush becomes a tomogram filter. Built.
+3. Pair-distance histogram g(r) within tomograms; the spike below Ø selects those pairs in the gallery. Built (raw pair
+   counts, not a normalised g(r)).
+4. `agreement` column (sources within Ø/2 on one frame) and its filter. Built.
+5. Set filters (D9) and the extracted-stack picture toggle (subtomo atlases where they exist). Built.
 6. Review sample: 50 random kept and 50 random removed rows to label good / bad; precision and lost-recall estimates at
-   the cut with Wilson intervals.
+   the cut with Wilson intervals. Built.
 7. Loupe (space on a tile): larger cutout, X/Z and Y/Z slices, and the template rotated to the TM angles beside it.
-8. Fate chart in the Ledger: candidates → kept → extracted → class → refined, by project.
+   Built.
+8. Fate chart in the Ledger: candidates → kept → extracted → class → refined, by project. Waits for the Ledger (S7).
 
 ### S7 — Later (scoped here, not scheduled)
 
 Segmentation columns (`p_<feature>` at the pick, distance to the feature surface from one distance transform per
 tomogram and feature on a coarse grid); downstream columns (Class 3D class, Refine 3D numbers) joined by particle name
 within a job chain; other pickers as member kinds; a two-component fit over σ (P(signal) per pick) beside the decoy FDR;
-TM-angle coverage; named pools; display filters on tiles; the deletions of §9.
+TM-angle coverage; named pools; display filters on tiles; the deletions of §9. From R1: tags (§4.6), the Doctor (§5.7)
+and the Ledger (§5.8), built in S3 and S5 and taken out until asked for; one selected pick carried across the two modes.
 
 ## 9. What the kitchen covers (for a later deletion pass)
 
@@ -530,29 +552,47 @@ TM-angle coverage; named pools; display filters on tiles; the deletions of §9.
 
 The Analytics tab's TM health, controls and results stay until the Ledger and Doctor show what they show.
 
-## 10. Runtime checklist (once, after S5)
+## 10. Runtime checklist (once, after S5; rewritten for R1)
 
 1. Restart the server; `python check_boundaries.py`; hard-reload the browser (new CSS and a new JS component).
-2. AGG412 pilot → Particles registry → `412_particle` → STA kitchen: the tab opens with the project's own 412
-   candidates (158; a new pool starts with the home project's members); the species rail hides (the sidebar icon
-   brings it back); the URL ends in `/species/412_particle/kitchen`, and `/species/412_particle/analytics` opens too.
-3. Scroll the gallery to the end; switch S / M / L; click tiles from three tomograms: the left half follows, the
-   clicked tile's dot is ringed; hover a dot and its tile lights.
-4. "+ filter" → σ; drag the low handle to 9: the count line says 13 for the pilot alone (the Analytics tab's 9σ
-   cut); dots below the cut go hollow; the edge strip shows six tiles each side of 9σ; after release the kept and
-   removed means appear beside it within a minute.
-5. Sources → Add sources: the other seven projects offer `412_particle` (catalog id); "Tick every source shown", Add;
-   the state line says it builds the members, then the count line reads ~2,922 of 16,533 at ≥ 9σ across 8 projects
-   and the composition bar splits them. Doctor shows no frame conflict for 412.
-6. Curate: drop a few tiles by `x` and by a drag box, keep one removed tile from a "removes N" view; restart the
-   server; the verdicts and the draft are still there. Tags: add one, press 1 on a tile.
-7. By tomogram: the rows scroll, leaders follow the box's scroll, the hovered pair is solid; "N tomograms with
-   nothing passing" folds; "rows" → worst CTF fit reorders.
-8. Make set… at ≥ 9σ: the plan says 8 projects and no blocker; Make set; a Class 3D or Extract job's I/O dropdown
-   lists "Pool set — … (8 projects)"; the Ledger lists it with per-project counts.
-9. `dm_ovary_ribosome` → STA kitchen → Sources → add MyrGFP_Grid2's two ribosome extractions: Doctor ⚑ lists 47
-   acquisitions in two frames, Make set is off; "prefer AGG412_20260311_MyrGFP_Grid2 · job024" settles them.
+2. AGG412_20260311_MyrGFP_Grid2 → Particles registry: the title line reads "Particles registry", the species mark and
+   the tabs (Overview … STA kitchen · Jobs); no tab row under it. `412_particle` → STA kitchen: the pool the
+   maintainer made (7 members) opens; the species rail hides (the sidebar icon brings it back); the URL ends in
+   `/species/412_particle/kitchen`.
+3. Pool: only the gallery, full width; tiles round-cornered on a tinted panel, σ bottom right; "metric" → LCC changes
+   every corner in place. The first screen fills in about a second, tile by tile; scroll down and back: the tiles seen
+   come back at once. A tile shows a 412 ball at about the size the Journey's Particles panel shows it.
+4. "+ filter": a white card that stays open while you browse it, closes on a pick, a click outside, Escape. Pick σ, drag
+   the low handle: counts and tiles follow, the tiles that stay keep their pictures (no grey flash); the edge strip
+   shows six cutouts each side of the cut; nothing else is computed.
+5. Means → "Compute for this cut": the kept and removed means appear in the panel; a new cut marks them "made for an
+   earlier cut" and computes nothing.
+6. Curate: click a tile, `x`: struck through, stays in view; `k` / `u`; a drag box while curating; restart the server:
+   the verdicts and the draft are still there.
+7. By tomogram: white cards with X/Y and X/Z, leaders follow the box's scroll, the hovered pair is solid; a click in a
+   card selects and stays in this mode; back to Pool: the gallery is where it was. "rows" → worst CTF fit reorders.
+8. Make set… at ≥ 9σ: the plan names 7 projects and no blocker; Make set; a Class 3D or Extract job's I/O dropdown
+   lists "Pool set — … (7 projects)".
+9. `dm_ovary_ribosome` → STA kitchen → Sources → add MyrGFP_Grid2's two ribosome extractions → Make set…: 47
+   acquisitions in two frames listed under the plan, Make set off; "prefer AGG412_20260311_MyrGFP_Grid2 · job024"
+   settles them.
 10. Check that no file in the other projects changed (the maintainer's `find -newer` on a marker file).
+
+S6 (built after R1; every item stays off screen until asked for):
+
+11. "+ filter" → "tomograms (σ by tomogram)": a full-width card, one row per tomogram, best CTF fit at the top, dark cells
+    where picks pass the other filters; hovering a row names it below the strip; a click drops that tomogram (red
+    tint, "removes N" moves, the count line follows), a drag over rows does a band, a double-click brings all back.
+12. "+ filter" → Charts → "pair distances in each tomogram": a histogram to 2 × Ø with Ø marked; "show N pairs" turns
+    the gallery into the pairs of the shaded band side by side, closest first; drag a narrower band; "back".
+13. "+ filter" → a particle set of this project: "in the set | not in it" and how many of its particles matched;
+    "agreement" in the Score group (no rows covered on today's pools: no two sources share a tomogram).
+14. "pictures" → extracted subtomograms: MyrGFP_Grid2's 412 tiles become job044's Warp-export subtomograms (as the
+    Journey shows them, inverted contrast); picks nobody extracted say so; back to tomogram cutouts.
+15. Review: "Draw a sample for this cut": 100 tiles, no numbers; click good / bad, the precision and lost-share line
+    moves; restart the server: the sample and labels are back; a new σ cut marks the sample as drawn for an earlier cut.
+16. Select a tile, space: the loupe (X/Y, X/Z, Y/Z of the reconstruction, the template turned to the matched angles
+    under them); Escape or a click outside closes it. On a ribosome pool the template should look like what it sits in.
 
 ## 11. Build record
 
@@ -719,9 +759,102 @@ headlines read only readouts a driver already wrote (no backfill from the kitche
    `service.averages`, route `/api/kitchen/average`); the strip shows them beside the edge strip. On the 412 pool
    at ≥ 9σ the kept mean is a sharp ring and the removed mean a fainter one (real particles below the cut); 36 s
    cold, cached after.
-2–8. Not built in this session (heat strip, g(r), agreement, set filters and the extracted-stack toggle, review
-   sample, loupe, fate chart).
+2–7. Built after R1 in a second session (2026-10-28 evening); 8 waits for the Ledger. Scripts and checks:
+   `notes/40-stage-snap/s6b/` (scratch homes and the scratch kitchen of R1; nothing under /groups moved, `find
+   -newermt` on MyrGFP_Grid2, Slot6 and copia). Every item is off screen until asked for: a "+ filter" entry, a chart,
+   a select, a mode, a key. One commit for all six: they share `kitchen.js`, `tab.py` and `service.py`.
+
+   - **S6.2 σ by tomogram.** A new filter kind, `tomograms` (`TomogramFilter`, `excluded` frame keys), not a category
+     filter on `frame`: it stores only what is dropped (a full allowed list would be 706 paths), a frame added later
+     passes, and a row without a frame is not dropped by it. Its card is the heat strip: a full-width line of the
+     filter strip, one 3–8 px row per tomogram in a 112 px scroll box, x = the σ filter's 0.25σ bins. A drag drops a
+     band or brings it back, following its first row (as the curation lasso follows the majority).
+   - **S6.3 pairs.** A chart, not a filter ("+ filter" → Charts): raw pair counts of the kept picks within each frame
+     to 2 × Ø (not a normalised g(r): lamellae are slabs, so a shell-volume normalisation would be wrong at large r).
+     The 412 pool, nothing filtered: 52,896 pairs closer than 1,150 Å in 66 ms, none closer than 287 Å (Ø/2, the
+     candidate extraction's spacing), equal to scipy's KD-tree pairs; ribosome job027 alone (26,345 rows): 268,077
+     pairs within 620 Å in 153 ms, computed on release only while the chart is open.
+   - **S6.4 agreement.** In `pool.assemble`, radius Ø/2 of the home species; `pooled_groups` moved from `export.py` to
+     `pool.py` for it. Equal to a brute-force count on a synthetic second source; today's pools have no tomogram
+     shared by two sources, so it covers no row there.
+   - **S6.5 set filters.** `services/kitchen/setmatch.py` (§4.5 item 3), matched in `service.ensure_set_masks` once per
+     table version and set file; `select(..., set_masks=)` on both sides. On the scratch home: a kitchen set of 639
+     rows matched by uid to exactly its rows, a 60-row position set to its 60 rows; 3 drafts agree in node.
+     **Extracted pictures**: a "pictures" select; `services/kitchen/pictures.py` uses the Journey's join
+     (`build_pick_to_mrcs_index`: Subtomo Extraction and Warp Export jobs serving the candidates), tiles of the mean of
+     the visible tilts (`_load_subtomo_mean_frame`) in their own tile directories. MyrGFP_Grid2 job043: 2,886 of 2,891
+     picks joined to job044's Warp export; Slot6: 1,776. Open: the table's `extracted` column (and Make set's level)
+     still joins Subtomo Extraction only (`subtomo_instances_for_ce`), so a Warp-exported pick shows its subtomogram
+     but counts as coordinates at Make set. Seen while checking: the export's projections do not line up with the
+     reconstruction's own (best NCC for a transpose, 16 of 29 picks, weak); the Journey shows the same pair.
+   - **S6.6 review.** A third mode, Review: `reviewSample` (seeded; kept = what the recipe keeps and no hand drop,
+     removed = what it removes and no hand verdict; rows with a cutout), shuffled, blind (no number, glyph or verdict
+     mark), labels by click or g / b / u; precision and the good share removed with Wilson 95 % intervals, the share of
+     good picks the cut loses with the pessimistic and optimistic pairing of them. Kept in `review.json` through the
+     server; a new cut marks the sample as drawn for an earlier one. The labels mark nothing in the pool.
+   - **S6.7 loupe.** Space on a selected tile (gallery or stream): `services/kitchen/loupe.py` in a `KITCHEN_TILE`
+     worker, X/Y, X/Z, Y/Z 30 Å slabs of the tile box, and the TM job's own `template_path` turned to the pick's
+     angles and resampled onto the same grid. The turn was measured, not assumed: of ZYZ, zyz and ZXZ, each as is and
+     transposed, only ZYZ (intrinsic) transposed makes the ribosome template agree with the tomogram at the twelve best
+     picks of MyrGFP_Grid2 job027 (3D NCC 0.18 at every one, against 0.07–0.08 for the others and for random turns);
+     through the loupe's own views on six ribosome picks the pick and template views agree at NCC 0.11–0.32. The
+     412 template is nearly round, so its turn shows little.
+
+   Checks: node parity (`check.mjs` on `make_cases.py`'s 8 drafts with tomograms filters; the old 14 still agree),
+   `pairs_check.mjs`, `sets_check.mjs`, `agreement_check.py`, `pictures_check.py`, `loupe_check.py`, jsdom
+   (`harness.mjs`: 58 checks over S6.2–S6.7; R1's 24 still pass), and `page_sim.py` (the tab in a NiceGUI simulation:
+   props, the draft and review events, set masks pushed, the tiles route with `src=ext`, the loupe routes). Not run in
+   a browser: §10 items 11–16.
 
 **Modern-Python weave-in.** Filters as a pydantic discriminated union (`kind: Literal[...]`); `StrEnum` for member kinds,
 verdicts and sources; frozen dataclasses for per-member column chunks; a `Protocol` for member builders
 (`build(member, view) -> Columns`) dispatched with `match`; numpy arrays end to end, pandas only where stars are read.
+
+### R1 — the maintainer's first look (2026-10-28)
+
+Asked for after the first run on MyrGFP_Grid2 (412 pool of 7 members): speed and caching of every picture, the tabs on
+the registry's title line, a metric on each tile, cutouts at the Journey's scale, one tile everywhere, a filter list that
+can be read and stays open, no grey rebuild on a filter change, Tags / Doctor / Ledger out, the means on request and out
+of the gallery's height, pool mode without tomograms, nothing lost on a mode switch, some accents.
+
+Built:
+
+- Registry: the species mark and the six tabs on the view's title line (`view_head("workbench")["lead"]`), the tab row
+  under it gone; a page built without a title line keeps the old header row.
+- Kitchen header: one row (rail toggle, Pool | By tomogram, S M L, Browse | Curate, sort, group in pool mode, rows by
+  tomogram, metric, Means, Sources, Make set…). Tags, Doctor and Ledger deleted with their code
+  (`services/kitchen/doctor.py`, `service.diagnose / ledger / record_tags`, the tag events and `KitchenPool.tags`; old
+  tag lines in a `verdicts.jsonl` are ignored); the frame choice (D3, D12) moved into Make set, under the plan.
+- Means: computed only on "Compute for this cut" in the Means panel, with the reason in its tooltip; a new cut or
+  verdict marks them stale.
+- `kitchen.js`: pool mode is the gallery alone; one tile builder for the gallery, the cards and the edge strip, on the
+  Journey's `.cb-gallery-tile` (dropped, selected and hover looks shared; the kitchen's copies of them deleted) with the
+  chosen metric in the corner (`.cb-tile-score`); tiles kept by row and moved, never rebuilt; the session tile cache and
+  the batched stream (§6.3); both views stay laid out, each with its own scroll, the hidden one catching up only when
+  shown, anchored on the uid of its first tile (a new sort starts at the top); a hand drop stays in view, struck
+  through; a click selects (no more mode switch from a card); filter cards compact (removes N in the head, the coverage
+  line only below 100 %), rebuilt only when a filter comes or goes; "+ filter" on a solid card that closes on a pick,
+  an outside click or Escape; counts, post-ops and the edge strip share one line; a tab with no size lays out nothing.
+- Pictures: box 1.4 × Ø (`CUTOUT_BOX_FACTOR`, also `_list_cutout_box_px`; the Journey's cached list atlases keep their
+  old box until they are rendered again); 160 px JPEG q85; norm sample 3; four frames per worker call on threads; tile
+  bytes in memory; the table gzip-compressed once per version; slab JPEG copies (§6.4).
+- Accents: tiles round (5 px) with a soft shadow, Journey's too; the gallery on a tinted panel; by-tomogram cards white
+  and round, slabs round.
+
+Why the cutouts looked bigger: the kitchen cut 2 × Ø (1,150 Å for the 412's 575 Å, two balls across), the
+`_list_cutout_box_px` rule; the Journey's 412 tiles on MyrGFP_Grid2 are job044's Warp-export subtomograms, box 256 px at
+3.1 Å = 794 Å (1.38 × Ø), and come from per-particle reconstructions at twice the sampling, so they also look sharper.
+
+Checked (sandbox, home = a scratch copy of MyrGFP_Grid2's params with its real pool, kitchen files in scratch): the tab
+opens the 7-member pool (14,861 rows, 706 frames) in 5 s; the table route sends 0.58 MB gzip for 2.28 MB; a first
+screen of 120 tiles over 47–65 frames streams in 1.0–1.7 s cold with workers warm, the first records after 0.1–0.3 s
+(before this pass: 9.7 s for the screen), and at once warm; a foreign slab 141 + 65 KB JPEG; the means 2.5 s (before: 23–36 s); Make set plans 1,937 rows in 315
+tomograms of 7 projects. Node: the store functions agree with `pool.select` on 14 drafts; the tile reader parses a
+stream cut at any chunk size; the component driven in jsdom (24 checks: a window of tiles, not the pool; tiles kept
+across a filter drag; the menu; verdicts; metric; mode switches keeping the nodes; L resize in place; a hidden tab asking
+for nothing). Not run in a browser: §10.
+
+NFS facts that set the numbers: one cutout reads ~1.3 MB (rows of 260 bytes in 4 KB pages), ~19 ms; eight threads
+or eight processes reach the same ~80 MB/s, so bytes, not parallelism, bound a cold screen: the norm sample (8 → 3
+cutouts per frame) was most of them.
+
