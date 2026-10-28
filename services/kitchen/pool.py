@@ -2,7 +2,7 @@
 
 The table is the members' column chunks (`services/kitchen/table.py`) put end to end, with the
 categorical columns recoded to pool-wide category lists and three identity columns added (member,
-project, source). Verdicts and tags are not in it: they change with every key press and travel
+project, source). Verdicts are not in it: they change with every key press and travel
 apart, so the table's version moves only when a member's files do.
 
 `select` is §4.5 of the kitchen's roadmap; ``ui/kitchen/kitchen.js`` implements the same recipe for
@@ -20,7 +20,7 @@ from typing import Any
 import numpy as np
 
 from services.kitchen.members import TABLE_SCHEMA
-from services.kitchen.models import CategoryFilter, Draft, KitchenPool, RangeFilter, SetFilter
+from services.kitchen.models import CategoryFilter, Draft, KitchenPool, RangeFilter, SetFilter, TomogramFilter
 from services.particles.set_ops import greedy_keep
 from services.particles.tomo_identity import check_transferable
 
@@ -42,6 +42,7 @@ NUM_COLUMNS: dict[str, ColumnInfo] = {
     "margin": ColumnInfo("σ above the tomogram's FP=1 cutoff", "σ", "Score"),
     "lcc": ColumnInfo("LCC", "", "Score"),
     "rank": ColumnInfo("rank in its tomogram", "", "Score"),
+    "agreement": ColumnInfo("other sources with a pick within Ø/2", "", "Score"),
     "depth_a": ColumnInfo("depth from the pick plane", "Å", "Geometry"),
     "face_a": ColumnInfo("distance to a volume face", "Å", "Geometry"),
     "nn_a": ColumnInfo("nearest pick of its source", "Å", "Geometry"),
@@ -109,10 +110,15 @@ def read_chunk(npz: Path) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
 
 
 def assemble(
-    pool: KitchenPool, chunks: list[tuple[str, dict[str, Any], dict[str, np.ndarray]]], *, labels
+    pool: KitchenPool,
+    chunks: list[tuple[str, dict[str, Any], dict[str, np.ndarray]]],
+    *,
+    labels,
+    agree_radius: float | None = None,
 ) -> PoolTable:
     """The pool table from its members' chunks, in member order. `labels(member_key)` gives the
-    member's (project label, member label)."""
+    member's (project label, member label); `agree_radius` (Å, half the species' diameter) is how near
+    another source's pick must be for the `agreement` column."""
     num: dict[str, list[np.ndarray]] = {k: [] for k in NUM_COLUMNS}
     cat_names: dict[str, list[str]] = {k: [] for k in CAT_COLUMNS}
     cat: dict[str, list[np.ndarray]] = {k: [] for k in CAT_COLUMNS}
@@ -177,9 +183,10 @@ def assemble(
         member_meta=metas,
         src_row=_cat_or_empty(src_row, np.int32),
         ext_row=_cat_or_empty(ext_row, np.int32),
-        version=pool_version(pool.species_id, [m["fingerprint"] for _k, m, _a in chunks]),
+        version=pool_version(pool.species_id, [m["fingerprint"] for _k, m, _a in chunks], agree_radius),
     )
     table.conflicts = frame_conflicts(frames)
+    table.num["agreement"] = agreement(table, agree_radius)
     return table
 
 
@@ -187,9 +194,63 @@ def _cat_or_empty(parts: list[np.ndarray], dtype) -> np.ndarray:
     return np.concatenate(parts).astype(dtype, copy=False) if parts else np.zeros(0, dtype=dtype)
 
 
-def pool_version(species_id: str, fingerprints: list[str]) -> str:
-    raw = f"{TABLE_SCHEMA}|{species_id}|" + "|".join(fingerprints)
+def pool_version(species_id: str, fingerprints: list[str], agree_radius: float | None = None) -> str:
+    raw = f"{TABLE_SCHEMA}|{species_id}|{agree_radius}|" + "|".join(fingerprints)
     return hashlib.sha1(raw.encode()).hexdigest()[:12]
+
+
+def pooled_groups(table: PoolTable) -> np.ndarray:
+    """Per frame, the frame its picks are pooled under: itself, or the first frame of its acquisition
+    it can be pooled with (`_poolable`)."""
+    out = np.arange(len(table.frames))
+    by_acq: dict[str, list[int]] = {}
+    for i, fr in enumerate(table.frames):
+        if fr.get("acq") and fr["acq"] != UNKNOWN_ACQ:
+            by_acq.setdefault(fr["acq"], []).append(i)
+    for idx in by_acq.values():
+        heads: list[int] = []
+        for i in idx:
+            head = next((h for h in heads if _poolable(table.frames[h], table.frames[i])), None)
+            if head is None:
+                heads.append(i)
+            else:
+                out[i] = head
+    return out
+
+
+def agreement(table: PoolTable, radius: float | None) -> np.ndarray:
+    """Per row, how many other members have a pick within `radius` Å of it in its tomogram (frames pooled
+    as Make set pools them). NaN where no other member has picks there, so nothing could agree, and
+    everywhere without a radius (the species has no diameter)."""
+    from scipy.spatial import cKDTree
+
+    out = np.full(table.n, np.nan, dtype=np.float32)
+    fcode = table.cat["frame"]
+    if not radius or not table.n or not (fcode >= 0).any():
+        return out
+    member = np.empty(table.n, dtype=np.int32)
+    for i, key in enumerate(table.members):
+        member[table.member_slices[key]] = i
+    group = np.where(fcode >= 0, pooled_groups(table)[np.maximum(fcode, 0)], -1)
+    xyz = np.column_stack([table.num[c] for c in ("x_a", "y_a", "z_a")]).astype(np.float64)
+    order = np.argsort(group, kind="stable")
+    bounds = np.flatnonzero(np.diff(group[order])) + 1
+    for rows in np.split(order, bounds):
+        if group[rows[0]] < 0:
+            continue
+        ms = np.unique(member[rows])
+        if len(ms) < 2:
+            continue
+        count = np.zeros(len(rows), dtype=np.float32)
+        own = {m: member[rows] == m for m in ms}
+        trees = {m: cKDTree(xyz[rows[own[m]]]) for m in ms}
+        for m in ms:
+            for o in ms:
+                if o != m:
+                    d, _i = trees[o].query(xyz[rows[own[m]]], k=1, distance_upper_bound=radius)
+                    count[own[m]] += d <= radius
+        out[rows] = count
+    return out
 
 
 def frame_conflicts(frames: list[dict[str, Any]]) -> dict[str, list[list[int]]]:
@@ -277,7 +338,9 @@ def frame_choice_mask(table: PoolTable, choice: dict[str, str]) -> np.ndarray:
     return ok
 
 
-def filter_mask(table: PoolTable, f) -> tuple[np.ndarray, tuple[int, int], str]:
+def filter_mask(table: PoolTable, f, set_masks: dict[str, np.ndarray] | None = None):
+    """(rows passing `f`, its coverage, a note when it could not be applied as written). `set_masks`: the
+    rows each particle set named by a set filter holds (`services/kitchen/setmatch.py`)."""
     n = table.n
     if isinstance(f, RangeFilter):
         v = table.num.get(f.col)
@@ -299,19 +362,30 @@ def filter_mask(table: PoolTable, f) -> tuple[np.ndarray, tuple[int, int], str]:
         names = table.categories.get(f.col) or []
         allowed = [i for i, name in enumerate(names) if name in set(f.allowed)]
         return np.isin(codes, allowed), (n, n), ""
+    if isinstance(f, TomogramFilter):
+        excluded = set(f.excluded)
+        off = [i for i, key in enumerate(table.categories.get("frame") or []) if key in excluded]
+        return ~np.isin(table.cat["frame"], off), (n, n), ""
     if isinstance(f, SetFilter):
-        return np.ones(n, dtype=bool), (n, n), f"set filter {f.set_id} is not applied yet"
+        m = (set_masks or {}).get(f.set_id)
+        if m is None:
+            return np.ones(n, dtype=bool), (n, n), f"set {f.set_id} is not matched yet: the filter passes everything"
+        return (m.copy() if f.mode == "in" else ~m), (n, n), ""
     return np.ones(n, dtype=bool), (n, n), f"unknown filter {f!r}"
 
 
 def select(
-    table: PoolTable, draft: Draft, verdicts: np.ndarray, frame_choice: dict[str, str] | None = None
+    table: PoolTable,
+    draft: Draft,
+    verdicts: np.ndarray,
+    frame_choice: dict[str, str] | None = None,
+    set_masks: dict[str, np.ndarray] | None = None,
 ) -> Selection:
     """§4.5: filters (a conjunction), the frame choice, then the post-ops per frame on what passes
     (best σ first, NaN last), then the hand verdicts: kept = (passes and not dropped) or kept by hand."""
     masks, coverage, notes = [], [], []
     for f in draft.filters:
-        m, cov, note = filter_mask(table, f)
+        m, cov, note = filter_mask(table, f, set_masks)
         masks.append(m)
         coverage.append(cov)
         if note:

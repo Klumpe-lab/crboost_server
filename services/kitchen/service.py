@@ -9,6 +9,7 @@ work to threads and CPU work to workers; nothing reads a member's files on the l
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
 from dataclasses import dataclass, field
@@ -19,7 +20,7 @@ import numpy as np
 
 from services.kitchen import store
 from services.kitchen.members import member_spec, tomo_facts
-from services.kitchen.models import Draft, KitchenPool, PoolMember, Verdict
+from services.kitchen.models import Draft, KitchenPool, MemberKind, PoolMember, SetFilter, Verdict
 from services.kitchen.pool import PoolTable, Selection, assemble, read_chunk, select, verdict_codes
 from services.kitchen.snapshots import ProjectView, project_view
 from services.kitchen.table import build_member
@@ -45,7 +46,6 @@ class LoadedPool:
     table: PoolTable | None = None
     payload: bytes | None = None
     verdicts: dict[str, str] = field(default_factory=dict)
-    tags: dict[str, int] = field(default_factory=dict)
     members: dict[str, MemberStatus] = field(default_factory=dict)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -54,6 +54,13 @@ class LoadedPool:
     tile_specs: dict[tuple, Any] = field(default_factory=dict)
     chunks: dict[str, tuple[dict, dict]] = field(default_factory=dict)  # member key -> (meta, arrays)
     averages: dict | None = None  # the last kept / removed means (`averages`)
+    # set id -> (what it was matched from, its rows in the table, what the match found): set filters (D9)
+    set_masks: dict[str, tuple[tuple, np.ndarray, dict]] = field(default_factory=dict)
+    # member key -> (what it was joined from, {row of its star: (extraction star, subtomogram, visible tilts)})
+    pictures: dict[str, tuple[tuple, dict]] = field(default_factory=dict)
+    review: dict | None = None  # the review sample and its labels (`store.REVIEW_FILE`)
+    # member key -> (its star's mtime, rot, tilt, psi per row of the star): the loupe's template angles
+    angles: dict[str, tuple] = field(default_factory=dict)
     assembled_from: list[tuple[str, str]] = field(default_factory=list)  # (member, fingerprint) of the table
 
     def bump(self) -> None:
@@ -79,7 +86,8 @@ async def open_pool(home: Path, species_id: str) -> LoadedPool:
         if is_new:
             pool.members = await asyncio.to_thread(_home_members, home_path, species_id)
         lp = _POOLS.setdefault(key, LoadedPool(home_path, species_id, pool))
-        lp.verdicts, lp.tags, _n = await asyncio.to_thread(store.read_verdicts, lp.home, species_id)
+        lp.verdicts, _n = await asyncio.to_thread(store.read_verdicts, lp.home, species_id)
+        lp.review = await asyncio.to_thread(store.read_review, lp.home, species_id)
         if is_new and pool.members:
             await save_pool(lp)
     return lp
@@ -171,12 +179,15 @@ async def rebuild(lp: LoadedPool) -> bool:
                 if lp.pool.member(key) is None:
                     lp.members.pop(key)
                     lp.chunks.pop(key, None)
-            fingerprints = [(k, meta["fingerprint"]) for k, meta, _a in chunks]
+            await _check_pictures(lp)
+            diameter = await asyncio.to_thread(species_diameter, lp)
+            radius = diameter / 2.0 if diameter else None
+            fingerprints = [(k, meta["fingerprint"]) for k, meta, _a in chunks] + [("agree_radius", str(radius))]
             if lp.table is not None and fingerprints == lp.assembled_from:
                 return False
             lp.assembled_from = fingerprints
             labels = {m.key: (m.project_label, m.label or m.ref) for m in members}
-            table = await asyncio.to_thread(assemble, lp.pool, chunks, labels=lambda k: labels[k])
+            table = await asyncio.to_thread(assemble, lp.pool, chunks, labels=lambda k: labels[k], agree_radius=radius)
             changed = lp.table is None or table.version != lp.table.version
             if changed:
                 lp.table, lp.payload = table, None
@@ -253,17 +264,11 @@ async def record_verdicts(lp: LoadedPool, uids: list[str], verdict: Verdict, sou
     lp.bump()
 
 
-async def record_tags(lp: LoadedPool, uids: list[str], tag: int, on: bool) -> None:
-    bit = 1 << int(tag)
-    for u in uids:
-        bits = (lp.tags.get(u, 0) | bit) if on else (lp.tags.get(u, 0) & ~bit)
-        if bits:
-            lp.tags[u] = bits
-        else:
-            lp.tags.pop(u, None)
+async def save_review(lp: LoadedPool, review: dict) -> None:
+    """Keep the review sample and its labels (the browser sends them whole, a few hundred uids)."""
+    lp.review = review
     async with lp.write_lock:
-        events = [store.tag_event(u, tag, on) for u in uids]
-        await asyncio.to_thread(store.append_events, lp.home, lp.species_id, events)
+        await asyncio.to_thread(store.save_review, lp.home, lp.species_id, review)
     lp.bump()
 
 
@@ -271,28 +276,81 @@ def current_selection(lp: LoadedPool) -> Selection | None:
     """The authoritative reading of the draft (cheap: vectorised over the table)."""
     if lp.table is None:
         return None
-    return select(lp.table, lp.pool.draft, verdict_codes(lp.table, lp.verdicts), lp.pool.frame_choice)
+    masks = {sid: hit[1] for sid, hit in lp.set_masks.items() if hit[0][0] == lp.table.version}
+    return select(lp.table, lp.pool.draft, verdict_codes(lp.table, lp.verdicts), lp.pool.frame_choice, masks)
+
+
+# ── Set filters (D9) ─────────────────────────────────────────────────────────────────────────────
+
+
+async def ensure_set_masks(lp: LoadedPool) -> bool:
+    """Match every set the draft names against the table (`setmatch.set_rows`), again only when the table
+    or the set moved. True when a match changed. A set that cannot be read holds nothing, and says why."""
+    from services.kitchen import setmatch
+
+    table = lp.table
+    if table is None:
+        return False
+    home = [m.key for m in lp.pool.members if Path(m.project_path).resolve() == lp.home]
+    moved = False
+    for sid in dict.fromkeys(f.set_id for f in lp.pool.draft.filters if isinstance(f, SetFilter)):
+        stamp = (table.version, await asyncio.to_thread(setmatch.set_stamp, lp.home, sid))
+        hit = lp.set_masks.get(sid)
+        if hit is not None and hit[0] == stamp:
+            continue
+        try:
+            mask, info = await asyncio.to_thread(setmatch.set_rows, table, lp.home, sid, home)
+        except (OSError, ValueError, KeyError) as e:
+            logger.exception("Kitchen %s/%s: set %s could not be matched", lp.home.name, lp.species_id, sid)
+            mask, info = np.zeros(table.n, dtype=bool), {"n_set": 0, "n_matched": 0, "error": f"{e}"}
+        lp.set_masks[sid] = (stamp, mask, info)
+        moved = True
+    if moved:
+        lp.bump()
+    return moved
+
+
+def set_mask_payload(lp: LoadedPool) -> dict[str, dict]:
+    """The matched sets for the browser: per set id its rows (`setmatch.mask_payload`), under the table
+    version they number, and what the match found."""
+    from services.kitchen.setmatch import mask_payload
+
+    if lp.table is None:
+        return {}
+    return {
+        sid: {"v": stamp[0], "bits": mask_payload(mask), **info}
+        for sid, (stamp, mask, info) in lp.set_masks.items()
+        if stamp[0] == lp.table.version
+    }
 
 
 async def selection(lp: LoadedPool) -> Selection | None:
     if lp.table is None:
         return None
+    await ensure_set_masks(lp)
     return await asyncio.to_thread(current_selection, lp)
 
 
 async def payload(lp: LoadedPool) -> bytes | None:
-    """The table's binary payload, encoded once per version."""
-    from services.kitchen.payload import encode
-
+    """The table's binary payload, gzip-compressed once per version: the columns shrink to about a third,
+    and the browser undoes it as it reads (the route sends ``Content-Encoding: gzip``)."""
     if lp.table is None:
         return None
     if lp.payload is None:
         table = lp.table
-        data = await asyncio.to_thread(encode, table)
+        data = await asyncio.to_thread(_encode_gzip, table)
         if lp.table is table:
             lp.payload = data
         return data
     return lp.payload
+
+
+def _encode_gzip(table: PoolTable) -> bytes:
+    import gzip
+
+    from services.kitchen.payload import encode
+
+    return gzip.compress(encode(table), compresslevel=6)
 
 
 def verdict_map(lp: LoadedPool) -> dict[str, int]:
@@ -312,14 +370,31 @@ def per_frame_rows(table: PoolTable, mask: np.ndarray) -> dict[int, int]:
 # ── Pictures ─────────────────────────────────────────────────────────────────────────────────────
 
 
-def box_a(lp: LoadedPool) -> float | None:
-    """The cutout edge in Å: the pool's setting, else twice the home species' diameter; None when the
-    species has no diameter (tiles then fall back to a fixed window, no common scale)."""
-    if lp.pool.box_a:
-        return float(lp.pool.box_a)
+def species_diameter(lp: LoadedPool) -> float | None:
+    """The home species' diameter in Å; None when it has none."""
     sp = project_view(lp.home).state.get_species(lp.species_id)
     d = getattr(sp, "diameter_ang", None) if sp is not None else None
-    return 2.0 * float(d) if d else None
+    return float(d) if d else None
+
+
+def box_a(lp: LoadedPool) -> float | None:
+    """The cutout edge in Å: the pool's setting, else CUTOUT_BOX_FACTOR × the home species' diameter (the
+    scale of an extraction's box, as the Journey's extracted cutouts show it); None when the species has no
+    diameter (tiles then fall back to a fixed window, no common scale)."""
+    from services.visualization.recon_cutouts import CUTOUT_BOX_FACTOR
+
+    if lp.pool.box_a:
+        return float(lp.pool.box_a)
+    d = species_diameter(lp)
+    return CUTOUT_BOX_FACTOR * d if d else None
+
+
+def tile_settings(lp: LoadedPool) -> str:
+    """What every tile of the pool is cut with, as a short hash: the browser keeps its cutouts under it."""
+    from services.kitchen.tiles import TILE_PX, TILE_QUALITY, TILE_SCHEMA
+
+    raw = f"{TILE_SCHEMA}|{box_a(lp)}|{lp.pool.slab_a}|{TILE_PX}|{TILE_QUALITY}"
+    return hashlib.sha1(raw.encode()).hexdigest()[:8]
 
 
 def _frame_sample(table: PoolTable, code: int) -> list[tuple[float, float, float]]:
@@ -332,73 +407,183 @@ def _frame_sample(table: PoolTable, code: int) -> list[tuple[float, float, float
     return [(float(table.num["x_px"][i]), float(table.num["y_px"][i]), float(table.num["z_px"][i])) for i in rows]
 
 
-async def tile_spec(lp: LoadedPool, code: int):
-    """The frame's TileSpec (or why it has no tiles) and its normalisation sample, cached per table."""
+async def tile_specs(lp: LoadedPool, codes: set[int]) -> dict[int, tuple]:
+    """{frame code: (its TileSpec or why it has no tiles, its normalisation sample)}, cached per table and
+    tile settings; the frames not seen yet in one thread call (a stat per volume)."""
     from services.kitchen.tiles import tile_spec as make_spec
 
+    table, settings = lp.table, tile_settings(lp)
+    out = {
+        c: lp.tile_specs[(table.version, c, settings)] for c in codes if (table.version, c, settings) in lp.tile_specs
+    }
+    todo = [c for c in codes if c not in out]
+    if todo:
+        box, slab_a = box_a(lp), lp.pool.slab_a
+
+        def build() -> dict[int, tuple]:
+            return {
+                c: (
+                    make_spec(
+                        table.frames[c], store.tiles_dir(lp.home, lp.species_id, table.frames[c]["key"]), box, slab_a
+                    ),
+                    _frame_sample(table, c),
+                )
+                for c in todo
+            }
+
+        for c, hit in (await asyncio.to_thread(build)).items():
+            out[c] = lp.tile_specs[(table.version, c, settings)] = hit
+    return out
+
+
+async def _member_pictures(lp: LoadedPool, key: str) -> dict:
+    """A member's extracted subtomograms by row of its star (`pictures.member_pictures`), joined once and
+    again only when an extraction serving it moved (`_check_pictures`, on the disk tick)."""
+    from services.kitchen.pictures import member_pictures, pictures_stamp
+
+    hit = lp.pictures.get(key)
+    if hit is not None:
+        return hit[1]
+    member = lp.pool.member(key)
+    if member is None or lp.table is None or key not in lp.table.member_meta:
+        return {}
+    view = await _view(member.project_path)
+    stamp = (_fingerprint(lp, key), await asyncio.to_thread(pictures_stamp, view, member))
+    pics = await asyncio.to_thread(member_pictures, view, member, lp.table.member_meta[key]["star"])
+    lp.pictures[key] = (stamp, pics)
+    return pics
+
+
+def _fingerprint(lp: LoadedPool, key: str) -> str:
+    status = lp.members.get(key)
+    return status.fingerprint if status is not None else ""
+
+
+async def _check_pictures(lp: LoadedPool) -> None:
+    """Forget the pictures of members whose picks or extractions moved, so the next ask joins them again."""
+    from services.kitchen.pictures import pictures_stamp
+
+    for key, (stamp, _pics) in list(lp.pictures.items()):
+        member = lp.pool.member(key)
+        if member is None:
+            lp.pictures.pop(key, None)
+            continue
+        now = (_fingerprint(lp, key), await asyncio.to_thread(pictures_stamp, await _view(member.project_path), member))
+        if now != stamp:
+            lp.pictures.pop(key, None)
+
+
+def _row_members(table: PoolTable) -> np.ndarray:
+    """Per row, its member's index in `table.members`."""
+    out = np.empty(table.n, dtype=np.int32)
+    for i, key in enumerate(table.members):
+        out[table.member_slices[key]] = i
+    return out
+
+
+async def _ext_jobs(lp: LoadedPool, rows: list[tuple[str, int, int]], now: list) -> dict[str, tuple]:
+    """The tile jobs of `rows` (uid, row, frame code) as extracted subtomograms: one directory per frame and
+    extraction; a pick with none gets its reason in `now`."""
+    from services.kitchen.pictures import LIST_NOT_JOINED, NOT_EXTRACTED
+    from services.kitchen.tiles import ext_spec
+    from services.particles.records import file_mtime
+
     table = lp.table
-    key = (table.version, code, lp.pool.box_a, lp.pool.slab_a)
-    hit = lp.tile_specs.get(key)
-    if hit is None:
-        frame = table.frames[code]
-        root = store.tiles_dir(lp.home, lp.species_id, frame["key"])
-        box = await asyncio.to_thread(box_a, lp)
-        spec = await asyncio.to_thread(make_spec, frame, root, box, lp.pool.slab_a)
-        hit = lp.tile_specs[key] = (spec, _frame_sample(table, code))
-    return hit
+    owner = _row_members(table)
+    pics = {}
+    for key in dict.fromkeys(table.members[owner[row]] for _u, row, _c in rows):
+        member = lp.pool.member(key)
+        pics[key] = await _member_pictures(lp, key) if member is not None and member.kind == MemberKind.TM else None
+    found = {}
+    for uid, row, code in rows:
+        key = table.members[owner[row]]
+        if pics[key] is None:
+            now.append((uid, LIST_NOT_JOINED))
+            continue
+        hit = pics[key].get(int(table.src_row[row]))
+        if hit is None:
+            now.append((uid, NOT_EXTRACTED))
+            continue
+        found[uid] = (code, hit)
+    stars = {hit[0] for _c, hit in found.values()}
+    mtimes = await asyncio.to_thread(lambda: {s: file_mtime(s) for s in stars})
+    jobs: dict[str, tuple] = {}
+    for uid, (code, (star, mrcs, visible)) in found.items():
+        if mtimes[star] is None:
+            now.append((uid, "its extraction's particles.star is gone"))
+            continue
+        spec = ext_spec(store.tiles_dir(lp.home, lp.species_id, table.frames[code]["key"]), star, mtimes[star])
+        jobs.setdefault(spec.out_dir, (spec, [], []))[2].append((uid, (mrcs, visible)))
+    return jobs
 
 
-async def tile(lp: LoadedPool, uid: str) -> tuple[Path | None, str]:
-    """The cutout of `uid`: its file, or why there is none. Cut on demand, batched per frame."""
-    from services.kitchen.tiles import BATCHER, cached_tile
-
-    table = lp.table
-    row = table.row_of(uid) if table is not None else None
-    if row is None:
-        return None, "not a pick of this pool"
-    code = int(table.cat["frame"][row])
-    if code < 0 or not np.isfinite(table.num["x_px"][row]):
-        return None, "the pick has no voxel position (its tomogram has no geometry)"
-    spec, sample = await tile_spec(lp, code)
-    if isinstance(spec, str):
-        return None, spec
-    path, reason = await asyncio.to_thread(cached_tile, spec, uid)
-    if path is None and reason is None:
-        xyz = (float(table.num["x_px"][row]), float(table.num["y_px"][row]), float(table.num["z_px"][row]))
-        await asyncio.shield(BATCHER.add(spec, uid, xyz, sample))
-        path, reason = await asyncio.to_thread(cached_tile, spec, uid)
-    return path, reason or ""
-
-
-async def prefetch_tiles(lp: LoadedPool, uids: list[str]) -> None:
-    """Queue the cutouts of `uids` that are not cut yet, so a screen of them is cut in one call per frame."""
-    from services.kitchen.tiles import BATCHER, cached_tile
+async def _tiles(lp: LoadedPool, uids: list[str], source: str = "recon"):
+    """Groups of (uid, JPEG | why there is none) for `uids`: first every tile that needs no cutting, then
+    each worker call's frames as they land, the frames of the first uids first. `source` "ext": each
+    pick's extracted subtomogram instead of a cutout of its reconstruction."""
+    from services.kitchen.tiles import BATCHER, STORE
 
     table = lp.table
     if table is None:
         return
-    todo = []
-    for uid in uids:
+    now: list[tuple[str, bytes | str]] = []
+    rows: list[tuple[str, int, int]] = []
+    for uid in dict.fromkeys(uids):
         row = table.row_of(uid)
-        if row is None or table.cat["frame"][row] < 0 or not np.isfinite(table.num["x_px"][row]):
+        if row is None:
+            now.append((uid, "not a pick of this pool"))
             continue
-        spec, sample = await tile_spec(lp, int(table.cat["frame"][row]))
-        if not isinstance(spec, str):
-            todo.append((spec, sample, uid, row))
-
-    def missing() -> list[int]:
-        return [k for k, (spec, _s, uid, _r) in enumerate(todo) if cached_tile(spec, uid) == (None, None)]
-
-    for k in await asyncio.to_thread(missing):
-        spec, sample, uid, row = todo[k]
+        code = int(table.cat["frame"][row])
+        if code < 0 or not np.isfinite(table.num["x_px"][row]):
+            now.append((uid, "the pick has no voxel position (its tomogram has no geometry)"))
+            continue
+        rows.append((uid, row, code))
+    jobs: dict[str, tuple] = {}  # tile directory -> (spec, sample, [(uid, xyz)]), in the order asked for
+    if source == "ext":
+        jobs = await _ext_jobs(lp, rows, now) if rows else {}
+        rows = []
+    specs = await tile_specs(lp, {code for _u, _r, code in rows}) if rows else {}
+    for uid, row, code in rows:
+        spec, sample = specs[code]
+        if isinstance(spec, str):
+            now.append((uid, spec))
+            continue
         xyz = (float(table.num["x_px"][row]), float(table.num["y_px"][row]), float(table.num["z_px"][row]))
-        BATCHER.add(spec, uid, xyz, sample)
+        jobs.setdefault(spec.out_dir, (spec, sample, []))[2].append((uid, xyz))
+    wanted = [(d, u) for d, (_spec, _sample, items) in jobs.items() for u, _xyz in items]
+    found = await asyncio.to_thread(STORE.lookup, wanted) if wanted else {}
+    now += found.items()
+    if now:
+        yield now
+    batches = []
+    for spec, sample, items in jobs.values():
+        todo = [(u, xyz) for u, xyz in items if u not in found]
+        if todo:
+            batches += BATCHER.request(spec, todo, sample)
+    missing = {u for _d, u in wanted if u not in found}
+    try:
+        for landed in asyncio.as_completed(list({id(b.done): b.done for b in batches}.values())):
+            group = [(u, data) for u, data in (await landed).items() if u in missing]
+            missing.difference_update(u for u, _data in group)
+            if group:
+                yield group
+    finally:
+        BATCHER.release(batches)
+
+
+async def tile_records(lp: LoadedPool, uids: list[str], source: str = "recon"):
+    """The body of a tiles response (`tiles.record`): one chunk per group of `_tiles`, so the browser paints
+    each frame's cutouts as they land."""
+    from services.kitchen.tiles import record
+
+    async for group in _tiles(lp, uids, source):
+        yield b"".join(record(uid, data) for uid, data in group)
 
 
 async def slab(lp: LoadedPool, code: int, which: str) -> tuple[Path | None, str]:
-    """The X/Y or X/Z slab of frame `code`, rendered once for every view that asks."""
+    """The display copy of frame `code`'s X/Y or X/Z slab, rendered once for every view that asks."""
     from services import renders
-    from services.kitchen.slabs import slab_paths
+    from services.kitchen.slabs import slab_views
 
     table = lp.table
     if table is None or not 0 <= code < len(table.frames):
@@ -406,8 +591,8 @@ async def slab(lp: LoadedPool, code: int, which: str) -> tuple[Path | None, str]
     frame = table.frames[code]
     if not frame.get("recon_exists"):
         return None, "its reconstruction is not on disk"
-    xy, xz, render = await asyncio.to_thread(slab_paths, lp.home, lp.species_id, frame)
-    if render is not None:
+    xy, xz, steps = await asyncio.to_thread(slab_views, lp.home, lp.species_id, frame)
+    for render in steps:
         state = await renders.ensure(render)
         if state == renders.RUNNING:
             await renders.wait(render.key)
@@ -415,17 +600,100 @@ async def slab(lp: LoadedPool, code: int, which: str) -> tuple[Path | None, str]
         if state == renders.FAILED:
             return None, renders.error(render.key) or "the slab render failed"
     path = xy if which == "xy" else xz
-    return (path, "") if path.exists() else (None, "the slab was not written")
+    return (path, "") if await asyncio.to_thread(path.exists) else (None, "the slab was not written")
 
 
-# ── Doctor, Make set, Ledger ─────────────────────────────────────────────────────────────────────
+# ── The loupe (S6.7) ─────────────────────────────────────────────────────────────────────────────
+
+ANGLE_COLS = ("rlnAngleRot", "rlnAngleTilt", "rlnAnglePsi")
 
 
-async def diagnose(lp: LoadedPool) -> list:
-    from services.kitchen.doctor import diagnose as run
+def _star_angles(star: str) -> tuple:
+    """(mtime, rot, tilt, psi) of every row of a member's star; the arrays are None without angles."""
+    from services.kitchen.table import _particle_block
 
-    sel = await selection(lp)
-    return await asyncio.to_thread(run, lp, sel)
+    mtime = Path(star).stat().st_mtime_ns
+    df = _particle_block(Path(star))
+    if not all(c in df.columns for c in ANGLE_COLS):
+        return (mtime, None, None, None)
+    return (mtime, *(df[c].to_numpy(dtype=np.float64) for c in ANGLE_COLS))
+
+
+async def _template_for(lp: LoadedPool, member: PoolMember | None, src_row: int) -> tuple[str | None, tuple | None]:
+    """The template its template match matched with, and the pick's matched angles (rot, tilt, psi)."""
+    from services.particles.analytics_store import tm_instance_for_ce
+
+    if member is None or member.kind != MemberKind.TM or lp.table is None:
+        return None, None
+    view = await _view(member.project_path)
+    tm = tm_instance_for_ce(view.state, member.ref)
+    path = str(getattr(view.state.jobs.get(tm), "template_path", "") or "") if tm else ""
+    template = None
+    if path:
+        p = Path(path) if Path(path).is_absolute() else view.path / path
+        template = str(p) if await asyncio.to_thread(p.exists) else None
+    star = lp.table.member_meta[member.key]["star"]
+    hit = lp.angles.get(member.key)
+    mtime = await asyncio.to_thread(lambda: Path(star).stat().st_mtime_ns)
+    if hit is None or hit[0] != mtime:
+        hit = lp.angles[member.key] = await asyncio.to_thread(_star_angles, star)
+    if hit[1] is None or not 0 <= src_row < len(hit[1]):
+        return template, None
+    return template, (float(hit[1][src_row]), float(hit[2][src_row]), float(hit[3][src_row]))
+
+
+async def loupe(lp: LoadedPool, uid: str) -> dict[str, Any]:
+    """The loupe of one pick (`services/kitchen/loupe.py`), rendered once in a worker and kept in the kitchen's
+    ``loupe/``: {"name": its PNG, "template", "why", "angles", "template_name", "box_a", "slab_a"}, or
+    {"error": why there is none}."""
+    import json
+
+    from services.kitchen.loupe import LOUPE_PX, render_loupe
+
+    table = lp.table
+    row = table.row_of(uid) if table is not None else None
+    if row is None:
+        return {"error": "not a pick of this pool"}
+    code = int(table.cat["frame"][row])
+    if code < 0 or not np.isfinite(table.num["x_px"][row]):
+        return {"error": "the pick has no voxel position (its tomogram has no geometry)"}
+    spec, _sample = (await tile_specs(lp, {code}))[code]
+    if isinstance(spec, str):
+        return {"error": spec}
+    frame = table.frames[code]
+    member = lp.pool.member(table.members[int(_row_members(table)[row])])
+    template, angles = await _template_for(lp, member, int(table.src_row[row]))
+    xyz = tuple(float(table.num[c][row]) for c in ("x_px", "y_px", "z_px"))
+    tag = hashlib.sha1(f"{spec.out_dir}|{template}|{angles}|{LOUPE_PX}".encode()).hexdigest()[:8]
+    out = store.kitchen_dir(lp.home, lp.species_id) / "loupe" / f"{uid}-{tag}.png"
+    meta = out.with_suffix(".json")
+    info = {
+        "name": out.name,
+        "angles": angles,
+        "template_name": Path(template).name if template else None,
+        "box_a": round(2 * spec.half_box * frame["apix"]),
+        "slab_a": round((2 * spec.half_slab + 1) * frame["apix"]),
+    }
+    try:
+        done = json.loads(await asyncio.to_thread(meta.read_text))
+    except (OSError, ValueError):  # not rendered yet
+        done = await run_in_worker(
+            WorkKind.KITCHEN_TILE,
+            render_loupe,
+            spec.recon,
+            xyz,
+            spec.half_box,
+            spec.half_slab,
+            float(frame["apix"]),
+            template,
+            angles,
+            str(out),
+        )
+        await asyncio.to_thread(meta.write_text, json.dumps(done))
+    return {**info, **done}
+
+
+# ── Make set ─────────────────────────────────────────────────────────────────────────────────────
 
 
 async def choose_frame(lp: LoadedPool, acq: str, frame_key: str | None) -> None:
@@ -442,6 +710,27 @@ def frame_source(frame: dict) -> str:
     recon = Path(frame.get("recon") or "")
     job = next((p.name for p in recon.parents if p.name.startswith("job") and p.parent.name == "External"), "")
     return f"{frame.get('project', '')} · {job}" if job else str(frame.get("project", ""))
+
+
+def frame_conflicts(lp: LoadedPool) -> list[dict]:
+    """Acquisitions seen in frames that cannot share picks (D3, D12), each with its frames: where each
+    comes from, its rows, and whether it is the one chosen. Blocking: call in a thread."""
+    table = lp.table
+    out = []
+    for acq, groups in (table.conflicts if table else {}).items():
+        chosen = lp.pool.frame_choice.get(acq)
+        items = [
+            {
+                "acq": acq,
+                "frame": table.frames[g[0]]["key"],
+                "source": frame_source(table.frames[g[0]]),
+                "rows": int(np.isin(table.cat["frame"], g).sum()),
+                "chosen": chosen == table.frames[g[0]]["key"],
+            }
+            for g in groups
+        ]
+        out.append({"acq": acq, "tomo": table.frames[groups[0][0]]["tomo"], "chosen": bool(chosen), "items": items})
+    return out
 
 
 async def prefer_source(lp: LoadedPool, source: str) -> int:
@@ -498,6 +787,10 @@ def describe_draft(draft: dict) -> str:
         elif f.get("kind") == "category":
             info = CAT_COLUMNS.get(f["col"])
             parts.append(f"{info.label if info else f['col']}: {len(f.get('allowed') or [])} chosen")
+        elif f.get("kind") == "tomograms" and f.get("excluded"):
+            parts.append(f"without {len(f['excluded'])} tomogram(s)")
+        elif f.get("kind") == "set":
+            parts.append(f"{'in' if f.get('mode', 'in') == 'in' else 'not in'} set {f.get('set_id')}")
     post = draft.get("post") or {}
     if post.get("nn_a"):
         parts.append(f"no two closer than {post['nn_a']:g} Å")
@@ -506,82 +799,15 @@ def describe_draft(draft: dict) -> str:
     return " · ".join(parts) or "every row"
 
 
-def _headline(project: Path, state, iid: str) -> str:
-    """A finished reader's result where its driver wrote a readout: class sizes, or the FSC resolution."""
-    import json
-
-    from services.models_base import JobStatus
-    from services.particles.analytics_store import job_dir_of
-    from services.particles.class_readout import CLASS3D_KIND, RECONSTRUCT_KIND, sidecar_paths
-
-    jm = state.jobs.get(iid)
-    status = getattr(getattr(jm, "execution_status", None), "value", "") if jm else ""
-    if jm is None or jm.execution_status != JobStatus.SUCCEEDED:
-        return status
-    jd = job_dir_of(state, project, iid)
-    for kind in (CLASS3D_KIND, RECONSTRUCT_KIND):
-        path = sidecar_paths(jd, kind)[0] if jd else None
-        if path is None or not path.exists():
-            continue
-        try:
-            data = json.loads(path.read_text()).get("data") or {}
-        except (OSError, ValueError):  # a readout being rewritten: the status alone says enough
-            return status
-        if kind == CLASS3D_KIND and data.get("classes"):
-            sizes = sorted((c.get("n", 0) for c in data["classes"]), reverse=True)
-            total = max(1, sum(sizes))
-            return "classes " + " / ".join(f"{100 * n / total:.0f}%" for n in sizes)
-        res = ((data.get("fsc") or {}).get("resolution") or {}).get("0.143")
-        if res:
-            return f"FSC 0.143: {res:.1f} Å"
-    return status
-
-
-def ledger(lp: LoadedPool) -> list[dict]:
-    """The sets made from this pool, newest first, with their readers. Blocking: call in a thread."""
-    from services.particles.particle_sets import SetOp, jobs_reading_set, list_sets
-
-    state = project_view(lp.home).state
-    out = []
-    for ps in reversed(list_sets(lp.home)):
-        if ps.recipe.op != SetOp.POOL or ps.species_id != lp.species_id:
-            continue
-        readers = [(iid, _headline(lp.home, state, iid)) for iid in jobs_reading_set(state, ps.id)]
-        out.append(
-            {
-                "id": ps.id,
-                "name": ps.name,
-                "created_at": ps.created_at,
-                "level": ps.level.value,
-                "n": ps.n_particles,
-                "n_tomograms": ps.n_tomograms,
-                "per_project": ps.details.get("per_project") or {},
-                "recipe": describe_draft(ps.recipe.params.get("draft") or {}),
-                "readers": readers,
-                "stale": [p.label for p in ps.stale_parents()],
-                "uids": str(Path(ps.particles_star).with_name(ps.details.get("uids_file") or "kitchen_uids.txt")),
-            }
-        )
-    return out
-
-
-def set_uids(path: str) -> list[str]:
-    try:
-        return [u for u in Path(path).read_text().split() if u]
-    except FileNotFoundError:
-        return []
-
-
-# ── Kept vs removed averages (S6) ────────────────────────────────────────────────────────────────
+# ── Kept vs removed means (S6) ───────────────────────────────────────────────────────────────────
 
 AVERAGE_SAMPLE = 200
 
 
 async def averages(lp: LoadedPool) -> dict | None:
     """Unaligned means of up to AVERAGE_SAMPLE kept and AVERAGE_SAMPLE removed cutouts (a fixed random
-    sample, so the same recipe gives the same pictures), each cut on demand. None without a table."""
-    import hashlib
-
+    sample, so the same recipe gives the same pictures), each cut on demand. Made only when the user asks:
+    a cold pair cuts up to 2 × AVERAGE_SAMPLE cutouts. None without a table."""
     from services.kitchen.tiles import mean_image
 
     sel = await selection(lp)
@@ -599,15 +825,14 @@ async def averages(lp: LoadedPool) -> dict | None:
         if not uids:
             out[which] = {"n": 0, "file": ""}
             continue
-        digest = hashlib.sha1(("|".join(uids) + f"|{lp.pool.box_a}|{lp.pool.slab_a}").encode()).hexdigest()[:12]
+        digest = hashlib.sha1(("|".join(uids) + f"|{tile_settings(lp)}").encode()).hexdigest()[:12]
         target = store.kitchen_dir(lp.home, lp.species_id) / "averages" / f"{which}-{digest}.png"
         if not await asyncio.to_thread(target.exists):
-            tiles = await asyncio.gather(*(tile(lp, u) for u in uids))
-            paths = [str(p) for p, _r in tiles if p is not None]
-            if not paths:
+            blobs = [data async for group in _tiles(lp, uids) for _u, data in group if isinstance(data, bytes)]
+            if not blobs:
                 out[which] = {"n": 0, "file": ""}
                 continue
-            n = await run_in_worker(WorkKind.KITCHEN_TILE, mean_image, paths, str(target))
+            n = await run_in_worker(WorkKind.KITCHEN_TILE, mean_image, blobs, str(target))
         else:
             n = len(uids)
         out[which] = {"n": int(n), "of": int(mask.sum()), "file": str(target), "digest": digest}

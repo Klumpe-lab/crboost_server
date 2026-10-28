@@ -22,7 +22,7 @@ from typing import Any
 import numpy as np
 
 from services.kitchen.models import SOURCE_PRIORITY, MemberKind, PickSource
-from services.kitchen.pool import UNKNOWN_ACQ, PoolTable, Selection, _poolable
+from services.kitchen.pool import PoolTable, Selection, pooled_groups
 from services.particles.set_ops import greedy_keep
 
 logger = logging.getLogger(__name__)
@@ -31,25 +31,6 @@ UIDS_FILE = "kitchen_uids.txt"
 COORDINATES, EXTRACTED, EXTRACTED_ONLY = "coordinates", "extracted", "extracted_only"
 # The optics columns extracted particles of one set must agree on.
 OPTICS_COLS = ("rlnImagePixelSize", "rlnImageSize", "rlnTomoSubtomogramBinning")
-
-
-def pooled_groups(table: PoolTable) -> np.ndarray:
-    """Per frame, the frame its picks are pooled under: itself, or the first frame of its acquisition
-    it can be pooled with (`_poolable`)."""
-    out = np.arange(len(table.frames))
-    by_acq: dict[str, list[int]] = {}
-    for i, fr in enumerate(table.frames):
-        if fr.get("acq") and fr["acq"] != UNKNOWN_ACQ:
-            by_acq.setdefault(fr["acq"], []).append(i)
-    for idx in by_acq.values():
-        heads: list[int] = []
-        for i in idx:
-            head = next((h for h in heads if _poolable(table.frames[h], table.frames[i])), None)
-            if head is None:
-                heads.append(i)
-            else:
-                out[i] = head
-    return out
 
 
 def dedup(table: PoolTable, rows: np.ndarray, radius: float | None) -> np.ndarray:
@@ -96,7 +77,7 @@ def plan(lp, sel: Selection, *, name: str, level: str | None, diameter_a: float 
             tomo = table.frames[hit[0][0]]["tomo"]
             blockers.append(
                 f"{tomo}: one acquisition in {len(hit)} frames that cannot be pooled (another alignment, geometry "
-                "or hand). Choose one in the Doctor."
+                "or hand). Choose its frame below."
             )
     unstated = sorted(
         {table.frames[f]["tomo"] for f in set(fcode.tolist()) if f >= 0 and table.frames[f].get("hand") is None}

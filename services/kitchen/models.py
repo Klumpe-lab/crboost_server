@@ -1,5 +1,5 @@
-"""The STA kitchen's records: one species' pool of picks in a home project, what feeds it, the recipe
-being drafted on it, and the tags its particles can carry.
+"""The STA kitchen's records: one species' pool of picks in a home project, what feeds it, and the
+recipe being drafted on it.
 
 A pool lives at ``<home>/Analytics/kitchen/<species>/pool.json`` (`services/kitchen/store.py`). Its
 members are read, never written: a member in another project is read through a snapshot
@@ -17,8 +17,6 @@ from pydantic import BaseModel, Field
 from services.particles.records import current_user, now_iso
 
 POOL_SCHEMA = 1
-# Tags are bits of one int32 column.
-MAX_TAGS = 32
 # A cutout's Z slab, in Å: 5 px at 6.2 Å/px, the commonest reconstruction pixel size.
 DEFAULT_SLAB_A = 30.0
 
@@ -88,7 +86,15 @@ class SetFilter(BaseModel):
     mode: Literal["in", "out"] = "in"
 
 
-Filter = Annotated[RangeFilter | CategoryFilter | SetFilter, Field(discriminator="kind")]
+class TomogramFilter(BaseModel):
+    """Every pick on one of the `excluded` reconstructions (frame keys) fails; a frame added to the pool
+    later passes. The σ-by-tomogram strip draws and edits it."""
+
+    kind: Literal["tomograms"] = "tomograms"
+    excluded: list[str] = Field(default_factory=list)
+
+
+Filter = Annotated[RangeFilter | CategoryFilter | SetFilter | TomogramFilter, Field(discriminator="kind")]
 
 
 class PostOps(BaseModel):
@@ -103,19 +109,12 @@ class Draft(BaseModel):
     post: PostOps = Field(default_factory=PostOps)
 
 
-class Tag(BaseModel):
-    id: int  # its bit, 0..31
-    name: str
-    key: int | None = None  # 1..9 on the keyboard
-
-
 class KitchenPool(BaseModel):
     schema_version: int = POOL_SCHEMA
     species_id: str
     members: list[PoolMember] = Field(default_factory=list)
     draft: Draft = Field(default_factory=Draft)
-    tags: list[Tag] = Field(default_factory=list)
-    box_a: float | None = None  # cutout edge in Å; None: twice the species diameter
+    box_a: float | None = None  # cutout edge in Å; None: CUTOUT_BOX_FACTOR × the species diameter
     slab_a: float = DEFAULT_SLAB_A
     # The user's choice of frame for an acquisition seen in frames that cannot be pooled
     # (acquisition label -> frame group); Make set waits for one per such acquisition.
