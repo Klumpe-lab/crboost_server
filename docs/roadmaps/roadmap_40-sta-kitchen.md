@@ -8,8 +8,9 @@ expected to be deleted once the kitchen covers them (§9); nothing is removed by
 the same day led to R1 (§11): Tags, Doctor and Ledger taken out (§5.7, §5.8 move to S7), the means made on request, pool
 mode the gallery alone, cutouts at 1.4 × Ø fetched a screen at a time. S6.2–S6.7 built the same evening in a second
 session (σ-by-tomogram strip, pairs chart, agreement column, set filters, extracted pictures, review sample, loupe);
-S6.8 waits for the Ledger. Nothing of S6 is on screen until asked for. The §10 pass is owed (now with items 11–16).
-Decisions in §7: D1–D11 accepted by the handoff of 2026-10-28; D12 (from the S0 facts) waits for a nod.
+S6.8 waits for the Ledger. Nothing of S6 is on screen until asked for. A speed pass the same night (§11) vectorised
+the slow joins, the NN thinning and the Make set merge (60 s → under 1 s), same outputs. The §10 pass is owed (now
+with items 11–16). Decisions in §7: D1–D11 accepted by the handoff of 2026-10-28; D12 (from the S0 facts) waits for a nod.
 
 **In one line.** A new tab of the Particles registry where one species' picks from every source (template matching,
 hand-picked, imported, later other pickers), on any reconstruction of any tomogram of any project, sit in one pool;
@@ -858,3 +859,35 @@ NFS facts that set the numbers: one cutout reads ~1.3 MB (rows of 260 bytes in 4
 or eight processes reach the same ~80 MB/s, so bytes, not parallelism, bound a cold screen: the norm sample (8 → 3
 cutouts per frame) was most of them.
 
+
+### Speed pass (2026-10-28, third session)
+
+Asked for as "speed tips: vectorize and hone in". Profiled on the scratch pools (MyrGFP_Grid2 home: the 412 pool of
+7 members, 14,861 rows; the ribosome pool of job027 + job028, 59,628 rows); every change checked old against new on the
+same data: the same selections, joins, columns and set files.
+
+| Path | Before | After | What changed |
+|---|---|---|---|
+| Open the 412 pool, all tables cached | 5.2–6.6 s | 0.6–1.0 s | the member fingerprint stats `registry/index.json` instead of loading 7 registries (7.3 s); the registry facts are read only for a build |
+| Build a ribosome member (26–33k rows) | 3.1–3.7 s | 0.8–1.4 s | nearest-pick column by KD-tree, not all pairs |
+| Extracted pictures join, 7 members | 2.0–4.6 s | 0.8 s | `build_pick_to_mrcs_index` on arrays (no `iterrows`), one parse per visible-frames string; the Journey's candidate preview uses the same function |
+| Release with NN thinning, ribosome, 300 Å | 0.6–0.8 s | 0.08 s | keep-first thinning settled in rounds over KD-tree pairs, every frame in one call (groups as a fourth axis); also Make set's dedup |
+| 194 drafts + 28 plans, both pools | 26.0 s | 5.5 s | the above, and the frame choice as one lookup per frame |
+| Make set, 412 at ≥ 9σ (2,669 picks, 436 tomograms, 7 projects) | 16.1 s warm, ~60 s cold | 0.7 s | the merge reads each star once (it read the member's stars once per tomogram), handedness only when two sources share an acquisition, coverage and provenance in one pass; no registry in the worker |
+| Verdict batch | reads the whole log | appends only | a budget counts appends; the log is read (and compacted) once per ~2,000 events: 12,000 batches, 14 reads |
+| Table payload, ribosome | 370 ms | 88 ms | gzip level 1 (2.21 MB against 2.08 MB) |
+
+Behaviour that moved, on purpose:
+
+- `subtomo_link._coord_key` rounds 10 × the Å value half to even (it rounded to 0.1 Å, then truncated ten times that):
+  the rounding the kitchen's extraction join and seeds already used. Every join uses it on both sides; on the 7 members
+  the 14,810 joined pictures are the same.
+- Make set equates tomograms across projects by the table's acquisition facts (`acquisition_lookup`, new beside
+  `registry_lookup` in `coord_merge`), the registry's as of the member's last build, instead of loading registries in
+  the worker. On a synthetic merge with shared acquisitions (pooled, renamed, kept apart) both lookups give the same plan
+  and files.
+
+Checks (`notes/40-stage-snap/speed/`): an old tree of the HEAD files beside the new one (`make_oldtree.py`),
+`check_equiv.py` + `compare_equiv.py` (pictures, selections and plans, member arrays, Make set files), `merge_synth.py`,
+`unit_checks.py` (400 random thinning cases with groups, duplicates and pairs at exactly the radius; the verdict log
+read back equals memory), node parity (`s6b/check.mjs`, 8 cases) and `s6b/page_sim.py` (14 ok). Not run in a browser.
