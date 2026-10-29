@@ -1,6 +1,7 @@
 # docs
 
 - **`docs/*.md`** — reference documentation: how the system works now, and how-tos.
+  - [installation.md](installation.md) — installing, configuring and updating a cluster install
   - [architecture.md](architecture.md) — request flow, services, orchestration
   - [protocols.md](protocols.md) — writing a protocol bundle
   - [particle-data-flow.md](particle-data-flow.md) — template matching → picks → extraction → aggregation

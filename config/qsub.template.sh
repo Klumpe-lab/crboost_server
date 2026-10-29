@@ -17,7 +17,7 @@
 # ------------ SLURM HEADER  -----------
 # CLUSTER-SPECIFIC: make the compute node's environment match the headnode's, so that the Python
 # running the server (venv, conda or uv) starts and finds its packages, and `apptainer` is on PATH.
-# A venv built with uv on its own Python (README quick start) needs nothing here: only `apptainer`
+# A venv built with uv on its own Python (docs/installation.md) needs nothing here: only `apptainer`
 # has to be on PATH. A venv built on a cluster module's Python needs that module loaded. Ours used
 # to be (an Lmod cluster):
 #
@@ -29,8 +29,6 @@
 #   module load gcccore/13.2.0
 #   module load arrow/16.1.0-gfbf-2023b
 #
-which python3
-python3 --version
 # ------------ ------------  -----------
 
 echo "--- SLURM JOB BEGAN ---"
