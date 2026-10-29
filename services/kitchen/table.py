@@ -215,14 +215,11 @@ def _coord_keys(df: pd.DataFrame) -> pd.DataFrame:
 
 def _nn_within(xyz: np.ndarray) -> np.ndarray:
     """Each pick's distance to its nearest other pick (inf when alone)."""
-    n = len(xyz)
-    out = np.full(n, np.inf)
-    for i in range(0, n, 1024):
-        d = xyz[i : i + 1024, None, :] - xyz[None, :, :]
-        dist = np.sqrt((d * d).sum(axis=2))
-        dist[np.arange(dist.shape[0]), np.arange(i, i + dist.shape[0])] = np.inf
-        out[i : i + 1024] = dist.min(axis=1)
-    return out
+    from scipy.spatial import cKDTree
+
+    if len(xyz) < 2:
+        return np.full(len(xyz), np.inf)
+    return cKDTree(xyz).query(xyz, k=2)[0][:, 1]
 
 
 def build_member(spec: dict[str, Any], out_npz: str) -> dict[str, Any]:

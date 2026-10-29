@@ -141,16 +141,16 @@ def tomo_facts(view: ProjectView) -> dict[str, dict[str, Any]]:
     return out
 
 
-def member_spec(view: ProjectView, member: PoolMember, facts: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """Everything a worker needs to build `member`'s columns, as plain data. Raises when the member's
-    source is gone (job removed, list deleted)."""
+def member_spec(view: ProjectView, member: PoolMember) -> dict[str, Any]:
+    """Everything a worker needs to build `member`'s columns, as plain data, but the tomograms' facts
+    (`tomo_facts`, which need the registry: the caller adds them as "facts" when the member is built).
+    Raises when the member's source is gone (job removed, list deleted)."""
     state, path = view.state, view.path
     spec: dict[str, Any] = {
         "key": member.key,
         "kind": member.kind.value,
         "project": str(path),
         "tomos": member.tomos,
-        "facts": facts,
         "subtomo": [],
     }
     if member.kind == MemberKind.TM:
@@ -214,7 +214,7 @@ def member_fingerprint(spec: dict[str, Any], view: ProjectView) -> str:
         paths += [Path(spec["tm_dir"]) / "tmResults", Path(spec["tm_dir"]) / "analytics" / "tm_tomo"]
     paths += [s["star"] for s in spec["subtomo"]]
     tomos = ",".join(spec["tomos"]) if spec.get("tomos") else "*"
-    index = view.registry.index_path
+    index = view.path / "registry" / "index.json"  # stat'ed, never loaded: a registry load costs seconds
     registry = index.stat().st_mtime_ns if index.exists() else "-"
     raw = f"{TABLE_SCHEMA}|{tomos}|{fingerprint_of(paths)}|{registry}"
     return hashlib.sha1(raw.encode()).hexdigest()[:16]

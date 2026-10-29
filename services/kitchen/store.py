@@ -133,13 +133,19 @@ def read_verdicts(home: Path, species_id: str) -> tuple[dict[str, str], int]:
     return verdicts, len(lines)
 
 
-def compact_verdicts(home: Path, species_id: str) -> bool:
-    """Rewrite the log as one event per live verdict once it has grown COMPACT_FACTOR times longer than
-    that. True when it was rewritten. Blocking."""
+def compaction_budget(n_lines: int, live: int) -> int:
+    """Events that can be appended to a log of `n_lines` lines holding `live` verdicts before it is worth
+    compacting: until it is COMPACT_FACTOR times longer than its live verdicts and COMPACT_MIN_LINES long."""
+    return max(COMPACT_MIN_LINES, COMPACT_FACTOR * max(live, 1)) - n_lines
+
+
+def compact_verdicts(home: Path, species_id: str) -> int:
+    """Rewrite the log as one event per live verdict when its budget is spent (`compaction_budget`, counted
+    on the file, so lines another writer appended count too). Returns the budget left after. Blocking."""
     verdicts, n_lines = read_verdicts(home, species_id)
     live = len(verdicts)
-    if n_lines < COMPACT_MIN_LINES or n_lines < COMPACT_FACTOR * max(live, 1):
-        return False
+    if compaction_budget(n_lines, live) > 0:
+        return compaction_budget(n_lines, live)
     path = kitchen_dir(home, species_id) / VERDICTS_FILE
     tmp = path.with_name(f".{path.name}.compact")
     stamp = {"at": now_iso(), "user": current_user(), "source": "compaction"}
@@ -148,4 +154,4 @@ def compact_verdicts(home: Path, species_id: str) -> bool:
             f.write(json.dumps({**stamp, "uid": uid, "op": "verdict", "value": v}) + "\n")
     tmp.replace(path)
     logger.info("Compacted %s: %d lines → %d", path, n_lines, live)
-    return True
+    return compaction_budget(live, live)
