@@ -70,6 +70,9 @@ class OutputCandidate:
     # input that `needs_extracted` never reads it.
     coordinates_only: bool = False
 
+    # A particle set whose rows carry RELION's subtomogram angles, which Warp export refuses.
+    subtomo_angles: bool = False
+
     @property
     def source_key(self) -> str:
         """Key format for source_overrides: 'jobtype:instance:<instance_id>' for a job, which holds
@@ -281,6 +284,20 @@ def auto_exclusion(consumer_type: JobType, consumer_species_id: str | None, cand
         return "not upstream"
     if consumer_species_id and candidate.species_id and candidate.species_id != consumer_species_id:
         return "other species"
+    return None
+
+
+def unreadable_reason(consumer_type: JobType, slot: InputSlot, candidate: OutputCandidate) -> str | None:
+    """Why input `slot` of a `consumer_type` job cannot read `candidate`, or None when it can. The I/O menu
+    greys such a source and says this: positions without particle images for an input that needs them, and a
+    particle set carrying RELION's subtomogram angles for Warp export, whose driver refuses them."""
+    if slot.needs_extracted and candidate.coordinates_only:
+        return "positions only, no particle images: extract them first, then read that job's particles"
+    if consumer_type == JobType.WARP_EXPORT and candidate.subtomo_angles:
+        return (
+            "carries RELION's subtomogram angles (an extraction's rows), which Warp export refuses: export the "
+            "coordinates it was made from"
+        )
     return None
 
 
@@ -1307,6 +1324,8 @@ class PathResolutionService:
 
     def _particle_set_candidate(self, set_id: str, *, rank: int, pset=None) -> OutputCandidate | None:
         from services.particles.particle_sets import SetLevel, get_set
+        from services.particles.star_columns import star_labels
+        from services.particles.warp_export import SUBTOMO_ANGLE_COLS
 
         if pset is None:
             if self.state.project_path is None:
@@ -1314,6 +1333,8 @@ class PathResolutionService:
             pset = get_set(Path(self.state.project_path), set_id)
         if pset is None or not Path(pset.optimisation_set).exists():
             return None
+        # Read from its header (kept per mtime): extracted rows may carry an extraction's subtomogram angles.
+        angles = pset.level == SetLevel.EXTRACTED and bool(set(SUBTOMO_ANGLE_COLS) & star_labels(pset.particles_star))
         return OutputCandidate(
             produces=JobFileType.OPTIMISATION_SET_STAR,
             producer_job_type=JobType.MERGED_SOURCES,
@@ -1327,6 +1348,7 @@ class PathResolutionService:
             label=_particle_set_label(pset),
             auto_eligible=False,
             coordinates_only=pset.level == SetLevel.COORDINATES,
+            subtomo_angles=angles,
         )
 
     def _get_instance_path(self, instance_id: str, job_model: AbstractJobParams) -> str:
@@ -1822,12 +1844,11 @@ def get_context_paths(job_type: JobType, job_model: AbstractJobParams, job_dir: 
 
 
 def _particle_set_label(pset) -> str:
-    """How a particle set reads in a job's I/O dropdown; a set made in the STA kitchen says so, with how
-    many projects it spans."""
-    from services.particles.particle_sets import SetOp
+    """How a particle set reads in a job's I/O dropdown; a set made in the STA kitchen names its subsets, its
+    kitchen and how many projects it spans (`set_lineage`)."""
+    from services.particles.particle_sets import SetOp, set_lineage
 
+    lineage = set_lineage(pset)
     if pset.recipe.op == SetOp.POOL:
-        n_projects = int(pset.details.get("n_projects") or 1)
-        span = f" ({n_projects} projects)" if n_projects > 1 else ""
-        return f"Pool set — {pset.name}{span} · {pset.n_particles:,} {pset.level.value}"
+        return f"Pool set — {lineage}" if lineage.startswith(f"{pset.name} (") else f"Pool set — {pset.name}: {lineage}"
     return f"Particle set — {pset.name} · {pset.n_particles:,} {pset.level.value}"
