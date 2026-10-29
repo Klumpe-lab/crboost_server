@@ -16,7 +16,7 @@ the cutouts (D13–D18); D13, D14 and D16 accepted the next day (§12.8), and th
 prototype (S8, §13) comes before any downstream job. S8 built the same day (§13.8, with the maintainer's asks
 of that turn: larger filter cards, dot controls and tiled cards in By tomogram, no slab flash on a filter drag);
 checked in the sandbox, not in a browser. The maintainer's look the same evening: "looking pretty good". Next: §14,
-subsets as inputs of the particle jobs.
+subsets as inputs of the particle jobs; its facts were read the same night (§14.4), D19–D24 wait for a nod.
 
 **In one line.** A new tab of the Particles registry where one species' picks from every source (template matching,
 hand-picked, imported, later other pickers), on any reconstruction of any tomogram of any project, sit in one pool;
@@ -1234,9 +1234,9 @@ The gaps:
 
 - **Make set per subset.** A Class 3D result arrives as a group of 3–4 subsets; making a set of each is the scope,
   the dialog, the name, again for every class.
-- **Level.** A coordinates set (picks, no images) is offered to Class 3D / Refine 3D / Reconstruct, which need
-  extracted particles; only the label's last word says it. A kitchen set from template-match candidates is
-  coordinates unless every kept row was extracted with agreeing optics.
+- **Level.** A coordinates set (picks, no images) is offered to Class 3D and Refine 3D, which need extracted
+  particles (Reconstruct particle does not: §14.4); only the label's last word says it. A kitchen set from
+  template-match candidates is coordinates unless every kept row was extracted with agreeing optics.
 - **The extraction hop.** A coordinates set has to go through Subtomo extraction or Warp export first, in the home
   project, on tomograms that may live in other projects. Whether those drivers can extract from another project's
   tilt series (Warp's per-tilt-series XML and settings, frame series directories, the reconstruction's own pixel
@@ -1248,33 +1248,128 @@ The gaps:
   differ.
 - **Checks before the job.** D16's job-start preflight, D17's half-sets: not built.
 
-### 14.2 Proposals (D19–D23, waiting for a nod)
+### 14.2 Proposals (D19–D24, waiting for a nod; D20 and D21 rewritten and D24 added after the facts of §14.4)
 
 - **D19 Make set from the rail.** A subset's right-click gets "Make set…" (the Make set dialog with the scope set to
   that subset and its name prefilled; the filters and verdicts as they are, said so in the dialog), and a group's
   "Make a set of each subset" (one plan per subset, one dialog listing them, made in turn). The selection bar gets
   "Make set of the selection" (a frozen subset first, then its set).
-- **D20 Offer sets by level.** A job slot that needs images (Class 3D, Refine 3D, Reconstruct particle) lists only
-  extracted sets; extraction and Warp export list coordinates sets (and extracted ones, to re-extract). A coordinates
-  set shown where images are needed says "extract first" and offers to add the extraction job for it, rather than
-  being chosen and failing on the cluster.
-- **D21 The extraction keeps the lineage.** An extraction (or Warp export) whose input is a particle set publishes
-  its output as an extracted particle set with the input set as parent and the uids carried over row for row
-  (the extraction keeps row order, to verify; otherwise a join on tomogram + position as `subtomo_link` does). Then
-  Class 3D reads "class 1 · extracted" and its results can come back to the cutouts (D18).
+- **D20 Offer sets by what the job can read.** Class 3D and Refine 3D (`relion_refine` needs particle images) list
+  extracted sets; Reconstruct particle and Subtomo extraction take both levels (Reconstruct cuts from the tilt series
+  itself, §14.4); Warp export takes coordinates sets, and extracted ones only without RELION's subtomogram angles,
+  which its driver refuses. A set a slot cannot read stays in the menu, greyed, with the reason, and offers
+  "+ Subtomo extraction" and "+ Warp export": the job is added reading the set, and the slot reads its output.
+  Nothing is chosen only to fail on the cluster.
+- **D21 The pick's uid travels in the files.** Every set's particles.star carries the pool uid as a column
+  (`cbPickUid`). RELION keeps columns it does not know and its extraction copies whole rows; Warp copies them row for
+  row (§14.4). So the extraction's rows, and Class 3D's and Refine 3D's data stars after it, name their picks (seen
+  once per tool on the first real run; where a star lacks the column, the position join stands in). The kitchen
+  joins any job output whose rows carry its uids as those picks' extraction, Warp export included: a set made after
+  an extraction can be extracted-level, and Class 3D results come back by uid rather than by position, so re-centring
+  does not break the join (D18's open point). Changed from the first draft: rows do not keep their order through
+  extraction (§14.4), and no second set is published per extraction: the job keeps the set it read
+  (`submitted_inputs`), which D22 shows.
 - **D22 Lineage on screen.** The dropdown label, the job page's input line and the roster's hover card name the set,
   its subset or group and the kitchen it came from: "class 1 (412 · classes) · 1,102 extracted · 5 projects". The
   rail marks a subset that has sets ("→ 2 sets", the newest first) and says when the subset changed since ("37
-  changed since set s014").
+  changed since set s014"). Also from §14.4: Make set names the tomograms it renames (today only the set's
+  `merge_summary.json` does), and a set counts its tomograms per project (today two projects' `Position_1` count as
+  one).
 - **D23 Checks at job start** are D16's table, run when a job with a set input is queued (one reconstruction and
   one source per acquisition, hand equal set-wide, one pixel size reachable, optics groups, files readable), and
-  D17's half-sets written at Make set.
+  D17's half-sets written at Make set (from a hash of the uid, so a particle keeps its half in every set). Added from
+  §14.4: the level the job needs (D20), angles where Reconstruct particle or Warp export read coordinates, every
+  tomogram's per-tilt star readable under its name in the set, every tomogram known to its own project's registry.
+  They run in `deploy_and_run_scheme` before anything is submitted (where the tilt filter's in-flight check sits) and
+  block with the reasons on the job page.
+- **D24 Extract tomograms of other projects (new).** Today both extraction jobs stop at the home project's registry
+  (§14.4). Proposed:
+  1. The set records each tomogram's origin (its project, its name there, its per-tilt star) as extra columns of the
+     set's tomograms.star, which the extraction copies into its own.
+  2. A tomogram renamed in the set gets its own per-tilt star in the set (`tilt_series/<name>.star`, a copy with the
+     block renamed), so RELION reads it under the new name; Warp export stages the origin's tomostar and XML under
+     the set's name. The extracted Make set renames the same way instead of failing.
+  3. The extraction checks each tomogram against its own project's registry. Exclusions: the set decides. A tomogram
+     excluded in its own project is a line in Make set and a marker in Sources, never a silent skip in the job (rules
+     mark, they never drop). Foreign tomograms' per-TS rows show on the job page by their name in the set; the home
+     Journey has no tilt series for them.
 
+Order: D19 + D20 (the visible part), then D24 + D21 (the same Make set writer and the same two drivers), D22, D23.
 Out of §14: results back onto the cutouts and the By class mode (D18), which follow once D21 carries the uids.
 
-### 14.3 First steps for the next session
+### 14.3 Steps
 
-1. Facts, read-only: a kitchen set through the job I/O resolver to Class 3D (what the dropdown shows, what the
-   driver reads); Subtomo extraction and Warp export drivers on a set whose tomograms live in another project (what
-   they read from the source project; does anything assume the job's own project); row order through extraction.
-2. Pick D19–D23 with the maintainer; build D19 + D20 first (the visible part), then D21, D22, D23.
+1. Facts, read-only: done the same night, §14.4.
+2. Pick D19–D24 with the maintainer; build in the order above. Open fact (needs a read of each project's
+   tomograms.star, not done): whether the eight AGG412 projects share tomogram names.
+
+### 14.4 Facts (2026-10-29, read from the code and the RELION 5.0 source; nothing run)
+
+**A kitchen set in a Class 3D job.**
+
+- Make set publishes `<home>/Analytics/sets/s<NNN>_<name>/`: `set.json`, `particles.star`, the set's own
+  `tomograms.star` (the members' rows, paths absolute), `optimisation_set.star` (absolute paths), `kitchen_uids.txt`,
+  and for a merge `merge_summary.json`.
+- The resolver offers every set of the home project to every slot that reads an optimisation set, whatever its
+  level: Reconstruct particle, Class 3D, Refine 3D, Subtomo extraction, Warp export (`_add_particle_set_candidates`);
+  never to automatic wiring.
+- The I/O menu is one flat list. Sets come after what automatic wiring may choose, the job's species first, the
+  newest first, as `Pool set — <name> (5 projects) · 1,102 coordinates` with the green "ok" dot (amber "other
+  species" when the species differ). Chosen, the slot stores `mergedSources:particle_set__<id>`, the line under it
+  shows the set's `optimisation_set.star`, the tag says "set by hand" and, once submitted, "fixed at submit". The job
+  page and the roster say nothing more.
+- Only the file's existence is checked. A coordinates set chosen for Class 3D is submitted and fails in
+  `relion_refine`, which needs particle images; nothing at Run looks inside a set.
+- The Class 3D driver runs `relion_refine --ios <set>/optimisation_set.star --ref <reference>`. RELION reads the
+  set's particles (an extracted set's images by their absolute `rlnImageName`, in the member's extraction job,
+  possibly in another project) and its tomograms.star, then each tomogram's per-tilt star (absolute, in the project
+  the tomogram lives in). Containers see /groups, /scratch, /software, /programs (`container_binds`) and the home
+  project, so other projects' files are readable. Class 3D, Refine 3D and Reconstruct particle check no registry: an
+  extracted cross-project set should run as it is.
+- Reconstruct particle needs no extraction (corrects §14.1): `relion_tomo_reconstruct_particle` cuts each particle
+  from the tilt images itself (`loadTomogram`, `extractAt3D_Fourier` on `tomogram.stack`) and never reads
+  `rlnImageName`; a particles star without an optics block takes its optics from the tomograms (`ParticleSet`). A
+  coordinates set is a valid input when it has angles: template-match picks have them, hand picks do not. Only
+  Class 3D and Refine 3D need images.
+
+**Extracting tomograms that live in another project.**
+
+- Subtomo extraction and Warp export are array jobs. Before any task the supervisor checks every tilt series it will
+  dispatch against the home project's registry (`preflight_registry`, `drivers/array_job_base.py`) and stops with
+  "registry is missing N/M expected TS". So a set with another project's tomograms fails today, in the supervisor,
+  within seconds; a foreign tomogram that happens to share a home tomogram's name passes.
+- Exclusions are read from the home registry by name (`load_excluded_ts`, `apply_exclusions`): a foreign tomogram
+  named like an excluded home one is skipped, and its per-TS status files carry the home tomogram's name.
+- Beyond that nothing assumes the job's own project, and no ProjectState or registry of the other project is read.
+  `relion_tomo_subtomo` reads the tomogram's per-tilt star and the tilt images it names, all absolute paths. Warp
+  export takes the tsCtf job from the per-tilt star's path (`<tsCtf job>/tilt_series/<ts>.star`) and reads its
+  `.settings`, `<ts>.tomostar` (copied with absolute paths) and `warp_tiltseries/<ts>.xml`, and through the tomostar
+  the tilt averages.
+- Names. RELION reads a per-tilt star by the block named after the tomogram (`data_<rlnTomoName>`,
+  `tomogram_set.cpp`; else "could not read data from … Does the table have the correct name"), and Warp export looks
+  for `<rlnTomoName>.tomostar` and `.xml`. A coordinates Make set across projects renames a tomogram whose name
+  another project also uses (`Position_1__<project>`, `coord_merge.plan_merge`) and says so only in the set's
+  `merge_summary.json`: such a set fails in Reconstruct particle, Subtomo extraction and Warp export. An extracted
+  Make set does not rename: its merge raises "Tomogram name conflict" in the worker after the plan showed nothing
+  (`subtomo_merge`). The folder-split import's project-per-folder mode makes exactly this case (B1G4 and B2G2 share
+  53 `Position_N` names).
+- Found on the way: a set's `per_tomo` and `n_tomograms` count by the name before the merge, so two projects'
+  `Position_1` count as one tomogram (`export.write_set`).
+
+**Row order.**
+
+- Subtomo extraction concatenates its per-tomogram outputs in sorted name order; inside a tomogram RELION keeps the
+  input order and drops particles seen in too few tilts (`min_frames`, `max_dose`; `writeParticleSet` in
+  `subtomo.cpp`). Warp export follows the tomograms.star order and drops by `max_missing_tilts`. Rows do not map one
+  to one.
+- What survives extraction: the position (RELION folds an offset into the coordinates; candidates carry none), which
+  `subtomo_link` joins on at 0.1 Å; and columns: RELION keeps star labels it does not know and its extraction copies
+  the whole input row (`metadata_table.h`, `ParticleSet::addParticle`); Warp copies unknown columns row for row (the
+  export relies on it for the centred coordinates). Warp export regenerates `rlnTomoParticleName`, so that name is no
+  key.
+- `kitchen_uids.txt` lines match the set's rows for a one-member set and an extracted merge only; a coordinates merge
+  reorders them (sources by list type, then per tomogram), so there it is a membership list, which is how
+  `setmatch.py` reads it.
+- The kitchen's `extracted` column finds an extraction only when its input lies in the candidate job's directory
+  (`subtomo_instances_for_ce`), and only Subtomo extraction: an extraction that read a set never comes back to the
+  pool.
