@@ -45,7 +45,10 @@ class Refine3DParams(AbstractJobParams):
     }
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(
-            key="input_optimisation", accepts=[JobFileType.OPTIMISATION_SET_STAR], preferred_source="subtomoExtraction"
+            key="input_optimisation",
+            accepts=[JobFileType.OPTIMISATION_SET_STAR],
+            preferred_source="subtomoExtraction",
+            needs_extracted=True,
         ),
         InputSlot(key="input_reference", accepts=[JobFileType.REFERENCE_MAP], preferred_source="reconstructParticle"),
     ]

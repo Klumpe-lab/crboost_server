@@ -38,7 +38,10 @@ class CandidateExtractPytomParams(AbstractJobParams):
     OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = [
         OutputSlot(key="output_star", produces=JobFileType.CANDIDATES_STAR, path_template="candidates.star"),
         OutputSlot(
-            key="optimisation_set", produces=JobFileType.OPTIMISATION_SET_STAR, path_template="optimisation_set.star"
+            key="optimisation_set",
+            produces=JobFileType.OPTIMISATION_SET_STAR,
+            path_template="optimisation_set.star",
+            coordinates_only=True,
         ),
     ]
 
