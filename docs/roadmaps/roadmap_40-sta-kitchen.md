@@ -16,7 +16,8 @@ the cutouts (D13–D18); D13, D14 and D16 accepted the next day (§12.8), and th
 prototype (S8, §13) comes before any downstream job. S8 built the same day (§13.8, with the maintainer's asks
 of that turn: larger filter cards, dot controls and tiled cards in By tomogram, no slab flash on a filter drag);
 checked in the sandbox, not in a browser. The maintainer's look the same evening: "looking pretty good". Next: §14,
-subsets as inputs of the particle jobs; its facts were read the same night (§14.4), D19–D24 wait for a nod.
+subsets as inputs of the particle jobs; its facts were read the same night (§14.4), D19–D24 accepted (§14.5) and the
+level check built (§14.6). Next: build the rest of §14 in the order of §14.2.
 
 **In one line.** A new tab of the Particles registry where one species' picks from every source (template matching,
 hand-picked, imported, later other pickers), on any reconstruction of any tomogram of any project, sit in one pool;
@@ -1289,10 +1290,10 @@ The gaps:
   2. A tomogram renamed in the set gets its own per-tilt star in the set (`tilt_series/<name>.star`, a copy with the
      block renamed), so RELION reads it under the new name; Warp export stages the origin's tomostar and XML under
      the set's name. The extracted Make set renames the same way instead of failing.
-  3. The extraction checks each tomogram against its own project's registry. Exclusions: the set decides. A tomogram
-     excluded in its own project is a line in Make set and a marker in Sources, never a silent skip in the job (rules
-     mark, they never drop). Foreign tomograms' per-TS rows show on the job page by their name in the set; the home
-     Journey has no tilt series for them.
+  3. The extraction checks each tomogram against its own project's registry. Exclusions stay a per-project concept
+     (taken 2026-10-29): a job reading a set applies none, home tomograms included, and the kitchen shows a small
+     "excluded in <project>" marker on a tomogram whose tilt series its own project excluded. Foreign tomograms'
+     per-TS rows show on the job page by their name in the set; the home Journey has no tilt series for them.
 
 Order: D19 + D20 (the visible part), then D24 + D21 (the same Make set writer and the same two drivers), D22, D23.
 Out of §14: results back onto the cutouts and the By class mode (D18), which follow once D21 carries the uids.
@@ -1300,8 +1301,8 @@ Out of §14: results back onto the cutouts and the By class mode (D18), which fo
 ### 14.3 Steps
 
 1. Facts, read-only: done the same night, §14.4.
-2. Pick D19–D24 with the maintainer; build in the order above. Open fact (needs a read of each project's
-   tomograms.star, not done): whether the eight AGG412 projects share tomogram names.
+2. D19–D24 accepted (§14.5); build in the order above. Open fact (needs a read of each project's tomograms.star, not
+   done): whether the eight AGG412 projects share tomogram names.
 
 ### 14.4 Facts (2026-10-29, read from the code and the RELION 5.0 source; nothing run)
 
@@ -1373,3 +1374,37 @@ Out of §14: results back onto the cutouts and the By class mode (D18), which fo
 - The kitchen's `extracted` column finds an extraction only when its input lies in the candidate job's directory
   (`subtomo_instances_for_ce`), and only Subtomo extraction: an extraction that read a set never comes back to the
   pool.
+
+### 14.5 Taken (2026-10-29)
+
+The maintainer's answer to §14.2: D19 yes; D20 yes (greyed with the reason and the "+ extraction" buttons); D21
+"absolutely agreed", with a caution taken as a rule for everything §14 builds: treat every star file RELION or Warp
+writes as untrusted input that may have changed anything. So the uid column is checked on every read (present, one per
+row, unique, known to the pool), anything else is reported and never guessed, and where the position join stands in,
+the screen says so. D24 yes, with exclusions out of it: excluding a tilt series is a per-project decision and the
+kitchen is a global space with its own, so nothing is rewired; a small marker says a tomogram's tilt series was excluded
+in its own project (§14.2 D24.3 amended). D22 and D23 yes, D23 blocking Run with its reasons. The order as written.
+The level check (§14.6) to be built at once.
+
+### 14.6 Built: the level check (2026-10-29)
+
+Stops what §14.4 found: Class 3D and Refine 3D accepting an optimisation set of positions only and failing on the
+cluster.
+
+- `InputSlot.needs_extracted` (Class 3D's and Refine 3D's `input_optimisation`), `OutputSlot.coordinates_only` (the
+  candidate extraction's optimisation set), `OutputCandidate.coordinates_only` (from the slot; for a particle set, its
+  level).
+- The resolver: automatic wiring never gives positions to an input that needs images; an explicit or recorded choice
+  of one is a problem (`_keyed_source`), shown in red under the input ("Pool set — … has positions only, no particle
+  images: extract it first (Subtomo extraction or Warp export) and read that job's output") and refused at Run and at
+  drive time. Reconstruct particle, Subtomo extraction and Warp export unchanged.
+- Changed behaviour: a Class 3D in a project with candidates and no extraction no longer wires the candidates (it
+  failed on the cluster); its input shows nothing chosen, the candidates still in its menu.
+- Not covered: the aggregate dialog's coordinate-grade merges (their grade sits in `merge_summary.json`, not read; the
+  dialog is due to go, §9).
+
+Checks: ruff on the touched files, format on `io_slots.py` and `path_resolution_service.py` (the three job files are
+hand-aligned and were edited by hand), `check_boundaries.py`, `import server_app`, and a synthetic project in the
+session scratchpad (`level/level_check.py`): 19 checks ok (automatic and explicit, Class 3D and Refine 3D, sets of
+both levels and the candidates by hand, Reconstruct and extraction unchanged, a job fixed at submit on a coordinates
+set). Not run in a browser.
