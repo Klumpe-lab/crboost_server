@@ -1,6 +1,7 @@
 """Segment plugin: the method, then what it runs — easymode features picked from the weights
-cache's registry, or one Ais model and the feature its title names — with TTA, easymode's output
-format, segmenting at easymode's 10 Å and smoothing plane-by-plane networks along Z. The input is the
+cache's registry, or one Ais model and the feature its title names — then, after a gap, how it runs:
+TTA, easymode's output format, segmenting at easymode's 10 Å and smoothing plane-by-plane networks
+along Z. The input is the
 I/O section's; an IsoNet-denoised input is marked here and never blocked: easymode was trained on
 raw, even/odd and noise2noise reconstructions.
 
@@ -22,6 +23,7 @@ from ui.job_plugins._field_styles import (
     HELPER_STYLE,
     enum_field,
     field_grid,
+    field_group,
     multi_choice_row,
     numeric_field,
     path_row,
@@ -65,15 +67,20 @@ def render_segment_params(job_type, job_model, is_frozen, save_handler, *, ui_mg
     render_config_preamble(job_model)
 
     @ui.refreshable
-    def method_block():
+    def what_block():
         if job_model.method == SegmentMethod.AIS_MODEL:
             _render_ais_model(job_model, is_frozen, save_handler)
         else:
-            _render_easymode(job_model, is_frozen, save_handler)
+            _render_features(job_model, is_frozen, save_handler)
+
+    @ui.refreshable
+    def how_block():
+        _render_settings(job_model, is_frozen, save_handler)
 
     def on_method():
         save_handler()
-        method_block.refresh()
+        what_block.refresh()
+        how_block.refresh()
 
     with field_grid():
         enum_field(
@@ -85,40 +92,52 @@ def render_segment_params(job_type, job_model, is_frozen, save_handler, *, ui_mg
             save_handler=on_method,
             hint=_description(job_model, "method"),
         )
-        numeric_field(
-            "TTA", job_model, "tta", is_frozen=is_frozen, save_handler=save_handler, hint=_description(job_model, "tta")
-        )
-    method_block()
+    what_block()
 
     @ui.refreshable
     def input_note():
         _render_input_note(ui_mgr, ctx.get("instance_id"))
 
     input_note()
+    with field_group():
+        how_block()
     return input_note.refresh
 
 
-def _render_easymode(job_model, is_frozen: bool, save_handler) -> None:
+def _render_settings(job_model, is_frozen: bool, save_handler) -> None:
+    """How the networks run: TTA for either method; easymode's storage format and its 10 Å; smoothing
+    along Z of the networks that decide plane by plane."""
+    easymode = job_model.method != SegmentMethod.AIS_MODEL
     with field_grid():
-        enum_field(
-            "Output format",
-            job_model,
-            "output_format",
-            SegmentFormat,
-            is_frozen=is_frozen,
-            save_handler=save_handler,
-            hint=_description(job_model, "output_format"),
+        numeric_field(
+            "TTA", job_model, "tta", is_frozen=is_frozen, save_handler=save_handler, hint=_description(job_model, "tta")
         )
+        if easymode:
+            enum_field(
+                "Output format",
+                job_model,
+                "output_format",
+                SegmentFormat,
+                is_frozen=is_frozen,
+                save_handler=save_handler,
+                hint=_description(job_model, "output_format"),
+            )
     with toggle_row():
-        toggle_field(
-            "Segment at 10 Å",
-            job_model,
-            "match_training_voxel",
-            is_frozen=is_frozen,
-            save_handler=save_handler,
-            hint=_description(job_model, "match_training_voxel"),
-        )
-        _smooth_toggle(job_model, is_frozen, save_handler, "Smooth 2.5D features along Z")
+        if easymode:
+            toggle_field(
+                "Segment at 10 Å",
+                job_model,
+                "match_training_voxel",
+                is_frozen=is_frozen,
+                save_handler=save_handler,
+                hint=_description(job_model, "match_training_voxel"),
+            )
+            _smooth_toggle(job_model, is_frozen, save_handler, "Smooth 2.5D features along Z")
+        else:
+            _smooth_toggle(job_model, is_frozen, save_handler, "Smooth along Z (2D and 2.5D models)")
+
+
+def _render_features(job_model, is_frozen: bool, save_handler) -> None:
     try:
         catalog = _catalog_at(str(easymode_cache_dir()))
     except (LookupError, OSError, ValueError) as e:
@@ -192,8 +211,6 @@ def _render_ais_model(job_model, is_frozen: bool, save_handler) -> None:
     )
     text, warn = _model_note(job_model.ais_model_path)
     note = _note(text, warn=warn)
-    with toggle_row():
-        _smooth_toggle(job_model, is_frozen, save_handler, "Smooth along Z (2D and 2.5D models)")
 
 
 def _smooth_toggle(job_model, is_frozen: bool, save_handler, label: str) -> None:
@@ -236,5 +253,6 @@ def _render_input_note(ui_mgr, instance_id: str | None) -> None:
     _note(
         f"The input, {source}, is denoised with IsoNet. easymode was trained on raw reconstructions and on its own "
         "n2n and iso (distilled IsoNet2) denoisings of them; this IsoNet output is close to, not the same as, "
-        "that flavour. Denoise predict with method easymode gives the flavour it was trained on."
+        "that flavour. Denoise predict with method easymode gives the flavour it was trained on.",
+        warn=True,
     )
