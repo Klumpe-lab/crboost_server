@@ -7,7 +7,13 @@ from ui.pipeline_builder.io_config_component import render_io_config
 
 
 def render_io_tab(
-    job_type: JobType, instance_id: str, job_model, is_frozen: bool, ui_mgr: UIStateManager, save_handler: Callable
+    job_type: JobType,
+    instance_id: str,
+    job_model,
+    is_frozen: bool,
+    ui_mgr: UIStateManager,
+    save_handler: Callable,
+    callbacks: dict[str, Callable] | None = None,
 ) -> Callable[[], None]:
     """Returns the refresh the job tab runs after an edit in another section: it re-renders the
     Inputs when a parameter added or removed one (template matching's segmentations)."""
@@ -21,5 +27,6 @@ def render_io_tab(
         on_change=save_handler,
         active_instance_ids=set(ui_mgr.selected_jobs),
         read_only=is_frozen,
+        callbacks=callbacks,
     )
     return component.refresh_if_inputs_changed

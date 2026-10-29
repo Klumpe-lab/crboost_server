@@ -23,7 +23,14 @@ from nicegui import ui
 
 from services.io_slots import JobFileType
 from services.models_base import InstanceId, JobType, JobStatus
-from services.path_resolution_service import PathResolutionService, InputSlotValidation, InputState, auto_exclusion
+from services.particles.particle_sets import list_sets, set_lineage, set_read_by
+from services.path_resolution_service import (
+    PathResolutionService,
+    InputSlotValidation,
+    InputState,
+    auto_exclusion,
+    unreadable_reason,
+)
 from backend import get_backend
 from services.project_state import get_project_state_for
 from ui.current_project import current_project_state
@@ -196,11 +203,14 @@ class IOConfigComponent:
         on_change: Callable[[], None] | None = None,
         active_instance_ids: set | None = None,
         read_only: bool = False,
+        callbacks: dict[str, Callable] | None = None,
     ):
         self.job_type = job_type
         self.instance_id = instance_id
         self.on_change = on_change
         self.active_instance_ids = active_instance_ids
+        # The workspace's callbacks: a greyed set's "+ Subtomo extraction" adds a job through them.
+        self.callbacks = callbacks or {}
         # read_only: a completed/frozen job. Same sectioned layout, but the
         # source selectors become static faces and the edit affordances (manual
         # path, reset, gain browse) are hidden.
@@ -433,6 +443,7 @@ class IOConfigComponent:
                 _detail_line("not written yet — produced when the upstream job runs", italic=True)
             elif not validation.file_exists:
                 _detail_line("path resolved, file not on disk yet", italic=True)
+        self._render_set_lines(slot, job_model)
 
         # Why there is no source: a tie, or an override that stopped resolving.
         if validation.tied:
@@ -442,6 +453,18 @@ class IOConfigComponent:
             validation.input_state != InputState.AUTOMATIC and validation.error_message and not validation.resolved_path
         ):
             _detail_line(validation.error_message, STATUS_STYLE[JobStatus.FAILED]["color"])
+
+    def _render_set_lines(self, slot, job_model) -> None:
+        """Under an input that reads a particle set: where the set came from (its subsets, kitchen, projects)."""
+        set_id = set_read_by(job_model, slot.key)
+        project = current_project_state().project_path
+        if set_id is None or project is None:
+            return
+        pset = next((s for s in list_sets(Path(project)) if s.id == set_id), None)
+        if pset is not None:
+            projects = ", ".join(pset.details.get("per_project") or {})
+            text = f"{pset.id} · {set_lineage(pset)}" + (f": {projects}" if projects else "")
+            _detail_line(text, "#334155")
 
     def _input_state_tag(self, validation):
         """How the source was chosen, as a quiet word beside it."""
@@ -542,6 +565,10 @@ class IOConfigComponent:
                         f"{FONT} font-size: 10px; color: {_MUTED}; padding: 6px 10px; font-style: italic;"
                     )
                 for c in candidates:
+                    blocked = unreadable_reason(self.job_type, slot, c)
+                    if blocked:
+                        self._render_blocked_candidate(slot, c, menu, blocked)
+                        continue
                     self._render_menu_candidate(
                         slot, c, menu, selected=(c.source_key == current_value), skipped=skipped.get(c.source_key)
                     )
@@ -600,6 +627,37 @@ class IOConfigComponent:
                 )
             if status_word:
                 ui.label(status_word).style(f"{_SMALL} color: {_MUTED}; flex-shrink: 0;")
+
+    def _render_blocked_candidate(self, slot, c, menu, reason: str):
+        """A source this input cannot read: greyed, not selectable, with the reason. One that holds positions
+        only offers to add the extraction that reads it, and to point this input at that job's particles."""
+        with ui.element("div").style("padding: 4px 10px; cursor: default;"):
+            with ui.element("div").style("display: flex; align-items: center; gap: 8px; opacity: 0.5;"):
+                ui.element("div").style(f"{_DOT} background: #cbd5e1;")
+                ui.label(_candidate_name(c)).style(
+                    f"{FONT} font-size: 11px; color: #1e293b; flex: 1 1 0; min-width: 0; "
+                    "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                )
+            ui.label(reason).style(f"{_SMALL} color: {_PATH_COLOR}; padding-left: 15px; white-space: normal;")
+            if slot.needs_extracted and c.coordinates_only:
+                with ui.element("div").style("display: flex; gap: 6px; padding: 3px 0 0 15px;"):
+                    for job_type in (JobType.SUBTOMO_EXTRACTION, JobType.WARP_EXPORT):
+                        house_button(
+                            f"+ {get_job_display_name(job_type)}",
+                            lambda _e, j=job_type, c=c, m=menu: self._add_extraction(slot, c, j, m),
+                            tooltip=f"Add a {get_job_display_name(job_type)} job reading this, and point "
+                            f"{snake_to_title(slot.key)} at its particles",
+                        )
+
+    def _add_extraction(self, slot, candidate, job_type: JobType, menu) -> None:
+        menu.close()
+        add = self.callbacks.get("add_job_reading")
+        if add is None:
+            ui.notify("Open this job from the pipeline view to add the extraction.", type="warning")
+            return
+        job_model = current_project_state().jobs.get(self.instance_id)
+        species_id = getattr(job_model, "species_id", None) or candidate.species_id
+        add(job_type, reads=candidate.source_key, consumer=self.instance_id, slot=slot.key, species_id=species_id)
 
     def _select_source(self, slot, value, menu):
         try:
@@ -762,7 +820,10 @@ def render_io_config(
     on_change: Callable[[], None] | None = None,
     active_instance_ids: set | None = None,
     read_only: bool = False,
+    callbacks: dict[str, Callable] | None = None,
 ) -> IOConfigComponent:
-    component = IOConfigComponent(job_type, instance_id, on_change, active_instance_ids, read_only=read_only)
+    component = IOConfigComponent(
+        job_type, instance_id, on_change, active_instance_ids, read_only=read_only, callbacks=callbacks
+    )
     component.render()
     return component

@@ -99,6 +99,7 @@ class PipelineBuilderPanel:
         self.callbacks["enable_run_button"] = self.roster.rebuild_run_slot
         self.callbacks["add_job_to_pipeline"] = lambda jt: self.add_instance_to_pipeline(jt)
         self.callbacks["add_instance_to_pipeline"] = self.add_instance_to_pipeline
+        self.callbacks["add_job_reading"] = self.add_job_reading
         self.callbacks["prompt_species_and_add"] = self.prompt_species_and_add
         self.callbacks["remove_instance_from_pipeline"] = self.remove_instance_from_pipeline
         self.callbacks["invalidate_tm_tabs"] = self.invalidate_tm_tabs
@@ -361,11 +362,13 @@ class PipelineBuilderPanel:
         species_id: str | None = None,
         clone_of: str | None = None,
         after: str | None = None,
+        source_overrides: dict[str, str] | None = None,
     ):
         """Add a job of `job_type`; with `clone_of`, one that takes that job's parameters, SLURM
         settings and inputs set by hand. With `after`: a Subset of that finished job's output, or
-        a job reading the Subset `after` (add_after_pins). Open while other jobs are queued or
-        running: adding changes nothing a submitted job reads."""
+        a job reading the Subset `after` (add_after_pins). `source_overrides`: inputs of the new job
+        set by hand from the start. Open while other jobs are queued or running: adding changes
+        nothing a submitted job reads."""
         state = current_project_state()
 
         refusal = add_refusal(state, job_type, after, clone_of)
@@ -509,6 +512,12 @@ class PipelineBuilderPanel:
                     timeout=6000,
                 )
 
+        if source_overrides and instance_id in state.jobs:
+            new_model = state.jobs[instance_id]
+            if new_model.source_overrides is None:
+                new_model.source_overrides = {}
+            new_model.source_overrides.update(source_overrides)
+
         pinned = pin_sources_made_ambiguous(state, sources_before)
         if pinned:
             state.mark_dirty()
@@ -524,6 +533,30 @@ class PipelineBuilderPanel:
 
         self.ui_mgr.set_active_instance(instance_id)
         self.rebuild_pipeline_ui()
+
+    def add_job_reading(
+        self, job_type: JobType, *, reads: str, consumer: str, slot: str, species_id: str | None
+    ) -> None:
+        """A new `job_type` job (an extraction) reading the source `reads` names, and `consumer`'s input
+        `slot` pointed at its output: what the I/O menu offers for a set the consumer cannot read itself."""
+        state = current_project_state()
+        if consumer not in state.jobs:
+            return
+        new_iid = next_instance_id(job_type, self.ui_mgr.selected_jobs, list(state.jobs.keys()))
+        self.add_instance_to_pipeline(
+            job_type, instance_id=new_iid, species_id=species_id, source_overrides={"input_optimisation": reads}
+        )
+        if new_iid not in state.jobs or new_iid not in self.ui_mgr.selected_jobs:
+            return  # refused, and said so
+        # After the addition, which may wire every optimisation-set input to an active merge.
+        consumer_model = state.jobs[consumer]
+        if consumer_model.source_overrides is None:
+            consumer_model.source_overrides = {}
+        consumer_model.source_overrides[slot] = instance_override_key(job_type, new_iid)
+        state.mark_dirty()
+        if self.ui_mgr.is_project_created:
+            asyncio.create_task(self.backend.save_project(self.ui_mgr.project_path, force=True))
+        ui.notify(f"{new_iid} reads the set; {consumer} reads {new_iid}'s particles", type="info", timeout=6000)
 
     def _cleanup_stale_overrides_for_instance(self, instance_id: str):
         state = current_project_state()

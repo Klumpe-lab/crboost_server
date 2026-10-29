@@ -176,7 +176,9 @@ def _render_job_page(
             # search-region note), so it is an edit like theirs.
             io_sec = ui.element("div").classes("cb-jsec-io").style("width: 100%;")
             with io_sec:
-                edit_refreshes.append(render_io_tab(job_type, instance_id, job_model, is_frozen, ui_mgr, on_edit))
+                edit_refreshes.append(
+                    render_io_tab(job_type, instance_id, job_model, is_frozen, ui_mgr, on_edit, callbacks=callbacks)
+                )
             with config_section("SLURM resources") as slurm_sec:
                 slurm_sec.classes("cb-jsec-slurm")
                 edit_refreshes.append(render_slurm_tab(job_model, is_frozen, on_edit))
