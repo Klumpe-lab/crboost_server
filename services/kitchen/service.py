@@ -46,6 +46,7 @@ class LoadedPool:
     table: PoolTable | None = None
     payload: bytes | None = None
     verdicts: dict[str, str] = field(default_factory=dict)
+    verdict_budget: int = 0  # verdict events appended before the log is read again for compaction
     members: dict[str, MemberStatus] = field(default_factory=dict)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -86,7 +87,8 @@ async def open_pool(home: Path, species_id: str) -> LoadedPool:
         if is_new:
             pool.members = await asyncio.to_thread(_home_members, home_path, species_id)
         lp = _POOLS.setdefault(key, LoadedPool(home_path, species_id, pool))
-        lp.verdicts, _n = await asyncio.to_thread(store.read_verdicts, lp.home, species_id)
+        lp.verdicts, n_lines = await asyncio.to_thread(store.read_verdicts, lp.home, species_id)
+        lp.verdict_budget = store.compaction_budget(n_lines, len(lp.verdicts))
         lp.review = await asyncio.to_thread(store.read_review, lp.home, species_id)
         if is_new and pool.members:
             await save_pool(lp)
@@ -132,7 +134,7 @@ async def _member_chunk(lp: LoadedPool, member: PoolMember) -> tuple[dict, dict]
     status = lp.members.setdefault(member.key, MemberStatus())
     try:
         view = await _view(member.project_path)
-        spec = await asyncio.to_thread(member_spec, view, member, await _facts(view))
+        spec = await asyncio.to_thread(member_spec, view, member)
     except (OSError, ValueError, KeyError) as e:
         logger.exception("Kitchen member %s could not be read", member.key)
         status.state, status.error = "error", f"{type(e).__name__}: {e}"
@@ -153,6 +155,7 @@ async def _member_chunk(lp: LoadedPool, member: PoolMember) -> tuple[dict, dict]
         status.state = "building"
         lp.bump()
         try:
+            spec["facts"] = await _facts(view)
             await run_in_worker(WorkKind.KITCHEN, build_member, spec, str(npz))
             meta, arrays = await asyncio.to_thread(read_chunk, npz)
         except Exception as e:
@@ -260,7 +263,9 @@ async def record_verdicts(lp: LoadedPool, uids: list[str], verdict: Verdict, sou
             lp.verdicts[u] = verdict.value
     async with lp.write_lock:
         await asyncio.to_thread(store.append_events, lp.home, lp.species_id, events)
-        await asyncio.to_thread(store.compact_verdicts, lp.home, lp.species_id)
+        lp.verdict_budget -= len(events)
+        if lp.verdict_budget <= 0:
+            lp.verdict_budget = await asyncio.to_thread(store.compact_verdicts, lp.home, lp.species_id)
     lp.bump()
 
 
@@ -350,7 +355,8 @@ def _encode_gzip(table: PoolTable) -> bytes:
 
     from services.kitchen.payload import encode
 
-    return gzip.compress(encode(table), compresslevel=6)
+    # Level 1: a quarter of level 6's time for 6 % more bytes on these float columns.
+    return gzip.compress(encode(table), compresslevel=1)
 
 
 def verdict_map(lp: LoadedPool) -> dict[str, int]:
