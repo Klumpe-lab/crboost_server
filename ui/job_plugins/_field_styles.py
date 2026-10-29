@@ -453,6 +453,8 @@ def choice_row(
     (CLAUDE.md "Surfacing uncertainty"). Writes go through an explicit change handler
     rather than `bind_value` so `empty_value` decides what "nothing chosen" means.
     `on_change`, when given, takes the chosen value instead of the write to `attr`.
+    A shown value that is not among `options` shows `empty_value` if that is one of them,
+    else an empty box (NiceGUI refuses a value outside the options).
     """
     with ui.element("div").style(ROW_STYLE):
         _label(label, hint)
@@ -460,7 +462,9 @@ def choice_row(
             sel = ui.select(options={"": placeholder}, value="")
         else:
             shown = value if value is not None else getattr(job_model, attr)
-            sel = ui.select(options=options, value=shown if shown in options else empty_value)
+            if shown not in options:
+                shown = empty_value if empty_value in options else None
+            sel = ui.select(options=options, value=shown)
         sel.props(_INPUT_PROPS_BASE)
         sel.props('popup-content-class="cb-select-popup"')
         sel.classes("cb-select")
