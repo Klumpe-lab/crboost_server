@@ -15,7 +15,8 @@ menu, sizes S–XL. §12 proposes subsets, one source per tomogram, a set prefli
 the cutouts (D13–D18); D13, D14 and D16 accepted the next day (§12.8), and the selection, subsets and Sources
 prototype (S8, §13) comes before any downstream job. S8 built the same day (§13.8, with the maintainer's asks
 of that turn: larger filter cards, dot controls and tiled cards in By tomogram, no slab flash on a filter drag);
-checked in the sandbox, not in a browser.
+checked in the sandbox, not in a browser. The maintainer's look the same evening: "looking pretty good". Next: §14,
+subsets as inputs of the particle jobs.
 
 **In one line.** A new tab of the Particles registry where one species' picks from every source (template matching,
 hand-picked, imported, later other pickers), on any reconstruction of any tomogram of any project, sit in one pool;
@@ -1206,3 +1207,74 @@ bar, subsets and slots, the rail and the scope, group by subset, menu on a selec
 spare cards, no rebuild while dragging, dot settings, the slab box, the source choice); the NiceGUI page simulation
 (24 ok: new subset and group through their dialogs, a browser edit kept, Dots, the Sources tree, a tomogram unticked
 reaching the browser's draft, delete). Not run in a browser.
+
+The maintainer's look (2026-10-29, evening): "this is looking pretty good now". Next, §14: how a subset becomes the
+input of Reconstruct particle, Class 3D, Refine 3D and the extraction jobs, transparently.
+
+## 14. Subsets as inputs of the particle jobs (next; scoped 2026-10-29, nothing built)
+
+The maintainer's question once S8 was on screen: "now that we can make subsets, how do I use one in Reconstruct
+particles, Class 3D and the like?" Wanted: a transparent way, from a subset in the rail to the job that reads it,
+with the job saying what it read.
+
+### 14.1 What exists today (read from the code, not run)
+
+The path works but is three hops and nothing on screen says so:
+
+1. In the kitchen, click the subset in the rail (the scope becomes "in it"), then Make set…: the scope, the filters,
+   the hand verdicts and the source choice are frozen into an ordinary particle set of the home project
+   (`services/sta_kitchen/export.py`, `services/particles/particle_sets.py`, recipe op `POOL`, the uid list in
+   `kitchen_uids.txt`, the subset names in the recipe's params since S8).
+2. Every particle set of the project is offered in every particle job's `input_optimisation` dropdown as a synthetic
+   producer, "Pool set — <name> (N projects) · n coordinates|extracted" (`path_resolution_service.py`
+   `_add_particle_set_candidates`, `_particle_set_label`), never wired automatically.
+3. The job reads the set's optimisation set (particles.star + tomograms.star, paths absolute).
+
+The gaps:
+
+- **Make set per subset.** A Class 3D result arrives as a group of 3–4 subsets; making a set of each is the scope,
+  the dialog, the name, again for every class.
+- **Level.** A coordinates set (picks, no images) is offered to Class 3D / Refine 3D / Reconstruct, which need
+  extracted particles; only the label's last word says it. A kitchen set from template-match candidates is
+  coordinates unless every kept row was extracted with agreeing optics.
+- **The extraction hop.** A coordinates set has to go through Subtomo extraction or Warp export first, in the home
+  project, on tomograms that may live in other projects. Whether those drivers can extract from another project's
+  tilt series (Warp's per-tilt-series XML and settings, frame series directories, the reconstruction's own pixel
+  size) is not known: the first thing to find out. Their output is a job output, not a particle set, so the lineage
+  (which subset, which uids) stops there.
+- **Lineage in the job.** The dropdown names the set, not the subset or group it came from; the job page and the
+  roster do not say "class 1 of 412 · classes, 1,102 particles from 5 projects".
+- **Freshness.** A set is frozen (D15, right); a subset edited after its set was made gives no sign that the two
+  differ.
+- **Checks before the job.** D16's job-start preflight, D17's half-sets: not built.
+
+### 14.2 Proposals (D19–D23, waiting for a nod)
+
+- **D19 Make set from the rail.** A subset's right-click gets "Make set…" (the Make set dialog with the scope set to
+  that subset and its name prefilled; the filters and verdicts as they are, said so in the dialog), and a group's
+  "Make a set of each subset" (one plan per subset, one dialog listing them, made in turn). The selection bar gets
+  "Make set of the selection" (a frozen subset first, then its set).
+- **D20 Offer sets by level.** A job slot that needs images (Class 3D, Refine 3D, Reconstruct particle) lists only
+  extracted sets; extraction and Warp export list coordinates sets (and extracted ones, to re-extract). A coordinates
+  set shown where images are needed says "extract first" and offers to add the extraction job for it, rather than
+  being chosen and failing on the cluster.
+- **D21 The extraction keeps the lineage.** An extraction (or Warp export) whose input is a particle set publishes
+  its output as an extracted particle set with the input set as parent and the uids carried over row for row
+  (the extraction keeps row order, to verify; otherwise a join on tomogram + position as `subtomo_link` does). Then
+  Class 3D reads "class 1 · extracted" and its results can come back to the cutouts (D18).
+- **D22 Lineage on screen.** The dropdown label, the job page's input line and the roster's hover card name the set,
+  its subset or group and the kitchen it came from: "class 1 (412 · classes) · 1,102 extracted · 5 projects". The
+  rail marks a subset that has sets ("→ 2 sets", the newest first) and says when the subset changed since ("37
+  changed since set s014").
+- **D23 Checks at job start** are D16's table, run when a job with a set input is queued (one reconstruction and
+  one source per acquisition, hand equal set-wide, one pixel size reachable, optics groups, files readable), and
+  D17's half-sets written at Make set.
+
+Out of §14: results back onto the cutouts and the By class mode (D18), which follow once D21 carries the uids.
+
+### 14.3 First steps for the next session
+
+1. Facts, read-only: a kitchen set through the job I/O resolver to Class 3D (what the dropdown shows, what the
+   driver reads); Subtomo extraction and Warp export drivers on a set whose tomograms live in another project (what
+   they read from the source project; does anything assume the job's own project); row order through extraction.
+2. Pick D19–D23 with the maintainer; build D19 + D20 first (the visible part), then D21, D22, D23.
