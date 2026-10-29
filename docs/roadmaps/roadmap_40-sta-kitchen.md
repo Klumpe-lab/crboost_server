@@ -1408,3 +1408,21 @@ hand-aligned and were edited by hand), `check_boundaries.py`, `import server_app
 session scratchpad (`level/level_check.py`): 19 checks ok (automatic and explicit, Class 3D and Refine 3D, sets of
 both levels and the candidates by hand, Reconstruct and extraction unchanged, a job fixed at submit on a coordinates
 set). Not run in a browser.
+
+### 14.7 Asked while §14 was built (2026-10-29)
+
+The maintainer made `s001_412_and_other_junk` in AGG412_20260311_MyrGFP_Grid2 (2,708 coordinates, 398 tomograms,
+7 projects; written by the §14 writer: `cbPickUid`, `rlnRandomSubset`, origin columns, no renames needed since every
+tomogram name carries its project).
+
+- **The Make set dialog's words are opaque** (to fix, in plain words and tooltips): the Level select ("as the rows
+  are": which rows? "coordinates (extract later)", "only the extracted rows") does not say what a level is, what the
+  job after it needs, or what each choice writes. "candidates" (member labels "candidates job043", the parent output
+  "candidates") means template-match picks, positions without images, and says neither. Each option should say what
+  the set will hold ("positions: Reconstruct particle reads them as they are; Class 3D needs an extraction first")
+  and how many rows each choice keeps.
+- **Warp exports are not joined to the pool.** All seven members' candidate jobs (job043, job017, job017, job020,
+  job023, job019, job020) have a Warp export reading exactly them, all at box 256, 3.1 Å, binning 2; the kitchen's
+  `extracted` column joins Subtomo extraction only (`member_spec` → `subtomo_instances_for_ce`), so the set could
+  only be made as coordinates. Pulled forward from D21: join a candidate job's Warp exports too (by position, a
+  stand-in, said so: they carry no `cbPickUid`), so an extracted set is made from them without extracting again.
