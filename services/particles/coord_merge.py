@@ -44,10 +44,12 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Hashable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import starfile
 
@@ -133,14 +135,24 @@ def _coord_block(star_path: Path) -> pd.DataFrame:
     raise ValueError(f"No centred-coordinate block (needs {list(CENTERED_COLS)}) in {star_path}")
 
 
-def _tomo_row(tomograms_star: Path, tomo_name: str) -> pd.Series:
-    data = starfile.read(Path(tomograms_star), always_dict=True)
-    for block in data.values():
-        if isinstance(block, pd.DataFrame) and "rlnTomoName" in block.columns:
-            hit = block[block["rlnTomoName"].astype(str) == str(tomo_name)]
-            if len(hit):
-                return hit.iloc[0]
-    raise ValueError(f"Tomogram {tomo_name!r} has no row in {tomograms_star}")
+def _tomo_row(
+    tomograms_star: Path, tomo_name: str, cache: dict[str, dict[str, tuple[pd.DataFrame, int]]] | None = None
+) -> pd.Series:
+    """`tomo_name`'s row of `tomograms_star` (its first, in block order). `cache` (path -> {name: (block,
+    row)}) reads a file the sources of one merge share once."""
+    rows = cache.get(str(tomograms_star)) if cache is not None else None
+    if rows is None:
+        rows = {}
+        for block in starfile.read(Path(tomograms_star), always_dict=True).values():
+            if isinstance(block, pd.DataFrame) and "rlnTomoName" in block.columns:
+                for i, name in enumerate(block["rlnTomoName"].astype(str)):
+                    rows.setdefault(name, (block, i))
+        if cache is not None:
+            cache[str(tomograms_star)] = rows
+    hit = rows.get(str(tomo_name))
+    if hit is None:
+        raise ValueError(f"Tomogram {tomo_name!r} has no row in {tomograms_star}")
+    return hit[0].iloc[hit[1]]
 
 
 def _hand_for(tomo_row: pd.Series, project_path: Path) -> int | None:
@@ -189,7 +201,7 @@ def _project_token(project_path: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-def plan_merge(sources: list[CoordSource], *, registry_lookup=None) -> MergePlan:
+def plan_merge(sources: list[CoordSource], *, registry_lookup=None, acquisition_lookup=None) -> MergePlan:
     """Resolve tomogram identity across the sources WITHOUT writing anything.
 
     Two sources naming the same tomogram of the same project ARE one tomogram and are
@@ -199,15 +211,20 @@ def plan_merge(sources: list[CoordSource], *, registry_lookup=None) -> MergePlan
     ``TiltSeries`` whose mdoc key answers that. Pass None (the default) and no two
     tomograms are ever equated across projects: they are kept apart under disambiguated
     names, which is the conservative reading and never silently pools unrelated picks.
+    ``acquisition_lookup(project_path, tomo_name) -> Hashable | None`` answers the acquisition
+    directly instead, for a caller that already knows it (no registry read).
 
     Equated tomograms then face the transferability gate: same acquisition, different
     reconstruction geometry means the centred-Å origin is a different physical point, so
     the coordinates may not be pooled. That lands in ``blocking``.
     """
     plan = MergePlan()
-    # merged name -> (row, project_path, acquisition key or None, handedness)
-    accepted: dict[str, tuple[pd.Series, Path, tuple[str, str] | None, int | None]] = {}
-    by_key: dict[tuple[str, str], str] = {}
+    # merged name -> (row, project_path, acquisition key or None)
+    accepted: dict[str, tuple[pd.Series, Path, Hashable | None]] = {}
+    # merged name -> handedness, read from its tilt star only when another source is compared with it
+    hands: dict[str, int | None] = {}
+    tables: dict[str, dict[str, tuple[pd.DataFrame, int]]] = {}
+    by_key: dict[Hashable, str] = {}
     # (resolved project, tomogram name) -> merged name. Same project and same tomogram is
     # the same tomogram -- no acquisition key, no transferability gate, no rename. This is
     # the commonest merge (two lists, or manual + auto, on one volume). Without it the
@@ -224,18 +241,22 @@ def plan_merge(sources: list[CoordSource], *, registry_lookup=None) -> MergePlan
             plan.assignment[src.display()] = by_origin[origin]
             continue
 
-        row = _tomo_row(src.tomograms_star, src.tomo_name)
-        hand = _hand_for(row, src.project_path)
+        row = _tomo_row(src.tomograms_star, src.tomo_name, tables)
         key = None
-        if registry_lookup is not None:
+        if acquisition_lookup is not None:
+            key = acquisition_lookup(src.project_path, src.tomo_name)
+        elif registry_lookup is not None:
             ts = registry_lookup(src.project_path, src.tomo_name)
             if ts is not None:
                 key = acquisition_key(ts)
 
         if key is not None and key in by_key:
             merged_name = by_key[key]
-            kept_row, kept_proj, _, kept_hand = accepted[merged_name]
-            report = check_transferable(kept_row, row, hand_a=kept_hand, hand_b=hand)
+            kept_row, kept_proj, _ = accepted[merged_name]
+            if merged_name not in hands:
+                hands[merged_name] = _hand_for(kept_row, kept_proj)
+            hand = _hand_for(row, src.project_path)
+            report = check_transferable(kept_row, row, hand_a=hands[merged_name], hand_b=hand)
             plan.unverified.extend(report.unverified)
             if not report.ok:
                 plan.blocking.extend(report.blocking)
@@ -263,7 +284,7 @@ def plan_merge(sources: list[CoordSource], *, registry_lookup=None) -> MergePlan
         used_names.add(merged_name)
         row = _absolutize_paths(row, src.project_path)
         row["rlnTomoName"] = merged_name
-        accepted[merged_name] = (row, Path(src.project_path), key, hand)
+        accepted[merged_name] = (row, Path(src.project_path), key)
         if key is not None:
             by_key[key] = merged_name
         plan.tomo_rows[merged_name] = row
@@ -281,30 +302,19 @@ def plan_merge(sources: list[CoordSource], *, registry_lookup=None) -> MergePlan
 # ---------------------------------------------------------------------------
 
 
-def _classify_columns(frames: list[pd.DataFrame]) -> tuple[list[str], list[str], dict[str, int]]:
+def _classify_columns(merged: pd.DataFrame) -> tuple[list[str], list[str], dict[str, int]]:
     """Split the union of every source's columns into (main-star, sidecar-only, coverage).
+    `merged` is the sources stacked: a column a source lacks is NaN on its rows.
 
     Coverage counts ROWS that actually state the column, which is what the UI shows next
     to a filter ("applies to 1,204 of 3,890").
     """
-    total_rows = sum(len(f) for f in frames)
-    union: list[str] = []
-    for f in frames:
-        for c in f.columns:
-            if c not in union:
-                union.append(c)
-
-    coverage: dict[str, int] = {}
-    for col in union:
-        n = 0
-        for f in frames:
-            if col in f.columns:
-                n += int(f[col].notna().sum())
-        coverage[col] = n
+    total_rows = len(merged)
+    coverage: dict[str, int] = {c: int(n) for c, n in merged.notna().sum().items()}
 
     main: list[str] = []
     sidecar: list[str] = []
-    for col in union:
+    for col in merged.columns:
         if col in _SPINE_COLS:
             continue  # handled explicitly
         if col in ANGLE_COLS:
@@ -323,7 +333,7 @@ def _classify_columns(frames: list[pd.DataFrame]) -> tuple[list[str], list[str],
 
 
 def merge_coordinate_sources(
-    sources: list[CoordSource], *, out_dir: Path, registry_lookup=None, name: str = ""
+    sources: list[CoordSource], *, out_dir: Path, registry_lookup=None, acquisition_lookup=None, name: str = ""
 ) -> dict[str, Any]:
     """Union `sources` into a coordinate-grade merged set under `out_dir`.
 
@@ -339,7 +349,7 @@ def merge_coordinate_sources(
     if len(sources) < 2:
         raise ValueError(f"A merge needs at least 2 sources; got {len(sources)}")
 
-    plan = plan_merge(sources, registry_lookup=registry_lookup)
+    plan = plan_merge(sources, registry_lookup=registry_lookup, acquisition_lookup=acquisition_lookup)
     if not plan.ok:
         raise ValueError("Cannot merge these sources:\n  " + "\n  ".join(plan.blocking))
 
@@ -348,25 +358,30 @@ def merge_coordinate_sources(
 
     ordered = sorted(sources, key=lambda s: s.priority)
     frames: list[pd.DataFrame] = []
-    provenance_frames: list[pd.DataFrame] = []
+    source_names: list[np.ndarray] = []  # each source's own rlnTomoParticleName, "" without one
     per_source: list[dict[str, Any]] = []
+    # list star -> (its coordinate block, the block's tomogram names): one read per file, however many
+    # of its tomograms are sources
+    blocks: dict[str, tuple[pd.DataFrame, Any]] = {}
 
     for src in ordered:
-        df = _coord_block(src.star_path)
-        if "rlnTomoName" in df.columns:
-            df = df[df["rlnTomoName"].astype(str) == str(src.tomo_name)].reset_index(drop=True)
+        if str(src.star_path) not in blocks:
+            block = _coord_block(src.star_path)
+            names = block["rlnTomoName"].astype(str).to_numpy() if "rlnTomoName" in block.columns else None
+            blocks[str(src.star_path)] = (block, names)
+        block, names = blocks[str(src.star_path)]
+        if names is not None:
+            df = block[names == str(src.tomo_name)].reset_index(drop=True)
+        else:
+            df = block.copy()
         merged_name = plan.assignment[src.display()]
         df["rlnTomoName"] = merged_name
-        prov = pd.DataFrame(index=df.index)
-        prov["cbSourceLabel"] = src.display()
-        prov["cbSourceProject"] = str(src.project_path)
-        prov["cbSourceList"] = str(src.star_path)
-        prov["cbSourceType"] = src.list_type
-        prov["cbSourceParticleName"] = (
-            df["rlnTomoParticleName"].astype(str) if "rlnTomoParticleName" in df.columns else ""
-        )
         frames.append(df)
-        provenance_frames.append(prov)
+        source_names.append(
+            df["rlnTomoParticleName"].astype(str).to_numpy(dtype=object)
+            if "rlnTomoParticleName" in df.columns
+            else np.full(len(df), "", dtype=object)
+        )
         per_source.append(
             {
                 "label": src.display(),
@@ -379,9 +394,18 @@ def merge_coordinate_sources(
             }
         )
 
-    main_cols, sidecar_cols, coverage = _classify_columns(frames)
     merged = pd.concat(frames, ignore_index=True, sort=False)
-    prov = pd.concat(provenance_frames, ignore_index=True, sort=False)
+    lengths = [len(f) for f in frames]
+    prov = pd.DataFrame(
+        {
+            "cbSourceLabel": np.repeat(np.array([s.display() for s in ordered], dtype=object), lengths),
+            "cbSourceProject": np.repeat(np.array([str(s.project_path) for s in ordered], dtype=object), lengths),
+            "cbSourceList": np.repeat(np.array([str(s.star_path) for s in ordered], dtype=object), lengths),
+            "cbSourceType": np.repeat(np.array([s.list_type for s in ordered], dtype=object), lengths),
+            "cbSourceParticleName": np.concatenate(source_names),
+        }
+    )
+    main_cols, sidecar_cols, coverage = _classify_columns(merged)
 
     # rlnTomoParticleName is reassigned merged-wide: the sources' own names are unique only
     # within their own set, and a merged set needs one join key. The originals ride along

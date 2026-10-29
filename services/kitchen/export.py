@@ -22,7 +22,7 @@ from typing import Any
 import numpy as np
 
 from services.kitchen.models import SOURCE_PRIORITY, MemberKind, PickSource
-from services.kitchen.pool import PoolTable, Selection, pooled_groups
+from services.kitchen.pool import UNKNOWN_ACQ, PoolTable, Selection, pooled_groups
 from services.particles.set_ops import greedy_keep
 
 logger = logging.getLogger(__name__)
@@ -45,11 +45,7 @@ def dedup(table: PoolTable, rows: np.ndarray, radius: float | None) -> np.ndarra
     sig = table.num["sigma"][rows]
     order = np.lexsort((np.arange(len(rows)), np.where(np.isnan(sig), np.inf, -sig), prio, group))
     xyz = np.column_stack([table.num[c][rows] for c in ("x_a", "y_a", "z_a")]).astype(float)
-    keep = np.zeros(len(rows), dtype=bool)
-    bounds = np.flatnonzero(np.diff(group[order])) + 1
-    for part in np.split(order, bounds):
-        keep[part[greedy_keep(xyz[part], np.arange(len(part)), radius)]] = True
-    return rows[keep]
+    return rows[greedy_keep(xyz, order, radius, group)]
 
 
 def _optics(star: str) -> dict[str, Any] | None:
@@ -121,6 +117,12 @@ def plan(lp, sel: Selection, *, name: str, level: str | None, diameter_a: float 
             "tomograms_star": meta["tomograms_star"],
             "rows": table.src_row[mine].tolist(),
             "uids": [table.uid_hex(int(r)) for r in mine],
+            # tomogram -> its acquisition, as the table knows it: the merge equates tomograms by it
+            "acq": {
+                table.categories["tomo"][t]: table.frames[f]["acq"]
+                for t, f in set(zip(table.cat["tomo"][mine].tolist(), table.cat["frame"][mine].tolist(), strict=True))
+                if f >= 0 and table.frames[f].get("acq") not in (None, "", UNKNOWN_ACQ)
+            },
         }
         if level in (EXTRACTED, EXTRACTED_ONLY):
             labels = table.categories["extracted"]
@@ -204,7 +206,6 @@ def write_set(plan: dict[str, Any]) -> dict[str, Any]:
     """Write and publish the planned set; worker-safe. Returns the published set as JSON."""
     import pandas as pd
 
-    from services.kitchen.snapshots import project_view
     from services.particles.particle_sets import (
         ParentRef,
         ParticleSet,
@@ -258,12 +259,8 @@ def write_set(plan: dict[str, Any]) -> dict[str, Any]:
         elif level == SetLevel.COORDINATES:
             from services.particles.coord_merge import CoordSource, merge_coordinate_sources
 
-            def lookup(project_path, tomo_name):
-                try:
-                    return project_view(Path(project_path)).registry.get_tilt_series(str(tomo_name))
-                except KeyError:  # a tomogram the registry does not know: no acquisition key, kept apart
-                    return None
-
+            # A tomogram without a known acquisition is kept apart, never equated.
+            acq = {(m["project"], t): a for m in members for t, a in (m.get("acq") or {}).items()}
             sources = [
                 CoordSource(
                     star_path=Path(m["subset"]),
@@ -277,7 +274,12 @@ def write_set(plan: dict[str, Any]) -> dict[str, Any]:
                 for t in m["tomos"]
             ]
             merged = staging / "merged"
-            merge_coordinate_sources(sources, out_dir=merged, registry_lookup=lookup, name=plan["name"])
+            merge_coordinate_sources(
+                sources,
+                out_dir=merged,
+                acquisition_lookup=lambda project, tomo: acq.get((str(project), str(tomo))),
+                name=plan["name"],
+            )
             particles, tomograms = merged / "particles.star", merged / "tomograms.star"
             extras = {
                 "provenance.star": merged / "provenance.star",
