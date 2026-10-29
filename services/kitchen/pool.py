@@ -323,8 +323,7 @@ def verdict_codes(table: PoolTable, verdicts: dict[str, str]) -> np.ndarray:
 def frame_choice_mask(table: PoolTable, choice: dict[str, str]) -> np.ndarray:
     """False on rows of a conflicted acquisition's frames outside the chosen group (named by its
     first frame's key)."""
-    ok = np.ones(table.n, dtype=bool)
-    fcode = table.cat["frame"]
+    off = np.zeros(len(table.frames) + 1, dtype=bool)  # per frame code; the last entry is code -1 (no frame)
     for acq, groups in table.conflicts.items():
         chosen = choice.get(acq)
         if not chosen:
@@ -334,8 +333,8 @@ def frame_choice_mask(table: PoolTable, choice: dict[str, str]) -> np.ndarray:
             continue
         for g in groups:
             if g is not keep:
-                ok &= ~np.isin(fcode, g)
-    return ok
+                off[g] = True
+    return ~off[table.cat["frame"]]
 
 
 def filter_mask(table: PoolTable, f, set_masks: dict[str, np.ndarray] | None = None):
@@ -428,16 +427,15 @@ def apply_post_ops(table: PoolTable, passes: np.ndarray, nn_a: float | None, top
     sigma = table.num["sigma"][rows]
     xyz = np.column_stack([table.num["x_a"][rows], table.num["y_a"][rows], table.num["z_a"][rows]]).astype(float)
     # Best σ first, rows without one last in table order.
-    order_all = np.lexsort((np.arange(len(rows)), np.where(np.isnan(sigma), np.inf, -sigma), groups))
-    bounds = np.flatnonzero(np.diff(groups[order_all])) + 1
-    for part in np.split(order_all, bounds):
-        keep_local = np.ones(len(part), dtype=bool)
-        if nn_a:
-            keep_local = greedy_keep(xyz[part], np.arange(len(part)), float(nn_a))
-        kept = part[keep_local]
-        if top_n:
-            kept = kept[: int(top_n)]
-        out[rows[kept]] = True
+    order = np.lexsort((np.arange(len(rows)), np.where(np.isnan(sigma), np.inf, -sigma), groups))
+    keep = greedy_keep(xyz, order, float(nn_a), groups) if nn_a else np.ones(len(rows), dtype=bool)
+    kept = order[keep[order]]  # by group, then best σ first
+    if top_n and len(kept):
+        g = groups[kept]
+        first = np.flatnonzero(np.r_[True, g[1:] != g[:-1]])
+        rank = np.arange(len(kept)) - np.repeat(first, np.diff(np.r_[first, len(kept)]))
+        kept = kept[rank < int(top_n)]
+    out[rows[kept]] = True
     return out
 
 
