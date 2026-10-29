@@ -380,3 +380,42 @@ def jobs_reading_set(state, set_id: str) -> list[str]:
         if any(needle == str(v).split(":", 1)[-1] for v in overrides.values()):
             out.append(iid)
     return out
+
+
+def set_read_by(job_model, slot: str = "input_optimisation") -> str | None:
+    """The id of the particle set a job's input reads: the one recorded at its submit while its inputs are
+    fixed, else the one set by hand; None when it reads no set."""
+    if getattr(job_model, "inputs_fixed", False):
+        rec = (job_model.submitted_inputs or {}).get(slot)
+        key = rec.source_key if rec is not None else None
+    else:
+        key = (getattr(job_model, "source_overrides", None) or {}).get(slot)
+    _type, _, ref = str(key or "").partition(":")
+    return ref[len(SET_PRODUCER_PREFIX) :] if ref.startswith(SET_PRODUCER_PREFIX) else None
+
+
+def pool_scope(pset: ParticleSet) -> tuple[list[str], list[str]]:
+    """The subset ids a kitchen set was made in (included, excluded); empty for any other set."""
+    if pset.recipe.op != SetOp.POOL:
+        return [], []
+    params = pset.recipe.params
+    scope = params.get("scope") or (params.get("draft") or {}).get("scope") or {}
+    return list(scope.get("include") or []), list(scope.get("exclude") or [])
+
+
+def set_lineage(pset: ParticleSet) -> str:
+    """Where a set came from, in one line: for a kitchen set its subsets, kitchen and group, then what it holds
+    and from how many projects ("class 1 (412_particle · classes) · 1,102 extracted · 5 projects")."""
+    count = f"{pset.n_particles:,} {pset.level.value}"
+    if pset.recipe.op != SetOp.POOL:
+        return f"{pset.recipe.describe()} · {count}"
+    params = pset.recipe.params
+    names, groups = params.get("subsets") or {}, params.get("groups") or {}
+    include, exclude = pool_scope(pset)
+    where = " ∪ ".join(names.get(i, i) for i in include)
+    where = " ".join([where, *(f"not {names.get(i, i)}" for i in exclude)]).strip()
+    kitchen = params.get("species") or pset.species_id or "kitchen"
+    in_groups = sorted({g for i in include if (g := groups.get(i))})
+    head = f"{where} ({' · '.join([kitchen, *in_groups])})" if where else f"{kitchen} kitchen"
+    n_projects = int(pset.details.get("n_projects") or 1)
+    return f"{head} · {count} · {n_projects} project{'' if n_projects == 1 else 's'}"
