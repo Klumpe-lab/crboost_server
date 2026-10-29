@@ -84,6 +84,10 @@ class OutputSlot(BaseModel):
     # transparently supersede the original whenever the user has saved one.
     prefer_if_exists: bool = Field(default=False)
 
+    # The optimisation set lists positions without particle images (template-match candidates): an
+    # input that `needs_extracted` never reads it.
+    coordinates_only: bool = Field(default=False)
+
     @field_validator("key")
     @classmethod
     def _key_nonempty(cls, v: str) -> str:
@@ -120,6 +124,10 @@ class InputSlot(BaseModel):
     # input, so nothing resolves, wires, records or shows it (template matching's segmentations,
     # read only while a search region is set). None: the input always exists.
     when: str | None = Field(default=None)
+
+    # The job reads particle images (relion_refine): an optimisation set of positions only (template-match
+    # candidates, a coordinates particle set) cannot feed it, whoever chose it.
+    needs_extracted: bool = Field(default=False)
 
     description: str = Field(default="")
 

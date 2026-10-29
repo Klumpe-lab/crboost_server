@@ -66,6 +66,10 @@ class OutputCandidate:
     # the same tomogram.
     auto_eligible: bool = True
 
+    # Positions without particle images (`OutputSlot.coordinates_only`, a coordinates particle set): an
+    # input that `needs_extracted` never reads it.
+    coordinates_only: bool = False
+
     @property
     def source_key(self) -> str:
         """Key format for source_overrides: 'jobtype:instance:<instance_id>' for a job, which holds
@@ -909,10 +913,18 @@ class PathResolutionService:
         fixed: bool = False,
     ) -> SlotSource:
         """The source a `source_overrides`-style key names. `output_key` pins which output of
-        the producer, for a recorded source."""
+        the producer, for a recorded source. Positions without particle images, named for an
+        input that needs images, are reported as a dangling source is."""
         if key.startswith("manual:"):
             return SlotSource(manual_path=key[len("manual:") :], override_key=key, fixed=fixed)
         hit = self._resolve_override(slot, key, index, output_key=output_key)
+        if hit is not None and slot.needs_extracted and hit.coordinates_only:
+            return SlotSource(
+                override_key=key,
+                problem=f"{hit.label or hit.instance_path} has positions only, no particle images: extract it first "
+                "(Subtomo extraction or Warp export) and read that job's output",
+                fixed=fixed,
+            )
         if hit is not None:
             return SlotSource(candidate=hit, override_key=key, fixed=fixed)
         target = _synthetic_override_target(key)
@@ -1113,6 +1125,7 @@ class PathResolutionService:
                         prefer_if_exists=slot.prefer_if_exists,
                         # A Subset is read only by a job set to read it.
                         auto_eligible=producer_job_type != JobType.SUBSET,
+                        coordinates_only=slot.coordinates_only,
                     )
                 )
 
@@ -1293,7 +1306,7 @@ class PathResolutionService:
                 index[JobFileType.OPTIMISATION_SET_STAR].append(candidate)
 
     def _particle_set_candidate(self, set_id: str, *, rank: int, pset=None) -> OutputCandidate | None:
-        from services.particles.particle_sets import get_set
+        from services.particles.particle_sets import SetLevel, get_set
 
         if pset is None:
             if self.state.project_path is None:
@@ -1313,6 +1326,7 @@ class PathResolutionService:
             species_id=pset.species_id or None,
             label=_particle_set_label(pset),
             auto_eligible=False,
+            coordinates_only=pset.level == SetLevel.COORDINATES,
         )
 
     def _get_instance_path(self, instance_id: str, job_model: AbstractJobParams) -> str:
@@ -1404,7 +1418,8 @@ class PathResolutionService:
         Automatic choice of the producer for one input slot.
 
         The pool is every output of an accepted type that `auto_exclusion` allows (an
-        earlier stage, not another species), minus the consumer itself. It is ranked by
+        earlier stage, not another species), minus the consumer itself and, for an input that
+        needs particle images, positions without them. It is ranked by
         species match (the consumer's own species over species-neutral producers, whether
         or not they have run), then by the slot's preferred source type, then a pipeline
         job over a synthetic producer (imported tomograms, a merge, a pick list), then a
@@ -1423,6 +1438,7 @@ class PathResolutionService:
             if c.auto_eligible
             and c.producer_instance_id != consumer_instance_id
             and auto_exclusion(consumer_type, consumer_species_id, c) is None
+            and not (slot.needs_extracted and c.coordinates_only)
         ]
         if not pool:
             return AutoChoice()
