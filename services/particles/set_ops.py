@@ -97,13 +97,13 @@ def read_table(path: str | Path) -> StarTable:
     return table
 
 
-def greedy_keep(xyz: np.ndarray, order: np.ndarray, radius: float) -> np.ndarray:
+def greedy_keep(xyz: np.ndarray, order: np.ndarray, radius: float, groups: np.ndarray | None = None) -> np.ndarray:
     """Boolean mask over rows: walking `order` (best first), a row is kept unless a kept row lies
-    within `radius` Å."""
+    within `radius` Å (a kept row of its own group, when `groups` gives each row one)."""
     keep = np.zeros(len(xyz), dtype=bool)
     if len(order) == 0:
         return keep
-    dropped = _greedy_drop_mask(xyz[order], radius)
+    dropped = _greedy_drop_mask(xyz[order], radius, None if groups is None else np.asarray(groups)[order])
     keep[order[~dropped]] = True
     return keep
 

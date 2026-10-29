@@ -95,23 +95,48 @@ def merge_lists_to_star(sources: Sequence[dict], tomo_name: str, out_star: Path)
     return {"count": len(df), "out_star": str(out_star), "n_sources": len(arrs)}
 
 
-def _greedy_drop_mask(coords: np.ndarray, radius: float) -> np.ndarray:
+def _close_pairs(coords: np.ndarray, radius: float, groups: np.ndarray | None) -> tuple[np.ndarray, np.ndarray]:
+    """(earlier, later) rows within `radius` of each other and in the same group. A KD-tree proposes
+    them; the distance test is the keep-first walk's own arithmetic, so the result does not depend on
+    the tree's rounding."""
+    from scipy.spatial import cKDTree
+
+    pts = coords
+    if groups is not None:
+        # A fourth axis puts every group farther than `radius` from every other.
+        pts = np.column_stack([coords, np.asarray(groups, dtype=float) * (2.0 * radius + 1.0)])
+    pairs = cKDTree(pts).query_pairs(radius * (1.0 + 1e-9) + 1e-9, output_type="ndarray")
+    if not len(pairs):
+        return pairs[:, 0], pairs[:, 1]
+    d = coords[pairs[:, 1]] - coords[pairs[:, 0]]
+    pairs = pairs[(d * d).sum(axis=1) <= float(radius) * float(radius)]
+    return pairs[:, 0], pairs[:, 1]
+
+
+def _greedy_drop_mask(coords: np.ndarray, radius: float, groups: np.ndarray | None = None) -> np.ndarray:
     """Boolean N: True for picks dropped by greedy keep-first dedup — a pick is
-    dropped iff within `radius` of an EARLIER kept pick (so row order = priority).
-    O(n²) worst case but n is small (tens–hundreds of picks per tomogram)."""
+    dropped iff within `radius` of an EARLIER kept pick (so row order = priority),
+    of its own group when `groups` is given.
+
+    Settled in rounds over the close pairs: each round keeps every open pick whose
+    earlier neighbours are all dropped, then drops the open picks next to a kept
+    one. That is the walk's own result (a pick's fate depends only on its earlier
+    neighbours'), in as many rounds as its longest chain of decisions."""
     coords = np.asarray(coords, dtype=float).reshape(-1, 3)
     n = len(coords)
-    dropped = np.zeros(n, dtype=bool)
     if n < 2 or radius <= 0:
-        return dropped
-    r2 = float(radius) * float(radius)
-    for i in range(n):
-        if dropped[i]:
-            continue
-        d = coords[i + 1 :] - coords[i]
-        within = (d * d).sum(axis=1) <= r2
-        dropped[i + 1 :] |= within
-    return dropped
+        return np.zeros(n, dtype=bool)
+    a, b = _close_pairs(coords, float(radius), groups)
+    open_, kept, dropped = 0, 1, 2
+    state = np.zeros(n, dtype=np.int8)
+    while (state == open_).any():
+        live = (state[b] == open_) & (state[a] != dropped)
+        a, b = a[live], b[live]
+        blocked = np.zeros(n, dtype=bool)
+        blocked[b] = True
+        state[(state == open_) & ~blocked] = kept
+        state[b[state[a] == kept]] = dropped
+    return state == dropped
 
 
 def clash_stats_coords(coords: np.ndarray, radius: float) -> dict:
