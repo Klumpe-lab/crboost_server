@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from services.models_base import PARTICLE_EXTRACTION_TYPES, JobType
@@ -39,11 +40,14 @@ _COORD_DECIMALS = 1
 
 
 def _coord_key(x: float, y: float, z: float) -> tuple[int, int, int]:
-    return (
-        int(round(float(x), _COORD_DECIMALS) * 10**_COORD_DECIMALS),
-        int(round(float(y), _COORD_DECIMALS) * 10**_COORD_DECIMALS),
-        int(round(float(z), _COORD_DECIMALS) * 10**_COORD_DECIMALS),
-    )
+    """A position in tenths of an Å, rounded half to even: `coord_keys` of one pick."""
+    s = 10**_COORD_DECIMALS
+    return (round(float(x) * s), round(float(y) * s), round(float(z) * s))
+
+
+def coord_keys(xyz: np.ndarray) -> np.ndarray:
+    """`_coord_key` of every row of an (n, 3) array of centred Å, as (n, 3) int64."""
+    return np.rint(np.asarray(xyz, dtype=np.float64) * 10**_COORD_DECIMALS).astype(np.int64)
 
 
 def _parse_visible_frames(raw) -> list[int] | None:
@@ -163,6 +167,8 @@ def build_pick_to_mrcs_index(
     recent extraction is the one I care about."
     """
     index: dict[tuple[str, tuple[int, int, int]], dict] = {}
+    root = Path(project_path)
+    coord_cols = ("rlnCenteredCoordinateXAngst", "rlnCenteredCoordinateYAngst", "rlnCenteredCoordinateZAngst")
 
     for job_dir in _subtomo_job_dirs(project_state, project_path, candidate_extract_job_dir):
         df = _read_subtomo_particles(job_dir / "particles.star", job_dir)
@@ -170,23 +176,26 @@ def build_pick_to_mrcs_index(
             continue
         if "rlnImageName" not in df.columns or "rlnTomoName" not in df.columns:
             continue
-        coord_cols = ("rlnCenteredCoordinateXAngst", "rlnCenteredCoordinateYAngst", "rlnCenteredCoordinateZAngst")
         if not all(c in df.columns for c in coord_cols):
             continue
 
-        for _, row in df.iterrows():
-            tomo = str(row["rlnTomoName"])
-            try:
-                key = _coord_key(row[coord_cols[0]], row[coord_cols[1]], row[coord_cols[2]])
-            except (TypeError, ValueError):
-                continue
-            mrcs_path = Path(str(row["rlnImageName"]))
-            if not mrcs_path.is_absolute():
-                mrcs_path = Path(project_path) / mrcs_path
-            visible = (
-                _parse_visible_frames(row.get("rlnTomoVisibleFrames")) if "rlnTomoVisibleFrames" in df.columns else None
-            )
-            index[(tomo, key)] = {"mrcs": mrcs_path, "visible_frames": visible, "src_job_dir": job_dir}
+        xyz = np.column_stack([pd.to_numeric(df[c], errors="coerce").to_numpy(dtype=np.float64) for c in coord_cols])
+        rows = np.flatnonzero(np.isfinite(xyz).all(axis=1))  # a row without a numeric position cannot be joined
+        keys = coord_keys(xyz[rows]).tolist()
+        tomos = df["rlnTomoName"].astype(str).to_numpy()[rows]
+        images = df["rlnImageName"].astype(str).to_numpy()[rows]
+        visible = None
+        if "rlnTomoVisibleFrames" in df.columns:
+            visible = df["rlnTomoVisibleFrames"].astype(str).to_numpy()[rows]
+        parsed: dict[str, list[int] | None] = {}  # the rows of one tomogram mostly share a visible-frames string
+        for i, (tomo, key, image) in enumerate(zip(tomos, keys, images, strict=True)):
+            frames = None
+            if visible is not None:
+                raw = visible[i]
+                if raw not in parsed:
+                    parsed[raw] = _parse_visible_frames(raw)
+                frames = list(parsed[raw]) if parsed[raw] is not None else None
+            index[(tomo, tuple(key))] = {"mrcs": root / image, "visible_frames": frames, "src_job_dir": job_dir}
 
     return index
 

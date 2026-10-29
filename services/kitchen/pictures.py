@@ -11,12 +11,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+
 from services.kitchen.models import MemberKind, PoolMember
 from services.kitchen.snapshots import ProjectView
 from services.particles.analytics_store import job_dir_of
 from services.particles.coords import CENTERED_COLS
 from services.particles.records import file_mtime
-from services.particles.subtomo_link import build_pick_to_mrcs_index, lookup_for_pick, subtomo_particles_stars
+from services.particles.subtomo_link import build_pick_to_mrcs_index, coord_keys, subtomo_particles_stars
 
 NOT_EXTRACTED = "not extracted: no subtomogram of this pick in the extraction jobs of its candidates"
 LIST_NOT_JOINED = "a pick list's extraction is not shown here yet"
@@ -45,9 +47,10 @@ def member_pictures(view: ProjectView, member: PoolMember, star: str) -> dict[in
     df = _particle_block(Path(star))
     tomos = df["rlnTomoName"].astype(str).to_numpy()
     xyz = df[CENTERED_COLS].to_numpy(dtype=float)
+    rows = np.flatnonzero(np.isfinite(xyz).all(axis=1))
     out: dict[int, tuple[str, str, tuple | None]] = {}
-    for i in range(len(df)):
-        hit = lookup_for_pick(index, tomos[i], *xyz[i])
+    for i, key in zip(rows.tolist(), coord_keys(xyz[rows]).tolist(), strict=True):
+        hit = index.get((tomos[i], tuple(key)))
         if hit is not None:
             visible = tuple(hit["visible_frames"]) if hit.get("visible_frames") else None
             out[i] = (str(Path(hit["src_job_dir"]) / "particles.star"), str(hit["mrcs"]), visible)
