@@ -16,6 +16,7 @@ from services.models_base import JobType
 from ui.components.species_pill import render_species_line, species_opener
 from ui.job_plugins._field_styles import (
     field_grid,
+    field_group,
     toggle_row,
     text_field,
     numeric_field,
@@ -26,6 +27,8 @@ from ui.job_plugins._field_styles import (
     is_enum_type,
     SANS,
     CLR_SUBLABEL,
+    HELPER_STYLE,
+    LABEL_W,
 )
 
 BASE_FIELDS: set[str] = {
@@ -42,6 +45,9 @@ BASE_FIELDS: set[str] = {
     "additional_sources",
     "merge_only",
 }
+
+# An open decision, under a field row's value column (label column + gap), in the Segment tab's amber.
+_NOTE_WARN_STYLE = f"{HELPER_STYLE} color: #b45309; margin: 0 0 4px {LABEL_W + 8}px;"
 
 
 def _get_description(job_model, param_name: str) -> str | None:
@@ -100,22 +106,26 @@ def render_species_badge(job_model, project_path: Path | None, *, callbacks: dic
     render_species_line(species, on_open=species_opener(callbacks, species.id))
 
 
-def render_denoise_inheritance(
+def render_denoise_params(
     job_model, project_path: Path | None, instance_id: str | None, *, is_frozen: bool, save_handler: Callable
 ) -> Callable[[], None]:
-    """The Denoiser row on denoise-predict: which model the job runs, as one choice.
+    """Denoise-predict's parameters: the Denoiser, under it only the fields of the method it names, then
+    which tomograms run.
 
-    A cryoCARE or IsoNet model must run as it was trained, so each denoise-train job of the project is
-    one entry carrying its method and IsoNet deconv; choosing it wires the model input to that job. A
-    model file set by hand in Inputs has no train job behind it, so then cryoCARE and IsoNet are offered
-    for the user to say which it is. easymode runs its pretrained denoisers, with no train job and no
-    model input. The row shows what Inputs has wired and never picks for the user. Returns the row's
-    refresh, a no-op unless what it shows changed (an input chosen in Inputs, say).
+    The Denoiser is which model the job runs, as one choice. A cryoCARE or IsoNet model must run as it
+    was trained, so each denoise-train job of the project is one entry carrying its method and IsoNet
+    deconv; choosing it wires the model input to that job. A model file set by hand in Inputs has no
+    train job behind it, so then cryoCARE and IsoNet are offered for the user to say which it is.
+    easymode runs its pretrained denoisers, with no train job and no model input. The row shows what
+    Inputs has wired and never picks for the user: with nothing wired it is empty and says so. Returns
+    the refresh of the Denoiser and its fields, a no-op unless what they show changed (an input chosen
+    in Inputs, say).
     """
     from services.models_base import DenoiseMethod, EasymodeDenoiser
     from services.path_resolution_service import PathResolutionService, instance_override_key
     from services.project_state import get_project_state_for
 
+    fields = type(job_model).model_fields
     box = ui.column().classes("w-full gap-0")
     shown_key: list = [None]
 
@@ -165,25 +175,51 @@ def render_denoise_inheritance(
         save_handler()
         refresh()
 
+    def method_of(shown: str) -> DenoiseMethod | None:
+        """The method the shown entry runs: easymode, the one said for a model file, or a train job's own."""
+        kind, _, name = shown.partition(":")
+        if shown == DenoiseMethod.EASYMODE.value:
+            return DenoiseMethod.EASYMODE
+        if kind == "manual":
+            return DenoiseMethod(name)
+        if kind == "train":
+            train = state().jobs.get(name)
+            return DenoiseMethod(train.denoise_method) if train else None
+        return None
+
+    def number(attr: str) -> None:
+        numeric_field(
+            fields[attr].title,
+            job_model,
+            attr,
+            is_frozen=is_frozen,
+            save_handler=save_handler,
+            hint=fields[attr].description,
+        )
+
     def build(options: dict[str, str], shown: str) -> None:
-        fields = type(job_model).model_fields
-        with field_grid():
-            choice_row(
-                "Denoiser",
-                job_model,
-                "denoise_method",
-                options,
-                is_frozen=is_frozen,
-                save_handler=save_handler,
-                value=shown,
-                hint="A trained model runs as it was trained: choose the denoise-train job that made it, and "
-                "Inputs reads its model. A model file set by hand in Inputs: say whether cryoCARE or IsoNet "
-                "trained it. easymode: its pretrained denoisers on the full reconstruction, no model input.",
-                on_change=pick,
+        choice_row(
+            "Denoiser",
+            job_model,
+            "denoise_method",
+            options,
+            is_frozen=is_frozen,
+            save_handler=save_handler,
+            value=shown,
+            hint="A trained model runs as it was trained: choose the denoise-train job that made it, and "
+            "Inputs reads its model. A model file set by hand in Inputs: say whether cryoCARE or IsoNet "
+            "trained it. easymode: its pretrained denoisers on the full reconstruction, no model input.",
+            on_change=pick,
+        )
+        if not shown:
+            ui.label("Not chosen yet: easymode, a denoise-train job's model, or a model file set in Inputs.").style(
+                _NOTE_WARN_STYLE
             )
-            if shown == DenoiseMethod.EASYMODE.value:
+        method = method_of(shown)
+        with field_grid():
+            if method == DenoiseMethod.EASYMODE:
                 enum_field(
-                    "easymode model",
+                    "Model",
                     job_model,
                     "easymode_denoiser",
                     EasymodeDenoiser,
@@ -191,15 +227,11 @@ def render_denoise_inheritance(
                     save_handler=save_handler,
                     hint=fields["easymode_denoiser"].description,
                 )
-                for attr in ("easymode_tta", "easymode_iter"):
-                    numeric_field(
-                        fields[attr].title,
-                        job_model,
-                        attr,
-                        is_frozen=is_frozen,
-                        save_handler=save_handler,
-                        hint=fields[attr].description,
-                    )
+                number("easymode_tta")
+                number("easymode_iter")
+            elif method == DenoiseMethod.CRYOCARE:
+                for attr in ("ntiles_x", "ntiles_y", "ntiles_z"):
+                    number(attr)
             elif shown == f"manual:{DenoiseMethod.ISONET.value}":
                 toggle_field(
                     "IsoNet deconv",
@@ -221,6 +253,16 @@ def render_denoise_inheritance(
             build(options, shown)
 
     refresh()
+    # Outside the box: no method change rebuilds it under the user's typing.
+    with field_group(), field_grid():
+        text_field(
+            fields["denoising_tomo_name"].title,
+            job_model,
+            "denoising_tomo_name",
+            is_frozen=is_frozen,
+            save_handler=save_handler,
+            hint=fields["denoising_tomo_name"].description,
+        ).props('placeholder="all"')
     return refresh
 
 
@@ -333,7 +375,7 @@ def render_default_params(
 def render_default_params_card(
     job_type, job_model, is_frozen: bool, save_handler: Callable, exclude: set[str] | None = None, **_ctx
 ):
-    """render_default_params with an optional species badge prefix. Returns the denoiser row's refresh on
+    """render_default_params with an optional species badge prefix. Returns the denoiser block's refresh on
     denoise-predict, None elsewhere."""
     ui_mgr = _ctx.get("ui_mgr")
     # A Path, not str: get_project_state_for() calls .resolve() on it. The old str
@@ -346,11 +388,13 @@ def render_default_params_card(
     render_config_preamble(job_model)
     refresh = None
     if job_type == JobType.DENOISE_PREDICT:
-        refresh = render_denoise_inheritance(
+        refresh = render_denoise_params(
             job_model, project_path, _ctx.get("instance_id"), is_frozen=is_frozen, save_handler=save_handler
         )
-        # The denoiser row above owns these; the generic grid must not render them twice.
-        exclude = (exclude or set()) | getattr(job_model, "INHERITANCE_FIELDS", set())
+        # The block above owns these; the generic grid renders only what a later field adds.
+        exclude = (exclude or set()) | job_model.DENOISER_FIELDS
+        if not job_model.USER_PARAMS - exclude:
+            return refresh
     render_default_params(job_type, job_model, is_frozen, save_handler, exclude=exclude)
     return refresh
 

@@ -9,6 +9,14 @@ from services.computing.slurm_service import SlurmPreset, SlurmConfig
 from services.configs.config_service import get_config_service
 
 
+def _tiles_description(axis: str) -> str:
+    return (
+        f"cryoCARE predicts each tomogram in tiles, this many along {axis}, so that one tile fits in GPU memory. "
+        "The job doubles it on an axis longer than 1000 voxels (at most 8). Raise it if prediction runs out of GPU "
+        "memory."
+    )
+
+
 class DenoisePredictParams(AbstractJobParams):
     job_type: JobType = Field(default=JobType.DENOISE_PREDICT)
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
@@ -17,7 +25,7 @@ class DenoisePredictParams(AbstractJobParams):
 
     # denoise_method and isonet_deconv are in USER_PARAMS for the dirty-marking and the
     # freeze-once-scheduled that entails, but they are not rendered by the generic grid —
-    # render_denoise_inheritance owns them: one Denoiser choice among the project's train jobs
+    # render_denoise_params owns them: one Denoiser choice among the project's train jobs
     # (each brings its method and deconv and wires the model input), cryoCARE or IsoNet for a
     # model file set by hand, and easymode, which needs no train job and has no model input.
     # Predict must run a trained model as it was trained (see inherited_from_train).
@@ -26,7 +34,6 @@ class DenoisePredictParams(AbstractJobParams):
         "ntiles_y",
         "ntiles_z",
         "denoising_tomo_name",
-        "perdevice",
         "array_throttle",
         "denoise_method",
         "isonet_deconv",
@@ -34,13 +41,18 @@ class DenoisePredictParams(AbstractJobParams):
         "easymode_tta",
         "easymode_iter",
     }
-    # Owned by render_denoise_inheritance, not the generic parameter grid.
-    INHERITANCE_FIELDS: ClassVar[set[str]] = {
+    # Owned by render_denoise_params (the Denoiser, then only what the chosen method reads), not the
+    # generic parameter grid.
+    DENOISER_FIELDS: ClassVar[set[str]] = {
         "denoise_method",
         "isonet_deconv",
         "easymode_denoiser",
         "easymode_tta",
         "easymode_iter",
+        "ntiles_x",
+        "ntiles_y",
+        "ntiles_z",
+        "denoising_tomo_name",
     }
 
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
@@ -59,10 +71,17 @@ class DenoisePredictParams(AbstractJobParams):
     ]
 
     denoise_method: DenoiseMethod = DenoiseMethod.CRYOCARE
-    ntiles_x: int = Field(default=4, ge=1)
-    ntiles_y: int = Field(default=4, ge=1)
-    ntiles_z: int = Field(default=4, ge=1)
-    denoising_tomo_name: str = ""
+    # cryoCARE-only:
+    ntiles_x: int = Field(default=4, ge=1, title="Tiles X", description=_tiles_description("X"))
+    ntiles_y: int = Field(default=4, ge=1, title="Tiles Y", description=_tiles_description("Y"))
+    ntiles_z: int = Field(default=4, ge=1, title="Tiles Z", description=_tiles_description("Z"))
+    denoising_tomo_name: str = Field(
+        default="",
+        title="Tomogram filter",
+        description="Denoise only the tomograms whose name contains this text; the others are skipped. "
+        "Empty: all of them.",
+    )
+    # Read by no denoise driver; kept so saved projects still load.
     perdevice: int = Field(default=1)
     array_throttle: int = Field(
         default=20, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tomogram denoise prediction"
@@ -79,17 +98,23 @@ class DenoisePredictParams(AbstractJobParams):
     easymode_denoiser: EasymodeDenoiser = Field(
         default=EasymodeDenoiser.N2N,
         title="easymode model",
-        description="n2n: noise2noise. ddw: distilled DeepDeWedge, also fills the missing wedge. "
+        description="n2n: noise2noise, denoises only. ddw: distilled DeepDeWedge, also fills the missing wedge. "
         "iso: distilled IsoNet2, also fills the missing wedge.",
     )
     easymode_tta: int = Field(
-        default=1, ge=1, le=16, title="TTA", description="Test-time augmentation factor (1–16); higher is slower."
+        default=1,
+        ge=1,
+        le=16,
+        title="TTA",
+        description="Test-time augmentation: how many rotated and flipped copies of each tomogram are denoised "
+        "and averaged (1–16). Smoother, and slower in proportion.",
     )
     easymode_iter: int = Field(
         default=1,
         ge=1,
         title="Iterations",
-        description="Denoising passes; more may help contrast, but beware of artifacts.",
+        description="How many times the denoiser runs (1 = once). More passes can raise contrast, and can add "
+        "artefacts.",
     )
 
     def __init__(self, **data):
