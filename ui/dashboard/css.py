@@ -159,8 +159,9 @@ _CB_CSS = """
 .cb-gallery-tile {
     position: relative; width: 96px; height: 96px;
     background-color: #0f172a; background-repeat: no-repeat;
-    border-radius: 3px; cursor: pointer; overflow: hidden;
+    border-radius: 5px; cursor: pointer; overflow: hidden;
     border: 2px solid transparent; transition: transform 0.06s ease;
+    box-shadow: 0 1px 2px rgba(16, 42, 67, 0.22);
 }
 .cb-gallery-tile:hover { transform: scale(1.04); border-color: #c7d2fe; }
 /* Selected tile. Amber, matching .cb-pick-ghost.cb-ghost-selected on the slab,
@@ -1896,6 +1897,11 @@ _REGISTRY_CSS = """
  * than its line wraps its segments; below 440 px the segments' padding tightens so that rarely happens. */
 .cb-species-page .cb-species-header { flex-wrap: wrap; row-gap: 4px; }
 .cb-species-page .cb-seg { max-width: 100%; flex-wrap: wrap; }
+/* The same on the view's title line, where the workspace's page carries them after the view's name: the strip
+ * wraps its segments rather than push the expand and close icons off the line. */
+.cb-species-head { row-gap: 4px; }
+.cb-species-head .cb-species-mark { flex-shrink: 1 !important; }
+.cb-species-head .cb-seg { max-width: 100%; flex-wrap: wrap; flex-shrink: 1; }
 @container cb-sdetail (max-width: 440px) {
     .cb-species-header .cb-seg-btn { padding: 2px 5px; }
 }
@@ -1945,31 +1951,40 @@ _TITLE_FONT_LINK = (
 )
 
 
-# The STA kitchen (ui/kitchen/kitchen.js): hover and state polish of its tiles, and the narrow-pane
-# stack. Structure is inline in the element; a container query cannot be, hence the one !important.
+# The STA kitchen (ui/sta_kitchen/sta_kitchen.js): its tiles are the galleries' `.cb-gallery-tile` (dropped, selected
+# and hover-brush looks included); here only what is the kitchen's own: a cutout on its way, kept by hand, no
+# cutout, the source glyph, subset dots, the cards of the by-tomogram stream, the subsets rail, chips and the
+# "+ filter" list. Structure is inline in the element.
 _KITCHEN_CSS = """
-.cbk-tile { outline: 1px solid transparent; outline-offset: -1px; }
-.cbk-tile:hover { outline-color: #9fb6cf; }
-.cbk-tile.cbk-active { outline: 2px solid #ffffff; box-shadow: 0 0 0 1px #0f172a; z-index: 1; }
-.cbk-tile.cbk-cursor { outline: 2px solid var(--cb-accent, #4a8fd4); }
-.cbk-tile.cbk-keep { box-shadow: inset 0 0 0 2px #16a34a; }
-.cbk-tile.cbk-drop { box-shadow: inset 0 0 0 2px #ef4444; }
-.cbk-tile.cbk-drop::after {
-    content: ''; position: absolute; inset: 0; pointer-events: none;
-    background: repeating-linear-gradient(135deg, rgba(239,68,68,0.0) 0 6px, rgba(239,68,68,0.55) 6px 7px);
-}
-.cbk-tile.cbk-none { background: #334155 !important; }
-.cbk-tile.cbk-none::before {
+.cbk .cbk-tile > img { width: 100%; height: 100%; display: block; }
+.cbk .cbk-tile:hover { z-index: 2; }
+.cbk .cbk-tile.cbk-wait { animation: cb-img-wait 1.4s ease-in-out infinite; }
+.cbk .cbk-tile.cbk-keep { border-color: #16a34a; box-shadow: 0 0 0 1px #16a34a; }
+.cbk .cbk-tile.cbk-none { background: #334155; }
+.cbk .cbk-tile.cbk-none::before {
     content: '∅'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     color: #94a3b8; font-size: 14px;
 }
-.cbk-ttl.cbk-red { color: #dc2626; }
-.cbk-chip { cursor: pointer; }
-.cbk-chip:hover { background: #e2e8f0; }
-.cbk-handle:hover { fill: var(--cb-accent, #4a8fd4); }
-@container (max-width: 1100px) {
-    .cbk-main { grid-template-columns: minmax(0, 1fr) !important; grid-template-rows: auto minmax(0, 1fr); }
+.cbk .cbk-glyph {
+    position: absolute; left: 3px; top: 1px; font-size: 9px; color: #fff; text-shadow: 0 0 2px #000;
+    pointer-events: none;
 }
+.cbk .cb-tile-score { font-family: 'IBM Plex Mono', monospace; pointer-events: none; }
+.cbk .cbk-srow {
+    background: #ffffff; border: 1px solid #dbe3ec; border-radius: 8px; box-shadow: 0 1px 2px rgba(16, 42, 67, 0.06);
+}
+.cbk .cbk-pane {
+    background: #0f172a; border-radius: 5px; overflow: hidden; box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.18);
+}
+.cbk .cbk-sbox { border-radius: 5px; }
+.cbk-ttl.cbk-red { color: #dc2626; }
+.cbk .cbk-chip { cursor: pointer; }
+.cbk .cbk-chip:hover { background: #e2e8f0; }
+.cbk-menu .cbk-mitem:hover { background: #eef4fb; }
+.cbk .cbk-subdots { position: absolute; left: 3px; bottom: 3px; display: flex; gap: 2px; pointer-events: none; }
+.cbk .cbk-subdots i { width: 6px; height: 6px; border-radius: 50%; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85); }
+.cbk .cbk-ritem:hover { background: #eef2f7; }
+.cbk .cbk-ritem.cbk-drop { background: #fef3c7; outline: 1px dashed #f59e0b; }
 """
 
 
