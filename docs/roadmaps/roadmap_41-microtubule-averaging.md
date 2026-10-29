@@ -1,6 +1,7 @@
-# Roadmap 41 — Microtubules from segmentation to an average (MyrGFP_Grid2)
+# Roadmap 41 — Microtubules from segmentation to an average (20260820 Tir_Env projects)
 
-**Status:** scoped 2026-10-28; nothing built. Decisions in §5 wait for a nod.
+**Status:** scoped 2026-10-28; nothing built. 2026-10-29: D1 moved to the two 20260820 Tir_Env projects, D3 and D5
+agreed, D4, D6 and D7 deferred (§5). S0 item 1 answered from Ais's v1.2.38 source (§6); the hand-run is owed.
 
 **In one line.** Trace easymode's microtubule segmentations into oriented points along each filament, export them
 with Warp like any other picks, and refine them in RELION with helical priors (tilt and psi held near the filament
@@ -13,13 +14,14 @@ tracing.
 
 ## 1. Goal
 
-**Use case.** In AGG412_20260311_MyrGFP_Grid2, the user adds a Filament pick job on the microtubule segmentations
-of Segment job047, sees one coloured line of dots per traced filament on the wall and in the Journey, exports them
+**Use case.** In 20260820_B1G4_Tir_Env_mutant and 20260820_B2G2_Tir_Env_Mut, the user adds a Filament pick job on
+the microtubule segmentations of a Segment job, sees one coloured line of dots per traced filament on the wall and in the Journey, exports them
 with Warp Export, and runs Refine 3D with its helical options on. After a per-filament polarity vote and a second
 Refine 3D, the average shows 13 separate protofilaments in cross-section, and every filament's points agree on its
 direction.
 
-**Expected yield (rough).** The Segment manifests store the mean microtubule probability per tomogram
+**Expected yield (rough, measured on MyrGFP_Grid2, the first candidate; the Tir_Env projects hold 209 tomograms
+and probably more microtubules, unmeasured until their Segment jobs run).** The Segment manifests store the mean microtubule probability per tomogram
 (`fraction_pct`, `services/segmentation/manifest.py`). In job047 the highest is 0.22 % (Position_8_3), eleven
 tomograms are above 0.05 %, and the median is 0.023 %. For a 1024 × 1024 × 512 volume at 6.2 Å, 0.2 % is about
 0.5–0.8 µm of microtubule, depending on whether the mask fills the lumen. The whole project then holds roughly
@@ -39,7 +41,9 @@ from other projects through roadmap 40 later (FilamentTracing1_SV_0326 is an obv
   stay as rows with a column that says why; a set leaves them out.
 - **Picks live on the reconstruction the segmentation was made on.** job047 segmented the easymode-iso denoising
   (job046) of `tsReconstruct__2` (missAlign, job024); its manifest names `recon_instance: tsReconstruct__2`. The picks
-  belong to that reconstruction's frame and extract through its tsCtf job (`tsCtf__2`), never on job009.
+  belong to that reconstruction's frame and extract through its tsCtf job (`tsCtf__2`), never on job009. In the
+  Tir_Env projects missAlign runs before tsCtf, so their one reconstruction (`tsReconstruct`, job007, with tsCtf
+  job006) is the frame.
 
 ## 3. What exists (anchors, 2026-10-28)
 
@@ -55,12 +59,31 @@ Files are `External/job047/segmentations/<tomo>__microtubule.mrc`, int8 p × 127
 `segmentations.json` listing the tomogram, feature, voxel size, `recon_instance` and source MRC for each.
 The Segment job's output slot is `JobFileType.SEGMENTATIONS` (`services/jobs/segment.py:45`).
 
-**Tracing tool.** The easymode container (`easymode_1.2.5.sif`) ships Ais (`ais-cryoet ≥ 1.2.36`). `ais pick` has
-a filament mode: it skeletonises, prunes branches by `-length`, fits a spline, samples every `-spacing`, and takes
-tilt and psi from the tangent, with rot synthetic and polarity arbitrary. Its output is `<tomo>__<target>_coords.star`
-with 0-based voxel indices of the segmentation grid (corner origin), no pixel size, and `aisFilamentID`,
-`aisFilamentConnectivity` and curvature, but no `rlnHelicalTubeID` and no prior columns. It spawns `cpu_count()`
-processes, capped at 32. (Survey: `docs/reports/tool-survey/segmentation-and-annotation-models-2026-10.md` §2.1–2.2.)
+**Tracing tool.** The easymode container (`easymode_1.2.5.sif`) ships Ais 1.2.38 (job047's `run.out`). `ais pick
+-filament`, read from the v1.2.38 source (`Ais/core/filaments.py`, `Ais/main.py`, 2026-10-29):
+- Flags: `-d -t -ou -threshold (128) -b (1) -spacing (Å, 10) -size (Å³, 1) -length (Å, 500) -m (binned px, 16)
+  -p (1) --twist (0)`. The parser is `parse_known_args`: a misspelt flag is ignored without a word, and `-twist`
+  with one dash would parse as `-t wist`.
+- Threshold: strict `>`; for int8 input it is halved, so the default 128 means p > 0.5 on our p × 127 volumes.
+  Spacing, size and length go to voxels through the header's voxel size (0 → 10 Å fallback; ours carry 6.2 Å).
+- No closing or filling before `skimage.morphology.skeletonize`; a hollow mask gives the wall's skeleton.
+- Every connected component above `-size` is skeletonised as a full-volume mask, one after another, so `-b 2`
+  (mean-pooled) and a real `-size` are the speed levers.
+- Branch points are deleted: crossings split into separate filament IDs with a gap at the junction; side branches
+  shorter than `-length` are pruned; closed loops are dropped. Spline `s = 500`, resampled by arc length.
+- Angles: `tilt = arccos(t_z)`, `psi = atan2(t_y, −t_x)`, rot 0 (+ k × twist). That is RELION's convention with the
+  reference's Z axis laid along the tangent (third column of `Euler_angles2matrix`), so these are the priors as they
+  stand. The tangent's sign is kept continuous along a filament, so polarity is consistent within one and arbitrary
+  between filaments.
+- Output `<tomo>__<target>_coords.star`, block `particles`: `rlnCoordinateZ/Y/X` (0-based voxel indices of the
+  input grid, multiplied back by `-b`, corner origin), `rlnAngleRot/Tilt/Psi`, `aisRadiusOfCurvature`,
+  `aisLog10RadiusOfCurvature`, `aisFilamentID` (0-based per tomogram), `aisFilamentConnectivity` (1 free end, 2 at a
+  junction, 0 inside), `rlnMicrographName` and particle ids. No `rlnHelicalTubeID`, no prior columns.
+(Survey: `docs/reports/tool-survey/segmentation-and-annotation-models-2026-10.md` §2.1–2.2.)
+
+**Tir_Env projects (2026-10-29).** 20260820_B1G4_Tir_Env_mutant (63 tilt series) and 20260820_B2G2_Tir_Env_Mut (146):
+AreTomo + missAlign, tsCtf job006, tsReconstruct job007 at 6.2 Å (B1G4 finished, B2G2 running). No Denoise or
+Segment job yet.
 
 **Export.** `drivers/warp_export.py` reads any optimisation set and `services/particles/warp_export.py`
 `warp_input_particles` (:162) requires centred Å coordinates and `rlnAngle*`. It refuses `rlnTomoSubtomogram*`
@@ -95,41 +118,58 @@ One row per traced point, written by the Filament pick job into `candidates.star
 | `rlnHelicalTrackLengthAngst` | arc length from the filament's first point |
 | `cbFilamentLengthAngst`, `cbFilamentCurvature` | per filament / per point, for marking |
 | `rlnAutopickFigureOfMerit` | mean segmentation p in a small sphere at the point |
+| `rlnRandomSubset` | 1 or 2 per tube: boxes 82 Å apart overlap by ~80 %, so a tube never straddles the halves |
 
 `tomograms.star` and the optics come from the reconstruction named in the manifest, the same way
 `build_list_optset_from_tomograms` synthesises them for a de-novo species (`drivers/extract_pick_list.py`).
 
-## 5. Decisions (proposed 2026-10-28)
+## 5. Decisions (proposed 2026-10-28, answered 2026-10-29)
 
-- **D1 Segmentation source = job047** (iso input, all 48 tomograms). job045 lacks 9 tomograms and easymode's own
-  training used n2n and iso inputs.
+- **D1 Source = 20260820_B1G4_Tir_Env_mutant and 20260820_B2G2_Tir_Env_Mut** (maintainer, 2026-10-29: more
+  microtubules expected there). Each gets Denoise predict (easymode, iso, as MyrGFP_Grid2 job046) on tsReconstruct
+  job007, then Segment (easymode, `microtubule` + `actin`, TTA 8, as job047). MyrGFP_Grid2 job047 stays the
+  tracing trial while those run.
 - **D2 Tracer = `ais pick` in filament mode** from the easymode container. It is already installed and reads the
   mask directly. Writing our own skeletoniser is more code for the same result; TARDIS runs its own segmentation and
-  ignores easymode's. Revisit only if S0 shows Ais tracing breaks on our masks (see D2 risk in §6).
+  ignores easymode's. Revisit only if S0 shows Ais tracing breaks on our masks (see D2 risk in §6). Open until
+  the S0 hand-run; nothing is added to crboost before it.
 - **D3 Spacing 82 Å** (one αβ dimer), so a point never sits halfway between two tubulin dimers. Warp Export at
-  binning 2 (12.4 Å/px), box 40 px (496 Å), diameter 300 Å.
+  binning 2 (12.4 Å/px), box 40 px (496 Å), diameter 300 Å. Agreed 2026-10-29.
 - **D4 Reference = a published 13-protofilament microtubule map**, resampled to 12.4 Å, low-passed to 40 Å, and
-  registered as the template of a new species `microtubule` (Ø 250 Å, C1). The maintainer picks the EMDB entry. A
-  plain cylinder made from the data has no polarity or protofilament skew to align to.
+  registered as the template of a new species `microtubule` (Ø 250 Å, C1). A plain cylinder made from the data has
+  no polarity or protofilament skew to align to. Deferred: the maintainer picks the EMDB entry at S1.
 - **D5 No helical symmetry imposed** (`--ignore_helical_symmetry`): the seam breaks it, and at this resolution it
-  adds nothing. Priors carry the helical knowledge.
-- **D6 Polarity by per-filament majority vote** after the first Refine 3D: within each `rlnHelicalTubeID`, the psi
+  adds nothing. Priors carry the helical knowledge: Ais's tilt/psi are them already (§3), copied into the prior
+  columns. Agreed 2026-10-29.
+- **D6 (deferred to the first Refine 3D) Polarity by per-filament majority vote** after the first Refine 3D: within each `rlnHelicalTubeID`, the psi
   flips relative to the prior that most points agree on win; the others are flipped. Filaments with less than a 2:1
   majority are marked, not flipped, and left out of the set that the second refinement reads.
 - **D7 New job type `filamentPick`**, not a mode of the candidate extraction: different input (segmentations, not TM
-  scores), different parameters, and actin reuses it.
+  scores), different parameters, and actin reuses it. Deferred until the S0 hand-run shows the tracing works.
 
 ## 6. Stages
 
 **S0 — facts before code (one short session, maintainer runs the cluster commands).**
-1. `ais pick --help` inside `easymode_1.2.5.sif`: the filament-mode flags, whether `-spacing` and `-length` are in
-   Å or voxels, the threshold scale for an int8 p × 127 input, and the exact output columns.
+1. ~~`ais pick --help` inside `easymode_1.2.5.sif`~~: answered from the v1.2.38 source (§3, 2026-10-29).
 2. Look at the XZ and XY overlays of job047's microtubule volume for Position_8_3, Position_6_3 and Position_4_5:
    real microtubules or false positives, and **is the lumen filled?** A hollow-tube mask skeletonises into a tube
    surface, not a centreline; if it is hollow, the mask is closed (binary fill per cross-section, or a 15 nm closing)
    before tracing.
 3. Run `ais pick` filament mode by hand on Position_8_3 and open the coordinates over the tomogram (ArtiaX or the
-   wall's import): does each microtubule come out as one filament ID, do crossings split cleanly.
+   wall's import): does each microtubule come out as one filament ID, do crossings split cleanly. On a CPU node:
+   ```bash
+   SIF=/groups/klumpe/software/containers/sifs/easymode_1.2.5.sif
+   SEG=/groups/klumpe/crboost_data/AGG412_20260311_MyrGFP_Grid2/External/job047/segmentations
+   OUT=$HOME/mt_trace/myrgfp
+   mkdir -p $OUT/in $OUT/.ais $OUT/.mpl
+   ln -s $SEG/AGG412_20260311_MyrGFP_Grid2_Position_8_3__microtubule.mrc $OUT/in/
+   ln -s $SEG/AGG412_20260311_MyrGFP_Grid2_Position_6_3__microtubule.mrc $OUT/in/
+   apptainer exec --cleanenv -B /groups $SIF bash -c "export AIS_CONFIG_DIR=$OUT/.ais MPLCONFIGDIR=$OUT/.mpl; ais pick -d $OUT/in -t microtubule -ou $OUT -filament -b 2 -spacing 82 -length 1000 -size 1e7 -p 2"
+   ```
+   `-size 1e7` Å³ drops components smaller than ~20–30 nm of tube; `-length 1000` drops pieces and prunes side
+   branches under 100 nm. MyrGFP_Grid2 job046 and job047 were deleted on 2026-10-29, so the trial runs on B1G4's
+   Segment job008 (raw tsReconstruct input, `actin` + `microtubule`) instead: same command, `SEG` = its
+   `segmentations/`, the two tomograms with the highest microtubule `fraction_pct`.
 4. Whether `WarpTools ts_export_particles` carries `rlnHelicalTubeID`, `rlnAngleTiltPrior`, `rlnAnglePsiPrior` and
    `rlnAnglePsiFlipRatio` from its input star into its output star.
 5. `relion_refine --help` in the RELION container: confirm `--helix`, `--ignore_helical_symmetry`,
@@ -188,14 +228,14 @@ its own roadmap, written once microtubules have averaged.
 
 ## 8. Runtime checklist (once, after S6)
 
-1. Filament pick on job047, `feature=microtubule`: the job page summary lists filaments per tomogram; Position_8_3
-   has the most.
-2. The wall shows the dots along the visible microtubules in Position_8_3 and Position_6_3; nothing in tomograms
-   whose overlay has no microtubule.
+1. Filament pick on each Tir_Env project's Segment job, `feature=microtubule`: the job page summary lists filaments
+   per tomogram; the tomograms with the highest microtubule `fraction_pct` have the most.
+2. The wall shows the dots along the visible microtubules in those tomograms; nothing in tomograms whose overlay
+   has no microtubule.
 3. Warp Export from it: `particles.star` keeps the tube IDs and priors.
 4. Refine 3D, helical on: converges; the refined tilt/psi stay within a few degrees of the priors.
 5. Polarity vote: most filaments decided; the second Refine 3D shows 13 protofilaments in cross-section.
 
 ## 9. Build record
 
-Nothing built yet.
+Nothing built yet. 2026-10-29: decisions answered (§5), Ais facts read from its source (§3), S0 hand-run handed over.
