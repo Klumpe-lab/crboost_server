@@ -15,7 +15,7 @@ from services.jobs.tilt_filter import FilterMode, dl_auto_filters, review_barrie
 from services.path_resolution_service import PathResolutionError, PathResolutionService, find_cycle, get_context_paths
 from services.models_base import InstanceId, SegmentMethod
 from services.event_log import events
-from services.result import err, ok
+from services.result import ErrorCode, err, ok
 from services.project_state import AbstractJobParams, JobCategory, JobType, JobStatus, ReviewHold
 from services.segmentation.search_region import search_region_problem
 from services.subsets import subset_problem, write_subset_star
@@ -348,6 +348,32 @@ class PipelineOrchestratorService:
                 )
         return (" ".join(reasons), live_ids) if reasons else None
 
+    @staticmethod
+    async def _check_set_inputs(project_dir: Path, state, instances_to_run: list[str]) -> list[str]:
+        """Check every job of the run that reads a particle set, once per set and job type; each job's result is
+        kept for its page. Returns the refusals, one per job with problems."""
+        from services.particles.particle_sets import set_read_by
+        from services.particles.set_preflight import check_set, remember
+
+        diameters = {sp.id: getattr(sp, "diameter_ang", None) for sp in state.species_registry}
+        done: dict[tuple, object] = {}
+        refused = []
+        for iid in instances_to_run:
+            job_model = state.jobs.get(iid)
+            set_id = set_read_by(job_model) if job_model is not None else None
+            if set_id is None:
+                continue
+            key = (set_id, job_model.job_type)
+            if key not in done:
+                done[key] = await asyncio.to_thread(
+                    check_set, project_dir, set_id, job_model.job_type, diameters=diameters
+                )
+            check = done[key]
+            remember(project_dir, iid, check)
+            if check.problems:
+                refused.append(f"{iid} reads {set_id}: " + "; ".join(check.problems))
+        return refused
+
     async def _submit_chain(self, project_dir: Path, instances_to_run: list[str], state) -> dict[str, Any]:
         """Submit the pipeline as a SLURM afterok DAG.
 
@@ -391,6 +417,12 @@ class PipelineOrchestratorService:
         ]
         if not_ready:
             return err("Subset not ready: " + "; ".join(not_ready))
+
+        # A job reading a particle set is checked against it now (services/particles/set_preflight.py): what
+        # its tools would refuse or get wrong on the cluster stops the Run here, named under the job's input.
+        refused = await self._check_set_inputs(project_dir, state, instances_to_run)
+        if refused:
+            return err("Set checks refused the Run — " + "; ".join(refused), code=ErrorCode.SET_CHECKS, refused=refused)
 
         still_running = await self._live_in_reused_dirs(project_dir, state, instances_to_run)
         if still_running:
@@ -693,10 +725,12 @@ class PipelineOrchestratorService:
         opts = dict(job_model._get_queue_options())  # qsub_extra1..8 already routed per job type
         cfg = SlurmConfig(**{field: opts[key] for field, key in SlurmConfig.QSUB_EXTRA_MAPPING.items()})
         # The job's QOS belongs to its own resources; a job whose queue options are the shared
-        # supervisor's (array dispatchers override _get_queue_options) keeps the default QOS here and
-        # passes its QOS to the array tasks instead.
+        # supervisor's (array dispatchers override _get_queue_options) takes the supervisor's QOS here
+        # and passes its own QOS to the array tasks instead.
         if type(job_model)._get_queue_options is AbstractJobParams._get_queue_options:
             cfg.qos = job_model.get_effective_slurm_config().qos
+        else:
+            cfg.qos = get_config_service().supervisor_slurm_defaults.qos
         return write_sbatch_script(job_dir / "run_submit.script", cfg, fn_exe)
 
     def _write_job_star(

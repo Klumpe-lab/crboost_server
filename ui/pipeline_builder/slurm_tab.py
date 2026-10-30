@@ -237,6 +237,7 @@ def _render_supervisor_summary():
                 ("Partition", sup.partition),
                 ("Memory", sup.mem),
                 ("Time limit", sup.time),
+                ("QOS", sup.qos or "(default)"),
                 ("GRES", sup.gres or "(none)"),
                 ("CPUs/task", str(sup.cpus_per_task)),
             ]:
