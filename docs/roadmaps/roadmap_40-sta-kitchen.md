@@ -17,7 +17,12 @@ prototype (S8, §13) comes before any downstream job. S8 built the same day (§1
 of that turn: larger filter cards, dot controls and tiled cards in By tomogram, no slab flash on a filter drag);
 checked in the sandbox, not in a browser. The maintainer's look the same evening: "looking pretty good". Next: §14,
 subsets as inputs of the particle jobs; its facts were read the same night (§14.4), D19–D24 accepted (§14.5) and the
-level check built (§14.6). Next: build the rest of §14 in the order of §14.2.
+level check built (§14.6). The rest of §14 built the same evening (§14.8: Make set from the rail, Warp exports and
+set extractions joined to the picks, extraction across projects, lineage on screen, Run checks), checked in the
+sandbox on the maintainer's 412 pool, not in a browser (§10 items 17–24). First real run 2026-10-30: Reconstruct
+particle job048 on s001 gave the 412 capsid shell (§15.1). The same day §15 proposed one set with many facets instead of
+a set per level (the model agreed, the I/O layout and the re-run rule open; five layouts on `/dev/io-layouts`). Next:
+§15, then D18 (results back onto the cutouts) as facets.
 
 **In one line.** A new tab of the Particles registry where one species' picks from every source (template matching,
 hand-picked, imported, later other pickers), on any reconstruction of any tomogram of any project, sit in one pool;
@@ -605,6 +610,25 @@ S6 (built after R1; every item stays off screen until asked for):
     moves; restart the server: the sample and labels are back; a new σ cut marks the sample as drawn for an earlier cut.
 16. Select a tile, space: the loupe (X/Y, X/Z, Y/Z of the reconstruction, the template turned to the matched angles
     under them); Escape or a click outside closes it. On a ribosome pool the template should look like what it sits in.
+
+§14 (built 2026-10-29, §14.8):
+
+17. Open the 412 kitchen: the members read "template-match picks jobNNN"; Sources lists each member's Warp export,
+    "matched to the picks by position". The first open rebuilds every member (new table schema): a few seconds.
+18. Make set…: "What the set holds: positions · 2,708 picks | particle images · 2,697 of 2,708 picks"; images names
+    the Warp exports; Make set: the set reads "… extracted" in a Class 3D input menu and is not greyed there.
+19. In a Class 3D input menu, a positions set is greyed with the reason and "+ Subtomo extraction / + Warp export";
+    one of them adds the job reading the set, and Class 3D reads that job's particles.
+20. Right-click a subset: Make set… (name prefilled, "From subset …"); a group's header: a set of each subset; select
+    tiles: the bar's Make set… makes a subset of them and its set. The rail then reads "→ 1 set · as in sNNN"; take a
+    pick out of the subset: "1 changed since sNNN".
+21. A job reading a set: its roster row shows sNNN (hover: where it came from); its I/O section names the set.
+22. Run a Reconstruct particle on the positions set: it passes the checks; on a set of hand picks (no angles) the Run
+    is refused with a dialog, and the reason stands under its input.
+23. Warp export (or Subtomo extraction) of a set spanning projects: its log says "Input is a particle set over N
+    project(s)" and shows the per-project preflight; the per-TS rows carry the set's names; no exclusions applied.
+24. Once that extraction has run: Sources lists it, "matched to picks by pick uid" (and any rows it could not
+    match), and a new Make set with images reads its particles.
 
 ## 11. Build record
 
@@ -1212,7 +1236,7 @@ reaching the browser's draft, delete). Not run in a browser.
 The maintainer's look (2026-10-29, evening): "this is looking pretty good now". Next, §14: how a subset becomes the
 input of Reconstruct particle, Class 3D, Refine 3D and the extraction jobs, transparently.
 
-## 14. Subsets as inputs of the particle jobs (next; scoped 2026-10-29, nothing built)
+## 14. Subsets as inputs of the particle jobs (scoped 2026-10-29, built the same day: §14.6, §14.8)
 
 The maintainer's question once S8 was on screen: "now that we can make subsets, how do I use one in Reconstruct
 particles, Class 3D and the like?" Wanted: a transparent way, from a subset in the rail to the job that reads it,
@@ -1249,7 +1273,7 @@ The gaps:
   differ.
 - **Checks before the job.** D16's job-start preflight, D17's half-sets: not built.
 
-### 14.2 Proposals (D19–D24, waiting for a nod; D20 and D21 rewritten and D24 added after the facts of §14.4)
+### 14.2 Proposals (D19–D24, accepted in §14.5; D20 and D21 rewritten and D24 added after the facts of §14.4)
 
 - **D19 Make set from the rail.** A subset's right-click gets "Make set…" (the Make set dialog with the scope set to
   that subset and its name prefilled; the filters and verdicts as they are, said so in the dialog), and a group's
@@ -1426,3 +1450,209 @@ tomogram name carries its project).
   `extracted` column joins Subtomo extraction only (`member_spec` → `subtomo_instances_for_ce`), so the set could
   only be made as coordinates. Pulled forward from D21: join a candidate job's Warp exports too (by position, a
   stand-in, said so: they carry no `cbPickUid`), so an extracted set is made from them without extracting again.
+
+Both done in §14.8: the dialog's choice reads "What the set holds: positions · N picks | particle images · M of N
+picks", each choice saying what it holds, which jobs read it and where the images come from (the tooltip on the
+title says what a pick and its images are); members read "template-match picks jobNNN" (older pool files are renamed
+on open). With the Warp exports joined, the maintainer's draft (σ 8.75–12.5, 2,708 picks) makes a set of 2,697
+picks with images (11 picks have none: Warp dropped them), at box 256 and 3.1 Å, in 2 s.
+
+### 14.8 Built: the rest of §14 (2026-10-29, evening)
+
+Taken over from the session that wrote the Make set writer and the greyed menu (committed as they were). In the
+order of §14.2, with §14.7's two points first.
+
+- **Images joined (D21, §14.7).** `members.member_spec` joins a candidate job's Warp exports as well as its Subtomo
+  extractions (by position, the stand-in; each with its job type); `TABLE_SCHEMA` 4. Extractions of a set made here
+  are joined by uid (`services/sta_kitchen/uid_join.py`): the home project's Subtomo extraction and Warp export jobs
+  reading a kitchen set of the species whose particles.star declares `cbPickUid`, read in a worker once per change
+  of the star; the column checked as read (no uid, malformed, shared by two rows: left out and counted), uids the
+  pool no longer holds counted (`pool.apply_uid_joins`, `PoolTable.uid_ext` and `uid_notes`). A uid join wins over
+  a position join; the "extracted by" labels name it `jobNNN · sNNN`. Make set reads the images of either kind; a
+  member whose kept picks have images from two extractions blocks, naming them and the "extracted by" filter that
+  keeps one (a set takes one extraction per source: two extractions of one tomogram need not share a per-tilt star
+  order). Sources lists each member's extractions and how they are matched, and every uid join with what it found.
+- **Plain words (§14.7).** The Make set dialog rewritten (`ui/sta_kitchen/sets.py`): where the picks come from (the
+  draft, a subset and its group, a selection), "What the set holds" with counts, the meaning of each choice, the
+  plan per project in picks and tomograms, the tomograms renamed (and that each gets its own per-tilt star), the
+  frame choice under it as before. Members renamed `template-match picks jobNNN`, a member filter following.
+- **D19.** A subset's right-click: "Make set…" (scope = the subset, name = its name). A group's: "Make a set of each
+  subset…" (one dialog, a name per subset, one shared choice of what they hold, made one after the other, a subset
+  with a problem left out and said). The selection bar: "Make set…": the plan reads the selected picks; on Make set
+  they become a subset named as the set, then its set (if the pool moved meanwhile, the subset stays and the set is
+  left to its menu). `service.plan_set(scope=, extra=)`; every plan carries the uids of the subsets its scope names.
+- **D22.** The roster shows the set a job reads by its number, its lineage on hover. The job page's input line names
+  the set, its lineage and projects, and under it the last Run's set checks (problems red, notes grey). The rail
+  marks a subset with sets: "→ 2 sets · 37 changed since s014" (or "as in s014") under its line, the sets on hover
+  (`service.subset_set_marks`, from each set's `kitchen_subsets/` snapshot, read once per set). The plan counts
+  tomograms per project by their names in the set (so does the writer, which counted a pooled tomogram twice).
+- **D24.** Subtomo extraction and Warp export read a set's origins (`set_origins.origins_of`): each tilt series is
+  checked against its own project's registry, read and never written (`array_job_base.preflight_origins`), and no
+  exclusions apply (`ArrayDriver.preflight` / `excluded_items`, `apply_exclusions(excluded=)`); Warp export finds a
+  tomogram's settings, tomostar and XML in its own project under its name there and stages them under the set's
+  name (`tsctf_sources(origin=)`). A frame excluded in its own project carries `excluded` (from the member's
+  registry): "excluded in <project>" on its card, in a tile's menu head, in the Sources tree, in the plan's notes.
+- **D23.** `services/particles/set_preflight.py`, run by `_submit_chain` before anything is allocated, once per set and
+  job type; problems refuse the Run (`ErrorCode.SET_CHECKS`: a dialog lists them and the job page is drawn again),
+  notes refuse nothing; the last check of each job is kept in the server's memory for its page. Checked: the kind of
+  rows the job reads (images for Class 3D and Refine 3D, no RELION subtomogram angles for Warp export, angles on
+  positions read by Reconstruct particle or Warp export); the uid column; doubles within Ø/2 on one tomogram; every
+  tomogram known to its own project's registry, one acquisition per tomogram, which are excluded in their project
+  (a note); handedness (two hands, or some stated and some not: a problem; none stated: a note); one tilt-series
+  pixel size where the job bins the tilt series; one image size and scale for images; each optics group one set of
+  constants; every tomogram's per-tilt star absolute, its block `data_<name>` present (read from the header,
+  `star_columns.block_labels`), aligned and CTF-fitted; for Refine 3D the halves.
+- **D17, verified.** RELION 5 keeps the halves it is given when every row has 1 or 2 (`Experiment::
+  divideParticlesInRandomHalves`, `src/exp_model.cpp`): it draws them only when all are 0, and refuses a star where
+  some are 0 and others not, or where a half is empty. What Warp export does with the column is seen on its first
+  run; a set made from its rows writes the halves again from the uids.
+
+Checks (sandbox; scripts in session 91fd6b69's scratchpad `c14/`; scratch homes and kitchen, the real projects read
+only: `find -newer` on the seven 412 projects found nothing changed):
+
+- `check_a.py`, the maintainer's 412 pool (MyrGFP_Grid2 home, 7 members): rebuilt in 9 s; 14,810 of 14,861 picks
+  joined to their Warp exports (job044 2,886 of 2,891, …); the draft's 2,708 picks plan as positions by default and
+  as 2,697 with images; the images set (one optics group, box 256, 3.1 Å, bin 2; 2,697 unique uids; halves 1,354 /
+  1,343; Warp's per-tilt stars) made in 2 s; the set checks clean for Class 3D, Refine 3D, Reconstruct and Warp
+  export; on s001 clean for Reconstruct and both extractions, refused for Class 3D (positions only).
+- `check_b.py`: eight broken copies, each refused for its reason (a uid twice and its double by position, a per-tilt
+  star without its block, two hands, partial halves, an origin unknown to its registry, two pixel sizes and the
+  optics group spanning them, two voltages, no angles); `preflight_origins` on s001 (398 tilt series in 7 projects)
+  and its two refusals; Warp staging of a renamed tomogram (files under the new name, its tilt block, `cbPickUid` in
+  Warp's input).
+- `check_c.py`: a fake Warp export of a set in the scratch home (rows shuffled, 40 dropped, one uid twice, one
+  unknown, one malformed): 2,654 of 2,658 rows joined, each fault counted; Make set then blocks the members whose
+  picks have images from two extractions.
+- `check_d.py`, the tab in a NiceGUI simulation: Make set from a subset, a set of each subset of a group, a set of a
+  selection (its subset made), the rail marks before and after 10 picks leave the subset, the orchestrator's Run
+  checks and what the job page reads.
+- `check_e.py`: the I/O menu greys positions sets for Class 3D and Refine 3D only. `check_f.py`, `check_g.py`: a
+  positions and an images set whose tomogram name repeats across two projects: renamed rows and particle names,
+  per-tilt star copies under the new name (Warp's frame order kept).
+- `h14.mjs` (jsdom): the rail's marks and hover, the three Make set entries and what they send, the exclusion
+  marks; the S6/S8 harnesses still pass (one R1 check expects L = 256 px, failing before this pass too).
+- ruff, `check_boundaries.py`, `import server_app`, the drivers imported, `node --check`.
+
+Not done: D18 (results back onto the cutouts, By class); D13's hand-list question; "+ Subtomo extraction" from the
+I/O menu not driven in a browser. Seen, not changed: a kitchen set made with images names, as a parent, the candidate
+job with output "particles" while the star it read is the extraction's.
+
+## 15. One set, many facets (proposed 2026-10-30; nothing built but the layouts page)
+
+### 15.1 First run of a kitchen set: job048
+
+Reconstruct particle (MyrGFP_Grid2 job048, 2026-10-29 21:00–22:55) read s001 "412_and_other_junk": 2,708 picks on
+398 tomograms of 7 projects, positions only, halves 1,361 / 1,347. RELION took the set as written: it kept the `cb*`
+columns, read every per-tilt star, and used the tomograms' 1.55 Å tilt-series pixel and hand −1 (box 256, 3.1 Å,
+`--bin 2`). Low-pass filtered to 40–60 Å, all three central slices show a round shell: positive from about 100 to 250 Å
+radius, peak near 160 Å, a negative halo near 290 Å, both halves alike. That is the 412 capsid of the earlier
+refinement (shell peak about 183 Å, outer edge about 250 Å). The shell shows no facets: the template-match angles do not
+agree. The half-map FSC (0.143 at 37 Å with the 575 Å sphere, 44.6 Å unmasked) comes from the round shell, which any
+picks centred on objects of that size give; it says nothing of the angles or of how much of the set is junk. Class 3D
+on images of the same picks is the next step; job048's map is its reference (`ini_high` 45 Å, the job's default).
+
+Seen on the way:
+
+- s001's particles.star carries `rlnTomoTiltSeriesPixelSize = 6.2` per row, copied from template matching's
+  candidates, while its tomograms.star says 1.55. RELION ignored the particle column here; a reader that trusted it
+  would place the picks 4× off. The writer should drop or rewrite it.
+- Class 3D could not read s001 (positions only, greyed). The greyed row offers "+ Subtomo extraction / + Warp export"
+  although the picks' images exist in each project's Warp export; the kitchen gives them only to a second set made
+  as "particle images". That led to the rest of §15.
+
+### 15.2 The problem
+
+A set has a level (positions or images) fixed when it is made, chosen for the job that will read it. A pick has more
+than two facets, and every new job type that needs another one (refined poses, another box, classes) would mean another
+set of the same picks. The maintainer: "will we have to make 20 different sets?" Wanted: one particle identity that
+lasts across everything jobs add to it, sets made of identities, and each job deriving what it reads.
+
+### 15.3 The model (agreed 2026-10-30)
+
+- **Identity.** A pick's uid (`cbPickUid`) is the particle. No cross-run identity: a new template-match run makes new
+  picks with new uids, and the same capsid picked twice is two particles. Sub-particles (symmetry expansion) are later.
+- **A set is uids plus how they were chosen**, with no level. Its halves come from the uids (D17) and are the same in
+  every job.
+- **Facets** are what jobs produced for a uid: the position it was picked at, the images of an export or extraction,
+  the poses and classes of a Class 3D or Refine 3D. A job's output rows are taken whole: nothing combines columns of
+  two jobs (refined poses with another job's images would mean shifting origins between extraction centres, the
+  pixel-arithmetic trap). Refined poses on new images = a new export reading the refinement result; Warp does the
+  centring.
+- **What each job takes from a set:**
+
+  | Job | Takes |
+  |---|---|
+  | Reconstruct particle | poses: as picked, or one Class 3D / Refine 3D result of the set |
+  | Warp export, Subtomo extraction | poses as above; box and pixel are its own parameters; it makes images |
+  | Class 3D | images (poses as those rows carry them) + reference |
+  | Refine 3D | images + reference + mask |
+
+- **One source per facet.** A source is one job, or one job per project when their parameters are identical (every
+  parameter but inputs and SLURM) and their stars agree on box and pixel, checked as read (stars are untrusted). Per
+  project:
+  - exactly one candidate: filled in and shown (nothing else could be chosen, so not a default);
+  - two or more: the job asks, and Run is refused until one is picked;
+  - candidates whose parameters differ from the rest: never combined; the job offers "Run one Warp export on this set"
+    (one job, one set of parameters, every tomogram of the set; extraction across projects exists since §14.8);
+  - none: "no images yet · add a Warp export reading this set".
+- **Picks without the facet** are counted on the line ("11 dropped by Warp") and left out of what the job reads.
+- **At Run** the job writes the star it reads from the set and its chosen sources, after the set checks (§14.8 D23),
+  into its own job dir, and reads that frozen copy.
+- **Plain job outputs** (job044, a Class 3D's data star) stay inputs as today; only kitchen sets become abstract.
+- **A set does not imply images.** The kitchen's tiles are display crops from the binned tomogram
+  (`services/visualization/recon_cutouts.py`); pool members are positions. The 412 pool has images because each of its
+  projects ran a Warp export.
+
+### 15.4 Re-runs in place (Q5)
+
+Read from the code: a succeeded job run again always takes a new job dir (`job_dir_counter` only goes up). A failed job
+is retried in its own dir (`_reused_dir`): `.task_status/*.ok` keeps the tilt series it finished and only the rest
+run. That is what lets 3 failed tilt series of 400 finish and what lets Refine 3D continue after a time-out. But a
+failed job's parameters stay editable (`is_job_frozen` locks only Queued, Running and Succeeded), and the reuse check
+(`_inputs_moved`) compares input paths only. A Warp export that fails on 3 tilt series, its box changed from 256 to 300,
+Run: the 397 finished keep box 256, the 3 retried come out at 300, and the merged particles.star mixes both, silently.
+
+The maintainer's first word: forbid re-running in place across the application. Proposed: retry in place only when the
+parameters and the inputs both equal the failed attempt's (finishing the same run); any change starts over in a new
+dir, with the console line that changed inputs print today. A full ban would lose the per-tilt-series top-up and the
+Refine 3D continue. Open.
+
+Choices recorded per job freeze its input (above), so a source that appears later is an option for new jobs only and
+never changes what a job read.
+
+### 15.5 I/O layouts
+
+`ui/io_layouts_preview.py`, served on `/dev/io-layouts` (a page of mock data, not wired to any project): five layouts
+of a Class 3D reading s002, each in three cases (every project one matching export; 412_Slot6 two matching exports;
+412_Grid3's export box 300). The menus pick and the page redraws; nothing else changes.
+
+- A · facet lines: one line per facet under the set row; a problem replaces its line.
+- B · summary + projects: one summary line; a per-project table (picks, images from, box · Å, dropped) on click,
+  open by itself when something needs a choice.
+- C · coverage bars: one bar per facet, a segment per project (hover names it): grey dropped, amber choose, red
+  differs.
+- D · one sentence: "set [s002 ▾] as particle images from [7 Warp exports · box 256 ▾], poses as exported, halves
+  from the set, against [job048 ▾]".
+- E · chips: the set row and one chip per facet; a chip opens the per-project list.
+
+Checked in a NiceGUI simulation (the three cases render, picking job036 for 412_Slot6 redraws), not in a browser. The
+page and its route go once a layout is chosen.
+
+### 15.6 Open
+
+1. Which layout (or which mix) for set inputs.
+2. In-place retries: the tighter rule of §15.4, or a ban.
+
+### 15.7 Steps, once 1 and 2 are answered
+
+1. A facet index per species: per uid, the jobs that hold each facet, kept current by mtimes (the pool's Warp-export
+   and uid joins are most of it).
+2. The writer at Run: set + chosen sources → the job's own particles.star / tomograms.star / optimisation set, after
+   the set checks; the congruence and coverage checks join them.
+3. The I/O rows for set inputs in the chosen layout, for Reconstruct, both extractions, Class 3D and Refine 3D; the
+   level greying goes for kitchen sets.
+4. Make set without a level: the dialog loses "What the set holds"; existing sets stay readable as they are.
+5. The in-place rule of §15.4.
+6. The pixel-size column of §15.1; the layouts page and its route removed.
+
+D18 (results back onto the cutouts) then becomes "a finished job adds facets to its uids".

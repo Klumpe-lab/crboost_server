@@ -20,6 +20,7 @@ from ui.routing import Route, RouteWriter, apply_route, parse_route, route_to_pa
 from ui.ui_state import get_ui_state_manager
 from ui.components.buttons import house_button
 from ui.data_import_panel import build_data_import_panel
+from ui.io_layouts_preview import render_io_layouts
 from ui.workspace_page import build_workspace_page
 
 logger = logging.getLogger(__name__)
@@ -305,3 +306,9 @@ def create_ui_router(backend: CryoBoostBackend):
         with ui.column().classes("p-8"):
             ui.label("Cluster Info Stub")
             house_button("Back", lambda: ui.navigate.back())
+
+    @ui.page("/dev/io-layouts")
+    async def io_layouts_page(client: Client):
+        await client.connected()
+        ensure_assets_loaded()
+        render_io_layouts()
