@@ -703,13 +703,16 @@ class MissAlignParams(AbstractJobParams):
         asks for one, else the user's default QOS, as probed via sacctmgr (the landing-page probe fills
         the cache). A named QOS the probe has not seen gets no ceiling — sbatch refuses a request over
         its limit at submit. The default QOS unprobed: the conservative supervisor walltime from
-        conf.yaml, else a day."""
+        conf.yaml when the supervisor runs under the default QOS too, else a day."""
         real = get_cached_qos_maxwall_minutes(qos)
         if real > 0:
             return real
         if qos.strip():
             return 0
-        return _hms_to_minutes(get_config_service().supervisor_slurm_defaults.time) or _WALLTIME_CAP_MIN
+        sup = get_config_service().supervisor_slurm_defaults
+        if sup.qos.strip():
+            return _WALLTIME_CAP_MIN
+        return _hms_to_minutes(sup.time) or _WALLTIME_CAP_MIN
 
     def _walltime_plan(self, base_time: str, qos: str, cpus: int) -> tuple[int, float, int, int] | None:
         """(estimated minutes, longest macro-iteration in minutes, wall-time ceiling in minutes (0 = none),

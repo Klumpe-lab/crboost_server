@@ -17,7 +17,7 @@ import shutil
 import yaml
 from enum import StrEnum
 from pathlib import Path
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Any, Literal, get_args, get_origin
 
 from services.models_base import JobType
@@ -108,6 +108,9 @@ class SupervisorSlurmConfig(BaseModel):
     gres: str = ""
     mem: str = "4G"
     time: str = "4:00:00"
+    # --qos; empty = the account's default QOS. The supervisor lives as long as its array, queue waits
+    # included: a QOS with a longer MaxWall keeps it from timing out with every task done.
+    qos: str = ""
 
 
 class JobResourceProfile(BaseModel):
@@ -246,8 +249,7 @@ class Config(BaseModel):
     # catalog affordance is rendered anywhere.
     species_catalog_root: str = ""
 
-    class Config:
-        extra = "ignore"
+    model_config = ConfigDict(extra="ignore")
 
 
 def _unread_keys(model: Any, data: Any, prefix: str = "") -> list[str]:

@@ -149,6 +149,8 @@ tools:
   `"gpu:a100:1"`; see `sinfo -o '%P %G'`). `time` must stay within your cluster's limit
   (`sinfo -o '%P %l'`). `constraint` limits jobs to certain node types; usually leave it empty.
 - `supervisor_slurm` — a small job that starts and watches the per-tilt-series job arrays. Needs no GPU.
+  It runs until its whole array is done, queue waits included, so give it a long `time` and, if your
+  cluster caps wall time per QOS, a long `qos` (`sacctmgr show qos format=Name,MaxWall`).
 - `job_resource_profiles` — per-job-type defaults that override `slurm_defaults`. Lower any `time` above
   your cluster's limit. Users can change all resources per job in the browser.
 - `curation` — ChimeraX/ArtiaX sessions: `sif_path` and `partition`.

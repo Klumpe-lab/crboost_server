@@ -38,7 +38,11 @@ supervisor_slurm:
   cpus_per_task: 1
   gres: ""
   mem: "4G"
+  # The supervisor waits for its whole array, queue time included: give it the longest time your QOS
+  # allows, or a long QOS (`sacctmgr show qos format=Name,MaxWall`). One that times out leaves every
+  # task done but the job Failed; Run then aggregates in place without recomputing.
   time: "4:00:00"
+  qos: ""
 
 # Per-job-type resource defaults for SLURM submissions.
 # Keys must match JobType enum values (e.g. fsMotionAndCtf, tsReconstruct).
