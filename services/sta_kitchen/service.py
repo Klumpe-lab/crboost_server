@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -27,6 +28,7 @@ from services.sta_kitchen.models import (
     KitchenPool,
     MemberKind,
     PoolMember,
+    Scope,
     SetFilter,
     Subset,
     SubsetGroup,
@@ -86,6 +88,10 @@ class LoadedPool:
     assembled_from: list[tuple[str, str]] = field(default_factory=list)  # (member, fingerprint) of the table
     subset_uids: dict[str, set[str]] = field(default_factory=dict)  # subset id -> its uids
     subset_rev: int = 0  # moves whenever a subset's uids change: views compare it
+    # extraction star -> (its mtime, `uid_join.read_join` of it with the job's facts): extractions joined by uid
+    uid_joins: dict[str, tuple[int, dict]] = field(default_factory=dict)
+    # set id -> {subset id: its uids when the set was made}: what the rail compares a subset with
+    set_snapshots: dict[str, dict[str, set[str]]] = field(default_factory=dict)
 
     def bump(self) -> None:
         self.rev += 1
@@ -110,15 +116,36 @@ async def open_pool(home: Path, species_id: str) -> LoadedPool:
         pool = await asyncio.to_thread(store.load_pool, home_path, species_id)
         if is_new:
             pool.members = await asyncio.to_thread(_home_members, home_path, species_id)
+        relabelled = _plain_labels(pool)
         lp = _POOLS.setdefault(key, LoadedPool(home_path, species_id, pool))
         lp.verdicts, n_lines = await asyncio.to_thread(store.read_verdicts, lp.home, species_id)
         lp.verdict_budget = store.compaction_budget(n_lines, len(lp.verdicts))
         lp.review = await asyncio.to_thread(store.read_review, lp.home, species_id)
         for sub in pool.subsets:
             lp.subset_uids[sub.id] = await asyncio.to_thread(store.read_subset, lp.home, species_id, sub.id)
-        if is_new and pool.members:
+        if (is_new and pool.members) or relabelled:
             await save_pool(lp)
     return lp
+
+
+# Older pool files name a template-match member "candidates jobNNN · extracted by N job(s)".
+_OLD_TM_LABEL = re.compile(r"^candidates (job\d+)(?: · extracted by \d+ job\(s\))?$")
+
+
+def _plain_labels(pool: KitchenPool) -> bool:
+    """Template-match members renamed to `members.tm_label` (what their rows are; the extraction count went
+    stale), a member filter following the rename. True when any was renamed."""
+    from services.sta_kitchen.members import tm_label
+
+    renamed: dict[str, str] = {}
+    for m in pool.members:
+        hit = _OLD_TM_LABEL.match(m.label or "")
+        if m.kind == MemberKind.TM and hit:
+            renamed[m.label] = m.label = tm_label(hit.group(1))
+    for f in pool.draft.filters:
+        if renamed and isinstance(f, CategoryFilter) and f.col == "member":
+            f.allowed = list(dict.fromkeys(renamed.get(a, a) for a in f.allowed))
+    return bool(renamed)
 
 
 def _home_members(home: Path, species_id: str) -> list[PoolMember]:
@@ -162,8 +189,10 @@ async def _member_chunk(lp: LoadedPool, member: PoolMember) -> tuple[dict, dict]
         view = await _view(member.project_path)
         spec = await asyncio.to_thread(member_spec, view, member)
     except (OSError, ValueError, KeyError) as e:
-        logger.exception("Kitchen member %s could not be read", member.key)
-        status.state, status.error = "error", f"{type(e).__name__}: {e}"
+        error = f"{type(e).__name__}: {e}"
+        if status.error != error:  # the disk tick retries every pass: log a member's problem once, not per tick
+            logger.exception("Kitchen member %s could not be read", member.key)
+        status.state, status.error = "error", error
         return None
     held = lp.chunks.get(member.key)
     if held is not None and held[0].get("fingerprint") == spec["fingerprint"]:
@@ -186,13 +215,38 @@ async def _member_chunk(lp: LoadedPool, member: PoolMember) -> tuple[dict, dict]
             meta, arrays = await asyncio.to_thread(read_chunk, npz)
         except Exception as e:
             # A member that cannot be built (a damaged star, a dead worker) leaves the others usable.
-            logger.exception("Kitchen member %s could not be built", member.key)
-            status.state, status.error = "error", f"{type(e).__name__}: {e}"
+            error = f"{type(e).__name__}: {e}"
+            if status.error != error:
+                logger.exception("Kitchen member %s could not be built", member.key)
+            status.state, status.error = "error", error
             return None
     status.state, status.error = "ok", ""
     status.fingerprint, status.n, status.build_s = meta["fingerprint"], int(meta["n"]), meta.get("build_s")
     lp.chunks[member.key] = (meta, arrays)
     return meta, arrays
+
+
+async def _uid_joins(lp: LoadedPool) -> list[dict]:
+    """The home project's extractions whose rows carry the pool's uids, each read once per change of its star
+    (`services/sta_kitchen/uid_join.py`), oldest first."""
+    from services.sta_kitchen.uid_join import read_join, uid_extractions
+
+    found = await asyncio.to_thread(uid_extractions, await _view(str(lp.home)), lp.species_id)
+    joins = []
+    for e in found:
+        hit = lp.uid_joins.get(e["star"])
+        if hit is None or hit[0] != e["mtime"]:
+            try:
+                data = await run_in_worker(WorkKind.KITCHEN, read_join, e["star"])
+            except Exception as ex:
+                # A star that cannot be read (damaged, mid-write) leaves the other joins and the pool usable.
+                logger.exception("Kitchen: extraction %s could not be read for its pick uids", e["star"])
+                data = {"uids": [], "vis": None, "n_rows": 0, "problems": [f"its particles.star is unreadable: {ex}"]}
+            hit = lp.uid_joins[e["star"]] = (e["mtime"], {**e, **data})
+        joins.append(hit[1])
+    for star in set(lp.uid_joins) - {e["star"] for e in found}:
+        lp.uid_joins.pop(star)
+    return joins
 
 
 async def rebuild(lp: LoadedPool) -> bool:
@@ -209,14 +263,22 @@ async def rebuild(lp: LoadedPool) -> bool:
                     lp.members.pop(key)
                     lp.chunks.pop(key, None)
             await _check_pictures(lp)
+            joins = await _uid_joins(lp)
             diameter = await asyncio.to_thread(species_diameter, lp)
             radius = diameter / 2.0 if diameter else None
-            fingerprints = [(k, meta["fingerprint"]) for k, meta, _a in chunks] + [("agree_radius", str(radius))]
+            fingerprints = (
+                [(k, meta["fingerprint"]) for k, meta, _a in chunks]
+                + [(f"uid:{j['star']}", str(j["mtime"])) for j in joins]
+                + [("agree_radius", str(radius))]
+                + [(f"label:{m.key}", m.label) for m in members]
+            )
             if lp.table is not None and fingerprints == lp.assembled_from:
                 return False
             lp.assembled_from = fingerprints
             labels = {m.key: (m.project_label, m.label or m.ref) for m in members}
-            table = await asyncio.to_thread(assemble, lp.pool, chunks, labels=lambda k: labels[k], agree_radius=radius)
+            table = await asyncio.to_thread(
+                assemble, lp.pool, chunks, labels=lambda k: labels[k], agree_radius=radius, uid_joins=joins
+            )
             changed = lp.table is None or table.version != lp.table.version
             if changed:
                 lp.table, lp.payload = table, None
@@ -303,25 +365,22 @@ async def save_review(lp: LoadedPool, review: dict) -> None:
     lp.bump()
 
 
-def current_selection(lp: LoadedPool) -> Selection | None:
-    """The authoritative reading of the draft (cheap: vectorised over the table)."""
+def current_selection(
+    lp: LoadedPool, draft: Draft | None = None, extra: dict[str, set[str]] | None = None
+) -> Selection | None:
+    """The authoritative reading of the draft (cheap: vectorised over the table). `draft`: another recipe on the
+    pool (the pool's draft with another scope); `extra`: uids of subsets its scope names that the pool does not
+    hold yet (a selection about to become one)."""
     if lp.table is None:
         return None
+    draft = draft if draft is not None else lp.pool.draft
     masks = {sid: hit[1] for sid, hit in lp.set_masks.items() if hit[0][0] == lp.table.version}
-    scope = lp.pool.draft.scope
+    held = {**lp.subset_uids, **(extra or {})}
     subs = {
-        sid: subset_mask(lp.table, lp.subset_uids[sid])
-        for sid in {*scope.include, *scope.exclude}
-        if sid in lp.subset_uids
+        sid: subset_mask(lp.table, held[sid]) for sid in {*draft.scope.include, *draft.scope.exclude} if sid in held
     }
     return select(
-        lp.table,
-        lp.pool.draft,
-        verdict_codes(lp.table, lp.verdicts),
-        lp.pool.frame_choice,
-        masks,
-        lp.pool.source_choice,
-        subs,
+        lp.table, draft, verdict_codes(lp.table, lp.verdicts), lp.pool.frame_choice, masks, lp.pool.source_choice, subs
     )
 
 
@@ -558,6 +617,7 @@ def source_tree(lp: LoadedPool) -> dict[str, Any]:
                 "sources": [{"key": k, "label": labels.get(k, k)} for k in conflict] if conflict else [],
                 "chosen": choice if conflict and choice in conflict else None,
                 "out": fr["key"] in excluded,
+                "excluded": bool(fr.get("excluded")),
             }
         )
     for p in projects.values():
@@ -1065,13 +1125,22 @@ async def prefer_source(lp: LoadedPool, source: str) -> int:
     return n
 
 
-async def plan_set(lp: LoadedPool, name: str, level: str | None) -> dict:
+async def plan_set(
+    lp: LoadedPool, name: str, scope: Scope | None = None, extra: dict[str, set[str]] | None = None
+) -> dict:
+    """What Make set would write from the pool's draft, or from it narrowed to `scope` instead of the draft's
+    own (a subset's Make set…); `extra`: uids of scope subsets the pool does not hold yet. The uids of every
+    subset the scope names go with the plan, so the set keeps them."""
     from services.sta_kitchen.export import plan
 
-    sel = await selection(lp)
+    draft = lp.pool.draft if scope is None else lp.pool.draft.model_copy(update={"scope": scope}, deep=True)
+    await ensure_set_masks(lp)
+    sel = await asyncio.to_thread(current_selection, lp, draft, extra)
     sp = (await asyncio.to_thread(project_view, lp.home)).state.get_species(lp.species_id)
     diameter = getattr(sp, "diameter_ang", None) if sp is not None else None
-    return await asyncio.to_thread(plan, lp, sel, name=name, level=level, diameter_a=diameter)
+    held = {**lp.subset_uids, **(extra or {})}
+    scope_uids = {sid: sorted(held[sid]) for sid in {*draft.scope.include, *draft.scope.exclude} if sid in held}
+    return await asyncio.to_thread(plan, lp, sel, name=name, diameter_a=diameter, draft=draft, scope_uids=scope_uids)
 
 
 async def make_set(lp: LoadedPool, plan: dict) -> dict:
@@ -1082,6 +1151,46 @@ async def make_set(lp: LoadedPool, plan: dict) -> dict:
         raise ValueError("; ".join(plan["blockers"]))
     out = await run_in_worker(WorkKind.KITCHEN, write_set, plan)
     lp.bump()
+    return out
+
+
+def _set_number(set_id: str) -> int:
+    """The sequence number of a set id ``s<NNN>_<name>``: the newer set, the larger."""
+    m = re.match(r"s(\d+)_", set_id)
+    return int(m.group(1)) if m else -1
+
+
+def subset_set_marks(lp: LoadedPool, held: dict[str, set[str]]) -> dict[str, dict]:
+    """Per subset, the kitchen sets of this species made in it (its id in their scope's include list), newest
+    first, and how many picks it gained or lost since the newest one (from that set's snapshot of it). `held`: a
+    copy of the subsets' uids, taken on the loop. Blocking (the sets' records and snapshots, each snapshot read
+    once): call in a thread."""
+    from services.sta_kitchen.export import SUBSETS_DIR
+    from services.particles.particle_sets import SetOp, list_sets, pool_scope, set_dir
+
+    made: dict[str, list] = {}
+    for ps in list_sets(lp.home):
+        if ps.recipe.op != SetOp.POOL or ps.species_id != lp.species_id:
+            continue
+        for sid in pool_scope(ps)[0]:
+            made.setdefault(sid, []).append(ps)
+    out: dict[str, dict] = {}
+    for sid, sets in made.items():
+        if sid not in held:
+            continue
+        sets.sort(key=lambda ps: _set_number(ps.id), reverse=True)
+        newest = sets[0]
+        snaps = lp.set_snapshots.get(newest.id)
+        if snaps is None:
+            snaps = {}
+            for f in (set_dir(lp.home, newest.id) / SUBSETS_DIR).glob("*.txt"):
+                snaps[f.stem] = set(f.read_text().split())
+            lp.set_snapshots[newest.id] = snaps
+        then = snaps.get(sid)
+        out[sid] = {
+            "sets": [{"id": ps.id, "name": ps.name, "n": ps.n_particles, "level": ps.level.value} for ps in sets],
+            "changed": len(then ^ held[sid]) if then is not None else None,
+        }
     return out
 
 
