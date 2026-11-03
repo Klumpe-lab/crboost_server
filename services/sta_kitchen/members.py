@@ -16,9 +16,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from services.kitchen.models import MemberKind, PickSource, PoolMember
-from services.kitchen.snapshots import ProjectView
-from services.models_base import JobType, PickListType
+from services.sta_kitchen.models import MemberKind, PickSource, PoolMember
+from services.sta_kitchen.snapshots import ProjectView
+from services.models_base import PARTICLE_EXTRACTION_TYPES, JobType, PickListType
 from services.particles.analytics_store import (
     candidates_sidecar_path,
     job_dir_of,
@@ -33,7 +33,7 @@ from services.particles.tomo_identity import acquisition_key
 logger = logging.getLogger(__name__)
 
 # Bumped when the columns a member build writes change, so cached tables rebuild.
-TABLE_SCHEMA = 3
+TABLE_SCHEMA = 4
 
 _LIST_SOURCES = {
     PickListType.MANUAL.value: PickSource.HAND,
@@ -52,6 +52,11 @@ class MemberOffer:
     extracted: bool
     n_rows: int | None  # from the job's analytics sidecar when it has one; None = not counted yet
     n_tomos: int | None
+
+
+def tm_label(job_name: str) -> str:
+    """A template-match member's name: what its rows are, and the Pick candidates job that wrote them."""
+    return f"template-match picks {job_name}"
 
 
 def project_token(path: Path) -> str:
@@ -81,12 +86,12 @@ def offered_members(view: ProjectView, species_id: str) -> list[MemberOffer]:
         if jd is None or not (jd / "candidates.star").exists():
             continue
         n_rows, n_tomos = _sidecar_counts(jd)
-        subs = subtomo_instances_for_ce(state, iid, path)
+        subs = subtomo_instances_for_ce(state, iid, path, types=PARTICLE_EXTRACTION_TYPES)
         out.append(
             MemberOffer(
                 kind=MemberKind.TM,
                 ref=iid,
-                label=f"candidates {jd.name}" + (f" · extracted by {len(subs)} job(s)" if subs else ""),
+                label=tm_label(jd.name),
                 star=str(jd / "candidates.star"),
                 tomograms_star=str(jd / "tomograms.star"),
                 extracted=bool(subs),
@@ -126,7 +131,8 @@ def _sidecar_counts(ce_dir: Path) -> tuple[int | None, int | None]:
 
 
 def tomo_facts(view: ProjectView) -> dict[str, dict[str, Any]]:
-    """{tomogram: {ctf_res, n_tilts, n_blank, acq}} from the project's registry."""
+    """{tomogram: {ctf_res, n_tilts, n_blank, acq, excluded}} from the project's registry; `excluded`: its
+    tilt series is excluded from processing in that project."""
     quality = tomogram_quality(view.path, view.registry)
     out: dict[str, dict[str, Any]] = {}
     for ts in view.registry.all_tilt_series():
@@ -137,6 +143,7 @@ def tomo_facts(view: ProjectView) -> dict[str, dict[str, Any]]:
             "n_tilts": q.get("n_used"),
             "n_blank": q.get("n_blank"),
             "acq": f"{key[0]}|{key[1]}" if key else "",
+            "excluded": bool(ts.is_excluded),
         }
     return out
 
@@ -173,10 +180,14 @@ def member_spec(view: ProjectView, member: PoolMember) -> dict[str, Any]:
             cap=getattr(jm, "max_num_particles", None),
             diameter_a=float(diameter) if diameter else None,
         )
-        for sid in subtomo_instances_for_ce(state, member.ref, path):
+        # Subtomo extraction and Warp export jobs that read this job's candidates: their rows carry the picks'
+        # positions, which is how they are joined (a stand-in for a uid those rows do not carry).
+        for sid in subtomo_instances_for_ce(state, member.ref, path, types=PARTICLE_EXTRACTION_TYPES):
             sd = job_dir_of(state, path, sid)
             if sd is not None and (sd / "particles.star").exists():
-                spec["subtomo"].append({"label": sd.name, "star": str(sd / "particles.star")})
+                spec["subtomo"].append(
+                    {"label": sd.name, "star": str(sd / "particles.star"), "type": state.jobs[sid].job_type.value}
+                )
     else:
         species_id, tomo, slug = member.ref.split("/", 2)
         pl = state.get_pick_list(slug, species_id, tomo)
@@ -201,7 +212,9 @@ def member_spec(view: ProjectView, member: PoolMember) -> dict[str, Any]:
 
             particles = _parse_optimisation_set(Path(pl.extracted_path))[0]
             if particles is not None and Path(particles).exists():
-                spec["subtomo"].append({"label": "list extraction", "star": str(particles)})
+                spec["subtomo"].append(
+                    {"label": "list extraction", "star": str(particles), "type": JobType.EXTRACT_PICK_LIST.value}
+                )
     spec["fingerprint"] = member_fingerprint(spec, view)
     return spec
 

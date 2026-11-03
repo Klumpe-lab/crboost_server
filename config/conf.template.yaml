@@ -130,6 +130,13 @@ job_resource_profiles:
     cpus_per_task: 2
     time: "0:15:00"
 
+  # One CPU job over every tomogram: Ais runs one process per CPU.
+  filamentPick:
+    gres: ""
+    mem: "32G"
+    cpus_per_task: 8
+    time: "1:00:00"
+
   subtomoExtraction:
     gres: "gpu:1"
     mem: "16G"

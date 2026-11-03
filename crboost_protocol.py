@@ -19,8 +19,7 @@ import sys
 from pathlib import Path
 
 sys.dont_write_bytecode = True
-REPO = Path(__file__).resolve().parent
-
+REPO                    = Path(__file__).resolve().parent
 
 def cmd_list(_args) -> int:
     from services.protocols.discovery import list_protocols
@@ -37,7 +36,6 @@ def cmd_list(_args) -> int:
         print(f"{info.name:28s} v{p.version}  {len(p.stages)} stages  {len(p.species)} species  {info.bundle_dir}")
     return 0
 
-
 def cmd_validate(args) -> int:
     from services.protocols.apply import validate_protocol
     from services.protocols.discovery import load_named_protocol
@@ -48,7 +46,6 @@ def cmd_validate(args) -> int:
         return 1
     print("ok")
     return 0
-
 
 def cmd_export(args) -> int:
     from services.project_state import ProjectState

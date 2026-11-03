@@ -159,4 +159,6 @@ visibly flagging over `except: return <default>` for any semantically load-beari
 
 - Line length: 120 (see `ruff.toml`)
 - `ruff format` with `skip-magic-trailing-comma = true`
-- `sys.dont_write_bytecode = True` is set in `main.py` — no `.pyc` files in dev
+- Bytecode: the server compiles into `~/.cache/crboost/pycache` (`pycache_setup.py`, imported first by
+  `crboost`); drivers use the usual `__pycache__`; the venv's packages are compiled by `uv pip sync`
+  (`compile-bytecode` in `uv.toml`)

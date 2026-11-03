@@ -49,8 +49,16 @@ from pathlib import Path
 
 import pandas as pd
 
-from drivers.array_job_base import ArrayDriver, ArrayResults, load_excluded_ts, write_skip_status, STATUS_DIR_NAME
+from drivers.array_job_base import (
+    ArrayDriver,
+    ArrayResults,
+    load_excluded_ts,
+    preflight_origins,
+    write_skip_status,
+    STATUS_DIR_NAME,
+)
 from drivers.driver_base import DriverContext, ToolCommand
+from services.particles.set_origins import origins_of
 from services.subtomo_merge import (
     _parse_optimisation_set,
     _read_input_particles_lenient,
@@ -253,6 +261,7 @@ class SubtomoExtractionDriver(ArrayDriver):
     job_name = "subtomo_extraction"
     driver_script = Path(__file__).resolve()
     poll_secs = 15
+    _origins = None  # name in the set -> Origin, when the input is a particle set recording them
 
     # ---------------- supervisor ----------------
 
@@ -280,6 +289,13 @@ class SubtomoExtractionDriver(ArrayDriver):
         # tomograms.star, so missing optics in the input is fine.
         particles_df, optics_df, general_kv = _read_input_particles_lenient(upstream_particles_star)
         tomograms_df = _read_tomograms_star(upstream_tomograms_star)
+        # A particle set's tomograms record where each lives (its project, its name there); a set may hold
+        # tomograms of other projects. Its picks are checked against those projects' registries and no
+        # exclusions apply to them.
+        self._origins = origins_of(tomograms_df)
+        if self._origins is not None:
+            projects = sorted({o.project for o in self._origins.values()})
+            self.log(f"Input is a particle set over {len(projects)} project(s): {[Path(p).name for p in projects]}")
 
         self._input_optimisation = input_optimisation
         self._upstream_particles_star = upstream_particles_star
@@ -352,7 +368,9 @@ class SubtomoExtractionDriver(ArrayDriver):
         # Excluded TS are muted — never staged, dispatched, or merged. The
         # base's apply_exclusions writes their .skip markers (and clears any
         # stale .ok/.fail); here we only need the filter.
-        self._excluded_set = load_excluded_ts(ctx.project_path)
+        self._excluded_set = self.excluded_items(ctx)
+        if self._excluded_set is None:
+            self._excluded_set = load_excluded_ts(ctx.project_path)
         excluded_ts = [t for t in ts_names if t in self._excluded_set]
         self._ts_with_picks = [t for t in ts_with_picks if t not in self._excluded_set]
 
@@ -371,6 +389,15 @@ class SubtomoExtractionDriver(ArrayDriver):
     def preflight_scope(self, ctx: DriverContext[SubtomoExtractionParams], items: list[str]) -> list[str]:
         # Preflight only the TS we'll actually dispatch.
         return self._ts_with_picks
+
+    def preflight(self, ctx: DriverContext[SubtomoExtractionParams], items: list[str]) -> None:
+        if self._origins is None:
+            super().preflight(ctx, items)
+        else:
+            preflight_origins(self._origins, self._ts_with_picks, job_name=self.job_name)
+
+    def excluded_items(self, ctx: DriverContext[SubtomoExtractionParams]) -> set[str] | None:
+        return set() if self._origins is not None else None
 
     def pre_dispatch(self, ctx: DriverContext[SubtomoExtractionParams], items: list[str]) -> None:
         # Clear stale .skip markers, then pre-write fresh ones for the

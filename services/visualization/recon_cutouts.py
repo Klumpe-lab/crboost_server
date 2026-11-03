@@ -30,6 +30,11 @@ from services.visualization.cutout_filters import emit_filtered_atlases
 
 logger = logging.getLogger(__name__)
 
+# A cutout's edge as a multiple of the particle's diameter, wherever a tile is cut from a reconstruction
+# (the STA kitchen, a pick list's cutouts): about the box an extraction gives the same particle, so the
+# particle fills most of the tile and a rim of its surroundings shows around it.
+CUTOUT_BOX_FACTOR = 1.4
+
 
 def _crop_slab(data, x: int, y: int, z: int, half_box: int, half_slab: int) -> np.ndarray | None:
     """Mean over a Z slab of a box centered at voxel (x, y, z) → 2D float32 (y, x).

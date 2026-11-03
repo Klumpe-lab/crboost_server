@@ -71,6 +71,11 @@ async def open_sources(tab: KitchenTab) -> None:
                         icon_button(
                             "close", lambda _e, k=m.key: remove(k), tooltip="Remove from the pool", kind="danger"
                         )
+                        images = _images_line(lp, m.key)
+                        if images:
+                            ui.label(images).classes(HINT_CLS).style("grid-column: 2 / -1; margin-top: -2px;")
+                for line, bad in _uid_join_lines(lp):
+                    ui.label(line).classes(ERROR_CLS if bad else HINT_CLS).style("white-space: normal;")
 
         async def render_tree() -> None:
             data = await asyncio.to_thread(service.source_tree, lp)
@@ -123,6 +128,11 @@ async def open_sources(tab: KitchenTab) -> None:
                                 f["key"]
                             )
                             ui.label(f"{f['kept']:,}/{f['rows']:,}").style(_MONO).style("width: 70px;")
+                            if f["excluded"]:
+                                ui.label("excluded in its project").classes(HINT_CLS).tooltip(
+                                    "Its tilt series is excluded from processing in its own project. The kitchen "
+                                    "and the jobs reading a set apply no exclusions: untick it to leave it out."
+                                )
                             for m in f["members"]:
                                 text = f"{m['label']} · {m['kept']:,}/{m['rows']:,}"
                                 if f["sources"]:
@@ -186,6 +196,30 @@ async def open_sources(tab: KitchenTab) -> None:
             house_button("Close", dlg.close)
     dlg.open()
     await render_tree()
+
+
+_JOB_NAMES = {"warpExport": "Warp export", "subtomoExtraction": "Subtomo extraction", "extractPickList": "extraction"}
+
+
+def _images_line(lp, key: str) -> str:
+    """Where a member's particle images come from: the extraction jobs that read its picks, matched to them by
+    position (their rows carry no pick uid)."""
+    meta = lp.table.member_meta.get(key) if lp.table is not None else None
+    jobs = (meta or {}).get("subtomo") or []
+    if not jobs:
+        return ""
+    named = ", ".join(f"{j['label']} ({_JOB_NAMES.get(j.get('type', ''), 'extraction')})" for j in jobs)
+    return f"particle images: {named}, matched to the picks by position"
+
+
+def _uid_join_lines(lp) -> list[tuple[str, bool]]:
+    """The extractions of sets made here, matched to the picks by the uid their rows carry, and what the match
+    found (rows without a uid, uids the pool no longer holds)."""
+    out = []
+    for label, j in (lp.table.uid_notes if lp.table is not None else {}).items():
+        out.append((f"{label}: {j['joined']:,} of its {j['rows']:,} rows matched to picks by pick uid", False))
+        out += [(f"{label}: {n}", True) for n in j["notes"]]
+    return out
 
 
 def _discover(home: Path, members: list[str]) -> list[Path]:

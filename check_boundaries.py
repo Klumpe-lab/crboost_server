@@ -27,8 +27,7 @@ import ast
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).parent
-
+ROOT        = Path(__file__).parent
 NO_UI_TREES = ("services", "drivers", "backend.py")
 
 # Pure re-export shims (module -> where to import from instead).

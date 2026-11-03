@@ -1,20 +1,22 @@
-"""Make set: the kept rows of a pool become an ordinary particle set of the home project.
+"""Make set: the kept picks of a pool become an ordinary particle set of the home project.
 
-`plan(lp, name, level)` (server, in a thread) reads the selection and states before anything is
-written: the blockers (an acquisition in frames that cannot be pooled and no frame chosen; extracted
-members whose optics disagree; tomograms the merge cannot equate), the unverified lines (handedness nobody
-states), the level, the clashes deduplicated (picks of one pooled tomogram within Ø/2, a hand pick winning,
-then the higher σ), the tomograms renamed, and the counts. `write_set(plan)` (a worker) writes it: one
-member is a row subset of its own star; several are merged, coordinates through `merge_coordinate_sources`,
-extracted particles through `merge_optimisation_sets_into_jobdir`.
+A set holds picks: their positions as picked, with their uids and halves. A job reading it takes each facet it
+needs of them (the images an extraction cut, poses a refinement found) from the jobs that made them
+(`services/particles/set_facets.py`), so one set serves every job.
+
+`plan(lp, sel, name=…)` (server, in a thread) reads the selection and states before anything is written: the
+blockers (an acquisition in frames that cannot be pooled and no frame chosen; tomograms the merge cannot equate),
+the unverified lines (handedness nobody states), the clashes deduplicated (picks of one pooled tomogram within Ø/2, a
+hand pick winning, then the higher σ), the tomograms renamed, and the counts. `write_set(plan)` (a worker) writes it:
+one member is a row subset of its own star; several are merged through `merge_coordinate_sources`.
 
 Every row carries its pick's pool uid (``cbPickUid``) and a half from a hash of it (``rlnRandomSubset``;
 `services/particles/pick_uids.py`). Every tomogram row records where its tomogram lives (project, name there,
 per-tilt star there; `services/particles/set_origins.py`). A tomogram whose name another project of the set
-also uses is renamed ``<name>__<project>``, coordinates and extracted sets alike, and gets a copy of its
-per-tilt star under that name in the set's ``tilt_series/``. The set records its members as parents, the
-recipe (with the subsets it was made in and their uids then, ``kitchen_subsets/``), the verdict counts and
-the frozen uid list (``kitchen_uids.txt``), so it can be compared and replayed exactly.
+also uses is renamed ``<name>__<project>`` and gets a copy of its per-tilt star under that name in the set's
+``tilt_series/``. The set records its members as parents, the recipe (with the subsets it was made in and their uids
+then, ``kitchen_subsets/``), the verdict counts and the frozen uid list (``kitchen_uids.txt``), so it can be compared
+and replayed exactly.
 """
 
 from __future__ import annotations
@@ -37,9 +39,6 @@ logger = logging.getLogger(__name__)
 UIDS_FILE = "kitchen_uids.txt"
 # The uids each subset the set was made in held then, one file per subset: the rail compares them with now.
 SUBSETS_DIR = "kitchen_subsets"
-COORDINATES, EXTRACTED, EXTRACTED_ONLY = "coordinates", "extracted", "extracted_only"
-# The optics columns extracted particles of one set must agree on.
-OPTICS_COLS = ("rlnImagePixelSize", "rlnImageSize", "rlnTomoSubtomogramBinning")
 
 
 def dedup(table: PoolTable, rows: np.ndarray, radius: float | None) -> np.ndarray:
@@ -57,30 +56,9 @@ def dedup(table: PoolTable, rows: np.ndarray, radius: float | None) -> np.ndarra
     return rows[greedy_keep(xyz, order, radius, group)]
 
 
-def _optics(star: str) -> dict[str, Any] | None:
-    import pandas as pd
-    import starfile
-
-    blocks = starfile.read(star, always_dict=True)
-    optics = blocks.get("optics")
-    if not isinstance(optics, pd.DataFrame) or optics.empty:
-        return None
-    return {c: str(optics[c].iloc[0]) for c in OPTICS_COLS if c in optics.columns}
-
-
 def _member_label(lp, key: str) -> str:
     m = lp.pool.member(key)
     return f"{m.project_label} · {m.label or m.ref}" if m is not None else key
-
-
-def ext_star_of(table: PoolTable, member_key: str, code: int) -> str | None:
-    """The particles.star of the extraction an `extracted` code names: one joined by uid (any job whose rows
-    carry the pool's uids), else one of the member's own extractions, joined by position."""
-    src = table.uid_ext.get(int(code))
-    if src is not None:
-        return src.star
-    label = table.categories["extracted"][int(code)]
-    return {j["label"]: j["star"] for j in table.member_meta[member_key].get("subtomo") or []}.get(label)
 
 
 def _coord_sources(members: list[dict[str, Any]]) -> list:
@@ -142,7 +120,6 @@ def plan(
     sel: Selection,
     *,
     name: str,
-    level: str | None,
     diameter_a: float | None,
     draft=None,
     scope_uids: dict[str, list[str]] | None = None,
@@ -150,9 +127,6 @@ def plan(
     """What Make set would write, and what stops it. Blocking reads: call in a thread. `draft`: the recipe
     read (the pool's, or it with the scope a rail command set); `scope_uids`: the uids of the subsets that
     scope names, kept with the set."""
-    from services.particles.pick_uids import read_uid_column
-    from services.particles.set_ops import read_table
-
     table = lp.table
     draft = draft if draft is not None else lp.pool.draft
     rows = np.flatnonzero(sel.final)
@@ -186,23 +160,12 @@ def plan(
         unverified.append(
             f"handedness is not stated for {len(unstated)} tomogram(s) (e.g. {unstated[0]}): a flip would mirror Z"
         )
-    extracted = table.cat["extracted"][rows] > 0
-    n_ext = int(extracted.sum())
-    if level is None:
-        level = EXTRACTED if n_ext == len(rows) and len(rows) else COORDINATES
-    if level == EXTRACTED and n_ext < len(rows):
-        blockers.append(
-            f"{len(rows) - n_ext:,} kept rows are not extracted: make a coordinates set or take only the extracted"
-        )
-    if level == EXTRACTED_ONLY:
-        rows = rows[extracted]
     radius = diameter_a / 2.0 if diameter_a else None
     if radius is None:
         notes.append("the species has no diameter, so clashes were not deduplicated")
     kept = dedup(table, rows, radius)
     tomo_names = table.categories["tomo"]
     members: list[dict[str, Any]] = []
-    optics: dict[str, dict[str, Any]] = {}
     for key in table.members:
         sl = table.member_slices[key]
         mine = kept[(kept >= sl.start) & (kept < sl.stop)]
@@ -236,37 +199,7 @@ def plan(
             # tomogram -> its per-tilt star in the member's project (the set's tomograms record it)
             "tilt_stars": {table.frames[f]["tomo"]: table.frames[f].get("ts_star") or "" for f in set(frames.tolist())},
         }
-        if level in (EXTRACTED, EXTRACTED_ONLY):
-            codes_here = set(table.cat["extracted"][mine].tolist())
-            stars = {ext_star_of(table, key, c) for c in codes_here}
-            if len(stars) != 1 or None in stars:
-                blockers.append(f"{entry['label']}: its kept rows come from {len(stars)} extractions; one per member")
-            else:
-                entry["ext_star"] = stars.pop()
-                entry["ext_rows"] = table.ext_row[mine].tolist()
-                o = _optics(entry["ext_star"])
-                if o:
-                    optics[entry["label"]] = o
-                if not all(int(c) in table.uid_ext for c in codes_here):
-                    job = Path(entry["ext_star"]).parent.name
-                    notes.append(
-                        f"{entry['label']}: its extraction {job} is joined to the picks by position, a stand-in "
-                        "(that star names no picks)"
-                    )
-                    col = read_uid_column(read_table(entry["ext_star"]).df)
-                    if col is not None:
-                        wrong = sum(col.uids[r] != u for r, u in zip(entry["ext_rows"], entry["uids"], strict=True))
-                        if wrong:
-                            blockers.append(
-                                f"{entry['label']}: {wrong:,} rows of {job} carry another pick's uid than the "
-                                "position join gave them"
-                            )
         members.append(entry)
-    if len({json.dumps(o, sort_keys=True) for o in optics.values()}) > 1:
-        blockers.append(
-            "extracted members disagree on optics: "
-            + "; ".join(f"{k}: {', '.join(f'{c}={v}' for c, v in o.items())}" for k, o in optics.items())
-        )
     assign, origins, merge_blocking, merge_unverified = _plan_names(members) if members else ({}, {}, [], [])
     blockers += merge_blocking
     unverified += [u for u in merge_unverified if u not in unverified]
@@ -294,24 +227,24 @@ def plan(
     per_project: dict[str, int] = {}
     for m in members:
         per_project[m["project_label"]] = per_project.get(m["project_label"], 0) + len(m["rows"])
+    per_project_tomos = tomograms_per_project(members, assign)
     scope = draft.scope
     in_scope = [*scope.include, *scope.exclude]
     return {
         "home": str(lp.home),
         "species_id": lp.species_id,
         "name": name,
-        "level": COORDINATES if level == COORDINATES else EXTRACTED,
         "members": members,
         "blockers": blockers,
         "unverified": unverified,
         "notes": notes,
         "n": len(kept),
         "n_before_dedup": len(rows),
-        "n_extracted": n_ext,
         "n_selected": int(sel.n),
         "n_frames": len(np.unique(table.cat["frame"][kept])) if len(kept) else 0,
         "n_projects": len(projects),
         "per_project": per_project,
+        "per_project_tomograms": per_project_tomos,
         "dedup_radius_a": radius,
         "draft": json.loads(draft.model_dump_json()),
         "frame_choice": dict(lp.pool.frame_choice),
@@ -330,6 +263,15 @@ def plan(
         "dropped_by_hand": sel.dropped_by_hand,
         "pool_version": table.version,
     }
+
+
+def tomograms_per_project(members: list[dict[str, Any]], assign: dict[str, str]) -> dict[str, int]:
+    """Tomograms of the set per project, by their names in the set: two projects' Position_1 are two, and one
+    tomogram two members share is one."""
+    names: dict[str, set[str]] = {}
+    for m in members:
+        names.setdefault(m["project_label"], set()).update(assign[f"{m['project']}|{t}"] for t in m["tomos"])
+    return {label: len(n) for label, n in names.items()}
 
 
 # ── Worker side ──────────────────────────────────────────────────────────────────────────────────
@@ -388,27 +330,14 @@ def _write_tomograms(df, out: Path) -> None:
     _write_tomograms_star(out, df)
 
 
-def _tomograms_of(m: dict[str, Any], level) -> str:
-    """The tomograms.star a member's rows of `level` refer to: its extraction's, beside the extracted
-    particles, else the member's own."""
-    if level == "extracted" and m.get("ext_star"):
-        beside = Path(m["ext_star"]).with_name("tomograms.star")
-        if beside.exists():
-            return str(beside)
-    return m["tomograms_star"]
-
-
-def _stamp_rows(subset, m: dict[str, Any], src: str, notes: list[str], *, joined: bool) -> None:
-    """Every row's pick uid and half, in place. Rows `joined` to the picks (an extraction's) that already carry
-    a uid must carry the one the pool joined them to (an untrusted star: anything else stops the set); a
-    member's own rows are its picks, and a uid they carry from elsewhere is replaced, and said."""
+def _stamp_rows(subset, m: dict[str, Any], src: str, notes: list[str]) -> None:
+    """Every row's pick uid and half, in place. A member's own rows are its picks: a uid they carry from elsewhere
+    is replaced, and said."""
     from services.particles.pick_uids import HALF_COL, UID_COL, half_of, read_uid_column, uid_cell
 
     col = read_uid_column(subset)
     if col is not None:
         wrong = sum(u != want for u, want in zip(col.uids, m["uids"], strict=True))
-        if wrong and joined:
-            raise ValueError(f"{wrong:,} rows of {src} name other picks than the pool joined them to")
         if wrong:
             notes.append(f"{wrong:,} rows of {Path(src).name} carried another {UID_COL}; replaced by their pool uid")
     halves = [half_of(u) for u in m["uids"]]
@@ -418,29 +347,6 @@ def _stamp_rows(subset, m: dict[str, Any], src: str, notes: list[str], *, joined
             notes.append(f"{moved:,} rows of {Path(src).parent.name} had another {HALF_COL}; set from their uid")
     subset[UID_COL] = [uid_cell(u) for u in m["uids"]]
     subset[HALF_COL] = halves
-
-
-def _rename_rows(subset, m: dict[str, Any], assign: dict[str, str]) -> dict[str, str]:
-    """An extraction's rows renamed to the set's tomogram names, in place (and their particle names' prefix);
-    returns {name in the extraction: name in the set}. Each extraction name must stand for one tomogram."""
-    names: dict[str, str] = {}
-    new_names = []
-    for old, origin in zip(subset["rlnTomoName"].astype(str), m["tomo_of_row"], strict=True):
-        new = assign[f"{m['project']}|{origin}"]
-        if names.setdefault(old, new) != new:
-            raise ValueError(f"{m['ext_star']}: tomogram {old} holds picks of two tomograms of {m['project_label']}")
-        new_names.append(new)
-    if len(set(names.values())) != len(names):
-        raise ValueError(f"{m['ext_star']}: one tomogram of {m['project_label']} under two names")
-    if "rlnTomoParticleName" in subset.columns:
-        subset["rlnTomoParticleName"] = [
-            f"{new}/{p[len(old) + 1 :]}" if old != new and p.startswith(f"{old}/") else p
-            for p, old, new in zip(
-                subset["rlnTomoParticleName"].astype(str), subset["rlnTomoName"].astype(str), new_names, strict=True
-            )
-        ]
-    subset["rlnTomoName"] = new_names
-    return names
 
 
 def write_set(plan: dict[str, Any]) -> dict[str, Any]:
@@ -457,11 +363,12 @@ def write_set(plan: dict[str, Any]) -> dict[str, Any]:
         publish_set,
         set_dir,
     )
+    from services.particles.set_facets import PER_ROW_DROPPED
     from services.particles.set_origins import TILT_DIR
     from services.particles.set_ops import read_table
 
     home = Path(plan["home"])
-    level = SetLevel(plan["level"])
+    level = SetLevel.COORDINATES
     members = plan["members"]
     assign, origins = plan["assign"], plan["origins"]
     set_id = allocate_id(home, plan["name"])
@@ -473,15 +380,12 @@ def write_set(plan: dict[str, Any]) -> dict[str, Any]:
         parents = []
         tomo_names: list[dict[str, str]] = []  # per member: {name in its rows' star: name in the set}
         for k, m in enumerate(members):
-            src = m.get("ext_star") if level == SetLevel.EXTRACTED else m["star"]
-            idx = m["ext_rows"] if level == SetLevel.EXTRACTED else m["rows"]
+            src = m["star"]
             table = read_table(src)
-            subset = table.df.iloc[idx].copy()
-            _stamp_rows(subset, m, src, notes, joined=level == SetLevel.EXTRACTED)
-            if level == SetLevel.EXTRACTED:
-                tomo_names.append(_rename_rows(subset, m, assign))
-            else:
-                tomo_names.append({t: assign[f"{m['project']}|{t}"] for t in m["tomos"]})
+            subset = table.df.iloc[m["rows"]].copy()
+            _stamp_rows(subset, m, src, notes)
+            subset = subset.drop(columns=[c for c in PER_ROW_DROPPED if c in subset.columns])
+            tomo_names.append({t: assign[f"{m['project']}|{t}"] for t in m["tomos"]})
             out = staging / f"m{k}.star"
             table.write(subset, out)
             m["subset"] = str(out)
@@ -490,7 +394,7 @@ def write_set(plan: dict[str, Any]) -> dict[str, Any]:
                 ParentRef(
                     kind="list" if m["kind"] == MemberKind.LIST.value else "job",
                     instance_id=m["ref"] if m["kind"] == MemberKind.TM.value else "",
-                    output="particles" if level == SetLevel.EXTRACTED else "candidates",
+                    output="candidates",
                     list_ref=m["ref"] if m["kind"] == MemberKind.LIST.value else "",
                     project_path="" if same else m["project"],
                     label=f"{m['project_label']} · {m['label']}",
@@ -504,7 +408,7 @@ def write_set(plan: dict[str, Any]) -> dict[str, Any]:
         extras: dict[str, Path] = {}
         tomograms = staging / "tomograms.star"
         rows_kw = {"origins": origins, "tilt_staging": tilt_staging, "tilt_final": tilt_final}
-        if level == SetLevel.COORDINATES and len(members) > 1:
+        if len(members) > 1:
             from services.particles.coord_merge import merge_coordinate_sources
 
             merged = staging / "merged"
@@ -527,43 +431,18 @@ def write_set(plan: dict[str, Any]) -> dict[str, Any]:
                 "provenance.star": merged / "provenance.star",
                 "merge_summary.json": merged / "merge_summary.json",
             }
-        elif len(members) == 1:
+        else:
             m, names = members[0], tomo_names[0]
             particles = Path(m["subset"])
-            df = _tomogram_rows(_tomograms_of(m, level), names, fallback_project=m["project"], **rows_kw)
+            df = _tomogram_rows(m["tomograms_star"], names, fallback_project=m["project"], **rows_kw)
             _write_tomograms(df, tomograms)
-        else:
-            from services.subtomo_merge import merge_optimisation_sets_into_jobdir, write_optimisation_set
-
-            optsets, taken = [], set()
-            for k, (m, names) in enumerate(zip(members, tomo_names, strict=True)):
-                d = staging / f"src{k}"
-                d.mkdir()
-                # A tomogram two members share (one acquisition, pooled) keeps the first member's row.
-                mine = {old: new for old, new in names.items() if new not in taken}
-                taken |= set(mine.values())
-                tstar = d / "tomograms.star"
-                df = _tomogram_rows(_tomograms_of(m, level), mine, fallback_project=m["project"], **rows_kw)
-                _write_tomograms(df, tstar)
-                optset = d / "optimisation_set.star"
-                write_optimisation_set(optset, particles_star=Path(m["subset"]), tomograms_star=tstar)
-                optsets.append(str(optset))
-            merged = staging / "merged"
-            merged.mkdir()
-            merge_optimisation_sets_into_jobdir(job_dir=merged, additional_sources=optsets, allow_no_primary=True)
-            particles, tomograms = merged / "particles.star", merged / "tomograms.star"
-            extras = {"merge_summary.json": merged / "merge_summary.json"}
 
         # Counted by the names in the set: two projects' Position_1 are two tomograms.
         per_tomo = {
             str(t): int(c) for t, c in read_table(particles).df["rlnTomoName"].astype(str).value_counts().items()
         }
         n_rows = sum(per_tomo.values())
-        per_project_tomos: dict[str, int] = {}
-        for m, names in zip(members, tomo_names, strict=True):
-            per_project_tomos[m["project_label"]] = per_project_tomos.get(m["project_label"], 0) + len(
-                set(names.values())
-            )
+        per_project_tomos = tomograms_per_project(members, assign)
         uids = [u for m in members for u in m["uids"]]
         scope = plan["draft"].get("scope", {})
         in_scope = [*scope.get("include", []), *scope.get("exclude", [])]

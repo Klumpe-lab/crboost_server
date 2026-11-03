@@ -324,10 +324,14 @@ def load_excluded_ts(project_path: Path) -> set:
 EXCLUDED_REASON = "excluded from processing"
 
 
-def apply_exclusions(job_dir: Path, project_path: Path, ts_names: list[str]) -> list[str]:
+def apply_exclusions(
+    job_dir: Path, project_path: Path, ts_names: list[str], excluded: set[str] | None = None
+) -> list[str]:
     """Pre-mark user-excluded tilt-series as `.skip` so the array never
     dispatches them and `collect_task_results` counts them as settled (not
-    failures or missing).
+    failures or missing). `excluded`: the names to treat as excluded instead of
+    the project's registry's (an empty set for a job that reads a particle set,
+    which applies no exclusions).
 
     Call this right before `submit_array_job`. Any excluded TS gets its stale
     `.ok`/`.fail` markers cleared first so it carries exactly one status file
@@ -343,7 +347,7 @@ def apply_exclusions(job_dir: Path, project_path: Path, ts_names: list[str]) -> 
     (subset of ts_names) so callers can also drop them from glob/merge-based
     aggregation.
     """
-    excluded_set = load_excluded_ts(project_path)
+    excluded_set = load_excluded_ts(project_path) if excluded is None else excluded
     status_dir = job_dir / STATUS_DIR_NAME
     restored = []
     if status_dir.is_dir():
@@ -431,6 +435,42 @@ def preflight_registry(project_path: Path, expected_ts_names: list[str], job_nam
             f"(e.g. prefix drift between source mdocs and project mdocs). Reload the project "
             f"in the UI — the drift detector in load_project_state will rebuild from "
             f"{project_path}/mdoc/ and align the names."
+        )
+
+
+def preflight_origins(origins: dict, expected_ts_names: list[str], job_name: str) -> None:
+    """For a job reading a particle set whose tomograms record where they live (`set_origins.origins_of`):
+    every tilt series it will dispatch must be known to its own project's registry, under its name there. Each
+    project's registry is read, never written. Raises naming what is missing, per project."""
+    from services.tilt_series.registry import TiltSeriesRegistry
+
+    no_origin = [t for t in expected_ts_names if t not in origins]
+    if no_origin:
+        raise RuntimeError(
+            f"{job_name} preflight: {len(no_origin)} tilt series of the set's particles have no tomogram row "
+            f"recording their origin: {no_origin[:10]}"
+        )
+    by_project: dict[str, list[str]] = {}
+    for t in expected_ts_names:
+        by_project.setdefault(origins[t].project, []).append(t)
+    problems = []
+    for project, names in sorted(by_project.items()):
+        registry = TiltSeriesRegistry(Path(project))
+        registry.load()
+        registry.raise_if_unreadable()
+        missing = [t for t in names if not registry.has_tilt_series(origins[t].tomo)]
+        print(
+            f"[{job_name}] PREFLIGHT: {len(names)} TS from {Path(project).name}: "
+            f"{len(names) - len(missing)} known to its registry",
+            flush=True,
+        )
+        if missing:
+            shown = ", ".join(f"{t} (there: {origins[t].tomo})" for t in missing[:10])
+            problems.append(f"{Path(project).name}: {len(missing)}/{len(names)} unknown to its registry: {shown}")
+    if problems:
+        raise RuntimeError(
+            f"{job_name} preflight: tilt series of the set unknown to their own project's registry. "
+            + "; ".join(problems)
         )
 
 
@@ -796,6 +836,16 @@ class ArrayDriver(ABC):
         subtomo_extraction narrows to the TS it will actually dispatch."""
         return items
 
+    def preflight(self, ctx: DriverContext, items: list[str]) -> None:
+        """Check the tilt series about to be dispatched before anything is submitted. Default: against this
+        project's registry; a job reading a particle set checks each against its own project's."""
+        preflight_registry(ctx.project_path, self.preflight_scope(ctx, items), job_name=self.job_name)
+
+    def excluded_items(self, ctx: DriverContext) -> set[str] | None:
+        """The items to treat as excluded from processing; None: this project's registry says. A job reading a
+        particle set applies none: excluding a tilt series is a decision of its own project."""
+        return None
+
     def item_metadata(self, ctx: DriverContext, items: list[str]) -> dict[str, dict] | None:
         """Per-item metadata to persist in the manifest (`ts_metadata`)."""
         return None
@@ -908,7 +958,7 @@ class ArrayDriver(ABC):
                 raise ValueError(f"{self.job_name}: no tilt-series to process")
             print(f"[SUPERVISOR] Found {len(items)} tilt-series", flush=True)
 
-            preflight_registry(ctx.project_path, self.preflight_scope(ctx, items), job_name=self.job_name)
+            self.preflight(ctx, items)
             self.pre_dispatch(ctx, items)
 
             if print_cmd_only():
@@ -922,7 +972,7 @@ class ArrayDriver(ABC):
 
             # Honor user "exclude from processing": pre-skip excluded items so they are
             # never dispatched and count as settled (not failures) in aggregation.
-            apply_exclusions(ctx.job_dir, ctx.project_path, items)
+            apply_exclusions(ctx.job_dir, ctx.project_path, items, excluded=self.excluded_items(ctx))
 
             array_job_id = submit_array_job(
                 job_dir=ctx.job_dir,

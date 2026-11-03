@@ -127,6 +127,8 @@ class JobType(str, Enum):
     SUBSET = "subset"
     TEMPLATE_MATCH_PYTOM = "templatematching"
     TEMPLATE_EXTRACT_PYTOM = "tmextractcand"
+    # Points along the filaments a Segment job's volumes trace (Ais `pick -filament`).
+    FILAMENT_PICK = "filamentPick"
     SUBTOMO_EXTRACTION = "subtomoExtraction"
     WARP_EXPORT = "warpExport"
     # Per-pick-list extraction. One instance per (species, tomogram, slug)

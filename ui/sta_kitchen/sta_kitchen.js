@@ -647,6 +647,7 @@ export default {
     source_choice: Object,
     subsets: Array,
     groups: Array,
+    subset_sets: Object,
     dots: Object,
   },
   mounted() {
@@ -746,6 +747,7 @@ export default {
       this.renderRail(true);
       if (this.s && this.sel) this.refreshTiles();
     },
+    subset_sets() { this.renderRail(true); },
     dots() { for (const R of this.stream.nodes.values()) if (!R.fold) this.drawStreamRow(R); },
     set_masks() {
       if (!this.s) return;
@@ -1136,7 +1138,8 @@ export default {
       const v = s.verdict[row] === KEEP ? " · kept by hand" : s.verdict[row] === DROP ? " · dropped by hand" : "";
       const pd = this.pairView ? this.pairView.dist.get(row) : undefined;
       const pair = pd !== undefined ? `\nin a pair ${fmt(pd, 0)} Å apart (its partner beside it)` : "";
-      return `${fr.project || "?"} · ${fr.tomo || "?"} · ${src}\nσ ${fmt(s.num.sigma[row], 2)} · LCC ${fmt(s.num.lcc[row], 3)} · depth ${fmt(s.num.depth_a[row], 0)} Å · NN ${fmt(s.num.nn_a[row], 0)} Å${v}${pair}`;
+      const ex = fr.excluded ? `\nexcluded from processing in ${fr.project || "its project"}` : "";
+      return `${fr.project || "?"} · ${fr.tomo || "?"} · ${src}${ex}\nσ ${fmt(s.num.sigma[row], 2)} · LCC ${fmt(s.num.lcc[row], 3)} · depth ${fmt(s.num.depth_a[row], 0)} Å · NN ${fmt(s.num.nn_a[row], 0)} Å${v}${pair}`;
     },
     // Select one tile alone (-1: nothing).
     pick(row) {
@@ -1505,6 +1508,14 @@ export default {
       return [...subs.filter((x) => !x.group || !grouped.has(x.group)), ...gs.flatMap((g) => subs.filter((x) => x.group === g.id))];
     },
     subById(id) { return (this.subsets || []).find((x) => x.id === id); },
+    // The sets made in a subset, under its rail line: how many, and how much it changed since the newest.
+    setMark(id) {
+      const m = (this.subset_sets || {})[id];
+      if (!m || !(m.sets || []).length) return "";
+      const n = m.sets.length, newest = m.sets[0].id.split("_")[0];
+      const changed = m.changed ? ` · ${m.changed.toLocaleString()} changed since ${newest}` : m.changed === 0 ? ` · as in ${newest}` : "";
+      return `→ ${n} set${n === 1 ? "" : "s"}${changed}`;
+    },
     // Add rows to a subset or take them out; adding to a subset of a group takes them out of its others.
     // The browser shows it at once, the server keeps it.
     editSubset(id, rows, op) {
@@ -1613,6 +1624,7 @@ export default {
         btn("Remove from ▾", (_e, b) => pop(b, "remove"));
       }
       btn("New subset…", () => this.newSubset([...this.picked]));
+      btn("Make set…", () => this.$emit("subset_cmd", { cmd: "make_set_selection", uids: [...this.picked].map((r) => uidHex(this.s, r)) }));
       btn("Keep", () => this.setVerdict([...this.picked], "keep"), "color:#15803d;");
       btn("Drop", () => this.setVerdict([...this.picked], "drop"), "color:#b91c1c;");
       btn("Clear", () => this.setVerdict([...this.picked], "clear"));
@@ -1667,6 +1679,12 @@ export default {
         }
         list.appendChild(it);
         this.railItems.set(id || "", { it, name, cnt, label });
+        const mark = id ? this.setMark(id) : "";
+        if (mark) {
+          const line = el("div", "padding:0 6px 3px 27px;font-size:8px;line-height:1.3;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;");
+          line.textContent = mark;
+          list.appendChild(line);
+        }
         return it;
       };
       item(null, "All picks", null, "");
@@ -1749,7 +1767,9 @@ export default {
         if (both) parts.push(`∩ ${y.name}: ${both.toLocaleString()}`);
       }
       const gone = this.subGone[id] || 0;
-      box.textContent = [x.name, ...(parts.length ? parts : ["shares no pick with another subset"]), gone ? `${gone.toLocaleString()} of its picks are no longer in the pool` : ""].filter(Boolean).join(" · ");
+      const made = ((this.subset_sets || {})[id] || {}).sets || [];
+      const sets = made.length ? `sets made in it: ${made.map((m) => `${m.id} (${m.n.toLocaleString()})`).join(", ")}` : "";
+      box.textContent = [x.name, ...(parts.length ? parts : ["shares no pick with another subset"]), gone ? `${gone.toLocaleString()} of its picks are no longer in the pool` : "", sets].filter(Boolean).join(" · ");
     },
     // Click: only this subset; ctrl / cmd: or this one too; alt: not this one. "All picks": no subset limit.
     onRailClick(id, e) {
@@ -1778,6 +1798,7 @@ export default {
       const menu = el("div", `${MENU_STYLE}min-width:210px;`, "cbk-menu");
       this.menuHead(menu, x.name);
       const m = this.s.subMasks[id];
+      this.menuItem(menu, "Make set…", "", false, () => this.$emit("subset_cmd", { cmd: "make_set", id }));
       this.menuItem(menu, "Select its picks shown", "", false, () => {
         const rows = this.shownRows().filter((r) => m && m[r]);
         this.setPicked(rows, false);
@@ -1804,6 +1825,7 @@ export default {
       e.preventDefault();
       this.closeMenu();
       const menu = el("div", `${MENU_STYLE}min-width:180px;`, "cbk-menu");
+      if ((this.subsets || []).some((x) => x.group === gid)) this.menuItem(menu, "Make a set of each subset…", "", false, () => this.$emit("subset_cmd", { cmd: "make_sets", group: gid }));
       this.menuItem(menu, "Rename group…", "", false, () => this.$emit("subset_cmd", { cmd: "rename_group", group: gid }));
       this.menuItem(menu, "Delete group (its subsets stay)…", "", false, () => this.$emit("subset_cmd", { cmd: "delete_group", group: gid }));
       this.showMenu(menu, this.$refs.rail, { left: e.clientX, top: e.clientY, bottom: e.clientY });
@@ -3078,7 +3100,8 @@ export default {
       let kept = 0;
       for (const i of e.rows) kept += fin[i];
       const other = (s.header.conflicts || {})[fr.acq] ? " · ⧉ in another frame" : "";
-      R.title.textContent = `${kept}/${e.total} · ${fr.tomo} · ${fr.project}${other} · CTF ${fmt(e.ctf, 1)} Å · ${fmt(e.tilts, 0)} tilts`;
+      const ex = fr.excluded ? ` · excluded in ${fr.project}` : "";
+      R.title.textContent = `${kept}/${e.total} · ${fr.tomo} · ${fr.project}${other}${ex} · CTF ${fmt(e.ctf, 1)} Å · ${fmt(e.tilts, 0)} tilts`;
       R.title.title = R.title.textContent;
       R.title.classList.toggle("cbk-red", !fr.apix);
     },

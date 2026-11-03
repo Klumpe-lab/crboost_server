@@ -51,3 +51,28 @@ def star_labels(path: str | Path) -> frozenset[str]:
     out = frozenset(labels)
     _LABELS[p] = (mtime, out)
     return out
+
+
+def block_labels(path: str | Path, block: str) -> frozenset[str] | None:
+    """The labels block ``data_<block>`` of a star declares, read up to its first row; None when the star has no
+    such block. Raises when the file cannot be read."""
+    want = f"data_{block}".encode()
+    labels: set[str] = set()
+    found = False
+    with open(path, "rb") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith(b"#"):
+                continue
+            if line.startswith(b"data_"):
+                if found:
+                    break
+                found = line == want
+                continue
+            if not found or line.startswith(b"loop_"):
+                continue
+            if line.startswith(b"_"):
+                labels.add(line.split()[0][1:].decode(errors="replace"))
+            elif labels:
+                break  # the block's first row
+    return frozenset(labels) if found else None

@@ -1,15 +1,15 @@
 """The Species page — `[rail 200px | detail]`.
 
-Detail = header row (active species' mark + segmented tabs) + one container per
-(species, tab), built lazily on first selection and cached; a switch only flips
-visibility. Tabs: Overview (identity editor, status, sanity, delete) · Templates &
-masks (the mounted workbench) · Picks & curation · Analytics (scores in σ, TM health, particle
-sets) · STA kitchen (one species' picks across tomograms and projects; the rail hides while it
-shows) · Jobs. The page
-owns the 3-s registry observe (species created / deleted elsewhere — roster "+", another
-browser tab, the Overview's delete) and the `on_workbench_active` / `workbench_select_species`
-hooks the workspace registers (`workspace_page._apply_views` / `_open_species`); the
-internal mode string stays "workbench" (roster `set_active_views` compares it).
+Detail = one container per (species, tab), built lazily on first selection and cached; a
+switch only flips visibility. The active species' mark and the segmented tabs sit on the
+view's title line, after its name. Tabs: Overview (identity editor, status, sanity, delete) ·
+Templates & masks (the mounted workbench) · Picks & curation · Analytics (scores in σ, TM
+health, particle sets) · STA kitchen (one species' picks across tomograms and projects; the
+rail hides while it shows) · Jobs. The page owns the 3-s registry observe (species created /
+deleted elsewhere — roster "+", another browser tab, the Overview's delete) and the
+`on_workbench_active` / `workbench_select_species` hooks the workspace registers
+(`workspace_page._apply_views` / `_open_species`); the internal mode string stays "workbench"
+(roster `set_active_views` compares it).
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from ui.components.segmented import Segmented, render_segmented
 from ui.components.species_pill import render_species_mark
 from ui.components.svg_icon import load_icon_svg
 from ui.dashboard.css import ensure_assets_loaded
-from ui.kitchen.tab import KitchenTab
+from ui.sta_kitchen.tab import KitchenTab
 from ui.routing import View
 from ui.species.analytics_tab import AnalyticsTab
 from ui.species.catalog import import_from_catalog
@@ -132,12 +132,19 @@ class SpeciesPage:
                     "display: flex; flex-direction: column; flex: 1 1 0%; min-width: 0; height: 100%; min-height: 0;"
                 )
             ):
-                header = ui.element("div").classes("cb-species-header")
+                # The active species and the tab strip ride the view's title line, after its name, so the
+                # page under it is all tab; a page built without a title line keeps them in a header row.
+                view_head = self.callbacks.get("view_head")
+                with view_head("workbench")["lead"] if view_head is not None else ui.element("div"):
+                    header = (
+                        ui.element("div")
+                        .classes("cb-species-head" if view_head is not None else "cb-species-header")
+                        .style("display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap;")
+                    )
                 self._refs["header"] = header
                 with header:
                     pill_slot = ui.element("div").style("display: flex; align-items: center; min-width: 0;")
                     self._pill = _PillView(pill_slot, self)
-                    ui.element("div").style("flex: 1;")
                     self._segmented = render_segmented(TABS, self.active_tab, self.select_tab)
                 body = ui.element("div").style(
                     "display: flex; flex-direction: column; width: 100%; flex: 1 1 0%; min-height: 0; overflow: hidden;"

@@ -107,11 +107,14 @@ def read_warp_volume(settings_path: Path) -> WarpVolume:
     return WarpVolume(apix=apix, dims=dims)
 
 
-def tsctf_sources(tomo_row: pd.Series, settings_name: str, tomostar_dir_name: str) -> TsCtfSources:
+def tsctf_sources(tomo_row: pd.Series, settings_name: str, tomostar_dir_name: str, origin=None) -> TsCtfSources:
     """Locate the tsCtf job behind a tomogram row via its rlnTomoTiltSeriesStarFile
-    (`<tsCtf job>/tilt_series/<ts>.star`). Raises naming every missing piece."""
+    (`<tsCtf job>/tilt_series/<ts>.star`). With `origin` (a particle set's tomogram, `set_origins.Origin`), the
+    tomogram as it is in its own project: its per-tilt star there and its Warp files under its name there, which a
+    set may have renamed. Raises naming every missing piece."""
     ts = str(tomo_row["rlnTomoName"])
-    raw = str(tomo_row.get("rlnTomoTiltSeriesStarFile", "") or "")
+    name = origin.tomo if origin is not None else ts
+    raw = origin.tilt_star if origin is not None else str(tomo_row.get("rlnTomoTiltSeriesStarFile", "") or "")
     if not raw:
         raise ValueError(f"{ts}: tomogram row has no rlnTomoTiltSeriesStarFile")
     tilt_star = Path(raw)
@@ -124,8 +127,8 @@ def tsctf_sources(tomo_row: pd.Series, settings_name: str, tomostar_dir_name: st
         job_dir=job_dir,
         tilt_star=tilt_star,
         settings=job_dir / settings_name,
-        tomostar=job_dir / tomostar_dir_name / f"{ts}{TOMOSTAR_SUFFIX}",
-        xml=job_dir / "warp_tiltseries" / f"{ts}.xml",
+        tomostar=job_dir / tomostar_dir_name / f"{name}{TOMOSTAR_SUFFIX}",
+        xml=job_dir / "warp_tiltseries" / f"{name}.xml",
     )
     missing = [str(p) for p in (sources.tilt_star, sources.settings, sources.tomostar, sources.xml) if not p.exists()]
     if missing:

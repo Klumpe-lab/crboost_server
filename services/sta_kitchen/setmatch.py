@@ -15,8 +15,8 @@ from typing import Any
 
 import numpy as np
 
-from services.kitchen.export import UIDS_FILE
-from services.kitchen.pool import PoolTable
+from services.sta_kitchen.export import UIDS_FILE
+from services.sta_kitchen.pool import PoolTable
 from services.particles.coords import CENTERED_COLS
 from services.particles.particle_sets import get_set, list_sets, set_dir
 from services.particles.records import file_mtime
@@ -46,7 +46,7 @@ def set_rows(table: PoolTable, home: Path, set_id: str, home_members: list[str])
     from the home project, the only picks a set without a uid list can name."""
     from scipy.spatial import cKDTree
 
-    from services.kitchen.table import _particle_block
+    from services.sta_kitchen.table import _particle_block
 
     pset = get_set(home, set_id)
     if pset is None:

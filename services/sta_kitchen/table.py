@@ -6,7 +6,7 @@ and binned voxels of its reconstruction), score, geometry, extraction, the tomog
 columns are float32 with NaN for "no value"; categorical columns are int32 codes into lists kept in
 the JSON beside the arrays, with the frames (reconstructions) the rows sit on.
 
-`spec` comes from `services/kitchen/members.member_spec`: paths and plain values, nothing from a
+`spec` comes from `services/sta_kitchen/members.member_spec`: paths and plain values, nothing from a
 project state.
 """
 
@@ -240,6 +240,7 @@ def build_member(spec: dict[str, Any], out_npz: str) -> dict[str, Any]:
 
     tdf = _tomo_table(Path(spec["tomograms_star"]))
     rows_by_tomo = {str(r[analytics.TOMO_COL]): r for _, r in tdf.iterrows()}
+    facts = spec.get("facts") or {}
     frames: list[dict[str, Any]] = []
     frame_of_tomo: dict[str, int] = {}
     for t in tomos:
@@ -248,7 +249,8 @@ def build_member(spec: dict[str, Any], out_npz: str) -> dict[str, Any]:
             notes.append(f"{t}: no row in {spec['tomograms_star']}, so its picks have no voxel position")
             continue
         frame_of_tomo[t] = len(frames)
-        frames.append(_frame_of(row, project))
+        # Excluded from processing in the member's own project: said in the kitchen, applied to nothing.
+        frames.append({**_frame_of(row, project), "excluded": bool((facts.get(t) or {}).get("excluded"))})
 
     xyz = df[CENTERED_COLS].to_numpy(dtype=np.float64)
     cols: dict[str, np.ndarray] = {}
@@ -283,7 +285,6 @@ def build_member(spec: dict[str, Any], out_npz: str) -> dict[str, Any]:
         if analytics.SCORE_COL in df.columns
         else nan.copy()
     )
-    facts = spec.get("facts") or {}
     tm_rows = _tm_rows(spec.get("tm_dir", ""), tomos)
     rank, margin, depth, nn = nan.copy(), nan.copy(), nan.copy(), nan.copy()
     slab, ctf, n_tilts, n_blank = nan.copy(), nan.copy(), nan.copy(), nan.copy()

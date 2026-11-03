@@ -16,8 +16,8 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from nicegui import app
 
 from services.http_responses import NO_GZIP
-from services.kitchen import service, store
-from services.kitchen.snapshots import is_installed
+from services.sta_kitchen import service, store
+from services.sta_kitchen.snapshots import is_installed
 
 _IMMUTABLE = "public, max-age=31536000, immutable"
 _LOUPE_NAME = re.compile(r"[0-9a-f]{12}-[0-9a-f]{8}\.png")
@@ -57,7 +57,7 @@ async def kitchen_table(home: str, species: str, v: str = "") -> Response:
 @app.post("/api/kitchen/tiles")
 async def kitchen_tiles(request: Request, home: str, species: str, v: str = "", src: str = "recon") -> Response:
     """The cutouts of the uids in the body ({"uids": [...]}, the visible ones first), streamed as records
-    (`services/kitchen/tiles.py` `record`) as they are found or cut. `v` names the tile settings the
+    (`services/sta_kitchen/tiles.py` `record`) as they are found or cut. `v` names the tile settings the
     browser keeps them under; the cutouts are always those of the pool's current settings. `src` "ext":
     the picks' extracted subtomograms instead."""
     lp = _pool(home, species)

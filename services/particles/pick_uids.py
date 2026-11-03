@@ -1,9 +1,10 @@
 """A pick's uid as a star column, and how every star that should carry it is read.
 
-Every particle set the STA kitchen makes writes its picks' pool uids as ``cbPickUid`` (roadmap 40 D21), and a
-half from a hash of the uid as ``rlnRandomSubset`` (D17), so a particle keeps its half in every set it is ever
-in. RELION's extraction copies whole rows and Warp's export copies unknown columns row for row, so the jobs
-after a set name their picks too.
+Every particle set the STA kitchen makes writes its picks' pool uids as ``cbPickUid``, and a half from a hash of
+the uid as ``rlnRandomSubset``, so a particle keeps its half in every set it is ever in (relion_refine keeps the
+halves it is given when every row has one, and refuses a star where only some rows do). RELION's extraction
+copies whole rows and Warp's export copies unknown columns row for row, so the jobs after a set name their picks
+too.
 
 A cell holds ``u`` and the 12 hex digits of the uid: with the letter first no reader takes it for a number
 (a uid of digits only, or one like ``12e4…``, would come back as a float and lose its leading zeros).
