@@ -1638,12 +1638,16 @@ of a Class 3D reading s002, each in three cases (every project one matching expo
 Checked in a NiceGUI simulation (the three cases render, picking job036 for 412_Slot6 redraws), not in a browser. The
 page and its route go once a layout is chosen.
 
-### 15.6 Open
+### 15.6 Taken and open
 
-1. Which layout (or which mix) for set inputs.
-2. In-place retries: the tighter rule of §15.4, or a ban.
+1. Layout: **A (facet lines), taken 2026-10-30** for the build, "because it keeps it structured". The maintainer then
+   asked for wilder directions for the graphical job builder to come (a job added among 80, several species and
+   sets, candidates as cards rather than menu rows, inputs not as a table of slots to satisfy); those are prototyped
+   on `/dev/io-ideas` (§15.9) and may replace A later. Build A so its parts (facet resolution, the writer at Run, the
+   per-facet choices on the job) do not depend on how they are drawn.
+2. In-place retries: the tighter rule of §15.4, or a ban. **Open**; ask before step 5.
 
-### 15.7 Steps, once 1 and 2 are answered
+### 15.7 Steps
 
 1. A facet index per species: per uid, the jobs that hold each facet, kept current by mtimes (the pool's Warp-export
    and uid joins are most of it).
@@ -1656,3 +1660,81 @@ page and its route go once a layout is chosen.
 6. The pixel-size column of §15.1; the layouts page and its route removed.
 
 D18 (results back onto the cutouts) then becomes "a finished job adds facets to its uids".
+
+### 15.8 Handoff: building §15 (for the next session)
+
+Branch `STA_Kitchen`, main checkout. Read first: §14.8 (what exists), §15.1–15.7, CLAUDE.md, and the memories
+"STA kitchen = roadmap 40", "Star files are untrusted", "Never commit". The maintainer commits; hand line-by-line `git
+add` (one path each) and `git commit -m "…"`, no branches, no attribution. Comments plain, no roadmap references.
+
+Build steps 1–4 and 6 of §15.7 with layout A, in that order; ask about §15.4 before step 5. Where the code is today:
+
+- **Facets of a pick.** Positions: the pool's members (`services/sta_kitchen/members.py`, `table.py`). Images: Warp
+  exports and Subtomo extractions of a candidate job, joined by position at 0.1 Å (`members.member_spec`, the stand-in
+  because those rows carry no uid), and extractions of a kitchen set joined by uid (`services/sta_kitchen/uid_join.py`,
+  `pool.apply_uid_joins`, `PoolTable.uid_ext`). `export._images_by_member` already lists, per member, the extraction
+  jobs holding images of the kept picks; the per-project "one / several / differing / none" of §15.3 starts there.
+  Poses from Class 3D / Refine 3D results: not joined yet (D18); for this pass Reconstruct takes poses "as picked" and
+  a result star only when its rows carry `cbPickUid`.
+- **Congruence.** Compare each candidate export's job parameters (its project's `project_params.json`, read through
+  `services/sta_kitchen/snapshots.project_view`, never written) minus inputs and SLURM, then box and pixel from its
+  star (`_optics`, `set_preflight._check_image_geometry`). Identical → one source; else refuse and offer one Warp
+  export on the set (`io_config_component._add_extraction` adds a job reading a set today).
+- **Sets without a level.** `export.plan` / `write_set` take a `level`; a set keeps positions + uids + halves +
+  origins (`set_origins`), and the images part moves to the writer at Run. Existing sets (s001, any images set) stay
+  readable as they are: a set that already holds images is read as written.
+- **The writer at Run.** `_submit_chain` calls `_check_set_inputs` before allocating
+  (`services/scheduling_and_orchestration/pipeline_orchestrator_service.py`); the writer runs after it, per job
+  reading a kitchen set: set + the job's chosen sources → `<job_dir>/input_set/particles.star`, `tomograms.star`,
+  `optimisation_set.star`, and the job's input path points at that frozen optimisation set (drivers stay as they
+  are; they read `in_optimisation`). Then `set_preflight.check_set` runs on the written star, so the checks see what
+  the job reads. Rows are copied whole from the source star, stamped with `cbPickUid` and the set's half; tomograms
+  renamed as the set renamed them (`export._rename_rows`, `set_origins.write_renamed_tilt_star`).
+- **Choices on the job.** A per-facet, per-project choice stored on the job model next to `submitted_inputs`
+  (`services/jobs/_base.py`), saved with the project; fixed at submit like the other inputs. Only ambiguous projects
+  need an entry; the rest resolve and are shown.
+- **I/O rows (layout A).** `ui/pipeline_builder/io_config_component.py`: `_render_input_slot_row` and
+  `_render_set_lines` draw the set row; add the facet lines under it as in `ui/io_layouts_preview.layout_lines`
+  (images / poses / halves; amber "pick one" menu per ambiguous project; red line + "Run one Warp export on this set"
+  when sources differ; "N dropped by Warp"). `path_resolution_service.unreadable_reason` stops greying kitchen sets
+  by level; `_add_particle_set_candidates` / `_particle_set_label` label sets by picks and projects, not level.
+- **Make set dialog.** `ui/sta_kitchen/sets.py`: "What the set holds" and `_holds_choice` go; the plan lines stay.
+- **Step 6.** The `rlnTomoTiltSeriesPixelSize` column copied from template matching (§15.1) is dropped or rewritten
+  by the writer; `ui/io_layouts_preview.py`, `ui/io_ideas_preview.py` and their routes in `ui/main_ui.py` stay until
+  the maintainer has chosen from §15.9.
+
+Check as §14.8 did, in the sandbox: scratch homes copied from MyrGFP_Grid2 (`project_params.json` + the kitchen),
+the seven real projects read only, `find -newer` on them at the end. Cases: the 412 draft through the writer for
+Class 3D (2,697 rows expected, one optics group, box 256, 3.1 Å) and Reconstruct (2,708); a fake second matching
+export in one project (the job asks, Run refused until picked); a fake box-300 export (refused, the offer shown); a
+set made before §15 still read as written. The I/O rows in a NiceGUI simulation (the harness of `c14/check_d.py`,
+session 91fd6b69's scratchpad). Record the build as §15.10.
+
+### 15.9 Wilder directions: `/dev/io-ideas` (2026-10-30)
+
+The maintainer liked A for its structure, then asked for designs "way outside the box" for the graphical job builder
+to come: a job just added among ~80, several species and sets, candidates as cards big enough to tell apart rather than
+menu rows, and inputs not as a table of slots to satisfy. `ui/io_ideas_preview.py` on `/dev/io-ideas`: six designs of
+one new Class 3D (mock: two species, four sets, a plain export, three maps), one switch for the three cases of §15.5,
+every click live on the page.
+
+1. **Sockets and cables.** The job is a node; each need is a socket on its edge (a set adds an "images of the set"
+   socket). Clicking a socket fans its candidates out as cards wired to it, the chosen one on the solid cable;
+   ambiguous exports are amber cards, a mismatch red, the offer of one export dashed.
+2. **Pantry and slots.** Big slots to fill (particles, reference, an optional mask) above a pantry of everything the
+   project holds for the active slot, grouped by species, "only what fits this job" on by default. The particles slot
+   shows its projects as tiles (green filled in, amber choose, red differs) and the two exports inside it.
+3. **Lineage river.** Each input as the path it came by: template matching → kitchen pool → set → images → this job,
+   the reference as a second river; an ambiguity is a fork, the branch picked carries on; alternatives as "or …"
+   chips at their station.
+4. **Questions.** One question per decision ("Which particles?", "Whose images for 412_Slot6's 402 picks?", "Against
+   which reference?"), answers as cards; settled questions shrink to a line with "change"; a question exists only
+   when something is ambiguous; a ready / not-yet verdict at the foot.
+5. **Coverage matrix.** Projects down, facets across (positions, images, poses, halves), the columns the job needs
+   lit; each cell names the job giving that facet; an ambiguous cell holds its two choices.
+6. **Project map.** The project's jobs as a small map by stage, the kitchen's sets of every species on a lane above,
+   the other projects as bubbles; what can feed the active input lights up, a click wires it to the new job; an
+   ambiguous project's bubble turns amber and opens its two exports.
+
+Checked in a NiceGUI simulation (every clickable element of each design clicked once in two cases, no handler error),
+not in a browser. Open: which of these, if any, the builder takes; the §15 build goes ahead with A (§15.6).

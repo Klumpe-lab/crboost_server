@@ -210,7 +210,7 @@ started (modules 17.1 s on that first start, compiling into the per-user cache).
   ruff, then run `ruff check .`, `ruff format --check .`, `python check_boundaries.py` and
   `python -m compileall -q .`. No pytest: `tests/` is the install self-test and needs a site's `conf.yaml`.
 - `CLAUDE.md` *Commands*: ruff from `requirements-dev.txt`. Also fix the stale line that says
-  `sys.dont_write_bytecode` is set in `main.py`; `pycache_setup.py` handles bytecode now.
+  `sys.dont_write_bytecode` is set in `main.py`; `pycache_setup.py` handles bytecode now (done 2026-10-28).
 
 ### S5 — Labelled containers and checksummed weights
 
