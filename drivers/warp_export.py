@@ -38,12 +38,15 @@ from drivers.array_job_base import (
     ArrayResults,
     copy_tomostar_with_absolute_paths,
     load_excluded_ts,
+    preflight_origins,
     write_skip_status,
 )
 from drivers.driver_base import DriverContext, ToolCommand, require_producer_input
 from drivers.ts_ctf import LOCAL_SETTINGS_NAME, LOCAL_TOMOSTAR_NAME
 from services.jobs.warp_export import WarpExportParams
+from services.particles.set_origins import origins_of
 from services.particles.warp_export import (
+    TOMOSTAR_SUFFIX,
     check_volume_agrees,
     check_warp_optics,
     optics_key,
@@ -83,20 +86,21 @@ def _first_table(path: Path) -> pd.DataFrame:
     raise ValueError(f"No table in {path}")
 
 
-def _stage_ts(task_dir: Path, ts: str, particles: pd.DataFrame, tomo_row: pd.Series) -> None:
-    """Everything one Warp call needs, built from the tilt series' own tsCtf job."""
-    src = tsctf_sources(tomo_row, LOCAL_SETTINGS_NAME, LOCAL_TOMOSTAR_NAME)
+def _stage_ts(task_dir: Path, ts: str, particles: pd.DataFrame, tomo_row: pd.Series, origin=None) -> None:
+    """Everything one Warp call needs, built from the tilt series' own tsCtf job (in its own project, for a
+    particle set's tomogram: `origin`), staged under the name `ts` the picks use."""
+    src = tsctf_sources(tomo_row, LOCAL_SETTINGS_NAME, LOCAL_TOMOSTAR_NAME, origin=origin)
     volume = read_warp_volume(src.settings)
     check_volume_agrees(tomo_row, volume)
 
     task_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src.settings, task_dir / LOCAL_SETTINGS_NAME)
     (task_dir / LOCAL_TOMOSTAR_NAME).mkdir(exist_ok=True)
-    staged_tomostar = task_dir / LOCAL_TOMOSTAR_NAME / src.tomostar.name
+    staged_tomostar = task_dir / LOCAL_TOMOSTAR_NAME / f"{ts}{TOMOSTAR_SUFFIX}"
     copy_tomostar_with_absolute_paths(src.tomostar, staged_tomostar, src.tomostar.parent)
     # A copy, not a symlink: the export re-saves the XML.
     (task_dir / PROCESSING_DIR).mkdir(exist_ok=True)
-    shutil.copy2(src.xml, task_dir / PROCESSING_DIR / src.xml.name)
+    shutil.copy2(src.xml, task_dir / PROCESSING_DIR / f"{ts}.xml")
 
     starfile.write(
         {"particles": warp_input_particles(particles, ts, volume)}, task_dir / WARP_INPUT_STAR, overwrite=True
@@ -112,6 +116,7 @@ class WarpExportDriver(ArrayDriver):
     job_name = "warp_export"
     driver_script = Path(__file__).resolve()
     poll_secs = 15
+    _origins = None  # name in the set -> Origin, when the input is a particle set recording them
 
     # ---------------- supervisor ----------------
 
@@ -131,6 +136,12 @@ class WarpExportDriver(ArrayDriver):
         self._input_optimisation = input_optimisation
         self._particles_df, _, _ = _read_input_particles_lenient(particles_star)
         self._tomograms_df = _read_tomograms_star(tomograms_star)
+        # A particle set's tomograms record where each lives: its Warp files are found in its own project, under
+        # its name there, and no exclusions apply to it.
+        self._origins = origins_of(self._tomograms_df)
+        if self._origins is not None:
+            projects = sorted({o.project for o in self._origins.values()})
+            self.log(f"Input is a particle set over {len(projects)} project(s): {[Path(p).name for p in projects]}")
 
         if self._particles_df.empty:
             status_dir = ctx.job_dir / STATUS_DIR_NAME
@@ -146,7 +157,9 @@ class WarpExportDriver(ArrayDriver):
         orphans = sorted(with_picks - set(all_ts))
         if orphans:
             raise ValueError(f"Picks name tilt series absent from the upstream tomograms.star: {orphans[:10]}")
-        excluded = load_excluded_ts(ctx.project_path)
+        excluded = self.excluded_items(ctx)
+        if excluded is None:
+            excluded = load_excluded_ts(ctx.project_path)
         self._empty_ts = [t for t in all_ts if t not in with_picks]
         self._ts_with_picks = [t for t in all_ts if t in with_picks and t not in excluded]
         self.log(
@@ -158,6 +171,15 @@ class WarpExportDriver(ArrayDriver):
     def preflight_scope(self, ctx: DriverContext[WarpExportParams], items: list[str]) -> list[str]:
         return self._ts_with_picks
 
+    def preflight(self, ctx: DriverContext[WarpExportParams], items: list[str]) -> None:
+        if self._origins is None:
+            super().preflight(ctx, items)
+        else:
+            preflight_origins(self._origins, self._ts_with_picks, job_name=self.job_name)
+
+    def excluded_items(self, ctx: DriverContext[WarpExportParams]) -> set[str] | None:
+        return set() if self._origins is not None else None
+
     def pre_dispatch(self, ctx: DriverContext[WarpExportParams], items: list[str]) -> None:
         status_dir = ctx.job_dir / STATUS_DIR_NAME
         if status_dir.is_dir():
@@ -168,8 +190,11 @@ class WarpExportDriver(ArrayDriver):
 
         tomo_rows = self._tomograms_df.set_index(self._tomograms_df["rlnTomoName"].astype(str))
         names = self._particles_df["rlnTomoName"].astype(str)
+        origins = self._origins or {}
         for ts in self._ts_with_picks:
-            _stage_ts(_task_dir(ctx.job_dir, ts), ts, self._particles_df[names == ts], tomo_rows.loc[ts])
+            _stage_ts(
+                _task_dir(ctx.job_dir, ts), ts, self._particles_df[names == ts], tomo_rows.loc[ts], origins.get(ts)
+            )
         self.log(f"Staged {len(self._ts_with_picks)} TS under {ctx.job_dir / '.staging'}")
 
     def manifest_extras(self, ctx: DriverContext[WarpExportParams], items: list[str]) -> dict:

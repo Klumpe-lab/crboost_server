@@ -1312,7 +1312,9 @@ class PathResolutionService:
         """Every particle set of the project (services/particles/particle_sets.py) as a synthetic
         OPTIMISATION_SET_STAR producer, offered to an explicit choice only: a set is something the
         user made for one purpose, and automatic wiring must never swap it in for a job's output.
-        The label states the level, since a coordinates set needs subtomo extraction first."""
+        A kitchen set is labelled by its picks and projects: the job reading it takes each facet of
+        them from the jobs that made it (`reads_by_facets`); any other set by its level, since a
+        coordinates set needs subtomo extraction first."""
         from services.particles.particle_sets import list_sets
 
         if self.state.project_path is None:
@@ -1323,7 +1325,7 @@ class PathResolutionService:
                 index[JobFileType.OPTIMISATION_SET_STAR].append(candidate)
 
     def _particle_set_candidate(self, set_id: str, *, rank: int, pset=None) -> OutputCandidate | None:
-        from services.particles.particle_sets import SetLevel, get_set
+        from services.particles.particle_sets import SetLevel, get_set, reads_by_facets
         from services.particles.star_columns import star_labels
         from services.particles.warp_export import SUBTOMO_ANGLE_COLS
 
@@ -1335,6 +1337,8 @@ class PathResolutionService:
             return None
         # Read from its header (kept per mtime): extracted rows may carry an extraction's subtomogram angles.
         angles = pset.level == SetLevel.EXTRACTED and bool(set(SUBTOMO_ANGLE_COLS) & star_labels(pset.particles_star))
+        # A kitchen set's picks take their images from the jobs that made them: it is no positions-only source.
+        positions_only = pset.level == SetLevel.COORDINATES and not reads_by_facets(pset)
         return OutputCandidate(
             produces=JobFileType.OPTIMISATION_SET_STAR,
             producer_job_type=JobType.MERGED_SOURCES,
@@ -1347,7 +1351,7 @@ class PathResolutionService:
             species_id=pset.species_id or None,
             label=_particle_set_label(pset),
             auto_eligible=False,
-            coordinates_only=pset.level == SetLevel.COORDINATES,
+            coordinates_only=positions_only,
             subtomo_angles=angles,
         )
 

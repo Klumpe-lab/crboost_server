@@ -16,6 +16,8 @@ in (for inputs: what each accepted type means + which producer it prefers; for
 outputs: the full path and that it is predicted until the job finishes).
 """
 
+import asyncio
+import logging
 from pathlib import Path
 from collections.abc import Callable
 
@@ -23,7 +25,9 @@ from nicegui import ui
 
 from services.io_slots import JobFileType
 from services.models_base import InstanceId, JobType, JobStatus
-from services.particles.particle_sets import list_sets, set_lineage, set_read_by
+from services.particles.particle_sets import list_sets, reads_by_facets, set_lineage, set_read_by
+from services.particles.set_facets import ALL, IMAGES, INPUT_DIR, PICKED, POSES, facet_of, poses_choice, resolve
+from services.particles.set_preflight import last_check
 from services.path_resolution_service import (
     PathResolutionService,
     InputSlotValidation,
@@ -38,7 +42,10 @@ from ui.ui_state import get_job_display_name
 from ui.utils import snake_to_title
 from ui.components.buttons import house_button, icon_button
 from ui.components.copyable import copyable_path
+from ui.components.reactive import owned_timer
 from ui.job_plugins._field_styles import LABEL_STYLE, LABEL_W, config_section
+
+logger = logging.getLogger(__name__)
 
 MONO = "font-family: 'IBM Plex Mono', monospace;"
 FONT = "font-family: 'IBM Plex Sans', sans-serif;"
@@ -143,6 +150,19 @@ _TIP_LEAD = f"{FONT} font-size: 10px; color: #334155; margin-top: 1px;"
 _TIP_KEY = f"{FONT} font-size: 10px; font-weight: 600; color: #1e293b;"
 _TIP_DESC = f"{FONT} font-size: 10px; color: #475569; line-height: 1.35;"
 _TIP_PATH = f"{MONO} font-size: 10px; color: #334155; word-break: break-all; white-space: normal;"
+_GREEN = "#10b981"
+_TEXT = "#334155"
+# A facet line under a kitchen set's row: its name in a column of its own, a dot, what it reads.
+_FACET_ROW = "display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap;"
+_FACET_NAME = f"{_SMALL} color: {_PATH_COLOR}; width: 40px; flex-shrink: 0;"
+_PICK_BOX = (
+    "display: flex; align-items: center; gap: 4px; cursor: pointer; padding: 0 5px; border: 1px solid #e2e8f0; "
+    "border-radius: 4px; background: #fff; height: 18px; box-sizing: border-box;"
+)
+_MENU_STYLE = (
+    "border: 1px solid #e2e8f0; border-radius: 6px; box-shadow: 0 8px 24px rgba(15,23,42,0.14); min-width: 240px;"
+)
+_FACET_WORD = {IMAGES: "particle images", POSES: "poses"}
 
 
 def _safe_int(x) -> int | None:
@@ -455,7 +475,9 @@ class IOConfigComponent:
             _detail_line(validation.error_message, STATUS_STYLE[JobStatus.FAILED]["color"])
 
     def _render_set_lines(self, slot, job_model) -> None:
-        """Under an input that reads a particle set: where the set came from (its subsets, kitchen, projects)."""
+        """Under an input that reads a particle set: where the set came from (its subsets, kitchen, projects), for a
+        kitchen set where each facet the job takes of its picks comes from, and what the set checks of the last Run
+        found (`services/particles/set_preflight.py`)."""
         set_id = set_read_by(job_model, slot.key)
         project = current_project_state().project_path
         if set_id is None or project is None:
@@ -465,6 +487,236 @@ class IOConfigComponent:
             projects = ", ".join(pset.details.get("per_project") or {})
             text = f"{pset.id} · {set_lineage(pset)}" + (f": {projects}" if projects else "")
             _detail_line(text, "#334155")
+            if reads_by_facets(pset):
+                self._render_facets(slot, job_model, pset)
+        check = last_check(project, self.instance_id)
+        if check is None or check.set_id != set_id:
+            return
+        red = STATUS_STYLE[JobStatus.FAILED]["color"]
+        for problem in check.problems:
+            _detail_line(f"Run refused ({check.at}): {problem}", red)
+        for note in check.notes:
+            _detail_line(f"checked at Run ({check.at}): {note}")
+
+    # ── A kitchen set's facets (one line each under the set's row) ───────────────────────────
+
+    def _render_facets(self, slot, job_model, pset) -> None:
+        """What the job takes of the kitchen set's picks, one line per facet: images (or poses), the poses those
+        carry, the halves. Filled once the set's sources are read, in a thread. A project whose picks leave a
+        choice gets an amber menu; images from jobs that made them differently, or none, a red line with the offer of
+        one Warp export on the set. A job fixed at submit shows what it read, and the copy of the set it reads."""
+        project = current_project_state().project_path
+        rec = (job_model.submitted_inputs or {}).get(slot.key) if job_model.inputs_fixed else None
+        read = (job_model.paths or {}).get(slot.key, "")
+        if rec is not None and not rec.facets:
+            _detail_line("read the set as written, as its rows are", _MUTED)
+            return
+        if rec is not None and Path(read).parent.name == INPUT_DIR:
+            with ui.element("div").style(_DETAIL_STYLE + " display: flex; align-items: center; gap: 6px;"):
+                ui.label("reads its copy, written at Run:").style(f"{_SMALL} color: {_MUTED}; flex-shrink: 0;")
+                copyable_path(read, color=_PATH_COLOR, copy_tooltip="Copy the path of the copy it reads")
+        choices = dict(rec.facets) if rec is not None else dict(job_model.facet_choices.get(slot.key) or {})
+        box = ui.element("div").style(_DETAIL_STYLE + " display: flex; flex-direction: column; gap: 2px;")
+        with box:
+            ui.label("finding the jobs that hold its picks…").style(f"{_SMALL} color: {_MUTED}; font-style: italic;")
+        editable = not self._inputs_read_only
+
+        async def fill() -> None:
+            problem = ""
+            try:
+                plan = await asyncio.to_thread(resolve, Path(project), pset, facet_of(slot), choices)
+            except (OSError, ValueError) as e:
+                logger.exception("The facets of set %s could not be read for %s", pset.id, self.instance_id)
+                plan, problem = None, str(e)
+            if box.is_deleted:
+                return
+            box.clear()
+            with box:
+                if plan is None:
+                    red = STATUS_STYLE[JobStatus.FAILED]["color"]
+                    self._facet_line("", red, f"where its picks are cannot be read: {problem}")
+                else:
+                    self._facet_body(slot, job_model, pset, plan, editable)
+
+        owned_timer(0, fill, box, once=True)
+
+    def _facet_line(self, name: str, color: str, text: str, tip: str | None = None) -> ui.element:
+        """One facet line: its name, a dot, what it reads. Returns the row, for a menu or button after the text."""
+        row = ui.element("div").style(_FACET_ROW)
+        with row:
+            ui.label(name).style(_FACET_NAME)
+            ui.element("div").style(f"{_DOT} background: {color};")
+            label = ui.label(text).style(f"{_SMALL} color: {_TEXT if color == _GREEN else color}; white-space: normal;")
+            if tip:
+                label.tooltip(tip)
+        return row
+
+    def _facet_body(self, slot, job_model, pset, plan, editable: bool) -> None:
+        red = STATUS_STYLE[JobStatus.FAILED]["color"]
+        word = _FACET_WORD[plan.facet]
+        name = "images" if plan.facet == IMAGES else "poses"
+        asks = [p for p in plan.projects if p.how == "ask"]
+        for p in plan.projects:
+            if p.how == "ask":
+                text = (
+                    f"{poses_choice(plan, p)}:"
+                    if plan.facet == POSES
+                    else f"{p.label}: {len(p.candidates)} jobs hold {word} of its picks:"
+                )
+                row = self._facet_line(name, _AMBER, text)
+                if editable:
+                    with row:
+                        self._facet_menu(slot, plan, p)
+            elif p.how == "none":
+                row = self._facet_line(name, red, f"{p.label}: no {word} of its {p.picks:,} picks yet")
+                if editable:
+                    with row:
+                        self._set_export_button(slot, job_model, pset, "Add a Warp export reading this set")
+            elif p.how == "gone":
+                self._facet_line(name, red, f"{p.label}: the job chosen for it holds none of its picks now")
+        common = [r for r in asks[0].candidates if all(r in p.candidates for p in asks)] if len(asks) > 1 else []
+        if editable and common:
+            with ui.element("div").style(f"{_FACET_ROW} padding-left: 46px;"):
+                for ref in common:
+                    s = plan.sources[ref]
+                    house_button(
+                        f"{s.label} for all {len(asks)}",
+                        lambda _e, r=ref: self._choose_facet(slot, {p.key: r for p in asks}),
+                        tooltip=f"Take {word} from {s.label} for each of {', '.join(p.label for p in asks)}",
+                    )
+        if plan.differ:
+            self._facet_line(name, red, "differ: " + "; ".join(plan.differ), tip=self._sources_tip(plan))
+            if editable:
+                with ui.element("div").style("padding-left: 46px;"):
+                    self._set_export_button(slot, job_model, pset, "Run one Warp export on this set")
+        if not plan.problems:
+            self._facet_line(name, _GREEN, self._facet_summary(plan), tip=self._sources_tip(plan))
+        elif not any(p.how in ("ask", "none", "gone") for p in plan.projects) and not plan.differ:
+            for problem in plan.problems:
+                self._facet_line(name, red, problem)
+        if plan.facet == IMAGES:
+            self._facet_line("poses", _GREEN, "as the image rows carry them")
+        h1, h2 = plan.halves
+        self._facet_line("halves", _GREEN, f"from the set, by pick uid · {h1:,} / {h2:,}")
+        for note in plan.notes[:3]:
+            _detail_line(note)
+        if len(plan.notes) > 3:
+            ui.label(f"and {len(plan.notes) - 3} more notes").style(f"{_SMALL} color: {_MUTED};").tooltip(
+                "\n".join(plan.notes[3:])
+            )
+        chosen_here = job_model.facet_choices.get(slot.key) or {}
+        if editable and chosen_here:
+            labels = "; ".join(
+                f"{'the set' if k == ALL else Path(k).name}: {self._ref_label(plan, r)}" for k, r in chosen_here.items()
+            )
+            row = self._facet_line("", _MUTED, f"chosen here: {labels}")
+            with row:
+                icon_button("restart_alt", lambda: self._choose_facet(slot, None), tooltip="Forget these choices")
+
+    @staticmethod
+    def _ref_label(plan, ref: str) -> str:
+        s = plan.sources.get(ref)
+        if s is not None:
+            return s.label
+        return "as picked" if ref == PICKED else ref.partition("|")[2]
+
+    @staticmethod
+    def _geometry_text(source) -> str:
+        geo = dict(source.geometry)
+        if "rlnImageSize" not in geo:
+            return ""
+        return f"box {geo['rlnImageSize']} · {geo.get('rlnImagePixelSize', '?')} Å"
+
+    def _facet_summary(self, plan) -> str:
+        chosen = plan.chosen_sources()
+        dropped = plan.n_picks - plan.n_held
+        count = f"{plan.n_held:,} of {plan.n_picks:,} picks" + (f" · {dropped:,} left out" if dropped else "")
+        if plan.facet != IMAGES:
+            head = "as picked (the set's own angles)" if chosen[0].ref == PICKED else f"from {chosen[0].label}"
+            return f"{head} · {count}"
+        kinds = {s.job_type for s in chosen}
+        if len(chosen) == 1:
+            jobs = chosen[0].label
+        elif len(kinds) == 1:
+            jobs = f"{get_job_display_name(JobType(kinds.pop()))} ×{len(chosen)}"
+        else:
+            jobs = f"{len(chosen)} jobs"
+        geometry = self._geometry_text(chosen[0])
+        return " · ".join(x for x in (jobs, geometry, count) if x)
+
+    @staticmethod
+    def _sources_tip(plan) -> str:
+        """Per project, the job it reads and how many of its picks that job holds."""
+        lines = []
+        for p in plan.projects:
+            s = plan.sources.get(p.chosen) if p.chosen else None
+            if s is None:
+                lines.append(f"{p.label}: {p.picks:,} picks, nothing chosen")
+                continue
+            how = " (matched by position)" if s.by == "position" else ""
+            lines.append(f"{p.label}: {s.label}{how} · {p.held:,} of {p.picks:,} picks")
+        return "\n".join(lines)
+
+    def _facet_menu(self, slot, plan, pf) -> None:
+        """A small "pick one" box opening `pf`'s candidate sources, each with its images' size and what it holds."""
+        box = ui.element("div").style(_PICK_BOX)
+        with box:
+            ui.label("pick one").style(f"{_SMALL} color: {_AMBER};")
+            ui.icon("expand_more", size="12px").style(f"color: {_MUTED};")
+            menu = ui.menu().props('no-parent-event anchor="bottom left" self="top left"').style(_MENU_STYLE)
+            with menu:
+                what = _FACET_WORD[plan.facet]
+                ui.label(f"{what} for {pf.label}'s {pf.picks:,} picks").style(
+                    f"{_SMALL} color: {_PATH_COLOR}; padding: 6px 10px 2px;"
+                )
+                for ref in pf.candidates:
+                    s = plan.sources[ref]
+                    held = f"{pf.held_by.get(ref, 0):,} of {pf.picks:,} picks"
+                    row = (
+                        ui.element("div")
+                        .classes("cb-io-menu-item")
+                        .style("display: flex; align-items: center; gap: 8px; padding: 4px 10px; cursor: pointer;")
+                    )
+                    row.on("click", lambda _e, r=ref, m=menu: self._pick_facet(slot, {pf.key: r}, m))
+                    with row:
+                        ui.element("div").style(f"{_DOT} background: {_GREEN};")
+                        ui.label(s.label).style(f"{FONT} font-size: 11px; color: #1e293b; flex: 1 1 0; min-width: 0;")
+                        detail = " · ".join(x for x in (self._geometry_text(s), held) if x)
+                        ui.label(detail).style(f"{_SMALL} color: {_MUTED}; flex-shrink: 0;")
+        box.on("click", lambda _e, m=menu: m.open())
+
+    def _pick_facet(self, slot, picked: dict[str, str], menu) -> None:
+        menu.close()
+        self._choose_facet(slot, picked)
+
+    def _choose_facet(self, slot, picked: dict[str, str] | None) -> None:
+        """Record where the job takes the facet from for the projects `picked` names; None forgets every choice."""
+        state = current_project_state()
+        job_model = state.jobs.get(self.instance_id)
+        if job_model is None:
+            return
+        if picked is None:
+            job_model.facet_choices.pop(slot.key, None)
+        else:
+            job_model.facet_choices.setdefault(slot.key, {}).update(picked)
+        asyncio.create_task(self._save_and_refresh(slot, state.project_path))
+
+    def _set_export_button(self, slot, job_model, pset, text: str) -> None:
+        house_button(
+            text,
+            lambda: self._add_set_export(slot, job_model, pset),
+            tooltip="Add one Warp export over every pick of the set, with one box and pixel size, and point "
+            f"{snake_to_title(slot.key)} at its particles",
+        )
+
+    def _add_set_export(self, slot, job_model, pset) -> None:
+        add = self.callbacks.get("add_job_reading")
+        if add is None:
+            ui.notify("Open this job from the pipeline view to add the Warp export.", type="warning")
+            return
+        species_id = getattr(job_model, "species_id", None) or pset.species_id
+        reads = f"{JobType.MERGED_SOURCES.value}:{pset.producer_id}"
+        add(JobType.WARP_EXPORT, reads=reads, consumer=self.instance_id, slot=slot.key, species_id=species_id)
 
     def _input_state_tag(self, validation):
         """How the source was chosen, as a quiet word beside it."""
@@ -749,6 +1001,8 @@ class IOConfigComponent:
             job_model.source_overrides[slot.key] = value
         else:
             job_model.source_overrides.pop(slot.key, None)
+        # Choices of where a set's picks take their facets from belong to the set they were made for.
+        job_model.facet_choices.pop(slot.key, None)
         import asyncio
 
         asyncio.create_task(self._save_and_refresh(slot, project_path))
@@ -774,6 +1028,7 @@ class IOConfigComponent:
             return
         if hasattr(job_model, "source_overrides") and job_model.source_overrides:
             job_model.source_overrides.pop(slot.key, None)
+        job_model.facet_choices.pop(slot.key, None)
         import asyncio
 
         asyncio.create_task(self._save_and_refresh(slot, project_path))

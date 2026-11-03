@@ -21,6 +21,7 @@ from services.jobs.segment import SegmentParams
 from services.jobs.subset import SubsetParams
 from services.jobs.template_match import TemplateMatchPytomParams
 from services.jobs.candidate_extract import CandidateExtractPytomParams
+from services.jobs.filament_pick import FilamentPickParams
 from services.jobs.subtomo_extraction import SubtomoExtractionParams
 from services.jobs.warp_export import WarpExportParams
 from services.jobs.extract_pick_list import ExtractPickListParams
@@ -47,6 +48,7 @@ __all__ = [
     "DenoiseTrainParams",
     "ExtractPickListParams",
     "ExtractionCutoffMethod",
+    "FilamentPickParams",
     "FsMotionCtfParams",
     "ImportMoviesParams",
     "MissAlignParams",

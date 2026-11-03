@@ -14,6 +14,7 @@ from services.jobs.spec import JOB_SPEC_BY_TYPE, JOB_SPECS, driver_invocation
 from services.jobs.tilt_filter import FilterMode, dl_auto_filters, review_barrier, verdict_edges
 from services.path_resolution_service import PathResolutionError, PathResolutionService, find_cycle, get_context_paths
 from services.models_base import InstanceId, SegmentMethod
+from services.particles.set_facets import INPUT_DIR as SET_INPUT_DIR, write_input
 from services.event_log import events
 from services.result import ErrorCode, err, ok
 from services.project_state import AbstractJobParams, JobCategory, JobType, JobStatus, ReviewHold
@@ -349,30 +350,50 @@ class PipelineOrchestratorService:
         return (" ".join(reasons), live_ids) if reasons else None
 
     @staticmethod
-    async def _check_set_inputs(project_dir: Path, state, instances_to_run: list[str]) -> list[str]:
-        """Check every job of the run that reads a particle set, once per set and job type; each job's result is
-        kept for its page. Returns the refusals, one per job with problems."""
-        from services.particles.particle_sets import set_read_by
-        from services.particles.set_preflight import check_set, remember
+    async def _check_set_inputs(
+        project_dir: Path, state, instances_to_run: list[str]
+    ) -> tuple[list[str], dict[str, tuple]]:
+        """Check every job of the run that reads a particle set; each job's result is kept for its page. A set read
+        as written is checked once per set and job type. A kitchen set is read through its picks' facets: per job,
+        from the sources its input chose (the ones recorded at its submit, for a Failed job retried), built and
+        checked as the job will read it (`services/particles/set_facets.py`). Returns the refusals, one per job with
+        problems, and per job reading a kitchen set (its input, the facet plan, what it reads), which pass 3 writes
+        into the job's directory."""
+        from services.particles.particle_sets import get_set, reads_by_facets, set_read_by
+        from services.particles.set_preflight import check_facet_input, check_set, remember
 
         diameters = {sp.id: getattr(sp, "diameter_ang", None) for sp in state.species_registry}
         done: dict[tuple, object] = {}
         refused = []
+        set_inputs: dict[str, tuple] = {}
         for iid in instances_to_run:
             job_model = state.jobs.get(iid)
             set_id = set_read_by(job_model) if job_model is not None else None
             if set_id is None:
                 continue
-            key = (set_id, job_model.job_type)
-            if key not in done:
-                done[key] = await asyncio.to_thread(
-                    check_set, project_dir, set_id, job_model.job_type, diameters=diameters
+            pset = await asyncio.to_thread(get_set, project_dir, set_id)
+            slot = next(
+                (s for s in getattr(type(job_model), "INPUT_SCHEMA", []) if s.key == "input_optimisation"), None
+            )
+            if pset is not None and slot is not None and await asyncio.to_thread(reads_by_facets, pset):
+                rec = (job_model.submitted_inputs or {}).get(slot.key) if job_model.inputs_fixed else None
+                choices = dict(rec.facets) if rec is not None else dict(job_model.facet_choices.get(slot.key) or {})
+                check, made = await asyncio.to_thread(
+                    check_facet_input, project_dir, pset, job_model.job_type, slot, choices, diameters=diameters
                 )
-            check = done[key]
+                if made is not None:
+                    set_inputs[iid] = (slot.key, *made)
+            else:
+                key = (set_id, job_model.job_type)
+                if key not in done:
+                    done[key] = await asyncio.to_thread(
+                        check_set, project_dir, set_id, job_model.job_type, diameters=diameters
+                    )
+                check = done[key]
             remember(project_dir, iid, check)
             if check.problems:
                 refused.append(f"{iid} reads {set_id}: " + "; ".join(check.problems))
-        return refused
+        return refused, set_inputs
 
     async def _submit_chain(self, project_dir: Path, instances_to_run: list[str], state) -> dict[str, Any]:
         """Submit the pipeline as a SLURM afterok DAG.
@@ -419,8 +440,9 @@ class PipelineOrchestratorService:
             return err("Subset not ready: " + "; ".join(not_ready))
 
         # A job reading a particle set is checked against it now (services/particles/set_preflight.py): what
-        # its tools would refuse or get wrong on the cluster stops the Run here, named under the job's input.
-        refused = await self._check_set_inputs(project_dir, state, instances_to_run)
+        # its tools would refuse or get wrong on the cluster stops the Run here, named under the job's input. What a
+        # job reads of a kitchen set is built now and written into its directory in pass 3.
+        refused, set_inputs = await self._check_set_inputs(project_dir, state, instances_to_run)
         if refused:
             return err("Set checks refused the Run — " + "; ".join(refused), code=ErrorCode.SET_CHECKS, refused=refused)
 
@@ -509,6 +531,14 @@ class PipelineOrchestratorService:
                 context_paths = get_context_paths(job_model.job_type, job_model, job_dir)
                 resolved[instance_id] = {k: str(v) for k, v in {**context_paths, **io_paths}.items() if v is not None}
                 recorded[instance_id] = resolver.record_inputs(instance_id)
+                if instance_id in set_inputs:
+                    # It reads the copy of the set written into its own dir in pass 3, and keeps where each
+                    # project's picks were taken from.
+                    slot_key, plan, _built = set_inputs[instance_id]
+                    resolved[instance_id][slot_key] = str(job_dir / SET_INPUT_DIR / "optimisation_set.star")
+                    rec = recorded[instance_id].get(slot_key)
+                    if rec is not None:
+                        recorded[instance_id][slot_key] = rec.model_copy(update={"facets": plan.record})
             if unresolved:
                 _restore_allocation(state, previous)
                 return err("Path resolution failed for " + "; for ".join(unresolved))
@@ -611,6 +641,13 @@ class PipelineOrchestratorService:
                 # last attempt's lines as this one's.
                 for _stale in ("RELION_JOB_EXIT_SUCCESS", "RELION_JOB_EXIT_FAILURE", "run.out", "run.err"):
                     (job_dir / _stale).unlink(missing_ok=True)
+                if instance_id in set_inputs:
+                    try:
+                        await asyncio.to_thread(write_input, set_inputs[instance_id][2], job_dir / SET_INPUT_DIR)
+                    except (OSError, ValueError) as e:
+                        logger.exception("writing the set %s reads failed", instance_id)
+                        failed = f"Could not write the set {instance_id} reads into its job folder: {e}"
+                        break
                 job_model.paths = resolved[instance_id]
                 job_model.submitted_inputs = recorded[instance_id]
 

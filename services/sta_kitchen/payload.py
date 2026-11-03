@@ -19,7 +19,7 @@ MAGIC = b"CBK1"
 
 
 def frame_header(table: PoolTable) -> list[dict[str, Any]]:
-    keys = ("key", "tomo", "project", "dims", "apix", "apix_src", "acq", "members", "recon_exists")
+    keys = ("key", "tomo", "project", "dims", "apix", "apix_src", "acq", "members", "recon_exists", "excluded")
     return [{k: fr.get(k) for k in keys} for fr in table.frames]
 
 

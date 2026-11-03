@@ -295,12 +295,18 @@ class KitchenTab:
             self._push()
 
     async def _refresh_sets(self) -> None:
-        """The home project's particle sets of the species, for "+ filter" (a set made since shows up)."""
+        """The home project's particle sets of the species, for "+ filter" (a set made since shows up), and per
+        subset the sets made in it and how much it changed since the newest (the rail's marks)."""
         try:
-            if self.lp is not None and self.view is not None and not self.view.is_deleted:
+            lp = self.lp
+            if lp is not None and self.view is not None and not self.view.is_deleted:
                 from services.sta_kitchen.setmatch import pool_sets
 
-                self.view.set_props(sets=await asyncio.to_thread(pool_sets, self.lp.home, self.lp.species_id))
+                sets = await asyncio.to_thread(pool_sets, lp.home, lp.species_id)
+                held = {k: set(v) for k, v in lp.subset_uids.items()}
+                marks = await asyncio.to_thread(service.subset_set_marks, lp, held)
+                if not self.view.is_deleted:
+                    self.view.set_props(sets=sets, subset_sets=marks)
         finally:
             self._sets_task = None
 

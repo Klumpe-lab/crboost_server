@@ -1,7 +1,7 @@
 """Where each tomogram of a particle set comes from, and its per-tilt star under the set's name.
 
 A set made across projects records, per tomogram row of its ``tomograms.star``, the tomogram it is: the
-project it lives in, its name there and its per-tilt star there (roadmap 40 D24). RELION carries unknown
+project it lives in, its name there and its per-tilt star there. RELION carries unknown
 columns, and the extraction jobs copy the rows they read, so what an extraction of a set writes keeps them.
 The extraction drivers check each tomogram against its own project's registry by them, and Warp export finds
 the tilt series' Warp files by them.

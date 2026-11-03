@@ -60,6 +60,9 @@ class SubmittedInput(BaseModel):
 
     source_key: str
     output_key: str = ""
+    # For a kitchen set, where each project's picks took the facet the job reads (project path, or "*" for the
+    # whole set -> source; `services/particles/set_facets.py`).
+    facets: dict[str, str] = Field(default_factory=dict)
 
 
 class AbstractJobParams(BaseModel):
@@ -135,6 +138,10 @@ class AbstractJobParams(BaseModel):
     # resolved from. None: never submitted that way, so the inputs are chosen afresh each time. A slot
     # missing from the dict had no source at submit and stays without one.
     submitted_inputs: dict[str, SubmittedInput] | None = None
+    # Where an input reading a kitchen set takes its picks' facet from, where they leave a choice: input slot ->
+    # {project path, or "*" for the whole set: source} (`services/particles/set_facets.py`). Fixed at submit with
+    # the inputs (`SubmittedInput.facets`).
+    facet_choices: dict[str, dict[str, str]] = Field(default_factory=dict)
     job_type: JobType | None = None
 
     # Private attribute, not a Pydantic model field.
@@ -461,6 +468,7 @@ class AbstractJobParams(BaseModel):
             setattr(self, name, copy.deepcopy(getattr(other, name)))
         self.slurm_overrides = copy.deepcopy(other.slurm_overrides)
         self.source_overrides = dict(other.source_overrides or {})
+        self.facet_choices = copy.deepcopy(other.facet_choices)
 
     @property
     def has_succeeded(self) -> bool:

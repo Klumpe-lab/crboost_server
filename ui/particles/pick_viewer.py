@@ -58,7 +58,7 @@ from services import renders
 from services.renders import Render
 from services.visualization.cutout_filters import keyed_path, offered_presets, render_variant, variant_is_current
 from services.visualization.preview_render import render_recon_slabs, render_xy_slab
-from services.visualization.recon_cutouts import render_list_cutouts
+from services.visualization.recon_cutouts import CUTOUT_BOX_FACTOR, render_list_cutouts
 from services.workers import WorkKind
 from services.segmentation import display
 from services.visualization.tomo_geometry import TomoGeometry, geometry_for_ts, volume_dims
@@ -430,8 +430,8 @@ def _list_cutout_paths(project_path: Path, species_id: str, tomo_name: str, slug
 
 
 def _list_cutout_box_px(sp: dict) -> int:
-    """Cutout box edge in binned-recon px ≈ 2× particle diameter (context around
-    the pick), clamped. Falls back to 48 when diameter/pixel size is unknown — this
+    """Cutout box edge in binned-recon px = CUTOUT_BOX_FACTOR × particle diameter, the
+    kitchen's scale, clamped. Falls back to 48 when diameter/pixel size is unknown — this
     is a display window, not extraction geometry, so a generic one is honest."""
     species = current_project_state().get_species(sp.get("species_id") or "")
     diameter = float(getattr(sp.get("jm"), "particle_diameter_ang", 0.0) or 0.0) or float(
@@ -439,7 +439,7 @@ def _list_cutout_box_px(sp: dict) -> int:
     )
     px = (sp.get("entry") or {}).get("pixel_size_ang")
     if diameter and px and px > 0:
-        half = max(16, min(96, round(diameter / px)))
+        half = max(16, min(96, round(CUTOUT_BOX_FACTOR * diameter / px / 2)))
         return half * 2
     return 48
 

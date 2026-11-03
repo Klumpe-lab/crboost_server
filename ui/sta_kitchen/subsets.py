@@ -54,6 +54,22 @@ def _ask(title: str, hint: str, value: str, on_ok, *, groups: dict[str, str] | N
     dlg.open()
 
 
+async def _make_set_command(tab: KitchenTab, cmd: str, sid, gid, uids: list[str]) -> None:
+    from services.sta_kitchen.models import Scope
+    from ui.sta_kitchen.sets import open_make_set, open_make_sets
+
+    lp = tab.lp
+    if lp.table is None:
+        ui.notify("The pool has no table yet", type="warning")
+        return
+    if cmd == "make_set" and lp.pool.subset(sid):
+        await open_make_set(tab, scope=Scope(include=[sid]), name=lp.pool.subset(sid).name)
+    elif cmd == "make_sets" and lp.pool.group(gid):
+        await open_make_sets(tab, gid)
+    elif cmd == "make_set_selection" and uids:
+        await open_make_set(tab, selection=uids, name=f"selection of {len(uids):,}")
+
+
 def _confirm(title: str, text: str, on_ok) -> None:
     with dialog_host(), ui.dialog() as dlg, ui.card().style("width: 420px; gap: 8px;"):
         ui.label(title).style(_TITLE)
@@ -72,12 +88,16 @@ def _confirm(title: str, text: str, on_ok) -> None:
 
 async def run_command(tab: KitchenTab, args: dict) -> None:
     """One ``subset_cmd`` from the element: new, new_passing, rename, color, group, delete, new_group,
-    rename_group, delete_group."""
+    rename_group, delete_group, and Make set from a subset (make_set), from each subset of a group (make_sets)
+    or from the selection (make_set_selection)."""
     lp = tab.lp
     if lp is None:
         return
     cmd, sid, gid = args.get("cmd"), args.get("id"), args.get("group")
     groups = {g.id: g.name for g in lp.pool.groups}
+    if cmd in ("make_set", "make_sets", "make_set_selection"):
+        await _make_set_command(tab, cmd, sid, gid, [str(u) for u in args.get("uids") or []])
+        return
 
     async def notify(error: str) -> None:
         if error:

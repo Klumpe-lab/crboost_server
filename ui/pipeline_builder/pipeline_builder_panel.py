@@ -16,6 +16,7 @@ from services.path_resolution_service import (
     pin_sources_made_ambiguous,
 )
 from services.project_state import JobType, get_project_state_for
+from services.result import ErrorCode
 from services.subsets import add_refusal
 
 from ui.components.buttons import house_button
@@ -789,12 +790,35 @@ class PipelineBuilderPanel:
                     self.rebuild_pipeline_ui()
                 elif result.get("still_live"):
                     await self._offer_cancel_leftovers(result["error"], result["still_live"])
+                elif result.get("code") == ErrorCode.SET_CHECKS:
+                    # The reasons also stand under each job's input once its page is drawn again.
+                    self.rebuild_pipeline_ui()
+                    self._show_set_refusal(result.get("refused") or [result["error"]])
                 else:
                     logger.warning("start_pipeline failed: %s", result.get("error"))
                     _safe_notify(f"Failed to start: {result.get('error')}", type="negative")
             except Exception as e:
                 logger.exception("handle_run_pipeline error")
                 _safe_notify(f"Error: {e}", type="negative")
+
+    def _show_set_refusal(self, refused: list[str]) -> None:
+        """Run refused by the checks of particle-set inputs: one line per job, the same reasons its I/O section
+        shows under the input."""
+        with (
+            dialog_host(),
+            ui.dialog() as dialog,
+            ui.card().style("min-width: 360px; max-width: 44rem; padding: 16px;"),
+        ):
+            ui.label("Not started").classes("text-base font-bold text-gray-800")
+            ui.label("A job reads a particle set its tools would refuse or misread:").classes(
+                "text-sm text-gray-600 mt-2"
+            )
+            for line in refused:
+                ui.label(line).style("font-size: 11px; color: #b91c1c; white-space: normal;")
+            ui.label("Each job's I/O section shows them under its input.").classes("text-xs text-gray-500 mt-2")
+            with ui.row().classes("mt-4 gap-2 justify-end w-full"):
+                house_button("Close", dialog.close)
+        dialog.open()
 
     async def _offer_cancel_leftovers(self, reason: str, slurm_ids: list[str]) -> None:
         """Run refused because a Failed job still has work in SLURM. Usually that work drains by

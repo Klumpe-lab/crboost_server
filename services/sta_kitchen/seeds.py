@@ -12,8 +12,8 @@ from pathlib import Path
 
 import numpy as np
 
-from services.kitchen.pool import PoolTable
-from services.kitchen.table import COORD_DECIMALS, _particle_block
+from services.sta_kitchen.pool import PoolTable
+from services.sta_kitchen.table import COORD_DECIMALS, _particle_block
 from services.particles import analytics
 from services.particles.coords import CENTERED_COLS
 

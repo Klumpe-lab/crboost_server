@@ -20,6 +20,7 @@ from ui.routing import Route, RouteWriter, apply_route, parse_route, route_to_pa
 from ui.ui_state import get_ui_state_manager
 from ui.components.buttons import house_button
 from ui.data_import_panel import build_data_import_panel
+from ui.io_ideas_preview import render_io_ideas
 from ui.io_layouts_preview import render_io_layouts
 from ui.workspace_page import build_workspace_page
 
@@ -312,3 +313,9 @@ def create_ui_router(backend: CryoBoostBackend):
         await client.connected()
         ensure_assets_loaded()
         render_io_layouts()
+
+    @ui.page("/dev/io-ideas")
+    async def io_ideas_page(client: Client):
+        await client.connected()
+        ensure_assets_loaded()
+        render_io_ideas()

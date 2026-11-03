@@ -13,8 +13,8 @@ from pathlib import Path
 
 import numpy as np
 
-from services.kitchen.models import MemberKind, PoolMember
-from services.kitchen.snapshots import ProjectView
+from services.sta_kitchen.models import MemberKind, PoolMember
+from services.sta_kitchen.snapshots import ProjectView
 from services.particles.analytics_store import job_dir_of
 from services.particles.coords import CENTERED_COLS
 from services.particles.records import file_mtime
@@ -36,7 +36,7 @@ def pictures_stamp(view: ProjectView, member: PoolMember) -> tuple:
 
 def member_pictures(view: ProjectView, member: PoolMember, star: str) -> dict[int, tuple[str, str, tuple | None]]:
     """{row of the member's star: (the extraction's particles.star, the subtomogram, its visible tilts)}."""
-    from services.kitchen.table import _particle_block
+    from services.sta_kitchen.table import _particle_block
 
     if member.kind != MemberKind.TM:
         return {}

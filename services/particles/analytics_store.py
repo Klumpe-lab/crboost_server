@@ -86,16 +86,18 @@ def tm_instance_for_ce(state, ce_instance_id: str) -> str | None:
     return None
 
 
-def subtomo_instances_for_ce(state, ce_instance_id: str, project_path: Path) -> list[str]:
-    """Subtomo-extraction instances whose recorded input optimisation set lies in the extraction
-    job's directory, newest job first."""
+def subtomo_instances_for_ce(
+    state, ce_instance_id: str, project_path: Path, types: frozenset[JobType] = frozenset({JobType.SUBTOMO_EXTRACTION})
+) -> list[str]:
+    """Extraction instances of `types` whose recorded input optimisation set lies in the candidate
+    extraction job's directory, newest job first."""
     ce_dir = job_dir_of(state, project_path, ce_instance_id)
     if ce_dir is None:
         return []
     ce_dir = ce_dir.resolve()
     out = []
     for iid, jm in state.jobs.items():
-        if getattr(jm, "job_type", None) != JobType.SUBTOMO_EXTRACTION:
+        if getattr(jm, "job_type", None) not in types:
             continue
         src = str((getattr(jm, "paths", None) or {}).get("input_optimisation", "") or "")
         if src and Path(src).parent.resolve() == ce_dir:

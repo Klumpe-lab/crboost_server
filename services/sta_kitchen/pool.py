@@ -80,6 +80,17 @@ CAT_COLUMNS: dict[str, ColumnInfo] = {
 _CHUNK_CATS = ("tomo", "acq", "extracted", "tm_marker")
 
 
+@dataclass(frozen=True, slots=True)
+class UidExtraction:
+    """An extraction whose rows name the pool's picks by uid: a home job that read a particle set
+    (`services/sta_kitchen/uid_join.py`)."""
+
+    label: str
+    star: str
+    job: str  # its instance id
+    set_id: str  # the set it read
+
+
 @dataclass
 class PoolTable:
     species_id: str
@@ -102,6 +113,10 @@ class PoolTable:
     # source: Make set takes one source per such acquisition.
     source_conflicts: dict[str, list[str]] = field(default_factory=dict)
     errors: dict[str, str] = field(default_factory=dict)  # member key -> why it has no rows
+    # "extracted" code -> the extraction joined by uid; any other code was joined by position
+    uid_ext: dict[int, UidExtraction] = field(default_factory=dict)
+    # label of an extraction joined by uid -> {job, set_id, star, rows, joined, notes}: what its join found
+    uid_notes: dict[str, dict[str, Any]] = field(default_factory=dict)
     _uid_rows: dict[str, int] | None = None
 
     def uid_hex(self, row: int) -> str:
@@ -126,10 +141,12 @@ def assemble(
     *,
     labels,
     agree_radius: float | None = None,
+    uid_joins: list[dict[str, Any]] | None = None,
 ) -> PoolTable:
     """The pool table from its members' chunks, in member order. `labels(member_key)` gives the
     member's (project label, member label); `agree_radius` (Å, half the species' diameter) is how near
-    another source's pick must be for the `agreement` column."""
+    another source's pick must be for the `agreement` column; `uid_joins` (`uid_join.read_join` of the
+    extractions `uid_join.uid_extractions` found, oldest first) name the picks they extracted."""
     num: dict[str, list[np.ndarray]] = {k: [] for k in NUM_COLUMNS}
     cat_names: dict[str, list[str]] = {k: [] for k in CAT_COLUMNS}
     cat: dict[str, list[np.ndarray]] = {k: [] for k in CAT_COLUMNS}
@@ -194,12 +211,58 @@ def assemble(
         member_meta=metas,
         src_row=_cat_or_empty(src_row, np.int32),
         ext_row=_cat_or_empty(ext_row, np.int32),
-        version=pool_version(pool.species_id, [m["fingerprint"] for _k, m, _a in chunks], agree_radius),
+        version=pool_version(
+            pool.species_id,
+            [m["fingerprint"] for _k, m, _a in chunks]
+            + [f"label|{k}|{labels(k)}" for k, _m, _a in chunks]
+            + [f"uid|{j['star']}|{j['mtime']}" for j in uid_joins or ()],
+            agree_radius,
+        ),
     )
     table.conflicts = frame_conflicts(frames)
     table.source_conflicts = source_conflicts(table)
     table.num["agreement"] = agreement(table, agree_radius)
+    apply_uid_joins(table, uid_joins or [])
     return table
+
+
+def apply_uid_joins(table: PoolTable, joins: list[dict[str, Any]]) -> None:
+    """Each join's rows become the extraction of the picks they name, over a join by position: a uid is the
+    pick's own name. Later joins (newer jobs) win a pick two carry. A join's rows whose uid no pick of the pool
+    holds are counted, never matched another way."""
+    names = table.categories["extracted"]
+    for j in joins:
+        if j["label"] not in names:
+            names.append(j["label"])
+        code = names.index(j["label"])
+        star_rows, pool_rows, unknown = [], [], 0
+        for i, u in enumerate(j.get("uids") or ()):
+            if u is None:
+                continue
+            r = table.row_of(u)
+            if r is None:
+                unknown += 1
+            else:
+                star_rows.append(i)
+                pool_rows.append(r)
+        rows, at = np.asarray(pool_rows, dtype=np.int64), np.asarray(star_rows, dtype=np.int64)
+        table.cat["extracted"][rows] = code
+        table.ext_row[rows] = at
+        vis = j.get("vis")
+        if vis is not None and len(rows):
+            table.num["vis_tilts"][rows] = np.asarray(vis, dtype=np.float32)[at]
+        table.uid_ext[code] = UidExtraction(j["label"], j["star"], j["job"], j["set_id"])
+        notes = list(j.get("problems") or ())
+        if unknown:
+            notes.append(f"{unknown:,} rows name picks the pool no longer holds")
+        table.uid_notes[j["label"]] = {
+            "job": j["job"],
+            "set_id": j["set_id"],
+            "star": j["star"],
+            "rows": int(j.get("n_rows") or len(j.get("uids") or ())),
+            "joined": len(rows),
+            "notes": notes,
+        }
 
 
 def _cat_or_empty(parts: list[np.ndarray], dtype) -> np.ndarray:

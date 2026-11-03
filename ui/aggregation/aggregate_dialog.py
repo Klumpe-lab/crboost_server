@@ -153,7 +153,7 @@ def _rows_for_project(project_path: Path) -> list[_Row]:
     would fail at merge time with a path error instead of at selection time with an
     explanation.
     """
-    from services.kitchen.snapshots import project_view
+    from services.sta_kitchen.snapshots import project_view
     from services.particles.list_ref import species_tomo_map
 
     try:

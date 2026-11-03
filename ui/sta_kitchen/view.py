@@ -25,6 +25,7 @@ class KitchenView(Element, component="sta_kitchen.js"):
             subsets=[],
             groups=[],
             sets=[],
+            subset_sets={},
             set_masks={},
             review=None,
             loupe_url="",

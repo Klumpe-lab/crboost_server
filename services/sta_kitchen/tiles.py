@@ -102,7 +102,7 @@ def tile_spec(frame: dict[str, Any], tiles_root: Path, box_a: float | None, slab
 
 def record(uid: str, data: bytes | str) -> bytes:
     """One record of a tiles response: the 12-character uid, then b"j" and a JPEG, or b"r" and why there is
-    none (UTF-8), each preceded by its length (uint32 LE). ``kitchen.js`` `TileReader` reads them."""
+    none (UTF-8), each preceded by its length (uint32 LE). ``sta_kitchen.js`` `TileReader` reads them."""
     body, kind = (data, b"j") if isinstance(data, bytes) else (data.encode(), b"r")
     return uid.encode()[:12].ljust(12, b"_") + kind + struct.pack("<I", len(body)) + body
 

@@ -28,6 +28,7 @@ from services.jobs.class3d import Class3DParams
 from services.jobs.denoise_predict import DenoisePredictParams
 from services.jobs.denoise_train import DenoiseTrainParams
 from services.jobs.extract_pick_list import ExtractPickListParams
+from services.jobs.filament_pick import FilamentPickParams
 from services.jobs.fs_motion_ctf import FsMotionCtfParams
 from services.jobs.import_movies import ImportMoviesParams
 from services.jobs.miss_align import MissAlignParams
@@ -234,6 +235,15 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         dependencies=(JobType.TEMPLATE_MATCH_PYTOM,),
         driver="extract_candidates_pytom.py",
         plugins=("candidate_extract", "array_tasks"),
+    ),
+    # Picks from a Segment job's volumes instead of template-matching scores: one CPU job, no array.
+    JobSpec(
+        JobType.FILAMENT_PICK,
+        FilamentPickParams,
+        "Filament pick",
+        PHASE_PARTICLES,
+        dependencies=(JobType.SEGMENT,),
+        driver="filament_pick.py",
     ),
     JobSpec(
         JobType.SUBTOMO_EXTRACTION,

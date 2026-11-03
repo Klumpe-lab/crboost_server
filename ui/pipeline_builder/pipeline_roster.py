@@ -7,6 +7,7 @@ from services import array_status_cache
 from services.array_status_cache import is_array_job
 from services.array_tasks import TaskProgress, shorten_ts_names
 from services.models_base import JobStatus
+from services.particles.particle_sets import list_sets, set_lineage, set_read_by
 from services.project_state import JobType
 from ui.current_project import current_project_state
 
@@ -268,6 +269,8 @@ class RosterWidget(FingerprintedView):
                 getattr(jm, "relion_job_name", None),
                 bool(getattr(jm, "is_orphaned", False)),
                 bool(getattr(jm, "IS_INTERACTIVE", False)),
+                # A job reading a particle set names it on its row.
+                set_read_by(jm),
             )
             for iid, jm in sorted(jobs.items())
         )
@@ -462,6 +465,20 @@ class RosterWidget(FingerprintedView):
                     for instance_id in instances:
                         self._render_instance_row(panel, job_type, instance_id)
 
+    @staticmethod
+    def _set_tag(job_model, project_path) -> None:
+        """The particle set a job reads, by its number, with where it came from on hover."""
+        set_id = set_read_by(job_model) if job_model is not None else None
+        if set_id is None or project_path is None:
+            return
+        pset = next((x for x in list_sets(Path(project_path)) if x.id == set_id), None)
+        tag = ui.label(set_id.split("_", 1)[0]).style(
+            f"{MONO} font-size: 8px; color: #2c4a6b; flex-shrink: 0; white-space: nowrap;"
+        )
+        with tag:
+            text = f"Reads {set_id}: {set_lineage(pset)}" if pset is not None else f"Reads {set_id}, which is gone"
+            ui.tooltip(text).style("white-space: pre-line;")
+
     def _render_instance_row(self, panel, job_type, instance_id, show_add=False):
         """Render a single job instance row — single line with icons at end."""
         job_model = current_project_state().jobs.get(instance_id)
@@ -521,6 +538,7 @@ class RosterWidget(FingerprintedView):
                         with tag:
                             ui.tooltip(f"{full_path}\nClick to copy").style("white-space: pre-line;")
                         copy_on_click(tag, full_path)
+                self._set_tag(job_model, panel.ui_mgr.project_path)
             # The species: one grey glyph, the Particles registry's own, named on hover.
             if species:
                 with ui.element("div").style("display: flex; flex-shrink: 0;"):

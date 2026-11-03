@@ -394,6 +394,21 @@ def set_read_by(job_model, slot: str = "input_optimisation") -> str | None:
     return ref[len(SET_PRODUCER_PREFIX) :] if ref.startswith(SET_PRODUCER_PREFIX) else None
 
 
+def reads_by_facets(pset: ParticleSet) -> bool:
+    """A set of picks the STA kitchen made: its rows are positions carrying their uids, and a job reading it takes each
+    facet it needs of them (positions, poses, images) from the jobs that made it (`services/particles/set_facets.py`).
+    Any other set, a kitchen set made with images among them, is read as written. Reads the set's star header (kept per
+    mtime)."""
+    from services.particles.pick_uids import UID_COL
+    from services.particles.star_columns import star_labels
+
+    return (
+        pset.recipe.op == SetOp.POOL
+        and pset.level == SetLevel.COORDINATES
+        and UID_COL in star_labels(pset.particles_star)
+    )
+
+
 def pool_scope(pset: ParticleSet) -> tuple[list[str], list[str]]:
     """The subset ids a kitchen set was made in (included, excluded); empty for any other set."""
     if pset.recipe.op != SetOp.POOL:
@@ -405,8 +420,8 @@ def pool_scope(pset: ParticleSet) -> tuple[list[str], list[str]]:
 
 def set_lineage(pset: ParticleSet) -> str:
     """Where a set came from, in one line: for a kitchen set its subsets, kitchen and group, then what it holds
-    and from how many projects ("class 1 (412_particle · classes) · 1,102 extracted · 5 projects")."""
-    count = f"{pset.n_particles:,} {pset.level.value}"
+    and from how many projects ("class 1 (412_particle · classes) · 1,102 picks · 5 projects")."""
+    count = f"{pset.n_particles:,} {'picks' if reads_by_facets(pset) else pset.level.value}"
     if pset.recipe.op != SetOp.POOL:
         return f"{pset.recipe.describe()} · {count}"
     params = pset.recipe.params
