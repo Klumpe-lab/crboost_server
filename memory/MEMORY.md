@@ -1,0 +1,172 @@
+- [Release-prep roadmaps 2026-09-29](project_release_prep_roadmaps_2026-09-29.md) — 20 on main; 23 stage 1 (token gate) DONE 2026-10-15, MERGED into main (b1278b7, with graphical_pipeline; worktrees removed 2026-10-16) (curl pass accepted; Munich handoff docs written: README "Upgrading an existing install" + roadmap 20 S5); 06 closed
+- [412 "aliasing" = blank-tilt rays](project_blank_tilt_rays.md) — beam-blocked tilts survive ts_import; roadmap 22
+- [Disk footprint roadmap 36](project_disk_footprint_roadmap36.md) — job removal only moves to Trash/; trash view + .staging script BUILT 2026-10-18 (not run); non-blocking roster deletes + trash clear via tray BUILT same day (not run)
+- [AGG412 missAlign rollout](project_agg412_missalign_rollout.md) — record = roadmap 29 §6.2; trio done in all seven 2026-10-21 (815 tomos); TM on refined tomos specified = §6.3 (2026-10-22, not submitted)
+- [Munich handoff prep 2026-09-15](project_munich_handoff_2026-09-15.md) — docs sorted, handoff note, preflight rewritten (never run)
+- [Plain code comments](feedback_plain_code_comments.md) — no roadmap/stage/date refs, no history narration
+- [Public repo: no names, no swearing](feedback_public_repo_no_names_no_swearing.md) — roles not names; q_*.md disposable
+- [v1 driver parity audit 2026-09-15](project_v1_driver_parity_audit_2026-09-15.md) — reported gaps: TM phase-flip/tilts, extract radius, cryoCARE, dose, EER
+- [CTF outlier check roadmap 19](project_ctf_outlier_check_roadmap.md) — NOT BUILT: 1D defocus scan vs Warp's 2D fit
+- [ChimeraX save dialog = last-visited dir](reference_chimerax_save_dialog_last_dir.md) — only the first dialog follows `cd`
+- [Curation seed arc — picking_ui/13](project_curation_seed_arc.md) — code-complete; runtime pass owed
+- [Quiet logs + staged data import](project_quiet_logs_staged_data_import.md) — 2026-10-19: log_setup.py = compose-style console (events+warnings) + ~/.crboost/logs/crboost-<port>.log 5×20 MB; watchdog file-only; NOT RUN
+- [Tilt metrics wave 2026-08-27](project_tilt_metrics_wave_2026-08-27.md) — per-tilt QC, PS1D panel; PENDING RUNTIME
+- [Protocols (re-scoped 2026-09-04)](project_protocols_regression_harness.md) — shape + params → a regular project; PENDING RUNTIME
+- [Tomogram gallery view](project_tomo_gallery_view.md) — 4th workspace view + Tilts tab; PENDING RUNTIME
+- [Tomo import UX + rail badges](project_tomo_import_ux_badges.md) — badges, one-field import; PENDING RUNTIME
+- [Species registry arc](project_species_registry_arc.md) — roadmaps 07–12 code-complete; runtime checklist owed
+- [Picking UI wave 2](project_picking_ui_wave2.md) — picking_ui/08–12 code-complete; runtime owed
+- [Picking UI wave 3](project_picking_ui_wave3.md) — authoritative-list model deleted; PENDING RUNTIME
+- [Raw widget values corrupt job params](reference_int_job_param_corruption.md) — use numeric_forward/enum_forward
+- [Protocols = parameter shapes only](feedback_protocols_scope_no_harness.md) — no harness, no parameter grids
+- [Don't gate stages on runtime](feedback_dont_gate_stages_on_runtime.md) — build the arc, verify once at the end
+- [Write roadmaps directly, no plan ceremony](feedback_write_roadmaps_directly.md) — docs/roadmaps/roadmap_*.md; done → completed/
+- [Never publish Artifacts](feedback_no_artifacts.md) — deliverables are repo markdown
+- [Architecture assessment 2026-08-10](project_architecture_assessment_2026-08-10.md) — GOTCHA: locals named err/ok shadow the helpers
+- [Roadmap 04 driver consolidation](project_roadmap04_driver_consolidation.md) — array drivers on ArrayDriver; PENDING RUNTIME
+- [DL tilt filter integration](project_dl_tilt_filter.md) — roadmap 06 CLOSED 2026-10-15 (works well enough); weights filterTilts/*.pth travel by hand
+- [Tilt views roadmap 26](project_tilt_views_roadmap26.md) — CLOSED 2026-10-15; F + G on main, V2 dropped
+- [Pipeline reshape 2026-07-29](project_pipeline_reshape_2026-07-29.md) — tiltFilter before alignment, verified
+- [Registry consolidation roadmap](project_registry_consolidation.md) — TiltSeriesRegistry becomes THE store
+- [Delete + spinner fix 2026-07-30](project_delete_and_spinner_fix_2026-07-30.md) — afterok toggle; SVG/SMIL spinner
+- [missAlign perf + walltime/QOS](project_missalign_perf_walltime_qos.md) — getpwuid fix, walltime estimator; PENDING RUNTIME
+- [Container getpwuid crash](reference_container_getpwuid_cleanenv.md) — --cleanenv on LDAP; set USER/LOGNAME
+- [IO/params/roster pass](project_io_params_roster_pass.md) — candidate dedup + prefer_if_exists; species chips
+- [Landing config + hub merge](project_landing_config_and_hub_merge.md) — ~/.crboost/conf.yaml override layer
+- [Preprocessing metrics inventory](project_preproc_metrics_inventory.md) — ①② landed, ③④⑤ next
+- [Dashboard renderer twitch fix](project_dashboard_renderer_twitch_fix.md) — un-gated rebuild; FingerprintedView
+- [Munich ship-prep UI pass](project_munich_shipprep_ui_pass.md) — gain-ref at setup, IO-tab rework; PENDING RUNTIME
+- [crboost_data access varies](reference_crboost_data_access.md) — mount intermittent in the sandbox; ls first
+- [Per-TS Parallelization Refactor](project_per_ts_parallelization.md) — WarpTools jobs as SLURM arrays over TS
+- [TS exclude-from-processing mute](project_ts_exclude_from_processing.md) — registry is_excluded + .skip; PENDING RUNTIME
+- [Denoise extension work](project_denoise_per_ts_split.md) — predict per-TS, train global; DenoiseMethod enum
+- [denoise_train dynamic walltime](project_denoise_train_dynamic_walltime.md) — --time scales with TS count
+- [TiltSeries Registry Refactor](project_ts_registry_refactor.md) — TS/Frame/Tomogram entities with stable IDs
+- [Import job necessity analysis](project_import_job_necessity.md) — only fsMotionAndCtf depends on import
+- [WarpTools ts_import hardcoded filter](project_warp_ts_import_filter.md) — silent intensity walk drops high tilts
+- [De-novo picking roadmap](project_denovo_picking.md) — S1–S3 + S5/S6 code-complete; PENDING RUNTIME
+- [User Profile](user_artem.md) — cryo-ET domain expert, deep WarpTools/RELION knowledge
+- [Project ownership sharing/transfer](project_ownership_sharing.md) — mutable owner vs immutable created_by
+- [Cutout lowpass filters](project_cutout_lowpass_filters.md) — display filters for Journey cutouts; lazy per atlas since 2026-10-18; PENDING runtime
+- [Separate containers when pinnings differ](feedback_container_separation.md) — one image per tool envelope
+- [Don't render cryo-ET volumes in the browser](feedback_no_browser_volume_rendering.md) — star stats + 3dmod handoff
+- [Per-tomogram dashboard arc](project_per_tomo_dashboard_arc.md) — candidate preview → per-TS dashboard
+- [Candidate-preview cache race](project_candidate_preview_subtomo_cache_race.md) — stale cache vs subtomo job; + manifest.json.tmp race; fixed
+- [Picks filter + aggregation roadmap](project_picks_filter_aggregation.md) — merged-optset producer landed
+- [Engage the concrete goal, not a scope menu](feedback_engage_concrete_goal.md) — pin the success use case first
+- [Visualization stack patterns](feedback_visualization_patterns.md) — Plotly-via-dict, manifest cache key, mmap trap
+- [Dashboard plot principles](feedback_dashboard_plot_principles.md) — no lines between discrete points; tilt-ID hovers
+- [WarpTools RELION-star placeholders](project_warp_relion_star_placeholders.md) — real values live in the XMLs
+- [Warp dev36 → relion5.0 star skew](project_warp_dev36_relion5_star_skew.md) — all-zero = reconstruct_particle on the dummy tilt series (corrected 2026-10-10)
+- [Pixel/binning arithmetic = #1 bad-pick source](project_pixel_arithmetic_pain_point.md) — sanity panel shipped
+- [Species linkage on per-particle jobs](project_species_linkage_wiring.md) — suffix, species_id, single-species fallback
+- [Template & Mask refactor v2 plan](project_template_registry_refactor.md) — TEMPLATE_REGISTRY_REFACTOR_PLAN_V2.md
+- [Template refactor v3 LANDED 2026-05-11](project_template_refactor_pr1.md) — multi-template + decoupled masks
+- [NEVER commit on user's behalf](feedback_never_commit.md) — line-by-line scripts, no && chains, no Claude attribution, no branches; no git apply patches, lines < 100 chars
+- [HPC env setup for python/ruff](reference_hpc_env.md) — no git; venv python WORKS since uv (2026-10-28), NiceGUI sim OK; venv/bin/ruff works; git module breaks main.py (GLIBCXX) — use a separate shell
+- [Lab install rollout](reference_lab_install_rollout.md) — /groups/klumpe/software/crboost_server = main clone; on uv since 2026-10-28 (old venv parked outside the checkout)
+- [One worktree per session](reference_worktree_per_session.md) — parallel sessions need separate trees; setup block starts with `module load git/2.36…`
+- [Don't snoop cluster libs or scan data](feedback_no_cluster_lib_snooping.md) — ceiling = ruff + reading; ask for runtime checks
+- [In-memory ProjectState is authoritative](feedback_inmemory_state_authoritative.md) — disk re-reads load-if-absent only
+- [412 TomoHand discrepancy](project_412_tomohand_discrepancy.md) — Import hand +1 vs v1 −1
+- [412 divergence cascade](project_412_divergence_cascade.md) — 7-layer cascade explains bad picks
+- [412 picking quantification](project_412_picking_quantification.md) — ~16 auto picks/TS vs 1–3 manual
+- [cryoboost v1 source location](reference_cryoboost_v1_location.md) — /users/artem.kushner/dev/CryoBoost/
+- [412 dataset comparison paths](reference_412_dataset_locations.md) — GT project, picks, template/mask paths
+- [412 STA refinement playbook](project_412_sta_refinement_playbook.md) — 35.8 Å gold-std, data-limited
+- [Reactive UI patterns](feedback_reactive_ui_patterns.md) — FingerprintedView + SingleFlight (in CLAUDE.md)
+- [NiceGUI timer "parent slot deleted"](reference_nicegui_timer_parent_slot.md) — use owned_timer
+- [NiceGUI "Client has been deleted" = warn_once](reference_nicegui_client_deleted_warning.md) — first hit per process only; guard on is_deleted
+- [Species fields in job tabs = section, not card](feedback_species_field_chrome.md) — section_header + field_grid
+- [UX jank refactor 2026-05-18](project_ux_jank_refactor.md) — roster rebuild, dialog stacking; stage 1 landed
+- [Gallery calibration anchors](feedback_gallery_calibration_anchors.md) — template + noise tiles + tomo-wide norm
+- [I1 angle list underperforms by 15×](project_i1_angle_list_underperforms.md) — 3398 angles for I1@12°
+- [TM driver reads symmetry from job tab only](project_tm_symmetry_from_job_only.md) — species symmetry unused
+- [Journey layout & density preferences](feedback_journey_layout_preferences.md) — slabs left of gallery; compact
+- [ArtiaX manual-picking bridge](project_artiax_bridge.md) — ChimeraX+ArtiaX over VNC; S14 done
+- [UI chrome / styling conventions](feedback_ui_chrome_conventions.md) — compact cb-* chrome; no CAPS tabs
+- [Never fail silently / no invented defaults](feedback_never_silent_defaults.md) — subtle UI markers (in CLAUDE.md)
+- [Rule-based markers, never rule-based drops](feedback_rules_mark_not_drop.md) — mark, explain, human decides
+- [Fresh projects, not backfills](feedback_fresh_projects_not_backfills.md) — test on fresh copia-protocol runs
+- [Per-list extraction model](feedback_per_list_extraction.md) — user-triggered; derived ListExtractionState
+- [CBE kernel ABI trap](reference_cbe_kernel_abi.md) — strip .note.ABI-tag for Qt6 libs
+- [ChimeraX VNC perf needs GPU+VirtualGL](reference_chimerax_vnc_perf.md) — partition g + --nv + vglrun
+- [ChimeraX simple lighting](feedback_chimerax_simple_lighting.md) — always `lighting simple`
+- [Journey rework + dashboard refactor](project_journey_rework_dashboard_refactor.md) — ui/dashboard/ split landed
+- [Background tasks have no client context](feedback_background_task_no_client_context.md) — pass explicit paths
+- [Job-number off-by-one after abort+redeploy](project_jobnum_offby1_abort_redeploy.md) — two causes; fixed 2026-08-12
+- [Pipeline/SLURM↔UI status desync](project_pipeline_state_desync.md) — 4 layers; not implemented
+- [Microscope apix default trap](project_microscope_apix_default_trap.md) — defaults 1.35, so `or 0.0` is broken
+- [Orchestrator replacement direction](project_orchestrator_replacement.md) — schemer DELETED 2026-10-15, on main since b1278b7 (roadmap 32 §13, NOT RUN); R2 RELION export left
+- [Platform roadmap (CryoSPARC-like)](project_platform_roadmap.md) — superseded by roadmap 23
+- [miss-alignment container + integration](project_miss_alignment_container.md) — roadmap 24 stages 1+3 built, NOT RUN
+- [No cluster-workaround automation](feedback_no_cluster_workaround_automation.md) — static exclude, never auto-retry
+- [CBE node apptainer mount rot](reference_cbe_node_mount_rot.md) — extend --exclude in qsub.sh
+- [Per-TS top-up](project_per_ts_top_up.md) — failed TS absent downstream; absorbed by roadmap 27
+- [Task status state machine](project_task_status_state_machine.md) — .ok/.fail/.skip; JSON migration designed
+- [run_command watchdog](reference_run_command_watchdog.md) — total walltime only; idle watchdog REMOVED, hung tools hold GPUs till walltime
+- [CBE SLURM QOS wall-time tiers](reference_cbe_slurm_qos.md) — 8 h default; g_medium 2 d, g_long 14 d
+- [Particle data flow reference](reference_particle_data_flow.md) — TM makes volumes, not picks
+- [UI pass 2026-08-27](project_ui_pass_2026-08-27.md) — dialogs, Journey header, logs; PENDING RUNTIME
+- [NiceGUI flex-start shrink-wrap](reference_nicegui_flexstart_shrinkwrap.md) — give width-less children a width
+- [Job-dir ownership + UI latency](project_job_dir_ownership_and_ui_latency.md) — roadmap 33 → 32 §14; L4 + L1 built 2026-10-26 (next line)
+- [Liveness batch 2026-10-26](project_liveness_batch_2026-10-26.md) — 32 §14.7 + §14.8 (L4, L1, L3 via owner file, L6, L5; L2 skipped) on uv_and_UI, NOT RUN; §14.9 built; ALL ON MAIN e8d6b33 (pushed) 2026-10-27 with uv S2 + crboost launcher; roadmaps branch + liveness worktree deleted; main checkout on main; lab on it since 2026-10-28 (44375a0)
+- [afterok skips sync_all_jobs side effects](reference_afterok_skips_sync_side_effects.md) — dead under afterok
+- [AreTomo long TS name mangles .tlt](reference_aretomo_long_ts_name.md) — 51-char basename breaks the .tlt
+- [Copia tutorial STA chain](project_copia_tutorial_sta_chain.md) — 8.16 Å after a second Refine3D
+- [RELION healpix GUI vs CLI](reference_relion_healpix_gui_vs_cli.md) — 3.75° = --healpix_order 3
+- [URL routing + roster/landing pass](project_url_routing_and_roster_pass.md) — roadmap 17 code-complete; PENDING RUNTIME
+- [Refine3D needs MPI](reference_relion_refine3d_needs_mpi.md) — mpirun -n 3 relion_refine_mpi
+- [Copia CTF fit divergence](project_copia_ctf_bimodal_fits.md) — fs_ctf band 30:6 → 30:10 default
+- [K3 stack ingest — roadmap 18](project_k3_stack_ingest.md) — code-complete, NOT RUN; dose estimated
+- [p_bad extra_forbidden = cross-branch registry](reference_registry_schema_cross_branch.md) — older code skips every TS
+- [NFS attr cache on crboost_data](reference_nfs_attr_cache_registry.md) — stat() may lag ~60 s, also node-to-node on afterok handoffs; open() is current
+- [Projects Overview rework + disk sizer](project_projects_overview_disk_usage.md) — roadmap 25 CLOSED 2026-10-15 (done)
+- [Landing + roster rework 2026-10-19](project_landing_overview_rework_2026-10-19.md) — overview default + New project switch, table columns, patch renders; 2026-10-21 hub kept per page + scan cache + persisted sort; NOT RUN; 2026-10-21 prefs prune off (was the Scanning stall)
+- [Design talk → roadmap, not code](feedback_scope_design_talk_into_roadmap.md) — build only on explicit "build"
+- [Denoise method redesign](project_denoise_method_redesign.md) — IsoNet options + deconv guard built, NOT RUN
+- [AGG412 picking campaign](project_agg412_reprocessing_2026-10-04.md) — read notes/agg412_picking/PLAYBOOK.md first; rollout 19 failed jobs (no recompute, Run per project); STA plan = roadmap 29
+- [Supervisor time-out leaves arrays running](reference_supervisor_timeout_arrays_survive.md) — N/N ok but Failed = TIME LIMIT; Run re-aggregates in place; supervisor_slurm.qos fix built 2026-10-30 (NOT RUN)
+- [Particle analytics roadmap 30](project_particle_analytics_roadmap30.md) — built 2026-10-10 st.1–5 (not run; S8 removed); stage 6 UI owed; §11/§12
+- [No verification ladders](feedback_no_verification_ladders.md) — go straight to best settings; define jargon like "pilot"/"rigid run"
+- [Tool survey 2026-10](project_tool_survey_2026-10.md) — keep PyTOM; easymode later; M/TomoTwin/DeepFinder notes in docs/reports/tool-survey/
+- [Settings dialog drops override keys](reference_settings_dialog_drops_override_keys.md) — use config/conf.yaml
+- [Species IO wiring — roadmap 28](project_species_io_wiring_roadmap28.md) — BUILT 2026-10-05, NOT RUN; pin on ambiguity, I/O-only cross-species tag
+- [Dev-tree edits are live for queued drivers](reference_dev_tree_live_drivers.md) — job scripts run drivers from the dev tree
+- [Per-TS deletion](project_per_ts_deletion.md) — NOT BUILT; inventory + design drafted, 2 decisions open
+- [Warp Export job](project_warp_export_job.md) — first run OK 2026-10-12; Grid2 Refine 3D final 2026-10-20: missAlign 8.27 Å vs baseline 11.23 Å (unmasked)
+- [Never re-home picks](feedback_no_pick_rehoming.md) — no moving picks between TM jobs/alignments; re-run TM; avoid "A/B project" jargon
+- [Upgrade a tool's container in place](feedback_upgrade_tool_container_in_place.md) — newer Warp for one job → rebuild warp_aretomo, no parallel tool key
+- [Refine 3D job — roadmap 31](project_refine3d_job_roadmap31.md) — mpirun -n 3 relion_refine_mpi; re-run CONTINUES from last iteration (run_ctN_*, worked 2026-10-20; Grid2 missAlign 8.27 Å vs 11.23 Å)
+- [Branching survey → roadmap 32](project_branching_pipeline_survey.md) — S1, §8, S2, S3 built 2026-10-15 NOT RUN, merged to main b1278b7 (copia chain submitted OK); round 1 + §11 checks owed
+- [NiceGUI head HTML not shared](reference_nicegui_head_html_not_shared.md) — module-level add_head_html never served; likely "stale shell" cause; UNVERIFIED
+- [miss-alignment throughput](reference_missalign_throughput.md) — 1 trainer + 5 builders + 10 loaders on 2 GPUs/16 CPUs = 98 cubes/s (7× first run); auto split by measured rates; eager (no compile); only whole iterations resume
+- [Config tab + fetch pass 2026-10-14](project_config_tab_and_fetch_pass_2026-10-14.md) — sections open, I/O restyle, image routes no-gzip/immutable, off-loop first load; PENDING RUNTIME
+- [UI latency roadmap 34](project_ui_latency_roadmap34.md) — S0–S6 built 2026-10-17; watchdog >1 s lines go to the log file only since 2026-10-19, CRBOOST_TRACE_STALLS=1 for console + stacks; Journey first paint ~0.8 s open
+- [Quick style pass = visible styling only](feedback_asap_style_pass_minimal.md) — no refactors/guideline sweeps of old code from pasted roadmaps; ask first
+- [Journey: do not overcorrect](feedback_journey_dont_overcorrect.md) — roadmap 35 passes overshot; C kept + folded 2026-10-18; Particles: A toolbar kept + folded (S7)
+- [Segmentations roadmap 37](project_segmentations_roadmap37.md) — S1–S7 BUILT 2026-10-20, on main (seen 2026-10-24); Segment ran OK on MyrGFP job038, wall hides it (other-recon default) — UX fix proposed
+- [Segmentation quality roadmap 38](project_segmentation_quality_roadmap38.md) — 10 Å resample + map back, TTA 8, Z smoothing; BUILT 2026-10-20, on main; first run = job039 2026-10-22
+- [Segmentation diagnosis job039](project_segmentation_diagnosis_job039.md) — 2026-10-22: tilt coverage, void = bad data, rim + tilted-lamella slab; easymode nets trained on n2n + iso inputs (repo says otherwise)
+- [Roster hover card + tooltips + Esc views 2026-10-20](project_roster_hover_card_tooltips_2026-10-20.md) — hub = landing roster, name-column card, glass `.cb-glass` on all tooltips + hover popups + chart hovers; NOT RUN
+- [Log progress parser](project_log_progress_parser.md) — run.out → roster Running cell + job header chip; standalone; BUILT 2026-10-20, NOT RUN
+- [Port block + startup survey](project_port_block_startup_survey.md) — 24300–24331 auto port, leftover report, tunnel hardening, thin main.py + server_app.py; NOT RUN
+- [File picker rework 2026-10-21](project_file_picker_rework_2026-10-21.md) — one compact browser, path bar = autocomplete, root limit gone; NOT RUN
+- [UI panels + progressive pass 2026-10-21](project_ui_panels_progressive_2026-10-21.md) — view title line + expand, job page one scroll page, gray-blue panels, no dividers, streaming roster/wall; NOT RUN
+- [Harbor look pinned 2026-10-22](project_style_themes_2026-10-22.md) — --cb-* vars in css.py, columns job page; controls sweep; rejected looks listed; NOT RUN
+- [DAV paper methods (DAV = try1 job121)](project_412_paper_methods.md) — DAV 23 ptcl (v1 try1), copia 76 (PI Copia/try2, §9; NOT copia-tutorial); 412-methods-provenance.md
+- [Workspace cards + closeable job 2026-10-22](project_workspace_cards_closeable_job_2026-10-22.md) — panels as cards on a desk, job page × closes the job only, rail avatar = project hover card; NOT RUN
+- [No blockquotes](feedback_no_blockquotes.md) — drafted text as plain paragraphs, never `>` quotes
+- [Python env roadmap 39](project_python_env_roadmap39.md) — S0–S2 DONE: uv venv (bytecode compiled at sync) on dev + lab; lab copia chain ran OK 2026-10-28; next §6.1, S3–S5, shorter cluster self-test (§6.5)
+- [easymode denoise + job size chip 2026-10-23](project_easymode_denoise_and_job_size_chip.md) — Denoise predict "easymode" (no train job, registry 1.7) + job header size chip; on main, NOT RUN
+- [CBE GPU memory by feature](reference_cbe_gpu_memory.md) — g1 P100 12 GB; TF jobs show whole card in sacct gpumem; segment OOMs on g1
+- [Roadmap triage 2026-10-26](project_roadmap_triage_2026-10-26.md) — archived 20/22/24/29/31/34; 37–38 high; 32 up; 27 after 32; 36–38 archived; 33 → 32 §14; Pending table in README; 23 Munich slice built
+- [Title-line tools + shared TS selection 2026-10-26](project_title_line_tools_2026-10-26.md) — hover-dropdown tools; wall↔Journey selection; one layers list (picks+segmentations, pins in display.py); Particles = version/layers/list tools; NOT RUN
+- [Folder-split import 2026-10-27](project_folder_split_import.md) — split question for folders reusing Position_N; 44-char gate gone (alias); import_sources.json; NOT RUN
+- [Pane focus + Particles tools 2026-10-27](project_pane_focus_particles_tools_2026-10-27.md) — Esc closes the lit pane; Particles dropdowns boxed over slabs/gallery; layers tables; missAlign view = roadmap 21 §7; NOT RUN
+- [missAlign Journey stage 7 2026-10-27](project_missalign_journey_stage7.md) — Refinement section + warp strip + blink built, NOT RUN; warpylib: +AxisOffset −GridMovement
+- [Render registry + skeletons 2026-10-28](project_render_registry_2026-10-28.md) — services/renders.py + RenderSlot replace auto-kicks; 3 buttons gone; layers table; registry reflow; NOT RUN
+- [STA kitchen = roadmap 40](project_sta_kitchen.md) — S0–S8 + §14 built 2026-10-29 (NOT RUN in browser); job048 first set run OK 2026-10-30; §15 one set/many facets: layout A taken, build handoff §15.8, re-run rule open; /dev/io-layouts + /dev/io-ideas mocks; then D18
+- [Star files are untrusted](feedback_star_files_untrusted.md) — RELION/Warp stars: check what you rely on at every read, never guess
+- [PyTOM angle convention](reference_pytom_angle_convention.md) — template turn = ZYZ intrinsic matrix transposed; measured on ribosome picks
+- [Microtubule averaging roadmap 41](project_microtubule_averaging_roadmap41.md) — S2 Filament pick job BUILT 2026-11-01, NOT RUN; Tir_Env traced (iso ≈ raw, recall-limited); fine-tune route noted; conf.yaml needs filamentPick profile; ArtiaX look owed
