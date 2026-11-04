@@ -27,8 +27,10 @@ INSTALL = Path(__file__).resolve().parent
 _BOLD, _CYAN, _DIM, _YELLOW, _RESET = "\x1b[1m", "\x1b[1;36m", "\x1b[2m", "\x1b[33m", "\x1b[0m"
 
 
-def banner_lines(port: int, hostname: str, token: str) -> list[str]:
+def banner_lines(port: int, hostname: str, token: str, via: str | None = None) -> list[str]:
     # Each command and link alone on its line, so a whole-line yank copies nothing else.
+    # `via` (local.SshLoginHost) is a login alias that may land on another login node than this one: the tunnel
+    # then ends there and goes on to this headnode by name, which resolves inside the cluster.
     # ExitOnForwardFailure: a tunnel that cannot take its port says so and ends, instead of going to the
     # background without a port (pasted on the headnode, where the server holds it, or over an old tunnel).
     # ServerAliveInterval: a tunnel whose connection died (laptop asleep, VPN switched) ends instead of
@@ -36,7 +38,8 @@ def banner_lines(port: int, hostname: str, token: str) -> list[str]:
     return [
         f"{_BOLD}On your own computer (not here), open the tunnel:{_RESET}",
         f"{_CYAN}ssh -f -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 "
-        f"-L {port}:127.0.0.1:{port} $USER@{hostname}{_RESET}",
+        + (f"-L {port}:{hostname}:{port} {via}" if via else f"-L {port}:127.0.0.1:{port} $USER@{hostname}")
+        + _RESET,
         f"{_DIM}ssh says 'Address already in use'? An old tunnel holds the port on your computer; end it with: "
         f"pkill -f 'ssh.*-L {port}:'{_RESET}",
         f"{_BOLD}Then open in your browser:{_RESET}",
@@ -71,6 +74,18 @@ def install_sticky_banner(lines: list[str]) -> None:
         out.flush()
 
     atexit.register(_restore)
+
+
+def _ssh_login_host(bind_host: str | None) -> str | None:
+    """local.SshLoginHost, unless this server listens on loopback only, where no other login node reaches it."""
+    if bind_host in ("127.0.0.1", "::1", "localhost"):
+        return None
+    try:
+        from services.configs.config_service import get_config_service
+
+        return get_config_service().config.local.SshLoginHost or None
+    except Exception:  # a broken conf.yaml is reported where it is used; the banner falls back to the headnode
+        return None
 
 
 def _dim_rows(rows: list[tuple[str, str]]) -> list[str]:
@@ -120,7 +135,7 @@ def main() -> None:
                 f"CryoBoost from this checkout is already running (pid {running.pid}, port {running.port}, "
                 f"since {port_survey.since(running.started)}). To use it:\n"
             )
-            print("\n".join(banner_lines(running.port, hostname, token)))
+            print("\n".join(banner_lines(running.port, hostname, token, _ssh_login_host(None))))
             print(f"\nTo restart it instead: kill {running.pid}, then start again.")
             print("\n".join(_leftover_block(found)))
             return
@@ -176,7 +191,7 @@ def main() -> None:
                 ]
             )
             summary += _leftover_block(found)
-            install_sticky_banner(banner_lines(port, hostname, token))
+            install_sticky_banner(banner_lines(port, hostname, token, _ssh_login_host(args.host)))
             # Printed into the scrolling region under the pinned links: a startup snapshot that log output may
             # scroll away.
             print("\n".join(summary) + "\n", flush=True)
