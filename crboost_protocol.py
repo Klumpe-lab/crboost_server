@@ -2,9 +2,9 @@
 """crboost_protocol — author, apply and export protocols (services/protocols/).
 
     venv/bin/python3 crboost_protocol.py list
-    venv/bin/python3 crboost_protocol.py validate copia-empiar12580
+    venv/bin/python3 crboost_protocol.py validate copia-tutorial
     venv/bin/python3 crboost_protocol.py export   /path/to/project --name my-flow --out ~/.crboost/protocols/my-flow
-    venv/bin/python3 crboost_protocol.py apply    copia-empiar12580 --name copia_test --base /path/to/projects \\
+    venv/bin/python3 crboost_protocol.py apply    copia-tutorial --name copia_test --base /path/to/projects \\
                                         --movies '/data/copia/*.eer' --mdocs '/data/copia/*.mdoc' [--gain gain.mrc]
 
 Run from the repo root.

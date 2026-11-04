@@ -1,13 +1,11 @@
-# Protocol: the CryoBoost v1 copia tutorial (EMPIAR-12580, one tilt series), importmovies -> class3d,
-# tutorial-faithful variant of copia-empiar12580. Short name on purpose: the project dirname
-# becomes the tilt-series name prefix, and AreTomo 1.0 mangles its IMOD .tlt beyond ~42 characters
-# (docs/known_bugs.md #3). Differences from that protocol:
+# Protocol: the CryoBoost v1 copia tutorial (EMPIAR-12580, one tilt series), importmovies -> class3d.
+# Short name on purpose: the project dirname becomes the tilt-series name prefix, and AreTomo 1.0
+# mangles its IMOD .tlt beyond ~42 characters (docs/known_bugs.md #3). Tutorial-faithful choices:
 #   - template + TM mask are the v1 repo's own files (CryoBoost/data/vols/copiaBlack_11.8A.mrc,
-#     mask_copia_11.8A.mrc = what v1's warp_tomo_prep/templatematching/job.star points at); the v1 mask is
-#     tighter (r ~245 A) than our spherical d575 mask (r ~305 A)
+#     mask_copia_11.8A.mrc = what v1's warp_tomo_prep/templatematching/job.star points at), tracked in assets/
 #   - species diameter / peak-extraction diameter 550 A (tutorial "Enter 550 as diameter for peak extraction")
 #   - class3d healpix_order 3 (tutorial GUI 3.75 deg) and tau_fudge 4 (RELION default, tutorial leaves it)
-# Everything else identical to copia-empiar12580 (incl. the fs_ctf band fix 30:10, docs/known_bugs.md #1).
+#   - one deliberate deviation: the fs_ctf band 30:10 instead of v1's 30:6 (docs/known_bugs.md #1)
 name: copia-tutorial
 version: 1
 schema_version: 1
