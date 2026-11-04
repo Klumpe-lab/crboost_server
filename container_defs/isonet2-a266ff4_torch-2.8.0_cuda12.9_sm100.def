@@ -1,0 +1,73 @@
+Bootstrap: docker
+From: nvcr.io/nvidia/cuda:12.9.1-devel-ubuntu22.04
+
+# IsoNet2 at commit a266ff4 (2025-12-27, the main the old isonet2.sif was built from) with torch 2.8.0+cu129.
+# Successor of isonet2.sif: upstream's isonet2_environment.yml pins pytorch 2.1.1 / pytorch-cuda 12.1 from the
+# pytorch conda channel, whose libtorch_cuda stops at sm_90 with no PTX, so nothing runs on CBE.next's B200s
+# (sm_100). The conda torch lines are dropped and torch comes from the PyTorch cu129 wheel index instead;
+# every other pin of the upstream environment stays.
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    # CBE.next builds run with --fakeroot --ignore-fakeroot-command (no subuid range): apt cannot drop to
+    # its _apt sandbox user there, so it stays root.
+    echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/99-no-sandbox
+    apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        git \
+        wget \
+        curl \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+    wget -q https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O /tmp/miniforge.sh
+    bash /tmp/miniforge.sh -b -p /opt/conda
+    rm /tmp/miniforge.sh
+
+    cd /opt
+    git clone https://github.com/IsoNet-cryoET/IsoNet2.git
+    cd IsoNet2
+    git checkout a266ff498aeeb614d6a262829b30b3f1700cdf5b
+
+    Y=isonet2_environment.yml
+    # lazy-loader version conflict (as in the old image)
+    sed -i 's/lazy-loader==0.3/lazy-loader>=0.4/' $Y
+    # torch from the cu129 wheels, not the pytorch/nvidia conda channels
+    sed -i -E '/^\s*- (pytorch|nvidia)\s*$/d; /^\s*- (pytorch|torchvision|torchaudio)==/d; /^\s*- pytorch-cuda=/d' $Y
+    sed -i 's|^  - pip:$|  - pip:\n    - --extra-index-url https://download.pytorch.org/whl/cu129\n    - torch==2.8.0+cu129\n    - torchvision==0.23.0+cu129\n    - torchaudio==2.8.0+cu129|' $Y
+    grep -q 'torch==2.8.0+cu129' $Y
+    if grep -q -E 'pytorch(-cuda)?=' $Y; then echo "conda pytorch pin survived the edit"; exit 1; fi
+    cat $Y
+
+    . /opt/conda/etc/profile.d/conda.sh
+    mamba env create -f $Y
+    conda clean --all -y
+
+    chmod +x /opt/IsoNet2/IsoNet/bin/isonet.py
+
+%environment
+    export ISONET_HOME=/opt/IsoNet2
+    export PATH=/opt/conda/envs/isonet2_environment/bin:$PATH
+    export PATH=$ISONET_HOME/IsoNet/bin:$PATH
+    export PYTHONPATH=$ISONET_HOME:$PYTHONPATH
+
+%test
+    P=/opt/conda/envs/isonet2_environment/bin/python
+    $P -c "import torch; a = torch.cuda.get_arch_list(); print(torch.__version__, a); assert 'sm_100' in a, a"
+    $P -c "import pytorch_lightning, torchmetrics; print(pytorch_lightning.__version__)"
+    export PYTHONPATH=/opt/IsoNet2:$PYTHONPATH
+    $P /opt/IsoNet2/IsoNet/bin/isonet.py --help > /dev/null
+
+%runscript
+    if [ $# -eq 0 ]; then
+        exec isonet.py --help
+    else
+        exec isonet.py "$@"
+    fi
+
+%labels
+    Tool IsoNet2
+    Version a266ff4
+    Torch 2.8.0+cu129
+    CUDA 12.9
+    GPU sm_50-sm_120 (torch cu129 wheels)
