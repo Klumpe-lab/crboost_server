@@ -13,6 +13,10 @@ local:
   DefaultMoviesGlob: ""
   DefaultMdocsGlob: ""
 
+  # What users ssh to from their own computer, if not this headnode itself: a login alias that lands on any
+  # of several login nodes (e.g. cbe.next). The startup banner's tunnel then goes through it to this headnode.
+  SshLoginHost: ""
+
 slurm_defaults:
   # These are starting defaults - users can override per-job in the UI
   partition: "gpu"

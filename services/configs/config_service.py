@@ -135,6 +135,10 @@ class LocalConfig(BaseModel):
     DefaultProjectBase: str | None = None
     DefaultMoviesGlob: str | None = None
     DefaultMdocsGlob: str | None = None
+    # What users ssh to from their own computer, when that is not the headnode itself (a login alias that
+    # lands on any of several login nodes). Set, the startup banner's tunnel goes through it to this
+    # headnode by name; unset, it goes straight to this headnode.
+    SshLoginHost: str | None = None
 
 
 class ToolConfig(BaseModel):
