@@ -1,0 +1,102 @@
+Bootstrap: docker
+From: nvcr.io/nvidia/cuda:12.9.1-devel-ubuntu22.04
+
+# pytom-match-pick 0.14.0 with cupy 13.6.0 on the CUDA 12.9 conda runtime.
+# Successor of pytom_match_pick_0.10.0.sif (pytom 0.10.0, same cupy, CUDA 12.1 there). pytom's GPU work is cupy,
+# which compiles its kernels at run time with the environment's NVRTC; NVRTC 12.1 predates sm_100, so on
+# CBE.next's B200s every kernel load failed with CUDA_ERROR_NO_BINARY_FOR_GPU. NVRTC 12.9 targets sm_100.
+# pytorch is dropped: pytom-match-pick does not import it.
+# 0.10.0 -> 0.14.0 for crboost: every CLI flag the drivers pass is unchanged, and the text inputs they use
+# (--tilt-angles/--defocus/--dose-accumulation) behave as before; the new Warp handling (level angles,
+# automatic phase-flip and defocus handedness) only applies with --warp-xml-file. Results do change: 0.12.0
+# fixed the tomogram wedge in volume-split mode, 0.14.0 reworked whitening and phase randomisation.
+
+%environment
+    export PYTHONNOUSERSITE=1
+    export PYTHONPATH=""
+    export PYTHONHOME=""
+    export PATH="/opt/miniforge3/envs/pytom/bin:/opt/miniforge3/bin:$PATH"
+    export CUDA_HOME="/usr/local/cuda"
+    export LD_LIBRARY_PATH="/opt/miniforge3/envs/pytom/lib:/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
+
+%post
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+    export PYTHONNOUSERSITE=1
+    unset PYTHONPATH
+    unset PYTHONHOME
+
+    # CBE.next builds run with --fakeroot --ignore-fakeroot-command (no subuid range), where only root is
+    # mapped: apt cannot drop to its _apt user, and package scripts cannot chown to system users (EINVAL).
+    # apt stays root, and chown/chgrp are diverted to versions that ignore that while packages install.
+    echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/99-no-sandbox
+    for c in chown chgrp; do
+        dpkg-divert --local --rename --add /usr/bin/$c
+        printf '#!/bin/sh\n/usr/bin/%s.distrib "$@" 2>/dev/null || true\n' $c > /usr/bin/$c
+        chmod +x /usr/bin/$c
+    done
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        wget \
+        git \
+        ca-certificates \
+        build-essential \
+        libgl1-mesa-glx \
+        libglib2.0-0
+    rm -rf /var/lib/apt/lists/*
+    for c in chown chgrp; do rm /usr/bin/$c; dpkg-divert --local --rename --remove /usr/bin/$c; done
+    test -z "$(dpkg --audit)"
+
+    cd /opt
+    wget -q https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O miniforge.sh
+    bash miniforge.sh -b -p /opt/miniforge3
+    rm miniforge.sh
+    export PATH="/opt/miniforge3/bin:$PATH"
+
+    # The build host has no GPU, so conda sees no __cuda virtual package.
+    CONDA_OVERRIDE_CUDA=12.9 conda create -n pytom -y -c conda-forge \
+        python=3.11 \
+        "numpy<2" \
+        cupy=13.6.0 \
+        "cuda-version=12.9" \
+        pip
+
+    /opt/miniforge3/envs/pytom/bin/pip install --no-cache-dir \
+        "pytom-match-pick @ git+https://github.com/SBC-Utrecht/pytom-match-pick.git@0.14.0"
+    conda clean --all -y
+
+    # Verify here, not in %test: a failing %test does not fail an Apptainer build.
+    P=/opt/miniforge3/envs/pytom/bin/python
+    $P -c "import pytom_tm, importlib.metadata as m; v = m.version('pytom-match-pick'); print('pytom-match-pick', v); assert v == '0.14.0', v"
+    # NVRTC >= 12.8 is what can compile cupy's kernels for sm_100.
+    $P -c "import cupy; v = cupy.cuda.nvrtc.getVersion(); print('cupy', cupy.__version__, 'nvrtc', v); assert v >= (12, 8), v"
+    # pytom_match_template.py --help initialises CUDA, so it runs in the GPU verify job, not on the build node.
+
+%test
+    # The real checks run at the end of %post (a failing %test does not fail the build).
+    test -x /opt/miniforge3/envs/pytom/bin/pytom_match_template.py
+
+%runscript
+    #!/bin/bash
+    export PYTHONNOUSERSITE=1
+    export PYTHONPATH=""
+    export PYTHONHOME=""
+
+    source /opt/miniforge3/etc/profile.d/conda.sh
+    conda activate pytom
+
+    if [ $# -eq 0 ]; then
+        /bin/bash
+    else
+        exec "$@"
+    fi
+
+%labels
+    Tool pytom-match-pick
+    Version 0.14.0
+    cupy 13.6.0
+    CUDA 12.9
+
+%help
+    pytom-match-pick 0.14.0 with cupy 13.6.0 on CUDA 12.9 (cupy's NVRTC compiles for sm_100).
+    Use with: apptainer exec --nv <image>.sif pytom_match_template.py

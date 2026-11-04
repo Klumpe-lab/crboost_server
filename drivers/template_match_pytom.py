@@ -48,7 +48,7 @@ import pandas as pd
 import starfile
 
 from drivers.array_job_base import ArrayDriver, ArrayResults, read_manifest
-from drivers.driver_base import DriverContext, ToolCommand, require_producer_input
+from drivers.driver_base import DriverContext, ToolCommand, allocated_gpu_count, require_producer_input
 from services.configs.starfile_service import StarfileService
 from services.job_lineage import recon_of
 from services.job_models import TemplateMatchPytomParams
@@ -503,7 +503,9 @@ class TemplateMatchPytomDriver(ArrayDriver):
         return path
 
     def build_command(self, ctx: DriverContext[TemplateMatchPytomParams], item: str, staged) -> ToolCommand:
-        gpu_ids = os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(",")
+        # The allocated GPUs are 0..N-1 inside the --nv container; CUDA_VISIBLE_DEVICES itself may hold
+        # UUIDs (CBE.next sets GPU-<uuid>), which pytom's -g rejects.
+        gpu_ids = [str(i) for i in range(allocated_gpu_count(1))]
         angle_list_str = staged["angle_list_path"]
         cmd = build_pytom_base_cmd(
             params=ctx.params,
