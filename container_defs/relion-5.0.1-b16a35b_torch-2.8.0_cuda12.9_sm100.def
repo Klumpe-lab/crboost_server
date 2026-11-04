@@ -1,0 +1,127 @@
+Bootstrap: docker
+From: nvcr.io/nvidia/cuda:12.9.1-devel-ubuntu22.04
+
+# RELION 5.0.1 (ver5.0 at commit b16a35b, the build in the old relion5.0_tomo.sif) with torch 2.8.0+cu129.
+# Successor of relion5.0_tomo.sif, whose recipe is the one embedded in that image (`apptainer inspect
+# --deffile`), not defs/relion5.0_tomo.def. Changes against it:
+#   - CUDA 12.9 base (was 11.8). CUDA < 12.8 cannot compile for sm_100 (CBE.next's B200s).
+#   - GPU code for sm_50-sm_100 + compute_100 PTX. Without CUDA_ARCH RELION's CMake falls back to
+#     -arch=sm_50, so the old binaries only had Maxwell SASS + compute_50 PTX, JIT-compiled on every B200 run.
+#   - torch 2.8.0+cu129 (was 2.0.1+cu117, no sm_100): Blush, class ranker, DynaMight, ModelAngelo.
+#   - Miniforge, conda-forge only (was Anaconda Miniconda, which now needs a ToS acceptance).
+#   - Ubuntu 22.04 (20.04 was for the old cluster's CentOS 7 host).
+
+%labels
+    Tool RELION
+    Version 5.0.1-b16a35b
+    Torch 2.8.0+cu129
+    CUDA 12.9
+    GPU sm_50-sm_100 + compute_100 PTX
+    Maintainer rtkushner@gmail.com
+
+%environment
+    export RELION_HOME=/opt/relion-5.0
+    export CUDA_HOME=/usr/local/cuda-12.9
+    export CONDA_ENV_PATH=/opt/miniforge3/envs/relion-5.0
+
+    export PATH="$CONDA_ENV_PATH/bin:/opt/miniforge3/bin:$RELION_HOME/build/bin:$CUDA_HOME/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    export LD_LIBRARY_PATH="$CONDA_ENV_PATH/lib:$RELION_HOME/build/lib:$CUDA_HOME/lib64:$LD_LIBRARY_PATH"
+
+    export QT_X11_NO_MITSHM=1
+    export QT_GRAPHICSSYSTEM="native"
+    export DISPLAY=${DISPLAY:-:0.0}
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    # CBE.next builds run with --fakeroot --ignore-fakeroot-command (no subuid range): apt cannot drop to
+    # its _apt sandbox user there, so it stays root.
+    echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/99-no-sandbox
+    export TZ=Europe/Vienna
+    ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+    apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        git \
+        wget \
+        libfftw3-dev \
+        libtiff5-dev \
+        openmpi-bin \
+        libopenmpi-dev \
+        libpng-dev \
+        libx11-dev \
+        libxft-dev \
+        libxext-dev \
+        libglu1-mesa-dev \
+        csh \
+        tcsh \
+        ca-certificates \
+        libtinfo5 \
+        munge \
+        libmunge-dev \
+        && rm -rf /var/lib/apt/lists/*
+
+    wget -q https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O /tmp/miniforge.sh
+    bash /tmp/miniforge.sh -b -p /opt/miniforge3
+    rm /tmp/miniforge.sh
+    export PATH="/opt/miniforge3/bin:$PATH"
+    conda config --set always_yes true
+    conda config --set auto_activate_base false
+
+    cd /opt
+    git clone https://github.com/3dem/relion.git relion-5.0
+    cd /opt/relion-5.0
+    git checkout b16a35b0038336e6631b7a97b922f8c629b0b6f7
+
+    # torch 2.8.0 from the cu129 wheels; every other pin of RELION's environment.yml stays.
+    sed -i 's|^      - torch==2.0.1$|      - torch==2.8.0+cu129|; s|^      - torchvision==0.15.2$|      - torchvision==0.23.0+cu129|; s|^  - pip:$|  - pip:\n      - --extra-index-url https://download.pytorch.org/whl/cu129|' environment.yml
+    grep -q 'torch==2.8.0+cu129' environment.yml
+    grep -q 'torchvision==0.23.0+cu129' environment.yml
+    conda env create -f environment.yml
+
+    # RELION's CMake takes a single -arch; replace its sm_50 fallback with the full list.
+    GENCODE=""
+    for a in 50 60 61 70 75 80 86 89 90 100; do GENCODE="$GENCODE -gencode=arch=compute_$a,code=sm_$a"; done
+    GENCODE="$GENCODE -gencode=arch=compute_100,code=compute_100"
+    sed -i "s|set(CUDARCH \"-arch=sm_50\")|set(CUDARCH \"$GENCODE\")|" CMakeLists.txt
+    grep -q 'code=compute_100' CMakeLists.txt
+
+    mkdir -p /opt/relion-5.0/build
+    cd /opt/relion-5.0/build
+    cmake \
+        -DENABLE_MPI=ON \
+        -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda-12.9 \
+        -DGUI=ON \
+        -DENABLE_TOMO_NEW=ON \
+        -DPYTHON_EXE_PATH=/opt/miniforge3/envs/relion-5.0/bin/python \
+        -DFETCH_WEIGHTS=OFF \
+        ..
+    make -j$(nproc)
+
+    conda clean --all -y
+    apt-get clean
+    rm -rf /var/lib/apt/lists/*
+
+%runscript
+    if [ $# -gt 0 ]; then
+        exec "$@"
+    else
+        exec /bin/bash
+    fi
+
+%test
+    export PATH="/opt/miniforge3/envs/relion-5.0/bin:/opt/relion-5.0/build/bin:/usr/local/cuda-12.9/bin:$PATH"
+    relion_refine --version
+    P=/opt/miniforge3/envs/relion-5.0/bin/python
+    $P -c "import starfile, mrcfile, tomography_python_programs"
+    $P -c "import torch; a = torch.cuda.get_arch_list(); print(torch.__version__, a); assert 'sm_100' in a, a"
+    # RELION's GPU code is linked into every binary: it must carry Blackwell SASS and PTX.
+    cuobjdump --list-elf /opt/relion-5.0/build/bin/relion_refine | grep -q sm_100
+    cuobjdump --list-ptx /opt/relion-5.0/build/bin/relion_refine | grep -q sm_100
+
+%help
+    RELION 5.0.1 (commit b16a35b) with CUDA 12.9, GPU code for sm_50-sm_100 + compute_100 PTX, the Python
+    tomography programs and torch 2.8.0+cu129 (Blush, class ranker, DynaMight, ModelAngelo).
+
+    Usage:
+      apptainer exec --nv <image>.sif relion_refine --version
