@@ -32,14 +32,24 @@ From: nvcr.io/nvidia/cuda:12.9.1-devel-ubuntu22.04
     export DISPLAY=${DISPLAY:-:0.0}
 
 %post
+    set -e
     export DEBIAN_FRONTEND=noninteractive
-    # CBE.next builds run with --fakeroot --ignore-fakeroot-command (no subuid range): apt cannot drop to
-    # its _apt sandbox user there, so it stays root.
-    echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/99-no-sandbox
     export TZ=Europe/Vienna
     ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-    apt-get update && apt-get install -y --no-install-recommends \
+    # CBE.next builds run with --fakeroot --ignore-fakeroot-command (no subuid range), where only root is
+    # mapped: apt cannot drop to its _apt user, and package scripts cannot chown to system users (EINVAL).
+    # apt stays root, and chown/chgrp are diverted to versions that ignore that while packages install.
+    echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/99-no-sandbox
+    for c in chown chgrp; do
+        dpkg-divert --local --rename --add /usr/bin/$c
+        printf '#!/bin/sh\n/usr/bin/%s.distrib "$@" 2>/dev/null || true\n' $c > /usr/bin/$c
+        chmod +x /usr/bin/$c
+    done
+    # munge (the daemon) is left out: its postinst runs `su munge`, impossible here, and crboost runs
+    # RELION's mpirun inside the container without Slurm. libmunge-dev stays.
+    apt-get update
+    apt-get install -y --no-install-recommends \
         build-essential \
         cmake \
         git \
@@ -57,9 +67,10 @@ From: nvcr.io/nvidia/cuda:12.9.1-devel-ubuntu22.04
         tcsh \
         ca-certificates \
         libtinfo5 \
-        munge \
-        libmunge-dev \
-        && rm -rf /var/lib/apt/lists/*
+        libmunge-dev
+    rm -rf /var/lib/apt/lists/*
+    for c in chown chgrp; do rm /usr/bin/$c; dpkg-divert --local --rename --remove /usr/bin/$c; done
+    test -z "$(dpkg --audit)"
 
     wget -q https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O /tmp/miniforge.sh
     bash /tmp/miniforge.sh -b -p /opt/miniforge3
@@ -98,6 +109,17 @@ From: nvcr.io/nvidia/cuda:12.9.1-devel-ubuntu22.04
         ..
     make -j$(nproc)
 
+    # Verify here, not in %test: a failing %test does not fail an Apptainer build.
+    export PATH="/opt/miniforge3/envs/relion-5.0/bin:/opt/relion-5.0/build/bin:/usr/local/cuda-12.9/bin:$PATH"
+    relion_refine --version
+    P=/opt/miniforge3/envs/relion-5.0/bin/python
+    $P -c "import starfile, mrcfile, tomography_python_programs"
+    # get_arch_list() is [] without a GPU; the compiled-in flags are not.
+    $P -c "import torch; a = torch._C._cuda_getArchFlags(); print(torch.__version__, a); assert 'sm_100' in a, a"
+    # RELION's GPU code is linked into every binary: it must carry Blackwell SASS and PTX.
+    cuobjdump --list-elf /opt/relion-5.0/build/bin/relion_refine | grep -q sm_100
+    cuobjdump --list-ptx /opt/relion-5.0/build/bin/relion_refine | grep -q sm_100
+
     conda clean --all -y
     apt-get clean
     rm -rf /var/lib/apt/lists/*
@@ -110,14 +132,8 @@ From: nvcr.io/nvidia/cuda:12.9.1-devel-ubuntu22.04
     fi
 
 %test
-    export PATH="/opt/miniforge3/envs/relion-5.0/bin:/opt/relion-5.0/build/bin:/usr/local/cuda-12.9/bin:$PATH"
-    relion_refine --version
-    P=/opt/miniforge3/envs/relion-5.0/bin/python
-    $P -c "import starfile, mrcfile, tomography_python_programs"
-    $P -c "import torch; a = torch.cuda.get_arch_list(); print(torch.__version__, a); assert 'sm_100' in a, a"
-    # RELION's GPU code is linked into every binary: it must carry Blackwell SASS and PTX.
-    cuobjdump --list-elf /opt/relion-5.0/build/bin/relion_refine | grep -q sm_100
-    cuobjdump --list-ptx /opt/relion-5.0/build/bin/relion_refine | grep -q sm_100
+    # The real checks run at the end of %post (a failing %test does not fail the build).
+    /opt/relion-5.0/build/bin/relion_refine --version
 
 %help
     RELION 5.0.1 (commit b16a35b) with CUDA 12.9, GPU code for sm_50-sm_100 + compute_100 PTX, the Python

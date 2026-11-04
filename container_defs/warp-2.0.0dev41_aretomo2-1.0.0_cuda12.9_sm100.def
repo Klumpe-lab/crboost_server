@@ -18,20 +18,30 @@ From: nvcr.io/nvidia/cuda:12.9.1-devel-ubuntu22.04
     export CUDA_HOME="/usr/local/cuda"
 
 %post
+    set -e
     export DEBIAN_FRONTEND=noninteractive
-    # CBE.next builds run with --fakeroot --ignore-fakeroot-command (no subuid range): apt cannot drop to
-    # its _apt sandbox user there, so it stays root.
-    echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/99-no-sandbox
     export TZ=Europe/Vienna
     ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-    apt-get update && apt-get install -y --no-install-recommends \
+    # CBE.next builds run with --fakeroot --ignore-fakeroot-command (no subuid range), where only root is
+    # mapped: apt cannot drop to its _apt user, and package scripts cannot chown to system users (EINVAL).
+    # apt stays root, and chown/chgrp are diverted to versions that ignore that while packages install.
+    echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/99-no-sandbox
+    for c in chown chgrp; do
+        dpkg-divert --local --rename --add /usr/bin/$c
+        printf '#!/bin/sh\n/usr/bin/%s.distrib "$@" 2>/dev/null || true\n' $c > /usr/bin/$c
+        chmod +x /usr/bin/$c
+    done
+    apt-get update
+    apt-get install -y --no-install-recommends \
         wget \
         git \
         build-essential \
         ca-certificates \
-        libfontconfig1 \
-        && rm -rf /var/lib/apt/lists/*
+        libfontconfig1
+    rm -rf /var/lib/apt/lists/*
+    for c in chown chgrp; do rm /usr/bin/$c; dpkg-divert --local --rename --remove /usr/bin/$c; done
+    test -z "$(dpkg --audit)"
 
     nvcc --version
     gcc --version
@@ -71,13 +81,16 @@ From: nvcr.io/nvidia/cuda:12.9.1-devel-ubuntu22.04
     rm -rf /tmp/AreTomo2
     apt-get clean
 
-%test
+    # Verify here, not in %test: a failing %test does not fail an Apptainer build.
     # dev40+ only: proves the solver did not fall back to an older Warp.
     /opt/miniforge3/envs/warp/bin/WarpTools ts_export_particles --help 2>&1 | grep -q -- "--dont_premultiply"
-    test -x /opt/aretomo2/bin/AreTomo2
     # AreTomo2 must carry Blackwell SASS and PTX.
-    /opt/miniforge3/envs/warp/bin/cuobjdump --list-elf /opt/aretomo2/bin/AreTomo2 | grep -q sm_100
-    /opt/miniforge3/envs/warp/bin/cuobjdump --list-ptx /opt/aretomo2/bin/AreTomo2 | grep -q sm_100
+    cuobjdump --list-elf /opt/aretomo2/bin/AreTomo2 | grep -q sm_100
+    cuobjdump --list-ptx /opt/aretomo2/bin/AreTomo2 | grep -q sm_100
+
+%test
+    # The real checks run at the end of %post (a failing %test does not fail the build).
+    test -x /opt/aretomo2/bin/AreTomo2
 
 %labels
     Tool WarpTools+AreTomo2
