@@ -8,17 +8,27 @@ From: nvcr.io/nvidia/cuda:12.9.1-devel-ubuntu22.04
 # every other pin of the upstream environment stays.
 
 %post
+    set -e
     export DEBIAN_FRONTEND=noninteractive
-    # CBE.next builds run with --fakeroot --ignore-fakeroot-command (no subuid range): apt cannot drop to
-    # its _apt sandbox user there, so it stays root.
+    # CBE.next builds run with --fakeroot --ignore-fakeroot-command (no subuid range), where only root is
+    # mapped: apt cannot drop to its _apt user, and package scripts cannot chown to system users (EINVAL).
+    # apt stays root, and chown/chgrp are diverted to versions that ignore that while packages install.
     echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/99-no-sandbox
-    apt-get update && apt-get install -y --no-install-recommends \
+    for c in chown chgrp; do
+        dpkg-divert --local --rename --add /usr/bin/$c
+        printf '#!/bin/sh\n/usr/bin/%s.distrib "$@" 2>/dev/null || true\n' $c > /usr/bin/$c
+        chmod +x /usr/bin/$c
+    done
+    apt-get update
+    apt-get install -y --no-install-recommends \
         build-essential \
         git \
         wget \
         curl \
-        ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+        ca-certificates
+    rm -rf /var/lib/apt/lists/*
+    for c in chown chgrp; do rm /usr/bin/$c; dpkg-divert --local --rename --remove /usr/bin/$c; done
+    test -z "$(dpkg --audit)"
 
     wget -q https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O /tmp/miniforge.sh
     bash /tmp/miniforge.sh -b -p /opt/conda
@@ -36,6 +46,11 @@ From: nvcr.io/nvidia/cuda:12.9.1-devel-ubuntu22.04
     sed -i -E '/^\s*- (pytorch|nvidia)\s*$/d; /^\s*- (pytorch|torchvision|torchaudio)==/d; /^\s*- pytorch-cuda=/d' $Y
     sed -i 's|^  - pip:$|  - pip:\n    - --extra-index-url https://download.pytorch.org/whl/cu129\n    - torch==2.8.0+cu129\n    - torchvision==0.23.0+cu129\n    - torchaudio==2.8.0+cu129|' $Y
     grep -q 'torch==2.8.0+cu129' $Y
+    # pytorch-lightning 2.1.4 (lightning-utilities) imports pkg_resources, which setuptools 81 removed
+    sed -i 's|^  - pip$|  - pip\n  - setuptools<81|' $Y
+    grep -q 'setuptools<81' $Y
+    # conda-forge only, no Anaconda defaults channel
+    sed -i '/^  - defaults$/d' $Y
     if grep -q -E 'pytorch(-cuda)?=' $Y; then echo "conda pytorch pin survived the edit"; exit 1; fi
     cat $Y
 
@@ -45,6 +60,13 @@ From: nvcr.io/nvidia/cuda:12.9.1-devel-ubuntu22.04
 
     chmod +x /opt/IsoNet2/IsoNet/bin/isonet.py
 
+    # Verify here, not in %test: a failing %test does not fail an Apptainer build.
+    P=/opt/conda/envs/isonet2_environment/bin/python
+    # get_arch_list() is [] without a GPU; the compiled-in flags are not.
+    $P -c "import torch; a = torch._C._cuda_getArchFlags(); print(torch.__version__, a); assert 'sm_100' in a, a"
+    $P -c "import pytorch_lightning, torchmetrics; print(pytorch_lightning.__version__)"
+    PYTHONPATH=/opt/IsoNet2 $P /opt/IsoNet2/IsoNet/bin/isonet.py --help > /dev/null
+
 %environment
     export ISONET_HOME=/opt/IsoNet2
     export PATH=/opt/conda/envs/isonet2_environment/bin:$PATH
@@ -52,11 +74,8 @@ From: nvcr.io/nvidia/cuda:12.9.1-devel-ubuntu22.04
     export PYTHONPATH=$ISONET_HOME:$PYTHONPATH
 
 %test
-    P=/opt/conda/envs/isonet2_environment/bin/python
-    $P -c "import torch; a = torch.cuda.get_arch_list(); print(torch.__version__, a); assert 'sm_100' in a, a"
-    $P -c "import pytorch_lightning, torchmetrics; print(pytorch_lightning.__version__)"
-    export PYTHONPATH=/opt/IsoNet2:$PYTHONPATH
-    $P /opt/IsoNet2/IsoNet/bin/isonet.py --help > /dev/null
+    # The real checks run at the end of %post (a failing %test does not fail the build).
+    isonet.py --help > /dev/null
 
 %runscript
     if [ $# -eq 0 ]; then
