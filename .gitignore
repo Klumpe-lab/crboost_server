@@ -16,6 +16,7 @@ user_jobs/
 tmpOut/
 **/*.cif
 **/*.mrc
+!config/protocols/*/assets/*.mrc
 
 # Auth
 auth/

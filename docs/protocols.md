@@ -89,5 +89,6 @@ as the protocol pinned them beside what the job holds now, with anything changed
 "edited". `crboost_protocol.py apply <name> --name … --base … --movies … --mdocs …` does the same
 from a terminal.
 
-Reference bundle: `config/protocols/copia-empiar12580/` — the CryoBoost v1 copia tutorial
-(EMPIAR-12580), 11 stages importmovies → class3d.
+Reference bundle: `config/protocols/copia-tutorial/` — the CryoBoost v1 copia tutorial
+(EMPIAR-12580), 11 stages importmovies → class3d, template and mask in `assets/` (tracked in git,
+3.5 MB each).
