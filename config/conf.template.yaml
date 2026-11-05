@@ -114,14 +114,17 @@ job_resource_profiles:
     cpus_per_task: 2
     time: "0:20:00"
 
-  # Per tomogram. easymode peaked at 22 GB of GPU memory on a 264 x 530 x 530 tomogram: set
-  # `constraint` to the node features whose cards have at least 24 GB.
+  # Per tomogram. easymode peaked at 22 GB of GPU memory on a 264 x 530 x 530 tomogram: where the partition also
+  # offers smaller cards or MIG slices, name the full GPU's type (CBE.next: "gpu:nvidia_b200:1").
   segment:
     gres: "gpu:1"
     mem: "32G"
     cpus_per_task: 8
     time: "2:00:00"
 
+  # A whole 1024 x 1024 x 512 tomogram needs ~31 GiB of GPU memory (roadmap 43 S1); gpu_split auto splits it to
+  # fit the GPU a task gets, at a cost in time. Where the partition also offers smaller cards or MIG slices, name
+  # the full GPU's type (CBE.next: "gpu:nvidia_b200:1").
   templatematching:
     gres: "gpu:1"
     mem: "32G"
@@ -159,14 +162,15 @@ job_resource_profiles:
     cpus_per_task: 4
     time: "2:00:00"
 
+  # The GPU comes from here (CBE.next: "gpu:nvidia_b200:1"); mem, CPUs and time from Class3D's own defaults.
   class3d:
-    gres: "gpu:4"
+    gres: "gpu:1"
     mem: "64G"
     cpus_per_task: 8
     time: "8:00:00"
 
-  # mpirun -n 3: a leader and one follower per half-set, each follower on its own GPU. With preread_images
-  # every follower holds the whole particle set in RAM.
+  # mpirun -n 3: a leader and one follower per half-set, each follower on its own GPU (CBE.next:
+  # "gpu:nvidia_b200:2"). With preread_images every follower holds the whole particle set in RAM.
   refine3d:
     gres: "gpu:2"
     mem: "96G"

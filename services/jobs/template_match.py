@@ -111,16 +111,22 @@ class TemplateMatchPytomParams(AbstractJobParams):
     random_phase_correction: bool = False
     half_precision: bool = Field(
         default=False,
-        description="Search in float16 (pytom --half-precision): less GPU memory, possibly faster. Off until "
-        "roadmap 43 S1 shows the scores agree with float32.",
+        description="Search in float16 (pytom --half-precision). Roadmap 43 S1: the same candidates as float32, but "
+        "on a whole tomogram no faster and barely smaller; it only speeds up a volume split.",
     )
     non_spherical_mask: bool = False
 
     bandpass_filter: str = Field(default="None")
-    gpu_split: str = Field(default="auto")
+    gpu_split: str = Field(
+        default="auto",
+        description="pytom's volume split (-s), x:y:z pieces searched one after another on each GPU. auto: the whole "
+        "tomogram when it fits the GPU the task gets, else the split with the least volume to search that fits "
+        "(sized on the node). None: no -s.",
+    )
     perdevice: int = Field(default=1)
+    # 16: a whole 412 tomogram takes ~2 min on a B200, so 140 of them take ~20 min (roadmap 43 D3).
     array_throttle: int = Field(
-        default=4, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tomogram template matching"
+        default=16, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tomogram template matching"
     )
     every_nth_tomogram: int = Field(
         default=1,

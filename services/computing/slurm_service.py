@@ -24,7 +24,8 @@ class SlurmPreset(str, Enum):
     LARGE = "4gpu:64gb"
 
 
-# Descriptive mapping for UI pills and snapping values
+# Descriptive mapping for UI pills and snapping values. Every preset is one node: the tools are one process (or one
+# mpirun) on one node, so GPUs on other nodes sit idle. Applying one keeps the job's GPU type (gres_keeping_type).
 SLURM_PRESET_MAP = {
     SlurmPreset.SMALL: {
         "label": "1 GPU · 16GB · 30m",
@@ -32,13 +33,38 @@ SLURM_PRESET_MAP = {
     },
     SlurmPreset.MEDIUM: {
         "label": "2 GPUs · 32GB · 2h",
-        "values": {"gres": "gpu:2", "mem": "32G", "cpus_per_task": 4, "time": "2:00:00", "nodes": 2},
+        "values": {"gres": "gpu:2", "mem": "32G", "cpus_per_task": 4, "time": "2:00:00", "nodes": 1},
     },
     SlurmPreset.LARGE: {
         "label": "4 GPUs · 64GB · 4h",
-        "values": {"gres": "gpu:4", "mem": "64G", "cpus_per_task": 8, "time": "4:00:00", "nodes": 4},
+        "values": {"gres": "gpu:4", "mem": "64G", "cpus_per_task": 8, "time": "4:00:00", "nodes": 1},
     },
 }
+
+
+def gres_keeping_type(gres: str, typed_like: str) -> str:
+    """`gres` with the GPU type `typed_like` names, if it names one: ("gpu:2", "gpu:nvidia_b200:1") ->
+    "gpu:nvidia_b200:2". An untyped `typed_like` leaves `gres` as it is."""
+
+    def gpu_item(value: str) -> tuple[int, list[str]] | None:
+        for k, item in enumerate(value.split(",")):
+            parts = item.strip().split(":")  # gpu[:type][:count]
+            if parts[0] == "gpu":
+                return k, parts
+        return None
+
+    source, target = gpu_item(typed_like or ""), gpu_item(gres or "")
+    if source is None or target is None:
+        return gres
+    parts = source[1]
+    gpu_type = parts[1] if len(parts) == 3 or (len(parts) == 2 and not parts[1].isdigit()) else None
+    if gpu_type is None:
+        return gres
+    k, target_parts = target
+    count = target_parts[-1] if len(target_parts) > 1 and target_parts[-1].isdigit() else "1"
+    items = gres.split(",")
+    items[k] = f"gpu:{gpu_type}:{count}"
+    return ",".join(items)
 
 
 class SlurmConfig(BaseModel):

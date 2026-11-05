@@ -113,9 +113,10 @@ class Class3DParams(AbstractJobParams):
 
     def __init__(self, **data):
         super().__init__(**data)
+        # The GPU comes from conf.yaml's class3d profile, which names its type where a cluster mixes full GPUs
+        # with MIG slices (roadmap 43 D2).
         if "slurm_overrides" not in data:
             self.slurm_overrides = {
-                "gres": "gpu:1",
                 "mem": "64G",
                 "cpus_per_task": 4,
                 "time": "8:00:00",
