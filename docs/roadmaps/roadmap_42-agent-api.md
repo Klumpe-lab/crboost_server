@@ -64,7 +64,8 @@ projects it made, and looking and judging stay in the UI.
    - Cs and amplitude contrast are never detected. The detected `invert_tilt_angles` (true when the software is not
      SerialEM, `services/configs/mdoc_service.py:337`) and EER fractions (`:353-354`) are never applied, and no code
      writes either field: non-SerialEM data runs with `--dont_invert` (`drivers/ts_import.py:77-78`), EER always with 32
-     groups (`services/jobs/_base.py:375-376`), and the defocus hand always keeps its default.
+     groups (`services/jobs/_base.py:375-376`), and the defocus hand always keeps its default. Queued as HOTFIXES
+     H2–H4 ([HOTFIXES.md](HOTFIXES.md)).
 4. **Adding a job is UI code, and its rules are lenient.**
    - `PipelineBuilderPanel.add_instance_to_pipeline` (`ui/pipeline_builder/pipeline_builder_panel.py:359-536`) does
      all of it: the single instance of an interactive job (`:381`, `:653`), the instance id (`next_instance_id`,
@@ -839,11 +840,8 @@ Every verb in §4.3 marked S7.
   - the "shared" tooltip promises an ownership transfer that no UI offers (`data_import_panel.py:1381`;
     `backend.transfer_project_ownership`, `backend.py:2236`);
   - the roster names a second instance `{job}__2`, protocols `{job}__{species}` (`services/protocols/schema.py:93`);
-  - acquisition labels never match between projects imported separately from the same data: import prefixes each movie
-    with the project's name (`project_service.py:110-111, 141-156`), and the label is the first frame's file name and
-    time (`services/particles/tomo_identity.py:99-115`), whose docstring (`:13-17`) says the labels are stable;
-  - `drivers/ts_import.py:93` reads `gain_operations`, which `TsImportParams` lacks, so the tilt-series settings never
-    get the gain flips that motion correction gets.
+  - five more, confirmed and queued in [HOTFIXES.md](HOTFIXES.md) (H1–H5): the kitchen's acquisition key across
+    projects, the two hands, Cs and amplitude contrast, EER grouping, and the tilt-series gain flips.
 
 ## 11. Runtime checklist (the maintainer's step, after the arc)
 1. **Two tabs on one project.** Add, remove and Run from either tab; both show one roster (S1).
