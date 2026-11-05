@@ -21,6 +21,14 @@ A worktree in this repo does not get the gitignored files it needs:
 - Start `main.py` from inside the worktree (`CryoBoostBackend(Path.cwd())`, repo root found from cwd), on
   its own port; don't point two servers at the same test project.
 
+**On CBE.next (from 2026-11) the next two paragraphs are history.** `/usr/bin/git` is 2.52 and the EESSI git
+first on PATH is 2.49; both have `git worktree`, so a handed block needs no `module load`. The EESSI git
+reads from CVMFS and stalled for minutes once (2026-11-05); `/usr/bin/git` answered meanwhile. qsub.sh no
+longer carries paths, and conf.yaml's `crboost_python` names the main venv's python, which is the same
+interpreter the venv symlink gives. The EESSI python3 (3.13) is first on PATH and has none of the packages,
+and `clean_env.py` only redirects interpreters older than 3.11, so start a worktree's server with
+`venv/bin/python3 crboost`, from inside the worktree; it gets its own port in `~/.crboost/ports.json`.
+
 **The system git has no `worktree`** (pre-2.5: "'worktree' is not a git command"). What worked: a local
 clone + checkout of the existing branch (`git clone ~/dev/crboost_server ../crboost_server_dl_filter`,
 `git checkout dl_filter`; origin = the main repo, `git push origin dl_filter` brings commits back). The Lmod
