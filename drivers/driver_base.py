@@ -5,6 +5,7 @@ Shared bootstrap logic for all CryoBoost drivers.
 """
 
 import atexit
+import re
 import signal
 import subprocess
 import sys
@@ -234,6 +235,30 @@ def allocated_gpu_count(default: int) -> int:
         if n > 0:
             return n
     return max(1, default)
+
+
+def allocated_gpu_memory_bytes() -> int:
+    """Memory of the smallest GPU this job was given, read on the node with nvidia-smi.
+
+    On a MIG slice nvidia-smi's memory.total is the parent GPU's (a CBE.next nvidia_b200_1g.23gb slice reports a
+    whole B200's 179 GiB), so a slice's size is read from its profile name in `nvidia-smi -L` ("MIG 1g.23gb", in GB).
+    Raises when nvidia-smi is missing, fails, or names no GPU.
+    """
+    listing = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, timeout=60, check=True).stdout
+    slices = [int(gb) * 10**9 for gb in re.findall(r"^\s*MIG \d+g\.(\d+)gb\b", listing, re.MULTILINE)]
+    if slices:
+        return min(slices)
+    totals = subprocess.run(
+        ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    ).stdout
+    mib = [int(v) for v in totals.split() if v.isdigit()]
+    if not mib:
+        raise RuntimeError(f"nvidia-smi names no GPU: {listing.strip() or totals.strip() or '(no output)'}")
+    return min(mib) * 2**20
 
 
 # Seconds before SLURM's --time at which run_command kills the tool itself.

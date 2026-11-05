@@ -38,17 +38,28 @@ The mode dispatch, both bootstraps, manifest lookup, exclusions, tally and exit
 code all live in ArrayDriver; this file is the template-match-specific hooks.
 """
 
+import itertools
+import math
 import os
 import shutil
 import time
 import traceback
 from pathlib import Path
 
+import mrcfile
 import pandas as pd
 import starfile
+from scipy.fft import next_fast_len
 
 from drivers.array_job_base import ArrayDriver, ArrayResults, read_manifest
-from drivers.driver_base import DriverContext, ToolCommand, allocated_gpu_count, require_producer_input
+from drivers.driver_base import (
+    DriverContext,
+    ToolCommand,
+    allocated_gpu_count,
+    allocated_gpu_memory_bytes,
+    print_cmd_only,
+    require_producer_input,
+)
 from services.configs.starfile_service import StarfileService
 from services.job_lineage import recon_of
 from services.job_models import TemplateMatchPytomParams
@@ -189,10 +200,74 @@ def make_pytom_tomograms_star(*, tomograms_star: Path, tiltseries_global_star: P
     return out_star
 
 
-def get_gpu_split(requested_split: str) -> list[str]:
-    if requested_split in ["auto", "None", ""]:
-        return ["2", "2", "1"]
-    return requested_split.split(":")
+# pytom 0.14's peak GPU memory (roadmap 43 S1, 2026-11-05): 60 bytes per voxel of the FFT-padded volume one GPU
+# searches plus 0.7 GiB, measured on a B200 whole (1024 x 1024 x 512) and per `2 2 1` piece. The random-phase decoy
+# adds one float32 volume.
+PYTOM_BYTES_PER_VOXEL = 60
+PYTOM_DECOY_BYTES_PER_VOXEL = 4
+PYTOM_FIXED_BYTES = int(0.7 * 2**30)
+# The share of the GPU's memory `auto` plans with: S1 sampled the peak every 2 s, never ran a non-spherical mask,
+# and a `1 3 1` piece (1024 x 450 x 512) peaked 5 % above this estimate.
+AUTO_SPLIT_GPU_SHARE = 0.75
+# Pieces per axis `auto` considers. Powers of two: on a slice copia's `1 3 1` took 570 s against 186 s for `2 2 1`
+# (S1), though it searches less padded volume.
+AUTO_SPLIT_COUNTS = (1, 2, 4, 8)
+
+
+def _axis_pieces(length: int, template: int, n: int) -> list[int]:
+    """FFT lengths of the n pieces pytom 0.14 cuts one axis into (`tmjob._determine_1D_fft_splits`, then
+    `next_fast_len(real=True)`): neighbouring pieces overlap by half the template, inner pieces on both sides."""
+    if n == 1:
+        return [next_fast_len(length, real=True)]
+    overhang = -(-template // 2)
+    min_len = -(-length // n) + overhang
+    outer = next_fast_len(next_fast_len(min_len), real=True)
+    inner = next_fast_len(next_fast_len(min_len + overhang), real=True)
+    return [outer, *[inner] * (n - 2), outer]
+
+
+def pytom_piece_shape(
+    tomo_shape: tuple[int, int, int], template_shape: tuple[int, int, int], split: tuple[int, int, int]
+) -> tuple[int, int, int]:
+    """The FFT shape of the largest piece pytom searches under `-s split`."""
+    return tuple(max(_axis_pieces(*axis)) for axis in zip(tomo_shape, template_shape, split, strict=True))
+
+
+def pytom_peak_bytes(piece_shape: tuple[int, int, int], *, decoy: bool) -> int:
+    """pytom's estimated peak GPU memory for one piece of `piece_shape`."""
+    per_voxel = PYTOM_BYTES_PER_VOXEL + (PYTOM_DECOY_BYTES_PER_VOXEL if decoy else 0)
+    return math.prod(piece_shape) * per_voxel + PYTOM_FIXED_BYTES
+
+
+def auto_gpu_split(
+    tomo_shape: tuple[int, int, int], template_shape: tuple[int, int, int], gpu_bytes: int, *, decoy: bool
+) -> tuple[tuple[int, int, int], int]:
+    """What `gpu_split: auto` runs on a GPU of `gpu_bytes`: of the splits into AUTO_SPLIT_COUNTS pieces per axis
+    whose largest piece's estimated peak fits AUTO_SPLIT_GPU_SHARE of it, the one with the least padded volume to
+    search (the whole tomogram when it fits; fewer pieces among equals). Returns the split (x, y, z) and its
+    estimate."""
+    budget = AUTO_SPLIT_GPU_SHARE * gpu_bytes
+    axes = list(zip(tomo_shape, template_shape, strict=True))
+
+    def searched(split: tuple[int, int, int]) -> int:
+        return math.prod(
+            sum(_axis_pieces(length, template, n)) for (length, template), n in zip(axes, split, strict=True)
+        )
+
+    for split in sorted(itertools.product(AUTO_SPLIT_COUNTS, repeat=3), key=lambda s: (searched(s), math.prod(s))):
+        need = pytom_peak_bytes(pytom_piece_shape(tomo_shape, template_shape, split), decoy=decoy)
+        if need <= budget:
+            return split, need
+    raise RuntimeError(
+        f"gpu_split auto: no split into up to {max(AUTO_SPLIT_COUNTS)} pieces per axis fits a {tomo_shape} "
+        f"tomogram into {AUTO_SPLIT_GPU_SHARE:.0%} of this GPU's {gpu_bytes / 2**30:.1f} GiB"
+    )
+
+
+def mrc_shape_xyz(path: Path) -> tuple[int, int, int]:
+    """An MRC volume's (x, y, z) size from its header: pytom's axis order."""
+    with mrcfile.open(path, header_only=True, permissive=True) as m:
+        return int(m.header.nx), int(m.header.ny), int(m.header.nz)
 
 
 def resolve_tomogram_path(raw_path: str, *, tomograms_star: Path, project_root: Path) -> Path:
@@ -217,9 +292,11 @@ def build_pytom_base_cmd(
     mask_file: Path,
     tm_results_dir: Path,
     gpu_ids: list[str],
+    volume_split: list[str] | None,
     angle_list_file: Path | None = None,
 ) -> ToolCommand:
-    """The per-task base command before per-tomogram args are appended.
+    """The per-task base command before per-tomogram args are appended. `volume_split` is pytom's `-s x y z`
+    (`TemplateMatchPytomDriver.volume_split`); None passes no `-s`.
 
     Symmetry routing:
       - `angle_list_file` provided → `--angular-search <file>` (used for D/T/O/I
@@ -253,8 +330,8 @@ def build_pytom_base_cmd(
         if sym != "C1" and sym.startswith("C"):
             base_cmd.opt("--z-axis-rotational-symmetry", sym[1:])
 
-    if params.gpu_split != "None":
-        base_cmd.raw(" ".join(["-s", *get_gpu_split(params.gpu_split)]))
+    if volume_split is not None:
+        base_cmd.raw(" ".join(["-s", *volume_split]))
     if params.spectral_whitening:
         base_cmd.flag("--spectral-whitening")
     if getattr(params, "random_phase_correction", False):
@@ -504,6 +581,31 @@ class TemplateMatchPytomDriver(ArrayDriver):
         self.log(f"Search region: {mask.mean() * 100:.1f} % of the tomogram → {path.name}")
         return path
 
+    def volume_split(self, ctx: DriverContext[TemplateMatchPytomParams], staged) -> list[str] | None:
+        """pytom's `-s x y z` for this task: `gpu_split` as given ("2:2:1"; "None" passes no `-s`), or for `auto`
+        the split `auto_gpu_split` sizes for the GPU this task got."""
+        requested = ctx.params.gpu_split
+        if requested == "None":
+            return None
+        if requested not in ("auto", ""):
+            return requested.split(":")
+        if print_cmd_only():
+            # CRBOOST_PRINT_CMD renders the commands on the supervisor's host: no GPU to size the split for.
+            self.log("gpu_split auto is sized on the GPU node: printed as -s auto")
+            return ["auto"]
+        gpu_bytes = allocated_gpu_memory_bytes()
+        split, need = auto_gpu_split(
+            mrc_shape_xyz(staged["local_tomo"]),
+            mrc_shape_xyz(staged["template_file"]),
+            gpu_bytes,
+            decoy=ctx.params.random_phase_correction,
+        )
+        self.log(
+            f"gpu_split auto: {' '.join(map(str, split))} (pytom needs ~{need / 2**30:.1f} GiB per piece, "
+            f"this GPU has {gpu_bytes / 2**30:.1f} GiB)"
+        )
+        return [str(n) for n in split]
+
     def build_command(self, ctx: DriverContext[TemplateMatchPytomParams], item: str, staged) -> ToolCommand:
         # The allocated GPUs are 0..N-1 inside the --nv container; CUDA_VISIBLE_DEVICES itself may hold
         # UUIDs (CBE.next sets GPU-<uuid>), which pytom's -g rejects.
@@ -516,6 +618,7 @@ class TemplateMatchPytomDriver(ArrayDriver):
             mask_file=staged["mask_file"],
             tm_results_dir=staged["tm_results_dir"],
             gpu_ids=gpu_ids,
+            volume_split=self.volume_split(ctx, staged),
             angle_list_file=Path(angle_list_str) if angle_list_str else None,
         )
 

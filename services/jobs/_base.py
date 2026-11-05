@@ -7,7 +7,7 @@ from typing import Any, ClassVar, Self, TYPE_CHECKING
 from pydantic import BaseModel, Field
 import pandas as pd
 
-from services.computing.slurm_service import SLURM_PRESET_MAP, SlurmConfig, SlurmPreset
+from services.computing.slurm_service import SLURM_PRESET_MAP, SlurmConfig, SlurmPreset, gres_keeping_type
 from services.configs.config_service import get_config_service
 from services.models_base import JobType, AcquisitionParams, JobCategory, JobStatus, MicroscopeParams
 
@@ -166,8 +166,8 @@ class AbstractJobParams(BaseModel):
                 if profile is not None:
                     for field, value in profile.model_dump(exclude_none=True).items():
                         merged_data[field] = value
-            except Exception:
-                pass  # Config not loaded yet (e.g. during testing)
+            except FileNotFoundError:
+                pass  # No conf.yaml (a checkout without preflight): no profiles to apply.
 
         # Layer 3: per-job user overrides
         if self.slurm_overrides:
@@ -193,8 +193,8 @@ class AbstractJobParams(BaseModel):
                 if profile is not None:
                     for field, value in profile.model_dump(exclude_none=True).items():
                         merged_data[field] = value
-            except Exception:
-                pass
+            except FileNotFoundError:
+                pass  # No conf.yaml: no profiles to apply.
 
         return SlurmConfig(**merged_data)
 
@@ -204,8 +204,8 @@ class AbstractJobParams(BaseModel):
             return False
         try:
             return get_config_service().get_job_resource_profile(self.job_type.value) is not None
-        except Exception:
-            return False
+        except FileNotFoundError:
+            return False  # No conf.yaml: no profiles.
 
     def apply_slurm_preset(self, preset: SlurmPreset) -> None:
         """Flatten preset values into the overrides dictionary."""
@@ -218,6 +218,8 @@ class AbstractJobParams(BaseModel):
         preset_data = SLURM_PRESET_MAP.get(preset)
         if not preset_data:
             return
+        # The preset sets how many GPUs; which type stays what the job's profile or SLURM section chose.
+        current_gres = self.get_effective_slurm_config().gres
 
         # 1. Clear specific resource overrides to ensure a clean snap
         for key in ["gres", "mem", "cpus_per_task", "time"]:
@@ -225,6 +227,7 @@ class AbstractJobParams(BaseModel):
 
         # 2. Inject ONLY the resource values, not the metadata
         self.slurm_overrides.update(preset_data["values"])
+        self.slurm_overrides["gres"] = gres_keeping_type(preset_data["values"]["gres"], current_gres)
 
         # 3. Store the preset enum value
         self.slurm_overrides["preset"] = preset.value
