@@ -24,3 +24,8 @@ SLURM day) → module imports are the bulk (~6 s warm), not measured per module 
 RUN): stage spinner (ASCII dose-symmetric tilt sweep, "ok <stage> <s>" lines), "Started in …" log line + summary
 `startup` row, SLURM/recent-projects summary moved to a background thread alongside app build + server start.
 User rejected braille/npm-style spinners.
+
+**2026-11-05:** startup screen trimmed on request ("a bit overwhelming"): the pinned tunnel line and link only, then
+three blank lines and gray troubleshooting (pkill hint, server log, leftovers). The spinner is one inline ASCII line,
+`Starting CryoBoost...` with cycling dots. The SLURM / recent-projects snapshot (`startup_summary.py`) is gone, and
+with it the wait for SLURM at the end of startup.
