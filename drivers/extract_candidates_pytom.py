@@ -43,6 +43,13 @@ from drivers.driver_base import DriverContext, ToolCommand
 from services.subtomo_merge import write_optimisation_set
 from services.job_models import CandidateExtractPytomParams, ExtractionCutoffMethod
 
+# Saves disk space: TM's `{tomo}_angles.mrc` is a full-size float32 map (2 GB per tomogram at
+# 1024x1024x512, ~280 GB on a 140-tomogram project) that only candidate extraction reads, to look up
+# each peak's orientation. Once a tomogram's candidates are extracted it is deleted from the TM job.
+# The cost: extracting that TM job again (another cutoff, a second extraction job) needs TM re-run.
+# The scores map is kept. Set False to keep the angles maps.
+DELETE_ANGLES_AFTER_EXTRACTION = True
+
 
 # ----------------------------------------------------------------------
 # Helpers (shared supervisor + task)
@@ -139,6 +146,28 @@ def stage_upstream_tm_results(upstream: Path, local: Path) -> int:
 def tomo_job_json_path(local_tm_results: Path, tomo_name: str) -> Path:
     """pytom writes `{tomo_name}_job.json`. The supervisor staged this into `job_dir/tmResults/`."""
     return local_tm_results / f"{tomo_name}_job.json"
+
+
+def tomo_angles_path(local_tm_results: Path, tomo_name: str) -> Path:
+    """pytom writes `{tomo_name}_angles.mrc`; the staged copy is a symlink to the TM job's file."""
+    return local_tm_results / f"{tomo_name}_angles.mrc"
+
+
+def delete_angles_maps(local_tm_results: Path, tomo_names: list[str]) -> tuple[int, int]:
+    """Delete the TM job's angles map (and the staged symlink to it) for each tomogram.
+    Returns (files deleted, bytes freed)."""
+    n, freed = 0, 0
+    for name in tomo_names:
+        link = tomo_angles_path(local_tm_results, name)
+        if not link.is_symlink():
+            continue
+        target = link.resolve()
+        if target.is_file():
+            freed += target.stat().st_size
+            target.unlink()
+            n += 1
+        link.unlink()
+    return n, freed
 
 
 def tomo_particles_star_path(local_tm_results: Path, tomo_name: str) -> Path:
@@ -326,6 +355,11 @@ class ExtractCandidatesPytomDriver(ArrayDriver):
         self.log("Created optimisation_set.star with absolute paths")
         self._write_analytics_sidecar(ctx)
 
+        if DELETE_ANGLES_AFTER_EXTRACTION:
+            # Only tomograms that extracted: a failed one keeps its map for the re-run.
+            n, freed = delete_angles_maps(local_tm_results, results.ok)
+            self.log(f"Deleted {n} TM angles map(s), {freed / 1e9:.1f} GB (DELETE_ANGLES_AFTER_EXTRACTION)")
+
     def _write_analytics_sidecar(self, ctx: DriverContext[CandidateExtractPytomParams]) -> None:
         """The candidate set in σ, per tomogram (counts, cutoff, ladder, cap, every score), as the
         job's analytics sidecar. A readout of outputs that are already complete: its failure —
@@ -364,6 +398,12 @@ class ExtractCandidatesPytomDriver(ArrayDriver):
         job_json = tomo_job_json_path(local_tm_results, item)
         if not job_json.exists():
             raise FileNotFoundError(f"Staged job.json missing for {item}: {job_json}")
+        angles = tomo_angles_path(local_tm_results, item)
+        if not angles.exists():
+            raise FileNotFoundError(
+                f"TM angles map missing for {item}: {angles}. An earlier extraction from this TM job deletes "
+                "it (DELETE_ANGLES_AFTER_EXTRACTION in drivers/extract_candidates_pytom.py); re-run TM"
+            )
         return job_json
 
     def build_command(self, ctx: DriverContext[CandidateExtractPytomParams], item: str, staged) -> ToolCommand:
