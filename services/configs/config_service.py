@@ -247,6 +247,9 @@ class Config(BaseModel):
     # and software roots. The project tree, the raw-data directories and the gain reference
     # are bound per job on top of these.
     container_binds: list[str] = Field(default_factory=list)
+    # Lasting directory for the CUDA driver's compiled-kernel cache (CUDA_CACHE_PATH), shared by
+    # every user and install. Empty = the per-job /tmp cache, which CBE.next wipes after each job.
+    gpu_kernel_cache: str = ""
     # Lab-level species catalog root. Cross-project species definitions live here — name,
     # diameter, symmetry, notes, templates + masks with their provenance; picks, filters,
     # merges and extractions stay project-bound. Empty or absent = the feature is off: no

@@ -160,6 +160,16 @@ def check_config():
             ok(f"container_binds: {bind}")
         else:
             fail(f"container_binds: {bind} does not exist")
+
+    cache = cfg.gpu_kernel_cache
+    if not cache:
+        ok("gpu_kernel_cache: unset (per-job /tmp; PTX-only images recompile their kernels every job)")
+    elif not Path(cache).is_dir() and not Path(cache).parent.is_dir():
+        fail(f"gpu_kernel_cache: neither {cache} nor its parent exists")
+    elif not os.access(cache if Path(cache).is_dir() else Path(cache).parent, os.W_OK):
+        fail(f"gpu_kernel_cache: {cache} is not writable")
+    else:
+        ok(f"gpu_kernel_cache: {cache}")
     return cfg
 
 

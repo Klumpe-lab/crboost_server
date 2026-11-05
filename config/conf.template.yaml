@@ -239,6 +239,16 @@ container_runtime: apptainer
 # and the gain reference are bound per job on top of these; /tmp is always bound.
 container_binds: []
 
+# Lasting directory for the CUDA driver's compiled-kernel cache (CUDA_CACHE_PATH), on shared
+# storage every user and install can write (e.g. /groups/<lab>/software/cache_and_artifacts/cuda_kernels).
+# An image with no machine code for the node's GPU (on B200s: every CUDA 11 / TensorFlow image,
+# such as cryocare, easymode, ais, pom) compiles its kernels from PTX on first GPU use: 12-22 min
+# per job on a B200. Cached here (one subdirectory per image, ~1.6 GB for a TensorFlow image), that
+# happens once per image and driver version, not once per job.
+# Sharing is safe: the cache is keyed by the code and the driver, and the driver locks it. Empty =
+# a per-user directory in the job's /tmp, which a cluster that cleans /tmp after each job wipes.
+gpu_kernel_cache: ""
+
 # Tool execution configuration
 # exec_mode: 'container' or 'binary'
 # container_path: path to .sif file (required if exec_mode is container)
