@@ -300,3 +300,7 @@ tools:
     container_path: "/path/to/easymode_1.2.5.sif"
     bin_path: ""
     cache_dir: "/path/to/cache_and_artifacts/easymode_1.2.5"
+    # Ais imports OpenGL on start. `--nv` mounts the host's NVIDIA libGL, which an EL10 host builds
+    # for a newer glibc than this Ubuntu 20.04 image has ("GLIBC_ABI_DT_RELR not found"); with the
+    # image's own library directory first, it loads the image's libGL. CUDA still comes from the host.
+    image_libs_first: [/lib/x86_64-linux-gnu]

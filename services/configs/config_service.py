@@ -147,12 +147,14 @@ class ToolConfig(BaseModel):
     `container_path` is the image a container tool runs in; `bin_path` is the directory
     holding a binary tool's executables, put first on PATH for its calls. `cache_dir` is the
     host directory of a tool's downloaded model weights, for the tools that keep them outside
-    the image (easymode)."""
+    the image (easymode). `image_libs_first` are directories inside the image put ahead of the
+    host libraries `--nv` mounts: for an image too old for the host's GL libraries."""
 
     exec_mode: Literal["container", "binary"] = "container"
     container_path: str | None = None
     bin_path: str | None = None
     cache_dir: str | None = None
+    image_libs_first: list[str] = Field(default_factory=list)
 
 
 class ContainerRuntime(StrEnum):
