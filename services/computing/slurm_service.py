@@ -1,6 +1,8 @@
 # services/slurm_service.py
 import asyncio
+import functools
 import logging
+import subprocess
 from enum import Enum
 from pathlib import Path
 import re
@@ -98,10 +100,48 @@ QSUB_EXIT_MARKERS = (
 )
 
 
+# What separates feature names in a --constraint expression: OR, AND, the matching-OR brackets,
+# grouping. A trailing *N is a node count, not part of the name.
+_CONSTRAINT_OPERATORS = re.compile(r"[|&,\[\]()]")
+
+
+@functools.cache
+def _partition_features(partition: str) -> frozenset[str] | None:
+    """The node features SLURM reports for `partition` (every partition when empty), once per process.
+    None off a SLURM host, where nothing can be submitted either."""
+    cmd = ["sinfo", "-h", "-o", "%f", *(["-p", partition] if partition else [])]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=True).stdout
+    except FileNotFoundError:
+        return None
+    return frozenset(f for line in out.split() for f in line.split(",") if f and f != "(null)")
+
+
+def check_constraint(cfg: SlurmConfig) -> None:
+    """Raise ValueError when `cfg.constraint` names a node feature its partition does not have.
+
+    Projects keep the SLURM defaults they were created with, so a project from another cluster asks
+    for that cluster's node features (the old CBE's g2|g3|g4); sbatch only says "Invalid feature
+    specification". This names the features and the field instead, and drops nothing."""
+    if not cfg.constraint:
+        return
+    features = _partition_features(cfg.partition)
+    if features is None:
+        return
+    named = {re.sub(r"\*\d+$", "", t.strip()) for t in _CONSTRAINT_OPERATORS.split(cfg.constraint)} - {""}
+    unknown = sorted(named - features)
+    if unknown:
+        raise ValueError(
+            f"SLURM constraint '{cfg.constraint}' names node features partition '{cfg.partition or '(any)'}' "
+            f"does not have: {', '.join(unknown)} (it has: {', '.join(sorted(features)) or 'none'}). "
+            "Clear or fix Constraint in the job's SLURM section"
+        )
+
 def write_sbatch_script(script_path: Path, cfg: SlurmConfig, command: str, *, array: str | None = None) -> Path:
     """Render config/qsub.sh to run `command` with `cfg`'s resources and write it, executable, to
     `script_path`. The SLURM logs land beside it (run.out/.err; task_<index>.out/.err for an array), and
     qsub.sh cd's into that directory before running `command`. `array` is the `--array` spec."""
+    check_constraint(cfg)
     script = QSUB_TEMPLATE.read_text()
     if QSUB_EXIT_MARKERS not in script:
         raise ValueError(f"{QSUB_TEMPLATE}: the exit-marker block differs from config/qsub.template.sh")

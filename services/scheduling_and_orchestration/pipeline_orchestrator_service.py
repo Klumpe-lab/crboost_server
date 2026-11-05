@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from services.array_tasks import recorded_array_job_id
-from services.computing.slurm_service import SlurmConfig, normalize_slurm_ids, write_sbatch_script
+from services.computing.slurm_service import SlurmConfig, check_constraint, normalize_slurm_ids, write_sbatch_script
 from services.configs.config_service import get_config_service
 from services.configs.starfile_service import StarfileService
 from services.job_models import ImportMoviesParams
@@ -759,6 +759,9 @@ class PipelineOrchestratorService:
         get_effective_slurm_config). Unlike an array render, the RELION_JOB_EXIT marker
         block is kept: for a single supervisor job that marker is the completion signal.
         """
+        # An array job's own resources only reach sbatch on the compute node; checked here, a bad
+        # constraint fails the submit in the UI instead of the supervisor after it is queued.
+        check_constraint(job_model.get_effective_slurm_config())
         opts = dict(job_model._get_queue_options())  # qsub_extra1..8 already routed per job type
         cfg = SlurmConfig(**{field: opts[key] for field, key in SlurmConfig.QSUB_EXTRA_MAPPING.items()})
         # The job's QOS belongs to its own resources; a job whose queue options are the shared
