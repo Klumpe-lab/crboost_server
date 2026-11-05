@@ -1,13 +1,15 @@
 ---
 name: reference-cryoboost-v1-location
-description: Old cryoboost v1 source lives at /users/artem.kushner/dev/CryoBoost/ — useful for driver-level diffs against the crboost_server refactor.
+description: Old cryoboost v1 source lives at /groups/klumpe/software/Setup/CryoBoost on CBE.next (the old /users/artem.kushner/dev/CryoBoost/ copy is gone) — useful for driver-level diffs against the crboost_server refactor.
 metadata: 
   node_type: memory
   type: reference
   originSessionId: 21982a9c-b83c-43ad-906d-a06e1aa36cdc
 ---
 
-Old cryoboost v1 source is at `/users/artem.kushner/dev/CryoBoost/`. Layout:
+Old cryoboost v1 source is at `/groups/klumpe/software/Setup/CryoBoost/` on CBE.next (checked 2026-11-05; the
+old-cluster copy at `/users/artem.kushner/dev/CryoBoost/` did not come along). v1's per-microscope presets (the two
+hands) are in its `config/conf.yaml`, its EER grouping in `src/misc/eerSampling.py`. Layout:
 
 - `bin/` — driver entry points (e.g. `crboost_warp_fs_motion_and_ctf.py`, `crboost_warp_ts_import.py`, etc.) — these get launched as `fn_exe` from RELION External jobs in cryoboost v1 projects.
 - `src/warp/` — Python modules (e.g. `src.warp.fsMotionAndCtf` imported by the bin scripts).
