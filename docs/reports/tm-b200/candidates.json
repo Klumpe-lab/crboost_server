@@ -1,0 +1,206 @@
+[
+  {
+    "tomo": "copia",
+    "case": "b200_s111_fp32_g1",
+    "candidates": 1005,
+    "interior_max_abs_diff": 0.0,
+    "interior_std": 0.017205032667041178,
+    "job_stats_std": 0.01982577808418114,
+    "picked_by_reference": 1.0,
+    "reference_picked": 1.0
+  },
+  {
+    "tomo": "copia",
+    "case": "b200_s111_fp32_g1_rp",
+    "candidates": 103,
+    "interior_max_abs_diff": 0.338777631521225,
+    "interior_std": 0.010285310412206549,
+    "job_stats_std": 0.01982577808418114,
+    "picked_by_reference": 1.0,
+    "reference_picked": 0.10248756218905472
+  },
+  {
+    "tomo": "copia",
+    "case": "b200_s111_fp32_g1_wh",
+    "candidates": 980,
+    "interior_max_abs_diff": 0.15050548315048218,
+    "interior_std": 0.010071897535649162,
+    "job_stats_std": 0.012521073957058461,
+    "picked_by_reference": 0.9948979591836735,
+    "reference_picked": 0.9701492537313433
+  },
+  {
+    "tomo": "copia",
+    "case": "b200_s111_fp32_g2",
+    "candidates": 1005,
+    "interior_max_abs_diff": 0.0,
+    "interior_std": 0.017205032667041178,
+    "job_stats_std": 0.01982577808418114,
+    "picked_by_reference": 1.0,
+    "reference_picked": 1.0
+  },
+  {
+    "tomo": "copia",
+    "case": "b200_s111_fp32_g4",
+    "candidates": 1005,
+    "interior_max_abs_diff": 0.0,
+    "interior_std": 0.017205032667041178,
+    "job_stats_std": 0.01982577808418114,
+    "picked_by_reference": 1.0,
+    "reference_picked": 1.0
+  },
+  {
+    "tomo": "copia",
+    "case": "b200_s111_half_g1",
+    "candidates": 1005,
+    "interior_max_abs_diff": 0.0001220405101776123,
+    "interior_std": 0.017205033484962908,
+    "job_stats_std": 0.01982577808418114,
+    "picked_by_reference": 1.0,
+    "reference_picked": 1.0
+  },
+  {
+    "tomo": "copia",
+    "case": "b200_s131_fp32_g1",
+    "candidates": null,
+    "interior_max_abs_diff": 1.914799213409424e-06,
+    "interior_std": 0.017205035424184986,
+    "job_stats_std": 0.019822287591161378
+  },
+  {
+    "tomo": "copia",
+    "case": "b200_s221_fp32_g1",
+    "candidates": 1008,
+    "interior_max_abs_diff": 1.5348196029663086e-06,
+    "interior_std": 0.017205032013214827,
+    "job_stats_std": 0.019747716825814245,
+    "picked_by_reference": 0.9970238095238095,
+    "reference_picked": 1.0
+  },
+  {
+    "tomo": "copia",
+    "case": "b200_s221_half_g1",
+    "candidates": 1008,
+    "interior_max_abs_diff": 0.0001221001148223877,
+    "interior_std": 0.01720503284027228,
+    "job_stats_std": 0.019747716825814245,
+    "picked_by_reference": 0.9970238095238095,
+    "reference_picked": 1.0
+  },
+  {
+    "tomo": "copia",
+    "case": "mig_s131_fp32_g1",
+    "candidates": null,
+    "interior_max_abs_diff": 1.914799213409424e-06,
+    "interior_std": 0.017205035424184986,
+    "job_stats_std": 0.019822287591161378
+  },
+  {
+    "tomo": "copia",
+    "case": "mig_s221_fp32_g1",
+    "candidates": 1008,
+    "interior_max_abs_diff": 1.5348196029663086e-06,
+    "interior_std": 0.017205032013214827,
+    "job_stats_std": 0.019747716825814245,
+    "picked_by_reference": 0.9970238095238095,
+    "reference_picked": 1.0
+  },
+  {
+    "tomo": "412",
+    "case": "b200_s111_fp32_g1",
+    "candidates": 20,
+    "interior_max_abs_diff": 0.0,
+    "interior_std": 0.005121490461721408,
+    "job_stats_std": 0.007680880446945954,
+    "picked_by_reference": 1.0,
+    "reference_picked": 1.0
+  },
+  {
+    "tomo": "412",
+    "case": "b200_s111_fp32_g1_rp",
+    "candidates": 20,
+    "interior_max_abs_diff": 0.04229266941547394,
+    "interior_std": 0.0059195911786851995,
+    "job_stats_std": 0.007680880446945954,
+    "picked_by_reference": 0.35,
+    "reference_picked": 0.35
+  },
+  {
+    "tomo": "412",
+    "case": "b200_s111_fp32_g1_wh",
+    "candidates": 20,
+    "interior_max_abs_diff": 0.04234398156404495,
+    "interior_std": 0.0024335503748141186,
+    "job_stats_std": 0.003755885984323981,
+    "picked_by_reference": 0.2,
+    "reference_picked": 0.2
+  },
+  {
+    "tomo": "412",
+    "case": "b200_s111_fp32_g2",
+    "candidates": 20,
+    "interior_max_abs_diff": 0.00023294426500797272,
+    "interior_std": 0.005121490594077724,
+    "job_stats_std": 0.007680880740845816,
+    "picked_by_reference": 1.0,
+    "reference_picked": 1.0
+  },
+  {
+    "tomo": "412",
+    "case": "b200_s111_fp32_g4",
+    "candidates": 20,
+    "interior_max_abs_diff": 0.00023294426500797272,
+    "interior_std": 0.00512149102130703,
+    "job_stats_std": 0.007680881564337217,
+    "picked_by_reference": 1.0,
+    "reference_picked": 1.0
+  },
+  {
+    "tomo": "412",
+    "case": "b200_s111_half_g1",
+    "candidates": 20,
+    "interior_max_abs_diff": 3.030151128768921e-05,
+    "interior_std": 0.005121491959423922,
+    "job_stats_std": 0.007680880446945954,
+    "picked_by_reference": 1.0,
+    "reference_picked": 1.0
+  },
+  {
+    "tomo": "412",
+    "case": "b200_s221_fp32_g1",
+    "candidates": 20,
+    "interior_max_abs_diff": 0.0019996222108602524,
+    "interior_std": 0.0051214619602579356,
+    "job_stats_std": 0.0076937211494537095,
+    "picked_by_reference": 1.0,
+    "reference_picked": 1.0
+  },
+  {
+    "tomo": "412",
+    "case": "b200_s221_half_g1",
+    "candidates": 20,
+    "interior_max_abs_diff": 0.002005062997341156,
+    "interior_std": 0.005121463404279691,
+    "job_stats_std": 0.0076937211494537095,
+    "picked_by_reference": 1.0,
+    "reference_picked": 1.0
+  },
+  {
+    "tomo": "412",
+    "case": "mig_s221_fp32_g1",
+    "candidates": 20,
+    "interior_max_abs_diff": 0.0019996222108602524,
+    "interior_std": 0.0051214619602579356,
+    "job_stats_std": 0.0076937211494537095,
+    "picked_by_reference": 1.0,
+    "reference_picked": 1.0
+  },
+  {
+    "tomo": "412",
+    "case": "v0.10_old-cluster_s221_fp32_g1",
+    "candidates": null,
+    "interior_max_abs_diff": 0.07917885482311249,
+    "interior_std": 0.0097766294821557,
+    "job_stats_std": null
+  }
+]
