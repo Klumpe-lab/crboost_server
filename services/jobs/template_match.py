@@ -47,6 +47,7 @@ class TemplateMatchPytomParams(AbstractJobParams):
         "dose_weight",
         "spectral_whitening",
         "random_phase_correction",
+        "half_precision",
         "non_spherical_mask",
         "bandpass_filter",
         "gpu_split",
@@ -108,6 +109,11 @@ class TemplateMatchPytomParams(AbstractJobParams):
     dose_weight: bool = True
     spectral_whitening: bool = False
     random_phase_correction: bool = False
+    half_precision: bool = Field(
+        default=False,
+        description="Search in float16 (pytom --half-precision): less GPU memory, possibly faster. Off until "
+        "roadmap 43 S1 shows the scores agree with float32.",
+    )
     non_spherical_mask: bool = False
 
     bandpass_filter: str = Field(default="None")
