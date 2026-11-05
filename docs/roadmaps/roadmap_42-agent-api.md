@@ -1,10 +1,11 @@
 # Roadmap 42 — Agent API: talk to your data from a Claude Code session
 
 **Status:** scoped 2026-11-04, no code. Reframed the same day after the maintainer's correction: the API reaches what
-the UI reaches, action by action (D2); it is not a set of recipes. The anchors in §0.1–§0.12 come from four code reads
-and a check of the Claude Code docs at `70ce4db`; the rest, and the UI inventory behind §4.3, from reads at `273f13d`.
-Every decision is made (§8), the last of them on 2026-11-05. Part A (§3) stands on its own: it fixes today's multi-tab
-roster whether or not an agent ever drives anything. **Pickup: S1, in its own worktree (§9).**
+the UI reaches, action by action (D2); it is not a set of recipes. Every decision is made (§8), the last of them on
+2026-11-05. A last scoping pass the same day, at `f7de679`, re-checked every anchor against the code (corrected in
+place), settled the facts-first items of S4, S6, S8 and S9 (§9), and changed the plan in a few places (§13). Part A
+(§3) stands on its own: it fixes today's multi-tab roster whether or not an agent ever drives anything.
+**Pickup: S1, in the `agent_api` worktree (§9).**
 
 **Ask (maintainer, 2026-11-04).** "A really differentiated API so I can just talk to my data." From a Claude Code
 session in a terminal:
@@ -26,25 +27,31 @@ projects it made, and looking and judging stay in the UI.
 ## 0. What is there today (S0 facts, 2026-11-04)
 
 1. **Nothing over HTTP can change anything.**
-   - `/api/tilt-thumb`, `/api/vis-asset` and `/api/project-preview` (`server_app.py:63-125`), and `/api/file`
-     (`ui/template_workbench.py:120`), only serve files.
-   - `TokenGate` (`services/server_auth.py:63`) takes `?token=` or the per-port cookie. It has no header form.
+   - `/api/tilt-thumb`, `/api/vis-asset` and `/api/project-preview` (`server_app.py:63-125`), `/api/file`
+     (`ui/template_workbench.py:120`) and `/api/kitchen/*` (`ui/sta_kitchen/routes.py:40-112`; `tiles` is a POST only
+     for its list of uids) only serve files and pictures. The last two are registered from `ui/` modules.
+   - `TokenGate` (`services/server_auth.py:65`) takes `?token=` or the per-port cookie (`crboost_token_<port>`),
+     compared with `hmac.compare_digest`. It has no header form.
 2. **Creating a project.**
    - Landing → New project (`handle_create_project`, `ui/data_import_panel.py:726`) → `create_project_and_scheme`
-     (`backend.py:2162`) → `ProjectService.initialize_new_project` (`project_service.py:464`). This makes a project with
-     **no jobs**; they are added from the roster.
+     (`backend.py:2162`) → `ProjectService.initialize_new_project`
+     (`services/scheduling_and_orchestration/project_service.py:464`). This makes a project with **no jobs**; they are
+     added from the roster.
    - The form has three inputs: name, dose and gain (`data_import_panel.py:1326, 1464, 1513`). Pixel size, voltage and
      tilt axis come from the first value the mdocs give (`_import_payload`, `:872`), else from the code defaults. Cs and
      amplitude contrast always come from the code. None of them can be typed, at creation or later.
    - Much of what Create needs lives only in `ui/data_import_panel.py`:
-     - the directory turned into a glob (`ui/glob_directory_input.py:173`), the mdocs found beside the frames or
-       elsewhere (`:655-665`, `:1405`), the `*/` retry (`:279-289`), and the frame kind the scan switches to (`:1088`);
+     - the directory turned into a glob (`_build_glob`, `ui/glob_directory_input.py:173`); and in this file the mdocs
+       found beside the frames or elsewhere (`:655-665`, `:1405`), the `*/` retry (`:275-289`), and the frame kind the
+       scan switches to (`:1088`);
      - series selection (`ui/dataset_overview_panel.py`), and the folder split for folders that reuse series names:
-       folder-qualified names, or one project per folder made in a UI loop (`ui/dataset_split_panel.py:33`, `:758-791`);
+       folder-qualified names (`FolderSplit`, `ui/dataset_split_panel.py:33`), or one project per folder made in a UI
+       loop (`:758-791`);
      - the dose row, the "shared" switch (owner `@lab`, `project_service.py:508`), and "no raw data" (`:313`, `:673`);
      - the refusal of a half-filled form (`get_missing_requirements`, `:322`); without it the backend skips the import
        and reports success;
-     - the gain reference, which is dropped when Create runs without a scan (`:797-799`).
+     - the gain reference, which travels only in the scan's payload (`_import_payload`, `:907-908`) and so is dropped
+       when Create runs without a scan (`:797-799`).
    - The scan itself is a backend call: `parse_dataset_overview` (`backend.py:2278`) → `DatasetOverview`
      (`services/tilt_series/preimport.py:217`).
 3. **Acquisition values default silently** (`services/models_base.py:314-341`).
@@ -52,7 +59,12 @@ projects it made, and looking and judging stay in the UI.
    - A project takes them without a word when the mdocs lack the value. Only the dose is guarded: there must be a value
      and a recorded source, or creation refuses (`project_service.py:550-582`).
    - The scan bar shows chips only for values it found, so a defaulted pixel size looks like a detected one.
-   - Detected `invert_tilt_angles` and EER fractions are never applied.
+   - With mixed values, Create takes the smallest pixel size, voltage and tilt axis of the selection
+     (`_import_payload`, `ui/data_import_panel.py:889-902`).
+   - Cs and amplitude contrast are never detected. The detected `invert_tilt_angles` (true when the software is not
+     SerialEM, `services/configs/mdoc_service.py:337`) and EER fractions (`:353-354`) are never applied, and no code
+     writes either field: non-SerialEM data runs with `--dont_invert` (`drivers/ts_import.py:77-78`), EER always with 32
+     groups (`services/jobs/_base.py:375-376`), and the defocus hand always keeps its default.
 4. **Adding a job is UI code, and its rules are lenient.**
    - `PipelineBuilderPanel.add_instance_to_pipeline` (`ui/pipeline_builder/pipeline_builder_panel.py:359-536`) does
      all of it: the single instance of an interactive job (`:381`, `:653`), the instance id (`next_instance_id`,
@@ -74,8 +86,14 @@ projects it made, and looking and judging stay in the UI.
      the UI never calls it.
 6. **Run is sound, and runs the whole roster.**
    - `deploy_and_run_scheme` holds a per-project lock (`pipeline_orchestrator_service.py:112-122`).
-   - `_submit_chain` (`:398`) refuses with its reason: `SET_CHECKS`, `still_live`, ambiguous inputs, or a cycle. On
-     success it returns the SLURM ids. Two Runs at once submit once.
+   - `_submit_chain` (`:398`) refuses with its reason: a Subset not ready (`:439`), `SET_CHECKS` (`:445-447`),
+     `still_live` (`:449-452`), unresolved or ambiguous inputs (`:542-544`), the search region (`:583-585`), or a cycle
+     (`:613-624`). On success it returns the SLURM ids. Two Runs at once submit once.
+   - Since `0947bb0`, a SLURM constraint that names a node feature the partition lacks is refused too
+     (`check_constraint`, `services/computing/slurm_service.py:120`, which runs `sinfo` once per partition per
+     process). But only in pass 3 (`_render_supervisor_script`, `:764`, and `write_sbatch_script`), after the job
+     directories exist: the job numbers are spent and the project saved before the `err`, which has no code
+     (`:689-702`). The UI shows it as the generic "Failed to start" toast (`pipeline_builder_panel.py:797-799`).
    - Run submits the tab's whole roster; the UI has no "run these". It resubmits a failed job for its failed tilt series
      only (`:84`, about `:490-497`), in a fresh folder when its inputs moved (`:99`). A job that finished cannot run
      again: it is cloned, or deleted and added again.
@@ -83,7 +101,8 @@ projects it made, and looking and judging stay in the UI.
    - `get_job_logs` takes a job directory name, not an instance id (`:524`).
 7. **The roster belongs to the browser tab.**
    - `UIState.selected_jobs` (`ui/ui_state.py:70`) lives in `app.storage.tab` (`:586`). It is filled from
-     `state.roster()` once, when the tab opens the project (`:450-464`).
+     `state.roster()` once, when the tab opens the project (`load_from_project`, `:450-466`, called from
+     `ui/open_project.py:70` and `ui/main_ui.py:297-299`).
    - So a job added by anything else gets no row in that tab.
    - That tab's next add writes `state.pipeline_order = list(selected_jobs)` (`pipeline_builder_panel.py:386, 425`),
      which drops the job.
@@ -91,13 +110,14 @@ projects it made, and looking and judging stay in the UI.
    - Two tabs on one project already diverge this way today.
 8. **Some fields copy their value instead of binding to it.**
    - Most parameter fields bind to the job model, so a change made elsewhere shows within 0.1 s.
-   - **Species-derived choice rows** (template, mask, symmetry; `_field_styles.py:459-521`) keep the value they were
-     drawn with.
+   - **Species-derived choice rows** (template, mask, symmetry; `choice_row` and `multi_choice_row`,
+     `_field_styles.py:428-521`, given the species' options by their callers) keep the value they were drawn with.
    - **SLURM fields** are copies taken at render time. Tabbing through a stale one writes its old text back as an
      override (`slurm_tab.py:203-209`).
    - **The I/O section** does not poll.
-   - **Run/Stop buttons:** after a Stop, the tab's status poller is not restarted (`pipeline_builder_panel.py:890-898`).
-     A later Run from somewhere else leaves those buttons stale.
+   - **Run/Stop buttons:** a tab's status poller runs only while that tab thinks the pipeline runs: from its own Run,
+     at a rebuild when `is_running` (`pipeline_builder_panel.py:739-743`), and after a Stop only while something is
+     still live (`:890-898`). A Run from another tab, or from the API, leaves an idle tab's buttons stale.
 9. **Status needs no tab.** `PipelineMonitor` reconciles every loaded project with `pipeline_active` set every 3 s
    (`docs/architecture.md`). After a restart it reloads only the projects under `default_project_base`.
 10. **The tilt filter can hold the chain.**
@@ -105,8 +125,9 @@ projects it made, and looking and judging stay in the UI.
       Approve. DL auto runs the model as a chain job that commits its own verdict.
     - While a review is open, Run holds alignment and everything after it; the rest runs. Approve submits the held jobs
       (`pipeline_orchestrator_service.py:174-190`, `:238`).
-    - Its `USER_PARAMS` is empty (`:99`). The mode has its own setter (`backend.set_tilt_filter_mode`, `backend.py:498`);
-      model and threshold are written by the widgets (`ui/pipeline_builder/tilt_filter_row.py:378, 387`).
+    - Its `USER_PARAMS` is empty (`:99`). The mode has its own setter (`backend.set_tilt_filter_mode`, `backend.py:498`).
+      The model is written by `_on_model` (`ui/pipeline_builder/tilt_filter_row.py:378-382`, then a forced save), the
+      threshold by a `house_number` binding (`:343-345`; `_on_threshold`, `:387`, only saves).
 11. **Kitchen subsets.**
     - A subset is a named list of pool uids kept in the home project (`services/sta_kitchen/service.py:436`).
     - Each uid's row names its frame (project, tomogram, reconstruction; `pool.py:95-108`) and its member (project,
@@ -122,18 +143,29 @@ projects it made, and looking and judging stay in the UI.
     - A second process that edits a loaded project is overwritten by the server's next save. So the API has to live
       inside the server.
 13. **Tomograms can come into a project without raw data, but TM cannot run on them.**
-    - `services/tomogram_import.py` writes the project's `Tomograms/tomograms.star`, either from `.mrc` files or by
-      referencing an existing `tomograms.star`, and records it on `ProjectState.imported_tomograms`
-      (`project_state.py:657`). The resolver offers that star as a tomograms producer
-      (`path_resolution_service.py:1194`).
-    - TM also reads a TS CTF tilt-series star (`input_tiltseries`, `services/jobs/template_match.py:69`) and stages
-      each tilt series' star from it (`drivers/template_match_pytom.py:305-337`). An import brings none, as the
-      resolver's own comment says (`path_resolution_service.py:1197-1203`).
+    - `services/tomogram_import.py` writes the project's `Tomograms/tomograms.star`, either from `.mrc` files
+      (synthesize) or by referencing an existing `tomograms.star` (reference), and records it on
+      `ProjectState.imported_tomograms` (`project_state.py:798`; the model is `ImportedTomograms`, `:657`). The
+      resolver offers that star as a synthetic tomograms producer (`path_resolution_service.py:1194-1225`).
+    - TM also requires a TS CTF tilt-series star (`input_tiltseries`, `services/jobs/template_match.py:70`). Its live
+      path (`LEGACY_TEXT_INPUT`, `drivers/template_match_pytom.py:66`; `:315-317`) reads `rlnTomoName` and
+      `rlnTomoTiltSeriesStarFile` from it, then `rlnTomoYTilt`, `rlnDefocusU` and `rlnMicrographPreExposure` from each
+      tilt series' star. An import brings no such star, as the resolver's own comment says (`:1197-1203`).
+    - TM and Pick candidates check the project's own tilt-series registry before they dispatch anything
+      (`preflight_registry`, `drivers/array_job_base.py:839-842`), which fails on a project without raw data
+      ("TiltSeries registry is empty", `:420-424`). Subtomo extraction already checks the origin projects' registries
+      when its tomograms carry `cbOrigin*` columns (`preflight_origins`, `:441-474`;
+      `services/particles/set_origins.py:22-25`).
     - TM takes voltage, Cs and amplitude contrast from the project, not from the tomogram
-      (`template_match_pytom.py:238-240`).
+      (`template_match_pytom.py:238-240`), and dose, tilt angles and defocus from the tilt series' stars. It passes no
+      voxel size, so pytom takes it from the MRC headers (pytom's behaviour, unchecked). Pick candidates and subtomo
+      extraction read no project acquisition value.
+    - The reference mode makes paths absolute against the star's folder only (`tomogram_import.py:112-120`). That
+      breaks a Denoise Predict star, whose tomogram paths are relative to the project root
+      (`drivers/denoise_predict.py:137-140`).
 14. **The job table knows the phases.**
-    - `JOB_SPECS` (`services/jobs/spec.py:54-79`) gives each job type its roster phase, the types that must be in the
-      roster before it, and the prerequisite added with it.
+    - `JOB_SPECS` (`services/jobs/spec.py:97-304`; the `JobSpec` fields at `:53-94`) gives each job type its roster
+      phase, the types that must be in the roster before it, and the prerequisite added with it.
     - Preprocessing holds Import, Motion & CTF, Tilt Filter, Alignment, Missalignment, TS CTF, Reconstruct, Denoise
       Train, Denoise Predict, Segment and Subset. tsImport is added with Tilt Filter or Alignment.
 15. **Nothing records how a project was made.** `created_by` and `owner` (`project_state.py:738-743`) say who made it,
@@ -166,8 +198,8 @@ Talking to your data:
 ```
  you:    make a project from /groups/…/run12; align with AreTomo at 200 nm, reconstruct at 10 Å, denoise,
          and match ribosomes from the lab catalog at 7°
- agent:  inspect_dataset(dir)   → 41 tilt series, EER. The mdocs give 0.93 Å, 300 kV, dose 3.1, tilt axis −95.2;
-                                   not given: Cs, amplitude contrast, sample thickness, hands, EER fractions.
+ agent:  inspect_dataset(dir)   → 41 tilt series, EER. The mdocs give 0.93 Å, 300 kV, dose 3.1, tilt axis −95.2,
+                                   detector 4096²; not given: Cs, amplitude contrast, hands, EER fractions.
          ← asks you for those, and for the gain reference                                        (D3)
          create_project(…, every value)                → Claude Code shows the call; you approve → ui_url
          list_job_types · get_job_type(aligntiltsWarp) → the parameters: value, bounds, choices, help
@@ -207,11 +239,12 @@ Talking to your data:
    - Each result also carries `needs`, `warnings` and a `ui_url` for whatever the call touched.
    - `code` appears only where the agent has to branch. New `ErrorCode` members: `NEEDS_DECISION`, `JOB_FROZEN`,
      `NOT_WRITABLE`.
-8. **Small answers.** Claude Code caps an MCP result at 25 000 tokens by default (`MAX_MCP_OUTPUT_TOKENS`) and saves
-   anything longer to a file. Summaries carry counts; per-tilt-series detail has its own paged verb.
+8. **Small answers.** Claude Code saves a text result over 50 000 characters, or over `MAX_MCP_OUTPUT_TOKENS` (25 000
+   tokens by default), to a file and shows the model only its path. Summaries carry counts; per-tilt-series detail has
+   its own paged verb.
 9. **Quick answers.**
-   - Anything slower than a few seconds, such as an import or a template simulation, runs as a `BackgroundTask`
-     (`services/background_tasks.py`), and the verb returns its id.
+   - Anything slower than a few seconds, such as an import or a template simulation, runs as a background task
+     (`BackgroundTaskRegistry`, `services/background_tasks.py:89`), and the verb returns its id.
    - The task also shows in the tray of any tab on that project. The tray matches the resolved path string, so verbs
      always use the resolved path.
 10. **The event loop stays free** (`docs/architecture.md`, *Where work runs*).
@@ -279,7 +312,10 @@ Talking to your data:
 - **`set_tilt_filter(state, iid, mode=, model=, threshold=)`**: the mode through `set_tilt_filter_mode`; model and
   threshold move from the widgets (§0.10).
 - **`set_slurm(state, iid, values | reset)`**: validated values, written only where they change (moves from
-  `slurm_tab.py:207`); `reset` is `clear_slurm_overrides` (`_base.py:248`). No presets: the UI has none.
+  `slurm_tab.py:203-214`); `reset` is `clear_slurm_overrides` (`_base.py:248`). It refuses a frozen job with
+  `JOB_FROZEN` itself: `slurm_overrides` is not a user parameter, so the model's guard never blocks it (the SLURM
+  section shows a frozen job's fields read-only, `slurm_tab.py:134, 199`). A constraint is checked at Run (§4.3), as
+  in the UI. No presets: the UI has none.
 - **`set_input(state, iid, slot, source | path | auto, facet=None)`**: the input-loop check (`cycle_with_override`,
   `path_resolution_service.py:543`), then the writes the I/O section makes today (`io_config_component.py:692`,
   `:981-1036`). **`reset_inputs(state, iid)`** for a failed job (`:309`). **`set_gain(state, path | None)`** (`:380`).
@@ -304,9 +340,12 @@ Talking to your data:
   - holds every acquisition value as a required field:
     - the landing page fills the values it does not let you type from the model defaults, in its own code, as today
       (D3);
-    - the API takes every one from the request (D3): pixel size, voltage, Cs, amplitude contrast, dose per tilt, tilt
-      axis, sample thickness, the tilt-angle and defocus hands, EER fractions for EER movies, and the gain reference
-      (a path, or none);
+    - the API takes every one from the request (D3), and the list is exactly what the pipeline reads (S4 facts,
+      settled 2026-11-05): pixel size, voltage, Cs, amplitude contrast, dose per tilt, tilt axis, detector size (read
+      when a job is made, `project_state.py:1154-1156`), the tilt-angle hand (`invert_tilt_angles`), the defocus hand
+      (`invert_defocus_hand`), EER fractions for EER movies, and the gain reference (a path, or none). The project's
+      sample thickness is not among them: nothing reads it, and alignment's own `sample_thickness_nm` (default 180,
+      `services/jobs/ts_alignment.py:65`) drives `--alignz`, set with `set_params` like any parameter;
   - checks the spec as `get_missing_requirements` checks the form today (moves here);
   - names in `warnings` each value that differs from what the data says;
   - refuses a directory that exists (§2.12);
@@ -327,28 +366,52 @@ Talking to your data:
 - **The workbench's generators** become `make_template(kind=shape | pdb | emdb | resample | lowpass | flip, …)` and
   `make_mask(kind=threshold | sphere, …)` over `template_service` (`:70, 73, 89, 157, 213, 289`) and `pdb_service`
   (`:218`). What only the workbench does today moves with them: flip polarity (`:2114, 2188`), the mask file names
-  (`:2251, 2328`), the auto box size (`:1806`), and the default pixel size taken from the project (`:431`).
+  (`:2251, 2328`), the auto box size (`:1806`), and the default pixel size (`_load_project_parameters`, `:431-472`: a
+  Reconstruct job's `rescale_angpixs`, else the project's pixel size, else 10 Å). In a project of imported tomograms
+  that default is their voxel size (§3.8).
 
 ### 3.7 Small facade gaps
 - `backend.stop_pipeline` and `backend.cancel_job`, wrapping `pipeline_runner`.
 - `get_job_logs` by instance id, and the tail of a single tilt series' task log.
 - `ui/routing.py`'s pure half (`View`, `Route`, `route_to_path`, `parse_route`) moves to `services/routes.py`, so the API
-  builds the same links. `ui/routing.py` keeps `apply_route` and `RouteWriter`.
+  builds the same links. `ui/routing.py` keeps `apply_route` and `RouteWriter`. It imports `nicegui` at its top
+  (`:32`), so `api/` could not import it where it is.
 
 ### 3.8 Tomograms from other projects, ready for TM (for U2)
 - `services/tomogram_import.py` gains a third mode beside synthesize and reference: **from CryoBoost jobs**. For each
-  source it takes the project, its tomogram job (Reconstruct or Denoise Predict), the TS CTF job behind it, and the
-  tomogram names.
-- It writes `Tomograms/tomograms.star` and `Tomograms/tilt_series.star` in the new project: the sources' rows for those
-  names, with absolute paths. Nothing is copied, and nothing is written in a source.
-- The resolver offers the second star as a TS CTF tilt-series producer beside the first
-  (`path_resolution_service.py:1194`), so both TM inputs resolve without pins.
-- The sources must agree on the values TM takes from the project (§0.13), and on pixel size. When they do not, the call
-  returns a `needs` item listing the groups: you pick one, or have one project made per group.
-- These values come with the tomograms: the new project takes the sources' recorded values, and the answer lists them.
-  D3 covers raw data, where nobody has recorded them yet.
+  source it takes the project, its tomogram job (Reconstruct or Denoise Predict), and the tomogram names. The TS CTF
+  job behind it is read off the rows: a Reconstruct row's `rlnTomoTiltSeriesStarFile` is its TS CTF input's own
+  per-tilt-series star, absolute (`services/tilt_series/adapters/ts_reconstruct.py:173-178`), and Denoise Predict
+  passes it through.
+- It writes, in the new project (S8 facts, settled 2026-11-05):
+  - `Tomograms/tomograms.star`: the sources' rows with all their columns, so optics, pixel size, binning, sizes and
+    hand stay the sources' own. Paths are made absolute against the star's folder, then the source's project root (as
+    `subsets._absolute`, `services/subsets.py:134-145`). The reference mode takes the same rule, which fixes its
+    Denoise Predict case (§0.13). Each row also carries the `cbOrigin*` columns (`set_origins.py:22-25`).
+  - `Tomograms/tilt_series.star`: `rlnTomoName` and the absolute `rlnTomoTiltSeriesStarFile` of exactly those
+    tomograms, from the TS CTF job's `ts_ctf_tilt_series.star`. Every per-tilt-series star must exist and hold
+    `rlnTomoYTilt`, `rlnDefocusU` and `rlnMicrographPreExposure`, or the call names what is missing.
+  - Names stay unique. A tomogram renamed `<name>__N` (as `tomogram_import.py:233-275` does) gets a copy of its
+    tilt-series star with the block renamed (`write_renamed_tilt_star`, `set_origins.py:77-89`). That is the only copy,
+    and nothing is written in a source.
+- `ImportedTomograms` gains the tilt-series star, and `write_tomograms_star` the new `source_mode` (any other mode falls
+  into synthesize, `:321-334`). The resolver offers the star as a synthetic TS CTF tilt-series producer beside the
+  tomograms one (`path_resolution_service.py:1194-1225`, `:258-265`), so both TM inputs resolve without pins.
+- TM and Pick candidates check the origin projects' registries when the rows carry `cbOrigin*`, as subtomo extraction
+  does (`preflight_origins`, `drivers/array_job_base.py:441-474`), instead of the project's own empty one (§0.13). The
+  other way, copying the sources' registry entries into the new project, is not taken: those entries point at the
+  sources' frames by project-relative paths.
+- The sources must agree on the values TM takes from the project (voltage, Cs, amplitude contrast) and on the tomogram
+  voxel size, which one template has to match. When they do not, the call returns a `needs` item listing the groups:
+  you pick one, or have one project made per group.
+- These values come with the tomograms: the new project takes the sources' recorded values (its pixel size is the
+  frame pixel size, `rlnTomoTiltSeriesPixelSize`), and the answer lists them. D3 covers raw data, where nobody has
+  recorded them yet. The workbench's default template pixel size is the tomograms' voxel size (§3.6).
+- A source outside the container binds (`container_binds` in conf.yaml) is refused, naming the path: no job could read
+  it.
 - The import dialog offers the same mode, so the UI can do it too (§2.1). Both go through
-  `backend.commit_imported_tomograms` (`backend.py:820`).
+  `backend.commit_imported_tomograms` (`backend.py:820`), which takes over the "not beside a Reconstruct job" rule
+  (§4.3).
 
 ## 4. Part B — the API inside the server
 
@@ -359,8 +422,9 @@ Talking to your data:
   default project base and conf warnings.
 
 ### 4.2 One verb table, two readers
-- A new top-level package `api/` sits beside `ui/`, over the same backend. `check_boundaries.py` R1 grows to cover it:
-  no `ui.*` imports.
+- A new top-level package `api/` sits beside `ui/`, over the same backend. `check_boundaries.py` covers it: `api`
+  joins `NO_UI_TREES` (R1, `:31`) and the folder lists of R3 and R4 (`:108`, `:125`), and a new rule keeps `nicegui`
+  out of `api/`, which R1 does not forbid. Its routes mount on the FastAPI app in `server_app.py`.
 - `api/verbs.py` has one entry per verb: name, a description written for the model, a pydantic input model,
   `read | write`, and the handler.
 - Two readers use that table:
@@ -392,7 +456,7 @@ with its verb or a line in those lists.
 | Remove a job that has not run | `remove_job` | `pipeline_edit.remove_job` | S2 |
 | Exclude a tilt series (Journey) | `exclude_tilt_series` | `pipeline_edit.exclude_tilt_series` | S2 |
 | New species (PARTICLES header) | `create_species` | `species_edit.create_species` | S7 |
-| Import tomograms (PARTICLES header) | `import_tomograms` | `commit_imported_tomograms` (`backend.py:820`); its "not beside a Reconstruct job" rule moves from `pipeline_roster.py:1375` | S7 |
+| Import tomograms (PARTICLES header) | `import_tomograms` | `commit_imported_tomograms` (`backend.py:820`); its "not beside a Reconstruct job" rule moves from `pipeline_roster.py:1375`, where it only disables the button | S7 |
 
 **Job pages, SLURM and I/O**
 
@@ -442,8 +506,14 @@ with its verb or a line in those lists.
 | `list_kitchen_subsets`, `get_kitchen_subset_sources` | §7 | `services/sta_kitchen/` |
 
 **`plan_run` matters most.**
-- Today `_submit_chain` checks inputs and allocates job directories in one pass (`:398-624`), and resolving inputs needs
-  the allocated directories.
+- Today `_submit_chain` checks in three places: before anything is allocated (`:430-452`: Subset readiness,
+  `SET_CHECKS`, `still_live`); in an in-memory allocate-and-resolve loop (`:463-556`, repeated while a reused failed
+  directory's inputs moved), whose refusals (`:542-624`) undo the allocation with `_restore_allocation`; and, for the
+  SLURM constraint, only in pass 3, after disk is touched (§0.6). The loop awaits a thread (`:578`) while its
+  allocation stands, so a dry pass must not run it on the live state.
+- `run` and `plan_run` share the pre-allocation check, and the constraint check moves into it (through
+  `asyncio.to_thread`, since `sinfo` runs on first use). A bad constraint is then refused before a job number is spent,
+  in the UI too: its own commit.
 - The dry pass reports, for each input slot, the source job that `_select_source` would pick and why: pinned, recorded
   at submit, or automatic (with the reason). It does not report paths.
 - So the inputs that are still picked silently show up in the plan, without being fixed here:
@@ -498,14 +568,19 @@ with `uv run --script` and inline dependencies, which keeps `mcp` out of the ser
     names the server's node.
 - **reads `~/.crboost/token` itself.** The token never appears in a config file or a tool result.
 - **lists the tools from `GET /api/v1/tools`.** If the server is down when the session starts, it offers only
-  `get_server_info`, which says how to start it. `/mcp` reconnects once the server runs.
+  `get_server_info`, which says how to start it. It tries the server again on each call. Once the server answers, it
+  sends `notifications/tools/list_changed`, and Claude Code fetches the full list without a reconnect (an `/mcp`
+  reconnect does the same). A restarted server whose verbs differ is announced the same way (§12.6).
 - **forwards each tool call** as `POST /api/v1/<verb>`.
 
 The alternative is an `http` MCP endpoint inside the server, with a `headersHelper` script reading the token. It saves
 the forwarder but carries the port problem above. Keep it for a session on a laptop through the tunnel (L3).
 
 ### 5.2 Instructions and the skill
-- **Server instructions** (at most 4 096 characters, loaded when the session starts) cover:
+- **Names that say what they do.** At session start Claude Code loads only the tool names and the server
+  instructions; it fetches a tool's description and schema when it needs them. So a verb's name carries its meaning,
+  and the instructions name the verb families.
+- **Server instructions** (at most 4 096 characters; Claude Code cuts the rest silently) cover:
   - what CryoBoost is, and the read/write split;
   - the API reaches what the UI reaches; looking and judging are the user's, in the UI, so hand over the `ui_url`;
   - the §2 rules in the agent's words: never invent a value; a `needs` item is a question for the user; `plan_run` comes
@@ -520,19 +595,25 @@ the forwarder but carries the port problem above. Keep it for a session on a lap
 
 ### 5.3 Permissions
 - Allow the read verbs: `mcp__crboost__get_*`, `mcp__crboost__list_*`, `mcp__crboost__inspect_*`,
-  `mcp__crboost__plan_*`. Every other verb prompts by default.
+  `mcp__crboost__plan_*` (a glob after the server's prefix is a documented form). Every other verb prompts by default.
+  The read verbs also carry `readOnlyHint`, which lets Claude Code run them in parallel; it changes no prompt.
 - `create_project` and the verbs that submit or cancel SLURM work (`run`, `predict_tilts`, `stop`, `cancel_job`,
-  `cancel_leftovers`) set `anthropic/requiresUserInteraction` in their tool `_meta`. They then ask even when a rule
-  allows them: `create_project` so you see every value before the project exists, the others since they spend GPU
-  hours or end them.
-- Deny `Edit` and `Write` of `**/project_params.json`.
+  `cancel_leftovers`) set `_meta["anthropic/requiresUserInteraction"]: true` in their tool entry. They then ask on
+  every call, in every permission mode, even when an allow rule matches: `create_project` so you see every value before
+  the project exists, the others since they spend GPU hours or end them.
+- Deny `Edit(//**/project_params.json)`. An `Edit` rule covers every built-in tool that edits files (a `Write` path
+  rule never matches), and `//` anchors it at the filesystem root: `**/` alone covers only the session's directory,
+  and projects live elsewhere. Neither stops a script run through Bash (§12.1).
 
 ### 5.4 Packaging (D6)
 - **Now, for the maintainer:** a user-scope entry,
-  `claude mcp add --scope user crboost -- uv run --script <checkout>/agent/crboost_mcp.py`. It works from any directory.
+  `claude mcp add --scope user crboost -- uv run --script <checkout>/agent/crboost_mcp.py`, kept in `~/.claude.json`.
+  It works from any directory.
 - **Later, for the lab:** a plugin in this repo (`agent/` with `.mcp.json`, `skills/` and `.claude-plugin/plugin.json`,
-  plus `.claude-plugin/marketplace.json` at the root). Install it with
-  `claude plugin marketplace add <repo>` and then `claude plugin install crboost@<marketplace>`.
+  plus `.claude-plugin/marketplace.json` at the root, whose entry has `"source": "./agent"`). `.mcp.json` names the
+  script through `${CLAUDE_PLUGIN_ROOT}`. Install it with `claude plugin marketplace add <repo>` and then
+  `claude plugin install crboost@<marketplace>`; `claude plugin validate` checks the layout. A plugin's server is named
+  `plugin_crboost_crboost`, so its allow rules read `mcp__plugin_crboost_crboost__get_*`.
 - A short `docs/agent.md` covers setup, the permission snippet, and what the agent will and will not do.
 
 ## 6. Talking to your data: how a session goes
@@ -600,8 +681,21 @@ not wait. The DL modes need `tilt_filter.models` in conf.yaml.
 - **The pool is not written.** It lives in the home project, which a person made, and membership is judging (§2.3). You
   add N's Pick candidates in the kitchen: Add members offers them because N's species came from the same catalog entry
   (`members.matching_species`, `members.py:72`; `offered_members`, `:79`).
-- **Old and new picks side by side** needs N's frames to carry the sources' acquisition labels, since the kitchen
-  groups sources per acquisition (`pool.acq_key`, `pool.py:331`). S9 checks this first.
+- **Old and new picks side by side (S9 facts, settled 2026-11-05).** The kitchen knows a frame by its resolved
+  reconstruction path alone (`pool.py:184-192`, `table.py:73-96`). The acquisition label (`acq_key`, `pool.py:331`)
+  comes from the member's own project registry (`services/particles/tomo_identity.py:99-115`), which N, having no raw
+  data, does not have. So:
+  - N's picks fold onto the source frames when N's tomograms are the very files the source member's TM read, since Pick
+    candidates copies TM's input rows, absolute paths included (`drivers/extract_candidates_pytom.py:302-303`). That is
+    why `get_kitchen_subset_sources` names the tomogram job the member's TM read, and §3.8 imports exactly that one.
+  - Those frames are then fed by two members, and Make set asks you to choose one (`source_conflicts`,
+    `pool.py:346-357`; `export.py:145-155`): judging, in the UI.
+  - N's member has to come after the source's in the pool, or the shared frame's label becomes "unknown"
+    (`pool.py:181-190`). Members are appended (`service.py:303-306`), so adding N's later keeps it.
+  - A member whose project has no `registry/index.json` fails to build today (`service.py:175` stats it), so N's Pick
+    candidates would bring no rows. S9 makes a missing registry mean "no labels".
+  - When Z has no catalog id, N's species is made with `create_species` from Z's selected template (several or none is
+    a `needs` item), and in the kitchen you pick N's species by hand (`ui/sta_kitchen/sources.py:264-266`).
 
 ## 8. Decisions
 
@@ -624,9 +718,9 @@ not wait. The DL modes need `tilt_filter.models` in conf.yaml.
 Every stage is one commit or a short series, and leaves the app runnable. The checks are run once at the end (§11),
 as the standing decision says.
 
-The arc is built in its own worktree (maintainer, 2026-11-05), S1 to S9 back to back. It stops for the maintainer only
-where a stage's facts-first check changes the plan. S8 and S9 are the likely ones: whether TM takes the pixel size per
-tomogram, and whether N's frames carry the sources' acquisition labels.
+The arc is built in its own worktree (maintainer, 2026-11-05), S1 to S9 back to back. The facts-first checks were run
+in the last scoping pass (§13), so no stop is planned. It stops for the maintainer only where the code disagrees with
+this document in a way that changes the plan.
 
 ### S1 — The roster belongs to the project (§3.1)
 UI. Behaviour change in its own commit.
@@ -653,8 +747,8 @@ A move. The Warp-export branch for protocols is its own flagged commit.
   - After a restart, every door's write is still there (none relied on a widget's forced save).
 
 ### S4 — Creation, everything the landing page can do (§3.5)
-- *Facts first:* which acquisition values the drivers and the job.star writers read, so the API's required list is
-  exact.
+- *Facts (settled 2026-11-05):* the required list in §3.5 is what the drivers, the job.star writers and job creation
+  read.
 - *Success:*
   - Landing Create makes the same project as before, defaults included, for raw data, split folders and no raw data.
   - A spec missing any value is refused, naming each one.
@@ -663,8 +757,11 @@ A move. The Warp-export branch for protocols is its own flagged commit.
   - Creating 300 tilt series leaves no loop stall over 1 s in the log.
 
 ### S5 — The API: reads, creation, composition, runs (§4, §3.7)
-Every verb in §4.3 marked S2–S5.
+Every verb in §4.3 marked S2–S5. The shared pre-allocation check, with the constraint check moved into it (§4.3), is
+its own commit: it changes the UI's Run too.
 - *Success:*
+  - A job whose constraint names a feature its partition lacks is refused by `plan_run` and by Run, from the API and
+    from the UI, before any job directory or number is spent.
   - `curl -s -X POST -H "Authorization: Bearer $(cat ~/.crboost/token)" localhost:P/api/v1/get_server_info` answers.
   - A write verb sent with only the cookie is refused.
   - A write verb on a project made by hand comes back as `NOT_WRITABLE`, and the project is unchanged.
@@ -675,12 +772,17 @@ Every verb in §4.3 marked S2–S5.
     same jobs, parameters, input pins and SLURM values (`project_params.json` compared without paths and times).
 
 ### S6 — The Claude Code side (§5)
-- *Facts first:*
-  - Checked 2026-11-05 on cbe-login-0: `uv` is `/usr/local/bin/uv`, and PyPI answers, so `uv run --script` can
-    fetch `mcp` and `httpx`.
-  - Does Claude Code re-list tools after `/mcp` reconnects?
+- *Facts (settled 2026-11-05, Claude Code 2.1.304 and its docs):*
+  - On cbe-login-0, `uv` is `/usr/local/bin/uv` (0.11.19) and PyPI answers: `mcp` 2.3.0 and `httpx` 0.28.1 resolve for
+    Python 3.11. The forwarder pins `mcp>=2.3,<3`.
+  - Each connection runs tool discovery, and an interactive session also refetches the list on
+    `notifications/tools/list_changed`, so a reconnect is not needed (§5.1).
+  - `anthropic/requiresUserInteraction`, the `mcp__crboost__get_*` allow rules, the 4 096-character instructions cap
+    and the 50 000-character result cap behave as §2.8 and §5 state.
 - *Success:*
   - `claude mcp list` shows `crboost` connected.
+  - Started with the server down, the forwarder offers `get_server_info`; once the server is up, the next call brings
+    the full list without `/mcp`.
   - Read verbs run without a prompt.
   - `create_project` and `run` always ask; the `create_project` prompt shows every value.
   - Pointed at a port held by another uid, the forwarder refuses and sends nothing.
@@ -695,23 +797,28 @@ Every verb in §4.3 marked S7.
   - A project created from a protocol through the API equals one from the dialog with the same inputs.
 
 ### S8 — Tomograms from other projects (§3.8)
-- *Facts first:*
-  - Which per-tilt-series stars does a Reconstruct job's `tomograms.star` point at, and are they its TS CTF input's?
-  - Does TM take the pixel size per tomogram (from the star or the header) or from the project?
-  - What else do Pick candidates and extraction read from the project?
+- *Facts (settled 2026-11-05, §0.13):* a Reconstruct job's rows point at its TS CTF input's per-tilt-series stars,
+  absolute, and Denoise Predict passes them through. TM takes the voxel size from the MRC headers, and voltage, Cs and
+  amplitude contrast from the project; Pick candidates and extraction read no project acquisition value. Writing the
+  stars is not enough: TM and Pick candidates also check the project's own registry, hence the origin preflight in
+  §3.8.
 - *Success:*
-  - A project made from two projects' Reconstruct and TS CTF jobs runs TM and Pick candidates with no pins, from the
-    API and from the import dialog alike.
+  - A project made from two projects' tomogram jobs (one Reconstruct, one Denoise Predict) runs TM and Pick candidates
+    with no pins, from the API and from the import dialog alike.
+  - Two sources with a tomogram of the same name both come in, one renamed, and both are matched.
   - The source projects' files and `project_params.json` keep their mtimes.
-  - Sources with different voltages come back as a `needs` item naming the groups.
+  - Sources with different voltages, or different voxel sizes, come back as a `needs` item naming the groups.
+  - A reference import of a Denoise Predict star finds its tomograms.
 
 ### S9 — The kitchen reads (§7)
-- *Facts first:* do N's frames carry the sources' acquisition labels (`pool.acq_key`)? If not, the kitchen takes N's
-  tomograms for new acquisitions, and old and new picks of one tilt series are not grouped together.
+- *Facts (settled 2026-11-05, §7):* N's frames carry no acquisition labels, but the kitchen knows a frame by its
+  reconstruction file, so N's picks fold onto the source frames when N imported the files the source member's TM
+  read. A member without a registry breaks the member build today; S9 fixes that.
 - *Success:*
   - On a home project whose pool spans two projects, `get_kitchen_subset_sources` lists both, with their tomograms,
-    jobs and values.
+    the tomogram job each member's TM read, the TS CTF jobs and the values.
   - A project made from them runs (S8), and the kitchen's Add members offers its Pick candidates.
+  - Once added, N's picks show on the source frames, and Make set asks which of the two to take.
 
 ## 10. Not doing
 - A chat, model or agent session inside the server or the UI (dropped 2026-11-04; D1), and with it the per-person
@@ -731,13 +838,19 @@ Every verb in §4.3 marked S7.
     (`data_import_panel.py:803`);
   - the "shared" tooltip promises an ownership transfer that no UI offers (`data_import_panel.py:1381`;
     `backend.transfer_project_ownership`, `backend.py:2236`);
-  - the roster names a second instance `{job}__2`, protocols `{job}__{species}` (`services/protocols/schema.py:93`).
+  - the roster names a second instance `{job}__2`, protocols `{job}__{species}` (`services/protocols/schema.py:93`);
+  - acquisition labels never match between projects imported separately from the same data: import prefixes each movie
+    with the project's name (`project_service.py:110-111, 141-156`), and the label is the first frame's file name and
+    time (`services/particles/tomo_identity.py:99-115`), whose docstring (`:13-17`) says the labels are stable;
+  - `drivers/ts_import.py:93` reads `gain_operations`, which `TsImportParams` lacks, so the tilt-series settings never
+    get the gain flips that motion correction gets.
 
 ## 11. Runtime checklist (the maintainer's step, after the arc)
 1. **Two tabs on one project.** Add, remove and Run from either tab; both show one roster (S1).
 2. **Landing Create** on a dataset without PixelSpacing behaves as before (S4).
 3. **The API with curl** (the S5 checks). The cookie alone on a write → refused. A write on a project made by hand →
-   `NOT_WRITABLE`.
+   `NOT_WRITABLE`. A job with a constraint its partition lacks → `plan_run` and Run refuse it, and no job directory
+   appears.
 4. **Parity.** Build a small pipeline by hand; have the agent build the same one from the same data; compare the two
    `project_params.json` (S5).
 5. **In Claude Code on the server's login node, from a data directory**, with no repo files open:
@@ -768,7 +881,7 @@ Every verb in §4.3 marked S7.
    list of record, and adding a UI action means adding its verb or its line there.
 5. **Large projects.** Answers carry counts, and per-tilt-series detail is paged.
 6. **A server older than the checkout.** The forwarder reads the tool list from the running server, so the newer verbs
-   are simply absent until a restart.
+   are simply absent until a restart. After the restart, `list_changed` brings them into the session (§5.1).
 7. **The token leaving the machine.** It is never in a tool result or a config file. The uid check keeps it off other
    users' ports.
 8. **The mark is one field in `project_params.json`.** A hand edit could open a hand-made project to the API. The deny
@@ -786,4 +899,16 @@ Every verb in §4.3 marked S7.
 
 ## 13. Stage log
 
-*(empty)*
+**Last scoping pass (2026-11-05, at `f7de679`; `a765794` landed during it and moved two TM anchors).** Only 11 Python
+files changed since the anchor reads, none at a cited line; the corrections are made in place in §0, §2 and §4. The
+facts-first checks of S4, S6, S8 and S9 were run, so the build has no planned stop. Plan changes:
+- S3: `set_slurm` refuses a frozen job itself (§3.3).
+- S4: the required acquisition list is what the pipeline reads (§3.5): detector size joins it; the project's sample
+  thickness, which nothing reads, leaves it.
+- S5: the SLURM constraint check (new since the scoping) moves ahead of allocation and into `plan_run` (§4.3).
+- S6: the forwarder announces the full tool list with `list_changed` rather than waiting for `/mcp`; the deny rule is
+  `Edit(//**/project_params.json)`; the read verbs carry `readOnlyHint` (§5).
+- S7: the workbench's default template pixel size is the imported tomograms' voxel size (§3.6).
+- S8: the new import also writes `cbOrigin*` columns and renamed tilt-series stars, and TM and Pick candidates check the
+  origin projects' registries (§3.8); the reference mode's Denoise Predict paths are fixed on the way.
+- S9: a member without a registry no longer breaks the member build (§7).
