@@ -33,7 +33,7 @@ _FILE_FORMAT = "%(asctime)s.%(msecs)03d %(levelname)-7s %(name)s  %(module)s:%(l
 _FILE_DATEFMT = "%Y-%m-%d %H:%M:%S"
 
 # First component of the server's own logger names; any other logger is a library's.
-_OWN_ROOTS = frozenset({"crboost", "services", "ui", "backend", "startup_summary", "__main__"})
+_OWN_ROOTS = frozenset({"crboost", "services", "ui", "backend", "__main__"})
 # Libraries that log below WARNING on their own: held at WARNING, so they never even build the records.
 _LIBRARIES = (
     "nicegui",

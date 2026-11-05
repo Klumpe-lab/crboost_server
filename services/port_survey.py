@@ -461,12 +461,3 @@ def leftover_lines(found: Survey) -> list[str]:
     lines += ["  " + "  ".join(cell.ljust(w) for cell, w in zip(row, widths, strict=True)) for row in table]
     lines.append(f"End them with:  kill -9 {' '.join(str(p.pid) for p in rows)}")
     return lines
-
-
-def port_line(found: Survey, port: int) -> str:
-    """This server's port and who else uses the block."""
-    others = [f"{p} {user}" + (" (CryoBoost)" if a.cryoboost else "") for p, (user, a) in sorted(found.others.items())]
-    mine = [f"{p.port} you ({_home(p.install)})" for p in found.running() if p.port is not None and p.port != port]
-    used = others + mine
-    block = f"{PORT_RANGE[0]}–{PORT_RANGE[-1]}"
-    return f"{port}  (block {block}" + (f"; also in use: {' · '.join(used)})" if used else ")")
