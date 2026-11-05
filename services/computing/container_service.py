@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 # JIT/kernel caches every tool may write. Under --cleanenv each would land wherever its
 # default points (often a read-only image path or a shared $HOME), so all of them go to one
-# node-local, per-user directory.
+# node-local, per-user directory. The CUDA kernel cache moves to conf's `gpu_kernel_cache` when set.
 _CACHE_VARS = {
     "XDG_CACHE_HOME": "",
     "CUPY_CACHE_DIR": "cupy",
@@ -37,8 +37,17 @@ def _cache_root() -> Path:
     return Path(os.environ.get("TMPDIR") or "/tmp") / f"crboost-{getpass.getuser()}"
 
 
-def _container_env(cache_root: Path) -> dict[str, str]:
+# The driver's cap on CUDA_CACHE_PATH (default 256 MB, at most 4 GiB). One TensorFlow image's
+# kernels compiled from PTX for a B200 take ~1.6 GB, and an evicted kernel compiles again, so
+# each image gets its own directory (and cap) under `gpu_kernel_cache`.
+_GPU_KERNEL_CACHE_MAXSIZE = str(4 * 1024**3)
+
+
+def _container_env(cache_root: Path, gpu_kernel_cache: str = "") -> dict[str, str]:
     env = {var: str(cache_root / sub) if sub else str(cache_root) for var, sub in _CACHE_VARS.items()}
+    if gpu_kernel_cache:
+        env["CUDA_CACHE_PATH"] = gpu_kernel_cache
+        env["CUDA_CACHE_MAXSIZE"] = _GPU_KERNEL_CACHE_MAXSIZE
     # Progress bars are carriage-return noise in a job log.
     env["TQDM_DISABLE"] = "1"
     return env
@@ -79,16 +88,21 @@ class ContainerService:
 
         cache_root = _cache_root()
         cache_root.mkdir(parents=True, exist_ok=True)
+        gpu_kernel_cache = ""
+        if cfg.config.gpu_kernel_cache:
+            gpu_kernel_cache = str(Path(cfg.config.gpu_kernel_cache) / Path(tool.container_path).stem)
+            Path(gpu_kernel_cache).mkdir(parents=True, exist_ok=True)
         binds = _bind_list(
             [
                 "/tmp",
                 str(cache_root),
+                gpu_kernel_cache,
                 str(Path(cwd).resolve()),
                 *(str(Path(b).resolve()) for b in additional_binds or []),
                 *cfg.config.container_binds,
             ]
         )
-        env = "; ".join(f"export {k}={shlex.quote(v)}" for k, v in _container_env(cache_root).items())
+        env = "; ".join(f"export {k}={shlex.quote(v)}" for k, v in _container_env(cache_root, gpu_kernel_cache).items())
         parts = [
             cfg.config.container_runtime.value,
             "exec",

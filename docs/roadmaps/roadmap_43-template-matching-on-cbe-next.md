@@ -127,8 +127,15 @@ against the text path; the 0.13.0 angle sign flip is the thing to watch. Answers
   that run from PTX (TensorFlow ones, imod) recompile every job. Move that one cache to a persistent per-user dir.
 - `pytest -m cluster`: the cryocare probe only lists GPUs; make every GPU probe run one kernel (pytom's does, which is
   how it caught the cupy failure).
-- cryocare, easymode, ais, pom (CUDA 11 / cuDNN 8 / TF 2.x) are not yet run on a B200; the binary survey says they
-  should JIT from compute_80/86 PTX.
+- cryocare, easymode, ais, pom (CUDA 11 / cuDNN 8 / TF 2.4–2.11) run on a B200 from compute_80 PTX (2026-11-05,
+  `container_verify/verify_tf.sh`: matmul, conv2d, conv3d, FFT on a full B200, no NaNs; values not checked against
+  a CPU run). The first GPU call compiles that PTX: 742 s (ais), 747 s (pom), 782 s (easymode), 1053 s plus 275 s of
+  device setup (cryocare); the second call takes under 0.1 s. With the cache in per-job `/tmp`, every job pays this
+  again, so the cache fix above comes first. No rebuild needed: no TF release ships sm_100 SASS, so a rebuilt
+  TF image would JIT as well. Set `CUDA_CACHE_MAXSIZE` too (default 256 MB; TF's compiled kernels are larger).
+  **Done 2026-11-05:** conf `gpu_kernel_cache` (`/groups/klumpe/software/cache_and_artifacts/cuda_kernels`, one
+  subdirectory per image, shared by all users and both installs, `CUDA_CACHE_MAXSIZE` 4 GiB). ais twice in a row
+  against it: 775 s, then 27 s for the first GPU call; its cache is 1.6 GB.
 
 ## 7. Runtime checklist (after S2)
 
