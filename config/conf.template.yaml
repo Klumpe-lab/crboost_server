@@ -192,6 +192,7 @@ curation:
   partition: "c"   # CPU partition, software GL. For fluid 3-D: point sif_path at chimerax_artiax_GL.sif,
                    # set partition: "g", gres: "gpu:1", vgl: true (VirtualGL on the GPU under apptainer --nv).
   gres: ""         # SLURM --gres for the session; "" = none (CPU). "gpu:1" on a GPU partition.
+                   # VirtualGL needs a full GPU: MIG slices do CUDA only (on CBE.next: gpu:nvidia_b200:1).
   vgl: false       # render ChimeraX via VirtualGL on the GPU (needs the _GL.sif + a GPU gres).
   cpus: 4
   mem: "16G"
