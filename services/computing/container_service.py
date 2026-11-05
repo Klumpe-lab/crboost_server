@@ -102,7 +102,13 @@ class ContainerService:
                 *cfg.config.container_binds,
             ]
         )
-        env = "; ".join(f"export {k}={shlex.quote(v)}" for k, v in _container_env(cache_root, gpu_kernel_cache).items())
+        exports = [f"export {k}={shlex.quote(v)}" for k, v in _container_env(cache_root, gpu_kernel_cache).items()]
+        if tool.image_libs_first:
+            # --nv puts the host's NVIDIA GL libraries on LD_LIBRARY_PATH; an image older than the host
+            # cannot load them (CBE.next's EL10 libGL needs a newer glibc than Ubuntu 20.04 has).
+            first = ":".join(shlex.quote(d) for d in tool.image_libs_first)
+            exports.append(f"export LD_LIBRARY_PATH={first}:$LD_LIBRARY_PATH")
+        env = "; ".join(exports)
         parts = [
             cfg.config.container_runtime.value,
             "exec",
