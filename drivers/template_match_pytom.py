@@ -259,6 +259,8 @@ def build_pytom_base_cmd(
         base_cmd.flag("--spectral-whitening")
     if getattr(params, "random_phase_correction", False):
         base_cmd.flag("--random-phase-correction")
+    if params.half_precision:
+        base_cmd.flag("--half-precision")
     if params.non_spherical_mask:
         base_cmd.flag("--non-spherical-mask")
     if params.bandpass_filter != "None" and ":" in params.bandpass_filter:
