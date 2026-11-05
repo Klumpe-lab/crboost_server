@@ -3,8 +3,8 @@
 **Status:** scoped 2026-11-04, no code. Reframed the same day after the maintainer's correction: the API reaches what
 the UI reaches, action by action (D2); it is not a set of recipes. The anchors in §0.1–§0.12 come from four code reads
 and a check of the Claude Code docs at `70ce4db`; the rest, and the UI inventory behind §4.3, from reads at `273f13d`.
-Decided: the scope (D2), D3, D4, D7 and U2. Open: D1, D6, D8, D9. Part A (§3) stands on its own: it fixes today's
-multi-tab roster whether or not an agent ever drives anything. **Pickup: S1.**
+Every decision is made (§8), the last of them on 2026-11-05. Part A (§3) stands on its own: it fixes today's multi-tab
+roster whether or not an agent ever drives anything. **Pickup: S1, in its own worktree (§9).**
 
 **Ask (maintainer, 2026-11-04).** "A really differentiated API so I can just talk to my data." From a Claude Code
 session in a terminal:
@@ -19,8 +19,9 @@ Things one would say:
 - **U3** and then look at the results in the UI, and carry on there.
 
 **In one line.** One verb for each thing the UI lets you do to compose, set up and run a project. Each verb goes through
-the same service function as its button, under the same rules. Claude Code calls them through a stdio MCP forwarder. The
-API changes only projects it made, and looking and judging stay in the UI.
+the same service function as its button, under the same rules. Any client with the token can call them (a script, curl);
+Claude Code calls them through a stdio MCP forwarder. No chat or model runs inside the server. The API changes only
+projects it made, and looking and judging stay in the UI.
 
 ## 0. What is there today (S0 facts, 2026-11-04)
 
@@ -488,6 +489,13 @@ with `uv run --script` and inline dependencies, which keeps `mcp` out of the ser
   - The reason: every user of the headnode shares `localhost`, and the port can move or be taken by someone else between
     restarts. An MCP entry with a fixed URL and a Bearer header would hand your token to whoever holds that port.
   - The script must be self-contained (stdlib + `mcp` + `httpx`), so it does this itself rather than importing it.
+- **runs on the server's login node.**
+  - CBE.next has two login nodes, and the `cbe.next` alias lands on either (`crboost:32`). `~/.crboost/ports.json`
+    is in the shared home, but it holds each checkout's preferred port, not the node a server runs on.
+  - The uid check reads this node's sockets, so the forwarder does not reach across nodes: that would send the token
+    to a port whose owner it cannot check.
+  - Finding no server of yours here, it says so and names this node. The tunnel line of the server's startup banner
+    names the server's node.
 - **reads `~/.crboost/token` itself.** The token never appears in a config file or a tool result.
 - **lists the tools from `GET /api/v1/tools`.** If the server is down when the session starts, it offers only
   `get_server_info`, which says how to start it. `/mcp` reconnects once the server runs.
@@ -599,15 +607,15 @@ not wait. The DL modes need `tilt_filter.models` in conf.yaml.
 
 | # | Question | Recommendation or decision |
 |---|---|---|
-| D1 | What the agent talks to | A stdio MCP forwarder in front of the REST verbs in the server (§5.1) |
+| D1 | What the agent talks to | **Decided 2026-11-05:** the server gains the verbs and nothing else, a small API that any outside client with the token can use to compose and queue work: Claude Code through the stdio forwarder (§5.1), a script, curl. No chat or model inside the server |
 | D2 | The API's scope | **Decided 2026-11-04:** what the UI reaches (§2.1, §4.3): any data folder the landing page can scan and create from, any combination of jobs the UI allows, any parameter. No protocol and no default set; recipes are the skill's (§6) |
 | D3 | Where acquisition values come from | **Decided 2026-11-04:** through the API, every one from you (§3.5). The landing page keeps its defaults for now |
 | D4 | The tilt filter | **Decided 2026-11-04:** in a preprocessing chain unless you say otherwise; its mode as you name it, else Manual, which waits for your review in the UI (§6) |
 | D5 | Protocol pins vs values from the data | **Dropped:** the API applies a protocol only as the dialog does (§4.3). The copia pin it came from is in §10 |
-| D6 | Packaging | A user-scope entry for the maintainer now; the in-repo plugin for the lab later |
+| D6 | Packaging | **Decided 2026-11-05:** a user-scope entry for the maintainer now; the in-repo plugin for the lab later (§5.4) |
 | D7 | Which projects the API may change | **Decided 2026-11-04:** only those it made (§2.12), for now. Any project can be read |
-| D8 | The template for U2 | The one the catalog's Z carries; several or none → a `needs` item (§7) |
-| D9 | The record of agent writes | Console events + `Logs/agent_api.jsonl`. Nothing extra in the UI |
+| D8 | The template for U2 | **Decided 2026-11-05:** the one the catalog's Z carries; several or none → a `needs` item (§7) |
+| D9 | The record of agent writes | **Decided 2026-11-05:** console events + `Logs/agent_api.jsonl`. Nothing extra in the UI |
 | D10 | Picking again without matching again | **Dropped with D7:** a new project has no score maps to pick from again |
 | U2 | "Subset Y of species Z globally" | **Decided 2026-11-04:** an STA-kitchen subset, matched again in a new project (§7) |
 
@@ -615,6 +623,10 @@ not wait. The DL modes need `tilt_filter.models` in conf.yaml.
 
 Every stage is one commit or a short series, and leaves the app runnable. The checks are run once at the end (§11),
 as the standing decision says.
+
+The arc is built in its own worktree (maintainer, 2026-11-05), S1 to S9 back to back. It stops for the maintainer only
+where a stage's facts-first check changes the plan. S8 and S9 are the likely ones: whether TM takes the pixel size per
+tomogram, and whether N's frames carry the sources' acquisition labels.
 
 ### S1 — The roster belongs to the project (§3.1)
 UI. Behaviour change in its own commit.
@@ -664,13 +676,15 @@ Every verb in §4.3 marked S2–S5.
 
 ### S6 — The Claude Code side (§5)
 - *Facts first:*
-  - Is `uv` on the PATH that Claude Code sees?
+  - Checked 2026-11-05 on cbe-login-0: `uv` is `/usr/local/bin/uv`, and PyPI answers, so `uv run --script` can
+    fetch `mcp` and `httpx`.
   - Does Claude Code re-list tools after `/mcp` reconnects?
 - *Success:*
   - `claude mcp list` shows `crboost` connected.
   - Read verbs run without a prompt.
   - `create_project` and `run` always ask; the `create_project` prompt shows every value.
   - Pointed at a port held by another uid, the forwarder refuses and sends nothing.
+  - Started on the other login node, the forwarder names this node and sends nothing.
 
 ### S7 — Species, templates, tomogram import, protocols (§3.6, the rest of §4.3)
 Every verb in §4.3 marked S7.
@@ -700,7 +714,8 @@ Every verb in §4.3 marked S7.
   - A project made from them runs (S8), and the kitchen's Add members offers its Pick candidates.
 
 ## 10. Not doing
-- A session inside the UI (dropped 2026-11-04), and with it the per-person Claude credentials.
+- A chat, model or agent session inside the server or the UI (dropped 2026-11-04; D1), and with it the per-person
+  Claude credentials.
 - Through the API: changing a project made by hand (D7, for now); looking and judging (§2.3); the deletions and the
   catalog publish of §4.3.
 - What the UI does not offer either (§4.3).
@@ -725,7 +740,7 @@ Every verb in §4.3 marked S7.
    `NOT_WRITABLE`.
 4. **Parity.** Build a small pipeline by hand; have the agent build the same one from the same data; compare the two
    `project_params.json` (S5).
-5. **In Claude Code, from a data directory**, with no repo files open:
+5. **In Claude Code on the server's login node, from a data directory**, with no repo files open:
    - "make a project from here and run preprocessing; align with AreTomo at 200 nm";
    - it shows every acquisition value and asks for those the data lacks; approve `create_project`, then `run`;
    - in the `ui_url`: review the tilts, approve; the roster, job pages and pictures are those of a hand-made project.
