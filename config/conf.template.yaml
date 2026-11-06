@@ -77,6 +77,8 @@ job_resource_profiles:
     mem: "48G"
     cpus_per_task: 8
     time: "2:00:00"
+    # The scaled time can pass the default QOS's 8 h; g_medium allows 2 days (`sacctmgr show qos format=Name,MaxWall`).
+    qos: "g_medium"
 
   tsCtf:
     gres: "gpu:1"
@@ -107,6 +109,8 @@ job_resource_profiles:
     # remaining walltime, and ~30 min of mask/extract prep runs first -- so the effective
     # IsoNet budget is well under --time. 8h gives ~6.5h of real compute (QOS rejects 12h).
     time: "8:00:00"
+    # The default QOS caps a job at 8 h; the time here can grow past that, so ask for g_medium (2 days).
+    qos: "g_medium"
 
   denoisepredict:
     gres: "gpu:1"
