@@ -22,10 +22,10 @@ mrcfile==1.5.4
 tifffile==2025.12.20
 
 # DL tilt filter (drivers/tilt_filter.py runs on the host venv, not in a container).
-# The 2.6.0 Linux wheel bundles CUDA 12.4 and needs only glibc 2.16, so it runs on
-# CentOS 7 compute nodes; check the nodes' glibc before moving to a newer torch.
-torch==2.6.0
-torchvision==0.21.0
+# 2.8.0 is the first PyPI Linux wheel built with CUDA 12.8, which has sm_100 SASS for the
+# CBE.next B200s (2.6.0/cu124 died with "no kernel image is available"). Needs glibc >= 2.28.
+torch==2.8.0
+torchvision==0.23.0
 
 # Self-test: `pytest` (headnode, seconds) and `pytest -m cluster` (one job per tool)
 pytest>=7
