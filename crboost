@@ -1,12 +1,31 @@
 #!/bin/sh
-# Starts the server with this checkout's own Python (venv/, built by install.sh) and nothing else: whatever the
-# shell has loaded (cluster modules, conda, another venv, PYTHONPATH) is left out, and jobs inherit that.
+# Starts the server, or runs a tool, with this checkout's own Python environment and nothing else: whatever the shell
+# has loaded (cluster modules, conda, another venv, PYTHONPATH) is left out, and the jobs the server submits inherit
+# that. The environment is named by requirements.txt and .python-version; install.sh finds it, or builds it first.
+#
+#   ./crboost [--port N] [--debug]   start the server
+#   ./crboost preflight              check this install
+#   ./crboost test [pytest args]     the install self-test (-m cluster: one job per tool)
+#   ./crboost python [args]          run python in the environment, e.g. ./crboost python -m ruff check .
+#   ./crboost lock                   recompile requirements.txt from requirements.in
+#   ./crboost env                    print the environment's path
+#   ./crboost clean [--yes]          list (or remove) environments this lock no longer needs
 here=$(cd "$(dirname "$0")" && pwd -P) || exit 1
-py="$here/venv/bin/python3"
-if [ ! -x "$py" ]; then
-    echo "crboost: $py not found; run $here/install.sh" >&2
-    exit 1
-fi
+
+case "${1:-}" in
+    lock) shift; exec "$here/install.sh" --lock "$@" ;;
+    env) shift; exec "$here/install.sh" --path "$@" ;;
+    clean) shift; exec "$here/install.sh" --clean "$@" ;;
+esac
+
+env=$("$here/install.sh") || exit 1
+py="$env/bin/python3"
 unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONUSERBASE VIRTUAL_ENV CONDA_PREFIX
 export PYTHONNOUSERSITE=1
-exec "$py" "$here/crboost.py" "$@"
+
+case "${1:-}" in
+    preflight) shift; exec "$py" "$here/preflight.py" "$@" ;;
+    test) shift; cd "$here" && exec "$py" -m pytest "$@" ;;
+    python) shift; exec "$py" "$@" ;;
+    *) exec "$py" "$here/crboost.py" "$@" ;;
+esac

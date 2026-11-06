@@ -10,25 +10,34 @@ CryoBoost Server — a web-based cryo-electron tomography pipeline manager. It r
 
 ```bash
 # Run the server
-./crboost                   # sh launcher: runs venv/bin/python3 crboost.py with a scrubbed env; picks a free port in 24300–24331; --port N to choose
+./crboost                   # sh launcher: finds or builds this checkout's Python environment, runs crboost.py in it with a scrubbed env; picks a free port in 24300–24331; --port N to choose
 
 # Validate environment setup
-python preflight.py
+./crboost preflight
 
-# Lint / format
-ruff check .
-ruff format .
+# Lint / format (ruff is pinned in requirements.txt)
+./crboost python -m ruff check .
+./crboost python -m ruff format .
 
 # Architecture-boundary lint (AST-based; catches function-local imports)
-python check_boundaries.py
+./crboost python check_boundaries.py
+
+# After editing requirements.in
+./crboost lock
 ```
 
-`tests/` is the install self-test, not unit tests: `pytest` checks the headnode setup (seconds),
-`pytest -m cluster` submits one short SLURM job per configured tool (minutes).
+`tests/` is the install self-test, not unit tests: `./crboost test` checks the headnode setup (seconds),
+`./crboost test -m cluster` submits one short SLURM job per configured tool (minutes).
+
+The Python environment is a build product: `.uv/env/<python>-<hash of the lock's pins>`, built by `install.sh` when
+it is missing and never modified afterwards, so a lock change builds a new one beside the old and a running server
+keeps its own. `venv` is only a convenience link to the latest. `./crboost env` prints the path, `./crboost clean`
+lists what is unused. Torch is not in it: the DL tilt filter's network runs in the `tilt_filter` container
+(`filterTilts/deepLearning/predict.py`). Design: `docs/roadmaps/roadmap_39-python-environment-and-setup.md` S3 and S6.
 
 ## Configuration
 
-- `config/conf.yaml` — main config (created from `config/conf.template.yaml` by `preflight.py`). Contains: `crboost_python` (optional driver-interpreter override; empty = the interpreter running the server), local paths, SLURM defaults, `container_runtime` + `container_binds`, and per-tool execution config (container vs binary).
+- `config/conf.yaml` — main config (created from `config/conf.template.yaml` by `preflight.py`). Contains: `crboost_python` (leave empty: drivers run the interpreter running the server; preflight warns when it is set), local paths, SLURM defaults, `container_runtime` + `container_binds`, and per-tool execution config (container vs binary).
 - `config/qsub.sh` — SLURM job submission template. Uses RELION-style `XXXextra1XXX`..`XXXextra8XXX` placeholders that get substituted with `SlurmConfig` fields at submission time.
 - `config/protocols/<name>/` — Protocol bundles (`protocol.yaml` + `assets/`): the shape of a pipeline with its parameters, applied at project creation to make a REGULAR project (`services/protocols/`). A project created from one carries `ProjectState.protocol_origin` and a frozen `<project>/protocol/protocol.yaml`; the workspace Protocols view (foot-of-rail light, `ui/protocols_view.py`) shows protocol vs current parameters. Nothing about results lives in protocols. How to write one: `docs/protocols.md`. Job instances take their code defaults; there are no per-job template files.
 
