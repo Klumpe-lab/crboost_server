@@ -105,7 +105,7 @@ def check_ui_save_project() -> list[str]:
 def check_shim_imports() -> list[str]:
     out = []
     shim_files = {ROOT / Path(*m.split(".")).with_suffix(".py") for m in BANNED_SHIM_MODULES}
-    for path in iter_py("ui", "services", "drivers", "backend.py", "crboost"):
+    for path in iter_py("ui", "services", "drivers", "backend.py", "crboost.py"):
         if path in shim_files:
             continue
         tree = parse(path)

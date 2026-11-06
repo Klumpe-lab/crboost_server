@@ -14,32 +14,20 @@ install, 1–12 GB per container.
 cd /groups/<your_group>/software            # any folder on the shared filesystem
 git clone https://github.com/Klumpe-lab/crboost_server.git
 cd crboost_server
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv python install 3.11
-uv venv -p 3.11 venv
-uv pip sync -p venv/bin/python3 requirements.txt
+./install.sh
 ```
 
-<details>
-<summary>If other people will use this install</summary>
-
-uv puts its Python in your home folder, which others may not be able to read. Run these two lines
-**before** `uv python install` to put it somewhere shared instead:
-
-```bash
-export UV_PYTHON_INSTALL_DIR=/groups/<your_group>/software/uv/python
-export UV_CACHE_DIR=/groups/<your_group>/software/uv/cache
-```
-
-</details>
+`install.sh` puts everything the server runs on inside the folder: uv (`.uv/bin`), its own CPython 3.11
+(`.uv/python`) and the `venv/` built from `requirements.txt`. Nothing comes from `~/.local`, a cluster module
+or your shell, and `./crboost` starts the server with that Python only (it drops `PYTHONPATH` and the like,
+and so do the jobs it submits). Run `./install.sh` again any time to rebuild `venv/` from the lock; stop the
+server first. Anyone who can read the folder can run it.
 
 <details>
 <summary>Using conda or pip instead of uv</summary>
 
-Any Python 3.11 environment works, as long as it is on the shared filesystem and starts on a compute node.
-With pip: `python3 -m venv venv && venv/bin/pip install -r requirements.txt`. If that Python comes from a
-cluster module, add its `module load` lines to `config/qsub.sh` (step 4) so it also starts on the compute
-nodes. A cluster module that puts packages on `PYTHONPATH` can shadow the venv's; preflight warns about it.
+Not supported: `./crboost` runs `venv/bin/python3`, so a venv of any origin works if it is at that path, but
+the lock and `install.sh` assume uv's Python.
 
 `requirements.txt` is generated: to change a dependency, edit `requirements.in` and run the
 `uv pip compile` line at the top of `requirements.txt`.
@@ -213,7 +201,7 @@ container on a compute node, the way real jobs do, including the GPU. Test jobs 
 ```bash
 cd <install>
 git pull
-uv pip sync -p venv/bin/python3 requirements.txt
+./install.sh
 venv/bin/python3 preflight.py
 ```
 
@@ -239,8 +227,8 @@ ones, and copy your values over. If you edit the old files instead, they must ha
   Without them CryoBoost refuses to submit, or failed jobs look successful. Preflight checks both.
 - The old `ENV PATHS` block (`CRBOOST_SERVER_DIR`, `CRBOOST_PYTHON`) is no longer used; delete it.
 
-**A venv built from a cluster module's Python:** stop the server, let running jobs finish, then `rm -rf venv`
-and redo the uv lines from step 1. Delete the Python `module load` lines from `config/qsub.sh`.
+**A venv built from a cluster module's Python:** stop the server, let running jobs finish, then run
+`./install.sh`. Delete the Python `module load` lines from `config/qsub.sh`.
 
 Then run `preflight.py` and `pytest -m cluster`, and start the server with `./crboost` (it used to be
 `main.py`). Every browser needs the new `?token=` link once. The `.nicegui/` folder in the install is no
