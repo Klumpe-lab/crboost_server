@@ -79,7 +79,7 @@ Done once per cluster by whoever maintains the install. Full guide: **[docs/inst
    paths).
 4. Run `preflight.py` until it is clean, then `venv/bin/python3 -m pytest -m cluster`.
 
-To update: `git pull`, `uv pip sync -p venv/bin/python3 requirements.txt`, `venv/bin/python3 preflight.py`, and
+To update: `git pull`, `./install.sh`, `venv/bin/python3 preflight.py`, and
 restart the server.
 
 </details>
