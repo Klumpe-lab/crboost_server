@@ -23,3 +23,14 @@ printed versions when pinning.
 **2026-10-28:** S0–S2 done and live. Lab install on the uv venv (record in roadmap 39 "Rollout"); a fresh copia
 chain (`copia-tutorial-20261028-1036`, Import + External/job002–011) ran clean on it, no module lines in any
 run_submit.script. `compile-bytecode = true` in uv.toml. The "venv lacks numpy" note above is history.
+
+**2026-11-06:** B200 nodes: torch 2.6.0/cu124 has no sm_100 kernels, so the DL tilt filter died there; torch went to
+2.8.0/cu128 (`d12f371`) and `install.sh` became self-contained (`f49ad87`). That evening S3 and S6 were built on the
+working tree, NOT RUN on dev/lab/a project: the environment is `.uv/env/<python>-<12 hex of the lock's pins>`, found or
+built by `./crboost` via `install.sh` (never modified, built under a temp name and renamed, no `--clear`, no
+"stop every server first"); `venv` is only a convenience link; commands are `./crboost preflight|test|python|lock|env|clean`.
+The tilt filter's torch moved to the `tilt_filter` image (`container_defs/tilt_filter_torch2.8.0_cuda12.8.def`,
+`filterTilts/deepLearning/predict.py`): of the venv's 7.3 GB, 6.6 was CUDA torch; an environment is now 0.8 GB, a first
+start 7 s. Maintainer chose a container over CPU torch (CPU: 116 tilts/s per forward pass on 4 threads, ~15 with the
+checkpoint's 8-fold TTA). Pending by hand: delete `crboost_python:` from both conf.yaml, put the image in the lab's
+`sifs/` and add `tools.tilt_filter`, first `./crboost` in dev, then the lab. Details and records: roadmap 39 S3 and S6.

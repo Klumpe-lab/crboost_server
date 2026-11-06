@@ -43,3 +43,6 @@ workspace_page.py without its `_field_styles`/`svg_icon`/`styles` definitions (f
 Old module venv parked OUTSIDE the checkout at `/groups/klumpe/software/crboost_venv.modules` (`.gitignore` has
 `venv/` only); `config/qsub.sh.bak-modules` = pre-uv qsub.sh. Delete both once the lab has run on uv for a while.
 Later `uv pip sync` on the lab: export `UV_CACHE_DIR=/groups/klumpe/software/cache_and_artifacts/uv/cache` first.
+(Superseded 2026-11-06: uv, its Python and cache live in the checkout's `.uv/`, and `./install.sh` / `./crboost` find or
+build the environment `.uv/env/<python>-<hash>`; nobody exports uv variables. The lab's old `venv/` and the shared
+`cache_and_artifacts/uv` stay until nothing runs on them. Roadmap 39 S6 has the steps.)
