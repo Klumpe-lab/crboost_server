@@ -1,5 +1,5 @@
 # Top-level dependencies. requirements.txt is generated from this file; edit here, then recompile:
-#   uv pip compile requirements.in -o requirements.txt   (Python and platform come from uv.toml)
+#   ./crboost lock   (uv pip compile requirements.in -o requirements.txt; Python and platform come from uv.toml)
 nicegui==3.0.3
 fastapi==0.118.0
 uvicorn==0.37.0
@@ -21,11 +21,11 @@ starfile==0.5.13
 mrcfile==1.5.4
 tifffile==2025.12.20
 
-# DL tilt filter (drivers/tilt_filter.py runs on the host venv, not in a container).
-# 2.8.0 is the first PyPI Linux wheel built with CUDA 12.8, which has sm_100 SASS for the
-# CBE.next B200s (2.6.0/cu124 died with "no kernel image is available"). Needs glibc >= 2.28.
-torch==2.8.0
-torchvision==0.23.0
+# No torch: the DL tilt filter's network runs in the tilt_filter container (container_defs/tilt_filter_*.def),
+# which keeps ~6.6 GB of CUDA libraries out of every environment.
 
-# Self-test: `pytest` (headnode, seconds) and `pytest -m cluster` (one job per tool)
+# Self-test: `./crboost test` (headnode, seconds) and `./crboost test -m cluster` (one job per tool)
 pytest>=7
+
+# Lint and format: one version for every checkout, since the formatter's output changes between versions.
+ruff==0.15.12

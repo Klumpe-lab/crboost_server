@@ -184,10 +184,16 @@ class TiltFilterParams(AbstractJobParams):
 # ── the classifier: registry lookup and liveness (shared by the submit, the driver and the panel) ──
 
 
+# The `tools:` entry of the image the classifier runs in (container_defs/tilt_filter_*.def): the host's
+# environment has no torch, so the network is the one part of the job that goes through run_tool.
+TILT_FILTER_TOOL = "tilt_filter"
+
+
 def resolve_model(key: str | None) -> tuple[str, TiltFilterModelConfig]:
     """The conf.yaml registry entry a prediction run uses: `key`, or `default_model` when the
     job never picked one. Raises ValueError saying what is missing: no models configured, no
-    default, an unknown key, or a weights file that is not on disk."""
+    default, an unknown key, a weights file that is not on disk, or the image the classifier
+    runs in (tools.tilt_filter)."""
     registry = get_config_service().tilt_filter
     if not registry.models:
         raise ValueError("No tilt classifier is configured (tilt_filter.models in conf.yaml).")
@@ -199,6 +205,11 @@ def resolve_model(key: str | None) -> tuple[str, TiltFilterModelConfig]:
         raise ValueError(f"Model '{name}' is not in conf.yaml's tilt_filter.models ({', '.join(registry.models)}).")
     if not entry.weights_path.is_file():
         raise ValueError(f"Model '{name}': weights file not found at {entry.weights_path}.")
+    if not get_config_service().is_tool_configured(TILT_FILTER_TOOL):
+        raise ValueError(
+            f"The tilt classifier runs in a container: build the tilt_filter image (container_defs/tilt_filter_*.def) "
+            f"and add tools.{TILT_FILTER_TOOL} to config/conf.yaml."
+        )
     return name, entry
 
 

@@ -3,8 +3,10 @@
 tilts a human marked bad in a crboost project?
 
 For checkpoints written by trainTiltCNN_ResNet18_Optuna1034.py (keys model_state_dict, arch, img_size,
-preprocessing, threshold, temperature, tta, ...). Standalone: torch, torchvision, Pillow. Runs on the
-CPU by default, so two machines print the same numbers:
+preprocessing, threshold, temperature, tta, ...). Standalone: torch, torchvision, Pillow; the server's
+environment has none of them, so run it in the tilt_filter image
+(`apptainer exec <tilt_filter.sif> python check_resnet_tiltnet.py ...`). Runs on the CPU by default,
+so two machines print the same numbers:
 
     python check_resnet_tiltnet.py run_best.pth [tilt.png ...] [--project DIR] [--png-dir DIR]
         [--device cuda] [--no-tta] [--csv out.csv]

@@ -12,20 +12,28 @@ into the registry and the counts go to commit.json beside the log. A model that 
 tilt the same P(bad) fails the job and commits nothing.
 
 Neither role saves project_params.json: the server settles both from the exit markers.
+
+The network runs in the tilt_filter container (filterTilts/deepLearning/predict.py): this driver, like the
+server's environment, has no torch. It makes or finds the PNGs, hands the list to the container, and reads the
+P(bad) values back from a JSON file.
 """
 
 import argparse
 import asyncio
+import json
 import os
+import shlex
 import sys
 import traceback
 from pathlib import Path
 
 try:
-    from drivers.driver_base import get_driver_context, start_supervisor
+    from drivers.driver_base import get_driver_context, run_tool, start_supervisor
+    from services.configs.config_service import REPO_ROOT
     from services.jobs.tilt_filter import (
         COMMIT_RECORD,
         LIVENESS_MIN_STD,
+        TILT_FILTER_TOOL,
         FilterMode,
         TiltFilterCommit,
         TiltFilterParams,
@@ -55,28 +63,48 @@ def _is_model_input(png: Path, size: int) -> bool:
         return False
 
 
-def predict(state, job_model: TiltFilterParams, job_dir: Path, project_path: Path, model: str | None):
+def _classify(pngs: list[Path], entry, batch_size: int, job_dir: Path, binds: list[str]) -> tuple[list[float], dict]:
+    """P(bad) for each PNG, in order, from the classifier running in the tilt_filter container, and the
+    facts it reports about the model. The files are the whole interface: a list in, a JSON out."""
+    list_file = job_dir / "tilt_pngs.txt"
+    result_file = job_dir / "predictions.json"
+    list_file.write_text("".join(f"{p}\n" for p in pngs))
+    result_file.unlink(missing_ok=True)  # an earlier attempt's result must not pass for this run's
+    command = (
+        f"cd {shlex.quote(str(job_dir))} && export PYTHONPATH={shlex.quote(str(REPO_ROOT))} && "
+        f"python -m filterTilts.deepLearning.predict --weights {shlex.quote(str(entry.weights_path))} "
+        f"--arch {shlex.quote(entry.arch)} --normalisation {shlex.quote(entry.normalisation)} "
+        f"--pngs {shlex.quote(str(list_file))} --out {shlex.quote(str(result_file))} --batch-size {batch_size}"
+    )
+    # The checkout is not among the default binds: the code that runs is its filterTilts/ directory.
+    png_dirs = {p.parent for p in pngs}
+    run_tool(
+        command,
+        tool_name=TILT_FILTER_TOOL,
+        cwd=job_dir,
+        binds=[*binds, REPO_ROOT / "filterTilts", entry.weights_path.parent, *png_dirs],
+    )
+    result = json.loads(result_file.read_text())
+    p_bad, facts = result["p_bad"], result["model"]
+    if len(p_bad) != len(pngs):
+        raise RuntimeError(f"The classifier returned {len(p_bad)} predictions for {len(pngs)} tilts")
+    return p_bad, facts
+
+
+def predict(state, job_model: TiltFilterParams, job_dir: Path, project_path: Path, model: str | None, binds: list[str]):
     """Predict P(bad) for every tilt of the fs-motion star with `model` (None: the default) and
-    save it into the registry. Returns the model's key and the predictions' liveness
-    (prediction_liveness)."""
-    from filterTilts.deepLearning.model_loader import GALLERY_PNG_SIZE, ModelLoader
+    save it into the registry. `binds` are the project's container binds. Returns the model's key
+    and the predictions' liveness (prediction_liveness)."""
+    from filterTilts.gallery import GALLERY_PNG_SIZE
     from filterTilts.image_processor import ImageProcessor
     from services.tilt_series import get_registry_for
     from services.tilt_series_service import get_tilt_image_paths, load_tilt_series
 
+    # The registry entry first, so a missing weights file or tool entry fails the run before any
+    # conversion. A missing GPU shows at the container call.
     model_key, entry = resolve_model(model)
     workers = len(os.sched_getaffinity(0))
-
-    # The model first, so a missing weights file or GPU fails the run before any conversion.
-    loader = ModelLoader(entry.weights_path, entry.arch, entry.normalisation, gpu=0, num_workers=workers)
-    loader.load_model()
     size = GALLERY_PNG_SIZE
-    tta = ", averaged over 8 rotations/flips" if loader.tta else ""
-    print(
-        f"[DRIVER] Model {model_key}: {entry.arch} at {loader.input_size} px, '{entry.normalisation}' "
-        f"normalisation, temperature {loader.temperature:.3f}{tta}, {entry.weights_path}, on {loader.device_name}",
-        flush=True,
-    )
 
     star_rel = job_model.paths.get("input_star", "")
     if not star_rel:
@@ -118,7 +146,14 @@ def predict(state, job_model: TiltFilterParams, job_dir: Path, project_path: Pat
     else:
         print(f"[DRIVER] Model inputs: the gallery PNGs in {png_dir}", flush=True)
 
-    p_bad = loader.predict_p_bad([str(p) for p in inputs], job_model.dl_batch_size)
+    p_bad, facts = _classify(inputs, entry, job_model.dl_batch_size, job_dir, binds)
+    tta = ", averaged over 8 rotations/flips" if facts["tta"] else ""
+    print(
+        f"[DRIVER] Model {model_key}: {facts['arch']} at {facts['input_size']} px, '{facts['normalisation']}' "
+        f"normalisation, temperature {facts['temperature']:.3f}{tta}, {entry.weights_path}, on {facts['device']} "
+        f"(torch {facts['torch']})",
+        flush=True,
+    )
 
     registry = get_registry_for(project_path)
     registry.raise_if_unreadable()
@@ -195,7 +230,7 @@ def main():
     args, _ = parser.parse_known_args()
 
     try:
-        state, job_model, _context_data, job_dir, project_path, _job_type = get_driver_context(TiltFilterParams)
+        state, job_model, context_data, job_dir, project_path, _job_type = get_driver_context(TiltFilterParams)
     except Exception as e:
         print(f"[DRIVER] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr)
         sys.exit(1)
@@ -203,9 +238,10 @@ def main():
     print(f"Node: {os.uname().nodename}", flush=True)
     print(f"CWD: {job_dir}", flush=True)
 
+    binds = list(context_data["additional_binds"])
     try:
         if args.commit:
-            model_key, liveness = predict(state, job_model, job_dir, project_path, job_model.model)
+            model_key, liveness = predict(state, job_model, job_dir, project_path, job_model.model, binds)
             if liveness is not None and not liveness[0]:
                 raise RuntimeError(
                     f"The model gives every tilt the same confidence score, {liveness[1]:.3f}: its verdicts are "
@@ -216,7 +252,7 @@ def main():
             run = job_model.predict_run
             if run is None:
                 raise RuntimeError("project_params.json records no prediction run for this job")
-            predict(state, job_model, job_dir, project_path, run.model)
+            predict(state, job_model, job_dir, project_path, run.model, binds)
     except Exception as e:
         print(f"[DRIVER] FATAL: {e}", file=sys.stderr, flush=True)
         traceback.print_exc(file=sys.stderr)

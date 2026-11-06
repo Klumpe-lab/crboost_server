@@ -8,6 +8,9 @@ plus the source file's name, sha256 and decision threshold. The source is loaded
 weights_only=False because its config holds numpy scalars, so convert only files that come from
 the model author. Prints the conf.yaml entry that registers the result. CPU only.
 
+The server's environment has no torch: run this from the checkout inside the tilt_filter image
+(`apptainer exec <tilt_filter.sif> env PYTHONPATH=$PWD python ...`).
+
     python -m filterTilts.deepLearning.convert_checkpoint run_best.pth filterTilts/tiltnet_resnet18_o1034.pth
 """
 

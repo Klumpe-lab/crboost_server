@@ -229,10 +229,11 @@ species_catalog_root: ""
 # as its checkpoint records). `threshold` is the P(bad) cut the weights were calibrated at,
 # which a job running them starts from (omit it for uncalibrated weights). The job's model
 # selector lists these keys; default_model is what a job runs until the user picks another.
+# Running a model needs the `tilt_filter` image (tools: below); the server's own environment has no torch.
 # Leave `models` empty to run the filter by hand only.
 tilt_filter:
   models:
-    tiltnet_resnet18_o1034:             # written by: python -m filterTilts.deepLearning.convert_checkpoint run_best.pth <this path>
+    tiltnet_resnet18_o1034:             # written by: python -m filterTilts.deepLearning.convert_checkpoint run_best.pth <this path> (in the tilt_filter image)
       path: "filterTilts/tiltnet_resnet18_o1034.pth"
       arch: "ResNet18Gray"
       normalisation: "per_image"
@@ -301,6 +302,12 @@ tools:
   miss_alignment:
     exec_mode: "container"
     container_path: "/path/to/miss_alignment.sif"
+    bin_path: ""
+  # The DL tilt filter's classifier (torch + torchvision, on a GPU): the tilt-filter job calls it for the network
+  # only. Needed when tilt_filter.models (above) is not empty; otherwise delete this entry.
+  tilt_filter:
+    exec_mode: "container"
+    container_path: "/path/to/tilt_filter.sif"
     bin_path: ""
   # easymode + Ais + Pom in one image (the Segment job). cache_dir holds the weights, filled once
   # with `easymode download --all` (see the image's %help); the job only ever reads them.
