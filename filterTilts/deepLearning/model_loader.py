@@ -5,11 +5,8 @@ from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 
+from ..gallery import GALLERY_PNG_SIZE
 from .model_architectures import get_model_class
-
-# Every model reads the gallery PNGs (TiltFilter/png): ImageProcessor's Fourier crop to this size,
-# min-max scaled to 8 bits. A network trained at another size gets them resized, as at training.
-GALLERY_PNG_SIZE = 384
 
 # The input normalisations weights are trained with, by the registry's `normalisation` key:
 # "per_image" = PerImageStandardize at the checkpoint's clip_sigma.

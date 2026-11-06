@@ -1,0 +1,50 @@
+Bootstrap: docker
+From: python:3.11-slim-bookworm
+
+# The DL tilt filter's classifier (filterTilts/deepLearning/predict.py): torch 2.8.0 and torchvision 0.23.0 from the
+# PyPI wheels, Pillow and numpy at the versions requirements.txt pins, nothing else. torch 2.8.0 is the first PyPI
+# Linux wheel built with CUDA 12.8, which has sm_100 SASS for CBE.next's B200s (2.6.0/cu124 died there with "no kernel
+# image is available"). The wheel carries its own CUDA libraries, so the image needs no CUDA base and no apt, which is
+# what the other CBE.next recipes spend their workarounds on.
+#
+# Build (CBE.next has no subuid range, so the faked-based fakeroot fails):
+#   apptainer build --fakeroot --ignore-fakeroot-command tilt_filter_torch2.8.0_cuda12.8.sif \
+#       container_defs/tilt_filter_torch2.8.0_cuda12.8.def
+
+%post
+    set -e
+    export PIP_ROOT_USER_ACTION=ignore PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1
+    # Resilience against slow build-host networks: torch and the nvidia-* wheels are ~3.5 GB together.
+    export PIP_DEFAULT_TIMEOUT=120 PIP_RETRIES=10 PIP_RESUME_RETRIES=20
+
+    python -m pip install torch==2.8.0 torchvision==0.23.0 pillow==12.0.0 numpy==1.26.2
+
+    # Verify here, not in %test: a failing %test does not fail an Apptainer build.
+    # get_arch_list() is [] without a GPU; the compiled-in flags are not.
+    python -c "import torch, torchvision; a = torch._C._cuda_getArchFlags(); print(torch.__version__, torchvision.__version__, a); assert 'sm_100' in a, a"
+    python -c "import numpy, PIL; print('numpy', numpy.__version__, 'Pillow', PIL.__version__)"
+
+%environment
+    # The user's home is bound into the container: a user-site package must not shadow the image's.
+    export PYTHONNOUSERSITE=1
+
+%test
+    # The real checks run at the end of %post (a failing %test does not fail the build).
+    python -c "import torch, torchvision, PIL, numpy"
+
+%runscript
+    exec python "$@"
+
+%labels
+    Tool tilt_filter
+    Torch 2.8.0
+    Torchvision 0.23.0
+    CUDA 12.8 (the torch wheel's own libraries)
+    Python 3.11
+    GPU sm_70-sm_120 (torch cu128 wheel)
+
+%help
+    The tilt filter's classifier: python -m filterTilts.deepLearning.predict, run from a crboost_server checkout
+    (the checkout's filterTilts/ directory is bound in, with PYTHONPATH pointing at the checkout).
+
+      apptainer exec --nv <image>.sif python -c "import torch; print(torch.cuda.is_available())"

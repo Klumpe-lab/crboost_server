@@ -2,10 +2,9 @@
 """CryoBoost Server preflight.
 
 Creates config/conf.yaml and config/qsub.sh from their templates when they are missing, then checks
-the things that break a fresh install. Run it with the interpreter that runs the server (and, unless
-conf.yaml sets crboost_python, the drivers):
+the things that break a fresh install. Run it with the interpreter that runs the server and the drivers:
 
-    python preflight.py
+    ./crboost preflight
 
 Never edits an existing config file. Exits 1 when any check fails.
 """
@@ -38,8 +37,6 @@ REQUIRED_MODULES = [
     "PIL",
     "starfile",
     "mrcfile",
-    "torch",
-    "torchvision",
 ]
 
 failures: list[str] = []
@@ -128,7 +125,14 @@ def check_config():
     if not cfg.crboost_python:
         ok(f"drivers run {sys.executable} (this interpreter, the one ./crboost uses)")
     elif os.access(cfg.crboost_python, os.X_OK):
-        ok(f"drivers run crboost_python = {cfg.crboost_python}")
+        if Path(cfg.crboost_python) == Path(sys.executable):
+            warn(f"crboost_python = {cfg.crboost_python} is this interpreter; delete the line (empty means the same)")
+        else:
+            # A conf.yaml copied from another install, or kept across an environment change, carries the old path.
+            warn(
+                f"crboost_python = {cfg.crboost_python}: drivers run that, not this interpreter ({sys.executable}); "
+                "delete the line from config/conf.yaml"
+            )
     else:
         fail(f"crboost_python = {cfg.crboost_python} is not an executable interpreter; set it or leave it empty")
 
@@ -254,7 +258,7 @@ def main() -> int:
     if failures:
         print(f"{len(failures)} check(s) failed.")
         return 1
-    print(f"All checks passed. Start the server with: ./crboost")
+    print("All checks passed. Start the server with: ./crboost")
     return 0
 
 

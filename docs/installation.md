@@ -5,7 +5,7 @@ Done once per cluster. Each user then runs their own server from the same instal
 
 **You need:** a headnode with SLURM and Apptainer (or Singularity), GPU compute nodes, and a shared
 filesystem that the headnode and all compute nodes see under the same paths. Put everything — the
-install, the containers, your data and your projects — on that shared filesystem. About 6 GB for the
+install, the containers, your data and your projects — on that shared filesystem. About 2 GB for the
 install, 1–12 GB per container.
 
 ## 1. Download and install
@@ -17,20 +17,34 @@ cd crboost_server
 ./install.sh
 ```
 
-`install.sh` puts everything the server runs on inside the folder: uv (`.uv/bin`), its own CPython 3.11
-(`.uv/python`) and the `venv/` built from `requirements.txt`. Nothing comes from `~/.local`, a cluster module
-or your shell, and `./crboost` starts the server with that Python only (it drops `PYTHONPATH` and the like,
-and so do the jobs it submits). Run `./install.sh` again any time to rebuild `venv/` from the lock; stop the
-server first. Anyone who can read the folder can run it.
+`install.sh` puts everything the server runs on inside the folder: uv (`.uv/bin`), its own CPython
+(`.uv/python`) and the Python environment built from `requirements.txt` (`.uv/env/<python>-<hash>`). Nothing
+comes from `~/.local`, a cluster module or your shell, and `./crboost` starts the server with that Python only
+(it drops `PYTHONPATH` and the like, and so do the jobs it submits). It takes seconds to a minute.
+
+The environment is named by the dependency list and is never changed once built. When `requirements.txt`
+changes, `./crboost` (or `./install.sh`) builds a new one beside the old, and servers still running keep theirs:
+there is nothing to activate, repair or stop first. `./crboost clean` lists the ones no longer needed. In an
+install the users cannot write to, the maintainer runs `./install.sh` after each `git pull`; everywhere else
+the first `./crboost` after an update does it.
 
 <details>
 <summary>Using conda or pip instead of uv</summary>
 
-Not supported: `./crboost` runs `venv/bin/python3`, so a venv of any origin works if it is at that path, but
-the lock and `install.sh` assume uv's Python.
+Not supported: the lock and `install.sh` assume uv's Python. To run the server on an environment you built
+yourself, start `crboost.py` with that Python directly; the jobs it submits follow it.
 
-`requirements.txt` is generated: to change a dependency, edit `requirements.in` and run the
-`uv pip compile` line at the top of `requirements.txt`.
+`requirements.txt` is generated: to change a dependency, edit `requirements.in` and run `./crboost lock`.
+
+</details>
+
+<details>
+<summary>No internet on the headnode</summary>
+
+The build downloads uv (astral.sh), its Python (GitHub) and the wheels (PyPI). Behind a mirror, set uv's own
+variables before `./install.sh`: `UV_INDEX_URL` for the wheels and `UV_PYTHON_INSTALL_MIRROR` for the Python.
+For uv itself, put a binary of the version named in `uv.toml` (`required-version`) at `.uv/bin/uv`, or point
+`CRBOOST_UV` at one.
 
 </details>
 
@@ -60,6 +74,7 @@ You need at least `warp_aretomo` and `relion`; the rest only for the jobs that u
 | `imod` | pick viewer utilities | `imod.def` |
 | `pymol` | templates from a PDB/mmCIF model | `pymol.def` |
 | `miss_alignment` | alignment refinement | `miss_alignment_torch2.8.0_cuda12.9.def` |
+| `tilt_filter` | the DL tilt filter's network (GPU) | `tilt_filter_torch2.8.0_cuda12.8.def` |
 | `cistem` | template simulation; a normal cisTEM install, not a container | — |
 
 `--fakeroot` must be allowed on your machine; if it isn't, build where you have root and copy the `.sif`
@@ -70,7 +85,7 @@ over. ChimeraX/ArtiaX manual picking (`chimerax_artiax_GL.def`) is set up separa
 ## 3. Fill in `config/conf.yaml`
 
 ```bash
-venv/bin/python3 preflight.py
+./crboost preflight
 ```
 
 The first run creates `config/conf.yaml` and `config/qsub.sh` and stops. Open `config/conf.yaml` in any text
@@ -83,8 +98,9 @@ editor (e.g. `nano config/conf.yaml`) and change these — leave everything else
 - **`tools:`** — for each tool, the full path to its `.sif` file from step 2. **Delete the whole entry of
   every tool you don't have** (all its lines), or preflight will complain.
 - **`curation:`** — not using ChimeraX picking: set `sif_path: ""`.
-- **`tilt_filter:`** — the tilt classifier's weights file isn't in git. Without it, replace the whole
-  `tilt_filter:` block with `tilt_filter: {models: {}}`.
+- **`tilt_filter:`** — the tilt classifier's weights file isn't in git, and it runs in the `tilt_filter` image
+  (its entry under `tools:`). Without the weights or the image, replace the whole `tilt_filter:` block with
+  `tilt_filter: {models: {}}` and delete the `tilt_filter` entry under `tools:`.
 
 <details>
 <summary>Example: a site with only Warp, RELION and PyTOM</summary>
@@ -144,7 +160,7 @@ tools:
 - `curation` — ChimeraX/ArtiaX sessions: `sif_path` and `partition`.
 - `species_catalog_root` — optional shared folder for a lab-wide particle catalog.
 - `tilt_filter` — each model names a weights file (`*.pth`, not in git: ask the maintainers) in
-  `filterTilts/`.
+  `filterTilts/`. Running one needs the `tilt_filter` tool (an image) under `tools`.
 - `container_runtime` — `apptainer` or `singularity`.
 - `container_binds` — folders available inside every container. The project, the raw data and the gain
   reference are added automatically.
@@ -170,13 +186,13 @@ Don't touch the `XXX…XXX` words, the `RELION_JOB_EXIT` block or the last line:
 ## 5. Check that everything works
 
 ```bash
-venv/bin/python3 preflight.py
+./crboost preflight
 ```
 
 It lists anything that is wrong, one line each. Fix, run again, until there are no failures. Then:
 
 ```bash
-venv/bin/python3 -m pytest -m cluster
+./crboost test -m cluster
 ```
 
 This submits one short test job per tool and takes a few minutes. When it passes,
@@ -190,8 +206,8 @@ tool path and bind folder exists; that SLURM and Apptainer are on PATH and every
 `qsub.sh` still has its placeholders, exit block and `exit $EXIT_CODE`. Settings nothing reads (usually a
 typo) are warnings. It doesn't check the tilt-filter weights or the ChimeraX image.
 
-`venv/bin/python3 -m pytest` runs the same checks in seconds. `-m cluster` runs every configured tool in its
-container on a compute node, the way real jobs do, including the GPU. Test jobs go to
+`./crboost test` runs the same checks in seconds. `-m cluster` runs every configured tool in its
+container on a compute node, the way real jobs do, including a kernel launch on the GPU for the tools that use one. Test jobs go to
 `~/.crboost/selftest/`; a failure prints the command and the log files.
 
 </details>
@@ -201,11 +217,14 @@ container on a compute node, the way real jobs do, including the GPU. Test jobs 
 ```bash
 cd <install>
 git pull
-./install.sh
-venv/bin/python3 preflight.py
+./install.sh                # builds the new Python environment now, if the dependencies changed
+./crboost preflight
 ```
 
-Then restart the server. `git pull` never changes your `config/conf.yaml` or `config/qsub.sh`.
+Then restart the servers; each keeps running on the environment it started with until then. (`./install.sh`
+is optional where users can write to the folder: the next `./crboost` builds it.) `git pull` never changes your
+`config/conf.yaml` or `config/qsub.sh`, so a setting the template gained since you installed has to be copied
+over by hand.
 
 <details>
 <summary>Upgrading an install with older config files</summary>
@@ -219,16 +238,19 @@ ones, and copy your values over. If you edit the old files instead, they must ha
   `curation.sif_path` is set.
 - Tool entries with the template's names (`warp_aretomo`, `relion`, …). `tools.cistem.bin_path` is the folder
   holding `simulate`, not the program itself.
-- No `crboost_root:` and no `use_afterok_orchestrator:`. Preflight warns about every setting nothing reads.
-- `tilt_filter` pointing at a weights file that exists, or `tilt_filter: {models: {}}`.
+- No `crboost_root:` and no `use_afterok_orchestrator:`, and no `crboost_python:` line (the drivers run the server's own
+  interpreter). Preflight warns about every setting nothing reads.
+- `tilt_filter` pointing at a weights file that exists (and a `tilt_filter` entry under `tools:`), or
+  `tilt_filter: {models: {}}`.
 
 **`config/qsub.sh`**
 - The `RELION_JOB_EXIT` block exactly as in `config/qsub.template.sh`, and the final `exit $EXIT_CODE`.
   Without them CryoBoost refuses to submit, or failed jobs look successful. Preflight checks both.
 - The old `ENV PATHS` block (`CRBOOST_SERVER_DIR`, `CRBOOST_PYTHON`) is no longer used; delete it.
 
-**A venv built from a cluster module's Python:** stop the server, let running jobs finish, then run
-`./install.sh`. Delete the Python `module load` lines from `config/qsub.sh`.
+**A venv built from a cluster module's Python, or any `venv/` from before environments were named:** run
+`./install.sh` (it leaves the old `venv/` alone), delete the Python `module load` lines from `config/qsub.sh`,
+and delete `venv/` once no server runs from it.
 
 Then run `preflight.py` and `pytest -m cluster`, and start the server with `./crboost` (it used to be
 `main.py`). Every browser needs the new `?token=` link once. The `.nicegui/` folder in the install is no
