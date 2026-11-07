@@ -2,7 +2,8 @@
 
 **Status:** scoped 2026-11-06, no product code. The baseline of §3 was read from SLURM's accounting the same day
 (`docs/reports/gpu-util/`: the script and its output); nothing else is measured yet. Open: D1 first (what IT's number
-is), then S0–S6 and D2–D8. Pickup: S0 needs no code, only a message to IT and three five-minute jobs.
+is), then S0–S6 and D2–D8. Pickup: S0 needs no code to build: a message to IT, three five-minute capability jobs, and
+two probe scripts that are written (`docs/reports/gpu-util/scripts/`) and wait for the maintainer's go.
 
 **In one line.** Cluster IT told a colleague that crboost jobs idle on the B200s about a quarter of the time while
 their data is read into GPU memory, and advised putting data on scratch. (The report has been passed on in two ways:
@@ -46,11 +47,17 @@ slice) or sharing the card. CPUs and memory get the same treatment: requested wi
   memory (0.134 per GB), a B200 (24) and a slice (3.43; roadmap 43 §3), which is a card's fair share: a full B200 is
   paid for like 24 CPUs or 179 GB, so up to that much of both comes with it at no extra billing, and a slice like 3.4
   CPUs or 26 GB.
-- No node-local disk is advertised (`TmpDisk=0`). `/tmp` is private to the job and wiped when it ends
-  (`NamespaceType=namespace/tmpfs`, `TmpFS=/tmp`); what backs it and how large it is on a g5 node is not known (S0).
-- From the login node: `/groups` is NFSv3 (project data, the container images, the shared CUDA kernel cache; 82 %
-  full), `/users` NFSv4.2 (home, the dev checkout and its venv), `/scratch` BeeGFS (1.3 PB, files deleted after 28
-  days: roadmap 43 §3).
+- No node-local disk (`TmpDisk=0`). Per the site's storage documentation (as the `cbe-data` skill of the clip-hpc
+  plugin restates it, 2026-10-29), a job's private `/tmp` and `$SCRATCHDIR` are on the same all-flash BeeGFS (12
+  storage servers, 180 NVMe targets, RDMA; 155 GiB/s measured for the whole system, less for one busy job). `/dev/shm`
+  is RAM and counts against `--mem`. All three are deleted automatically.
+- `/groups` is campus NFSv3 storage (project data, the container images, the shared CUDA kernel cache; the group is at
+  82 % of its quota), spread over 128 storage units with placement by folder: one folder holding a dataset, or many
+  tasks writing into one folder, makes a hot spot for the job and for everyone on that unit. The site advises one
+  subfolder per task and fewer than 10,000 files in a folder. `/users` is NFSv4.2 (home, the dev checkout and its
+  venv); `/scratch` is BeeGFS (1.3 PB, deleted after 28 days: roadmap 43 §3).
+- Site tools: `jobeff` (CPU and memory efficiency only), `jobinfo`, `psjob`, `stage` (a parallel copy submitted as a
+  batch job), `myquota`. The public docs name no GPU-utilisation monitoring, dashboard or threshold.
 - SLURM 26.05.3 gathers `gres/gpumem` and `gres/gpuutil` for each job step every 30 s through cgroups, keeps batch
   scripts (readable for one's own jobs only) and records each job's `StdOut` path. The default QOS is `g_short` (8 h).
 
@@ -89,6 +96,9 @@ slice) or sharing the card. CPUs and memory get the same treatment: requested wi
   (`services/scheduling_and_orchestration/pipeline_runner.py:302`) already lands a driver-written file (the tilt
   filter's `commit.json`) on a job when it ends; the job page header already carries two chips
   (`ui/pipeline_builder/job_tab_component.py:239-240`).
+- The container wrapper always passes `--cleanenv` (`services/computing/container_service.py:112-116`), which the site
+  docs advise against on GPU nodes because it removes `CUDA_VISIBLE_DEVICES`. Every job in §3 ran on its allocated card
+  (SLURM saw its GPU memory), so this is a check (S0, `capability.sh`), not a finding.
 - `config/qsub.sh` is the site's file and its exit-marker block must stay byte-identical
   (`services/computing/slurm_service.py:172`), so a recorder goes in the driver or in `write_sbatch_script`
   (`services/computing/slurm_service.py:166`), which already adds `--qos`, `--array` and `--open-mode` lines.
@@ -128,12 +138,27 @@ What it says:
 - **SLURM's busy is probably blind to start-up and teardown.** Its accounting samples every 30 s
   (`JobAcctGatherFrequency=task=30`), so a start-up or teardown shorter than an interval is barely in the average, if
   at all (a trace from the first second confirms or refutes this: S2). A dashboard that plots each card over the whole
-  allocation sees that time as idle. One
-  412 tomogram run by hand on a B200 took 114 s (file times: about 27 s before the search started, 78 s searching, 9 s
-  writing two 2 GiB maps) and SLURM recorded it 100 % busy; the production template-matching tasks take 165 s at the
-  median and read 98.6 %. A task that holds its card 165 s and runs the tool busy for the 115 s of a hand run reads 70 %
-  on a dashboard over the allocation, near IT's figure, and "the data is read in first" is the first thing visible in
-  the gap. That is a hypothesis; §4 H2–H3 say what the gap is made of.
+  allocation sees that time as idle. A hand run of one 412 tomogram on a B200 took 112 s for the container command
+  (roadmap 43 §3) and SLURM recorded it 100 % busy; the production template-matching tasks take 165 s at the median and
+  read 98.6 %. The next bullet shows where those 165 s go.
+- **A production template-matching task, from file times.** The 141 tasks of one 412 job (AGG412 job019, 2026-11-05):
+  the allocation start from accounting, the rest from the modification times of each tomogram's files, because the task
+  logs carry no clock. Medians over the tasks (they do not add up exactly):
+
+  | Phase | Median s | Share | The card |
+  |---|---:|---:|---|
+  | Driver start-up and staging, before the container | 3.7 | 2 % | idle |
+  | Container start, pytom set-up, the search, the scores map written | 132.7 | 80 % | mostly busy; the split is unknown |
+  | Angles map and `job.json` written to `/groups` | 16.9 | 10 % | idle |
+  | CPU scan of the scores map | 7.7 | 5 % | idle |
+  | Whole task (accounting) | 165 | | |
+
+  The first, third and fourth rows, 28 s or 17 % of the task, are idle on the card by construction: Python and the
+  driver starting, a 2 GiB map written to `/groups` at about 125 MB/s, and a CPU scan that reads the scores map back.
+  The second row holds the container start, pytom's set-up, the search and the first map's write; how it splits is what
+  P4b measures. Production's container-command part (rows two and three, 150 s) is 38 s longer than the hand run's
+  112 s, which had a warm kernel cache and wrote to `/scratch`; the other 11 s are the driver start-up and the scan.
+  If the search is about 80 s of the 133, a dashboard over the allocation reads about 50 %.
 - **GPUs asked for and never touched.** Candidate extraction (140 jobs, 2.0 GPU-h) reads 3.3 GB per job and ends with
   its candidates, all without a byte of GPU memory: real work, on the CPU. Particle reconstruction (3) and subtomogram
   extraction (2) the same. Warp export (132) and Warp CTF (14) ran 12–17 s with no I/O and no GPU memory, which reads
@@ -170,13 +195,16 @@ sorted by how sure they are.
   estimate, not a measurement) and `CUPY_CACHE_DIR` is in the job's private `/tmp`
   (`services/computing/container_service.py:27`), so every task pays it again, where the hand run above had a warm
   cache on `/scratch`. Confirm: phase marks and the time to the first busy second (the meter). Cure: L3, L5, L8.
-- **H3 — inputs read in front of the compute.** The tool reads its frames or tomogram from `/groups` itself, with no
-  overlap; SLURM counts 2.5 GB read and 4.1 GB written per 76 s Warp motion task. One cold 1 GiB read with a single
-  reader (from the login node, so no contention and not a compute node; 2026-11-06) ran at 1.2 GB/s from `/groups` and
-  4.8 GB/s from `/scratch`: a 2 GiB tomogram takes about 1.8 s against 0.45 s, a second or so of a 115–165 s
-  template-matching task and nothing like a quarter of it. What contention does to that is P4's question. Confirm: GPU
-  busy against read rate over time (the meter), and the storage probe. Cure: L3, and L4 only if the probe says `/groups`
-  is the limit.
+- **H3 — data moved on `/groups` around the compute.** The tool reads its frames or tomogram from `/groups` itself,
+  with no overlap; SLURM counts 2.5 GB read and 4.1 GB written per 76 s Warp motion task. Reading is cheap at one
+  reader: a cold 1 GiB read from the login node (no contention, not a compute node; 2026-11-06) ran at 1.2 GB/s from
+  `/groups` and 4.8 GB/s from `/scratch`, so a 2 GiB tomogram takes about 1.8 s against 0.45 s. Writing is not: a
+  template-matching task writes two 2 GiB maps to `/groups`, the angles map in 16.9 s at the median (about 125 MB/s)
+  while the card waits, the scores map presumably as long, and then reads the scores map back for the CPU scan; the hand
+  run wrote its angles map to `/scratch` in 9 s. Sixteen tasks write into one folder (`tmResults`) at once, the pattern
+  the site warns about. What concurrency does to these rates is P4's question. Confirm: GPU busy against read and write
+  rate over time (the meter), and the storage probes. Cure: L3 for reads, L9 for writes, L4 only if the probes say
+  `/groups` is the limit.
 - **H4 — the CPU cannot feed the card.** Warp motion has 2 CPUs for 2 workers that decode EER and apply the gain; at 66
   % efficiency that is 1.3 cores. A fed card and starved CPUs look like this. Confirm: cores busy against GPU busy
   over time. Cure: L2.
@@ -206,9 +234,10 @@ A probe is one measurement that answers one question; each runs once and feeds a
 |---|---|---|---|---|
 | P0 accounting report | Which jobs, how many GPU-hours, how busy, how much CPU and memory, per job type | `scripts/sacct_gpu_report.py` over any window | seconds, no job | `docs/reports/gpu-util/baseline-<date>.md`; re-run after every stage |
 | P1 IT's view | What is IT's number (a quarter idle, or 25 % utilised): which metric, window and averaging, for which job ids; do slices count? | the questions in S0 | one message | D1 |
-| P2 capability job | What can a g5 node, a slice and a `c` node show us: dmon columns, DCGM, nsys, cgroup files, what backs `/tmp`, mounts, a container's cold start | one script submitted three times (B200, slice, `c` node), five minutes each; in S0 | 3 short jobs | `docs/reports/gpu-util/capability-<date>.md`; picks the meter's sources |
+| P2 capability job | What can a g5 node, a slice and a `c` node show us: dmon columns, DCGM, nsys, cgroup files, mounts, a container's cold start, which GPUs a `--cleanenv` container sees | one script submitted three times (B200, slice, `c` node), five minutes each; in S0 | 3 short jobs | `docs/reports/gpu-util/capability-<date>.md`; picks the meter's sources |
 | P3 the meter | Per job: GPU busy over time, PCIe in and out, GPU memory, cores busy, memory peak, bytes read and written, and where the wall time went | built in S2, on for every tool call | one `nvidia-smi dmon` process and one thread | `meter/` in the job directory |
-| P4 storage probe | How fast does a node read what a task reads, from `/groups`, `/scratch` and `/tmp`, cold and warm, one reader and sixteen; a container image's first start | `dd` with `iflag=direct` for cold, a plain second read for warm; `time apptainer exec <sif> true` on a node that has not run it; CPU-only jobs on a g5 node | an hour of CPU | MB/s and time to first byte per place |
+| P4 storage probe | What do sixteen tasks at once get when they write and read what a template-matching task does: one shared `/groups` folder against a subfolder each, against `/tmp` and `$SCRATCHDIR`; real score maps read out of one production folder | `scripts/probe_io.sh`: an array of 16 CPU-only tasks with a barrier before each phase, 1 GiB per file, `dd` with `conv=fsync` to write and `iflag=direct` to read; `summarise_io.py` | 16 tasks × 2 CPUs for a few minutes; 16 GiB written to `/groups` (deleted by the script) and as much to each of `/tmp` and `$SCRATCHDIR`; about 80 GiB read | MB/s per task and together, per place |
+| P4b template-matching envelope A/B | How much of a template-matching task's non-search time is the kernel cache, and how much the output folder? | `scripts/probe_tm_ab.sh`: one 412 tomogram, the production command, kernel cache cold or warm × outputs on `/groups` or in `/tmp`, each cell twice in mirrored order with a short angular search, then two full-search runs; a 1 Hz `nvidia-smi dmon` trace; `summarise_tm_ab.py` | 10 runs on one full B200, about 15 minutes (0.25 GPU-h); about 20 GiB written | per run: seconds before the first busy second, busy, idle between and after; the effect of each factor |
 | P5 concurrency sweep | How many processes of this tool does one card take before items per hour stops rising; the same on a slice | the same N items at K = 1, 2, 4, 8 processes per card (Warp: `--perdevice`; others: K copies of the tool's command in one allocation, `xargs -P K`) and K = 1, 2 on a slice, metered | one run per tool that shows a wait | items/h and busy against K |
 | P6 CPU sweep | Where does adding CPUs stop helping | the same items at 2, 4, 8, 16 CPUs | one run per tool | items/h against CPUs |
 | P7 timeline | What the tool does in the gaps the meter cannot explain | Nsight Systems if P2 finds `nsys`; `py-spy` for the Python side | per case | a timeline |
@@ -246,6 +275,10 @@ Each is applied to a job type only where the meter names its cause (§4); the ex
 - **L7 — mark, do not kill.** A tool whose trace shows the GPU idle for a long stretch while it runs gets a chip and an
   event line; a person decides. No auto-kill, no auto-retry, no node probing (standing rule on cluster-workaround
   automation).
+- **L9 — keep the card out of the I/O.** A template-matching task holds its card while it writes two 2 GiB maps
+  and reads one back. Write them to the job's `/tmp` (BeeGFS) and let a CPU job copy them to `/groups` and run the
+  scan: the stage-out job of the site's own data lifecycle, which the afterok chain already supports. Smaller: a
+  subfolder per task instead of one shared `tmResults`. Which pays is P4 and P4b.
 - **L8 — keep the compile caches across jobs.** Only `CUDA_CACHE_PATH` has been moved to `/groups` (roadmap 43 S6);
   cupy's cache (pytom), Triton's, torch's and numba's are in the job's `/tmp` and are rebuilt by every task. Put them
   beside the CUDA one, one subdirectory per image.
@@ -298,34 +331,20 @@ Each is applied to a job type only where the meter names its cause (§4); the ex
 **S0 — Ask and look (no code).**
 1. Send IT D1's questions with two or three job ids from the colleague's "25 %" period. If IT shares a series, put
    it beside the same job's SLURM record (P0).
-2. Run P2: one small script, `cap.sh`, submitted three times from any directory, to a full B200, a slice and a `c`
-   node.
-
-   ```bash
-   #!/bin/bash
-   hostname; command -v dcgmi nsys ncu nvidia-cuda-mps-control iostat pidstat perf py-spy strace
-   nvidia-smi -L; nvidia-smi --query-gpu=name,driver_version,compute_mode,mig.mode.current --format=csv
-   nvidia-smi dmon -s umt -c 3 -d 1
-   nvidia-smi --query-gpu=utilization.gpu,utilization.memory,memory.used,power.draw --format=csv
-   df -hT /tmp /dev/shm /scratch /groups; findmnt -T /tmp; mount | grep -E " /groups | /scratch | /users "
-   cg=/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup); ls $cg; cat $cg/cpu.max $cg/memory.max
-   python3 -c 'import sys;f=open(sys.argv[1],"rb");[0 for _ in iter(lambda:f.read(1<<24),b"")];print(open("/proc/self/io").read())' /groups/klumpe/software/containers/sifs/imod.sif
-   sif=/groups/klumpe/software/containers/sifs/pytom-match-pick-0.14.0_cupy-13.6.0_cuda12.9_sm100.sif
-   time apptainer exec --nv $sif nvidia-smi -L
-   ```
-
-   ```bash
-   sbatch -J cb-cap -p g --gres=gpu:nvidia_b200:1 -N1 -n1 -c4 --mem=16G -t 0:05:00 -o cap-b200.out cap.sh
-   sbatch -J cb-cap -p g --gres=gpu:nvidia_b200_1g.23gb:1 -N1 -n1 -c4 --mem=16G -t 0:05:00 -o cap-slice.out cap.sh
-   sbatch -J cb-cap -p c -N1 -n1 -c4 --mem=16G -t 0:05:00 -o cap-c.out cap.sh
-   ```
-
-   The `c` job's GPU lines fail by design; what it settles is whether CPU-only steps can move to `c` (apptainer,
-   `/groups`, `/scratch`, the pytom and RELION images). The Python line shows which of `rchar`, `wchar` and `read_bytes`
-   see an NFS read, which the meter's byte counters rest on. Record what each job says in
-   `docs/reports/gpu-util/capability-<date>.md`: which dmon columns a B200 and a slice give, whether DCGM or `nsys`
-   exist, what backs `/tmp` and how large it is, which cgroup files a job can read.
-3. Re-run P0 (`sacct_gpu_report.py --scope all --completed-only`) when the window has grown.
+2. Run P2: `docs/reports/gpu-util/scripts/capability.sh`, submitted three times from any directory, to a full B200,
+   a slice and a `c` node (the sbatch lines are in its header). The `c` job's GPU lines fail by design; what it settles
+   is whether CPU-only steps can move to `c` (apptainer, `/groups`, `/scratch`, the pytom and RELION images). Its Python
+   section shows which of `rchar`, `wchar` and `read_bytes` see an NFS read, which the meter's byte counters rest on,
+   and its two container sections show whether a `--cleanenv` container sees exactly the allocated GPU. Record what
+   each job says in `docs/reports/gpu-util/capability-<date>.md`: which dmon columns a B200 and a slice give, whether
+   DCGM or `nsys` exist, how large `/tmp` is, which cgroup files a job can read.
+3. Run P4b and P4, which need nothing built: `probe_tm_ab.sh` on one full B200 (about 15 minutes) and `probe_io.sh` as
+   an array of sixteen CPU-only tasks (a few minutes). Both write under a `/groups` folder the maintainer names in
+   `GROUPS_OUT` and delete what they made there; their summarisers print the tables. The results decide L3, L4, L8 and
+   L9 and what S4 does first for template matching. The tuning skill's rule applies: the maintainer says go, with the
+   cost above in view, before anything is submitted.
+4. Re-run P0 (`sacct_gpu_report.py --scope all --completed-only`) when the window has grown; its stored-script
+   lookups are cached, so a rerun costs two accounting queries plus the directories it has not seen.
 
 **S1 — Ask for what the job uses (config and small code; certain).**
 - `config/conf.yaml` (both installs) and `config/conf.template.yaml`: `tmextractcand`, `subtomoExtraction` and
@@ -367,8 +386,8 @@ first mark, so the shell and interpreter start-up before Python is in the wall t
   (`services/scheduling_and_orchestration/pipeline_orchestrator_service.py:642`) learns the `meter/` folder.
 - Cost: one process and one thread beside the tool; checked in the runtime list by the same task with and without it.
 
-**S3 — The probes on the pilots (P4–P8; the maintainer's one pass).** The copia protocol on B200s with the meter on
-(P8, the baseline per stage); P4 beside it; then, only for the job types whose summaries show a wait, one P5 and one P6
+**S3 — The probes on the pilots (P5–P8; the maintainer's one pass).** The copia protocol on B200s with the meter on
+(P8, the baseline per stage); then, only for the job types whose summaries show a wait, one P5 and one P6
 sweep. Results in `docs/reports/gpu-util/pilot-<date>.md`: per job type the phase table, the busy and filled readings
 and items/h against K and CPUs. Each sweep also records that the outputs are identical across its arms.
 
@@ -377,7 +396,7 @@ and items/h against K and CPUs. Each sweep also records that the outputs are ide
 | Job type | First look (§3) | Likely wait (§4) | Expected lever |
 |---|---|---|---|
 | Segment | 96.8 % busy | H5 (CPU resample inside the allocation), whole-card TensorFlow | none for busy; P5 for two tasks per card with `TF_FORCE_GPU_ALLOW_GROWTH` |
-| Template matching | 98.6 % | H2 (cupy kernels rebuilt per task), H5 (6.8 s score scan), filled unknown (30.7 of 179 GiB) | L8; P5 at K = 2; otherwise leave (roadmap 43) |
+| Template matching | 98.6 % busy, about half the allocation (§3) | H2 (cupy kernels rebuilt per task), H3 (two 2 GiB maps to `/groups`), H5 (7.7 s scan), filled unknown (30.7 of 179 GiB) | L8, L9, L5 (several tomograms per task); P5 at K = 2 |
 | Candidate, subtomogram extraction, particle reconstruction | 0 % | H1 | L1 |
 | Warp motion + CTF | 23 % | H2, H3, H4 | L2 (CPUs and workers), then L5 and L3 |
 | AreTomo alignment | 30 % | H2, H6 | L5, or a slice (L6) |
@@ -418,3 +437,11 @@ its leftovers named.
   now runs it as `./crboost python -m ruff`, which builds one), so `ruff check` and `ruff format` are owed. Read by hand
   for the roadmap: the scan seconds in H5 (the task logs of three template-matching jobs), the read speeds in H3 (two
   `dd` runs) and the cupy cache count in H2. No product code changed.
+- **2026-11-06, probes written, not run.** `docs/reports/gpu-util/scripts/`: `capability.sh`; `probe_tm_ab.sh` with
+  `summarise_tm_ab.py`; `probe_io.sh` with `summarise_io.py`. Checked: `bash -n` and `py_compile`; `probe_io.sh` as one
+  16 MiB task on the login node with a scratch folder standing in for `/groups`; `probe_tm_ab.sh` with `PROBE_DRY=1`
+  (the order of the ten runs, the short angle list, the cleanup); `summarise_tm_ab.py` on synthetic traces with known
+  answers. Not submitted: the tuning skill's rule is to propose a measurement with its cost and wait for the
+  maintainer's go. `sacct_gpu_report.py` gained a cache for its stored-script lookups for the same reason (the skill
+  asks for sparing queries; the first version made one lookup per job directory on every run). The task anatomy of
+  §3 came from one accounting query and the file times of job019's 141 tasks.

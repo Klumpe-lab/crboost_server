@@ -8,6 +8,8 @@ Read-only: it only calls sacct. It prints aggregates and no user names. What the
 - A MIG slice always reports 0, so slice jobs are counted in GPU-hours and left out of the busy column.
 - TensorFlow tools reserve the whole card, so their `gres/gpumem` says nothing about need.
 - sacct hides other users' batch scripts, so their jobs are grouped under "?".
+- The scheduler is shared and rate-limits heavy users, so a run makes two accounting queries plus one stored-script
+  lookup per job directory it has not seen before; those answers are kept in ~/.cache/crboost/ (--no-cache skips it).
 - Read and write GB are SLURM's disk counters per job. What they count (cached reads, NFS) has not been checked
   against the bytes that crossed the network, so read them as upper bounds; tilt_filter's are implausibly large.
 
@@ -15,14 +17,19 @@ Read-only: it only calls sacct. It prints aggregates and no user names. What the
 """
 
 import argparse
+import json
+import os
 import re
 import statistics
 import subprocess
+import sys
+import time
 from collections import defaultdict
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 UNITS_MB = {"": 1 / 1024, "K": 1 / 1024, "M": 1, "G": 1024, "T": 1024 * 1024}
+DRIVER_CACHE = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "crboost" / "sacct_driver_cache.json"
 
 
 @dataclass
@@ -82,6 +89,19 @@ def driver_of(job_id: str) -> str:
     return m.group(1) if m else "?"
 
 
+def load_driver_cache() -> dict[str, str]:
+    try:
+        return json.loads(DRIVER_CACHE.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        # No cache yet, or a half-written one: every directory is looked up again.
+        return {}
+
+
+def save_driver_cache(cache: dict[str, str]) -> None:
+    DRIVER_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    DRIVER_CACHE.write_text(json.dumps(cache, indent=0, sort_keys=True))
+
+
 def load_jobs(args: argparse.Namespace) -> list[Job]:
     allocations = sacct(
         ["JobID", "User", "JobName", "State", "Elapsed", "AllocCPUS", "AllocTRES", "WorkDir", "StdOut"], args, "-X"
@@ -98,7 +118,15 @@ def load_jobs(args: argparse.Namespace) -> list[Job]:
     first_job_in: dict[str, str] = {}
     for a in allocations:
         first_job_in.setdefault(job_dir_of(a), a["JobID"])
-    driver_in = {job_dir: driver_of(job_id) for job_dir, job_id in first_job_in.items()}
+    cache = {} if args.no_cache else load_driver_cache()
+    new = [job_dir for job_dir in first_job_in if job_dir not in cache]
+    for job_dir in new:
+        cache[job_dir] = driver_of(first_job_in[job_dir])
+        time.sleep(0.2)  # one query per directory on a shared scheduler: no tight loop
+    if new and not args.no_cache:
+        save_driver_cache(cache)
+    print(f"stored-script lookups: {len(new)} new, {len(first_job_in) - len(new)} cached", file=sys.stderr)
+    driver_in = {job_dir: cache[job_dir] for job_dir in first_job_in}
 
     jobs = []
     for a in allocations:
@@ -192,6 +220,7 @@ def main() -> None:
     ap.add_argument("--partition", default="g")
     ap.add_argument("--job-name", default="CryoBoost")
     ap.add_argument("--completed-only", action="store_true", help="leave failed and cancelled jobs out")
+    ap.add_argument("--no-cache", action="store_true", help="look every job directory up again")
     args = ap.parse_args()
 
     jobs = load_jobs(args)
