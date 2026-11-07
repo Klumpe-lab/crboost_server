@@ -97,6 +97,12 @@ def check_python() -> None:
     for found in outside:
         warn(f"not from this environment ({sys.prefix}): {found}")
 
+    # A venv/ that is a real directory is an install from before environments were named by their lock: ./crboost
+    # starts from .uv/env now and never touches it. (When venv is a link, it is only a convenience.)
+    old = ROOT / "venv"
+    if old.is_dir() and not old.is_symlink():
+        warn(f"{old} is not used any more; delete it once no server runs from it")
+
 
 def check_config():
     print("\nConfig (config/conf.yaml, overlaid by ~/.crboost/conf.yaml if present)")

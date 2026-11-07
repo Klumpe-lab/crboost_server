@@ -3,11 +3,12 @@
 **Pending (maintainer, 2026-10-26):** wanted; move to uv, plus §6 (start-up cost of every array task first).
 **Status:** S0–S2 done (lab on uv since 2026-10-28; records in §3). 2026-11-06: the install became self-contained
 (`install.sh`, `.uv/` inside the checkout, `crboost` an sh launcher; `f49ad87`) and torch moved to 2.8.0/cu128 for the
-B200 nodes (`d12f371`); §2 notes what that revised. The same evening S3 and S6 were built on the working tree, not yet
-committed and NOT RUN on a project or the lab: S6 makes the environment a build product named by its inputs (no `venv/`
-to repair, no rebuild in place, `./crboost` finds or builds it), S3 moves the tilt filter's torch into the
-`tilt_filter` container, so an environment is 0.8 GB instead of 7.3. The records are in §3; next, the maintainer's
-steps in S6 ("By hand"), then S4, S5 and §6.
+B200 nodes (`d12f371`); §2 notes what that revised. The same evening S3 and S6 were built and pushed (`355b08f`,
+`8e60f63`, `b5655df`): S6 makes the environment a build product named by its inputs (no `venv/` to repair, no rebuild
+in place, `./crboost` finds or builds it), S3 moves the tilt filter's torch into the `tilt_filter` container, so an
+environment is 0.8 GB instead of 7.3. The lab built its environment and started a server on it that night, dev built
+its own, and the driver's container step ran from the lab install on a B200; the DL tilt filter has NOT yet run on a
+project. The records are in §3; next, the rest of S6's "By hand", then S4, S5 and §6.
 
 **In one line.** Today the server's environment is a venv built on the cluster's Python module. Some of its packages
 are probably not in the venv at all, and most of its versions are not pinned. This roadmap makes that environment
@@ -377,13 +378,15 @@ file lacks (the `qos` incident). The per-task start-up cost and the other items 
 **By hand, after it lands.**
 
 1. Delete the `crboost_python:` line from both `conf.yaml` files. Harmless now: empty means the server's own
-   interpreter, which is what both point at. Preflight warns until it is gone.
-2. Put the tilt-filter image where the others are (S3) and add `tools.tilt_filter` to both `conf.yaml` files.
+   interpreter, which is what both point at. Preflight warns until it is gone. *Done 2026-11-06 in both.*
+2. Put the tilt-filter image where the others are (S3) and add `tools.tilt_filter` to both `conf.yaml` files. *Done
+   2026-11-06: the lab's `sifs/` copy is byte-identical to the tested build; both entries point at it.*
 3. Dev: `./crboost`. The first start builds. Delete the old `venv/` once no server runs from it; the `venv` link then
-   appears.
+   appears. *Built 2026-11-06 (by `./crboost preflight`); the old `venv/` is still there, and preflight says so.*
 4. Lab, at a quiet time: `git pull`, then `./install.sh` once to watch the build, then each member's `./crboost`.
-   The old `venv/` stays until nobody runs from it.
-5. Then delete what nothing uses: each member's `~/.cache/uv` and `~/.local/share/uv`; the shared
+   The old `venv/` stays until nobody runs from it. *Done 2026-11-06 21:33; the other members' servers still run on
+   the old `venv/` until they restart.*
+5. Then delete what nothing uses (not done; each is a deletion to ask about): each member's `~/.cache/uv` and `~/.local/share/uv`; the shared
    `/groups/klumpe/software/cache_and_artifacts/uv` (12 GB), once the old dev `venv/` and the `agent_api` worktree's
    link to it are gone, since both run on its interpreter; the `config/*.bak-*` files, once diffed.
 
@@ -399,7 +402,7 @@ file lacks (the `qos` incident). The per-task start-up cost and the other items 
 5. In a checkout the user cannot write to, with no environment for its lock: the message names `install.sh`.
 6. On a B200, `./crboost test -m cluster` passes `tilt_filter` (a kernel launch).
 
-#### S6 record (2026-11-06, a scratch copy of the working tree on local XFS; NOT RUN on dev or the lab)
+#### S6 record (2026-11-06: first a scratch copy of the working tree on local XFS, then the lab and dev)
 
 - First start from nothing (fetch uv 0.13.7, install Python 3.11.18, download and install 78 wheels, run): 6.6 s;
   a second start 22 ms. The environment is 0.8 GB, the wheel cache 0.7, the Python 0.09 and uv 0.04: 1.6 GB per
@@ -415,8 +418,24 @@ file lacks (the `qos` incident). The per-task start-up cost and the other items 
   `--yes` removes it.
 - `ruff check .` finds only the 6 E501 of §1; `check_boundaries.py` is clean; `./crboost test` collects the 3 headnode
   tests; `./crboost preflight` shows the Python section with no import from outside the environment.
-- Not tried: `/groups` (NFS: the link mode, group permissions, a remainder from `rm` on a busy file), the real dev and
-  lab trees, two members on two login nodes, the shell of user check 1 (EESSI modules and a poisoned `PYTHONPATH`).
+- Not tried in the scratch copy: `/groups` (NFS), the real trees, two members on two login nodes.
+
+**Lab and dev, the same night (2026-11-06).**
+
+- Lab (`/groups`, NFS): `./install.sh` from the maintainer's own login shell built the environment in about 35 s (78
+  packages installed in 14.9 s, 6328 files byte-compiled in 19.6 s; the cache held every wheel but ruff), and
+  `./crboost` started a server on it that picked up the running jobs. 11213 of the environment's 17826 files are
+  hardlinks into the cache: the link mode works on `/groups` and uv warned about nothing. The environment is 0.83 GB.
+  The lab's cache is 6.4 GB because it still holds the old torch wheels (see "By hand", 5).
+- Dev (home, NFS): the first `./crboost preflight` fetched uv, installed the Python and built the environment; the Python
+  state of the whole checkout is about 1 GB (the cache is hardlinked into the environment).
+- Both preflights are clean on the new environment, with `tools.tilt_filter` OK and no `crboost_python`; dev's adds the
+  warning about its old `venv/` (a check added that night: it was in this text before it was in the code).
+- GPU job 1433245 (a full B200 on `cbe-g5-2`, from the lab install): `drivers.tilt_filter._classify` through `run_tool`
+  with the lab's `conf.yaml` and environment, real weights, the 48 synthetic PNGs: the wrapper's command ran the image,
+  the JSON came back, and the P(bad) values equal the earlier run on a MIG slice exactly (max difference 0.0).
+- Not tried: the DL tilt filter on a project (registry write, liveness, the red marker), `./crboost test -m cluster`,
+  two members on two login nodes, a build under another member's account.
 
 ## 4. End-of-arc runtime pass
 

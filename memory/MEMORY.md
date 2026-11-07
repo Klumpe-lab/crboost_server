@@ -157,7 +157,7 @@
 - [DAV paper methods (DAV = try1 job121)](project_412_paper_methods.md) — DAV 23 ptcl (v1 try1), copia 76 (PI Copia/try2, §9; NOT copia-tutorial); 412-methods-provenance.md
 - [Workspace cards + closeable job 2026-10-22](project_workspace_cards_closeable_job_2026-10-22.md) — panels as cards on a desk, job page × closes the job only, rail avatar = project hover card; NOT RUN
 - [No blockquotes](feedback_no_blockquotes.md) — drafted text as plain paragraphs, never `>` quotes
-- [Python env roadmap 39](project_python_env_roadmap39.md) — S0–S2 DONE (lab on uv 2026-10-28); 2026-11-06 S6 (env = `.uv/env/<python>-<hash of lock>`, `./crboost preflight|test|python|lock|clean`) and S3 (tilt filter's torch in the `tilt_filter` image, env 0.8 GB) built, NOT RUN on dev/lab; next the by-hand steps, S4, S5, §6
+- [Python env roadmap 39](project_python_env_roadmap39.md) — S0–S2 DONE (lab on uv 2026-10-28); 2026-11-06 S6 (env = `.uv/env/<python>-<hash of lock>`, `./crboost preflight|test|python|lock|clean`) and S3 (tilt filter's torch in the `tilt_filter` image, env 0.8 GB) built and live on dev + lab (DL filter not yet run on a project); next the cleanup, S4, S5, §6
 - [easymode denoise + job size chip 2026-10-23](project_easymode_denoise_and_job_size_chip.md) — Denoise predict "easymode" (no train job, registry 1.7) + job header size chip; on main, NOT RUN
 - [CBE GPU memory by feature](reference_cbe_gpu_memory.md) — g1 P100 12 GB; TF jobs show whole card in sacct gpumem; segment OOMs on g1
 - [Roadmap triage 2026-10-26](project_roadmap_triage_2026-10-26.md) — archived 20/22/24/29/31/34; 37–38 high; 32 up; 27 after 32; 36–38 archived; 33 → 32 §14; Pending table in README; 23 Munich slice built
