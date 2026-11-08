@@ -474,6 +474,20 @@ def preflight_origins(origins: dict, expected_ts_names: list[str], job_name: str
         )
 
 
+def input_tomogram_origins(ctx: DriverContext) -> dict | None:
+    """Where the tomograms of the job's input tomograms star live, when its rows record it (tomograms imported
+    from other projects' jobs); None when they do not, or the job reads no tomograms star."""
+    from services.particles.set_origins import origins_of
+
+    star = ctx.paths.get("input_tomograms")
+    if star is None or not Path(star).is_file():
+        return None
+    for block in StarfileService().read(Path(star)).values():
+        if hasattr(block, "columns") and "rlnTomoName" in block.columns:
+            return origins_of(block)
+    return None
+
+
 # ----------------------------------------------------------------------
 # Tomostar path handling
 # ----------------------------------------------------------------------
@@ -838,13 +852,19 @@ class ArrayDriver(ABC):
 
     def preflight(self, ctx: DriverContext, items: list[str]) -> None:
         """Check the tilt series about to be dispatched before anything is submitted. Default: against this
-        project's registry; a job reading a particle set checks each against its own project's."""
-        preflight_registry(ctx.project_path, self.preflight_scope(ctx, items), job_name=self.job_name)
+        project's registry; a job whose input tomograms come from other projects (they record where, as a
+        particle set's do) checks each against its own project's."""
+        origins = input_tomogram_origins(ctx)
+        if origins is None:
+            preflight_registry(ctx.project_path, self.preflight_scope(ctx, items), job_name=self.job_name)
+        else:
+            preflight_origins(origins, self.preflight_scope(ctx, items), job_name=self.job_name)
 
     def excluded_items(self, ctx: DriverContext) -> set[str] | None:
-        """The items to treat as excluded from processing; None: this project's registry says. A job reading a
-        particle set applies none: excluding a tilt series is a decision of its own project."""
-        return None
+        """The items to treat as excluded from processing; None: this project's registry says. A job reading
+        tomograms of other projects, or a particle set, applies none: excluding a tilt series is a decision of
+        its own project."""
+        return set() if input_tomogram_origins(ctx) is not None else None
 
     def item_metadata(self, ctx: DriverContext, items: list[str]) -> dict[str, dict] | None:
         """Per-item metadata to persist in the manifest (`ts_metadata`)."""

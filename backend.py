@@ -817,6 +817,19 @@ class CryoBoostBackend:
 
         return await asyncio.to_thread(preview_reference_metadata, reference_star)
 
+    async def tomogram_jobs(self, project: str) -> list[dict[str, Any]]:
+        """Another project's Reconstruct and Denoise Predict jobs with their tomograms, read off the event loop
+        and never opened as a project (`tomogram_import.tomogram_jobs`)."""
+        from services.tomogram_import import tomogram_jobs
+
+        return await asyncio.to_thread(tomogram_jobs, project)
+
+    async def preview_job_tomograms(self, project: str, job: str) -> list[dict[str, Any]]:
+        """One of those jobs' tomograms in the import preview's shape (`tomogram_import.preview_job_metadata`)."""
+        from services.tomogram_import import preview_job_metadata
+
+        return await asyncio.to_thread(preview_job_metadata, project, job)
+
     async def commit_imported_tomograms(
         self,
         project_path: Path,
@@ -824,6 +837,7 @@ class CryoBoostBackend:
         mode: str = "synthesize",
         mrc_paths: list[str] | None = None,
         reference_star: str = "",
+        job_sources: list[dict] | None = None,
         pixel_size_angstrom: float = 0.0,
         tomogram_binning: float = 1.0,
         optics_group_name: str = "opticsGroup1",
@@ -841,13 +855,27 @@ class CryoBoostBackend:
         does NOT block the commit: it contributes zero rows and its error is returned under
         ``batch_errors``, since nothing in this dialog can repair a directory that moved.
 
-        Microscope/optics values come from the project's microscope + acquisition params.
-        Returns {count, star_path, added, renamed, skipped, batch_errors, batches}."""
-        from services.tomogram_import import write_tomograms_star
-        from services.project_state import ImportBatch, ImportedTomograms
+        Microscope/optics values come from the project's microscope + acquisition params. Tomograms from other
+        projects' jobs (`job_sources`, mode "jobs") bring their own: they must agree among themselves
+        (`check_job_sources`), and a project with raw data or other imported tomograms must hold the same; a
+        project without either takes theirs. Refused in a project whose tomograms come from the pipeline
+        (`import_refusal`). Returns ok(count, star_path, added, renamed, skipped, batch_errors, batches,
+        tilt_series_star, values)."""
+        from services.tomogram_import import (
+            TOMO_IMPORT_JOBS,
+            check_job_sources,
+            import_refusal,
+            project_value_mismatch,
+            take_tomogram_values,
+            write_tomograms_star,
+        )
+        from services.project_state import ImportBatch, ImportedTomograms, TomogramJobSource
 
         project_path = Path(project_path)
         state = self.state_service.state_for(project_path)
+        refusal = import_refusal(state)
+        if refusal:
+            return err(refusal)
         out_rel = Path("Tomograms") / "tomograms.star"
         out_abs = project_path / out_rel
 
@@ -857,11 +885,29 @@ class CryoBoostBackend:
             source_mode=mode,
             source_paths=[str(p) for p in (mrc_paths or [])],
             reference_star=reference_star,
+            job_sources=[TomogramJobSource(**s) for s in (job_sources or [])],
             pixel_size_angstrom=pixel_size_angstrom,
             tomogram_binning=tomogram_binning,
             optics_group_name=optics_group_name,
         )
         all_batches = [*prior, new_batch]
+        values = None
+        if mode == TOMO_IMPORT_JOBS:
+            sources = [s.model_dump() for b in all_batches if b.source_mode == TOMO_IMPORT_JOBS for s in b.job_sources]
+            checked = await asyncio.to_thread(
+                check_job_sources, sources, self.config_service.config.container_binds
+            )
+            if not checked["success"]:
+                return checked
+            values = checked["values"]
+            own_values = bool(state.movies_glob) or any(b.source_mode != TOMO_IMPORT_JOBS for b in all_batches)
+            mismatch = project_value_mismatch(state, values) if own_values else []
+            if mismatch:
+                return err(
+                    "Not imported: template matching takes these values from the project, and they differ from "
+                    "the tomograms': " + "; ".join(mismatch),
+                    problems=mismatch,
+                )
 
         result = await asyncio.to_thread(
             write_tomograms_star,
@@ -878,9 +924,13 @@ class CryoBoostBackend:
             batch.count = int(report["count"])
             batch.renamed = report["renamed"]
             batch.skipped = report["skipped"]
+        if values is not None and not own_values:
+            take_tomogram_values(state, values)
+        tilt_series = result.get("tilt_series_star")
         state.set_imported_tomograms(
             ImportedTomograms(
                 star_path=str(out_rel),
+                tilt_series_star=str(Path(tilt_series).relative_to(project_path)) if tilt_series else "",
                 batches=all_batches,
                 source_mode=mode,
                 source_paths=[str(p) for p in (mrc_paths or [])],
@@ -892,17 +942,19 @@ class CryoBoostBackend:
             )
         )
         await self.state_service.save_project(project_path=project_path, force=True)
-        return {
-            "count": int(result["count"]),
-            "star_path": str(out_abs),
-            "added": int(reports[-1]["count"]),
-            "renamed": reports[-1]["renamed"],
-            "skipped": reports[-1]["skipped"],
-            "batch_errors": [
+        return ok(
+            count=int(result["count"]),
+            star_path=str(out_abs),
+            added=int(reports[-1]["count"]),
+            renamed=reports[-1]["renamed"],
+            skipped=reports[-1]["skipped"],
+            batch_errors=[
                 {"batch": b.label, "error": r["error"]} for b, r in zip(all_batches, reports, strict=True) if r["error"]
             ],
-            "batches": len(all_batches),
-        }
+            batches=len(all_batches),
+            tilt_series_star=tilt_series,
+            values=values,
+        )
 
     # ── Segmentation import (Tomograms view; a project-level artifact, not a job) ──
 
@@ -1879,6 +1931,7 @@ class CryoBoostBackend:
             created_ts = None
             creator = None
             owner_raw = None
+            made_by_api = False
             pipeline_active = False
             total_jobs_planned = 0
             # Initialized outside the try below: an unreadable project_params.json
@@ -1914,6 +1967,7 @@ class CryoBoostBackend:
                         created_ts = None
                 creator = data.get("created_by")
                 owner_raw = data.get("owner")
+                made_by_api = bool(data.get("made_by_api", False))
                 pipeline_active = bool(data.get("pipeline_active", False))
                 review_hold = data.get("review_hold")
                 jobs_dict = {iid: job for iid, job in (data.get("jobs") or {}).items() if _is_pipeline_job_dict(job)}
@@ -2039,6 +2093,7 @@ class CryoBoostBackend:
                 "created_timestamp": created_ts,
                 "creator": creator,
                 "owner": owner_raw,
+                "made_by_api": made_by_api,
                 "pipeline_active": pipeline_active,
                 "total_jobs_planned": total_jobs_planned,
                 "ts_count": ts_count,
@@ -2159,32 +2214,11 @@ class CryoBoostBackend:
 
         return out
 
-    async def create_project_and_scheme(
-        self,
-        project_name: str,
-        project_base_path: str,
-        selected_jobs: list[str],
-        movies_glob: str,
-        mdocs_glob: str,
-        selected_mdoc_paths: list[str] | None = None,
-        import_summary: dict[str, Any] | None = None,
-        detected_params: dict[str, Any] | None = None,
-        shared: bool = False,
-        progress_cb=None,
-        ts_names_by_folder: bool = False,
-    ):
-        return await self.project_service.initialize_new_project(
-            project_name=project_name,
-            project_base_path=project_base_path,
-            selected_jobs=selected_jobs,
-            movies_glob=movies_glob,
-            mdocs_glob=mdocs_glob,
-            selected_mdoc_paths=selected_mdoc_paths,
-            import_summary=import_summary,
-            detected_params=detected_params,
-            shared=shared,
-            progress_cb=progress_cb,
-            ts_names_by_folder=ts_names_by_folder,
+    async def create_project(self, spec, *, overview=None, import_summary=None, progress_cb=None, made_by_api=False):
+        """Make a new project from a `ProjectSpec` (services/project_create.py): landing Create, the Protocols
+        dialog and the agent API all come here."""
+        return await self.project_service.create_project(
+            spec, overview=overview, import_summary=import_summary, progress_cb=progress_cb, made_by_api=made_by_api
         )
 
     async def delete_project(self, project_path: Path, progress_cb: ProgressCallback | None = None) -> dict[str, Any]:
@@ -2332,6 +2366,51 @@ class CryoBoostBackend:
     async def get_pipeline_overview(self, project_path: str):
         """Gets a high-level overview and detailed statuses of all jobs."""
         return await self.pipeline_runner.get_pipeline_overview(project_path)
+
+    async def stop_pipeline(self, project_path: Path | str) -> dict[str, Any]:
+        """Stop the project's run: cancel every live job and mark it Failed (`stop_and_cleanup`)."""
+        return await self.pipeline_runner.stop_and_cleanup(Path(project_path))
+
+    async def cancel_job(self, project_path: Path | str, instance_id: str) -> dict[str, Any]:
+        """Cancel one live job; the rest of the run goes on (`PipelineRunnerService.cancel_job`)."""
+        return await self.pipeline_runner.cancel_job(Path(project_path), instance_id)
+
+    async def get_instance_logs(
+        self, project_path: Path | str, instance_id: str, *, ts: str | None = None, lines: int = 200
+    ) -> dict[str, Any]:
+        """A job's logs by instance id: the tails of its run.out and run.err, or with `ts` that tilt series'
+        task log in the job's array (task_<index>.out/.err, the index its manifest gives) and why it failed."""
+        from services.array_tasks import STATUS_DIR_NAME, manifest_items, read_tail
+
+        project_path = Path(project_path)
+        job_model = self.state_service.state_for(project_path).jobs.get(instance_id)
+        if job_model is None:
+            return err(f"No job {instance_id} in this project.")
+        if not job_model.relion_job_name:
+            return err(f"{instance_id} has not run: it has no log yet.")
+        job_dir = project_path / job_model.relion_job_name.rstrip("/")
+
+        def _read() -> dict[str, Any]:
+            if ts is None:
+                return ok(
+                    job_dir=str(job_dir),
+                    stdout=read_tail(job_dir / "run.out", lines),
+                    stderr=read_tail(job_dir / "run.err", lines),
+                )
+            items = manifest_items(job_dir)
+            if ts not in items:
+                return err(f"{instance_id} has no task for {ts} (its tasks: {len(items)} tilt series).")
+            idx = items.index(ts)
+            fail = job_dir / STATUS_DIR_NAME / f"{ts}.fail"
+            return ok(
+                job_dir=str(job_dir),
+                ts=ts,
+                stdout=read_tail(job_dir / f"task_{idx}.out", lines),
+                stderr=read_tail(job_dir / f"task_{idx}.err", lines),
+                reason=fail.read_text(errors="replace").strip() if fail.is_file() else "",
+            )
+
+        return await asyncio.to_thread(_read)
 
     async def get_job_logs(self, project_path: str, job_name: str, *, tail_bytes: int | None = None) -> dict[str, str]:
         """Gets logs for a specific job *path* (e.g., "External/job003/").

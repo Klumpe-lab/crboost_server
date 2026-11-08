@@ -314,7 +314,7 @@ class TemplateService:
     # =========================================================
 
     def _calculate_thresholds_sync(self, input_path: str, lowpass: float | None = None) -> dict[str, float]:
-        """Calculate multiple threshold methods using skimage filters."""
+        """Calculate multiple threshold methods using skimage filters; {} when the volume cannot be read."""
         try:
             with mrcfile.open(input_path) as mrc:
                 vol = mrc.data.copy()
@@ -331,9 +331,9 @@ class TemplateService:
                 "yen": float(filters.threshold_yen(vol)),
                 "flexible_bounds": float(np.mean(vol) + 1.85 * np.std(vol)),
             }
-        except Exception as e:
-            logger.info("Threshold calculation error: %s", e)
-            return {"flexible_bounds": 0.001}
+        except Exception:
+            logger.exception("Threshold calculation failed for %s", input_path)
+            return {}
 
     def _gaussian_lowpass(self, volume: np.ndarray, cutoff_angstrom: float, voxel_size: float) -> np.ndarray:
         """Apply Gaussian low-pass filter in Fourier space (numpy version)."""

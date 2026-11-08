@@ -41,6 +41,16 @@ class ErrorCode(StrEnum):
     # Run refused by the checks of a job's particle-set input: the pipeline panel lists them and redraws the job.
     SET_CHECKS = auto()
 
+    # A call needs a decision only its caller can make (a value nobody gave, one of several options): the
+    # result's `needs` names each one (`need`), and the call refuses until they are given.
+    NEEDS_DECISION = auto()
+
+    # A write to a job that is queued, running or finished: its settings stay as they ran or will run.
+    JOB_FROZEN = auto()
+
+    # The agent API changes only the projects it made; one made by hand is changed in the UI.
+    NOT_WRITABLE = auto()
+
 
 def ok(**data: Any) -> dict[str, Any]:
     """Successful outcome; payload keys stay ad-hoc by design."""
@@ -50,3 +60,10 @@ def ok(**data: Any) -> dict[str, Any]:
 def err(message: str, *, code: ErrorCode | None = None, **data: Any) -> dict[str, Any]:
     """Failed outcome. ``error`` is always the human-facing text — never None."""
     return {"success": False, "error": message, **({"code": code} if code else {}), **data}
+
+
+def need(kind: str, what: str, why: str, *, options: list | None = None, **data: Any) -> dict[str, Any]:
+    """One open decision, for an ``err(..., code=ErrorCode.NEEDS_DECISION, needs=[...])``. ``kind``: "value" (a
+    value nobody gave), "choice" (one of ``options``) or "pin" (which source an input reads). ``what`` names the
+    field or input, ``why`` says what it is for; extra keys describe the options further."""
+    return {"kind": kind, "what": what, "why": why, **({"options": options} if options is not None else {}), **data}

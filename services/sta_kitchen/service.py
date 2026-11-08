@@ -172,7 +172,17 @@ async def _view(path: str) -> ProjectView:
 
 
 async def _facts(view: ProjectView) -> dict[str, dict[str, Any]]:
-    key = (view.path, view.stamp if not view.installed else (view.registry.index_path.stat().st_mtime_ns,))
+    """The member project's tomogram facts (`tomo_facts`), read once per change of its files. A project without a
+    registry (its tomograms imported from other projects) has none: its frames carry no acquisition labels."""
+    if view.installed:
+        try:
+            key = (view.path, (view.registry.index_path.stat().st_mtime_ns,))
+        except FileNotFoundError:
+            return {}
+    elif view.stamp[1] is None:
+        return {}
+    else:
+        key = (view.path, view.stamp)
     hit = _FACTS.get(key)
     if hit is None:
         hit = _FACTS[key] = await asyncio.to_thread(tomo_facts, view)

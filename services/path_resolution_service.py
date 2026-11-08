@@ -1198,9 +1198,8 @@ class PathResolutionService:
         # not a pipeline job. Surface the committed tomograms.star as a synthetic
         # TOMOGRAMS_STAR producer so resolver-based consumers discover it like any
         # reconstructed-tomogram source (mirrors _add_merged_sources_candidates). The
-        # manual-picking flow reads the star directly, so this matters only for future
-        # resolver consumers (e.g. TemplateMatch -- which separately also needs a
-        # tilt-series star, so this alone does not enable TM on imported tomograms).
+        # manual-picking flow reads the star directly; template matching reads it through
+        # the resolver, with the tilt-series star below.
         rec = getattr(self.state, "imported_tomograms", None)
         if not rec or not rec.star_path:
             return
@@ -1223,6 +1222,26 @@ class PathResolutionService:
                 label=f"Imported tomograms — {rec.count} tomogram(s)" if rec.count else "Imported tomograms",
             )
         )
+        # Tomograms taken from other projects' jobs come with their tilt-series star, the other input template
+        # matching reads; offered the same way, so both resolve without a pin.
+        ts_star = Path(rec.tilt_series_star) if rec.tilt_series_star else None
+        if ts_star is not None and not ts_star.is_absolute():
+            ts_star = project_root / ts_star
+        if ts_star is not None and ts_star.exists():
+            index[JobFileType.TS_CTF_TILT_SERIES_STAR].append(
+                OutputCandidate(
+                    produces=JobFileType.TS_CTF_TILT_SERIES_STAR,
+                    producer_job_type=JobType.IMPORTED_TOMOGRAMS,
+                    producer_output_key="tilt_series_star",
+                    path=str(ts_star),
+                    instance_path=IMPORTED_TOMOGRAMS_INSTANCE_PATH,
+                    producer_instance_id=IMPORTED_TOMOGRAMS_PRODUCER_ID,
+                    execution_status=JobStatus.SUCCEEDED,
+                    relion_job_number=0,
+                    species_id=None,
+                    label="Imported tomograms — their tilt series",
+                )
+            )
 
     def _add_segmentation_import_candidates(
         self, index: dict[JobFileType, list[OutputCandidate]], project_root: Path
