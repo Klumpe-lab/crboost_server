@@ -1312,3 +1312,62 @@ Playwright's Chromium from a tool venv outside the repo (`~/.local/share/crboost
 beyond?); whether the socket rows stay on every card or only on the selected one; the method token's source per
 type (the `USER_PARAMS` field that is the method); whether "+" lists every type or only the next stages; the
 build order (card component → map view → add flow), which this mock's `render_card` / `_tidy` / `resolve` sketch.
+
+### 15.3 Pickup for the next session (written 2026-11-08)
+
+**Where things stand.** The Jobs tab becomes the branch map (§15.1 design 1, decided 2026-11-07). Chapter 3 on
+`/dev/io-ideas/branch` (`ui/branch_map_preview.py`) works it out: the job card as one visual language, the map
+with cables, the "+" per output offering job types, the new job's sockets resolved and fanned out (§15.2). The
+maintainer has seen the chapter 2 page and the §15.2 screenshots and says the direction is right with many
+small details still to settle. **The maintainer will give those instructions at the start of the next session;
+nothing below presumes them.** Everything is on disk, uncommitted (the commit script is in the session's last
+message; the files are listed below).
+
+**First thing in the next session, before any change:** look at the page as it is, then take the maintainer's
+list.
+
+- Start the server (`./crboost`), open `/dev/io-ideas/branch`; `?add=dpredict&after=job023` opens it mid-add.
+- Or shoot it without a browser: `~/.local/share/crboost-dev/pw/bin/python scripts/dev_screenshot.py --panels
+  "/dev/io-ideas/branch?add=dpredict&after=job023"` writes one PNG per panel to `notes/screens/`; the assistant
+  can view those PNGs directly. Shoot after every visual change; nothing is "fixed" until the PNG shows it.
+- The click-through check lives nowhere permanent (it was in a session scratchpad): a NiceGUI `User`
+  simulation that opens the page, starts an add from the palette, then clicks every socket, menu row and card
+  for a few rounds and fails on any ERROR log. Twenty lines; rewrite it if needed (`prepare_simulation()`,
+  `ui.run(storage_secret=…)`, `core.app.router.lifespan_context`, `httpx.ASGITransport`, `User(client)`;
+  click = `events.handle_event(listener.handler, GenericEventArguments(sender, client, None))`).
+
+**The files of this work** (all else in `git status` is from other sessions):
+`ui/branch_map_preview.py` (chapter 3), `ui/tree_ideas_preview.py` (chapter 2; its mock project, `pedigree`,
+`dossier`, `ts_text` are imported by chapter 3), `ui/io_ideas_preview.py` and `ui/io_layouts_preview.py` (chapter
+1 and the §15 layouts; only the chapter links and the scroll fix changed), `ui/main_ui.py` (the three `/dev/`
+routes), `scripts/dev_screenshot.py`, this roadmap, `docs/roadmaps/README.md` (row 32), roadmap 40 §15.9 (the
+pointer).
+
+**How chapter 3 is put together,** so a detail can be found fast:
+- `SLOTS` / `slots_of(kind, method)`: each type's inputs (label, what it accepts, required, bundled); the
+  easymode exception lives here. `PRODUCES2`: what each type's main output is. `METHODS`, `TOOL`, `ICON`.
+- `resolve(st)`: the new job's sockets (explicit / automatic / ambiguous / missing / optional) and the "on this
+  chain" rule (an ancestor of the main choice, a job reading it, or a job descending from it).
+- `offered_after(job)`: what the "+" lists and why a type is greyed.
+- `spec_of(job)` / `spec_of_new(st, resolved)` → `CardSpec`; `render_card(...)` draws it (header, method line,
+  socket rows, edge sockets, the "+"), `card_height` / `socket_y` give the geometry cables attach to.
+- `section_cards()`: the enlarged card with numbered callouts (`ANATOMY`, the `marks` dict), specimens
+  (`_specimens()`, two of them jobs invented for the panel), the compact row.
+- `section_map(st, redraw)`: `_tidy` (leaves stacked, parent centred on children) + a per-column de-overlap,
+  cables as one SVG, the palette and density/trunk toggles, `plus_menu`, the fan-out, the verdict panel.
+- Mock data: `JOBS` in `ui/tree_ideas_preview.py` (23 jobs; `method=` on filter, alignments, denoising,
+  segments). Add a job there and every chapter follows.
+
+**Known rough edges, not yet raised with the maintainer:** the map is ~1,470 px wide with nine stage columns
+(a tenth scrolls); compact cards hide the socket rows entirely (hover the dots); the trunk card unfolds on click
+but the Tilt filter card re-folds only via the toggle; the verdict's "+ … first" and "Add to project" are
+notifications; cables from one output to three sockets of one card run as three near-parallel curves (bundled
+ones paler), which may be one too many; the `ui.icon` glyphs per type are placeholders chosen from Material
+names, not the roster's SVGs.
+
+**The real build, when it starts,** in the order §15.2 suggests: the card as a component (`render_card`'s
+anatomy over a real job model: method from the type's `USER_PARAMS`, identity = the parameters that differ among
+the type's instances, sockets from the job's `InputSlot`s, sources from `resolve_slot_edges`); the map view
+replacing the waterfall roster (`services/pipeline_table.pipeline_rows` for the main lineage, `_tidy` over it);
+the add flow (`offered_after` from the real slot schemas, `resolve` from `PathResolutionService`, the fan-out as
+the I/O override UI). Decisions owed first are the §15.2 open points.
