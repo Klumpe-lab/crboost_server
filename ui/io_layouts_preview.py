@@ -497,6 +497,8 @@ LAYOUTS = (
 
 
 def render_io_layouts() -> None:
+    # The page shell hides overflow (the workspace scrolls its own panels); this page scrolls as a whole.
+    ui.query(".nicegui-content").style("overflow: auto;")
     with ui.column().style("padding: 18px 24px; gap: 22px; width: 100%; max-width: 1800px;"):
         ui.label("Particle-set inputs: five layouts").style(PAGE_SECTION_STYLE + " font-size: 14px;")
         ui.label(
