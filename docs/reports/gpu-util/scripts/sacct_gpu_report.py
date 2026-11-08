@@ -102,11 +102,17 @@ def save_driver_cache(cache: dict[str, str]) -> None:
     DRIVER_CACHE.write_text(json.dumps(cache, indent=0, sort_keys=True))
 
 
+def is_crboost(name: str, args: argparse.Namespace) -> bool:
+    """A crboost job: the name qsub.sh gives (`--job-name`), or `cb-<instance_id>`, which crboost names its jobs
+    by; the probes in this folder are `cb-probe-*` and are not crboost jobs."""
+    return name == args.job_name or (name.startswith("cb-") and not name.startswith("cb-probe-"))
+
+
 def load_jobs(args: argparse.Namespace) -> list[Job]:
     allocations = sacct(
         ["JobID", "User", "JobName", "State", "Elapsed", "AllocCPUS", "AllocTRES", "WorkDir", "StdOut"], args, "-X"
     )
-    allocations = [a for a in allocations if a["JobName"] == args.job_name and "gres/gpu" in a["AllocTRES"]]
+    allocations = [a for a in allocations if is_crboost(a["JobName"], args) and "gres/gpu" in a["AllocTRES"]]
     step_fields = ["JobID", "TRESUsageInAve", "TRESUsageInMax", "TotalCPU", "MaxRSS", "AveDiskRead", "AveDiskWrite"]
     steps = sacct(step_fields, args)
     batch = {s["JobID"].removesuffix(".batch"): s for s in steps if s["JobID"].endswith(".batch")}

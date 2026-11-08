@@ -129,10 +129,10 @@ class SubtomoExtractionParams(AbstractJobParams):
         """
         Override: extract's parent sbatch is a lightweight CPU-only supervisor
         that slices the upstream optimisation set per TS, submits an array,
-        and merges results. Per-task resources (the actual relion_tomo_subtomo
-        invocations — these are the GPU/memory-heavy ones) are consumed by the
-        supervisor when it builds the array sbatch, NOT by this supervisor's
-        own sbatch. Mirrors candidate_extract.py:_get_queue_options.
+        and merges results. Per-task resources (the relion_tomo_subtomo
+        invocations, which run on CPUs only and are the memory-heavy ones) are
+        consumed by the supervisor when it builds the array sbatch, NOT by this
+        supervisor's own sbatch. Mirrors candidate_extract.py:_get_queue_options.
         """
         sup = get_config_service().supervisor_slurm_defaults
         options = [
