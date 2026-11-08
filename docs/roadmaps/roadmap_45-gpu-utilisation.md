@@ -236,7 +236,7 @@ A probe is one measurement that answers one question; each runs once and feeds a
 | P1 IT's view | What is IT's number (a quarter idle, or 25 % utilised): which metric, window and averaging, for which job ids; do slices count? | the questions in S0 | one message | D1 |
 | P2 capability job | What can a g5 node, a slice and a `c` node show us: dmon columns, DCGM, nsys, cgroup files, mounts, a container's cold start, which GPUs a `--cleanenv` container sees | one script submitted three times (B200, slice, `c` node), five minutes each; in S0 | 3 short jobs | `docs/reports/gpu-util/capability-<date>.md`; picks the meter's sources |
 | P3 the meter | Per job: GPU busy over time, PCIe in and out, GPU memory, cores busy, memory peak, bytes read and written, and where the wall time went | built in S2, on for every tool call | one `nvidia-smi dmon` process and one thread | `meter/` in the job directory |
-| P4 storage probe | What do sixteen tasks at once get when they write and read what a template-matching task does: one shared `/groups` folder against a subfolder each, against `/tmp` and `$SCRATCHDIR`; real score maps read out of one production folder | `scripts/probe_io.sh`: an array of 16 CPU-only tasks with a barrier before each phase, 1 GiB per file, `dd` with `conv=fsync` to write and `iflag=direct` to read; `summarise_io.py` | 16 tasks × 2 CPUs for a few minutes; 16 GiB written to `/groups` (deleted by the script) and as much to each of `/tmp` and `$SCRATCHDIR`; about 80 GiB read | MB/s per task and together, per place |
+| P4 storage probe | What do sixteen tasks at once get when they write and read what a template-matching task does: one shared `/groups` folder against a subfolder each, against `/tmp` and `$SCRATCHDIR`; real score maps read out of one production folder | `scripts/probe_io.sh`: an array of 16 CPU-only tasks on partition `c` (`g` refuses a job without a GPU) with a barrier before each phase, the run voiding itself if the tasks do not all start together, 1 GiB per file, `dd` with `conv=fsync` to write and `iflag=direct` to read; `summarise_io.py` | 16 tasks × 2 CPUs for a few minutes; 16 GiB written to `/groups` (deleted by the script) and as much to each of `/tmp` and `$SCRATCHDIR`; about 80 GiB read | MB/s per task and together, per place |
 | P4b template-matching envelope A/B | How much of a template-matching task's non-search time is the kernel cache, and how much the output folder? | `scripts/probe_tm_ab.sh`: one 412 tomogram, the production command, kernel cache cold or warm × outputs on `/groups` or in `/tmp`, each cell twice in mirrored order with a short angular search, then two full-search runs; a 1 Hz `nvidia-smi dmon` trace; `summarise_tm_ab.py` | 10 runs on one full B200, about 15 minutes (0.25 GPU-h); about 20 GiB written | per run: seconds before the first busy second, busy, idle between and after; the effect of each factor |
 | P5 concurrency sweep | How many processes of this tool does one card take before items per hour stops rising; the same on a slice | the same N items at K = 1, 2, 4, 8 processes per card (Warp: `--perdevice`; others: K copies of the tool's command in one allocation, `xargs -P K`) and K = 1, 2 on a slice, metered | one run per tool that shows a wait | items/h and busy against K |
 | P6 CPU sweep | Where does adding CPUs stop helping | the same items at 2, 4, 8, 16 CPUs | one run per tool | items/h against CPUs |
@@ -338,11 +338,13 @@ Each is applied to a job type only where the meter names its cause (§4); the ex
    and its two container sections show whether a `--cleanenv` container sees exactly the allocated GPU. Record what
    each job says in `docs/reports/gpu-util/capability-<date>.md`: which dmon columns a B200 and a slice give, whether
    DCGM or `nsys` exist, how large `/tmp` is, which cgroup files a job can read.
-3. Run P4b and P4, which need nothing built: `probe_tm_ab.sh` on one full B200 (about 15 minutes) and `probe_io.sh` as
-   an array of sixteen CPU-only tasks (a few minutes). Both write under a `/groups` folder the maintainer names in
-   `GROUPS_OUT` and delete what they made there; their summarisers print the tables. The results decide L3, L4, L8 and
-   L9 and what S4 does first for template matching. The tuning skill's rule applies: the maintainer says go, with the
-   cost above in view, before anything is submitted.
+3. Run P4b and then P4, which need nothing built, one after the other: P4 writes 16 GiB at once and would slow the
+   writes P4b times. `probe_tm_ab.sh` runs on one full B200 (about 15 minutes); `probe_io.sh` is an array of sixteen
+   CPU-only tasks on partition `c` (a few minutes; `g` refuses a job without a GPU). Each takes a `/groups` folder the
+   maintainer names as its first argument, not as an exported variable: the CBE module sets `SBATCH_EXPORT=SCRATCHDIR`,
+   so sbatch passes a job nothing but `$SCRATCHDIR`. Each deletes what it made there; their summarisers print the
+   tables. The results decide L3, L4, L8 and L9 and what S4 does first for template matching. The tuning skill's rule
+   applies: the maintainer says go, with the cost above in view, before anything is submitted.
 4. Re-run P0 (`sacct_gpu_report.py --scope all --completed-only`) when the window has grown; its stored-script
    lookups are cached, so a rerun costs two accounting queries plus the directories it has not seen.
 
@@ -445,3 +447,23 @@ its leftovers named.
   maintainer's go. `sacct_gpu_report.py` gained a cache for its stored-script lookups for the same reason (the skill
   asks for sparing queries; the first version made one lookup per job directory on every run). The task anatomy of
   §3 came from one accounting query and the file times of job019's 141 tasks.
+- **2026-11-07, first submissions: neither probe ran.** `probe_tm_ab.sh` (jobs 1457654 and 1457659) stopped after 3 s at
+  its first line: the folder had been handed over as an exported variable, and the CBE module sets
+  `SBATCH_EXPORT=SCRATCHDIR`, so the job received nothing but `$SCRATCHDIR`. `probe_io.sh` was refused by the submit
+  plugin: partition `g` requires a GPU and the probe uses none. The hand-over lines had not been run past the scheduler,
+  and gave the two probes as one block, which would have run them together. Now: the folder is the first argument;
+  `probe_io.sh` runs on `c`, voids itself and cleans up when its tasks do not all arrive, and cleans up when
+  cancelled (checked locally: a normal run, a void run and a cancel each leave nothing behind); every sbatch line is
+  checked with `sbatch --test-only` (nothing queued) before it is handed out; the probes run one after the other.
+  `capability.sh` also prints the environment a job starts with.
+- **2026-11-08, P4b and P4 ran** (job 1474636, array 1474806). P4b, one 412 tomogram on a B200, short angular search:
+  the cupy cache costs 0.3 s (outputs on `/groups`) to 4.1 s (`/tmp`) per run, outputs on `/groups` cost 5–8 s over
+  `/tmp`, and in every cell the card holds 30.7 GB from about 1 s in but its SMs stay at 0 % for 58–72 s, with the
+  input files already in the page cache. With the full angular search the run takes 150 s and the SMs are busy
+  63–68 s of it: 43 % in the best setting. So the kernel cache (H2) and the tomogram read are not the cause; the minute
+  is something else, now P5. A container with `--cleanenv` sees exactly the one allocated GPU on a full B200 (the MIG
+  case is the slice job of `capability.sh`). P4, 16 tasks from one `c` node, 1 GiB each: `/groups` shared folder 88
+  MB/s per task (1.3 GB/s together), own subfolder each 271 (2.5), `/tmp` 835 (4.7), `$SCRATCHDIR` 504 (4.8); reads of
+  `/groups` 260–290 per task, of BeeGFS 600–730. Caveats: one run, a `c` node, all 16 tasks on one node, other
+  users' load unknown. `probe_tm_prestart.sh` with `summarise_tm_pre.py` (P5) written and tried with a stand-in only:
+  4 against 16 CPUs, a once-a-second sample of the python process.
