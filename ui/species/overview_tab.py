@@ -35,6 +35,7 @@ from services.jobs.subtomo_extraction import SubtomoExtractionParams
 from services.particles.species_overview import SpeciesOverview, species_overview
 from services.project_state import ParticleSpecies, TemplateMask, get_project_state_for
 from services.species_admin import delete_species
+from services.species_edit import set_species
 from ui.components.buttons import house_button
 from ui.components.chip import render_method_chip, render_polarity_chip
 from ui.components.color_swatch import render_color_swatch
@@ -94,10 +95,7 @@ def _render_color_swatch(backend, project_path: Path, species_id: str, current: 
     this tab's persistence closure (the creation dialog passes a different one)."""
 
     def _on_pick(c: str) -> None:
-        def _apply(s: ParticleSpecies) -> None:
-            s.color = c
-
-        get_project_state_for(project_path).mutate_species(species_id, _apply)
+        set_species(get_project_state_for(project_path), species_id, color=c)
         asyncio.create_task(backend.save_project(project_path, debounce_s=1.0))
 
     render_color_swatch(current, _on_pick)
@@ -115,8 +113,11 @@ def render_identity_editor(backend, project_path: Path, species_id: str) -> None
     if sp is None:
         return
 
-    def _mutate(fn) -> None:
-        get_project_state_for(project_path).mutate_species(species_id, fn)
+    def _set(**fields) -> None:
+        res = set_species(get_project_state_for(project_path), species_id, **fields)
+        if not res["success"]:
+            ui.notify(res["error"], type="warning")
+            return
         asyncio.create_task(backend.save_project(project_path, debounce_s=1.0))
 
     with ui.column().classes("w-full gap-1").style(PANEL_STYLE):
@@ -133,11 +134,7 @@ def render_identity_editor(backend, project_path: Path, species_id: str) -> None
                 v = (e.value or "").strip()
                 if not v:
                     return  # an empty label is not a rename; the input keeps what was typed
-
-                def _apply(s: ParticleSpecies) -> None:
-                    s.name = v
-
-                _mutate(_apply)
+                _set(name=v)
 
             name_input.on_value_change(_on_name)
 
@@ -160,11 +157,9 @@ def render_identity_editor(backend, project_path: Path, species_id: str) -> None
                         new_val = float(e.value) if e.value not in (None, "") else None
                     except (TypeError, ValueError):
                         return  # mid-typing garbage; the next valid value lands
-
-                    def _apply(s: ParticleSpecies) -> None:
-                        s.diameter_ang = new_val
-
-                    _mutate(_apply)
+                    if new_val is not None and new_val <= 0:
+                        return  # a zero on the way to a number; the door refuses it
+                    _set(diameter_ang=new_val)
 
                 diam_input.on_value_change(_on_diam)
 
@@ -182,12 +177,7 @@ def render_identity_editor(backend, project_path: Path, species_id: str) -> None
                 )
 
                 def _on_sym(e):
-                    new_val = e.value or SymmetryGroup.C1.value
-
-                    def _apply(s: ParticleSpecies) -> None:
-                        s.symmetry = new_val
-
-                    _mutate(_apply)
+                    _set(symmetry=e.value or SymmetryGroup.C1.value)
 
                 sym_select.on_value_change(_on_sym)
 
@@ -202,12 +192,7 @@ def render_identity_editor(backend, project_path: Path, species_id: str) -> None
             )
 
             def _on_notes(e):
-                v = e.value or ""
-
-                def _apply(s: ParticleSpecies) -> None:
-                    s.notes = v
-
-                _mutate(_apply)
+                _set(notes=e.value or "")
 
             notes_input.on_value_change(_on_notes)
 

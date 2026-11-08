@@ -15,8 +15,9 @@ from services.project_resolve import resolve_project
 from services.result import ErrorCode
 from ui.dashboard.css import ensure_assets_loaded
 from services.project_state import get_project_state_for
-from ui.open_project import disambiguating_base, load_project_into_tab, workspace_url
-from ui.routing import Route, RouteWriter, apply_route, parse_route, route_to_path
+from ui.open_project import load_project_into_tab, workspace_url
+from services.routes import Route, disambiguating_base, parse_route, route_to_path
+from ui.routing import RouteWriter, apply_route
 from ui.ui_state import get_ui_state_manager
 from ui.components.buttons import house_button
 from ui.data_import_panel import build_data_import_panel
@@ -294,9 +295,7 @@ def create_ui_router(backend: CryoBoostBackend):
             return
         if not ui_mgr.is_project_created:
             recovered_state = get_project_state_for(ui_mgr.project_path)
-            ui_mgr.load_from_project(
-                project_path=recovered_state.project_path, scheme_name="recovered", jobs=recovered_state.roster()
-            )
+            ui_mgr.load_from_project(project_path=recovered_state.project_path, scheme_name="recovered")
         ui.navigate.to(workspace_url(ui_mgr.project_path))
 
     # --- AUX PAGES ---

@@ -9,6 +9,10 @@ state and watches for `pipeline_active` transitions so it can flip the
 per-tab `ui_mgr.is_running` flag, stop the spinner, and notify the user
 when the pipeline finishes.
 
+It runs for as long as the workspace shows the project, whatever the
+pipeline does: a Run from another tab or from the API, after a Stop here,
+starts the spinner here too.
+
 Multi-tab safety: two browser tabs on the same project share one
 ProjectState (path-keyed registry). Both their refreshers observe the
 same `pipeline_active` flag, so they both react in step when the monitor
@@ -18,6 +22,8 @@ flips it.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 from nicegui import ui
@@ -36,6 +42,8 @@ class StatusPoller:
         # `None` on first tick means "no prior observation"; first tick
         # only records, doesn't fire transitions.
         self._last_active: bool | None = None
+        # This tab's own Run, Stop or Cancel in flight (acting()).
+        self._acting = 0
         # The slot the builder is built in, which no rebuild clears. A timer is an element: one
         # made inside a click handler sits in that handler's container (the run slot) and is
         # deleted with its next rebuild.
@@ -45,6 +53,29 @@ class StatusPoller:
         """(Re)start the 3 s refresher in the builder's own slot; replaces any earlier one."""
         with self._home:
             self.panel.ui_mgr.status_timer = ui.timer(3.0, self.safe_status_check)
+
+    def ensure_running(self) -> None:
+        timer = self.panel.ui_mgr.status_timer
+        if timer is None or timer.is_deleted:
+            self.start()
+
+    @contextmanager
+    def acting(self) -> Iterator[None]:
+        """Around this tab's own Run, Stop or Cancel: ticks meanwhile refresh but announce no start or end,
+        which the action reports itself. The state it leaves is the one the next tick compares against, and
+        the Run/Stop buttons follow it."""
+        self._acting += 1
+        try:
+            yield
+        finally:
+            self._acting -= 1
+            project_path = self.panel.ui_mgr.project_path
+            if project_path is not None:
+                current = bool(get_project_state_for(project_path).pipeline_active)
+                self._last_active = current
+                if self.panel.ui_mgr.is_running != current:
+                    self.panel.ui_mgr.set_pipeline_running(current)
+                    self.panel.roster.rebuild_run_slot()
 
     async def check_and_update_statuses(self):
         """One UI tick. Reads in-memory state (already kept fresh by
@@ -71,12 +102,13 @@ class StatusPoller:
         if self._last_active is None:
             self._last_active = current
             return
+        if self._acting:
+            return
 
         if self._last_active and not current:
-            # Pipeline just finished or was stopped — flip per-tab UI flag.
+            # Pipeline just finished or was stopped elsewhere — flip per-tab UI flag.
             self._last_active = current
             panel.ui_mgr.set_pipeline_running(False)
-            self.stop_all_timers()
             hold = state.review_hold
             try:
                 if overview.get("failed", 0) > 0:
@@ -92,13 +124,10 @@ class StatusPoller:
                 # Client gone — fine; nothing to notify.
                 pass
             panel.rebuild_pipeline_ui()
-            # Keep watching: an Approve that submits the parked jobs, or a Run in another tab,
-            # starts the pipeline again, and this tab has to see it.
-            self.start()
             return
 
         if not self._last_active and current:
-            # Pipeline started in another tab or via restart-recovery.
+            # Pipeline started in another tab, through the API, by an Approve or via restart-recovery.
             self._last_active = current
             panel.ui_mgr.set_pipeline_running(True)
             panel.rebuild_pipeline_ui()
@@ -108,9 +137,6 @@ class StatusPoller:
             await self.check_and_update_statuses()
         except Exception as e:
             logger.info("Status refresh failed: %s", e)
-
-    def stop_all_timers(self):
-        self.panel.ui_mgr.cleanup_all_timers()
 
     async def startup_sync(self):
         """Fires when a workspace tab mounts. Records the initial
@@ -138,5 +164,4 @@ class StatusPoller:
         # currently active — that way a pipeline that gets started in
         # another tab (or by restart-recovery) shows up here without
         # needing a manual refresh.
-        if panel.ui_mgr.status_timer is None:
-            panel.ui_mgr.status_timer = ui.timer(3.0, self.safe_status_check)
+        self.ensure_running()

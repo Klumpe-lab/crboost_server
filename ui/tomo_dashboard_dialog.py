@@ -91,7 +91,7 @@ from ui.dashboard.figures import (
 from ui.dashboard import warp_strip
 from ui.dashboard.pixel_sanity import render_pixel_sanity_table
 from ui.dashboard.strip import build_strip
-from ui.routing import View
+from services.routes import View
 from ui.particles.pick_viewer import render_imported_particles_section, render_particles_section, xy_slab_render
 
 logger = logging.getLogger(__name__)
@@ -405,24 +405,17 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         )
 
     async def toggle_exclude(ts: str) -> None:
-        # Forward-only mute: flip the registry flag + persist. The effect (drivers
-        # pre-skip this TS) lands on the next run; the strip mutes it immediately.
-        # Guard against emptying the set — excluding the last active TS would
-        # hand every downstream supervisor an empty input and deadlock the run.
+        # Forward-only mute through the pipeline-edit door, which refuses the last active tilt series. The
+        # effect (drivers pre-skip this TS) lands on the next run; the strip mutes it immediately.
+        from services.pipeline_edit import exclude_tilt_series
         from services.tilt_series import get_registry_for
 
         reg = get_registry_for(project_path)
-        if not reg.has_tilt_series(ts):
-            ui.notify(f"{ts} isn't in the tilt-series registry — reload the project first.", type="warning")
+        currently = reg.has_tilt_series(ts) and reg.get_tilt_series(ts).is_excluded
+        res = await exclude_tilt_series(state, ts, not currently, reason="excluded via dashboard")
+        if not res["success"]:
+            ui.notify(res["error"], type="warning")
             return
-        currently = reg.get_tilt_series(ts).is_excluded
-        if not currently:
-            active = [t for t in reg.tilt_series_ids() if not reg.get_tilt_series(t).is_excluded]
-            if len(active) <= 1:
-                ui.notify("Can't exclude the last remaining tilt-series.", type="warning")
-                return
-        reg.set_excluded(ts, not currently, reason="excluded via dashboard" if not currently else None)
-        await reg.save_async()
         ui.notify(
             f"{ts}: {'excluded — will be skipped on the next run' if not currently else 'restored to processing'}",
             type="info",

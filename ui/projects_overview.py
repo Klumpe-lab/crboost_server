@@ -37,7 +37,7 @@ from ui.components.dialogs import dialog_host
 from ui.components.fields import house_select
 from ui.components.reactive import SingleFlight
 from ui.components.segmented import render_segmented
-from ui.routing import Route, route_to_path
+from services.routes import Route, route_to_path
 from ui.styles import MONO, SANS as FONT, WAIT_SPINNER
 
 logger = logging.getLogger(__name__)

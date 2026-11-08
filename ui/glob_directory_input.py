@@ -5,6 +5,8 @@ from collections.abc import Callable
 
 from nicegui import ui
 
+from services.dataset_scan import glob_in
+
 from ui.components.buttons import icon_button
 from ui.styles import MONO as _MONO
 
@@ -171,11 +173,7 @@ class GlobDirectoryInput:
         return glob_str
 
     def _build_glob(self, dir_path: str) -> str:
-        if not dir_path or not dir_path.strip():
-            return ""
-        if not self.extension:
-            return dir_path.strip()
-        return str(Path(dir_path.strip()) / self.extension)
+        return glob_in(dir_path, self.extension)
 
     def _commit(self) -> None:
         self._hide_dropdown()

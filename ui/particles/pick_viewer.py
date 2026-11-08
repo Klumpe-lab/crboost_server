@@ -3913,7 +3913,7 @@ class PickViewerPage:
         self.species_id = species_id
         set_url = self.callbacks.get("set_url")
         if set_url and self.tomo_name:
-            from ui.routing import View
+            from services.routes import View
 
             set_url(View.PICKS, species_id, self.tomo_name)
 

@@ -21,11 +21,11 @@ from ui.projects_overview import project_card_menu
 from ui.protocols_view import protocol_light
 from ui.styles import MONO, SANS as FONT
 from ui.status_indicator import BoundStatusDot, _dot_html, _running_led_html
-from services.jobs.spec import JOB_SPEC_BY_TYPE
+from services.jobs.spec import JOB_SPEC_BY_TYPE, instance_display_name
 from services.models_base import InstanceId, instance_id_to_job_type
 from services.path_resolution_service import jobs_in_use
-from ui.pipeline_builder.config_tab import in_use_notice
-from ui.ui_state import get_job_display_name, get_instance_display_name
+from services.pipeline_edit import NOT_CLONED, in_use_notice, missing_deps
+from ui.ui_state import get_job_display_name
 from ui.pipeline_builder.pipeline_constants import (
     PHASE_JOBS,
     PHASE_META,
@@ -35,7 +35,6 @@ from ui.pipeline_builder.pipeline_constants import (
     SB_ACT,
     SB_ABG,
     SB_SEP,
-    missing_deps,
 )
 from ui.pipeline_builder.tilt_filter_row import render_tilt_filter_controls, render_tilt_filter_status
 
@@ -293,7 +292,9 @@ class RosterWidget(FingerprintedView):
         return (
             self._flash_phase,
             self._roster_visible,
-            tuple(ui_mgr.selected_jobs),
+            # The project's roster, not this tab's: a job added or removed in another tab or through the API
+            # gets or loses its row on the next tick.
+            tuple(ui_mgr.roster()),
             # Not the active job: a job switch repaints its rows in place (paint_active).
             ui_mgr.is_running,
             per_job,
@@ -330,13 +331,15 @@ class RosterWidget(FingerprintedView):
             await array_status_cache.refresh(project_path, current_project_state().jobs)
 
     def refresh(self):
-        """Render the roster if its signature changed since last paint.
+        """Render the roster if its signature changed since last paint, then drop the job pages of jobs
+        that have left it (PipelineBuilderPanel.follow_roster).
 
         Same call site as before — but inherits FingerprintedView's gate so
         the 3 s status poll no longer rebuilds the sidebar on every tick
         when nothing has actually changed.
         """
         super().refresh()
+        self.panel.follow_roster()
 
     def paint_active(self) -> None:
         """Repaint the active-job highlight on the rendered rows (a job switch)."""
@@ -365,6 +368,8 @@ class RosterWidget(FingerprintedView):
             ui.icon("close", size="12px").classes("cb-view-close").props(
                 'title="Close the job roster and the job page"'
             ).on("click", lambda _e: self._on_pipeline_icon())
+        roster = panel.ui_mgr.roster()
+        on_roster = set(roster)
         for phase_id, jobs in PHASE_JOBS.items():
             icon_or_svg, phase_label, _ = PHASE_META[phase_id]
             is_flashing = self._flash_phase == phase_id
@@ -397,7 +402,7 @@ class RosterWidget(FingerprintedView):
                     self._build_aggregation_merge_btn()
 
             for job_type in jobs:
-                instances = panel.ui_mgr.get_instances_for_type(job_type)
+                instances = [iid for iid in roster if InstanceId.matches(iid, job_type)]
                 # A type made elsewhere (a Subset, from the tab of the job it cuts) has no add row or "+".
                 addable = JOB_SPEC_BY_TYPE[job_type].roster_add
 
@@ -433,7 +438,7 @@ class RosterWidget(FingerprintedView):
                 else:
                     # Multiple instances — a header, then instance rows laid out exactly like a
                     # single instance's, so their lights stay in the roster's one column.
-                    missing = missing_deps(job_type, set(panel.ui_mgr.selected_jobs))
+                    missing = missing_deps(job_type, on_roster)
                     any_active = any(panel.ui_mgr.active_instance_id == iid for iid in instances)
                     header = ui.element("div").style(
                         f"display: flex; align-items: center; gap: 6px; "
@@ -645,7 +650,7 @@ class RosterWidget(FingerprintedView):
                         tooltip=f"Add {get_job_display_name(job_type)}",
                     )
                 # Not the singletons: the tilt filter, the import written at submit.
-                if job_model is not None and not is_filter and job_type != JobType.IMPORT_MOVIES:
+                if job_model is not None and job_type not in NOT_CLONED:
                     icon_button(
                         "content_copy",
                         lambda _, iid=instance_id, j=job_type, sp=job_model.species_id: panel.add_instance_to_pipeline(
@@ -765,7 +770,7 @@ class RosterWidget(FingerprintedView):
         panel = self.panel
         if panel.ensure_pipeline_mode:
             panel.ensure_pipeline_mode()
-        missing = missing_deps(job_type, set(panel.ui_mgr.selected_jobs))
+        missing = missing_deps(job_type, set(panel.ui_mgr.roster()))
         if missing:
             ui.notify(
                 f"{get_job_display_name(job_type)} typically requires: "
@@ -809,7 +814,7 @@ class RosterWidget(FingerprintedView):
         # rows, and a confirm dialog parented in a row that gets torn down takes the delete
         # with it. See ui/components/dialogs.py.
         with dialog_host(), ui.dialog() as dialog, ui.card().classes("w-[28rem]"):
-            ui.label(f"Delete {get_instance_display_name(instance_id, job_model)}?").classes("text-lg font-bold")
+            ui.label(f"Delete {instance_display_name(instance_id, job_model)}?").classes("text-lg font-bold")
             ui.label("This will move the job files to Trash/ and remove it from the pipeline.").classes(
                 "text-sm text-gray-600 mb-2"
             )
@@ -882,7 +887,7 @@ class RosterWidget(FingerprintedView):
                             break
 
         with dialog_host(), ui.dialog() as dialog, ui.card().classes("w-[28rem]"):
-            ui.label(f"Remove {get_instance_display_name(instance_id, job_model)}?").classes("text-lg font-bold")
+            ui.label(f"Remove {instance_display_name(instance_id, job_model)}?").classes("text-lg font-bold")
             ui.label("Your labels and thumbnails will be preserved and restored if you re-add this job.").classes(
                 "text-sm text-gray-600 mb-2"
             )
@@ -897,7 +902,7 @@ class RosterWidget(FingerprintedView):
                     with ui.column().classes("gap-1 ml-6"):
                         for iid in downstream:
                             dm = state.jobs.get(iid)
-                            name = get_instance_display_name(iid, dm)
+                            name = instance_display_name(iid, dm)
                             ui.label(name).classes("text-xs font-mono text-gray-700")
                     ui.label(
                         "These jobs were processed with the filtered tilt set. "
@@ -1292,7 +1297,7 @@ class RosterWidget(FingerprintedView):
         # from PHASE_JOBS / roster). Mirror that filter on the fallback so the
         # first paint -- before the first overview poll returns -- doesn't inflate.
         _hidden = {JobType.IMPORT_MOVIES.value, JobType.TS_IMPORT.value}
-        visible_selected = sum(1 for iid in self.panel.ui_mgr.selected_jobs if InstanceId.split(iid)[0] not in _hidden)
+        visible_selected = sum(1 for iid in self.panel.ui_mgr.roster() if InstanceId.split(iid)[0] not in _hidden)
         total = overview.get("total", visible_selected) if overview else visible_selected
         # Staged jobs are not part of what runs, so not of its total.
         staged = (overview or {}).get("scheduled", 0)
@@ -1363,26 +1368,22 @@ class RosterWidget(FingerprintedView):
         project-level artifact, NOT a job (no SLURM/IO). Disabled when upstream tomograms
         already exist (a regular project at the particle stage); a green dot marks an
         import already committed. See ui/tomogram_import_dialog.py."""
-        from services.models_base import JobType
         from services.project_state import get_project_state_for
+        from services.tomogram_import import import_refusal
         from ui.tomogram_import_dialog import open_tomogram_import_dialog
 
         project_path = self.panel.ui_mgr.project_path
-        has_upstream = False
+        refusal = None
         already = False
         try:
             state = get_project_state_for(project_path)
-            has_upstream = any(getattr(jm, "job_type", None) == JobType.TS_RECONSTRUCT for jm in state.jobs.values())
+            refusal = import_refusal(state)
             already = state.imported_tomograms is not None and bool(state.imported_tomograms.star_path)
         except Exception as e:
             logger.debug("import-tomograms header button: could not read project state: %s", e)
 
-        disabled = has_upstream
-        tip = (
-            "Tomograms already come from the pipeline above"
-            if has_upstream
-            else ("Import more tomograms" if already else "Import tomograms")
-        )
+        disabled = refusal is not None
+        tip = refusal or ("Import more tomograms" if already else "Import tomograms")
 
         def _committed():
             # Three surfaces answer "did that land": this header's green dot (roster

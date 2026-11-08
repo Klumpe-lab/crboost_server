@@ -18,6 +18,7 @@ from collections.abc import Callable
 
 from nicegui import ui
 
+from services.job_params import SLURM_FIELDS, set_slurm
 from ui.components.buttons import house_button
 from ui.components.reactive import Debounced
 from ui.job_plugins._field_styles import (
@@ -41,9 +42,13 @@ def _is_array_job(job_model) -> bool:
 _REFRESH_AFTER_EDIT_S = 0.8
 
 
-def render_slurm_tab(job_model, is_frozen: bool, save_handler: Callable) -> Callable[[], None]:
+def render_slurm_tab(
+    job_model, is_frozen: bool, save_handler: Callable, *, state, instance_id: str
+) -> Callable[[], None]:
     """Render the panel; returns its refresh. The job tab reruns that after an edit in any section, since
-    the effective settings can follow the job's parameters (missAlign's time limit and GRES)."""
+    the effective settings can follow the job's parameters (missAlign's time limit and GRES), and on its
+    poll, which shows a setting changed elsewhere (another tab, the API). Writes go through the setting
+    door (`job_params.set_slurm`)."""
     shown = None
     # A field's edit reaches the rest of the panel once focus has stayed out of its fields for a
     # moment: rebuilding at once replaced the field the user had just clicked into. While one of
@@ -59,11 +64,18 @@ def render_slurm_tab(job_model, is_frozen: bool, save_handler: Callable) -> Call
         focused["on"] = False
         refresh_after_edit()
 
+    def write(values: dict | None = None, *, reset: bool = False) -> None:
+        res = set_slurm(state, instance_id, values, reset=reset)
+        if not res["success"]:
+            ui.notify(res["error"], type="warning")
+        elif res["applied"] or reset:
+            save_handler()
+
     @ui.refreshable
     def content():
         nonlocal shown
         shown = _signature(job_model)
-        _render_slurm_content(job_model, is_frozen, save_handler, refresh, hold_refresh, release_refresh)
+        _render_slurm_content(job_model, is_frozen, write, save_handler, refresh, hold_refresh, release_refresh)
 
     def refresh():
         # A rebuild replaces every input, so only rebuild when a value it shows has changed.
@@ -86,7 +98,13 @@ def _signature(job_model) -> tuple:
 
 
 def _render_slurm_content(
-    job_model, is_frozen: bool, save_handler: Callable, refresh: Callable[[], None], hold: Callable, release: Callable
+    job_model,
+    is_frozen: bool,
+    write: Callable,
+    save_handler: Callable,
+    refresh: Callable[[], None],
+    hold: Callable,
+    release: Callable,
 ):
     effective_config = job_model.get_effective_slurm_config()
     overrides = job_model.slurm_overrides or {}
@@ -107,8 +125,7 @@ def _render_slurm_content(
                 if overrides and not is_frozen:
 
                     def reset_to_profile():
-                        job_model.clear_slurm_overrides()
-                        save_handler()
+                        write(reset=True)
                         refresh()
 
                     house_button("Reset to profile", reset_to_profile)
@@ -146,10 +163,10 @@ def _render_slurm_content(
     if is_array:
         with field_group():
             section_header("Per-Task Resources", first=True)
-            _render_resource_fields(effective_config, job_model, is_frozen, save_handler, hold, release)
+            _render_resource_fields(effective_config, is_frozen, write, hold, release)
         _render_supervisor_summary()
     else:
-        _render_resource_fields(effective_config, job_model, is_frozen, save_handler, hold, release)
+        _render_resource_fields(effective_config, is_frozen, write, hold, release)
     _render_slurm_note(job_model)
 
 
@@ -165,26 +182,12 @@ def _render_slurm_note(job_model):
         ui.tooltip(detail).style("white-space: pre-line; max-width: 420px; font-size: 11px; line-height: 1.45;")
 
 
-_RESOURCE_FIELDS = [
-    ("partition", "Partition"),
-    ("constraint", "Constraint"),
-    ("nodes", "Nodes"),
-    ("ntasks_per_node", "Tasks/node"),
-    ("cpus_per_task", "CPUs/task"),
-    ("gres", "GRES"),
-    ("mem", "Memory"),
-    ("time", "Time limit"),
-    ("qos", "QOS"),
-]
-
-
-def _render_resource_fields(effective_config, job_model, is_frozen, save_handler, hold, release):
-    """Stack the SLURM resource fields one per row, label inline-left."""
+def _render_resource_fields(effective_config, is_frozen, write, hold, release):
+    """Stack the SLURM resource fields one per row, label inline-left. A field shows the job's effective
+    value; it writes an override only when its text changed while it had focus, so tabbing through one,
+    even one drawn before a change made elsewhere, writes nothing."""
     with field_grid():
-        for fname, label in _RESOURCE_FIELDS:
-            # Don't bind directly to job_model -- that would write to the
-            # underlying SlurmConfig instead of the override layer. Bind to the
-            # effective value, then route blur into slurm_overrides.
+        for fname, label in SLURM_FIELDS:
             current = getattr(effective_config, fname)
             with ui.element("div").style(ROW_STYLE):
                 lbl = ui.label(label).style(LABEL_STYLE)
@@ -199,20 +202,26 @@ def _render_resource_fields(effective_config, job_model, is_frozen, save_handler
                 if is_frozen:
                     inp.props("readonly")
                 else:
+                    focus_handler, blur_handler = _field_handlers(fname, write, hold, release)
+                    inp.on("focus", focus_handler)
+                    inp.on("blur", blur_handler)
 
-                    def _make_blur(name):
-                        def handler(e):
-                            # Focus passing through is not an edit: pinning the value shown would stop
-                            # it following the job's settings (a computed time limit, say).
-                            if e.sender.value != str(getattr(job_model.get_effective_slurm_config(), name)):
-                                job_model.set_slurm_override(name, e.sender.value)
-                                save_handler()
-                            release()
 
-                        return handler
+def _field_handlers(name: str, write: Callable, hold: Callable, release: Callable) -> tuple[Callable, Callable]:
+    """One field's focus and blur: the text it had at focus, and on blur a write only if it changed since."""
+    at_focus: dict = {"text": None}
 
-                    inp.on("focus", hold)
-                    inp.on("blur", _make_blur(fname))
+    def on_focus(e) -> None:
+        at_focus["text"] = e.sender.value
+        hold()
+
+    def on_blur(e) -> None:
+        if at_focus["text"] is not None and e.sender.value != at_focus["text"]:
+            write({name: e.sender.value})
+        at_focus["text"] = None
+        release()
+
+    return on_focus, on_blur
 
 
 def _render_supervisor_summary():

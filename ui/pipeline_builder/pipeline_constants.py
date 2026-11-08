@@ -1,5 +1,4 @@
-from services.jobs.spec import JOB_SPEC_BY_TYPE, JOB_SPECS, PHASE_PARTICLES, PHASE_PREPROCESSING
-from services.models_base import InstanceId
+from services.jobs.spec import JOB_SPECS, PHASE_PARTICLES, PHASE_PREPROCESSING
 from services.project_state import JobType
 
 # Derived view of services.jobs.spec — phase membership and order come from the
@@ -26,36 +25,6 @@ SB_SEP = "#e2e8f0"
 SB_MUTE = "#94a3b8"
 SB_ACT = "#475569"
 SB_ABG = "#f1f5f9"
-
-
-def missing_deps(job_type: JobType, selected_instance_ids: set[str]) -> list[JobType]:
-    def type_present(jt: JobType) -> bool:
-        return any(InstanceId.matches(s, jt) for s in selected_instance_ids)
-
-    if job_type == JobType.TEMPLATE_MATCH_PYTOM:
-        if type_present(JobType.TS_RECONSTRUCT) or type_present(JobType.DENOISE_PREDICT):
-            return []
-        return [JobType.TS_RECONSTRUCT]
-
-    # Either extraction path feeds reconstruction.
-    if job_type == JobType.RECONSTRUCT_PARTICLE and type_present(JobType.WARP_EXPORT):
-        return []
-
-    spec = JOB_SPEC_BY_TYPE.get(job_type)
-    deps = spec.dependencies if spec else ()
-    return [d for d in deps if not type_present(d)]
-
-
-def next_instance_id(job_type: JobType, existing_ui_ids: list[str], state_keys: list[str]) -> str:
-    taken = set(existing_ui_ids) | set(state_keys)
-    base = job_type.value
-    if base not in taken:
-        return base
-    for n in range(2, 200):
-        candidate = str(InstanceId(job_type, str(n)))
-        if candidate not in taken:
-            return candidate
-    return str(InstanceId(job_type, str(len(taken) + 1)))
 
 
 def fmt(v) -> str:

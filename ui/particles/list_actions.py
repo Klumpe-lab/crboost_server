@@ -27,7 +27,8 @@ from services.particles.ingest import register_manual_pick_list
 from services.particles.list_admin import delete_pick_list, pick_list_files
 from services.particles.list_ref import AUTO_SLUG, ListRef, extract_pick_list_instance_id, fs_slug, known_tomograms
 from services.particles.species_overview import ExtractJob, extract_job_for
-from services.project_state import ExtractionParams, PickList, get_project_state_for
+from services.project_state import PickList, get_project_state_for
+from services.species_edit import set_species
 from services.visualization.tomo_geometry import geometry_for_ts
 from ui.background_task import BackgroundTask
 from ui.components.buttons import house_button
@@ -356,19 +357,12 @@ async def commit_extraction_geometry(backend, project_path: Path, species_id: st
     ``mutate_species`` (dirty + rev) and an awaited forced save — the extraction that follows
     runs in a BackgroundTask with no client context, and a fire-and-forget save can lose the
     geometry the user just committed. False = not committed (the reason was toasted)."""
-    if not box or not binning or not crop:
-        ui.notify("Box size, binning and crop are all required.", type="warning")
-        return False
     if backend is None:
         _no_backend()
         return False
-    geometry = ExtractionParams(box_size=int(box), binning=float(binning), crop_size=int(crop))
-
-    def _apply(species) -> None:
-        species.extraction_params = geometry
-
-    if not get_project_state_for(project_path).mutate_species(species_id, _apply):
-        ui.notify("Species not found — reload the project.", type="negative")
+    res = set_species(get_project_state_for(project_path), species_id, extraction=(box, binning, crop))
+    if not res["success"]:
+        ui.notify(res["error"], type="warning")
         return False
     await backend.save_project(project_path, force=True)
     return True

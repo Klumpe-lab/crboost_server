@@ -19,10 +19,10 @@ from pathlib import Path
 
 from nicegui import ui
 
-from services import species_admin
+from services import species_admin, species_edit
 from services.jobs._base import SymmetryGroup
-from services.models_base import SpeciesOrigin, species_palette_color
-from services.project_state import ParticleSpecies, TemplateMask, get_project_state_for, slugify
+from services.models_base import species_palette_color
+from services.project_state import ParticleSpecies, get_project_state_for, slugify
 from ui.components.buttons import house_button, icon_button
 from ui.components.color_swatch import render_color_swatch
 from ui.components.fields import HOUSE_LABEL_CLS, house_field, house_number, house_select
@@ -235,21 +235,24 @@ async def create_species(backend, project_path: Path, *, origin: str) -> Particl
     if draft is None:
         return None
     state = get_project_state_for(project_path)
-    species = state.add_species(draft.name, origin=SpeciesOrigin(origin).value, color=draft.color)
-
-    def _apply(sp: ParticleSpecies) -> None:
-        sp.diameter_ang = draft.diameter_ang
-        sp.symmetry = draft.symmetry
-        sp.notes = draft.notes
-
-    state.mutate_species(species.id, _apply)
-
+    res = species_edit.create_species(
+        state,
+        draft.name,
+        origin=origin,
+        color=draft.color,
+        diameter_ang=draft.diameter_ang,
+        symmetry=draft.symmetry,
+        notes=draft.notes,
+        mask_path=draft.mask_path or None,
+    )
+    if not res["success"]:
+        ui.notify(res["error"], type="warning")
+        return None
+    for warning in res["warnings"]:
+        ui.notify(warning, type="negative")
+    species = state.get_species(res["species_id"])
     if draft.template_path:
         await _bind_template(project_path, species, draft.template_path)
-    if draft.mask_path:
-        res = species_admin.register_mask(state, species.id, TemplateMask(mask_path=draft.mask_path, method="imported"))
-        if not res["success"]:
-            ui.notify(res["error"], type="negative")
 
     await backend.save_project(project_path, force=True)
     return species

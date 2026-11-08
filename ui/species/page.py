@@ -30,7 +30,7 @@ from ui.components.species_pill import render_species_mark
 from ui.components.svg_icon import load_icon_svg
 from ui.dashboard.css import ensure_assets_loaded
 from ui.sta_kitchen.tab import KitchenTab
-from ui.routing import View
+from services.routes import View
 from ui.species.analytics_tab import AnalyticsTab
 from ui.species.catalog import import_from_catalog
 from ui.species.jobs_tab import JobsTab

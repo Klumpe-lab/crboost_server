@@ -14,9 +14,11 @@ def render_io_tab(
     ui_mgr: UIStateManager,
     save_handler: Callable,
     callbacks: dict[str, Callable] | None = None,
+    observe: Callable[[Callable[[], None]], None] | None = None,
 ) -> Callable[[], None]:
     """Returns the refresh the job tab runs after an edit in another section: it re-renders the
-    Inputs when a parameter added or removed one (template matching's segmentations)."""
+    Inputs when a parameter added or removed one (template matching's segmentations). `observe` takes the
+    section's poll, which draws it again when what it shows changed elsewhere."""
     # One sectioned Inputs/Outputs layout for every job state. A completed/frozen
     # job renders the SAME view, read-only (static source faces, no edit
     # affordances) — not a separate flat path dump — so the look never changes
@@ -25,8 +27,10 @@ def render_io_tab(
         job_type,
         instance_id,
         on_change=save_handler,
-        active_instance_ids=set(ui_mgr.selected_jobs),
+        active_instance_ids=set(ui_mgr.roster()),
         read_only=is_frozen,
         callbacks=callbacks,
     )
+    if observe is not None:
+        observe(component.observe)
     return component.refresh_if_inputs_changed

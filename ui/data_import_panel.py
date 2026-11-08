@@ -11,14 +11,17 @@ from pathlib import Path
 from collections.abc import Callable
 
 from nicegui import ui, app
+from pydantic import ValidationError
 
 from backend import CryoBoostBackend
 from services.configs.mdoc_service import describe_duplicate_ts_names
 from services.configs.user_prefs_service import get_prefs_service
+from services.dataset_scan import co_located_mdocs_glob, first_mdoc_values, other_depth
+from services.project_create import ProjectSpec, model_defaults
 
 from ui.components.buttons import house_button, icon_button
 from ui.components.segmented import render_segmented
-from ui.ui_state import get_ui_state_manager
+from ui.ui_state import DataImportFormState, get_ui_state_manager
 from ui.local_file_picker import local_file_picker
 from ui.glob_directory_input import GlobDirectoryInput
 from ui.dataset_overview_panel import build_dataset_overview_panel, build_dry_run_summary
@@ -73,6 +76,73 @@ def _avatar_color(key: str) -> str:
 
 
 CURRENT_USER = getpass.getuser()
+
+
+async def landing_spec(
+    di: DataImportFormState, name: str, overview, *, ts_names_by_folder: bool
+) -> tuple[ProjectSpec | None, str | None]:
+    """The spec landing Create makes, or (None, why). The values the data gives come from the scan's
+    selection, else from the first mdoc (a Create without a scan), the smallest of each where the
+    selection is mixed; the dose comes with its provenance, the mdoc's value, else the dose row (the
+    scan's estimate or the user's number), never the model default. The values this form does not ask
+    for take the model defaults (`model_defaults`). A form with both globs empty asks for a project without raw
+    data."""
+    values = model_defaults()
+    series = None
+    software = ""
+    dose_source = ""
+    if di.movies_glob or di.mdocs_glob:
+        first = await asyncio.to_thread(first_mdoc_values, di.mdocs_glob)
+        dose = None
+        if overview is not None:
+            series = [str(ts.mdoc_path) for ts in overview.get_selected_tilt_series()]
+            sel = overview.selected_acquisition_summary()
+            for key, found in (
+                ("pixel_size_angstrom", sel.pixel_sizes),
+                ("acceleration_voltage_kv", sel.voltages),
+                ("tilt_axis_degrees", sel.tilt_axes),
+            ):
+                if found:
+                    values[key] = found[0]
+            if sel.dose_missing > 0:
+                if di.dose_per_tilt_override is not None:
+                    dose, dose_source = di.dose_per_tilt_override, di.dose_per_tilt_source or "estimated"
+            elif sel.doses:
+                dose, dose_source = sel.doses[0], "mdoc"
+            software = overview.acquisition_software or first.get("acquisition_software", "")
+            dims = overview.detector_dimensions or first.get("detector_dimensions")
+        else:
+            for key in ("pixel_size_angstrom", "acceleration_voltage_kv", "tilt_axis_degrees"):
+                if key in first:
+                    values[key] = first[key]
+            software = first.get("acquisition_software", "")
+            dims = first.get("detector_dimensions")
+        if dose is None:
+            if "dose_per_tilt" not in first:
+                return None, "dose per tilt: not in the mdocs and no estimate possible — enter it"
+            dose, dose_source = first["dose_per_tilt"], first["dose_per_tilt_source"]
+        values["dose_per_tilt"] = dose
+        if dims:
+            values["detector_dimensions"] = tuple(dims)
+    if not di.movies_glob.lower().endswith(".eer"):
+        values["eer_fractions_per_frame"] = None
+    try:
+        spec = ProjectSpec(
+            name=name,
+            base=di.project_base_path,
+            frames_glob=di.movies_glob,
+            mdocs_glob=di.mdocs_glob,
+            series=series,
+            ts_names_by_folder=ts_names_by_folder,
+            shared=di.is_shared,
+            gain_reference=di.gain_reference_path or None,
+            dose_per_tilt_source=dose_source,
+            acquisition_software=software,
+            **values,
+        )
+    except ValidationError as e:
+        return None, str(e)
+    return spec, None
 
 
 def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Callable]) -> None:
@@ -277,11 +347,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             # other depth and adopt it through the (hidden) mdocs input's extension —
             # state, prefs and the input then move together via on_mdocs_change.
             if not is_valid and not local_refs["mdocs_separate"] and ui_mgr.panel_refs.mdocs_input:
-                ext = ui_mgr.panel_refs.mdocs_input.extension
-                other = f"*/{ext}" if not ext.startswith("*/") else ext[len("*/") :]
-                other_ok, _n, _m = await _validate_glob_full(
-                    str(Path(pattern).parents[1 if ext.startswith("*/") else 0] / other)
-                )
+                retry, other = other_depth(pattern, ui_mgr.panel_refs.mdocs_input.extension)
+                other_ok, _n, _m = await _validate_glob_full(retry)
                 if ui_mgr.data_import.mdocs_glob != pattern or _page_gone():
                     return
                 if other_ok:
@@ -653,11 +720,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         # co-located mode; a stale derived pattern would keep is_dataless() false and
         # "Create" disabled on "Missing: Data Path".
         if not local_refs["mdocs_separate"]:
-            if glob_str:
-                parent = str(Path(glob_str).parent) if "*" in glob_str else glob_str
-                derived_mdocs = str(Path(parent) / local_refs["default_mdocs_ext"])
-            else:
-                derived_mdocs = ""
+            derived_mdocs = co_located_mdocs_glob(glob_str, local_refs["default_mdocs_ext"])
             ui_mgr.update_data_import(mdocs_glob=derived_mdocs)
             prefs_service.update_fields(mdocs_glob=derived_mdocs)
             if ui_mgr.panel_refs.mdocs_input:
@@ -794,22 +857,13 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                 def _on_create_progress(text: str, step=step):
                     create_progress["text"] = step + text
 
-                selected_mdoc_paths, import_summary, detected_params = (
-                    _import_payload(plan_overview) if plan_overview and not is_dataless() else (None, None, None)
-                )
-                result = await backend.create_project_and_scheme(
-                    project_name=name,
-                    project_base_path=di.project_base_path,
-                    selected_jobs=[j.value for j in ui_mgr.selected_jobs],
-                    movies_glob=di.movies_glob,
-                    mdocs_glob=di.mdocs_glob,
-                    selected_mdoc_paths=selected_mdoc_paths,
-                    import_summary=import_summary,
-                    detected_params=detected_params,
-                    shared=di.is_shared,
-                    progress_cb=_on_create_progress,
-                    ts_names_by_folder=ts_names_by_folder,
-                )
+                scanned = plan_overview if plan_overview and not is_dataless() else None
+                spec, why = await landing_spec(di, name, scanned, ts_names_by_folder=ts_names_by_folder)
+                if spec is None:
+                    done = f" ({', '.join(n for n, _ in created)} created)" if created else ""
+                    ui.notify(f"Failed: {name}: {why}{done}", type="negative", timeout=15000)
+                    break
+                result = await backend.create_project(spec, overview=scanned, progress_cb=_on_create_progress)
                 if not result.get("success"):
                     done = f" ({', '.join(n for n, _ in created)} created)" if created else ""
                     ui.notify(f"Failed: {name}: {result.get('error')}{done}", type="negative", timeout=15000)
@@ -868,45 +922,6 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         # overview (and its selection) comes back.
         if overview is not None and _current_overview() is overview and progress_container is not None:
             _render_overview(overview, restored=False)
-
-    def _import_payload(overview) -> tuple[list[str], dict, dict]:
-        """(selected mdoc paths, import summary, detected params) of `overview`'s selection."""
-        di = ui_mgr.data_import
-        selected_mdoc_paths = [str(ts.mdoc_path) for ts in overview.get_selected_tilt_series()]
-        # Scalar counts only — per-position/per-TS details and per-tilt mdoc
-        # stats live in the TiltSeriesRegistry, not in a ProjectState mirror.
-        import_summary = {
-            "total_positions": len(overview.positions),
-            "selected_positions": sum(1 for p in overview.positions if any(ts.selected for ts in p.tilt_series)),
-            "total_tilt_series": overview.total_tilt_series,
-            "selected_tilt_series": overview.selected_tilt_series,
-            "source_directory": overview.source_directory or "",
-            "frame_extension": overview.frame_extension or "",
-        }
-        sel_summary = overview.selected_acquisition_summary()
-        detected_params = {}
-        if sel_summary.pixel_sizes:
-            detected_params["pixel_size_angstrom"] = sel_summary.pixel_sizes[0]
-        if sel_summary.voltages:
-            detected_params["acceleration_voltage_kv"] = sel_summary.voltages[0]
-        # Dose with its provenance: the mdoc's value, else the row —
-        # the scan's estimate or the user's number. Never the model default.
-        if sel_summary.dose_missing > 0:
-            if di.dose_per_tilt_override is not None:
-                detected_params["dose_per_tilt"] = di.dose_per_tilt_override
-                detected_params["dose_per_tilt_source"] = di.dose_per_tilt_source or "estimated"
-        elif sel_summary.doses:
-            detected_params["dose_per_tilt"] = sel_summary.doses[0]
-            detected_params["dose_per_tilt_source"] = "mdoc"
-        if sel_summary.tilt_axes:
-            detected_params["tilt_axis_degrees"] = sel_summary.tilt_axes[0]
-        if overview.acquisition_software:
-            detected_params["acquisition_software"] = overview.acquisition_software
-        if overview.detector_dimensions:
-            detected_params["detector_dimensions"] = overview.detector_dimensions
-        if di.gain_reference_path:
-            detected_params["gain_reference_path"] = di.gain_reference_path
-        return selected_mdoc_paths, import_summary, detected_params
 
     async def handle_load_project_click():
         start = ui_mgr.data_import.project_base_path or "~"
@@ -968,9 +983,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                         update_mdocs_validation()
             elif ui_mgr.data_import.movies_glob:
                 # Same-dir mode: derive mdocs from movies directory
-                mg = ui_mgr.data_import.movies_glob
-                parent = str(Path(mg).parent) if "*" in mg else mg
-                derived = str(Path(parent) / local_refs["default_mdocs_ext"])
+                derived = co_located_mdocs_glob(ui_mgr.data_import.movies_glob, local_refs["default_mdocs_ext"])
                 ui_mgr.update_data_import(mdocs_glob=derived)
                 update_mdocs_validation()
 

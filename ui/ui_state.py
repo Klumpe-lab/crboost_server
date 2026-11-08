@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import Any
 from collections.abc import Callable
 from pydantic import BaseModel, Field, ConfigDict
-from services.jobs.spec import PIPELINE_ORDER, display_name
-from services.models_base import InstanceId, instance_id_to_job_type
-from services.project_state import JobType
+from services.jobs.spec import display_name
+from services.models_base import instance_id_to_job_type
+from services.project_state import JobType, get_project_state_for
 
 logger = logging.getLogger(__name__)
 
@@ -65,9 +65,6 @@ class UIState(BaseModel):
     project_created: bool = False
     continuation_mode: bool = False
 
-    # Instance IDs as strings — singletons use job_type.value,
-    # multi-instance uses "jobtype__2", "jobtype__ribosome", etc.
-    selected_jobs: list[str] = Field(default_factory=list)
     pipeline_running: bool = False
 
     active_job_tab: str | None = None  # instance_id string
@@ -147,69 +144,11 @@ class PanelWidgetRefs:
         self.status_indicator = None
 
 
-# ── Pipeline ordering (all data lives in services.jobs.spec) ──────────────────
-
-_JOB_ORDER: dict[JobType, int] = {jt: i for i, jt in enumerate(PIPELINE_ORDER)}
-
-
-def get_job_order(job_type: JobType) -> int:
-    return _JOB_ORDER.get(job_type, 999)
+# ── Display names (all data lives in services.jobs.spec) ─────────────────────
 
 
 def get_job_display_name(job_type: JobType) -> str:
     return display_name(job_type)
-
-
-def get_ordered_jobs() -> list[JobType]:
-    return list(PIPELINE_ORDER)
-
-
-# ── Instance ID helpers (decoding lives in services.models_base.InstanceId) ──
-
-
-def get_instance_order(instance_id: str) -> tuple:
-    """Stable sort key: (type_order, numeric_suffix_or_999, text_suffix)."""
-    try:
-        type_order = get_job_order(instance_id_to_job_type(instance_id))
-    except ValueError:
-        type_order = 999
-    suffix = InstanceId.split(instance_id)[1]
-    if suffix is None:
-        # base instance always sorts before any suffixed variant
-        return (type_order, 0, "")
-    try:
-        return (type_order, int(suffix), "")
-    except ValueError:
-        return (type_order, 999, suffix)
-
-
-def get_instance_display_name(instance_id: str, job_model=None) -> str:
-    if job_model is not None:
-        label = getattr(job_model, "display_label", None)
-        if label:
-            return label
-
-    base, suffix = InstanceId.split(instance_id)
-
-    try:
-        base_name = display_name(JobType(base))
-    except ValueError:
-        base_name = base
-
-    # If the job has actually run, show its real directory name (e.g. "job004")
-    if job_model is not None:
-        relion_job_name = getattr(job_model, "relion_job_name", None)
-        if relion_job_name:
-            job_dir = relion_job_name.rstrip("/").split("/")[-1]
-            return f"{base_name} ({job_dir})"
-
-    # Not yet run — fall back to instance_id suffix
-    if suffix is None:
-        return base_name
-
-    if suffix.isdigit():
-        return f"{base_name} #{suffix}"
-    return f"{base_name} ({suffix})"
 
 
 # ── UIStateManager ────────────────────────────────────────────────────────────
@@ -240,9 +179,6 @@ class UIStateManager:
         try:
             logger.info("Hydrating from browser storage...")
             self._state = UIState(**storage_dict)
-            for iid in self._state.selected_jobs:
-                if iid not in self._job_widget_refs:
-                    self._job_widget_refs[iid] = JobWidgetRefs()
             self._notify()
         except Exception as e:
             logger.info("Error hydrating state from storage: %s", e)
@@ -256,11 +192,6 @@ class UIStateManager:
     @property
     def panel_refs(self) -> PanelWidgetRefs:
         return self._panel_refs
-
-    @property
-    def selected_jobs(self) -> list[str]:
-        """Ordered list of selected instance_ids."""
-        return list(self._state.selected_jobs)
 
     @property
     def active_instance_id(self) -> str | None:
@@ -316,76 +247,28 @@ class UIStateManager:
                 pass
         self._status_timer = timer
 
-    # ── Instance queries ──────────────────────────────────────────────────────
+    # ── The roster: the project's, never the tab's ────────────────────────────
 
-    def get_instances_for_type(self, job_type: JobType) -> list[str]:
-        """All selected instance_ids for a given job type, in pipeline order."""
-        return [s for s in self._state.selected_jobs if InstanceId.matches(s, job_type)]
+    def roster(self) -> list[str]:
+        """The jobs on the project's roster (`ProjectState.roster()`), the one list every tab and the
+        API read: a job added or removed anywhere is here on the next read."""
+        if self.project_path is None:
+            return []
+        return get_project_state_for(self.project_path).roster()
 
-    def is_job_type_selected(self, job_type: JobType) -> bool:
-        return len(self.get_instances_for_type(job_type)) > 0
-
-    def is_job_selected(self, job_type: JobType) -> bool:
-        """Backward compat alias for is_job_type_selected."""
-        return self.is_job_type_selected(job_type)
-
-    # ── Instance management ───────────────────────────────────────────────────
-
-    def add_instance(self, instance_id: str, job_type: JobType) -> bool:
-        if instance_id in self._state.selected_jobs:
-            return False
-
-        self._state.selected_jobs.append(instance_id)
-        self._state.selected_jobs.sort(key=get_instance_order)
-
-        self._state.job_ui_states[instance_id] = JobCardUIState()
-        self._job_widget_refs[instance_id] = JobWidgetRefs()
-
-        if self._state.active_job_tab is None:
-            self._state.active_job_tab = instance_id
-
-        self._notify()
-        return True
-
-    def add_job(self, job_type: JobType) -> bool:
-        """Backward compat: add the singleton instance (instance_id = job_type.value)."""
-        return self.add_instance(job_type.value, job_type)
-
-    def remove_instance(self, instance_id: str) -> bool:
-        if instance_id not in self._state.selected_jobs:
-            return False
-
-        if instance_id in self._job_widget_refs:
-            self._job_widget_refs[instance_id].cleanup()
-            del self._job_widget_refs[instance_id]
-
-        self._state.selected_jobs.remove(instance_id)
-
-        if instance_id in self._state.job_ui_states:
-            del self._state.job_ui_states[instance_id]
-
+    def forget_job(self, instance_id: str) -> None:
+        """Drop this tab's state for a job that has left the roster."""
+        refs = self._job_widget_refs.pop(instance_id, None)
+        if refs is not None:
+            refs.cleanup()
+        self._state.job_ui_states.pop(instance_id, None)
         if self._state.active_job_tab == instance_id:
-            self._state.active_job_tab = self._state.selected_jobs[0] if self._state.selected_jobs else None
-
-        self._notify()
-        return True
-
-    def remove_job(self, job_type: JobType) -> bool:
-        """Backward compat: remove the singleton instance."""
-        return self.remove_instance(job_type.value)
-
-    def toggle_job(self, job_type: JobType) -> bool:
-        instances = self.get_instances_for_type(job_type)
-        if instances:
-            for iid in list(instances):
-                self.remove_instance(iid)
-            return True
-        return self.add_job(job_type)
+            self._state.active_job_tab = None
 
     # ── Active tab ────────────────────────────────────────────────────────────
 
     def set_active_instance(self, instance_id: str):
-        if instance_id in self._state.selected_jobs:
+        if instance_id in self.roster():
             self._state.active_job_tab = instance_id
             self._notify()
 
@@ -393,12 +276,6 @@ class UIStateManager:
         """No job open: the job page is closed, the roster stays."""
         self._state.active_job_tab = None
         self._notify()
-
-    def set_active_job(self, job_type: JobType):
-        """Backward compat: activate the first instance of a type."""
-        instances = self.get_instances_for_type(job_type)
-        if instances:
-            self.set_active_instance(instances[0])
 
     # ── Per-instance UI state & refs ──────────────────────────────────────────
 
@@ -447,21 +324,16 @@ class UIStateManager:
         self._state.continuation_mode = enabled
         self._notify()
 
-    def load_from_project(self, project_path: Path, scheme_name: str, jobs: list[str]):
+    def load_from_project(self, project_path: Path, scheme_name: str):
+        """Point this tab at a project. The roster is read from the project whenever it is needed; the first job
+        opens unless the tab already has one open that is on the roster."""
         self._state.current_project_path = str(project_path)
         self._state.current_scheme_name = scheme_name
         self._state.project_created = True
 
-        self._state.selected_jobs = sorted(jobs, key=get_instance_order)
-
-        for iid in self._state.selected_jobs:
-            if iid not in self._state.job_ui_states:
-                self._state.job_ui_states[iid] = JobCardUIState()
-            if iid not in self._job_widget_refs:
-                self._job_widget_refs[iid] = JobWidgetRefs()
-
-        if self._state.selected_jobs and self._state.active_job_tab is None:
-            self._state.active_job_tab = self._state.selected_jobs[0]
+        roster = self.roster()
+        if self._state.active_job_tab not in roster:
+            self._state.active_job_tab = roster[0] if roster else None
 
         self._notify()
 

@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 from nicegui import ui
 
 from services.configs.config_service import get_config_service
+from services.job_params import set_tilt_filter
 from services.jobs.tilt_filter import (
     DL_MODES,
     FilterMode,
@@ -367,7 +368,7 @@ class TiltFilterControls(FingerprintedView):
         async with self._flight(f"tilt-filter-mode:{self._iid}") as acquired:
             if not acquired:
                 return
-            res = await self._panel.backend.set_tilt_filter_mode(self._panel.ui_mgr.project_path, self._iid, mode)
+            res = await set_tilt_filter(self._panel.backend, self._panel.ui_mgr.project_path, self._iid, mode=mode)
             if res["success"]:
                 notify_resume(res)
                 self._panel.rerender_job(self._iid)
@@ -379,9 +380,10 @@ class TiltFilterControls(FingerprintedView):
         _state, jm = _state_and_job(self._panel.ui_mgr.project_path, self._iid)
         if jm is None or e.value == (jm.model or get_config_service().tilt_filter.default_model):
             return
-        jm.model = e.value
-        # Not a USER_PARAMS field, so nothing marks the project dirty: force the save.
-        await self._panel.backend.save_project(self._panel.ui_mgr.project_path, force=True, debounce_s=1.0)
+        res = await set_tilt_filter(self._panel.backend, self._panel.ui_mgr.project_path, self._iid, model=e.value)
+        if not res["success"]:
+            _notify(res["error"], "warning")
+        await self._panel.backend.save_project(self._panel.ui_mgr.project_path, debounce_s=1.0)
         self.refresh()
 
     async def _on_threshold(self, _e) -> None:
