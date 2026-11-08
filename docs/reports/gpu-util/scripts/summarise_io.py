@@ -34,7 +34,7 @@ def main() -> None:
                 _, phase, _task, host, t0, t1, rate = line.split("\t")
                 phases[phase].append((float(t0), float(t1), float(rate), host))
         for line in out.read_text().splitlines():
-            if line.startswith(("FAILED", "NOTE")):
+            if line.startswith(("FAILED", "VOID")):
                 print(f"{out.name}: {line}")
     print("| phase | tasks | nodes | per task MB/s median (min-max) | together MB/s | start spread s |")
     print("|---|---:|---:|---|---:|---:|")

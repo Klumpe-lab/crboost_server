@@ -1,6 +1,7 @@
 #!/bin/bash
 # Probe P2 of roadmap 45: what can a node show us? Five minutes, no real work, everything is printed.
-# Submit the same script to a full B200, a MIG slice and a CPU node, from any directory:
+# Submit the same script to a full B200, a MIG slice and a CPU node, from the folder the outputs should land in,
+# giving the script's full path (capability.sh below stands for it):
 #
 #   sbatch -J cb-cap -p g --gres=gpu:nvidia_b200:1 -N1 -n1 -c4 --mem=16G -t 0:05:00 \
 #       -o cap-b200.out capability.sh
@@ -8,7 +9,7 @@
 #       -o cap-slice.out capability.sh
 #   sbatch -J cb-cap -p c -N1 -n1 -c4 --mem=16G -t 0:05:00 -o cap-c.out capability.sh
 #
-# The CPU job's GPU lines fail by design. Paste the three outputs into docs/reports/gpu-util/capability-<date>.md.
+# The CPU job's GPU lines fail by design. Paste the three outputs into docs/reports/gpu-util/capability-2026-11-08.md.
 # No `set -e`: a missing tool is an answer, not a reason to stop.
 
 sif=${SIF:-/groups/klumpe/software/containers/sifs/pytom-match-pick-0.14.0_cupy-13.6.0_cuda12.9_sm100.sif}
@@ -19,6 +20,11 @@ echo "== host"
 hostname
 date
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}  SLURM_GPUS_ON_NODE=${SLURM_GPUS_ON_NODE:-unset}"
+
+echo "== the environment this job starts with (sbatch here passes only SCRATCHDIR: SBATCH_EXPORT in the CBE module)"
+echo "USER=${USER:-unset} HOME=${HOME:-unset} TMPDIR=${TMPDIR:-unset} SCRATCHDIR=${SCRATCHDIR:-unset}"
+echo "SLURM_EXPORT_ENV=${SLURM_EXPORT_ENV:-unset} EESSI_VERSION=${EESSI_VERSION:-unset} variables: $(env | wc -l)"
+echo "PATH=$PATH"
 
 echo "== profiling and monitoring tools on PATH"
 command -v dcgmi nsys ncu nvidia-cuda-mps-control iostat pidstat perf py-spy strace

@@ -4,7 +4,7 @@ seconds between and after, then the effect of the kernel cache and of the output
 A second counts as busy when nvidia-smi dmon's `sm` column is above 0 (the same coarse measure as SLURM's gpuutil,
 but sampled every second from before the first run).
 
-    python3 summarise_tm_ab.py $SCRATCHDIR/gpu_probe/tm_ab_<jobid>
+    python3 summarise_tm_ab.py $SCRATCHDIR/gpu_probe/tm_ab_1474636
 """
 
 import statistics

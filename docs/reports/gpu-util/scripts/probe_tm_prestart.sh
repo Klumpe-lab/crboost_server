@@ -8,7 +8,7 @@
 # process reads nothing it is waiting; reads would point at storage. summarise_tm_pre.py prints the table.
 #
 #   sbatch -o probe_tm_pre-%j.out docs/reports/gpu-util/scripts/probe_tm_prestart.sh
-#   python3 docs/reports/gpu-util/scripts/summarise_tm_pre.py $SCRATCHDIR/gpu_probe/tm_pre_<jobid>
+#   python3 docs/reports/gpu-util/scripts/summarise_tm_pre.py $SCRATCHDIR/gpu_probe/tm_pre_1474966
 #
 # Nothing is written to /groups, which is only read. PROBE_DRY=1 runs a stand-in (3 s asleep, 3 s busy) in place of
 # the container, so the sampler and the summary can be tried without a GPU.

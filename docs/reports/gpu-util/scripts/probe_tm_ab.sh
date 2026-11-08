@@ -8,9 +8,12 @@
 # then two runs with the full angular search: cold + /groups (as in production) and warm + /tmp (the best case).
 # A once-a-second nvidia-smi trace runs throughout; summarise_tm_ab.py turns it and runs.tsv into one table.
 #
-#   export GROUPS_OUT=/groups/klumpe/user/<you>/_gpu_probe      # a folder you own; ~20 GiB are written there
-#   sbatch -o probe_tm_ab-%j.out docs/reports/gpu-util/scripts/probe_tm_ab.sh
-#   python3 docs/reports/gpu-util/scripts/summarise_tm_ab.py $SCRATCHDIR/gpu_probe/tm_ab_<jobid>
+#   sbatch -o probe_tm_ab-%j.out docs/reports/gpu-util/scripts/probe_tm_ab.sh /groups/klumpe/user/$USER/_gpu_probe
+#   python3 docs/reports/gpu-util/scripts/summarise_tm_ab.py $SCRATCHDIR/gpu_probe/tm_ab_1474636
+#
+# The argument is a folder you own on /groups; about 20 GiB are written there. It is an argument, not an exported
+# variable, because sbatch on CBE.next passes a job only $SCRATCHDIR (the CBE module sets SBATCH_EXPORT=SCRATCHDIR).
+# Run alone: probe_io.sh writes 16 GiB at once and would slow the writes this one times.
 #
 # It deletes the folder it makes under $GROUPS_OUT and only that one, and only if it holds its marker file.
 # PROBE_DRY=1 prints what it would run instead of running it (no GPU needed).
@@ -24,7 +27,8 @@
 #SBATCH -t 0:40:00
 set -euo pipefail
 
-: "${GROUPS_OUT:?set GROUPS_OUT to a folder on /groups that you own}"
+GROUPS_OUT=${1:-${GROUPS_OUT:-}}
+: "${GROUPS_OUT:?pass a folder on /groups that you own as the first argument}"
 SCRATCHDIR=${SCRATCHDIR:-/scratch/users/$USER}
 id=${SLURM_JOB_ID:-manual}
 RES=$SCRATCHDIR/gpu_probe/tm_ab_$id # results: runs.tsv, dmon.log, one log per run

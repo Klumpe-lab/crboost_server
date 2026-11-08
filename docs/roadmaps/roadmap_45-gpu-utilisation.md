@@ -467,3 +467,18 @@ its leftovers named.
   `/groups` 260–290 per task, of BeeGFS 600–730. Caveats: one run, a `c` node, all 16 tasks on one node, other
   users' load unknown. `probe_tm_prestart.sh` with `summarise_tm_pre.py` (P5) written and tried with a stand-in only:
   4 against 16 CPUs, a once-a-second sample of the python process.
+- **2026-11-08, P2 and P5 ran** (jobs 1474967–1474969, 1474966). P2: a job starts with a full environment (186
+  variables, the EESSI `PATH`); per-job `/tmp` is BeeGFS from the 1.3 PB pool; `/groups` is NFSv3 at 96 % (268 TB free),
+  1 MiB read and write sizes; `dcgmi`, `strace` and `nvidia-cuda-mps-control` exist on GPU nodes, `nsys`, `ncu`, `py-spy`
+  and `iostat` do not; `cpu.stat` and `memory.*` are readable in the job cgroup, `io.stat` is not; `rchar` and
+  `read_bytes` both count NFS reads; a `--cleanenv` container sees exactly the allocated B200 or MIG slice with
+  `nvidia-smi -L` (CUDA's own enumeration on a slice is untested); a slice reports no utilisation and the parent GPU
+  shows other users' memory and power. P5, same node and command as P4b: the process runs on one core for about 30 s
+  before its first kernel, the same with 4 and with 16 CPUs, reading only the tomogram; P4b saw 58–72 s for that stage
+  on the same node earlier in the day, which is unexplained. A B200 has about 180 GB and one process holds 31 GB, so
+  `probe_tm_concurrency.sh` with `summarise_tm_conc.py` (P6) runs 1 to 4 processes on one GPU and tries `dcgmi dmon`;
+  written, tried with stand-ins only. Running on slices is already built and measured (roadmap 43 S1 and S2: `-s x y
+  z` cuts the FFT-padded volume, pytom's peak is about 60 bytes per voxel of one piece plus 0.7 GiB, `gpu_split: auto`
+  picks the split; on 412 a slice at `2 2 1` takes 793 s against 112 s whole on a B200, 7.1×). What that leaves for
+  this roadmap: the 30 s preamble and the post-search time are the same on a slice, so they are about 10 % of a slice's
+  allocation against 40–55 % of a B200's, and SLURM cannot show it because it does not meter slices.
