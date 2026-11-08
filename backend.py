@@ -37,7 +37,7 @@ from services.project_disk_usage import get_disk_usage_service, is_stale as is_d
 from services.project_trash import clear_trash, list_trash, trash_summary
 from services.event_log import events
 from services.result import ErrorCode, err, ok
-from services.computing.slurm_service import SlurmService, write_sbatch_script
+from services.computing.slurm_service import SlurmService, crboost_job_name, write_sbatch_script
 from services.configs.config_service import get_config_service
 from services.curation.session_service import CurationSessionService
 from services.curation.watcher import CurationWatcher
@@ -389,7 +389,10 @@ class CryoBoostBackend:
         run_dir = next_predict_run_dir(project_path)
         try:
             sbatch_path = write_sbatch_script(
-                run_dir / "run_tilt_filter.sh", job_model.get_effective_slurm_config(), driver_cmd
+                run_dir / "run_tilt_filter.sh",
+                job_model.get_effective_slurm_config(),
+                driver_cmd,
+                name=crboost_job_name(instance_id),
             )
         except (OSError, ValueError) as e:
             logger.exception("Tilt filter DL: sbatch script render failed")
@@ -692,9 +695,14 @@ class CryoBoostBackend:
         await asyncio.to_thread(_clear_previous_output)
 
         try:
-            # SLURM resources = the project's defaults (proven to run relion_tomo_subtomo;
-            # over-provisioned for one tomo but consistent with the pipeline extraction).
-            sbatch_path = write_sbatch_script(out_dir / "run_extract.sh", state.slurm_defaults, driver_cmd)
+            # The instance's own resources: the project's defaults under conf's extractPickList profile.
+            # relion_tomo_subtomo runs on CPUs only.
+            sbatch_path = write_sbatch_script(
+                out_dir / "run_extract.sh",
+                jm.get_effective_slurm_config(),
+                driver_cmd,
+                name=crboost_job_name(instance_id),
+            )
             proc = await asyncio.create_subprocess_exec(
                 "sbatch",
                 str(sbatch_path),

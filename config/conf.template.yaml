@@ -135,6 +135,9 @@ job_resource_profiles:
     cpus_per_task: 4
     time: "1:30:00"
 
+  # Candidate extraction computes on the CPU, but pytom_extract_candidates.py cannot start without a CUDA device
+  # (voltools asks cupy for the device count at import): give it the smallest GPU the partition offers
+  # (CBE.next: "gpu:nvidia_b200_1g.23gb:1", one MIG slice).
   tmextractcand:
     gres: "gpu:1"
     mem: "8G"
@@ -148,8 +151,17 @@ job_resource_profiles:
     cpus_per_task: 8
     time: "1:00:00"
 
+  # Subtomogram extraction (also per pick list) and particle reconstruction run on CPUs only (relion_tomo_subtomo,
+  # relion_tomo_reconstruct_particle start without a GPU). Where the GPU partition refuses a job without one, name a
+  # CPU partition for them and for the other gres "" profiles (CBE.next: partition: "c").
   subtomoExtraction:
-    gres: "gpu:1"
+    gres: ""
+    mem: "16G"
+    cpus_per_task: 4
+    time: "0:30:00"
+
+  extractPickList:
+    gres: ""
     mem: "16G"
     cpus_per_task: 4
     time: "0:30:00"
@@ -161,7 +173,7 @@ job_resource_profiles:
     time: "0:30:00"
 
   reconstructParticle:
-    gres: "gpu:1"
+    gres: ""
     mem: "32G"
     cpus_per_task: 4
     time: "2:00:00"

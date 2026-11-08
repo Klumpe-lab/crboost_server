@@ -3,6 +3,8 @@ import asyncio
 import functools
 import logging
 import subprocess
+import time
+from collections import Counter
 from enum import Enum
 from pathlib import Path
 import re
@@ -12,6 +14,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from services.configs.config_service import REPO_ROOT, get_config_service
+from services.event_log import events
 from services.result import err, ok
 
 logger = logging.getLogger(__name__)
@@ -163,14 +166,41 @@ def check_constraint(cfg: SlurmConfig) -> None:
             "Clear or fix Constraint in the job's SLURM section"
         )
 
-def write_sbatch_script(script_path: Path, cfg: SlurmConfig, command: str, *, array: str | None = None) -> Path:
+
+def crboost_job_name(instance_id: str, *, supervisor: bool = False) -> str:
+    """The SLURM job name of a job instance, `cb-<instance_id>` (`-sup` for an array's supervisor): what
+    squeue, sacct and the cluster's dashboards group jobs by."""
+    name = "cb-" + re.sub(r"[^\w.+-]", "_", instance_id)
+    return f"{name}-sup" if supervisor else name
+
+
+# A job-name directive in qsub.sh; the name passed to write_sbatch_script replaces it.
+_JOB_NAME_LINE = re.compile(r"^#SBATCH\s+(--job-name[=\s]|-J\s?)")
+
+# The first line of every job's log: the ids sacct and scancel take (an array task's `<array>_<index>` and its own
+# job id), the job's name, where it runs and the GPU it was given. `grep -h '^\[SLURM\]' task_*.out` lists them.
+SLURM_ID_LINE = (
+    'echo "[SLURM] job ${SLURM_ARRAY_JOB_ID:+${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID} = }${SLURM_JOB_ID} '
+    "${SLURM_JOB_NAME} on ${SLURMD_NODENAME:-$(hostname -s)} (${SLURM_JOB_PARTITION})"
+    "${CUDA_VISIBLE_DEVICES:+, GPU ${CUDA_VISIBLE_DEVICES}}, started $(date '+%F %T')\"\n"
+)
+
+
+def write_sbatch_script(
+    script_path: Path, cfg: SlurmConfig, command: str, *, array: str | None = None, name: str = ""
+) -> Path:
     """Render config/qsub.sh to run `command` with `cfg`'s resources and write it, executable, to
     `script_path`. The SLURM logs land beside it (run.out/.err; task_<index>.out/.err for an array), and
-    qsub.sh cd's into that directory before running `command`. `array` is the `--array` spec."""
+    qsub.sh cd's into that directory before running `command`. `array` is the `--array` spec; `name` the job
+    name (`crboost_job_name`), which takes the place of the one qsub.sh gives."""
     check_constraint(cfg)
     script = QSUB_TEMPLATE.read_text()
     if QSUB_EXIT_MARKERS not in script:
         raise ValueError(f"{QSUB_TEMPLATE}: the exit-marker block differs from config/qsub.template.sh")
+    if name:
+        lines = script.splitlines(keepends=True)
+        shebang, body = lines[0], "".join(line for line in lines[1:] if not _JOB_NAME_LINE.match(line))
+        script = f"{shebang}#SBATCH --job-name={name}\n{body}"
     if cfg.qos.strip():
         # Straight under the shebang: sbatch stops reading #SBATCH lines at the first command.
         shebang, body = script.split("\n", 1)
@@ -198,6 +228,12 @@ def write_sbatch_script(script_path: Path, cfg: SlurmConfig, command: str, *, ar
     values |= {"XXXoutfileXXX": f"{logs}.out", "XXXerrfileXXX": f"{logs}.err", "XXXcommandXXX": command}
     for placeholder, value in values.items():
         script = script.replace(placeholder, value)
+
+    # After the last directive: sbatch stops reading #SBATCH lines at the first command.
+    lines = script.splitlines(keepends=True)
+    last_directive = max((i for i, line in enumerate(lines) if line.startswith("#SBATCH")), default=0)
+    lines.insert(last_directive + 1, SLURM_ID_LINE)
+    script = "".join(lines)
 
     script_path.write_text(script)
     script_path.chmod(0o755)
@@ -329,14 +365,53 @@ def normalize_slurm_ids(job_ids: list[str]) -> list[str]:
     return sorted(result)
 
 
+# How often the count of the server's Slurm commands reaches the console.
+SLURM_CALL_REPORT_SECS = 3600
+
+
+class SlurmCallCounter:
+    """The Slurm commands the server runs, by kind, reported as one event line per period: the rate the
+    scheduler sees from this server, which `sdiag` shows the cluster's admins per user."""
+
+    def __init__(self, period_secs: float = SLURM_CALL_REPORT_SECS):
+        self.period_secs = period_secs
+        self.counts: Counter[str] = Counter()
+        self.since = time.monotonic()
+
+    @staticmethod
+    def kind(cmd: list[str]) -> str:
+        """The command, and for squeue its selector: -j a job's state, -r an array's tasks, -u the user's jobs."""
+        if cmd[0] == "squeue" and len(cmd) > 1 and cmd[1].startswith("-"):
+            return f"squeue {cmd[1]}"
+        return cmd[0]
+
+    def count(self, cmd: list[str]) -> None:
+        self.counts[self.kind(cmd)] += 1
+        elapsed = time.monotonic() - self.since
+        if elapsed < self.period_secs:
+            return
+        total = sum(self.counts.values())
+        events.info(
+            "Slurm calls in the last %.0f min: %d (%.1f a minute): %s",
+            elapsed / 60,
+            total,
+            60 * total / elapsed,
+            ", ".join(f"{kind} {n}" for kind, n in self.counts.most_common()),
+        )
+        self.counts.clear()
+        self.since = time.monotonic()
+
+
 class SlurmService:
     def __init__(self, username: str):
         self.username = username
         self._cache = {}
         self._cache_timestamp = {}
         self._cache_ttl = 60
+        self.calls = SlurmCallCounter()
 
     async def _run_command(self, cmd: list[str]) -> tuple[bool, str, str]:
+        self.calls.count(cmd)
         try:
             process = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE

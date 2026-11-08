@@ -32,7 +32,7 @@ from pathlib import Path
 server_dir = Path(__file__).parent.parent
 
 from drivers.driver_base import PRINT_CMD_ENV, DriverContext, print_cmd_only, run_tool, start_supervisor
-from services.computing.slurm_service import SlurmConfig, write_sbatch_script
+from services.computing.slurm_service import SlurmConfig, crboost_job_name, write_sbatch_script
 from services.configs.starfile_service import StarfileService
 from services.jobs.spec import driver_invocation
 
@@ -600,7 +600,9 @@ def build_array_sbatch_script(
     driver_cmd = driver_invocation(
         server_dir=server_dir, driver_script=driver_script, instance_id=instance_id, project_path=project_path
     )
-    return write_sbatch_script(job_dir / "run_array.sh", per_task_cfg, driver_cmd, array=array_spec)
+    return write_sbatch_script(
+        job_dir / "run_array.sh", per_task_cfg, driver_cmd, array=array_spec, name=crboost_job_name(instance_id)
+    )
 
 
 def submit_array_sbatch(script_path: Path, cwd: Path) -> str:
