@@ -220,6 +220,77 @@ partition, and let the strip show each type.
 **Check.** The line above gives `[("nvidia_b200", 4), ("nvidia_b200_1g.23gb", 28)]`, and the landing page's strip
 shows both on `g`.
 
+### H7 — Create after a scan stores the dose per tilt rounded to 0.1
+
+**Status:** open, found 2026-11-05 (roadmap 42 S4). **Severity:** low: a dose off by up to 0.05 e/Å² per tilt, i.e. a
+few per cent, in dose weighting and everything that reads the project's dose.
+
+**What is wrong.**
+- The mdoc parser keeps the dose to two decimals (`services/configs/mdoc_service.py:215`), as CryoBoost v1 does
+  (`src/rw/librw.py:407` there).
+- The scan's `AcquisitionSummary` rounds each series' dose to one decimal to tell mixed doses apart
+  (`services/tilt_series/preimport.py:165`), and the landing page takes that display value as the project's dose
+  (`ui/data_import_panel.py:111`).
+- Create without a scan reads the first mdoc and keeps two decimals, so the same data gives two doses. The agent API
+  takes the series' own value (`services/dataset_scan.py:133`).
+
+**Evidence** (toy: two EER series whose mdocs say `ExposureDose = 2.04`). Create after a scan stores
+`dose_per_tilt: 2.0`; Create without one, and the API, store `2.04`.
+
+**Impact.** 2.04 becomes 2.0 and 2.46 becomes 2.5: every dose-weighted step runs on the rounded dose.
+
+**Fix.** The landing page takes the selected series' own dose, as `dataset_scan.data_values` does; the summary's
+rounding stays for telling doses apart and for display.
+
+**Check.** The toy's Create after a scan stores 2.04.
+
+### H8 — Resampling or filtering a black template writes black density into its "white" file
+
+**Status:** open, found 2026-11-05 (roadmap 42 S7). **Severity:** medium: the polarity labels of the made pair are
+swapped, and a threshold mask made next is a mask of the inverted density.
+
+**What is wrong.**
+- The workbench's Resample and Apply lowpass start from the selected template as it is
+  (`services/species_edit.py:439-442`). `process_volume_async` writes its input's contrast to `<name>_white.mrc` and
+  the negative to `<name>_black.mrc` (`services/templating/template_service.py:116-123`), and both are registered
+  under those names, the white selected.
+- When the selected template is black, the made `_white.mrc` holds black density, is registered white and is
+  selected. The mask tools start from a `_white.mrc` as it is (`services/species_edit.py:545`), so a threshold mask
+  made from it thresholds the inverted density.
+- CryoBoost v1 has no resample or filter of a made template: it makes each pair from its source (PDB, EMDB, shape),
+  the white as the source and the black inverted (`src/gui/generateTemplate.py:129-134`, `:414-417` there).
+
+**Evidence** (toy, the RELION handler emulated: it keeps contrast, as `relion_image_handler --rescale_angpix
+--new_box` does). Select the black of a shape pair, resample: the selected template is
+`…_apix10.00_box96_white.mrc`, polarity white, and its density correlates +1.0 with the black source.
+
+**Impact.** TM itself reads only the file, so a run on the selected template matches the contrast the user had
+picked. The labels, a flip made from it, and a threshold mask made from it are wrong: the mask covers the
+background around the particle.
+
+**Fix.** In `species_edit.make_template`, start a resample or lowpass from the source's white sibling when it is
+black and the sibling exists (as the mask tools do); when it has none, swap the two outputs after processing. Then
+select the made template of the source's polarity.
+
+**Check.** The toy's resample of a black template selects a black template that correlates +1.0 with its source,
+and its registered white correlates −1.0.
+
+### H9 — A basic shape left without a lowpass is filtered at 45 Å and recorded as unfiltered
+
+**Status:** open, found 2026-11-05 (roadmap 42 S7). **Severity:** low: the template's record, not its data.
+
+**What is wrong.** The shape form's lowpass shows "—" when empty (`ui/template_workbench.py:1331`), the service then
+filters at 45 Å (`services/templating/template_service.py:188`), and the pair is registered with no lowpass
+(`services/species_edit.py`, `make_template`). TM's template row and a protocol export read that record. CryoBoost
+v1 filters every shape at 45 Å (`src/gui/generateTemplate.py:452-453` there) and records nothing.
+
+**Evidence** (toy). A shape made with no lowpass is named `…_lp45_white.mrc` and registered with
+`lowpass_resolution_ang: None`. The agent API's answer reports `lowpass: 45.0` for it.
+
+**Fix.** The form shows 45 Å as its value, and the pair is registered with the resolution it was filtered at.
+
+**Check.** The toy's shape is registered with `lowpass_resolution_ang: 45.0`.
+
 ## Fixed
 
 *(none yet)*

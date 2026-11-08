@@ -1,11 +1,12 @@
 # Roadmap 42 — Agent API: talk to your data from a Claude Code session
 
-**Status:** scoped 2026-11-04, no code. Reframed the same day after the maintainer's correction: the API reaches what
-the UI reaches, action by action (D2); it is not a set of recipes. Every decision is made (§8), the last of them on
-2026-11-05. A last scoping pass the same day, at `f7de679`, re-checked every anchor against the code (corrected in
-place), settled the facts-first items of S4, S6, S8 and S9 (§9), and changed the plan in a few places (§13). Part A
-(§3) stands on its own: it fixes today's multi-tab roster whether or not an agent ever drives anything.
-**Pickup: S1, in the `agent_api` worktree (§9).**
+**Status:** S1–S9 built 2026-11-05 in the `agent_api` worktree, checked on toys and read-only real data, not yet
+run in a server or on SLURM (§13, one entry per stage). Scoped 2026-11-04 and reframed the same day after the
+maintainer's correction: the API reaches what the UI reaches, action by action (D2); it is not a set of recipes.
+Every decision is made (§8). Part A (§3) stands on its own: it fixes today's multi-tab roster whether or not an
+agent ever drives anything.
+**Pickup: the maintainer's run (the server and the jobs once, then Claude Code against it); H7–H9 are queued in
+HOTFIXES.md.**
 
 **Ask (maintainer, 2026-11-04).** "A really differentiated API so I can just talk to my data." From a Claude Code
 session in a terminal:
@@ -636,8 +637,8 @@ the forwarder but carries the port problem above. Keep it for a session on a lap
 6. **Look.** You open the `ui_url`: the tilts, the alignments, the tomograms, the score maps, the picks, the graphs. The
    tilt review is yours.
 7. **Change.** A Scheduled or Failed job takes new values directly, and Run resubmits a failed job for its failed tilt
-   series. A job that finished is cloned (`add_job(clone_of=…)`), set and run, and the jobs after it are added
-   `after=` the clone, as you would in the roster.
+   series. A job that finished is cloned (`add_job(clone_of=…)`), set and run; the jobs after it are added and their
+   inputs set to the clone (`set_input`), as in the roster's I/O section, where two producers of one input tie.
 
 **The tilt filter (D4).** It is in unless you leave it out, and its mode is yours to name. Without a word from you it
 keeps its default, Manual: Run holds alignment and everything after it until you review the tilts in the UI and
@@ -910,3 +911,271 @@ facts-first checks of S4, S6, S8 and S9 were run, so the build has no planned st
 - S8: the new import also writes `cbOrigin*` columns and renamed tilt-series stars, and TM and Pick candidates check the
   origin projects' registries (§3.8); the reference mode's Denoise Predict paths are fixed on the way.
 - S9: a member without a registry no longer breaks the member build (§7).
+
+**S1 — the roster belongs to the project (2026-11-05, built, not run).**
+- `UIState.selected_jobs` is gone. Every reader takes the project's roster: `ProjectState.roster()`, read in the
+  tab through `UIStateManager.roster()` (the roster's rows and signature, `missing_deps`, the I/O section's producer
+  list, the status label, Run). Adding and removing a job write `pipeline_order` only, in `instance_order`.
+- `roster()` is strict: `pipeline_order` filtered by `jobs`, sorted by `instance_order` (moved from `ui/ui_state.py`
+  to `services/jobs/spec.py`), the order Run allocates job directories in, as the tab's sorted list did. Its old
+  fallback to every job is now only load's backfill for a file without an order, which leaves out per-list
+  extractions: they are never on the roster, and Run would have submitted them.
+- Every roster refresh ends in `follow_roster`: a job taken off the roster anywhere loses its kept pages, and its open
+  page closes; the address bar moves only when it names that job. Removing the open job in the tab itself now closes
+  its page too, where it used to open the first job of the roster. The pages' wrapper is built for an empty roster
+  as well, so a job another tab adds can be opened.
+- The status poller runs for the life of the workspace. Run, Stop and a job's Cancel wrap their backend call in
+  `StatusPoller.acting()`, which keeps a tick from announcing that action as a change made elsewhere and leaves the
+  Run/Stop buttons on the resulting `pipeline_active`; Stop and Cancel no longer stop the poller.
+- Create passes `selected_jobs=[]`, its only value in practice (§10's `j.value` note).
+- Toy check (two tabs' panels on one temp project, widgets stubbed): adds and removes in one tab show in the other's
+  roster, a removal closes the other tab's open page, the Run set is the same from both, a reload gives the same
+  roster, and a file without `pipeline_order` backfills without its per-list extraction.
+
+**S2 — the pipeline-edit door (2026-11-05, built, not run).**
+- `services/pipeline_edit.py`: `add_job`, `remove_job`, `exclude_tilt_series`, `species_defaults`, with
+  `next_instance_id` and `missing_deps` (from `ui/pipeline_builder/pipeline_constants.py`), `in_use_notice` (from
+  `ui/pipeline_builder/config_tab.py`) and the instance name the UI shows (`instance_display_name`, from
+  `ui/ui_state.py` to `services/jobs/spec.py`), so a door's refusal reads as the UI's. `ErrorCode.NEEDS_DECISION`
+  and `need()` land in `services/result.py`: `add_job` without a species for a particle job returns one.
+- `add_job` and `remove_job` mark the state dirty and leave the save to the caller (the UI's save after an add,
+  the API's after each write); `exclude_tilt_series` saves the registry. `add_job` returns
+  `ok(instance_id, added, pins, warnings)`, `pins` tagged `after`, `reading` or `kept`, from which the panel makes
+  its toasts.
+- Refusals the UI never meets, for the API: an unknown species, a species on a non-particle job, tsImport or a
+  per-list extraction added directly, a clone across types, a clone of the tilt filter or the import (the roster's
+  clone button now reads the same `NOT_CLONED`), a `reading` slot the job lacks. `remove_job` refuses a job that
+  still owns a job directory: deleting it into Trash is the UI's, whose delete takes it out of `jobs` first.
+- `after=` keeps the UI's meaning, Subset only. Two alignments tie and the UI asks for a pin, so a clone's
+  downstream is pinned with `set_input`: §6.7 corrected. The consumer pin of "+ Subtomo / + Warp export" is still
+  written by the I/O code until S3's `set_input`.
+- `add_instance_for_species` says "Added …" only when the add went through; it used to say so after a refusal too.
+- Behaviour change, its own commit: `protocols.apply` takes the species' values through `species_defaults` on the
+  registered species, which brings the Warp-export branch; `register_protocol_species` returns only its warnings.
+- Toy checks. Parity: 17 adds, clones and refusals and 2 removes through the panel (widgets stubbed), committed
+  tree against working tree on the same toy project: the same jobs, parameters, inputs, roster, open job and toasts.
+  The copia protocol's TM and a roster TM take the same template and mask; a protocol Warp export takes the
+  species' voxel size, crop box and diameter as the roster's does. Excluding the last tilt series is refused.
+
+**S3 — the setting doors, and fields that refresh (2026-11-05, built, not run).**
+- `services/job_params.py`: `set_params`, `set_slurm`, `set_input`, `reset_inputs`, `set_gain` (async: it stats the
+  file), `set_tilt_filter` (async: the mode goes through `backend.set_tilt_filter_mode`), with the rules they share:
+  `is_frozen` (only Scheduled and Failed take edits; the UI's `is_job_frozen` now reads it, so an Unknown job is
+  read-only too), `check_value` (the field's type as the model loads it, then its declared bounds) and
+  `param_options` (the choices the project offers: TM's templates, masks, symmetries and features, easymode's
+  catalog, the Denoiser). `ErrorCode.JOB_FROZEN` joins the enum.
+- `set_params` checks every value first and writes nothing unless all pass (`rejected={name: why}`). Denoise
+  Predict's Denoiser is the parameter `denoiser` (`train:<job>`, `manual:<method>`, `easymode`;
+  `denoiser_choices` moved out of the renderer); a direct `denoise_method` is refused, and `isonet_deconv` is taken
+  only for an IsoNet model file set by hand, as the UI shows it. Subset's tilt-series names are not checked against
+  the star it cuts (a disk read); Run refuses names it lacks, as before.
+- `set_slurm` validates the merged `SlurmConfig`, writes only what differs from the effective value, stores typed
+  values (the section stored the typed text), and refuses a frozen job itself.
+- The widgets call the doors, except the fields bound to the model: those keep their binding, which is what shows
+  a value set elsewhere within 0.1 s, and its transform (`numeric_forward`, `enum_forward`) now applies the door's
+  `check_value`, so the rules are written once. Choice rows, Segment's features, Subset's table, the Denoiser,
+  SLURM fields and reset, every I/O write, the gain, and the tilt filter's mode and model go through a door; the
+  saves after them are no longer forced. The "+ Subtomo / + Warp export" consumer pin is a `set_input`.
+- Refresh (§3.4): each open job page runs its sections' observers every 3 s (its job scope). TM's species rows and
+  search region are `FingerprintedView`s; the Denoiser, SLURM and I/O sections compare a signature; Subset's table
+  repaints when its names moved. None redraws while the user is in one of its fields or menus (`FocusHold`, new in
+  `ui/components/reactive.py`, beside `FingerprintedView.adopt` for a view's own write). A SLURM field writes only
+  when its text changed while it had focus.
+- Toy check (temp project, through the doors): bounds, types, unknown names and options not offered are refused
+  and named; frozen jobs give `JOB_FROZEN` for parameters, SLURM and inputs; SLURM writes nothing for unchanged
+  values; inputs refuse a source the I/O section does not list; a plain `save_if_dirty` and a reload keep every
+  door's write. The S1 and S2 toys and the S2 parity still pass.
+
+**S4 — creation, everything the landing page can do (2026-11-05, built, not run).** The maintainer kept D3 at the
+start of S4: the landing page keeps its defaults; H2–H4 stay open.
+- `services/dataset_scan.py`: `scan(directory | globs)` returns a `DatasetScan` (series, movie kind, frames and
+  mdocs globs, gain-reference candidates by name, offered and never applied, folders that reuse series names, and
+  per acquisition value a `DataValue`: the mdocs' own value, unrounded, `found_in` mdoc | estimate | none, or the
+  values a mixed selection holds) with the parser's `DatasetOverview`. The landing page's folder rules live there
+  and the page calls them: `glob_in`, `co_located_mdocs_glob`, `other_depth` (the `*/` retry). `first_mdoc_values`
+  is what a Create without a scan takes from the first mdoc.
+- `services/project_create.py`: `ProjectSpec`, `ACQUISITION_FIELDS` (the §3.5 list), `spec_problems` (the spec
+  half of `get_missing_requirements`, every problem named), `apply_values`, and `model_defaults` for the callers
+  that keep D3's defaults. A project without raw data needs only voltage, Cs, amplitude contrast and the defocus
+  hand: what imported tomograms and template matching read from the project; the rest keep the model defaults,
+  which nothing such a project can run reads.
+- `ProjectService.create_project(spec, overview=, import_summary=)` replaces `initialize_new_project`, and
+  `backend.create_project` replaces `create_project_and_scheme`. It takes values from the spec only, warns for each
+  that differs from the scan, refuses an existing directory, builds the registry in a thread, and reads RELION's
+  init output (`communicate`; a non-zero exit is logged). `StateService.update_from_mdoc` lost its only caller and
+  is gone.
+- Landing Create builds the spec in `landing_spec` (module level, so a script can drive it) as the old payload
+  did, the gain reference included with or without a scan. `apply_protocol` builds one the same way (its "Tomo5"
+  software fallback and dose rules unchanged); S7 adds `create_project(protocol=…)` on top.
+- Deviation: a spec for EER movies carries a grouping, so an EER project from the landing page or a protocol now
+  records `eer_fractions_per_frame = 32`, the grouping `eer_ngroups` used for an unset value. It runs as before;
+  the Journey's dataset rows show the value. H4 stays open.
+- Toy checks. Parity on a toy EER dataset, committed tree with the old payload against `landing_spec` →
+  `create_project`, six cases (scan or not; dose in the mdocs, estimated, typed; no raw data; gain without a scan):
+  the same project files but for the recorded grouping, the gain now kept without a scan, and a warning for a typed
+  dose that differs from the estimate. API side: each missing value named, a pixel size off the mdocs' warned with
+  both, bounds and an existing directory refused. Not checked here: the loop-stall criterion (runtime).
+- Seen on the way, to check against v1 and queue: Create after a scan stores the dose per tilt at the summary's
+  rounding, 2.0 for an mdoc's 2.04; Create without a scan stores 2.04.
+
+**S5 — the API: reads, creation, composition, runs (2026-11-05, built, not run).**
+- §3.7: `services/routes.py` holds `View`, `Route`, `route_to_path`, `parse_route`, `route_of_url`, and the link base
+  (`disambiguating_base`, from `ui/open_project.py`) with `workspace_path`; `ui/routing.py` keeps `apply_route` and
+  `RouteWriter`, and every importer moved. `backend.stop_pipeline`, `backend.cancel_job`, and
+  `backend.get_instance_logs` (by instance id; with `ts`, that tilt series' task log and its `.fail` reason).
+- §4.1: `TokenGate` takes `Authorization: Bearer` too and leaves how a request passed in its scope
+  (`AUTH_SCOPE_KEY`); a write verb without "bearer" gets 403. `get_server_info` is the health check.
+- §4.2: `api/` (`context`, `models`, `handlers`, `verbs`, `router`, `instructions.md`), mounted in `server_app.py`.
+  `check_boundaries.py`: R1 covers `api`, R3 and R4 read it, R5 keeps `nicegui` out. A handler's outcome is a 200
+  with `ok()`/`err()`, `needs` checked against the `Need` union and `warnings` always present; 403 and 422 are the
+  dispatcher's own refusals.
+- §4.3: the 35 verbs of S2–S5 (14 reads, 21 writes); the S7 and S9 ones come with their stages. `create_project`,
+  `run`, `stop`, `cancel_job`, `cancel_leftovers` and the two prediction verbs carry
+  `anthropic/requiresUserInteraction`; reads carry `readOnlyHint`.
+- Run's pre-allocation checks are one `_preflight` (Subset readiness, set checks, live work in a failed job's dir,
+  and the SLURM constraint of each job's own and supervisor resources, now before any job number, in a thread),
+  shared by Run, the UI's included, and `plan_run`. `plan_run` allocates, writes and submits nothing and keeps no
+  set-check result for the job pages; it shares `_run_set` with Run and `job_params.describe_inputs` with `get_job`.
+- `ProjectState.made_by_api` (schema 3.13, restored on load, shown by the project scan). `create_project` runs the
+  scan, refuses a missing value as a `needs` item saying what the data holds, refuses an existing directory, then
+  imports in a background task whose structured result `get_task` returns. Writes elsewhere refuse a hand-made
+  project with `NOT_WRITABLE` and its link. Every write verb leaves a line in `Logs/agent_api.jsonl`; a write made
+  is also a console event.
+- `tests/test_static.py` checks the verb table: schemas build, reads are named as reads, the instructions fit, and
+  `/api/v1/tools` serves the table.
+- Toy (in process through FastAPI's test client: the real gate, router, backend and doors; RELION's init and every
+  sbatch stubbed): 401 without the token, 403 for a write with only the cookie, `inspect_dataset`, `create_project`
+  refused with ten needs then made in the background, refused again on its directory; adds and settings; a bound
+  named; `plan_run`; a constraint the partition lacks refused by `plan_run` and `run` with no job number or
+  directory spent; a hand-made project read but `NOT_WRITABLE`, unchanged; parity with the same choices made through
+  the doors the widgets call: identical jobs, parameters, inputs and SLURM (only the import summary differed, the
+  toy's hand-made project having no scan); eleven record lines. Not checked: a write showing in an open tab (runtime).
+- Not done: `get_job` lists output paths, not preview PNGs.
+
+**S6 — the Claude Code side (2026-11-05, built; checked with the MCP client, not yet in Claude Code).**
+- `agent/crboost_mcp.py`: the stdio forwarder, `uv run --script` with inline dependencies (`mcp>=2.3,<3`,
+  `httpx`). mcp 2.3 registers handlers in the `Server` constructor and serves two protocol eras; the forwarder
+  advertises `tools.listChanged`, sends the change as a session notification (handshake era) and on a
+  `subscriptions/listen` stream (`ListenHandler` over an in-memory bus, the 2026-07-28 wire). The server
+  instructions come from the checkout's `api/instructions.md`, the file `/api/v1/tools` serves.
+- It finds the server from `CRBOOST_URL` (localhost only), this checkout's port in `~/.crboost/ports.json`, or the
+  one CryoBoost server of the user's on this node (by the owner header of its 401); several are named. The token
+  goes only to a port whose `/proc/net/tcp` listener has the user's uid, checked before every call. With no
+  server it lists `get_server_info`, which names this node and says how to start one; every call tries again.
+- `agent/skills/crboost/SKILL.md`: the rules in the agent's words and the recipes (a project from a folder,
+  preprocessing with the tilt filter, matching a species, changing what ran, following a run). `docs/agent.md`:
+  setup (the user-scope entry and the skill link), the permission snippet, what it does and does not do. The
+  plugin layout stays for later (D6).
+- Checked with the mcp 2.3 client over stdio: with no server, one tool and a refusal naming the node; against a
+  live gated server on a free port with the user's token, 35 tools, the seven that ask every time, and
+  `get_server_info` forwarded; a server started after the session is picked up by the next call and the list
+  grows to 35; a port held by another uid (sshd's 22) is refused with nothing sent. Not checked: `claude mcp
+  list`, Claude Code's refetch on `list_changed`, the prompts and allow rules (runtime).
+
+**S7 — species, templates, tomogram import, protocols (2026-11-05, built, not run).**
+- `services/species_edit.py`: `create_species` (the species dialog's orchestration) and `set_species` (identity and
+  extraction geometry; `None` clears the diameter, `KEEP` leaves a field), called by `ui/species/prompt.py`,
+  `ui/species/overview_tab.py` and `ui/particles/list_actions.py`.
+- Templates and masks go in two steps: `plan_template` / `plan_mask` settle every value or return `needs`;
+  `make_template` / `make_mask` write the files, register them through `species_admin` and select (a pair's white,
+  a flip's result, a mask only when the species has none). The workbench calls them, and the background task now
+  registers and saves, so a template made while the user leaves the page is no longer lost; the page's completion
+  only repaints, from the task's record (a second click on a running make no longer reports a failure).
+- Moved with them: the flip, the mask file names, the auto box (`auto_box`), and the default pixel size
+  (`template_pixel_size`: the Reconstruct jobs' when they agree, else the imported tomograms' voxel size from their
+  star when they agree). The workbench keeps its pre-fill fallbacks (the movies' pixel size, then 10 Å); the API
+  takes the tomograms' or asks, as D3. The API also asks for the box of a PDB, EMDB or resample template (the
+  workbench pre-fills 96).
+- `_calculate_thresholds_sync` returned `{"flexible_bounds": 0.001}` on failure; it returns `{}` and logs the
+  traceback: the method menu keeps its value, `plan_mask` refuses.
+- The import dialog's template registers through `species_admin.register_template` (its inline copy is gone).
+- `tomogram_import.import_refusal` is the roster's "not beside a Reconstruct job" rule, now refused by
+  `commit_imported_tomograms` itself. `apply_protocol(values=, made_by_api=)` takes the API's values over the
+  autodetect.
+- API, 40 verbs (14 reads, 26 writes): `create_species`, `set_species`, `import_tomograms`, `make_template`,
+  `make_mask`, and `create_project(protocol=…)`. The two makes run as background tasks that save and record when
+  they end; the router saves and records nothing for an answer that carries a `task_id`.
+- Checked through the API with the real gate and doors (RELION init stubbed; `relion_image_handler` and
+  `relion_mask_create` emulated in Python, no containers):
+  - species: made, edited (symmetry, extraction, a cleared diameter), a bad symmetry refused; an import beside a
+    Reconstruct job refused with the roster's reason;
+  - the copia protocol through the API and through `apply_protocol` called as the dialog calls it: equal
+    `project_params.json`, but for `created_at` and the minted template and mask ids;
+  - templates: the needs (a pixel size without tomograms; a PDB id and box), a bad shape refused; a shape pair
+    registered, its white selected, normalised (mean 0, σ 1) in a 96 box at 10 Å; a flip selecting the registered
+    sibling; a resample at the Reconstruct job's 6.2 Å without being given it; a lowpass at the header's pixel size
+    and box; a missing PDB entry failing with RCSB's 404 through `get_task`;
+  - masks: no level gives the five methods with their levels, one made at Otsu's; a sphere at the species'
+    diameter on the template's grid; the first mask selected, the second not; all saved, one record per make;
+  - a project of imported tomograms (7.84 Å volumes): its template pixel size is 7.84 Å.
+- Not checked: a PDB simulation (cisTEM), RELION in its container, the workbench in a browser. "The same files and
+  selections as the workbench" rests on both calling `make_template` / `make_mask`.
+- Found on the way and queued: H7 (Create after a scan rounds the dose to 0.1), H8 (resampling or filtering a black
+  template writes black density into its "white" file), H9 (a shape without a lowpass is filtered at 45 Å and
+  recorded as unfiltered).
+
+**S8 — tomograms from other projects (2026-11-05, built, not run).**
+- `services/tomogram_import.py` has a third mode, `jobs`: each source is a project, its Reconstruct or Denoise
+  Predict job and the tomogram names (all when none are given), read from the source's `project_params.json`,
+  never opened as a project. `job_rows` takes the job's rows with all their columns, paths absolute against the
+  star's folder and then the source's root, and the `cbOrigin*` columns. The rows' own
+  `rlnTomoTiltSeriesStarFile` is the per-tilt-series star to read: it is not always TS CTF's (a June project's
+  Reconstruct rows name the tilt filter's stars, which hold the same three columns).
+- `check_job_sources` runs before anything is written: every tomogram and tilt-series star under a container bind,
+  every tilt-series star holding `rlnTomoYTilt`, `rlnDefocusU`, `rlnMicrographPreExposure` in the block of its
+  name, and one group of voltage, Cs, amplitude contrast, voxel size and hand (else a `needs` item listing the
+  groups). A project with raw data or other imported tomograms must hold the same values; one without either
+  takes them (and the tilt-series pixel size when the sources share one).
+- The writer puts `Tomograms/tilt_series.star` beside the tomograms star, and a tomogram renamed `<name>__N`
+  gets a copy of its tilt-series star with the block renamed in `Tomograms/tilt_series/`, which its rows name.
+  `ImportBatch.job_sources` and `ImportedTomograms.tilt_series_star` record it (schema 3.14).
+- The reference mode takes the same path rule, non-strict (a path found nowhere keeps the star-folder form, as
+  before), so a Denoise Predict star's tomograms are found.
+- The resolver offers the tilt-series star as a second output of the `importedTomograms` producer, so TM's two
+  inputs resolve with no pin. `ArrayDriver.preflight` and `excluded_items` read the input tomograms star's
+  origins (`input_tomogram_origins`): TM and Pick candidates check the sources' registries and apply no
+  exclusions, as subtomo extraction does for a set. `drivers/template_match_pytom.py` is untouched.
+- `ProjectSpec.tomograms_from`, committed by `create_project` once the project exists; the API's
+  `create_project(tomograms_from=…)` checks the sources first and takes no acquisition value (they come with the
+  tomograms), and `import_tomograms(mode="jobs", sources=…)`. The import dialog takes a CryoBoost project folder:
+  its tomogram jobs in a menu, the chosen job's tomograms in the review table.
+- Checked on a toy (two source projects from the toy EER data, their finished Reconstruct and Denoise Predict
+  written as the jobs write them, the import through the API):
+  - a project from A's Reconstruct and B's Denoise Predict: four tomograms, absolute paths that exist, the origin
+    columns, `tilt_series.star` of four, the project's values from the sources (300 kV, 2.7, 0.1, 1.55 Å, hand
+    inverted); TM and Pick candidates added with every input resolved and no needs, `plan_run` with no needs;
+    TM's preflight against A's and B's registries passing; TM's own reader (`generate_legacy_text_files`) taking
+    the stars;
+  - A's Reconstruct and A's Denoise Predict of one tomogram: `srcA_Position_1` and `srcA_Position_1__2`, the
+    copy's block renamed and its micrograph paths absolute, both matched against A's registry;
+  - a 200 kV source beside a 300 kV one: a `needs` item with the two groups; a source outside the binds refused,
+    naming the path; acquisition values given beside `tomograms_from` refused;
+  - the sources' files keep their mtimes;
+  - a reference import of B's Denoise Predict star finds its tomograms;
+  - the template pixel size of the new project is the tomograms' 6.2 Å (S7's default).
+- Not checked: TM and Pick candidates on SLURM, the dialog in a browser. A project mixing this mode with
+  volumes or a reference star has rows without origins, and TM's preflight refuses it, naming them.
+
+**S9 — the kitchen reads (2026-11-05, built, not run).**
+- `services/sta_kitchen/subset_sources.py`: `list_subsets` (name, group, picks; the open pool's, else read from its
+  files, so a read never makes a pool) and `subset_sources`, over `export.plan` of the subset's rows (no
+  dedup). Per source project: the tomograms, the job whose directory holds each one's reconstruction (what the
+  member's TM read; for a pick list, where the frame lives) and its type, the job holding its tilt-series star,
+  and what is missing (a reconstruction gone, a tomogram no Reconstruct or Denoise Predict job made). Then
+  `tomograms_from` per (project, job), `check_job_sources` on them (values, or the groups as a need), the
+  templates the sources' TM jobs used, and the template (D8): the catalog entry's single template, else a need
+  listing them (or Z's own templates when Z has no catalog entry).
+- `subset_sources` opens the pool as the kitchen does (member tables built or read from its cache); it never adds
+  a member, changes a subset or records a verdict.
+- `_facts` (`service.py`) no longer stats a missing registry index: a member project without a registry gives no
+  facts, so its frames carry no acquisition labels, opened or not.
+- API: `list_kitchen_subsets`, `get_kitchen_subset_sources` (reads; 42 verbs, 16 reads). The skill has the U2
+  recipe.
+- Checked on real data, read only: a scratchpad copy of `AGG412_20260311_MyrGFP_Grid2`'s 412 kitchen (pool,
+  subsets, verdicts, cached tables), whose seven members are real projects. Its subset `412_and_other_junk`
+  (1696 picks) gives seven source projects, 324 tomograms, all of `tsReconstruct__2` over `tsCtf__2`, one group
+  of values (300 kV, 2.7 mm, 0.10, 6.2 Å voxels, hand −1, 1.55 Å), the catalog's `412_particle` v1 template,
+  and nothing missing; the home's and members' files keep their mtimes. `_facts` of the S8 toy's project
+  without a registry: `{}` as a snapshot and opened.
+- Not checked (runtime): the new project's Pick candidates offered by Add members, its picks folding onto the
+  source frames, and Make set asking between the two.
