@@ -1,8 +1,9 @@
 # Roadmap 46 — Tracking jobs without polling Slurm
 
-**Status:** scoped 2026-11-08, no code. Everything in §2 was read from the code the same day; nothing is measured yet
-(S0 does that). Open: D1 first (what IT will accept), then S0–S6 and D2–D7. Pickup: S0 needs one small change (a call
-counter) and two reads of `sdiag`.
+**Status:** scoped 2026-11-08; S0 step 3 (the call counter) built the same day, not run. Everything in §2 was read
+from the code; nothing is measured yet. Open: D1 first (what IT will accept), then the rest of S0, S1–S6 and D2–D7.
+Pickup: the `sdiag` readings around a full pipeline and the counter's hourly lines from the same run (S0 steps 2
+and 4).
 
 **In one line.** The server asks Slurm about every unfinished job every 3 seconds, per project, whether or not anyone
 has a tab open, and every array supervisor does the same every 30 seconds from its compute node. The cluster docs ask
@@ -186,3 +187,19 @@ supervisors' lines; against S0. Set D2 from it.
   (`_run_command`, `get_user_jobs`, `query_jobs_by_ids`, `live_task_counts`, `query_terminal_states`),
   `supervisor_owner.py`, `drivers/array_job_base.py`, `array_tasks.py`, `config/qsub.sh`, the cluster docs on Slurm
   jobs and scheduling. One `sdiag` reading (§2). No call rate is measured and no code changed.
+- **2026-11-08, S0 step 3 built (not run).** `SlurmCallCounter` (`services/computing/slurm_service.py`) counts every
+  command `SlurmService._run_command` runs, by kind (`squeue -j`, `squeue -r`, `squeue -u`, `sacct`, `sinfo`,
+  `sacctmgr`, `scancel`), and writes one event line an hour: `Slurm calls in the last 60 min: N (n a minute): ...`.
+  Not counted: the sbatch submits, `supervisor_owner`'s `squeue`, the constraint check's cached `sinfo`, and the array
+  supervisors on the compute nodes (step 4 counts those from their logs). A second `sdiag` reading, 16:35 with no
+  pipeline running: 677 requests since 01:00 for our user. Step 2 is the maintainer's: the same reading before and
+  after a full pipeline.
+- **2026-11-08, S0 step 2: the first pipeline under the counter.** `slurmtest_412_FCIsolation` (163 tilt series, motion
+  to Warp export, server on cbe-login-1 port 24326, restarted on the new code just before). `sdiag` before the
+  submit: 704 requests since 01:00. The chain was submitted at 16:59:49; the "after" reading and the server's hourly
+  lines (`~/.crboost/logs/crboost-24326.log`) go here when it ends.
+- **2026-11-08, every job's log names its Slurm ids.** `write_sbatch_script` puts one line after the directives of
+  every script it renders (`SLURM_ID_LINE`): `[SLURM] job 1476473_17 = 1476491 cb-templatematching on cbe-g5-3 (g),
+  GPU GPU-…, started …` for an array task, `[SLURM] job 1476464 cb-tsImport-sup on cbe-c3-2 (c), started …` for a
+  single job or supervisor. It is the first line of every `run.out` and `task_N.out`, so a job's ids come from its
+  files without a Slurm query.

@@ -1,9 +1,8 @@
 # Roadmap 45 — GPU use on CBE.next: measure every job, then close the gaps
 
-**Status:** scoped 2026-11-06, no product code. The baseline of §3 was read from SLURM's accounting the same day
-(`docs/reports/gpu-util/`: the script and its output); nothing else is measured yet. Open: D1 first (what IT's number
-is), then S0–S6 and D2–D8. Pickup: S0 needs no code to build: a message to IT, three five-minute capability jobs, and
-two probe scripts that are written (`docs/reports/gpu-util/scripts/`) and wait for the maintainer's go.
+**Status:** scoped 2026-11-06. S0's probes P2 and P4–P7 ran 2026-11-08 (§11); S1 built the same day and running in
+two pilot projects. Open: D1 (what IT's number is; no message sent yet), S2–S6 and D2–D8. Pickup: the pilots'
+numbers (§11), then two to four template-matching processes per GPU under MPS (P7: 1.45× at four).
 
 **In one line.** Cluster IT told a colleague that crboost jobs idle on the B200s about a quarter of the time while
 their data is read into GPU memory, and advised putting data on scratch. (The report has been passed on in two ways:
@@ -482,3 +481,106 @@ its leftovers named.
   picks the split; on 412 a slice at `2 2 1` takes 793 s against 112 s whole on a B200, 7.1×). What that leaves for
   this roadmap: the 30 s preamble and the post-search time are the same on a slice, so they are about 10 % of a slice's
   allocation against 40–55 % of a B200's, and SLURM cannot show it because it does not meter slices.
+- **2026-11-08, P6 ran** (job 1475262; the first submission, 1475050, hung in a bare `wait` on the samplers and was
+  cancelled). 1, 2, 3, 4 and 1 full-search processes at once on one B200, 412 tomogram, outputs on `/tmp`:
+
+  | N at once | wall s | tomograms/min | SM>0 s | peak GPU GB | DCGM SM active / DRAM active |
+  |---:|---:|---:|---:|---:|---|
+  | 1 | 192 | 0.31 | 64 | 31 | 0.33 / 0.14 |
+  | 2 | 272 | 0.44 | 143 | 61 | 0.48 / 0.19 |
+  | 3 | 335 | 0.54 | 214 | 92 | 0.58 / 0.24 |
+  | 4 | 401 | 0.60 | 282 | 123 | 0.64 / 0.26 |
+  | 1 | 132 | 0.45 | 64 | 31 | 0.47 / 0.20 |
+
+  The two single-process batches took 192 s and 132 s for the same work, so the gain is 1.3× (against the 132 s) to
+  1.9× (against the 192 s) at four processes: time-slicing fills the idle start-up of one process with the search of
+  another, but the kernels do not run side by side, so the total SM-busy time grows with N (64 s to 282 s). The
+  tensor pipe is unused throughout. Not tried: MPS (`nvidia-cuda-mps-control` exists on the GPU nodes), which could
+  run kernels together; the search alone fills 0.97 of the SMs but occupies only 0.54. `dcgmi dmon` works in a user
+  job and reports all 8 GPUs of the node; it needs `CUDA_VISIBLE_DEVICES` unset and `-i <gpu id>` to follow one.
+- **2026-11-08, the preamble read from pytom's source; P7 written.** pytom 0.14's `TMJob.start_job`
+  (`pytom_tm/tmjob.py`, read from the production image) builds the tomogram's missing-wedge filter at full size
+  (`create_wedge` on 1024 x 1024 x 512) and filters the whole padded tomogram on the CPU with `scipy.fft.rfftn` and
+  `irfftn` before the GPU plan exists. scipy's FFTs use one thread unless told otherwise (`scipy.fft.get_workers()` is
+  1 in the image), which fits everything P5 saw: one core busy for about 30 s, the same with 4 and 16 CPUs, 18–19 GB
+  resident. The card's memory is taken only after that (`TemplateMatchingGPU.__init__`). Memory bandwidth shared with
+  the node's other jobs would explain the 30 s against 65 s, but that is not established. `probe_tm_fft_mps.sh` (P7)
+  with `summarise_tm_fft.py` runs the production command through a wrapper that sets scipy.fft's worker count and logs
+  when each of those calls, the plan, the search and the writes start and end: 1, 4, 4 and 1 workers on one process
+  (the variance and the effect), then four processes with 4 workers each, then with the argument `mps` the same four
+  under an MPS daemon on the job's GPU. The maps of 1 against 4 workers, and of two 1-worker runs, are compared byte
+  for byte. Checked: `bash -n`, a stand-in run (`PROBE_DRY=1`) through the summariser, `sbatch --test-only`.
+  P7 showed the FFT is not the cause (next entry).
+- **2026-11-08, S1 built (not run).** As §9 S1 says, with what the code showed:
+  - *No GPU for the CPU-only steps.* `config/conf.yaml`: `subtomoExtraction` and `reconstructParticle` get
+    `gres: ''` and `partition: c` (P2's `c` job ran the containers there), `tmextractcand` one MIG slice on `g`
+    (it cannot start without a CUDA device: the next entry); a new
+    `extractPickList` profile the same; `tsImport` and `filamentPick` had `gres: ''` on partition `g`, which the
+    submit plugin refuses, and get `partition: c` too (filament picking had never been submitted on CBE.next;
+    `tsImport` submits with the supervisor's resources and was not affected). `config/conf.template.yaml`: the two
+    RELION steps and the new profile without a GPU, a comment to name a CPU partition, and candidate extraction on
+    `gpu:1` with a comment to name the smallest GPU. The per-list extraction
+    (`backend.py`, `extract_pick_list`) takes its instance's resources (the project's defaults under the
+    `extractPickList` profile) instead of the project's GPU defaults. The lab's `config/conf.yaml` needs the same
+    six profile edits by hand. `sbatch --test-only` placed every CPU job on `c` hours out (19:09, then 19:30)
+    while three `c` nodes were idle and all 274 pending `c` jobs waited on a dependency or a begin time, so that
+    estimate looks pessimistic rather than a real queue; the array supervisors were on `c` before this change
+    already. A user's SLURM tab can still move one job back to `g`.
+  - *Job names.* `write_sbatch_script(..., name=)` replaces qsub.sh's `--job-name=CryoBoost` with
+    `crboost_job_name(instance_id)`: `cb-<instance_id>` for single jobs and array tasks, `cb-<instance_id>-sup` for an
+    array's supervisor (`services/computing/slurm_service.py`; callers in the orchestrator, `drivers/array_job_base.py`
+    and the tilt-filter and per-list extraction submits). `sacct_gpu_report.py` selects both names (`cb-probe-*` left
+    out). No `--comment`: the name carries the instance and `StdOut` the directory.
+  - *Template-matching outputs.* pytom writes into a folder of the task's own `TMPDIR` (on CBE.next the private BeeGFS
+    `/tmp`: 835 MB/s per task in P4 against 88 in the shared folder). `land_outputs` then copies them into
+    `<job_dir>/.tm_landing/<tomogram>` (a folder per task: 271 MB/s in P4) and renames each into `tmResults`, the score
+    map last, so the layout every reader knows stays as it is and a file there is always whole. The job.json's paths
+    into the temporary folder (`output_dir`, `whitening_filter`) are rewritten to `tmResults`, and the files keep
+    pytom's write times, which the runtime backfill reads. A `TMPDIR` without room for three times the two maps keeps
+    today's direct writes, and says so in the task log. The supervisor removes `.tm_landing` after the array. A task
+    killed while writing no longer leaves a truncated score map that a rerun would take as done. The task log prints
+    `Landed X GiB in tmResults in Y s`, the number to compare with the 16.9 s per map of §3.
+  - Checked: ruff and `check_boundaries.py`; the edited modules import; scripts rendered for a CPU array task, a
+    per-list extraction and a TM supervisor, each accepted by `sbatch --test-only`; `land_outputs` on a toy folder
+    (order, rewritten paths, kept times, the folders removed). Not run: a pipeline. The runtime check is the next
+    template-matching job (task logs: the staging line and the landed line; extraction reads the job.json as before)
+    and the next candidate extraction (its tasks on `c`).
+  - Not in this pass: marking which job types can use more than one GPU (the presets of §9 S1).
+- **2026-11-08, candidate extraction needs a CUDA device; first runs.** The copia protocol run
+  (`copia-tutorial-20261108-1651`) failed at candidate extraction (job008) on `c`: `pytom_extract_candidates.py`
+  imports `pytom_tm.matching`, whose `voltools` asks cupy for the device count at import and raises
+  `cudaErrorNoDevice` on a node without a GPU (voltools catches only a missing cupy). It computes on the CPU and used
+  no GPU memory in §3, but it needs a device to exist, so `tmextractcand` now asks for one MIG slice on `g`
+  (`gpu:nvidia_b200_1g.23gb:1`, 3.43 billing units against 24 for a B200; at 17:03 `--test-only` put a slice 30
+  minutes out and any GPU 3). On this login node, which has no GPU either, `relion_tomo_subtomo` and
+  `relion_tomo_reconstruct_particle` start and print their usage, so the RELION steps stay on `c`. A patched pytom
+  image (voltools treating the CUDA error like a missing cupy) would let extraction run on `c`; not done. The same
+  run's template matching (job007, one tomogram, no other task writing) staged in `/tmp` and landed 4.0 GiB in
+  `tmResults` in 6.7 s; extraction staged its job.json as before.
+- **2026-11-08, P7 ran** (job 1476310, one B200, 412 tomogram, full angle list, outputs in `/tmp`, each process on its
+  own 4 CPUs). The FFT reading of the preamble was wrong: both FFTs of the whole tomogram take 4.1 s with one worker
+  and 1.1 s with four. Where a process's 112 s go (medians of the two 1-worker runs; the 4-worker runs differ only in
+  the FFT):
+
+  | Phase | s | The card |
+  |---|---:|---|
+  | Container start and pytom's imports | 1.2 | idle |
+  | Reading the tomogram (with pytom's transpose) | 8.2 | idle |
+  | Missing-wedge filters: the tomogram's at full size, the template's per tilt | 8.5 + 5.9 | idle |
+  | The two CPU FFTs | 4.1 | idle |
+  | GPU plan | 0.9 | allocating |
+  | Search | 63.5 | busy |
+  | Writing the two maps (with the transpose) | 17.2 | idle |
+  | Rest | 2.1 | idle |
+
+  So 48 s of 112 are CPU work on one core while the card waits, and the search alone fills it (SM active 0.97 in P6).
+  Batches: 1 worker 112 and 112 s, 4 workers 109 and 109 s (the variance of P4b and P6 did not recur; load average
+  45–49 on the node); four processes at once 360 s, 0.67 tomograms a minute, 1.24× one process; the same four under
+  MPS 308 s, 0.78 a minute, 1.45× (DCGM SM active 0.72 without MPS, 0.81 with; peak 123 GB; tensor pipe unused). MPS
+  ran as a user daemon in the job: `get_server_list` named its server and nvidia-smi showed it beside four clients of
+  31 GB each. Running four at once slowed each one's set-up (the wedge took 48 s without MPS and 22 s with it,
+  unexplained) and its search (277 s for four without MPS, 250 s with: time-slicing costs about 9 %, MPS about
+  nothing against four searches one after another). The ceiling is the search, 63.5 s a tomogram: 0.94 a minute,
+  1.75× one process. The byte-for-byte check did not run: the probe looked for the maps under the tilt series' name,
+  and pytom names them after the volume file (fixed in the script). Not built, since 3 s of 112 is not worth a
+  wrapper: the FFT workers. Next: two to four processes per GPU under MPS, started a set-up apart.
