@@ -66,25 +66,35 @@ one() { # label, angle file: one process, its own output folder and kernel-cache
 }
 
 batch() { # N: N processes at once; the line in runs.tsv spans from the first start to the last end
-    local n=$1 t0 t1 i
+    local n=$1 t0 t1 i pids=()
     t0=$(date +%s.%N)
-    for i in $(seq 1 "$n"); do one "n${n}_p$i" "$full" & done
-    wait
+    for i in $(seq 1 "$n"); do
+        one "n${n}_p$i" "$full" &
+        pids+=($!)
+    done
+    wait "${pids[@]}" # these only: a bare wait would also wait for the two samplers, which never end
     t1=$(date +%s.%N)
     printf '%s\t%s\t%s\n' "$n" "$t0" "$t1" >>"$RES/runs.tsv"
 }
 
+pick_gpu='/^\| [0-9]+ / { id = $2 } /Device UUID/ && index($0, u) { print id }' # the GPU ID row, then its UUID row
 sampler=""
 dcgm=""
 if [ -z "${PROBE_DRY:-}" ]; then
     stdbuf -oL nvidia-smi dmon -s um -d 1 -o T >"$RES/dmon.log" 2>&1 &
     sampler=$!
     # Best effort: SM active, SM occupancy, tensor pipe active, DRAM active, once a second, if a user job may.
-    dcgmi discovery -l >"$RES/dcgm_discovery.txt" 2>&1 || true
+    # dcgmi sees all 8 GPUs of the node; -i keeps ours, found by the UUID in CUDA_VISIBLE_DEVICES.
+    env -u CUDA_VISIBLE_DEVICES dcgmi discovery -l >"$RES/dcgm_discovery.txt" 2>&1 || true
+    gid=$(awk -v u="${CUDA_VISIBLE_DEVICES:-none}" "$pick_gpu" "$RES/dcgm_discovery.txt")
+    echo "${gid:-all}" >"$RES/dcgm_gpu.txt"
     date +%s.%N >"$RES/dcgm_start.txt"
-    dcgmi dmon -e 1002,1003,1004,1005 -d 1000 >"$RES/dcgm.log" 2>&1 &
+    env -u CUDA_VISIBLE_DEVICES dcgmi dmon ${gid:+-i "$gid"} -e 1002,1003,1004,1005 -d 1000 >"$RES/dcgm.log" 2>&1 &
     dcgm=$!
     cat "$vol" "${tpl}_black.mrc" "${tpl}_sphere_d575_s5.mrc" >/dev/null # the same page-cache state for every run
+else
+    sleep 600 & # stands in for the samplers, so that a wait which also waits for them would show up as a hang
+    sampler=$!
 fi
 trap 'kill $sampler $dcgm 2>/dev/null || true' EXIT
 

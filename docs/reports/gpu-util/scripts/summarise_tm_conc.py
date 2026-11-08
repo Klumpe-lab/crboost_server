@@ -25,19 +25,23 @@ def load_dmon(path: Path, day: dt.date) -> list[tuple[float, int, int]]:
 
 
 def load_dcgm(folder: Path) -> list[tuple[float, float, float, float]]:
-    log, start = folder / "dcgm.log", folder / "dcgm_start.txt"
-    if not log.exists() or not start.exists():
+    """Rows of our GPU's dcgmi dmon log as (epoch, SM active, tensor active, DRAM active); one row a second."""
+    log, start, gpu = folder / "dcgm.log", folder / "dcgm_start.txt", folder / "dcgm_gpu.txt"
+    if not log.exists() or not start.exists() or not gpu.exists():
         return []
-    t_start = float(start.read_text())
-    rows = []
+    t_start, wanted = float(start.read_text()), gpu.read_text().strip()
+    if wanted == "all":  # the GPU could not be identified: the log holds all 8, none of them known to be ours
+        return []
+    rows, seen = [], 0
     for line in log.read_text().splitlines():
         cols = line.split()
-        if len(cols) >= 6 and cols[0] == "GPU":
+        if len(cols) >= 6 and cols[0] == "GPU" and cols[1] == wanted:
+            seen += 1  # N/A rows while the counters start still take their second
             try:
                 values = [float(c) for c in cols[2:6]]
-            except ValueError:  # N/A while the counters start
+            except ValueError:
                 continue
-            rows.append((t_start + len(rows) + 1.0, values[0], values[2], values[3]))
+            rows.append((t_start + seen, values[0], values[2], values[3]))
     return rows
 
 
@@ -52,8 +56,7 @@ def main() -> None:
     reference = batches[0][2] - batches[0][1]
     print(f"{folder.name}\n")
     print(
-        "| N at once | wall s | tomograms/min | speed-up | SM>0 s | mean SM % | peak GPU GB "
-        "| dcgm SM / tensor / DRAM |"
+        "| N at once | wall s | tomograms/min | speed-up | SM>0 s | mean SM % | peak GPU GB | dcgm SM / tensor / DRAM |"
     )
     print("|---:|---:|---:|---:|---:|---:|---:|---|")
     for n, t0, t1 in batches:

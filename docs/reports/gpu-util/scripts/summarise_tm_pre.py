@@ -9,6 +9,7 @@ cores busy per 10 s of the run.
 """
 
 import datetime as dt
+import itertools
 import sys
 from pathlib import Path
 
@@ -58,7 +59,7 @@ def main() -> None:
         window = [r for r in ps if t0 <= r[0] <= end]
         cpu = seen = read = 0.0
         buckets: dict[int, list[float]] = {}
-        for a, b in zip(window, window[1:]):
+        for a, b in itertools.pairwise(window):
             if a[1] != b[1] or b[0] <= a[0]:  # another process: no delta
                 continue
             span = b[0] - a[0]
