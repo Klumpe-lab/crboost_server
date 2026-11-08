@@ -17,6 +17,7 @@ from nicegui import app as ng_app, ui
 from nicegui.storage import Storage
 from starlette.middleware.sessions import SessionMiddleware
 
+from api.router import create_api_router
 from backend import CryoBoostBackend
 from services import workers
 from services.configs.config_service import REPO_ROOT
@@ -141,6 +142,8 @@ def setup_app(port: int):
 
     backend = CryoBoostBackend(REPO_ROOT)
     create_ui_router(backend)
+    # The agent API: the verbs of api/verbs.py at /api/v1/<verb>, behind the same token gate.
+    app.include_router(create_api_router(backend, port))
 
     # Single server-side pipeline observer: runs reconcile_afterok centrally
     # on a 3-s tick for every project with pipeline_active=True, and on

@@ -26,6 +26,11 @@ NICEGUI_STORAGE_DIR = CRBOOST_HOME / "nicegui"
 # can tell a CryoBoost server from another program).
 OWNER_HEADER = "x-cryoboost-user"
 
+# How the gate let a request in, in its ASGI scope: "bearer" (the Authorization header), "query" or "cookie".
+# The cookie rides along on any same-site request, and every localhost port is the same site, so the agent
+# API's write verbs take the header only.
+AUTH_SCOPE_KEY = "crboost_auth"
+
 
 def _unauthorized_page(owner: str, port: int) -> bytes:
     owner = html.escape(owner)
@@ -67,8 +72,10 @@ class TokenGate:
     socket.io mount (websocket and long-polling), /api/*, /static and NiceGUI's assets are all behind
     it; lifespan passes through.
 
+    `Authorization: Bearer <token>` matching → pass (the agent API's clients).
     `?token=` matching → set the per-port cookie and redirect to the same URL without the token.
-    A matching cookie → pass. Anything else → 401 page, or the websocket handshake is refused."""
+    A matching cookie → pass. Anything else → 401 page, or the websocket handshake is refused.
+    How a request passed is left in its scope under `AUTH_SCOPE_KEY`."""
 
     def __init__(self, app, token: str, port: int) -> None:
         self.app = app
@@ -81,15 +88,21 @@ class TokenGate:
         if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
+        if self._matches(self._bearer_value(scope)):
+            scope[AUTH_SCOPE_KEY] = "bearer"
+            await self.app(scope, receive, send)
+            return
         query = parse_qsl(scope.get("query_string", b"").decode("latin-1"), keep_blank_values=True)
         offered = next((v for k, v in reversed(query) if k == "token"), None)
         if offered is not None and self._matches(offered):
             if scope["type"] == "http" and scope["method"] in ("GET", "HEAD"):
                 await self._redirect_without_token(scope, query, send)
             else:
+                scope[AUTH_SCOPE_KEY] = "query"
                 await self.app(scope, receive, send)
             return
         if self._matches(self._cookie_value(scope)):
+            scope[AUTH_SCOPE_KEY] = "cookie"
             await self.app(scope, receive, send)
             return
         if scope["type"] == "websocket":
@@ -113,6 +126,15 @@ class TokenGate:
 
     def _matches(self, value: str | None) -> bool:
         return value is not None and hmac.compare_digest(value.encode(), self._token)
+
+    @staticmethod
+    def _bearer_value(scope) -> str | None:
+        for name, value in scope.get("headers", []):
+            if name == b"authorization":
+                kind, _, token = value.decode("latin-1").strip().partition(" ")
+                if kind.lower() == "bearer":
+                    return token.strip()
+        return None
 
     def _cookie_value(self, scope) -> str | None:
         for name, value in scope.get("headers", []):
