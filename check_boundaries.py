@@ -19,6 +19,8 @@ Rules:
       nothing imports it.
   R4  No new module-level dict literals keyed by 3+ JobType members outside
       services/jobs/spec.py — that's a per-concern job table growing back.
+  R5  api/ must not import nicegui: the agent API serves the same doors as the UI
+      without it (R1 already keeps ui.* out of api/).
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ import sys
 from pathlib import Path
 
 ROOT        = Path(__file__).parent
-NO_UI_TREES = ("services", "drivers", "backend.py")
+NO_UI_TREES = ("services", "drivers", "backend.py", "api")
 
 # Pure re-export shims (module -> where to import from instead).
 BANNED_SHIM_MODULES: dict[str, str] = {}
@@ -105,7 +107,7 @@ def check_ui_save_project() -> list[str]:
 def check_shim_imports() -> list[str]:
     out = []
     shim_files = {ROOT / Path(*m.split(".")).with_suffix(".py") for m in BANNED_SHIM_MODULES}
-    for path in iter_py("ui", "services", "drivers", "backend.py", "crboost"):
+    for path in iter_py("ui", "services", "drivers", "backend.py", "crboost", "api"):
         if path in shim_files:
             continue
         tree = parse(path)
@@ -122,7 +124,7 @@ def check_shim_imports() -> list[str]:
 
 def check_jobtype_tables() -> list[str]:
     out = []
-    for path in iter_py("ui", "services", "drivers", "backend.py"):
+    for path in iter_py("ui", "services", "drivers", "backend.py", "api"):
         if path == SPEC_FILE:
             continue
         tree = parse(path)
@@ -141,16 +143,34 @@ def check_jobtype_tables() -> list[str]:
     return out
 
 
+def check_api_without_nicegui() -> list[str]:
+    out = []
+    for path in iter_py("api"):
+        tree = parse(path)
+        if tree is None:
+            continue
+        for lineno, mod, _name in imported_modules(tree):
+            if mod == "nicegui" or mod.startswith("nicegui."):
+                out.append(f"{path.relative_to(ROOT)}:{lineno}: R5 imports {mod} — the agent API stays NiceGUI-free")
+    return out
+
+
 def main() -> int:
-    violations = check_no_ui_imports() + check_ui_save_project() + check_shim_imports() + check_jobtype_tables()
+    violations = (
+        check_no_ui_imports()
+        + check_ui_save_project()
+        + check_shim_imports()
+        + check_jobtype_tables()
+        + check_api_without_nicegui()
+    )
     for v in violations:
         print(v)
     if violations:
         print(f"\n{len(violations)} boundary violation(s).")
         return 1
     print(
-        "Boundaries clean (R1 ui-free services/drivers/facade, R2 facade-only saves, "
-        "R3 no shim imports, R4 no stray JobType tables)."
+        "Boundaries clean (R1 ui-free services/drivers/facade/api, R2 facade-only saves, "
+        "R3 no shim imports, R4 no stray JobType tables, R5 NiceGUI-free api)."
     )
     return 0
 
