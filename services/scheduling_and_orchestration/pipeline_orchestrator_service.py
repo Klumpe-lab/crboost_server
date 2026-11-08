@@ -103,6 +103,47 @@ def _inputs_moved(job_model: AbstractJobParams, resolved: dict[str, str]) -> boo
     return any(before.get(s.key) != resolved.get(s.key) for s in getattr(type(job_model), "INPUT_SCHEMA", None) or [])
 
 
+def _run_set(state, selected: list[str]) -> tuple[list[str], list[str]]:
+    """(the jobs a run of `selected` starts, the live ones it starts around). A finished job stays as it is; a
+    queued or running one is left to run, and a job of the run that reads it waits for its SLURM id; an
+    interactive job is never dispatched to the cluster."""
+    to_run: list[str] = []
+    live: list[str] = []
+    for instance_id in selected:
+        job_model = state.jobs.get(instance_id)
+        status = job_model.execution_status if job_model else None
+        if status in (JobStatus.QUEUED, JobStatus.RUNNING):
+            live.append(instance_id)
+        elif status != JobStatus.SUCCEEDED:
+            if job_model and getattr(job_model, "IS_INTERACTIVE", False):
+                continue
+            to_run.append(instance_id)
+    return to_run, live
+
+
+def _queue_config(job_model: AbstractJobParams) -> SlurmConfig:
+    """The resources the job's supervisor is submitted with (qsub_extra1..8, routed per job type)."""
+    opts = dict(job_model._get_queue_options())
+    return SlurmConfig(**{field: opts[key] for field, key in SlurmConfig.QSUB_EXTRA_MAPPING.items()})
+
+
+def _constraint_problems(state, instances_to_run: list[str]) -> list[str]:
+    """Each job of the run whose SLURM constraint names a node feature its partition lacks, in its own
+    resources or its supervisor's (`check_constraint`, one sinfo per partition per process)."""
+    out: list[str] = []
+    for iid in instances_to_run:
+        job_model = state.jobs.get(iid)
+        if job_model is None or getattr(job_model, "RUNS_INLINE", False):
+            continue
+        for cfg in (job_model.get_effective_slurm_config(), _queue_config(job_model)):
+            try:
+                check_constraint(cfg)
+            except ValueError as e:
+                out.append(f"{iid}: {e}")
+                break
+    return out
+
+
 class PipelineOrchestratorService:
     def __init__(self, backend_instance: "CryoBoostBackend"):
         self.backend = backend_instance
@@ -128,27 +169,14 @@ class PipelineOrchestratorService:
         state = self.backend.state_service.state_for(project_dir)
 
         # A run starts what is not live, around what is: a running pipeline does not refuse it.
-        # Membership and order are the roster's, which add and remove keep in pipeline_order. A run
-        # only adds what it is given and pipeline_order lacks (a job the tab restored at load), so a
-        # run beside live jobs never reorders or drops one.
+        # Membership and order are the roster's (ProjectState.roster), which every Run is given. A job
+        # it is given that is not on the roster joins it, so a run never drops one.
         missing = [iid for iid in selected_instance_ids if iid not in state.pipeline_order]
         if missing:
             state.pipeline_order = [*state.pipeline_order, *missing]
             state.mark_dirty()
 
-        instances_to_run: list[str] = []
-        live: list[str] = []
-        for instance_id in selected_instance_ids:
-            job_model = state.jobs.get(instance_id)
-            status = job_model.execution_status if job_model else None
-            if status in (JobStatus.QUEUED, JobStatus.RUNNING):
-                # Left as it is; a job of this run that reads it waits for its SLURM id (_submit_chain).
-                live.append(instance_id)
-            elif status != JobStatus.SUCCEEDED:
-                # Interactive jobs are never dispatched to the cluster.
-                if job_model and getattr(job_model, "IS_INTERACTIVE", False):
-                    continue
-                instances_to_run.append(instance_id)
+        instances_to_run, live = _run_set(state, selected_instance_ids)
 
         if not instances_to_run:
             if live:
@@ -351,7 +379,7 @@ class PipelineOrchestratorService:
 
     @staticmethod
     async def _check_set_inputs(
-        project_dir: Path, state, instances_to_run: list[str]
+        project_dir: Path, state, instances_to_run: list[str], *, record: bool = True
     ) -> tuple[list[str], dict[str, tuple]]:
         """Check every job of the run that reads a particle set; each job's result is kept for its page. A set read
         as written is checked once per set and job type. A kitchen set is read through its picks' facets: per job,
@@ -390,10 +418,103 @@ class PipelineOrchestratorService:
                         check_set, project_dir, set_id, job_model.job_type, diameters=diameters
                     )
                 check = done[key]
-            remember(project_dir, iid, check)
+            if record:
+                remember(project_dir, iid, check)
             if check.problems:
                 refused.append(f"{iid} reads {set_id}: " + "; ".join(check.problems))
         return refused, set_inputs
+
+    async def _preflight(
+        self, project_dir: Path, state, instances_to_run: list[str], *, record: bool = True
+    ) -> tuple[dict[str, Any] | None, dict[str, tuple]]:
+        """What stops a run before anything is allocated, as its refusal, else None; and the inputs of the jobs
+        reading a kitchen set, which pass 3 writes. Run and `plan_run` share it, so a plan refuses what Run
+        would. Checked: a Subset not ready, the set checks, work still live in a failed job's directory, and a
+        SLURM constraint naming a node feature the partition lacks, here before a job number is spent.
+        `record` keeps the set checks' results for the jobs' pages; a plan does not."""
+        # A Subset is written in pass 3 from its cut's star; whatever stops that is said now, before
+        # anything is allocated.
+        check = PathResolutionService(state)
+        not_ready = [
+            problem
+            for iid in instances_to_run
+            if (jm := state.jobs.get(iid)) is not None
+            and jm.job_type == JobType.SUBSET
+            and (problem := subset_problem(state, check, iid))
+        ]
+        if not_ready:
+            return err("Subset not ready: " + "; ".join(not_ready)), {}
+
+        # A job reading a particle set is checked against it now (services/particles/set_preflight.py): what
+        # its tools would refuse or get wrong on the cluster stops the Run here, named under the job's input. What a
+        # job reads of a kitchen set is built now and written into its directory in pass 3.
+        refused, set_inputs = await self._check_set_inputs(project_dir, state, instances_to_run, record=record)
+        if refused:
+            msg = "Set checks refused the Run — " + "; ".join(refused)
+            return err(msg, code=ErrorCode.SET_CHECKS, refused=refused), {}
+
+        still_running = await self._live_in_reused_dirs(project_dir, state, instances_to_run)
+        if still_running:
+            # still_live: what the Run refusal offers to scancel when it never drains by itself.
+            return err(still_running[0], still_live=still_running[1]), {}
+
+        # sinfo runs on a partition's first check in this process: in a thread.
+        bad = await asyncio.to_thread(_constraint_problems, state, instances_to_run)
+        if bad:
+            return err("Not started: " + "; ".join(bad), refused=bad), {}
+        return None, set_inputs
+
+    async def plan_run(self, project_dir: Path) -> dict[str, Any]:
+        """What Run would do now, without doing any of it: nothing is allocated, written or submitted. The
+        roster's jobs it would start, in submit order, those it leaves (finished, queued or running), the ones
+        a tilt-filter review would hold, what would refuse the Run, and per input slot of each job the source
+        automatic selection or a pin gives it and how; per job its SLURM resources. An input with no source,
+        or with two that tie, is a `needs` item."""
+        from services.job_params import describe_inputs
+
+        state = self.backend.state_service.state_for(project_dir)
+        selected = state.roster()
+        to_run, live = _run_set(state, selected)
+        finished = [iid for iid in selected if iid not in to_run and iid not in live]
+        barrier = review_barrier(state, selected)
+        parked = self._parked_behind_review(state, to_run) if barrier else []
+        refusals: list[str] = []
+        for iid in dl_auto_filters(state, to_run):
+            if state.jobs[iid].predict_in_flight:
+                refusals.append(f"A DL prediction run of the tilt filter ({iid}) is in flight.")
+        refusal, _ = await self._preflight(project_dir, state, to_run, record=False) if to_run else (None, {})
+        if refusal is not None:
+            refusals.extend(refusal.get("refused") or [refusal["error"]])
+
+        jobs: list[dict[str, Any]] = []
+        needs: list[dict[str, Any]] = []
+        for iid in to_run:
+            job_model = state.jobs.get(iid)
+            if job_model is None:
+                continue
+            inputs, open_pins = describe_inputs(state, iid)
+            needs.extend(open_pins)
+            cfg = job_model.get_effective_slurm_config()
+            jobs.append(
+                {
+                    "instance_id": iid,
+                    "job_type": job_model.job_type.value,
+                    "status": job_model.execution_status.value,
+                    "waits_for_review": iid in parked,
+                    "inputs": inputs,
+                    "resources": {
+                        k: getattr(cfg, k)
+                        for k in ("partition", "constraint", "gres", "cpus_per_task", "mem", "time", "qos")
+                    },
+                }
+            )
+        return ok(
+            jobs=jobs,
+            leaves={"finished": finished, "live": live},
+            held_by_review=barrier if parked else None,
+            refusals=refusals,
+            needs=needs,
+        )
 
     async def _submit_chain(self, project_dir: Path, instances_to_run: list[str], state) -> dict[str, Any]:
         """Submit the pipeline as a SLURM afterok DAG.
@@ -426,30 +547,9 @@ class PipelineOrchestratorService:
         """
         server_dir = Path(__file__).parent.parent.parent.resolve()
 
-        # A Subset is written in pass 3 from its cut's star; whatever stops that is said now, before
-        # anything is allocated.
-        check = PathResolutionService(state)
-        not_ready = [
-            problem
-            for iid in instances_to_run
-            if (jm := state.jobs.get(iid)) is not None
-            and jm.job_type == JobType.SUBSET
-            and (problem := subset_problem(state, check, iid))
-        ]
-        if not_ready:
-            return err("Subset not ready: " + "; ".join(not_ready))
-
-        # A job reading a particle set is checked against it now (services/particles/set_preflight.py): what
-        # its tools would refuse or get wrong on the cluster stops the Run here, named under the job's input. What a
-        # job reads of a kitchen set is built now and written into its directory in pass 3.
-        refused, set_inputs = await self._check_set_inputs(project_dir, state, instances_to_run)
-        if refused:
-            return err("Set checks refused the Run — " + "; ".join(refused), code=ErrorCode.SET_CHECKS, refused=refused)
-
-        still_running = await self._live_in_reused_dirs(project_dir, state, instances_to_run)
-        if still_running:
-            # still_live: what the Run refusal offers to scancel when it never drains by itself.
-            return err(still_running[0], still_live=still_running[1])
+        refusal, set_inputs = await self._preflight(project_dir, state, instances_to_run)
+        if refusal is not None:
+            return refusal
 
         # Seed the sole job-dir allocator once from the existing RELION counter, then own it.
         if not state.job_dir_counter:
@@ -759,11 +859,9 @@ class PipelineOrchestratorService:
         get_effective_slurm_config). Unlike an array render, the RELION_JOB_EXIT marker
         block is kept: for a single supervisor job that marker is the completion signal.
         """
-        # An array job's own resources only reach sbatch on the compute node; checked here, a bad
-        # constraint fails the submit in the UI instead of the supervisor after it is queued.
+        # Checked before allocation (_preflight); again here, where the script is written.
         check_constraint(job_model.get_effective_slurm_config())
-        opts = dict(job_model._get_queue_options())  # qsub_extra1..8 already routed per job type
-        cfg = SlurmConfig(**{field: opts[key] for field, key in SlurmConfig.QSUB_EXTRA_MAPPING.items()})
+        cfg = _queue_config(job_model)
         # The job's QOS belongs to its own resources; a job whose queue options are the shared
         # supervisor's (array dispatchers override _get_queue_options) takes the supervisor's QOS here
         # and passes its own QOS to the array tasks instead.

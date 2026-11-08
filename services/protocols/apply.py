@@ -22,7 +22,9 @@ from services import species_admin
 from services.configs.config_service import get_config_service
 from services.jobs.spec import JOB_SPEC_BY_TYPE
 from services.models_base import JobType, SpeciesOrigin
+from services.pipeline_edit import species_defaults
 from services.project_state import ExtractionParams, ProjectState, ProtocolOrigin, TemplateMask
+from services.project_create import ProjectSpec, model_defaults
 from services.protocols.schema import (
     PROJECT_PROTOCOL_DIRNAME,
     PROTOCOL_FILENAME,
@@ -129,6 +131,8 @@ async def apply_protocol(
     shared: bool = False,
     dose_per_tilt: float | None = None,
     dose_per_tilt_source: str = "",
+    values: dict[str, Any] | None = None,
+    made_by_api: bool = False,
 ) -> dict[str, Any]:
     """Create `<project_base_path>/<project_name>` from `protocol`. `ok(project_path=,
     stages=[instance ids], warnings=[...], load_warnings=[...])` or `err(...)` (validation
@@ -137,33 +141,49 @@ async def apply_protocol(
     `dose_per_tilt` (+ its source, "user" when typed) overrides the mdocs' value. When the
     mdocs carry no dose and none is passed, project creation uses the scan's estimate and
     records it as "estimated"; it refuses only when no estimate is possible either, so a
-    protocol never runs on a silent default dose."""
+    protocol never runs on a silent default dose.
+
+    `values`, every acquisition value (`project_create.ACQUISITION_FIELDS`) with the dose's source, is what
+    the agent API passes: they are taken as given, and nothing comes from the mdocs or the model defaults.
+    `made_by_api` marks the project as the API's."""
     problems = validate_protocol(protocol)
     if problems:
         return err("Protocol cannot be applied:\n  - " + "\n  - ".join(problems), problems=problems)
 
-    # Layer 1 — dataset facts from the mdocs, the same autodetect the landing page runs.
+    # Layer 1 — dataset facts from the mdocs, the same autodetect the landing page runs; what they do not
+    # give, and the values no mdoc carries, take the model defaults, as on the landing page. Given `values`
+    # (the agent API) are taken instead, all of them.
     from services.configs.mdoc_service import get_mdoc_service
+    from services.dataset_scan import first_mdoc_values
 
     facts = await asyncio.to_thread(get_mdoc_service().get_autodetect_params, mdocs_glob) or {}
-    detected: dict[str, Any] = {}
+    given = values
+    values = dict(given) if given is not None else model_defaults()
     for src, dst in (
         ("pixel_spacing", "pixel_size_angstrom"),
         ("voltage", "acceleration_voltage_kv"),
         ("tilt_axis_angle", "tilt_axis_degrees"),
-        ("acquisition_software", "acquisition_software"),
         ("detector_dimensions", "detector_dimensions"),
     ):
-        if facts.get(src) is not None:
-            detected[dst] = facts[src]
-    if dose_per_tilt is not None:
-        detected["dose_per_tilt"] = dose_per_tilt
-        detected["dose_per_tilt_source"] = dose_per_tilt_source or "user"
-    elif facts.get("dose_per_tilt") is not None:
-        detected["dose_per_tilt"] = facts["dose_per_tilt"]
-        detected["dose_per_tilt_source"] = "mdoc"
-    if gain_reference_path:
-        detected["gain_reference_path"] = str(gain_reference_path)
+        if facts.get(src) is not None and given is None:
+            values[dst] = facts[src]
+    if given is not None:
+        dose_source = values.pop("dose_per_tilt_source", "user")
+    elif dose_per_tilt is not None:
+        values["dose_per_tilt"], dose_source = dose_per_tilt, dose_per_tilt_source or "user"
+    else:
+        first = await asyncio.to_thread(first_mdoc_values, mdocs_glob)
+        if "dose_per_tilt" not in first:
+            return err("dose per tilt: not in the mdocs and no estimate possible — enter it")
+        values["dose_per_tilt"], dose_source = first["dose_per_tilt"], first["dose_per_tilt_source"]
+        if dose_source == "estimated":
+            logger.warning(
+                "%s: dose per tilt not in the mdocs — using the estimate %.2f e/Å²",
+                project_name,
+                values["dose_per_tilt"],
+            )
+    if given is None and not str(movies_glob).lower().endswith(".eer"):
+        values["eer_fractions_per_frame"] = None
     mdoc_files = sorted(glob.glob(mdocs_glob))
     # frame_extension is NOT guessed from the movies glob: the import records what it
     # actually linked or split (`.mrc` for SerialEM stacks).
@@ -174,24 +194,25 @@ async def apply_protocol(
         "selected_tilt_series": len(mdoc_files),
         "source_directory": str(Path(movies_glob).parent),
     }
-
-    created = await backend.create_project_and_scheme(
-        project_name=project_name,
-        project_base_path=str(project_base_path),
-        selected_jobs=[],
-        movies_glob=movies_glob,
+    spec = ProjectSpec(
+        name=project_name,
+        base=str(project_base_path),
+        frames_glob=movies_glob,
         mdocs_glob=mdocs_glob,
-        import_summary=import_summary,
-        detected_params=detected or None,
         shared=shared,
+        gain_reference=str(gain_reference_path) if gain_reference_path else None,
+        dose_per_tilt_source=dose_source,
+        acquisition_software=facts.get("acquisition_software") or "",
+        **values,
     )
+    created = await backend.create_project(spec, import_summary=import_summary, made_by_api=made_by_api)
     if not created.get("success"):
         return created
     project_dir = Path(created["project_path"])
     state: ProjectState = backend.state_service.state_for(project_dir)
 
-    assets, warnings = register_protocol_species(state, protocol, project_dir)
-    warnings += instantiate_stages(state, protocol, assets)
+    warnings = register_protocol_species(state, protocol, project_dir)
+    warnings += instantiate_stages(state, protocol)
     state.pipeline_order = protocol.stage_ids()
     state.protocol_origin = ProtocolOrigin(
         name=protocol.name,
@@ -216,14 +237,11 @@ async def apply_protocol(
     )
 
 
-def register_protocol_species(
-    state: ProjectState, protocol: Protocol, project_dir: Path
-) -> tuple[dict[str, dict[str, str]], list[str]]:
-    """Register every protocol species; copy its assets into `templates/<id>/`. Returns
-    `({species_id: {"template": path, "mask": path}}, warnings)` — the project-local
-    copies the TM stage snapshots (the same values the pipeline builder would take)."""
+def register_protocol_species(state: ProjectState, protocol: Protocol, project_dir: Path) -> list[str]:
+    """Register every protocol species; copy its assets into `templates/<id>/`, registered and selected, so
+    the stages take them as a job added from the roster would (`pipeline_edit.species_defaults`). Returns
+    the warnings."""
     warnings: list[str] = []
-    assets: dict[str, dict[str, str]] = {}
     for ps in protocol.species:
         sp = state.add_species(ps.name, origin=SpeciesOrigin.WORKBENCH.value)
         if sp.id != ps.id:
@@ -235,7 +253,6 @@ def register_protocol_species(
                 state.mutate_species(sp.id, lambda s, new_id=ps.id: setattr(s, "id", new_id))
         state.mutate_species(ps.id, lambda s, ps=ps: _fill_species(s, ps))
 
-        entry: dict[str, str] = {}
         template_id: str | None = None
         if ps.template is not None:
             dst = species_admin.ingest_template_file(project_dir, ps.id, protocol.asset_path(ps.template.asset))
@@ -250,7 +267,6 @@ def register_protocol_species(
                 notes=ps.template.notes,
             )
             if res["success"]:
-                entry["template"] = str(dst)
                 template_id = res["template_id"]
             else:
                 warnings.append(f"species '{ps.id}': template not registered — {res['error']}")
@@ -267,12 +283,9 @@ def register_protocol_species(
                 notes=ps.mask.notes,
             )
             res = species_admin.register_mask(state, ps.id, mask)
-            if res["success"]:
-                entry["mask"] = str(dst)
-            else:
+            if not res["success"]:
                 warnings.append(f"species '{ps.id}': mask not registered — {res['error']}")
-        assets[ps.id] = entry
-    return assets, warnings
+    return warnings
 
 
 def _fill_species(sp, ps: ProtocolSpecies) -> None:
@@ -282,7 +295,7 @@ def _fill_species(sp, ps: ProtocolSpecies) -> None:
     sp.extraction_params = ExtractionParams(**ps.extraction.model_dump()) if ps.extraction else None
 
 
-def instantiate_stages(state: ProjectState, protocol: Protocol, assets: dict[str, dict[str, str]]) -> list[str]:
+def instantiate_stages(state: ProjectState, protocol: Protocol) -> list[str]:
     """Create every stage instance and apply its param snapshot. Values are coerced through
     the field's own type (enums, ints — a float can never land in an int field). Unknown
     fields, rejected values and fields the protocol does not cover are all reported."""
@@ -307,9 +320,9 @@ def instantiate_stages(state: ProjectState, protocol: Protocol, assets: dict[str
         filled: set[str] = set()
         if st.species:
             jm.species_id = st.species
-            ps = protocol.get_species(st.species)
-            if ps is not None:
-                filled = _apply_species_defaults(jm, st, ps, assets.get(st.species, {}), warnings)
+            sp = state.get_species(st.species)
+            if sp is not None:
+                filled = _apply_species_defaults(jm, st, sp, warnings)
 
         uncovered = sorted(jm.USER_PARAMS - set(st.params) - filled)
         if uncovered:
@@ -356,33 +369,19 @@ def stage_edits(state: ProjectState, protocol: Protocol) -> dict[str, list[tuple
     return out
 
 
-def _apply_species_defaults(jm, st: ProtocolStage, ps: ProtocolSpecies, entry: dict[str, str], warnings) -> set[str]:
-    """The species-shaped defaults the pipeline builder snapshots at creation (template,
-    mask, symmetry, diameter, extraction geometry) — only for fields the stage's own params
-    do not pin. Returns the fields filled."""
+def _apply_species_defaults(jm, st: ProtocolStage, sp, warnings) -> set[str]:
+    """The species' values a job added from the roster takes (`pipeline_edit.species_defaults`), for the
+    fields the stage's own params do not pin. Returns the fields filled."""
+    defaults = species_defaults(jm.job_type, sp)
     filled: set[str] = set()
-    iid = st.instance_id
-    jt = jm.job_type
-    if jt == JobType.TEMPLATE_MATCH_PYTOM:
+    for field, value in defaults.items():
+        if field not in st.params:
+            setattr(jm, field, value)
+            filled.add(field)
+    if jm.job_type == JobType.TEMPLATE_MATCH_PYTOM:
         for field, key in (("template_path", "template"), ("mask_path", "mask")):
-            if field in st.params:
-                continue
-            path = entry.get(key)
-            if path:
-                setattr(jm, field, path)
-                filled.add(field)
-            else:
-                warnings.append(f"{iid}: species '{ps.id}' registers no {key}; {field} left empty (TM will refuse)")
-        if "symmetry" not in st.params and ps.symmetry:
-            jm.symmetry = ps.symmetry
-            filled.add("symmetry")
-    elif jt == JobType.TEMPLATE_EXTRACT_PYTOM:
-        if "particle_diameter_ang" not in st.params and ps.diameter_ang:
-            jm.particle_diameter_ang = float(ps.diameter_ang)
-            filled.add("particle_diameter_ang")
-    elif jt == JobType.SUBTOMO_EXTRACTION and ps.extraction is not None:
-        for field in ("box_size", "binning", "crop_size"):
-            if field not in st.params:
-                setattr(jm, field, getattr(ps.extraction, field))
-                filled.add(field)
+            if field not in st.params and field not in defaults:
+                warnings.append(
+                    f"{st.instance_id}: species '{sp.id}' registers no {key}; {field} left empty (TM will refuse)"
+                )
     return filled

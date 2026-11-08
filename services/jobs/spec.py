@@ -44,7 +44,7 @@ from services.jobs.ts_ctf import TsCtfParams
 from services.jobs.ts_import import TsImportParams
 from services.jobs.ts_reconstruct import TsReconstructParams
 from services.jobs.warp_export import WarpExportParams
-from services.models_base import JobType
+from services.models_base import InstanceId, JobType
 
 PHASE_PREPROCESSING: Final = "preprocessing"
 PHASE_PARTICLES: Final = "particles"
@@ -311,6 +311,26 @@ PARAM_CLASS_BY_TYPE: Final[Mapping[JobType, type[AbstractJobParams]]] = MappingP
 
 PIPELINE_ORDER: Final[tuple[JobType, ...]] = tuple(s.job_type for s in JOB_SPECS)
 
+_TYPE_ORDER: Final[Mapping[JobType, int]] = MappingProxyType({jt: i for i, jt in enumerate(PIPELINE_ORDER)})
+
+
+def instance_order(instance_id: str) -> tuple[int, int, str]:
+    """Sort key of a job instance on the roster: its type's place in PIPELINE_ORDER, then the base
+    instance, numbered instances by number, and named ones (a species) by name. Run allocates job
+    directories in this order."""
+    base, suffix = InstanceId.split(instance_id)
+    try:
+        type_order = _TYPE_ORDER.get(JobType(base), 999)
+    except ValueError:
+        type_order = 999
+    if suffix is None:
+        return (type_order, 0, "")
+    try:
+        return (type_order, int(suffix), "")
+    except ValueError:
+        return (type_order, 999, suffix)
+
+
 # Synthetic sources that are not pipeline jobs (no JobSpec row) but still need
 # a human-readable name (e.g. MergedSources appears as a producer candidate).
 _SYNTHETIC_DISPLAY_NAMES: Final[Mapping[JobType, str]] = MappingProxyType(
@@ -327,6 +347,35 @@ def display_name(job_type: JobType) -> str:
     if spec is not None:
         return spec.display_name
     return _SYNTHETIC_DISPLAY_NAMES.get(job_type, job_type.value)
+
+
+def instance_display_name(instance_id: str, job_model=None) -> str:
+    """A job instance's name as the UI shows it: its label when it has one, else its type's name with its job
+    directory once it has run ("Alignment (job004)"), else with its instance suffix ("Alignment #2")."""
+    if job_model is not None:
+        label = getattr(job_model, "display_label", None)
+        if label:
+            return label
+
+    base, suffix = InstanceId.split(instance_id)
+
+    try:
+        base_name = display_name(JobType(base))
+    except ValueError:
+        base_name = base
+
+    if job_model is not None:
+        relion_job_name = getattr(job_model, "relion_job_name", None)
+        if relion_job_name:
+            job_dir = relion_job_name.rstrip("/").split("/")[-1]
+            return f"{base_name} ({job_dir})"
+
+    if suffix is None:
+        return base_name
+
+    if suffix.isdigit():
+        return f"{base_name} #{suffix}"
+    return f"{base_name} ({suffix})"
 
 
 def driver_launch_prefix(*, server_dir: Path, driver_script: Path) -> str:

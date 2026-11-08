@@ -34,6 +34,7 @@ from services.code_version import code_version
 from services.computing.slurm_service import SlurmConfig
 from services.event_log import events
 from services.job_models import AbstractJobParams, jobtype_paramclass
+from services.jobs.spec import instance_order
 from services.shared_files import make_shared
 
 logger = logging.getLogger(__name__)
@@ -57,7 +58,9 @@ logger = logging.getLogger(__name__)
 # 3.10: +feature_registry (segmentation features)
 # 3.11: +segmentation_imports (segmentations registered from elsewhere)
 # 3.12: +saved_by (the checkout that last saved the project)
-SCHEMA_VERSION: tuple[int, int] = (3, 12)
+# 3.13: +made_by_api (the agent API changes only the projects it made)
+# 3.14: +ImportBatch.job_sources, +ImportedTomograms.tilt_series_star (tomograms from other projects' jobs)
+SCHEMA_VERSION: tuple[int, int] = (3, 14)
 
 
 # Sentinel `owner` value marking a project as shared/lab-owned rather than
@@ -621,6 +624,15 @@ class PickList(BaseModel):
         self.extracted_at = datetime.now()
 
 
+class TomogramJobSource(BaseModel):
+    """Tomograms of another project's tomogram job (Reconstruct or Denoise Predict), by their names there; every
+    one the job made when no names are given."""
+
+    project: str  # absolute
+    job: str  # its instance id there
+    names: list[str] = Field(default_factory=list)
+
+
 class ImportBatch(BaseModel):
     """One import action: what the user selected, once. The committed
     ``Tomograms/tomograms.star`` is rebuilt from the whole batch list on every commit, so a
@@ -632,9 +644,10 @@ class ImportBatch(BaseModel):
     than duplicated. Both are recorded, never silent — the same rule
     ``drivers/subtomo_merge.py`` follows for cross-project collisions."""
 
-    source_mode: str = "synthesize"  # "synthesize" | "reference"
+    source_mode: str = "synthesize"  # "synthesize" | "reference" | "jobs"
     source_paths: list[str] = Field(default_factory=list)  # selected recon files (synthesize)
     reference_star: str = ""  # an existing tomograms.star (reference mode)
+    job_sources: list[TomogramJobSource] = Field(default_factory=list)  # other projects' tomogram jobs (jobs mode)
     pixel_size_angstrom: float = 0.0  # user override (0 ⇒ derived from MRC header)
     tomogram_binning: float = 1.0
     optics_group_name: str = "opticsGroup1"
@@ -648,6 +661,8 @@ class ImportBatch(BaseModel):
         """Short provenance line for the dialog's batch list."""
         if self.source_mode == "reference":
             return Path(self.reference_star).name or "reference star"
+        if self.source_mode == "jobs":
+            return ", ".join(f"{Path(s.project).name}/{s.job}" for s in self.job_sources) or "no jobs"
         if not self.source_paths:
             return "no files"
         parent = Path(self.source_paths[0]).parent
@@ -667,6 +682,9 @@ class ImportedTomograms(BaseModel):
     what was already there."""
 
     star_path: str = ""  # project-relative (or absolute) path to the committed tomograms.star
+    # The tilt-series star of the tomograms that came from other projects' jobs, which template matching reads
+    # beside them; "" when none did.
+    tilt_series_star: str = ""
     batches: list[ImportBatch] = Field(default_factory=list)
     source_mode: str = "synthesize"  # "synthesize" | "reference"
     source_paths: list[str] = Field(default_factory=list)  # selected .mrc files (synthesize)
@@ -801,6 +819,10 @@ class ProjectState(BaseModel):
     # Restored explicitly in load() (field-by-field).
     review_hold: ReviewHold | None = None
 
+    # Made by the agent API, which changes only the projects it made (reads work on any). In the UI a
+    # project like any other.
+    made_by_api: bool = False
+
     # Always True and read by nothing here. Written so that an older checkout opening this
     # project submits it as an afterok chain too, rather than through its RELION path, whose job
     # numbers would collide with the External/jobNNN dirs this one allocated.
@@ -851,10 +873,11 @@ class ProjectState(BaseModel):
         self._dirty = True
 
     def roster(self) -> list[str]:
-        """The jobs on the roster, in order: `pipeline_order`, which adding and removing a job keep,
-        or every job of a project that has none yet. A finished job taken off the roster stays in
-        `jobs` (its outputs may be read) and must not come back when the project is opened."""
-        return [iid for iid in self.pipeline_order if iid in self.jobs] or list(self.jobs)
+        """The jobs on the roster: `pipeline_order`, which adding and removing a job write, in the
+        order Run allocates their directories (`instance_order`). Every tab and the API read this
+        one list. A job in `jobs` that is not on it (a per-list extraction, a finished job taken off
+        the roster) is not run."""
+        return sorted((iid for iid in self.pipeline_order if iid in self.jobs), key=instance_order)
 
     @property
     def is_dirty(self) -> bool:
@@ -1334,6 +1357,7 @@ class ProjectState(BaseModel):
                 else SlurmConfig.from_config_defaults()
             ),
             pipeline_active=data.get("pipeline_active", False),
+            made_by_api=bool(data.get("made_by_api", False)),
         )
 
         project_state.saved_by = data.get("saved_by")
@@ -1470,10 +1494,12 @@ class ProjectState(BaseModel):
             logger.info("Rewrote %d input override(s) in %s to name job instances", rekeyed, path.parent.name)
             project_state.mark_dirty()
 
-        # pipeline_order: use the persisted value; for projects without the field,
-        # backfill from the loaded job set in file order (every initialized job is part
-        # of the pipeline). The authoritative value is the write-through at deploy.
-        _persisted_order = data.get("pipeline_order") or list(project_state.jobs.keys())
+        # pipeline_order: the persisted roster, which adding and removing a job write. A project
+        # without one takes every loaded job but the per-list extractions, which run from the
+        # Particles registry and are never on the roster.
+        _persisted_order = data.get("pipeline_order") or [
+            iid for iid, jm in project_state.jobs.items() if jm.job_type != JobType.EXTRACT_PICK_LIST
+        ]
         # Drop instance_ids whose job failed to deserialize (e.g. a removed JobType such
         # as 'importtomograms') so pipeline_order never references a ghost job.
         project_state.pipeline_order = [iid for iid in _persisted_order if iid in project_state.jobs]
@@ -1591,34 +1617,6 @@ class StateService:
     def state_for(self, project_path: Path) -> ProjectState:
         """Explicit accessor for backend/service code that has a path."""
         return get_project_state_for(project_path)
-
-    async def update_from_mdoc(self, mdocs_glob: str, project_path: Path | None = None):
-        from services.configs.mdoc_service import get_mdoc_service
-
-        mdoc_service = get_mdoc_service()
-        logger.info("Parsing mdocs from: %s", mdocs_glob)
-        mdoc_data = mdoc_service.get_autodetect_params(mdocs_glob)
-        logger.info("Mdoc autodetect result: %s", mdoc_data)
-        if not mdoc_data:
-            return
-
-        # Explicit path when available (initialize_new_project
-        # calls this before the UI tab has a project_path set)
-        if project_path:
-            s = self.state_for(project_path)
-        else:
-            s = self.state
-
-        if "dose_per_tilt" in mdoc_data:
-            s.acquisition.dose_per_tilt = mdoc_data["dose_per_tilt"]
-            logger.info("Set dose_per_tilt = %s", mdoc_data["dose_per_tilt"])
-        if "pixel_spacing" in mdoc_data:
-            s.microscope.pixel_size_angstrom = mdoc_data["pixel_spacing"]
-        if "voltage" in mdoc_data:
-            s.microscope.acceleration_voltage_kv = mdoc_data["voltage"]
-        if "tilt_axis_angle" in mdoc_data:
-            s.acquisition.tilt_axis_degrees = mdoc_data["tilt_axis_angle"]
-        s.update_modified()
 
     async def load_project(self, project_json_path: Path):
         try:

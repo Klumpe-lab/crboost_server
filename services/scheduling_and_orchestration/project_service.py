@@ -30,8 +30,11 @@ from services.project_state import (
     set_project_state_for,
 )
 from services.tilt_series import preload_registry
+from services.dataset_scan import data_values, differences
 from services.event_log import events
+from services.project_create import ProjectSpec, apply_values, spec_problems
 from services.result import err, ok
+from services.tilt_series.preimport import DatasetOverview
 from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
 
 if TYPE_CHECKING:
@@ -194,6 +197,24 @@ class DataImportService:
             progress_cb,
             ts_names_by_folder,
         )
+
+
+def _import_summary(overview: DatasetOverview, series: list[str] | None) -> dict[str, Any]:
+    """The scalar counts of a scan's selection: the `series` imported, or every one when None. Per-position
+    and per-series details live in the TiltSeriesRegistry."""
+    chosen = {str(ts.mdoc_path) for p in overview.positions for ts in p.tilt_series}
+    if series is not None:
+        chosen &= set(series)
+    return {
+        "total_positions": len(overview.positions),
+        "selected_positions": sum(
+            1 for p in overview.positions if any(str(t.mdoc_path) in chosen for t in p.tilt_series)
+        ),
+        "total_tilt_series": overview.total_tilt_series,
+        "selected_tilt_series": len(chosen),
+        "source_directory": overview.source_directory or "",
+        "frame_extension": overview.frame_extension or "",
+    }
 
 
 class ProjectService:
@@ -405,7 +426,7 @@ class ProjectService:
         `dose_per_tilt_fallback` (the project's dose) feeds the per-frame pre-exposure when
         the mdocs record no ExposureDose (SerialEM without dose calibration).
 
-        Called from `initialize_new_project` after data import, and from
+        Called from `create_project` after data import, and from
         `load_project_state` if the registry sidecar is missing or stale. Returns
         the number of TS added. Callers log exceptions and continue.
 
@@ -461,32 +482,36 @@ class ProjectService:
         _ = get_registry_for(project_dir)
         return len(ts_list)
 
-    async def initialize_new_project(
+    async def create_project(
         self,
-        project_name: str,
-        project_base_path: str,
-        selected_jobs: list[str],
-        movies_glob: str,
-        mdocs_glob: str,
-        selected_mdoc_paths: list[str] | None = None,
+        spec: ProjectSpec,
+        *,
+        overview: DatasetOverview | None = None,
         import_summary: dict[str, Any] | None = None,
-        detected_params: dict[str, Any] | None = None,
-        shared: bool = False,
         progress_cb: Callable[[str], None] | None = None,
-        ts_names_by_folder: bool = False,
-    ):
+        made_by_api: bool = False,
+    ) -> dict[str, Any]:
+        """Make the project `spec` describes, with exactly its values: nothing is read from the mdocs here but
+        the series to import. Refused, before anything is written, when the spec misses a value or names an
+        existing directory, or when the series to import share a name. `overview`, the scan the caller made,
+        gives the import summary and the warnings for values that differ from what the data says; without one
+        the summary is the registry's count. `ok(project_path, warnings)`."""
+        problems = spec_problems(spec)
+        if problems:
+            return err("Not created: " + "; ".join(problems), problems=problems)
+        project_name = spec.name.strip()
         try:
-            project_dir = Path(project_base_path).expanduser() / project_name
-
-            # 1. Standard Setup (Dirs, Data Import)
+            project_dir = Path(spec.base).expanduser() / project_name
             if project_dir.exists():
                 return err(f"Project directory '{project_dir}' already exists.")
 
             # Refuse before anything is written: the import flattens series by name,
             # so a collision would silently keep only one of each.
-            if selected_mdoc_paths is not None or mdocs_glob:
-                mdoc_files = selected_mdoc_paths if selected_mdoc_paths is not None else glob.glob(mdocs_glob)
-                duplicates = duplicate_ts_names(mdoc_files, by_folder=ts_names_by_folder)
+            if spec.has_raw_data:
+                mdoc_files = (
+                    spec.series if spec.series is not None else await asyncio.to_thread(glob.glob, spec.mdocs_glob)
+                )
+                duplicates = duplicate_ts_names(mdoc_files, by_folder=spec.ts_names_by_folder)
                 if duplicates:
                     return err(describe_duplicate_ts_names(duplicates))
 
@@ -501,156 +526,80 @@ class ProjectService:
             # project_name (the dir is the durable identity).
             state.mnemonic = nickname_for(str(project_dir))
             state.project_path = project_dir
-            state.movies_glob = movies_glob
-            state.mdocs_glob = mdocs_glob
+            state.movies_glob = spec.frames_glob
+            state.mdocs_glob = spec.mdocs_glob
             state.created_by = getpass.getuser()
             # `created_by` is immutable provenance; `owner` drives sharing/grouping.
-            state.owner = SHARED_OWNER if shared else None
+            state.owner = SHARED_OWNER if spec.shared else None
+            state.made_by_api = made_by_api
+            apply_values(state, spec)
+            state.update_modified()
             set_project_state_for(project_dir, state)
 
-            # A project can be created with NO pipeline jobs (data-less): particles then
-            # arrive by cross-project merge or tomogram import, and downstream jobs
-            # (Reconstruct/Class3D/Refine3D) are added through the regular job roster. They
-            # pick up the active merge's MergedSources/<slug>/optimisation_set.star through
-            # the synthetic `mergedSources` producer the path resolver registers
-            # (apply_aggregation_overrides wires it via a source_overrides key). Creation
-            # does not depend on a project-type flag.
-
-            # Apply microscope/acquisition params from the already-parsed dataset
-            # overview (avoids re-parsing all mdocs from scratch). A data-less project has
-            # no source mdocs, so skip the fallback re-parse.
-            if detected_params:
-                if "pixel_size_angstrom" in detected_params:
-                    state.microscope.pixel_size_angstrom = detected_params["pixel_size_angstrom"]
-                if "acceleration_voltage_kv" in detected_params:
-                    state.microscope.acceleration_voltage_kv = detected_params["acceleration_voltage_kv"]
-                if "dose_per_tilt" in detected_params:
-                    state.acquisition.dose_per_tilt = detected_params["dose_per_tilt"]
-                if "tilt_axis_degrees" in detected_params:
-                    state.acquisition.tilt_axis_degrees = detected_params["tilt_axis_degrees"]
-                # Gain reference is user-supplied at setup (not auto-detectable from
-                # mdocs). Only set when non-empty so we never stamp a blank over a
-                # value that could arrive later; the drivers read it via
-                # job.gain_path -> acquisition.gain_reference_path.
-                if detected_params.get("gain_reference_path"):
-                    state.acquisition.gain_reference_path = detected_params["gain_reference_path"]
-                if detected_params.get("dose_per_tilt_source"):
-                    state.acquisition.dose_per_tilt_source = detected_params["dose_per_tilt_source"]
-                if detected_params.get("acquisition_software"):
-                    state.acquisition.acquisition_software = detected_params["acquisition_software"]
-                if detected_params.get("detector_dimensions"):
-                    state.acquisition.detector_dimensions = tuple(detected_params["detector_dimensions"])
-                state.update_modified()
-            elif mdocs_glob:
-                # Fallback: re-parse mdocs (no overview available).
-                # Gated on having mdocs at all — data-less projects have none, so
-                # this is skipped without a flag check.
-                await self.backend.state_service.update_from_mdoc(mdocs_glob, project_path=project_dir)
-
-            # The dose per tilt is never left to the model default: every
-            # creation path ends with a value and its provenance. Callers that pass a source
-            # ("user", "estimated") are believed; otherwise the first mdoc decides — its
-            # ExposureDose ("mdoc") or the zero-thickness estimate ("estimated") — and a
-            # dataset that allows neither refuses to create rather than run on 3.0.
-            if mdocs_glob:
-                found = await asyncio.to_thread(self.data_importer.mdoc_service.first_mdoc_facts, mdocs_glob)
-                facts = found[0] if found else None
-                given = detected_params or {}
-                if facts is not None:
-                    if facts.software and not given.get("acquisition_software"):
-                        state.acquisition.acquisition_software = facts.software
-                    if facts.detector_dimensions and not given.get("detector_dimensions"):
-                        state.acquisition.detector_dimensions = facts.detector_dimensions
-                    if not state.acquisition.dose_per_tilt_source:
-                        dose_given = "dose_per_tilt" in given
-                        if dose_given or facts.dose_per_tilt is not None:
-                            if not dose_given:
-                                state.acquisition.dose_per_tilt = facts.dose_per_tilt
-                            state.acquisition.dose_per_tilt_source = "mdoc"
-                        elif facts.dose_estimate is not None:
-                            state.acquisition.dose_per_tilt = facts.dose_estimate.value
-                            state.acquisition.dose_per_tilt_source = "estimated"
-                            logger.warning(
-                                "%s: dose per tilt not in the mdocs — using the estimate %.2f e/Å² (%s)",
-                                project_name,
-                                facts.dose_estimate.value,
-                                facts.dose_estimate.describe(),
-                            )
-                        else:
-                            return err("dose per tilt: not in the mdocs and no estimate possible — enter it")
-                    state.update_modified()
-
-            # Apply dataset import summary so it's saved atomically with the project
-            if import_summary:
-                state.import_total_positions = import_summary.get("total_positions", 0)
-                state.import_selected_positions = import_summary.get("selected_positions", 0)
-                state.import_total_tilt_series = import_summary.get("total_tilt_series", 0)
-                state.import_selected_tilt_series = import_summary.get("selected_tilt_series", 0)
-                state.import_source_directory = import_summary.get("source_directory", "")
-                state.import_frame_extension = import_summary.get("frame_extension", "")
+            warnings = differences(spec, data_values(overview)) if overview is not None else []
+            summary = import_summary or (_import_summary(overview, spec.series) if overview is not None else None)
+            if summary:
+                state.import_total_positions = summary.get("total_positions", 0)
+                state.import_selected_positions = summary.get("selected_positions", 0)
+                state.import_total_tilt_series = summary.get("total_tilt_series", 0)
+                state.import_selected_tilt_series = summary.get("selected_tilt_series", 0)
+                state.import_source_directory = summary.get("source_directory", "")
+                state.import_frame_extension = summary.get("frame_extension", "")
                 # Per-position/per-TS details + tilt_metadata live in the
                 # TiltSeriesRegistry built below, not in ProjectState.
 
             # Create Dirs & Import Data (runs blocking I/O in thread pool)
-            import_prefix = f"{project_name}_"
             structure_result = await self.create_project_structure(
                 project_dir,
-                movies_glob,
-                mdocs_glob,
-                import_prefix,
-                selected_mdoc_paths,
+                spec.frames_glob,
+                spec.mdocs_glob,
+                f"{project_name}_",
+                spec.series,
                 progress_cb,
-                ts_names_by_folder,
+                spec.ts_names_by_folder,
             )
             if not structure_result["success"]:
                 return structure_result
-            # What the import actually did — set before the jobs are
-            # initialized so ensure_job_initialized's stamps see it.
+            # What the import actually did — set before any job is made, so
+            # ensure_job_initialized's stamps see it.
             if structure_result.get("layer"):
                 state.import_source_kind = structure_result["layer"]
             if structure_result.get("frame_extension"):
                 state.import_frame_extension = structure_result["frame_extension"]
 
-            # 2. Instantiate the selected jobs with their code defaults.
-            if selected_jobs:
-                logger.info("Initializing jobs: %s", selected_jobs)
-                for job_str in selected_jobs:
-                    try:
-                        state.ensure_job_initialized(JobType(job_str))
-                    except ValueError:
-                        logger.warning("Skipping unknown job '%s'", job_str)
-
-            # 3. Build the TiltSeries registry from the imported mdocs, persist to
-            # sidecar JSON under {project}/registry/. Failure here is logged but
-            # non-fatal. Data-less projects have no mdocs of their own to
-            # register — gate on the mdocs glob, not a project-type flag.
-            if mdocs_glob:
+            # The TiltSeries registry from the imported mdocs, persisted to sidecar JSON under
+            # {project}/registry/, in a thread: it parses every mdoc. Failure here is logged but
+            # non-fatal. A project without raw data has no mdocs of its own to register.
+            if spec.mdocs_glob:
                 try:
-                    n_registered = self._build_and_persist_registry(
-                        project_dir, mdocs_glob, dose_per_tilt_fallback=state.acquisition.dose_per_tilt
+                    n_registered = await asyncio.to_thread(
+                        self._build_and_persist_registry,
+                        project_dir,
+                        spec.mdocs_glob,
+                        dose_per_tilt_fallback=state.acquisition.dose_per_tilt,
                     )
                     # Created without a dataset scan: no summary came in, and every
                     # matched mdoc was imported — the registry is the count.
-                    if not import_summary:
+                    if not summary:
                         state.import_total_tilt_series = n_registered
                         state.import_selected_tilt_series = n_registered
                 except Exception as e:
                     logger.warning("Registry construction failed for %s: %s", project_dir, e)
 
-            # 4. Save Project State (project_params.json) — includes import summary
+            # Save Project State (project_params.json) — includes import summary
             await self.backend.state_service.save_project(project_path=project_dir, force=True)
 
-            # 5. Initialize Relion (Create default_pipeline.star)
+            # Initialize Relion (Create default_pipeline.star)
             logger.info("Initializing Relion project...")
 
             init_command = "unset DISPLAY && relion --tomo --do_projdir ."
             # Data-less projects have no raw-data parents to bind. Path("").parent
             # would resolve to the cwd, which is wrong and would clutter the binds.
             binds = [str(project_dir.resolve())]
-            if movies_glob:
-                binds.append(str(Path(movies_glob).parent.resolve()))
-            if mdocs_glob:
-                binds.append(str(Path(mdocs_glob).parent.resolve()))
+            if spec.frames_glob:
+                binds.append(str(Path(spec.frames_glob).parent.resolve()))
+            if spec.mdocs_glob:
+                binds.append(str(Path(spec.mdocs_glob).parent.resolve()))
 
             container_cmd = self.backend.container_service.wrap_command_for_tool(
                 command=init_command, cwd=project_dir, tool_name="relion", additional_binds=binds
@@ -659,7 +608,15 @@ class ProjectService:
             proc = await asyncio.create_subprocess_shell(
                 container_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=project_dir
             )
-            await proc.wait()
+            # Read the output as it comes: waiting alone would block once a full pipe stops the process.
+            _out, init_err = await proc.communicate()
+            if proc.returncode:
+                logger.warning(
+                    "%s: relion --do_projdir exited %s: %s",
+                    project_name,
+                    proc.returncode,
+                    init_err.decode(errors="replace")[-2000:],
+                )
 
             n_ts = state.import_selected_tilt_series
             events.info(
@@ -668,7 +625,25 @@ class ProjectService:
                 project_dir.parent,
                 f"{n_ts} tilt-series" if n_ts else "no raw data",
             )
-            return ok(message=f"Project '{project_name}' created.", project_path=str(project_dir))
+            imported = None
+            if spec.tomograms_from:
+                if progress_cb:
+                    progress_cb("Importing the tomograms…")
+                imported = await self.backend.commit_imported_tomograms(
+                    project_dir, mode="jobs", job_sources=[s.model_dump() for s in spec.tomograms_from]
+                )
+                if not imported["success"]:
+                    return err(
+                        f"Project '{project_name}' created, without its tomograms: {imported['error']}",
+                        project_path=str(project_dir),
+                        needs=imported.get("needs", []),
+                    )
+            return ok(
+                message=f"Project '{project_name}' created.",
+                project_path=str(project_dir),
+                warnings=warnings,
+                tomograms=imported,
+            )
 
         except Exception as e:
             logger.exception("Creating project %s failed", project_name)
