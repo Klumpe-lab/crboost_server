@@ -14,6 +14,7 @@ from typing import get_args
 
 from nicegui import ui
 
+from services.job_params import check_value, field_bounds
 from ui.components.svg_icon import render_glyph
 
 # ── Tokens ──────────────────────────────────────────────────────────────────
@@ -273,15 +274,10 @@ def _numeric_kind(job_model, attr: str) -> tuple[bool, bool]:
 
 
 def _numeric_bounds(job_model, attr: str) -> tuple[float | None, float | None]:
-    """The field's declared (ge, le), or (None, None). Only ge/le are modelled — no field
-    under services/jobs/ uses the open-interval gt/lt, and an open bound has no
-    representable widget minimum anyway."""
-    field = type(job_model).model_fields.get(attr)
-    lo = hi = None
-    for m in getattr(field, "metadata", None) or []:
-        lo = getattr(m, "ge", lo) if getattr(m, "ge", None) is not None else lo
-        hi = getattr(m, "le", hi) if getattr(m, "le", None) is not None else hi
-    return lo, hi
+    """The widget's (min, max): the field's declared ge/le (`job_params.field_bounds`). An open bound
+    (gt/lt) has no representable widget minimum; `check_value` still enforces it."""
+    bounds = field_bounds(job_model, attr)
+    return bounds.get("ge"), bounds.get("le")
 
 
 def numeric_forward(job_model, attr: str) -> Callable:
@@ -299,10 +295,10 @@ def numeric_forward(job_model, attr: str) -> Callable:
     tool downstream rejects harder — `max_num_particles: 0` reaches PyTOM as `-n 0`, which
     dies with "must be larger than 0" on a compute node. Refusing (rather than clamping)
     is what keeps mid-typing safe: the prefixes of "1500" that fall below a bound leave
-    the last good value in place until a whole in-range number is typed.
+    the last good value in place until a whole in-range number is typed. The type and
+    bounds are the setting door's (`job_params.check_value`), the ones the API is held to.
     """
     is_int, allows_none = _numeric_kind(job_model, attr)
-    lo, hi = _numeric_bounds(job_model, attr)
 
     def _forward(value):
         if value is None or value == "":
@@ -315,9 +311,8 @@ def numeric_forward(job_model, attr: str) -> Callable:
         except (TypeError, ValueError):
             return getattr(job_model, attr)  # mid-typing garbage; the next valid value lands
         number = round(number) if is_int else number  # round() with no ndigits returns an int
-        if (lo is not None and number < lo) or (hi is not None and number > hi):
-            return getattr(job_model, attr)
-        return number
+        checked, why = check_value(job_model, attr, number)
+        return getattr(job_model, attr) if why else checked
 
     return _forward
 
@@ -395,8 +390,11 @@ def enum_forward(job_model, attr: str, enum_type) -> Callable:
     """
 
     def _forward(value):
+        checked, why = check_value(job_model, attr, value)
+        if why:
+            return getattr(job_model, attr)  # not a value of the field; keep the last good one
         try:
-            return enum_type(value)
+            return enum_type(checked)
         except ValueError:
             return getattr(job_model, attr)  # not a member; keep the last good value
 
@@ -494,11 +492,13 @@ def multi_choice_row(
     save_handler: Callable,
     hint: str | None = None,
     placeholder: str = "none available",
+    on_change: Callable[[list[str]], None] | None = None,
 ):
     """`choice_row` for a list field: any number of the options, shown comma-separated in the
     box. The field's values must be among `options` (the caller adds any it holds that are not,
     labelled as such, so they stay visible and removable). Writes a new sorted list, so the model
-    sees an assignment and marks itself dirty."""
+    sees an assignment and marks itself dirty. `on_change`, when given, takes the chosen list
+    instead of that write."""
     with ui.element("div").style(ROW_STYLE):
         _label(label, hint)
         if not options:
@@ -515,6 +515,9 @@ def multi_choice_row(
         else:
 
             def _on_change(e):
+                if on_change is not None:
+                    on_change(sorted(e.value or []))
+                    return
                 setattr(job_model, attr, sorted(e.value or []))
                 save_handler()
 

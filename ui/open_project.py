@@ -9,7 +9,7 @@ from nicegui import app, ui
 
 from services.configs.user_prefs_service import get_prefs_service
 from services.project_state import get_project_state_for
-from ui.routing import Route, route_to_path
+from services.routes import workspace_path
 
 
 def remember_project_opened(target: Path | str, label: str | None = None) -> None:
@@ -22,26 +22,9 @@ def remember_project_opened(target: Path | str, label: str | None = None) -> Non
     prefs_service.save_to_app_storage(app.storage.user)
 
 
-def disambiguating_base(project_path: Path | str) -> str | None:
-    """The `?base=` a link to this project needs, or None when it needs none.
-
-    `resolve_project` searches the user's bases by directory name; when that already
-    lands on exactly this path the URL stays clean. When it lands elsewhere, finds
-    nothing, or finds the name in two places, the link must carry the base or it would
-    not resolve on the recipient's side."""
-    from services.project_resolve import resolve_project
-
-    path = Path(project_path)
-    found = resolve_project(path.name)
-    if found.get("success") and str(found["path"]) == str(path):
-        return None
-    return str(path.parent)
-
-
 def workspace_url(project_path: Path | str) -> str:
     """The addressable URL for a project's workspace."""
-    path = Path(project_path)
-    return route_to_path(Route(project=path.name, base=disambiguating_base(path)))
+    return workspace_path(project_path)
 
 
 async def load_project_into_tab(backend, ui_mgr, target: Path | str) -> bool:
@@ -67,7 +50,7 @@ async def load_project_into_tab(backend, ui_mgr, target: Path | str) -> bool:
             classes="whitespace-pre-line",
         )
     state = get_project_state_for(target)
-    ui_mgr.load_from_project(project_path=state.project_path or target, scheme_name="loaded", jobs=state.roster())
+    ui_mgr.load_from_project(project_path=state.project_path or target, scheme_name="loaded")
     if state.pipeline_active:
         ui_mgr.set_pipeline_running(True)
     remember_project_opened(state.project_path or target, label=state.project_name)

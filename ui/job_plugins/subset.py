@@ -16,7 +16,8 @@ from pathlib import Path
 from nicegui import run, ui
 
 from services.io_slots import JobFileType
-from services.jobs.spec import display_name
+from services.job_params import set_params
+from services.jobs.spec import display_name, instance_display_name
 from services.models_base import JobStatus, JobType
 from services.path_resolution_service import PathResolutionService, subset_cut
 from services.subsets import cut_names, jobs_after
@@ -24,7 +25,6 @@ from ui.components.buttons import house_button
 from ui.components.reactive import owned_timer
 from ui.job_plugins import register_params_renderer
 from ui.job_plugins._field_styles import CLR_HEADER, HELPER_STYLE, MONO, SANS
-from ui.ui_state import get_instance_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +129,7 @@ def render_subset_params(job_type, job_model, is_frozen, save_handler, *, ui_mgr
     state = job_model._project_state
     instance_id = ctx.get("instance_id") or next(iid for iid, jm in state.jobs.items() if jm is job_model)
     callbacks = ctx.get("callbacks") or {}
+    observe = ctx.get("observe")
 
     ui.label(
         "Run writes this Subset at once, no SLURM job: the rows of the star it cuts for the tilt series kept "
@@ -145,7 +146,7 @@ def render_subset_params(job_type, job_model, is_frozen, save_handler, *, ui_mgr
     source_id, slot = cut
     source = state.jobs[source_id]
     star = Path(check.resolved_path)
-    ui.label(f"Cuts {get_instance_display_name(source_id, source)} · {star.name}").style(_LINE_STYLE).tooltip(str(star))
+    ui.label(f"Cuts {instance_display_name(source_id, source)} · {star.name}").style(_LINE_STYLE).tooltip(str(star))
     if slot.produces == JobFileType.ALIGNED_TILT_SERIES_STAR:
         ui.label(
             "A CTF job after this Subset with defocus_hand = auto decides the hand from these tilt series only."
@@ -176,7 +177,9 @@ def render_subset_params(job_type, job_model, is_frozen, save_handler, *, ui_mgr
         if not body.is_deleted:
             body.clear()
             with body:
-                _render_body(job_model, rows, is_frozen, save_handler)
+                _render_body(
+                    job_model, rows, is_frozen, save_handler, state=state, instance_id=instance_id, observe=observe
+                )
 
     owned_timer(0.01, load, body, once=True)
 
@@ -195,14 +198,20 @@ def render_subset_params(job_type, job_model, is_frozen, save_handler, *, ui_mgr
     return None
 
 
-def _render_body(job_model, rows: list[_Row], frozen: bool, save_handler) -> None:
+def _render_body(
+    job_model, rows: list[_Row], frozen: bool, save_handler, *, state, instance_id: str, observe=None
+) -> None:
+    """The count, the All / None buttons and the table. A choice goes through the setting door; one made
+    elsewhere (another tab, the API) is painted on the page's next poll."""
     order = [r.name for r in rows]
     listed = set(order)
+    painted: list[tuple] = [()]
 
     count = ui.label("").style(_LINE_STYLE)
     stale = ui.label("").style(f"{SANS} font-size: 9px; color: {_AMBER};")
 
     def paint() -> None:
+        painted[0] = tuple(job_model.ts_names)
         chosen = set(job_model.ts_names)
         count.set_text(f"{len(chosen & listed)} of {len(order)} chosen")
         absent = [n for n in job_model.ts_names if n not in listed]
@@ -218,7 +227,10 @@ def _render_body(job_model, rows: list[_Row], frozen: bool, save_handler) -> Non
     def choose(names: list[str]) -> None:
         if frozen:
             return
-        job_model.ts_names = names
+        res = set_params(state, instance_id, {"ts_names": names})
+        if not res["success"]:
+            ui.notify(res["error"], type="warning")
+            return
         save_handler()
         paint()
 
@@ -243,3 +255,5 @@ def _render_body(job_model, rows: list[_Row], frozen: bool, save_handler) -> Non
         table = ui.html("", sanitize=False)
         table.on("click", handler=on_click, js_handler=_ROW_CLICK_JS)
     paint()
+    if observe is not None:
+        observe(lambda: None if table.is_deleted or tuple(job_model.ts_names) == painted[0] else paint())

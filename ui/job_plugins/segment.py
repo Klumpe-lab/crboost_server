@@ -16,7 +16,8 @@ from nicegui import ui
 from services.models_base import DenoiseMethod, JobType, SegmentFormat, SegmentMethod
 from services.path_resolution_service import PathResolutionService
 from services.project_state import get_project_state_for
-from services.segmentation.easymode import ais_model_title, easymode_cache_dir, read_catalog
+from services.job_params import easymode_catalog, set_params
+from services.segmentation.easymode import ais_model_title, easymode_cache_dir
 from services.segmentation.manifest import ENGINE_AIS, feature_slug
 from ui.job_plugins import register_params_renderer
 from ui.job_plugins._field_styles import (
@@ -35,12 +36,6 @@ from ui.job_plugins.default_renderer import render_config_preamble
 _WARN_STYLE = HELPER_STYLE + " color: #b45309;"
 # Under the value column of a field row (label column 110 px + gap).
 _NOTE_STYLE = " margin: 0 0 4px 118px;"
-
-
-@lru_cache(maxsize=4)
-def _catalog_at(cache_dir: str) -> dict:
-    """The weights cache's features, read once per cache: it is frozen."""
-    return read_catalog(Path(cache_dir))
 
 
 @lru_cache(maxsize=16)
@@ -71,7 +66,7 @@ def render_segment_params(job_type, job_model, is_frozen, save_handler, *, ui_mg
         if job_model.method == SegmentMethod.AIS_MODEL:
             _render_ais_model(job_model, is_frozen, save_handler)
         else:
-            _render_features(job_model, is_frozen, save_handler)
+            _render_features(job_model, is_frozen, save_handler, ui_mgr=ui_mgr, instance_id=ctx.get("instance_id"))
 
     @ui.refreshable
     def how_block():
@@ -137,9 +132,9 @@ def _render_settings(job_model, is_frozen: bool, save_handler) -> None:
             _smooth_toggle(job_model, is_frozen, save_handler, "Smooth along Z (2D and 2.5D models)")
 
 
-def _render_features(job_model, is_frozen: bool, save_handler) -> None:
+def _render_features(job_model, is_frozen: bool, save_handler, *, ui_mgr=None, instance_id: str | None = None) -> None:
     try:
-        catalog = _catalog_at(str(easymode_cache_dir()))
+        catalog = easymode_catalog(str(easymode_cache_dir()))
     except (LookupError, OSError, ValueError) as e:
         # Absent is stated: no feature list is guessed without the cache.
         multi_choice_row(
@@ -159,7 +154,13 @@ def _render_features(job_model, is_frozen: bool, save_handler) -> None:
     options = {name: name for name in catalog} | {f: f"{f} · not in the weights cache" for f in unknown}
     summary = None
 
-    def on_change():
+    def on_change(value: list[str]) -> None:
+        if ui_mgr is None or not ui_mgr.project_path or not instance_id:
+            job_model.features = value  # no project to hold the job: nothing for the door to check against
+        else:
+            res = set_params(get_project_state_for(ui_mgr.project_path), instance_id, {"features": value})
+            if not res["success"]:
+                ui.notify(res["error"], type="warning")
         save_handler()
         _set_note(summary, *_features_summary(job_model.features, catalog))
 
@@ -169,8 +170,9 @@ def _render_features(job_model, is_frozen: bool, save_handler) -> None:
         "features",
         options,
         is_frozen=is_frozen,
-        save_handler=on_change,
+        save_handler=save_handler,
         hint="The features of easymode's weights cache (its registry.json); each runs that feature's default network.",
+        on_change=on_change,
     )
     text, warn = _features_summary(job_model.features, catalog)
     summary = _note(text, warn=warn)

@@ -1,12 +1,15 @@
 """Particles-header tomogram-import dialog — a project-level utility, not a pipeline job.
 
-One source field, and three things it accepts:
+One source field, and four things it accepts:
 
   · a **folder** of reconstructed volumes (``.mrc`` / etomo ``.rec``) — every volume in it
     is scanned and listed, tick off the ones you don't want;
   · **one volume**;
   · an existing **tomograms.star** — its rows are read back and referenced, nothing is
-    copied or recomputed.
+    copied or recomputed;
+  · a **CryoBoost project** folder — pick one of its Reconstruct or Denoise Predict jobs and
+    the tomograms come with their tilt series, ready for template matching (the source
+    project is only read).
 
 The mode is read off the path instead of picked on a tab: the file browser already asks
 "which of these do you have". Whatever the path resolves to lands in the same table, and
@@ -35,7 +38,7 @@ from services.project_state import get_project_state_for
 from services.tomogram_import import TOMOGRAM_SUFFIXES
 from ui.components.buttons import house_button
 from ui.components.chip import render_chip
-from ui.components.fields import house_field, house_number
+from ui.components.fields import house_field, house_number, house_select
 from ui.dashboard.css import ensure_assets_loaded
 from ui.job_plugins._field_styles import PAGE_SECTION_STYLE
 from ui.local_file_picker import local_file_picker
@@ -58,6 +61,8 @@ _PROBE_CHUNK = 100  # header probes per await, so the status line moves during a
 _KIND_NONE = ""
 _KIND_VOLUMES = "volumes"  # a folder of volumes, or one volume -> synthesize
 _KIND_STAR = "star"  # an existing tomograms.star -> reference
+_KIND_JOB = "job"  # a CryoBoost project's tomogram job -> jobs
+_SELECTABLE = (_KIND_VOLUMES, _KIND_JOB)
 
 
 def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], None] | None = None) -> None:
@@ -76,7 +81,8 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
     # `typed` is the last string _resolve was handed — a blur whose text hasn't moved is not
     # a new request (clicking Browse… blurs the field, and re-scanning Lustre for that would
     # be a free directory walk per click).
-    src = {"kind": _KIND_NONE, "path": "", "folder": "", "typed": ""}
+    # `loaded`: the (project, job) whose tomograms the table shows, so the job menu's echo of a load is no reload.
+    src = {"kind": _KIND_NONE, "path": "", "folder": "", "typed": "", "project": "", "loaded": None}
     files: list[dict] = []  # preview rows (probed MRC headers, or reference star rows)
     selected: dict[str, bool] = {}  # volumes mode: path -> checked
     row_checkboxes: dict[str, ui.checkbox] = {}
@@ -129,14 +135,15 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
 
     def _render_table() -> None:
         nonlocal select_all_cb
-        selectable = src["kind"] == _KIND_VOLUMES
+        selectable = src["kind"] in _SELECTABLE
         select_all_cb = None
         table.clear()
         row_checkboxes.clear()
         with table:
             if not files:
                 ui.label(
-                    "Point the field above at a folder of volumes, one volume, or a tomograms.star."
+                    "Point the field above at a folder of volumes, one volume, a tomograms.star, or a CryoBoost "
+                    "project."
                     if src["kind"] == _KIND_NONE
                     else "Nothing to import from that path."
                 ).style("font-size: 11px; color: #9ca3af; padding: 10px;")
@@ -165,7 +172,7 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
         if src["kind"] == _KIND_STAR:
             missing = sum(1 for f in files if not f.get("has_voxel_size"))
             counts_lbl.text = f"{len(files)} in this star" + (f"  ·  ⚠ {missing} lack a pixel size" if missing else "")
-        elif src["kind"] == _KIND_VOLUMES:
+        elif src["kind"] in _SELECTABLE:
             n_sel = sum(1 for v in selected.values() if v)
             missing = sum(1 for f in files if f.get("nx") and not f.get("has_voxel_size") and selected.get(f["path"]))
             counts_lbl.text = f"{n_sel}/{len(files)} selected" + (
@@ -198,6 +205,7 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
         src.update(kind=kind, folder=folder, path=path)
         synth_row.set_visibility(kind == _KIND_VOLUMES)
         ref_note.set_visibility(kind == _KIND_STAR)
+        job_row.set_visibility(kind == _KIND_JOB)
         folder_btn.set_visibility(bool(folder))
 
     def _clear(message: str = "", *, bad: bool = False) -> None:
@@ -251,6 +259,47 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
         _render_table()
         _update_counts()
 
+    async def _load_project(project: Path) -> None:
+        """A CryoBoost project: its tomogram jobs to pick from, the first one's tomograms listed."""
+        status.style(_STATUS)
+        status.text = f"Reading {project.name}'s tomogram jobs…"
+        try:
+            jobs = await backend.tomogram_jobs(str(project))
+        except (OSError, ValueError) as e:
+            _clear(f"Could not read {project.name}: {e}", bad=True)
+            return
+        if not jobs:
+            _clear(f"{project.name} has no Reconstruct or Denoise Predict tomograms yet.", bad=True)
+            return
+        src["project"] = str(project)
+        job_pick.set_options({j["job"]: f"{j['job']} · {j['count']} tomograms" for j in jobs}, value=jobs[0]["job"])
+        await _load_job(jobs[0]["job"])
+
+    async def _load_job(job: str | None) -> None:
+        key = (src["project"], job)
+        if not job or not src["project"] or src["loaded"] == key:
+            return
+        src["loaded"] = key
+        status.style(_STATUS)
+        status.text = f"Reading {job}'s tomograms…"
+        files.clear()
+        selected.clear()
+        try:
+            rows = await backend.preview_job_tomograms(src["project"], job)
+        except (OSError, ValueError) as e:
+            _clear(f"Could not read {job}: {e}", bad=True)
+            return
+        files.extend(rows)
+        for f in rows:
+            selected[f["path"]] = True
+        _set_kind(_KIND_JOB, path=src["project"])
+        status.text = (
+            f"{len(files)} tomogram(s) of {Path(src['project']).name}'s {job}, with their tilt series. Nothing is "
+            "copied, and the project they come from is only read."
+        )
+        _render_table()
+        _update_counts()
+
     async def _resolve(raw: str) -> None:
         """Turn whatever is in the path field into a preview. The one entry point —
         Browse…, Enter in the field and the 'whole folder' shortcut all land here, so
@@ -258,12 +307,16 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
         raw = (raw or "").strip()
         path_in.value = raw
         src["typed"] = raw
+        src["loaded"] = None
         if not raw:
             _clear()
             return
         p = Path(raw).expanduser()
         if not p.exists():
             _clear(f"Nothing at {p}", bad=True)
+            return
+        if p.is_dir() and (p / "project_params.json").is_file():
+            await _load_project(p)
             return
         if p.is_dir():
             status.style(_STATUS)
@@ -286,7 +339,7 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
             return
         _clear(
             f"{p.name} is not a tomogram source — point this at a folder of .mrc/.rec volumes, "
-            "one volume, or a tomograms.star.",
+            "one volume, a tomograms.star, or a CryoBoost project.",
             bad=True,
         )
 
@@ -360,6 +413,17 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
                 res = await backend.commit_imported_tomograms(
                     project_path, mode="reference", reference_star=src["path"], replace=replace
                 )
+            elif src["kind"] == _KIND_JOB:
+                names = [f["name"] for f in files if selected.get(f["path"])]
+                if not names:
+                    ui.notify("Tick at least one tomogram", type="warning")
+                    return
+                res = await backend.commit_imported_tomograms(
+                    project_path,
+                    mode="jobs",
+                    job_sources=[{"project": src["project"], "job": job_pick.value, "names": names}],
+                    replace=replace,
+                )
             else:
                 chosen = [p for p, v in selected.items() if v]
                 if not chosen:
@@ -373,6 +437,17 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
                     tomogram_binning=float(bin_in.value or 1.0),
                     replace=replace,
                 )
+            if not res["success"]:
+                ui.notify(res["error"], type="warning", timeout=6000)
+                groups = [o for n in res.get("needs") or [] for o in n.get("options") or []]
+                if groups:
+                    status.style(_STATUS_BAD)
+                    status.text = "Groups: " + " · ".join(
+                        f"{g['voltage']:g} kV, Cs {g['spherical_aberration']:g}, AC {g['amplitude_contrast']:g}, "
+                        f"{g['voxel_size']:g} Å voxels: {g['tomograms']} ({', '.join(g['first'])}…)"
+                        for g in groups
+                    )
+                return
             ui.notify(
                 f"Imported {res.get('added', res['count'])} tomogram(s) — {res['count']} in the project. "
                 "Open the Tomograms view to see them.",
@@ -417,7 +492,7 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
             house_button("Browse…", _browse)
         ui.element("div").style("height: 3px;")
         ui.label(
-            "A folder of .mrc / .rec volumes · one volume · an existing tomograms.star — "
+            "A folder of .mrc / .rec volumes · one volume · an existing tomograms.star · a CryoBoost project — "
             "whichever you point at is read straight away."
         ).style(_HINT)
         with ui.row().classes("items-start w-full gap-2 no-wrap").style("margin-top: 4px;"):
@@ -460,6 +535,16 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
             _HINT + " margin-top: 8px;"
         )
         ref_note.set_visibility(False)
+        job_row = ui.row().classes("items-center w-full gap-4").style("margin-top: 8px;")
+        with job_row:
+            job_pick = house_select(
+                "Job",
+                {},
+                width="w-56",
+                hint="The project's Reconstruct or Denoise Predict job whose tomograms to take",
+                on_change=lambda e: _load_job(e.value),
+            )
+        job_row.set_visibility(False)
 
         # ── Already imported ──
         if prior_batches:

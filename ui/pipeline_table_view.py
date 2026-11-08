@@ -35,7 +35,7 @@ from ui.components.species_pill import render_species_mark
 from ui.dashboard.css import ensure_assets_loaded
 from ui.status_indicator import _BADGE_STYLES, _DOT_COLORS
 from ui.styles import MONO, SANS
-from ui.ui_state import get_instance_display_name
+from services.jobs.spec import instance_display_name
 from ui.utils import snake_to_title
 
 logger = logging.getLogger(__name__)
@@ -141,7 +141,7 @@ def _inputs_tip(row: TableRow, state: ProjectState) -> str:
     lines = ["Reads"]
     for e in row.inputs:
         how = InputState.FIXED_AT_SUBMIT if fixed else InputState.SET_BY_HAND if e.explicit else InputState.AUTOMATIC
-        producer = get_instance_display_name(e.producer, state.jobs.get(e.producer))
+        producer = instance_display_name(e.producer, state.jobs.get(e.producer))
         lines.append(f"{snake_to_title(e.slot)} ← {producer} · {how.value}")
     return "\n".join(lines)
 
@@ -379,7 +379,7 @@ class _TableView(FingerprintedView):
                 "line-height: 0;"
             )
             with ui.element("div").style(_CELL + " gap: 6px;"):
-                ui.label(get_instance_display_name(iid, jm)).style(f"{MONO} font-size: 11px; color: #1e293b;")
+                ui.label(instance_display_name(iid, jm)).style(f"{MONO} font-size: 11px; color: #1e293b;")
                 species = state.get_species(jm.species_id) if jm.species_id else None
                 tip = _inputs_tip(row, state)
                 if species is not None:

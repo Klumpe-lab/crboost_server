@@ -36,13 +36,14 @@ from services.path_resolution_service import (
     unreadable_reason,
 )
 from backend import get_backend
+from services.job_params import reset_inputs, set_gain, set_input
 from services.project_state import get_project_state_for
 from ui.current_project import current_project_state
 from ui.ui_state import get_job_display_name
 from ui.utils import snake_to_title
 from ui.components.buttons import house_button, icon_button
 from ui.components.copyable import copyable_path
-from ui.components.reactive import owned_timer
+from ui.components.reactive import FocusHold, owned_timer
 from ui.job_plugins._field_styles import LABEL_STYLE, LABEL_W, config_section
 
 logger = logging.getLogger(__name__)
@@ -240,10 +241,46 @@ class IOConfigComponent:
         self._slot_containers: dict[str, ui.element] = {}
         self._gain_container: ui.element | None = None
         self._input_keys: list[str] = []  # the inputs the job had at the last render
+        # What the section showed at its last render, for observe(); and whether the user is in its path
+        # field or one of its menus, which a redraw would take from under them.
+        self._shown: tuple | None = None
+        self._hold = FocusHold()
 
     def render(self):
         # The Inputs and Outputs sections keep the Config tab's section gap.
         self._root = ui.column().classes("w-full").style("gap: 10px;")
+        with self._root:
+            self._render_body()
+
+    def _signature(self) -> tuple | None:
+        """Everything the section draws from the project, in memory: the job's inputs as set and as fixed, the
+        jobs it could read and their state, the roster, the species and pick lists, the gain reference."""
+        state = current_project_state()
+        jm = state.jobs.get(self.instance_id)
+        if jm is None:
+            return None
+        return (
+            jm.execution_status,
+            jm.inputs_fixed,
+            tuple(sorted((jm.source_overrides or {}).items())),
+            tuple(sorted((k, tuple(sorted(v.items()))) for k, v in (jm.facet_choices or {}).items())),
+            tuple((iid, m.execution_status, m.relion_job_name) for iid, m in state.jobs.items()),
+            tuple(state.roster()),
+            state.registry_rev,
+            state.acquisition.gain_reference_path,
+            state.active_merge_slug,
+            len(state.aggregation_merges),
+            state.imported_tomograms.star_path if state.imported_tomograms else None,
+        )
+
+    def observe(self) -> None:
+        """The page's poll: draw the section again when something it shows changed elsewhere (another tab,
+        the API), except while the user is in its path field or one of its menus."""
+        if self._root.is_deleted or self._hold.held:
+            return
+        if self._signature() == self._shown:
+            return
+        self._root.clear()
         with self._root:
             self._render_body()
 
@@ -291,6 +328,7 @@ class IOConfigComponent:
         if output_schema:
             with config_section("Outputs"):
                 self._render_output_slots(output_schema, job_model)
+        self._shown = self._signature()
 
     def refresh_if_inputs_changed(self) -> None:
         """Re-render when the job's inputs changed with its parameters (an input that exists only while
@@ -308,11 +346,11 @@ class IOConfigComponent:
 
     async def _reset_inputs(self):
         state = current_project_state()
-        job_model = state.jobs.get(self.instance_id)
-        if job_model is None:
+        res = reset_inputs(state, self.instance_id)
+        if not res["success"]:
+            ui.notify(res["error"], type="warning")
             return
-        job_model.submitted_inputs = None
-        await get_backend().save_project(state.project_path, force=True)
+        await get_backend().save_project(state.project_path)
         self._root.clear()
         with self._root:
             self._render_body()
@@ -380,8 +418,10 @@ class IOConfigComponent:
     async def _set_gain(self, value: str | None):
         state = current_project_state()
         project_path = state.project_path
-        state.acquisition.gain_reference_path = value or None
-        state.mark_dirty()
+        res = await set_gain(state, value)
+        if not res["success"]:
+            ui.notify(res["error"], type="warning")
+            return
         await get_backend().save_project(project_path)
         if self._gain_container is not None:
             self._gain_container.clear()
@@ -441,10 +481,12 @@ class IOConfigComponent:
         manual_editing = current_value == "manual" and not self._inputs_read_only
         if manual_editing:
             with ui.element("div").style(_DETAIL_STYLE + " display: flex; align-items: center; gap: 4px;"):
-                inp = ui.input(
-                    value=manual_path,
-                    placeholder="/path/to/file",
-                    on_change=lambda e, s=slot: self._handle_manual_path_change(s, e.value),
+                inp = self._hold.watch(
+                    ui.input(
+                        value=manual_path,
+                        placeholder="/path/to/file",
+                        on_change=lambda e, s=slot: self._handle_manual_path_change(s, e.value),
+                    )
                 )
                 inp.classes("cb-select").props(
                     "dense borderless hide-bottom-space "
@@ -664,6 +706,7 @@ class IOConfigComponent:
             ui.label("pick one").style(f"{_SMALL} color: {_AMBER};")
             ui.icon("expand_more", size="12px").style(f"color: {_MUTED};")
             menu = ui.menu().props('no-parent-event anchor="bottom left" self="top left"').style(_MENU_STYLE)
+            self._hold.watch_open(menu)
             with menu:
                 what = _FACET_WORD[plan.facet]
                 ui.label(f"{what} for {pf.label}'s {pf.picks:,} picks").style(
@@ -691,15 +734,7 @@ class IOConfigComponent:
 
     def _choose_facet(self, slot, picked: dict[str, str] | None) -> None:
         """Record where the job takes the facet from for the projects `picked` names; None forgets every choice."""
-        state = current_project_state()
-        job_model = state.jobs.get(self.instance_id)
-        if job_model is None:
-            return
-        if picked is None:
-            job_model.facet_choices.pop(slot.key, None)
-        else:
-            job_model.facet_choices.setdefault(slot.key, {}).update(picked)
-        asyncio.create_task(self._save_and_refresh(slot, state.project_path))
+        self._write(slot, facet=picked or {})
 
     def _set_export_button(self, slot, job_model, pset, text: str) -> None:
         house_button(
@@ -811,6 +846,7 @@ class IOConfigComponent:
                     "min-width: 240px;"
                 )
             )
+            self._hold.watch_open(menu)
             with menu:
                 if not candidates:
                     ui.label("No upstream producer yet — pick a manual path below.").style(
@@ -978,66 +1014,34 @@ class IOConfigComponent:
 
     # ── State updates ────────────────────────────────────────────────────────
 
-    def _handle_source_change(self, slot, value):
+    def _write(self, slot, **change) -> None:
+        """One input's change through the setting door (`job_params.set_input`), then the save and the row
+        drawn again. A new source forgets where a set's picks took their facets from: those choices belong to
+        the set they were made for."""
         state = current_project_state()
-        project_path = state.project_path
-        job_model = state.jobs.get(self.instance_id)
-        if not job_model:
+        res = set_input(state, self.instance_id, slot.key, **change)
+        if not res["success"]:
+            ui.notify(res["error"], type="negative", timeout=8000)
             return
-        if not hasattr(job_model, "source_overrides") or job_model.source_overrides is None:
-            job_model.source_overrides = {}
-        if value and value != "manual":
-            loop = PathResolutionService(state).cycle_with_override(self.instance_id, slot.key, value)
-            if loop:
-                ui.notify(
-                    "Not set: this source would close a loop — " + "; ".join(w.describe() for w in loop),
-                    type="negative",
-                    timeout=8000,
-                )
-                return
-        if value == "manual":
-            job_model.source_overrides[slot.key] = "manual:"
-        elif value:
-            job_model.source_overrides[slot.key] = value
-        else:
-            job_model.source_overrides.pop(slot.key, None)
-        # Choices of where a set's picks take their facets from belong to the set they were made for.
-        job_model.facet_choices.pop(slot.key, None)
-        import asyncio
+        asyncio.create_task(self._save_and_refresh(slot, state.project_path))
 
-        asyncio.create_task(self._save_and_refresh(slot, project_path))
+    def _handle_source_change(self, slot, value):
+        if value == "manual":
+            self._write(slot, path="")
+        elif value:
+            self._write(slot, source=value)
+        else:
+            self._write(slot, auto=True)
 
     def _handle_manual_path_change(self, slot, path):
-        state = current_project_state()
-        project_path = state.project_path
-        job_model = state.jobs.get(self.instance_id)
-        if not job_model:
-            return
-        if not hasattr(job_model, "source_overrides") or job_model.source_overrides is None:
-            job_model.source_overrides = {}
-        job_model.source_overrides[slot.key] = f"manual:{path}"
-        import asyncio
-
-        asyncio.create_task(self._save_and_refresh(slot, project_path))
+        self._write(slot, path=path)
 
     def _clear_override(self, slot):
-        state = current_project_state()
-        project_path = state.project_path
-        job_model = state.jobs.get(self.instance_id)
-        if not job_model:
-            return
-        if hasattr(job_model, "source_overrides") and job_model.source_overrides:
-            job_model.source_overrides.pop(slot.key, None)
-        job_model.facet_choices.pop(slot.key, None)
-        import asyncio
-
-        asyncio.create_task(self._save_and_refresh(slot, project_path))
+        self._write(slot, auto=True)
 
     async def _save_and_refresh(self, slot, project_path):
-        # The source-override handlers mutate job_model.source_overrides in place,
-        # which bypasses ProjectState's dirty tracking — so force the write or the
-        # user's source pick / manual path silently vanishes on the next load.
-        await get_backend().save_project(project_path, force=True)
+        # The door marked the state dirty, so a plain save writes the change.
+        await get_backend().save_project(project_path)
         container = self._slot_containers.get(slot.key)
         job_model = None
         if container:
@@ -1048,6 +1052,7 @@ class IOConfigComponent:
             container.clear()
             with container:
                 self._render_input_slot_row(resolver, slot, job_model)
+            self._shown = self._signature()
         if self.on_change:
             self.on_change()
 

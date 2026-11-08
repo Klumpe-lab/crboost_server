@@ -229,12 +229,22 @@ class FingerprintedView:
         """
         self._dirty = True
 
-    def refresh(self) -> None:
+    def adopt(self) -> None:
+        """Take the current state as painted: the view's own control made the change and already shows it,
+        so the next refresh does not rebuild for it (a rebuild would replace that control under the user)."""
+        try:
+            self._last_signature = self.signature()
+        except Exception as e:
+            logger.info("FingerprintedView signature() raised, next refresh rebuilds: %s", e)
+            self._dirty = True
+
+    def refresh(self) -> bool:
+        """Render if the signature moved; True when it rendered."""
         container = self._get_container()
         # Deleted along with its client (tab closed) after this tick was scheduled: clearing it
         # only makes NiceGUI warn "Client has been deleted but is still being used".
         if container is None or container.is_deleted:
-            return
+            return False
         try:
             sig = self.signature()
         except Exception as e:
@@ -244,7 +254,7 @@ class FingerprintedView:
             sig = None
             self._dirty = True
         if not self._dirty and sig == self._last_signature:
-            return
+            return False
         try:
             container.clear()
             with container:
@@ -253,9 +263,33 @@ class FingerprintedView:
             # Client gone (tab close races with a tick). Leave dirty so
             # the next mount rebuilds; don't update last_signature.
             logger.info("FingerprintedView render skipped (client gone): %s", e)
-            return
+            return False
         self._last_signature = sig
         self._dirty = False
+        return True
+
+
+class FocusHold:
+    """Whether the user is in one of a view's fields. A view whose rebuild would replace a field under the
+    cursor (a poll that sees a change made elsewhere) skips its rebuild while one of the fields it watches has
+    focus; the next poll after the blur catches up."""
+
+    def __init__(self) -> None:
+        self.held = False
+
+    def watch(self, element):
+        element.on("focus", lambda _e: self._set(True))
+        element.on("blur", lambda _e: self._set(False))
+        return element
+
+    def watch_open(self, menu):
+        """A menu holds the view while it is open: a redraw would close it under the pointer."""
+        menu.on("show", lambda _e: self._set(True))
+        menu.on("hide", lambda _e: self._set(False))
+        return menu
+
+    def _set(self, on: bool) -> None:
+        self.held = on
 
 
 class SingleFlight:

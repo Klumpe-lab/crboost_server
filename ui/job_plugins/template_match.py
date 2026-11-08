@@ -35,13 +35,15 @@ from pathlib import Path
 
 from nicegui import ui
 
+from services.job_params import project_features, set_params
 from services.jobs.template_match import TM_SYMMETRY_CHOICES
-from services.models_base import JobType, SegmentMethod
+from services.models_base import JobType
 from services.path_resolution_service import PathResolutionService, override_instance_id
 from services.project_state import get_project_state_for
 from services.models_base import resolve_species
 from services.segmentation.search_region import describe, read_segmentations
 from services.templating.template_metadata import read_template_header
+from ui.components.reactive import FingerprintedView, FocusHold
 from ui.components.species_pill import render_species_line, species_opener
 from ui.job_plugins import register_params_renderer
 from ui.job_plugins._field_styles import (
@@ -65,8 +67,10 @@ _NOTE_STYLE = " margin: 0 0 4px 118px;"
 @register_params_renderer(JobType.TEMPLATE_MATCH_PYTOM)
 def render_template_match_params(job_type, job_model, is_frozen, save_handler, *, ui_mgr=None, backend=None, **_ctx):
     instance_id = _ctx.get("instance_id")
+    observe = _ctx.get("observe")
 
     species = None
+    state = None
     if ui_mgr and ui_mgr.project_path:
         state = get_project_state_for(ui_mgr.project_path)
         species, _resolved_sid = resolve_species(state, job_model, instance_id)
@@ -80,58 +84,142 @@ def render_template_match_params(job_type, job_model, is_frozen, save_handler, *
     render_config_preamble(job_model)
     render_default_params(job_type, job_model, is_frozen, save_handler, exclude=exclude)
 
+    if state is None or instance_id is None:
+        return None
     if species is not None:
         # ── Template + mask + search symmetry ─────────────────────────────────
         section_header(SPECIES_SECTION_TITLE)
+        rows = _SpeciesRows(state, instance_id, is_frozen, save_handler, ui.element("div").style("width: 100%;"))
+        rows.refresh()
+        if observe is not None:
+            observe(rows.refresh)
+    return _render_search_region(state, job_model, instance_id, is_frozen, save_handler, observe)
+
+
+def _door(view: FingerprintedView, state, instance_id: str, save_handler):
+    """A row's write, through the setting door: refused values are said, and the view takes what it now shows
+    as painted, so its next refresh does not rebuild the control just used."""
+
+    def write(attr: str, value) -> None:
+        res = set_params(state, instance_id, {attr: value})
+        if not res["success"]:
+            ui.notify(res["error"], type="warning")
+        save_handler()
+        view.adopt()
+
+    return write
+
+
+class _SpeciesRows(FingerprintedView):
+    """The template, mask and symmetry rows, drawn again when they or the species' templates and masks change
+    anywhere (another tab, the API), except while one of them has focus."""
+
+    def __init__(self, state, instance_id: str, is_frozen: bool, save_handler, container) -> None:
+        super().__init__(container)
+        self._state, self._iid, self._frozen = state, instance_id, is_frozen
+        self._hold = FocusHold()
+        self._write = _door(self, state, instance_id, save_handler)
+
+    def signature(self):
+        jm = self._state.jobs.get(self._iid)
+        species, _ = resolve_species(self._state, jm, self._iid) if jm is not None else (None, None)
+        if jm is None or species is None:
+            return None
+        return (
+            jm.template_path,
+            jm.mask_path,
+            jm.symmetry,
+            species.symmetry,
+            species.selected_template_id,
+            species.selected_mask_id,
+            tuple((t.id, t.template_path, t.polarity, t.lowpass_resolution_ang) for t in species.templates),
+            tuple((m.id, m.mask_path, m.method) for m in species.masks),
+        )
+
+    def refresh(self) -> bool:
+        return False if self._hold.held else super().refresh()
+
+    def render(self) -> None:
+        jm = self._state.jobs.get(self._iid)
+        species, _ = resolve_species(self._state, jm, self._iid) if jm is not None else (None, None)
+        if jm is None or species is None:
+            return
         with field_grid():
-            _render_template_dropdown(species, job_model, is_frozen, save_handler)
-            _render_mask_dropdown(species, job_model, is_frozen, save_handler)
-            _render_symmetry_dropdown(species, job_model, is_frozen, save_handler)
-
-    if ui_mgr is None or not ui_mgr.project_path:
-        return None
-    state = get_project_state_for(ui_mgr.project_path)
-    return _render_search_region(state, job_model, instance_id, is_frozen, save_handler)
+            for draw in (_render_template_dropdown, _render_mask_dropdown, _render_symmetry_dropdown):
+                sel = draw(species, jm, self._frozen, self._write)
+                if sel is not None:
+                    self._hold.watch(sel)
 
 
-def _render_search_region(state, job_model, instance_id: str | None, is_frozen: bool, save_handler):
-    """The features to search in and to leave out, and how far to grow the region; under them, what
-    the job will read. Returns the note's refresh, which the job tab reruns after an edit."""
+class _SearchRegion(FingerprintedView):
+    """The features to search in and to leave out, and how far to grow the region, drawn again when the
+    region or the project's features change anywhere, except while one of its fields has focus."""
+
+    def __init__(self, state, instance_id: str, is_frozen: bool, save_handler, container) -> None:
+        super().__init__(container)
+        self._state, self._iid, self._frozen, self._save = state, instance_id, is_frozen, save_handler
+        self._hold = FocusHold()
+        self._write = _door(self, state, instance_id, save_handler)
+
+    def signature(self):
+        jm = self._state.jobs.get(self._iid)
+        if jm is None:
+            return None
+        return (tuple(jm.search_include), tuple(jm.search_exclude), tuple(project_features(self._state)))
+
+    def refresh(self) -> bool:
+        return False if self._hold.held else super().refresh()
+
+    def render(self) -> None:
+        jm = self._state.jobs.get(self._iid)
+        if jm is None:
+            return
+        features = project_features(self._state)
+        held = [*jm.search_include, *jm.search_exclude]
+        options = {f: f for f in features} | {
+            f: f"{f} · not segmented in this project" for f in held if f not in features
+        }
+        with field_grid():
+            for attr, label, hint in (
+                (
+                    "search_include",
+                    "Search in",
+                    "Match only where one of these features has p ≥ 0.5. None: the whole tomogram, less what is "
+                    "left out.",
+                ),
+                ("search_exclude", "Leave out", "Never match where one of these features has p ≥ 0.5 (void, ice, …)."),
+            ):
+                sel = multi_choice_row(
+                    label,
+                    jm,
+                    attr,
+                    options,
+                    is_frozen=self._frozen,
+                    save_handler=self._save,
+                    placeholder="no segmentations in this project",
+                    hint=hint,
+                    on_change=lambda value, attr=attr: self._write(attr, value),
+                )
+                self._hold.watch(sel)
+            grow = numeric_field(
+                "Grow by",
+                jm,
+                "search_dilation_ang",
+                is_frozen=self._frozen,
+                save_handler=self._save,
+                suffix="Å",
+                hint="Grow the searched features by this distance before what is left out is cut away, so a "
+                "particle on the region's edge is matched whole.",
+            )
+            self._hold.watch(grow)
+
+
+def _render_search_region(state, job_model, instance_id: str, is_frozen: bool, save_handler, observe):
+    """The search region's rows; under them, what the job will read. Returns the note's refresh, which the
+    job tab reruns after an edit, and which a change of the region made elsewhere reruns too."""
     section_header("Search region")
-    features = _project_features(state)
-    held = [*job_model.search_include, *job_model.search_exclude]
-    options = {f: f for f in features} | {f: f"{f} · not segmented in this project" for f in held if f not in features}
-    with field_grid():
-        multi_choice_row(
-            "Search in",
-            job_model,
-            "search_include",
-            options,
-            is_frozen=is_frozen,
-            save_handler=save_handler,
-            placeholder="no segmentations in this project",
-            hint="Match only where one of these features has p ≥ 0.5. None: the whole tomogram, less what is left out.",
-        )
-        multi_choice_row(
-            "Leave out",
-            job_model,
-            "search_exclude",
-            options,
-            is_frozen=is_frozen,
-            save_handler=save_handler,
-            placeholder="no segmentations in this project",
-            hint="Never match where one of these features has p ≥ 0.5 (void, ice, …).",
-        )
-        numeric_field(
-            "Grow by",
-            job_model,
-            "search_dilation_ang",
-            is_frozen=is_frozen,
-            save_handler=save_handler,
-            suffix="Å",
-            hint="Grow the searched features by this distance before what is left out is cut away, so a particle "
-            "on the region's edge is matched whole.",
-        )
+    region = _SearchRegion(state, instance_id, is_frozen, save_handler, ui.element("div").style("width: 100%;"))
+    region.refresh()
 
     @ui.refreshable
     def note() -> None:
@@ -139,16 +227,9 @@ def _render_search_region(state, job_model, instance_id: str | None, is_frozen: 
         ui.label(text).style((_WARN_STYLE if warn else HELPER_STYLE) + _NOTE_STYLE)
 
     note()
+    if observe is not None:
+        observe(lambda: region.refresh() and note.refresh())
     return note.refresh
-
-
-def _project_features(state) -> list[str]:
-    """The features this project has segmentations of, or a Segment job is set to make."""
-    ids = {f.id for f in state.feature_registry}
-    for jm in state.jobs.values():
-        if jm.job_type == JobType.SEGMENT and jm.method == SegmentMethod.EASYMODE:
-            ids |= set(jm.features)
-    return sorted(ids)
 
 
 def _region_note(state, job_model, instance_id: str | None) -> tuple[str, bool]:
@@ -201,7 +282,7 @@ def _default_note(kind: str, default_name: str | None) -> str:
     return f"The species has no selected {kind}. {_OVERRIDE_NOTE}"
 
 
-def _render_template_dropdown(species, job_model, is_frozen: bool, save_handler) -> None:
+def _render_template_dropdown(species, job_model, is_frozen: bool, write):
     templates = list(getattr(species, "templates", []) or [])
     current = getattr(job_model, "template_path", "") or ""
     selected = species.get_selected_template() if hasattr(species, "get_selected_template") else None
@@ -215,12 +296,12 @@ def _render_template_dropdown(species, job_model, is_frozen: bool, save_handler)
             "template_path",
             {},
             is_frozen=is_frozen,
-            save_handler=save_handler,
+            save_handler=lambda: None,
             hint=hint,
             placeholder="no templates registered",
         )
         _absent_pointer("Register one in the Particles registry → Templates & masks.")
-        return
+        return None
 
     options: dict[str, str] = {}
     for t in templates:
@@ -242,19 +323,20 @@ def _render_template_dropdown(species, job_model, is_frozen: bool, save_handler)
     if value not in options and options:
         value = next(iter(options.keys()))
 
-    choice_row(
+    return choice_row(
         "Template",
         job_model,
         "template_path",
         options,
         is_frozen=is_frozen,
-        save_handler=save_handler,
+        save_handler=lambda: None,
         value=value,
         hint=hint,
+        on_change=lambda v: write("template_path", v),
     )
 
 
-def _render_symmetry_dropdown(species, job_model, is_frozen: bool, save_handler) -> None:
+def _render_symmetry_dropdown(species, job_model, is_frozen: bool, write):
     # Annotate each option with how PyTOM is going to honor it so the user
     # knows what they're picking. Cn (n=1..6) goes through the dedicated
     # --z-axis-rotational-symmetry flag; D/T/O/I are translated by the
@@ -272,15 +354,16 @@ def _render_symmetry_dropdown(species, job_model, is_frozen: bool, save_handler)
     if value not in options:
         value = "C1"
     species_sym = getattr(species, "symmetry", "") or "C1"
-    choice_row(
+    return choice_row(
         "Symmetry",
         job_model,
         "symmetry",
         options,
         is_frozen=is_frozen,
-        save_handler=save_handler,
+        save_handler=lambda: None,
         value=value,
         empty_value="C1",
+        on_change=lambda v: write("symmetry", v),
         hint=(
             f"Species default: {'None (C1)' if species_sym == 'C1' else species_sym}. {_OVERRIDE_NOTE}\n"
             "Cn uses PyTOM's --z-axis-rotational-symmetry flag (n-fold around z). "
@@ -298,7 +381,7 @@ def _group_order(point_group: str) -> int:
     return {"D2": 4, "D3": 6, "D4": 8, "D5": 10, "D6": 12, "T": 12, "O": 24, "I1": 60, "I2": 60}.get(point_group, 1)
 
 
-def _render_mask_dropdown(species, job_model, is_frozen: bool, save_handler) -> None:
+def _render_mask_dropdown(species, job_model, is_frozen: bool, write):
     masks = list(getattr(species, "masks", []) or [])
     current = getattr(job_model, "mask_path", "") or ""
     selected = species.get_selected_mask() if hasattr(species, "get_selected_mask") else None
@@ -312,12 +395,12 @@ def _render_mask_dropdown(species, job_model, is_frozen: bool, save_handler) -> 
             "mask_path",
             {},
             is_frozen=is_frozen,
-            save_handler=save_handler,
+            save_handler=lambda: None,
             hint=hint,
             placeholder="no masks registered",
         )
         _absent_pointer("Create or import one in the Particles registry → Templates & masks.")
-        return
+        return None
 
     # Include a "(none)" option so the user can explicitly skip a mask.
     options: dict[str, str] = {"": "(none)"}
@@ -330,8 +413,16 @@ def _render_mask_dropdown(species, job_model, is_frozen: bool, save_handler) -> 
     if value not in options:
         value = ""
 
-    choice_row(
-        "Mask", job_model, "mask_path", options, is_frozen=is_frozen, save_handler=save_handler, value=value, hint=hint
+    return choice_row(
+        "Mask",
+        job_model,
+        "mask_path",
+        options,
+        is_frozen=is_frozen,
+        save_handler=lambda: None,
+        value=value,
+        hint=hint,
+        on_change=lambda v: write("mask_path", v),
     )
 
 

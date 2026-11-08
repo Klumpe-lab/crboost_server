@@ -10,7 +10,8 @@ from ui.components.buttons import house_button
 from ui.components.reactive import SingleFlight
 from ui.job_plugins._field_styles import VIEW_HEAD_STYLE, VIEW_TITLE_STYLE, view_head_icon
 from ui.pipeline_builder.pipeline_builder_panel import build_pipeline_builder_panel
-from ui.routing import RouteWriter, View, apply_route, route_of_url
+from services.routes import View, route_of_url
+from ui.routing import RouteWriter, apply_route
 from ui.species.page import build_species_page
 from ui.ui_state import get_ui_state_manager
 
@@ -289,7 +290,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
     client = ui.context.client
 
     if route_writer is None:
-        from ui.open_project import disambiguating_base
+        from services.routes import disambiguating_base
 
         route_writer = RouteWriter(ui_mgr.project_path.name, disambiguating_base(ui_mgr.project_path))
     callbacks["set_url"] = route_writer.write

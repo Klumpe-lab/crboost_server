@@ -2,12 +2,15 @@
 import asyncio
 import logging
 from collections.abc import Callable
+from contextlib import nullcontext
 
 from nicegui import ui
 
 from backend import get_backend
+from services.jobs.spec import instance_display_name
 from services.path_resolution_service import cut_output
-from services.project_state import JobStatus, JobType
+from services.pipeline_edit import in_use_notice
+from services.project_state import JobStatus, JobType, get_project_state_for
 from ui.components.buttons import house_button, icon_button
 from ui.components.copyable import copy_on_click
 from ui.components.reactive import Debounced
@@ -15,12 +18,12 @@ from ui.current_project import current_project_state
 from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
 from ui.job_plugins import get_extra_tabs, get_full_panel_renderer
 from ui.job_plugins._field_styles import PANEL_HEAD_STYLE, PANEL_STYLE, PANEL_TITLE_STYLE, config_section, fold_panel
-from ui.routing import View
+from services.routes import View
 from ui.components.species_pill import render_species_mark
 from ui.status_indicator import BoundStatusDot
 from services.models_base import instance_id_to_job_type
-from ui.ui_state import UIStateManager, MonitorTab, get_instance_display_name
-from ui.pipeline_builder.config_tab import render_config_tab, in_use_notice, is_job_frozen
+from ui.ui_state import UIStateManager, MonitorTab
+from ui.pipeline_builder.config_tab import render_config_tab, is_job_frozen
 from ui.pipeline_builder.io_tab import render_io_tab
 from ui.pipeline_builder.slurm_tab import render_slurm_tab
 from ui.pipeline_builder.logs_tab import render_logs_tab
@@ -138,6 +141,10 @@ def _render_job_page(
     # and GRES its SLURM section displays, and its warnings read the SLURM settings. Parameters and
     # SLURM save through `on_edit`, which then reruns the refresh each of them hands back.
     edit_refreshes: list[Callable[[], None]] = []
+    # What the sections draw that their fields do not bind to (choice rows, SLURM, inputs) can change
+    # elsewhere: another tab, the API. Every 3 s while the page shows, each observer redraws its part if
+    # what it shows moved, never under the user's cursor.
+    observers: list[Callable[[], None]] = []
 
     def _run_refreshes() -> None:
         for refresh in edit_refreshes:
@@ -157,7 +164,7 @@ def _render_job_page(
     # the view's title and the job's line above them (both 14 px in). The cb-job* classes place each
     # section in the two-column grid the styles lay a wide page out in (ui/dashboard/css.py `_THEME_CSS`).
     with ui.scroll_area().classes("w-full h-full cb-scroll-tight cb-jobscroll"):
-        with ui.column().classes("w-full cb-jobpage").style("padding: 4px 14px 16px; gap: 10px;"):
+        with ui.column().classes("w-full cb-jobpage").style("padding: 4px 14px 16px; gap: 10px;") as page:
             with config_section("Parameters") as params_sec:
                 params_sec.classes("cb-jsec-params")
                 params_refresh = render_config_tab(
@@ -169,6 +176,7 @@ def _render_job_page(
                     on_edit,
                     instance_id=instance_id,
                     callbacks=callbacks,
+                    observe=observers.append,
                 )
                 if params_refresh is not None:
                     edit_refreshes.append(params_refresh)
@@ -177,11 +185,28 @@ def _render_job_page(
             io_sec = ui.element("div").classes("cb-jsec-io").style("width: 100%;")
             with io_sec:
                 edit_refreshes.append(
-                    render_io_tab(job_type, instance_id, job_model, is_frozen, ui_mgr, on_edit, callbacks=callbacks)
+                    render_io_tab(
+                        job_type,
+                        instance_id,
+                        job_model,
+                        is_frozen,
+                        ui_mgr,
+                        on_edit,
+                        callbacks=callbacks,
+                        observe=observers.append,
+                    )
                 )
             with config_section("SLURM resources") as slurm_sec:
                 slurm_sec.classes("cb-jsec-slurm")
-                edit_refreshes.append(render_slurm_tab(job_model, is_frozen, on_edit))
+                slurm_refresh = render_slurm_tab(
+                    job_model,
+                    is_frozen,
+                    on_edit,
+                    state=get_project_state_for(ui_mgr.project_path),
+                    instance_id=instance_id,
+                )
+                edit_refreshes.append(slurm_refresh)
+                observers.append(slurm_refresh)
 
             builders: dict[str, Callable[[], None]] = {
                 et.key: lambda et=et: et.render(job_type, instance_id, job_model, backend, ui_mgr)
@@ -195,6 +220,13 @@ def _render_job_page(
                 openers[key] = _render_lazy_section(
                     title, boxed, open_=open_, dom_id=_section_dom_id(instance_id, key), build=builders[key]
                 )
+        if observers:
+
+            def observe_all() -> None:
+                for observe in observers:
+                    observe()
+
+            ui_mgr.job_scope(instance_id).timer(3.0, observe_all, page)
     return openers
 
 
@@ -341,7 +373,7 @@ async def _handle_stop_job(
     job_dir = (project_path / job_model.relion_job_name.rstrip("/")) if job_model.relion_job_name else None
 
     with ui.dialog() as dialog, ui.card().style("min-width: 360px; padding: 16px;"):
-        ui.label(f"Cancel {get_instance_display_name(instance_id, job_model)}?").classes(
+        ui.label(f"Cancel {instance_display_name(instance_id, job_model)}?").classes(
             "text-base font-bold text-gray-800"
         )
         if job_dir:
@@ -358,14 +390,11 @@ async def _handle_stop_job(
     if not confirmed:
         return
 
-    result = await backend.pipeline_runner.cancel_job(project_path, instance_id)
-
     # The other jobs keep running, and so does the pipeline (pipeline_active stays until every
-    # job has ended): the tab keeps polling while it is active.
-    active = bool(current_project_state().pipeline_active)
-    if not active and "stop_all_timers" in callbacks:
-        callbacks["stop_all_timers"]()
-    ui_mgr.set_pipeline_running(active)
+    # job has ended); the tab's refresher follows it either way.
+    acting = callbacks.get("pipeline_acting")
+    with acting() if acting else nullcontext():
+        result = await backend.pipeline_runner.cancel_job(project_path, instance_id)
     if "rebuild_pipeline_ui" in callbacks:
         callbacks["rebuild_pipeline_ui"]()
 
@@ -411,7 +440,7 @@ def _handle_delete(
     preview = get_deletion_service().preview_deletion(current_project_state(), instance_id)
 
     with ui.dialog() as dialog, ui.card().classes("w-[28rem]"):
-        ui.label(f"Delete {get_instance_display_name(instance_id, job_model)}?").classes("text-lg font-bold")
+        ui.label(f"Delete {instance_display_name(instance_id, job_model)}?").classes("text-lg font-bold")
         ui.label("This will move the job files to Trash/ and remove it from the pipeline.").classes(
             "text-sm text-gray-600 mb-2"
         )
