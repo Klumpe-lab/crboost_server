@@ -277,8 +277,9 @@ the outputs identical.
 
 **S10 — Item flow (L11),** after D11; the replay's numbers checked on a pilot.
 
-**S11 — tsImport per tilt series,** if roadmap 45's P11 says the 12 minutes are work and not waiting on `/groups`: then
-it is an array like the others and the last thing on `c` is per tilt series too.
+**S11 — tsImport faster, not per tilt series.** Roadmap 45's P11: the 12 minutes are CPU work on one CPU, with about
+64 s of fixed cost per `ts_import` call, so a task per tilt series would mostly start up. Instead the job asks for 4–8
+CPUs and runs 4–8 calls at once (1.5 minutes, identical tomostars); it stays the one job a GPU pipeline has on `c`.
 
 ## 7. Risks
 

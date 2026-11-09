@@ -872,3 +872,52 @@ its leftovers named.
   the lab's own use (1.7 % of `imp`'s against a 5 % share) barely moves the factor. So billing saved does little for
   the queue; what holds a GPU pipeline is its CPU jobs on `c`: a supervisor per stage, each eligible only when the
   stage before ends, so each queues on `c` afresh with no age, and tsImport.
+- **2026-11-09, P11 ran** (job 1494447, `cbe-c3-8`, 16 CPUs; it waited on the full `c` from 10:32 to 13:28).
+  Production's `WarpTools ts_import` over the pilot's 163 mdocs:
+
+  | Calls at once | Mdocs a call | Wall s | User s a call | System s a call |
+  |---:|---:|---:|---:|---:|
+  | 1 | 163 | 272 | 618 | 32 |
+  | 4 | 40–41 | 94 | 161–170 | 9 |
+  | 8 | 20–21 | 82 | 85–92 | 6 |
+
+  The 12 minutes are work, not waiting on `/groups`: one call keeps about 2.3 cores busy (618 s user in 272 s), and
+  production gives it one CPU (the pilot: 737 s at 0.98 of 1 CPU). A call has about 64 s of fixed cost (the line
+  through 4 and 8 calls: 0.7 s a mdoc on top), so a task per tilt series would spend most of its time starting; 4–8
+  calls in one job with 8–16 CPUs take 1.5 minutes. The tomostars are identical in all three. Cheapest change: the
+  tsImport job asks for 4 CPUs (about 4.5 minutes); next, 4–8 calls inside it. The replay's "tsImport split per tilt
+  series" (0:39) assumed a cost per tilt series that does not exist; with tsImport at 1.5 minutes as one job, item
+  flow starts the rest after it, which the replay's 0:59 line already models.
+- **2026-11-09, the anglestest pilot** (`anglestest_FCIsolation`, the 412 data again, on `4cdf022`: any GPU constrained
+  to B200 cards and slices, reconstruct in chunks of 8 with 2 workers, template matching I1 at 5° (2,124 rotations) in
+  3 lanes x 2 under MPS, extraction capped at 20). Its first supervisor waited 13:00–13:26 on the full `c`; from there
+  to the end of template matching 79 minutes, against 76 for the first pilot. One accounting query per pilot, filtered
+  on the project's path; billing as Slurm reports it:
+
+  | Job | First pilot: tasks, median s, billing-h | anglestest: cards | median s (B200 / slice) | billing-h |
+  |---|---|---|---|---:|
+  | Motion + CTF | 163, 60, 57.5 | 37 B200, 126 slices | 154 / 170 | 53.8 |
+  | Alignment | 158, 27, 26.4 | 42 / 116 | 34 / 42 | 14.1 |
+  | CTF | 158, 16, 14.4 | 35 / 123 | 27 / 31 | 10.5 |
+  | Reconstruct | 158, 63, 66.3 | 20 chunks: 8 B200, 12 slices | 327 / 1,298 a chunk of 8 | 51.6 |
+  | Template matching | 158, 186, 208.9 | 27 tasks of 6, B200 | 362 a task | 69.5 |
+  | Extraction | 158, 35, 5.4 | slices | 43 | 6.1 |
+  | Total | 378.9 | | | 205.6 |
+
+  - *Template matching:* 60 s of B200 a tomogram against 186, 3.0x less billing; the stage took 14.5 minutes (14:30:35
+    to 14:45:16) against 35 (17:41 to 18:16). The list (P9: 0.80 of the old) and the lanes (P7b: 1.91 at 3) predict
+    2.4x; chunks of 6 also start the container and stage once per lane. 158 of 158, every chunk 6 of 6, `gpu_split
+    auto` 1 1 1 (a third of the card, 59.7 GiB, holds a whole tomogram's 30.7).
+  - *Candidates:* 1,407 against 1,335, scores alike (matched 0.994 of the first's, median LCCmax 0.0560 against
+    0.0563, 43 tomograms at the cap against 41); 46 % of the first pilot's candidates and 57 % of its top three per
+    tomogram found again within 144 Å. Not the angle list alone: the tomograms differ too (Warp's CTF spread, the
+    slices pilot's entry), so this does not separate the two.
+  - *Reconstruct chunks* pay on a B200 (41 s a tilt series against 63 one per task; 0.27 billing-h a tilt series
+    against 0.42) and not on a slice: 162 s a tilt series, and a chunk asks for 8 CPUs and 48 GB, which a slice bills
+    at 8 (its CPUs) instead of 3.43, so 0.36 billing-h a tilt series against the slices pilot's 0.16 one per task. The
+    slice chunks were also the stage's tail (22 minutes).
+  - *Motion on a full B200 took 154 s* against 60 in the first pilot, about what a slice takes (170). Not explained;
+    the same nodes carried up to 28 slice tasks each this time. Alignment and CTF on B200s were close to the first
+    pilot's (34 and 27 s against 27 and 16).
+  - All stages' outcomes as before: the same five alignment failures (AreTomo2 exits 139 on Position_4, 36_2, 38_5,
+    39_4, 39_5 in all three pilots), 158 of 158 from CTF on.
