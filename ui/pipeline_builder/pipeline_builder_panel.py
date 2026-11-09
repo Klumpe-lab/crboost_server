@@ -7,6 +7,7 @@ from nicegui import ui
 
 from backend import CryoBoostBackend
 from services.jobs.spec import JOB_SPEC_BY_TYPE
+from services.jobs.template_match import DEFAULT_INCREMENT_FOR_SYMMETRY
 from services.models_base import JobStatus
 from services.path_resolution_service import (
     PathResolutionService,
@@ -458,6 +459,9 @@ class PipelineBuilderPanel:
                             sp_sym = getattr(sp, "symmetry", None)
                             if sp_sym:
                                 job_model.symmetry = sp_sym
+                                job_model.angular_search = DEFAULT_INCREMENT_FOR_SYMMETRY.get(
+                                    sp_sym, job_model.angular_search
+                                )
                         # Default new candidate-extract jobs to the species's
                         # particle diameter. Job param defaults to 200 Å so
                         # this only overrides when species.diameter_ang is set.
