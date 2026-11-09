@@ -277,9 +277,10 @@ the outputs identical.
 
 **S10 — Item flow (L11),** after D11; the replay's numbers checked on a pilot.
 
-**S11 — tsImport faster, not per tilt series.** Roadmap 45's P11: the 12 minutes are CPU work on one CPU, with about
-64 s of fixed cost per `ts_import` call, so a task per tilt series would mostly start up. Instead the job asks for 4–8
-CPUs and runs 4–8 calls at once (1.5 minutes, identical tomostars); it stays the one job a GPU pipeline has on `c`.
+**S11 — tsImport faster, not per tilt series** (built 2026-11-09, roadmap 45 §11). Roadmap 45's P11: the 12 minutes
+are CPU work on one CPU, with about 64 s of fixed cost per `ts_import` call, so a task per tilt series would mostly
+start up. Instead the job asks for 4–8 CPUs and runs 4–8 calls at once (1.5 minutes, identical tomostars); it stays
+the one job a GPU pipeline has on `c`.
 
 ## 7. Risks
 
@@ -309,6 +310,9 @@ CPUs and runs 4–8 calls at once (1.5 minutes, identical tomostars); it stays t
 
 ## 9. Build record
 
+- **2026-11-09, S11 built (not run).** tsImport takes its own profile (8 CPUs, 16G, partition `c` in the dev conf)
+  instead of the supervisor's, and runs 4 `ts_import` calls at once, each into its own folder, landed in `tomostar/`
+  by one rename (roadmap 45 §11). It stays the one job a GPU pipeline has on `c`.
 - **2026-11-09, Part B scoped.** Trigger: the anglestest pilot (roadmap 45) queued behind its first supervisor on a
   full `c` (worst-case start 2026-11-11 19:00) with `g` idle; the maintainer asked whether supervisors can go and
   chose to fold it into this roadmap. Read: `pipeline_orchestrator_service.py` (`_submit_chain`, the inline writers),

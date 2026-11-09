@@ -11,10 +11,11 @@ No GPU work — purely metadata assembly. Runs as a single SLURM job (not an arr
 import os
 import shutil
 import sys
+import threading
 import traceback
 from pathlib import Path
 
-from drivers.array_job_base import read_tilt_series_names_from_input_star
+from drivers.array_job_base import read_tilt_series_names_from_input_star, split_cpus
 from drivers.driver_base import ToolCommand, add_gain_options, get_driver_context, run_tool, start_supervisor
 from services.jobs.ts_import import TsImportParams
 
@@ -51,25 +52,18 @@ def stage_upstream_mdocs(mdoc_dir: Path, input_star: Path, pattern: str, job_dir
     return staged
 
 
-def build_ts_import_commands(params: TsImportParams, paths: dict, job_dir: Path) -> str:
-    """
-    Build the WarpTools ts_import + create_settings command chain.
+def ts_import_command(params: TsImportParams, mdoc_dir: Path, frameseries_rel: str, output: str) -> ToolCommand:
+    """WarpTools ts_import over the mdocs in mdoc_dir, writing one .tomostar per tilt series into `output`.
 
-    After this runs, job_dir will contain:
-        tomostar/               <- one .tomostar per tilt-series
-        warp_tiltseries.settings <- settings for downstream TS jobs
+    A tomostar names its frames relative to its own folder, so `output` must sit at the depth of job_dir/tomostar
+    for the tomostars to stay right when they are moved there.
     """
-    # frameseries dir relative to job_dir — WarpTools stores _wrpMovieName
-    # in the tomostar relative to the tomostar file's location.
-    frameseries_rel = os.path.relpath(str(paths["input_processing"]), str(job_dir))
-
-    # === Step 1: ts_import ===
     ts_import = (
         ToolCommand("WarpTools ts_import")
-        .opt_path("--mdocs", paths["mdoc_dir"], quote=True)
+        .opt_path("--mdocs", mdoc_dir, quote=True)
         .opt_path("--pattern", params.mdoc_pattern, quote=True)
         .opt_path("--frameseries", frameseries_rel, quote=True)
-        .opt("--output", "tomostar")
+        .opt("--output", output)
         .opt("--tilt_exposure", params.dose_per_tilt)
         .opt("--override_axis", params.tilt_axis_angle)
         .opt("--min_intensity", params.min_intensity)
@@ -78,8 +72,11 @@ def build_ts_import_commands(params: TsImportParams, paths: dict, job_dir: Path)
         ts_import.flag("--dont_invert")
     if params.do_at_most > 0:
         ts_import.opt("--do_at_most", params.do_at_most)
+    return ts_import
 
-    # === Step 2: create_settings ===
+
+def create_settings_command(params: TsImportParams) -> str:
+    """WarpTools create_settings for the tomostars in job_dir/tomostar, checked by its output file."""
     create_settings = (
         ToolCommand("WarpTools create_settings")
         .opt("--folder_data", "tomostar")
@@ -97,15 +94,87 @@ def build_ts_import_commands(params: TsImportParams, paths: dict, job_dir: Path)
     settings_gate = (
         "test -f warp_tiltseries.settings || "
         "{ echo 'ERROR: WarpTools create_settings produced no warp_tiltseries.settings "
-        "(it exits 0 on unknown options — check its output above for \"Option ... is unknown\")' >&2; "
+        '(it exits 0 on unknown options — check its output above for "Option ... is unknown")\' >&2; '
         "exit 1; }"
     )
-    return " && ".join(
-        [
-            f"test -d tomostar && ls tomostar/*.tomostar >/dev/null 2>&1 || ({ts_import.render()})",
-            f"{{ test -f warp_tiltseries.settings || ({create_settings.render()}); {settings_gate}; }}",
-        ]
-    )
+    return f"{{ test -f warp_tiltseries.settings || ({create_settings.render()}); {settings_gate}; }}"
+
+
+def import_tilt_series(params: TsImportParams, paths: dict, job_dir: Path, binds) -> None:
+    """ts_import in `params.import_calls` calls at once (never more than the job has CPUs), each over a share of
+    the staged mdocs and on a share of the CPUs, each into its own folder beside tomostar/; then their tomostars
+    land in tomostar/ in one rename, so tomostar/ exists only whole. Each call's output is printed after the calls
+    end, in order."""
+    mdocs = sorted(paths["mdoc_dir"].glob(params.mdoc_pattern))
+    calls = max(1, min(params.import_calls, len(mdocs), len(os.sched_getaffinity(0))))
+    # The frame series relative to job_dir, which is every call's working directory.
+    frameseries_rel = os.path.relpath(str(paths["input_processing"]), str(job_dir))
+    parts = [(job_dir / f"mdoc_part{c}", f"tomostar_part{c}") for c in range(calls)]
+    for c, (mdoc_part, out_part) in enumerate(parts):
+        for d in (mdoc_part, job_dir / out_part):
+            if d.exists():
+                shutil.rmtree(d)
+        mdoc_part.mkdir()
+        for m in mdocs[c::calls]:
+            shutil.copy2(m, mdoc_part / m.name)
+        (job_dir / f"{out_part}.log").unlink(missing_ok=True)
+
+    cpu_groups = split_cpus(calls) if calls > 1 else [None]
+    failed: dict[int, BaseException] = {}
+
+    def call(c: int) -> None:
+        mdoc_part, out_part = parts[c]
+        command = ts_import_command(params, mdoc_part, frameseries_rel, out_part).render()
+        try:
+            run_tool(
+                f"{command} > {out_part}.log 2>&1",
+                tool_name=params.get_tool_name(),
+                cwd=job_dir,
+                binds=binds,
+                cpus=cpu_groups[c],
+            )
+        except Exception as e:  # reported with the call's output below, and fails the job there
+            traceback.print_exc(file=sys.stderr)
+            failed[c] = e
+
+    print(f"[DRIVER] ts_import over {len(mdocs)} mdoc(s) in {calls} call(s) at once", flush=True)
+    threads = [threading.Thread(target=call, args=(c,), name=f"ts_import{c}") for c in range(calls)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    for c, (mdoc_part, out_part) in enumerate(parts):
+        log = job_dir / f"{out_part}.log"
+        n = len(list(mdoc_part.iterdir()))
+        print(
+            f"[DRIVER] --- ts_import call {c + 1} of {calls} ({n} mdoc(s)){': FAILED' if c in failed else ''} ---",
+            flush=True,
+        )
+        print(log.read_text() if log.exists() else "(no output)", flush=True)
+    if failed:
+        raise RuntimeError(
+            f"ts_import failed in {len(failed)} of {calls} call(s): "
+            + "; ".join(f"call {c + 1}: {failed[c]}" for c in sorted(failed))
+        )
+
+    assembling = job_dir / "tomostar.assembling"
+    if assembling.exists():
+        shutil.rmtree(assembling)
+    assembling.mkdir()
+    for _, out_part in parts:
+        for f in (job_dir / out_part).glob("*.tomostar"):
+            if (assembling / f.name).exists():
+                raise RuntimeError(f"Two ts_import calls wrote {f.name}")
+            f.rename(assembling / f.name)
+    tomostar_dir = job_dir / "tomostar"
+    if tomostar_dir.exists():  # left by an earlier run with no tomostar in it, or the import would be skipped
+        shutil.rmtree(tomostar_dir)
+    assembling.rename(tomostar_dir)
+    for mdoc_part, out_part in parts:
+        shutil.rmtree(mdoc_part)
+        shutil.rmtree(job_dir / out_part)
+        (job_dir / f"{out_part}.log").unlink(missing_ok=True)
 
 
 def main():
@@ -127,15 +196,18 @@ def main():
         additional_binds = local_params_data["additional_binds"]
         paths["mdoc_dir"] = stage_upstream_mdocs(paths["mdoc_dir"], paths["input_star"], params.mdoc_pattern, job_dir)
 
-        # Build and run the WarpTools commands
-        command_str = build_ts_import_commands(params, paths, job_dir)
-        print(f"[DRIVER] Command: {command_str}", flush=True)
+        tomostar_dir = job_dir / "tomostar"
+        done = sorted(tomostar_dir.glob("*.tomostar")) if tomostar_dir.is_dir() else []
+        if done:
+            print(f"[DRIVER] {len(done)} tomostar file(s) already in {tomostar_dir}: ts_import skipped", flush=True)
+        else:
+            import_tilt_series(params, paths, job_dir, additional_binds)
 
-        print("[DRIVER] Executing container...", flush=True)
+        command_str = create_settings_command(params)
+        print(f"[DRIVER] Command: {command_str}", flush=True)
         run_tool(command_str, tool_name=params.get_tool_name(), cwd=job_dir, binds=additional_binds)
 
         # Verify outputs exist
-        tomostar_dir = job_dir / "tomostar"
         settings_file = job_dir / "warp_tiltseries.settings"
         tomostar_files = list(tomostar_dir.glob("*.tomostar")) if tomostar_dir.exists() else []
 

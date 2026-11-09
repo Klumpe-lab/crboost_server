@@ -1,12 +1,13 @@
 # Roadmap 45 — GPU use on CBE.next: measure every job, then close the gaps
 
-**Status:** scoped 2026-11-06. S1 built and piloted 2026-11-08; probes P2, P4–P7b, P9, P10 and P12 ran 2026-11-08 and
-09 (§11). Since 2026-11-09 the dev conf (not the template) runs the short Warp and AreTomo stages on MIG slices, and
-a second 412 pilot on them (`slicetest_412_FCIsolation`) ran import to reconstruct at a third of the billing in twice
-the wall time; P9 on a slice finished (template matching stays on B200s) and P11 (tsImport) queued. Open: D1 (IT's
-number), D9 (angle lists, before H7's fix), S2–S6, D2–D8. Pickup: §11's 2026-11-09 entries, then P11; the builds the
-results point to: slices in the template conf, two or three template-matching lanes under MPS (P7b: 1.75× at two,
-1.91× at three), Warp chunks with two workers (P10: 1.38–1.42×), item flow (replay: 1:37 to 0:59).
+**Status:** scoped 2026-11-06. S1 built and piloted 2026-11-08; probes P2, P4–P7b and P9–P12 ran 2026-11-08 and
+09 (§11). Built 2026-11-09 and piloted on the 412 data (`anglestest_FCIsolation`: 205.6 billing-h against the first
+pilot's 378.9): the short Warp and AreTomo stages on any B200 card or slice, template matching in 3 lanes of 2 under
+MPS with H7's angle lists (60 s of B200 a tomogram against 186), Warp reconstruct in chunks of 8. Then built, not
+run: tsImport in 4 calls on its own 8-CPU profile (P11), the template-matching tab's rotation count, the template
+conf's per-tilt-series reconstruct sizes (§11, last entry). Open: whether reconstruct chunks keep to full B200s (on
+slices they cost more than single tasks), A100 probes, why motion on full B200s took 154 s against 60, D1 (IT's
+number), S2–S6, D2 and D5–D7. The lab install lags main and its conf the dev conf (§11, last entry).
 
 **In one line.** Cluster IT told a colleague that crboost jobs idle on the B200s about a quarter of the time while
 their data is read into GPU memory, and advised putting data on scratch. (The report has been passed on in two ways:
@@ -921,3 +922,44 @@ its leftovers named.
     pilot's (34 and 27 s against 27 and 16).
   - All stages' outcomes as before: the same five alignment failures (AreTomo2 exits 139 on Position_4, 36_2, 38_5,
     39_4, 39_5 in all three pilots), 158 of 158 from CTF on.
+- **2026-11-09, why motion on full B200s took 154 s against 60** (the task logs, Warp's per-item logs and one
+  accounting query per pilot; no job). Not the card, not the reads, not the request: Slurm put 159 of the anglestest
+  pilot's 163 motion tasks on one node, `cbe-g5-8`, about 20 at a time, while no other job ran on any g5 node
+  (13:21–13:44); the first pilot's ran about 3 to a node over 7 nodes, because other users held the slices. The
+  requests are the same (`%20`, 2 CPUs, `gpu:1`, 24G, `--perdevice 2`; only `--constraint=b200` is new). In Warp's
+  per-item logs the EER load stays at about 1.3 s an item; the processing step goes from 1.1 to 5.4 s, most of it
+  the CTF fit (0.41 to 3.9 s) and the motion fit (0.16 to 0.71 s), and rises with the motion tasks on the node: 1.1 s
+  at 1–3, 2.2 s at 7–12, 5.6 s at 18–20, the same on a card and on a slice. CPU use fell from about 70 % to 30 % of
+  the 2 cores. The slices pilot (all slices) shows the same split: 126 tasks on g5-8 at 160 s at the median, 37 on
+  g5-2 (2 at a time) at 60 s, as fast as a B200. The crowd, not the node: at equal load g5-8 is at most about 10 %
+  slower (first pilot, 2–5 tasks a node: 1.09–1.31 s an item against 1.02–1.24 s elsewhere; 60 s a task against
+  56–62), and inside g5-8 alone the time climbs with the tasks on it (anglestest, slices: 1.1 s at 2, 1.9–2.6 s at
+  7–11, 3.0 s at 13, 4.4–4.8 s at 16–17, 6.0 s at 20). No other node ever ran 7 or more, so a fault of g5-8's that
+  shows only when crowded is not ruled out. So the slices pilot's "motion 2.5x slower on a slice" was the crowd, not
+  the slice, and its alignment and CTF factors (1.4x) may carry the same crowd; only reconstruct's (P10, a lone job)
+  is clean. Open: which shared resource the GPU steps wait on (PCIe, host memory, the driver, NUMA): K motion tasks
+  on one node at K = 1, 4, 8, 16, 20 under `dmon` would find the knee and the resource; why Slurm stacks a lone array
+  on one node instead of spreading it (for IT, with D1).
+- **2026-11-09, built: tsImport in parallel calls, the tab's rotation count, the template's sizes** (not run on the
+  cluster; toy runs of the real code: a fake WarpTools over 10 mdocs in 4 calls, one call failing, a rerun).
+  - *tsImport (P11).* It takes its own SLURM profile like any single job, no longer the supervisor's 1 CPU and 4 GB
+    (its job name loses `-sup`), and runs `import_calls` (default 4, never more than its CPUs) `WarpTools ts_import`
+    calls at once, each over a share of the mdocs on a share of the CPUs, each into its own folder beside `tomostar/`
+    (a tomostar names its frames relative to itself, so the folder sits at the same depth); their tomostars land in
+    `tomostar/` in one rename, so `tomostar/` exists only whole. Each call's output reaches `run.out` in order after
+    the calls end; a failed call fails the job and keeps its folder and log. A call's command is production's but
+    for `--mdocs` and `--output`. Profiles: 8 CPUs, 16G (template and dev conf). A conf whose tsImport profile names
+    no partition now sends it to the default one, which on CBE.next refuses a job without a GPU: the lab conf needs
+    `partition: c` there before it pulls this.
+  - *The template-matching tab (H7's last part).* Under Symmetry: about how many rotations the search tries
+    (`pytom_angle_count`, which counts pytom's list without building it, over |G|) and, for T, O and I, what 12°
+    searched before; switching to or from I1 or I2 moves an increment still at its default (`set_symmetry`). HOTFIXES
+    H7 moved to Fixed.
+  - *conf.template.yaml.* tsReconstruct per tilt series, 24G and 0:20:00: its 64G and 1:00:00 made a default chunk
+    (8 tilt series, 2 workers) ask for 128G and 4:00:00. The template-matching profile says it is per tomogram.
+  - *Lab install* (`/groups/klumpe/software/crboost_server`): on `b5655df`, which is origin/main; main is 19 commits
+    ahead, unpushed. Its conf lacks 11 of the dev conf's profile changes: `constraint: b200` on motion, alignment,
+    CTF, reconstruct and export (without it an untyped `gpu:1` can land on the A100 and RTX 6000 nodes); extraction
+    on a slice; subtomogram extraction, particle reconstruction, tsImport and filament picking on `c`; an
+    `extractPickList` profile; tsCtf and warpExport at 16G, tsReconstruct at 24G and 0:20:00; tsImport at 8 CPUs
+    and 16G. They go in with the pull: before it, `partition` and `gres: ''` on the CPU steps would send them to `g`.
