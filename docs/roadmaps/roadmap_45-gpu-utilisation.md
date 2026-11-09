@@ -1,10 +1,12 @@
 # Roadmap 45 — GPU use on CBE.next: measure every job, then close the gaps
 
-**Status:** scoped 2026-11-06. S0's probes P2 and P4–P7 ran 2026-11-08 (§11); S1 built the same day and piloted in
-two projects (§11): the CPU steps run without a GPU, and a template-matching task took 186 s against 165 s for a reason
-not yet found. Open: D1 (what IT's number is; no message sent yet), S2–S6 and D2–D8. Pickup (§11, 2026-11-09): the
-slices pilot, P9 (angle lists, HOTFIXES H7), P10 (Warp chunks), P11 (tsImport) and P12 (item dependencies), all
-written and not run; then two to four template-matching processes per GPU under MPS (P7: 1.45× at four; P7b not run).
+**Status:** scoped 2026-11-06. S1 built and piloted 2026-11-08; probes P2, P4–P7b, P9, P10 and P12 ran 2026-11-08
+and 09 (§11). Since 2026-11-09 the dev conf (not the template) runs the short Warp and AreTomo stages on MIG slices,
+and a second 412 pilot on them (`slicetest_412_FCIsolation`) was at reconstruct at 11:30; P9 on a slice was finishing
+and P11 (tsImport) queued. Open: D1 (IT's number), D9 (angle lists, before H7's fix), S2–S6, D2–D8. Pickup: §11's
+2026-11-09 entries, then the slices pilot against the first (stage times, billing, `scripts/compare_projects.py`) and
+P11; the builds the results point to: slices in the template conf, two or three template-matching lanes under MPS
+(P7b: 1.75× at two, 1.91× at three), Warp chunks with two workers (P10: 1.38–1.42×), item flow (replay: 1:37 to 0:59).
 
 **In one line.** Cluster IT told a colleague that crboost jobs idle on the B200s about a quarter of the time while
 their data is read into GPU memory, and advised putting data on scratch. (The report has been passed on in two ways:
@@ -326,6 +328,25 @@ Each is applied to a job type only where the meter names its cause (§4); the ex
   (`services/project_state.py:60`, now 3.12).
 - **D8 — job names.** Proposed `cb-<instance_id>` and `cb-<instance_id>-sup`, and `--comment` the job type and
   directory number. The project's path is already in every job's `StdOut`, so the name adds no exposure.
+- **D9 — angle lists for template matching (HOTFIXES H7), the maintainer's points of 2026-11-09.** Nothing about
+  them is decided; the fix waits on these.
+  - The lab searches roughly spherical viruses at 12° or at 90°. Finer targets need every increment available:
+    nothing may narrow the choice of increment or symmetry unless it is plainly better for speed and loses nothing.
+  - Wanted first: one clear account of where the lists come from, why they matter so much, why each job computes
+    its own instead of one list per group being kept, and how the increment relates to the group (I1, C5, ...).
+  - What is known, for that account. A search tries every rotation in its list against the whole tomogram, so its
+    time is the list's length. pytom builds the list itself for a bare increment (`angle_to_angle_list`: HEALPix
+    view directions times in-plane steps; 9,000 rotations at 12°, 48 at 90°, about 8 times as many each time the
+    increment halves). For Cn crboost passes `--z-axis-rotational-symmetry n`, and pytom cuts the in-plane steps to
+    360/n. For D, T, O and I pytom has no option, so crboost writes a list file
+    (`services/templating/angle_lists.py`, its own Euler grid cut with scipy's `Rotation.create_group`) at each
+    job's start. The increment sets how finely orientations are sampled, and the group how much of the rotation space
+    is needed (1/|G| of it, |G| = 60 for I); the two are independent, about (pytom's list at that increment) / |G|
+    rotations. The list depends only on the group, its axes and the increment, so one kept per (group, axes,
+    increment) would do as well as a fresh one per job; the job's copy records what it searched.
+  - Open points the fix has to settle: the template's axes (RELION's I1 and I2 differ by 90° about z; P9 found the
+    412 template on scipy's setting), the side the symmetry composes on, and what a very coarse search means once
+    reduced: 90° in I leaves about one rotation.
 
 ## 9. Stages
 
@@ -718,3 +739,48 @@ its leftovers named.
   against 0.865). The two Euler readings give the same numbers for this group, so the run's "not clear" flag was the
   rule comparing the winner with that tie; it now compares with the other setting. Lists: 148 rotations at 12°, 578
   at 8°, 2,124 at 5°. A one-rotation warm-up on the slice, split 2 2 1, took 199 s with cold caches.
+- **2026-11-09, a full `c` holds up GPU work.** At 10:41 `c` had 4 of 2,112 cores idle and 30 jobs ahead by
+  priority, while `g` had 5 idle nodes. The slices pilot's supervisors (1 CPU, 4 h limit each), P11 and P12's
+  dependents waited on `c`, and each of a pipeline's supervisors queues there again when its turn comes. Priority
+  43,841: fair-share 36,659 of 100,000 (the lab used a third of its share, LevelFS 3.1, but the holding and the
+  institute sit at or above theirs, 0.93 and 0.98, so quieter branches rank first; the maintainer's own use moves
+  the factor from 0.377 to 0.367). The B200 probes' "18:07" from `--test-only` was the worst case Slurm plans with,
+  every running job taking its full limit: both started within six minutes. Item flow submitted from the server
+  (P12) would need no supervisor jobs on `c`.
+- **2026-11-09, P12 ran** (arrays 1494448–1494450, reaper 1494451, on the full `c`). `--dependency=aftercorr`
+  releases per task: B_0 started at 10:34:51 while A's tasks 3–5 still ran (to 10:36:04). The cluster sets
+  `DependencyParameters=kill_invalid_depend`, so a dependent task is cancelled once its dependency cannot be met,
+  with or without `--kill-on-invalid-dep`: B_6 and C_6, with no task 6 upstream, when A ended; B_3 and C_3, whose
+  counterpart failed, while still pending, and they leave no record in `sacct` (never split from the array). So item
+  flow needs one index per tilt series across all stages (sparse `--array` lists match by index), and the
+  reconciler has to read "skipped, upstream failed" from the upstream failure. The start delays (97 s to 10 min
+  after the counterpart ended) were the full partition's queue, not the dependency: the replay's 1 s and 60 s stay
+  assumptions until a run on a partition with room.
+- **2026-11-09, P9 on a B200** (job 1494468; the 4 tomograms with the most candidates, all at the `-n 20` cap). The
+  old list reproduces the pilot exactly (80 of 80 candidates, score difference 0).
+
+  | List | Rotations | Nearest orientation, median / 95th pct | Task wall s | Start to scores map s |
+  |---|---:|---|---:|---:|
+  | old | 3,398 | 2.3° / 3.7° | 119 | 110 |
+  | 5° | 2,124 | 2.4° / 3.4° | 95 | 85 |
+  | 8° | 578 | 3.8° / 5.2° | 66 | 57 |
+  | 12° | 148 | 5.9° / 8.4° | 58 | 49 |
+
+  About 45 s of a task is not the search. The candidates cannot say whether a coarser list loses particles: in each
+  tomogram the best pick scores 8–27 % above the 20th and all 20 sit just above pytom's cut-off, so the picks are
+  mostly peaks at the noise level that any change of sampling reshuffles. A list that samples as finely as the old
+  one (5°) keeps 31 of the old 80 within a quarter diameter (144 Å), and of the old three best per tomogram 5° keeps
+  9 of 12, 8° 5 and 12° 4 (10, 7 and 8 within half a diameter). Matched picks score 0.98 (5°), 0.97 (8°) and 0.93
+  (12°) of the old. So 5° is the like-for-like fix (20 % off the task), and 8° or 12° need a set of picks the
+  scientists trust to test recall on.
+- **2026-11-09, P10 on a B200** (job 1494469, 8 tilt series). Warp reconstruct, one call each as production: 43 s a
+  tilt series (production's task, 63 s, adds driver, staging and start-up). One call for all 8: 1 worker 1.07×, 2
+  workers 1.38× (SM 80 %), 4 workers 1.39× (SM 89 %). Tomograms equal one call each's to 3e-5 (correlation 1.000000).
+  The cold read of the 8 tilt series' averages and halves, 31.1 GB, took 42 s (733 MB/s, 5.3 s a tilt series).
+- **2026-11-09, P10 on a slice** (job 1494446, 4 tilt series). One call each: 170 s a tilt series at the median
+  (Position_13_3 took 419 s, the other three 149–172 s), about 4 times the B200's 43 s. One call for all 4: 1 worker
+  0.85× (1,052 s), 2 workers 1.42× (630 s, 157 s a tilt series), 4 workers 1.41×. Tomograms equal one call each's to
+  3e-5. Warp's first start in the job took 149 s for one tilt series. Billing a tilt series at 2 workers, 157 s ×
+  3.43 on a slice against 30 s × 24 on a B200: 539 against 720 units·s. Reconstruct is the one short stage that
+  keeps a card busy, and on a slice it saves a quarter of the billing at five times the wall time; the slices pilot
+  shows what that does at full scale with 20 at a time.
