@@ -2,9 +2,9 @@
 
 **Status:** scoped 2026-11-06. S0's probes P2 and P4–P7 ran 2026-11-08 (§11); S1 built the same day and piloted in
 two projects (§11): the CPU steps run without a GPU, and a template-matching task took 186 s against 165 s for a reason
-not yet found. Open: D1 (what IT's number is; no message sent yet), S2–S6 and D2–D8. Pickup: outputs into TMPDIR
-against `/groups` on one GPU (§11, the 412 pilot's numbers), then two to four template-matching processes per GPU
-under MPS (P7: 1.45× at four; P7b written, not run).
+not yet found. Open: D1 (what IT's number is; no message sent yet), S2–S6 and D2–D8. Pickup (§11, 2026-11-09): the
+slices pilot, P9 (angle lists, HOTFIXES H7), P10 (Warp chunks), P11 (tsImport) and P12 (item dependencies), all
+written and not run; then two to four template-matching processes per GPU under MPS (P7: 1.45× at four; P7b not run).
 
 **In one line.** Cluster IT told a colleague that crboost jobs idle on the B200s about a quarter of the time while
 their data is read into GPU memory, and advised putting data on scratch. (The report has been passed on in two ways:
@@ -668,3 +668,53 @@ its leftovers named.
     A seventh of a B200 does these short stages at 1.2–1.33 times the time, so a slice is the right size for them
     (L6), and pinning them to `gpu:nvidia_b200_1g.23gb:1` costs a fifth of the billing. Reconstruct has one slice task
     and is the stage that keeps its card busy (56 %).
+- **2026-11-09, experiments for slices, angle lists and the pipeline's shape (written, not run).**
+  - *The pipeline's shape, replayed* (`scripts/simulate_item_flow.py`, no job: the pilot's own task times, throttles
+    and gaps). Stage barriers as run: 1:32:40 against the real 1:36:34, which checks the replay; 11 min of the run
+    are gaps between one stage's last task and the next stage's first. Each tilt series moving on as soon as its
+    own task ends: 0:58:45 with tsImport still one job, 0:39:21 with it split per tilt series; with 60 s for Slurm to
+    act on each dependency, 1:05:38 and 0:46:14. Up to 71–82 tasks then run at once (57–66 outside template
+    matching), against 20 today: more GPUs than `g` has as full B200s, so item flow needs the short stages on slices.
+  - *P9, angle lists* (`probe_tm_angles.sh`, `tm_angle_lists.py`, `summarise_tm_angles.py`; HOTFIXES H7). The
+    pilot's own pytom and extraction commands on its tomograms with the most candidates, with the old list and with
+    correct I lists at 12°, 8° and 5°. Before any list it checks with pytom's own rotation which 2-2-2 setting the
+    template has and on which side its symmetry composes. Search time per list, and the candidates against the old
+    list's.
+  - *P10, Warp chunks* (`probe_warp_chunk.sh`, `summarise_warp_chunk.py`; L5, P5 for Warp). Warp reconstruct on N
+    tilt series: one call each as production, then one call for all with 1, 2 and 4 workers, on a B200 and on a
+    slice; the cold read of the averages timed first (3.4 GB a tilt series), tomograms compared with one call each.
+  - *P11, tsImport* (`probe_ts_import.sh`, partition `c`): production's `ts_import` over the 163 mdocs in one call,
+    then 4 and 8 calls at once; its user and system seconds say whether the 12 minutes are work or waiting on
+    `/groups`. Neither `ts_import` nor reconstruct wrote into its inputs in the pilot (file times), so the probes read
+    them in place.
+  - *P12, item dependencies* (`probe_aftercorr.sh`, four tiny jobs on `c`): whether `--dependency=aftercorr` starts
+    task i when task i upstream ends, how long after, and what becomes of a task whose counterpart failed or is
+    missing, with and without `--kill-on-invalid-dep`.
+  - *The slices pilot.* The dev conf now runs motion, alignment, CTF, reconstruct and export on a slice, with memory
+    at the pilot's peak plus about half (CTF 32 → 16G, reconstruct 64 → 24G, export 32 → 16G): above 25 GB a slice
+    job is billed by its memory (0.134 a GB), and 28 slices share a node's memory. Motion stays at 24G, where its
+    peak sat at the request. A second 412 project up to reconstruct then gives the stage times at full scale, and
+    `scripts/compare_projects.py` its outputs against the pilot's (the pilot against itself: identical throughout).
+  - Full B200s queued for about 8 hours this morning while slices started at once.
+- **2026-11-09, P7b ran** (job 1493952, one B200, 16 CPUs, the production command with the full 3,398-rotation
+  list, lanes started 30 s apart). The maps of one lane and of four lanes under MPS are byte for byte the same.
+
+  | Lanes | MPS | Tomograms/min | Against one lane | DCGM SM active / occupancy | Set-up s | Search s |
+  |---:|---|---:|---:|---|---:|---:|
+  | 1 | – | 0.44 | 1.00 | 0.46 / 0.26 | 51.7 | 63.6 |
+  | 2 | no | 0.64 | 1.45 | 0.67 / 0.37 | 62.1 | 80.9 |
+  | 2 | yes | 0.78 | 1.75 | 0.80 / 0.45 | 27.8 | 96.5 |
+  | 3 | yes | 0.85 | 1.91 | 0.88 / 0.49 | 27.8 | 127.1 |
+  | 4 | yes | 0.87 | 1.97 | 0.91 / 0.51 | 35.5 | 170.6 |
+
+  Two lanes under MPS give most of it, three nearly all: four sit at the search's ceiling (63.6 s a tomogram, 0.94 a
+  minute). The tensor pipe stays unused. As in P7, a lane's set-up runs faster under MPS (51.7 s alone, about 28 s
+  beside another), unexplained. With H7 fixed the search shrinks and the set-up and writes are most of a tomogram,
+  so lanes would then fill a card that one process leaves mostly idle.
+- **2026-11-09, P9's axis check** (job 1494445, on a slice). Over the 59 symmetry rotations the template keeps a
+  correlation of at least 0.922 (median 0.944) with scipy's icosahedral group as it is, and 0.838 (median 0.855)
+  turned 90° about z, against 0.864–0.889 for random rotations: the near-spherical particle looks alike from most
+  directions, and its axes are scipy's setting (the project calls it I1). The symmetry composes on the right (0.988
+  against 0.865). The two Euler readings give the same numbers for this group, so the run's "not clear" flag was the
+  rule comparing the winner with that tie; it now compares with the other setting. Lists: 148 rotations at 12°, 578
+  at 8°, 2,124 at 5°. A one-rotation warm-up on the slice, split 2 2 1, took 199 s with cold caches.

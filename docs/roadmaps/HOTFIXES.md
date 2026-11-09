@@ -237,6 +237,11 @@ changes scores and candidates, so the increment to use afterwards is the scienti
 - The module promises "|G|× faster search" (`:14-18`), and `expected_angle_count` (`:158-166`) has the right number:
   every such job logs both, e.g. "symmetry=I1: wrote 3398 angles (estimate 225)" in the 412 pilot's job007 `run.out`
   (`drivers/template_match_pytom.py:502`).
+- Hidden behind it, and live once the cut works: the group is scipy's icosahedral group whatever the template's
+  axes (`_scipy_group_name`, `:63-71`, maps I1 and I2 to the same group, and the module calls the orientation moot,
+  `:20-27`), and it composes on one fixed side (`sym_group * rot`, `:113`). A list cut to one rotation per orbit
+  covers every orientation only for the template's own axes, composed on the side pytom applies a listed rotation;
+  RELION's I1 and I2 differ by a 90° turn about z. Today's lists keep so many rotations that it does not show.
 - Beside it: an increment that does not parse becomes 12° without a word (`drivers/template_match_pytom.py:494-497`).
 - CryoBoost v1 had no such list: it allowed only Cn symmetry for pytom (`src/templateMatching/pytomTm.py:71-73`
   there), so this is new, not inherited.
@@ -248,24 +253,28 @@ changes scores and candidates, so the increment to use afterwards is the scienti
 ```
 
 prints `3398 225`, as the pilot's `angles_I1.txt` has 3,398 lines. For 20,000 random orientations, the angle to the
-nearest symmetry image of a listed one: the pilot's list, median 2.3°, 95th percentile 3.7°, at most 5.0°; the 222
-points of the same grid that lie in one fundamental region (a point kept when its own key is its orbit's smallest),
-5.6°, 9.1° and 12.8°; the full 12° grid without symmetry, 5.3°, 7.9° and 21.1°. So the list samples like an increment
-of about 5°, not 12°.
+nearest symmetry image of a listed one: the pilot's list, median 2.3–2.9°, 95th percentile 3.7–4.6°, at most 5.0–6.4°
+(the range covers both sides and both 2-2-2 settings). pytom's own sampling for a plain increment
+(`pytom_tm.angles.angle_to_angle_list`: HEALPix view directions times in-plane steps), cut to the rotation nearest
+the identity in each orbit, keeps 148 of 9,000 at 12° (median 6.0°, 95th percentile 8.6°, against 5.8° and 7.9°
+uncut), 578 of 34,560 at 8° (3.8°, 5.2°) and 2,124 of 124,416 at 5° (2.4°, 3.4°). So the pilot's list samples like an
+increment of about 5°, which a correct list reaches with 2,124 rotations. The crboost grid cuts unevenly (451 at 12°,
+3,512 at 5°): its points crowd at the poles of the Euler angles.
 
 **Impact.** The search took 63.5 of a template-matching process's 112 s in roadmap 45's P7; with 225 orientations it
 would take about 4 s. The 412 pilot's template matching held B200s for 8.71 GPU-h, the baseline week's 7.0 (roadmap
 45 §3), most of it this search. Projects with T or O templates search about 3 and 6 times what they ask for.
 
-**Fix.** Keep the points of one fundamental region: a grid point stays when its key is the smallest of its orbit, which
-leaves about |grid| ÷ |G| points with the C1 grid's coverage at the same increment. Show the count beside the
-increment in the template-matching tab, and say there that searches with these groups used to sample finer than their
-increment, about 5° at a 12° setting, so a project can keep that sampling by choosing it.
+**Fix.** Start from pytom's own sampling at the increment and keep, in each orbit, the rotation nearest the identity:
+about a |G|th of the list, with the uncut list's coverage. Use the template's own axes (I1 or I2 as RELION means them)
+and the side pytom composes on, as roadmap 45's P9 measures them with pytom's own rotation
+(`docs/reports/gpu-util/scripts/tm_angle_lists.py`). Show the count beside the increment in the template-matching
+tab, and say there that searches with these groups used to sample finer than their increment, about 5° at a 12°
+setting, so a project can keep that sampling by choosing it.
 
-**Check.** `generate_asymmetric_unit_angles('I1', 12)` gives about 225 (222 on this grid) and the coverage check gives
-the C1 grid's median within half a degree. One 412 tomogram searched with the old and the new list at the same
-increment, and with the new list at about 5°: candidates and score distributions side by side, before a project
-changes over.
+**Check.** The I1 list at 12° has about 150 rotations and covers within half a degree of pytom's uncut 12° list. P9's
+tomograms searched with the old list and with correct lists at 12°, 8° and 5°: candidates and scores side by side,
+before a project changes over.
 
 ## Fixed
 
