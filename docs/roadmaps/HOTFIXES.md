@@ -220,6 +220,53 @@ partition, and let the strip show each type.
 **Check.** The line above gives `[("nvidia_b200", 4), ("nvidia_b200_1g.23gb", 28)]`, and the landing page's strip
 shows both on `g`.
 
+### H7 — Template matching with T, O or I symmetry searches 3 to 15 times the orientations its increment asks for
+
+**Status:** open, found 2026-11-09 (roadmap 45, the 412 pilot; anchors at `edebd13`). **Severity:** high for cost, none
+for correctness so far: every I1 search runs 3,398 orientations where its 12° needs about 225, and the search is most
+of a template-matching task's GPU time. The extra orientations sample finer, so results so far are valid; a fix
+changes scores and candidates, so the increment to use afterwards is the scientists' choice.
+
+**What is wrong.**
+- `_reduce_to_asymmetric_unit` (`services/templating/angle_lists.py:99-128`) drops a grid orientation only when an
+  earlier one has the same orbit key, a rounded quaternion. Two points of the ZXZ grid (`_uniform_so3_grid`, `:74-96`)
+  share a key only when a group element maps one exactly onto the other, and on that grid only the rotations about z
+  and the 2-folds do. So the cut is the order of that subgroup, not of the group: at 12° the 13,500-point grid becomes
+  3,484 (D2), 2,333 (D3), 1,430 (D5), 1,175 (D6), which is right, but 3,448 (T), 3,439 (O) and 3,398 (I1, I2) against
+  1,125, 562 and 225.
+- The module promises "|G|× faster search" (`:14-18`), and `expected_angle_count` (`:158-166`) has the right number:
+  every such job logs both, e.g. "symmetry=I1: wrote 3398 angles (estimate 225)" in the 412 pilot's job007 `run.out`
+  (`drivers/template_match_pytom.py:502`).
+- Beside it: an increment that does not parse becomes 12° without a word (`drivers/template_match_pytom.py:494-497`).
+- CryoBoost v1 had no such list: it allowed only Cn symmetry for pytom (`src/templateMatching/pytomTm.py:71-73`
+  there), so this is new, not inherited.
+
+**Evidence** (the real functions, and the pilot's list read without writing). From the checkout:
+
+```
+./crboost python -c "from services.templating.angle_lists import generate_asymmetric_unit_angles as g, expected_angle_count as e; print(len(g('I1', 12)), e('I1', 12))"
+```
+
+prints `3398 225`, as the pilot's `angles_I1.txt` has 3,398 lines. For 20,000 random orientations, the angle to the
+nearest symmetry image of a listed one: the pilot's list, median 2.3°, 95th percentile 3.7°, at most 5.0°; the 222
+points of the same grid that lie in one fundamental region (a point kept when its own key is its orbit's smallest),
+5.6°, 9.1° and 12.8°; the full 12° grid without symmetry, 5.3°, 7.9° and 21.1°. So the list samples like an increment
+of about 5°, not 12°.
+
+**Impact.** The search took 63.5 of a template-matching process's 112 s in roadmap 45's P7; with 225 orientations it
+would take about 4 s. The 412 pilot's template matching held B200s for 8.71 GPU-h, the baseline week's 7.0 (roadmap
+45 §3), most of it this search. Projects with T or O templates search about 3 and 6 times what they ask for.
+
+**Fix.** Keep the points of one fundamental region: a grid point stays when its key is the smallest of its orbit, which
+leaves about |grid| ÷ |G| points with the C1 grid's coverage at the same increment. Show the count beside the
+increment in the template-matching tab, and say there that searches with these groups used to sample finer than their
+increment, about 5° at a 12° setting, so a project can keep that sampling by choosing it.
+
+**Check.** `generate_asymmetric_unit_angles('I1', 12)` gives about 225 (222 on this grid) and the coverage check gives
+the C1 grid's median within half a degree. One 412 tomogram searched with the old and the new list at the same
+increment, and with the new list at about 5°: candidates and score distributions side by side, before a project
+changes over.
+
 ## Fixed
 
 *(none yet)*

@@ -1,8 +1,10 @@
 # Roadmap 45 — GPU use on CBE.next: measure every job, then close the gaps
 
-**Status:** scoped 2026-11-06. S0's probes P2 and P4–P7 ran 2026-11-08 (§11); S1 built the same day and running in
-two pilot projects. Open: D1 (what IT's number is; no message sent yet), S2–S6 and D2–D8. Pickup: the pilots'
-numbers (§11), then two to four template-matching processes per GPU under MPS (P7: 1.45× at four).
+**Status:** scoped 2026-11-06. S0's probes P2 and P4–P7 ran 2026-11-08 (§11); S1 built the same day and piloted in
+two projects (§11): the CPU steps run without a GPU, and a template-matching task took 186 s against 165 s for a reason
+not yet found. Open: D1 (what IT's number is; no message sent yet), S2–S6 and D2–D8. Pickup: outputs into TMPDIR
+against `/groups` on one GPU (§11, the 412 pilot's numbers), then two to four template-matching processes per GPU
+under MPS (P7: 1.45× at four; P7b written, not run).
 
 **In one line.** Cluster IT told a colleague that crboost jobs idle on the B200s about a quarter of the time while
 their data is read into GPU memory, and advised putting data on scratch. (The report has been passed on in two ways:
@@ -140,9 +142,9 @@ What it says:
   allocation sees that time as idle. A hand run of one 412 tomogram on a B200 took 112 s for the container command
   (roadmap 43 §3) and SLURM recorded it 100 % busy; the production template-matching tasks take 165 s at the median and
   read 98.6 %. The next bullet shows where those 165 s go.
-- **A production template-matching task, from file times.** The 141 tasks of one 412 job (AGG412 job019, 2026-11-05):
-  the allocation start from accounting, the rest from the modification times of each tomogram's files, because the task
-  logs carry no clock. Medians over the tasks (they do not add up exactly):
+- **A production template-matching task, from file times.** The 141 tasks of one 412 job (job019 of
+  `AGG412_20251113_412`, 2026-11-05): the allocation start from accounting, the rest from the modification times of
+  each tomogram's files, because the task logs carry no clock. Medians over the tasks (they do not add up exactly):
 
   | Phase | Median s | Share | The card |
   |---|---:|---:|---|
@@ -584,3 +586,85 @@ its leftovers named.
   1.75× one process. The byte-for-byte check did not run: the probe looked for the maps under the tilt series' name,
   and pytom names them after the volume file (fixed in the script). Not built, since 3 s of 112 is not worth a
   wrapper: the FFT workers. Next: two to four processes per GPU under MPS, started a set-up apart.
+- **2026-11-08, P7b written (not run).** `probe_tm_lanes.sh` with `summarise_tm_lanes.py`: the production command in
+  lanes (each lane runs its tomograms one after another on its own 4 CPUs, later lanes 30 s apart): one lane x 2
+  (baseline), two lanes x 3 without and with MPS, three x 2 and four x 2 under MPS; maps of a lone run compared byte
+  for byte with a second lone run and with one made by the fourth lane under MPS. Its throughput includes each arm's
+  ramp up and down, as a task running 2–3 tomograms a lane would. Checked: `bash -n`, a stand-in run through the
+  summariser, `sbatch --test-only` from `~/dev`.
+- **2026-11-08, the 412 pilot under way** (`slurmtest_412_FCIsolation`, all 163 tilt series of the session, settings
+  of the AGG412 FCIsolation project without its tilt filter and missAlign; submitted 16:59:49). Motion 163 of 163 in
+  about 13 minutes; tsImport one CPU job on `c`, about 14 minutes; alignment dropped 5 series to AreTomo2 segfaults
+  (exit 139), four of which aligned in the reference project after its DL tilt filter had removed bad tilts; CTF and
+  reconstruction 158 of 158. Template matching (158 tasks at 16 at a time) runs on the new code: every task log
+  begins with its `[SLURM]` line, and the first eight tasks landed 4.0 GiB each in `tmResults` in 6.5–7.8 s with
+  sixteen tasks running, where pytom writing into the shared folder took about 17 s for one map in §3.
+- **2026-11-08, the copia pilot** (`copia-tutorial-20261108-1651`, one tilt series, every stage to Class3D) succeeded
+  once candidate extraction was re-run on a slice. From one accounting query by job name: subtomogram extraction (44 s
+  a task) and particle reconstruction (4 min 8 s, CPU efficiency 0.60) ran on `c` with no GPU; candidate extraction
+  held one MIG slice for 8 min 6 s without touching it (the protocol's up to 1500 candidates, which pytom extracts
+  one full-map search at a time: 1005 here, 1028 in the October run); template matching 1 min 42 s on a B200 at 4 %
+  busy (the protocol searches 48 rotations, 90° in C1, as the October run did, so the task is set-up and writes); motion
+  35 %, reconstruction 60 %, Class3D 93 % (19 min, the whole card's memory). Alignment (21 s) and CTF (14 s) read 0 %
+  with no GPU memory: shorter than SLURM's 30 s sampling, so not sampled rather than unused. The three CPU steps held
+  a full B200 for about 13 minutes before this change.
+- **2026-11-08, the 412 pilot's numbers** (16:59:50 to 18:36:34, 1 h 37 min; one accounting query, filtered on the
+  project's path; medians per task):
+
+  | Job | Tasks | GPU | s | GPU-h | SLURM busy % | CPU eff. | GPU mem GB |
+  |---|---:|---|---:|---:|---:|---:|---:|
+  | Warp motion + CTF | 163 | B200 or slice | 60 | 2.72 | 30 | 0.68 of 2 | 5.3 |
+  | tsImport (one job) | 1 | none, `c` | 737 | – | – | 0.98 of 1 | – |
+  | AreTomo alignment | 158 | B200 or slice | 27 | 1.21 | 0 (not sampled) | 0.42 | 0 |
+  | Warp CTF | 158 | B200 or slice | 16 | 0.72 | 0 (not sampled) | 0.39 | 0 |
+  | Warp reconstruct | 158 | B200 or slice | 63 | 2.79 | 56 | 0.16 | 2.6 |
+  | Template matching | 158 | B200 | 186 | 8.71 | 100 | 0.23 of 4 | 30.7 |
+  | Candidate extraction | 158 | slice | 35 | 1.81 | 0 | 0.41 | 0 |
+  | Warp export | 146 | B200 or slice | 10 | 0.46 | 0 (not sampled) | 0.16 | 0 |
+
+  Template matching from each task's log and file times: driver start and staging 2.9 s, pytom from the container's
+  start to its job.json 168 s (p10 145, p90 242), landing 6.9 s (6.2–9.2 over all 158), score-map scan 4.2 s, 186 s a
+  task: a tomogram held its B200 186 s against 165 s in job019, 8.71 GPU-h for 158 against about 6.5 for 141.
+  Corrected 2026-11-09, phase by phase against job019 (`AGG412_20251113_412`: the same container, tomogram size, 3,398
+  rotations, template, pytom options, 4 CPUs and 32 GB; up to 32 tasks at a time), from the same file times:
+
+  | Median s | job019 | 412 pilot |
+  |---|---:|---:|
+  | Driver start and staging | 3.7 | 2.9 |
+  | Container start to the scores map (set-up, search, first map) | 133 | 157 |
+  | Scores map to `job.json` (angles map, json) | 16.9 into `/groups` | 11.0 into TMPDIR |
+  | Landing, then the score-map scan | –, 7.7 | 6.9, 4.2 |
+  | Whole task | 165 | 186 |
+
+  From the scores map to the task's end the runs are about level (about 28 and 26 s): the angles map writes faster
+  into TMPDIR and landing gives most of that back, so staging did not shorten the task. The difference sits before the
+  scores map, and it is not node sharing, as this entry first said: both runs had about four tasks per node (111 of
+  job019's 141, 145 of the pilot's 158), and on the nodes both used that way job019 took 131–138 s where the pilot took
+  151–170 s (cbe-g5-3 131 to 151, g5-7 132 to 152, g5-2 138 to 170). cbe-g5-8 was the slowest node in both (224 s for
+  the five job019 tasks it ran alone, 175 s here). Nor is it neighbours' landing: tasks whose first minute overlapped
+  other tasks landing on their node were no slower. The first 16, started together, took 186 s against 156 s for the
+  rest. The 41 tilts here against 37–40 there (no tilt filter) change only the wedge set-up, about a second by P7.
+  Open: the first map's write into TMPDIR, which sits inside that span, and the cluster's state that evening; one job
+  on one GPU running the same tomogram with outputs into `/groups` and into TMPDIR in turn, under P7's phase timer,
+  tells them apart. P7b gives one GPU 16 CPUs; production gives a task 4, which lanes would share. Tasks under 30 s
+  (alignment, CTF, export) get no SLURM sample, so their 0 % and 0 GB are "not measured": whether Warp CTF and export
+  use the GPU needs the meter (S2). Motion's 2 CPUs ran at 0.68, so the CPU question (L2) is not settled by this.
+- **2026-11-09, two findings from the 412 pilot's own records.**
+  - The I1 angle list is 15 times too long (HOTFIXES H7). The pilot and job019 searched 3,398 orientations where a 12°
+    I1 search needs about 225, because symmetry duplicates were dropped only when they hit the grid exactly. The
+    list samples like about 5°. Fixing it is the largest lever on template matching found so far, and a scientific
+    choice, since the scores change.
+  - Slurm put some tasks of each short stage on MIG slices (`gpu:1` takes either type), so the pilot holds a
+    comparison with nothing else changed:
+
+    | Stage | B200 tasks | median s | slice tasks | median s | slice ÷ B200 | B200 cost ÷ slice cost |
+    |---|---:|---:|---:|---:|---:|---:|
+    | Warp motion + CTF | 144 | 60 | 19 | 72 | 1.20 | 5.8 |
+    | AreTomo alignment | 145 | 27 | 13 | 36 | 1.33 | 5.2 |
+    | Warp CTF | 131 | 15 | 28 | 18 | 1.20 | 5.8 |
+    | Warp export | 135 | 10 | 11 | 12 | 1.20 | 5.8 |
+    | Warp reconstruct | 158 | 63 | 1 | 174 | 2.76 | 2.5 |
+
+    A seventh of a B200 does these short stages at 1.2–1.33 times the time, so a slice is the right size for them
+    (L6), and pinning them to `gpu:nvidia_b200_1g.23gb:1` costs a fifth of the billing. Reconstruct has one slice task
+    and is the stage that keeps its card busy (56 %).

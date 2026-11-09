@@ -203,3 +203,9 @@ supervisors' lines; against S0. Set D2 from it.
   GPU GPU-…, started …` for an array task, `[SLURM] job 1476464 cb-tsImport-sup on cbe-c3-2 (c), started …` for a
   single job or supervisor. It is the first line of every `run.out` and `task_N.out`, so a job's ids come from its
   files without a Slurm query.
+- **2026-11-08, S0 measured on the pilots** (the 412 pilot plus the copia run, both active for most of the hour).
+  The server's counter, first hourly line (18:06): 1,827 calls in 60 minutes, 30.4 a minute: `squeue -j` 1,802,
+  `sacctmgr` 12, `sinfo` 10, `sacct` 3. The array supervisors' logs: 183 `still in queue` lines over the whole run,
+  one `squeue` each. `sdiag` for our user: 704 before the submit (16:59), 7,682 at 18:39, so about 7,000 requests in
+  100 minutes, most of them the reconciler's 3-second `squeue -j` (an squeue can cost the scheduler more than one
+  request). So the server, not the supervisors, is the rate to cut: S1's shared snapshot first.
