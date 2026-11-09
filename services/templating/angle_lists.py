@@ -1,152 +1,167 @@
-"""Asymmetric-unit angle list generation for PyTOM template-matching.
+"""Symmetry-reduced angle lists for PyTOM template matching (HOTFIXES H7, roadmap 45 D9).
 
-PyTOM's `pytom_match_template.py` has only one symmetry-named flag —
-`--z-axis-rotational-symmetry N` — which restricts the angular search to
-1/N of SO(3) for Cn rotational symmetry around the z-axis. For *any other*
-point group (D, T, O, I), the only way to exploit symmetry during the
-search is to pass a custom angle list via `--angular-search <file>`. From
-the pytom-match-pick help text verbatim:
+Where the lists come from. A search tries every rotation in its list against the whole tomogram, so its time is
+the list's length. For a bare increment pytom builds the list itself (`pytom_tm.angles.angle_to_angle_list`:
+HEALPix view directions times in-plane steps, 9,000 rotations at 12°, 124,416 at 5°). For Cn crboost passes
+`--z-axis-rotational-symmetry n` and pytom cuts the in-plane steps to 360/n. For D, T, O and I pytom has no option,
+so this module writes the list: pytom's own list for the increment, cut to one rotation per symmetry orbit.
 
-  "a .txt file can be provided with three Euler angles (in radians) per
-   line that define the angular search. Angle format is ZXZ anti-clockwise
-   (see https://www.ccpem.ac.uk/user_help/rotation_conventions.php)."
+Why that is exact. The template is invariant under its group G, so rotating it by R·S (S in G, applied first)
+gives the same picture as R: the |G| rotations R·G score alike, and one of them is enough. Keeping, per orbit, the
+rotation nearest the identity leaves about 1/|G| of pytom's list (148 of 9,000 for I at 12°) with the unreduced
+list's coverage, so the increment means the same with symmetry as without. The increment and the group are
+independent: the increment sets how finely orientations are sampled, the group how much of rotation space is
+needed.
 
-That file IS the symmetry: instead of evaluating cross-correlation at every
-orientation in SO(3) and discovering that |G| of them give the same score
-(because the template is invariant under the point group G), we pre-pick one
-representative per equivalence class. Result: |G|× faster search with
-identical scoring on a symmetric template.
+What must match the template. The group's axes: I1 is scipy's icosahedral setting, I2 the same turned 90° about z
+(RELION's two settings); D, T and O are scipy's (n-fold on z). The side: symmetry composes on the right, R·S, which
+P9 measured with pytom's own rotation on the 412 template. Euler angles are pytom's anti-clockwise ZXZ in radians,
+scipy's intrinsic "ZXZ".
 
-The convention question (which way scipy orients the icosahedral axes vs.
-which way RELION does) is moot for *correctness*: any orientation of the
-group in 3D yields a valid asymmetric unit of SO(3). The 60 cosets tile
-SO(3); we pick one representative per coset; PyTOM's correlation score at
-that representative equals the score at any of the other 59 equivalents
-(because the template is G-invariant). Convention only matters if you want
-the rep angles to "look natural" relative to the molecule, which doesn't
-affect the picker.
-
-The user IS responsible for the template being symmetric under the point
-group they declare. A RELION reconstruction with `--sym I1` is already I1-
-symmetric; nothing further required. For a non-symmetrized volume, the
-search would be wrong — but that's the user's mistake, not ours.
+The list depends only on (group, increment); each job writes its own copy, which records what it searched.
+P9 (roadmap 45 §11) checked these lists against pytom's on the 412 data: 148, 578 and 2,124 rotations at 12°, 8°
+and 5° for I.
 """
 
 from __future__ import annotations
 
-import logging
+import math
 from pathlib import Path
 
 import numpy as np
 
-logger = logging.getLogger(__name__)
-
-# Order of each point group — used to estimate output count and as the
-# expected reduction factor relative to full SO(3) sampling.
+# Order of each point group: the reduction factor against pytom's list for the increment.
 POINT_GROUP_ORDER = {
     "C1": 1, "C2": 2, "C3": 3, "C4": 4, "C5": 5, "C6": 6,
     "D2": 4, "D3": 6, "D4": 8, "D5": 10, "D6": 12,
     "T": 12, "O": 24, "I1": 60, "I2": 60,
-}
+}  # fmt: skip
 
-# Subset where PyTOM has no built-in flag → we MUST supply an angle list.
-# Cn (n>=2) goes through --z-axis-rotational-symmetry instead.
+# Cn goes through pytom's --z-axis-rotational-symmetry instead.
 POINT_GROUPS_NEEDING_ANGLE_LIST = {"D2", "D3", "D4", "D5", "D6", "T", "O", "I1", "I2"}
 
 
 def needs_angle_list(point_group: str) -> bool:
-    """True iff PyTOM needs a custom --angular-search file for this group.
-    Cn goes through the dedicated flag; C1 doesn't need symmetry handling."""
+    """True iff PyTOM needs a custom --angular-search file for this group."""
     return point_group in POINT_GROUPS_NEEDING_ANGLE_LIST
 
 
-def _scipy_group_name(point_group: str) -> str:
-    """scipy.spatial.transform.Rotation.create_group treats both icosahedral
-    conventions as the same group "I" (the 60 rotations are the same set in
-    any embedding). The two enum values I1/I2 exist on our side because
-    RELION uses them to distinguish axis conventions for the *template*,
-    not for the *group*."""
-    if point_group in ("I1", "I2"):
-        return "I"
-    return point_group  # "D2".."D6", "T", "O" map 1:1
+def parse_increment(angular_search: str | float) -> float:
+    """The job's angular_search as degrees; a value that is not a positive number is refused, never replaced."""
+    try:
+        inc = float(angular_search)
+    except (TypeError, ValueError):
+        raise ValueError(f"angular_search {angular_search!r} is not an increment in degrees") from None
+    if not inc > 0:
+        raise ValueError(f"angular_search {angular_search!r} must be a positive increment in degrees")
+    return inc
 
 
-def _uniform_so3_grid(angle_increment_deg: float) -> np.ndarray:
-    """Approximately-uniform SO(3) sampling as ZXZ Euler triples (radians).
+def _healpix_ring_pix2ang(nside: int) -> tuple[np.ndarray, np.ndarray]:
+    """(theta, phi) of every HEALPix pixel centre in the RING scheme, as healpix's pix2ang gives them."""
+    npix = 12 * nside * nside
+    ncap = 2 * nside * (nside - 1)
+    p = np.arange(npix, dtype=np.int64)
+    z = np.empty(npix)
+    phi = np.empty(npix)
 
-    cos(beta) is sampled at midpoints to absorb the sin(beta) spherical
-    Jacobian — without that, the resulting grid over-samples the poles and
-    the post-reduction angle count drifts well below |full|/|G|.
+    north = p < ncap
+    iring = (1 + np.sqrt(1 + 2 * p[north]).astype(np.int64)) >> 1
+    iphi = p[north] + 1 - 2 * iring * (iring - 1)
+    z[north] = 1 - iring * iring * 4.0 / npix
+    phi[north] = (iphi - 0.5) * (math.pi / 2) / iring
 
-    Output shape (n_alpha * n_beta * n_gamma, 3). For a 12° increment that's
-    30 × 15 × 30 = 13500 angles full-SO(3); ~225 after I1 reduction.
-    """
-    inc_rad = np.deg2rad(angle_increment_deg)
-    n_alpha = max(1, round(2 * np.pi / inc_rad))
-    n_beta = max(1, round(np.pi / inc_rad))
-    n_gamma = max(1, round(2 * np.pi / inc_rad))
+    belt = (p >= ncap) & (p < npix - ncap)
+    ip = p[belt] - ncap
+    iring = ip // (4 * nside) + nside
+    iphi = ip % (4 * nside) + 1
+    fodd = np.where((iring + nside) & 1, 1.0, 0.5)
+    z[belt] = (2 * nside - iring) * 2.0 / (3 * nside)
+    phi[belt] = (iphi - fodd) * (math.pi / 2) / nside
 
-    alphas = np.linspace(0.0, 2 * np.pi, n_alpha, endpoint=False)
-    step = 2.0 / n_beta
-    cos_betas = -1.0 + step * (np.arange(n_beta) + 0.5)
-    betas = np.arccos(np.clip(cos_betas, -1.0, 1.0))
-    gammas = np.linspace(0.0, 2 * np.pi, n_gamma, endpoint=False)
+    south = p >= npix - ncap
+    ip = npix - p[south]
+    iring = (1 + np.sqrt(2 * ip - 1).astype(np.int64)) >> 1
+    iphi = 4 * iring + 1 - (ip - 2 * iring * (iring - 1))
+    z[south] = -1 + iring * iring * 4.0 / npix
+    phi[south] = (iphi - 0.5) * (math.pi / 2) / iring
+    return np.arccos(z), phi
 
-    A, B, G = np.meshgrid(alphas, betas, gammas, indexing="ij")
-    return np.stack([A.ravel(), B.ravel(), G.ravel()], axis=1)
+
+def pytom_angle_list(increment_deg: float) -> np.ndarray:
+    """pytom's `angle_to_angle_list(increment)` (pytom-match-pick 0.14), as ZXZ Euler triples in radians:
+    what `--angular-search <degrees>` searches without symmetry."""
+    npix = 4 * math.pi / math.radians(increment_deg) ** 2
+    nside = 0
+    while 12 * nside * nside < npix:
+        nside += 1
+    theta, phi = _healpix_ring_pix2ang(nside)
+    phi %= 2 * math.pi
+    theta %= math.pi
+    psi = np.linspace(0, 2 * math.pi, math.ceil(360 / increment_deg), endpoint=False)
+    out = np.empty((len(phi) * len(psi), 3))
+    out[:, 0] = np.repeat(phi, len(psi))
+    out[:, 1] = np.repeat(theta, len(psi))
+    out[:, 2] = np.tile(psi, len(phi))
+    return out[np.lexsort((out[:, 2], out[:, 1], out[:, 0]))]
 
 
-def _reduce_to_asymmetric_unit(angles_rad: np.ndarray, point_group: str) -> np.ndarray:
-    """For each input orientation R, compute all |G| equivalents (S·R for S in
-    group), canonicalize to the lex-smallest quaternion (with w≥0 sign-flip
-    so q and -q collapse), and keep one input per canonical key. Output
-    contains the original ZXZ angles of the surviving reps."""
+def symmetry_group(point_group: str):
+    """The group's rotations on the template's axes: scipy's setting, I2 turned 90° about z from I1."""
     from scipy.spatial.transform import Rotation as R
 
-    sym_group = R.create_group(_scipy_group_name(point_group))
-    rots = R.from_euler("ZXZ", angles_rad)
-
-    canonical_keys: set[tuple] = set()
-    keep_indices: list[int] = []
-    for i in range(len(rots)):
-        rot = rots[i]
-        equivs = sym_group * rot  # shape (|G|,)
-        quats = equivs.as_quat()  # (|G|, 4), scipy order [x, y, z, w]
-        # Enforce w >= 0 so the two equivalent quaternions (q, -q) for one
-        # rotation collapse to a single canonical form. Without this we'd
-        # double-count via sign.
-        signs = np.where(quats[:, 3:4] < 0, -1.0, 1.0)
-        quats = quats * signs
-        # Pick lex-smallest as the canonical fingerprint — stable across runs.
-        rep_key = min(tuple(np.round(q, 6)) for q in quats)
-        if rep_key not in canonical_keys:
-            canonical_keys.add(rep_key)
-            keep_indices.append(i)
-
-    if not keep_indices:
-        return np.zeros((0, 3))
-    return angles_rad[keep_indices]
+    if point_group == "I2":
+        turn = R.from_euler("z", 90, degrees=True)
+        return turn * R.create_group("I") * turn.inv()
+    return R.create_group("I" if point_group == "I1" else point_group)
 
 
-def generate_asymmetric_unit_angles(point_group: str, angle_increment_deg: float = 12.0) -> np.ndarray:
-    """ZXZ Euler triples (radians), one representative per SO(3)/G coset.
+def _keys(rots) -> np.ndarray:
+    """Integer quaternion keys, q and -q made the same (w > 0, or the first non-zero of x, y, z when w is 0)."""
+    q = rots.as_quat()
+    lead = np.where(
+        np.abs(q[:, 3]) > 1e-9,
+        q[:, 3],
+        np.where(np.abs(q[:, 0]) > 1e-9, q[:, 0], np.where(np.abs(q[:, 1]) > 1e-9, q[:, 1], q[:, 2])),
+    )
+    return np.round(q * np.where(lead < 0, -1.0, 1.0)[:, None] * 1e6).astype(np.int64)
 
-    For C1 returns full SO(3) sampling — caller would normally use the float
-    --angular-search increment instead of writing a file, but this is the
-    sensible fallback if a downstream caller wants a file unconditionally.
-    """
+
+def _nearer(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Where key a is nearer the identity than key b (larger w); ties go to the smaller x, y, z."""
+    won, equal = a[:, 3] > b[:, 3], a[:, 3] == b[:, 3]
+    for c in (0, 1, 2):
+        won |= equal & (a[:, c] < b[:, c])
+        equal &= a[:, c] == b[:, c]
+    return won
+
+
+def generate_asymmetric_unit_angles(point_group: str, angle_increment_deg: float) -> np.ndarray:
+    """ZXZ Euler triples (radians): pytom's list for the increment, one rotation per orbit of the group (the one
+    nearest the identity). C1 returns pytom's whole list."""
+    from scipy.spatial.transform import Rotation as R
+
     if point_group not in POINT_GROUP_ORDER:
         raise ValueError(f"Unknown point group: {point_group}")
-    grid = _uniform_so3_grid(angle_increment_deg)
+    euler = pytom_angle_list(angle_increment_deg)
     if point_group == "C1":
-        return grid
-    return _reduce_to_asymmetric_unit(grid, point_group)
+        return euler
+    group = symmetry_group(point_group)
+    rots = R.from_euler("ZXZ", euler)
+    own = _keys(rots)
+    best = own.copy()
+    for k in range(len(group)):
+        cand = _keys(rots * group[k])
+        swap = _nearer(cand, best)
+        best[swap] = cand[swap]
+    kept = euler[np.all(best == own, axis=1)]
+    # An increment coarser than the region nearest the identity (90° in I or O) leaves none of pytom's rotations
+    # in it; the identity then stands for the whole region, which lies within the increment of it.
+    return kept if len(kept) else np.zeros((1, 3))
 
 
 def write_angle_list_file(angles_rad: np.ndarray, out_path: Path) -> Path:
-    """Write ZXZ Euler triples (radians) as space-separated triples, one per
-    line — the format pytom_tm.angles.load_angle_list() expects from
-    --angular-search <file>."""
+    """ZXZ Euler triples (radians), space-separated, one per line: what pytom's load_angle_list reads."""
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w") as f:
@@ -156,11 +171,5 @@ def write_angle_list_file(angles_rad: np.ndarray, out_path: Path) -> Path:
 
 
 def expected_angle_count(point_group: str, angle_increment_deg: float) -> int:
-    """Rough estimate of the output count, before actually running the
-    reduction. Used for sanity-check logging at supervisor time."""
-    inc_rad = np.deg2rad(angle_increment_deg)
-    n_alpha = max(1, round(2 * np.pi / inc_rad))
-    n_beta = max(1, round(np.pi / inc_rad))
-    n_gamma = max(1, round(2 * np.pi / inc_rad))
-    full_n = n_alpha * n_beta * n_gamma
-    return max(1, full_n // POINT_GROUP_ORDER[point_group])
+    """pytom's list length for the increment over the group's order: what the written list should come close to."""
+    return max(1, round(len(pytom_angle_list(angle_increment_deg)) / POINT_GROUP_ORDER[point_group]))

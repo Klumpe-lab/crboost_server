@@ -40,6 +40,7 @@ code all live in ArrayDriver; this file is the template-match-specific hooks.
 """
 
 import atexit
+import contextlib
 import itertools
 import json
 import math
@@ -55,15 +56,17 @@ import pandas as pd
 import starfile
 from scipy.fft import next_fast_len
 
-from drivers.array_job_base import ArrayDriver, ArrayResults, read_manifest
+from drivers.array_job_base import ArrayDriver, ArrayResults, mps_daemon, read_manifest
 from drivers.driver_base import (
     DriverContext,
     ToolCommand,
     allocated_gpu_count,
+    allocated_gpu_is_slice,
     allocated_gpu_memory_bytes,
     print_cmd_only,
     require_producer_input,
 )
+from services.computing.slurm_service import SlurmConfig, scale_per_task
 from services.configs.starfile_service import StarfileService
 from services.job_lineage import recon_of
 from services.job_models import TemplateMatchPytomParams
@@ -412,8 +415,24 @@ class TemplateMatchPytomDriver(ArrayDriver):
     params_class = TemplateMatchPytomParams
     job_name = "template_match_pytom"
     driver_script = Path(__file__).resolve()
+    # Searches sharing the card: each sizes its gpu_split on its share of the memory.
+    _sharing = 1
 
     # ---------------- supervisor ----------------
+
+    def items_per_task(self, ctx: DriverContext[TemplateMatchPytomParams]) -> int:
+        return ctx.params.lanes * ctx.params.tomograms_per_lane
+
+    def per_task_slurm_config(self, ctx: DriverContext[TemplateMatchPytomParams]) -> SlurmConfig:
+        """The SLURM tab's resources are one search's: a task runs `lanes` at once and `tomograms_per_lane` in turn."""
+        p = ctx.params
+        cfg = scale_per_task(ctx.params.get_effective_slurm_config(), resources=p.lanes, time=p.tomograms_per_lane)
+        if p.lanes > 1 or p.tomograms_per_lane > 1:
+            self.log(
+                f"{p.lanes} lane(s) x {p.tomograms_per_lane} tomogram(s) a task: {cfg.cpus_per_task} CPUs, "
+                f"{cfg.mem}, {cfg.time} per task"
+            )
+        return cfg
 
     def enumerate_items(self, ctx: DriverContext[TemplateMatchPytomParams]) -> list[str]:
         input_star_tomos = ctx.paths["input_tomograms"]
@@ -486,20 +505,21 @@ class TemplateMatchPytomDriver(ArrayDriver):
         from services.templating.angle_lists import (
             needs_angle_list,
             generate_asymmetric_unit_angles,
+            parse_increment,
             write_angle_list_file,
             expected_angle_count,
         )
 
         if needs_angle_list(sym):
-            try:
-                inc_deg = float(ctx.params.angular_search)
-            except (TypeError, ValueError):
-                inc_deg = 12.0
+            inc_deg = parse_increment(ctx.params.angular_search)
             angles = generate_asymmetric_unit_angles(sym, inc_deg)
             self._angle_list_path = job_dir / f"angles_{sym}.txt"
             write_angle_list_file(angles, self._angle_list_path)
             est = expected_angle_count(sym, inc_deg)
-            self.log(f"symmetry={sym}: wrote {len(angles)} angles (estimate {est}) → {self._angle_list_path}")
+            self.log(
+                f"symmetry={sym} at {inc_deg:g} deg: wrote {len(angles)} rotations (pytom's list / |G| = {est}) → "
+                f"{self._angle_list_path}"
+            )
 
         self._search_region = self._settle_search_region(ctx, items) if ctx.params.restricts_search else None
 
@@ -559,6 +579,17 @@ class TemplateMatchPytomDriver(ArrayDriver):
         shutil.rmtree(ctx.job_dir / TM_LANDING_DIR, ignore_errors=True)
 
     # ---------------- task ----------------
+
+    def lanes(self, ctx: DriverContext[TemplateMatchPytomParams], n_items: int) -> int:
+        lanes = min(ctx.params.lanes, n_items)
+        if lanes > 1 and not print_cmd_only() and allocated_gpu_is_slice():
+            self.log(f"A MIG slice: its {n_items} tomograms run one at a time, not in {lanes} lanes")
+            lanes = 1
+        self._sharing = lanes
+        return lanes
+
+    def chunk_session(self, ctx: DriverContext[TemplateMatchPytomParams], lanes: int):
+        return mps_daemon() if lanes > 1 else contextlib.nullcontext()
 
     def task_already_done(self, ctx: DriverContext[TemplateMatchPytomParams], item: str) -> bool:
         # Covers the crash-after-output-before-status window for the most
@@ -661,7 +692,7 @@ class TemplateMatchPytomDriver(ArrayDriver):
             # CRBOOST_PRINT_CMD renders the commands on the supervisor's host: no GPU to size the split for.
             self.log("gpu_split auto is sized on the GPU node: printed as -s auto")
             return ["auto"]
-        gpu_bytes = allocated_gpu_memory_bytes()
+        gpu_bytes = allocated_gpu_memory_bytes() // self._sharing
         split, need = auto_gpu_split(
             mrc_shape_xyz(staged["local_tomo"]),
             mrc_shape_xyz(staged["template_file"]),
@@ -670,7 +701,7 @@ class TemplateMatchPytomDriver(ArrayDriver):
         )
         self.log(
             f"gpu_split auto: {' '.join(map(str, split))} (pytom needs ~{need / 2**30:.1f} GiB per piece, "
-            f"this GPU has {gpu_bytes / 2**30:.1f} GiB)"
+            f"this search has {gpu_bytes / 2**30:.1f} GiB of the GPU)"
         )
         return [str(n) for n in split]
 

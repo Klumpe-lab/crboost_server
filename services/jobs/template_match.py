@@ -31,6 +31,10 @@ TM_SYMMETRY_CHOICES: list[str] = [
     "I2",
 ]
 
+# The increment a new template-matching job gets with these groups (HOTFIXES H7): 5° for I samples at least as
+# finely as the lists written before the fix did at "12°" (2,124 rotations against 3,398; roadmap 45 P9).
+DEFAULT_INCREMENT_FOR_SYMMETRY: dict[str, str] = {"I1": "5.0", "I2": "5.0"}
+
 
 class TemplateMatchPytomParams(AbstractJobParams):
     job_type: JobType = Field(default=JobType.TEMPLATE_MATCH_PYTOM)
@@ -52,6 +56,8 @@ class TemplateMatchPytomParams(AbstractJobParams):
         "bandpass_filter",
         "gpu_split",
         "perdevice",
+        "lanes",
+        "tomograms_per_lane",
         "array_throttle",
         "every_nth_tomogram",
         "search_include",
@@ -124,9 +130,29 @@ class TemplateMatchPytomParams(AbstractJobParams):
         "(sized on the node). None: no -s.",
     )
     perdevice: int = Field(default=1)
+    lanes: int = Field(
+        default=3,
+        ge=1,
+        le=4,
+        description="Tomograms matched at once on one full GPU, under MPS: the card's idle stretches in one search "
+        "are another's work (roadmap 45 P7b on a B200: 1.75x the tomograms per hour at 2, 1.91x at 3, 1.97x at 4; "
+        "maps byte for byte the same). A task asks for this many times the SLURM tab's CPUs and memory; on a MIG "
+        "slice it runs one at a time.",
+    )
+    tomograms_per_lane: int = Field(
+        default=2,
+        ge=1,
+        le=8,
+        description="Tomograms each lane matches one after another: a task matches lanes x this many, and its time "
+        "limit is this many times the SLURM tab's. A tomogram that fails is rerun on its own.",
+    )
     # 16: a whole 412 tomogram takes ~2 min on a B200, so 140 of them take ~20 min (roadmap 43 D3).
     array_throttle: int = Field(
-        default=16, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tomogram template matching"
+        default=16,
+        ge=1,
+        le=64,
+        description="Max concurrent SLURM array tasks for template matching: GPUs at once, each matching lanes "
+        "tomograms",
     )
     every_nth_tomogram: int = Field(
         default=1,

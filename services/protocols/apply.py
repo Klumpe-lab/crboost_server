@@ -21,6 +21,7 @@ from pydantic import TypeAdapter, ValidationError
 from services import species_admin
 from services.configs.config_service import get_config_service
 from services.jobs.spec import JOB_SPEC_BY_TYPE
+from services.jobs.template_match import DEFAULT_INCREMENT_FOR_SYMMETRY
 from services.models_base import JobType, SpeciesOrigin
 from services.project_state import ExtractionParams, ProjectState, ProtocolOrigin, TemplateMask
 from services.protocols.schema import (
@@ -376,6 +377,9 @@ def _apply_species_defaults(jm, st: ProtocolStage, ps: ProtocolSpecies, entry: d
         if "symmetry" not in st.params and ps.symmetry:
             jm.symmetry = ps.symmetry
             filled.add("symmetry")
+        if "angular_search" not in st.params and jm.symmetry in DEFAULT_INCREMENT_FOR_SYMMETRY:
+            jm.angular_search = DEFAULT_INCREMENT_FOR_SYMMETRY[jm.symmetry]
+            filled.add("angular_search")
     elif jt == JobType.TEMPLATE_EXTRACT_PYTOM:
         if "particle_diameter_ang" not in st.params and ps.diameter_ang:
             jm.particle_diameter_ang = float(ps.diameter_ang)

@@ -222,7 +222,8 @@ shows both on `g`.
 
 ### H7 — Template matching with T, O or I symmetry searches 3 to 15 times the orientations its increment asks for
 
-**Status:** open, found 2026-11-09 (roadmap 45, the 412 pilot; anchors at `edebd13`). **Severity:** high for cost, none
+**Status:** fixed 2026-11-09 (D9 settled that day; the fix is below the evidence), found 2026-11-09 (roadmap 45,
+the 412 pilot; anchors at `edebd13`). **Severity:** high for cost, none
 for correctness so far: every I1 search runs 3,398 orientations where its 12° needs about 225, and the search is most
 of a template-matching task's GPU time. The extra orientations sample finer, so results so far are valid; a fix
 changes scores and candidates, so the increment to use afterwards is the scientists' choice.
@@ -285,3 +286,14 @@ account of where lists come from comes before the fix.
 ## Fixed
 
 *(none yet)*
+
+**Fix (2026-11-09, D9: the maintainer's answers).** `services/templating/angle_lists.py` now takes pytom's own list
+for the increment (`angle_to_angle_list`, ported with its HEALPix RING step: equal to pytom 0.14's to 1e-15 at 3°–90°)
+and keeps, per symmetry orbit, the rotation nearest the identity, the symmetry composed on the right; I1 is scipy's
+setting, I2 that turned 90° about z. The I1 lists at 12°, 8° and 5° are P9's, rotation for rotation (148, 578,
+2,124). An increment coarser than the fundamental region (90° in I or O) keeps the identity alone. An unparsable
+increment is refused (`parse_increment`), no longer 12°. New template-matching jobs with I1 or I2 start at 5°
+(`DEFAULT_INCREMENT_FOR_SYMMETRY`, pipeline builder and protocol apply): about the sampling the old "12°" lists had,
+20 % faster (P9). An existing job keeps its increment, which now means what it says: an I job saved at 12° searches
+148 rotations, not 3,398. T and O were also over-sampled before (3,448 and 3,439 at 12°; about 8° and 7° like for
+like) and keep the 12° default.
