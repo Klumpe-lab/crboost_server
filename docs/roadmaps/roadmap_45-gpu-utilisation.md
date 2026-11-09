@@ -1,12 +1,12 @@
 # Roadmap 45 — GPU use on CBE.next: measure every job, then close the gaps
 
-**Status:** scoped 2026-11-06. S1 built and piloted 2026-11-08; probes P2, P4–P7b, P9, P10 and P12 ran 2026-11-08
-and 09 (§11). Since 2026-11-09 the dev conf (not the template) runs the short Warp and AreTomo stages on MIG slices,
-and a second 412 pilot on them (`slicetest_412_FCIsolation`) was at reconstruct at 11:30; P9 on a slice was finishing
-and P11 (tsImport) queued. Open: D1 (IT's number), D9 (angle lists, before H7's fix), S2–S6, D2–D8. Pickup: §11's
-2026-11-09 entries, then the slices pilot against the first (stage times, billing, `scripts/compare_projects.py`) and
-P11; the builds the results point to: slices in the template conf, two or three template-matching lanes under MPS
-(P7b: 1.75× at two, 1.91× at three), Warp chunks with two workers (P10: 1.38–1.42×), item flow (replay: 1:37 to 0:59).
+**Status:** scoped 2026-11-06. S1 built and piloted 2026-11-08; probes P2, P4–P7b, P9, P10 and P12 ran 2026-11-08 and
+09 (§11). Since 2026-11-09 the dev conf (not the template) runs the short Warp and AreTomo stages on MIG slices, and
+a second 412 pilot on them (`slicetest_412_FCIsolation`) ran import to reconstruct at a third of the billing in twice
+the wall time; P9 on a slice finished (template matching stays on B200s) and P11 (tsImport) queued. Open: D1 (IT's
+number), D9 (angle lists, before H7's fix), S2–S6, D2–D8. Pickup: §11's 2026-11-09 entries, then P11; the builds the
+results point to: slices in the template conf, two or three template-matching lanes under MPS (P7b: 1.75× at two,
+1.91× at three), Warp chunks with two workers (P10: 1.38–1.42×), item flow (replay: 1:37 to 0:59).
 
 **In one line.** Cluster IT told a colleague that crboost jobs idle on the B200s about a quarter of the time while
 their data is read into GPU memory, and advised putting data on scratch. (The report has been passed on in two ways:
@@ -784,3 +784,80 @@ its leftovers named.
   3.43 on a slice against 30 s × 24 on a B200: 539 against 720 units·s. Reconstruct is the one short stage that
   keeps a card busy, and on a slice it saves a quarter of the billing at five times the wall time; the slices pilot
   shows what that does at full scale with 20 at a time.
+- **2026-11-09, P9 on a slice** (job 1494445, 2 tomograms, pytom split 2 2 1). Per tomogram: old list 803 s (roadmap
+  43 had 793 s), 5° 578 s, 8° 338 s, 12° 267 s; at 12° about 250 s of it is not the search. The old list with the
+  split reproduces the pilot's picks exactly (20 of 20 per tomogram, score difference 0). The candidates behave as
+  on the B200 (14, 19 and 19 of the old 40 within a quarter diameter for 12°, 8° and 5°). Billing a tomogram as
+  production would ask (4 CPUs, 32 GB: 4.29 units an hour on a slice, 24 on a B200): old list 3,445 units·s on a
+  slice against 2,856 on a B200; 12° 1,145 against 1,392. Template matching stays on full B200s, where lanes under
+  MPS (P7b) are the lever.
+- **2026-11-09, P9 on a slice** (job 1494445, 2 tomograms, 8 CPUs and 64 GB as the B200 run). The old list
+  reproduces the pilot's candidates on Position_8_3 (20 of 20, score difference 0); pytom split each search over the
+  slice's 23 GB without a word from the run.
+
+  | List | Rotations | Task wall s, slice | B200 | Slice ÷ B200 | Billing a tomogram, slice ÷ B200 |
+  |---|---:|---:|---:|---:|---:|
+  | old | 3,398 | 803 | 119 | 6.7× | 0.96 |
+  | 5° | 2,124 | 578 | 95 | 6.1× | 0.87 |
+  | 8° | 578 | 338 | 66 | 5.1× | 0.73 |
+  | 12° | 148 | 267 | 58 | 4.6× | 0.66 |
+
+  A straight line through start-to-scores-map times: 0.165 s a rotation and about 230 s fixed on the slice, against
+  0.019 s and about 46 s on the B200, so the search runs 8.8 times slower (a seventh of the SMs, and less) and the
+  set-up 5 times. Billing counts a slice at 3.43; production's template-matching request (4 CPUs, 32 GB) would be
+  billed by its memory, 4.29, which makes the old list dearer on a slice (1.20) and the 5° list about level (1.09).
+  Against lanes under MPS (P7b: 4 lanes 1.97× on one B200, about 1,450 units·s a tomogram with the old list, half
+  the slice's 2,754 and at a sixth of its wall time), slices are not the place for template matching at any of these
+  lists. Candidates over the 2 tomograms say what the B200 run said: 5° finds 6 of the old 20 within 144 Å (8°: 7,
+  12°: 4) at matched scores 0.97, 0.97 and 0.89 of the old, all near pytom's cut-off.
+- **2026-11-09, the slices pilot** (`slicetest_412_FCIsolation`, 10:35:33 to 11:56:58 for import to reconstruct; the
+  dev conf's slices for every short stage, all 637 tasks on slices; one accounting query per project, filtered on its
+  path, billing as Slurm reports it, which rounds a slice to 3). Against the first pilot, whose 2026-11-08 placement
+  was 87–99 % B200s:
+
+  | Job | Median task s, first | slices | Stage wall min, first | slices | Billing-h, first | slices |
+  |---|---:|---:|---:|---:|---:|---:|
+  | Warp motion + CTF | 60 | 151 | 10 | 28 | 57.5 | 18.5 |
+  | tsImport (`c`) | 737 | – | 12 | 11 | – | – |
+  | AreTomo alignment | 27 | 38 | 5 | 9 | 26.4 | 5.1 |
+  | Warp CTF | 16 | 22 | 4 | 6.5 | 14.4 | 3.2 |
+  | Warp reconstruct | 63 | 186 | 10 | 27 | 66.3 | 32.7 |
+  | Import to reconstruct | | | 41 | 81 | 164.6 | 59.5 |
+
+  A third of the billing (0.36) at twice the wall time. The short stages' 1.2–1.33× from the first pilot's few slice
+  tasks holds for alignment and CTF (1.4×) but not for motion, 2.5× with every task on a slice; reconstruct is 3×
+  (P10 had 4×) and halves its billing, where P10 expected a quarter off. Motion's tasks peak at the 24G they ask for
+  in both pilots (MaxRSS median 23.5, max 24.0 GB, no out-of-memory), so Warp takes what it is given; the others
+  stay well under. Outputs: alignment is identical in all 158 tilt series. Warp CTF differs in all 158 but by little:
+  defocus by a median 2 Å (90th pct 37, max 493 Å), resolution estimate by a median 0 (90th pct 0.2 Å), with six tilt
+  series whose estimate flips between 3.1 Å and 12–23 Å; motion's per-frame CTF likewise, 90 of 500 files the same.
+  Reconstruct follows its inputs: 158 tomograms, lowest correlation 0.824. It is not the card: the 28 tilt series
+  whose CTF ran on a slice in both pilots differ as much (5 identical, defocus median 3 Å, max 493 Å, one estimate
+  flip) as the 130 that moved from a B200 (24 identical, median 2 Å, max 207 Å, four flips), so it is Warp's
+  run-to-run spread, with motion's differing output feeding in. Same parameters in both (job.star identical).
+- **2026-11-09, built: any GPU, H7, lanes, Warp chunks** (uncommitted at the time of writing; the maintainer's answers
+  of that day: D9 settled as below, D3 yes, item flow after these). Not yet run on the cluster; checked with toy runs
+  of the real code (chunk plans and array specs, a rerun, three lanes with one failing item, logs and markers per item,
+  resource scaling, a Warp chunk that succeeds and one that fails) and `./crboost test`.
+  - *Any GPU for the short stages (D4).* The dev conf's motion, alignment, CTF, reconstruct and export ask for an
+    untyped `gpu:1` again (the template always did): each task takes whichever card is free, a B200 or a slice, at
+    the memory measured on 412 plus half, so it succeeds on either. Candidate extraction keeps its slice, template
+    matching and segmentation their B200. Slurm cannot prefer one type; full B200s queued for hours on 2026-11-09
+    while slices started at once.
+  - *H7 (D9).* HOTFIXES H7's fix: pytom's own list cut to one rotation per orbit; I1 scipy's axes, I2 turned 90°
+    about z; new I jobs at 5°.
+  - *Chunks (L5, D3).* `ArrayDriver.items_per_task`: the items to run go out in chunks, one array task at each
+    chunk's first index (`chunks` in the manifest), so a rerun chunks only what failed. Every item keeps its marker,
+    and each item after a chunk's first writes its own `task_<index>.out` (the node line first), so the UI's running
+    state, logs, node backfill and the post-Stop sweep read it as before. `scale_per_task` makes the SLURM tab's
+    per-item request a task's.
+  - *Template-matching lanes (P7b).* `lanes` (default 3) searches at once under an MPS daemon per task
+    (`mps_daemon`, pipes in /dev/shm, passed through `--cleanenv`), each lane on its share of the CPUs (`taskset`),
+    later lanes 30 s apart, `tomograms_per_lane` (default 2) each; a task asks for lanes x the CPUs and memory and
+    tomograms_per_lane x the time, and `gpu_split auto` sizes each search on its share of the card. On a slice the
+    lanes run one after another.
+  - *Warp reconstruct chunks (P10).* `tilt_series_per_task` (default 8) in one WarpTools call with `perdevice`
+    (default 2) workers; the task asks for perdevice x the CPUs and memory and its rounds x the time (dev conf:
+    0:20:00 a tilt series). A failed call fails its tilt series and removes what they left.
+  - *To measure:* a third 412 project, motion to template matching on these defaults, against the first pilot and
+    the slices pilot (stage times, billing; tomograms and candidates against the first's).
