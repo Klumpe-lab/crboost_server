@@ -276,6 +276,12 @@ setting, so a project can keep that sampling by choosing it.
 tomograms searched with the old list and with correct lists at 12°, 8° and 5°: candidates and scores side by side,
 before a project changes over.
 
+**Measured, and what holds the fix** (roadmap 45 §11 P9, §8 D9). On a B200 a 412 tomogram took 119 s with the old
+list, 95 s with a correct 5° list (sampling at least as fine), 66 s at 8° and 58 s at 12°. The 412 picks are too
+close to pytom's cut-off to tell whether a coarser list loses particles. The maintainer's conditions are in D9:
+every increment stays available, nothing narrows the choice unless it is plainly better and loses nothing, and the
+account of where lists come from comes before the fix.
+
 ## Fixed
 
 *(none yet)*

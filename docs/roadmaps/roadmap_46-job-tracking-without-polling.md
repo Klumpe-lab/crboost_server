@@ -1,9 +1,9 @@
 # Roadmap 46 — Tracking jobs without polling Slurm
 
-**Status:** scoped 2026-11-08; S0 step 3 (the call counter) built the same day, not run. Everything in §2 was read
-from the code; nothing is measured yet. Open: D1 first (what IT will accept), then the rest of S0, S1–S6 and D2–D7.
-Pickup: the `sdiag` readings around a full pipeline and the counter's hourly lines from the same run (S0 steps 2
-and 4).
+**Status:** scoped 2026-11-08; S0 measured on the 412 pilot the same day (§11): the server makes about 30 Slurm calls
+a minute, nearly all the reconciler's `squeue -j`, and the supervisors few. Open: D1 (what IT will accept), S1–S6,
+D2–D7. Pickup: S1, the shared snapshot, the build the numbers point to; §11's 2026-11-09 entry for what item-level
+dependencies (roadmap 45 P12) mean for tracking.
 
 **In one line.** The server asks Slurm about every unfinished job every 3 seconds, per project, whether or not anyone
 has a tab open, and every array supervisor does the same every 30 seconds from its compute node. The cluster docs ask
@@ -209,3 +209,11 @@ supervisors' lines; against S0. Set D2 from it.
   one `squeue` each. `sdiag` for our user: 704 before the submit (16:59), 7,682 at 18:39, so about 7,000 requests in
   100 minutes, most of them the reconciler's 3-second `squeue -j` (an squeue can cost the scheduler more than one
   request). So the server, not the supervisors, is the rate to cut: S1's shared snapshot first.
+- **2026-11-09, what roadmap 45's pipeline-shape probes mean for tracking** (roadmap 45 §11, P12 and the full `c`).
+  - Supervisors are Slurm jobs on `c`, one per stage, and each queues there when its turn comes. With `c` full (4 of
+    2,112 cores idle at 10:41) a GPU pipeline waited on CPU capacity while `g` had idle nodes.
+  - `--dependency=aftercorr` starts task i of a dependent array when task i upstream ends, and the cluster's
+    `DependencyParameters=kill_invalid_depend` cancels a task whose counterpart failed or does not exist. Such a task
+    never runs and leaves no `sacct` record, so a tracker must read it from the upstream failure, not look for it.
+  - Item flow submitted by the server (every stage's array at once, chained per task) would remove the supervisor
+    jobs and their `squeue` lines; it puts more jobs in the queue at once, which S1's shared snapshot has to cover.
