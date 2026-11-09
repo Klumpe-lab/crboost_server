@@ -237,6 +237,12 @@ def allocated_gpu_count(default: int) -> int:
     return max(1, default)
 
 
+def allocated_gpu_is_slice() -> bool:
+    """Whether the GPU this job was given is a MIG slice (`nvidia-smi -L` lists it as "MIG ...")."""
+    listing = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, timeout=60, check=True).stdout
+    return bool(re.search(r"^\s*MIG ", listing, re.MULTILINE))
+
+
 def allocated_gpu_memory_bytes() -> int:
     """Memory of the smallest GPU this job was given, read on the node with nvidia-smi.
 
@@ -538,12 +544,14 @@ def run_tool(
     attempts: int = 1,
     label: str = "",
     timeout: int | None = None,
+    cpus: Iterable[int] | None = None,
 ) -> None:
     """Wrap a tool command for its execution mode and run it.
 
     ``binds`` are extra paths to bind into the container: the wrapper resolves,
     dedups and sorts them itself, so caller-side ordering cannot affect the emitted bytes.
     ``attempts > 1`` routes through ``run_command_with_retries``.
+    ``cpus`` pins the tool to these CPUs (``taskset``): a lane of a chunk keeps to its share of the task's.
 
     Accepts a plain ``str`` as well as a ``ToolCommand`` — compound shell (guard
     chains, ``$()`` capture) is composed by the driver into a string and passed
@@ -553,6 +561,8 @@ def run_tool(
     wrapped = get_container_service().wrap_command_for_tool(
         command=rendered, cwd=cwd, tool_name=tool_name, additional_binds=[str(b) for b in binds]
     )
+    if cpus is not None:
+        wrapped = f"taskset -c {','.join(map(str, cpus))} {wrapped}"
     if attempts > 1:
         run_command_with_retries(wrapped, cwd=cwd, attempts=attempts, label=label or tool_name, timeout=timeout)
     else:

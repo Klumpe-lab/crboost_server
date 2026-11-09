@@ -50,6 +50,11 @@ def _container_env(cache_root: Path, gpu_kernel_cache: str = "") -> dict[str, st
         env["CUDA_CACHE_MAXSIZE"] = _GPU_KERNEL_CACHE_MAXSIZE
     # Progress bars are carriage-return noise in a job log.
     env["TQDM_DISABLE"] = "1"
+    # A task running several processes on its GPU under MPS (drivers/array_job_base.mps_daemon) points them at
+    # its daemon; --cleanenv would drop the variables.
+    for var in ("CUDA_MPS_PIPE_DIRECTORY", "CUDA_MPS_LOG_DIRECTORY"):
+        if os.environ.get(var):
+            env[var] = os.environ[var]
     return env
 
 

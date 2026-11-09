@@ -54,6 +54,10 @@ supervisor_slurm:
 # Users can still override per-job in the UI (slurm_overrides).
 # Merge order: slurm_defaults <- job_resource_profiles[jobtype] <- slurm_overrides
 job_resource_profiles:
+  # The short Warp and AreTomo steps (motion, alignment, CTF, reconstruct, export) run on any GPU, MIG slices
+  # included: an untyped "gpu:1" takes whichever is free first, so a pipeline is not held up waiting for a full card.
+  # On CBE.next a 1g.23gb slice runs them 1.4-3x slower at a seventh of the billing (roadmap 45). Size mem so a task
+  # succeeds on either; name a type only for a job a small card cannot hold (segment, template matching).
   fsMotionAndCtf:
     # mem=24G pairs with perdevice=2 (default in FsMotionCtfParams): two
     # concurrent EER movies per GPU need ~12-18GB GPU RAM plus host-side

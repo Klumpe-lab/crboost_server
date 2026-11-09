@@ -332,6 +332,26 @@ def _slurm_walltime_to_minutes(t: str) -> int:
         return 0
 
 
+def scale_per_task(cfg: "SlurmConfig", *, resources: int = 1, time: int = 1) -> "SlurmConfig":
+    """A per-item request made a task's that runs several (roadmap 45 L5): CPUs and memory times `resources`
+    (items at once), the time limit times `time` (items one after another). A time or memory it cannot read is
+    refused, never guessed."""
+    out = cfg.model_copy()
+    if resources > 1:
+        out.cpus_per_task = cfg.cpus_per_task * resources
+        m = re.fullmatch(r"(\d+)([KMGT]?)", str(cfg.mem).strip(), re.IGNORECASE)
+        if not m:
+            raise ValueError(f"memory {cfg.mem!r} is not a SLURM size like 32G")
+        out.mem = f"{int(m.group(1)) * resources}{m.group(2).upper()}"
+    if time > 1:
+        minutes = _slurm_walltime_to_minutes(str(cfg.time))
+        if minutes in (0, _QOS_UNLIMITED):
+            raise ValueError(f"time {cfg.time!r} is not a SLURM walltime like 1:30:00")
+        days, rest = divmod(minutes * time, 1440)
+        out.time = f"{days}-{rest // 60:02d}:{rest % 60:02d}:00" if days else f"{rest // 60}:{rest % 60:02d}:00"
+    return out
+
+
 def _gpu_from_tres(tres: str) -> int:
     """Extract the gres/gpu=N count from a SLURM TRES string (0 if absent)."""
     m = re.search(r"gres/gpu=(\d+)", tres or "")
