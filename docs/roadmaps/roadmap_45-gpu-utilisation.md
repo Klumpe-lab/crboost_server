@@ -861,3 +861,14 @@ its leftovers named.
     0:20:00 a tilt series). A failed call fails its tilt series and removes what they left.
   - *To measure:* a third 412 project, motion to template matching on these defaults, against the first pilot and
     the slices pilot (stage times, billing; tomograms and candidates against the first's).
+- **2026-11-09 13:07, partition `g` has more than B200s, and `c` holds the pipeline up.** `sinfo` lists idle
+  `cbe-g3-*` (4 Quadro RTX 6000, sm_75), `cbe-g4-*` (4 A100 40 GB, or 8 A100 MIG 3g.20gb) beside the `cbe-g5-*` B200s;
+  an untyped `gpu:1` can land on any of them, untested with our images and sizes, so the dev conf's any-GPU stages
+  add `constraint: b200` (`sbatch --test-only` accepts it). Meanwhile `c` was full (9 nodes allocated, 2 mixed, 1
+  draining) while `g` stood idle: the anglestest pilot's first supervisor (1 CPU) and P11 waited on `c` with Slurm's
+  worst-case start 2026-11-11 19:00. Priority 44,136: fair-share 36,659 (factor 0.367), QOS 6,667, partition 500,
+  age 298. Fair Tree ranks top down: `oeaw` sits under its share (0.08 used against 0.15) and ranks above all of
+  `vbc` (0.91 against 0.85); inside `vbc`, `vbcf` and `gmi` rank above `imp` (at its share, 0.375 against 0.373);
+  the lab's own use (1.7 % of `imp`'s against a 5 % share) barely moves the factor. So billing saved does little for
+  the queue; what holds a GPU pipeline is its CPU jobs on `c`: a supervisor per stage, each eligible only when the
+  stage before ends, so each queues on `c` afresh with no age, and tsImport.

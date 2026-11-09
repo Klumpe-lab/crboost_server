@@ -1,9 +1,11 @@
-# Roadmap 46 — Tracking jobs without polling Slurm
+# Roadmap 46 — Tracking and orchestrating jobs without polling Slurm
 
-**Status:** scoped 2026-11-08; S0 measured on the 412 pilot the same day (§11): the server makes about 30 Slurm calls
-a minute, nearly all the reconciler's `squeue -j`, and the supervisors few. Open: D1 (what IT will accept), S1–S6,
-D2–D7. Pickup: S1, the shared snapshot, the build the numbers point to; §11's 2026-11-09 entry for what item-level
-dependencies (roadmap 45 P12) mean for tracking.
+**Status:** Part A (tracking) scoped 2026-11-08; S0 measured on the 412 pilot the same day (§9): the server makes about
+30 Slurm calls a minute, nearly all the reconciler's `squeue -j`, and the supervisors few. Part B (orchestration
+without supervisor jobs) scoped 2026-11-09 from a full `c` that held a GPU pipeline while `g` stood idle, with an
+audit of every driver's supervisor steps (§2). Open: D1 (what IT will accept, now including light work on the login
+node), S1–S5, S6–S11, D2–D12. Pickup: S1, the shared snapshot, which Part B needs too; then D8 (whether a pipeline may
+depend on the server being up), which decides Part B's shape.
 
 **In one line.** The server asks Slurm about every unfinished job every 3 seconds, per project, whether or not anyone
 has a tab open, and every array supervisor does the same every 30 seconds from its compute node. The cluster docs ask
@@ -12,7 +14,16 @@ delays the requests of users who send too many. This roadmap makes files the sou
 leaves Slurm only the questions a file cannot answer (is it queued, why is it waiting, did it die without telling
 us), asks those rarely and in one batch, and counts every call so that the rate is a number we can show IT.
 
-**Not in this roadmap:** what the pages show (the utilisation badge of roadmap 45 S5 is read from files too, but it is
+**Part B in one line.** Every stage of a pipeline is a supervisor: a 1-CPU Slurm job on `c` that lists the stage's
+items, submits their array, waits on `squeue` every 30 seconds, then merges the results. Chained by afterok, each
+becomes eligible only when the stage before ends, so each joins `c`'s queue afresh, with no age: on 2026-11-09 the
+anglestest pilot's first supervisor waited on a full `c` with a worst-case start two days out while `g` was idle.
+Part B moves that glue out of Slurm: the tasks keep doing all per-item work and leave files; the server, which already
+reads those files, merges a finished stage and submits the next one's array itself; Slurm carries the dependencies
+between arrays. A GPU pipeline then queues only for GPUs (and for the CPU stages it really has, tsImport).
+
+**Not in this roadmap:** roadmap 45's levers (chunks, lanes, card types), which Part B only has to keep working; what
+the pages show (the utilisation badge of roadmap 45 S5 is read from files too, but it is
 that roadmap's); the representation of per-task status (`roadmap_task-status-state-machine.md`); anything the cluster
 owns, such as Slurm's rate limits, which are asked of IT (D1) and not built around.
 
@@ -32,6 +43,10 @@ settled, and settled by an event, not by a poll that happened to catch it.
 3. *What IT sees*: our row in `sdiag`'s "Remote Procedure Call statistics by user", before and after a run.
 
 The targets are D2; the proposal there is an order of magnitude below what §2 adds up to.
+
+**Part B's use case.** The maintainer starts a GPU pipeline while `c` is full. Its GPU stages start as soon as `g`
+has cards; nothing of the pipeline waits in `c`'s queue but tsImport; the job pages, logs, markers and RELION files
+read as they do today; a failed item is rerun alone, as now.
 
 ## 2. What exists (checked 2026-11-08)
 
@@ -72,6 +87,34 @@ Each running array supervisor adds two a minute. The docs ask for "every few min
 counters reset at 01:00 (they reset at midnight; "Data since" says when), almost all of them this session's probes.
 That is the baseline for "a person at a terminal"; it says nothing about crboost yet.
 
+**What a supervisor does (audited 2026-11-09).** `run_supervisor` (`drivers/array_job_base.py:1069-1156`): bootstrap,
+`supervisor_owner.acquire` (an exclusive claim on the job dir, `services/supervisor_owner.py`), enumerate, preflight
+(a registry load), pre-dispatch, exclusions, write the manifest, sbatch the array, `squeue` every 30 s, tally,
+aggregate, exit 0 or 1, and `config/qsub.sh` turns the exit code into `RELION_JOB_EXIT_*` (array scripts have that
+block removed, `slurm_service.py:214-220`, so only the supervisor writes markers); the pipeline's afterok edges point
+at supervisor job ids. Cost of the steps around the array, by driver (LIGHT: small files, seconds; MEDIUM: a pass
+over every tilt series' or frame's files, up to a minute; HEAVY: a container, volume data or images):
+
+| Driver | Before the array | After the array | Barrier |
+|---|---|---|---|
+| `fs_motion_and_ctf` | LIGHT | MEDIUM: one Warp XML per frame, all tilt series (`fs_motion_and_ctf.py:278-298`) | – |
+| `ts_alignment` | MEDIUM: registry, rebuilds the tomostar dir with the tilt cut (`:224`) | MEDIUM: .aln/.xf/XML per tilt series, one MRC header (`:291-300`) | – |
+| `ts_ctf` | **HEAVY**: `WarpTools ts_defocus_hand` in the container over all tilt series (`ts_ctf.py:50-103`, `:264`) | MEDIUM: XML per tilt series (`:281`) | **yes**: the hand is one decision for all |
+| `ts_reconstruct` | LIGHT | LIGHT–MEDIUM: MRC headers, star, registry (`:150-166`) | – |
+| `denoise_predict` | MEDIUM: untars the IsoNet model (`:93-112`) | LIGHT | – |
+| `segment` | **HEAVY**: starts the easymode container for tool versions (`segment.py:274-290`) | LIGHT | – |
+| `template_match_pytom` | LIGHT–MEDIUM: the angle list (scipy over pytom's list) | LIGHT | – |
+| `extract_candidates_pytom` | LIGHT | **HEAVY**: IMOD `point2model`, previews from tomogram and template data, deletes the angle maps (`:265-361`) | – |
+| `subtomo_extraction` | MEDIUM: star merges, per-tilt-series staging | MEDIUM: concat, moves | – |
+| `warp_export` | MEDIUM: per-tilt-series staging | MEDIUM: per-tilt-series transforms | – |
+
+The single-job drivers (tsImport, tilt filter, missAlign, denoise train, filament pick, particle reconstruct, Class3D,
+Refine3D, pick-list extraction) are the tool run itself and stay Slurm jobs. Two server-side precedents exist:
+`RUNS_INLINE` jobs (import, Subset) write their output in the server at submit (`pipeline_orchestrator_service.py:
+670-690`), and the reconciler already settles jobs from files. The registry has its own cross-process lock
+(`services/tilt_series/registry.py`), which a server-side merge must take. The orchestrator says what Part B gives
+up, in its own words: "The chain executes in SLURM regardless of the headnode process" (`:422`).
+
 ## 3. Principles
 
 - **Files first, Slurm last.** Slurm answers three questions only: is it queued, why is it waiting, did it die
@@ -83,6 +126,14 @@ That is the baseline for "a person at a terminal"; it says nothing about crboost
   named constant; the count is visible (log, and later the UI).
 - **A hidden view does nothing** (CLAUDE.md): no Slurm call because a tab might want the answer.
 - **The exit-marker block of `config/qsub.sh` stays byte-identical** (crboost refuses a template without it).
+- **Per-item work runs in the item's task; the server only merges.** A task leaves what its item contributes
+  (registry fields, star rows) in a small file of its own; the step after a stage concatenates. Parsing every XML of a
+  stage is never the server's job.
+- **Nothing heavy on the login node.** A container, volume data or an image render runs in a Slurm job, never in the
+  server; what the server runs is star/JSON merging in a worker process (`run_in_worker`), seconds long.
+- **Slurm carries the dependencies; the server carries the glue.** Arrays wait on each other in Slurm, never in a
+  polling loop; the server reacts to files.
+- **Every glue step is idempotent and resumable from files**, so a server restart picks a pipeline up where it was.
 
 ## 4. Design
 
@@ -119,6 +170,40 @@ most, only to catch an array that vanished with tasks neither done nor failed.
 through `services.event_log`; a ceiling per minute raises a visible warning. The supervisors' calls are counted by
 their own log lines (each `[ARRAY] n task(s) still in queue` line is one `squeue`).
 
+**Part B.**
+
+**L7 — One driver, three entry points.** `ArrayDriver` splits into `plan` (enumerate, preflight, pre-dispatch,
+manifest), `task` (as now) and `finish` (tally, aggregate, exit marker). The supervisor keeps calling all three, so this
+step changes no behaviour; the server can then call `plan` and `finish` itself.
+
+**L8 — Per-item contributions.** Each driver whose `finish` is MEDIUM moves its per-item parsing into `collect`
+(`fs_motion_and_ctf`, `ts_alignment`, `ts_ctf`, `ts_reconstruct`, `subtomo_extraction`, `warp_export`): the task writes
+`.contrib/<item>.json` (registry fields and star rows), `finish` reads those and writes the star and the registry under
+its lock. `finish` becomes LIGHT; it also makes item flow possible, where a stage has no single end.
+
+**L9 — The server runs the glue.** When a stage's items are all settled (markers, plus S1's snapshot for tasks that
+died without one), the pipeline monitor runs its `finish` in a worker, writes `RELION_JOB_EXIT_*` itself, and for each
+consumer whose producers are all done runs `plan` and sbatches its array. The supervisor's owner claim becomes a
+per-job lock in the server plus the same file, so a second server cannot double-submit. Stop and Cancel `scancel` the
+arrays. `job.star`, `default_pipeline.star` and the markers stay as RELION expects them.
+
+**L10 — Heavy steps get a job of their own, where they belong.** `ts_ctf`'s defocus hand runs as a one-task array of
+its own before the CTF array (on a slice in `g`, which is idle when `c` is full); `segment`'s tool versions are read
+once per image and cached beside the image (the kernel-cache folder); extraction's previews and IMOD models move into
+the per-tomogram tasks (`collect`), and the angle-map deletion with them. None of them then runs on `c` or on the login
+node.
+
+**L11 — Item flow.** On top of L9: every stage's array is submitted at the start, each task waiting on its own
+upstream task (`--dependency=aftercorr`, roadmap 45 P12), so a tilt series moves on when its own work is done (the
+replay: 1:37 to 0:59, 0:39 with tsImport split). Needs one array index per tilt series across all stages (sparse
+`--array` lists keep indices), barriers (the defocus hand) as whole-array dependencies, and a reconciler that reads
+"skipped: upstream failed" from the upstream `.fail`, because `kill_invalid_depend` cancels such a task without a
+record. Chunks (roadmap 45 L5) and item flow are at odds where a chunk's items finish upstream at different times;
+item flow wins for the short stages, chunks stay for template matching, which follows a barrier anyway.
+
+**L12 — Supervisor mode stays.** `orchestration: supervisor | server` in `conf.yaml`, default `supervisor` until S8
+has run; a site where the server cannot stay up keeps the chain in Slurm.
+
 ## 5. Decisions
 
 - **D1 — What IT will accept** (open, asked first). Whether Slurm applies a per-user request limit and its value, what
@@ -133,6 +218,20 @@ their own log lines (each `[ARRAY] n task(s) still in queue` line is one `squeue
 - **D6 — When the server is down.** Files persist; on restart one snapshot pass settles everything, as the restart
   recovery already does (`pipeline_monitor.py`, startup scan).
 - **D7 — Pending reasons** shown only on a job's open page, not in the roster.
+- **D8 — May a pipeline depend on the server?** With L9 a stage's arrays run whatever the server does, but the next
+  stage is submitted only while it runs: a server down overnight stalls a pipeline between stages (it resumes on
+  restart, from files). Item flow (L11) narrows this to the barriers and the final merges. The alternatives: accept it
+  (and keep the server under a supervisor of its own, e.g. a user systemd unit or tmux, roadmap 39); or keep supervisor
+  mode for unattended runs. The maintainer's call.
+- **D9 — Where glue may run.** Proposed: star/JSON merges in the server's worker processes; containers, volumes and
+  images never on the login node. Asked of IT together with D1: whether a long-running server doing seconds of file
+  merging per stage on a login node is acceptable, or whether they prefer it elsewhere (an OpenOnDemand session, a
+  service node).
+- **D10 — Heavy steps' placement** (L10): the defocus hand on a slice in `g`, or a CPU job on `c` (it would then queue
+  there again, but once per pipeline, not once per stage).
+- **D11 — Index per tilt series for item flow**: the registry's order at import, fixed for the project's life, or a
+  per-pipeline map written at submit.
+- **D12 — Default orchestration** after S8: `server` for this lab's deployment, `supervisor` in the template.
 
 ## 6. Stages
 
@@ -162,6 +261,25 @@ stay.
 **S5 — Re-measure and write the numbers in.** `sdiag` before and after a 24-hour pipeline, the counter's table, the
 supervisors' lines; against S0. Set D2 from it.
 
+**Part B.** S1 comes first: the server needs one shared snapshot to tell a task that died from one that is queued.
+
+**S6 — Split the driver (L7).** `plan` / `task` / `finish`, called in turn by the supervisor; no behaviour change.
+Checked by rerunning a finished pilot's stages in supervisor mode and comparing outputs.
+
+**S7 — Per-item contributions (L8),** driver by driver, starting with `fs_motion_and_ctf` (the largest merge). The
+supervisor's `finish` reads the contributions; outputs compared with today's.
+
+**S8 — The server runs the glue (L9, L12),** stage by stage, behind `orchestration: server`. One 412 pilot to template
+matching in each mode while `c` is busy: stage start delays, wall time, the server's Slurm calls (S0's counter), and
+the outputs identical.
+
+**S9 — Heavy steps (L10).** The defocus-hand job, the cached tool versions, extraction's previews in its tasks.
+
+**S10 — Item flow (L11),** after D11; the replay's numbers checked on a pilot.
+
+**S11 — tsImport per tilt series,** if roadmap 45's P11 says the 12 minutes are work and not waiting on `/groups`: then
+it is an array like the others and the last thing on `c` is per tilt series too.
+
 ## 7. Risks
 
 - A heartbeat or `run.out` check on `/groups` is a metadata operation: 100 running tasks at one a minute is far below
@@ -172,6 +290,13 @@ supervisors' lines; against S0. Set D2 from it.
 - The snapshot's age must be visible to the code that settles jobs, so that "absent from a 5-minute-old snapshot" is
   never read as "gone".
 - Clock skew: mtimes compare against the server's clock; the heartbeat carries the job's own epoch for this reason.
+- Part B: two servers on one project (two login nodes) would both submit the next stage; the per-job lock of L9 must
+  be a file that both see, not memory.
+- Part B: a merge in the server that throws must fail the job visibly (a failure marker with the reason), never leave
+  it "running"; and it must not block the event loop (`run_in_worker`, CLAUDE.md).
+- Part B: more arrays queued at once under item flow (60–80 tasks running, roadmap 45's replay) is more for S1's
+  snapshot to cover and more for the reconciler to read; the snapshot stays one `squeue --me`.
+- Part B: per-item contribution files add a few small files per item on `/groups`; written once, read once.
 
 ## 8. Runtime checklist (after S1 and S2)
 
@@ -182,6 +307,12 @@ supervisors' lines; against S0. Set D2 from it.
 5. Compare `sdiag`'s row for our user before and after.
 
 ## 9. Build record
+
+- **2026-11-09, Part B scoped.** Trigger: the anglestest pilot (roadmap 45) queued behind its first supervisor on a
+  full `c` (worst-case start 2026-11-11 19:00) with `g` idle; the maintainer asked whether supervisors can go and
+  chose to fold it into this roadmap. Read: `pipeline_orchestrator_service.py` (`_submit_chain`, the inline writers),
+  `pipeline_runner.py`, `pipeline_monitor.py`, `drivers/array_job_base.py`, and every driver's supervisor hooks (the
+  audit table of §2, by a read-only sweep). No code changed.
 
 - **2026-11-08, scoped.** Read: `pipeline_monitor.py`, `pipeline_runner.py` (pass 1 and 2), `slurm_service.py`
   (`_run_command`, `get_user_jobs`, `query_jobs_by_ids`, `live_task_counts`, `query_terminal_states`),
