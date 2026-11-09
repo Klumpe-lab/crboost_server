@@ -88,14 +88,24 @@ def _healpix_ring_pix2ang(nside: int) -> tuple[np.ndarray, np.ndarray]:
     return np.arccos(z), phi
 
 
-def pytom_angle_list(increment_deg: float) -> np.ndarray:
-    """pytom's `angle_to_angle_list(increment)` (pytom-match-pick 0.14), as ZXZ Euler triples in radians:
-    what `--angular-search <degrees>` searches without symmetry."""
+def _healpix_nside(increment_deg: float) -> int:
+    """The HEALPix resolution pytom takes for the increment: the coarsest whose pixels are no larger than it."""
     npix = 4 * math.pi / math.radians(increment_deg) ** 2
     nside = 0
     while 12 * nside * nside < npix:
         nside += 1
-    theta, phi = _healpix_ring_pix2ang(nside)
+    return nside
+
+
+def pytom_angle_count(increment_deg: float) -> int:
+    """The length of pytom's list for the increment, without building it: view directions times in-plane steps."""
+    return 12 * _healpix_nside(increment_deg) ** 2 * math.ceil(360 / increment_deg)
+
+
+def pytom_angle_list(increment_deg: float) -> np.ndarray:
+    """pytom's `angle_to_angle_list(increment)` (pytom-match-pick 0.14), as ZXZ Euler triples in radians:
+    what `--angular-search <degrees>` searches without symmetry."""
+    theta, phi = _healpix_ring_pix2ang(_healpix_nside(increment_deg))
     phi %= 2 * math.pi
     theta %= math.pi
     psi = np.linspace(0, 2 * math.pi, math.ceil(360 / increment_deg), endpoint=False)
@@ -172,4 +182,4 @@ def write_angle_list_file(angles_rad: np.ndarray, out_path: Path) -> Path:
 
 def expected_angle_count(point_group: str, angle_increment_deg: float) -> int:
     """pytom's list length for the increment over the group's order: what the written list should come close to."""
-    return max(1, round(len(pytom_angle_list(angle_increment_deg)) / POINT_GROUP_ORDER[point_group]))
+    return max(1, round(pytom_angle_count(angle_increment_deg) / POINT_GROUP_ORDER[point_group]))

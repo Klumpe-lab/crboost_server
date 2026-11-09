@@ -220,9 +220,12 @@ partition, and let the strip show each type.
 **Check.** The line above gives `[("nvidia_b200", 4), ("nvidia_b200_1g.23gb", 28)]`, and the landing page's strip
 shows both on `g`.
 
+## Fixed
+
 ### H7 — Template matching with T, O or I symmetry searches 3 to 15 times the orientations its increment asks for
 
-**Status:** fixed 2026-11-09 (D9 settled that day; the fix is below the evidence), found 2026-11-09 (roadmap 45,
+**Status:** fixed 2026-11-09 in `c27416f` (D9 settled that day; the fix is below the evidence; the tab's count
+and note followed the same day), found 2026-11-09 (roadmap 45,
 the 412 pilot; anchors at `edebd13`). **Severity:** high for cost, none
 for correctness so far: every I1 search runs 3,398 orientations where its 12° needs about 225, and the search is most
 of a template-matching task's GPU time. The extra orientations sample finer, so results so far are valid; a fix
@@ -283,10 +286,6 @@ close to pytom's cut-off to tell whether a coarser list loses particles. The mai
 every increment stays available, nothing narrows the choice unless it is plainly better and loses nothing, and the
 account of where lists come from comes before the fix.
 
-## Fixed
-
-*(none yet)*
-
 **Fix (2026-11-09, D9: the maintainer's answers).** `services/templating/angle_lists.py` now takes pytom's own list
 for the increment (`angle_to_angle_list`, ported with its HEALPix RING step: equal to pytom 0.14's to 1e-15 at 3°–90°)
 and keeps, per symmetry orbit, the rotation nearest the identity, the symmetry composed on the right; I1 is scipy's
@@ -297,3 +296,9 @@ increment is refused (`parse_increment`), no longer 12°. New template-matching 
 20 % faster (P9). An existing job keeps its increment, which now means what it says: an I job saved at 12° searches
 148 rotations, not 3,398. T and O were also over-sampled before (3,448 and 3,439 at 12°; about 8° and 7° like for
 like) and keep the 12° default.
+
+The template-matching tab says under Symmetry about how many rotations the search tries (pytom's list over |G|:
+2,074 for I1 at 5°, where the list itself has 2,124) and, for T, O and I, what 12° searched before and the
+increment that samples as finely now; an increment that is not a number is flagged there. Switching the symmetry
+to or from I1 or I2 moves an increment still at its old default to the new one's (`set_symmetry`,
+`services/jobs/template_match.py`); a typed increment stays.

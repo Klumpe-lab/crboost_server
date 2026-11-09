@@ -35,12 +35,19 @@ from pathlib import Path
 
 from nicegui import ui
 
-from services.jobs.template_match import TM_SYMMETRY_CHOICES
+from services.jobs.template_match import TM_SYMMETRY_CHOICES, set_symmetry
 from services.models_base import JobType, SegmentMethod
 from services.path_resolution_service import PathResolutionService, override_instance_id
 from services.project_state import get_project_state_for
 from services.models_base import resolve_species
 from services.segmentation.search_region import describe, read_segmentations
+from services.templating.angle_lists import (
+    POINT_GROUP_ORDER,
+    expected_angle_count,
+    needs_angle_list,
+    parse_increment,
+    pytom_angle_count,
+)
 from services.templating.template_metadata import read_template_header
 from ui.components.species_pill import render_species_line, species_opener
 from ui.job_plugins import register_params_renderer
@@ -60,6 +67,9 @@ _SEARCH_FIELDS = {"search_include", "search_exclude", "search_dilation_ang"}
 _WARN_STYLE = HELPER_STYLE + " color: #b45309;"
 # Under the value column of a field row (label column 110 px + gap).
 _NOTE_STYLE = " margin: 0 0 4px 118px;"
+# T, O and I lists used to keep far more than one rotation per orbit: what one at 12° tried, and the increment
+# that samples about as finely now.
+_SAMPLED_BEFORE = {"T": (3448, 8), "O": (3439, 7), "I1": (3398, 5), "I2": (3398, 5)}
 
 
 @register_params_renderer(JobType.TEMPLATE_MATCH_PYTOM)
@@ -80,6 +90,7 @@ def render_template_match_params(job_type, job_model, is_frozen, save_handler, *
     render_config_preamble(job_model)
     render_default_params(job_type, job_model, is_frozen, save_handler, exclude=exclude)
 
+    refreshes = []
     if species is not None:
         # ── Template + mask + search symmetry ─────────────────────────────────
         section_header(SPECIES_SECTION_TITLE)
@@ -87,11 +98,56 @@ def render_template_match_params(job_type, job_model, is_frozen, save_handler, *
             _render_template_dropdown(species, job_model, is_frozen, save_handler)
             _render_mask_dropdown(species, job_model, is_frozen, save_handler)
             _render_symmetry_dropdown(species, job_model, is_frozen, save_handler)
+        refreshes.append(_render_search_note(job_model))
 
-    if ui_mgr is None or not ui_mgr.project_path:
+    if ui_mgr is not None and ui_mgr.project_path:
+        state = get_project_state_for(ui_mgr.project_path)
+        refreshes.append(_render_search_region(state, job_model, instance_id, is_frozen, save_handler))
+    if not refreshes:
         return None
-    state = get_project_state_for(ui_mgr.project_path)
-    return _render_search_region(state, job_model, instance_id, is_frozen, save_handler)
+
+    def refresh() -> None:
+        for r in refreshes:
+            r()
+
+    return refresh
+
+
+def _render_search_note(job_model):
+    """How many rotations the search tries, under the symmetry row. Returns its refresh, which the job tab reruns
+    after an edit (the increment and the symmetry both change it)."""
+
+    @ui.refreshable
+    def note() -> None:
+        text, warn = _search_note(job_model)
+        ui.label(text).style((_WARN_STYLE if warn else HELPER_STYLE) + _NOTE_STYLE)
+
+    note()
+    return note.refresh
+
+
+def _search_note(job_model) -> tuple[str, bool]:
+    """(text, is_warning): the rotations the search tries at the job's increment and symmetry, and for T, O and I
+    what a 12° search tried before their lists were cut to one rotation per orbit."""
+    sym = getattr(job_model, "symmetry", "C1") or "C1"
+    try:
+        inc = parse_increment(job_model.angular_search)
+    except ValueError:
+        bad = f"Angular search {job_model.angular_search!r} is not an increment in degrees"
+        if needs_angle_list(sym):
+            return f"{bad}: the job will refuse to run.", True
+        return f"{bad}: pytom gets it as given.", False
+    full = pytom_angle_count(inc)
+    if sym == "C1":
+        text = f"Searches {full:,} rotations at {inc:g}°."
+    else:
+        cut = expected_angle_count(sym, inc)
+        rotations = f"{cut:,} rotation{'s' if cut != 1 else ''}"
+        text = f"Searches about {rotations}: pytom's {full:,} at {inc:g}°, one per {sym} orbit."
+    if sym in _SAMPLED_BEFORE:
+        tried, like = _SAMPLED_BEFORE[sym]
+        text += f" Until 2026-11-09, {sym} at 12° searched {tried:,}: as fine as about {like}° now."
+    return text, False
 
 
 def _render_search_region(state, job_model, instance_id: str | None, is_frozen: bool, save_handler):
@@ -265,7 +321,11 @@ def _render_symmetry_dropdown(species, job_model, is_frozen: bool, save_handler)
             return "  ·  no symmetry (full SO(3) search)"
         if s.startswith("C"):
             return f"  ·  {s[1:]}-fold rotational symmetry (PyTOM --z-axis flag)"
-        return f"  ·  point group {s} (angle list, ~{_group_order(s)}× speedup)"
+        return f"  ·  point group {s} (angle list, ~{POINT_GROUP_ORDER[s]}× speedup)"
+
+    def _on_change(value: str) -> None:
+        set_symmetry(job_model, value)
+        save_handler()
 
     options = {s: f"{s}{_suffix(s)}" for s in TM_SYMMETRY_CHOICES}
     value = getattr(job_model, "symmetry", "C1") or "C1"
@@ -281,21 +341,17 @@ def _render_symmetry_dropdown(species, job_model, is_frozen: bool, save_handler)
         save_handler=save_handler,
         value=value,
         empty_value="C1",
+        on_change=_on_change,
         hint=(
             f"Species default: {'None (C1)' if species_sym == 'C1' else species_sym}. {_OVERRIDE_NOTE}\n"
             "Cn uses PyTOM's --z-axis-rotational-symmetry flag (n-fold around z). "
             "D/T/O/I generate a custom asymmetric-unit angle list at submission and "
             "pass --angular-search <file>. The template must be symmetric under the "
-            "chosen group — RELION reconstructions made with --sym <group> are."
+            "chosen group — RELION reconstructions made with --sym <group> are.\n"
+            "I1 and I2 start at a 5° increment, the others at 12°: switching moves an increment still at its "
+            "default to the new one's; a typed increment stays."
         ),
     )
-
-
-def _group_order(point_group: str) -> int:
-    """Order of the point group (|G|) for the suffix label. Mirrors the table
-    in services.templating.angle_lists.POINT_GROUP_ORDER but kept inline here
-    to avoid importing scipy-dependent modules at UI render time."""
-    return {"D2": 4, "D3": 6, "D4": 8, "D5": 10, "D6": 12, "T": 12, "O": 24, "I1": 60, "I2": 60}.get(point_group, 1)
 
 
 def _render_mask_dropdown(species, job_model, is_frozen: bool, save_handler) -> None:

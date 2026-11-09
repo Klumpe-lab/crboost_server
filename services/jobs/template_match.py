@@ -222,3 +222,24 @@ class TemplateMatchPytomParams(AbstractJobParams):
     @staticmethod
     def get_input_requirements() -> dict[str, str]:
         return {"tomograms": "denoisepredict"}
+
+
+def default_increment(symmetry: str) -> str:
+    """The increment a template-matching job starts at with this symmetry."""
+    return DEFAULT_INCREMENT_FOR_SYMMETRY.get(symmetry, TemplateMatchPytomParams.model_fields["angular_search"].default)
+
+
+def set_symmetry(job_model: TemplateMatchPytomParams, symmetry: str) -> bool:
+    """Set the search symmetry. An increment still at the old symmetry's default moves to the new one's (I1 and I2
+    start at 5°, the rest at 12°); one that was chosen stays. True when the increment moved."""
+    old = default_increment(job_model.symmetry or "C1")
+    job_model.symmetry = symmetry
+    try:
+        at_default = float(job_model.angular_search) == float(old)
+    except ValueError:  # an angle-list file or a typo: not a default increment, so it stays
+        at_default = False
+    new = default_increment(job_model.symmetry)
+    if not at_default or float(new) == float(old):
+        return False
+    job_model.angular_search = new
+    return True
