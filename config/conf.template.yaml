@@ -90,16 +90,21 @@ job_resource_profiles:
     cpus_per_task: 2
     time: "0:10:00"
 
+  # Per tilt series: a task of tilt_series_per_task (default 8) runs perdevice (default 2) at once, and asks for
+  # perdevice x the CPUs and memory and its rounds x the time. 24G is the peak on 1024 x 1024 x 512 tomograms plus
+  # half; a tilt series took 41 s on a B200 and 170 s on a 1g.23gb slice at the median, 419 s at worst.
   tsReconstruct:
     gres: "gpu:1"
-    mem: "64G"
+    mem: "24G"
     cpus_per_task: 4
-    time: "1:00:00"
+    time: "0:20:00"
 
+  # CPU only. import_calls (default 4) WarpTools ts_import calls run at once on these CPUs, each keeping about two
+  # busy: 163 tilt series take about 1.5 minutes on 8 CPUs against 12 in one call on one.
   tsImport:
     gres: ""
-    mem: "4G"
-    cpus_per_task: 1
+    mem: "16G"
+    cpus_per_task: 8
     time: "0:30:00"
 
   denoisetrain:
@@ -132,7 +137,8 @@ job_resource_profiles:
 
   # A whole 1024 x 1024 x 512 tomogram needs ~31 GiB of GPU memory (roadmap 43 S1); gpu_split auto splits it to
   # fit the GPU a task gets, at a cost in time. Where the partition also offers smaller cards or MIG slices, name
-  # the full GPU's type (CBE.next: "gpu:nvidia_b200:1").
+  # the full GPU's type (CBE.next: "gpu:nvidia_b200:1"). Per tomogram: a task runs lanes (default 3) at once under
+  # MPS, tomograms_per_lane (default 2) each, and asks for lanes x the CPUs and memory, tomograms_per_lane x the time.
   templatematching:
     gres: "gpu:1"
     mem: "32G"

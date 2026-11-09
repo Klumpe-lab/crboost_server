@@ -3,8 +3,6 @@ from typing import ClassVar
 
 from pydantic import Field
 
-from services.computing.slurm_service import SlurmConfig
-from services.configs.config_service import get_config_service
 from services.jobs._base import AbstractJobParams
 from services.models_base import JobType, JobCategory
 from services.io_slots import InputSlot, OutputSlot, JobFileType
@@ -23,7 +21,7 @@ class TsImportParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
-    USER_PARAMS: ClassVar[set[str]] = {"mdoc_pattern", "min_intensity", "do_at_most", "tomo_dimensions"}
+    USER_PARAMS: ClassVar[set[str]] = {"mdoc_pattern", "min_intensity", "do_at_most", "tomo_dimensions", "import_calls"}
 
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(key="input_star", accepts=[JobFileType.FS_MOTION_CTF_STAR], preferred_source="fsMotionAndCtf"),
@@ -57,27 +55,18 @@ class TsImportParams(AbstractJobParams):
     min_intensity: float = Field(default=0.0, ge=0.0, le=1.0)
     do_at_most: int = Field(default=-1)
     tomo_dimensions: str = Field(default="4096x4096x2048")
+    import_calls: int = Field(
+        default=4,
+        ge=1,
+        le=16,
+        description="WarpTools ts_import calls at once, each over a share of the mdocs, on a share of the SLURM "
+        "tab's CPUs. A call keeps about 2 CPUs busy and takes about a minute to start: 163 tilt series took 12 "
+        "minutes in one call on 1 CPU, 1.5 minutes in 4 calls on 16 CPUs, with the same tomostars.",
+    )
 
     def _get_job_specific_options(self) -> list[tuple[str, str]]:
         input_star = self.paths.get("input_star", "")
         return [("in_mic", str(input_star))]
-
-    def _get_queue_options(self) -> list[tuple[str, str]]:
-        """
-        ts_import is lightweight metadata assembly — no GPU needed.
-        Use the supervisor SLURM config (minimal resources).
-        """
-        sup = get_config_service().supervisor_slurm_defaults
-        options = [
-            ("do_queue", "Yes"),
-            ("queuename", sup.partition),
-            ("qsub", "sbatch"),
-            ("qsubscript", "qsub.sh"),
-            ("min_dedicated", "1"),
-        ]
-        for field_name, var_name in SlurmConfig.QSUB_EXTRA_MAPPING.items():
-            options.append((var_name, str(getattr(sup, field_name))))
-        return options
 
     def is_driver_job(self) -> bool:
         return True
