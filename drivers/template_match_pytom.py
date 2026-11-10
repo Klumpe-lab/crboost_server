@@ -16,8 +16,9 @@ Mode is determined by the SLURM_ARRAY_TASK_ID env var:
           its tomogram, idempotently skips if `tmResults/{name}_scores.mrc`
           already exists, otherwise symlinks the tomogram MRC into tmResults/
           and runs `pytom_match_template.py` with the per-tomogram text inputs
-          prepared by the supervisor. Atomically writes
-          `.task_status/{name}.{ok|fail}`.
+          prepared by the supervisor. pytom writes its maps into a folder of
+          the task's own TMPDIR; they land in tmResults when it is done
+          (`land_outputs`). Atomically writes `.task_status/{name}.{ok|fail}`.
 
 With a search region (`params.restricts_search`) the supervisor records the segmentations and the
 region in the manifest, and each task builds its tomogram's mask from them as
@@ -25,8 +26,8 @@ region in the manifest, and each task builds its tomogram's mask from them as
 (services/segmentation/search_region.py); a tomogram whose segmentations lack a named feature, sit
 on another grid or come from another reconstruction fails its task with that reason.
 
-There is no per-task staging isolation: pytom takes explicit per-tomogram args
-and outputs are name-keyed, so tasks cannot collide. The task reads its inputs
+pytom takes explicit per-tomogram args and outputs are name-keyed, so tasks
+cannot collide in tmResults. The task reads its inputs
 from the manifest snapshot, not the drive-time resolver: all array tasks of one
 submission must see identical, already-validated template/mask/star inputs even
 if project state changes mid-array.
@@ -38,10 +39,14 @@ The mode dispatch, both bootstraps, manifest lookup, exclusions, tally and exit
 code all live in ArrayDriver; this file is the template-match-specific hooks.
 """
 
+import atexit
+import contextlib
 import itertools
+import json
 import math
 import os
 import shutil
+import tempfile
 import time
 import traceback
 from pathlib import Path
@@ -51,15 +56,17 @@ import pandas as pd
 import starfile
 from scipy.fft import next_fast_len
 
-from drivers.array_job_base import ArrayDriver, ArrayResults, read_manifest
+from drivers.array_job_base import ArrayDriver, ArrayResults, mps_daemon, read_manifest
 from drivers.driver_base import (
     DriverContext,
     ToolCommand,
     allocated_gpu_count,
+    allocated_gpu_is_slice,
     allocated_gpu_memory_bytes,
     print_cmd_only,
     require_producer_input,
 )
+from services.computing.slurm_service import SlurmConfig, scale_per_task
 from services.configs.starfile_service import StarfileService
 from services.job_lineage import recon_of
 from services.job_models import TemplateMatchPytomParams
@@ -285,6 +292,63 @@ def scores_mrc_path(job_dir: Path, tomo_name: str) -> Path:
     return job_dir / "tmResults" / f"{tomo_name}_scores.mrc"
 
 
+# Where a task's outputs are copied before they are renamed into tmResults: `<job_dir>/.tm_landing/<tomogram>`.
+TM_LANDING_DIR = ".tm_landing"
+# Room a task's TMPDIR needs per voxel of the tomogram: two float32 maps, three times over for a split search's
+# pieces, which pytom writes there and merges before it writes the maps.
+OUTPUT_BYTES_PER_VOXEL = 3 * 2 * 4
+
+
+def output_staging_dir(item: str, tomo_shape: tuple[int, int, int]) -> tuple[Path | None, str]:
+    """A new folder in this task's TMPDIR for pytom's outputs, and what to log about it; None when TMPDIR has too
+    little room for them, and pytom then writes into tmResults itself. On CBE.next TMPDIR is a private BeeGFS
+    folder per task, written several times faster than the group storage with a dozen tasks at once."""
+    root = Path(os.environ.get("TMPDIR") or "/tmp")
+    need = OUTPUT_BYTES_PER_VOXEL * math.prod(tomo_shape)
+    free = shutil.disk_usage(root).free
+    if free < need:
+        return None, (
+            f"TMPDIR {root} has {free / 2**30:.1f} GiB free and the outputs need about {need / 2**30:.1f}: "
+            "pytom writes into tmResults"
+        )
+    staging = Path(tempfile.mkdtemp(prefix=f"crboost_tm_{item}_", dir=root))
+    # A task that fails leaves nothing behind in a TMPDIR that outlives the job; the folder is temporary
+    # either way, so an error removing it is ignorable.
+    atexit.register(shutil.rmtree, staging, True)
+    return staging, f"pytom writes into {staging}; the maps land in tmResults when it is done"
+
+
+def land_outputs(staging: Path, tm_results_dir: Path, item: str) -> int:
+    """Move what pytom wrote into `staging` into tmResults and return the bytes moved. The files are copied into
+    a folder of this task's own first (`<job_dir>/.tm_landing/<item>`): tasks writing 2 GiB maps into one folder
+    of the group storage at once share a hot spot, a folder each does not. Each is then renamed into tmResults, the
+    score map last, so a file there is always whole and a score map means its job.json and angles are there too.
+    The job.json's paths into `staging` are rewritten to tmResults, as if pytom had written there; every file keeps
+    the time pytom wrote it."""
+    landing = tm_results_dir.parent / TM_LANDING_DIR / item
+    shutil.rmtree(landing, ignore_errors=True)  # a previous attempt's partial copies, if any
+    landing.mkdir(parents=True)
+    scores = f"{item}_scores.mrc"
+    names = sorted((p.name for p in staging.iterdir() if p.is_file()), key=lambda n: (n == scores, n))
+    moved = 0
+    for name in names:
+        src, dst = staging / name, landing / name
+        if name.endswith("_job.json"):
+            data = json.loads(src.read_text())
+            for key, value in data.items():
+                if isinstance(value, str) and (value == str(staging) or value.startswith(f"{staging}/")):
+                    data[key] = str(tm_results_dir) + value[len(str(staging)) :]
+            dst.write_text(json.dumps(data, indent=4))
+            shutil.copystat(src, dst)
+        else:
+            shutil.copy2(src, dst)
+        moved += dst.stat().st_size
+    for name in names:
+        os.replace(landing / name, tm_results_dir / name)
+    landing.rmdir()
+    return moved
+
+
 def build_pytom_base_cmd(
     params: TemplateMatchPytomParams,
     state,
@@ -351,8 +415,24 @@ class TemplateMatchPytomDriver(ArrayDriver):
     params_class = TemplateMatchPytomParams
     job_name = "template_match_pytom"
     driver_script = Path(__file__).resolve()
+    # Searches sharing the card: each sizes its gpu_split on its share of the memory.
+    _sharing = 1
 
     # ---------------- supervisor ----------------
+
+    def items_per_task(self, ctx: DriverContext[TemplateMatchPytomParams]) -> int:
+        return ctx.params.lanes * ctx.params.tomograms_per_lane
+
+    def per_task_slurm_config(self, ctx: DriverContext[TemplateMatchPytomParams]) -> SlurmConfig:
+        """The SLURM tab's resources are one search's: a task runs `lanes` at once and `tomograms_per_lane` in turn."""
+        p = ctx.params
+        cfg = scale_per_task(ctx.params.get_effective_slurm_config(), resources=p.lanes, time=p.tomograms_per_lane)
+        if p.lanes > 1 or p.tomograms_per_lane > 1:
+            self.log(
+                f"{p.lanes} lane(s) x {p.tomograms_per_lane} tomogram(s) a task: {cfg.cpus_per_task} CPUs, "
+                f"{cfg.mem}, {cfg.time} per task"
+            )
+        return cfg
 
     def enumerate_items(self, ctx: DriverContext[TemplateMatchPytomParams]) -> list[str]:
         input_star_tomos = ctx.paths["input_tomograms"]
@@ -425,20 +505,21 @@ class TemplateMatchPytomDriver(ArrayDriver):
         from services.templating.angle_lists import (
             needs_angle_list,
             generate_asymmetric_unit_angles,
+            parse_increment,
             write_angle_list_file,
             expected_angle_count,
         )
 
         if needs_angle_list(sym):
-            try:
-                inc_deg = float(ctx.params.angular_search)
-            except (TypeError, ValueError):
-                inc_deg = 12.0
+            inc_deg = parse_increment(ctx.params.angular_search)
             angles = generate_asymmetric_unit_angles(sym, inc_deg)
             self._angle_list_path = job_dir / f"angles_{sym}.txt"
             write_angle_list_file(angles, self._angle_list_path)
             est = expected_angle_count(sym, inc_deg)
-            self.log(f"symmetry={sym}: wrote {len(angles)} angles (estimate {est}) → {self._angle_list_path}")
+            self.log(
+                f"symmetry={sym} at {inc_deg:g} deg: wrote {len(angles)} rotations (pytom's list / |G| = {est}) → "
+                f"{self._angle_list_path}"
+            )
 
         self._search_region = self._settle_search_region(ctx, items) if ctx.params.restricts_search else None
 
@@ -493,8 +574,22 @@ class TemplateMatchPytomDriver(ArrayDriver):
         output_tomograms = ctx.job_dir / "tomograms.star"
         shutil.copy2(ctx.paths["input_tomograms"], output_tomograms)
         self.log(f"Copied tomograms.star to {output_tomograms}")
+        # Every task has ended: what is left in the landing folders is the partial copy of a task that died
+        # while landing, which a rerun of that tomogram copies again.
+        shutil.rmtree(ctx.job_dir / TM_LANDING_DIR, ignore_errors=True)
 
     # ---------------- task ----------------
+
+    def lanes(self, ctx: DriverContext[TemplateMatchPytomParams], n_items: int) -> int:
+        lanes = min(ctx.params.lanes, n_items)
+        if lanes > 1 and not print_cmd_only() and allocated_gpu_is_slice():
+            self.log(f"A MIG slice: its {n_items} tomograms run one at a time, not in {lanes} lanes")
+            lanes = 1
+        self._sharing = lanes
+        return lanes
+
+    def chunk_session(self, ctx: DriverContext[TemplateMatchPytomParams], lanes: int):
+        return mps_daemon() if lanes > 1 else contextlib.nullcontext()
 
     def task_already_done(self, ctx: DriverContext[TemplateMatchPytomParams], item: str) -> bool:
         # Covers the crash-after-output-before-status window for the most
@@ -532,9 +627,13 @@ class TemplateMatchPytomDriver(ArrayDriver):
         search = manifest.get("search_region")
         search_mask = self._stage_search_mask(item, search, tomo_path, tm_results_dir) if search else None
 
+        staging, note = output_staging_dir(item, mrc_shape_xyz(tomo_path))
+        self.log(note)
+
         return {
             "local_tomo": local_tomo,
             "tm_results_dir": tm_results_dir,
+            "out_dir": staging or tm_results_dir,
             "template_file": Path(manifest["template_path"]),
             "mask_file": Path(manifest["mask_path"]),
             "use_legacy": bool(manifest.get("legacy_text_input", True)),
@@ -593,7 +692,7 @@ class TemplateMatchPytomDriver(ArrayDriver):
             # CRBOOST_PRINT_CMD renders the commands on the supervisor's host: no GPU to size the split for.
             self.log("gpu_split auto is sized on the GPU node: printed as -s auto")
             return ["auto"]
-        gpu_bytes = allocated_gpu_memory_bytes()
+        gpu_bytes = allocated_gpu_memory_bytes() // self._sharing
         split, need = auto_gpu_split(
             mrc_shape_xyz(staged["local_tomo"]),
             mrc_shape_xyz(staged["template_file"]),
@@ -602,7 +701,7 @@ class TemplateMatchPytomDriver(ArrayDriver):
         )
         self.log(
             f"gpu_split auto: {' '.join(map(str, split))} (pytom needs ~{need / 2**30:.1f} GiB per piece, "
-            f"this GPU has {gpu_bytes / 2**30:.1f} GiB)"
+            f"this search has {gpu_bytes / 2**30:.1f} GiB of the GPU)"
         )
         return [str(n) for n in split]
 
@@ -616,7 +715,7 @@ class TemplateMatchPytomDriver(ArrayDriver):
             state=ctx.state,
             template_file=staged["template_file"],
             mask_file=staged["mask_file"],
-            tm_results_dir=staged["tm_results_dir"],
+            tm_results_dir=staged["out_dir"],
             gpu_ids=gpu_ids,
             volume_split=self.volume_split(ctx, staged),
             angle_list_file=Path(angle_list_str) if angle_list_str else None,
@@ -637,14 +736,18 @@ class TemplateMatchPytomDriver(ArrayDriver):
         return cmd
 
     def task_binds(self, ctx: DriverContext[TemplateMatchPytomParams], item: str, staged) -> list:
-        return [staged["template_file"].parent.resolve(), staged["mask_file"].parent.resolve()]
+        return [staged["template_file"].parent.resolve(), staged["mask_file"].parent.resolve(), staged["out_dir"]]
 
     def verify_outputs(self, ctx: DriverContext[TemplateMatchPytomParams], item: str, staged) -> None:
-        out_scores = scores_mrc_path(ctx.job_dir, item)
+        out_scores = staged["out_dir"] / f"{item}_scores.mrc"
         if not out_scores.exists():
             raise FileNotFoundError(f"pytom_match_template reported success but expected output missing: {out_scores}")
 
     def collect(self, ctx: DriverContext[TemplateMatchPytomParams], item: str, staged) -> None:
+        if staged["out_dir"] != staged["tm_results_dir"]:
+            t0 = time.monotonic()
+            moved = land_outputs(staged["out_dir"], staged["tm_results_dir"], item)
+            self.log(f"Landed {moved / 2**30:.1f} GiB in tmResults in {time.monotonic() - t0:.1f} s")
         self._write_analytics_sidecar(ctx, item, started_at=staged.get("started_at"))
 
     def _write_analytics_sidecar(

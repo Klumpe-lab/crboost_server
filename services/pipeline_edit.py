@@ -14,6 +14,7 @@ from typing import Any
 from services.aggregation.extraction import apply_aggregation_overrides
 from services.jobs import jobtype_paramclass
 from services.jobs.spec import JOB_SPEC_BY_TYPE, PHASE_PARTICLES, display_name, instance_display_name, instance_order
+from services.jobs.template_match import set_symmetry
 from services.models_base import InstanceId, JobStatus, JobType
 from services.path_resolution_service import (
     PathResolutionService,
@@ -254,7 +255,10 @@ def add_job(
     if species is not None:
         job_model.species_id = species_id
         for field, value in species_defaults(job_type, species).items():
-            setattr(job_model, field, value)
+            if field == "symmetry":
+                set_symmetry(job_model, value)  # I1 and I2 start at their own increment
+            else:
+                setattr(job_model, field, value)
     if source is not None:
         job_model.copy_settings_from(source)
 

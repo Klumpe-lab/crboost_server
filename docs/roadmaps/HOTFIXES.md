@@ -220,7 +220,35 @@ partition, and let the strip show each type.
 **Check.** The line above gives `[("nvidia_b200", 4), ("nvidia_b200_1g.23gb", 28)]`, and the landing page's strip
 shows both on `g`.
 
-### H7 — Create after a scan stores the dose per tilt rounded to 0.1
+### H8 — A SerialEM delivery imports some series from stacks and others from raw frames, under one axis and hand
+
+**Status:** fix built 2026-11-10 with roadmap 48 S1–S3, not run; moves to Fixed with its commit. Found 2026-11-10
+(anchors at `a22decd`). **Severity:** high: the frames-built series come out
+mirrored, with the tilt axis 10° off and no gain correction, and nothing on screen says so.
+
+**What is wrong.**
+- The layer is chosen per series: the stack whenever `<mdoc dir>/<ImageFile>` exists with nz == sections, else the
+  movies (`services/stack_import.py:57-66`, `services/configs/dataset_parsing_service.py:179-187`).
+- A K3's raw frames are stored in the camera's native orientation, and SerialEM's stack and the mdoc's
+  `Tilt axis angle` in the rotated/flipped one (`RotationAndFlip = 6`, a vertical mirror; measured, roadmap 48 §3).
+- The project has one tilt axis and one hand, both from the stack's view, and no gain unless one is typed.
+- The scan only warns "Mixed source layers" in the parse warnings (`dataset_parsing_service.py:209-214`).
+
+**Evidence** (real data, read only). `DatasetParsingService().parse_dataset` on
+`/groups/klumpe/001_Data/OLENA_pooled_tomos/experiment2_20260615/*/*/*.mdoc`: 18 series `stack`, 5 `movies`
+(`area_4-A_1_ts_002/003`, `area_4-A_2_ts_001`, `area_5-A_ts_002/004`, whose stacks IMOD renamed `_orig.mrc`), one
+project tilt axis 85.0. For `area_5-A_ts_002`, the frame sum matches the stack section only after a vertical mirror
+(NCC 0.64 against ≤ 0.04).
+
+**Impact.** Any SerialEM K3 share where some stacks were renamed, moved or deleted. CryoBoost v1 had no stack layer,
+so this is new with roadmap 18.
+
+**Fix.** One layer per project, chosen by the user, with the axis, hand and gain of that layer (roadmap 48 S2–S3).
+Until then: Create refuses a selection with more than one layer.
+
+**Check.** The same scan offers Frames or Stacks for the project, and a Create never holds both.
+
+### H9 — Create after a scan stores the dose per tilt rounded to 0.1
 
 **Status:** open, found 2026-11-05 (roadmap 42 S4). **Severity:** low: a dose off by up to 0.05 e/Å² per tilt, i.e. a
 few per cent, in dose weighting and everything that reads the project's dose.
@@ -244,7 +272,7 @@ rounding stays for telling doses apart and for display.
 
 **Check.** The toy's Create after a scan stores 2.04.
 
-### H8 — Resampling or filtering a black template writes black density into its "white" file
+### H10 — Resampling or filtering a black template writes black density into its "white" file
 
 **Status:** open, found 2026-11-05 (roadmap 42 S7). **Severity:** medium: the polarity labels of the made pair are
 swapped, and a threshold mask made next is a mask of the inverted density.
@@ -275,7 +303,7 @@ select the made template of the source's polarity.
 **Check.** The toy's resample of a black template selects a black template that correlates +1.0 with its source,
 and its registered white correlates −1.0.
 
-### H9 — A basic shape left without a lowpass is filtered at 45 Å and recorded as unfiltered
+### H11 — A basic shape left without a lowpass is filtered at 45 Å and recorded as unfiltered
 
 **Status:** open, found 2026-11-05 (roadmap 42 S7). **Severity:** low: the template's record, not its data.
 
@@ -291,6 +319,105 @@ v1 filters every shape at 45 Å (`src/gui/generateTemplate.py:452-453` there) an
 
 **Check.** The toy's shape is registered with `lowpass_resolution_ang: 45.0`.
 
+### H12 — The startup banner tells you to kill a running server's workers
+
+**Status:** fix built 2026-11-10 in the `agent_api` merge, not committed; moves to Fixed with its commit. Found
+2026-11-10. **Severity:** high: every start prints a `kill -9` line for the workers of a server that is running,
+and following it takes that server's render and preview workers away.
+
+**What is wrong.** The port survey knows a server by the script in its command line, `crboost` or `main.py`
+(`services/port_survey.py:207`). Since the sh launcher (roadmap 39), a server runs `python3 …/crboost.py`, so no
+server started since then is known as one. Its workers then have no server for a parent and are listed as "CryoBoost
+worker whose server is gone", with `End them with: kill -9 …`; the server itself is left out of the survey. CryoBoost
+v1 has no port survey: this is new with the launcher.
+
+**Evidence** (real processes, read only). 2026-11-10 on cbe-login-0: a test server's banner listed 24292 and 24293
+as leftovers; `ps -o ppid` gives 23406 for both, the lab install's server, running on port 24330 since 14:10.
+
+**Fix.** `crboost.py` joins the names the survey knows a server by.
+
+**Check.** `survey()` on that node lists 23406 as a server on 24330, with 24292 and 24293 as its workers and no
+leftovers; a second server's banner names neither.
+
 ## Fixed
 
-*(none yet)*
+### H7 — Template matching with T, O or I symmetry searches 3 to 15 times the orientations its increment asks for
+
+**Status:** fixed 2026-11-09 in `c27416f` (D9 settled that day; the fix is below the evidence; the tab's count
+and note followed the same day), found 2026-11-09 (roadmap 45,
+the 412 pilot; anchors at `edebd13`). **Severity:** high for cost, none
+for correctness so far: every I1 search runs 3,398 orientations where its 12° needs about 225, and the search is most
+of a template-matching task's GPU time. The extra orientations sample finer, so results so far are valid; a fix
+changes scores and candidates, so the increment to use afterwards is the scientists' choice.
+
+**What is wrong.**
+- `_reduce_to_asymmetric_unit` (`services/templating/angle_lists.py:99-128`) drops a grid orientation only when an
+  earlier one has the same orbit key, a rounded quaternion. Two points of the ZXZ grid (`_uniform_so3_grid`, `:74-96`)
+  share a key only when a group element maps one exactly onto the other, and on that grid only the rotations about z
+  and the 2-folds do. So the cut is the order of that subgroup, not of the group: at 12° the 13,500-point grid becomes
+  3,484 (D2), 2,333 (D3), 1,430 (D5), 1,175 (D6), which is right, but 3,448 (T), 3,439 (O) and 3,398 (I1, I2) against
+  1,125, 562 and 225.
+- The module promises "|G|× faster search" (`:14-18`), and `expected_angle_count` (`:158-166`) has the right number:
+  every such job logs both, e.g. "symmetry=I1: wrote 3398 angles (estimate 225)" in the 412 pilot's job007 `run.out`
+  (`drivers/template_match_pytom.py:502`).
+- Hidden behind it, and live once the cut works: the group is scipy's icosahedral group whatever the template's
+  axes (`_scipy_group_name`, `:63-71`, maps I1 and I2 to the same group, and the module calls the orientation moot,
+  `:20-27`), and it composes on one fixed side (`sym_group * rot`, `:113`). A list cut to one rotation per orbit
+  covers every orientation only for the template's own axes, composed on the side pytom applies a listed rotation;
+  RELION's I1 and I2 differ by a 90° turn about z. Today's lists keep so many rotations that it does not show.
+- Beside it: an increment that does not parse becomes 12° without a word (`drivers/template_match_pytom.py:494-497`).
+- CryoBoost v1 had no such list: it allowed only Cn symmetry for pytom (`src/templateMatching/pytomTm.py:71-73`
+  there), so this is new, not inherited.
+
+**Evidence** (the real functions, and the pilot's list read without writing). From the checkout:
+
+```
+./crboost python -c "from services.templating.angle_lists import generate_asymmetric_unit_angles as g, expected_angle_count as e; print(len(g('I1', 12)), e('I1', 12))"
+```
+
+prints `3398 225`, as the pilot's `angles_I1.txt` has 3,398 lines. For 20,000 random orientations, the angle to the
+nearest symmetry image of a listed one: the pilot's list, median 2.3–2.9°, 95th percentile 3.7–4.6°, at most 5.0–6.4°
+(the range covers both sides and both 2-2-2 settings). pytom's own sampling for a plain increment
+(`pytom_tm.angles.angle_to_angle_list`: HEALPix view directions times in-plane steps), cut to the rotation nearest
+the identity in each orbit, keeps 148 of 9,000 at 12° (median 6.0°, 95th percentile 8.6°, against 5.8° and 7.9°
+uncut), 578 of 34,560 at 8° (3.8°, 5.2°) and 2,124 of 124,416 at 5° (2.4°, 3.4°). So the pilot's list samples like an
+increment of about 5°, which a correct list reaches with 2,124 rotations. The crboost grid cuts unevenly (451 at 12°,
+3,512 at 5°): its points crowd at the poles of the Euler angles.
+
+**Impact.** The search took 63.5 of a template-matching process's 112 s in roadmap 45's P7; with 225 orientations it
+would take about 4 s. The 412 pilot's template matching held B200s for 8.71 GPU-h, the baseline week's 7.0 (roadmap
+45 §3), most of it this search. Projects with T or O templates search about 3 and 6 times what they ask for.
+
+**Fix.** Start from pytom's own sampling at the increment and keep, in each orbit, the rotation nearest the identity:
+about a |G|th of the list, with the uncut list's coverage. Use the template's own axes (I1 or I2 as RELION means them)
+and the side pytom composes on, as roadmap 45's P9 measures them with pytom's own rotation
+(`docs/reports/gpu-util/scripts/tm_angle_lists.py`). Show the count beside the increment in the template-matching
+tab, and say there that searches with these groups used to sample finer than their increment, about 5° at a 12°
+setting, so a project can keep that sampling by choosing it.
+
+**Check.** The I1 list at 12° has about 150 rotations and covers within half a degree of pytom's uncut 12° list. P9's
+tomograms searched with the old list and with correct lists at 12°, 8° and 5°: candidates and scores side by side,
+before a project changes over.
+
+**Measured, and what holds the fix** (roadmap 45 §11 P9, §8 D9). On a B200 a 412 tomogram took 119 s with the old
+list, 95 s with a correct 5° list (sampling at least as fine), 66 s at 8° and 58 s at 12°. The 412 picks are too
+close to pytom's cut-off to tell whether a coarser list loses particles. The maintainer's conditions are in D9:
+every increment stays available, nothing narrows the choice unless it is plainly better and loses nothing, and the
+account of where lists come from comes before the fix.
+
+**Fix (2026-11-09, D9: the maintainer's answers).** `services/templating/angle_lists.py` now takes pytom's own list
+for the increment (`angle_to_angle_list`, ported with its HEALPix RING step: equal to pytom 0.14's to 1e-15 at 3°–90°)
+and keeps, per symmetry orbit, the rotation nearest the identity, the symmetry composed on the right; I1 is scipy's
+setting, I2 that turned 90° about z. The I1 lists at 12°, 8° and 5° are P9's, rotation for rotation (148, 578,
+2,124). An increment coarser than the fundamental region (90° in I or O) keeps the identity alone. An unparsable
+increment is refused (`parse_increment`), no longer 12°. New template-matching jobs with I1 or I2 start at 5°
+(`DEFAULT_INCREMENT_FOR_SYMMETRY`, pipeline builder and protocol apply): about the sampling the old "12°" lists had,
+20 % faster (P9). An existing job keeps its increment, which now means what it says: an I job saved at 12° searches
+148 rotations, not 3,398. T and O were also over-sampled before (3,448 and 3,439 at 12°; about 8° and 7° like for
+like) and keep the 12° default.
+
+The template-matching tab says under Symmetry about how many rotations the search tries (pytom's list over |G|:
+2,074 for I1 at 5°, where the list itself has 2,124) and, for T, O and I, what 12° searched before and the
+increment that samples as finely now; an increment that is not a number is flagged there. Switching the symmetry
+to or from I1 or I2 moves an increment still at its old default to the new one's (`set_symmetry`,
+`services/jobs/template_match.py`); a typed increment stays.

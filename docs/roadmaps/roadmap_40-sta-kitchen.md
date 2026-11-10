@@ -1738,3 +1738,8 @@ every click live on the page.
 
 Checked in a NiceGUI simulation (every clickable element of each design clicked once in two cases, no handler error),
 not in a browser. Open: which of these, if any, the builder takes; the §15 build goes ahead with A (§15.6).
+
+2026-11-06: the page gained a second chapter, `/dev/io-ideas/tree` (`ui/tree_ideas_preview.py`): the preprocessing
+jobs as the tree a new job joins, six designs to tell six Reconstructs apart; recorded in roadmap 32 §15.1.
+2026-11-07: a third chapter, `/dev/io-ideas/branch` (`ui/branch_map_preview.py`), the branch map worked out with
+the sockets-and-cables look of design 1 here; roadmap 32 §15.2.

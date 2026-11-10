@@ -115,7 +115,7 @@ class CandidateExtractPytomParams(AbstractJobParams):
     score_filter_value: str = Field(default="None")
 
     array_throttle: int = Field(
-        default=16, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tomogram candidate extraction"
+        default=40, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tomogram candidate extraction"
     )
 
     def _get_job_specific_options(self) -> list[tuple[str, str]]:

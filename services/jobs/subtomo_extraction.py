@@ -118,7 +118,7 @@ class SubtomoExtractionParams(AbstractJobParams):
     min_frames: int = Field(default=1, description="Min frames per tilt to include")
 
     array_throttle: int = Field(
-        default=16, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series subtomo extraction"
+        default=40, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series subtomo extraction"
     )
 
     def _get_job_specific_options(self) -> list[tuple[str, str]]:
@@ -129,10 +129,10 @@ class SubtomoExtractionParams(AbstractJobParams):
         """
         Override: extract's parent sbatch is a lightweight CPU-only supervisor
         that slices the upstream optimisation set per TS, submits an array,
-        and merges results. Per-task resources (the actual relion_tomo_subtomo
-        invocations — these are the GPU/memory-heavy ones) are consumed by the
-        supervisor when it builds the array sbatch, NOT by this supervisor's
-        own sbatch. Mirrors candidate_extract.py:_get_queue_options.
+        and merges results. Per-task resources (the relion_tomo_subtomo
+        invocations, which run on CPUs only and are the memory-heavy ones) are
+        consumed by the supervisor when it builds the array sbatch, NOT by this
+        supervisor's own sbatch. Mirrors candidate_extract.py:_get_queue_options.
         """
         sup = get_config_service().supervisor_slurm_defaults
         options = [

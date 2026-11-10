@@ -5,7 +5,13 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from services.array_tasks import recorded_array_job_id
-from services.computing.slurm_service import SlurmConfig, check_constraint, normalize_slurm_ids, write_sbatch_script
+from services.computing.slurm_service import (
+    SlurmConfig,
+    check_constraint,
+    crboost_job_name,
+    normalize_slurm_ids,
+    write_sbatch_script,
+)
 from services.configs.config_service import get_config_service
 from services.configs.starfile_service import StarfileService
 from services.job_models import ImportMoviesParams
@@ -785,7 +791,7 @@ class PipelineOrchestratorService:
                 else:
                     fn_exe = self._build_fn_exe(instance_id, job_type, job_model, project_dir, server_dir)
                     try:
-                        script_path = self._render_supervisor_script(job_dir, job_model, fn_exe)
+                        script_path = self._render_supervisor_script(job_dir, instance_id, job_model, fn_exe)
                     except (OSError, ValueError) as e:
                         logger.exception("sbatch script render failed for %s", instance_id)
                         failed = f"Could not write the sbatch script for {instance_id}: {e}"
@@ -851,7 +857,9 @@ class PipelineOrchestratorService:
             message = f"{', '.join(written)} written at submit; nothing to queue."
         return ok(message=message, pid=0, afterok=True, submitted=submitted)
 
-    def _render_supervisor_script(self, job_dir: Path, job_model: AbstractJobParams, fn_exe: str) -> Path:
+    def _render_supervisor_script(
+        self, job_dir: Path, instance_id: str, job_model: AbstractJobParams, fn_exe: str
+    ) -> Path:
         """Render config/qsub.sh -> <job_dir>/run_submit.script for a supervisor submit.
 
         Resources come from job_model._get_queue_options() -- the per-job-type routing that also
@@ -865,11 +873,13 @@ class PipelineOrchestratorService:
         # The job's QOS belongs to its own resources; a job whose queue options are the shared
         # supervisor's (array dispatchers override _get_queue_options) takes the supervisor's QOS here
         # and passes its own QOS to the array tasks instead.
-        if type(job_model)._get_queue_options is AbstractJobParams._get_queue_options:
-            cfg.qos = job_model.get_effective_slurm_config().qos
-        else:
+        supervisor = type(job_model)._get_queue_options is not AbstractJobParams._get_queue_options
+        if supervisor:
             cfg.qos = get_config_service().supervisor_slurm_defaults.qos
-        return write_sbatch_script(job_dir / "run_submit.script", cfg, fn_exe)
+        else:
+            cfg.qos = job_model.get_effective_slurm_config().qos
+        name = crboost_job_name(instance_id, supervisor=supervisor)
+        return write_sbatch_script(job_dir / "run_submit.script", cfg, fn_exe, name=name)
 
     def _write_job_star(
         self,

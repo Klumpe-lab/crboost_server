@@ -976,12 +976,24 @@ def render_io_ideas() -> None:
             if st is None or st.kind != page["kind"]:
                 st = states[title] = State(page["kind"])
             with ui.column().style("gap: 6px; width: 100%;"):
-                ui.label(title).style(PAGE_SECTION_STYLE)
+                ui.label(title).classes("cb-mock-panel-title").style(PAGE_SECTION_STYLE)
                 ui.label(blurb).style(f"{FONT} font-size: 10px; color: {SOFT}; max-width: 900px;")
                 _render_design(fn, st)
 
+    # The page shell hides overflow (the workspace scrolls its own panels); this page scrolls as a whole.
+    ui.query(".nicegui-content").style("overflow: auto;")
     with ui.column().style("padding: 18px 24px; gap: 26px; width: 100%; max-width: 1500px;"):
         with ui.column().style("gap: 6px;"):
+            with ui.element("div").style("display: flex; gap: 14px; align-items: baseline;"):
+                ui.label("1 · A new Class 3D's inputs").style(
+                    f"{FONT} font-size: 10px; color: {INK}; font-weight: 600;"
+                )
+                ui.link("2 · The preprocessing tree →", "/dev/io-ideas/tree").style(
+                    f"{FONT} font-size: 10px; color: {BLUE};"
+                )
+                ui.link("3 · Branch map, worked out →", "/dev/io-ideas/branch").style(
+                    f"{FONT} font-size: 10px; color: {BLUE};"
+                )
             ui.label("A new Class 3D in a project of ~70 jobs: six ways to give it its inputs").style(
                 PAGE_SECTION_STYLE + " font-size: 14px;"
             )
@@ -1012,9 +1024,13 @@ def render_io_ideas() -> None:
 def _render_design(fn, st: State) -> None:
     @ui.refreshable
     def panel() -> None:
-        with ui.element("div").style(
-            "background: #fff; border: 1px solid #dbe3ec; border-radius: 8px; padding: 14px 16px; width: 100%; "
-            "box-sizing: border-box; overflow-x: auto;"
+        with (
+            ui.element("div")
+            .classes("cb-mock-panel")
+            .style(
+                "background: #fff; border: 1px solid #dbe3ec; border-radius: 8px; padding: 14px 16px; width: 100%; "
+                "box-sizing: border-box; overflow-x: auto;"
+            )
         ):
             fn(st, panel.refresh)
 

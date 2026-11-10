@@ -20,6 +20,7 @@ class TsReconstructParams(AbstractJobParams):
         "halfmap_tilts",
         "deconv",
         "perdevice",
+        "tilt_series_per_task",
         "array_throttle",
     }
 
@@ -78,9 +79,24 @@ class TsReconstructParams(AbstractJobParams):
         "the even/odd half-tomograms too, and those are what cryoCARE and IsoNet train and predict on, so keep "
         "it 0 when the pipeline denoises: IsoNet refuses deconvolved halves and makes its own deconvolved mask copy.",
     )
-    perdevice: int = Field(default=1, ge=0, le=8)
+    perdevice: int = Field(
+        default=2,
+        ge=1,
+        le=8,
+        description="Warp workers on the GPU (--perdevice), each reconstructing a tilt series of the task's. Two "
+        "keep the card busy where one leaves it idle between steps (roadmap 45 P10: 1.38x on a B200, 1.42x on a MIG "
+        "slice; four add nothing). A task asks for this many times the SLURM tab's CPUs and memory.",
+    )
+    tilt_series_per_task: int = Field(
+        default=8,
+        ge=1,
+        le=32,
+        description="Tilt series one task reconstructs in one Warp call, so the container and Warp start once for "
+        "them; its time limit is the SLURM tab's times the rounds its workers take. Tomograms are the same as one "
+        "call each (P10: to 3e-5). If the call fails, all of its tilt series fail and a rerun redoes them.",
+    )
     array_throttle: int = Field(
-        default=20, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series reconstruction"
+        default=40, ge=1, le=64, description="Max concurrent SLURM array tasks for tilt-series reconstruction"
     )
 
     def _get_job_specific_options(self) -> list[tuple[str, str]]:

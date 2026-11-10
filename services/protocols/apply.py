@@ -21,6 +21,7 @@ from pydantic import TypeAdapter, ValidationError
 from services import species_admin
 from services.configs.config_service import get_config_service
 from services.jobs.spec import JOB_SPEC_BY_TYPE
+from services.jobs.template_match import DEFAULT_INCREMENT_FOR_SYMMETRY
 from services.models_base import JobType, SpeciesOrigin
 from services.pipeline_edit import species_defaults
 from services.project_state import ExtractionParams, ProjectState, ProtocolOrigin, TemplateMask
@@ -384,4 +385,8 @@ def _apply_species_defaults(jm, st: ProtocolStage, sp, warnings) -> set[str]:
                 warnings.append(
                     f"{st.instance_id}: species '{sp.id}' registers no {key}; {field} left empty (TM will refuse)"
                 )
+        # The increment follows the symmetry the job ends up with, the stage's own or the species'.
+        if "angular_search" not in st.params and jm.symmetry in DEFAULT_INCREMENT_FOR_SYMMETRY:
+            jm.angular_search = DEFAULT_INCREMENT_FOR_SYMMETRY[jm.symmetry]
+            filled.add("angular_search")
     return filled

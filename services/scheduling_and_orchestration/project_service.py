@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from services.configs.mdoc_service import (
     acquisition_from_mdoc,
+    classify_mdoc,
     describe_duplicate_ts_names,
     duplicate_ts_names,
     folder_tag,
@@ -30,7 +31,7 @@ from services.project_state import (
     set_project_state_for,
 )
 from services.tilt_series import preload_registry
-from services.dataset_scan import data_values, differences
+from services.dataset_scan import data_values, differences, layer_problems
 from services.event_log import events
 from services.project_create import ProjectSpec, apply_values, spec_problems
 from services.result import err, ok
@@ -65,6 +66,7 @@ class DataImportService:
         selected_mdoc_paths: list[str] | None = None,
         progress_cb: Callable[[str], None] | None = None,
         ts_names_by_folder: bool = False,
+        source_layer: str | None = None,
     ) -> dict[str, Any]:
         """Synchronous core of data import — runs in thread pool to avoid blocking the event loop.
 
@@ -75,7 +77,9 @@ class DataImportService:
         the series name and its frames' names lead with the mdoc folder's `folder_tag`. Where
         every series came from is written to `IMPORT_SOURCES_FILENAME`. Returns
         `ok(layer=…, frame_extension=…, n_frames=…)`; `progress_cb` receives short status
-        strings for the Create spinner.
+        strings for the Create spinner. `source_layer` ("stack" / "movies") is the user's pick
+        for the whole project: a series without it fails the import instead of quietly
+        arriving from the other layer, whose orientation differs.
         """
         try:
             frames_dir = project_dir / "frames"
@@ -106,8 +110,9 @@ class DataImportService:
             for idx, mdoc_path_str in enumerate(sorted(mdoc_files)):
                 mdoc_path = Path(mdoc_path_str)
                 parsed_mdoc = self.mdoc_service.parse_mdoc_file(mdoc_path)
-                if not parsed_mdoc["data"]:
-                    logger.warning("Skipping %s: no [ZValue] sections", mdoc_path.name)
+                kind = classify_mdoc(parsed_mdoc)
+                if kind != "tilt_series":
+                    logger.warning("Skipping %s: %s mdoc, not a tilt series", mdoc_path.name, kind)
                     continue
                 facts = acquisition_from_mdoc(parsed_mdoc)
                 series_prefix = import_prefix + (f"{folder_tag(mdoc_path.parent)}_" if ts_names_by_folder else "")
@@ -125,7 +130,12 @@ class DataImportService:
                 movies_complete = bool(movies) and all(p is not None for _, p in movies)
                 movies_partial = any(p is not None for _, p in movies)
                 stack = resolve_stack(mdoc_path, facts.image_file, facts.n_sections)
-                layer = choose_source_layer(facts.software, movies_complete, movies_partial, stack is not None)
+                layer = choose_source_layer(
+                    facts.software, movies_complete, movies_partial, stack is not None, chosen=source_layer
+                )
+                if layer == "missing" and source_layer:
+                    what = "a stack" if source_layer == "stack" else "all of its movies"
+                    return err(f"{mdoc_path.name}: has no {what}; deselect it or choose the other layer")
 
                 if layer == "stack":
                     if progress_cb:
@@ -160,7 +170,7 @@ class DataImportService:
                 layers["movies"] += 1
 
             if not layers:
-                return err("No tilt-series imported: every selected mdoc lacks [ZValue] sections.")
+                return err("No tilt-series imported: none of the selected mdocs is a tilt series.")
             (project_dir / IMPORT_SOURCES_FILENAME).write_text(
                 json.dumps({"ts_names_by_folder": ts_names_by_folder, "series": sources}, indent=1)
             )
@@ -185,6 +195,7 @@ class DataImportService:
         selected_mdoc_paths: list[str] | None = None,
         progress_cb: Callable[[str], None] | None = None,
         ts_names_by_folder: bool = False,
+        source_layer: str | None = None,
     ) -> dict[str, Any]:
         """Async wrapper — offloads blocking file I/O to a thread."""
         return await asyncio.to_thread(
@@ -196,6 +207,7 @@ class DataImportService:
             selected_mdoc_paths,
             progress_cb,
             ts_names_by_folder,
+            source_layer,
         )
 
 
@@ -384,6 +396,7 @@ class ProjectService:
         selected_mdoc_paths: list[str] | None = None,
         progress_cb: Callable[[str], None] | None = None,
         ts_names_by_folder: bool = False,
+        source_layer: str | None = None,
     ) -> dict[str, Any]:
         """Creates the project directory structure and imports the raw data. On success the
         import result is returned as is (it carries `layer` / `frame_extension` / `n_frames`)."""
@@ -403,6 +416,7 @@ class ProjectService:
                 selected_mdoc_paths,
                 progress_cb,
                 ts_names_by_folder,
+                source_layer,
             )
         except Exception as e:
             return err(f"Failed during directory setup: {e!s}")
@@ -514,6 +528,10 @@ class ProjectService:
                 duplicates = duplicate_ts_names(mdoc_files, by_folder=spec.ts_names_by_folder)
                 if duplicates:
                     return err(describe_duplicate_ts_names(duplicates))
+            # One layer for every series, and what that layer needs: the landing page's Create gate asks the same.
+            problems = layer_problems(overview) if overview is not None else []
+            if problems:
+                return err("Not created: " + "; ".join(problems))
 
             import getpass
             from services.project_nickname import nickname_for
@@ -557,6 +575,7 @@ class ProjectService:
                 spec.series,
                 progress_cb,
                 spec.ts_names_by_folder,
+                source_layer=spec.source_layer,
             )
             if not structure_result["success"]:
                 return structure_result

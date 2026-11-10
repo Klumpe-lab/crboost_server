@@ -19,7 +19,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from services.computing.slurm_service import SlurmConfig
 from services.jobs.spec import instance_display_name
-from services.jobs.template_match import TM_SYMMETRY_CHOICES
+from services.jobs.template_match import TM_SYMMETRY_CHOICES, set_symmetry
 from services.models_base import DenoiseMethod, JobStatus, JobType, SegmentMethod, resolve_species
 from services.path_resolution_service import (
     PathResolutionService,
@@ -265,7 +265,13 @@ def set_params(state: ProjectState, instance_id: str, values: dict[str, Any]) ->
         if getattr(job_model, name) == value:
             unchanged.append(name)
             continue
-        setattr(job_model, name, value)
+        is_tm = job_model.job_type == JobType.TEMPLATE_MATCH_PYTOM
+        if name == "symmetry" and is_tm and "angular_search" not in checked:
+            # An increment still at the old symmetry's default moves to the new one's, as the job tab shows.
+            if set_symmetry(job_model, value):
+                applied["angular_search"] = job_model.angular_search
+        else:
+            setattr(job_model, name, value)
         applied[name] = getattr(job_model, name)
     if applied:
         state.mark_dirty()

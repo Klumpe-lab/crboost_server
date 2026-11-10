@@ -8,7 +8,7 @@ in their own code (`model_defaults`); the API takes every one from the request.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -51,6 +51,10 @@ class ProjectSpec(BaseModel):
     series: list[str] | None = None
     # Series named after their folder too: one project from folders that reuse series names.
     ts_names_by_folder: bool = False
+    # The one layer every series comes from, SerialEM's stacks or the movies: a series without it fails the
+    # import rather than arrive from the other layer, whose orientation differs. None: each series takes the
+    # layer it has.
+    source_layer: Literal["stack", "movies"] | None = None
     shared: bool = False
     # A path, or None for frames already gain-corrected: given either way.
     gain_reference: str | None = Field(...)

@@ -10,13 +10,15 @@ forwards each tool call with your token. Nothing runs a model inside the server.
 On the login node where your server runs (its startup banner names the node):
 
 ```bash
-claude mcp add --scope user crboost -- uv run --script <checkout>/agent/crboost_mcp.py
+claude mcp add --scope user crboost -- <checkout>/crboost mcp
 mkdir -p ~/.claude/skills && ln -s <checkout>/agent/skills/crboost ~/.claude/skills/crboost
 ```
 
-`uv` fetches the forwarder's two dependencies (`mcp`, `httpx`) on first start. `claude mcp list` then shows
-`crboost` connected. Started with no server up, the forwarder offers only `get_server_info`, which says how to
-start one; once the server answers, the next call brings the full tool list without `/mcp`.
+`crboost mcp` runs the forwarder with the checkout's own uv, which fetches its two dependencies (`mcp`, `httpx`)
+on first start. A user-scope entry belongs to one Claude Code login: with `CLAUDE_CONFIG_DIR` set, add it with that
+same setting. `claude mcp list` then shows `crboost` connected. Started with no server up, the forwarder offers
+only `get_server_info`, which says how to start one; once the server answers, the next call brings the full tool
+list without `/mcp`.
 
 The forwarder finds the server from `CRBOOST_URL` (localhost only), else the port this checkout last ran on
 (`~/.crboost/ports.json`), else the one CryoBoost server running as you on this node. It reads your token from

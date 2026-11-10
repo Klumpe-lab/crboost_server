@@ -2,15 +2,13 @@
 """CryoBoost Server preflight.
 
 Creates config/conf.yaml and config/qsub.sh from their templates when they are missing, then checks
-the things that break a fresh install. Run it with the interpreter that runs the server (and, unless
-conf.yaml sets crboost_python, the drivers):
+the things that break a fresh install. Run it with the interpreter that runs the server and the drivers:
 
-    python preflight.py
+    ./crboost preflight
 
 Never edits an existing config file. Exits 1 when any check fails.
 """
 
-import clean_env  # noqa: F401  (first: check the environment crboost will run in)
 import importlib
 import os
 import shutil
@@ -39,8 +37,6 @@ REQUIRED_MODULES = [
     "PIL",
     "starfile",
     "mrcfile",
-    "torch",
-    "torchvision",
 ]
 
 failures: list[str] = []
@@ -101,6 +97,12 @@ def check_python() -> None:
     for found in outside:
         warn(f"not from this environment ({sys.prefix}): {found}")
 
+    # A venv/ that is a real directory is an install from before environments were named by their lock: ./crboost
+    # starts from .uv/env now and never touches it. (When venv is a link, it is only a convenience.)
+    old = ROOT / "venv"
+    if old.is_dir() and not old.is_symlink():
+        warn(f"{old} is not used any more; delete it once no server runs from it")
+
 
 def check_config():
     print("\nConfig (config/conf.yaml, overlaid by ~/.crboost/conf.yaml if present)")
@@ -127,9 +129,16 @@ def check_config():
         warn("curation.partition is not set; curation sessions cannot start")
 
     if not cfg.crboost_python:
-        ok(f"drivers run {sys.executable} (this interpreter; start crboost with it too)")
+        ok(f"drivers run {sys.executable} (this interpreter, the one ./crboost uses)")
     elif os.access(cfg.crboost_python, os.X_OK):
-        ok(f"drivers run crboost_python = {cfg.crboost_python}")
+        if Path(cfg.crboost_python) == Path(sys.executable):
+            warn(f"crboost_python = {cfg.crboost_python} is this interpreter; delete the line (empty means the same)")
+        else:
+            # A conf.yaml copied from another install, or kept across an environment change, carries the old path.
+            warn(
+                f"crboost_python = {cfg.crboost_python}: drivers run that, not this interpreter ({sys.executable}); "
+                "delete the line from config/conf.yaml"
+            )
     else:
         fail(f"crboost_python = {cfg.crboost_python} is not an executable interpreter; set it or leave it empty")
 
@@ -255,7 +264,7 @@ def main() -> int:
     if failures:
         print(f"{len(failures)} check(s) failed.")
         return 1
-    print(f"All checks passed. Start the server with: {sys.executable} crboost")
+    print("All checks passed. Start the server with: ./crboost")
     return 0
 
 

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Does a SmallSimpleCNN tilt-classifier checkpoint respond to its input?
 
-Standalone: needs torch, plus Pillow when PNGs are given. Runs on the CPU by default, so two
-machines print the same numbers for the same file:
+Standalone: needs torch, plus Pillow when PNGs are given; the server's environment has neither, so run it
+in the tilt_filter image (`apptainer exec <tilt_filter.sif> python check_tiltnet.py ...`). Runs on the CPU
+by default, so two machines print the same numbers for the same file:
 
     python check_tiltnet.py model260212.pth [tilt.png ...] [--device cuda]
 

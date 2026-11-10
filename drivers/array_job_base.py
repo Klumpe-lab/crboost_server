@@ -17,12 +17,16 @@ Any driver that processes tilt series independently can use this module:
     4. Call write_status_atomic() to report outcome
 """
 
+import contextlib
 import json
 import os
+import queue
 import shutil
 import signal
+import socket
 import subprocess
 import sys
+import threading
 import time
 import traceback
 from abc import ABC, abstractmethod
@@ -32,7 +36,7 @@ from pathlib import Path
 server_dir = Path(__file__).parent.parent
 
 from drivers.driver_base import PRINT_CMD_ENV, DriverContext, print_cmd_only, run_tool, start_supervisor
-from services.computing.slurm_service import SlurmConfig, write_sbatch_script
+from services.computing.slurm_service import SlurmConfig, crboost_job_name, write_sbatch_script
 from services.configs.starfile_service import StarfileService
 from services.jobs.spec import driver_invocation
 
@@ -538,13 +542,20 @@ def copy_tomostar_with_absolute_paths(src: Path, dst: Path, original_dir: Path) 
 def stage_per_ts_environment(
     job_dir: Path, ts_name: str, input_processing: Path | None, settings_file: Path
 ) -> tuple[Path, Path]:
+    """One tilt series' staging folder, `.staging/task_<ts_name>` (`stage_tilt_series`)."""
+    return stage_tilt_series(job_dir / ".staging" / f"task_{ts_name}", [ts_name], input_processing, settings_file)
+
+
+def stage_tilt_series(
+    stage_root: Path, ts_names: list[str], input_processing: Path | None, settings_file: Path
+) -> tuple[Path, Path]:
     """
-    Build a per-TS staging directory so WarpTools only sees ONE tilt-series.
+    Build a staging directory so WarpTools sees only these tilt series (one, or a chunk's).
 
     WarpTools enumerates items from the settings file's DataFolder (tomostar dir),
     NOT from --input_processing.  So we must stage:
 
-        .staging/task_{ts_name}/
+        <stage_root>/
         ├── warp_tiltseries.settings    # copy of original
         ├── tomostar/
         │   └── {ts_name}.tomostar      # copy with absolute movie paths
@@ -560,40 +571,36 @@ def stage_per_ts_environment(
 
     Returns (staged_settings_file, staged_input_processing).
     """
-    stage_root = job_dir / ".staging" / f"task_{ts_name}"
     stage_root.mkdir(parents=True, exist_ok=True)
 
     # 1. Copy the settings file (it's small XML).
     staged_settings = stage_root / settings_file.name
     shutil.copy2(str(settings_file), str(staged_settings))
 
-    # 2. Stage the tomostar — one TS only, with ABSOLUTE MoviePaths.
+    # 2. Stage the tomostars — these TS only, with ABSOLUTE MoviePaths.
     original_tomostar_dir = settings_file.parent / "tomostar"
     staged_tomostar_dir = stage_root / "tomostar"
     staged_tomostar_dir.mkdir(parents=True, exist_ok=True)
-
-    src_tomostar = original_tomostar_dir / f"{ts_name}.tomostar"
-    if not src_tomostar.exists():
-        raise FileNotFoundError(f"Tomostar not found: {src_tomostar}")
-
-    dst_tomostar = staged_tomostar_dir / f"{ts_name}.tomostar"
-    copy_tomostar_with_absolute_paths(src_tomostar, dst_tomostar, original_tomostar_dir)
-
-    # 3. Stage the warp_tiltseries dir (input_processing) — one XML only.
     staged_processing = stage_root / "warp_tiltseries"
     staged_processing.mkdir(parents=True, exist_ok=True)
 
-    if input_processing is None:
-        return staged_settings, staged_processing
+    for ts_name in ts_names:
+        src_tomostar = original_tomostar_dir / f"{ts_name}.tomostar"
+        if not src_tomostar.exists():
+            raise FileNotFoundError(f"Tomostar not found: {src_tomostar}")
+        dst_tomostar = staged_tomostar_dir / f"{ts_name}.tomostar"
+        copy_tomostar_with_absolute_paths(src_tomostar, dst_tomostar, original_tomostar_dir)
 
-    src_xml = input_processing / f"{ts_name}.xml"
-    if not src_xml.exists():
-        raise FileNotFoundError(f"Per-TS XML not found in input_processing: {src_xml}")
-
-    dst_xml = staged_processing / f"{ts_name}.xml"
-    if dst_xml.exists() or dst_xml.is_symlink():
-        dst_xml.unlink()
-    dst_xml.symlink_to(src_xml.resolve())
+        # 3. Stage the warp_tiltseries dir (input_processing) — these XMLs only.
+        if input_processing is None:
+            continue
+        src_xml = input_processing / f"{ts_name}.xml"
+        if not src_xml.exists():
+            raise FileNotFoundError(f"Per-TS XML not found in input_processing: {src_xml}")
+        dst_xml = staged_processing / f"{ts_name}.xml"
+        if dst_xml.exists() or dst_xml.is_symlink():
+            dst_xml.unlink()
+        dst_xml.symlink_to(src_xml.resolve())
 
     return staged_settings, staged_processing
 
@@ -614,7 +621,9 @@ def build_array_sbatch_script(
     driver_cmd = driver_invocation(
         server_dir=server_dir, driver_script=driver_script, instance_id=instance_id, project_path=project_path
     )
-    return write_sbatch_script(job_dir / "run_array.sh", per_task_cfg, driver_cmd, array=array_spec)
+    return write_sbatch_script(
+        job_dir / "run_array.sh", per_task_cfg, driver_cmd, array=array_spec, name=crboost_job_name(instance_id)
+    )
 
 
 def submit_array_sbatch(script_path: Path, cwd: Path) -> str:
@@ -665,6 +674,7 @@ def submit_array_job(
     *,
     ts_metadata: dict[str, dict] | None = None,
     manifest_extra: dict | None = None,
+    items_per_task: int = 1,
 ) -> str | None:
     """
     Complete supervisor dispatch: write manifest, clean status dir, build + submit array.
@@ -672,6 +682,10 @@ def submit_array_job(
     On re-run, already-succeeded tilt-series (with .ok status files) are skipped.
     Only failed/missing items are re-submitted.  The manifest always contains ALL
     ts_names so that array index → ts_name mapping stays consistent across runs.
+
+    `items_per_task` > 1 runs the items to (re)run in chunks (`plan_chunks`): one array task per chunk, at its
+    first index, and the manifest's `chunks` says which indices each runs. Every item keeps its own status marker
+    and log, so a rerun submits only the items that failed (roadmap 45 D3).
 
     Returns the SLURM array job ID, or None if all items already succeeded.
     """
@@ -699,21 +713,28 @@ def submit_array_job(
     cancel_previous_array(job_dir)
 
     # 3. Write manifest with ALL items (keeps index→name mapping stable)
-    write_manifest(job_dir, ts_names, ts_metadata=ts_metadata, extra=manifest_extra)
+    chunks = plan_chunks(indices_to_run, items_per_task) if items_per_task > 1 else None
+    extra = {**(manifest_extra or {}), **({"chunks": chunks} if chunks else {})}
+    write_manifest(job_dir, ts_names, ts_metadata=ts_metadata, extra=extra or None)
 
     # 4. Clean .fail files from previous run; keep .ok files intact
     clean_status_dir(job_dir, keep_ok=True)
 
-    # 5. Compute array spec: only the indices that need (re)processing
-    n_to_run = len(indices_to_run)
-    throttle = max(1, min(array_throttle, n_to_run))
-    if n_to_run == len(ts_names):
+    # 5. Compute array spec: only the indices that need (re)processing, or the first index of each chunk
+    task_indices = [int(k) for k in chunks] if chunks else indices_to_run
+    n_tasks = len(task_indices)
+    throttle = max(1, min(array_throttle, n_tasks))
+    if not chunks and n_tasks == len(ts_names):
         # Fresh run — simple range
         array_spec = f"0-{len(ts_names) - 1}%{throttle}"
     else:
-        # Re-run — comma-separated indices of failed/missing items
-        idx_str = ",".join(str(i) for i in indices_to_run)
+        # Re-run or chunks — comma-separated indices
+        idx_str = ",".join(str(i) for i in task_indices)
         array_spec = f"{idx_str}%{throttle}"
+    if chunks:
+        print(
+            f"[SUPERVISOR] {len(indices_to_run)} tilt-series in {n_tasks} task(s) of up to {items_per_task}", flush=True
+        )
     print(
         f"[SUPERVISOR] Per-task SLURM: mem={per_task_cfg.mem} time={per_task_cfg.time} "
         f"gres={per_task_cfg.gres} cpus={per_task_cfg.cpus_per_task} | --array={array_spec}",
@@ -791,6 +812,97 @@ def install_cancel_handler(array_job_id: str) -> None:
 
 
 # ----------------------------------------------------------------------
+# Chunks: several items per array task (roadmap 45 L5, D3)
+# ----------------------------------------------------------------------
+
+
+def plan_chunks(indices: list[int], size: int) -> dict[str, list[int]]:
+    """The indices to run in consecutive runs of `size`, keyed by each run's first index: its array task."""
+    return {str(indices[i]): indices[i : i + size] for i in range(0, len(indices), size)}
+
+
+class _PerThreadStream:
+    """sys.stdout / sys.stderr while a chunk runs: a thread bound to an item's log writes there, every other
+    thread to the task's own stream. print() and traceback look the stream up at each call."""
+
+    def __init__(self, default) -> None:
+        self._default = default
+        self._bound: dict[int, object] = {}
+
+    def bind(self, stream) -> None:
+        self._bound[threading.get_ident()] = stream
+
+    def unbind(self) -> None:
+        self._bound.pop(threading.get_ident(), None)
+
+    def _target(self):
+        return self._bound.get(threading.get_ident(), self._default)
+
+    def write(self, text: str) -> int:
+        return self._target().write(text)
+
+    def flush(self) -> None:
+        self._target().flush()
+
+    def __getattr__(self, name):
+        return getattr(self._default, name)
+
+
+def chunk_item_header(item: str, leader: int) -> str:
+    """The first lines of the log of a chunk's item after the first: the node (for the analytics backfill) and
+    the task it runs in."""
+    return f"Node: {socket.gethostname()}\n[CHUNK] {item} runs in array task {leader} (task_{leader}.out)\n"
+
+
+@contextlib.contextmanager
+def item_log(job_dir: Path, idx: int, item: str, leader: int):
+    """Send this thread's output to `task_<idx>.out` while it runs an item of the chunk in task `leader`, so the
+    item has its own log where the UI looks for it (and a task_N.out that says it started). The chunk's first item
+    writes to the task's own log."""
+    if idx == leader or not isinstance(sys.stdout, _PerThreadStream):
+        yield
+        return
+    with open(job_dir / f"task_{idx}.out", "a", buffering=1) as f:
+        f.write(chunk_item_header(item, leader))
+        for stream in (sys.stdout, sys.stderr):
+            stream.bind(f)
+        try:
+            yield
+        finally:
+            for stream in (sys.stdout, sys.stderr):
+                stream.unbind()
+
+
+@contextlib.contextmanager
+def mps_daemon():
+    """An MPS control daemon for this task's GPU for the duration, its pipes on the node (/dev/shm). The
+    container wrapper passes CUDA_MPS_PIPE_DIRECTORY on, so every process the task starts shares the card under
+    it. Raises when the daemon does not start."""
+    root = Path("/dev/shm") / f"crboost_mps_{os.environ.get('SLURM_JOB_ID', os.getpid())}"
+    pipe, log = root / "pipe", root / "log"
+    pipe.mkdir(parents=True, exist_ok=True)
+    log.mkdir(parents=True, exist_ok=True)
+    env = {**os.environ, "CUDA_MPS_PIPE_DIRECTORY": str(pipe), "CUDA_MPS_LOG_DIRECTORY": str(log)}
+    subprocess.run(["nvidia-cuda-mps-control", "-d"], env=env, check=True, timeout=60)
+    os.environ.update(CUDA_MPS_PIPE_DIRECTORY=str(pipe), CUDA_MPS_LOG_DIRECTORY=str(log))
+    print(f"[MPS] control daemon started, pipes in {pipe}", flush=True)
+    try:
+        yield
+    finally:
+        subprocess.run(["nvidia-cuda-mps-control"], input="quit\n", text=True, env=env, timeout=60, check=False)
+        for var in ("CUDA_MPS_PIPE_DIRECTORY", "CUDA_MPS_LOG_DIRECTORY"):
+            os.environ.pop(var, None)
+        shutil.rmtree(root, ignore_errors=True)  # node-local scratch of a daemon that has quit
+
+
+def split_cpus(n: int) -> list[list[int]]:
+    """This task's CPUs in n groups of about equal size, one per lane."""
+    cpus = sorted(os.sched_getaffinity(0))
+    size = max(1, len(cpus) // n)
+    return [cpus[i * size : (i + 1) * size] or cpus for i in range(n)]
+
+
+# ----------------------------------------------------------------------
 # ArrayDriver template
 # ----------------------------------------------------------------------
 
@@ -818,13 +930,16 @@ class ArrayDriver(ABC):
     driver_script: Path
     retry_attempts: int = 1
     poll_secs: int = 30
+    # Seconds between the starts of a chunk's lanes (P7b started them 30 s apart).
+    lane_stagger_s: int = 30
 
     # Log prefix for the mode currently running; hooks print through self.log()
-    # so a line reads the same whichever mode emitted it.
+    # so a line reads the same whichever mode emitted it. A lane of a chunk sets its own.
     _prefix: str = "[DRIVER]"
+    _lane = threading.local()
 
     def log(self, message: str) -> None:
-        print(f"{self._prefix} {message}", flush=True)
+        print(f"{getattr(self._lane, 'prefix', self._prefix)} {message}", flush=True)
 
     # ---------------- shared hooks ----------------
 
@@ -883,6 +998,10 @@ class ArrayDriver(ABC):
         conditional on a parameter); default is the job's effective config."""
         return ctx.params.get_effective_slurm_config()
 
+    def items_per_task(self, ctx: DriverContext) -> int:
+        """Items one array task runs (`plan_chunks`). Default 1: a task per item."""
+        return 1
+
     def tally_acceptable(self, ctx: DriverContext, results: ArrayResults) -> bool:
         """False → job FAILED before aggregation. Default: tolerant. A tilt-series
         that failed is dropped (`results.dropped`) and the rest carry on, so one bad
@@ -919,6 +1038,14 @@ class ArrayDriver(ABC):
         ctx.additional_binds. The container wrapper resolves/dedups/sorts."""
         return []
 
+    def lanes(self, ctx: DriverContext, n_items: int) -> int:
+        """Items of a chunk run at once, each lane on its own share of the task's CPUs. Default 1."""
+        return 1
+
+    def chunk_session(self, ctx: DriverContext, lanes: int):
+        """A context around a chunk's lanes (template matching: an MPS daemon when several share the card)."""
+        return contextlib.nullcontext()
+
     def execute(self, ctx: DriverContext, item: str, staged) -> None:
         """Run this item's tool work: build_command → run_tool. Override when an
         item needs multiple tool invocations (denoise_predict's IsoNet path);
@@ -932,6 +1059,7 @@ class ArrayDriver(ABC):
             binds=[*ctx.additional_binds, *self.task_binds(ctx, item, staged)],
             attempts=self.retry_attempts,
             label=f"{self.job_name} {item}",
+            cpus=getattr(self._lane, "cpus", None),
         )
 
     def verify_outputs(self, ctx: DriverContext, item: str, staged) -> None:
@@ -1004,6 +1132,7 @@ class ArrayDriver(ABC):
                 driver_script=self.driver_script,
                 ts_metadata=self.item_metadata(ctx, items),
                 manifest_extra=self.manifest_extras(ctx, items),
+                items_per_task=self.items_per_task(ctx),
             )
 
             if array_job_id is not None:
@@ -1054,20 +1183,32 @@ class ArrayDriver(ABC):
             traceback.print_exc(file=sys.stderr)
             sys.exit(1)
 
-        status_dir = ctx.job_dir / STATUS_DIR_NAME
-        item = None
         try:
             self.post_bootstrap(ctx)
             manifest = read_manifest(ctx.job_dir)
             items = manifest["ts_names"]
-            if array_idx >= len(items):
+            indices = (manifest.get("chunks") or {}).get(str(array_idx)) or [array_idx]
+            if max(indices) >= len(items):
                 raise IndexError(f"SLURM_ARRAY_TASK_ID {array_idx} out of range (manifest has {len(items)})")
-            item = items[array_idx]
-            print(f"[TASK {array_idx}] ts_name={item}", flush=True)
+        except Exception as e:
+            label = f"_unknown_idx{array_idx}"
+            print(f"[TASK {array_idx}] FATAL ERROR for ts={label}: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            self._write_fail(ctx, array_idx, label, e)
+            sys.exit(1)
 
+        entries = [(i, items[i]) for i in indices]
+        ok = self.run_item(ctx, *entries[0]) if len(entries) == 1 else self.run_chunk(ctx, entries)
+        sys.exit(0 if ok else 1)
+
+    def run_item(self, ctx: DriverContext, idx: int, item: str) -> bool:
+        """One item start to end, its `.ok` or `.fail` written; True when it succeeded."""
+        status_dir = ctx.job_dir / STATUS_DIR_NAME
+        try:
+            print(f"[TASK {idx}] ts_name={item}", flush=True)
             if self.task_already_done(ctx, item):
                 write_status_atomic(status_dir, item, ok=True)
-                sys.exit(0)
+                return True
 
             staged = self.stage(ctx, item)
             self.execute(ctx, item, staged)
@@ -1075,17 +1216,67 @@ class ArrayDriver(ABC):
             self.collect(ctx, item, staged)
 
             write_status_atomic(status_dir, item, ok=True)
-            print(f"[TASK {array_idx}] {item} done", flush=True)
-            sys.exit(0)
+            print(f"[TASK {idx}] {item} done", flush=True)
+            return True
 
         except Exception as e:
-            label = item or f"_unknown_idx{array_idx}"
-            print(f"[TASK {array_idx}] FATAL ERROR for ts={label}: {e}", file=sys.stderr, flush=True)
+            print(f"[TASK {idx}] FATAL ERROR for ts={item}: {e}", file=sys.stderr, flush=True)
             traceback.print_exc(file=sys.stderr)
-            try:
-                write_status_atomic(status_dir, label, ok=False, reason=failure_reason(e))
-            except Exception as inner:
-                # Broad and last-ditch: we are already on the failure path, and a
-                # status-write error must not mask the real error.
-                print(f"[TASK {array_idx}] Could not write fail status: {inner}", file=sys.stderr, flush=True)
-            sys.exit(1)
+            self._write_fail(ctx, idx, item, e)
+            return False
+
+    def _write_fail(self, ctx: DriverContext, idx: int, item: str, exc: BaseException) -> None:
+        try:
+            write_status_atomic(ctx.job_dir / STATUS_DIR_NAME, item, ok=False, reason=failure_reason(exc))
+        except Exception as inner:
+            # Broad and last-ditch: we are already on the failure path, and a
+            # status-write error must not mask the real error.
+            print(f"[TASK {idx}] Could not write fail status: {inner}", file=sys.stderr, flush=True)
+
+    def run_chunk(self, ctx: DriverContext, entries: list[tuple[int, str]]) -> bool:
+        """A chunk's items in `lanes` lanes, each taking the next item when its last one ends; lanes after the
+        first start `lane_stagger_s` apart, so their set-ups fall apart in time (P7b). Each item writes its own
+        marker and, but the first, its own log. True when every item succeeded."""
+        leader = entries[0][0]
+        lanes = max(1, min(self.lanes(ctx, len(entries)), len(entries)))
+        self.log(f"Chunk of {len(entries)}: {[item for _, item in entries]} in {lanes} lane(s)")
+        todo: queue.SimpleQueue = queue.SimpleQueue()
+        for entry in entries:
+            todo.put(entry)
+        results: dict[str, bool] = {}
+        cpu_groups = split_cpus(lanes) if lanes > 1 else [None]
+
+        def lane(n: int) -> None:
+            if n and not todo.empty():
+                time.sleep(self.lane_stagger_s * n)
+            self._lane.cpus = cpu_groups[n]
+            while True:
+                try:
+                    idx, item = todo.get_nowait()
+                except queue.Empty:
+                    return
+                self._lane.prefix = f"[TASK {idx}]"
+                with item_log(ctx.job_dir, idx, item, leader):
+                    results[item] = self.run_item(ctx, idx, item)
+
+        streams = (sys.stdout, sys.stderr)
+        sys.stdout, sys.stderr = _PerThreadStream(sys.stdout), _PerThreadStream(sys.stderr)
+        try:
+            with self.chunk_session(ctx, lanes):
+                threads = [threading.Thread(target=lane, args=(n,), name=f"lane{n}") for n in range(lanes)]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join()
+        except Exception as e:
+            # The session itself failed (an MPS daemon that would not start): its items that did not run fail.
+            print(f"[TASK {leader}] FATAL ERROR for the chunk: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            for idx, item in entries:
+                if item not in results:
+                    self._write_fail(ctx, idx, item, e)
+            return False
+        finally:
+            sys.stdout, sys.stderr = streams
+        self.log(f"Chunk done: {sum(results.values())} of {len(entries)} succeeded")
+        return len(results) == len(entries) and all(results.values())

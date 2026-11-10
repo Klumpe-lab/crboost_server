@@ -5,6 +5,9 @@ from pathlib import Path
 from PIL import Image
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from scipy.fft import fft2, ifft2, fftshift, ifftshift
+
+from .gallery import GALLERY_PNG_SIZE
+
 try:
     from tqdm import tqdm
 except ImportError:
@@ -14,7 +17,7 @@ except ImportError:
 class ImageProcessor:
     """Handles MRC to PIL image conversion and preprocessing."""
     
-    def __init__(self, target_size=384, ignore_non_square=False, max_workers=20):
+    def __init__(self, target_size=GALLERY_PNG_SIZE, ignore_non_square=False, max_workers=20):
         """
         Initialize image processor.
         

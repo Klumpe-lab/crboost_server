@@ -1,11 +1,11 @@
 # Roadmap 42 — Agent API: talk to your data from a Claude Code session
 
-**Status:** S1–S9 built 2026-11-05 in the `agent_api` worktree, checked on toys and read-only real data, not yet
-run in a server or on SLURM (§13, one entry per stage). Scoped 2026-11-04 and reframed the same day after the
-maintainer's correction: the API reaches what the UI reaches, action by action (D2); it is not a set of recipes.
-Every decision is made (§8). Part A (§3) stands on its own: it fixes today's multi-tab roster whether or not an
-agent ever drives anything.
-**Pickup: the maintainer's run (the server and the jobs once, then Claude Code against it); H7–H9 are queued in
+**Status:** S1–S9 built 2026-11-05 in the `agent_api` worktree, checked on toys and read-only real data; merged
+with main 2026-11-10, when a server first ran it; not yet run on SLURM (§13, one entry per stage). Scoped
+2026-11-04 and reframed the same day after the maintainer's correction: the API reaches what the UI reaches,
+action by action (D2); it is not a set of recipes. Every decision is made (§8). Part A (§3) stands on its own: it
+fixes today's multi-tab roster whether or not an agent ever drives anything.
+**Pickup: the maintainer's run (the server and the jobs once, then Claude Code against it); H9–H11 are queued in
 HOTFIXES.md.**
 
 **Ask (maintainer, 2026-11-04).** "A really differentiated API so I can just talk to my data." From a Claude Code
@@ -1110,8 +1110,8 @@ start of S4: the landing page keeps its defaults; H2–H4 stay open.
   - a project of imported tomograms (7.84 Å volumes): its template pixel size is 7.84 Å.
 - Not checked: a PDB simulation (cisTEM), RELION in its container, the workbench in a browser. "The same files and
   selections as the workbench" rests on both calling `make_template` / `make_mask`.
-- Found on the way and queued: H7 (Create after a scan rounds the dose to 0.1), H8 (resampling or filtering a black
-  template writes black density into its "white" file), H9 (a shape without a lowpass is filtered at 45 Å and
+- Found on the way and queued: H9 (Create after a scan rounds the dose to 0.1), H10 (resampling or filtering a black
+  template writes black density into its "white" file), H11 (a shape without a lowpass is filtered at 45 Å and
   recorded as unfiltered).
 
 **S8 — tomograms from other projects (2026-11-05, built, not run).**
@@ -1179,3 +1179,32 @@ start of S4: the landing page keeps its defaults; H2–H4 stay open.
   without a registry: `{}` as a snapshot and opened.
 - Not checked (runtime): the new project's Pick candidates offered by Add members, its picks folding onto the
   source frames, and Make set asking between the two.
+
+**Merge with main (2026-11-10).** Main had moved 37 commits (the uv environment, roadmaps 45–48). Git's conflicts
+were in seven files; what main changed in code the branch had moved now lives in the doors:
+- *Template-matching increments* (main's HOTFIXES H7). I1 and I2 start at 5°, and a symmetry switch moves an
+  increment still at its default. `pipeline_edit.add_job` sets a species' symmetry through `set_symmetry`;
+  `job_params.set_params` moves the increment with the symmetry unless the same call sets one, so the job tab
+  and the API behave alike; `protocols.apply` keeps main's rule on the symmetry the job ends with. The TM tab's
+  rotations note sits under the symmetry row, written only when its text moves, and follows a change made
+  elsewhere too.
+- *K3 ingest* (roadmap 48). The mdocs depth rule (up to three folders down, the most tilt series) is
+  `dataset_scan.best_mdocs_depth`, used by the landing page and `scan`. `layer_problems` moved to
+  `services/dataset_scan.py`. `ProjectSpec.source_layer` takes the one layer to the import; `landing_spec` sets
+  it and the frames' inverted hand, as main's Create did; the creation door refuses what the landing gate
+  refuses. API: `inspect_dataset` reports `layer`, `layers`, `layer_problems`, `frames_gain` and
+  `frames_mirrored`; `create_project` takes `source_layer`, asks for it (a `choice` need) when every selected
+  series has both layers, applies it, and reads the values again for the selection; the frames' inverted hand
+  is offered as what the data says.
+- *The uv environment.* Main's `uv.toml` admits only its own uv, so `uv run --script` with the login node's uv
+  refused to start the forwarder from inside a checkout. `./crboost mcp` runs it with the checkout's uv;
+  `docs/agent.md` and the forwarder's texts follow. `check_boundaries.py` reads `crboost.py`.
+- *HOTFIXES.* The branch's H7–H9 are H9–H11 (main had used H7 and H8). H12, found while starting the test
+  server: the port survey did not know a server started by the sh launcher, and the banner offered to kill a
+  running server's workers.
+- *Checks.* ruff (the six errors the tree already had), boundaries clean, self-test 4 passed. The forwarder
+  answers `initialize` through `./crboost mcp`. Read-only scans: the copia set (1 series, movies, no problems)
+  and `SK_20251017_412` (137 series at the folder's own depth, movies, no problems). A test server on its own
+  project base (`DefaultProjectBase` in the worktree's untracked conf.yaml, so a second server never reconciles
+  the first one's running projects) starts, and its API answers §11.3: 200 with the Bearer token, 401 without,
+  403 for a write with the cookie alone.

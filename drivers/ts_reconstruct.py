@@ -21,15 +21,23 @@ The mode dispatch, both bootstraps, manifest lookup, exclusions, tally and exit
 code all live in ArrayDriver; this file is the ts_reconstruct-specific hooks.
 """
 
+import math
+import sys
+import traceback
 from pathlib import Path
 
 from drivers.array_job_base import (
+    STATUS_DIR_NAME,
     ArrayDriver,
     ArrayResults,
+    chunk_item_header,
     read_tilt_series_names_from_input_star,
     stage_per_ts_environment,
+    stage_tilt_series,
+    write_status_atomic,
 )
-from drivers.driver_base import DriverContext, ToolCommand, require_producer_input
+from drivers.driver_base import DriverContext, ToolCommand, require_producer_input, run_tool
+from services.computing.slurm_service import SlurmConfig, scale_per_task
 from services.job_models import TsReconstructParams
 from services.tilt_series import get_registry_for
 from services.tilt_series.adapters import TsReconstructIngestAdapter
@@ -107,6 +115,24 @@ class TsReconstructDriver(ArrayDriver):
 
     # ---------------- supervisor ----------------
 
+    def items_per_task(self, ctx: DriverContext[TsReconstructParams]) -> int:
+        return ctx.params.tilt_series_per_task
+
+    def per_task_slurm_config(self, ctx: DriverContext[TsReconstructParams]) -> SlurmConfig:
+        """The SLURM tab's resources are one tilt series': a task runs `perdevice` at once, in as many rounds as
+        its tilt series take."""
+        p = ctx.params
+        cfg = ctx.params.get_effective_slurm_config()
+        if p.tilt_series_per_task == 1:
+            return cfg
+        workers = min(p.perdevice, p.tilt_series_per_task)
+        cfg = scale_per_task(cfg, resources=workers, time=math.ceil(p.tilt_series_per_task / workers))
+        self.log(
+            f"{p.tilt_series_per_task} tilt series a task, {workers} Warp worker(s): {cfg.cpus_per_task} CPUs, "
+            f"{cfg.mem}, {cfg.time} per task"
+        )
+        return cfg
+
     def enumerate_items(self, ctx: DriverContext[TsReconstructParams]) -> list[str]:
         if ctx.params.halfmap_frames == 1 and ctx.params.halfmap_tilts == 1:
             raise ValueError(
@@ -175,6 +201,85 @@ class TsReconstructDriver(ArrayDriver):
         out_mrc = reconstruction_mrc_path(ctx.job_dir, item, ctx.params.rescale_angpixs)
         if not out_mrc.exists():
             raise FileNotFoundError(f"WarpTools reported success but expected output MRC missing: {out_mrc}")
+
+    def run_chunk(self, ctx: DriverContext[TsReconstructParams], entries: list[tuple[int, str]]) -> bool:
+        """A chunk's tilt series in one Warp call with `perdevice` workers (roadmap 45 P10): the container and
+        Warp start once for all of them. Each keeps its own marker; a failed call fails the tilt series it ran and
+        removes what they left, so a rerun redoes them whole."""
+        status_dir = ctx.job_dir / STATUS_DIR_NAME
+        leader = entries[0][0]
+        todo: list[tuple[int, str]] = []
+        for idx, item in entries:
+            if idx != leader:
+                (ctx.job_dir / f"task_{idx}.out").write_text(chunk_item_header(item, leader))
+            if self.task_already_done(ctx, item):
+                write_status_atomic(status_dir, item, ok=True)
+            else:
+                todo.append((idx, item))
+        self.log(f"Chunk of {len(entries)}: {len(todo)} to reconstruct in one call")
+        if not todo:
+            return True
+
+        stage_root = ctx.job_dir / ".staging" / f"chunk_{todo[0][1]}"
+        try:
+            staged_settings, staged_processing = stage_tilt_series(
+                stage_root,
+                [item for _, item in todo],
+                ctx.paths["input_processing"],
+                ctx.paths["warp_tiltseries_settings"],
+            )
+        except Exception as e:
+            print(f"[TASK {leader}] FATAL ERROR staging the chunk: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            for idx, item in todo:
+                self._write_fail(ctx, idx, item, e)
+            return False
+
+        runnable = []
+        for idx, item in todo:
+            try:
+                if ctx.params.halfmap_frames == 1:
+                    require_even_odd_halves(staged_settings.parent / "tomostar" / f"{item}.tomostar")
+                runnable.append((idx, item))
+            except Exception as e:
+                print(f"[TASK {idx}] FATAL ERROR for ts={item}: {e}", file=sys.stderr, flush=True)
+                self._write_fail(ctx, idx, item, e)
+                (staged_settings.parent / "tomostar" / f"{item}.tomostar").unlink()
+        if not runnable:
+            return False
+
+        try:
+            cmd = self.build_command(ctx, runnable[0][1], (staged_settings, staged_processing))
+            self.log(f"Command: {cmd}")
+            run_tool(
+                cmd,
+                tool_name=ctx.params.get_tool_name(),
+                cwd=ctx.job_dir,
+                binds=ctx.additional_binds,
+                attempts=self.retry_attempts,
+                label=f"{self.job_name} chunk of {len(runnable)}",
+            )
+        except Exception as e:
+            print(f"[TASK {leader}] FATAL ERROR for the chunk's Warp call: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            for idx, item in runnable:
+                out_mrc = reconstruction_mrc_path(ctx.job_dir, item, ctx.params.rescale_angpixs)
+                for f in (out_mrc, out_mrc.parent / "even" / out_mrc.name, out_mrc.parent / "odd" / out_mrc.name):
+                    f.unlink(missing_ok=True)
+                self._write_fail(ctx, idx, item, e)
+            return False
+
+        ok = len(runnable) == len(todo)
+        for idx, item in runnable:
+            try:
+                self.verify_outputs(ctx, item, None)
+                write_status_atomic(status_dir, item, ok=True)
+                print(f"[TASK {idx}] {item} done", flush=True)
+            except Exception as e:
+                print(f"[TASK {idx}] FATAL ERROR for ts={item}: {e}", file=sys.stderr, flush=True)
+                self._write_fail(ctx, idx, item, e)
+                ok = False
+        return ok
 
 
 if __name__ == "__main__":

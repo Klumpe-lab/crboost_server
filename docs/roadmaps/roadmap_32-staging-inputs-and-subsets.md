@@ -1189,3 +1189,185 @@ harder. Not before the maintainer finishes the species/particles curation UI/UX 
 The data already exists, so this is mostly a view: per-TS states in `.task_status/` markers (read through
 `services/array_status_cache.py`, never a per-view scan), `is_excluded` in the tilt-series registry, and the
 Subset jobs' stars for membership.
+
+### 15.1 Tree-builder mock designs: `/dev/io-ideas/tree` (2026-11-06)
+
+**The problem, pinned.** A colleague's remark, which the maintainer shares: in a project with several jobs of one
+type (Reconstruct job005, job016, job023, job069; two Denoise trains) the roster rows and the I/O menu rows
+("Reconstruct (job016) ok") cannot be told apart, so to pick the input of a new job one opens each candidate's I/O
+tab and walks up its chain. The success case: a user adding a Denoise predict (or a Template matching, or another
+Reconstruct) to such a project tells the candidates apart on the Jobs tab itself and picks one without opening any
+job. Visuals, concision and transparency first; the general machinery of this roadmap second.
+
+**The principle every design shares: say only what differs, fold what is shared.** A candidate's *pedigree* is the
+list of stages at which the candidates' ancestries split, each named by the candidate's ancestor there, then the
+job's own parameters. A split counts only when an earlier one does not explain it (a CTF per alignment is the
+alignment's difference, not its own). An ancestor is named by its parameters where they differ (AreTomo / IMOD,
+12 Å / 6 Å), by its type when it has none (missAlign), by its number only when that still clashes. Absence is the
+default and goes unsaid in chips; "no missAlign" appears only where a table has a cell for it. Every job carries a
+*dossier* on hover: what it is, status and tilt-series tally, the chain it descends from with the splitting stages
+bold and the roads not taken greyed under them, who reads it. Every design ends in the same *verdict* line:
+"Denoise predict (new) · tomograms ← Reconstruct job023 · AreTomo · missAlign · 12 Å · 46/46 · done Oct 18 · read
+by Denoise train job024, Denoise predict job025".
+
+**The mock.** `ui/tree_ideas_preview.py`, served on `/dev/io-ideas/tree` (`ui/main_ui.py`), the second chapter of
+`/dev/io-ideas` (roadmap 40 §15.9 is the first; the two pages link to each other). One project of 23 preprocessing
+jobs: two alignments (AreTomo, IMOD), a missAlign refining the AreTomo one, a Subset of 12 tilt series, six
+Reconstructs (12 or 6 Å, one with deconv, one running), two Denoise trains, three predicts (cryoCARE twice,
+easymode once), two Segments (one failed). A switch sets the job being added: Denoise predict (6 candidates),
+Template matching (9, the denoised tomograms included), Reconstruct (4, at the CTF level, the Subset among them).
+Pedigree, dossier and verdict are computed from the mock graph, not written per job, so they carry over to real
+data unchanged in shape.
+
+1. **Branch map.** A column per stage, a 110-px box per job (type, number, status dot, own parameters, tilt-series
+   tally), the shared start of every chain folded into one box (click unfolds). Candidates have a dashed ring; the
+   one picked lights its whole ancestry and the new job hangs off it as a dashed box with a socket. CryoSPARC's
+   tree view, in boxes small enough for 80 jobs.
+2. **Commit log.** The §8 pipeline table (its `assign_lanes` and `gutter_svg` reused as they are) plus the column
+   it lacks, *what tells it apart*: pedigree chips on the candidates, own parameters and "beside jobNNN" on the
+   rest, "refines jobNNN" on a refinement; a ring per candidate in the input's column; the chosen one's ancestry
+   tinted. Reads as the project's history and takes any number of branches without growing sideways.
+3. **Lineage columns.** The candidates side by side, the stages as rows from Import down. Where candidates share an
+   ancestor the cell spans them, so the shared start is one quiet band and every split is a seam; a stage absent
+   from some chains is a dashed "no missAlign" cell. Cards with status, tally, date and readers at the foot. The
+   whole question "how do these six differ" in one small table.
+4. **Pedigree chips in today's roster.** The smallest change: the roster stays a list grouped by type, but every
+   instance of a type with several carries its pedigree among those instances as chips after the number, "→ n"
+   for its readers, the tally when short; the I/O menu shows the same chips; the menu as it reads today sits beside
+   it for contrast.
+5. **Choose by path.** No numbers until the end: one question per splitting stage (which alignment, refined or
+   not, which pixel size), every answer with how many candidates it leaves; one left is the pick, none left is an
+   offer to add the missing chain. The way a user already thinks about it.
+6. **Transit lines.** Branches as named, coloured lines, jobs as stations placed by stage: a job continues its
+   parent's line when it has the most descendants of the parent's readers, every other reader starts a line named
+   by what it changed (IMOD, missAlign, 6 Å, 12 of 46 TS); candidates are the ringed stations, the new job a
+   dashed line of its own. Lines could carry user-given names, which the project has no word for today.
+
+Checked in NiceGUI's user simulation (every clickable element of every design clicked, in each of the three cases,
+no handler error); not in a browser. The page is wide (designs 1 and 6 cost a column per stage); the panels scroll
+sideways.
+
+**Recommendation (for the maintainer to take or leave).** Ship 4 first: it is a labelling change in
+`ui/pipeline_builder/io_config_component.py` (`_candidate_name`) and the roster row, with the pedigree computed by
+one small service over the main lineage (`services/pipeline_table.pipeline_rows`'s `parent`), the `USER_PARAMS`
+values that differ between siblings, `array_status_cache` tallies and `consumers_of`; nothing new is recorded, and
+it answers the complaint on its own. Make 2 the Jobs view that retires the waterfall: it is the §8 table with one
+more column and a pick mode. Keep 3 as the I/O tab's compare panel when a slot has three or more candidates, and 5
+as the first page of adding a job. 1 and 6 are the two that look like a tree builder; 6 adds the one idea worth
+keeping whichever is chosen, named branches.
+
+**Open for the maintainer:** which of the six (or which combination) the Jobs tab becomes; whether branch names
+become project state; whether "add a job after this one" lives on the job's box or only on the new job's socket;
+whether the dossier replaces the roster's name tooltip everywhere.
+
+### 15.2 The branch map worked out: `/dev/io-ideas/branch` (2026-11-07)
+
+**Decided (maintainer, 2026-11-07):** the Jobs tab becomes the **branch map** (§15.1 design 1); the other five are
+not pursued, except that their pedigree, dossier and verdict carry over. Asked for next: the map's relationship
+with a job being added and the job types on offer; the look of §15.9's sockets-and-cables (several inputs per
+job); and one visual language for the job card that every type shares while methods of one type still differ.
+
+**Built: `ui/branch_map_preview.py` on `/dev/io-ideas/branch`** (chapter 3 of the io-ideas pages; the three link to
+each other). `?add=dpredict&after=job023` opens it mid-add.
+
+**A · The job card.** One anatomy for every type: a header (status light, the type's glyph and name, the job
+number); a line with the *method token* (the tool or method this instance runs with: AreTomo / IMOD, cryoCARE /
+IsoNet / easymode, Ais / MemBrain-seg, WarpTools, RELION) and *what sets it apart* (the parameters that differ
+between instances), the tilt-series tally at the right; one labelled socket per input on the left edge (filled =
+reads a job, amber = to pick, red = nothing exists yet, hollow = optional); one output socket on the right edge
+that pulls a new job out of it. What never varies: header, light, number's place, method line, output socket.
+What varies: the token, the parameters named, the number of sockets; where the method changes the inputs the
+sockets follow (easymode needs no model, so the socket is gone). A compact form keeps the header and the method
+line and folds the socket rows into dots on the edge. Shown as an enlarged, numbered card, fifteen specimens
+(incl. queued, running, failed, a Subset, a refinement, an IsoNet predict with no train job yet) and the compact
+row.
+
+**B · The map, with a job being added.** Stage columns, the cards above laid out as a tree (leaves stacked, a
+parent centred on its children, columns de-overlapped), the shared start folded into one card. Cables run from a
+job's output socket to every socket that reads it: the main input slate, bundled inputs (the warp dir that rides
+the main choice) paler, side inputs (a model) dashed. Adding a job, two ways to the same state: the "+" on a
+card's output lists the job types that can read that output, saying as which input and what else they need
+("Denoise predict, as its tomograms, also needs a model"), greyed with the reason when they cannot ("reads CTF'd
+tilt series, not tomograms"); or the palette above the map, every input then to choose. The new job is a dashed
+card in its stage column hanging off its main source, its method token cycling through the type's methods. Its
+sockets resolve as the resolver would: the main one explicit, bundled ones automatic with it, any other filled by
+itself when exactly one candidate sits on the main choice's chain (the train of this reconstruction, the CTF these
+tomograms came from), amber when several, red with an offer to add the missing job when none. Clicking a socket
+fans its candidates out on the map itself: candidates ringed, the rest dimmed, dashed cables to the socket; a
+click on a candidate wires it and the next unsettled socket opens. A verdict panel under the map lists every
+input with its source's pedigree and how it was set, "ready to add" or "not yet", Add to project / Discard.
+
+Checked in NiceGUI's user simulation (palette add, then every socket, menu row and card clicked for four rounds,
+no handler error) and looked at in headless Chromium (`scripts/dev_screenshot.py`, below). The map with nine
+stage columns is ~1,470 px wide at 144-px cards; with a tenth column it scrolls sideways.
+
+**Tooling found on the way.** The page shell hides overflow (`.nicegui-content`), so every `/dev/` page was
+clipped at the window's height; the four mock pages now set `overflow: auto` on it. `scripts/dev_screenshot.py`
+starts a server of the dev pages in the project's Python and shoots routes or every `.cb-mock-panel` with
+Playwright's Chromium from a tool venv outside the repo (`~/.local/share/crboost-dev/pw`, browser in
+`~/.cache/ms-playwright`; made with `uv venv`, `uv pip install playwright`, `playwright install chromium`).
+`--url` shoots a running server instead. PNGs land in `notes/screens/` (git-ignored).
+
+**Open for the maintainer:** the card's exact density for the real Jobs view (full cards for ~25 jobs, compact
+beyond?); whether the socket rows stay on every card or only on the selected one; the method token's source per
+type (the `USER_PARAMS` field that is the method); whether "+" lists every type or only the next stages; the
+build order (card component → map view → add flow), which this mock's `render_card` / `_tidy` / `resolve` sketch.
+
+### 15.3 Pickup for the next session (written 2026-11-08)
+
+**Where things stand.** The Jobs tab becomes the branch map (§15.1 design 1, decided 2026-11-07). Chapter 3 on
+`/dev/io-ideas/branch` (`ui/branch_map_preview.py`) works it out: the job card as one visual language, the map
+with cables, the "+" per output offering job types, the new job's sockets resolved and fanned out (§15.2). The
+maintainer has seen the chapter 2 page and the §15.2 screenshots and says the direction is right with many
+small details still to settle. **The maintainer will give those instructions at the start of the next session;
+nothing below presumes them.** Everything is on disk, uncommitted (the commit script is in the session's last
+message; the files are listed below).
+
+**First thing in the next session, before any change:** look at the page as it is, then take the maintainer's
+list.
+
+- Start the server (`./crboost`), open `/dev/io-ideas/branch`; `?add=dpredict&after=job023` opens it mid-add.
+- Or shoot it without a browser: `~/.local/share/crboost-dev/pw/bin/python scripts/dev_screenshot.py --panels
+  "/dev/io-ideas/branch?add=dpredict&after=job023"` writes one PNG per panel to `notes/screens/`; the assistant
+  can view those PNGs directly. Shoot after every visual change; nothing is "fixed" until the PNG shows it.
+- The click-through check lives nowhere permanent (it was in a session scratchpad): a NiceGUI `User`
+  simulation that opens the page, starts an add from the palette, then clicks every socket, menu row and card
+  for a few rounds and fails on any ERROR log. Twenty lines; rewrite it if needed (`prepare_simulation()`,
+  `ui.run(storage_secret=…)`, `core.app.router.lifespan_context`, `httpx.ASGITransport`, `User(client)`;
+  click = `events.handle_event(listener.handler, GenericEventArguments(sender, client, None))`).
+
+**The files of this work** (all else in `git status` is from other sessions):
+`ui/branch_map_preview.py` (chapter 3), `ui/tree_ideas_preview.py` (chapter 2; its mock project, `pedigree`,
+`dossier`, `ts_text` are imported by chapter 3), `ui/io_ideas_preview.py` and `ui/io_layouts_preview.py` (chapter
+1 and the §15 layouts; only the chapter links and the scroll fix changed), `ui/main_ui.py` (the three `/dev/`
+routes), `scripts/dev_screenshot.py`, this roadmap, `docs/roadmaps/README.md` (row 32), roadmap 40 §15.9 (the
+pointer).
+
+**How chapter 3 is put together,** so a detail can be found fast:
+- `SLOTS` / `slots_of(kind, method)`: each type's inputs (label, what it accepts, required, bundled); the
+  easymode exception lives here. `PRODUCES2`: what each type's main output is. `METHODS`, `TOOL`, `ICON`.
+- `resolve(st)`: the new job's sockets (explicit / automatic / ambiguous / missing / optional) and the "on this
+  chain" rule (an ancestor of the main choice, a job reading it, or a job descending from it).
+- `offered_after(job)`: what the "+" lists and why a type is greyed.
+- `spec_of(job)` / `spec_of_new(st, resolved)` → `CardSpec`; `render_card(...)` draws it (header, method line,
+  socket rows, edge sockets, the "+"), `card_height` / `socket_y` give the geometry cables attach to.
+- `section_cards()`: the enlarged card with numbered callouts (`ANATOMY`, the `marks` dict), specimens
+  (`_specimens()`, two of them jobs invented for the panel), the compact row.
+- `section_map(st, redraw)`: `_tidy` (leaves stacked, parent centred on children) + a per-column de-overlap,
+  cables as one SVG, the palette and density/trunk toggles, `plus_menu`, the fan-out, the verdict panel.
+- Mock data: `JOBS` in `ui/tree_ideas_preview.py` (23 jobs; `method=` on filter, alignments, denoising,
+  segments). Add a job there and every chapter follows.
+
+**Known rough edges, not yet raised with the maintainer:** the map is ~1,470 px wide with nine stage columns
+(a tenth scrolls); compact cards hide the socket rows entirely (hover the dots); the trunk card unfolds on click
+but the Tilt filter card re-folds only via the toggle; the verdict's "+ … first" and "Add to project" are
+notifications; cables from one output to three sockets of one card run as three near-parallel curves (bundled
+ones paler), which may be one too many; the `ui.icon` glyphs per type are placeholders chosen from Material
+names, not the roster's SVGs.
+
+**The real build, when it starts,** in the order §15.2 suggests: the card as a component (`render_card`'s
+anatomy over a real job model: method from the type's `USER_PARAMS`, identity = the parameters that differ among
+the type's instances, sockets from the job's `InputSlot`s, sources from `resolve_slot_edges`); the map view
+replacing the waterfall roster (`services/pipeline_table.pipeline_rows` for the main lineage, `_tidy` over it);
+the add flow (`offered_after` from the real slot schemas, `resolve` from `PathResolutionService`, the fan-out as
+the I/O override UI). Decisions owed first are the §15.2 open points.

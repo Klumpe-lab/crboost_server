@@ -1,7 +1,14 @@
 # Roadmap 39 — Python environment and setup: a locked, self-contained environment built with uv
 
 **Pending (maintainer, 2026-10-26):** wanted; move to uv, plus §6 (start-up cost of every array task first).
-**Status:** scoped 2026-10-22; nothing built. S0 inventory run and §2 answered 2026-10-27 (records in §2, §3).
+**Status:** S0–S2 done (lab on uv since 2026-10-28; records in §3). 2026-11-06: the install became self-contained
+(`install.sh`, `.uv/` inside the checkout, `crboost` an sh launcher; `f49ad87`) and torch moved to 2.8.0/cu128 for the
+B200 nodes (`d12f371`); §2 notes what that revised. The same evening S3 and S6 were built and pushed (`355b08f`,
+`8e60f63`, `b5655df`): S6 makes the environment a build product named by its inputs (no `venv/` to repair, no rebuild
+in place, `./crboost` finds or builds it), S3 moves the tilt filter's torch into the `tilt_filter` container, so an
+environment is 0.8 GB instead of 7.3. The lab built its environment and started a server on it that night, dev built
+its own, and the driver's container step ran from the lab install on a B200; the DL tilt filter has NOT yet run on a
+project. The records are in §3; next, the rest of S6's "By hand", then S4, S5 and §6.
 
 **In one line.** Today the server's environment is a venv built on the cluster's Python module. Some of its packages
 are probably not in the venv at all, and most of its versions are not pinned. This roadmap makes that environment
@@ -10,6 +17,8 @@ PyTorch out of it, and adds the checks that keep it that way: CI, a pinned ruff,
 checksummed weights.
 
 ## 1. What is there now
+
+*(The state of 2026-10-22, before S0–S2; §3 records what changed since.)*
 
 - **The interpreter is the cluster's.** `venv/pyvenv.cfg` points at
   `/software/f2022/software/python/3.11.5-gcccore-13.2.0`. A compute node can start the venv only after the same
@@ -43,6 +52,16 @@ checksummed weights.
 **Answered 2026-10-27 (maintainer):** D1, D2, D3, D5, D6 as recommended. D4: uv's Python and cache go under
 `/groups/klumpe/software/cache_and_artifacts/uv/{python,cache}`. D7: the weights are not published yet; Hugging
 Face is the likely place, licence still to check.
+
+**Revised 2026-11-06:** D4 — uv's Python and cache now live inside each checkout (`.uv/python`, `.uv/cache`; built by
+`install.sh`), so an install depends on nothing outside its folder. D6 — the tilt filter's torch is 2.8.0 / CUDA 12.8,
+as the venv has had it since `d12f371`: 2.6.0/cu124 has no sm_100 kernels and died on the B200 nodes. 2.8.0 needs
+glibc >= 2.28 (`requirements.in`); the maintainer chose to leave older nodes out, so the old-glibc reason for 2.6.0
+(§1) is gone.
+
+**Answered 2026-11-06, evening (maintainer):** the environment is a build product named by its inputs (S6, D8–D13), and
+the tilt filter's torch lives in a container (S3), not in the environment and not as CPU torch. D3 (keep `venv/`) now
+holds only as a convenience link; D4's shared uv directory is gone with the rest of the outside-the-checkout state.
 
 | # | Question | Recommendation |
 |---|---|---|
@@ -187,30 +206,67 @@ started (modules 17.1 s on that first start, compiling into the per-user cache).
 
 ### S3 — The tilt filter in its own container
 
-- `container_defs/tilt_filter_torch2.6.0_cu124.def`: torch 2.6.0 + torchvision 0.21.0 + Pillow + numpy, nothing
-  else (one image per tool envelope, as for the other tools). New `tools:` key `tilt_filter`, in
-  `config/conf.template.yaml`, the README's tool table, the preflight tool checks, and a `PROBES` entry in
-  `tests/test_cluster.py` that imports torch and sees the GPU.
-- `filterTilts/deepLearning/predict.py`: a command-line entry run inside the container. Its inputs are the PNG list,
-  the weights path, arch and normalisation. It writes one JSON file holding P(bad) per tilt plus the facts the
-  driver prints today: input size, temperature, TTA, device.
-- `drivers/tilt_filter.py`: the PNG conversion stays on the host (`filterTilts/image_processor.py` needs no torch).
-  Inference becomes one `run_tool(..., tool_name="tilt_filter")` call, and the driver reads the JSON back into the
-  registry as now. `GALLERY_PNG_SIZE` moves out of `model_loader.py` into a torch-free module, so the driver no
-  longer imports torch. The weights file's directory is bound into the call, since the checkout is not among the
-  default binds.
-- `requirements.in` drops torch and torchvision; the venv goes from 5.6 GB to well under 1 GB.
-  `filterTilts/deepLearning/convert_checkpoint.py` and the scripts under `docs/reports/dl-tilt-filter/scripts/` are
-  run in the container from then on; their docstrings say how.
+**Why a container (maintainer, 2026-11-06).** Of the environment's 7.3 GB, 6.6 GB was the CUDA build of torch
+(measured the same day: the nvidia-* libraries 4.2 GB, torch itself 1.7, triton 0.55, sympy, networkx, mpmath and
+torchvision 0.14; everything the server needs 0.9), and the DL tilt filter is the only host-side user: a ResNet-18 at
+224 px with 45 MB of weights, run with the 8-fold rotate/flip averaging its checkpoint asks for (`tta`). A CPU-only
+torch in the environment (`2.8.0+cpu`, under 2 GB) was weighed and not taken. Timed on a login node with 4 threads
+(the profile's `cpus_per_task`), the network does 116 tilts/s per forward pass and about 15 with the averaging, so
+minutes per project where a GPU takes seconds. It would also have moved the numerics the 0.301 cut was set on, and
+`ModelLoader`'s "no CPU mode" is a deliberate rule (a fallback would hide a broken node). The image keeps the GPU
+path, the numbers and the code as they were.
+
+**Built 2026-11-06.**
+
+- `container_defs/tilt_filter_torch2.8.0_cuda12.8.def`: `python:3.11-slim-bookworm`, then `pip install` of torch 2.8.0,
+  torchvision 0.23.0 and the lock's Pillow and numpy, nothing else. No CUDA base and no apt: the torch wheel carries its
+  own CUDA libraries, and apt is what the other CBE.next recipes spend their fakeroot workarounds on. The check that
+  `sm_100` is among torch's compiled-in architectures runs at the end of `%post`, since a failing `%test` does not fail
+  an Apptainer build. `PYTHONNOUSERSITE=1` in `%environment`, because the home directory is bound in.
+- `filterTilts/deepLearning/predict.py`, run as `python -m filterTilts.deepLearning.predict` in the container: a PNG
+  list file in, one JSON file out (P(bad) per PNG in that order, and the model facts the driver prints: architecture,
+  input size, temperature, TTA, GPU name, torch version), written whole or not at all. GPU only, as `ModelLoader`.
+- `filterTilts/gallery.py` holds `GALLERY_PNG_SIZE`, the one fact the host (which makes the thumbnails) and the
+  container (which reads them) share, so neither imports the other's packages.
+- `drivers/tilt_filter.py`: the PNGs are found or converted on the host as before (`ImageProcessor` needs no torch);
+  the inference is one `run_tool(..., tool_name="tilt_filter")` call that binds the checkout's `filterTilts/`, the
+  weights' directory and the PNG directories; the registry write and the liveness check read the JSON back. The
+  order changed in one place: the registry entry (weights file, `tools.tilt_filter`) is checked before any conversion,
+  and a missing GPU shows at the container call instead of before the conversion.
+- `resolve_model` (`services/jobs/tilt_filter.py`) also raises when `tools.tilt_filter` is not configured, so the job
+  panel's red marker, Run's refusal and the driver all say so before anything is queued or converted.
+- `config/conf.template.yaml`: a `tools.tilt_filter` entry. `tests/test_cluster.py`: a `tilt_filter` probe that launches a
+  kernel (`torch.ones(1, device="cuda") + 1`) and not only `is_available()`, which a torch without the node's GPU
+  architecture passes. Preflight's tool loop covers the new entry; torch and torchvision left its import list.
+- `requirements.in`: torch and torchvision out, with the 20 packages only they needed; ruff in (S6, D13). 99 pins
+  became 78 and no other pin moved.
+
+**Not in S3.** A CPU mode. Image labels and the weights checksum (S5).
+
+#### S3 record (2026-11-06; the driver has NOT been run on a project)
+
+- Image: built from the `.def` as SLURM job 1432979 on a compute node, 3 min 14 s, 3.8 GB, into
+  `container_verify/tilt_filter_torch2.8.0_cuda12.8.sif` in the maintainer's scratch (the lab's `sifs/` untouched).
+  The `%post` assertion that `sm_100` is among torch's compiled-in architectures passed.
+- On a B200 (job 1433011, a `1g.23gb` slice of `cbe-g5-4`): the kernel launch passes with torch 2.8.0+cu128, and
+  `predict.py`, run as the driver runs it (the checkout's `filterTilts/` bound, `PYTHONPATH` set), did 48 synthetic
+  384 px PNGs with the real weights in 3.5 s wall, start-up included. The same PNGs through the loader on 4 CPU
+  threads (the old dev venv, torch 2.8.0): 2.9 s for the network alone, max |ΔP(bad)| 1.6e-4, mean 1.8e-5. All 48
+  values lay between 0.01 and 0.13, far from the 0.301 cut, so this shows the two paths agree numerically, not that
+  no tilt flips next to the cut.
+- Lock: 99 pins became 78 (22 out: torch, torchvision, triton, 14 nvidia-*, sympy, mpmath, filelock, fsspec,
+  setuptools; ruff in), and `./crboost lock` gives the same file back.
+- Not tried: the driver on a real project (registry write, liveness, the red marker in the job panel), `./crboost
+  test -m cluster` with the new probe, the image in the lab's `sifs/`.
 
 ### S4 — CI and a pinned ruff
 
 - Fix the 6 E501 lines first.
-- `.github/workflows/lint.yml` (public repo, so GitHub Actions costs nothing): install `requirements-dev.txt`'s
-  ruff, then run `ruff check .`, `ruff format --check .`, `python check_boundaries.py` and
+- `.github/workflows/lint.yml` (public repo, so GitHub Actions costs nothing): install `requirements.txt` (ruff
+  0.15.12 is in it since S6), then run `ruff check .`, `ruff format --check .`, `python check_boundaries.py` and
   `python -m compileall -q .`. No pytest: `tests/` is the install self-test and needs a site's `conf.yaml`.
-- `CLAUDE.md` *Commands*: ruff from `requirements-dev.txt`. Also fix the stale line that says
-  `sys.dont_write_bytecode` is set in `main.py`; `pycache_setup.py` handles bytecode now (done 2026-10-28).
+- `CLAUDE.md` *Commands* (done 2026-11-06): ruff from the environment, `./crboost python -m ruff check .`. The stale
+  line about `sys.dont_write_bytecode` in `main.py` went 2026-10-28.
 
 ### S5 — Labelled containers and checksummed weights
 
@@ -221,17 +277,177 @@ started (modules 17.1 s on that first start, compiling into the per-user cache).
 - `tilt_filter.models.<name>.sha256` in `conf.yaml` (optional). When it is set, preflight checks the weights file
   against it. `scripts/fetch_weights.py` downloads the published file (D7) into `filterTilts/` and checks it.
 
+### S6 — The environment is a build product, named by its inputs (2026-11-06)
+
+**Why.** Four things went wrong on 2026-11-06, and a check at the right moment would have caught each.
+
+- *The venv's torch was never run on the GPUs it is for.* The lock pinned torch 2.6.0/cu124, which has no sm_100
+  kernels. Preflight only imports torch, and every `pytest -m cluster` probe was a container tool, so the DL tilt
+  filter, the one GPU workload that ran in the venv, died on the B200 nodes with "no kernel image is available".
+- *A pulled lock did not reach the venv.* `d12f371` fixed the pin and `git pull` carried it to the lab install, whose
+  venv stayed on 2.6.0 until someone rebuilt it. Nothing said so in between.
+- *The rebuild in place failed.* `uv venv --clear` stopped with "Device or resource busy": a server on another login
+  node still had the old venv open, and NFS keeps such files as `.nfs…` entries that block removing their directory.
+  No `venv/bin` was left. Each member runs a server from the lab install, so whoever installs cannot list every
+  process that uses it.
+- *Several interpreters.* The dev venv sat on the shared uv Python and was built by the system uv 0.11.19; the lab venv
+  on its own `.uv/python`, built by uv 0.13.7 (the installer fetched whatever was newest). Both `conf.yaml` files set
+  `crboost_python` to an absolute path, where the template says empty. About 40 GB: two 7.3 GB venvs and three uv caches.
+
+Outside Python, the same day: the lab `conf.yaml` lacked the `qos: "g_medium"` lines of `missAlign` and `denoisetrain`
+that `89f3fe4` put in the template. `conf.yaml` is untracked, so `git pull` never carries such a line (not in S6).
+
+**Idea.** Nobody maintains the environment. It is a build product, a directory named by a hash of what goes into it (a
+Nix store path, a Docker tag), found or built by `./crboost` and never modified afterwards. A lock change builds a new
+one beside the old; a server still running keeps its own; going back to the old lock finds the old one again. There is
+no `--clear`, no switch, no "stop every server first", and no stale environment, because a stale one would have a
+different name. (This replaces the first S6 of the same day: generations switched by a link, a lock stamp, refusing
+checks at start. It was heavier and still rebuilt in place.)
+
+**The name.** `<python>-<12 hex of a sha256>` over the Python version and the lock's pin lines (comments, blank lines and
+order ignored, so recompiling to the same pins changes nothing). uv's own version is not in it: it does not change what
+is installed. One home per fact, and none of them in a script:
+
+| Fact | Lives in | To try something without editing it |
+|---|---|---|
+| what is installed | `requirements.txt`, compiled from `requirements.in` by `./crboost lock` | `CRBOOST_LOCK=<file>` |
+| which Python | `.python-version`, an exact x.y.z (uv's own convention) | `CRBOOST_PYTHON=x.y.z` |
+| which uv, and how it behaves (wheels only, bytecode, platform, own Pythons only) | `uv.toml`: `required-version`, `[pip]` | `CRBOOST_UV=<binary>` |
+| where environments live | `.uv/env` in the checkout | `CRBOOST_ENV_ROOT=<dir>`: checkouts with the same key share one |
+| which interpreter runs the jobs | the server's own (`sys.executable`) | none |
+| how anything is called | `./crboost preflight\|test\|python\|lock\|env\|clean` | none |
+
+```
+.uv/bin/uv                       the builder, exactly the version uv.toml requires
+.uv/python/                      uv's CPython
+.uv/cache/                       wheel cache
+.uv/env/3.11.18-a1b2c3d4e5f6/    one environment; its BUILD file records the inputs
+venv -> .uv/env/...              a convenience link for editors, refreshed at every start; nothing depends on it
+```
+
+**What runs.**
+
+- `./crboost` asks `install.sh` for the environment's path, then execs `<env>/bin/python3 crboost.py` with `PYTHONPATH`
+  and the like removed. It execs the resolved path, never the `venv` link, so a lazy import cannot come from a newer
+  environment than the server started on.
+- `install.sh` prints only the path on stdout (progress goes to stderr). If `<env>/bin/python3` exists it is done.
+  Otherwise it fetches the pinned uv, runs `uv python install`, builds with `uv venv --relocatable` and
+  `uv pip sync` under `<name>.tmp-<pid>`, checks the Python, writes `BUILD` and renames the directory to `<name>`,
+  one `mv -T`. Wheels only, bytecode compiled, `UV_NO_CONFIG=1` plus an explicit `--config-file uv.toml`: a person's
+  own `~/.config/uv` is ignored and the checkout's policy is not. `uv python install --no-bin`, because uv would
+  otherwise put a `python3.11` shim in `~/.local/bin`, outside the checkout.
+- Two starts at once both build; the second rename fails and that one throws its copy away. Wasted work, no lock
+  file, no corrupt result. An interrupted build leaves only a `*.tmp-*` directory, which `clean` removes.
+- A checkout the user cannot write to, with no environment for its lock yet: `./crboost` says "ask whoever installed
+  CryoBoost to run `<checkout>/install.sh`" and stops. Nothing else installs by itself.
+- `./crboost clean` lists, and with `--yes` removes, environments that are neither this lock's nor the newest other
+  (the way back) and that no process on this node runs. It cannot see servers on other login nodes and says so. It
+  refuses under `CRBOOST_ENV_ROOT` (a shared root may hold other checkouts' environments). Removal renames first,
+  then deletes, so a name that exists is never half-deleted; an NFS-busy remainder is retried by the next clean.
+- A `venv/` that is a real directory (an install from before this) is neither used nor touched. Preflight says it can
+  go once no server runs from it.
+- Preflight warns when `crboost_python` is set: drivers then run something other than the server's interpreter, and a
+  `conf.yaml` copied between installs carries the old path. The key itself goes later.
+
+**Tried 2026-11-06 (uv 0.13.7, scratch).** An ordinary venv built under a temporary name and then renamed breaks: its
+console scripts keep the temporary path. `uv venv --relocatable` survives the rename, and a second one.
+`UV_NO_CONFIG=1` plus `--config-file` applies the checkout's `uv.toml` (`required-version` is enforced through it) and
+ignores a person's own `~/.config/uv`.
+
+**At the first real build.** uv picks the link mode itself (the first `install.sh` forced `UV_LINK_MODE=copy`, and nobody
+remembers why). On the XFS scratch it cloned (link count 1, no warning); `--link-mode hardlink` gave 2. What `/groups`
+does is not known, and uv copies, with a warning, where it can do neither. A full copy of an environment is 0.8 GB now,
+so nothing depends on the answer.
+
+**Decisions.**
+
+| # | Question | Answer |
+|---|---|---|
+| D8 | Generations switched by a link, or rebuild in place with "stop every server first" | Neither (2026-11-06): named environments, built beside and never changed. A link survives only as the `venv` convenience |
+| D9 | `./crboost` refuses, or warns, when the environment is not the lock's | The question goes away: the name is the lock, so start-up finds or builds the right one. It refuses (naming the command) only in a checkout the user cannot write to |
+| D10 | `.uv/cache` after a successful install: keep or delete | Keep: it is 0.7 GB, and a lock change then downloads only what changed |
+| D11 | Keep one previous generation | Yes: `clean` keeps this lock's environment and the newest other |
+| D12 | Where torch lives | In the `tilt_filter` container (S3), not in the environment, and not as CPU torch |
+| D13 | A dev lock for ruff, or one lock | One lock: `ruff==0.15.12` is in `requirements.in`, `requirements-dev.*` are gone, so there is no `--dev` and the formatter is pinned for everyone |
+
+**Not in S6.** Hashes in the lock (D2 stands). Finding servers on other login nodes. Conda and pip routes (run
+`crboost.py` with your own Python; the jobs follow it through `sys.executable`). Removing the `crboost_python` key
+from the config model, the settings dialog and `spec.py`. A check for `conf.yaml` keys the template has and the site's
+file lacks (the `qos` incident). The per-task start-up cost and the other items of §6.
+
+**By hand, after it lands.**
+
+1. Delete the `crboost_python:` line from both `conf.yaml` files. Harmless now: empty means the server's own
+   interpreter, which is what both point at. Preflight warns until it is gone. *Done 2026-11-06 in both.*
+2. Put the tilt-filter image where the others are (S3) and add `tools.tilt_filter` to both `conf.yaml` files. *Done
+   2026-11-06: the lab's `sifs/` copy is byte-identical to the tested build; both entries point at it.*
+3. Dev: `./crboost`. The first start builds. Delete the old `venv/` once no server runs from it; the `venv` link then
+   appears. *Built 2026-11-06 (by `./crboost preflight`); the old `venv/` is still there, and preflight says so.*
+4. Lab, at a quiet time: `git pull`, then `./install.sh` once to watch the build, then each member's `./crboost`.
+   The old `venv/` stays until nobody runs from it. *Done 2026-11-06 21:33; the other members' servers still run on
+   the old `venv/` until they restart.*
+5. Then delete what nothing uses (not done; each is a deletion to ask about): each member's `~/.cache/uv` and `~/.local/share/uv`; the shared
+   `/groups/klumpe/software/cache_and_artifacts/uv` (12 GB), once the old dev `venv/` and the `agent_api` worktree's
+   link to it are gone, since both run on its interpreter; the `config/*.bak-*` files, once diffed.
+
+**User check.**
+
+1. A fresh clone, a shell with the EESSI modules loaded and a poisoned `PYTHONPATH`: `./crboost preflight` builds,
+   prints the environment's path, and is clean; no import comes from outside it, and there is no torch.
+2. With a server up, change one pin in `requirements.txt`. `./crboost` builds a second environment while the first
+   server keeps serving; `ls .uv/env` shows both; putting the pin back starts at once; `./crboost clean` lists the
+   unused one.
+3. Kill `./install.sh` during the sync: no half environment, only a `*.tmp-*` directory; the next run builds.
+4. Two starts at once in a fresh clone: both finish, one environment.
+5. In a checkout the user cannot write to, with no environment for its lock: the message names `install.sh`.
+6. On a B200, `./crboost test -m cluster` passes `tilt_filter` (a kernel launch).
+
+#### S6 record (2026-11-06: first a scratch copy of the working tree on local XFS, then the lab and dev)
+
+- First start from nothing (fetch uv 0.13.7, install Python 3.11.18, download and install 78 wheels, run): 6.6 s;
+  a second start 22 ms. The environment is 0.8 GB, the wheel cache 0.7, the Python 0.09 and uv 0.04: 1.6 GB per
+  checkout, where the lab's was 14.5.
+- Found by the first start and fixed: `uv python install` tried to put a `python3.11` shim in `~/.local/bin`
+  (`--no-bin` now). A second fresh build then touched nothing under `~/.local`, `~/.config`, `~/.cache/uv` or
+  `~/.crboost`.
+- The name: unchanged by a comment-only edit and by a reordered lock; changed by a pin and by another Python.
+  `./crboost lock` gives `requirements.txt` back unchanged.
+- Two starts at once: both exit 0, one environment, one "built" and one "another start finished it first". SIGTERM
+  mid-sync: nothing usable and nothing left behind, and the next run builds. A root the user cannot write to: the
+  message names `install.sh`, exit 1. `clean` keeps this lock's environment and the newest other, lists the rest, and
+  `--yes` removes it.
+- `ruff check .` finds only the 6 E501 of §1; `check_boundaries.py` is clean; `./crboost test` collects the 3 headnode
+  tests; `./crboost preflight` shows the Python section with no import from outside the environment.
+- Not tried in the scratch copy: `/groups` (NFS), the real trees, two members on two login nodes.
+
+**Lab and dev, the same night (2026-11-06).**
+
+- Lab (`/groups`, NFS): `./install.sh` from the maintainer's own login shell built the environment in about 35 s (78
+  packages installed in 14.9 s, 6328 files byte-compiled in 19.6 s; the cache held every wheel but ruff), and
+  `./crboost` started a server on it that picked up the running jobs. 11213 of the environment's 17826 files are
+  hardlinks into the cache: the link mode works on `/groups` and uv warned about nothing. The environment is 0.83 GB.
+  The lab's cache is 6.4 GB because it still holds the old torch wheels (see "By hand", 5).
+- Dev (home, NFS): the first `./crboost preflight` fetched uv, installed the Python and built the environment; the Python
+  state of the whole checkout is about 1 GB (the cache is hardlinked into the environment).
+- Both preflights are clean on the new environment, with `tools.tilt_filter` OK and no `crboost_python`; dev's adds the
+  warning about its old `venv/` (a check added that night: it was in this text before it was in the code).
+- GPU job 1433245 (a full B200 on `cbe-g5-2`, from the lab install): `drivers.tilt_filter._classify` through `run_tool`
+  with the lab's `conf.yaml` and environment, real weights, the 48 synthetic PNGs: the wrapper's command ran the image,
+  the JSON came back, and the P(bad) values equal the earlier run on a MIG slice exactly (max difference 0.0).
+- Not tried: the DL tilt filter on a project (registry write, liveness, the red marker), `./crboost test -m cluster`,
+  two members on two login nodes, a build under another member's account.
+
 ## 4. End-of-arc runtime pass
 
 One pass after S1–S5, on a fresh clone in a fresh directory (not a rebuilt old venv):
 
-1. The quick start runs as written, `uv` from clone to `./crboost`, in a shell with **no** modules loaded.
-2. `preflight.py` exits 0 and lists no import from outside the venv.
+1. The quick start runs as written, `./install.sh` from clone to `./crboost`, in a shell with **no** modules loaded.
+2. `./crboost preflight` exits 0 and lists no import from outside the environment.
 3. `pytest -m cluster` passes, `tilt_filter` included, with the slimmed `qsub.sh` header.
 4. One run of the copia protocol through Tilt Filter → Reconstruct. The tilt filter's P(bad) values match an
    earlier run's on the same tilts (same torch, same weights, now in a container), and the motion/CTF and
    alignment outputs look as before, since numpy, pandas and scipy are now PyPI's builds.
-5. `du -sh venv` is under 1 GB. A second checkout's venv built from the same cache adds little (hardlinks).
+5. `du -sh $(./crboost env)` is under 1 GB (0.8 GB measured 2026-11-06 in a scratch clone).
 
 ## 5. uv itself: the risk and the way out
 

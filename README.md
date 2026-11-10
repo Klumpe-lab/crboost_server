@@ -73,14 +73,14 @@ Done once per cluster by whoever maintains the install. Full guide: **[docs/inst
 <details>
 <summary>In short</summary>
 
-1. Clone the repository onto the shared filesystem and build its venv with uv.
+1. Clone the repository onto the shared filesystem and run `./install.sh`: it builds, inside the folder, the Python
+   environment the server runs on.
 2. Build the tool containers from `container_defs/` (`warp_aretomo` and `relion` are required).
-3. Run `venv/bin/python3 preflight.py`, then fill in `config/conf.yaml` (project folder, partitions, container
-   paths).
-4. Run `preflight.py` until it is clean, then `venv/bin/python3 -m pytest -m cluster`.
+3. Run `./crboost preflight`, then fill in `config/conf.yaml` (project folder, partitions, container paths).
+4. Run `./crboost preflight` until it is clean, then `./crboost test -m cluster`.
 
-To update: `git pull`, `uv pip sync -p venv/bin/python3 requirements.txt`, `venv/bin/python3 preflight.py`, and
-restart the server.
+To update: `git pull`, then `./crboost`; it builds a new Python environment first when the dependencies changed.
+Restart running servers to move them onto it.
 
 </details>
 

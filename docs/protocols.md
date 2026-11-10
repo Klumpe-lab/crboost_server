@@ -26,7 +26,7 @@ listed, with its error.
 Workspace → foot-of-rail protocol light → Protocols view → **Save this project as a protocol**, or:
 
 ```
-venv/bin/python3 crboost_protocol.py export /path/to/project --name my-flow --out ~/.crboost/protocols/my-flow
+./crboost python crboost_protocol.py export /path/to/project --name my-flow --out ~/.crboost/protocols/my-flow
 ```
 
 Export writes every stage of the project's pipeline with its FULL parameter set, the species each
@@ -35,8 +35,8 @@ edit the yaml to say what the protocol should PIN (drop what was incidental, fix
 ones you mean). Then:
 
 ```
-venv/bin/python3 crboost_protocol.py validate my-flow
-venv/bin/python3 crboost_protocol.py list
+./crboost python crboost_protocol.py validate my-flow
+./crboost python crboost_protocol.py list
 ```
 
 ## By hand
