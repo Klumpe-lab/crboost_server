@@ -34,6 +34,11 @@ slurm_defaults:
 # The supervisor submits a child SLURM array, polls until done, and runs
 # pure-Python metadata aggregation — no GPU work. The user-facing slurm_defaults
 # above describe PER-TASK resources for the array's child sbatch.
+# Where to put it: a CPU partition if yours starts small jobs promptly. Each stage's supervisor enters the queue only
+# when the stage before ends, so a busy CPU partition adds its whole wait at every stage boundary; on CBE.next that
+# was 30 minutes to hours between GPU stages of minutes. There the supervisor rides the GPU partition on the cheapest
+# card as a ticket it never uses (partition: "g", gres: "gpu:quadro_rtx_6000:1", billing 2 an hour), and so do the
+# CPU-only job profiles below.
 supervisor_slurm:
   partition: "gpu"
   constraint: ""
@@ -102,7 +107,10 @@ job_resource_profiles:
     time: "0:20:00"
 
   # CPU only. import_calls (default 4) WarpTools ts_import calls run at once on these CPUs, each keeping about two
-  # busy: 163 tilt series take about 1.5 minutes on 8 CPUs against 12 in one call on one.
+  # busy: 163 tilt series take about 1.5 minutes on 8 CPUs against 12 in one call on one. Where the GPU partition
+  # refuses a job without a GPU, either name a CPU partition for it and the other gres "" profiles (partition: "c")
+  # or, if that partition queues long, give them the cheapest card as a ticket (CBE.next: partition: "g",
+  # gres: "gpu:quadro_rtx_6000:1"; see supervisor_slurm).
   tsImport:
     gres: ""
     mem: "16G"
@@ -164,8 +172,9 @@ job_resource_profiles:
     time: "1:00:00"
 
   # Subtomogram extraction (also per pick list) and particle reconstruction run on CPUs only (relion_tomo_subtomo,
-  # relion_tomo_reconstruct_particle start without a GPU). Where the GPU partition refuses a job without one, name a
-  # CPU partition for them and for the other gres "" profiles (CBE.next: partition: "c").
+  # relion_tomo_reconstruct_particle start without a GPU). Where the GPU partition refuses a job without one, see the
+  # tsImport note: a CPU partition, or the cheapest card as a ticket (CBE.next: partition: "g",
+  # gres: "gpu:quadro_rtx_6000:1").
   subtomoExtraction:
     gres: ""
     mem: "16G"
