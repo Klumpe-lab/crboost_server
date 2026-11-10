@@ -379,7 +379,7 @@ def instance_display_name(instance_id: str, job_model=None) -> str:
 
 
 def driver_launch_prefix(*, server_dir: Path, driver_script: Path) -> str:
-    """`export PYTHONPATH=…; <python> <script>` — everything a driver launch shares
+    """`export PYTHONPATH=… PYTHONNOUSERSITE=1; <python> <script>` — everything a driver launch shares
     before its arguments.
 
     Lives next to `JobSpec.driver` because this module already owns *which* script
@@ -399,7 +399,9 @@ def driver_launch_prefix(*, server_dir: Path, driver_script: Path) -> str:
             f"Driver interpreter {python_exe!r} is not executable (crboost_python in config/conf.yaml; "
             f"empty = the interpreter running the server)"
         )
-    return f"export PYTHONPATH={server_dir}:${{PYTHONPATH}}; {python_exe} {driver_script}"
+    # Only this checkout on the path, and no ~/.local site-packages: whatever a cluster module or the user's
+    # shell put on PYTHONPATH must not shadow the venv's packages.
+    return f"export PYTHONPATH={server_dir} PYTHONNOUSERSITE=1; {python_exe} {driver_script}"
 
 
 def driver_invocation(*, server_dir: Path, driver_script: Path, instance_id: str, project_path: Path) -> str:

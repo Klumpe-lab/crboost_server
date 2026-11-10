@@ -1,8 +1,18 @@
-# uv settings for this checkout. `uv pip compile` resolves for the cluster (Python 3.11, x86-64 Linux)
-# from any machine, torch's nvidia-* dependencies included.
+# How uv behaves in this checkout. install.sh passes this file explicitly (with UV_NO_CONFIG=1, so a person's own uv
+# configuration stays out of the build); `uv pip compile` run by hand finds it by itself.
+
+# The uv that builds the environments. install.sh fetches exactly this one into .uv/bin, and uv refuses to run as any other.
+required-version = "==0.13.7"
+
+# uv's own Pythons (python-build-standalone, which needs glibc 2.17), never a cluster module's.
+python-preference = "only-managed"
+
 [pip]
+# `uv pip compile` resolves for the cluster (Python 3.11, x86-64 Linux) from any machine.
 python-version = "3.11"
 python-platform = "x86_64-unknown-linux-gnu"
-# `uv pip sync` writes the venv's .pyc files at install time. Drivers on the compute nodes would otherwise
-# compile numpy, pandas and the rest from source in every task wherever they cannot write bytecode.
+# Wheels only: nothing is built from source on a login node, and a package without a wheel fails the build by name.
+only-binary = [":all:"]
+# The .pyc files ship with the environment. Drivers on the compute nodes would otherwise compile numpy, pandas and the
+# rest from source in every task wherever they cannot write bytecode.
 compile-bytecode = true

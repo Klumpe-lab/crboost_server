@@ -626,6 +626,31 @@ async def create_project(call: Call) -> dict[str, Any]:
             for p in overview.positions:
                 for ts in p.tilt_series:
                     ts.selected = str(ts.mdoc_path) in chosen
+        # One layer for every series, as the landing page's Source row sets it. Both layers whole is a decision:
+        # the frames and SerialEM's stack differ in orientation.
+        n = len(overview.get_selected_tilt_series())
+        both = n > 0 and all(v == n for v in overview.layer_coverage().values())
+        if a.source_layer is None and both:
+            return err(
+                "The selected series have both SerialEM's stacks and their movies: choose the layer",
+                code=ErrorCode.NEEDS_DECISION,
+                needs=[
+                    need(
+                        "choice",
+                        "source_layer",
+                        "the stacks are SerialEM's frame-aligned images; the movies are the raw frames, whose "
+                        "orientation, tilt axis, hand and gain reference differ from the stack's",
+                        options=["stack", "movies"],
+                    )
+                ],
+            )
+        overview.apply_layer(a.source_layer or overview.default_layer())
+        problems = dataset_scan.layer_problems(overview)
+        if problems:
+            return err("Not created: " + "; ".join(problems), problems=problems)
+        values = dataset_scan.data_values(overview)
+    elif a.source_layer is not None:
+        return err("source_layer: a project without raw data imports no series.")
     spec = ProjectSpec(
         name=a.name,
         base=a.base,
@@ -633,6 +658,7 @@ async def create_project(call: Call) -> dict[str, Any]:
         mdocs_glob=mdocs_glob,
         series=series,
         ts_names_by_folder=a.ts_names_by_folder,
+        source_layer=overview.layer if overview is not None else None,
         shared=a.shared,
         gain_reference=a.gain_reference,
         dose_per_tilt_source=a.dose_per_tilt_source if a.dose_per_tilt is not None else "",
@@ -647,6 +673,8 @@ async def create_project(call: Call) -> dict[str, Any]:
             said = values.get(name)
             if said is not None and said.value is not None:
                 why = f"the {said.found_in.value} says {said.value}: confirm it, or give the right value"
+                if said.hint:
+                    why += f" ({said.hint})"
             elif said is not None and said.mixed:
                 why = f"the selected series disagree: {', '.join(map(str, said.mixed))}"
             else:

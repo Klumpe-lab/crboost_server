@@ -3,8 +3,9 @@ reference candidates, folders that reuse series names, and for each acquisition 
 
 The landing page's rules for turning a folder into globs live here and nowhere else: the frames glob is the
 folder and the movie extension, the mdocs sit beside the frames unless they are elsewhere, and a SerialEM
-delivery keeps one folder per series, so mdocs not found at one depth are looked for at the other. The scan
-itself is the dataset parser's (`DatasetOverview`), run off the event loop.
+delivery keeps one folder per series, often under folders per grid or session, so mdocs beside the frames are
+taken at the depth (up to three folders down) holding the most tilt series. The scan itself is the dataset
+parser's (`DatasetOverview`), run off the event loop.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from services.configs.config_service import get_config_service
+from services.configs.mdoc_service import find_tilt_series_depth
 from services.tilt_series.preimport import DatasetOverview
 
 logger = logging.getLogger(__name__)
@@ -67,6 +69,16 @@ class DatasetScan(BaseModel):
     series: list[ScanSeries] = Field(default_factory=list)
     n_tilts: int = 0
     unresolved: int = 0
+    # The layer Create imports every series from: the one every selected series has, SerialEM's stacks when both
+    # do (`DatasetOverview.default_layer`). `layers` counts the selected series each layer could serve, and
+    # `layer_problems` says what stops a Create from the layer.
+    layer: str | None = None
+    layers: dict[str, int] = Field(default_factory=dict)
+    layer_problems: list[str] = Field(default_factory=list)
+    # The gain reference SerialEM named for the frames, when the selected series agree on one (offered, never
+    # applied), and whether the frames are stored mirrored against SerialEM's images (None: not known).
+    frames_gain: str | None = None
+    frames_mirrored: bool | None = None
     gain_candidates: list[str] = Field(default_factory=list)
     folder_collisions: dict[str, list[str]] = Field(default_factory=dict)
     values: dict[str, DataValue] = Field(default_factory=dict)
@@ -98,12 +110,17 @@ def co_located_mdocs_glob(frames_glob: str, mdocs_extension: str) -> str:
     return str(Path(parent) / mdocs_extension)
 
 
-def other_depth(mdocs_glob: str, extension: str) -> tuple[str, str]:
-    """`(glob, extension)` one folder deeper (`*/*.mdoc`, one folder per series), or one up when the extension
-    already looks a folder deep."""
-    other = f"*/{extension}" if not extension.startswith("*/") else extension[len("*/") :]
-    base = Path(mdocs_glob).parents[1 if extension.startswith("*/") else 0]
-    return str(base / other), other
+def best_mdocs_depth(mdocs_glob: str, extension: str) -> tuple[str, str, tuple[int, int, dict[str, int]]] | None:
+    """`(glob, extension, found)` at the depth below the mdocs' folder (0 to 3 folders down) holding the most
+    tilt-series mdocs, `found` being `find_tilt_series_depth`'s (depth, count, other kinds there); None when no
+    depth holds a tilt series. Reads every candidate mdoc: for a thread."""
+    leaf = extension.split("/")[-1]
+    base = Path(mdocs_glob).parents[extension.count("/")]
+    found = find_tilt_series_depth(base, leaf)
+    if found is None:
+        return None
+    best = "/".join(["*"] * found[0] + [leaf])
+    return str(base / best), best, found
 
 
 def matching_files(pattern: str) -> int:
@@ -156,10 +173,56 @@ def data_values(overview: DatasetOverview) -> dict[str, DataValue]:
         "detector_dimensions": DataValue(value=list(overview.detector_dimensions), found_in=FoundIn.MDOC)
         if overview.detector_dimensions
         else DataValue(),
-        "invert_tilt_angles": DataValue(hint=f"acquisition software: {software or 'not stated in the mdocs'}"),
+        "invert_tilt_angles": _tilt_hand(overview, software),
         "invert_defocus_hand": DataValue(),
         "eer_fractions_per_frame": DataValue(),
     }
+
+
+def _tilt_hand(overview: DatasetOverview, software: str) -> DataValue:
+    """The tilt-angle hand: no mdoc records it, but frames stored mirrored against SerialEM's images take the other
+    hand from the stack's, which is what the landing page sets for them."""
+    if overview.layer == "movies" and overview.frames_mirrored():
+        return DataValue(
+            value=True,
+            found_in=FoundIn.MDOC,
+            hint="the frames are stored mirrored against SerialEM's images (their RotationAndFlip)",
+        )
+    return DataValue(hint=f"acquisition software: {software or 'not stated in the mdocs'}")
+
+
+def layer_problems(overview: DatasetOverview) -> list[str]:
+    """What stops a Create from the chosen layer (empty when nothing does): the landing page's Create gate, the
+    creation door and the API ask the same."""
+    layer = overview.layer
+    sel = overview.get_selected_tilt_series()
+    if layer is None:
+        return ["no layer has every selected series — deselect the ones without it, or pick a layer"]
+    missing = [ts.ts_name for ts in sel if ts.source_kind == "missing"]
+    if missing:
+        what = "a stack" if layer == "stack" else "all movies"
+        return [f"{len(missing)} selected without {what}: {', '.join(missing[:3])}{', …' if len(missing) > 3 else ''}"]
+    if layer == "movies":
+        out = []
+        superres = [ts.ts_name for ts in sel if ts.frames_binning is not None and ts.frames_binning < 1]
+        if superres:
+            out.append(
+                f"{len(superres)} series have super-resolution frames (Binning < 1), which the motion job "
+                "does not bin yet — use the stacks"
+            )
+        no_axis = [ts.ts_name for ts in sel if ts.tilt_axis is None]
+        if no_axis:
+            out.append(f"tilt axis for the frames unknown in {len(no_axis)} series (RotationAndFlip not derived)")
+        gains = overview.frames_gain_references()
+        missing_gain = [k for k in gains if k.startswith("missing: ")]
+        if missing_gain:
+            out.append("gain reference not found: " + ", ".join(k[len("missing: ") :] for k in missing_gain))
+        elif overview.gain_references_differ:
+            out.append(f"{len(gains)} different gain references — one project takes one; select series by folder")
+        elif gains and sum(len(v) for v in gains.values()) != len(sel):
+            out.append("some series name a gain reference and others none")
+        return out
+    return []
 
 
 def differences(spec, values: dict[str, DataValue]) -> list[str]:
@@ -257,6 +320,11 @@ def _scan_sync(frames_glob: str, mdocs_glob: str, progress_cb) -> tuple[DatasetS
         series=series,
         n_tilts=overview.total_frames,
         unresolved=overview.unresolved_selected,
+        layer=overview.layer,
+        layers=overview.layer_coverage(),
+        layer_problems=layer_problems(overview),
+        frames_gain=overview.frames_gain(),
+        frames_mirrored=overview.frames_mirrored(),
         gain_candidates=gain_candidates(*(f for f in folders if f is not None)),
         folder_collisions={name: [str(p) for p in paths] for name, paths in overview.folder_name_collisions().items()},
         values=data_values(overview),
@@ -274,23 +342,29 @@ async def scan(
     progress_cb=None,
 ) -> dict[str, Any]:
     """Scan a data folder, or globs, as the landing page does. From a folder: its movies at conf.yaml's
-    default extension, the mdocs beside them or in `mdocs_directory`, one folder deeper when none sit at the
-    first depth. `ok(scan=DatasetScan, overview=DatasetOverview)`, or why nothing could be scanned."""
+    default extension, the mdocs in `mdocs_directory`, else beside the movies at the depth (up to three folders
+    down) holding the most tilt series. `ok(scan=DatasetScan, overview=DatasetOverview)`, or why nothing could
+    be scanned."""
     from services.result import err, ok
 
     movies_ext, mdocs_ext = default_extensions()
+    co_located = False
     if directory:
         frames_glob = frames_glob or glob_in(directory, movies_ext)
-        mdocs_glob = mdocs_glob or (
-            glob_in(mdocs_directory, mdocs_ext) if mdocs_directory else co_located_mdocs_glob(frames_glob, mdocs_ext)
-        )
+        if not mdocs_glob:
+            co_located = not mdocs_directory
+            if co_located:
+                mdocs_glob = co_located_mdocs_glob(frames_glob, mdocs_ext)
+            else:
+                mdocs_glob = glob_in(mdocs_directory, mdocs_ext)
     if not mdocs_glob:
         return err("Give a data folder, or the frames and mdocs globs.")
-    if await asyncio.to_thread(matching_files, mdocs_glob) == 0:
-        ext = Path(mdocs_glob).name if "*" in Path(mdocs_glob).name else mdocs_ext
-        retry, _ = other_depth(mdocs_glob, ext)
-        if await asyncio.to_thread(matching_files, retry) == 0:
-            return err(f"No mdocs at {mdocs_glob} or {retry}.")
-        mdocs_glob = retry
+    if co_located:
+        best = await asyncio.to_thread(best_mdocs_depth, mdocs_glob, mdocs_ext)
+        if best is None:
+            return err(f"No tilt-series mdocs at {mdocs_glob}, nor up to three folders below it.")
+        mdocs_glob = best[0]
+    elif await asyncio.to_thread(matching_files, mdocs_glob) == 0:
+        return err(f"No mdocs at {mdocs_glob}.")
     scanned, overview = await asyncio.to_thread(_scan_sync, frames_glob or "", mdocs_glob, progress_cb)
     return ok(scan=scanned, overview=overview)

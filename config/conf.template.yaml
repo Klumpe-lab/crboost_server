@@ -34,6 +34,11 @@ slurm_defaults:
 # The supervisor submits a child SLURM array, polls until done, and runs
 # pure-Python metadata aggregation — no GPU work. The user-facing slurm_defaults
 # above describe PER-TASK resources for the array's child sbatch.
+# Where to put it: a CPU partition if yours starts small jobs promptly. Each stage's supervisor enters the queue only
+# when the stage before ends, so a busy CPU partition adds its whole wait at every stage boundary; on CBE.next that
+# was 30 minutes to hours between GPU stages of minutes. There the supervisor rides the GPU partition on the cheapest
+# cards as a ticket it never uses (partition: "g", gres: "gpu:1", constraint: "rtx6000|a100": any RTX 6000 or A100,
+# 2 to 6 an hour, never a B200 at 24), and so do the CPU-only job profiles below.
 supervisor_slurm:
   partition: "gpu"
   constraint: ""
@@ -54,6 +59,10 @@ supervisor_slurm:
 # Users can still override per-job in the UI (slurm_overrides).
 # Merge order: slurm_defaults <- job_resource_profiles[jobtype] <- slurm_overrides
 job_resource_profiles:
+  # The short Warp and AreTomo steps (motion, alignment, CTF, reconstruct, export) run on any GPU, MIG slices
+  # included: an untyped "gpu:1" takes whichever is free first, so a pipeline is not held up waiting for a full card.
+  # On CBE.next a 1g.23gb slice runs them 1.4-3x slower at a seventh of the billing (roadmap 45). Size mem so a task
+  # succeeds on either; name a type only for a job a small card cannot hold (segment, template matching).
   fsMotionAndCtf:
     # mem=24G pairs with perdevice=2 (default in FsMotionCtfParams): two
     # concurrent EER movies per GPU need ~12-18GB GPU RAM plus host-side
@@ -77,6 +86,8 @@ job_resource_profiles:
     mem: "48G"
     cpus_per_task: 8
     time: "2:00:00"
+    # The scaled time can pass the default QOS's 8 h; g_medium allows 2 days (`sacctmgr show qos format=Name,MaxWall`).
+    qos: "g_medium"
 
   tsCtf:
     gres: "gpu:1"
@@ -84,16 +95,26 @@ job_resource_profiles:
     cpus_per_task: 2
     time: "0:10:00"
 
+  # Per tilt series: a task of tilt_series_per_task (default 8) runs perdevice (default 2) at once, and asks for
+  # perdevice x the CPUs and memory and its rounds x the time. 24G is the peak on 1024 x 1024 x 512 tomograms plus
+  # half; a tilt series took 41 s on a B200 and 170 s on a 1g.23gb slice at the median, 419 s at worst. Where the
+  # partition also offers MIG slices, name the full GPU's type (CBE.next: "gpu:nvidia_b200:1"): a chunk is slower
+  # on a small slice than single tasks, and billed for its CPUs.
   tsReconstruct:
     gres: "gpu:1"
-    mem: "64G"
+    mem: "24G"
     cpus_per_task: 4
-    time: "1:00:00"
+    time: "0:20:00"
 
+  # CPU only. import_calls (default 4) WarpTools ts_import calls run at once on these CPUs, each keeping about two
+  # busy: 163 tilt series take about 1.5 minutes on 8 CPUs against 12 in one call on one. Where the GPU partition
+  # refuses a job without a GPU, either name a CPU partition for it and the other gres "" profiles (partition: "c")
+  # or, if that partition queues long, give them the cheapest cards as a ticket (CBE.next: partition: "g",
+  # gres: "gpu:1", constraint: "rtx6000|a100"; see supervisor_slurm).
   tsImport:
     gres: ""
-    mem: "4G"
-    cpus_per_task: 1
+    mem: "16G"
+    cpus_per_task: 8
     time: "0:30:00"
 
   denoisetrain:
@@ -107,6 +128,8 @@ job_resource_profiles:
     # remaining walltime, and ~30 min of mask/extract prep runs first -- so the effective
     # IsoNet budget is well under --time. 8h gives ~6.5h of real compute (QOS rejects 12h).
     time: "8:00:00"
+    # The default QOS caps a job at 8 h; the time here can grow past that, so ask for g_medium (2 days).
+    qos: "g_medium"
 
   denoisepredict:
     gres: "gpu:1"
@@ -124,13 +147,17 @@ job_resource_profiles:
 
   # A whole 1024 x 1024 x 512 tomogram needs ~31 GiB of GPU memory (roadmap 43 S1); gpu_split auto splits it to
   # fit the GPU a task gets, at a cost in time. Where the partition also offers smaller cards or MIG slices, name
-  # the full GPU's type (CBE.next: "gpu:nvidia_b200:1").
+  # the full GPU's type (CBE.next: "gpu:nvidia_b200:1"). Per tomogram: a task runs lanes (default 3) at once under
+  # MPS, tomograms_per_lane (default 2) each, and asks for lanes x the CPUs and memory, tomograms_per_lane x the time.
   templatematching:
     gres: "gpu:1"
     mem: "32G"
     cpus_per_task: 4
     time: "1:30:00"
 
+  # Candidate extraction computes on the CPU, but pytom_extract_candidates.py cannot start without a CUDA device
+  # (voltools asks cupy for the device count at import): give it the smallest GPU the partition offers
+  # (CBE.next: "gpu:nvidia_b200_1g.23gb:1", one MIG slice).
   tmextractcand:
     gres: "gpu:1"
     mem: "8G"
@@ -144,8 +171,18 @@ job_resource_profiles:
     cpus_per_task: 8
     time: "1:00:00"
 
+  # Subtomogram extraction (also per pick list) and particle reconstruction run on CPUs only (relion_tomo_subtomo,
+  # relion_tomo_reconstruct_particle start without a GPU). Where the GPU partition refuses a job without one, see the
+  # tsImport note: a CPU partition, or the cheapest cards as a ticket (CBE.next: partition: "g", gres: "gpu:1",
+  # constraint: "rtx6000|a100").
   subtomoExtraction:
-    gres: "gpu:1"
+    gres: ""
+    mem: "16G"
+    cpus_per_task: 4
+    time: "0:30:00"
+
+  extractPickList:
+    gres: ""
     mem: "16G"
     cpus_per_task: 4
     time: "0:30:00"
@@ -157,7 +194,7 @@ job_resource_profiles:
     time: "0:30:00"
 
   reconstructParticle:
-    gres: "gpu:1"
+    gres: ""
     mem: "32G"
     cpus_per_task: 4
     time: "2:00:00"
@@ -225,10 +262,11 @@ species_catalog_root: ""
 # as its checkpoint records). `threshold` is the P(bad) cut the weights were calibrated at,
 # which a job running them starts from (omit it for uncalibrated weights). The job's model
 # selector lists these keys; default_model is what a job runs until the user picks another.
+# Running a model needs the `tilt_filter` image (tools: below); the server's own environment has no torch.
 # Leave `models` empty to run the filter by hand only.
 tilt_filter:
   models:
-    tiltnet_resnet18_o1034:             # written by: python -m filterTilts.deepLearning.convert_checkpoint run_best.pth <this path>
+    tiltnet_resnet18_o1034:             # written by: python -m filterTilts.deepLearning.convert_checkpoint run_best.pth <this path> (in the tilt_filter image)
       path: "filterTilts/tiltnet_resnet18_o1034.pth"
       arch: "ResNet18Gray"
       normalisation: "per_image"
@@ -297,6 +335,12 @@ tools:
   miss_alignment:
     exec_mode: "container"
     container_path: "/path/to/miss_alignment.sif"
+    bin_path: ""
+  # The DL tilt filter's classifier (torch + torchvision, on a GPU): the tilt-filter job calls it for the network
+  # only. Needed when tilt_filter.models (above) is not empty; otherwise delete this entry.
+  tilt_filter:
+    exec_mode: "container"
+    container_path: "/path/to/tilt_filter.sif"
     bin_path: ""
   # easymode + Ais + Pom in one image (the Segment job). cache_dir holds the weights, filled once
   # with `easymode download --all` (see the image's %help); the job only ever reads them.

@@ -19,7 +19,10 @@ between restarts. It never reaches across login nodes, where it could not check 
 With no server up, it offers `get_server_info`, which says how to start one, and tries again on every call;
 once the server answers, it announces the full tool list (`notifications/tools/list_changed`).
 
-    claude mcp add --scope user crboost -- uv run --script <checkout>/agent/crboost_mcp.py
+    claude mcp add --scope user crboost -- <checkout>/crboost mcp
+
+The launcher runs it with the checkout's own uv (`.uv/bin/uv`, the one `uv.toml` pins), wherever Claude Code
+was started.
 """
 
 from __future__ import annotations
@@ -110,9 +113,9 @@ def find_server() -> tuple[int | None, str]:
             "name one with CRBOOST_URL=http://localhost:<port>."
         )
     return None, (
-        f"No CryoBoost server of {USER}'s answers on this login node ({HOST}). Start one from {CHECKOUT} with "
-        "`venv/bin/python3 crboost`; its startup banner names the node it runs on, and this forwarder must run "
-        "on that same node."
+        f"No CryoBoost server of {USER}'s answers on this login node ({HOST}). Start one with "
+        f"`{CHECKOUT}/crboost`; its startup banner names the node it runs on, and this forwarder must run on that "
+        "same node."
     )
 
 

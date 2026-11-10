@@ -14,9 +14,9 @@ from nicegui import ui, app
 from pydantic import ValidationError
 
 from backend import CryoBoostBackend
-from services.configs.mdoc_service import describe_duplicate_ts_names
+from services.configs.mdoc_service import describe_duplicate_ts_names, describe_ignored_mdocs
 from services.configs.user_prefs_service import get_prefs_service
-from services.dataset_scan import co_located_mdocs_glob, first_mdoc_values, other_depth
+from services.dataset_scan import best_mdocs_depth, co_located_mdocs_glob, first_mdoc_values, layer_problems
 from services.project_create import ProjectSpec, model_defaults
 
 from ui.components.buttons import house_button, icon_button
@@ -84,13 +84,15 @@ async def landing_spec(
     """The spec landing Create makes, or (None, why). The values the data gives come from the scan's
     selection, else from the first mdoc (a Create without a scan), the smallest of each where the
     selection is mixed; the dose comes with its provenance, the mdoc's value, else the dose row (the
-    scan's estimate or the user's number), never the model default. The values this form does not ask
-    for take the model defaults (`model_defaults`). A form with both globs empty asks for a project without raw
-    data."""
+    scan's estimate or the user's number), never the model default. After a scan, every series comes from
+    the layer chosen there, whose tilt axis the selection carries; frames stored mirrored against SerialEM's
+    images take the other tilt-angle hand. The values this form does not ask for take the model defaults
+    (`model_defaults`). A form with both globs empty asks for a project without raw data."""
     values = model_defaults()
     series = None
     software = ""
     dose_source = ""
+    layer = None
     if di.movies_glob or di.mdocs_glob:
         first = await asyncio.to_thread(first_mdoc_values, di.mdocs_glob)
         dose = None
@@ -111,6 +113,9 @@ async def landing_spec(
                 dose, dose_source = sel.doses[0], "mdoc"
             software = overview.acquisition_software or first.get("acquisition_software", "")
             dims = overview.detector_dimensions or first.get("detector_dimensions")
+            layer = overview.layer
+            if layer == "movies" and overview.frames_mirrored():
+                values["invert_tilt_angles"] = True
         else:
             for key in ("pixel_size_angstrom", "acceleration_voltage_kv", "tilt_axis_degrees"):
                 if key in first:
@@ -134,6 +139,7 @@ async def landing_spec(
             mdocs_glob=di.mdocs_glob,
             series=series,
             ts_names_by_folder=ts_names_by_folder,
+            source_layer=layer,
             shared=di.is_shared,
             gain_reference=di.gain_reference_path or None,
             dose_per_tilt_source=dose_source,
@@ -305,6 +311,9 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         ov = _current_overview()
         if ov is None or not ov.positions:
             return None
+        problems = layer_problems(ov)
+        if problems:
+            return False, problems[0]
         unresolved = ov.unresolved_selected
         if unresolved:
             return False, f"{unresolved} selected tilt-series have neither movies nor a stack on disk"
@@ -342,24 +351,34 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             is_valid, count, msg = await _validate_glob_full(pattern)
             if ui_mgr.data_import.mdocs_glob != pattern or _page_gone():
                 return
-            # Co-located mdocs are derived from the data folder; a SerialEM delivery keeps
-            # one folder per series, so when the derived depth matches nothing, try the
-            # other depth and adopt it through the (hidden) mdocs input's extension —
-            # state, prefs and the input then move together via on_mdocs_change.
-            if not is_valid and not local_refs["mdocs_separate"] and ui_mgr.panel_refs.mdocs_input:
-                retry, other = other_depth(pattern, ui_mgr.panel_refs.mdocs_input.extension)
-                other_ok, _n, _m = await _validate_glob_full(retry)
+            # Co-located mdocs are derived from the data folder. A SerialEM delivery keeps
+            # one folder per series, often under folders per grid or session, beside maps
+            # and previews: the depth (0–3 folders down) holding the most tilt-series mdocs
+            # (`best_mdocs_depth`, the scan's rule too) is adopted through the (hidden) mdocs
+            # input's extension — state, prefs and the input then move together via
+            # on_mdocs_change.
+            found = None
+            if not local_refs["mdocs_separate"] and ui_mgr.panel_refs.mdocs_input:
+                ext = ui_mgr.panel_refs.mdocs_input.extension
+                best = await asyncio.to_thread(best_mdocs_depth, pattern, ext)
                 if ui_mgr.data_import.mdocs_glob != pattern or _page_gone():
                     return
-                if other_ok:
-                    ui_mgr.panel_refs.mdocs_input.set_extension(other)  # re-enters via on_mdocs_change
-                    return
+                if best is not None:
+                    _glob, best_ext, found = best
+                    if best_ext != ext:
+                        ui_mgr.panel_refs.mdocs_input.set_extension(best_ext)  # re-enters via on_mdocs_change
+                        return
             ui_mgr.update_data_import(mdocs_valid=is_valid)
             if ui_mgr.panel_refs.mdocs_input:
                 update_input_validation(ui_mgr.panel_refs.mdocs_input, is_valid, msg)
             _set_hint(ui_mgr.panel_refs.mdocs_hint_label, msg, CLR_SUCCESS if is_valid else CLR_ERROR)
             update_create_button_state()
-            if is_valid:
+            if is_valid and found is not None:
+                where = f" {found[0]} folder{'s' if found[0] > 1 else ''} down" if found[0] else ""
+                ignored = describe_ignored_mdocs(found[2])
+                text = f"{found[1]} tilt series{where}" + (f" ({ignored})" if ignored else "")
+                _render_scan_affordance(text, CLR_SUCCESS, can_scan=True)
+            elif is_valid:
                 where = " in subfolders" if "/*/" in pattern else ""
                 _render_scan_affordance(f"{count} mdocs found{where}", CLR_SUCCESS, can_scan=True)
             else:
@@ -1102,6 +1121,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         """What the scan concluded, written back into the form: the frames extension
         follows the chosen layer (`.mrc` for stacks), the dose row appears when the
         mdocs record none. Both happen through the normal change handlers."""
+        _apply_frames_gain(overview)
         ext = overview.frame_extension
         movies_input = ui_mgr.panel_refs.movies_input
         if ext and movies_input and movies_input.extension != f"*{ext}":
@@ -1109,6 +1129,23 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         else:
             update_movies_validation()
         _refresh_dose_row()
+
+    def _apply_frames_gain(overview):
+        """The gain reference SerialEM named for the frames, into the gain field while the
+        project imports frames, out again for stacks (already normalised). A value the user
+        typed is never touched; references that differ prefill nothing and block Create."""
+        gain_input = local_refs.get("gain_input")
+        di = ui_mgr.data_import
+        auto = local_refs.get("gain_autofilled") or ""
+        if di.gain_reference_path and di.gain_reference_path != auto:
+            return
+        value = (overview.frames_gain() or "") if overview.layer == "movies" else ""
+        if value == di.gain_reference_path:
+            return
+        ui_mgr.update_data_import(gain_reference_path=value)
+        local_refs["gain_autofilled"] = value
+        if gain_input is not None:
+            gain_input.value = value
 
     def on_data_commit(_glob: str):
         """Enter / picker / recent entry on a data field: the user chose a
@@ -1228,7 +1265,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         container.clear()
 
         def _on_selection_change():
-            _refresh_dose_row()
+            _apply_overview_to_fields(overview)
             panel = local_refs["folder_split_panel"]
             if _folder_split() is not None and panel is not None:
                 panel.refresh()

@@ -126,6 +126,12 @@ class CreateProjectIn(_In):
     ts_names_by_folder: bool = Field(
         False, description="Name each series after its folder too: folders that reuse series names, in one project"
     )
+    source_layer: Literal["stack", "movies"] | None = Field(
+        None,
+        description="Where every series comes from when the selected series have both SerialEM's stacks and their "
+        "movies (inspect_dataset's `layers`): they differ in orientation, so the tilt axis, the hand and the gain "
+        "follow the choice. Omit when the data holds one layer",
+    )
     shared: bool = Field(False, description="A lab project rather than the user's own")
     gain_reference: str | None = Field(description="The gain reference file, or null for frames already gain-corrected")
     pixel_size_angstrom: float | None = Field(None, description="Å per pixel of the movies")

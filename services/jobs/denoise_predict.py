@@ -84,7 +84,7 @@ class DenoisePredictParams(AbstractJobParams):
     # Read by no denoise driver; kept so saved projects still load.
     perdevice: int = Field(default=1)
     array_throttle: int = Field(
-        default=20, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tomogram denoise prediction"
+        default=40, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tomogram denoise prediction"
     )
     # IsoNet-only (ignored when denoise_method == cryoCARE):
     isonet_deconv: bool = Field(

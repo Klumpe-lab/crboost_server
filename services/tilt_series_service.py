@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from filterTilts.gallery import GALLERY_PNG_SIZE
 from services.configs.starfile_service import StarfileService
 
 logger = logging.getLogger(__name__)
@@ -213,7 +214,11 @@ def drop_tilts_from_tomostar(src_dir: str | Path, out_dir: str | Path, bad_movie
 
 
 def generate_tilt_thumbnails(
-    ts_ctf_star: str | Path, project_path: str | Path, png_dir: str | Path, progress_cb=None, target_size: int = 384
+    ts_ctf_star: str | Path,
+    project_path: str | Path,
+    png_dir: str | Path,
+    progress_cb=None,
+    target_size: int = GALLERY_PNG_SIZE,
 ) -> int:
     """Synchronously generate PNG thumbnails for every tilt referenced by a
     ts_ctf star file. Returns the number of source MRC images processed.

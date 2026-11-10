@@ -91,7 +91,7 @@ class WarpExportParams(AbstractJobParams):
     perdevice: int = Field(default=1, ge=1, description="Warp worker processes per GPU")
 
     array_throttle: int = Field(
-        default=16, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series export"
+        default=40, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series export"
     )
 
     def _get_job_specific_options(self) -> list[tuple[str, str]]:
