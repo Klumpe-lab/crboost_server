@@ -92,7 +92,9 @@ job_resource_profiles:
 
   # Per tilt series: a task of tilt_series_per_task (default 8) runs perdevice (default 2) at once, and asks for
   # perdevice x the CPUs and memory and its rounds x the time. 24G is the peak on 1024 x 1024 x 512 tomograms plus
-  # half; a tilt series took 41 s on a B200 and 170 s on a 1g.23gb slice at the median, 419 s at worst.
+  # half; a tilt series took 41 s on a B200 and 170 s on a 1g.23gb slice at the median, 419 s at worst. Where the
+  # partition also offers MIG slices, name the full GPU's type (CBE.next: "gpu:nvidia_b200:1"): a chunk is slower
+  # on a small slice than single tasks, and billed for its CPUs.
   tsReconstruct:
     gres: "gpu:1"
     mem: "24G"
