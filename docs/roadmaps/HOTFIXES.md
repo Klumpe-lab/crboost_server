@@ -339,6 +339,26 @@ as leftovers; `ps -o ppid` gives 23406 for both, the lab install's server, runni
 **Check.** `survey()` on that node lists 23406 as a server on 24330, with 24292 and 24293 as its workers and no
 leftovers; a second server's banner names neither.
 
+### H13 — The API's set_params picks a missAlign preset without the fields the preset sets
+
+**Status:** open, found 2026-11-10 (roadmap 49 R1, through the Agent API at `906170a`). **Severity:** high for an API
+run: the job runs a different budget and box than the preset the tab shows, without a word.
+
+**What is wrong.** Choosing `iteration_preset` in the job tab calls `MissAlignParams.apply_preset`
+(`ui/job_plugins/miss_align.py:41`), which sets `steps_per_epoch`, `max_epochs_per_iteration`, `lr_milestones` and
+`z_box` from `PRESET_SETTINGS` (`services/jobs/miss_align.py:156`). The API's `set_params` sets the field alone,
+so the UI and the API leave different jobs behind for the same choice (roadmap 42's parity rule).
+
+**Evidence.** `set_params(missAlign, {iteration_preset: paper})` on `AGG412_20251113_412_rerun` answered
+`applied: {iteration_preset: paper}`; `get_job` then showed `steps_per_epoch` 250 and `z_box` full (PAPER: 1000 and
+auto), and the walltime estimate followed the 250. Worked around by setting the four fields by hand.
+
+**Fix.** The preset hook belongs to the button's service function, not the tab: one place that both the tab and
+`set_params` go through applies it, for any field with such a side effect.
+
+**Check.** `set_params(missAlign, {iteration_preset: paper})` on a fresh job leaves 1000 / 30 / `5,15` / auto, as
+the tab does.
+
 ## Fixed
 
 ### H7 — Template matching with T, O or I symmetry searches 3 to 15 times the orientations its increment asks for
