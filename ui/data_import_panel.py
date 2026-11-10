@@ -13,7 +13,7 @@ from collections.abc import Callable
 from nicegui import ui, app
 
 from backend import CryoBoostBackend
-from services.configs.mdoc_service import describe_duplicate_ts_names
+from services.configs.mdoc_service import describe_duplicate_ts_names, describe_ignored_mdocs, find_tilt_series_depth
 from services.configs.user_prefs_service import get_prefs_service
 
 from ui.components.buttons import house_button, icon_button
@@ -21,7 +21,7 @@ from ui.components.segmented import render_segmented
 from ui.ui_state import get_ui_state_manager
 from ui.local_file_picker import local_file_picker
 from ui.glob_directory_input import GlobDirectoryInput
-from ui.dataset_overview_panel import build_dataset_overview_panel, build_dry_run_summary
+from ui.dataset_overview_panel import build_dataset_overview_panel, build_dry_run_summary, layer_problems
 from ui.dataset_split_panel import SPLIT_ONE_PROJECT, SPLIT_PER_FOLDER, FolderSplit, FolderSplitPanel
 from ui.projects_overview import ProjectsOverview
 from ui.job_plugins._field_styles import PANEL_HEAD_STYLE, PANEL_STYLE, PANEL_TITLE_STYLE
@@ -235,6 +235,9 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         ov = _current_overview()
         if ov is None or not ov.positions:
             return None
+        problems = layer_problems(ov)
+        if problems:
+            return False, problems[0]
         unresolved = ov.unresolved_selected
         if unresolved:
             return False, f"{unresolved} selected tilt-series have neither movies nor a stack on disk"
@@ -272,27 +275,35 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             is_valid, count, msg = await _validate_glob_full(pattern)
             if ui_mgr.data_import.mdocs_glob != pattern or _page_gone():
                 return
-            # Co-located mdocs are derived from the data folder; a SerialEM delivery keeps
-            # one folder per series, so when the derived depth matches nothing, try the
-            # other depth and adopt it through the (hidden) mdocs input's extension —
-            # state, prefs and the input then move together via on_mdocs_change.
-            if not is_valid and not local_refs["mdocs_separate"] and ui_mgr.panel_refs.mdocs_input:
+            # Co-located mdocs are derived from the data folder. A SerialEM delivery keeps
+            # one folder per series, often under folders per grid or session, beside maps
+            # and previews: the depth (0–3 folders down) holding the most tilt-series mdocs
+            # is adopted through the (hidden) mdocs input's extension — state, prefs and the
+            # input then move together via on_mdocs_change.
+            found = None
+            if not local_refs["mdocs_separate"] and ui_mgr.panel_refs.mdocs_input:
                 ext = ui_mgr.panel_refs.mdocs_input.extension
-                other = f"*/{ext}" if not ext.startswith("*/") else ext[len("*/") :]
-                other_ok, _n, _m = await _validate_glob_full(
-                    str(Path(pattern).parents[1 if ext.startswith("*/") else 0] / other)
-                )
+                leaf = ext.split("/")[-1]
+                base = Path(pattern).parents[ext.count("/")]
+                found = await asyncio.to_thread(find_tilt_series_depth, base, leaf)
                 if ui_mgr.data_import.mdocs_glob != pattern or _page_gone():
                     return
-                if other_ok:
-                    ui_mgr.panel_refs.mdocs_input.set_extension(other)  # re-enters via on_mdocs_change
-                    return
+                if found is not None:
+                    best = "/".join(["*"] * found[0] + [leaf])
+                    if best != ext:
+                        ui_mgr.panel_refs.mdocs_input.set_extension(best)  # re-enters via on_mdocs_change
+                        return
             ui_mgr.update_data_import(mdocs_valid=is_valid)
             if ui_mgr.panel_refs.mdocs_input:
                 update_input_validation(ui_mgr.panel_refs.mdocs_input, is_valid, msg)
             _set_hint(ui_mgr.panel_refs.mdocs_hint_label, msg, CLR_SUCCESS if is_valid else CLR_ERROR)
             update_create_button_state()
-            if is_valid:
+            if is_valid and found is not None:
+                where = f" {found[0]} folder{'s' if found[0] > 1 else ''} down" if found[0] else ""
+                ignored = describe_ignored_mdocs(found[2])
+                text = f"{found[1]} tilt series{where}" + (f" ({ignored})" if ignored else "")
+                _render_scan_affordance(text, CLR_SUCCESS, can_scan=True)
+            elif is_valid:
                 where = " in subfolders" if "/*/" in pattern else ""
                 _render_scan_affordance(f"{count} mdocs found{where}", CLR_SUCCESS, can_scan=True)
             else:
@@ -882,6 +893,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             "selected_tilt_series": overview.selected_tilt_series,
             "source_directory": overview.source_directory or "",
             "frame_extension": overview.frame_extension or "",
+            "source_layer": overview.layer or "",
         }
         sel_summary = overview.selected_acquisition_summary()
         detected_params = {}
@@ -906,6 +918,10 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             detected_params["detector_dimensions"] = overview.detector_dimensions
         if di.gain_reference_path:
             detected_params["gain_reference_path"] = di.gain_reference_path
+        # Frames stored mirrored relative to SerialEM's images need the other tilt-angle hand
+        # from the stack's; the stack keeps the hand roadmap 18 ran with.
+        if overview.layer == "movies" and overview.frames_mirrored():
+            detected_params["invert_tilt_angles"] = True
         return selected_mdoc_paths, import_summary, detected_params
 
     async def handle_load_project_click():
@@ -1089,6 +1105,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         """What the scan concluded, written back into the form: the frames extension
         follows the chosen layer (`.mrc` for stacks), the dose row appears when the
         mdocs record none. Both happen through the normal change handlers."""
+        _apply_frames_gain(overview)
         ext = overview.frame_extension
         movies_input = ui_mgr.panel_refs.movies_input
         if ext and movies_input and movies_input.extension != f"*{ext}":
@@ -1096,6 +1113,23 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         else:
             update_movies_validation()
         _refresh_dose_row()
+
+    def _apply_frames_gain(overview):
+        """The gain reference SerialEM named for the frames, into the gain field while the
+        project imports frames, out again for stacks (already normalised). A value the user
+        typed is never touched; references that differ prefill nothing and block Create."""
+        gain_input = local_refs.get("gain_input")
+        di = ui_mgr.data_import
+        auto = local_refs.get("gain_autofilled") or ""
+        if di.gain_reference_path and di.gain_reference_path != auto:
+            return
+        value = (overview.frames_gain() or "") if overview.layer == "movies" else ""
+        if value == di.gain_reference_path:
+            return
+        ui_mgr.update_data_import(gain_reference_path=value)
+        local_refs["gain_autofilled"] = value
+        if gain_input is not None:
+            gain_input.value = value
 
     def on_data_commit(_glob: str):
         """Enter / picker / recent entry on a data field: the user chose a
@@ -1215,7 +1249,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         container.clear()
 
         def _on_selection_change():
-            _refresh_dose_row()
+            _apply_overview_to_fields(overview)
             panel = local_refs["folder_split_panel"]
             if _folder_split() is not None and panel is not None:
                 panel.refresh()
