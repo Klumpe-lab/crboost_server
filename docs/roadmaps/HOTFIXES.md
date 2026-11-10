@@ -220,6 +220,33 @@ partition, and let the strip show each type.
 **Check.** The line above gives `[("nvidia_b200", 4), ("nvidia_b200_1g.23gb", 28)]`, and the landing page's strip
 shows both on `g`.
 
+### H8 — A SerialEM delivery imports some series from stacks and others from raw frames, under one axis and hand
+
+**Status:** open, found 2026-11-10 (anchors at `a22decd`). **Severity:** high: the frames-built series come out
+mirrored, with the tilt axis 10° off and no gain correction, and nothing on screen says so.
+
+**What is wrong.**
+- The layer is chosen per series: the stack whenever `<mdoc dir>/<ImageFile>` exists with nz == sections, else the
+  movies (`services/stack_import.py:57-66`, `services/configs/dataset_parsing_service.py:179-187`).
+- A K3's raw frames are stored in the camera's native orientation, and SerialEM's stack and the mdoc's
+  `Tilt axis angle` in the rotated/flipped one (`RotationAndFlip = 6`, a vertical mirror; measured, roadmap 48 §3).
+- The project has one tilt axis and one hand, both from the stack's view, and no gain unless one is typed.
+- The scan only warns "Mixed source layers" in the parse warnings (`dataset_parsing_service.py:209-214`).
+
+**Evidence** (real data, read only). `DatasetParsingService().parse_dataset` on
+`/groups/klumpe/001_Data/OLENA_pooled_tomos/experiment2_20260615/*/*/*.mdoc`: 18 series `stack`, 5 `movies`
+(`area_4-A_1_ts_002/003`, `area_4-A_2_ts_001`, `area_5-A_ts_002/004`, whose stacks IMOD renamed `_orig.mrc`), one
+project tilt axis 85.0. For `area_5-A_ts_002`, the frame sum matches the stack section only after a vertical mirror
+(NCC 0.64 against ≤ 0.04).
+
+**Impact.** Any SerialEM K3 share where some stacks were renamed, moved or deleted. CryoBoost v1 had no stack layer,
+so this is new with roadmap 18.
+
+**Fix.** One layer per project, chosen by the user, with the axis, hand and gain of that layer (roadmap 48 S2–S3).
+Until then: Create refuses a selection with more than one layer.
+
+**Check.** The same scan offers Frames or Stacks for the project, and a Create never holds both.
+
 ## Fixed
 
 ### H7 — Template matching with T, O or I symmetry searches 3 to 15 times the orientations its increment asks for
