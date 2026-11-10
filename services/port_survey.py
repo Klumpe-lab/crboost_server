@@ -199,12 +199,13 @@ def own_processes(socket_ports: dict[int, int]) -> list[Proc]:
 
 
 def _install_of(proc: Proc) -> Path | None:
-    """The checkout a CryoBoost server runs from: the crboost launcher it was started with, next to a backend.py.
-    main.py is the launcher's old name, still running from checkouts that predate the rename."""
+    """The checkout a CryoBoost server runs from: the script it runs, next to a backend.py. That is crboost.py,
+    which the sh launcher execs; crboost and main.py are the script's older names, still running from checkouts
+    that predate the renames."""
     if any("multiprocessing" in a for a in proc.args):
         return None
     for arg in proc.args[1:4]:
-        if Path(arg).name in ("crboost", "main.py"):
+        if Path(arg).name in ("crboost.py", "crboost", "main.py"):
             path = Path(proc.cwd, arg)
             if (path.parent / "backend.py").is_file():
                 return path.parent.resolve()
