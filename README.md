@@ -66,6 +66,48 @@ Closing the headnode terminal (or `Ctrl-C`) stops the server; jobs already submi
 
 </details>
 
+## From a Claude Code session
+
+You can also drive your server from Claude Code in a terminal: say what to make and run, and look at the results
+later in the browser or in the project folder. It does what the browser lets you do (make a project from a data
+folder, add jobs, set parameters, run, stop), under the same rules.
+
+**Once**, on the headnode, from the folder CryoBoost is installed in:
+
+```bash
+cd /groups/klumpe/software/crboost_server
+claude mcp add --scope user crboost -- "$PWD/crboost" mcp
+mkdir -p ~/.claude/skills
+ln -s "$PWD/agent/skills/crboost" ~/.claude/skills/crboost
+```
+
+`claude mcp list` then shows `crboost` connected.
+
+**Then**, with your server running (`./crboost`, as above), start `claude` from any folder on the same headnode and
+say what you want, for example:
+
+- *make a project in /groups/klumpe/my_projects from /groups/klumpe/data/run12, with the values of my project
+  run11, preprocess it to reconstruction and run it*
+- *how far is run12, and did anything fail?*
+
+It shows what the mdocs say and asks for every value they lack (Cs, amplitude contrast, the hands, the EER grouping,
+the gain reference). It asks you before it creates a project and before every run, and it changes only the projects
+it made. Those open in the browser like any other.
+
+<details>
+<summary><b>More on the Claude Code tools</b></summary>
+
+- **Several Claude Code logins** (`CLAUDE_CONFIG_DIR`): each has its own tool list, so run `claude mcp add` under
+  the one you use.
+- **No prompt for every look:** the permission rules in [docs/agent.md](docs/agent.md#permissions) let the
+  read-only tools run without asking and keep Claude Code's file tools off the project files.
+- **Without a running server** it can only tell you how to start one; once the server is up, the next request finds it.
+- Tilt review, picking and judging particles stay in the browser. Every change it makes is recorded in the
+  project's `Logs/agent_api.jsonl`.
+- Details, and the API for scripts and `curl`: [docs/agent.md](docs/agent.md).
+
+</details>
+
 ## Installing and updating
 
 Done once per cluster by whoever maintains the install. Full guide: **[docs/installation.md](docs/installation.md)**.
@@ -87,5 +129,5 @@ Restart running servers to move them onto it.
 ## Documentation
 
 [Installation](docs/installation.md) · [architecture](docs/architecture.md) · [protocols](docs/protocols.md) ·
-[particle data flow](docs/particle-data-flow.md) · [binning and resolution](docs/binning-and-resolution.md) ·
-[known bugs](docs/known_bugs.md)
+[Claude Code](docs/agent.md) · [particle data flow](docs/particle-data-flow.md) ·
+[binning and resolution](docs/binning-and-resolution.md) · [known bugs](docs/known_bugs.md)
