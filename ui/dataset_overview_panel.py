@@ -5,10 +5,12 @@ selectable table of stage positions and their tilt-series (beam positions).
 """
 
 from collections.abc import Callable
+from pathlib import Path
 
 from nicegui import ui
 
 from services.tilt_series.preimport import DatasetOverview
+from ui.components.segmented import render_segmented
 from ui.job_plugins._field_styles import PANEL_HEAD_STYLE, PANEL_TITLE_STYLE
 from ui.styles import MONO, SANS as FONT
 
@@ -36,7 +38,7 @@ _DEFAULT_CAT = ("#d97706", "#fef3c7", "#fffbeb")  # fallback amber
 CB_STYLE = "padding: 0; margin: 0 2px;"
 CB_PROPS = "dense size=xs"
 CELL = "padding: 3px 5px;"
-COL_WIDTHS = "24px 44px 40px 40px 110px 58px 50px 50px 50px 1fr"
+COL_WIDTHS = "24px 72px 40px 40px 110px 58px 50px 50px 50px 1fr"
 
 
 _WARNINGS_SHOWN = 3
@@ -103,10 +105,16 @@ def build_dataset_overview_panel(
     summary_bar_container = ui.column().classes("w-full gap-0")
 
     def refresh_all():
+        if overview.layer is None:
+            overview.apply_layer(overview.default_layer())
         _refresh_counts()
         _refresh_summary_bar()
         if on_change:
             on_change()
+
+    def on_layer(key: str):
+        overview.apply_layer(key)
+        refresh_all()
 
     def _refresh_counts():
         sel = overview.selected_tilt_series
@@ -119,6 +127,7 @@ def build_dataset_overview_panel(
         summary_bar_container.clear()
         s = overview.selected_acquisition_summary()
         with summary_bar_container:
+            _build_layer_row(overview, on_layer)
             _build_acquisition_summary_bar(s, overview, row_registry)
 
     _refresh_counts()
@@ -220,6 +229,95 @@ def _bucket_by_param(overview, param_key):
         return {}, None
     majority_val = max(buckets, key=lambda k: len(buckets[k]))
     return buckets, majority_val
+
+
+def _build_layer_row(overview: DatasetOverview, on_layer: Callable[[str], None]) -> None:
+    """Which layer the project imports from, when the delivery has stacks: SerialEM's stacks
+    or the frames. Both counts are shown; the line under it says what the choice implies
+    (raw `_orig` stacks; for frames the gain reference, and the axis and hand turned into
+    the frames' orientation)."""
+    cov = overview.layer_coverage()
+    n = overview.selected_tilt_series
+    if not cov["stack"] or not n:
+        return
+    tabs = (("stack", f"Stacks {cov['stack']}/{n}"), ("movies", f"Frames {cov['movies']}/{n}"))
+    with ui.row().classes("items-center gap-2 no-wrap").style("padding: 2px 0;"):
+        ui.label("Source").style(
+            f"{FONT} font-size: 8px; color: {CLR_SUBLABEL}; text-transform: uppercase; letter-spacing: 0.03em;"
+        ).tooltip(
+            "Stacks: the tilt series as SerialEM saved them (frame-aligned sums, gain-corrected, in the orientation "
+            "of the mdoc's tilt axis), split into one image per tilt at Create. Frames: the raw movies, for "
+            "Warp's motion correction; they need the gain reference SerialEM named and are often stored "
+            "mirrored relative to the stack. One layer per project."
+        )
+        render_segmented(tabs, overview.layer or "", on_layer, classes="cb-seg-sm")
+        ui.label(_layer_note(overview)).style(f"{FONT} font-size: 9px; color: {_layer_note_colour(overview)};")
+
+
+def layer_problems(overview: DatasetOverview) -> list[str]:
+    """What stops a Create from the chosen layer (empty when nothing does); the landing page's
+    Create gate asks the same."""
+    layer = overview.layer
+    sel = overview.get_selected_tilt_series()
+    if layer is None:
+        return ["no layer has every selected series — deselect the ones without it, or pick a layer"]
+    missing = [ts.ts_name for ts in sel if ts.source_kind == "missing"]
+    if missing:
+        what = "a stack" if layer == "stack" else "all movies"
+        return [f"{len(missing)} selected without {what}: {', '.join(missing[:3])}{', …' if len(missing) > 3 else ''}"]
+    if layer == "movies":
+        out = []
+        superres = [ts.ts_name for ts in sel if ts.frames_binning is not None and ts.frames_binning < 1]
+        if superres:
+            out.append(
+                f"{len(superres)} series have super-resolution frames (Binning < 1), which the motion job "
+                "does not bin yet — use the stacks"
+            )
+        no_axis = [ts.ts_name for ts in sel if ts.tilt_axis is None]
+        if no_axis:
+            out.append(f"tilt axis for the frames unknown in {len(no_axis)} series (RotationAndFlip not derived)")
+        gains = overview.frames_gain_references()
+        missing_gain = [k for k in gains if k.startswith("missing: ")]
+        if missing_gain:
+            out.append("gain reference not found: " + ", ".join(k[len("missing: ") :] for k in missing_gain))
+        elif overview.gain_references_differ:
+            out.append(f"{len(gains)} different gain references — one project takes one; select series by folder")
+        elif gains and sum(len(v) for v in gains.values()) != len(sel):
+            out.append("some series name a gain reference and others none")
+        return out
+    return []
+
+
+def _layer_note(overview: DatasetOverview) -> str:
+    problems = layer_problems(overview)
+    if problems:
+        return "; ".join(problems)
+    sel = overview.get_selected_tilt_series()
+    if overview.layer == "stack":
+        n_orig = sum(1 for ts in sel if ts.stack_path is not None and ts.stack_path.stem.endswith("_orig"))
+        return "SerialEM's stacks" + (f" ({n_orig} renamed `_orig` by IMOD, raw used)" if n_orig else "")
+    gains = list(overview.frames_gain_references())
+    chosen = overview.frames_gain()
+    gain = (
+        "no gain reference named (frames taken as gain-corrected)"
+        if not gains
+        else f"gain {Path(chosen).name}" + (f" (the {len(gains)} copies hold the same image)" if len(gains) > 1 else "")
+    )
+    axes = {(ts.mdoc_tilt_axis, ts.tilt_axis) for ts in sel}
+    turned = [f"{a:.1f}° → {b:.1f}°" for a, b in axes if a is not None and b is not None and a != b]
+    mirrored = overview.frames_mirrored()
+    parts = [f"frames {overview.frame_extension or '?'}", gain]
+    if turned:
+        parts.append("axis " + ", ".join(sorted(turned)) + " (frames are stored mirrored)")
+    if mirrored:
+        parts.append("tilt-angle hand inverted vs. the stack")
+    return " · ".join(parts)
+
+
+def _layer_note_colour(overview: DatasetOverview) -> str:
+    if layer_problems(overview):
+        return CLR_ERROR
+    return CLR_WARN if overview.layer == "movies" and overview.frames_mirrored() else CLR_SUBLABEL
 
 
 def _build_acquisition_summary_bar(s, overview, row_registry):
@@ -414,7 +512,7 @@ def _build_position_group(pos, overview, refresh_all, row_registry):
                     ts_checkboxes.append(cb)
 
                     ui.label("").style(CELL)
-                    beam = "—" if ts.beam_position is None else str(ts.beam_position)
+                    beam = ts.target_label or ("—" if ts.beam_position is None else str(ts.beam_position))
                     ui.label(beam).style(f"{MONO} font-size: 10px; color: {CLR_LABEL}; {CELL}")
 
                     tc_style = f"{MONO} font-size: 10px; {CELL}"
@@ -430,7 +528,9 @@ def _build_position_group(pos, overview, refresh_all, row_registry):
                     _acq_cell(ts.pixel_size, ".3f")
                     _acq_cell(ts.voltage, ".0f")
                     _acq_cell(ts.dose_per_tilt, ".1f")
-                    _acq_cell(ts.tilt_axis, ".1f")
+                    ui.label().style(f"{MONO} font-size: 10px; color: {CLR_LABEL}; {CELL}").bind_text_from(
+                        ts, "tilt_axis", backward=lambda v: "\u2014" if v is None else f"{v:.1f}"
+                    )
 
                     mdoc_display = str(ts.mdoc_path)
                     ui.label(mdoc_display).style(
@@ -476,7 +576,7 @@ def _build_position_group(pos, overview, refresh_all, row_registry):
         with ui.row().classes("items-center gap-0.5").style(f"{CELL}"):
             chevron = ui.icon("chevron_right", size="12px").style(f"color: {CLR_SUBLABEL};")
             chevron_ref[0] = chevron
-            stage = "—" if pos.stage_position is None else str(pos.stage_position)
+            stage = pos.label or ("—" if pos.stage_position is None else str(pos.stage_position))
             ui.label(stage).style(f"{MONO} font-size: 11px; font-weight: 600; color: {CLR_HEADING};")
 
         ui.label(f"{n_beams}").style(f"{MONO} font-size: 10px; color: {CLR_SUBLABEL}; {CELL}")

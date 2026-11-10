@@ -1,6 +1,6 @@
 # Roadmap 48 — K3 / SerialEM / PACEtomo deliveries, from either layer
 
-Status: scoped 2026-11-10, no code. Builds on [roadmap 18](completed/roadmap_18-k3-stack-ingest.md) (stack split at
+Status: scoped 2026-11-10; S1–S5 built the same day, NOT RUN (§9). Builds on [roadmap 18](completed/roadmap_18-k3-stack-ingest.md) (stack split at
 Create, per-mdoc layer inference, dose estimate). Anchors at `a22decd`.
 
 Goal: point the landing page at an outside lab's SerialEM/PACEtomo folder as it was shared (maps, previews, IMOD
@@ -79,9 +79,10 @@ pages; PACEtomo `https://github.com/eisfabian/PACEtomo`; IMOD etomo tutorial
   (5°) and `area_6-A_shift_ts_001` (−52°, −55°).
 - **Dose.** `ExposureDose = 0` everywhere (dose never calibrated in SerialEM). Per series, the zero-thickness fit of
   roadmap 18 (`services/configs/mdoc_service.py:241`) gives an **incident 4.2–4.6 e/Å² per tilt in all 17 series where
-  it fits** (t/λ from 0.30 to 1.60, pretilt −4.5° to −9.5°), although the transmitted dose varies fivefold (0.9–3.4).
-  The six `area_6-A` series do not fit (rms 0.06–0.56) and only have transmitted values (1.0–1.5). A constant beam of
-  ≈ 4.3 e/Å² per tilt, ≈ 165 e/Å² for 39 tilts, explains all fitted series.
+  it fits**: 14 of 23 (t/λ from 0.30 to 1.60, pretilt −4.5° to −9.5°), although the transmitted dose varies
+  fivefold (0.9–3.4). The eight `area_6-A` series (both grids) and `area_4-A_1_ts_001` do not fit (rms 0.05–0.56)
+  and only have transmitted values (1.0–3.3). A constant beam of ≈ 4.3 e/Å² per tilt, ≈ 165 e/Å² for 39 tilts,
+  explains all fitted series.
 
 experiment1: frames are 8-bit **super-resolution** MRCs (11520×8184, `Binning = 0.5`, 1.6855 Å), stack mdocs say
 3.371 Å at 26 kx. The acquirer's mail says 0.261 nm, which matches neither. The gain reference these frames name
@@ -177,7 +178,7 @@ for every dataset; the rule above only keeps the frames and stacks consistent wi
 
 **S4 — Dose per series.**
 - The project's dose is the median of **incident fits only**; series without a fit are named, with their transmitted
-  value, and assumed to share the beam. The estimated-dose chip says "estimated (17/23 fitted, 4.2–4.6)".
+  value, and assumed to share the beam. The estimated-dose chip says "estimated (14/23 fitted, 4.2–4.6)".
 - Anchors: `preimport.py:241-252`, `AcquisitionSummary.from_tilt_series`.
 
 **S5 — PACEtomo positions.**
@@ -208,10 +209,50 @@ Thanks for the data! We've been through the files and have three questions:
    counts only the electrons that made it through the lamella and the energy filter, so it drops at high tilt and on
    thick areas. We fitted that drop across each tilt series (thickness grows as 1/cos of the tilt) and extrapolated to
    zero thickness. That gives about **4.3 e/Å² per tilt at the specimen (≈ 165 e/Å² over 39 tilts)**, consistently in
-   17 of the 23 series. The area_6-A series don't fit cleanly. Does ~4.3 e/Å² per tilt match what you set, and was
+   the 14 of 23 series where the fit works. The area_6-A series (both grids) don't fit cleanly. Does ~4.3 e/Å² per tilt match what you set, and was
    the beam the same for area_6-A (both grids)? If you measured the dose over vacuum or have the planned total, that
    number would replace ours.
 2. **experiment1 pixel size.** Your mail says 0.261 nm, but the mdocs say 3.371 Å (26 kx; 1.6855 Å for the
    super-resolution frames). Which one should we use?
 3. **experiment1 gain reference.** The frames name `SuperRef_lam_ts_ts_01_45_000_12.0.dm4`, which isn't in the
    folder (only `SuperRef_lam_2A_16_SAmap26kx_Lam_poly_21_21_000_0.0.dm4` is). Could you send it?
+
+## 9. Stage log
+
+**2026-11-10 — S1–S5 built, NOT RUN (S6 owed).** ruff and `check_boundaries.py` clean. Read-only run of the new scan
+(`DatasetParsingService.parse_dataset` + `find_tilt_series_depth`) on the three folders:
+
+| folder | depth | series | ignored | positions | stack / frames | dose |
+|---|---|---|---|---|---|---|
+| experiment2 | 2 | 23, one project | 889 frame mdocs | 6 PACEtomo areas | 23/23 · 23/23 | 4.29 (14/23 fitted) |
+| experiment1 | 2 | 3 | 109 frame mdocs | flat (`ts_0N`) | 3/3 · 3/3, frames blocked: gain missing, super-res | 2.89 (2/3 fitted) |
+| first share | 1 | 4 | 156 frame mdocs | `area_5-A` | 4/4 · 4/4, frames blocked: gain not in that share | 4.28 (4/4) |
+
+Stacks: the seven `_orig.mrc` series take the raw stack. Frames: `.tif`, axis −85.0, tilt-angle hand inverted, the
+`tomo/` and `tomo2/` CountRefs hold the same image (headers differ in 19 bytes), so one gain serves the project.
+
+What changed:
+- S1. `classify_mdoc` / `describe_ignored_mdocs` / `find_tilt_series_depth` (`services/configs/mdoc_service.py`);
+  the scan, `first_mdoc_facts` and the import skip anything that is not a tilt series. The landing page adopts the
+  depth with the most tilt series (0–3 below the data folder) instead of the `*.mdoc` ⇄ `*/*.mdoc` flip, and the scan
+  line says "23 tilt series 2 folders down (ignored: 889 frame mdocs)".
+- S2. Per series the scan records both layers (`stack_path`, `movies_complete`); `DatasetOverview.layer` /
+  `apply_layer` / `default_layer` / `layer_coverage`; a Stacks/Frames segmented row in the overview with a line
+  saying what the choice implies; Create is held (frames field) while a selected series lacks the layer.
+  `resolve_stack` and `split_stack` take `<stem>_orig.mrc` first (`stack_candidates`). The import gets the choice
+  (`import_summary["source_layer"]` → `choose_source_layer(chosen=…)`) and fails on a series without it.
+- S3. `read_frame_facts` (per-movie mdoc: gain, defects, RotationAndFlip, Binning), the gain found beside the mdoc or
+  above it, compared by content when several (`same_image_data`), prefilled into the gain field for frames and taken
+  out for stacks (a typed value is kept); `frames_tilt_axis` (ops 0 and 6 only; others leave the axis open and block
+  Create); `invert_tilt_angles=True` for mirrored frames (written at creation — the first writer of that field, see
+  H2). Super-resolution frames block the frames layer.
+- S4. `AcquisitionSummary.dose_estimates` holds incident fits only, `dose_transmitted_only` the rest; the hint says
+  "incident fit in 14/23 series (4.2–4.6); 9 without a fit (transmitted 1.0–3.3), assumed the same beam".
+- S5. `<area>_ts_<NNN>` → `area_label` / `target_label`; `aggregate_to_positions` groups by area; the POS column
+  shows the area, BEAM the target.
+
+Not done: defect lists (here only edge rows); super-resolution binning; `.dm4` gains; frame-series `--exposure`
+(not passed for any input today, EER included — check whether Warp's frame dose weighting needs it).
+
+S6 runtime check, owed: experiment2 into two projects (Stacks, Frames), one series per area; motion/CTF → alignment →
+`ts_defocus_hand --check` → reconstruction; the frames reconstruction must match the stack one; then all 23.

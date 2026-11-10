@@ -11,16 +11,21 @@ and never chosen by the user.
 import glob
 import logging
 import os
-from collections import Counter
+import re
 from pathlib import Path
 from collections.abc import Callable
 
-from services.configs.mdoc_service import MdocFacts, acquisition_from_mdoc, get_mdoc_service, ts_name_from_mdoc
-from services.stack_import import choose_source_layer, resolve_stack
+from services.configs.mdoc_service import (
+    acquisition_from_mdoc,
+    classify_mdoc,
+    describe_ignored_mdocs,
+    get_mdoc_service,
+    ts_name_from_mdoc,
+)
+from services.stack_import import find_beside_or_above, read_frame_facts, resolve_stack, same_image_data
 from services.tilt_series.preimport import (
     AcquisitionSummary,
     DatasetOverview,
-    SourceKind,
     TiltInfo,
     TiltSeriesInfo,
     aggregate_to_positions,
@@ -30,6 +35,9 @@ from services.tilt_series.build import parse_position
 logger = logging.getLogger(__name__)
 
 _MOVIE_EXTENSIONS = (".eer", ".tiff", ".tif", ".mrc")
+
+# PACEtomo names a series `<navigator area>_ts_<target>` (`area_5-A_ts_002`).
+_PACETOMO_NAME_RE = re.compile(r"^(.+)_ts_(\d+)$")
 
 
 class DatasetParsingService:
@@ -64,7 +72,8 @@ class DatasetParsingService:
 
         warnings: list[str] = []
         tilt_series_list: list[TiltSeriesInfo] = []
-        skipped_no_sections = 0
+        ignored: dict[str, int] = {}
+        scan_root = Path(mdocs_glob.split("*", 1)[0]) if "*" in mdocs_glob else Path(mdocs_glob).parent
 
         total_mdocs = len(mdoc_paths)
         if progress_cb:
@@ -77,10 +86,13 @@ class DatasetParsingService:
                 warnings.append(f"Failed to parse {mdoc_path.name}: {e}")
                 continue
 
-            if not mdoc_data["data"]:
-                # A raw SerialEM delivery holds one per-movie mdoc per tilt (no [ZValue]
-                # section) next to the stack mdoc — those are not tilt-series.
-                skipped_no_sections += 1
+            kind = classify_mdoc(mdoc_data)
+            if kind != "tilt_series":
+                # Per-movie mdocs, Navigator maps and single images sit beside the series in a
+                # SerialEM delivery; they are counted, not offered.
+                ignored[kind] = ignored.get(kind, 0) + 1
+                if progress_cb:
+                    progress_cb(mdoc_idx + 1, total_mdocs)
                 continue
 
             tilts: list[TiltInfo] = []
@@ -93,10 +105,11 @@ class DatasetParsingService:
             ts_name = ts_name_from_mdoc(mdoc_path.name)
             parsed_pos = parse_position(ts_name)
             stage_pos, beam_pos = (parsed_pos[0], parsed_pos[1] or 1) if parsed_pos else (None, None)
-            source_kind, stack = self._classify_source(mdoc_path, tilts, facts)
-            if source_kind == "stack":
-                for tilt in tilts:
-                    tilt.frame_filename = Path(tilt.frame_filename).with_suffix(".mrc").name
+            stack = resolve_stack(mdoc_path, facts.image_file, facts.n_sections)
+            first_movie = next((t.frame_path for t in tilts if t.frame_path is not None), None)
+            frame_facts = read_frame_facts(first_movie) if first_movie is not None else None
+            gain_name = frame_facts.gain_reference if frame_facts else ""
+            pace = _PACETOMO_NAME_RE.match(ts_name)
 
             ts = TiltSeriesInfo(
                 ts_name=ts_name,
@@ -105,58 +118,57 @@ class DatasetParsingService:
                 mdoc_filename=mdoc_path.name,
                 mdoc_path=mdoc_path,
                 tilts=tilts,
-                source_kind=source_kind,
                 stack_path=stack[0] if stack else None,
                 stack_nz=stack[1] if stack else None,
+                movies_complete=bool(tilts) and all(t.frame_path is not None for t in tilts),
+                gain_reference_name=gain_name,
+                gain_reference=find_beside_or_above(gain_name, mdoc_path.parent, scan_root),
+                frames_rotation_flip=frame_facts.rotation_flip if frame_facts else None,
+                frames_binning=frame_facts.binning if frame_facts else None,
+                area_label=pace.group(1) if pace and stage_pos is None else None,
+                target_label=pace.group(2) if pace and stage_pos is None else None,
                 pixel_size=facts.pixel_size,
                 voltage=facts.voltage,
                 dose_per_tilt=facts.dose_per_tilt,
                 dose_estimate=facts.dose_estimate,
                 tilt_axis=facts.tilt_axis,
+                mdoc_tilt_axis=facts.tilt_axis,
                 acquisition_software=facts.software,
                 software_version=facts.software_version,
                 detector_dimensions=facts.detector_dimensions,
             )
             tilt_series_list.append(ts)
 
-            if source_kind == "missing":
-                warnings.append(f"{ts.ts_label}: no movies and no stack found for {ts.tilt_count} tilts")
-            elif ts.missing_frames > 0:
-                warnings.append(f"{ts.ts_label}: {ts.missing_frames}/{ts.tilt_count} frames not found")
+            if stack is None and not ts.movies_complete:
+                found = sum(1 for t in tilts if t.frame_path is not None)
+                warnings.append(f"{ts.ts_label}: no stack, and {found}/{ts.tilt_count} movies found")
 
             if progress_cb:
                 progress_cb(mdoc_idx + 1, total_mdocs)
 
-        if skipped_no_sections:
-            warnings.append(f"Skipped {skipped_no_sections} mdocs without [ZValue] sections (per-movie mdocs)")
+        if ignored:
+            warnings.append(describe_ignored_mdocs(ignored))
 
-        frame_ext = self._frame_extension(tilt_series_list, resolved_frames_dir, warnings)
         positions = aggregate_to_positions(tilt_series_list)
         first_with_software = next((ts for ts in tilt_series_list if ts.acquisition_software), None)
         first_with_dims = next((ts for ts in tilt_series_list if ts.detector_dimensions), None)
 
-        return DatasetOverview(
+        overview = DatasetOverview(
             source_directory=str(resolved_frames_dir) if resolved_frames_dir else str(Path(mdocs_glob).parent),
-            frame_extension=frame_ext,
+            frame_extension=self._detect_frame_extension(resolved_frames_dir) if tilt_series_list else "",
             positions=positions,
             parse_warnings=warnings,
             acquisition_summary=AcquisitionSummary.from_tilt_series(tilt_series_list),
             acquisition_software=first_with_software.acquisition_software if first_with_software else "",
             software_version=first_with_software.software_version if first_with_software else "",
             detector_dimensions=first_with_dims.detector_dimensions if first_with_dims else None,
+            ignored_mdocs=ignored,
         )
-
-    def _classify_source(
-        self, mdoc_path: Path, tilts: list[TiltInfo], facts: MdocFacts
-    ) -> tuple[SourceKind, tuple[Path, int] | None]:
-        """Movies when every SubFramePath resolved; stack when
-        `<mdoc dir>/<ImageFile>` is an MRC with nz == sections; both complete →
-        SerialEM prefers the (frame-aligned) stack, Tomo5 the movies."""
-        movies_complete = bool(tilts) and all(t.frame_path is not None for t in tilts)
-        movies_partial = any(t.frame_path is not None for t in tilts)
-        stack = resolve_stack(mdoc_path, facts.image_file, facts.n_sections)
-        kind = choose_source_layer(facts.software, movies_complete, movies_partial, stack is not None)
-        return kind, (stack if kind == "stack" else None)
+        gains = sorted({ts.gain_reference for ts in tilt_series_list if ts.gain_reference is not None})
+        if len(gains) > 1:
+            overview.gain_references_differ = not same_image_data(gains)
+        overview.apply_layer(overview.default_layer())
+        return overview
 
     def _resolve_frames_directory(self, mdoc_files: list[Path], frames_dir: str | None) -> Path | None:
         """
@@ -199,30 +211,6 @@ class DatasetParsingService:
             return mdoc_files[0].parent
 
         return None
-
-    def _frame_extension(
-        self, tilt_series_list: list[TiltSeriesInfo], frames_dir: Path | None, warnings: list[str]
-    ) -> str:
-        """The extension the import will record: `.mrc` for stack series (the split
-        writes MRC slices), the resolved movies' suffix otherwise; a directory sniff
-        remains the fallback when nothing resolved at all."""
-        kinds = Counter(ts.source_kind for ts in tilt_series_list if ts.source_kind != "missing")
-        if len(kinds) > 1:
-            warnings.append(
-                "Mixed source layers: "
-                + ", ".join(f"{n} series from {'stacks' if k == 'stack' else k}" for k, n in kinds.most_common())
-            )
-        if not kinds:
-            return self._detect_frame_extension(frames_dir)
-        if kinds.most_common(1)[0][0] == "stack":
-            return ".mrc"
-        for ts in tilt_series_list:
-            if ts.source_kind != "movies":
-                continue
-            for tilt in ts.tilts:
-                if tilt.frame_path is not None:
-                    return tilt.frame_path.suffix.lower()
-        return self._detect_frame_extension(frames_dir)
 
     def _detect_frame_extension(self, frames_dir: Path | None) -> str:
         if not frames_dir or not frames_dir.exists():

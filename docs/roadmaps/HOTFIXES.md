@@ -222,7 +222,8 @@ shows both on `g`.
 
 ### H8 — A SerialEM delivery imports some series from stacks and others from raw frames, under one axis and hand
 
-**Status:** open, found 2026-11-10 (anchors at `a22decd`). **Severity:** high: the frames-built series come out
+**Status:** fix built 2026-11-10 with roadmap 48 S1–S3, not run; moves to Fixed with its commit. Found 2026-11-10
+(anchors at `a22decd`). **Severity:** high: the frames-built series come out
 mirrored, with the tilt axis 10° off and no gain correction, and nothing on screen says so.
 
 **What is wrong.**

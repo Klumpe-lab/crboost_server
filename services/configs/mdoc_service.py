@@ -232,6 +232,67 @@ def acquisition_from_mdoc(parsed: dict[str, Any]) -> MdocFacts:
     )
 
 
+MIN_TS_SECTIONS = 3
+MIN_TS_SPAN_DEG = 10.0
+
+
+def classify_mdoc(parsed: dict[str, Any]) -> str:
+    """What a parsed mdoc describes, by its sections alone:
+
+    - `"frames"`: no `[ZValue]` section (SerialEM's per-movie `[FrameSet]` mdoc);
+    - `"montage"`: a Navigator map (`Montage = 1` header or `PieceCoordinates` per piece);
+    - `"single"`: fewer than 3 sections or a tilt span under 10° (previews, View/Record shots,
+      grid maps at one tilt);
+    - `"tilt_series"`: everything else.
+    """
+    sections = parsed.get("data", [])
+    if not sections:
+        return "frames"
+    kv, _notes = parse_header_facts(parsed.get("header", ""))
+    if kv.get("Montage", "0").strip() not in ("", "0") or any("PieceCoordinates" in s for s in sections):
+        return "montage"
+    angles = [a for a in (_float_or_none(s.get("TiltAngle")) for s in sections) if a is not None]
+    if len(sections) < MIN_TS_SECTIONS or not angles or max(angles) - min(angles) < MIN_TS_SPAN_DEG:
+        return "single"
+    return "tilt_series"
+
+
+def describe_ignored_mdocs(counts: dict[str, int]) -> str:
+    """`ignored: 10 montage maps, 18 single images, 889 frame mdocs` (empty when none)."""
+    labels = (("montage", "montage maps"), ("single", "single images"), ("frames", "frame mdocs"))
+    parts = [f"{counts[k]} {label}" for k, label in labels if counts.get(k)]
+    return ("ignored: " + ", ".join(parts)) if parts else ""
+
+
+MAX_TS_SEARCH_DEPTH = 3
+
+
+def find_tilt_series_depth(folder: str | Path, ext: str = "*.mdoc") -> tuple[int, int, dict[str, int]] | None:
+    """The folder depth (0 = `folder/*.mdoc`, 1 = `folder/*/*.mdoc`, … up to 3) holding the most
+    tilt-series mdocs, with that count and the per-kind counts of what else that depth holds.
+    Ties go to the shallower depth; None when no depth holds a tilt series. `*~` backups
+    never match `*.mdoc`."""
+    svc = get_mdoc_service()
+    best: tuple[int, int, dict[str, int]] | None = None
+    for depth in range(MAX_TS_SEARCH_DEPTH + 1):
+        pattern = str(Path(folder).joinpath(*(["*"] * depth), ext))
+        counts: dict[str, int] = {}
+        for p in glob.glob(pattern):
+            if not os.path.isfile(p):
+                continue
+            try:
+                kind = classify_mdoc(svc.parse_mdoc_file(Path(p)))
+            except (OSError, UnicodeDecodeError) as e:
+                # An unreadable file is not a tilt series; the scan reports it if it is chosen.
+                logger.warning("mdoc depth probe: cannot read %s (%s)", p, e)
+                continue
+            counts[kind] = counts.get(kind, 0) + 1
+        n_ts = counts.pop("tilt_series", 0)
+        if n_ts and (best is None or n_ts > best[1]):
+            best = (depth, n_ts, counts)
+    return best
+
+
 _PRETILT_SCAN_DEG = [x * 0.5 for x in range(-40, 41)]  # −20 … +20 in 0.5° steps
 _MIN_FIT_TILTS = 10
 _MIN_FIT_SPAN_DEG = 30.0
@@ -307,7 +368,7 @@ class MdocService:
 
     def first_mdoc_facts(self, mdocs_glob: str) -> tuple[MdocFacts, dict[str, Any]] | None:
         """`(MdocFacts, parsed)` of the first tilt-series mdoc the glob matches (sorted;
-        mdocs without a `[ZValue]` section — SerialEM per-movie mdocs — are skipped).
+        per-movie mdocs, montage maps and single images are skipped, `classify_mdoc`).
         None when nothing usable matches."""
         for p in sorted(glob.glob(mdocs_glob)):
             if not (os.path.isfile(p) and p.endswith(".mdoc")):
@@ -317,7 +378,7 @@ class MdocService:
             except Exception:
                 logger.exception("MdocService failed to parse %s", p)
                 return None
-            if parsed["data"]:
+            if classify_mdoc(parsed) == "tilt_series":
                 return acquisition_from_mdoc(parsed), parsed
         return None
 
