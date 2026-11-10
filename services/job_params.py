@@ -252,8 +252,8 @@ def set_params(state: ProjectState, instance_id: str, values: dict[str, Any]) ->
 
     applied: dict[str, Any] = {}
     unchanged: list[str] = []
-    # The Denoiser first: it sets IsoNet deconv, which a value given beside it then overrides.
-    for name in sorted(checked, key=lambda n: n != DENOISER):
+    # The Denoiser and missAlign's preset first: they set other fields, which a value given beside them overrides.
+    for name in sorted(checked, key=lambda n: n not in (DENOISER, "iteration_preset")):
         value = checked[name]
         if name == DENOISER:
             if denoiser_choices(state, instance_id)[1] == value:
@@ -270,6 +270,14 @@ def set_params(state: ProjectState, instance_id: str, values: dict[str, Any]) ->
             # An increment still at the old symmetry's default moves to the new one's, as the job tab shows.
             if set_symmetry(job_model, value):
                 applied["angular_search"] = job_model.angular_search
+        elif name == "iteration_preset" and job_model.job_type == JobType.MISS_ALIGN:
+            # A preset sets the fields it defines, as the job tab does (MissAlignParams.apply_preset).
+            previous = job_model.iteration_preset
+            before = job_model.model_dump()
+            job_model.iteration_preset = value
+            job_model.apply_preset(previous=previous)
+            after = job_model.model_dump()
+            applied.update({k: getattr(job_model, k) for k in after if k != name and after[k] != before[k]})
         else:
             setattr(job_model, name, value)
         applied[name] = getattr(job_model, name)

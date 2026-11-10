@@ -341,8 +341,10 @@ leftovers; a second server's banner names neither.
 
 ### H13 — The API's set_params picks a missAlign preset without the fields the preset sets
 
-**Status:** open, found 2026-11-10 (roadmap 49 R1, through the Agent API at `906170a`). **Severity:** high for an API
-run: the job runs a different budget and box than the preset the tab shows, without a word.
+**Status:** fix built 2026-11-10 in the main checkout, not committed (the test server and roadmap 49's queued chain
+run from the `agent_api` worktree, untouched); moves to Fixed with its commit. Found 2026-11-10 (roadmap 49 R1,
+through the Agent API at `906170a`). **Severity:** high for an API run: the job runs a different budget and box than
+the preset the tab shows, without a word.
 
 **What is wrong.** Choosing `iteration_preset` in the job tab calls `MissAlignParams.apply_preset`
 (`ui/job_plugins/miss_align.py:41`), which sets `steps_per_epoch`, `max_epochs_per_iteration`, `lr_milestones` and
@@ -353,11 +355,14 @@ so the UI and the API leave different jobs behind for the same choice (roadmap 4
 `applied: {iteration_preset: paper}`; `get_job` then showed `steps_per_epoch` 250 and `z_box` full (PAPER: 1000 and
 auto), and the walltime estimate followed the 250. Worked around by setting the four fields by hand.
 
-**Fix.** The preset hook belongs to the button's service function, not the tab: one place that both the tab and
-`set_params` go through applies it, for any field with such a side effect.
+**Fix.** `job_params.set_params` calls `MissAlignParams.apply_preset` when the preset changes, as it already moves
+the TM increment with the symmetry (`set_symmetry`): the hook stays on the model, and the tab and the API both call
+it. The preset goes first, so a field of it named in the same call overrides it (as the Denoiser does); `applied`
+lists the fields the preset moved.
 
-**Check.** `set_params(missAlign, {iteration_preset: paper})` on a fresh job leaves 1000 / 30 / `5,15` / auto, as
-the tab does.
+**Check.** Toy run of `set_params` on a fresh `MissAlignParams` (2026-11-10): `paper` → 1000 / 30 / `5,15` / auto,
+applied `steps_per_epoch` and `z_box`; `paper` with `z_box: full` → 1000 and full; back to `default` → 250. Owed:
+the same through the API on the test server once it runs this code.
 
 ## Fixed
 
