@@ -9,7 +9,8 @@ conf's per-tilt-series reconstruct sizes; reconstruct chunks go to full B200s (t
 P13 ran 2026-11-10 (§11, last entry; `docs/reports/gpu-util/gpu-types-2026-11-10.md`): every card type runs every
 stage; the same architecture gives the same bits, slice or card; across architectures Warp's motion and CTF fits and
 AreTomo2 differ on frames and series without signal; the maintainer accepted that for 63 more cards (roadmap 47
-D4), so every Warp stage but reconstruct takes any card. Open: D1 (IT's
+D4), then the balance pilot the same afternoon showed 7 of 7 motion tasks on RTX 6000s changing their series and 3
+destroying them (roadmap 47 §7; D4 back with the maintainer). Open: D1 (IT's
 number), S2–S6, D2 and D5–D7; motion's slowdown is a crowded node (§11). The lab install lags main and its conf the
 dev conf.
 Re-scoped 2026-11-10: roadmap 47 orders this roadmap and 46 by the pipeline's wall time (every card, nothing on `c`)

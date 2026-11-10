@@ -96,7 +96,7 @@ class TsReconstructParams(AbstractJobParams):
         "call each (P10: to 3e-5). If the call fails, all of its tilt series fail and a rerun redoes them.",
     )
     array_throttle: int = Field(
-        default=20, ge=1, le=64, description="Max concurrent SLURM array tasks for tilt-series reconstruction"
+        default=40, ge=1, le=64, description="Max concurrent SLURM array tasks for tilt-series reconstruction"
     )
 
     def _get_job_specific_options(self) -> list[tuple[str, str]]:

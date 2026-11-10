@@ -1,14 +1,18 @@
 # Roadmap 47 — The whole pipeline on what the cluster has: every card, nothing waits on `c`
 
-**Status:** scoped 2026-11-10 on the maintainer's direction; S1 built the same day (§7), not yet run on a pipeline.
-Next: S3, the balance pilot. Roadmaps 45 and 46 began from the new B200s and
+**Status:** scoped 2026-11-10 on the maintainer's direction; S1 and S2 built and S3, the balance pilot, run the same day
+(§7, `docs/reports/gpu-util/balance-pilot-2026-11-10.md`): 98 s to the first supervisor against 26 min, 85 min to
+extraction against 105 to the end of template matching, same billing. Two findings: 7 of 7 motion tasks that landed on
+an RTX 6000 changed their tilt series and 3 destroyed them, so D4 was reverted the same evening (`constraint: b200` is
+back on the Warp stages; the RTX 6000s and A100s stay the ticket for CPU work), and Warp's tilt-series CTF fit varies
+run to run on one architecture for a quarter of the series. Roadmaps 45 and 46 began from the new B200s and
 over-corrected for them: card and slice comparisons, MPS lanes, chunk sizes, each worth minutes on a stage that lasts
 minutes, while the pipeline's wall time is set elsewhere, by its CPU jobs queueing on partition `c` between every two
 GPU stages, by `constraint: b200` keeping 63 idle cards out of reach, and by `%20` throttles. P13 (every card type,
 roadmap 45 §11, `docs/reports/gpu-util/gpu-types-2026-11-10.md`) ran the same morning and settled the card question:
-every card runs every stage; Warp's fits differ across GPU architectures on frames without signal, which the
-maintainer weighed against 63 idle cards and accepted (D4): every GPU stage but reconstruct and template matching
-takes any card, and the CPU steps ride the RTX 6000s and A100s as a ticket. S1 built the same day (§7).
+every card runs every stage; Warp's fits differ across GPU architectures on frames without signal, which the maintainer
+weighed against 63 idle cards and accepted (D4): every GPU stage but reconstruct and template matching takes any card,
+and the CPU steps ride the RTX 6000s and A100s as a ticket. S1 built the same day (§7).
 
 **In one line.** A pipeline is as fast as its slowest queue, not its fastest card. Every GPU stage runs on whichever
 card fits its memory and is free now; every CPU step rides a GPU node rather than queueing on `c`; the throttle is the
@@ -104,13 +108,18 @@ window plus the markers' mtimes):
 - **D2 — Roadmap 46 D8: may a pipeline depend on the server being up?** Recommended: yes for the lab's deployment,
   where the server is already what every user reads results from; `orchestration: supervisor` stays the template
   default for sites that cannot keep a server up. This unlocks 46's S6–S8, which remove the supervisors for good.
-- **D3 — Throttle defaults.** Proposed: 40 for motion, alignment, CTF and candidate extraction (any card, 319 exist,
-  no `g_short` cap); reconstruct 16 (B200 only: 32 exist, 16 is the `g_medium` cap and half the cards); template
-  matching stays 16 (lanes of 6 tomograms); segment 8. Or leave them at 20 and raise per job in the tab.
-- **D4 — The Warp stages take any card** (the maintainer, 2026-11-10, after the P13 finding was put to them: "throwing
-  away 60-something GPUs for good just to keep some marginal tilts reproducible is not worth it"): `constraint: b200`
-  is gone from motion, alignment, CTF and export. Reconstruct keeps its full B200 (43 s a tilt series against 136–349
-  elsewhere, and dearer on an RTX 6000) and template matching its B200 lanes (D5); both for speed, not architecture.
+- **D3 — Throttle defaults: 40 across the board** (the maintainer, 2026-11-10, after the balance pilot's motion
+  tasks pended on `JobArrayTaskLimit` with devices free). Built the same day (S2): every array job's `array_throttle`
+  default is 40 (motion, alignment, CTF, reconstruct, denoise predict from 20; template matching, extraction, export,
+  subtomogram extraction from 16); segment stays 8 (each task holds a full B200 for about 17 minutes). Projects keep
+  their saved values; new instances take 40. Estimate (§7): about 8–10 minutes less on a 163-tilt-series pipeline.
+- **D4 — The Warp stages stay on the B200 pool** (`gpu:1` with `constraint: b200`: 32 cards and 224 slices, one GPU
+  architecture). The maintainer first dropped the constraint on 2026-11-10 after P13 ("throwing away 60-something GPUs
+  for good just to keep some marginal tilts reproducible is not worth it"), then restored it the same evening when
+  the balance pilot (§7) showed all 7 motion tasks that landed on RTX 6000s changing their series and 3 destroying
+  the alignment: whole series with signal, not marginal tilts. The RTX 6000s and A100s remain the ticket for the
+  supervisors and CPU steps (D1), where no result depends on the card. Reconstruct keeps its full B200 and template
+  matching its B200 lanes (D5) for speed and memory.
 - **D5 — Template matching stays in B200 lanes** (about 40 billing-h a hundred tomograms). An A100 40 GB does a
   tomogram in one piece in 260 s at 43 billing-h a hundred with the same score map (3e-8): a second pool at the same
   price when the B200s are full, offered as an alternative profile the SLURM tab can pick, not a default. The 20–24 GB
@@ -225,3 +234,43 @@ gives the per-type figures for both installs.
   `gpu:quadro_rtx_6000:1` to `gpu:1` + `constraint: rtx6000|a100` for `supervisor_slurm` and the five CPU profiles
   (whichever RTX 6000 or A100 is free first; `check_constraint` accepts it on `g`; the dry run of the same shape
   started at once this morning). The template's comments follow. The issue draft for Warp's author written (D7).
+- **2026-11-10, S2 built: throttle defaults 40** (D3). `array_throttle` `Field` defaults in `services/jobs/`:
+  fs_motion_ctf, ts_alignment, ts_ctf, ts_reconstruct, denoise_predict (20 to 40); template_match, candidate_extract,
+  warp_export, subtomo_extraction (16 to 40); segment unchanged at 8. Ruff: nothing new (fs_motion_ctf.py's five
+  E501s on its aligned field block predate this). The dev server takes it on restart
+  (the class defaults are read when an instance is created); the lab with its pull. Why: in the balance pilot
+  (`orchestrator_test_FCIsolation`, Run 12:33:28) motion's pending tasks' reason was `JobArrayTaskLimit` at 12:46
+  while B200 devices stood free: a wave of 20 took about 58 s wall (40 s of Warp plus start-up), so 163 tasks are 9
+  waves at 20 and 5 at 40; the crowding term (yesterday: 1.1 s an item at 2 tasks a node, 6 s at 20) eats part of the
+  gain. The pilot's own task logs (node and wall time per task) give the measured per-node curve once it ends.
+- **2026-11-10, the balance pilot runs** (`orchestrator_test_FCIsolation`, 163 tilt series of the 2025-10-31
+  FCIsolation data, the anglestest settings: I1 at 5°, 6.2 Å, 20 candidates at 575 Å). Run 12:33:28; first
+  supervisor started 12:35:06 on `cbe-g3-1` (98 s against 26 min); motion's array (`%20`, untyped `gpu:1`) landed on
+  B200 nodes only, 3–7 tasks a node over four nodes; motion's marker 12:53:14.
+- **2026-11-10, S3 ran: the balance pilot** (`orchestrator_test_FCIsolation`; the record is
+  `docs/reports/gpu-util/balance-pilot-2026-11-10.md`, the comparison `scripts/compare_runs_by_device.py`). §1's five
+  numbers against anglestest: wait before the first task 2:37 (the supervisor queued 98 s) against about 27 min;
+  boundary waits 9:05 over six boundaries, about 3 min of it the supervisors' merges; wall 85:33 to extraction
+  (72:34 to the end of template matching) against about 105 min to the end of template matching; 211.3 billing-h
+  against 205.6; 158 of 158 from CTF on with the same five alignment failures, 1,412 candidates against 1,409. Every
+  supervisor started on `cbe-g3-1` within a minute of becoming eligible; motion's pending tasks read
+  `JobArrayTaskLimit` with devices free (D3). Stages: motion 15:19 (163 at 20), alignment 8:45, CTF 6:04, reconstruct
+  11:04 (20 chunks), template matching 17:19, extraction 8:25.
+  - *Finding 1, the RTX 6000 and Warp motion.* Slurm put 7 of 163 motion tasks on RTX 6000s (the rest on B200 cards
+    and slices). All 7 series differ from yesterday's; alignment (run on B200 slices, from today's averages) changed
+    for 6: Position_17_2 off by 885 px (tomogram centre correlation 0.31), Position_18 13 px on every tilt (−0.01),
+    Position_17_3 (0.42), three more kept one tilt fewer. Every series whose motion ran on a B200 device has the same
+    alignment as yesterday. This is stronger than P13's reading: a series with signal breaks when its averages come
+    from an sm_75 card. D4 (any card for the Warp stages) is back with the maintainer: the recommendation is
+    `constraint: b200` on motion, alignment, CTF and export again, the RTX 6000 and A100 for CPU tickets and pytom.
+  - *Finding 2, the tilt-series CTF varies run to run.* Of the 151 series with bitwise-identical alignment inputs,
+    both runs on B200 devices, 34 differ in per-tilt defocus by 0.05–0.51 µm, mostly the short series; it moves 16
+    tomograms with identical alignments to correlations of 0.83–0.98. Not an architecture effect; for the issue to
+    Warp's author (D7) and for anyone comparing runs.
+  - *For this project:* the seven RTX series need motion re-run on a B200 and the chain after them redone, or the
+    project is kept as the timing pilot only. The maintainer's call.
+- **2026-11-10 evening, D4 reverted on the maintainer's word** ("revert the constraint but still use those 'bad' GPUs
+  as a ticket"): `constraint: b200` back on fsMotionAndCtf, aligntiltsWarp, tsCtf and warpExport in the dev conf and
+  the lab's patched copy, with the finding in the comment above them; `supervisor_slurm` and the CPU profiles keep
+  `gpu:1` + `constraint: rtx6000|a100`. The dev server reads it on restart; the lab copy is installed by the
+  maintainer. The seven RTX series of the pilot are the maintainer's to re-run or discard.

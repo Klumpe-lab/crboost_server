@@ -148,7 +148,7 @@ class TemplateMatchPytomParams(AbstractJobParams):
     )
     # 16: a whole 412 tomogram takes ~2 min on a B200, so 140 of them take ~20 min (roadmap 43 D3).
     array_throttle: int = Field(
-        default=16,
+        default=40,
         ge=1,
         le=64,
         description="Max concurrent SLURM array tasks for template matching: GPUs at once, each matching lanes "

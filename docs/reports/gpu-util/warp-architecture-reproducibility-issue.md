@@ -89,11 +89,29 @@ different solution only on the ill-conditioned input.) `ts_ctf` and `ts_reconstr
 agree on every card; the cascade (motion on an A100, then alignment, CTF and reconstruction of those averages) was
 not run: *to fill* if the maintainer wants it in the report (a whole-chain A100 run compared with the B200 run).
 
+**A whole-pipeline run, same day.** 163 tilt series run through our pipeline with the motion tasks placed on
+whichever GPU was free: 98 on B200 cards, 53 on B200 slices, 7 on Quadro RTX 6000s; alignment (`ts_aretomo`) for all
+of them on B200 slices; compared tilt series by tilt series with the previous day's run on B200 devices only
+(`compare_runs_by_device.py` in our repository).
+
+- Motion on a B200 device, 151 series: alignment identical to the previous run in every case (0 px, 0°); the frame
+  XMLs identical but for four single frames (0.05–0.30 µm of defocus).
+- Motion on an RTX 6000, 7 series: all 7 differ in their frame XMLs (1–7 frames per series by more than 0.05 µm of
+  defocus, trajectories by up to 17 px), and the alignment computed from their averages changed for 6 of them:
+  one series' `.st.aln` off by 885 px (tomogram centre correlation with the previous run 0.31), one shifted 13 px on
+  every tilt (−0.01), one at 0.42, three kept 41 tilts where the previous run kept 40. These are full 41-tilt series
+  with signal, not the low-dose extremes of the first table.
+- A second observation, independent of the GPU: for the 151 series with bitwise-identical alignment inputs
+  (alignment XMLs and tomostars the same, CTF tasks on B200 devices in both runs), `ts_ctf`'s per-tilt defocus
+  differs between the two runs by 0.05–0.51 µm in 34 of them, mostly short series (21–37 tilts); 55 are identical to
+  0.001 µm. So the tilt-series CTF fit is not reproducible from run to run on one architecture for about a quarter
+  of the series. Is there a non-deterministic step (thread-order reductions, a random start) in `ts_ctf`?
+
 **Questions**
 
-1. Is cross-architecture divergence of this size on low-signal frames the expected behaviour of the motion and
-   CTF fits (cuFFT plan selection, FMA contraction, reduction order), or does something in the grid search's
-   bracketing make it sensitive to the last bits?
+1. Is cross-architecture divergence of this size, on low-signal frames and, on the RTX 6000, on whole series with
+   signal, the expected behaviour of the motion and CTF fits (cuFFT plan selection, FMA contraction, reduction
+   order), or does something in the grid search's bracketing make it sensitive to the last bits?
 2. Does the conda package ship SASS for sm_100, or do the B200 runs JIT-compile PTX? If the latter, the B200 is the
    odd one out here (two of its fits are the outliers), and that would be worth knowing for users on Blackwell.
 3. Is there, or could there be, a deterministic mode (fixed cuFFT algorithms, no FMA contraction) for users who need
