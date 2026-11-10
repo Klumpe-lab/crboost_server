@@ -79,12 +79,14 @@ job_resource_profiles:
     cpus_per_task: 2
     time: "0:15:00"
 
-  # Single multi-GPU-node job (not a per-TS array). `time` is a floor — scaled by
-  # n_ts x n_macro_iterations at deploy time (MissAlignParams.get_effective_slurm_config).
+  # One job on one node (not a per-TS array): num_gpus of the card the GRES names (a full card; the trainer is
+  # card-bound on an RTX 6000 and mostly idle on a B200, where the CPUs set the speed: they become patch builders
+  # and loaders). The training pool lives in the node's RAM and the job adds it to mem. `time` is a floor, scaled
+  # by n_ts x n_macro_iterations at deploy time (MissAlignParams.get_effective_slurm_config).
   missAlign:
-    gres: "gpu:1"
-    mem: "48G"
-    cpus_per_task: 8
+    gres: "gpu:nvidia_b200:1"
+    mem: "160G"
+    cpus_per_task: 48
     time: "2:00:00"
     # The scaled time can pass the default QOS's 8 h; g_medium allows 2 days (`sacctmgr show qos format=Name,MaxWall`).
     qos: "g_medium"

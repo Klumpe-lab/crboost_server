@@ -364,6 +364,81 @@ lists the fields the preset moved.
 applied `steps_per_epoch` and `z_box`; `paper` with `z_box: full` → 1000 and full; back to `default` → 250. Owed:
 the same through the API on the test server once it runs this code.
 
+### H14 — missAlign's effective SLURM config drops the profile's GPU type, so the training job lands on any card
+
+**Status:** fix built 2026-11-10 in the main checkout (`gres_with_count` keeps the profile's type; the dev conf, `conf.template.yaml` and the lab copy name `gpu:nvidia_b200:1`), not committed, not run; moves to Fixed with its commit. Found 2026-11-10 (roadmap 49 R1; anchors at `3c0cc3e`). **Severity:** high on CBE.next: the run's
+length follows the card it happens to get, and the profile has no way to choose one.
+
+**What is wrong.**
+- `MissAlignParams.get_effective_slurm_config` (`services/jobs/miss_align.py:806-807`) replaces the profile's `gres`
+  with `gpu:{num_gpus}` whenever the job carries no `gres` override, so `job_resource_profiles.missAlign.gres` in
+  `conf.yaml` can never name a card. Every other GPU profile pins one by a typed GRES (`gpu:nvidia_b200:1` on
+  tsReconstruct) or a constraint.
+- A `constraint: b200` would not do either: the `b200` feature is on the MIG nodes too (`cbe-g5-1/2/5/6`, features
+  `b200,mig`), where `gpu:2` is two 23 GB slices, and SLURM constraints cannot exclude a feature. Only the typed GRES
+  (`gpu:nvidia_b200:N`) picks a whole card.
+- `gpu_count()` (`:647-657`) already reads a typed override (`gpu:nvidia_b200:2` → 2) and the driver reads
+  `SLURM_GPUS_ON_NODE`, so the type only has to survive the effective config.
+
+**Evidence** (real jobs, read only, 2026-11-10). R1's missAlign, SLURM 1526891
+(`AGG412_20251113_412_rerun/External/job006`): `ReqTRES gres/gpu=2`, no features, allocated
+`gres/gpu:quadro_rtx_6000=2` on `cbe-g3-1` while every full B200 was taken. It trains at 2.29 steps/s with GPU 0
+at 100 % in every sample: the RTX 6000 is the limit, and CPUs would not help. The same job on one B200 with half the
+CPUs (SLURM 1514330) runs 3.65–4.09 steps/s with its trainer at 24 % of the card. To repeat:
+`MissAlignParams().get_effective_slurm_config().gres` with the profile's `gres` set to `gpu:nvidia_b200:1` → `gpu:1`.
+
+**Impact.** A PAPER run over ~140 series: ~2.7 h of training per macro-iteration on the RTX 6000 against ≤ 1.6 h on
+a B200, nine times over; R1 is heading for 27–31 h instead of a working day (roadmap 50 §3). A `gres` override by
+hand on every job is the only way round it today.
+
+**Fix.** Keep the profile's type and set only the count: read `cfg.gres` as `gpu[:type][:count]` and write back
+`gpu[:type]:{num_gpus}`; an override stays untouched. The profile then reads `gres: gpu:nvidia_b200:1` in the dev
+conf, `conf.template.yaml` and the lab conf (roadmap 50 S1 sets its CPUs and memory with it).
+
+**Check.** Toy: profile `gpu:nvidia_b200:1` and `num_gpus` 2 → `gpu:nvidia_b200:2`; profile `gpu:1` → `gpu:2`; an
+override `gpu:nvidia_a100-sxm4-40gb:2` → unchanged; `gpu_count()` 2 in each case. Real: the next missAlign's `sacct`
+shows `gres/gpu:nvidia_b200=2`.
+
+### H15 — missAlign's training pool streams through the shared BeeGFS: tens of terabytes a run for a 5 GB working set
+
+**Status:** fix built 2026-11-10 in the main checkout (`pool_root()` in the driver: `/dev/shm/crboost-<user>-<job id>` as the tool's `TMPDIR`, removed after training; `pool_size × 5.3 MB` added to the memory request), not committed, not run; moves to Fixed with its commit. Found 2026-11-10 (anchors at `3c0cc3e`). **Severity:** high for the cluster and for the run: every
+run writes and reads its training cubes through the site's shared scratch at about 1 GB/s for the whole training
+phase, and the builders and loaders wait on it.
+
+**What is wrong.**
+- The tool keeps its pool of training cubes under `tempfile.gettempdir()` (in the container,
+  `miss_alignment/data/training_datamodule.py:205`: `recon_pool_<hash>`): each patch builder writes every 96³ triplet
+  as a 5.3 MB pickle (`_reconstruction_worker.py:232`), each loader lists its partition, reads one file and deletes it,
+  per sample. crboost sets no `TMPDIR` for the tool (`drivers/miss_align.py:706-709` sets USER, thread and dynamo
+  variables only; `--cleanenv` drops the host's), so the pool goes to the container's `/tmp`.
+- On CBE.next a job's `/tmp` is not local disk: it is the job's private directory on BeeGFS (roadmap 45 §2; `df /tmp`
+  inside both running jobs → `beegfs_nodev`, 1.3 PB). The node has no local disk (`TmpDisk=0`); its RAM-backed
+  `/dev/shm` (756 GB tmpfs, charged to the job's `--mem`) is the only node-local store. The container sees the job's
+  private one (probe 2026-11-10 in SLURM 1514330: a directory made host-side was listed inside `apptainer exec`, a
+  file made inside appeared outside, the tool's own `sem.mp-*` semaphores sit there), and SLURM's `namespace/tmpfs`
+  removes it at job end.
+
+**Evidence** (`sstat`, 2026-11-10 ~21:00). SLURM 1514330 (one B200, 3 builders, 4 loaders): `fs/disk` 26.2 TB after
+7 h 22, about 1 GB/s (3.7 steps/s × 32 files × 5.3 MB, written once and read once); SLURM 1526891 (R1, two RTX
+6000s): 2.8 TB after 1 h 27. `top` inside both jobs showed loaders and builders in `D` (waiting on I/O); the pools
+held 135 files / 0.7 GB and 991 files / 4.9 GB. Roadmap 45 §3 had noted "missAlign's 5 TB is its training cubes in
+`/tmp`" without the filesystem behind it.
+
+**Impact.** Every missAlign run puts a sustained ~1 GB/s of churn on the shared scratch for 10–25 h, for a working
+set of 5 GB; the producers wait on that churn, part of why a B200 trainer holds 24 % of its card (roadmap 50 §1).
+This is the kind of traffic the site asked the lab about (roadmap 45 §1).
+
+**Fix.** The driver makes `/dev/shm/crboost-<user>-<SLURM job id>` before training, passes `TMPDIR=<that>` in the
+tool's environment prefix (the tool's `tempfile.gettempdir()` follows it), removes the directory in its `finally`
+(the tool deletes its own pool on teardown; the job's namespace goes at job end anyway), and the estimate and the
+SLURM tab note add the pool (`pool_size × 5.3 MB`, 16 GB at 3000) to the memory request. The directory must exist
+first: `tempfile` falls back to `/tmp` silently when `TMPDIR` does not.
+
+**Check.** Toy (done 2026-11-10 in the container): `TMPDIR=/dev/shm python -c "import tempfile;
+print(tempfile.gettempdir())"` → `/dev/shm`; without it → `/tmp`. Real: the next run's `run.out` says `Created pool
+directory: /dev/shm/crboost-…/recon_pool_…`, `sstat`'s `fs/disk` stays in the tens of GB (the stacks read), no process
+in `D`, and steps/s against the same layout with the pool on BeeGFS.
+
 ## Fixed
 
 ### H7 — Template matching with T, O or I symmetry searches 3 to 15 times the orientations its increment asks for

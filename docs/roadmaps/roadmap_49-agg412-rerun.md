@@ -112,3 +112,14 @@ legacy cluster; their times come from file times and `task_N.out`):
 - **2026-11-10** — R1 submitted (maintainer's go, `dl_auto`): SLURM 1524926 (motion) … 1524936, one afterok
   chain: motion 1524926, tsImport 27, tilt filter 28, alignment 29, missAlign 30, tsCtf 31, tsReconstruct 32,
   TM 412 33, TM ribosome 34, candidates 35 / 36.
+- **2026-11-10 ~19:00** — The tilt filter failed at start: `filterTilts/tiltnet_resnet18_o1034.pth` (git-ignored) was
+  missing from the re-made `agent_api` worktree; its dependents were cancelled unstarted. Motion & CTF 150/151:
+  Position_11_4 tilt 029 (+52°) died in Warp dev41's per-movie CTF fit (`System.OverflowException ... Decimal`,
+  `Movie.ProcessCTF.cs:427`); dev36 processed it in the old project. The maintainer linked the weights from the main
+  checkout and pressed Run: tilt filter through, alignment 1526890 on, missAlign 1526891 … candidates 1526897.
+  Motion was not resubmitted, so the rerun carries 150 series.
+- **2026-11-10 ~21:00** — missAlign 1526891 landed on two Quadro RTX 6000s (`cbe-g3-1`): the profile cannot name a
+  card (HOTFIXES H14) and every B200 and A100 was taken. 2.29 steps/s with GPU 0 at 100 % → 27–31 h for the nine
+  iterations, inside its 2-day limit; left to run (roadmap 50 D1). Its training pool streams through BeeGFS (H15).
+  Speed levers and the arithmetic: roadmap 50; R2 runs on its S1 profile (two B200s, 48 CPUs, pool in RAM), and D4
+  there asks whether R2–R8 `infer` from R1's models instead of training.

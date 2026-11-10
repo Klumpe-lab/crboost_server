@@ -141,6 +141,21 @@ def read_stacks(upstream_processing: Path, ts_names: list[str]) -> dict[str, Sta
     return stacks
 
 
+def pool_root() -> Path:
+    """Where the tool keeps its pool of training cubes: a directory of this job's own in the node's RAM
+    (`/dev/shm`, which the container shares and SLURM removes with the job), passed to the tool as TMPDIR.
+    The job's /tmp is no alternative: on CBE.next it is a directory on the shared BeeGFS, and the pool is
+    written and read once per cube, about 1 GB/s for the whole training phase. Where /dev/shm is missing
+    the job's TMPDIR (or /tmp) is used, so the pool still has a directory of its own."""
+    job = os.environ.get("SLURM_JOB_ID") or str(os.getpid())
+    user = os.environ.get("USER") or getpass.getuser()
+    base = Path("/dev/shm")
+    if not (base.is_dir() and os.access(base, os.W_OK)):
+        base = Path(os.environ.get("TMPDIR") or "/tmp")
+        print(f"[DRIVER] WARNING: /dev/shm is not writable here; the training pool goes to {base}", flush=True)
+    return base / f"crboost-{user}-{job}"
+
+
 # The tool's shift generator rejects a series of fewer than 4 tilts; the patch builder that draws one dies and
 # training waits on it until the walltime. 10 leaves a margin above that.
 MIN_TILTS = 10
@@ -703,9 +718,13 @@ def main():
                 f"[DRIVER] GPUs={n_gpus}: training-devices={training_devices} reconstruction-devices={recon_devices}",
                 flush=True,
             )
+            # The pool directory must exist before the tool starts: tempfile falls back to /tmp silently.
+            pool_dir = pool_root()
+            pool_dir.mkdir(parents=True, exist_ok=True)
+            print(f"[DRIVER] Training pool in {pool_dir} (pool_size {params.pool_size} x ~5.3 MB, in RAM)", flush=True)
             env = (
-                f"env -u TQDM_DISABLE USER={username} LOGNAME={username} OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 "
-                f"TORCHDYNAMO_DISABLE=1"
+                f"env -u TQDM_DISABLE USER={username} LOGNAME={username} TMPDIR={pool_dir} OMP_NUM_THREADS=1 "
+                f"MKL_NUM_THREADS=1 TORCHDYNAMO_DISABLE=1"
             )
             if len(training_devices) > 1:
                 env += " NCCL_P2P_DISABLE=1"
@@ -723,7 +742,11 @@ def main():
             if params.prepare_stacks_apix > 0 and resume_from == 0:
                 train_cmd.opt("--prepare-stacks", params.prepare_stacks_apix)
             print(f"[DRIVER] Train command: {train_cmd}", flush=True)
-            run_tool(train_cmd, tool_name=params.get_tool_name(), cwd=job_dir, binds=additional_binds)
+            try:
+                run_tool(train_cmd, tool_name=params.get_tool_name(), cwd=job_dir, binds=additional_binds)
+            finally:
+                # The tool deletes its pool on teardown; the directory round it is ours (RAM on a shared node).
+                shutil.rmtree(pool_dir, ignore_errors=True)
 
         # 5. The run is complete only when the last macro-iteration checkpointed; iter0/ and the
         #    staged XMLs exist before any training, so neither proves work.
