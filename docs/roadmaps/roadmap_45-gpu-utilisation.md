@@ -6,9 +6,13 @@ pilot's 378.9): the short Warp and AreTomo stages on any B200 card or slice, tem
 MPS with H7's angle lists (60 s of B200 a tomogram against 186), Warp reconstruct in chunks of 8. Then built, not
 run: tsImport in 4 calls on its own 8-CPU profile (P11), the template-matching tab's rotation count, the template
 conf's per-tilt-series reconstruct sizes; reconstruct chunks go to full B200s (the maintainer, the faster option).
-First priority now: P13, every card type of partition g (39 RTX 6000, 16 A100, 8 A100 slices besides the B200s,
-none tried with our images) through the pipeline's GPU stages (§11, last entry). Open: D1 (IT's number), S2–S6, D2
-and D5–D7; motion's slowdown is a crowded node (§11). The lab install lags main and its conf the dev conf.
+P13 ran 2026-11-10 (§11, last entry; `docs/reports/gpu-util/gpu-types-2026-11-10.md`): every card type runs every
+stage; the same architecture gives the same bits, slice or card; across architectures Warp's motion and CTF fits and
+AreTomo2 differ on frames and series without signal, so the Warp stages stay on the B200 pool. Open: D1 (IT's
+number), S2–S6, D2 and D5–D7; motion's slowdown is a crowded node (§11). The lab install lags main and its conf the
+dev conf.
+Re-scoped 2026-11-10: roadmap 47 orders this roadmap and 46 by the pipeline's wall time (every card, nothing on `c`)
+and names what stops; the card tuning here ends with P13's table.
 
 **In one line.** Cluster IT told a colleague that crboost jobs idle on the B200s about a quarter of the time while
 their data is read into GPU memory, and advised putting data on scratch. (The report has been passed on in two ways:
@@ -979,3 +983,35 @@ its leftovers named.
   login node staged every stage from the pilot and compared the pilot's outputs with themselves (all identical);
   `sbatch --test-only` accepts all five card types, each to start at once. Cost: 8 CPUs and 48G bill 8 an hour on
   every card but the B200 (24): about 50 billing-h for the five, 2.5 h each at most.
+- **2026-11-10, P13 ran** (jobs 1508653–1508657, 10:30–11:19, 2.3 job-hours, about 21 billing-h against the 50
+  estimated; the tables and the per-frame reading are in `docs/reports/gpu-util/gpu-types-2026-11-10.md`). Every
+  image runs a kernel on every card (cryoCARE and easymode skipped on sm_100 as known to run there). Seconds an item
+  at the median, B200 / B200 slice / A100 40 GB / A100 3g.20gb / RTX 6000: motion 40 / 44 / 68 / 72 / 103; alignment
+  21 / 26 / 26 / 29 / 23; CTF 11 / 14 / 23 / 22 / 23; reconstruct (one a task) 43 / 169 / 136 / 144 / 349; pytom
+  start-up (one rotation, cold kernel cache for the architecture) 70 / 188 / 166 / 263 / 321; pytom a tomogram, I1 at
+  5°, one process 104 / 554 / 260 / 510 / 736. Billing-h per 100 items at production's requests: motion 26.6 / 4.2 /
+  11.3 / 6.5 / 9.2; alignment 14.0 / 2.5 / 4.3 / 2.4 / 1.4; CTF 7.2 / 1.3 / 3.9 / 1.8 / 1.4; reconstruct 28.9 / 18.8 /
+  22.6 / 16.0 / 38.8; pytom 69.2 / 66.1 / 43.4 / 60.8 / 87.6 (the B200 lanes of production do a tomogram for about 40).
+  - *Outputs.* The B200 slice reproduces the B200 bitwise in every stage; the A100 3g slice reproduces the A100
+    bitwise. Across architectures (sm_100 against sm_80 and sm_75): tilt-series CTF, Warp reconstruct (tomogram
+    centre correlation 1.000) and pytom (score-map centre equal to 3e-8) agree; Warp's motion and frame CTF agree on
+    every frame to floating-point level and differ materially on the highest tilts of Position_13 (−70° to −61°, +35°
+    to +50°: trajectories off by 3–78 px, one defocus by 0.19 µm) and on two frames of Position_1, the pilot's poorest
+    series, where the pilot's own B200 fits (7.5 and 6.3 µm) are the outliers against their neighbours (1.6–2.0 µm)
+    and the RTX 6000's 1.6 µm agree with them. AreTomo2 is identical on the three good series on every card and finds
+    a different solution on Position_1 (7 of 26 tilts off by up to 208 px on the A100, 11 of 26 by up to 704 px on the
+    RTX 6000). So: a fit with no signal lands where rounding pushes it, and the architecture sets the rounding; no
+    card is right or wrong. Reproducible results need one architecture per project, and a failed item re-run on the
+    same one.
+  - *Per stage.* Alignment and CTF do not care about the card (20–30 s everywhere); motion is 2.5x slower on an RTX
+    6000 at a third of the billing; reconstruct is 3–8x slower off a B200 and more expensive on an RTX 6000, so it
+    stays on full B200s (D4 of roadmap 47); a tomogram's template matching fits a 40 GB A100 in one piece (17.6 GiB
+    with `gpu_split 1 2 1`) at 260 s, 43 billing-h a hundred against the B200 lanes' about 40: a second pool at the
+    same price, not a cheaper one; the 20–24 GB cards split it in 2 2 1 and take 8–12 minutes. The pytom start-up on a
+    card type the kernel cache has not seen is 3–5 minutes, once per image and architecture.
+  - *Consequences* are roadmap 47's: the Warp stages keep `constraint: b200` (the pool of 32 cards and 224 slices
+    started at once in every dry run today); the RTX 6000s carry CPU work as the ticket onto `g`; the A100s are the
+    template-matching fallback profile when the B200s are full (same architecture family question does not arise:
+    pytom agrees). A whole-chain pilot on A100s against the B200 pilot (`compare_projects.py`, about 135 billing-h)
+    would show whether frame-level differences reach good tilt series' tomograms and picks; a report to Warp's author
+    waits on a frame with signal where architectures disagree, which this sample has not.

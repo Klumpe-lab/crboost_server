@@ -5,7 +5,8 @@
 without supervisor jobs) scoped 2026-11-09 from a full `c` that held a GPU pipeline while `g` stood idle, with an
 audit of every driver's supervisor steps (§2). Open: D1 (what IT will accept, now including light work on the login
 node), S1–S5, S6–S11, D2–D12. Pickup: S1, the shared snapshot, which Part B needs too; then D8 (whether a pipeline may
-depend on the server being up), which decides Part B's shape.
+depend on the server being up), which decides Part B's shape. 2026-11-10: roadmap 47 puts Part B (S6–S8) first
+among the structural moves and recommends D8 = yes for the lab's deployment.
 
 **In one line.** The server asks Slurm about every unfinished job every 3 seconds, per project, whether or not anyone
 has a tab open, and every array supervisor does the same every 30 seconds from its compute node. The cluster docs ask
