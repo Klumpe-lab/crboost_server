@@ -1208,3 +1208,12 @@ were in seven files; what main changed in code the branch had moved now lives in
   project base (`DefaultProjectBase` in the worktree's untracked conf.yaml, so a second server never reconciles
   the first one's running projects) starts, and its API answers §11.3: 200 with the Bearer token, 401 without,
   403 for a write with the cookie alone.
+
+**First runs through the API (2026-11-10).** Two projects made and queued by a client script over HTTP, with nothing
+done in the UI, on the test server's base `/groups/klumpe/_crboost_data_api`: `copia_api_20261110` (the copia set)
+and `412_SK_20251017_api_20261110` (the four series of the hand-made `teact_SK_20251017_412`), each import to
+reconstruct, with the acquisition values and processing parameters of the hand-made projects of the same data.
+The new jobs derived the old binned pixel sizes themselves; set through `set_params` were the 412 reconstruction's
+10 Å and copia's deconvolution. Resource values (array throttle, processes per GPU) stayed at the current tuning,
+and the 412 tilt filter (manual, nothing dropped) was left out. `plan_run` was clean for both; `run` submitted SLURM
+1519852–1519856 and 1519857–1519861; each project holds nine agent records.
