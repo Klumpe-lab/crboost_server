@@ -312,8 +312,8 @@ def _balanced_loaders(spare: int, n_train: int, pool_cap: int) -> int:
 def worker_plan(params: MissAlignParams, n_gpus: int, cpus: int) -> WorkerPlan:
     """The process layout for `n_gpus` allocated GPUs and `cpus` CPUs. The first training_gpus cards train.
     The CPUs left after the trainers go to builders and loaders: what is pinned is kept, and auto splits the
-    rest so the builders' and loaders' measured rates match. Builders go round the non-training GPUs first,
-    then the training ones, so they spread evenly. Raises ValueError for a layout that cannot run."""
+    rest so the builders' and loaders' measured rates match. Builders go round the non-training GPUs, and
+    share the training ones only when there are no others. Raises ValueError for a layout that cannot run."""
     n_train = params.training_gpus
     if n_train > n_gpus:
         raise ValueError(f"training_gpus={n_train} but only {n_gpus} GPU(s) are allocated; raise num_gpus")
@@ -332,7 +332,10 @@ def worker_plan(params: MissAlignParams, n_gpus: int, cpus: int) -> WorkerPlan:
         loaders = _balanced_loaders(spare, n_train, pool_cap)
     n_builders = params.patch_builders if params.patch_builders > 0 else max(1, spare - n_train * loaders)
     training = tuple(range(n_train))
-    order = [g for g in range(n_gpus) if g not in training] + list(training)
+    # Builders reconstruct on their GPU, and a trainer's card is the one place that costs training time
+    # (an RTX 6000 trainer sharing its card with two builders ran at 100 % while the builders' card idled):
+    # they go round the non-training cards when there are any, and share the training ones only otherwise.
+    order = [g for g in range(n_gpus) if g not in training] or list(training)
     return WorkerPlan(
         training=training,
         builders=tuple(order[i % len(order)] for i in range(n_builders)),

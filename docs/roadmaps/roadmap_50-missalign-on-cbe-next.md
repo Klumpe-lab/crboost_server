@@ -138,3 +138,9 @@ weeks of a 2-day QOS babysitting; S1 ~50–60 h; S3 ~12 h.
   environment, `rmtree` in `finally`), `config/conf.yaml`, `config/conf.template.yaml` and the lab copy
   (`gpu:nvidia_b200:1`, 48 CPUs, 160G). Toy: profile `gpu:nvidia_b200:1` + `num_gpus` 2 → `gpu:nvidia_b200:2`,
   mem 160G + 3000 files → 176G, an A100 override untouched. The server that submits must restart to use it.
+- **2026-11-10, evening** — S2's builder placement pulled forward: `worker_plan` sends builders round the non-training
+  cards only (the trainers' cards only when there are no others); 4 cards, 2 trainers, 48 CPUs → 16 builders on
+  GPUs 2–3, 15 loaders a trainer. Restart plan for R1: every B200 and A100 held by one other user's array
+  (`sbatch --test-only` says 2026-11-16 for either), nine RTX 6000 nodes idle → cancel job006 once `iter1/model.ckpt`
+  exists (the resume keeps it), reset its overrides, `gpu:quadro_rtx_6000:4`, `num_gpus` 4, `training_gpus` 2,
+  `pool_size` 3000, Run in place. First DDP run in crboost; expected ~11–14 h for the eight iterations left against ~24.
