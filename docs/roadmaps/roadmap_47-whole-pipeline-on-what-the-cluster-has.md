@@ -1,6 +1,6 @@
 # Roadmap 47 — The whole pipeline on what the cluster has: every card, nothing waits on `c`
 
-**Status:** scoped 2026-11-10 on the maintainer's direction. Roadmaps 45 and 46 began from the new B200s and
+**Status:** scoped 2026-11-10 on the maintainer's direction; S1 built the same day (§7), not yet run on a pipeline. Roadmaps 45 and 46 began from the new B200s and
 over-corrected for them: card and slice comparisons, MPS lanes, chunk sizes, each worth minutes on a stage that lasts
 minutes, while the pipeline's wall time is set elsewhere, by its CPU jobs queueing on partition `c` between every two
 GPU stages, by `constraint: b200` keeping 63 idle cards out of reach, and by `%20` throttles. P13 (every card type,
@@ -177,3 +177,12 @@ gives the per-type figures for both installs.
 - **2026-11-10, scoped.** Dry runs and the cluster state of §2 are from this morning; nothing built, no conf changed.
   P13 ran the same morning (roadmap 45 §11, `docs/reports/gpu-util/gpu-types-2026-11-10.md`): the first draft's
   "any card for the short stages" became "one architecture per project" (§3, D4), and D7 was added.
+- **2026-11-10, S1 built on the maintainer's go** ("supervisors on the GPUs"). `config/conf.yaml` (dev): `supervisor_slurm`
+  and the tsImport, filamentPick, subtomoExtraction, extractPickList and reconstructParticle profiles take
+  `partition: g` and `gres: gpu:quadro_rtx_6000:1`, CPUs, memory and time as before; no GPU stage changed (D4, D5).
+  `config/conf.template.yaml`: the generic defaults stay, with the ticket option and CBE.next's values in the
+  comments at `supervisor_slurm`, tsImport and the RELION CPU steps. The lab's patched conf, the same edits on
+  yesterday's: `/scratch/users/artem.kushner/crboost_lab_conf/conf.yaml-20261110` (the maintainer installs it: back
+  up `/groups/klumpe/software/crboost_server/config/conf.yaml`, copy, restart). `sbatch --test-only` for the three
+  shapes (1 CPU 4G 4 h; 8 CPUs 16G; 4 CPUs 32G 2 h), all `gpu:quadro_rtx_6000:1` on `g`: each to start at once on
+  `cbe-g3-1`. The dev server reads the conf on restart. Not run: S3, the balance pilot, is the check (§6).
