@@ -1,13 +1,14 @@
 # Roadmap 47 — The whole pipeline on what the cluster has: every card, nothing waits on `c`
 
-**Status:** scoped 2026-11-10 on the maintainer's direction; S1 built the same day (§7), not yet run on a pipeline. Roadmaps 45 and 46 began from the new B200s and
+**Status:** scoped 2026-11-10 on the maintainer's direction; S1 built the same day (§7), not yet run on a pipeline.
+Next: S3, the balance pilot. Roadmaps 45 and 46 began from the new B200s and
 over-corrected for them: card and slice comparisons, MPS lanes, chunk sizes, each worth minutes on a stage that lasts
 minutes, while the pipeline's wall time is set elsewhere, by its CPU jobs queueing on partition `c` between every two
 GPU stages, by `constraint: b200` keeping 63 idle cards out of reach, and by `%20` throttles. P13 (every card type,
 roadmap 45 §11, `docs/reports/gpu-util/gpu-types-2026-11-10.md`) ran the same morning and settled the card question:
-every card runs every stage, but Warp's fits differ across GPU architectures on frames without signal, so the Warp
-stages stay on the one architecture the lab has most of, the B200 pool, and the other cards carry CPU work. Nothing
-here is built.
+every card runs every stage; Warp's fits differ across GPU architectures on frames without signal, which the
+maintainer weighed against 63 idle cards and accepted (D4): every GPU stage but reconstruct and template matching
+takes any card, and the CPU steps ride the RTX 6000s and A100s as a ticket. S1 built the same day (§7).
 
 **In one line.** A pipeline is as fast as its slowest queue, not its fastest card. Every GPU stage runs on whichever
 card fits its memory and is free now; every CPU step rides a GPU node rather than queueing on `c`; the throttle is the
@@ -77,11 +78,11 @@ window plus the markers' mtimes):
 
 - **Wall time first, billing second, utilisation third.** A card held idle for an hour at 2 an hour that saves a
   three-hour queue is the right trade; the trade is written down (D1), not hidden.
-- **One architecture per project for the fitting stages.** Warp's and AreTomo2's fits are reproducible within a GPU
-  architecture and not across them (P13), so a project's motion, alignment and CTF run on one architecture, and a
-  re-run of a failed item on the same one. The lab's architecture is the B200 pool, cards and slices alike (256
-  devices). Stages whose results do not depend on the card (pytom, the CPU steps) may take any card that fits their
-  memory.
+- **Any card that fits, reproducibility at the margins accepted.** Warp's and AreTomo2's fits are bitwise
+  reproducible within a GPU architecture and not across them, on frames and tilt series without signal (P13). The
+  maintainer's call (2026-11-10): the 63 non-B200 cards are worth more than that, so every stage takes any card that
+  fits its memory, and a marginal item may come out differently between runs. Only speed and memory type a request
+  (reconstruct, template matching). The finding is recorded (roadmap 45 §11, the issue draft of D7).
 - **No `c` on a GPU pipeline's path.** CPU work rides a GPU node on the cheapest card until the server does the glue
   itself (roadmap 46 Part B), after which only tsImport needs a ticket.
 - **The throttle is the number of cards we hold at once**, chosen against what exists (319) and what others need,
@@ -106,18 +107,18 @@ window plus the markers' mtimes):
 - **D3 — Throttle defaults.** Proposed: 40 for motion, alignment, CTF and candidate extraction (any card, 319 exist,
   no `g_short` cap); reconstruct 16 (B200 only: 32 exist, 16 is the `g_medium` cap and half the cards); template
   matching stays 16 (lanes of 6 tomograms); segment 8. Or leave them at 20 and raise per job in the tab.
-- **D4 — The Warp stages keep `constraint: b200`** (motion, alignment, CTF, export) and reconstruct its full B200
-  (43 s a tilt series against 136–349 elsewhere, and more expensive on an RTX 6000). Settled by P13 rather than open:
-  the B200 pool is the one architecture, and it started at once in every dry run today. The 63 other cards were never
-  the wall-time lever; `c` was.
+- **D4 — The Warp stages take any card** (the maintainer, 2026-11-10, after the P13 finding was put to them: "throwing
+  away 60-something GPUs for good just to keep some marginal tilts reproducible is not worth it"): `constraint: b200`
+  is gone from motion, alignment, CTF and export. Reconstruct keeps its full B200 (43 s a tilt series against 136–349
+  elsewhere, and dearer on an RTX 6000) and template matching its B200 lanes (D5); both for speed, not architecture.
 - **D5 — Template matching stays in B200 lanes** (about 40 billing-h a hundred tomograms). An A100 40 GB does a
   tomogram in one piece in 260 s at 43 billing-h a hundred with the same score map (3e-8): a second pool at the same
   price when the B200s are full, offered as an alternative profile the SLURM tab can pick, not a default. The 20–24 GB
   cards take 8–12 minutes a tomogram.
-- **D7 — A whole-chain pilot on A100s** (the 412 data to extraction, every stage on A100s, compared with the B200
-  pilot by `compare_projects.py`; about 135 billing-h): the one measurement that would say whether the frame-level
-  differences of P13 reach the tomograms and picks of good tilt series. Optional; it decides whether the lab may ever
-  mix architectures, and whether there is anything to report to Warp's author. Recommended: not now; after S3.
+- **D7 — The reproducibility finding goes to Warp's author** as an issue (drafted 2026-11-10:
+  `docs/reports/gpu-util/warp-architecture-reproducibility-issue.md`; the maintainer files it). A whole-chain pilot on
+  A100s against the B200 pilot (`compare_projects.py`, about 135 billing-h) would show whether the frame-level
+  differences reach good tilt series' tomograms and picks; optional, after S3.
 - **D6 — What stops.** Slice-against-card comparisons for the short stages; MPS lane tuning beyond what is built; the
   crowding probe (unless the balance pilot shows motion crowded on a slice node again); roadmap 45's meter (S2) and
   its UI chip (S5) wait until after S3 here, because `sacct`'s busy figure is enough to judge a stage; item flow
@@ -130,20 +131,52 @@ window plus the markers' mtimes):
 ```yaml
 supervisor_slurm:
   partition: g                       # c queues for hours between stages; g starts at once with a GPU ticket
-  gres: gpu:quadro_rtx_6000:1        # the cheapest ticket (2 an hour); the supervisor never touches it
+  gres: gpu:1                        # the ticket; the supervisor never touches it
+  constraint: rtx6000|a100           # any RTX 6000 or A100 card or slice (2 to 6 an hour), never a B200 (24)
   # cpus_per_task 1, mem 4G, time 4:00:00 as now; qos '' = g_short
 
 job_resource_profiles:
-  # fsMotionAndCtf, aligntiltsWarp, tsCtf, warpExport: unchanged, gpu:1 with constraint b200 (one architecture, P13)
-  tsImport:        { partition: g, gres: 'gpu:quadro_rtx_6000:1', mem: 16G, cpus_per_task: 8, time: '0:30:00' }
-  subtomoExtraction:   { partition: g, gres: 'gpu:quadro_rtx_6000:1', mem: 16G, cpus_per_task: 4, time: '0:30:00' }
-  extractPickList:     { partition: g, gres: 'gpu:quadro_rtx_6000:1', mem: 16G, cpus_per_task: 4, time: '0:30:00' }
-  reconstructParticle: { partition: g, gres: 'gpu:quadro_rtx_6000:1', mem: 32G, cpus_per_task: 4, time: '2:00:00' }
-  filamentPick:        { partition: g, gres: 'gpu:quadro_rtx_6000:1', mem: 32G, cpus_per_task: 8, time: '1:00:00' }
+  # fsMotionAndCtf, aligntiltsWarp, tsCtf, warpExport: gpu:1, the constraint b200 line removed (any card, D4)
+  tsImport:
+    partition: g
+    gres: 'gpu:1'
+    constraint: 'rtx6000|a100'
+    mem: 16G
+    cpus_per_task: 8
+    time: '0:30:00'
+  subtomoExtraction:
+    partition: g
+    gres: 'gpu:1'
+    constraint: 'rtx6000|a100'
+    mem: 16G
+    cpus_per_task: 4
+    time: '0:30:00'
+  extractPickList:
+    partition: g
+    gres: 'gpu:1'
+    constraint: 'rtx6000|a100'
+    mem: 16G
+    cpus_per_task: 4
+    time: '0:30:00'
+  reconstructParticle:
+    partition: g
+    gres: 'gpu:1'
+    constraint: 'rtx6000|a100'
+    mem: 32G
+    cpus_per_task: 4
+    time: '2:00:00'
+  filamentPick:
+    partition: g
+    gres: 'gpu:1'
+    constraint: 'rtx6000|a100'
+    mem: 32G
+    cpus_per_task: 8
+    time: '1:00:00'
   # unchanged: tsReconstruct, templatematching, segment, class3d, refine3d on nvidia_b200; tmextractcand on a slice.
 ```
 
-Only the CPU steps move; no GPU stage changes card (D4, D5). The dev conf first (the server reads it on restart), the
+The CPU steps move, and the Warp stages lose their constraint (D4); reconstruct and template matching keep their
+B200 type (D5). The dev conf first (the server reads it on restart), the
 lab conf with its pull (45 §11 lists what else it lacks). The six dry runs of §2 accepted every shape.
 
 **S2 — Throttle defaults** (code, small; after D3): the `array_throttle` `Field` defaults in `services/jobs/*.py`
@@ -165,8 +198,8 @@ gives the per-type figures for both installs.
 
 1. Run on a 412 project while `c` shows a queue: tsImport and the first supervisor start on a `cbe-g3-*` node within
    minutes (`cb-*-sup` jobs carry `gres/gpu:quadro_rtx_6000:1` in accounting).
-2. Motion, alignment and CTF tasks land on B200 cards and slices only (`g5` nodes); the CPU jobs on `g3` nodes; the
-   outputs as before.
+2. Motion, alignment and CTF tasks land on `g3`, `g4` and `g5` nodes mixed, per-task times by card near P13's; the
+   CPU jobs on `g3` or `g4` nodes; the outputs as before but for marginal items (D4).
 3. Each stage's supervisor starts within two minutes of the stage before ending.
 4. A supervisor on an RTX 6000 node submits its array, polls and lands outputs exactly as from `c` (same code; sbatch
    exports only `SCRATCHDIR`, so the tasks inherit nothing from the node).
@@ -177,12 +210,18 @@ gives the per-type figures for both installs.
 - **2026-11-10, scoped.** Dry runs and the cluster state of §2 are from this morning; nothing built, no conf changed.
   P13 ran the same morning (roadmap 45 §11, `docs/reports/gpu-util/gpu-types-2026-11-10.md`): the first draft's
   "any card for the short stages" became "one architecture per project" (§3, D4), and D7 was added.
-- **2026-11-10, S1 built on the maintainer's go** ("supervisors on the GPUs"). `config/conf.yaml` (dev): `supervisor_slurm`
-  and the tsImport, filamentPick, subtomoExtraction, extractPickList and reconstructParticle profiles take
-  `partition: g` and `gres: gpu:quadro_rtx_6000:1`, CPUs, memory and time as before; no GPU stage changed (D4, D5).
+- **2026-11-10, S1 built on the maintainer's go** ("supervisors on the GPUs"). `config/conf.yaml` (dev):
+  `supervisor_slurm` and the tsImport, filamentPick, subtomoExtraction, extractPickList and reconstructParticle
+  profiles take `partition: g` and `gres: gpu:quadro_rtx_6000:1`, CPUs, memory and time as before; no GPU stage
+  changed (D4, D5) in this first form, revised the same afternoon (next entry).
   `config/conf.template.yaml`: the generic defaults stay, with the ticket option and CBE.next's values in the
   comments at `supervisor_slurm`, tsImport and the RELION CPU steps. The lab's patched conf, the same edits on
   yesterday's: `/scratch/users/artem.kushner/crboost_lab_conf/conf.yaml-20261110` (the maintainer installs it: back
   up `/groups/klumpe/software/crboost_server/config/conf.yaml`, copy, restart). `sbatch --test-only` for the three
   shapes (1 CPU 4G 4 h; 8 CPUs 16G; 4 CPUs 32G 2 h), all `gpu:quadro_rtx_6000:1` on `g`: each to start at once on
   `cbe-g3-1`. The dev server reads the conf on restart. Not run: S3, the balance pilot, is the check (§6).
+- **2026-11-10, S1 revised on the maintainer's second call** (D4): `constraint: b200` removed from fsMotionAndCtf,
+  aligntiltsWarp, tsCtf and warpExport in the dev conf and the lab's patched conf; the ticket widened from
+  `gpu:quadro_rtx_6000:1` to `gpu:1` + `constraint: rtx6000|a100` for `supervisor_slurm` and the five CPU profiles
+  (whichever RTX 6000 or A100 is free first; `check_constraint` accepts it on `g`; the dry run of the same shape
+  started at once this morning). The template's comments follow. The issue draft for Warp's author written (D7).
