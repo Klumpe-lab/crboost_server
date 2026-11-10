@@ -360,6 +360,34 @@ _WALLTIME_PER_TS_ALIGN_MIN = 5  # alignment per (tilt-series x macro-iteration) 
 _ALIGN_REFERENCE_APIX = 6.2  # the alignment cost above scales with (this / effective Å)^3
 _WALLTIME_CAP_MIN = 24 * 60  # ceiling when the QOS limit is unknown
 
+# One pool file (a triplet of 96³ fp16 cubes, pickled); the pool lives in the node's RAM (see the driver).
+POOL_FILE_BYTES = 5.3 * 1024**2
+
+
+def gres_with_count(gres: str, count: int) -> str:
+    """`gpu[:type][:count]` with the count set to `count`: the profile names the card, num_gpus the number.
+    Anything that is not a gpu GRES becomes a plain `gpu:<count>`."""
+    parts = [p for p in str(gres or "").split(":") if p]
+    if not parts or parts[0] != "gpu":
+        return f"gpu:{count}"
+    body = parts[1:]
+    if body and body[-1].isdigit():
+        body = body[:-1]
+    return ":".join(["gpu", *body, str(count)])
+
+
+def mem_plus(mem: str, extra_bytes: float) -> str:
+    """A SLURM memory string (`160G`, `64000M`, `48`) with `extra_bytes` added, rounded up to whole GB."""
+    text = str(mem or "").strip().upper()
+    units = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
+    scale = units.get(text[-1:], 1024**2)  # SLURM's bare number is MB
+    number = text[:-1] if text[-1:] in units else text
+    try:
+        have = float(number) * scale
+    except ValueError:
+        return mem
+    return f"{int(-(-(have + extra_bytes) // 1024**3))}G"
+
 
 def _hms_to_minutes(t: str) -> int:
     """SLURM walltime ('H:MM:SS' or 'D-H:MM:SS') -> whole minutes (any seconds round up)."""
@@ -465,7 +493,9 @@ class MissAlignParams(AbstractJobParams):
         "• 2 GPUs (1 training) with 16 CPUs → 1 trainer, 10 loaders, 5 builders.\n"
         "• GPUs on the cluster are mostly taken one at a time: a 4-GPU job waits for a whole node to empty "
         "(days), a 1–2 GPU job for any gap (often minutes).\n"
-        "• Constraint g2|g3|g4 = V100, RTX 6000 or A100. P100 (g1) does not run this container.\n"
+        "• The profile's GRES names the card (a full B200 on CBE.next); num_gpus sets how many. An RTX 6000 is "
+        "card-bound at ~2.3 steps/s, an A100 ~3, a B200 ≥ 3.7 with its trainer mostly idle: feed it CPUs.\n"
+        "• The training pool (pool_size × ~5.3 MB) lives in the node's RAM and is added to the memory request.\n"
         "• Alignment, after each iteration's training, spreads over every GPU; on 100+ tilt series it grows "
         "to hours per iteration.\n"
         "• One node only (num_gpus ≤ 4). A full node queues longer.\n"
@@ -561,17 +591,19 @@ class MissAlignParams(AbstractJobParams):
         "of view in Å grows with the downsample (see the schedule summary).",
     )
     pool_size: int = Field(
-        default=1000,
+        default=3000,
         ge=16,
-        description="Subtomogram pool size. Must hold 2 x batch_size for every data-loading worker of every "
-        "training GPU (checked by the driver).",
+        description="Subtomogram pool size, in the node's RAM (~5.3 MB a file, added to the memory request). Must "
+        "hold 2 x batch_size for every data-loading worker of every training GPU (checked by the driver), so it "
+        "caps the loaders.",
     )
     num_gpus: int = Field(
-        default=1,
+        default=2,
         ge=1,
-        le=4,
-        description="GPUs to allocate on one node (GRES follows). The first training_gpus of them train; patch "
-        "builders run on all of them. More GPUs queue longer, and the node must have that many.",
+        le=8,
+        description="GPUs to allocate on one node (the profile's GRES names the card, this the count). The first "
+        "training_gpus of them train; patch builders go to the others first. More GPUs queue longer, and the node "
+        "must have that many.",
     )
     training_gpus: int = Field(
         default=1,
@@ -802,9 +834,13 @@ class MissAlignParams(AbstractJobParams):
         if "time" not in self.slurm_overrides:
             cfg.time = self._scaled_walltime(cfg.time, cfg.qos, cfg.cpus_per_task)
         # num_gpus is the single source of truth for the GPU count so the driver's train/recon
-        # device split has the cards it maps to. Respect an explicit gres override (SLURM tab).
+        # device split has the cards it maps to; the profile's GRES keeps naming the card. Respect an
+        # explicit gres override (SLURM tab).
         if "gres" not in self.slurm_overrides:
-            cfg.gres = f"gpu:{self.num_gpus}"
+            cfg.gres = gres_with_count(cfg.gres, self.num_gpus)
+        # The training pool sits in the node's RAM and counts against the job's memory.
+        if "mem" not in self.slurm_overrides:
+            cfg.mem = mem_plus(cfg.mem, self.pool_size * POOL_FILE_BYTES)
         return cfg
 
 
