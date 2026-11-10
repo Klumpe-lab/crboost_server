@@ -5,9 +5,10 @@
 pilot's 378.9): the short Warp and AreTomo stages on any B200 card or slice, template matching in 3 lanes of 2 under
 MPS with H7's angle lists (60 s of B200 a tomogram against 186), Warp reconstruct in chunks of 8. Then built, not
 run: tsImport in 4 calls on its own 8-CPU profile (P11), the template-matching tab's rotation count, the template
-conf's per-tilt-series reconstruct sizes (§11, last entry). Open: whether reconstruct chunks keep to full B200s (on
-slices they cost more than single tasks), A100 probes, why motion on full B200s took 154 s against 60, D1 (IT's
-number), S2–S6, D2 and D5–D7. The lab install lags main and its conf the dev conf (§11, last entry).
+conf's per-tilt-series reconstruct sizes; reconstruct chunks go to full B200s (the maintainer, the faster option).
+First priority now: P13, every card type of partition g (39 RTX 6000, 16 A100, 8 A100 slices besides the B200s,
+none tried with our images) through the pipeline's GPU stages (§11, last entry). Open: D1 (IT's number), S2–S6, D2
+and D5–D7; motion's slowdown is a crowded node (§11). The lab install lags main and its conf the dev conf.
 
 **In one line.** Cluster IT told a colleague that crboost jobs idle on the B200s about a quarter of the time while
 their data is read into GPU memory, and advised putting data on scratch. (The report has been passed on in two ways:
@@ -963,3 +964,18 @@ its leftovers named.
     on a slice; subtomogram extraction, particle reconstruction, tsImport and filament picking on `c`; an
     `extractPickList` profile; tsCtf and warpExport at 16G, tsReconstruct at 24G and 0:20:00; tsImport at 8 CPUs
     and 16G. They go in with the pull: before it, `partition` and `gres: ''` on the CPU steps would send them to `g`.
+- **2026-11-09, the maintainer: reconstruct on full B200s; P13 written (not run).** Reconstruct chunks keep to full
+  B200s, the faster option (dev conf `gres: gpu:nvidia_b200:1`; the template says to name the full card where a
+  partition also has slices). Then the bigger question, first: partition g has 39 Quadro RTX 6000 (`cbe-g3-*`,
+  sm_75, 24 GB, billing 2), 16 A100 SXM4 40 GB (`cbe-g4-4/7/10/11`, sm_80, 6) and 8 A100 3g.20gb slices (`cbe-g4-9`,
+  20 GB, 3) besides the B200s (24) and their slices (3.43), most of them idle, and no stage has been tried on them.
+  The image recipes promise them: Warp and AreTomo2 sm_52–sm_100, RELION sm_50–sm_100, pytom compiles on the card,
+  the torch wheels sm_50/70–sm_120, TensorFlow native sm_75/80. P13 (`probe_gpu_types.sh` + `probe_gpu_types.py`,
+  `summarise_gpu_types.py`): one job per card type replays the first 412 pilot's own commands for motion (2 tilt
+  series), alignment, CTF (after the pilot's `--set_flip`) and reconstruct (4 each) and pytom on one tomogram (I1 at
+  5°, split for the card as `gpu_split auto` does), staged as production stages a task and pinned to production's
+  CPUs; compares each output with the pilot's (frame defocus and averages, the `.st.aln`, per-tilt defocus, the
+  tomogram's centre; score maps across cards) and first runs a kernel in every other GPU image. A dry run on the
+  login node staged every stage from the pilot and compared the pilot's outputs with themselves (all identical);
+  `sbatch --test-only` accepts all five card types, each to start at once. Cost: 8 CPUs and 48G bill 8 an hour on
+  every card but the B200 (24): about 50 billing-h for the five, 2.5 h each at most.
