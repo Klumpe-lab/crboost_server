@@ -118,7 +118,7 @@ class SubtomoExtractionParams(AbstractJobParams):
     min_frames: int = Field(default=1, description="Min frames per tilt to include")
 
     array_throttle: int = Field(
-        default=16, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series subtomo extraction"
+        default=40, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series subtomo extraction"
     )
 
     def _get_job_specific_options(self) -> list[tuple[str, str]]:

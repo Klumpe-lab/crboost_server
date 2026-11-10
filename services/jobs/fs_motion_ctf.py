@@ -70,7 +70,7 @@ class FsMotionCtfParams(AbstractJobParams):
         default=None, description="Colon-separated gain operations: flip_x, flip_y, transpose (e.g. flip_x:transpose)"
     )
     array_throttle: int = Field(
-        default=20, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series motion/CTF"
+        default=40, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series motion/CTF"
     )
 
     def _get_job_specific_options(self) -> list[tuple[str, str]]:
