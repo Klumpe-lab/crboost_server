@@ -58,6 +58,9 @@ supervisor_slurm:
 # Only fields present here override slurm_defaults; omitted fields inherit.
 # Users can still override per-job in the UI (slurm_overrides).
 # Merge order: slurm_defaults <- job_resource_profiles[jobtype] <- slurm_overrides
+# Besides sbatch's own fields a profile takes `prefer` (sbatch --prefer: node features tried first; when no such
+# node is free the job starts on what `constraint` allows instead of waiting) and `avoid` (node features to stay
+# off: the nodes that have one are sent as --exclude, since SLURM's expressions have no NOT).
 job_resource_profiles:
   # The short Warp and AreTomo steps (motion, alignment, CTF, reconstruct, export) run on any GPU, MIG slices
   # included: an untyped "gpu:1" takes whichever is free first, so a pipeline is not held up waiting for a full card.

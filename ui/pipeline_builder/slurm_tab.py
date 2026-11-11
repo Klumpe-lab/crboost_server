@@ -182,6 +182,13 @@ def _render_slurm_note(job_model):
         ui.tooltip(detail).style("white-space: pre-line; max-width: 420px; font-size: 11px; line-height: 1.45;")
 
 
+_FIELD_TOOLTIPS = {
+    "prefer": "SLURM --prefer: node features tried first; when no such node is free the job starts on what "
+    "Constraint allows instead of waiting",
+    "avoid": "Node features to stay off (e.g. mig): the nodes that have one are sent as --exclude",
+}
+
+
 def _render_resource_fields(effective_config, is_frozen, write, hold, release):
     """Stack the SLURM resource fields one per row, label inline-left. A field shows the job's effective
     value; it writes an override only when its text changed while it had focus, so tabbing through one,
@@ -191,7 +198,7 @@ def _render_resource_fields(effective_config, is_frozen, write, hold, release):
             current = getattr(effective_config, fname)
             with ui.element("div").style(ROW_STYLE):
                 lbl = ui.label(label).style(LABEL_STYLE)
-                lbl.tooltip(f"SLURM --{fname.replace('_', '-')}")
+                lbl.tooltip(_FIELD_TOOLTIPS.get(fname, f"SLURM --{fname.replace('_', '-')}"))
                 inp = ui.input(value=str(current))
                 inp.props(
                     "dense borderless hide-bottom-space "
@@ -248,6 +255,8 @@ def _render_supervisor_summary():
                 ("Time limit", sup.time),
                 ("QOS", sup.qos or "(default)"),
                 ("GRES", sup.gres or "(none)"),
+                ("Constraint", sup.constraint or "(none)"),
+                ("Prefer", sup.prefer or "(none)"),
                 ("CPUs/task", str(sup.cpus_per_task)),
             ]:
                 with ui.element("div").style(ROW_STYLE):

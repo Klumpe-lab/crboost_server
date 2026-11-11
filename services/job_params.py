@@ -43,6 +43,8 @@ SLURM_FIELDS: tuple[tuple[str, str], ...] = (
     ("mem", "Memory"),
     ("time", "Time limit"),
     ("qos", "QOS"),
+    ("prefer", "Prefer"),
+    ("avoid", "Avoid"),
 )
 _SLURM_NAMES = frozenset(name for name, _ in SLURM_FIELDS)
 
