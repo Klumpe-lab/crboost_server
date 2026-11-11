@@ -13,6 +13,7 @@ import json
 import os
 import re
 from collections import Counter
+from collections.abc import Collection
 from pathlib import Path
 from typing import NamedTuple
 
@@ -69,13 +70,6 @@ def ts_position_sort_key(raw_name: str):
 def sort_ts_by_position(items: list[str]) -> list[str]:
     """Return items ordered by (stage, beam) ascending."""
     return sorted(items, key=ts_position_sort_key)
-
-
-def ts_anchor_id(instance_id: str, raw_name: str) -> str:
-    """Stable DOM id for a per-TS row; used for deep-link scroll-to."""
-    safe_iid = re.sub(r"[^A-Za-z0-9_-]", "_", instance_id)
-    safe_name = re.sub(r"[^A-Za-z0-9_-]", "_", raw_name)
-    return f"ts-row-{safe_iid}-{safe_name}"
 
 
 def read_tail(path: Path, max_lines: int = 200) -> str:
@@ -195,6 +189,63 @@ def scan_statuses(job_dir: Path, items: list[str]) -> dict[str, str]:
         else:
             statuses[name] = "pending"
     return statuses
+
+
+# A task log's first line (services/computing/slurm_service.py SLURM_ID_LINE), and the line a chunk item's own
+# log starts with instead (drivers/array_job_base.py chunk_item_header), naming the task the item runs in.
+_SLURM_ID_LINE = re.compile(r"^\[SLURM\] job (\d+_\d+) = ")
+_CHUNK_LINE = re.compile(r"^\[CHUNK\] .* runs in array task (\d+) ")
+_LOG_HEAD_BYTES = 2048
+_LOG_HEAD_LINES = 8
+
+
+def _log_head(path: Path) -> tuple[str | None, int | None]:
+    """(SLURM id, chunk task index) named by the first lines of a task log; (None, None) when it names neither."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(_LOG_HEAD_BYTES).decode("utf-8", errors="replace")
+    except FileNotFoundError:  # removed between the listing and the read
+        return None, None
+    for line in head.splitlines()[:_LOG_HEAD_LINES]:
+        if m := _SLURM_ID_LINE.match(line):
+            return m.group(1), None
+        if m := _CHUNK_LINE.match(line):
+            return None, int(m.group(1))
+    return None, None
+
+
+def task_slurm_ids(job_dir: Path, manifest: dict, only: Collection[str] | None = None) -> dict[str, str]:
+    """{item: "<array job>_<task index>"}, the SLURM id each item runs (or ran) under, for the items in `only`
+    (every item when None). An item of the current submission's chunks runs in its chunk's task, which the
+    manifest names; any other item's id is on the first line of its task_<idx>.out, or of the chunk task's log
+    it points to. Items whose log has not started, or names no id, are left out."""
+    items = manifest.get("items") or []
+    array_id = manifest.get("array_job_id")
+    chunk_task = {int(i): int(task) for task, indices in (manifest.get("chunks") or {}).items() for i in indices}
+    started: set[str] = set()
+    if job_dir.is_dir():
+        started = {e.name for e in os.scandir(job_dir) if e.name.startswith("task_") and e.name.endswith(".out")}
+    heads: dict[int, tuple[str | None, int | None]] = {}
+
+    def head(idx: int) -> tuple[str | None, int | None]:
+        if idx not in heads:
+            name = f"task_{idx}.out"
+            heads[idx] = _log_head(job_dir / name) if name in started else (None, None)
+        return heads[idx]
+
+    ids: dict[str, str] = {}
+    for idx, name in enumerate(items):
+        if only is not None and name not in only:
+            continue
+        if array_id and idx in chunk_task:
+            ids[name] = f"{array_id}_{chunk_task[idx]}"
+            continue
+        sid, task = head(idx)
+        if sid is None and task is not None:
+            sid = head(task)[0]
+        if sid:
+            ids[name] = sid
+    return ids
 
 
 class TaskProgress(NamedTuple):

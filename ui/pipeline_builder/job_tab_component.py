@@ -76,29 +76,62 @@ def create_save_handler(ui_mgr: UIStateManager) -> Callable:
 
 
 # The sections after Parameters / I/O / SLURM that read the job directory when built: shown folded
-# until opened (or named by the URL), then built once. Each sits in a fixed-height box the user can
-# drag taller; its view scrolls inside it.
+# until opened (or named by the URL), then built once. A boxed one sits in a fixed-height box the
+# user can drag taller; its view scrolls inside it.
 _LAZY_BOX_STYLE = (
-    "width: 100%; height: 360px; min-height: 140px; resize: vertical; overflow: hidden; "
+    "width: 100%; min-height: 140px; resize: vertical; overflow: hidden; "
     "display: flex; flex-direction: column; background: #fff; border-radius: 4px; "
     "outline: 1px solid var(--cb-box-line, #dbe3ec); outline-offset: -1px;"
 )
+_BOX_PX = 360
+# An array job's Tasks box holds the task list and the selected task's log beside it.
+_TASKS_BOX_PX = 720
+_TASKS = "tasks"
 
 
 def _section_dom_id(instance_id: str, key: str) -> str:
     return f"cb-jsec-{instance_id}-{key}"
 
 
-def _lazy_sections(job_type: JobType) -> list[tuple[str, str, bool]]:
-    """(key, title, boxed) of the page's folded sections, in page order: the extra tabs (Tasks,
-    Results), the log, the files. Boxed ones fill a fixed-height box; the rest take their height."""
-    out = [(et.key, et.label, et.key == "tasks") for et in get_extra_tabs(job_type)]
-    out.append((MonitorTab.LOGS.value, "Log", True))
-    out.append((MonitorTab.FILES.value, "Files", True))
+def _has_tasks(job_type: JobType) -> bool:
+    return any(et.key == _TASKS for et in get_extra_tabs(job_type))
+
+
+def _lazy_sections(job_type: JobType) -> list[tuple[str, str, int | None]]:
+    """(key, title, box height in px) of the page's folded sections, in page order: the extra tabs
+    (Tasks, Results), the log, the files. A boxed one fills a box that high; None takes its content's
+    height. An array job's log is the supervisor's row of its Tasks panel, so it has no Log section."""
+    out = [(et.key, et.label, _TASKS_BOX_PX if et.key == _TASKS else None) for et in get_extra_tabs(job_type)]
+    if not _has_tasks(job_type):
+        out.append((MonitorTab.LOGS.value, "Log", _BOX_PX))
+    out.append((MonitorTab.FILES.value, "Files", _BOX_PX))
     return out
 
 
-def _render_lazy_section(title: str, boxed: bool, *, open_: bool, dom_id: str, build: Callable) -> Callable:
+def _task_panel_openers(instance_id: str, open_tasks: Callable, ui_mgr: UIStateManager) -> dict[str, Callable]:
+    """An array job's Tasks panel answers for its log too: "logs" opens it on the supervisor's row, "tasks"
+    on the task a roster link named (`ui_mgr.focus_ts_by_instance`). The built panel leaves its hooks in
+    the job's widget refs (ui/components/array_task_tracker.py)."""
+    hooks = ui_mgr.get_job_widget_refs(instance_id).monitor_logs
+
+    def open_on(hook: str) -> None:
+        open_tasks()
+        show = hooks.get(hook)
+        if show is not None:
+            show()
+
+    def open_logs() -> None:
+        open_on("show_supervisor")
+        # This page has no Log section to scroll to: the Tasks panel comes into view instead.
+        ui.run_javascript(
+            f"setTimeout(() => document.getElementById({_section_dom_id(instance_id, _TASKS)!r})"
+            "?.scrollIntoView({block: 'start', behavior: 'smooth'}), 60);"
+        )
+
+    return {MonitorTab.LOGS.value: open_logs, _TASKS: lambda: open_on("show_focus")}
+
+
+def _render_lazy_section(title: str, box_px: int | None, *, open_: bool, dom_id: str, build: Callable) -> Callable:
     """A folded section: its title line opens and closes it; the content is built on the first
     opening. Returns its opener."""
     built = {"done": False}
@@ -108,7 +141,7 @@ def _render_lazy_section(title: str, boxed: bool, *, open_: bool, dom_id: str, b
         with ui.row().classes("items-center no-wrap").style(head_style) as head:
             caret = ui.label("▸").style("font-size: 9px; color: #94a3b8; width: 8px;")
             ui.label(title).style(PANEL_TITLE_STYLE)
-        body = ui.element("div").style(_LAZY_BOX_STYLE if boxed else "width: 100%;")
+        body = ui.element("div").style(f"{_LAZY_BOX_STYLE} height: {box_px}px;" if box_px else "width: 100%;")
         body.set_visibility(False)
 
     def set_open(on: bool) -> None:
@@ -212,14 +245,24 @@ def _render_job_page(
                 et.key: lambda et=et: et.render(job_type, instance_id, job_model, backend, ui_mgr)
                 for et in get_extra_tabs(job_type)
             }
-            builders[MonitorTab.LOGS.value] = lambda: render_logs_tab(job_type, instance_id, job_model, backend, ui_mgr)
-            builders[MonitorTab.FILES.value] = lambda: render_files_tab(job_type, job_model, ui_mgr)
-            for key, title, boxed in _lazy_sections(job_type):
-                # The log is open from the start once the job has run; the others when the URL names them.
-                open_ = key == active or (key == MonitorTab.LOGS.value and bool(job_model.relion_job_name))
-                openers[key] = _render_lazy_section(
-                    title, boxed, open_=open_, dom_id=_section_dom_id(instance_id, key), build=builders[key]
+            tasks = _has_tasks(job_type)
+            if not tasks:
+                builders[MonitorTab.LOGS.value] = lambda: render_logs_tab(
+                    job_type, instance_id, job_model, backend, ui_mgr
                 )
+            builders[MonitorTab.FILES.value] = lambda: render_files_tab(job_type, job_model, ui_mgr)
+            # The section holding the job's log (an array job's Tasks panel) is open from the start once the
+            # job has run, and when the URL names the log; the others when the URL names them.
+            log_key = _TASKS if tasks else MonitorTab.LOGS.value
+            for key, title, box_px in _lazy_sections(job_type):
+                open_ = key == active or (
+                    key == log_key and (bool(job_model.relion_job_name) or active == MonitorTab.LOGS.value)
+                )
+                openers[key] = _render_lazy_section(
+                    title, box_px, open_=open_, dom_id=_section_dom_id(instance_id, key), build=builders[key]
+                )
+            if tasks:
+                openers.update(_task_panel_openers(instance_id, openers[_TASKS], ui_mgr))
         if observers:
 
             def observe_all() -> None:

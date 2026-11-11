@@ -1,16 +1,18 @@
 # ui/components/array_task_tracker.py
 """
-Generic per-item task tracker for SLURM array jobs.
+The Tasks panel of an array job's page: the supervisor and every array task as a short row on the
+left, the selected one's log on the right, the two scrolling apart. The supervisor's row stays at
+the top of the list; it is the job's own log, and the panel opens on it.
 
-Any job that fans out into per-item array tasks can use this component.
-The only requirement is the file-based contract written by the supervisor:
+It reads the file-based contract the supervisor writes:
 
     {job_dir}/
-    ├── .task_manifest.json   # {"items": [...], "item_label": "Tilt Series", ...}
+    ├── .task_manifest.json   # {"items": [...], "item_label": "Tilt Series", "array_job_id": ...}
     ├── .task_status/
     │   ├── {name}.ok
     │   └── {name}.fail
-    ├── task_0.out
+    ├── run.out, run.err      # the supervisor's log
+    ├── task_0.out            # first line: "[SLURM] job <array>_<index> = <job id> ..."
     └── task_0.err
 
 Register as an extra tab via the plugin system:
@@ -21,25 +23,26 @@ Register as an extra tab via the plugin system:
 """
 
 import asyncio
+from dataclasses import dataclass
 from pathlib import Path
 
 from nicegui import ui
 
-from services.models_base import JobStatus
-
 from services.array_tasks import (
     TaskProgress,
+    read_manifest,
+    scan_statuses,
     shorten_ts_names,
     sort_ts_by_position,
-    ts_anchor_id,
-    read_tail as _read_tail,
-    read_manifest as _read_manifest,
-    scan_statuses as _scan_statuses,
-    resolve_job_dir,
+    task_slurm_ids,
 )
-from ui.components.log_pane import log_pane
+from services.models_base import JobStatus
+from services.project_state import get_project_state_for
+from ui.components.copyable import _write_clipboard
+from ui.components.log_pane import LogViewer, job_log_placeholder
 from ui.components.reactive import owned_timer
-from ui.styles import MONO
+from ui.status_indicator import _dot_html
+from ui.styles import MONO, SANS
 
 # ── Status constants ──
 
@@ -49,111 +52,40 @@ _RUNNING = "running"
 _PENDING = "pending"
 _SKIP = "skip"
 
-# The job is over: a tracker whose tasks have all settled stops polling.
-_ENDED = (JobStatus.SUCCEEDED, JobStatus.FAILED)
-
 _CHIP = {
-    _OK: ("check_circle", "#16a34a", "#f0fdf4"),
-    _FAIL: ("error", "#dc2626", "#fef2f2"),
-    _RUNNING: ("sync", "#2563eb", "#eff6ff"),
-    _PENDING: ("schedule", "#9ca3af", "#f9fafb"),
+    _OK: ("check_circle", "#16a34a"),
+    _FAIL: ("error", "#dc2626"),
+    _RUNNING: ("sync", "#2563eb"),
+    _PENDING: ("schedule", "#9ca3af"),
     # Intentional non-run: upstream produced nothing for this item, supervisor
     # pre-marked it. Distinguished from "fail" (red) and "pending" (waiting)
     # so the user can tell "skipped by design" from "didn't make it yet".
-    _SKIP: ("remove_circle_outline", "#94a3b8", "#f8fafc"),
+    _SKIP: ("remove_circle_outline", "#94a3b8"),
 }
+
+# The supervisor's row: no manifest item has an empty name.
+SUPERVISOR = ""
+
+_ROW_STYLE = "display: flex; align-items: center; gap: 6px; height: 20px; padding: 0 8px 0 10px; min-width: 0;"
+_NAME_STYLE = (
+    f"{MONO} font-size: 10px; color: #334155; flex: 1 1 auto; min-width: 0; "
+    "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+)
+_ID_STYLE = f"{MONO} font-size: 9px; color: #94a3b8; flex-shrink: 0; white-space: nowrap;"
 
 
 # ── Public API ──
 
 
 def render_array_task_tracker(instance_id: str, job_model, ui_mgr) -> None:
-    """Render the full task tracker widget inside the current NiceGUI context.
-
-    `instance_id` is used to anchor per-TS DOM ids and to consume a one-shot
-    `ui_mgr.focus_ts_by_instance[instance_id]` entry (set when the user clicks
-    a TS row in the roster) so the matching row is auto-expanded + scrolled
-    into view on arrival.
-    """
-    job_dir = resolve_job_dir(job_model)
-    if job_dir is None:
-        _render_placeholder("Job directory not yet assigned.")
+    """Render the Tasks panel into the current slot. A deep link from the roster's tilt-series rows
+    (`ui_mgr.focus_ts_by_instance[instance_id]`, popped here) selects that task. The job page's
+    openers reach the built panel through `monitor_logs` of the job's widget refs: "show_supervisor"
+    and "show_focus" (the deep link set after the panel was built)."""
+    if not job_model.relion_job_name or ui_mgr.project_path is None:
+        job_log_placeholder(instance_id, ui_mgr)
         return
-
-    manifest = _read_manifest(job_dir)
-    if manifest is None:
-        _render_placeholder("Waiting for supervisor to start...")
-        return
-
-    items = manifest.get("items", [])
-    item_label = manifest.get("item_label", "Item")
-    if not items:
-        _render_placeholder("No items in task manifest.")
-        return
-
-    # One-shot deep-link target. Consumed on arrival so subsequent polls /
-    # manual scrolls don't keep pulling the view back to this row.
-    focus_target = None
-    if ui_mgr is not None and hasattr(ui_mgr, "focus_ts_by_instance"):
-        focus_target = ui_mgr.focus_ts_by_instance.pop(instance_id, None)
-
-    # Display in (stage, beam) ascending order. The manifest is the source of
-    # truth for array-index → ts_name mapping (used to read task_{idx}.out),
-    # so we keep that mapping intact and only reorder for display.
-    display_order = sort_ts_by_position(items)
-    item_to_task_idx = {name: i for i, name in enumerate(items)}
-
-    # cb-scroll-tight: NiceGUI lays scroll-area / expansion content out as a flex
-    # column with align-items: flex-start + 1 rem padding, which squeezes every
-    # task's log pane to the left; the rows own their spacing and fill the width.
-    with ui.column().classes("w-full h-full overflow-hidden cb-scroll-tight").style("gap: 0;") as tracker:
-        # ── Summary bar ──
-        with ui.row().classes("w-full items-center px-3 py-1").style("gap: 12px; flex-shrink: 0;"):
-            summary = ui.html("", sanitize=False)
-
-        # ── Progress bar ──
-        progress_bar = (
-            ui.linear_progress(value=0, show_value=False)
-            .classes("w-full")
-            .style("flex-shrink: 0; height: 3px;")
-            .props("color=positive")
-        )
-
-        # ── Task rows (built once, updated in-place) ──
-        with ui.scroll_area().classes("w-full").style("flex: 1; min-height: 0;"):
-            with ui.column().classes("w-full gap-0").style("padding: 0;"):
-                row_widgets = _build_task_rows(display_order, item_to_task_idx, job_dir, instance_id, focus_target)
-
-    # The poll scans in a thread and touches only what changed: the summary, the bar and the rows
-    # whose status moved. It runs while this job's page is the one shown, and ends once every
-    # task has settled and the job is over.
-    shown: dict[str, str] = {}
-
-    async def _poll() -> None:
-        s = await asyncio.to_thread(_scan_statuses, job_dir, items)
-        if tracker.is_deleted or s == shown:
-            return
-        summary.set_content(_summary_html(s, item_label))
-        _update_progress(progress_bar, s)
-        _apply_statuses_to_rows(row_widgets, s, shown)
-        shown.clear()
-        shown.update(s)
-        p = TaskProgress.from_statuses(s)
-        if p.n_settled == p.total and getattr(job_model, "execution_status", None) in _ENDED:
-            timer.cancel()
-
-    owned_timer(0.01, _poll, tracker, once=True)
-    timer = ui_mgr.job_scope(instance_id).timer(5.0, _poll, tracker) if ui_mgr is not None else ui.timer(5.0, _poll)
-
-    # Scroll the focused TS into view after the DOM settles.
-    if focus_target is not None:
-        anchor = ts_anchor_id(instance_id, focus_target)
-        ui.run_javascript(
-            "setTimeout(() => {"
-            f"  const el = document.getElementById({anchor!r});"
-            "  if (el) el.scrollIntoView({behavior: 'smooth', block: 'center'});"
-            "}, 80);"
-        )
+    _TaskPanel(instance_id, job_model, ui_mgr).build()
 
 
 # ── Internals ──
@@ -174,127 +106,274 @@ def _summary_html(statuses: dict[str, str], item_label: str) -> str:
     if p.n_pending:
         parts.append(f'<span style="color: #9ca3af;">{p.n_pending} pending</span>')
 
-    return f'<span style="{MONO} font-size: 11px;">{" · ".join(parts)} / {p.total} {item_label.lower()}</span>'
+    return f'<span style="{MONO} font-size: 10px;">{" · ".join(parts)} / {p.total} {item_label.lower()}</span>'
 
 
-def _update_progress(bar: ui.linear_progress, statuses: dict[str, str]) -> None:
-    p = TaskProgress.from_statuses(statuses)
-    if p.total == 0:
-        bar.set_value(0)
-        return
-    # Settled = ok + fail + skip: skipped items won't ever run, so the bar
-    # reaches 100% when only skips + oks remain.
-    bar.set_value(p.n_settled / p.total)
-    bar.props(f"color={'negative' if p.n_fail else 'positive'}")
+def _read_tasks(job_dir: Path, shown: dict[str, str]) -> tuple[dict | None, dict[str, str], dict[str, str]]:
+    """The manifest, every item's status, and the SLURM ids worth reading: of the items whose status moved
+    since `shown` (a rerun gives a task a new id) and of the running ones (a log that just started, or a
+    task that started again). Blocking: run it in a thread."""
+    manifest = read_manifest(job_dir)
+    items = (manifest or {}).get("items") or []
+    if not items:
+        return manifest, {}, {}
+    statuses = scan_statuses(job_dir, items)
+    want = {n for n, s in statuses.items() if s != shown.get(n) or s == _RUNNING}
+    ids = task_slurm_ids(job_dir, manifest, only=want) if want else {}
+    return manifest, statuses, ids
 
 
-# ── Row building (once) and updating (on poll) ──
+@dataclass
+class _Row:
+    element: ui.element
+    sid: ui.label
+    icon: ui.icon | None = None  # None on the supervisor's row: it has the job's status light
 
 
-def _build_task_rows(
-    display_order: list[str],
-    item_to_task_idx: dict[str, int],
-    job_dir: Path,
-    instance_id: str,
-    focus_target: str | None,
-) -> dict[str, dict]:
-    """Build all expansion rows ONCE. Returns {name: {icon, label, expansion, bg_style}} refs.
+class _TaskPanel:
+    """One job's Tasks panel. Rows are built once, when the manifest is first read, and then only
+    repainted: a status poll moves an icon and an id, a selection two row classes."""
 
-    Rows are rendered in `display_order`. The task-output file for each row
-    uses the ORIGINAL manifest index via `item_to_task_idx`, since SLURM task
-    ids are tied to the manifest order.
-    """
-    display_names = shorten_ts_names(display_order)
-    row_widgets: dict[str, dict] = {}
-    for name in display_order:
-        icon_name, icon_color, bg_color = _CHIP[_PENDING]
-        short_name = display_names.get(name, name)
-        task_idx = item_to_task_idx[name]
-        anchor_id = ts_anchor_id(instance_id, name)
-        is_focus = focus_target == name
+    def __init__(self, instance_id: str, job_model, ui_mgr) -> None:
+        self.instance_id = instance_id
+        self.ui_mgr = ui_mgr
+        self.project_path: Path = ui_mgr.project_path
+        self.job_name: str = job_model.relion_job_name
+        self.job_dir = self.project_path / self.job_name.rstrip("/")
+        self.items: list[str] = []
+        self.index: dict[str, int] = {}
+        self.item_label = "Item"
+        self.rows: dict[str, _Row] = {}
+        self.statuses: dict[str, str] = {}
+        self.ids: dict[str, str] = {}
+        self.selected = SUPERVISOR
+        # A deep link's task, selected once its row exists.
+        self.focus: str | None = ui_mgr.focus_ts_by_instance.pop(instance_id, None)
+        # The job has ended and its tasks have settled since the last read: no read until it runs again.
+        self.quiet = False
+        # Whether the log poll read on its last tick: it reads once more after the log stops changing.
+        self.log_was_active = False
+        self.supervisor_shown: tuple | None = None
 
-        with (
-            ui.expansion(value=is_focus)
-            .classes("w-full")
-            .style(f"border-bottom: 1px solid #f1f5f9; background: {bg_color}; min-height: 0;")
-            .props(f'dense id="{anchor_id}"') as exp
-        ):
-            exp.props('header-class="p-0"')
+    # ── Layout ──
 
-            with exp.add_slot("header"):
-                with ui.row().classes("w-full items-center").style("gap: 8px; padding: 4px 12px;"):
-                    icon_el = ui.icon(icon_name, size="16px").style(f"color: {icon_color};")
-                    ui.label(short_name).style(f"{MONO} font-size: 11px; color: #334155; font-weight: 500;")
-                    ui.space()
-                    status_label = ui.label(_PENDING).style(
-                        f"{MONO} font-size: 9px; color: {icon_color}; text-transform: uppercase; font-weight: 600;"
+    def build(self) -> None:
+        with ui.element("div").style("display: flex; flex: 1 1 0; min-height: 0; width: 100%;") as root:
+            # The list: its own scroll; the summary and the supervisor's row stay at its top.
+            self.list = ui.element("div").style(
+                "width: 250px; flex-shrink: 0; overflow-y: auto; position: relative; "
+                "border-right: 1px solid var(--cb-box-line, #dbe3ec);"
+            )
+            with self.list:
+                with ui.element("div").style("position: sticky; top: 0; z-index: 1; background: #ffffff;"):
+                    self.summary = ui.html("", sanitize=False).style("display: block; padding: 6px 10px 4px;")
+                    self.summary.set_visibility(False)
+                    self.bar = (
+                        ui.linear_progress(value=0, show_value=False)
+                        .classes("w-full")
+                        .style("height: 2px;")
+                        .props("color=positive")
                     )
+                    self.bar.set_visibility(False)
+                    self.rows[SUPERVISOR] = self._supervisor_row()
+                self.note = ui.label("Tasks show once the supervisor submits them").style(
+                    f"{SANS} font-size: 10px; color: #94a3b8; font-style: italic; padding: 8px 10px;"
+                )
+                self.body = ui.element("div").style("display: flex; flex-direction: column;")
+            # The log of the selected row: the rest of the width, its own scroll.
+            with ui.element("div").style(
+                "flex: 1 1 0; min-width: 0; min-height: 0; display: flex; flex-direction: column;"
+            ):
+                self.viewer = LogViewer(self.project_path)
+        self.root = root
+        self.rows[SUPERVISOR].element.classes(add="active")
+        job = self._job()
+        if job is not None:
+            self._paint_supervisor(job)
+        self.viewer.show(*self._files(SUPERVISOR))
 
-            # The task's log is read when its row is first opened, not for every row at render.
-            log_box = ui.element("div").classes("w-full")
-            if is_focus:
-                with log_box:
-                    _render_inline_log(job_dir, task_idx)
-            else:
-                exp.on_value_change(lambda e, box=log_box, i=task_idx: _open_inline_log(e, box, job_dir, i))
+        hooks = self.ui_mgr.get_job_widget_refs(self.instance_id).monitor_logs
+        hooks["show_supervisor"] = lambda: self.select(SUPERVISOR)
+        hooks["show_focus"] = self.take_focus
 
-        row_widgets[name] = {"icon": icon_el, "label": status_label, "expansion": exp}
+        # Every read is off the loop and runs while this job's page is the one shown.
+        owned_timer(0.01, self._first_read, root, once=True)
+        scope = self.ui_mgr.job_scope(self.instance_id)
+        scope.timer(5.0, self._poll_tasks, root)
+        self.ui_mgr.get_job_widget_refs(self.instance_id).logs_timer = scope.timer(3.0, self._poll_log, root)
 
-    return row_widgets
+    def _supervisor_row(self) -> _Row:
+        row = (
+            ui.element("div")
+            .classes("cb-tlog-row")
+            .style(f"{_ROW_STYLE} height: 24px; border-bottom: 1px solid #e3eaf2;")
+        )
+        row.props["title"] = "The job's own log: run.out and run.err"
+        row.on("click", lambda: self.select(SUPERVISOR))
+        with row:
+            self.light = ui.html("", sanitize=False, tag="span").style(
+                "display: inline-flex; width: 12px; justify-content: center; flex-shrink: 0;"
+            )
+            ui.label("Supervisor").style(
+                f"{SANS} font-size: 10px; font-weight: 600; color: #12324f; flex: 1 1 auto; min-width: 0;"
+            )
+            sid = ui.label("—").classes("cb-tlog-copy").style(_ID_STYLE)
+            sid.on("click.stop", lambda: self._click_copy(SUPERVISOR, self._supervisor_sid()))
+        return _Row(row, sid)
 
+    def _supervisor_sid(self) -> str | None:
+        return self.supervisor_shown[2] if self.supervisor_shown else None
 
-def _apply_statuses_to_rows(row_widgets: dict[str, dict], statuses: dict[str, str], shown: dict[str, str]) -> None:
-    """Update icon, label text and background color of the rows whose status changed since `shown`
-    (what the rows display now), without rebuilding them."""
-    for name, widgets in row_widgets.items():
-        status = statuses.get(name, _PENDING)
-        if shown.get(name) == status:
-            continue
-        icon_name, icon_color, bg_color = _CHIP.get(status, _CHIP[_PENDING])
+    def _build_rows(self) -> None:
+        """One row per manifest item, in (stage, beam) order: its status, its short name (the full one in the
+        hover) and the SLURM id it ran under."""
+        names = shorten_ts_names(self.items)
+        icon_name, colour = _CHIP[_PENDING]
+        with self.body:
+            for name in sort_ts_by_position(self.items):
+                row = ui.element("div").classes("cb-tlog-row").style(_ROW_STYLE)
+                row.props["title"] = name
+                row.on("click", lambda n=name: self.select(n))
+                with row:
+                    icon = ui.icon(icon_name, size="12px").style(f"color: {colour}; flex-shrink: 0;")
+                    label = ui.label(names.get(name, name)).classes("cb-tlog-copy").style(_NAME_STYLE)
+                    label.on("click.stop", lambda n=name: self._click_copy(n, n))
+                    sid = ui.label("—").classes("cb-tlog-copy").style(_ID_STYLE)
+                    sid.on("click.stop", lambda n=name: self._click_copy(n, self.ids.get(n)))
+                self.rows[name] = _Row(row, sid, icon)
+        self.note.set_visibility(False)
 
-        widgets["icon"]._props["name"] = icon_name
-        widgets["icon"].style(f"color: {icon_color};")
-        widgets["icon"].update()
+    # ── Selection ──
 
-        widgets["label"].set_text(status)
-        widgets["label"].style(
-            f"{MONO} font-size: 9px; color: {icon_color}; text-transform: uppercase; font-weight: 600;"
+    def select(self, key: str) -> None:
+        """Show `key`'s log (SUPERVISOR: the job's own) and mark its row; the log is read at once."""
+        if key not in self.rows or self.root.is_deleted:
+            return
+        if key != self.selected:
+            self.rows[self.selected].element.classes(remove="active")
+            self.rows[key].element.classes(add="active")
+            self.selected = key
+            self.viewer.show(*self._files(key))
+        owned_timer(0.01, self._read_log, self.root, once=True)
+
+    def take_focus(self) -> None:
+        """The roster's link to one task (`ui_mgr.focus_ts_by_instance`): select it and bring its row into view
+        in the list. Kept until the rows exist."""
+        if self.root.is_deleted:
+            return
+        name = self.ui_mgr.focus_ts_by_instance.pop(self.instance_id, None) or self.focus
+        if name is None:
+            return
+        if name not in self.rows:
+            self.focus = name
+            return
+        self.focus = None
+        self.select(name)
+        row = self.rows[name].element
+        row.client.run_javascript(
+            f"(() => {{ const r = getHtmlElement({row.id}), p = getHtmlElement({self.list.id}); "
+            "if (r && p) p.scrollTop = Math.max(0, r.offsetTop - p.clientHeight / 2); })()"
         )
 
-        widgets["expansion"].style(f"border-bottom: 1px solid #f1f5f9; background: {bg_color}; min-height: 0;")
+    async def _click_copy(self, key: str, text: str | None) -> None:
+        """A click on a row's name or SLURM id: on the selected row it copies, on any other it selects."""
+        if key != self.selected:
+            self.select(key)
+        elif text:
+            await _write_clipboard(text)
 
+    def _files(self, key: str) -> tuple[Path, Path]:
+        if key == SUPERVISOR:
+            return self.job_dir / "run.out", self.job_dir / "run.err"
+        idx = self.index[key]
+        return self.job_dir / f"task_{idx}.out", self.job_dir / f"task_{idx}.err"
 
-# ── Inline log viewer ──
+    # ── Polls ──
 
+    def _job(self):
+        return get_project_state_for(self.project_path).jobs.get(self.instance_id)
 
-def _open_inline_log(e, box, job_dir: Path, task_idx: int) -> None:
-    if not e.value or box.is_deleted or box.default_slot.children:
-        return
-    with box:
-        _render_inline_log(job_dir, task_idx)
+    async def _first_read(self) -> None:
+        await self._poll_tasks(first=True)
+        await self._read_log()
 
-
-def _render_inline_log(job_dir: Path, task_idx: int) -> None:
-    stdout_path = job_dir / f"task_{task_idx}.out"
-    stderr_path = job_dir / f"task_{task_idx}.err"
-
-    stdout_text = _read_tail(stdout_path, max_lines=200)
-    stderr_text = _read_tail(stderr_path, max_lines=100)
-
-    with ui.column().classes("w-full").style("padding: 4px 12px 10px; gap: 6px;"):
-        if not stdout_text and not stderr_text:
-            ui.label("No log output yet.").style(f"{MONO} font-size: 10px; color: #94a3b8;")
+    async def _poll_tasks(self, first: bool = False) -> None:
+        job = self._job()
+        if job is None or self.root.is_deleted:
             return
-        if stdout_text:
-            log_pane("stdout", stdout_text, stdout_path, max_h="60vh")
-        if stderr_text:
-            log_pane("stderr", stderr_text, stderr_path, max_h="40vh")
+        if job.relion_job_name != self.job_name:
+            # Run again into another job directory: the page is rebuilt on it.
+            self.ui_mgr.request_rebuild()
+            return
+        self._paint_supervisor(job)
+        live = job.execution_status.is_live
+        if self.quiet and not live and not first:
+            return
+        manifest, statuses, ids = await asyncio.to_thread(_read_tasks, self.job_dir, dict(self.statuses))
+        if self.root.is_deleted:
+            return
+        items = (manifest or {}).get("items") or []
+        if manifest is not None and not items:
+            self.note.set_text("The task manifest lists no items")
+        if items and not self.items:
+            self.items = items
+            self.index = {name: i for i, name in enumerate(items)}
+            self.item_label = manifest.get("item_label") or "Item"
+            self._build_rows()
+            if self.focus is not None:
+                self.take_focus()
+        self.ids.update(ids)
+        self._paint_rows(statuses)
+        p = TaskProgress.from_statuses(statuses)
+        # Arrays outlive a supervisor that timed out: a task still unsettled may yet move.
+        self.quiet = not live and p.n_settled == p.total
 
+    def _paint_supervisor(self, job) -> None:
+        shown = (job.execution_status, job.is_orphaned, job.slurm_job_id)
+        if shown == self.supervisor_shown:
+            return
+        self.supervisor_shown = shown
+        self.light.set_content(_dot_html(job.execution_status, is_orphaned=job.is_orphaned, size_px=7))
+        self.rows[SUPERVISOR].sid.set_text(job.slurm_job_id or "—")
 
-def _render_placeholder(message: str) -> None:
-    with ui.column().classes("w-full h-full items-center justify-center text-gray-400 gap-2"):
-        # Pulsating dot (self-contained inline SVG/SMIL; see status_indicator._running_spinner_html).
-        from ui.status_indicator import _running_spinner_html
+    def _paint_rows(self, statuses: dict[str, str]) -> None:
+        """Repaint what moved: the icons of the rows whose status changed, the ids, the summary and the bar."""
+        for name in self.items:
+            row = self.rows.get(name)
+            if row is None:
+                continue
+            status = statuses.get(name, _PENDING)
+            if self.statuses.get(name) != status:
+                icon_name, colour = _CHIP.get(status, _CHIP[_PENDING])
+                row.icon.set_name(icon_name)
+                row.icon.style(f"color: {colour};")
+            sid = self.ids.get(name) or "—"
+            if row.sid.text != sid:
+                row.sid.set_text(sid)
+        if statuses and statuses != self.statuses:
+            p = TaskProgress.from_statuses(statuses)
+            self.summary.set_content(_summary_html(statuses, self.item_label))
+            self.summary.set_visibility(True)
+            # Settled = ok + fail + skip: skipped items never run, so the bar fills when only oks and skips remain.
+            self.bar.set_value(p.n_settled / p.total)
+            self.bar.props(f"color={'negative' if p.n_fail else 'positive'}")
+            self.bar.set_visibility(True)
+        self.statuses = statuses
 
-        ui.html(_running_spinner_html(40, "#94a3b8"), sanitize=False)
-        ui.label(message).style("font-size: 13px;")
+    async def _poll_log(self) -> None:
+        job = self._job()
+        if job is None or job.relion_job_name != self.job_name:
+            return
+        active = job.execution_status.is_live or self.statuses.get(self.selected) == _RUNNING
+        # One more read after the log stops changing, for its last lines.
+        if active or self.log_was_active:
+            await self._read_log()
+        self.log_was_active = active
+
+    async def _read_log(self) -> None:
+        if self.selected == SUPERVISOR:
+            job = self._job()
+            live = job is not None and job.execution_status == JobStatus.RUNNING
+        else:
+            live = self.statuses.get(self.selected) == _RUNNING
+        await self.viewer.refresh(live=live)
