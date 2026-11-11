@@ -12,9 +12,13 @@
   #bar { height: 3px; background: var(--line); margin-top: 8px; border-radius: 2px; overflow: hidden; }
   #bar > div { height: 100%; width: 0; background: var(--accent); transition: width 0.3s; }
   #error { color: #b91c1c; margin-top: 6px; white-space: pre-wrap; }
-  #stage { margin: 12px 16px; width: 800px; height: 500px; overflow: hidden; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
-  /* The workspace renders at its full size; the window shows it at half. */
-  #frame { width: 1600px; height: 1000px; border: 0; transform: scale(0.5); transform-origin: 0 0; }
+  #stage { margin: 12px 16px; display: flex; flex-wrap: wrap; gap: 8px; }
+  /* Each workspace renders at its full size, 1600 x 1000; the window shows it at a quarter (the negative
+     margins give back the space the scale leaves). */
+  #stage iframe {
+    width: 1600px; height: 1000px; border: 1px solid var(--line); border-radius: 6px; background: #fff;
+    transform: scale(0.25); transform-origin: 0 0; margin: 0 -1200px -750px 0;
+  }
   #done a { color: var(--accent); }
 </style>
 </head>
@@ -26,7 +30,7 @@
   <div id="error"></div>
   <div id="done"></div>
 </header>
-<div id="stage"><iframe id="frame" title="workspace being captured"></iframe></div>
+<div id="stage"></div>
 <script src="/snapshot/capture.js"></script>
 </body>
 </html>

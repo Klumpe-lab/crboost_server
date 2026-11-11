@@ -16,6 +16,7 @@ rewritten into a classic script (`echarts_classic_script`).
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import importlib.util
 import io
@@ -156,16 +157,32 @@ def _asset_name(url: str, ext: str) -> str:
     return hashlib.sha1(url.encode()).hexdigest()[:20] + ext
 
 
-def _rewrite(text: str, names: dict[str, str], prefix: str) -> str:
-    """Every server URL in `text` (also HTML-escaped) as the bundle's copy, `prefix` + its name; a URL
-    the bundle has no copy of is left as it is (it shows as missing, which is the truth)."""
+def _rewrite(text: str, names: dict[str, str], prefix: str, inline: dict[str, str] | None = None) -> str:
+    """Every server URL in `text` (also HTML-escaped) as the bundle's copy, `prefix` + its name, or as
+    its `data:` URI when it is in `inline`; a URL the bundle has no copy of is left as it is (it shows as
+    missing, which is the truth)."""
+    inline = inline or {}
 
     def sub(m: re.Match) -> str:
         url = m.group(0)
-        name = names.get(url) or names.get(url.replace("&amp;", "&"))
+        plain = url.replace("&amp;", "&")
+        if plain in inline:
+            return inline[plain]
+        name = names.get(url) or names.get(plain)
         return prefix + name if name else url
 
     return _URL_IN_TEXT.sub(sub, text)
+
+
+# A CSS mask names its picture in a style attribute (`ui/components/feature_layers.py` fill_style).
+_MASK_URL = re.compile(r"mask-image:\s*url\((?:&quot;|[\"'])?(https?://(?:(?!&quot;|&#39;)[^\s\"'()<>\\])+)")
+
+
+def _mask_urls(scenes: list[dict]) -> set[str]:
+    """The pictures used as CSS masks (segmentation fills). Chrome loads a mask with CORS, which a page
+    opened from disk (origin null) is refused, and a mask that does not load hides its element: these
+    go into the pages as `data:` URIs instead of files."""
+    return {m.group(1).replace("&amp;", "&") for s in scenes for m in _MASK_URL.finditer(s["html"])}
 
 
 def _page(scene: dict, css_name: str, data: dict) -> str:
@@ -218,6 +235,8 @@ def write_bundle(
     for s in scenes:
         for u, w in (s.get("shown") or {}).items():
             shown[u] = max(shown.get(u, 0), int(w))
+    masks = _mask_urls(scenes)
+    inline: dict[str, str] = {}
     total = len(urls) + len(scenes) + 1
     kw = {
         "project": Path(project).resolve(),
@@ -243,6 +262,10 @@ def write_bundle(
                     missing.append(url)
                     continue
                 blob, ext = _fitted(*got, shown.get(url, 0))
+                if url in masks:
+                    mime = "image/png" if ext == ".png" else "image/jpeg"
+                    inline[url] = f"data:{mime};base64,{base64.b64encode(blob).decode()}"
+                    continue
                 names[url] = _asset_name(url, ext)
                 packed = text if ext in (".css", ".json", ".svg", ".txt") else zipfile.ZIP_STORED
                 zf.writestr(_entry(f"{root}/assets/{names[url]}"), blob, packed)
@@ -255,7 +278,7 @@ def write_bundle(
             for name in ("frozen.js", "frozen.css"):
                 zf.write(Path(frozen_dir) / name, f"{root}/{name}")
             for j, scene in enumerate(scenes, start=1):
-                scene["html"] = _rewrite(scene["html"], names, "assets/")
+                scene["html"] = _rewrite(scene["html"], names, "assets/", inline)
                 charts = json.loads(_rewrite(json.dumps(scene.get("charts", {})), names, "assets/"))
                 data = {**nav, "scene": scene["key"], "charts": charts, "solo": scene.get("solo", [])}
                 page = _page(scene, f"{scene['css']}.css", data)
@@ -272,7 +295,12 @@ def write_bundle(
     shutil.rmtree(cap, ignore_errors=True)
     if missing:
         logger.warning("Snapshot %s: %d file(s) could not be resolved, e.g. %s", final, len(missing), missing[0])
-    return {"size": final.stat().st_size, "n_scenes": len(scenes), "n_assets": len(names), "missing": len(missing)}
+    return {
+        "size": final.stat().st_size,
+        "n_scenes": len(scenes),
+        "n_assets": len(names) + len(inline),
+        "missing": len(missing),
+    }
 
 
 def _css_urls(cap: Path) -> set[str]:

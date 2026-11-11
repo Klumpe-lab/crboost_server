@@ -1,12 +1,15 @@
 // A project snapshot's capture (ui/snapshot/routes.py): show every scene of the plan in the iframe — the
 // real workspace — wait for the view to settle, freeze it (its DOM, the page's styles, its charts'
 // options, every file it names) and post it to the server, which zips them (services/snapshot/bundle.py).
+// WORKERS workspaces capture side by side, each taking the next scene of the plan when it is free. Each is
+// loaded once the previous one has: NiceGUI then sees the tab already open and gives the new page a tab id
+// of its own (its per-tab state, `app.storage.tab`, would otherwise be shared).
 (async function () {
   'use strict';
   const $ = (id) => document.getElementById(id);
-  const frame = $('frame');
   const source = new URLSearchParams(location.search).get('source') || '';
-  const SETTLE_QUIET_MS = 1500;
+  const WORKERS = 3;
+  const SETTLE_QUIET_MS = 600;
   const SETTLE_MAX_MS = 60000;
   // Still drawing: a picture rendering, a spinner, a view "reading".
   const BUSY = '.cb-rslot--run, .q-spinner, .q-inner-loading, .q-skeleton';
@@ -14,12 +17,21 @@
   const say = (text) => { $('status').textContent = text; };
   const progress = (f) => { $('bar').firstElementChild.style.width = `${Math.round(f * 100)}%`; };
   const fail = (text) => { $('error').textContent = text; say('Stopped.'); document.title = 'Snapshot failed'; };
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // Waits timed by a worker: a window in the background has its own timers slowed to one a second, and
+  // after five minutes to one a minute; a worker's are not.
+  const ticker = new Worker(URL.createObjectURL(new Blob(
+    ['onmessage = (e) => setTimeout(() => postMessage(e.data.id), e.data.ms);'], { type: 'text/javascript' })));
+  const waits = new Map();
+  let nextWait = 0;
+  ticker.onmessage = (e) => { waits.get(e.data)?.(); waits.delete(e.data); };
+  const sleep = (ms) => new Promise((r) => { nextWait += 1; waits.set(nextWait, r); ticker.postMessage({ id: nextWait, ms }); });
 
   // ── driving the workspace ─────────────────────────────────────────────────
-  function load(path) {
+  function newFrame(path) {
+    const frame = Object.assign(document.createElement('iframe'), { title: 'workspace being captured' });
+    $('stage').append(frame);
     return new Promise((resolve) => {
-      frame.onload = () => resolve();
+      frame.onload = () => resolve(frame);
       frame.src = path;
     });
   }
@@ -27,7 +39,7 @@
     const t0 = Date.now();
     while (Date.now() - t0 < ms) {
       if (test()) return true;
-      await sleep(200);
+      await sleep(100);
     }
     return false;
   }
@@ -48,14 +60,14 @@
     return out;
   }
   // The workspace's own routing: the History API and a popstate, as Back does (ui/routing.py).
-  async function go(path) {
+  async function go(frame, path) {
     const win = frame.contentWindow;
     win.history.pushState(null, '', path);
     win.dispatchEvent(new PopStateEvent('popstate'));
   }
   // Panes the scene does not show are closed as their cross would (the workspace's Esc), so the
   // server is not keeping views no one captures.
-  function closeOthers(solo) {
+  function closeOthers(frame, solo) {
     const win = frame.contentWindow;
     for (const name of openPanes(win.document)) {
       if (!solo.includes(name) && !(name === 'pipeline' && solo.includes('roster'))) {
@@ -63,7 +75,7 @@
       }
     }
   }
-  async function settle(solo) {
+  async function settle(frame, solo) {
     const doc = frame.contentWindow.document;
     const panes = () => solo.map((n) => paneOf(doc, n));
     if (!(await until(() => panes().every(shows), SETTLE_MAX_MS))) return false;
@@ -78,7 +90,7 @@
 
   // What a reader would open: folded sections (a job's Results, its Log) and, where a view offers it,
   // its own "Expand all" (the Tilts tab's series). True when something was opened.
-  function expandAll(solo) {
+  function expandAll(frame, solo) {
     const doc = frame.contentWindow.document;
     let opened = false;
     for (const pane of solo.map((n) => paneOf(doc, n)).filter(Boolean)) {
@@ -132,7 +144,7 @@
     };
     return [...doc.styleSheets].map(walk).join('');
   }
-  function freeze(scene) {
+  function freeze(frame, scene) {
     const win = frame.contentWindow;
     const doc = win.document;
     const origin = win.location.origin;
@@ -257,43 +269,59 @@
   const sentCss = new Set();
   const slow = [];
   const n = plan.scenes.length;
-  try {
-    for (let i = 0; i < n; i++) {
-      const s = plan.scenes[i];
-      say(`${i + 1} / ${n} · ${s.title}  (keep this window open)`);
-      progress(i / (n + 1));
-      if (i === 0) await load(s.path);
-      else await go(s.path);
-      if (!(await until(() => appOf(frame.contentWindow), SETTLE_MAX_MS))) throw new Error('the workspace did not load');
-      await sleep(300);
-      closeOthers(s.solo);
-      if (s.seg) {
-        await settle(s.solo);
-        const seg = paneOf(frame.contentWindow.document, s.solo[0])?.querySelector(`[data-cb-seg="${s.seg}"]`);
-        if (seg && !seg.classList.contains('active')) seg.click();
-      }
-      if (!(await settle(s.solo))) slow.push(s.title);
-      if (expandAll(s.solo) && !(await settle(s.solo))) slow.push(s.title);
-      const frozen = freeze(s);
-      if (sentCss.has(frozen.css)) delete frozen.css_text;
-      let res = await post(`/api/snapshot/scene?session=${plan.session}`, frozen);
-      if (res.need_css) res = await post(`/api/snapshot/scene?session=${plan.session}`, { ...freeze(s) });
-      sentCss.add(frozen.css);
+  const queue = [...plan.scenes];
+  let done = 0;
+  let current = '';
+
+  async function capture(frame, s) {
+    current = s.title;
+    await go(frame, s.path);
+    await sleep(100);
+    closeOthers(frame, s.solo);
+    if (s.seg) {
+      await settle(frame, s.solo);
+      const seg = paneOf(frame.contentWindow.document, s.solo[0])?.querySelector(`[data-cb-seg="${s.seg}"]`);
+      if (seg && !seg.classList.contains('active')) seg.click();
     }
+    if (!(await settle(frame, s.solo))) slow.push(s.title);
+    if (expandAll(frame, s.solo) && !(await settle(frame, s.solo))) slow.push(s.title);
+    const frozen = freeze(frame, s);
+    if (sentCss.has(frozen.css)) delete frozen.css_text;
+    let res = await post(`/api/snapshot/scene?session=${plan.session}`, frozen);
+    if (res.need_css) res = await post(`/api/snapshot/scene?session=${plan.session}`, freeze(frame, s));
+    sentCss.add(frozen.css);
+    done += 1;
+    say(`${done} / ${n} · ${current}  (keep this window open)`);
+    progress(done / (n + 1));
+  }
+  async function worker(frame) {
+    if (!(await until(() => appOf(frame.contentWindow), SETTLE_MAX_MS))) throw new Error('the workspace did not load');
+    for (let s = queue.shift(); s; s = queue.shift()) await capture(frame, s);
+  }
+
+  try {
+    say(`Opening the workspace…`);
+    const runs = [];
+    for (let w = 0; w < Math.min(WORKERS, n); w++) {
+      // One after the other: each opens while the ones before it are open (see the top of this file).
+      const frame = await newFrame(plan.scenes[0].path);
+      await until(() => appOf(frame.contentWindow), SETTLE_MAX_MS);
+      runs.push(worker(frame));
+    }
+    await Promise.all(runs);
     say('Writing the zip…');
     progress(n / (n + 1));
-    const done = await post(`/api/snapshot/finish?session=${plan.session}`, {});
+    const zip = await post(`/api/snapshot/finish?session=${plan.session}`, {});
     progress(1);
-    say(`Done: ${done.n_scenes} views, ${(done.size / 1e6).toFixed(1)} MB. Downloading ${done.name}.`);
-    const a = Object.assign(document.createElement('a'), { href: done.url, download: done.name });
+    say(`Done: ${zip.n_scenes} views, ${(zip.size / 1e6).toFixed(1)} MB. Downloading ${zip.name}.`);
+    const a = Object.assign(document.createElement('a'), { href: zip.url, download: zip.name });
     document.body.append(a);
     a.click();
     $('done').innerHTML = '';
-    $('done').append('Not downloading? ', Object.assign(document.createElement('a'), { href: done.url, textContent: done.name }),
-      done.missing ? ` · ${done.missing} file(s) could not be included (listed in missing.json)` : '',
+    $('done').append('Not downloading? ', Object.assign(document.createElement('a'), { href: zip.url, textContent: zip.name }),
+      zip.missing ? ` · ${zip.missing} file(s) could not be included (listed in missing.json)` : '',
       slow.length ? ` · still drawing when captured: ${slow.join(', ')}` : '');
     document.title = 'Snapshot ready';
-    frame.remove();
     $('stage').remove();
   } catch (e) {
     fail(`The snapshot stopped: ${e.message}`);
