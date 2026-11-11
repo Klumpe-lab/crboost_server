@@ -12,6 +12,7 @@ from ui.job_plugins._field_styles import VIEW_HEAD_STYLE, VIEW_TITLE_STYLE, view
 from ui.pipeline_builder.pipeline_builder_panel import build_pipeline_builder_panel
 from services.routes import View, route_of_url
 from ui.routing import RouteWriter, apply_route
+from ui.snapshot.build import start_snapshot
 from ui.species.page import build_species_page
 from ui.ui_state import get_ui_state_manager
 
@@ -173,6 +174,13 @@ _PANE_FOCUS_JS = """
   document.addEventListener('pointerdown', (e) => {
     const pane = e.target.closest && e.target.closest('#cb-roster-panel, #cb-view-main > [id^="cb-view-"]');
     if (pane) focus(pane);
+  }, true);
+  // Ctrl/⌘+Alt+S: a snapshot of the project to download (ui/snapshot/). By key code: with Alt held,
+  // a Mac types "ß" for S.
+  window.addEventListener('keydown', (e) => {
+    if (e.code !== 'KeyS' || !e.altKey || !(e.ctrlKey || e.metaKey) || e.repeat) return;
+    e.preventDefault();
+    emitEvent('cb_snapshot');
   }, true);
   window.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || e.repeat) return;
@@ -746,6 +754,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
 
     ui.on("cb_view_escape", _on_escape)
     ui.on("cb_popstate", _on_popstate)
+    ui.on("cb_snapshot", lambda _e: start_snapshot(ui_mgr.project_path))
     ui.timer(
         0.1,
         lambda: ui.run_javascript(
