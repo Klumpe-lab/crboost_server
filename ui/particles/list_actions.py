@@ -232,7 +232,7 @@ _MONO = "font-family: ui-monospace, SFMono-Regular, Menlo, monospace;"
 _LOG_MAX_LINES = 400  # lines kept from each file (the tail); the marker below says what went
 # The widget holds more than is ever pushed: `ui.log(max_lines=N)` drops from the front, so
 # capping it at the truncation threshold would evict the "[… truncated …]" marker, the one
-# line that says the view is partial. Same split as `ui/pipeline_builder/logs_tab.py`.
+# line that says the view is partial.
 _LOG_WIDGET_LINES = _LOG_MAX_LINES * 2
 
 
@@ -247,7 +247,7 @@ def extraction_geometry_text(job: ExtractJob) -> str:
 async def open_extraction_logs(backend, project_path: Path, job: ExtractJob, *, title: str) -> None:
     """The per-list extraction job's logs, as a dialog.
 
-    The pipeline's log viewer (``ui/pipeline_builder/logs_tab.py``) cannot serve this job: it
+    The job page's log viewer (``ui/pipeline_builder/logs_tab.py``) cannot serve this job: it
     keys off ``relion_job_name`` and per-tab widget refs, and a per-list extraction is not a
     scheme job so it has neither. ``backend.get_job_logs`` needs only a directory — and
     ``config/qsub.sh`` already writes ``run.out``/``run.err`` into the list's out dir — so the
