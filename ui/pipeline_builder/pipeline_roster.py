@@ -527,6 +527,7 @@ class RosterWidget(FingerprintedView):
                     "display: flex; align-items: baseline; gap: 6px;"
                 )
                 .on("click", lambda iid=instance_id: panel.switch_tab(iid))
+                .props(f'data-cb-job="{instance_id}"')
             ):
                 name_el = ui.label(base_name).style(
                     f"{MONO} font-size: 10px; {name_paint} "
@@ -1167,8 +1168,14 @@ class RosterWidget(FingerprintedView):
                 f"font-size: 9px; font-weight: 700; color: {color}; "
                 "letter-spacing: 0.04em; line-height: 1; pointer-events: none;"
             )
-        # The projects roster's hover card for this project, read fresh on the first hover.
-        project_card_menu(avatar, lambda: self.panel.backend.scan_project(self.panel.ui_mgr.project_path))
+        # The projects roster's hover card for this project, read fresh on the first hover, with the
+        # base's other projects under it to go to.
+        project_card_menu(
+            avatar,
+            lambda: self.panel.backend.scan_project(self.panel.ui_mgr.project_path),
+            backend=self.panel.backend,
+            project_path=self.panel.ui_mgr.project_path,
+        )
         return avatar
 
     async def _open_project_hub(self):
@@ -1562,6 +1569,8 @@ class RosterWidget(FingerprintedView):
             dot_el = ui.element("div").style(_SB_DOT_STYLE) if dot else None
         if ref_key:
             self._refs[ref_key] = container
+            # Which view the icon opens, for a project snapshot's frozen page (ui/snapshot/).
+            container.props["data-cb-rail"] = ref_key
             # The icon separately, so a re-colour can set its markup in place instead of
             # clearing the container — which would take the tooltip with it.
             self._refs[f"{ref_key}_icon"] = icon

@@ -1273,6 +1273,8 @@ class TomoGalleryPage:
     def _render_tile(self, row: dict) -> None:
         """One tile."""
         tile = ui.element("div").classes("cb-gal-tile" + (" selected" if row["ts"] == self.selected_ts else ""))
+        # Its tilt series, for a project snapshot's frozen page to open the Journey on (ui/snapshot/).
+        tile.props["data-cb-ts"] = row["ts"]
         self._tiles[row["ts"]] = tile
         with tile:
             self._fill_tile(row)

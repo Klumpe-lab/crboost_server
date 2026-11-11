@@ -1586,6 +1586,11 @@ def remove_project_state(project_path: Path):
     _project_states.pop(project_path.resolve(), None)
 
 
+def loaded_projects() -> list[Path]:
+    """The project directories this process has loaded."""
+    return list(_project_states)
+
+
 def is_in_loaded_project(path: Path) -> bool:
     """True when `path` (already resolved) lies inside a project this process has loaded. The raw
     file routes serve only such paths, so a leaked link cannot read the rest of the owner's files."""
