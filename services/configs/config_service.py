@@ -111,6 +111,8 @@ class SupervisorSlurmConfig(BaseModel):
     # --qos; empty = the account's default QOS. The supervisor lives as long as its array, queue waits
     # included: a QOS with a longer MaxWall keeps it from timing out with every task done.
     qos: str = ""
+    prefer: str = ""  # SlurmConfig.prefer
+    avoid: str = ""  # SlurmConfig.avoid
 
 
 class JobResourceProfile(BaseModel):
@@ -129,6 +131,8 @@ class JobResourceProfile(BaseModel):
     mem: str | None = None
     time: str | None = None
     qos: str | None = None
+    prefer: str | None = None
+    avoid: str | None = None
 
 
 class LocalConfig(BaseModel):
@@ -178,6 +182,9 @@ class CurationConfig(BaseModel):
     sif_path: str | None = None
     partition: str = ""  # a CPU partition will do: software GL is enough for slice-based picking
     gres: str | None = None  # SLURM --gres, e.g. "gpu:1" on partition 'g'; None on CPU partitions
+    constraint: str = ""  # SLURM --constraint, e.g. the node features whose GPUs do OpenGL
+    prefer: str = ""  # SLURM --prefer: features tried first, `constraint` when none is free (SlurmConfig.prefer)
+    avoid: str = ""  # node features to stay off, sent as --exclude (SlurmConfig.avoid)
     vgl: bool = False  # render ChimeraX via VirtualGL (vglrun -d egl) on the GPU — needs the _GL.sif + gres
     cpus: int = 4
     mem: str = "16G"

@@ -192,7 +192,7 @@ class SetSlurmIn(JobIn):
     values: dict[str, Any] | None = Field(
         None,
         description="{setting: value} among partition, constraint, nodes, ntasks_per_node, cpus_per_task, gres, "
-        "mem, time, qos",
+        "mem, time, qos, prefer (node features tried first), avoid (node features to stay off)",
     )
     reset: bool = Field(False, description="Drop every setting made by hand: back to the defaults and the profile")
 

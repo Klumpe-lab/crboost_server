@@ -27,7 +27,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from services.computing.slurm_service import SlurmService
+from services.computing.slurm_service import SlurmConfig, SlurmService, avoided_nodes, check_constraint
 from services.configs.config_service import get_config_service
 from services.result import ErrorCode, err, ok
 
@@ -132,6 +132,16 @@ class CurationSessionService:
         # does on the manual path — `export CX_VGL=1` flips the worker to `vglrun -d egl chimerax`
         # under apptainer --nv, so the _GL.sif renders on the GPU instead of software-GL llvmpipe.
         gres_line = f"#SBATCH --gres={cur.gres}\n" if cur.gres else ""
+        # Where the GPU may come from: --constraint, --prefer (tried first) and the nodes `avoid` names (sinfo).
+        placement = SlurmConfig(partition=cur.partition, constraint=cur.constraint, prefer=cur.prefer, avoid=cur.avoid)
+        try:
+            await asyncio.to_thread(check_constraint, placement)
+            excluded = await asyncio.to_thread(avoided_nodes, placement)
+        except ValueError as e:
+            return err(f"conf.yaml curation: {e}")
+        gres_line += f'#SBATCH --constraint="{placement.constraint}"\n' if placement.constraint else ""
+        gres_line += f'#SBATCH --prefer="{placement.prefer}"\n' if placement.prefer else ""
+        gres_line += f"#SBATCH --exclude={','.join(excluded)}\n" if excluded else ""
         vgl_export = "export CX_VGL=1\n" if cur.vgl else ""
         # Opt-in only: the desktop then runs `-SecurityTypes None`, so anyone who can reach the rfb
         # port on that node drives it. Off by default; the control center states the risk.

@@ -86,6 +86,13 @@ class SlurmConfig(BaseModel):
     time: str = "3:30:00"
     # --qos; empty = the account's default QOS. Not a qsub.sh placeholder: write_sbatch_script adds it.
     qos: str = ""
+    # --prefer: node features tried first; when no such node is free, the job starts on whatever `constraint`
+    # allows instead of waiting. Not a qsub.sh placeholder: write_sbatch_script adds it.
+    prefer: str = ""
+    # Node features to stay off ("mig"): the nodes that have any of them go to --exclude, read with sinfo where the
+    # script is written. SLURM's expressions have no NOT, and a feature is all that tells a full B200 node from a
+    # MIG-sliced one on CBE.next.
+    avoid: str = ""
 
     # Standard Relion Tomography aliases for XXXextra1XXX through XXXextra8XXX
     QSUB_EXTRA_MAPPING: ClassVar[dict[str, str]] = {
@@ -99,7 +106,7 @@ class SlurmConfig(BaseModel):
         "time": "qsub_extra8",
     }
 
-    @field_validator("constraint", mode="before")
+    @field_validator("constraint", "prefer", mode="before")
     @classmethod
     def _unquote_constraint(cls, value: Any) -> Any:
         # Confs, project files and typed overrides carry shell-quoted constraints ('g2|g3|g4');
@@ -135,36 +142,75 @@ _CONSTRAINT_OPERATORS = re.compile(r"[|&,\[\]()]")
 
 
 @functools.cache
-def _partition_features(partition: str) -> frozenset[str] | None:
-    """The node features SLURM reports for `partition` (every partition when empty), once per process.
+def _partition_nodes(partition: str) -> dict[str, frozenset[str]] | None:
+    """Each node of `partition` (every partition when empty) with its features, once per process.
     None off a SLURM host, where nothing can be submitted either."""
-    cmd = ["sinfo", "-h", "-o", "%f", *(["-p", partition] if partition else [])]
+    cmd = ["sinfo", "-h", "-N", "-o", "%N %f", *(["-p", partition] if partition else [])]
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=True).stdout
     except FileNotFoundError:
         return None
-    return frozenset(f for line in out.split() for f in line.split(",") if f and f != "(null)")
+    nodes: dict[str, frozenset[str]] = {}
+    for line in out.splitlines():
+        name, _, features = line.strip().partition(" ")
+        if name:
+            nodes[name] = nodes.get(name, frozenset()) | {f for f in features.split(",") if f and f != "(null)"}
+    return nodes
+
+
+def _partition_features(partition: str) -> frozenset[str] | None:
+    """The node features SLURM reports for `partition` (every partition when empty). None off a SLURM host."""
+    nodes = _partition_nodes(partition)
+    return None if nodes is None else frozenset().union(*nodes.values())
+
+
+def _named_features(expression: str) -> set[str]:
+    return {re.sub(r"\*\d+$", "", t.strip()) for t in _CONSTRAINT_OPERATORS.split(expression)} - {""}
 
 
 def check_constraint(cfg: SlurmConfig) -> None:
-    """Raise ValueError when `cfg.constraint` names a node feature its partition does not have.
+    """Raise ValueError when `cfg.constraint`, `cfg.prefer` or `cfg.avoid` names a node feature its partition
+    does not have.
 
     Projects keep the SLURM defaults they were created with, so a project from another cluster asks
     for that cluster's node features (the old CBE's g2|g3|g4); sbatch only says "Invalid feature
     specification". This names the features and the field instead, and drops nothing."""
-    if not cfg.constraint:
+    fields = [
+        (label, value)
+        for label, value in (("Constraint", cfg.constraint), ("Prefer", cfg.prefer), ("Avoid", cfg.avoid))
+        if value
+    ]
+    if not fields:
         return
     features = _partition_features(cfg.partition)
     if features is None:
         return
-    named = {re.sub(r"\*\d+$", "", t.strip()) for t in _CONSTRAINT_OPERATORS.split(cfg.constraint)} - {""}
-    unknown = sorted(named - features)
-    if unknown:
+    for label, value in fields:
+        unknown = sorted(_named_features(value) - features)
+        if unknown:
+            raise ValueError(
+                f"SLURM {label.lower()} '{value}' names node features partition '{cfg.partition or '(any)'}' "
+                f"does not have: {', '.join(unknown)} (it has: {', '.join(sorted(features)) or 'none'}). "
+                f"Clear or fix {label} in the job's SLURM section"
+            )
+
+
+def avoided_nodes(cfg: SlurmConfig) -> list[str]:
+    """The nodes of `cfg.partition` that have any feature `cfg.avoid` names: the job's --exclude. Empty when
+    nothing is avoided or off a SLURM host. Raises when every node of the partition would be excluded."""
+    if not cfg.avoid:
+        return []
+    nodes = _partition_nodes(cfg.partition)
+    if nodes is None:
+        return []
+    avoid = _named_features(cfg.avoid)
+    out = sorted(name for name, features in nodes.items() if features & avoid)
+    if nodes and len(out) == len(nodes):
         raise ValueError(
-            f"SLURM constraint '{cfg.constraint}' names node features partition '{cfg.partition or '(any)'}' "
-            f"does not have: {', '.join(unknown)} (it has: {', '.join(sorted(features)) or 'none'}). "
-            "Clear or fix Constraint in the job's SLURM section"
+            f"SLURM avoid '{cfg.avoid}' excludes every node of partition '{cfg.partition or '(any)'}'. "
+            "Clear or fix Avoid in the job's SLURM section"
         )
+    return out
 
 
 def crboost_job_name(instance_id: str, *, supervisor: bool = False) -> str:
@@ -205,6 +251,12 @@ def write_sbatch_script(
         # Straight under the shebang: sbatch stops reading #SBATCH lines at the first command.
         shebang, body = script.split("\n", 1)
         script = f"{shebang}\n#SBATCH --qos={cfg.qos.strip()}\n{body}"
+    if cfg.prefer:
+        shebang, body = script.split("\n", 1)
+        script = f'{shebang}\n#SBATCH --prefer="{cfg.prefer}"\n{body}'
+    if excluded := avoided_nodes(cfg):
+        shebang, body = script.split("\n", 1)
+        script = f"{shebang}\n#SBATCH --exclude={','.join(excluded)}\n{body}"
     if array is None:
         # A second supervisor started in a running job's dir (refused by its owner file) would truncate
         # the owner's run.out/.err by starting; appended to, they keep both. Callers that reuse a dir

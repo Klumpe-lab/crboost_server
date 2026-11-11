@@ -128,9 +128,23 @@ def _run_set(state, selected: list[str]) -> tuple[list[str], list[str]]:
 
 
 def _queue_config(job_model: AbstractJobParams) -> SlurmConfig:
-    """The resources the job's supervisor is submitted with (qsub_extra1..8, routed per job type)."""
+    """The resources the job's supervisor is submitted with (qsub_extra1..8, routed per job type).
+
+    QOS, prefer and avoid are not qsub_extra values: a job whose queue options are the shared supervisor's (array
+    dispatchers override _get_queue_options) takes the supervisor's and passes its own to the array tasks instead."""
     opts = dict(job_model._get_queue_options())
-    return SlurmConfig(**{field: opts[key] for field, key in SlurmConfig.QSUB_EXTRA_MAPPING.items()})
+    cfg = SlurmConfig(**{field: opts[key] for field, key in SlurmConfig.QSUB_EXTRA_MAPPING.items()})
+    own = (
+        get_config_service().supervisor_slurm_defaults
+        if _is_supervisor(job_model)
+        else job_model.get_effective_slurm_config()
+    )
+    cfg.qos, cfg.prefer, cfg.avoid = own.qos, own.prefer, own.avoid
+    return cfg
+
+
+def _is_supervisor(job_model: AbstractJobParams) -> bool:
+    return type(job_model)._get_queue_options is not AbstractJobParams._get_queue_options
 
 
 def _constraint_problems(state, instances_to_run: list[str]) -> list[str]:
@@ -510,7 +524,17 @@ class PipelineOrchestratorService:
                     "inputs": inputs,
                     "resources": {
                         k: getattr(cfg, k)
-                        for k in ("partition", "constraint", "gres", "cpus_per_task", "mem", "time", "qos")
+                        for k in (
+                            "partition",
+                            "constraint",
+                            "prefer",
+                            "avoid",
+                            "gres",
+                            "cpus_per_task",
+                            "mem",
+                            "time",
+                            "qos",
+                        )
                     },
                 }
             )
@@ -870,15 +894,7 @@ class PipelineOrchestratorService:
         # Checked before allocation (_preflight); again here, where the script is written.
         check_constraint(job_model.get_effective_slurm_config())
         cfg = _queue_config(job_model)
-        # The job's QOS belongs to its own resources; a job whose queue options are the shared
-        # supervisor's (array dispatchers override _get_queue_options) takes the supervisor's QOS here
-        # and passes its own QOS to the array tasks instead.
-        supervisor = type(job_model)._get_queue_options is not AbstractJobParams._get_queue_options
-        if supervisor:
-            cfg.qos = get_config_service().supervisor_slurm_defaults.qos
-        else:
-            cfg.qos = job_model.get_effective_slurm_config().qos
-        name = crboost_job_name(instance_id, supervisor=supervisor)
+        name = crboost_job_name(instance_id, supervisor=_is_supervisor(job_model))
         return write_sbatch_script(job_dir / "run_submit.script", cfg, fn_exe, name=name)
 
     def _write_job_star(
