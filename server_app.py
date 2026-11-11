@@ -127,21 +127,6 @@ def setup_app(port: int):
             return FileResponse(resolved, media_type="image/png", headers=cache)
         return Response(content=thumb, media_type="image/jpeg", headers=cache)
 
-    @app.get("/api/snapshot")
-    def serve_snapshot(path: str):
-        # A project snapshot's zip (ui/snapshot/build.py), as a download: only a .zip directly in a
-        # loaded project's Snapshots/ directory.
-        try:
-            resolved = Path(path).resolve(strict=True)
-        except (FileNotFoundError, RuntimeError):
-            return {"error": "not found"}
-        is_snapshot = resolved.suffix == ".zip" and resolved.parent.name == "Snapshots"
-        if not is_snapshot or not (resolved.parent.parent / "project_params.json").is_file():
-            return {"error": "not a project snapshot"}
-        if not is_in_loaded_project(resolved):
-            return {"error": "outside project roots"}
-        return FileResponse(resolved, media_type="application/zip", filename=resolved.name, headers=NO_GZIP)
-
     app.mount("/static", StaticFiles(directory=REPO_ROOT / "static"), name="static")
     # mtime-based cache-buster: the browser refetches main.css whenever we edit it,
     # so dev iteration doesn't require Cmd-Shift-R after every CSS change.

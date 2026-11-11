@@ -1,0 +1,31 @@
+/* A frozen page of a project snapshot (frozen.js): nothing looks clickable but what goes somewhere. */
+body.cb-frozen,
+body.cb-frozen * { cursor: default !important; }
+body.cb-frozen [data-cb-go],
+body.cb-frozen [data-cb-go] *,
+body.cb-frozen a[href],
+body.cb-frozen a[href] * { cursor: pointer !important; }
+body.cb-frozen [data-frozen-chart] { cursor: crosshair !important; }
+
+.cb-frozen-step {
+  display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px;
+  margin: 0 2px; border-radius: 3px; color: #475569; text-decoration: none; font-size: 13px; line-height: 1;
+}
+.cb-frozen-step:hover { background: #e2e8f0; color: #0f172a; }
+.cb-frozen-step.off { opacity: 0.3; pointer-events: none; }
+
+.cb-frozen-list {
+  position: fixed; z-index: 9000; max-height: 70vh; min-width: 280px; overflow: auto; padding: 4px 0;
+  background: #fff; border: 1px solid #dbe3ec; border-radius: 6px; box-shadow: 0 6px 18px rgba(15, 23, 42, 0.14);
+  font: 11px/1.4 "IBM Plex Sans", system-ui, sans-serif;
+}
+.cb-frozen-list a { display: block; padding: 3px 12px; color: #334155; text-decoration: none; white-space: nowrap; }
+.cb-frozen-list a:hover { background: #f1f5f9; }
+.cb-frozen-list a.on { background: #e8f1fb; color: #0f172a; font-weight: 600; }
+
+.cb-frozen-tag {
+  position: fixed; right: 10px; bottom: 8px; z-index: 9000; padding: 2px 8px; border-radius: 10px;
+  background: rgba(15, 23, 42, 0.72); color: #f8fafc; font: 10px/16px "IBM Plex Sans", system-ui, sans-serif;
+  text-decoration: none;
+}
+.cb-frozen-tag:hover { background: rgba(15, 23, 42, 0.9); }

@@ -30,6 +30,8 @@ class Segmented:
         with ui.element("div").classes(f"cb-seg {classes}".strip()):
             for key, label in tabs:
                 seg = ui.element("div").classes("cb-seg-btn" + (" active" if key == active else ""))
+                # Which segment it is, for a project snapshot's frozen page to switch on (ui/snapshot/).
+                seg.props["data-cb-seg"] = key
                 with seg:
                     ui.label(label)
                     # Built once, text set later: a count change must never rebuild the
