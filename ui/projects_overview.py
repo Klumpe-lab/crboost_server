@@ -19,6 +19,7 @@ import logging
 import itertools
 import math
 import re
+import time
 import urllib.parse
 from datetime import datetime
 from pathlib import Path
@@ -34,8 +35,8 @@ from ui.background_task import BackgroundTask
 from ui.components.buttons import house_button, icon_button
 from ui.components.copyable import copy_on_click
 from ui.components.dialogs import dialog_host
-from ui.components.fields import house_select
-from ui.components.reactive import SingleFlight
+from ui.components.fields import house_field, house_select
+from ui.components.reactive import Debounced, SingleFlight
 from ui.components.segmented import render_segmented
 from services.routes import Route, route_to_path
 from ui.styles import MONO, SANS as FONT, WAIT_SPINNER
@@ -77,6 +78,32 @@ _ASCENDING_FIRST = frozenset({"name", "owner", "species"})
 _STATUS_RANK = {"running": 4, "queued": 3, "review": 2, "done": 1, "failed": 0}
 DEFAULT_COLUMN_SORT = ("status", True)
 
+# The search filters once typing pauses: a render shows and hides every row that comes or goes.
+_SEARCH_SETTLE_S = 0.25
+# A row shows this many of its tags after its name and counts the rest.
+_ROW_TAGS_SHOWN = 2
+_TAG_MAX_LEN = 40
+_CLR_TAG_MODE = "#4a8fd4"
+# A tag on a row: the house chip's capsule, small and colourless (a tag is the user's grouping, not a state).
+_ROW_TAG_STYLE = (
+    f"{FONT} font-size: 9px; font-weight: 500; line-height: 13px; padding: 0 6px; border-radius: 999px; "
+    "border: 1px solid #dbe3ec; background: #f4f8fc; color: #4f6782; white-space: nowrap; flex-shrink: 0;"
+)
+# A tag chip in the header: the same capsule at the toolbar's 22 px.
+_TAG_CHIP_STYLE = (
+    f"{FONT} display: inline-flex; align-items: baseline; gap: 5px; height: 22px; box-sizing: border-box; "
+    "padding: 0 10px; border-radius: 999px; font-size: 10px; line-height: 20px; white-space: nowrap; "
+    "cursor: pointer; user-select: none; flex-shrink: 0;"
+)
+# A section title in the project hover card.
+_CARD_HEAD_STYLE = (
+    f"{FONT} font-size: 9px; font-weight: 600; color: {CLR_LABEL}; letter-spacing: 0.06em; "
+    "text-transform: uppercase; margin: 8px 0 3px;"
+)
+# The rail avatar's card rescans the project's base at most this often, when it opens.
+_OTHERS_RESCAN_S = 30.0
+_others_scanned_at: dict[str, float] = {}
+
 # WarpTools preview names end in the reconstruction's pixel size: `<tomo>_6.20Apx.png`.
 _PREVIEW_SUFFIX = re.compile(r"_\d+(?:\.\d+)?Apx\.png$")
 
@@ -101,6 +128,11 @@ _HOVER_FIT = (
     "m.dataset.side = b.top >= r.bottom - 1 ? 'below' : 'above'; "
     "m.style.setProperty('--cb-caret-x', Math.min(Math.max(z.left + 24 - b.left, 14), b.width - 14) + 'px'); "
     "}); }"
+)
+# Close the open card now: a row a filter hides keeps its menu, which would stay up over the list.
+_HOVER_HIDE_NOW = (
+    f"(() => {{ const s = {_HOVER_STATE}; clearTimeout(s.timer); "
+    "if (s.open !== null) runMethod(s.open, 'hide', []); s.open = null; })()"
 )
 
 
@@ -304,9 +336,13 @@ class ProjectsOverview:
         self._outer_container = None
         self._list_container = None
         self._column_header = None
-        # What the list shows, in order: (key, fingerprint, element) per section header and row. A
-        # render whose keys come out the same rebuilds only the entries whose fingerprint moved.
+        # What the list holds: (key, fingerprint, element) per section header and row, the shown ones
+        # first and in order, then the rows the filters hide. A render rebuilds only the entries whose
+        # fingerprint moved.
         self._rendered: list[tuple[str, object, ui.element]] = []
+        self._skeleton = None
+        self._empty_note = None
+        self._count_label = None
         self._size_label = None
         self._scan_note = None
         # True while a scan streams rows in: an empty list then means "not found yet".
@@ -339,7 +375,21 @@ class ProjectsOverview:
         # Deletion mode: armed by the header's trash toggle, a row click deletes.
         self._delete_mode = False
         self._delete_btn = None
-        self._delete_hint = None
+        self._mode_hint = None
+        # The search: what was typed, and its words lowercased; every word must turn up in a project.
+        self._query = ""
+        self._query_words: tuple[str, ...] = ()
+        self._search_soon = Debounced(self._render_list, _SEARCH_SETTLE_S)
+        # Tagging mode: the tag a row click puts on its project or takes off ("" while it has no name
+        # yet); None when the mode is off.
+        self._tag_mode: str | None = None
+        self._tag_strip = None
+        self._tag_strip_shown: object = None
+        self._tag_btn = None
+        self._tag_tools = None
+        self._tag_field = None
+        self._tag_drop_btn = None
+        self._syncing_tag_field = False
         self._flight = SingleFlight()
 
     # =====================================================================
@@ -380,17 +430,22 @@ class ProjectsOverview:
                 .style(f"{scroll_style} padding: 0; background: #ffffff; border-radius: 4px;")
             ):
                 self._list_container = ui.column().classes("w-full").style("gap: 0; padding: 0;")
-            # The last scan of this base, from any roster, shows at once; the scan below brings it up
-            # to date and re-renders only the rows that moved.
-            base = (self.base_path_provider() or "").strip()
-            cached = self.backend.last_project_scan(base) if base else None
+                # Outside the list, whose children are exactly the rendered entries.
+                self._empty_note = ui.label("").style(
+                    f"{FONT} font-size: 11px; color: {CLR_GHOST}; font-style: italic; padding: 24px 16px; "
+                    "text-align: center; width: 100%;"
+                )
+                self._empty_note.set_visibility(False)
+                # The last scan of this base, from any roster, shows at once; the scan below brings it
+                # up to date and re-renders only the rows that moved.
+                base = (self.base_path_provider() or "").strip()
+                cached = self.backend.last_project_scan(base) if base else None
+                if cached is None:
+                    self._skeleton = self._render_loading_skeleton()
             if cached is not None:
                 self._projects = cached
                 self._last_scanned_base = base
                 self._render_list()
-            else:
-                with self._list_container:
-                    self._render_loading_skeleton()
 
         # Kick off the first scan; subsequent ones are timer-driven.
         # Hand the coroutines directly to ui.timer -- wrapping them in
@@ -497,81 +552,134 @@ class ProjectsOverview:
     # =====================================================================
 
     def _build_header(self):
-        """One control row: the title and the total size on the left, every control on
-        the right. It wraps on a narrow pane instead of pushing controls off the edge."""
-        with ui.row().classes("w-full items-center px-3 py-2").style("gap: 6px 10px; flex-wrap: wrap;"):
-            if self.title_slot is not None:
-                self.title_slot()
-            else:
-                ui.label(self.title).style(
-                    f"{FONT} font-size: 12px; font-weight: 600; color: {CLR_HEADING}; "
-                    "letter-spacing: -0.01em; flex-shrink: 0;"
+        """Two control rows over the list, each wrapping on a narrow pane instead of pushing controls off
+        its edge. The first holds the title, how many projects show and what they weigh, a mode's hint,
+        then the order, the view and the actions; the second what shows: the search, the tag chips and
+        the tag tools, the species and the owner. The controls are the toolbar's 22 px (`.cb-proj-toolbar`,
+        ui/dashboard/css.py), the height of the title switch and the house buttons."""
+        with ui.column().classes("w-full cb-proj-toolbar").style("gap: 10px; padding: 12px 14px 10px;"):
+            with ui.row().classes("w-full items-center").style("gap: 8px 16px; flex-wrap: wrap;"):
+                if self.title_slot is not None:
+                    self.title_slot()
+                else:
+                    ui.label(self.title).style(
+                        f"{FONT} font-size: 13px; font-weight: 600; color: {CLR_HEADING}; "
+                        "letter-spacing: -0.01em; flex-shrink: 0;"
+                    )
+                with ui.row().classes("items-baseline no-wrap").style("gap: 10px; flex-shrink: 0;"):
+                    self._count_label = ui.label("").style(f"{MONO} font-size: 10px; color: {CLR_META};")
+                    self._size_label = ui.label("").style(f"{MONO} font-size: 10px; color: {CLR_SUBLABEL};")
+                    # Shown while a first scan streams its rows in.
+                    self._scan_note = ui.label("").style(f"{MONO} font-size: 10px; color: {CLR_SUBLABEL};")
+                    self._scan_note.set_visibility(False)
+                self._mode_hint = ui.label("").style(
+                    f"{FONT} font-size: 10px; font-weight: 600; letter-spacing: 0.02em; "
+                    "flex-shrink: 0; white-space: nowrap;"
                 )
-            self._size_label = ui.label("").style(f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; flex-shrink: 0;")
-            # Shown while a first scan streams its rows in.
-            self._scan_note = ui.label("").style(f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; flex-shrink: 0;")
-            self._scan_note.set_visibility(False)
-            self._delete_hint = ui.label("Deletion mode · click a project to delete it").style(
-                f"{FONT} font-size: 9px; font-weight: 600; color: {CLR_FAILED}; letter-spacing: 0.02em; "
-                "flex-shrink: 0; white-space: nowrap;"
-            )
-            ui.element("div").style("flex: 1 1 0; min-width: 0;")
+                ui.element("div").style("flex: 1 1 0; min-width: 0;")
+                # Every choice here is the same two-way strip, so the row reads as one set of controls
+                # and each state is named rather than implied by a knob. In the full view sorting
+                # happens inside each owner section, so the Lab/Shared grouping is unaffected by it.
+                with ui.row().classes("items-center no-wrap").style("gap: 12px; flex-shrink: 0;"):
+                    self._sort_seg = self._segmented(
+                        SORT_MODES,
+                        "" if self._column_sort else self._sort_mode,
+                        self._on_sort,
+                        hint="Order: last opened by you, or created",
+                    )
+                    self._view_seg = self._segmented(
+                        (("compact", "Compact"), ("full", "Full")),
+                        "compact" if self.prefs.prefs.projects_compact_view else "full",
+                        self._on_view,
+                        hint="Compact: one line per project. Full: paths and last activity",
+                    )
+                with ui.row().classes("items-center no-wrap").style("gap: 6px; flex-shrink: 0;"):
+                    if self.on_browse is not None:
+                        icon_button("folder_open", self.on_browse, tooltip="Browse for another base location")
+                    self._delete_btn = icon_button(
+                        "delete_outline",
+                        self._toggle_delete_mode,
+                        tooltip="Deletion mode: arm it, then click the project to delete. Click again to disarm.",
+                        kind="danger",
+                    )
+                    # An explicit rescan on top of the timer's.
+                    icon_button(
+                        "refresh", self.refresh, tooltip=f"Rescan now (auto every {int(self.auto_refresh_sec)}s)"
+                    )
 
-            # Every choice in this row is the same small two-way strip, so the row reads as
-            # one set of controls and each state is named rather than implied by a knob.
-            # In the full view sorting happens inside each owner section, so the
-            # Lab/Shared grouping is unaffected by it.
-            self._sort_seg = self._small_segmented(
-                SORT_MODES,
-                "" if self._column_sort else self._sort_mode,
-                self._on_sort,
-                hint="Order: last opened by you, or created",
-            )
+            with ui.row().classes("w-full items-center").style("gap: 8px 16px; flex-wrap: wrap;"):
+                self._build_search()
+                with ui.row().classes("items-center").style("gap: 6px; flex-wrap: wrap; min-width: 0;"):
+                    self._tag_strip = ui.row().classes("items-center").style("gap: 6px; flex-wrap: wrap;")
+                    self._build_tag_tools()
+                ui.element("div").style("flex: 1 1 0; min-width: 0;")
+                with ui.row().classes("items-center no-wrap").style("gap: 12px; flex-shrink: 0;"):
+                    # Species index across the scanned projects. Options are refreshed on every scan
+                    # (_render_list); a species that no project registers is simply not offered rather
+                    # than silently matching nothing.
+                    self._species_select = house_select(
+                        "",
+                        {ANY_SPECIES: ANY_SPECIES_LABEL},
+                        value=ANY_SPECIES,
+                        width="w-36",
+                        hint="Show only projects whose registry holds this particle species",
+                        on_change=self._on_species_filter,
+                    )
+                    if self.show_filter:
+                        self._owner_seg = self._segmented(
+                            (("all", "All"), ("mine", "Mine")),
+                            "mine" if self.prefs.prefs.show_only_mine else "all",
+                            self._on_owner_filter,
+                            hint=f"Mine: projects created by {CURRENT_USER}, plus Lab / Shared",
+                        )
+        self._style_modes()
 
-            # Species index across the scanned projects. Options are refreshed on every
-            # scan (_render_list); a species that no project registers is simply not
-            # offered rather than silently matching nothing.
-            self._species_select = house_select(
-                "",
-                {ANY_SPECIES: ANY_SPECIES_LABEL},
-                value=ANY_SPECIES,
-                width="w-28",
-                hint="Show only projects whose registry holds this particle species",
-                on_change=self._on_species_filter,
-            )
+    def _build_search(self) -> None:
+        """Every word typed must turn up somewhere in a project (`_search_text`); the list follows once the
+        typing pauses. Esc clears it."""
 
-            if self.show_filter:
-                self._owner_seg = self._small_segmented(
-                    (("all", "All"), ("mine", "Mine")),
-                    "mine" if self.prefs.prefs.show_only_mine else "all",
-                    self._on_owner_filter,
-                    hint=f"Mine: projects created by {CURRENT_USER}, plus Lab / Shared",
-                )
-            self._view_seg = self._small_segmented(
-                (("compact", "Compact"), ("full", "Full")),
-                "compact" if self.prefs.prefs.projects_compact_view else "full",
-                self._on_view,
-                hint="Compact: one line per project. Full: paths and last activity",
-            )
+        def build():
+            field = ui.input(placeholder="Search name, species, owner, tag, job, path…").props("clearable")
+            with field.add_slot("prepend"):
+                ui.icon("search")
+            field.on_value_change(self._on_search)
+            field.on("keydown.esc", lambda: field.set_value(""))
+            return field
 
-            if self.on_browse is not None:
-                icon_button("folder_open", self.on_browse, tooltip="Browse for another base location")
-            self._delete_btn = icon_button(
-                "delete_outline",
-                self._toggle_delete_mode,
-                tooltip="Deletion mode: arm it, then click the project to delete. Click again to disarm.",
-                kind="danger",
+        house_field("", build, width="w-72")
+
+    def _build_tag_tools(self) -> None:
+        """The tag button, and beside it while tagging mode is armed: the tag's name, the mode's hint,
+        Remove from all (when projects carry it) and Done."""
+        self._tag_btn = icon_button(
+            "new_label",
+            self._toggle_tag_mode,
+            tooltip="Tag projects: name a tag (or click its chip), then click projects to put it on or take it "
+            "off. Tags are yours alone: they group your roster and change nothing in the projects.",
+        )
+        self._tag_tools = ui.row().classes("items-center no-wrap").style("gap: 8px; flex-shrink: 0;")
+        with self._tag_tools:
+
+            def build():
+                field = ui.input(placeholder="tag name").props(f"maxlength={_TAG_MAX_LEN}")
+                field.on_value_change(self._on_tag_name)
+                field.on("keydown.esc", lambda: self._set_tag_mode(None))
+                field.on("keydown.enter", lambda: field.run_method("blur"))
+                return field
+
+            self._tag_field = house_field("Tag", build, width="w-40")
+            self._tag_drop_btn = house_button(
+                "Remove from all", self._confirm_drop_tag, kind="danger", tooltip="Take this tag off every project"
             )
-            self._style_delete_mode()
-            # Refresh button -- explicit re-scan in addition to the timer.
-            icon_button("refresh", self.refresh, tooltip=f"Rescan now (auto every {int(self.auto_refresh_sec)}s)")
+            house_button("Done", lambda: self._set_tag_mode(None), kind="accent")
+        self._tag_tools.set_visibility(False)
 
     def _build_column_header(self):
         """Compact view: the column titles, above the scroll area so they stay put. Same widths,
         gap and padding as `_render_compact_body`, plus the chevron's column. A title click
         sorts by its column, a second click reverses it (`_on_column_sort`)."""
         head = ui.element("div").style(
-            f"display: flex; align-items: center; gap: 12px; padding: 4px {8 + self._W_CHEVRON}px 4px 14px; "
+            f"display: flex; align-items: center; gap: 12px; padding: 6px {8 + self._W_CHEVRON}px 6px 14px; "
             "width: 100%;"
         )
         with head:
@@ -623,10 +731,10 @@ class ProjectsOverview:
         self.prefs.save_to_app_storage(app.storage.user)
 
     @staticmethod
-    def _small_segmented(tabs, active: str, on_switch: Callable[[str], None], *, hint: str):
-        """A 16 px segmented strip (`cb-seg-sm`) with a hover hint."""
+    def _segmented(tabs, active: str, on_switch: Callable[[str], None], *, hint: str):
+        """A segmented strip at the toolbar's scale, with a hover hint."""
         with ui.element("div").style("display: flex; flex-shrink: 0;").tooltip(hint):
-            return render_segmented(list(tabs), active, on_switch, classes="cb-seg-sm")
+            return render_segmented(list(tabs), active, on_switch)
 
     def _toggle_delete_mode(self):
         self._set_delete_mode(not self._delete_mode)
@@ -634,29 +742,208 @@ class ProjectsOverview:
     def _set_delete_mode(self, on: bool):
         """Arm or disarm deletion mode. Armed, the rows re-render as delete targets: a click
         opens the confirm dialog, nothing previews, and the travel chevron is a trash glyph,
-        so no click on a row leaves the page."""
+        so no click on a row leaves the page. Arming it ends tagging mode."""
         self._delete_mode = on
-        self._style_delete_mode()
+        if on and self._tag_mode is not None:
+            self._tag_mode = None
+            if self._tag_tools is not None:
+                self._tag_tools.set_visibility(False)
+        self._style_modes()
         self._render_list()
 
-    def _style_delete_mode(self):
-        """The header toggle, its hint and the roster's outline, for the current mode. The
-        armed outline breathes (`.cb-proj-delmode`, ui/dashboard/css.py)."""
-        on = self._delete_mode
-        if self._delete_btn is not None:
-            self._delete_btn.props(f"icon={'delete' if on else 'delete_outline'}")
+    def _style_modes(self):
+        """The header's mode toggles, the mode's hint and the roster's outline. Armed deletion breathes
+        red (`.cb-proj-delmode`, ui/dashboard/css.py); armed tagging is outlined blue."""
+        deleting, tagging = self._delete_mode, self._tag_mode is not None
+        for btn, on in ((self._delete_btn, deleting), (self._tag_btn, tagging)):
+            if btn is None:
+                continue
             if on:
-                self._delete_btn.classes(add="cb-icon-btn--armed")
+                btn.classes(add="cb-icon-btn--armed")
             else:
-                self._delete_btn.classes(remove="cb-icon-btn--armed")
-        if self._delete_hint is not None:
-            self._delete_hint.set_visibility(on)
+                btn.classes(remove="cb-icon-btn--armed")
+        if self._delete_btn is not None:
+            self._delete_btn.props(f"icon={'delete' if deleting else 'delete_outline'}")
+        if self._mode_hint is not None:
+            if deleting:
+                self._mode_hint.set_text("Deletion mode · click a project to delete it")
+                self._mode_hint.style(f"color: {CLR_FAILED};")
+            elif tagging:
+                self._mode_hint.set_text("Tagging · click a project to put the tag on or take it off")
+                self._mode_hint.style(f"color: {_CLR_TAG_MODE};")
+            self._mode_hint.set_visibility(deleting or tagging)
         if self._outer_container is not None:
-            self._outer_container.style(f"border: 1px solid {CLR_FAILED if on else 'transparent'};")
-            if on:
+            edge = CLR_FAILED if deleting else _CLR_TAG_MODE if tagging else "transparent"
+            self._outer_container.style(f"border: 1px solid {edge};")
+            if deleting:
                 self._outer_container.classes(add="cb-proj-delmode")
             else:
                 self._outer_container.classes(remove="cb-proj-delmode")
+
+    # ---- search and tags ----
+
+    def _on_search(self, e) -> None:
+        self._query = (e.value or "").strip()
+        words = tuple(self._query.lower().split())
+        if words == self._query_words:
+            return
+        self._query_words = words
+        self._search_soon()
+
+    def _search_text(self, proj: dict) -> str:
+        """Everything the search looks in, lowercased, a line per field so no word matches across two:
+        the name and nickname, owner and creator, species, tags, protocol, the status, the furthest job
+        and the one at work, the raw-data folder and the project's own path."""
+        status = proj.get("live_status") or ""
+        parts = [
+            proj["name"],
+            proj.get("mnemonic") or "",
+            self._owner_label(self._eff_owner_of(proj)),
+            proj.get("owner") or "",
+            proj.get("creator") or "",
+            *(s.get("name") or s["id"] for s in proj.get("species") or []),
+            *self._tags(proj),
+            proj.get("protocol") or "",
+            status,
+            (_STATUS_STYLES.get(status) or {}).get("label", ""),
+            (proj.get("furthest_done") or {}).get("label") or "",
+            (proj.get("live_progress") or {}).get("stage") or "",
+            proj.get("source_directory") or "",
+            proj["path"],
+        ]
+        return "\n".join(parts).lower()
+
+    def _tags(self, proj: dict) -> list[str]:
+        return self.prefs.prefs.tags_of(proj["resolved_path"])
+
+    @staticmethod
+    def _carries(tags, tag: str) -> bool:
+        return any(t.lower() == tag.lower() for t in tags)
+
+    def _tag_counts(self, projects: list[dict]) -> dict[str, int]:
+        """The tags on `projects` -> how many of them carry each, by name."""
+        counts: dict[str, int] = {}
+        for proj in projects:
+            for tag in self._tags(proj):
+                counts[tag] = counts.get(tag, 0) + 1
+        return dict(sorted(counts.items(), key=lambda kv: kv[0].lower()))
+
+    def _tag_filter(self, counts: dict[str, int]) -> str | None:
+        """The tag the list is narrowed to, in its spelling in `counts`; None when there is none, or when
+        no project the other filters show carries it any more."""
+        tag = self.prefs.prefs.projects_tag_filter
+        if not tag:
+            return None
+        return next((t for t in counts if t.lower() == tag.lower()), None)
+
+    def _paint_tag_strip(self, counts: dict[str, int], active: str | None) -> None:
+        """One chip per tag with its count, rebuilt only when the tags, the filter or the mode moved. A
+        click narrows the list to the tag's projects, a second shows them all again; in tagging mode it
+        arms that tag instead."""
+        if self._tag_strip is None or self._tag_strip.is_deleted:
+            return
+        armed = self._tag_mode
+        shown = (tuple(counts.items()), active, armed)
+        if shown == self._tag_strip_shown:
+            return
+        self._tag_strip_shown = shown
+        self._tag_strip.clear()
+        with self._tag_strip:
+            for tag, n in counts.items():
+                lit = (armed is not None and armed.lower() == tag.lower()) or (armed is None and tag == active)
+                chip = ui.element("div").classes("cb-proj-tagchip" + (" active" if lit else "")).style(_TAG_CHIP_STYLE)
+                with chip:
+                    ui.label(tag)
+                    ui.label(str(n)).classes("cb-proj-tagchip-n")
+                if armed is not None:
+                    hint = f"Tag projects with {tag}"
+                elif lit:
+                    hint = "Show every project again"
+                else:
+                    hint = f"Show only the {n} project{'s' if n != 1 else ''} tagged {tag}"
+                _set_title(chip, hint)
+                chip.on("click", lambda _e, t=tag: self._on_tag_chip(t))
+
+    def _on_tag_chip(self, tag: str) -> None:
+        if self._tag_mode is not None:
+            self._set_tag_mode(tag)
+            return
+        current = self.prefs.prefs.projects_tag_filter
+        self._set_tag_filter(None if current is not None and current.lower() == tag.lower() else tag)
+
+    def _set_tag_filter(self, tag: str | None) -> None:
+        self.prefs.prefs.projects_tag_filter = tag
+        self.prefs.save_to_app_storage(app.storage.user)
+        self._render_list()
+
+    def _toggle_tag_mode(self) -> None:
+        if self._tag_mode is not None:
+            self._set_tag_mode(None)
+            return
+        # Armed for the tag the list is narrowed to, if any: the usual next step is adding to it.
+        self._set_tag_mode(self.prefs.prefs.projects_tag_filter or "")
+
+    def _set_tag_mode(self, tag: str | None) -> None:
+        """Arm tagging mode for `tag` ("" = armed, its name still to type) or end it (None). Armed, a row
+        click puts the tag on its project or takes it off, and the tag filter rests, so every project can
+        be reached. Arming it ends deletion mode."""
+        if tag is not None:
+            self._delete_mode = False
+            tag = self.prefs.prefs.canonical_tag(tag)
+        self._tag_mode = tag
+        if self._tag_field is not None:
+            self._syncing_tag_field = True
+            try:
+                self._tag_field.set_value(tag or "")
+            finally:
+                self._syncing_tag_field = False
+        if self._tag_tools is not None:
+            self._tag_tools.set_visibility(tag is not None)
+        self._style_modes()
+        self._render_list()
+        if tag == "" and self._tag_field is not None:
+            self._tag_field.run_method("focus")
+
+    def _on_tag_name(self, e) -> None:
+        if self._syncing_tag_field or self._tag_mode is None:
+            return
+        self._tag_mode = self.prefs.prefs.canonical_tag(e.value or "")
+        self._search_soon()
+
+    def _toggle_row_tag(self, proj: dict) -> None:
+        tag = self._tag_mode or ""
+        if not tag:
+            ui.notify("Name the tag first", type="warning", timeout=1500)
+            return
+        self.prefs.prefs.toggle_tag(proj["resolved_path"], tag)
+        self.prefs.save_to_app_storage(app.storage.user)
+        self._render_list()
+
+    async def _confirm_drop_tag(self) -> None:
+        """Take the armed tag off every project, after a confirm; tagging mode ends with it."""
+        tag = self._tag_mode or ""
+        n = self.prefs.prefs.tag_counts().get(tag, 0)
+        if not n or self._outer_container is None:
+            return
+        async with self._flight("drop-tag") as acquired:
+            if not acquired:
+                return
+            with self._outer_container, ui.dialog() as dialog, ui.card().classes("w-96"):
+                ui.label(f"Remove the tag '{tag}'?").style(
+                    f"{FONT} font-size: 13px; font-weight: 600; color: {CLR_HEADING};"
+                )
+                ui.label(
+                    f"It comes off the {n} project{'s' if n != 1 else ''} that carry it. The projects stay as they are."
+                ).style(f"{FONT} font-size: 12px; color: {CLR_LABEL}; margin-top: 4px;")
+                with ui.row().classes("w-full justify-end mt-3 gap-2"):
+                    house_button("Cancel", lambda: dialog.submit(False))
+                    house_button("Remove tag", lambda: dialog.submit(True), kind="danger")
+            confirmed = await dialog
+        if not confirmed:
+            return
+        self.prefs.prefs.drop_tag(tag)
+        self.prefs.save_to_app_storage(app.storage.user)
+        self._set_tag_mode(None)
 
     def _on_owner_filter(self, key: str):
         self._owner_seg.set_active(key)
@@ -772,15 +1059,20 @@ class ProjectsOverview:
     # LIST
     # =====================================================================
 
-    def _render_loading_skeleton(self):
-        with ui.row().classes("w-full items-center justify-center").style("padding: 24px 0;"):
+    def _render_loading_skeleton(self) -> ui.element:
+        with ui.row().classes("w-full items-center justify-center").style("padding: 24px 0;") as skeleton:
             ui.spinner("dots", size="sm").style(f"color: {CLR_SUBLABEL};")
             ui.label("Scanning…").style(f"{FONT} font-size: 11px; color: {CLR_SUBLABEL}; margin-left: 8px;")
+        return skeleton
 
     def _render_list(self):
         # Deleted when the tab closed while refresh() awaited the scan.
         if self._list_container is None or self._list_container.is_deleted:
             return
+
+        if self._skeleton is not None:
+            self._skeleton.delete()
+            self._skeleton = None
 
         self._running_tasks = _running_roster_tasks()
         all_projects = [p for p in self._projects if _DELETE_KEY + p["path"] not in self._running_tasks]
@@ -801,13 +1093,40 @@ class ProjectsOverview:
         if species_filter != ANY_SPECIES:
             visible = [p for p in visible if any(s["id"] == species_filter for s in (p.get("species") or []))]
 
-        # The header carries one number: what the visible projects weigh on disk.
+        # The chips count what the filters above show; the tag filter rests in tagging mode, where every
+        # project must be reachable.
+        counts = self._tag_counts(visible)
+        tag = self._tag_filter(counts)
+        self._paint_tag_strip(counts, tag)
+        if self._tag_drop_btn is not None:
+            self._tag_drop_btn.set_visibility(bool(self._tag_mode) and self._tag_mode in self.prefs.prefs.tag_counts())
+        if tag is not None and self._tag_mode is None:
+            visible = [p for p in visible if self._carries(self._tags(p), tag)]
+        if self._query_words:
+            visible = [p for p in visible if all(w in self._search_text(p) for w in self._query_words)]
+
+        self._paint_counts(visible, all_projects)
+
+        compact = self.prefs.prefs.projects_compact_view
+        items = self._list_items(visible, compact)
+        if self._column_header is not None:
+            self._column_header.set_visibility(compact and bool(items))
+        self._patch_list(items)
+        self._paint_empty_note(visible, all_projects, tag)
+
+    def _paint_counts(self, visible: list[dict], all_projects: list[dict]) -> None:
+        """The header's numbers: how many projects show of those here, and what the shown ones weigh."""
+        if self._count_label is not None:
+            n, total = len(visible), len(all_projects)
+            s = "s" if total != 1 else ""
+            self._count_label.set_text(f"{n} of {total}" if n != total else f"{total} project{s}")
+            # A native title, not .tooltip(): that would add a new tooltip element on every refresh.
+            _set_title(self._count_label, f"{n} shown of the {total} project{s} in {self._last_scanned_base or '—'}")
         if self._size_label is not None:
             measured = [p["disk_usage"] for p in visible if p.get("disk_usage") and not p["disk_usage"].error]
             unmeasured_n = len(visible) - len(measured)
             total = format_bytes(sum(u.total_bytes for u in measured)) if measured else ""
             self._size_label.set_text(f"{'≥ ' if measured and unmeasured_n else ''}{total}")
-            # A native title, not .tooltip(): that would add a new tooltip element on every refresh.
             if measured and unmeasured_n:
                 s = "s" if unmeasured_n != 1 else ""
                 note = f"{unmeasured_n} project{s} not measured yet: the size is a lower bound"
@@ -815,49 +1134,45 @@ class ProjectsOverview:
             else:
                 self._size_label.props(remove="title")
 
-        compact = self.prefs.prefs.projects_compact_view
-        items = self._list_items(visible, compact)
-        if self._column_header is not None:
-            self._column_header.set_visibility(compact and bool(items))
-
-        if items and self._rendered:
-            self._patch_list(items)
+    def _paint_empty_note(self, visible: list[dict], all_projects: list[dict], tag: str | None) -> None:
+        """What an empty list says: the filter that left nothing, or that there is nothing here."""
+        note = self._empty_note
+        if note is None or note.is_deleted:
             return
-
-        self._list_container.clear()
-        self._rendered = []
-        # Every hover card died with the rows.
-        self._preview_open = False
-        with self._list_container:
-            if not visible:
-                msg = "No projects to show"
-                base = self._last_scanned_base or ""
-                if self._scanning:
-                    msg = "Scanning…"
-                elif not base:
-                    msg = "Set a base location to scan for projects"
-                elif all_projects and species_filter != ANY_SPECIES:
-                    label = (self._species_select.options if self._species_select else {}).get(
-                        species_filter, species_filter
-                    )
-                    msg = f"No projects with a '{label}' species"
-                elif all_projects and show_only_mine:
-                    msg = f"No projects owned by {CURRENT_USER}"
-                ui.label(msg).style(
-                    f"{FONT} font-size: 11px; color: {CLR_GHOST}; "
-                    "font-style: italic; padding: 24px 16px; text-align: center;"
-                )
-                return
-            for key, fingerprint, build in items:
-                self._rendered.append((key, fingerprint, build()))
+        note.set_visibility(not visible)
+        if visible:
+            return
+        msg = "No projects to show"
+        if self._scanning:
+            msg = "Scanning…"
+        elif not (self._last_scanned_base or ""):
+            msg = "Set a base location to scan for projects"
+        elif not all_projects:
+            msg = "No projects to show"
+        elif self._query_words:
+            msg = f"No project matches “{self._query}”"
+        elif tag is not None and self._tag_mode is None:
+            msg = f"No projects tagged {tag}"
+        elif self._species_filter != ANY_SPECIES:
+            label = (self._species_select.options if self._species_select else {}).get(
+                self._species_filter, self._species_filter
+            )
+            msg = f"No projects with a '{label}' species"
+        elif self.prefs.prefs.show_only_mine:
+            msg = f"No projects owned by {CURRENT_USER}"
+        note.set_text(msg)
 
     def _list_items(self, visible: list[dict], compact: bool) -> list[tuple[str, object, Callable[[], ui.element]]]:
         """What the list shows, in order: (key, fingerprint, builder) per section header and row.
         The fingerprint holds everything the entry's render reads."""
         items: list[tuple[str, object, Callable[[], ui.element]]] = []
 
+        tagging = self._tag_mode is not None
+        armed = self._tag_mode or ""
+
         def add_row(proj: dict) -> None:
             path = proj["path"]
+            tags = tuple(self._tags(proj))
             fingerprint = (
                 proj,
                 compact,
@@ -865,6 +1180,9 @@ class ProjectsOverview:
                 proj["resolved_path"] == self._current_resolved,
                 proj["resolved_path"] == self._selected_resolved,
                 _CLEAR_TRASH_KEY + path in self._running_tasks,
+                tags,
+                tagging,
+                bool(armed) and self._carries(tags, armed),
             )
             items.append((f"row:{path}", fingerprint, lambda: self._render_row(proj, compact=compact)))
 
@@ -899,23 +1217,20 @@ class ProjectsOverview:
         return items
 
     def _patch_list(self, items: list[tuple[str, object, Callable[[], ui.element]]]) -> None:
-        """Bring the shown entries to `items` by key: build the new ones and those whose fingerprint
-        moved, move the rest into place, delete the ones gone. A timer tick usually changes one live
-        project, a streaming scan only adds rows, and a full render of a long roster blocks the event
-        loop for a second."""
-        wanted = {key for key, _, _ in items}
-        old: dict[str, tuple[object, ui.element]] = {}
-        for key, fingerprint, element in self._rendered:
-            if key in wanted:
-                old[key] = (fingerprint, element)
-            else:
-                element.delete()
-                self._preview_open = False
+        """Bring the list to `items` by key: build the new entries and those whose fingerprint moved,
+        show and move the rest into place. A row the filters leave out is hidden rather than deleted
+        while its project is in the scan, so a search or a tag chip brings it back without building it
+        again; section headers and the rows of projects gone are deleted. A timer tick usually changes
+        one live project, a streaming scan only adds rows, and building a long roster's rows blocks the
+        event loop for a second."""
+        old = {key: (fingerprint, element) for key, fingerprint, element in self._rendered}
         rendered: list[tuple[str, object, ui.element]] = []
         for i, (key, fingerprint, build) in enumerate(items):
-            prev = old.get(key)
+            prev = old.pop(key, None)
             if prev is not None and prev[0] == fingerprint:
                 element = prev[1]
+                if not element.visible:
+                    element.set_visibility(True)
             else:
                 with self._list_container:
                     element = build()
@@ -926,6 +1241,20 @@ class ProjectsOverview:
             if self._list_container.default_slot.children.index(element) != i:
                 element.move(target_index=i)
             rendered.append((key, fingerprint, element))
+        scanned = {f"row:{p['path']}" for p in self._projects}
+        hid = False
+        for key, (fingerprint, element) in old.items():
+            if key in scanned:
+                if element.visible:
+                    element.set_visibility(False)
+                    hid = True
+                rendered.append((key, fingerprint, element))
+            else:
+                element.delete()
+                self._preview_open = False
+        if hid and self._preview_open:
+            self._list_container.client.run_javascript(_HOVER_HIDE_NOW)
+            self._preview_open = False
         self._rendered = rendered
 
     def _render_section_header(self, creator: str, projects: list[dict]) -> ui.element:
@@ -1045,14 +1374,18 @@ class ProjectsOverview:
         )
         outline = " box-shadow: inset 0 0 0 1.5px #93c5fd;" if is_selected else ""
         deleting = self._delete_mode
-        cursor = " cursor: pointer;" if preview_mode or deleting else " cursor: default;"
+        tagging = self._tag_mode is not None and not deleting
+        cursor = " cursor: pointer;" if preview_mode or deleting or tagging else " cursor: default;"
         if is_current:
-            row_classes = "w-full group"
+            row_classes = "w-full group" + (" cb-proj-tagrow" if tagging else "")
             row_style = base_style + " background: #eff6ff; border-left: 3px solid #3b82f6;" + cursor + outline
             if deleting:
                 row_style += " opacity: 0.5; cursor: not-allowed;"
         elif deleting:
             row_classes = "w-full group cb-proj-delrow"
+            row_style = base_style + cursor + outline
+        elif tagging:
+            row_classes = "w-full group cb-proj-tagrow"
             row_style = base_style + cursor + outline
         else:
             row_classes = "w-full hover:bg-slate-50 transition-colors group"
@@ -1069,6 +1402,9 @@ class ProjectsOverview:
                     await self._handle_delete(proj)
 
                 row.on("click", _delete)
+        elif tagging:
+            # Tagging mode: the row is the trigger, as in deletion mode.
+            row.on("click", lambda: self._toggle_row_tag(proj))
         elif preview_mode:
             row.on("click", _select)
 
@@ -1076,7 +1412,7 @@ class ProjectsOverview:
         with row:
             if compact:
                 self._render_compact_body(proj, row)
-                self._render_chevron(path_str, is_current)
+                self._render_chevron(proj, is_current)
                 return row
             with ui.element("div").style(
                 "flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 3px; "
@@ -1102,6 +1438,7 @@ class ProjectsOverview:
                                 "border-radius: 3px; padding: 0 4px; flex-shrink: 0; "
                                 "letter-spacing: 0.05em;"
                             )
+                        self._render_row_tags(proj)
                         self._render_hover_card(proj, zone, row)
                     # Fixed slots, filled or not, so the running job and the status line up across rows.
                     with ui.element("div").style(f"width: {self._W_LIVE}px; flex-shrink: 0; display: flex;"):
@@ -1149,10 +1486,43 @@ class ProjectsOverview:
             # ---- Travel chevron: full row height, its own hit area ----
             # A full-height column on the right edge, so "go there" is the easiest
             # thing on the row to hit.
-            self._render_chevron(path_str, is_current)
+            self._render_chevron(proj, is_current)
         return row
 
-    def _render_chevron(self, path_str: str, is_current: bool):
+    def _render_row_tags(self, proj: dict) -> None:
+        """The row's tags after its name: the first `_ROW_TAGS_SHOWN`, then how many more. Outside the
+        modes a click on one shows only its projects; in them a click anywhere on the row is the mode's."""
+        tags = self._tags(proj)
+        if not tags:
+            return
+        clickable = self._tag_mode is None and not self._delete_mode
+        with ui.element("div").style("display: flex; align-items: center; gap: 4px; flex-shrink: 0;"):
+            for tag in tags[:_ROW_TAGS_SHOWN]:
+                chip = ui.label(tag).classes("cb-proj-rowtag").style(_ROW_TAG_STYLE)
+                if clickable:
+                    chip.classes("cb-proj-rowtag--link").on("click.stop", lambda _e, t=tag: self._set_tag_filter(t))
+                    _set_title(chip, f"Show only the projects tagged {tag}")
+            if len(tags) > _ROW_TAGS_SHOWN:
+                rest = tags[_ROW_TAGS_SHOWN:]
+                more = ui.label(f"+{len(rest)}").style(f"{MONO} font-size: 9px; color: {CLR_SUBLABEL};")
+                _set_title(more, "Also tagged " + ", ".join(rest))
+
+    def _render_chevron(self, proj: dict, is_current: bool):
+        path_str = proj["path"]
+        if self._tag_mode is not None and not self._delete_mode:
+            # Tagging: the travel column says whether the project carries the armed tag, and lights with
+            # the row (`.cb-proj-tagcheck`), so the one control that leaves the page is gone.
+            on = bool(self._tag_mode) and self._carries(self._tags(proj), self._tag_mode)
+            with (
+                ui.element("div")
+                .classes("cb-proj-tagcheck" + (" on" if on else ""))
+                .style(
+                    f"width: {self._W_CHEVRON}px; flex-shrink: 0; display: flex; align-items: center; "
+                    "justify-content: center; align-self: stretch;"
+                )
+            ):
+                ui.icon("check_box" if on else "check_box_outline_blank", size="16px")
+            return
         if is_current:
             with ui.element("div").style(
                 f"width: {self._W_CHEVRON}px; flex-shrink: 0; display: flex; "
@@ -1219,6 +1589,7 @@ class ProjectsOverview:
                     f"{FONT} font-size: 11px; font-weight: 600; color: {CLR_HEADING}; letter-spacing: -0.01em; "
                     "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 0 1 auto;"
                 )
+                self._render_row_tags(proj)
                 self._render_hover_card(proj, zone, row)
             with ui.element("div").style(f"width: {self._W_LIVE}px; {fixed} display: flex; overflow: hidden;"):
                 self._render_live_progress(proj)
@@ -1406,7 +1777,7 @@ class ProjectsOverview:
                     'no-parent-event no-focus no-refocus anchor="bottom left" self="top left" '
                     ':offset="[-8, 8]" transition-show="fade" transition-hide="fade" :transition-duration="80"'
                 )
-                .classes("cb-proj-card cb-glass")
+                .classes("cb-proj-card cb-popover")
                 # Visible overflow: the caret sits outside the card's box.
                 .style("overflow: visible; max-height: none;")
             )
@@ -1453,17 +1824,14 @@ class ProjectsOverview:
                     icon_button("chevron_right", lambda: step(1), tooltip="Next")
 
     @staticmethod
-    def _render_card_facts(proj: dict) -> None:
+    def _render_card_facts(proj: dict, after: Callable[[], None] | None = None) -> None:
         """What the row has no room for: the mnemonic and protocol, every path (click to copy),
         and the acquisition and import facts without a column. What the project did not record
-        says so."""
+        says so. `after` adds a section at the column's end."""
         facts = proj.get("card") or {}
         grid = "display: grid; grid-template-columns: 64px minmax(0, 1fr); column-gap: 8px; row-gap: 2px;"
         key_style = f"{FONT} font-size: 9px; color: {CLR_LABEL};"
-        head_style = (
-            f"{FONT} font-size: 9px; font-weight: 600; color: {CLR_LABEL}; letter-spacing: 0.06em; "
-            "text-transform: uppercase; margin: 8px 0 3px;"
-        )
+        head_style = _CARD_HEAD_STYLE
 
         def value(text: str | None, *, path: bool = False) -> None:
             if not text:
@@ -1519,6 +1887,8 @@ class ProjectsOverview:
                 imported.append(("Source layer", kind))
             if imported:
                 section("Import", imported)
+            if after is not None:
+                after()
 
     def _on_preview_toggle(self, e):
         self._preview_open = bool(e.value)
@@ -1939,17 +2309,28 @@ def _card_box() -> ui.element:
     return card
 
 
-def _render_card_content(proj: dict) -> None:
+def _render_card_content(proj: dict, after: Callable[[], None] | None = None) -> None:
     if proj.get("tomo_preview"):
         ProjectsOverview._render_card_previews(proj)
-    ProjectsOverview._render_card_facts(proj)
+    ProjectsOverview._render_card_facts(proj, after)
 
 
-def project_card_menu(anchor: ui.element, load: Callable[[], Awaitable[dict | None]]) -> None:
+def project_card_menu(
+    anchor: ui.element,
+    load: Callable[[], Awaitable[dict | None]],
+    *,
+    backend=None,
+    project_path: Path | str | None = None,
+) -> None:
     """The roster's project hover card on another anchor (the workspace rail's project avatar),
     opening to its right with the caret on its left edge at the anchor's middle. `load` reads the
     project's roster row; it runs the first time the anchor is entered, and the card spins until
-    it lands."""
+    it lands.
+
+    With `backend` and `project_path` the card ends in the other projects of the project's base, a
+    line each (`_render_other_projects`), so going to another one needs no trip to the landing page.
+    The list is drawn from the base's last scan each time the card opens, and the base is rescanned
+    then, in the background, when the card last rescanned it more than `_OTHERS_RESCAN_S` ago."""
     with anchor:
         menu = (
             ui.menu()
@@ -1957,9 +2338,40 @@ def project_card_menu(anchor: ui.element, load: Callable[[], Awaitable[dict | No
                 'no-parent-event no-focus no-refocus anchor="top right" self="top left" '
                 ':offset="[10, 0]" transition-show="fade" transition-hide="fade" :transition-duration="80"'
             )
-            .classes("cb-proj-card cb-proj-card--right cb-glass")
+            .classes("cb-proj-card cb-proj-card--right cb-popover")
             .style("overflow: visible; max-height: none;")
         )
+    base = str(Path(project_path).parent) if backend is not None and project_path is not None else None
+    # The list's box once the card is built, and what it was drawn from: the scan list (a new one per
+    # scan), the MRU and the owner filter.
+    others: dict = {"box": None, "drawn": None}
+
+    def paint_others() -> None:
+        box = others["box"]
+        if box is None or box.is_deleted:
+            return
+        rows = backend.last_project_scan(base)
+        prefs = get_prefs_service().prefs
+        drawn = (id(rows), tuple(r.path for r in prefs.recent_projects), prefs.show_only_mine)
+        if drawn == others["drawn"]:
+            return
+        others["drawn"] = drawn
+        box.clear()
+        with box:
+            _render_other_projects(rows, str(project_path))
+
+    async def rescan() -> None:
+        last = _others_scanned_at.get(base)
+        if last is not None and time.monotonic() - last < _OTHERS_RESCAN_S:
+            return
+        _others_scanned_at[base] = time.monotonic()
+        await backend.scan_for_projects(base)
+        if not menu.is_deleted and menu.value:
+            paint_others()
+
+    def others_section() -> None:
+        ui.label("Other projects · click one to go there").style(_CARD_HEAD_STYLE)
+        others["box"] = ui.element("div").style("max-height: 280px; overflow-y: auto; margin: 0 -6px;")
 
     async def fill() -> None:
         if menu.is_deleted or menu.default_slot.children:
@@ -1978,8 +2390,90 @@ def project_card_menu(anchor: ui.element, load: Callable[[], Awaitable[dict | No
                     f"{FONT} font-size: 10px; color: {CLR_META};"
                 )
             else:
-                _render_card_content(proj)
+                _render_card_content(proj, others_section if base is not None else None)
+        paint_others()
         menu.run_method("updatePosition")
 
+    async def on_open(e) -> None:
+        if not e.value or base is None:
+            return
+        paint_others()
+        await rescan()
+
+    menu.on_value_change(on_open)
     anchor.on("mouseenter", fill, js_handler=_hover_open_js(menu.id))
     anchor.on("mouseleave", js_handler=_HOVER_CLOSE)
+
+
+def _render_other_projects(rows: list[dict] | None, here: str) -> None:
+    """The base's projects but the one at `here`, a line each (`_other_project_line`): the most recently
+    opened first, then the most recently active. The roster's Mine holds here too: the user's own and
+    the lab's projects only."""
+    if rows is None:
+        with ui.row().classes("items-center no-wrap").style("gap: 6px; padding: 2px 6px;"):
+            ui.spinner("dots", size="xs").style(f"color: {CLR_SUBLABEL};")
+            ui.label("Reading the other projects…").style(f"{FONT} font-size: 9px; color: {CLR_SUBLABEL};")
+        return
+    prefs = get_prefs_service().prefs
+    eff = ProjectsOverview._eff_owner_of
+    shown = [p for p in rows if here not in (p["path"], p["resolved_path"])]
+    if prefs.show_only_mine:
+        shown = [p for p in shown if eff(p) in (CURRENT_USER, SHARED_OWNER)]
+    rank = prefs.recent_project_rank()
+    shown.sort(key=lambda p: (rank.get(p["resolved_path"], len(rank)), -(p.get("last_activity_ts") or 0.0)))
+    if not shown:
+        ui.label("No other projects here").style(
+            f"{FONT} font-size: 9px; color: {CLR_META}; font-style: italic; padding: 2px 6px;"
+        )
+        return
+    for proj in shown:
+        _other_project_line(proj)
+
+
+def _other_project_line(proj: dict) -> None:
+    """One project in the hover card's list: its status dot, its name (and owner, when not the user),
+    the job at work or the furthest one done, and its last activity. The line is a link to the project,
+    so ⌘-click opens it in a new tab."""
+    status = proj.get("live_status") or "idle"
+    badge = _STATUS_STYLES.get(status)
+    lp = proj.get("live_progress")
+    if lp and status in ("running", "queued"):
+        stage = "queued" if lp["state"] == "queued" else lp["stage"]
+        if lp["state"] != "queued" and lp["total"]:
+            stage += f" · {lp['ok']}/{lp['total']}"
+        stage_color = CLR_RUNNING
+    elif proj.get("furthest_done"):
+        stage, stage_color = f"→ {proj['furthest_done']['label']}", CLR_LABEL
+    else:
+        stage, stage_color = "—", CLR_GHOST
+    when, _ = ProjectsOverview._activity_text(proj)
+    owner = ProjectsOverview._eff_owner_of(proj)
+    link = (
+        ui.link(target=ProjectsOverview._project_url(proj["path"]))
+        .classes("cb-proj-other")
+        .style(
+            "display: grid; grid-template-columns: 6px minmax(0, 1fr) 170px 74px; column-gap: 8px; "
+            "align-items: center; padding: 2px 6px; border-radius: 3px; text-decoration: none; color: inherit;"
+        )
+    )
+    _set_title(link, f"{proj['name']} · {badge['label'] if badge else 'idle'}\n{proj['path']}\nClick to go there")
+    with link:
+        dot = ui.element("div").style(
+            f"width: 6px; height: 6px; border-radius: 50%; background: {badge['color'] if badge else CLR_BORDER};"
+        )
+        if status == "running":
+            dot.classes("cb-live-pulse")
+        with ui.element("div").style("display: flex; align-items: baseline; gap: 6px; min-width: 0;"):
+            ui.label(proj["name"]).style(
+                f"{FONT} font-size: 10px; font-weight: 600; color: {CLR_HEADING}; overflow: hidden; "
+                "text-overflow: ellipsis; white-space: nowrap; min-width: 0;"
+            )
+            if owner != CURRENT_USER:
+                ui.label(ProjectsOverview._owner_label(owner)).style(
+                    f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; white-space: nowrap; flex-shrink: 0;"
+                )
+        ui.label(stage).style(
+            f"{FONT} font-size: 9px; color: {stage_color}; overflow: hidden; text-overflow: ellipsis; "
+            "white-space: nowrap;"
+        )
+        ui.label(when).style(f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; text-align: right; white-space: nowrap;")

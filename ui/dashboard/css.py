@@ -970,10 +970,8 @@ _CB_CSS = """
  * facing its row, aimed at the project's name; the open handler sets data-side and --cb-caret-x. */
 .cb-proj-card::before {
     content: ''; position: absolute; top: -5px; left: var(--cb-caret-x, 24px);
-    width: 9px; height: 9px; background: rgba(120, 120, 120, 0.12); backdrop-filter: blur(1.5px);
-    border-left: 1px solid rgba(75, 85, 99, 0.4); border-top: 1px solid rgba(75, 85, 99, 0.4);
-    /* Only the half outside the card: the half over it would show the card's edge through the glass. */
-    clip-path: polygon(0 0, 100% 0, 0 100%);
+    width: 9px; height: 9px; background: var(--cb-pop-bg, #f8fafc);
+    border-left: 1px solid var(--cb-pop-line, #d3dce6); border-top: 1px solid var(--cb-pop-line, #d3dce6);
     transform: translateX(-50%) rotate(45deg);
 }
 .cb-proj-card[data-side="above"]::before { top: auto; bottom: -5px; transform: translateX(-50%) rotate(225deg); }
@@ -981,32 +979,33 @@ _CB_CSS = """
  * edge, at the 34 px avatar's middle. */
 .cb-proj-card.cb-proj-card--right::before { top: 17px; left: -5px; transform: translateY(-50%) rotate(-45deg); }
 /* Every tooltip in the app, Quasar's and the native `title` ones (drawn by _TITLE_TIP_JS as
- * .cb-title-tip): see-through, the faintest neutral gray tint and a hairline outline; a touch of blur
- * so the text separates from what it covers. Never wider than about a path and a half; long
- * paths wrap. A Quasar tooltip that sets its own max-width inline keeps it. */
-.q-tooltip.q-tooltip--style, .cb-title-tip, .cb-glass {
-    background: rgba(120, 120, 120, 0.12); backdrop-filter: blur(1.5px); color: #020617;
-    border: 1px solid rgba(75, 85, 99, 0.4); border-radius: 5px; box-shadow: none;
+ * .cb-title-tip), and the hover popups that are not tooltips (.cb-popover: the projects roster's
+ * card, the landing status strip's popovers, the tilt popover): one matte panel, light gray with
+ * a hairline and a soft drop shadow, nothing of the page showing through. Tooltips are never
+ * wider than about a path and a half; long paths wrap. A Quasar tooltip that sets its own
+ * max-width inline keeps it. */
+.q-tooltip.q-tooltip--style, .cb-title-tip, .cb-popover {
+    background: var(--cb-pop-bg, #f8fafc); color: #0f172a;
+    border: 1px solid var(--cb-pop-line, #d3dce6); border-radius: 5px;
+    box-shadow: var(--cb-pop-shadow, 0 4px 14px rgba(16, 42, 67, 0.12));
 }
 .q-tooltip.q-tooltip--style, .cb-title-tip {
     font-family: 'IBM Plex Sans', sans-serif; font-size: 10px;
     max-width: min(120ch, 92vw); overflow-wrap: anywhere; line-height: 1.4;
 }
-/* The same glass on the hover popups that are not tooltips (.cb-glass: the projects roster's
- * card, the landing status strip's popovers, the tilt popover) and on the charts' hover boxes:
- * ECharts' through ui/dashboard/figures.py `_tooltip`, Plotly's here (SVG takes no blur, so a
- * little more tint). Secondary text inside them is a step darker than on the page, or it
- * disappears into whatever shows through. */
+/* The charts' hover boxes are the same panel: ECharts' through ui/dashboard/figures.py `_tooltip`,
+ * Plotly's here. Secondary text inside these panels is a step darker than on the page: it is
+ * small type on gray. */
 .js-plotly-plot .hoverlayer .hovertext path {
-    fill: rgba(241, 245, 249, 0.82) !important; stroke: rgba(75, 85, 99, 0.4) !important;
+    fill: var(--cb-pop-bg, #f8fafc) !important; stroke: var(--cb-pop-line, #d3dce6) !important;
 }
-.js-plotly-plot .hoverlayer .hovertext text { fill: #020617 !important; }
-:is(.q-tooltip--style, .cb-glass) .cb-params-k,
-:is(.q-tooltip--style, .cb-glass) .cb-tt-sub { color: #475569; }
-:is(.q-tooltip--style, .cb-glass) .cb-params-v,
-:is(.q-tooltip--style, .cb-glass) .cb-tt-line { color: #020617; }
-:is(.q-tooltip--style, .cb-glass) .cb-tt-head { color: #334155; }
-:is(.q-tooltip--style, .cb-glass) .cb-tt-sep { background: rgba(75, 85, 99, 0.3); }
+.js-plotly-plot .hoverlayer .hovertext text { fill: #0f172a !important; }
+:is(.q-tooltip--style, .cb-popover) .cb-params-k,
+:is(.q-tooltip--style, .cb-popover) .cb-tt-sub { color: #475569; }
+:is(.q-tooltip--style, .cb-popover) .cb-params-v,
+:is(.q-tooltip--style, .cb-popover) .cb-tt-line { color: #0f172a; }
+:is(.q-tooltip--style, .cb-popover) .cb-tt-head { color: #334155; }
+:is(.q-tooltip--style, .cb-popover) .cb-tt-sep { background: #dbe3ec; }
 .cb-title-tip {
     position: fixed; z-index: 9500; pointer-events: none; padding: 6px 10px;
     white-space: pre-line; display: none;
@@ -1023,6 +1022,46 @@ _CB_CSS = """
 }
 .cb-proj-colhead:hover { color: #33506e; }
 .cb-proj-colhead.active { color: var(--cb-head-ink, #12324f); }
+/* The roster's toolbar (ui/projects_overview.py `_build_header`): its controls are 22 px, a notch over
+ * the house 16-20 px control rows, the height of its title switch and of the house buttons. */
+.cb-proj-toolbar .cb-seg:not(.cb-seg-title) .cb-seg-btn { font-size: 10px; line-height: 18px; padding: 1px 10px; }
+.cb-proj-toolbar .cb-field .q-field__control { height: 22px; min-height: 22px; padding: 0 7px; }
+.cb-proj-toolbar .cb-field .q-field__native,
+.cb-proj-toolbar .cb-field .q-field__input { font-size: 11px; line-height: 20px; }
+.cb-proj-toolbar .cb-field .q-field__marginal,
+.cb-proj-toolbar .cb-field .q-field__prepend,
+.cb-proj-toolbar .cb-field .q-field__append { height: 20px; }
+.cb-proj-toolbar .cb-field .q-field__prepend { padding-right: 5px; }
+.cb-proj-toolbar .cb-field .q-field__prepend .q-icon,
+.cb-proj-toolbar .cb-field .q-field__append .q-icon { font-size: 14px; color: #94a3b8; }
+.cb-proj-toolbar .q-btn.cb-icon-btn {
+    width: 22px !important; height: 22px !important; min-width: 22px !important; min-height: 22px !important;
+}
+.cb-proj-toolbar .q-btn.cb-icon-btn .q-icon { font-size: 16px; }
+/* Tag chips over the roster: the house chip's capsule; the one the list is narrowed to (or, tagging,
+ * the armed one) in the segmented strip's active blue. */
+.cb-proj-tagchip {
+    border: 1px solid #dbe3ec; background: #f4f8fc; color: #33506e;
+    transition: border-color 0.12s, background-color 0.12s;
+}
+.cb-proj-tagchip:hover { border-color: #a9c6e4; background: #ffffff; }
+.cb-proj-tagchip .cb-proj-tagchip-n { font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #7d93ab; }
+.cb-proj-tagchip.active {
+    background: var(--cb-head, #edf4fb); border-color: var(--cb-accent, #4a8fd4);
+    color: var(--cb-head-ink, #12324f); font-weight: 600;
+}
+.cb-proj-tagchip.active .cb-proj-tagchip-n { color: #4a6584; }
+/* A tag on a row: a click shows only the tag's projects. */
+.cb-proj-rowtag--link { cursor: pointer; }
+.cb-proj-rowtag--link:hover { border-color: #a9c6e4 !important; color: #12324f !important; }
+/* Tagging mode: the row is the target, its travel column says whether it carries the armed tag. */
+.cb-proj-tagrow { transition: background-color 0.12s; }
+.cb-proj-tagrow:hover { background: #f4f8fc; }
+.cb-proj-tagcheck { color: #b8cce0; background: #fafcfe; transition: color 0.12s, background-color 0.12s; }
+.cb-proj-tagcheck.on { color: #4a8fd4; }
+.cb-proj-tagrow:hover .cb-proj-tagcheck { color: #4a8fd4; background: #edf4fb; }
+/* The other projects in the workspace's project card (`project_card_menu`): a line each, a link. */
+.cb-proj-other:hover { background: #e9f0f7; }
 /* Template workbench lists: table rows, so the per-row facts (apix / box / lp, sigma
  * stats, size, polarity) sit in columns sized to their content. Only the file column flexes.
  * The accent is a custom property set per list on the container (indigo for templates,
@@ -1551,6 +1590,13 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 /* A live log (LiveLog) fills what its tab leaves, inset from the tab's edges. align-self: its NiceGUI
  * column aligns children flex-start, which shrink-wraps a width-less child to its longest line. */
 .cb-livelog { flex: 1 1 0; min-height: 0; width: auto; align-self: stretch; margin: 6px 10px 10px; }
+/* An array job's Tasks panel (ui/components/array_task_tracker.py): the supervisor and the tasks as
+ * short rows, the selected one's log beside them. The selected row has the title stripes' light blue
+ * and blue tick; only there do its name and SLURM id copy on a click, so only there do they say so. */
+.cb-tlog-row { cursor: pointer; transition: background-color 0.1s; }
+.cb-tlog-row:hover { background: #f4f8fc; }
+.cb-tlog-row.active { background: var(--cb-head, #edf4fb); box-shadow: inset 2px 0 0 var(--cb-accent, #4a8fd4); }
+.cb-tlog-row.active .cb-tlog-copy:hover { color: #2563eb !important; text-decoration: underline; }
 /* ── Species page · Analytics: the per-tomogram table and the set list ───── */
 .cb-atable-wrap { max-height: 440px; overflow: auto; width: 100%; border-top: 1px solid #e2e8f0; }
 .cb-atable { border-collapse: collapse; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #1e293b; }
@@ -2087,6 +2133,7 @@ _THEME_CSS = """
     --cb-field-line: #d3dde8; --cb-field-line-hover: #a9c6e4; --cb-field-focus: #4a8fd4;
     --cb-field-ring: 0 0 0 2px rgba(74, 143, 212, 0.16); --cb-field-radius: 4px; --cb-field-bg: #fff;
     --cb-btn-line: #b8cce0; --cb-btn-accent: #1f4e79; --cb-btn-accent-hover: #163a5c;
+    --cb-pop-bg: #f8fafc; --cb-pop-line: #d3dce6; --cb-pop-shadow: 0 4px 14px rgba(16, 42, 67, 0.12);
 }
 body { background: var(--cb-page) !important; }
 /* A wide job page in two columns: Parameters on the left, Inputs / Outputs over SLURM on the right,

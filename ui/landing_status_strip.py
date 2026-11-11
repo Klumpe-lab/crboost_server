@@ -51,7 +51,7 @@ CLR_NEUTRAL = "#94a3b8"
 
 _REFRESH_SEC = 15.0
 
-# Popover (opens on hover, closes on leave) on the app tooltip's glass (`.cb-glass`, ui/dashboard/css.py);
+# Popover (opens on hover, closes on leave) on the app tooltip's panel (`.cb-popover`, ui/dashboard/css.py);
 # only the room is set here.
 _POPOVER_STYLE = "padding: 12px 14px;"
 _POP_TITLE = f"{FONT} font-size: 12px; font-weight: 700; color: {CLR_HEADING};"
@@ -346,7 +346,7 @@ class LandingStatusStrip(FingerprintedView):
                     .style("background: transparent; box-shadow: none; overflow: visible;")
                 )
                 with menu:
-                    with ui.element("div").classes("cb-glass").style(_POPOVER_STYLE):
+                    with ui.element("div").classes("cb-popover").style(_POPOVER_STYLE):
                         popover()
                 # Hover-card behaviour: open on hover/click, and close when the pointer leaves BOTH
                 # the trigger and the popover (so it doesn't linger). Re-opening on the menu's own

@@ -48,6 +48,11 @@ class UserPreferences(BaseModel):
     # Feeds the "Recently viewed" sort of the projects roster; "viewed" is per-user,
     # which is why it lives here and not in the project on disk.
     recent_projects: list[RecentPath] = Field(default_factory=list)
+    # The user's own grouping of the projects roster: tags by resolved project directory, shown as
+    # chips over the roster. Per user like the MRU; nothing is written into the projects.
+    project_tags: dict[str, list[str]] = Field(default_factory=dict)
+    # The tag chip the roster shows only the projects of; None shows them all.
+    projects_tag_filter: str | None = None
 
     # Journey dashboard prefs — user-level, persist across projects + TS.
     # `dashboard_panel` is the one section the Journey shows ("all" = every section).
@@ -98,6 +103,57 @@ class UserPreferences(BaseModel):
         """Resolved project dir -> position in the MRU (0 = most recent). Projects the
         user has never opened are simply absent; the caller decides where they sort."""
         return {r.path: i for i, r in enumerate(self.recent_projects)}
+
+    # --- project tags ---
+
+    def tags_of(self, path: str) -> list[str]:
+        return self.project_tags.get(path, [])
+
+    def tag_counts(self) -> dict[str, int]:
+        """Every tag in use -> how many projects carry it, by name, case-insensitively."""
+        counts: dict[str, int] = {}
+        for tags in self.project_tags.values():
+            for tag in tags:
+                counts[tag] = counts.get(tag, 0) + 1
+        return dict(sorted(counts.items(), key=lambda kv: kv[0].lower()))
+
+    def canonical_tag(self, name: str) -> str:
+        """`name` trimmed, in the spelling of the tag already in use that it matches case-insensitively."""
+        name = " ".join(name.split())
+        for tag in self.tag_counts():
+            if tag.lower() == name.lower():
+                return tag
+        return name
+
+    def toggle_tag(self, path: str, tag: str) -> bool:
+        """Put `tag` on the project at `path`, or take it off when it is there. True when it is on now."""
+        tag = self.canonical_tag(tag)
+        tags = self.project_tags.get(path, [])
+        if any(t.lower() == tag.lower() for t in tags):
+            remaining = [t for t in tags if t.lower() != tag.lower()]
+            if remaining:
+                self.project_tags[path] = remaining
+            else:
+                self.project_tags.pop(path, None)
+            return False
+        self.project_tags[path] = sorted([*tags, tag], key=str.lower)
+        return True
+
+    def drop_tag(self, tag: str) -> int:
+        """Take `tag` off every project. Returns how many carried it."""
+        n = 0
+        for path in list(self.project_tags):
+            tags = self.project_tags[path]
+            remaining = [t for t in tags if t.lower() != tag.lower()]
+            if len(remaining) != len(tags):
+                n += 1
+                if remaining:
+                    self.project_tags[path] = remaining
+                else:
+                    del self.project_tags[path]
+        if self.projects_tag_filter is not None and self.projects_tag_filter.lower() == tag.lower():
+            self.projects_tag_filter = None
+        return n
 
     # --- data paths (raw frames / mdocs directories) ---
 
