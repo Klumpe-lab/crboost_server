@@ -165,7 +165,7 @@ _VIOLET_TEXT = "#6d28d9"
 _INDIGO_TEXT = "#4a3aa7"
 _MUTED = "#94a3b8"
 _LABEL = "#64748b"
-# A step darker inside the popover: its glass lets the page show through.
+# A step darker inside the popover: small type on its gray panel.
 _POP_MUTED = "#475569"
 _POP_LABEL = "#334155"
 
@@ -1144,7 +1144,7 @@ _SHOW = (
     ("outliers", "outliers"),
 )
 _GROUPINGS = (("series", "series"), ("position", "position"))
-# Its panel is the app tooltip's glass (`.cb-glass`, ui/dashboard/css.py).
+# Its panel is the app tooltip's (`.cb-popover`, ui/dashboard/css.py).
 _POPOVER_STYLE = (
     "position: fixed; z-index: 6000; display: none; max-width: 400px; "
     "padding: 6px 8px; font-family: 'IBM Plex Sans', sans-serif; font-size: 10px; line-height: 1.45; "
@@ -1377,7 +1377,7 @@ class TiltGallery:
         self._pos_ui = {}
         self._list = None
         with self.root:
-            ui.element("div").classes("cb-tp-popover cb-glass").style(_POPOVER_STYLE)
+            ui.element("div").classes("cb-tp-popover cb-popover").style(_POPOVER_STYLE)
             for text, color, spinner in notes:
                 self._note(text, color=color, spinner=spinner)
             if not self.groups:

@@ -585,15 +585,15 @@ _TOOLTIP_POSITION_JS = """
 
 
 def _tooltip(formatter_js: str, *, trigger: str = "axis", theme: ChartTheme = DEFAULT_THEME) -> dict:
-    """The house hover card with a JS formatter, on the app tooltip's glass (ui/dashboard/css.py)."""
+    """The house hover card with a JS formatter, on the app tooltip's panel (ui/dashboard/css.py)."""
     out = {
         "trigger": trigger,
-        "backgroundColor": "rgba(120, 120, 120, 0.12)",
-        "borderColor": "rgba(75, 85, 99, 0.4)",
+        "backgroundColor": "#f8fafc",
+        "borderColor": "#d3dce6",
         "borderWidth": 1,
         "padding": [6, 8],
         "appendToBody": True,
-        "extraCssText": "box-shadow: none; border-radius: 5px; backdrop-filter: blur(1.5px);",
+        "extraCssText": "box-shadow: 0 4px 14px rgba(16, 42, 67, 0.12); border-radius: 5px;",
         ":formatter": formatter_js,
         ":position": _TOOLTIP_POSITION_JS,
     }
