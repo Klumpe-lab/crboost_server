@@ -130,6 +130,12 @@ class SegmentParams(AbstractJobParams):
     def _get_job_specific_options(self) -> list[tuple[str, str]]:
         return [("in_mic", str(self.paths.get("input_tomograms", "")))]
 
+    def run_problems(self) -> list[str]:
+        # What drivers/segment.py resolve_targets would raise on the cluster, said before the submit.
+        if self.method == SegmentMethod.AIS_MODEL:
+            return [] if self.ais_model_path.strip() else ["no Ais model chosen"]
+        return [] if self.features else ["no features chosen"]
+
     def is_driver_job(self) -> bool:
         return True
 

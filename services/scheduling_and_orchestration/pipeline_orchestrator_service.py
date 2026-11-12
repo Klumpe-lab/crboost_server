@@ -449,8 +449,9 @@ class PipelineOrchestratorService:
     ) -> tuple[dict[str, Any] | None, dict[str, tuple]]:
         """What stops a run before anything is allocated, as its refusal, else None; and the inputs of the jobs
         reading a kitchen set, which pass 3 writes. Run and `plan_run` share it, so a plan refuses what Run
-        would. Checked: a Subset not ready, the set checks, work still live in a failed job's directory, and a
-        SLURM constraint naming a node feature the partition lacks, here before a job number is spent.
+        would. Checked: a Subset not ready, a job whose parameters leave it nothing to do, the set checks, work
+        still live in a failed job's directory, and a SLURM constraint naming a node feature the partition lacks,
+        here before a job number is spent.
         `record` keeps the set checks' results for the jobs' pages; a plan does not."""
         # A Subset is written in pass 3 from its cut's star; whatever stops that is said now, before
         # anything is allocated.
@@ -464,6 +465,17 @@ class PipelineOrchestratorService:
         ]
         if not_ready:
             return err("Subset not ready: " + "; ".join(not_ready)), {}
+
+        # A job whose own parameters leave it nothing to do (a Segment with no features) fails on the
+        # cluster in seconds; it is refused here instead.
+        unset = [
+            f"{iid}: {problem}"
+            for iid in instances_to_run
+            if (jm := state.jobs.get(iid)) is not None
+            for problem in jm.run_problems()
+        ]
+        if unset:
+            return err("Not started: " + "; ".join(unset), refused=unset), {}
 
         # A job reading a particle set is checked against it now (services/particles/set_preflight.py): what
         # its tools would refuse or get wrong on the cluster stops the Run here, named under the job's input. What a
