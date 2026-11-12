@@ -499,6 +499,11 @@ class AbstractJobParams(BaseModel):
     def from_job_star(cls, star_path: Path) -> Self | None:
         return None  # Default implementation
 
+    def run_problems(self) -> list[str]:
+        """What in its own parameters stops this job from starting, one sentence each. A Run (and a plan)
+        refuses while any is left, before anything is allocated. Cheap: no disk."""
+        return []
+
     def is_driver_job(self) -> bool:
         return False
 
