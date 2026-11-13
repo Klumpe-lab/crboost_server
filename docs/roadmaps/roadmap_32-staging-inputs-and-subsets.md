@@ -1315,6 +1315,8 @@ build order (card component → map view → add flow), which this mock's `rende
 
 ### 15.3 Pickup for the next session (written 2026-11-08)
 
+**Taken 2026-11-08: the maintainer's list and what it changed are §15.4.**
+
 **Where things stand.** The Jobs tab becomes the branch map (§15.1 design 1, decided 2026-11-07). Chapter 3 on
 `/dev/io-ideas/branch` (`ui/branch_map_preview.py`) works it out: the job card as one visual language, the map
 with cables, the "+" per output offering job types, the new job's sockets resolved and fanned out (§15.2). The
@@ -1371,3 +1373,367 @@ the type's instances, sockets from the job's `InputSlot`s, sources from `resolve
 replacing the waterfall roster (`services/pipeline_table.pipeline_rows` for the main lineage, `_tidy` over it);
 the add flow (`offered_after` from the real slot schemas, `resolve` from `PathResolutionService`, the fan-out as
 the I/O override UI). Decisions owed first are the §15.2 open points.
+
+### 15.4 Second pass on the card and the map (2026-11-08)
+
+**The maintainer's list, after looking at §15.2.** The cards mode too compact and the cards very dense; even a
+moderate tree dense; a light dotted-paper background wanted; the "+" on the card's right edge off-style and often
+over the text; the text crammed, the tag-like method names too small and unclear to anyone who does not know the
+tool; the input dots opaque as to what they mean; once a job is being added, no obvious way to connect one of the
+highlighted candidates to its input (the highlight of only the matching outputs was liked); bigger cards wanted,
+and a hover that shows something rather than a text dump, reusing the Journey's elements for finished jobs.
+
+**Built, in `ui/branch_map_preview.py` (worktree `crboost_server_branch_map`, off main at 03f47ba).**
+- *The card*, 236 px wide. The status light, the type's name in words and the number; a second line with what sets
+  this instance apart ("6 Å · deconvolved") and the tool or method as plain text, a one-line gloss on hover
+  (`GLOSS`); one row per input saying what it reads and from which job, with a small square port on the left edge
+  where the cable lands (filled = wired, amber = to choose, red dashed = nothing exists yet, hollow = optional),
+  the row's hover glossing the input itself (`SLOT_GLOSS`); an output row "→ tomograms" with its port on the right
+  edge and the add button in that row, a 16 px house square muted until hovered, so the action sits with its output
+  and never over text. No type glyph: the words carry it. Compact keeps the header, the second line and the output
+  row, the ports stacked on the edge.
+- *The map.* Dotted paper, the stage names along the top, 72 px gutters and 22 px between siblings, a zoom control
+  (100 / 75 / 55 %; `?zoom=55` for a link). An input that comes with the main one (the warp dir) is bracketed to
+  the main port on the card's edge instead of riding a second near-parallel cable; a side input (a model) stays a
+  dashed cable. A job added from the palette sits at the top of its column.
+- *Connecting.* The row being settled is amber; its candidates ring up, each with a blue "use as tomograms" pill at
+  its output, the rest dim; the same candidates sit under the row's ▾ as a list (name, pedigree, tally); a click on
+  either wires it and the next unsettled row opens. Rows the main choice decides later say so ("once the tomograms
+  are chosen", "follows the tomograms") instead of asking. The method is a ▾ menu with glosses, not a chip that
+  cycles. The verdict box counts what is left to settle; a card's dossier hides when its add menu opens over it.
+- *The dossier*, on hover and shown inline in section A for four jobs. What the job made as the Journey shows it
+  (tomogram slices on the dark canvas, grain from a turbulence filter; before and after for a denoising; membranes
+  drawn on a segmentation; a residual bar per tilt series for an alignment; defocus dots for a CTF; a loss curve
+  for a training; a score histogram with the cut-off for template matching), the strip's tilt-series pills (done,
+  failed, running; a subset's kept ones), the pedigree as breadcrumb chips with the splitting stages bold and the
+  road not taken under them, who reads it. Mock numbers come from a seeded generator, stable across renders.
+
+**Checked.** `scripts/dev_screenshot.py --panels --width 2900 --height 1700 "/dev/io-ideas/branch?add=dpredict&after=job023"`
+(the panels outgrew a 1000 px viewport, which clipped them; the page's column is 3000 px wide now so the 100 % map
+fits a wide shot). `scripts/dev_branch_map_check.py` drives the page in headless Chromium — palette add, a
+candidate's pill, a row, its list, the method menu, an add menu, a second add, Discard, compact — writes one PNG per
+step to `notes/screens/steps/` and fails on any server ERROR or page error: clean.
+
+**Open for the maintainer.** The map is ~2,750 px wide at 100 % with nine stage columns (zoom is the answer
+offered; folding the columns of finished stages would be the other); whether the dossier's pictures become the real
+Journey renders (`RenderSlot`) when the view is built, or stay sketches until then; compact's place, now that it
+hides the input rows; whether the verdict's "+ X first" should add the missing job on the spot; the `GLOSS` and
+`SLOT_GLOSS` wordings, which a domain expert should read once.
+
+### 15.5 Third pass: a free map, the card in two sizes, the strip (2026-11-10)
+
+**The maintainer's list, after looking at §15.4.** Too much white space; the stage columns get in the way; cards
+draggable, the map zoomable; the "large" card two or three times bigger and packed with compact results (the
+dossier's pictures and plots) for finished jobs and status for running ones, the parameters of a job being added
+living there too; the palette bar of job types gone, the per-card add menu being enough; the tilt-series tally as
+tiny stylised boxes on top of each small card (how many, how many fell through), toggleable, sized to the project
+(small at ~20 tilt series, very small past 160), later the place a per-series log or status hangs from; the tool
+made explicit on the small cards.
+
+**Built, in `ui/branch_map_preview.py` (worktree `crboost_server_branch_map`).**
+- *The map.* Columns by how far down the chains a job sits (one past the deepest job it reads, side inputs
+  included), not by type: a chain without a refinement no longer leaves an empty column. Gutters 44 px, siblings
+  14 px apart. The same project that needed ~2,750 px now fits ~2,000 px at 100 %, and the stage names along the
+  top are gone (each card says its type).
+- *Drag, pan, zoom*, all in the browser (`JS`, installed once by `ui.run_javascript`, a MutationObserver picking
+  up every canvas the page rebuilds): a pointer-down on a card moves it and its cables follow (each `<path>` carries
+  both ends as offsets from its two cards' corners, `_cable`); a pointer-down on the paper pans; the wheel zooms
+  about the pointer; −/+/fit buttons. A drag's end goes to the server as `cb-bm-move` (`ui.on`), the view as
+  `cb-bm-view`, so a redraw after a click keeps dragged cards where they were left (`MapState.moved`) and the view
+  where it was; "reset layout" clears the drags. A change that reshapes the whole map (a size toggle, strips, the
+  shared start, a job added or discarded) sets the view aside and the browser fits it again. The canvas is a fixed
+  820 px box; the world inside it transforms.
+- *The card in two sizes.* Small: as §15.4, metrics tightened (header 24, rows 17), the tool or method as a grey
+  badge first on the second line (`_badge`, gloss on hover), what sets the instance apart after it. Large (340 px;
+  the header click or its ⤢ toggles, "all large" / "all small" for the map): the same card holding its results
+  between the input rows and the output row — the Journey's pictures (tomogram slices; before and after for a
+  denoising; membranes on a segmentation) or plot (residual bars, defocus dots, a loss curve, a score histogram),
+  a caption, the tilt series as pills, the tally, a running job's progress line, a failed job's first error, a
+  queued job's "waits for …". The block's height is known before drawing (`results_parts`, `Box`), so cables
+  attach without a round trip. The hover dossier is gone: the large card is the dossier.
+- *The new job* is always large; its parameters sit under its input rows (`PARAM_FIELDS`, a few mock fields per
+  type on `house_number` / `house_select` / `house_text`, kept across redraws in `MapState.params`), the method a
+  ▾ badge as before.
+- *The strip.* One box per tilt series along the top of every small card (`strip_spec`, `strip_svg`): done
+  green, failed red, running amber, waiting grey, a subset's kept series filled; sized to the project in one
+  band for the whole map (9 × 4 px boxes at 12 tilt series, 3 × 3 at 46, 2 × 2 slivers in three rows at 160,
+  1 px in four rows past 300), each box naming its tilt series and state on hover (`<title>`), the hook for a
+  per-series log later. "tilt-series strips" / "no strips" on the map. Section A shows the strip at four project
+  sizes.
+- *Gone:* the palette bar of job types (a job is added from a card's output only; `?add=&after=` still opens
+  the page mid-add), the compact density, the hover dossier.
+
+**Checked.** `scripts/dev_branch_map_check.py` (rewritten for the new interactions): add from a card's menu,
+re-open the main input and take another candidate by its pill, the model row, its list, the method menu, a
+parameter typed, a card dragged (and still there after the next redraw), a wheel zoom, a pan, fit, a header
+click making a card large, a second add, discard, all large, strips off; sixteen PNGs in `notes/screens/steps/`,
+no server error, no page error. `scripts/dev_screenshot.py --panels --width 2400 --height 1400
+"/dev/io-ideas/branch"` for the two panels.
+
+**Open for the maintainer.** Whether a drag should also be allowed to reorder the layout the tidy pass makes
+(today a dragged card is pinned, the rest still flow); whether the large card's pictures become the real Journey
+renders (`RenderSlot`) in the real build; the strip's hover as the per-series log/status entry (what it opens);
+the parameter fields per type for real (the mock shows two or three); whether the view (zoom, pan, dragged
+positions) persists per project in the real build; the §15.4 wordings (`GLOSS`, `SLOT_GLOSS`) still unread.
+
+### 15.6 Fourth pass: the strip as an escort, the card's zones, a real project behind the map (2026-11-10)
+
+**The maintainer's list, after looking at §15.5.** The tilt-series squares were meant as a stack of one or two
+rows hovering *above* the card, outside it, moving with it like an escort, slightly larger; the paper a touch
+greyer; both card sizes with more internal structure, separation and alignment ("a dump, though pretty"); and a
+real project from `crboost_data` behind the page, real data, real visualisations, a real parameter set for the job
+being added. "All large" liked: the Journey at a glance.
+
+**Built.**
+- *The strip* (`strip_spec`, `_strip_above`): squares in one row while they stay 6 px or wider (10 px at 12
+  tilt series), two rows while that keeps them 6 px (8 px at 46, 7 px at 50), then 2 px slivers in as many rows
+  as it takes (1 px past 300); drawn inside the card element at a negative top, so it drags with the card; the
+  layout reserves one band above every small card (`Box.band`). The paper is `#f1f4f8` with `#c3cbd6` dots.
+- *The card's zones.* A header band (`#f8fafc`, hairline below) with the light in a 14 px column and every
+  other label and value starting at one text column (`TEXT_X`); input labels as small uppercase tracking labels
+  over a 70 px column; the results or parameters block separated by a hairline and a section label; the output
+  row as a footer band. Rows 17 px, header 26, footer 22.
+- *A real project* (`ui/branch_map_project.py`, new). `Project` is the page's model (jobs, lineage, pedigree,
+  slots, what each type makes, methods, tools, parameter fields); `mock_project()` fills it from chapter 2's
+  invented jobs, `real_project(path)` from a project on disk, read-only (`ProjectState.load(read_only=True)`,
+  never installed; nothing written). By default `AGG412_20260311_MyrGFP_Grid2` (50 tilt series, 19 jobs: two
+  reconstructions off one alignment, missAlign, IsoNet train, cryoCARE predict, easymode segmentation, template
+  matching, picks, Warp export, a particle average, a Class 3D and an easymode predict still scheduled);
+  `?project=<name>` for another under the configured base, `?project=mock` for the invented one. The page route
+  loads it off the loop first (`prepare_branch_map`, `asyncio.to_thread`), cached on the params file's mtime.
+  - Jobs: id from the job number (`job024`), else the instance id (`tiltFilter`, `class3d`); status from
+    `execution_status`; per-tilt-series states from the array task markers (`read_manifest` + `scan_statuses`),
+    mapped onto the registry's tilt-series order so the same square is the same series on every card; the strip
+    names each series on hover.
+  - Inputs: a finished job's rows are what it recorded when it ran (`paths` → the job whose dir holds the file),
+    never the live resolver (which already re-points `tsCtf` at `missAlign`); a scheduled job's rows are the
+    resolver's answer or "to choose"; a merged-sources particle set is traced to the job it pooled from through
+    `Analytics/sets/<id>/set.json`. Slots come from each type's `INPUT_SCHEMA` (labels from `SLOT_LABELS` /
+    `STAR_LABELS`, bundled = same preferred source as the main slot, `when`-conditioned slots optional, the
+    `warp_tiltseries_settings` slot "quiet": a row, no cable). The shown lineage keeps the roster's order Motion
+    & CTF → tilt series import → tilt filter → alignment, as the filter trims the tomostars the alignment reads.
+  - The large card's facts (`_facts`), all from what is already on disk: Warp's own `reconstruction/*.png` for a
+    reconstruction; the `vis/slabs` slab beside the raw one for a denoising; the fullest `vis/segment` membrane
+    mask tinted onto the slab for a segmentation; CTF fit resolution per series from the registry for Motion & CTF
+    and CTF; the tilt axis per series for an alignment; residual rms per series from `missalign_changes.json` (over
+    threshold red) for missAlign; tilts taken out per series for the filter; the loss curve from `run.out` for a
+    training; the best peak per tomogram with the one-false-positive line from `analytics/tm_tomo` for template
+    matching; the histogram of all pick scores with the cut-off plus one cut-out atlas for the picks; the particle
+    count from `particles.star` for the export; three central slices of `merged.mrc` for the average. Thumbnails
+    are 192 px JPEGs as data URLs (contrast-stretched), cached per file mtime.
+  - A scheduled job's large card shows its parameters read-only ("PARAMETERS · not run yet").
+  - The new job's parameters are the type's real `USER_PARAMS` (`_field_spec`: number / select for enums and
+    booleans / text; labels from the field's `title`, hints from its `description`; defaults from an existing
+    instance of the type, else the class), the first ten on the card, "+ N more in the job tab" after; the method
+    field (`METHOD_FIELD`) is the ▾ badge. What the add menu offers comes from the real `OUTPUT_SCHEMA` /
+    `INPUT_SCHEMA` match (`offered_after`).
+- Section A keeps the invented project for the anatomy and the specimens (it has running and failed jobs) and
+  shows the large card over the real project: a reconstruction, a denoising, a segmentation, the picks, and a
+  Denoise predict being added after the latest reconstruction with its real parameter set.
+
+**Checked.** `scripts/dev_branch_map_check.py` over the real project (add after Reconstruct 024, re-open the
+tomograms row, take Reconstruct 009 by its pill, the model row and its list, the method menu, easymode, a
+parameter typed, missAlign 022 dragged and still there after the next redraw, wheel, pan, fit, a header click,
+Segment after Denoise predict 041, discard, all large, strips off): sixteen steps, no server error, no page
+error. `scripts/dev_screenshot.py --panels --width 2400 --height 1500 "/dev/io-ideas/branch?large=all"` for
+the Journey at a glance.
+
+**Open for the maintainer.** Whether the real build keeps thumbnails as data URLs or serves them through
+`/api/vis-asset` once the project is installed; which plot each type should carry for good (the choices above are
+one reading of the registry); the slivers past 160 tilt series (2 px) as the floor, or a count instead; whether
+a finished job's rows should ever show the live resolver's answer beside what it ran with; the five-job shared
+start (the alignment folds in because only its readers branch) vs folding only up to the filter; the real
+project's lineage rule for the tilt filter, made explicit here, to be the roster's rule too.
+
+### 15.7 Fifth pass: styles to choose from, the card's zones for real, the tilt-series picker (2026-11-11)
+
+**The maintainer's list, after looking at §15.6.** The magazine better but still unsatisfying: a few twists on the
+same idea, with a dropdown to choose; running tilt series blue and animated. The tool name in the header bar with
+the status and type; the small card without the bits of information (a pixel size, a symmetry, a resolution): those
+go into the large card, comprehensive, organised, arranged. The job being added inherits the arrangement and order
+of its job tab's parameter form instead of a page of unaligned inputs; the large and creation cards bigger if need
+be. The large card of a finished job carries the actual tilt-series processing data and the same stats and graphs
+the Journey shows per tilt series, not a summary. Above the board, auto-hiding and easily reopened, a carousel or
+other way to list every tilt series with some preview so one can be picked as active: picking highlights its mark
+in every magazine and the large cards turn to that tilt series' Journey; two or three ways to materialise it. The
+discard/add interface not as a separate strip outside the paper: a red cross and a green check that lights only
+once every input and parameter requirement is met. And a few prototypes for the small and large cards and the
+links between them, to tell the direction.
+
+**Built, in `ui/branch_map_preview.py` and `ui/branch_map_project.py` (worktree `crboost_server_branch_map`).**
+- *Styles, chosen on the page.* A bar of four dropdowns at the top (`MapState.strip_style` / `card_style` /
+  `link_style` / `picker_style`; `?magazine=&card=&cables=&picker=` for a link) and section A as a style sheet:
+  each piece next to its alternatives with a "use" button, so the map follows either control.
+  - The magazine (`STRIP_STYLES`, `strip_spec`, `strip_svg`): *squares* (§15.6), *ticks* (2 × 9 px, a barcode,
+    two rows of 5 px when they no longer fit), *bar* (one bar as wide as the card cut into segments, on the card's
+    top edge), *dots* (round). Running tilt series are blue (`RUN`) and blink (`.cb-bm-run`); the picked one is
+    ringed in ink; every mark carries `data-ts`, and a click on any mark, anywhere on the page, picks its tilt
+    series (`cb-bm-ts`).
+  - The card (`CARD_STYLES`): *zoned* (pale bands, hairlines), *plain* (white, hairlines only), *ink* (a dark
+    header band with white type). Geometry never changes with the style, so the cables land the same.
+  - The cables (`LINK_STYLES`, `_path_d`, mirrored in `JS.pathD`): *curve*, *elbow* (rounded corners), *straight*.
+  - The picker (`PICKER_STYLES`, `picker_body`): *film strip* (the latest reconstruction's slice per tilt series,
+    the position under it, a 3 px trail of per-job marks; scrolls sideways), *position chips* (title + trail of
+    dots; wraps), *rows* (light, position, name, tilts and dropped count, median defocus from the mdoc, a 6 px
+    trail; scrolls down). A trail is one mark per job in map order, named on hover (`_trail_svg`, `TsCard`).
+- *The header* carries the tool or method badge after the type's name, then the number and the size toggle. The
+  badge line and the tally are gone from the small card: it is the magazine, the header, the input rows and the
+  footer, nothing else (`ANATOMY`).
+- *The large card* (480 px) has three labelled blocks between the input rows and the footer, each a list of
+  `(height, draw)` parts so the card's height is known before it is drawn (`middle_sections`, `box_of`):
+  - `PARAMETERS · as run` (or `not run yet`): the job's parameters in the job tab's arrangement
+    (`default_renderer._classify_fields`, carried as `FieldSpec.group`): path fields in full-width rows, numeric,
+    enum and text fields in two columns, toggles beneath; read-only (`_ro_field`). The real project records every
+    job's parameter rows now, not only the scheduled ones.
+  - `RESULTS · every tilt series`: the §15.6 facts plus headline tiles (`Facts.tiles`), the magazine as larger
+    marks, the tally.
+  - `TILT SERIES · Pos 3 · Beam 2`, once one is picked: the Journey's section of this job for that tilt series,
+    compacted (`TsFacts`, `Project.ts_facts`): the stat tiles, the pictures of that tomogram, the per-tilt plots two
+    to a row (`TiltPlot`, `svg_tilt`: a value per tilt over the stage angle, dropped tilts hollow, a dashed
+    threshold, the extremes of both axes as labels). Per type, from the registry and the job's files
+    (`_ts_facts_real`): Motion & CTF defocus / CTF fit / motion per tilt and the Journey's tiles; the tilt filter's
+    P(bad) per tilt with the threshold and the dropped angles; alignment and missAlign shift, tilt offset, mean
+    intensity per tilt, the tilt axis, and missAlign's residual per tilt with its threshold from
+    `missalign_changes.json`; CTF defocus and astigmatism per tilt, the fit resolution and the specimen-plane tilt;
+    the reconstruction's own slice with size, pixel size and binning; the denoised slab beside the raw one; the
+    membrane overlay on it with the fraction per feature from `analytics/segment/<ts>.json`; template matching's
+    twenty strongest peaks against the one-false-positive line from `tm_tomo/<ts>.json`; the picks' score
+    histogram with the cut and the cut-out atlas; the particles exported from this tilt series. A tilt series
+    not in the job, still waiting, failed or on the GPU says so instead. The invented project's version
+    (`_mock_ts_facts`) is seeded, so it is the same on every render.
+- *The new job* is a large card whose `PARAMETERS` block is the real form in the job tab's own chrome
+  (`_ed_field`: the tab's label style, `.cb-select` boxes, mono text, two columns), every field, no cap. Its header
+  carries the ✕ (discard) and the ✓ (add), the ✓ green only when nothing is left to choose and nothing is missing
+  (`unsettled`; an input that follows the main choice counts as settled); grey, its tooltip names what is left.
+  The verdict strip under the map is gone.
+- *The picker* sits above the map (`render_picker`): a handle (`Tilt series · 50`), the picked one as a chip with
+  its ✕, a pin. It opens on the handle, folds after a pick unless pinned. `?ts=<id>` opens the page with one
+  picked. A pick refreshes section A and the map, not the style bar.
+- *Facts for the picker* (`TsCard`, `_ts_cards_real`): position and beam from the registry record, the latest
+  finished reconstruction's slice as the thumbnail (`_thumb`, 48 of the 50 have one), tilts and dropped tilts, the
+  median defocus of the mdoc, the per-job trail from the task markers. Read once with the project, off the loop
+  (`prepare_branch_map`).
+
+**Checked.** `scripts/dev_branch_map_check.py` (twenty steps now: the §15.6 run, discard by the ✕, magazines off and
+on, the picker opened and a tilt series taken from the film strip, its section on a large card, another picked by
+a magazine mark, every style switched from section A's buttons with the cables' style read back off the svg): no
+server error, no page error. `scripts/dev_screenshot.py --panels --width 2400 --height 3000` for section A (a
+viewport shorter than the panel clips it; 1500 px is not enough any more). Both projects shot: the real one with
+`?ts=…&add=denoisepredict&after=job024`, the invented one with `?project=mock&ts=TS_003&add=dpredict&after=job023`.
+
+**Open for the maintainer.** Which of each style to keep (the dropdowns are the question); whether the picker's
+film strip should carry the denoised slab when one exists instead of the raw slice; whether a pick should also
+scroll the map to the first card where that tilt series failed; the per-tilt plots as real ECharts tiles
+(`ui/dashboard/figures.py`) in the real build, or the small SVGs as they are; `Project.ts_facts` reads JSON files on
+the loop at click time (fine on this page, off the loop in the real build); the SLURM section of a job tab is not
+on the new card (left to the tab); a segmentation or template-matching record missing for a tilt series says so
+rather than showing the project-wide picture.
+
+**Decided (maintainer, 2026-11-11, after looking at §15.7).** Position chips for the picker, S-curves for the
+cables, squares for the magazine, the zoned card: these are the defaults now (`MapState`); the alternatives stay
+on the dropdowns and in section A for comparison until the real build, which carries only the chosen ones. Two
+amendments built the same day: the magazine never goes inside a card — a large card gets the same escort above it
+as a small one (the marks sized to its width), and the results block no longer repeats it; and the card's graphs
+and stats take the Journey's own vocabulary — `JOURNEY_THEME` (`ui/dashboard/figures.py`) for every colour and
+tick face (series blue for points and curves, the score-histogram blue for bars, the dropped-tilt red as a ring
+on a dropped point or a bar over a threshold that is bad, dashed grey reference lines, the y grid, the x axis
+line), the Journey's `.cb-stat` tiles for the headline numbers and `.cb-plot-label` for each plot's title. A
+threshold a value should stay *under* (missAlign's residual) flags the bars over it; one it should be *above* (a
+pick's score, a template-matching peak) does not (`TiltPlot.over_is_bad`).
+
+### 15.8 Decided: this UI stands. The real build — the Jobs view opens onto the branch map (2026-11-11)
+
+**Decision (maintainer, 2026-11-11, after §15.7 and its amendments): the branch map as it stands on
+`/dev/io-ideas/branch` is the UI.** Position chips, S-curves, squares, the zoned card, the Journey's chart theme,
+the magazine above every card, the large card's three blocks, the new job's form with ✕/✓ in its header, the
+picker above the map. No further design pass: the next session integrates it into this worktree's job builder, so
+that opening the regular Jobs view shows the branched layout. The mock page stays as the design bench until the
+view is in; then it goes.
+
+**Pickup for the next session.** Read this section, then §15.7 (what the page does and where), then look at the
+page before touching anything: `./crboost` from inside the worktree and open
+`/dev/io-ideas/branch?ts=AGG412_20260311_MyrGFP_Grid2_Position_1&add=denoisepredict&after=job024`; or shoot it
+(`~/.local/share/crboost-dev/pw/bin/python scripts/dev_screenshot.py --panels --width 2400 --height 3000 …`).
+`scripts/dev_branch_map_check.py` is the regression net for the mock page (twenty steps, no server or page
+error); keep it green while the code moves, and give the real view its own check in the same shape.
+
+**Where the map goes.** The Jobs view (`View.PIPELINE`, `ui/workspace_page.py`) is today the roster panel
+(`#cb-roster-panel`, `RosterWidget` in `ui/pipeline_builder/pipeline_roster.py`, the waterfall list, the Run
+slot, the counts) beside the main area, whose pipeline frame (`_view_frame("pipeline")`, built by
+`build_pipeline_builder_panel`) shows the open job's page (`PipelineBuilderPanel._show_job`) or, with no job
+open, the "No job open · Pick a job in the roster" placeholder (`_refs["empty_title"]`, ~line 363). The map takes
+the placeholder's place: with no job open, the pipeline frame is the map; a click on a card's header opens that
+job's page the way a roster row does (`panel._show_job(iid)` via `switch_tab`), and the page's close cross
+(`close_job`) brings the map back. The roster panel stays as the narrow list for now (its Run button, counts and
+rail are not the map's business) — whether it goes once the map is in is decision (b) below.
+
+**Stages.**
+
+- *S1 — the module.* `ui/branch_map/` as a package, moved out of the two preview files and stripped of the mock
+  chrome (section A, the style sheet, the alternatives): `card.py` (geometry, `render_card`, the magazine, the
+  header with ✕/✓), `blocks.py` (the large card's parameters / results / tilt-series blocks, the SVG plots in
+  `JOURNEY_THEME`), `model.py` (`Project` and `project_from_state(state, path)`: today's `real_project` over the
+  LIVE `ProjectState` the workspace holds, never a second load; `ts_cards`, `ts_facts`), `picker.py` (chips),
+  `view.py` (`BranchMapView(FingerprintedView)`: `signature()` = every job's `execution_status`, the
+  `array_status_cache` snapshot per array job, `pipeline_order`, the selected tilt series, the page state;
+  `render()` = today's `section_map` without the controls that were mock-only). `MapState` becomes the view's
+  state; the styles collapse to the chosen ones (`strip_style` etc. go). `/dev/io-ideas/branch` keeps working
+  over `project_from_state(ProjectState.load(read_only=True))` until S5.
+- *S2 — mounted in the workspace.* In `build_workspace_page`, the pipeline frame gets the map container next to
+  the job pages; `_set_job_open(False)` shows the map, `_show_job` hides it; the header click of a card calls
+  `panel.switch_tab(iid)`; the ⤢ stays the large card. The map's pollers are `ui_mgr.view_scope("pipeline")`
+  timers (3 s, signature-gated), so a hidden Jobs view does nothing. The route stays `View.PIPELINE`; a card's
+  large state and the view (zoom, pan, dragged positions) persist per project in the UI prefs
+  (`ui_state`, client storage) — decision (c).
+- *S3 — the actions, on the panel's verbs.* The add menu's row → the new card (page state only; nothing persisted
+  until ✓). ✓ → `panel.add_instance_to_pipeline(job_type, after=…, source_overrides={slot:
+  instance_override_key(src_type, src_iid) for every input chosen by hand})`, then the card's parameters onto
+  the new model's `USER_PARAMS` fields (the same setters the job tab uses, `numeric_forward` / `enum_forward`),
+  `state.mark_dirty()`, `backend.save_project`. Species-bound types (template matching, picks, extraction) go
+  through `prompt_species_and_add` first — the species dialog, then the card. ✕ → drop the page state. The
+  fan-out on an input row of a *scheduled* job writes `job_model.source_overrides[slot.key]` the way
+  `IOConfigComponent` does (`io_config_component.py` ~line 1001) and saves; a finished job's rows are read-only
+  (what it ran with). Remove → `remove_instance_from_pipeline` from the card's menu (an entry under the header's
+  number, not a new button). Run stays the roster's Run slot (`handle_run_pipeline`).
+- *S4 — live data, off the loop.* Statuses and the magazine from `array_status_cache.get(project_path, iid)`
+  and `jm.execution_status`, the tilt-series order from the registry (`sort_ts_by_position`); the large card's
+  facts, thumbnails and per-tilt-series facts read in `asyncio.to_thread` (JSON, PNG thumbnails; cached per job
+  dir mtime as today) or `run_in_worker` where PIL work adds up (the picker's fifty thumbnails); thumbnails
+  served through `/api/vis-asset` instead of data URLs once the project is installed — decision (d). The picker's
+  active tilt series IS the workspace's selected tilt series: `callbacks["select_ts"]` / `selected_ts` /
+  `follow_ts`, so the Journey and the map agree on it.
+- *S5 — retire.* `ui/pipeline_table_view.py` (`View.TABLE`, the rail's branch glyph) goes: the map supersedes
+  it. The three `/dev/io-ideas*` pages and `ui/tree_ideas_preview.py`, `ui/io_ideas_preview.py`,
+  `ui/io_layouts_preview.py`, `ui/branch_map_preview.py`, `ui/branch_map_project.py` go with them, their
+  surviving pieces having moved into `ui/branch_map/` in S1. `scripts/dev_branch_map_check.py` turns into a
+  check of the real view over a project.
+
+**Decisions owed by the maintainer (ask at the start, build S1 meanwhile).**
+- (a) The job page and the map: swap (the page replaces the map, as today's placeholder is replaced) or stacked
+  (the map above, the page below, each sized by the splitter). Recommended: swap, the large card being the glance.
+- (b) The roster's waterfall list: keep as the narrow list beside the map, or fold its Run slot, counts and rail
+  into the map's frame and drop the list.
+- (c) Persist the map's view per project (zoom, pan, dragged positions, large cards) in client storage.
+  Recommended: yes.
+- (d) Thumbnails via `/api/vis-asset` (recommended) vs data URLs.
+- (e) The per-tilt plots stay SVG (recommended: cheap, no ECharts instance per card) or become the Journey's
+  ECharts tiles.
+
+**Runtime checklist (the real view, after S2).** Open a project's Jobs view: the map, nothing else, when no job
+is open; a card header opens the job page, its close cross brings the map back; the magazine's marks match the
+roster's per-tilt-series rows; a Denoise predict added from a Reconstruct's menu appears in the roster with the
+inputs the card showed and the parameters typed on it, and its job tab's I/O section agrees; the fan-out on a
+scheduled job's row changes its I/O section's source; a pick in the picker selects the same tilt series in the
+Journey; the map does nothing while another view is on (no stalls in the watchdog log); a second browser tab sees
+the same map.
+
+**The look (2026-11-12).** The map takes Harbor Mono, one box deep (roadmap 51 §5, §6): its colours, labels, tool
+tags, lights, ports, picker and paper are `--cb-*` variables with today's values as fallbacks, `HARBOR_MONO` is the
+look's values, and `/dev/io-ideas/branch?frame=app` draws the Jobs view as S2 mounts it: the rail, the job roster,
+and the pipeline frame with the picker and the controls as strips across it and the paper filling the rest
+(`&look=harbor` for today's look). The frame is titled Pipeline there, since the roster beside it already says Jobs;
+the title is open. S1's `ui/branch_map/` keeps the variables, and the values come from `_THEME_CSS` once roadmap 51
+S3 is in. Screens: `notes/screens/final-*.png`.
+
+**Not in scope.** Species and particles streaming in from other projects (§15, deferred); forks across
+projects (stage 4); the pipeline table's lane layout (retired with it).

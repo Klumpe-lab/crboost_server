@@ -61,7 +61,8 @@ def copy_3dmod_chip(volume) -> None:
         ui.label("3dmod")
         .classes("cb-3dmod-chip")
         .style(
-            "position: absolute; right: 4px; bottom: 4px; z-index: 2; padding: 0 6px; border-radius: 3px; "
+            "position: absolute; right: 4px; bottom: 4px; z-index: 2; padding: 0 6px; "
+            "border-radius: var(--cb-r-sm, 3px); "
             f"{_MONO} font-size: 9px; line-height: 16px; cursor: pointer; user-select: none;"
         )
         .on("click.stop", _copy)

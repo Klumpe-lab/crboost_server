@@ -131,7 +131,10 @@ class local_file_picker(ui.dialog):
         self._typed_task: asyncio.Task | None = None
         self._typed_settled = Debounced(self._kick_typed, _TYPE_SETTLE_S)
 
-        with self, ui.card().style("width: 680px; max-width: 92vw; padding: 0; gap: 0; border-radius: 6px;"):
+        with (
+            self,
+            ui.card().style("width: 680px; max-width: 92vw; padding: 0; gap: 0; border-radius: var(--cb-r-lg, 6px);"),
+        ):
             with (
                 ui.row()
                 .classes("w-full items-center no-wrap")

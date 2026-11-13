@@ -41,7 +41,7 @@ from ui.job_plugins.default_renderer import render_config_preamble, render_defau
 
 logger = logging.getLogger(__name__)
 
-_CHIP_STYLE = "border-radius: 4px; padding: 3px 8px; margin-top: 4px; flex-wrap: nowrap;"
+_CHIP_STYLE = "border-radius: var(--cb-r-md, 4px); padding: 3px 8px; margin-top: 4px; flex-wrap: nowrap;"
 
 
 @register_params_renderer(JobType.SUBTOMO_EXTRACTION)

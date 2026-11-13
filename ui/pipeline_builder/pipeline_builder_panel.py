@@ -24,6 +24,7 @@ from services.routes import View
 from services.models_base import InstanceId, instance_id_to_job_type
 from ui.ui_state import get_ui_state_manager, get_job_display_name
 from ui.pipeline_builder.job_tab_component import render_job_tab
+from ui.branch_map import mount_branch_map
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,6 @@ class PipelineBuilderPanel:
         toggle_journey: Callable | None = None,
         toggle_gallery: Callable | None = None,
         toggle_protocols: Callable | None = None,
-        toggle_table: Callable | None = None,
     ):
         self.backend = backend
         self.callbacks = callbacks
@@ -65,7 +65,6 @@ class PipelineBuilderPanel:
         self.toggle_journey = toggle_journey
         self.toggle_gallery = toggle_gallery
         self.toggle_protocols = toggle_protocols
-        self.toggle_table = toggle_table
 
         self.ui_mgr = get_ui_state_manager()
 
@@ -77,6 +76,9 @@ class PipelineBuilderPanel:
 
         self.roster = RosterWidget(self)
         self.poller = StatusPoller(self)
+        # The branch map (ui/branch_map/) and the job pages share the pipeline frame's body: one shows at a time.
+        self.map = None
+        self._map_container = None
         # Guards async handlers that own a dialog (and other re-entrant work)
         # against rapid/double clicks. See ui/components/reactive.py.
         self.flight = SingleFlight()
@@ -116,30 +118,18 @@ class PipelineBuilderPanel:
 
     # ── Species gate ──────────────────────────────────────────────────────────
 
-    async def prompt_species_and_add(self, job_type: JobType, after: str | None = None):
-        """Add a job of `job_type`, asking for its species first when it is a per-particle job.
-        `after`: the Subset it follows (add_instance_to_pipeline)."""
-        # SingleFlight: if a dialog for this job_type is already open, a
-        # second click drops silently instead of stacking another dialog.
-        # Required because the trigger button can be destroyed and rebuilt
-        # mid-click by an unrelated refresh, so the user may click "add"
-        # several times before one click lands.
+    async def choose_species(self, job_type: JobType) -> str | None:
+        """The species a per-particle job of `job_type` is made for, asked in a dialog; None when there is none
+        to choose or the dialog was cancelled (said so, nothing added). SingleFlight: a second click while the
+        dialog is open drops silently instead of stacking another dialog (the trigger can be destroyed and
+        rebuilt mid-click by an unrelated refresh)."""
         async with self.flight(f"species_dialog:{job_type.value}") as acquired:
             if not acquired:
-                return
-
-            if job_type not in PHASE_JOBS[PHASE_PARTICLES]:
-                self.add_instance_to_pipeline(job_type, after=after)
-                return
-
+                return None
             project_path = self.ui_mgr.project_path
             if not project_path:
-                return
-
-            from services.project_state import get_project_state_for
-
+                return None
             state = get_project_state_for(project_path)
-
             if not state.species_registry:
                 ui.notify(
                     "No particle species yet — use “+” on the PARTICLES header to create one "
@@ -147,7 +137,7 @@ class PipelineBuilderPanel:
                     type="warning",
                     timeout=4000,
                 )
-                return
+                return None
 
             chosen = {"id": state.species_registry[0].id}
 
@@ -170,9 +160,18 @@ class PipelineBuilderPanel:
                     house_button("Add", lambda: dialog.submit(True), kind="accent")
 
             confirmed = await dialog
-            if not confirmed:
-                return
-            self.add_instance_to_pipeline(job_type, species_id=chosen["id"], after=after)
+            return chosen["id"] if confirmed else None
+
+    async def prompt_species_and_add(self, job_type: JobType, after: str | None = None):
+        """Add a job of `job_type`, asking for its species first when it is a per-particle job.
+        `after`: the Subset it follows (add_instance_to_pipeline)."""
+        if job_type not in PHASE_JOBS[PHASE_PARTICLES]:
+            self.add_instance_to_pipeline(job_type, after=after)
+            return
+        species_id = await self.choose_species(job_type)
+        if species_id is None:
+            return
+        self.add_instance_to_pipeline(job_type, species_id=species_id, after=after)
 
     async def add_instance_for_species(self, job_type: JobType, species_id: str) -> None:
         """One-click add from the Species page's Jobs tab: the species is known, so no
@@ -269,6 +268,18 @@ class PipelineBuilderPanel:
         self._set_job_open(True)
 
     def _set_job_open(self, on: bool) -> None:
+        """A job page shows, or the map does. The workspace styles the frame's title line for either."""
+        tabs = self.ui_mgr.panel_refs.job_tabs_container
+        if tabs is not None and not tabs.is_deleted:
+            tabs.set_visibility(on)
+        if self._map_container is not None and not self._map_container.is_deleted:
+            self._map_container.set_visibility(not on)
+        if self.map is not None:
+            self.map.set_visible(not on)
+        if not on:
+            set_title = self.callbacks.get("set_view_title")
+            if set_title:
+                set_title("pipeline", "Pipeline")
         set_open = self.callbacks.get("set_job_open")
         if set_open:
             set_open(on)
@@ -367,12 +378,13 @@ class PipelineBuilderPanel:
         clone_of: str | None = None,
         after: str | None = None,
         reading: dict[str, str] | None = None,
+        open_page: bool = True,
     ) -> dict:
         """Add a job of `job_type` through the pipeline-edit door (`services.pipeline_edit.add_job`), which
-        holds every rule, and open its page. With `clone_of`, one that takes that job's parameters, SLURM
-        settings and inputs set by hand; with `after`, a Subset of that finished job's output, or a job reading
-        the Subset `after`; `reading`, inputs of the new job set from the start. A refusal and the inputs
-        pinned on the way are toasts. Returns the door's result."""
+        holds every rule, and open its page (`open_page`; the map adds without leaving itself). With `clone_of`,
+        one that takes that job's parameters, SLURM settings and inputs set by hand; with `after`, a Subset of
+        that finished job's output, or a job reading the Subset `after`; `reading`, inputs of the new job set
+        from the start. A refusal and the inputs pinned on the way are toasts. Returns the door's result."""
         state = current_project_state()
         res = add_job(state, job_type, species_id=species_id, after=after, reading=reading, clone_of=clone_of)
         if not res["success"]:
@@ -406,7 +418,8 @@ class PipelineBuilderPanel:
         if res["added"] and self.ui_mgr.is_project_created:
             asyncio.create_task(self.backend.save_project(self.ui_mgr.project_path))
 
-        self.ui_mgr.set_active_instance(instance_id)
+        if open_page:
+            self.ui_mgr.set_active_instance(instance_id)
         self.rebuild_pipeline_ui()
         return res
 
@@ -489,7 +502,7 @@ class PipelineBuilderPanel:
         if not roster:
             set_title = self.callbacks.get("set_view_title")
             if set_title:
-                set_title("pipeline", "Jobs")
+                set_title("pipeline", "Pipeline")
 
         with tabs_container:
             wrapper = ui.element("div").style(
@@ -668,7 +681,6 @@ def build_pipeline_builder_panel(
     toggle_journey: Callable | None = None,
     toggle_gallery: Callable | None = None,
     toggle_protocols: Callable | None = None,
-    toggle_table: Callable | None = None,
 ) -> None:
     panel = PipelineBuilderPanel(
         backend=backend,
@@ -680,7 +692,6 @@ def build_pipeline_builder_panel(
         toggle_journey=toggle_journey,
         toggle_gallery=toggle_gallery,
         toggle_protocols=toggle_protocols,
-        toggle_table=toggle_table,
     )
 
     # `apply_aggregation_overrides` does not run on render: it would mutate every project on
@@ -689,9 +700,13 @@ def build_pipeline_builder_panel(
 
     # Must be created in the current NiceGUI rendering context before
     # panel.build() is called, since rebuild_pipeline_ui writes into it.
-    tabs_container = ui.element("div").style(
-        "display: flex; flex-direction: column; width: 100%; flex: 1 1 0%; min-height: 0; overflow: hidden;"
-    )
+    body = "display: flex; flex-direction: column; width: 100%; flex: 1 1 0%; min-height: 0; overflow: hidden;"
+    # The map and the job pages, siblings in the frame's body: _set_job_open shows one of them.
+    panel._map_container = ui.element("div").classes("cb-bm-app").style(body)
+    tabs_container = ui.element("div").style(body)
     panel.ui_mgr.panel_refs.job_tabs_container = tabs_container
 
     panel.build()
+    with panel._map_container:
+        panel.map = mount_branch_map(panel._map_container, panel, callbacks)
+    panel._set_job_open(panel.ui_mgr.active_instance_id is not None)

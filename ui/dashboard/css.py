@@ -45,7 +45,7 @@ _CB_CSS = """
     box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.18);
 }
 .cb-pill-strip { display: flex; gap: 2px; }
-.cb-pill { height: 4px; width: 13px; flex: 0 0 13px; border-radius: 2px; background: #e5e7eb; }
+.cb-pill { height: 4px; width: 13px; flex: 0 0 13px; border-radius: var(--cb-r-sm, 2px); background: #e5e7eb; }
 .cb-pill.ok { background: #10b981; }
 .cb-pill.fail { background: #dc2626; }
 .cb-pill.running { background: #f59e0b; }
@@ -102,12 +102,23 @@ _CB_CSS = """
     flex: 1; display: flex; align-items: center; justify-content: center;
     color: #9ca3af; font-size: 13px; padding: 40px; flex-direction: column; gap: 8px;
 }
+/* Drawn things (roadmap 51 D3): shown by a look that sets --cb-drawn, in place of what --cb-undrawn hides. */
+.cb-drawn { display: var(--cb-drawn, none) !important; }
+.cb-undrawn { display: var(--cb-undrawn, inline-flex) !important; }
+.cb-ascii {
+    font-family: var(--cb-mono, monospace); font-size: 10px; line-height: 1.2; margin: 0; white-space: pre;
+    color: var(--cb-ascii, #94a3b8);
+}
+.cb-ascii .hi { color: var(--cb-ascii-hi, #4a8fd4); }
+.cb-prompt { font-family: var(--cb-mono, monospace); font-size: 11px; color: var(--cb-ink-1, #0f172a); }
+.cb-prompt .p { color: var(--cb-prompt, #94a3b8); }
 .cb-section-title {
     font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; font-weight: 600;
     color: #1e293b; letter-spacing: 0;
 }
 .cb-section-card {
-    background: #ffffff; border: 1px solid #e5e7eb; border-radius: 6px;
+    background: var(--cb-section-fill, #ffffff); border: 1px solid var(--cb-section-ring, #e5e7eb);
+    border-radius: var(--cb-card-radius, 6px);
     padding: 10px 12px 8px; margin-bottom: 8px;
 }
 /* Title line: title · (params ⓘ) · (status). Real air between it and the content. */
@@ -140,7 +151,7 @@ _CB_CSS = """
     }
 }
 .cb-hover-card {
-    background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 4px;
+    background: #f8fafc; border: 1px solid #e5e7eb; border-radius: var(--cb-r-md, 4px);
     padding: 8px 10px; font-family: ui-monospace, monospace;
     font-size: 11px; color: #374151;
     display: grid; grid-template-columns: max-content 1fr;
@@ -159,7 +170,7 @@ _CB_CSS = """
 .cb-gallery-tile {
     position: relative; width: 96px; height: 96px;
     background-color: #0f172a; background-repeat: no-repeat;
-    border-radius: 5px; cursor: pointer; overflow: hidden;
+    border-radius: var(--cb-r-md, 5px); cursor: pointer; overflow: hidden;
     border: 2px solid transparent; transition: transform 0.06s ease;
     box-shadow: 0 1px 2px rgba(16, 42, 67, 0.22);
 }
@@ -197,10 +208,10 @@ _CB_CSS = """
 }
 .cb-gallery-empty {
     padding: 18px; text-align: center; font-size: 11px; color: #6b7280;
-    background: #f8fafc; border-radius: 4px; border: 1px dashed #cbd5e1;
+    background: #f8fafc; border-radius: var(--cb-r-md, 4px); border: 1px dashed #cbd5e1;
 }
 .cb-tomo-preview {
-    width: 100%; background: #0f172a; border-radius: 4px;
+    width: 100%; background: #0f172a; border-radius: var(--cb-r-md, 4px);
     overflow: hidden; position: relative;
 }
 .cb-tomo-preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -230,7 +241,7 @@ _CB_CSS = """
  * restyle rule below reads it via var() so each species' dots are colored. */
 .cb-pick-layer { position: absolute; inset: 0; pointer-events: none; z-index: 4; }
 .cb-pick-layer-hidden { display: none; }
-.cb-recon-canvas { background: #0f172a; border-radius: 6px; }
+.cb-recon-canvas { background: #0f172a; border-radius: var(--cb-r-lg, 6px); }
 /* X/Y + X/Z stack: fills its column (width:100%, left-aligned margin:0). The
  * column is capped per-tomo to the slab's height-limited width (see
  * .cb-particles-canvas-col), so the stack — and the side strip below it — match
@@ -262,7 +273,7 @@ _CB_CSS = """
 .cb-ltable {
     flex: 1 1 auto; min-width: 0;
     display: flex; flex-direction: column; gap: 1px;
-    background: #fafbfc; border: 1px solid #eef1f6; border-radius: 8px; padding: 3px;
+    background: #fafbfc; border: 1px solid #eef1f6; border-radius: var(--cb-r-lg, 8px); padding: 3px;
 }
 .cb-ltable-row {
     display: grid;
@@ -271,7 +282,7 @@ _CB_CSS = """
      * own template below. */
     grid-template-columns: 14px minmax(0, 1fr) 48px 26px 22px 22px 20px;
     align-items: center; gap: 8px;
-    padding: 3px 7px; border-radius: 5px; cursor: pointer;
+    padding: 3px 7px; border-radius: var(--cb-r-md, 5px); cursor: pointer;
     border: 1px solid transparent; transition: background 0.12s, border-color 0.12s;
 }
 .cb-ltable-row:hover { background: #ffffff; border-color: #e3e8f0; }
@@ -338,7 +349,7 @@ _CB_CSS = """
  * hovered. */
 .cb-ptable-import {
     display: flex; align-items: center; gap: 6px;
-    padding: 3px 7px; border-radius: 5px; cursor: pointer;
+    padding: 3px 7px; border-radius: var(--cb-r-md, 5px); cursor: pointer;
     border: 1px dashed #e1e7f0; background: transparent;
     font-size: 10px; color: #b6c0cf;
     transition: background 0.12s, border-color 0.12s, color 0.12s;
@@ -434,7 +445,7 @@ _CB_CSS = """
     font-family: ui-monospace, monospace;
     max-height: 90px; overflow-y: auto;
     background: #f8fafc; border: 1px solid #e5e7eb;
-    border-radius: 3px; padding: 6px 8px;
+    border-radius: var(--cb-r-sm, 3px); padding: 6px 8px;
 }
 .cb-failures-list .cb-failure-row {
     display: flex; gap: 8px; padding: 1px 0;
@@ -468,7 +479,7 @@ _CB_CSS = """
 .cb-plot-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 0 0 6px 0; }
 .cb-plot-cell {
     flex: 1 1 var(--cb-plot-min, 340px); min-width: 0;
-    background: #ffffff; border-radius: 4px; padding: 6px 6px 6px;
+    background: #ffffff; border-radius: var(--cb-r-md, 4px); padding: 6px 6px 6px;
 }
 /* One short regular-weight title per chart (the explainer tooltip hangs on it);
  * the only weighted text in a tile is the axis names. */
@@ -480,7 +491,14 @@ _CB_CSS = """
  * never a `key val · key val` line crammed into 20 px. */
 .cb-stats { display: flex; gap: 26px; flex-wrap: wrap; margin: 0 2px 14px; }
 .cb-stat { display: flex; flex-direction: column; gap: 1px; }
-.cb-stat-label { font-family: 'IBM Plex Sans', sans-serif; font-size: 9px; color: #94a3b8; white-space: nowrap; }
+.cb-stat-label {
+    font-family: var(--cb-stat-font, 'IBM Plex Sans', sans-serif); font-size: var(--cb-stat-size, 9px);
+    font-weight: var(--cb-stat-weight, 400); text-transform: var(--cb-stat-case, none);
+    letter-spacing: var(--cb-stat-track, 0); color: var(--cb-stat-ink, #94a3b8); white-space: nowrap;
+}
+/* A number's unit and its decimals a step back (`num_html`, ui/job_plugins/_field_styles.py). */
+.cb-unit { color: var(--cb-unit-ink, inherit); }
+.cb-dec { color: var(--cb-unit-ink, inherit); }
 .cb-stat-value { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #1e293b; white-space: nowrap; }
 /* The Dataset title carries its headline facts inline (it is collapsed by default). */
 .cb-stats-inline { margin: 0 0 0 6px; gap: 16px; }
@@ -489,7 +507,7 @@ _CB_CSS = """
 .cb-section-card-header:has(+ .cb-collapsed) { margin-bottom: 0; }
 .cb-drop-list {
     font-family: ui-monospace, monospace; font-size: 10px; color: #6b7280;
-    background: #fef3c7; border: 1px solid #fde68a; border-radius: 3px;
+    background: #fef3c7; border: 1px solid #fde68a; border-radius: var(--cb-r-sm, 3px);
     padding: 6px 8px; margin: 4px 0; max-height: 120px; overflow-y: auto;
 }
 .cb-drop-list .cb-drop-row {
@@ -574,15 +592,15 @@ _CB_CSS = """
 }
 .cb-chip {
     display: inline-flex; align-items: center; gap: 6px;
-    padding: 2px 8px; border-radius: 999px;
+    padding: 2px 8px; border-radius: var(--cb-badge-radius, 999px);
     font-family: ui-monospace, monospace; font-size: 10px;
     border: 1px solid #dbe3ec; background: #f4f8fc;
     color: #33506e; cursor: help; line-height: 1.4;
     white-space: nowrap;
 }
 .cb-chip .cb-chip-label {
-    color: #7d93ab; text-transform: uppercase;
-    font-size: 9px; font-weight: 700; letter-spacing: 0.4px;
+    color: var(--cb-th-ink, #7d93ab); text-transform: uppercase;
+    font-size: var(--cb-th-size, 9px); font-weight: var(--cb-th-weight, 700); letter-spacing: 0.4px;
 }
 .cb-chip .cb-chip-value { color: #12324f; font-weight: 600; }
 .cb-chip-ok      { background: #ecfdf5; border-color: #a7f3d0; }
@@ -599,7 +617,7 @@ _CB_CSS = """
 .cb-recon-preview {
     width: 100%;
     background: #0f172a;
-    border-radius: 6px;
+    border-radius: var(--cb-r-lg, 6px);
     overflow: hidden;
     margin: 8px 0 4px 0;
     display: flex; justify-content: center; align-items: center;
@@ -629,7 +647,8 @@ _CB_CSS = """
 .cb-warp-angle { font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #6b829b; line-height: 11px; }
 .cb-warp-zoom-dialog .q-dialog__inner--minimized > div { max-width: none; }
 .cb-warp-zoom {
-    background: #ffffff; padding: 10px 12px; border-radius: 6px; font-family: 'IBM Plex Sans', sans-serif;
+    background: #ffffff; padding: 10px 12px;
+    border-radius: var(--cb-r-lg, 6px); font-family: 'IBM Plex Sans', sans-serif;
     display: flex; flex-direction: column; gap: 6px;
 }
 .cb-warp-zoom-title { font-size: 12px; font-weight: 600; color: var(--cb-head-ink, #12324f); }
@@ -771,7 +790,7 @@ _CB_CSS = """
 .cb-filter-counter {
     font-family: ui-monospace, monospace; font-size: 10px;
     color: #33506e;
-    padding: 1px 6px; border-radius: 3px;
+    padding: 1px 6px; border-radius: var(--cb-r-sm, 3px);
     background: #f4f8fc; border: 1px solid #dbe3ec;
 }
 .cb-filter-counter.cb-filter-dirty {
@@ -796,7 +815,7 @@ _CB_CSS = """
 .cb-jsep { width: 1px; height: 14px; background: var(--cb-panel-line, #dbe3ec); flex: 0 0 auto; }
 .cb-jswitch {
     display: flex; align-items: baseline; gap: 6px; cursor: pointer; user-select: none;
-    padding: 3px 6px; margin-left: -6px; border-radius: 4px;
+    padding: 3px 6px; margin-left: -6px; border-radius: var(--cb-r-md, 4px);
 }
 .cb-jswitch:hover { background: var(--cb-hover, #e6eff8); }
 .cb-jswitch-caret { font-size: 9px; color: #94a3b8; }
@@ -807,7 +826,7 @@ _CB_CSS = """
 .cb-jsp-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
 .cb-jsp {
     display: inline-flex; align-items: baseline; gap: 5px; padding: 0 4px;
-    border-radius: 3px; white-space: nowrap;
+    border-radius: var(--cb-r-sm, 3px); white-space: nowrap;
 }
 .cb-jsp-n { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #1e293b; }
 .cb-jsp-kept { font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #059669; }
@@ -852,7 +871,8 @@ _CB_CSS = """
  * grouped by stage position, with every species' pick count; the totals at its foot. */
 .cb-ts-sep { color: #9fb2c8; margin: 0 -2px; }
 .cb-ts-switch {
-    display: flex; align-items: center; gap: 1px; min-width: 0; padding: 1px 2px 1px 6px; border-radius: 4px;
+    display: flex; align-items: center; gap: 1px; min-width: 0; padding: 1px 2px 1px 6px;
+    border-radius: var(--cb-r-md, 4px);
     cursor: pointer; user-select: none;
 }
 .cb-ts-switch:hover { background: var(--cb-hover, #e6eff8); }
@@ -907,11 +927,13 @@ _CB_CSS = """
  * switcher as one bordered strip; the active segment is tinted, never a Quasar tab. */
 .cb-seg {
     display: inline-flex; align-items: stretch; flex-shrink: 0;
-    border: 1px solid var(--cb-field-line, #d3dde8); border-radius: var(--cb-field-radius, 4px); overflow: hidden;
-    background: #ffffff; box-shadow: 0 1px 1px rgba(16, 42, 67, 0.04);
+    border: 1px solid var(--cb-field-line, #d3dde8); border-radius: var(--cb-ctl-radius, 4px); overflow: hidden;
+    background: #ffffff; box-shadow: var(--cb-card-shadow, 0 1px 1px rgba(16, 42, 67, 0.04));
 }
 .cb-seg-btn {
-    font-size: 9px; font-weight: 500; line-height: 16px; padding: 2px 8px;
+    font-family: var(--cb-ctl-font, inherit); text-transform: var(--cb-ctl-case, none);
+    letter-spacing: var(--cb-ctl-track, 0);
+    font-size: var(--cb-seg-size, 9px); font-weight: var(--cb-seg-weight, 500); line-height: 16px; padding: 2px 8px;
     color: #4f6782; background: #ffffff; cursor: pointer; user-select: none;
     border-right: 1px solid #e3eaf2; white-space: nowrap;
 }
@@ -922,7 +944,7 @@ _CB_CSS = """
 .cb-seg-btn:hover { background: #f4f8fc; color: var(--cb-head-ink, #12324f); }
 /* The active segment: the title stripes' light blue with their blue tick, under it. */
 .cb-seg-btn.active {
-    background: var(--cb-head, #edf4fb); color: var(--cb-head-ink, #12324f); font-weight: 600;
+    background: var(--cb-head, #edf4fb); color: var(--cb-head-ink, #12324f); font-weight: var(--cb-seg-weight-on, 600);
     box-shadow: inset 0 -2px 0 var(--cb-accent, #4a8fd4);
 }
 /* Small strip: as tall as a 16 px `.cb-field`, for control rows (projects roster). */
@@ -986,7 +1008,7 @@ _CB_CSS = """
  * max-width inline keeps it. */
 .q-tooltip.q-tooltip--style, .cb-title-tip, .cb-popover {
     background: var(--cb-pop-bg, #f8fafc); color: #0f172a;
-    border: 1px solid var(--cb-pop-line, #d3dce6); border-radius: 5px;
+    border: 1px solid var(--cb-pop-line, #d3dce6); border-radius: var(--cb-pop-radius, 5px);
     box-shadow: var(--cb-pop-shadow, 0 4px 14px rgba(16, 42, 67, 0.12));
 }
 .q-tooltip.q-tooltip--style, .cb-title-tip {
@@ -1017,7 +1039,9 @@ _CB_CSS = """
 .cb-scroll-noh .q-scrollarea__content { width: 100%; max-width: 100%; padding: 0; gap: 0; }
 /* The roster's compact column titles: each sorts its column on a click; the sorted one is darker. */
 .cb-proj-colhead {
-    font-family: 'IBM Plex Sans', sans-serif; font-size: 9px; font-weight: 600; color: #7d93ab;
+    font-family: var(--cb-th-font, 'IBM Plex Sans', sans-serif); font-size: var(--cb-th-size, 9px);
+    font-weight: var(--cb-th-weight, 600); text-transform: var(--cb-th-case, none);
+    letter-spacing: var(--cb-th-track, 0); color: var(--cb-th-ink, #7d93ab);
     white-space: nowrap; cursor: pointer; user-select: none;
 }
 .cb-proj-colhead:hover { color: #33506e; }
@@ -1101,7 +1125,7 @@ _CB_CSS = """
 .cb-tw-import {
     display: flex; align-items: center; gap: 5px;
     margin: 3px 5px; padding: 2px 5px; min-height: 18px;
-    border: 1px dashed #e5e7eb; border-radius: 4px; cursor: pointer;
+    border: 1px dashed #e5e7eb; border-radius: var(--cb-r-md, 4px); cursor: pointer;
     font-size: 9px; color: #b6c0cf;
     transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
@@ -1210,7 +1234,7 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 .cb-select.q-textarea .q-field__control { height: auto; }
 .cb-field textarea.q-field__native { line-height: 1.4; padding: 2px 0; }
 .cb-select-popup {
-    border: 1px solid #e2e8f0; border-radius: 5px;
+    border: 1px solid #e2e8f0; border-radius: var(--cb-r-md, 5px);
     box-shadow: 0 6px 18px rgba(15,23,42,.10);
 }
 .cb-select-popup .q-item {
@@ -1244,7 +1268,7 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 }
 .cb-gal-count {
     font-family: ui-monospace, monospace; font-size: 10px; color: #1f4e79;
-    background: var(--cb-head, #edf4fb); border-radius: 3px; padding: 0 5px;
+    background: var(--cb-head, #edf4fb); border-radius: var(--cb-r-sm, 3px); padding: 0 5px;
 }
 .cb-gal-toolbar-label {
     font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
@@ -1261,8 +1285,8 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 .cb-lyr { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 10px; color: #334155; }
 .cb-lyr.cb-lyr-wide { min-width: 500px; }
 .cb-lyr td { padding: 2px 4px; vertical-align: middle; white-space: nowrap; }
-.cb-lyr td:first-child { padding-left: 8px; border-radius: 3px 0 0 3px; }
-.cb-lyr td:last-child { padding-right: 10px; border-radius: 0 3px 3px 0; }
+.cb-lyr td:first-child { padding-left: 8px; border-radius: var(--cb-r-sm, 3px) 0 0 var(--cb-r-sm, 3px); }
+.cb-lyr td:last-child { padding-right: 10px; border-radius: 0 var(--cb-r-sm, 3px) var(--cb-r-sm, 3px) 0; }
 .cb-lyr td.cb-lyr-c-eye, .cb-lyr td.cb-lyr-c-key, .cb-lyr td.cb-lyr-c-num,
 .cb-lyr td.cb-lyr-c-src, .cb-lyr td.cb-lyr-c-gal { width: 1px; }
 .cb-lyr td.cb-lyr-c-eye, .cb-lyr td.cb-lyr-c-key, .cb-lyr td.cb-lyr-c-gal { text-align: center; }
@@ -1295,7 +1319,8 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 .cb-lyr-src {
     display: inline-block; max-width: 140px; box-sizing: border-box; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; vertical-align: middle; font-size: 9px; line-height: 14px; padding: 0 5px;
-    border-radius: 3px; color: #4f6782; background: #ffffff; border: 1px solid var(--cb-field-line, #d3dde8);
+    border-radius: var(--cb-r-sm, 3px); color: #4f6782; background: #ffffff;
+    border: 1px solid var(--cb-field-line, #d3dde8);
     cursor: pointer;
 }
 .cb-lyr-src:hover { border-color: var(--cb-field-line-hover, #a9c6e4); color: var(--cb-head-ink, #12324f); }
@@ -1304,7 +1329,7 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
     font-weight: 600; cursor: default;
 }
 .cb-lyr-src.none { background: transparent; border-color: transparent; color: #94a3b8; cursor: inherit; }
-.cb-lyr .q-icon.cb-lyr-gal { color: #9fb2c8; cursor: pointer; border-radius: 3px; }
+.cb-lyr .q-icon.cb-lyr-gal { color: #9fb2c8; cursor: pointer; border-radius: var(--cb-r-sm, 3px); }
 .cb-lyr .q-icon.cb-lyr-gal:hover { color: var(--cb-head-ink, #12324f); background: #ffffff; }
 .cb-lyr .q-icon.cb-lyr-gal.here { color: var(--cb-accent, #4a8fd4); cursor: default; }
 /* Segmentation layers: the fills' opacity, under the list. */
@@ -1314,7 +1339,8 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 .cb-gal-grid { display: grid; gap: 10px; padding: 10px; align-items: start; }
 .cb-gal-tile {
     display: flex; flex-direction: column; min-width: 0;
-    border: 1px solid var(--cb-card-line, #dbe3ec); border-radius: calc(var(--cb-card-radius, 4px) + 1px);
+    border: 1px solid var(--cb-card-line, #dbe3ec);
+    border-radius: var(--cb-r-tile, calc(var(--cb-card-radius, 4px) + 1px));
     overflow: hidden; background: #ffffff; box-shadow: var(--cb-card-shadow, 0 1px 2px rgba(16, 42, 67, 0.06));
 }
 .cb-gal-tile:hover { border-color: #c7d2fe; box-shadow: 0 2px 8px rgba(15,23,42,0.08); }
@@ -1359,9 +1385,15 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
     font-size: 10px; color: #334155; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1;
 }
+/* Harbor Mono's figure numbers on the wall (roadmap 51 D3): each caption counts its tile, shown by --cb-fig-n. */
+.cb-gal-grid { counter-reset: cb-fig; }
+.cb-gal-cap::before {
+    counter-increment: cb-fig; content: counter(cb-fig, decimal-leading-zero); display: var(--cb-fig-n, none);
+    font-family: var(--cb-mono, monospace); font-size: 8px; letter-spacing: .06em; color: var(--cb-ink-4, #94a3b8);
+}
 /* The Journey glyph at the caption's end: opens the Journey on this tilt series, beside the wall. */
 .cb-gal-jlink {
-    display: flex; flex: 0 0 auto; padding: 1px; margin-right: -2px; border-radius: 3px;
+    display: flex; flex: 0 0 auto; padding: 1px; margin-right: -2px; border-radius: var(--cb-r-sm, 3px);
     color: #8aa0b8; cursor: pointer;
 }
 .cb-gal-jlink:hover { color: var(--cb-head-ink, #12324f); background: var(--cb-hover, #e6eff8); }
@@ -1372,8 +1404,8 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
  * mosaic cells. A series is one HTML string; its sizes and layout are inline there. */
 /* A series is a pale gray-blue panel, the Journey's section look; its tilt cards stay white. */
 .cb-tp-group {
-    border-radius: var(--cb-radius, 5px); background: var(--cb-panel, #ffffff); overflow: hidden;
-    outline: 1px solid var(--cb-panel-line, #dbe3ec); outline-offset: -1px;
+    border-radius: var(--cb-radius, 5px); background: var(--cb-group-fill, #ffffff); overflow: hidden;
+    outline: 1px solid var(--cb-group-ring, #dbe3ec); outline-offset: -1px;
 }
 .cb-tp-head {
     display: flex; align-items: center; gap: 6px; padding: 4px 8px; min-width: 0;
@@ -1455,7 +1487,7 @@ viewBox='0 0 10 10' fill='%23c4b5fd'>\
 .cb-tg-m-ast .cb-to-v-ast, .cb-tg-m-shift .cb-to-v-shift { color: #6d28d9; font-weight: 600; }
 /* The magnifier, top right over a card's image, drawn on hover: the full-size viewer. */
 .cb-tp-zoom {
-    position: absolute; top: 3px; right: 3px; z-index: 2; width: 16px; height: 16px; border-radius: 3px;
+    position: absolute; top: 3px; right: 3px; z-index: 2; width: 16px; height: 16px; border-radius: var(--cb-r-sm, 3px);
     background: rgba(15,23,42,0.55) url("data:image/svg+xml;utf8,\
 <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10' \
 fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
@@ -1472,7 +1504,7 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 .cb-tc-out { background: #818cf8; }
 /* The legend's red-border swatch. */
 .cb-lg-x {
-    width: 12px; height: 12px; box-sizing: border-box; border: 1.5px solid #ef4444; border-radius: 2px;
+    width: 12px; height: 12px; box-sizing: border-box; border: 1.5px solid #ef4444; border-radius: var(--cb-r-sm, 2px);
     background: #f1f5f9;
 }
 /* A group header's strip: one tick per tilt at its stage tilt, coloured like its tilt. The
@@ -1498,7 +1530,7 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 .cb-tp-beam { display: flex; align-items: center; gap: 6px; padding: 2px 2px 3px; min-width: 0; }
 .cb-tp-beam:not(:first-child) { margin-top: 6px; }
 /* On the Tilts tab a beam's line selects its tilt series; the selected one carries the accent tick. */
-.cb-tg-select .cb-tp-beam { padding-left: 6px; border-radius: 3px; cursor: pointer; }
+.cb-tg-select .cb-tp-beam { padding-left: 6px; border-radius: var(--cb-r-sm, 3px); cursor: pointer; }
 .cb-tg-select .cb-tp-beam:hover { background: var(--cb-hover, #e6eff8); }
 .cb-tp-beam.selected, .cb-tp-beam.selected:hover {
     background: var(--cb-head, #edf4fb); box-shadow: inset 2px 0 0 var(--cb-accent, #4a8fd4);
@@ -1515,12 +1547,12 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
  * on its right, top to bottom. */
 .cb-gal-zoom {
     background: rgba(51, 65, 85, 0.55); backdrop-filter: blur(3px);
-    border-radius: 8px; padding: 6px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.35);
+    border-radius: var(--cb-r-lg, 8px); padding: 6px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.35);
     display: flex; flex-direction: row; align-items: stretch; gap: 8px; width: fit-content; max-width: 99vw;
 }
 .cb-gal-zoom-side {
     flex: 0 0 auto; display: flex; flex-direction: column; gap: 4px; min-height: 0; overflow-y: auto;
-    background: #ffffff; border-radius: 5px; padding: 8px 4px 8px 8px;
+    background: #ffffff; border-radius: var(--cb-r-md, 5px); padding: 8px 4px 8px 8px;
 }
 .cb-gal-zoom-side .cb-lyr td:first-child { padding-left: 2px; }
 .cb-gal-zoom-side .cb-hmenu-item, .cb-gal-zoom-side .cb-hmenu-group { padding-left: 2px; padding-right: 4px; }
@@ -1541,7 +1573,7 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 .cb-gal-zoom-img.auto {
     position: static; height: calc(100vh - 28px); width: auto; max-width: calc(100vw - 300px); object-fit: contain;
 }
-.cb-gal-zoom-frame { cursor: default; border-radius: 4px; }
+.cb-gal-zoom-frame { cursor: default; border-radius: var(--cb-r-md, 4px); }
 /* The zoom's previous / next chevrons: dim over the slice, solid under the pointer. */
 .cb-gal-zoom-chev { color: rgba(255, 255, 255, 0.4); background: rgba(15, 23, 42, 0.12); }
 .cb-gal-zoom-chev:hover { color: rgba(255, 255, 255, 0.95); background: rgba(15, 23, 42, 0.5); }
@@ -1578,7 +1610,7 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
  * mono, set apart from the light UI; error lines red, warnings amber, the app's own notes dim. */
 .cb-log-well {
     font-family: 'IBM Plex Mono', monospace; font-size: 10px; line-height: 1.5;
-    background: #1e293b; color: #e2e8f0; border-radius: 6px; padding: 8px 10px;
+    background: #1e293b; color: #e2e8f0; border-radius: var(--cb-r-lg, 6px); padding: 8px 10px;
     white-space: pre-wrap; overflow-wrap: anywhere; overflow-y: auto; box-sizing: border-box;
     box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.3);
     scrollbar-width: thin; scrollbar-color: #475569 transparent;
@@ -1586,7 +1618,9 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 .cb-log-well ::selection { background: rgba(147, 197, 253, 0.35); }
 .cb-log-err { color: #fca5a5; }
 .cb-log-warn { color: #fcd34d; }
-.cb-log-note { color: #64748b; font-style: italic; }
+.cb-log-note { color: #64748b; font-style: var(--cb-log-note-style, italic); }
+/* Harbor Mono's prompt before a log's notes ("~> no output yet"); a string variable, empty in Harbor. */
+.cb-log-note::before { content: var(--cb-prompt-glyph, ""); color: var(--cb-prompt, #94a3b8); font-style: normal; }
 /* A live log (LiveLog) fills what its tab leaves, inset from the tab's edges. align-self: its NiceGUI
  * column aligns children flex-start, which shrink-wraps a width-less child to its longest line. */
 .cb-livelog { flex: 1 1 0; min-height: 0; width: auto; align-self: stretch; margin: 6px 10px 10px; }
@@ -1624,7 +1658,7 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
  * `!important` bg-* / text-* color classes. */
 .q-notification, .q-notification[class*="bg-"], .q-notification[class*="text-"] {
     background: #ffffff !important; color: #1e293b !important;
-    border: 1px solid #e2e8f0; border-left: 3px solid #94a3b8; border-radius: 4px;
+    border: 1px solid #e2e8f0; border-left: 3px solid #94a3b8; border-radius: var(--cb-r-md, 4px);
     box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12); min-height: 0; padding: 3px 10px 3px 8px;
     font-family: 'IBM Plex Sans', sans-serif; font-size: 11px; line-height: 1.4; max-width: 460px;
 }
@@ -1648,7 +1682,7 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 .q-notification.bg-info .q-notification__icon { color: #6366f1; }
 /* A view's expand icon and close cross (ui/workspace_page.py `_view_frame`), at the right end of
  * its title line. */
-.cb-view-close { color: #8aa0b8; cursor: pointer; border-radius: 3px; width: 16px; height: 16px; }
+.cb-view-close { color: #8aa0b8; cursor: pointer; border-radius: var(--cb-r-sm, 3px); width: 16px; height: 16px; }
 .cb-view-close:hover { color: var(--cb-head-ink, #12324f); background: var(--cb-hover, #e6eff8); }
 /* The pane Esc closes, the one the pointer last went down in (ui/workspace_page.py `_PANE_FOCUS_JS`):
  * its title line takes the title stripes' light blue over an accent rule. */
@@ -1679,7 +1713,7 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 .cb-htool.cb-htool--box:hover { background: #f4f8fc; border-color: var(--cb-field-line-hover, #a9c6e4); }
 .cb-htool--box .cb-htool-glyph { color: #6b829b; }
 .q-menu.cb-hmenu {
-    border: 1px solid var(--cb-panel-line, #dbe3ec); border-radius: 5px;
+    border: 1px solid var(--cb-panel-line, #dbe3ec); border-radius: var(--cb-r-md, 5px);
     box-shadow: 0 6px 18px rgba(15, 23, 42, 0.10);
 }
 .cb-hmenu-body { padding: 4px 0; min-width: 190px; font-family: 'IBM Plex Sans', sans-serif; }
@@ -1709,7 +1743,7 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 .cb-seg-head .cb-seg-btn {
     font-family: 'IBM Plex Sans Condensed', 'IBM Plex Sans', sans-serif; font-size: 13px; font-weight: 600;
     letter-spacing: 0.01em; line-height: 20px; padding: 0 5px; color: #8aa0b8; background: transparent;
-    border-right: none; border-radius: 4px;
+    border-right: none; border-radius: var(--cb-r-md, 4px);
 }
 .cb-seg-head .cb-seg-btn:hover { color: var(--cb-head-ink, #12324f); background: var(--cb-hover, #e6eff8); }
 .cb-seg-head .cb-seg-btn.active { color: var(--cb-view-head-ink, #12324f); background: transparent; box-shadow: none; }
@@ -1780,8 +1814,8 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
  * header's active section in gray-blue ink. A card inside a section (the scatter fallback's) is
  * plain. */
 .cb-journey .cb-main > .cb-section-card {
-    background: var(--cb-panel, #ffffff); border: none; border-radius: var(--cb-radius, 5px); padding: 12px;
-    margin-bottom: 10px; outline: 1px solid var(--cb-panel-line, #dbe3ec); outline-offset: -1px;
+    background: var(--cb-section-fill, #ffffff); border: none; border-radius: var(--cb-radius, 5px); padding: 12px;
+    margin-bottom: 10px; outline: 1px solid var(--cb-section-ring, #dbe3ec); outline-offset: -1px;
 }
 .cb-journey .cb-section-card .cb-section-card { background: transparent; border: none; padding: 0; }
 .cb-journey .cb-section-title { color: var(--cb-head-ink, #12324f); }
@@ -1804,6 +1838,7 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
  * waiting note (.cb-gal-note-wait). Cutouts and templates are CSS backgrounds, which fire no
  * events: their container carries a hidden <img> of the same atlas (.cb-img-probe), and its
  * tiles breathe until that one is marked. */
+@keyframes cb-blink { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
 @keyframes cb-img-wait {
     0%, 100% { background-color: #eceff3; }
     50%      { background-color: #c9d1dc; }
@@ -1820,6 +1855,14 @@ img[src]:not([data-cb-img]) {
 }
 .q-img:has(.q-img__loading) { animation: cb-img-wait 1.4s ease-in-out infinite; }
 .q-img__loading .q-spinner { display: none; }
+/* Harbor Mono's loading tile: a dot matrix drifting across the waiting box (--cb-wait-dots; none in Harbor). */
+@keyframes cb-dither { 0% { background-position: 0 0; } 100% { background-position: 24px 0; } }
+:is(.cb-gal-frame, .cb-tomo-preview, .cb-recon-preview, .cb-tp-img):has(img:not([data-cb-img]), .cb-gal-note-wait),
+:is(.cb-gallery-scroll, .cb-gallery-grid):has(> .cb-img-probe:not([data-cb-img])) > .cb-gallery-tile,
+.q-img:has(.q-img__loading), .cb-rslot.cb-rslot--run {
+    background-image: var(--cb-wait-dots, none); background-size: 4px 4px;
+    animation: var(--cb-wait-anim, cb-img-wait 1.4s ease-in-out infinite);
+}
 .cb-img-probe { display: none; }
 .cb-gal-note.cb-gal-note-wait { color: #64748b; }
 /* A picture's place while it renders (ui/components/render_slot.py): the box keeps the picture's
@@ -1829,10 +1872,10 @@ img[src]:not([data-cb-img]) {
 @keyframes cb-rslot-in { from { border-color: transparent; background-color: transparent; } }
 .cb-rslot { position: relative; box-sizing: border-box; min-width: 0; }
 .cb-rslot.cb-rslot--wait, .cb-rslot.cb-rslot--run, .cb-rslot.cb-rslot--failed {
-    border: 1px dashed #c3cfdc; border-radius: 4px; background-color: #eceff3;
+    border: 1px dashed #c3cfdc; border-radius: var(--cb-r-md, 4px); background-color: #eceff3;
 }
 .cb-rslot.cb-rslot--wait { animation: cb-rslot-in 0.3s ease-out 0.3s both; }
-.cb-rslot.cb-rslot--run { animation: cb-img-wait 1.6s ease-in-out infinite; }
+.cb-rslot.cb-rslot--run { animation: var(--cb-wait-anim, cb-img-wait 1.6s ease-in-out infinite); }
 .cb-rslot.cb-rslot--failed { border-color: #e9a3a3; background-color: #fbf4f4; }
 .cb-rslot-tools {
     position: absolute; top: 4px; right: 4px; z-index: 6; display: flex; align-items: center; gap: 2px;
@@ -2017,12 +2060,14 @@ _KITCHEN_CSS = """
 }
 .cbk .cb-tile-score { font-family: 'IBM Plex Mono', monospace; pointer-events: none; }
 .cbk .cbk-srow {
-    background: #ffffff; border: 1px solid #dbe3ec; border-radius: 8px; box-shadow: 0 1px 2px rgba(16, 42, 67, 0.06);
+    background: #ffffff; border: 1px solid #dbe3ec;
+    border-radius: var(--cb-r-lg, 8px); box-shadow: 0 1px 2px rgba(16, 42, 67, 0.06);
 }
 .cbk .cbk-pane {
-    background: #0f172a; border-radius: 5px; overflow: hidden; box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.18);
+    background: #0f172a;
+    border-radius: var(--cb-r-md, 5px); overflow: hidden; box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.18);
 }
-.cbk .cbk-sbox { border-radius: 5px; }
+.cbk .cbk-sbox { border-radius: var(--cb-r-md, 5px); }
 .cbk-ttl.cbk-red { color: #dc2626; }
 .cbk .cbk-chip { cursor: pointer; }
 .cbk .cbk-chip:hover { background: #e2e8f0; }
@@ -2031,6 +2076,109 @@ _KITCHEN_CSS = """
 .cbk .cbk-subdots i { width: 6px; height: 6px; border-radius: 50%; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85); }
 .cbk .cbk-ritem:hover { background: #eef2f7; }
 .cbk .cbk-ritem.cbk-drop { background: #fef3c7; outline: 1px dashed #f59e0b; }
+"""
+
+# Harbor Mono (roadmap 51, D1 2026-11-12): Harbor's palette and faces, Oxide's voice and geometry. Labels, controls,
+# badges and column heads in mono capitals; 2 px corners, no shadows; square pips; one box deep (§5). Only values:
+# drop this block from `ensure_assets_loaded` and the app is Harbor again.
+_HARBOR_MONO_CSS = """
+:root {
+    --cb-page: #ffffff; --cb-panel-line: #d6e0ea; --cb-panel-shadow: none; --cb-radius: 2px;
+    --cb-head: #f2f6fb; --cb-head-line: #dbe3ec; --cb-head-glint: transparent; --cb-group-head: #f2f6fb;
+    --cb-hover: #eaf1f8; --cb-card-line: #d3dde8; --cb-card-radius: 3px; --cb-card-shadow: none;
+    --cb-edge-shadow: none;
+    --cb-field-radius: 2px; --cb-btn-line: #c5d3e2;
+    --cb-pop-bg: #ffffff; --cb-pop-line: #c9d6e3; --cb-pop-shadow: 0 6px 18px rgba(16, 42, 67, 0.10);
+    --cb-pop-radius: 2px;
+    --cb-label-font: var(--cb-mono); --cb-label-size: 8.5px; --cb-label-weight: 400; --cb-label-case: uppercase;
+    --cb-label-track: .07em; --cb-label-ink: #5b7089; --cb-label-w: 104px;
+    --cb-ctl-font: var(--cb-mono); --cb-ctl-size: 9px; --cb-ctl-weight: 500; --cb-ctl-case: uppercase;
+    --cb-ctl-track: .07em; --cb-ctl-radius: 2px; --cb-btn-minw: 0px;
+    --cb-seg-size: 8.5px; --cb-seg-weight: 500; --cb-seg-weight-on: 500;
+    --cb-badge-font: var(--cb-mono); --cb-badge-size: 8.5px; --cb-badge-weight: 500; --cb-badge-case: uppercase;
+    --cb-badge-track: .05em; --cb-badge-radius: 2px; --cb-badge-pad: 1px 5px;
+    --cb-th-font: var(--cb-mono); --cb-th-size: 8.5px; --cb-th-weight: 500; --cb-th-case: uppercase;
+    --cb-th-track: .07em; --cb-th-ink: #4f6782;
+    --cb-stat-font: var(--cb-mono); --cb-stat-size: 8.5px; --cb-stat-weight: 400; --cb-stat-case: uppercase;
+    --cb-stat-track: .07em; --cb-stat-ink: #5b7089; --cb-unit-ink: #94a3b8;
+    --cb-ink-1: #12324f; --cb-ink-2: #1e293b; --cb-ink-3: #5b7089; --cb-ink-4: #94a3b8; --cb-line: #e4eaf1;
+    --cb-pick: #4a8fd4;
+    --cb-ok-ink: #0f6b4c; --cb-ok-bg: transparent; --cb-ok-line: #b5e3cd;
+    --cb-run-ink: #1d4fa0; --cb-run-bg: #e8f1fb; --cb-run-line: #bcd6f3;
+    --cb-que-ink: #3a78bf; --cb-que-bg: transparent; --cb-que-line: #a9c9ec;
+    --cb-bad-ink: #a61b1b; --cb-bad-bg: #fdeeee; --cb-bad-line: #f5c2c2;
+    --cb-warn-ink: #8a4b06; --cb-warn-bg: #fdf3e3; --cb-warn-line: #f1d29a;
+    --cb-off-dot: #c5d3e2; --cb-off-ink: #4f6782; --cb-off-bg: transparent; --cb-off-line: #c5d3e2;
+    --cb-wait-dot: #dbe3ec;
+    --cb-pip-radius: 1px; --cb-pip-halo: none; --cb-run-halo: none; --cb-run-blink: cb-blink 1.6s ease-in-out infinite;
+    --cb-section-ring: transparent; --cb-section-fill: transparent; --cb-section-shadow: none;
+    --cb-fold-line: transparent; --cb-group-ring: transparent; --cb-group-fill: transparent;
+    --cb-srail-line: var(--cb-panel-line); --cb-srail-radius: 0; --cb-srail-margin: 0;
+    --cb-bm-card-line: #d3dde8; --cb-bm-card-radius: 3px; --cb-bm-card-shadow: none;
+    --cb-bm-card-hover: 0 0 0 1px #a9c6e4; --cb-bm-band: #f4f7fb; --cb-bm-hair: #e4eaf1; --cb-bm-port: #5b7089;
+    --cb-bm-port-radius: 1px; --cb-bm-paper: #f6f8fb; --cb-bm-paper-dot: #d3dde8; --cb-bm-chosen: #edf4fb;
+    --cb-bm-hover: #eaf1f8; --cb-bm-chip-radius: 2px; --cb-bm-chip-on: #edf4fb; --cb-bm-chip-on-line: #4a8fd4;
+    --cb-bm-chip-on-ink: #12324f; --cb-bm-chip-on-soft: #5b7089; --cb-bm-menu-radius: 2px;
+    --cb-bm-menu-shadow: 0 6px 18px rgba(16, 42, 67, 0.10); --cb-bm-cable: #a9b8c9; --cb-bm-cable-fan: #a9c6e4;
+    --cb-bm-box-radius: 2px; --cb-bm-paper-radius: 2px;
+    --cb-tag: #f1f5f9; --cb-tag-line: #dbe3ec; --cb-tag-ink: #4f6782; --cb-tag-font: var(--cb-mono);
+    --cb-tag-size: 8px; --cb-tag-weight: 500; --cb-tag-case: uppercase; --cb-tag-track: .06em; --cb-tag-radius: 2px;
+    --cb-rail-on: #dbe7f3; --cb-rail-tick: none; --cb-avatar-radius: 2px; --cb-rail-btn-radius: 2px;
+    --cb-rail-n-radius: 0; --cb-rail-n-bg: transparent; --cb-rail-n-ring: none; --cb-rail-n-ink: #5b7089;
+    --cb-rail-n-font: var(--cb-mono); --cb-rail-n-weight: 500;
+    --cb-r-lg: 3px; --cb-r-md: 2px; --cb-r-sm: 2px; --cb-r-pill: 2px; --cb-r-tile: 2px; --cb-img-radius: 1px;
+    --cb-drawn: block; --cb-undrawn: none; --cb-prompt: #4a8fd4; --cb-ascii: #a9b8c9; --cb-ascii-hi: #4a8fd4;
+    --cb-prompt-glyph: "~> "; --cb-log-note-style: normal; --cb-fig-n: inline-block;
+    --cb-wait-dots: radial-gradient(circle, #94a3b8 0.75px, transparent 1.05px);
+    --cb-wait-anim: cb-dither 2.4s steps(6) infinite;
+}
+/* Corners the app never spells: Quasar's and Tailwind's defaults, at the look's radii. */
+.q-card, .q-dialog .q-card, .q-menu, .q-badge, .rounded-borders, .q-field--outlined .q-field__control,
+.q-field--filled .q-field__control, .q-btn:not(.q-btn--round), .q-expansion-item, .q-list--bordered,
+.q-table__container, .q-chip { border-radius: var(--cb-r-md) !important; }
+.q-dialog .q-card { border-radius: var(--cb-r-lg) !important; }
+.rounded-sm, .rounded, .rounded-md, .rounded-lg, .rounded-xl, .rounded-2xl { border-radius: var(--cb-r-md) !important; }
+"""
+
+# The branch map (ui/branch_map/): its hover states and its two animations. Structure is inline on the elements.
+# In the Jobs view the map is the frame's content, one box deep: the picker and the controls are strips across it.
+_BRANCH_MAP_CSS = """
+.cb-bm-app {
+    --cb-bm-box-line: transparent; --cb-bm-box-radius: 0; --cb-bm-box-gap: 0; --cb-bm-box-pad: 12px;
+    --cb-bm-box-rule: 0 1px 0 var(--cb-bm-hair, #e9eef3); --cb-bm-paper-line: transparent; --cb-bm-paper-radius: 0;
+}
+.cb-bm-card { cursor: grab; }
+.cb-bm-card.cb-bm-dragging { cursor: grabbing; z-index: 6;
+    box-shadow: 0 2px 4px rgba(15,23,42,0.08), 0 16px 36px rgba(15,23,42,0.16) !important; }
+.cb-bm-card:hover {
+    box-shadow: var(--cb-bm-card-hover, 0 1px 2px rgba(15,23,42,0.06), 0 10px 24px rgba(15,23,42,0.10)) !important;
+}
+.cb-bm-card .cb-bm-add { opacity: 0.55; transition: opacity .12s, color .12s, border-color .12s, background .12s; }
+.cb-bm-card:hover .cb-bm-add, .cb-bm-add:hover { opacity: 1; }
+.cb-bm-add:hover { color: #1f4e79 !important; border-color: #1f4e79 !important; background: #f1f5f9 !important; }
+.cb-bm-card .cb-bm-size { opacity: 0.3; transition: opacity .12s; }
+.cb-bm-card:hover .cb-bm-size, .cb-bm-size:hover { opacity: 1; }
+.cb-bm-x { opacity: 0.6; transition: opacity .12s, background .12s; }
+.cb-bm-x:hover { opacity: 1; background: #fee2e2; }
+.cb-bm-ok-ready { box-shadow: 0 0 0 3px rgba(16,185,129,0.25); }
+.cb-bm-ok-ready:hover { filter: brightness(1.08); }
+.cb-bm-list { opacity: 0.6; transition: opacity .12s, background .12s; }
+.cb-bm-list:hover { opacity: 1; background: #f1f5f9; }
+.cb-bm-row:hover { background: var(--cb-bm-hover, #f8fafc); }
+.cb-bm-menu-row:hover { background: var(--cb-bm-hover, #f1f5f9); }
+.cb-bm-canvas:active { cursor: grabbing; }
+.cb-bm-card svg [data-ts] { cursor: pointer; }
+.cb-bm-chip:hover { border-color: #94a3b8 !important; }
+.cb-bm-handle:hover span { color: #1f4e79; }
+@keyframes cb-bm-pulse {
+    0% { box-shadow: 0 0 0 0 rgba(59,130,246,0.45); }
+    70% { box-shadow: 0 0 0 6px rgba(59,130,246,0); }
+    100% { box-shadow: 0 0 0 0 rgba(59,130,246,0); }
+}
+/* A running light pulses in Harbor and blinks in Harbor Mono (--cb-run-blink). */
+.cb-bm-pulse { animation: var(--cb-run-blink, cb-bm-pulse 1.6s ease-out infinite); }
+@keyframes cb-bm-blink { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
+.cb-bm-run { animation: cb-bm-blink 1.2s ease-in-out infinite; }
 """
 
 
@@ -2043,7 +2191,10 @@ def ensure_assets_loaded() -> None:
         return
     client._cb_assets_loaded = True
     ui.add_head_html(_TITLE_FONT_LINK)
-    ui.add_head_html(f"<style>{_THEME_CSS}{_CB_CSS}{_PARTICLES_CSS}{_REGISTRY_CSS}{_KITCHEN_CSS}</style>")
+    ui.add_head_html(
+        f"<style>{_THEME_CSS}{_HARBOR_MONO_CSS}{_CB_CSS}{_PARTICLES_CSS}{_REGISTRY_CSS}{_KITCHEN_CSS}"
+        f"{_BRANCH_MAP_CSS}</style>"
+    )
     client.run_javascript(_TITLE_TIP_JS)
     client.run_javascript(_IMG_STATE_JS)
 
@@ -2134,6 +2285,36 @@ _THEME_CSS = """
     --cb-field-ring: 0 0 0 2px rgba(74, 143, 212, 0.16); --cb-field-radius: 4px; --cb-field-bg: #fff;
     --cb-btn-line: #b8cce0; --cb-btn-accent: #1f4e79; --cb-btn-accent-hover: #163a5c;
     --cb-pop-bg: #f8fafc; --cb-pop-line: #d3dce6; --cb-pop-shadow: 0 4px 14px rgba(16, 42, 67, 0.12);
+    --cb-pop-radius: 5px;
+    /* Faces, and the voices (roadmap 51 §6): a label, a control (buttons, tabs), a badge, a column head. */
+    --cb-sans: 'IBM Plex Sans', sans-serif; --cb-mono: 'IBM Plex Mono', monospace;
+    --cb-label-font: var(--cb-sans); --cb-label-size: 10px; --cb-label-weight: 500; --cb-label-case: none;
+    --cb-label-track: 0; --cb-label-ink: #64748b; --cb-label-w: 110px;
+    --cb-ctl-font: var(--cb-sans); --cb-ctl-size: 10px; --cb-ctl-weight: 600; --cb-ctl-case: none;
+    --cb-ctl-track: .02em; --cb-ctl-radius: 4px; --cb-btn-ink: #24405e; --cb-btn-minw: 84px;
+    --cb-seg-size: 9px; --cb-seg-weight: 500; --cb-seg-weight-on: 600;
+    --cb-badge-font: var(--cb-sans); --cb-badge-size: 12px; --cb-badge-weight: 700; --cb-badge-case: none;
+    --cb-badge-track: 0; --cb-badge-radius: 9999px; --cb-badge-pad: 2px 8px;
+    --cb-th-font: var(--cb-sans); --cb-th-size: 9px; --cb-th-weight: 600; --cb-th-case: none; --cb-th-track: 0;
+    --cb-th-ink: #7d93ab;
+    --cb-stat-font: var(--cb-sans); --cb-stat-size: 9px; --cb-stat-weight: 400; --cb-stat-case: none;
+    --cb-stat-track: 0; --cb-stat-ink: #94a3b8; --cb-unit-ink: inherit;
+    /* The ink scale, a rule, what is chosen. */
+    --cb-ink-1: #0f172a; --cb-ink-2: #334155; --cb-ink-3: #64748b; --cb-ink-4: #94a3b8; --cb-line: #e2e8f0;
+    --cb-pick: #2563eb;
+    /* States: the light, its ink, a badge's fill and edge. */
+    --cb-ok-dot: #10b981; --cb-ok-ink: #065f46; --cb-ok-bg: #d1fae5; --cb-ok-line: transparent;
+    --cb-run-dot: #3b82f6; --cb-run-ink: #1e40af; --cb-run-bg: #dbeafe; --cb-run-line: transparent;
+    --cb-que-dot: #60a5fa; --cb-que-ink: #2563eb; --cb-que-bg: #eff6ff; --cb-que-line: transparent;
+    --cb-bad-dot: #ef4444; --cb-bad-ink: #991b1b; --cb-bad-bg: #fee2e2; --cb-bad-line: transparent;
+    --cb-warn-dot: #fbbf24; --cb-warn-ink: #92400e; --cb-warn-bg: #fef3c7; --cb-warn-line: transparent;
+    --cb-off-dot: #9ca3af; --cb-off-ink: #1f2937; --cb-off-bg: #f3f4f6; --cb-off-line: transparent;
+    /* A pip's corners; a look may also set --cb-pip-halo (none), --cb-run-halo (none), --cb-run-blink. */
+    --cb-pip-radius: 50%;
+    /* One box deep (roadmap 51 §5): a section's ring, fill and shadow; a fold's box; a group's. */
+    --cb-section-ring: var(--cb-panel-line); --cb-section-fill: var(--cb-panel);
+    --cb-section-shadow: var(--cb-panel-shadow); --cb-fold-line: var(--cb-box-line);
+    --cb-group-ring: var(--cb-panel-line); --cb-group-fill: var(--cb-panel);
 }
 body { background: var(--cb-page) !important; }
 /* A wide job page in two columns: Parameters on the left, Inputs / Outputs over SLURM on the right,

@@ -109,7 +109,7 @@ def plan_for(state, project_path: Path, route: Route) -> Plan:
             name = instance_display_name(iid, jm)
             add(Scene(f"job/{iid}", f"Jobs · {name}", url(View.JOB, iid), _JOBS_PANES, group="job", target=iid))
     if state.pipeline_order:
-        add(Scene("table", "Jobs table", url(View.TABLE), ["table"], group="table"))
+        add(Scene("map", "Jobs · branch map", url(View.PIPELINE), _JOBS_PANES, group="job"))
 
     _journey, ts_names = collect_dashboard_journey(state, project_path)
     for ts in _ordered(list(ts_names)):

@@ -55,7 +55,7 @@ _DASH = "3 3"
 
 _ROW_STYLE = (
     f"grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: center; "
-    f"height: {_ROW_H}px; cursor: pointer; border-radius: 3px;"
+    f"height: {_ROW_H}px; cursor: pointer; border-radius: var(--cb-r-sm, 3px);"
 )
 _HEAD_STYLE = (
     f"{SANS} font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; "

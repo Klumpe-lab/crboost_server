@@ -20,6 +20,7 @@ from ui.components.buttons import house_button
 from ui.components.fields import house_number
 from ui.dashboard.figures import build_sigma_histogram, build_survival_chart
 from ui.styles import MONO, SANS
+from ui.job_plugins._field_styles import num_html
 
 HIST_BIN_SIGMA = 0.25
 SURVIVAL_STEP_SIGMA = 0.1
@@ -122,7 +123,7 @@ class ScorePanel:
             for label, value, tip in tiles:
                 with ui.element("div").classes("cb-stat"):
                     ui.label(label).classes("cb-stat-label")
-                    ui.label(value).classes("cb-stat-value")
+                    ui.html(num_html(value), sanitize=False).classes("cb-stat-value")
                     ui.tooltip(tip).style(TOOLTIP_STYLE)
 
     def _render_ladder(self) -> None:

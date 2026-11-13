@@ -86,13 +86,14 @@ _TAG_MAX_LEN = 40
 _CLR_TAG_MODE = "#4a8fd4"
 # A tag on a row: the house chip's capsule, small and colourless (a tag is the user's grouping, not a state).
 _ROW_TAG_STYLE = (
-    f"{FONT} font-size: 9px; font-weight: 500; line-height: 13px; padding: 0 6px; border-radius: 999px; "
+    f"{FONT} font-size: 9px; font-weight: 500; line-height: 13px; padding: 0 6px; "
+    "border-radius: var(--cb-r-pill, 999px); "
     "border: 1px solid #dbe3ec; background: #f4f8fc; color: #4f6782; white-space: nowrap; flex-shrink: 0;"
 )
 # A tag chip in the header: the same capsule at the toolbar's 22 px.
 _TAG_CHIP_STYLE = (
     f"{FONT} display: inline-flex; align-items: baseline; gap: 5px; height: 22px; box-sizing: border-box; "
-    "padding: 0 10px; border-radius: 999px; font-size: 10px; line-height: 20px; white-space: nowrap; "
+    "padding: 0 10px; border-radius: var(--cb-r-pill, 999px); font-size: 10px; line-height: 20px; white-space: nowrap; "
     "cursor: pointer; user-select: none; flex-shrink: 0;"
 )
 # A section title in the project hover card.
@@ -176,7 +177,7 @@ def _preview_img_html(png: str, stamp: int) -> str:
     url = f"/api/project-preview?path={urllib.parse.quote(png, safe='')}&v={stamp}"
     return (
         f"<img src='{url}' alt='' style='width: 260px; height: 260px; object-fit: contain; "
-        "display: block; border-radius: 3px; background: #f1f5f9;' />"
+        "display: block; border-radius: var(--cb-r-sm, 3px); background: #f1f5f9;' />"
     )
 
 
@@ -406,9 +407,9 @@ class ProjectsOverview:
             .style(
                 # A pale gray-blue panel, the Journey's section look, holding the list on white. The
                 # border is transparent until deletion mode colours it.
-                "background: var(--cb-panel, #ffffff); border-radius: var(--cb-radius, 5px); "
+                "background: var(--cb-section-fill, #ffffff); border-radius: var(--cb-radius, 5px); "
                 "border: 1px solid transparent; "
-                "outline: 1px solid var(--cb-panel-line, #dbe3ec); outline-offset: -1px; "
+                "outline: 1px solid var(--cb-section-ring, #dbe3ec); outline-offset: -1px; "
                 "padding: 0 8px 8px; box-sizing: border-box; "
                 # Never wider than the pane it sits in: a narrow landing page clips
                 # here rather than scrolling the whole roster sideways.
@@ -427,7 +428,7 @@ class ProjectsOverview:
             with (
                 ui.scroll_area()
                 .classes("w-full cb-scroll-noh")
-                .style(f"{scroll_style} padding: 0; background: #ffffff; border-radius: 4px;")
+                .style(f"{scroll_style} padding: 0; background: #ffffff; border-radius: var(--cb-r-md, 4px);")
             ):
                 self._list_container = ui.column().classes("w-full").style("gap: 0; padding: 0;")
                 # Outside the list, whose children are exactly the rendered entries.
@@ -1285,7 +1286,7 @@ class ProjectsOverview:
             if is_me:
                 ui.label("you").style(
                     f"{FONT} font-size: 8px; color: #1e40af; font-weight: 700; "
-                    "background: #dbeafe; border-radius: 3px; padding: 0 5px;"
+                    "background: #dbeafe; border-radius: var(--cb-r-sm, 3px); padding: 0 5px;"
                 )
             ui.label(f"{len(projects)} project{'s' if len(projects) != 1 else ''}").style(
                 f"{MONO} font-size: 8px; color: {CLR_SUBLABEL};"
@@ -1435,7 +1436,7 @@ class ProjectsOverview:
                             ui.label("CURRENT").style(
                                 f"{FONT} font-size: 7px; color: #1e40af; font-weight: 700; "
                                 "background: #dbeafe; border: 1px solid #93c5fd; "
-                                "border-radius: 3px; padding: 0 4px; flex-shrink: 0; "
+                                "border-radius: var(--cb-r-sm, 3px); padding: 0 4px; flex-shrink: 0; "
                                 "letter-spacing: 0.05em;"
                             )
                         self._render_row_tags(proj)
@@ -2287,7 +2288,7 @@ class ProjectsOverview:
             )
             ui.label(str(project_dir)).style(
                 f"{MONO} font-size: 10px; color: {CLR_SUBLABEL}; margin-top: 6px; "
-                "padding: 5px 7px; background: #f8fafc; border-radius: 4px; "
+                "padding: 5px 7px; background: #f8fafc; border-radius: var(--cb-r-md, 4px); "
                 "word-break: break-all;"
             )
             with ui.row().classes("w-full justify-end mt-3 gap-2"):
@@ -2453,7 +2454,8 @@ def _other_project_line(proj: dict) -> None:
         .classes("cb-proj-other")
         .style(
             "display: grid; grid-template-columns: 6px minmax(0, 1fr) 170px 74px; column-gap: 8px; "
-            "align-items: center; padding: 2px 6px; border-radius: 3px; text-decoration: none; color: inherit;"
+            "align-items: center; padding: 2px 6px; "
+            "border-radius: var(--cb-r-sm, 3px); text-decoration: none; color: inherit;"
         )
     )
     _set_title(link, f"{proj['name']} · {badge['label'] if badge else 'idle'}\n{proj['path']}\nClick to go there")

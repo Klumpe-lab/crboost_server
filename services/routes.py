@@ -29,7 +29,6 @@ class View(StrEnum):
     SPECIES = "species"
     PICKS = "picks"
     PROTOCOLS = "protocols"
-    TABLE = "table"
 
 
 # Views whose URL carries targets, and how many segments they take.

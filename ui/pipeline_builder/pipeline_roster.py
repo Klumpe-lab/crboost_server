@@ -19,7 +19,7 @@ from ui.components.svg_icon import load_icon_svg
 from ui.job_plugins._field_styles import VIEW_HEAD_STYLE, VIEW_TITLE_STYLE, view_head_icon
 from ui.projects_overview import project_card_menu
 from ui.protocols_view import protocol_light
-from ui.styles import MONO, SANS as FONT
+from ui.styles import MONO
 from ui.status_indicator import BoundStatusDot, _dot_html, _running_led_html
 from services.jobs.spec import JOB_SPEC_BY_TYPE, instance_display_name
 from services.models_base import InstanceId, instance_id_to_job_type
@@ -72,15 +72,18 @@ _AVATAR_PALETTE = ["#3b82f6", "#8b5cf6", "#06b6d4", "#10b981", "#f59e0b", "#ec48
 # a number actually moves. Load-bearing chrome, so the look is inline on the element —
 # ui/main_ui.py's shell stylesheet is served stale on this deployment.
 _COUNTS_TICK_S = 15.0
+# The rail's look reads the theme's variables (`--cb-rail-*`, ui/dashboard/css.py), today's look in the fallbacks:
+# Harbor Mono draws the count as a bare mono number, the lit icon as a tinted square without the tick.
 _SB_BADGE_STYLE = (
     "position: absolute; right: -2px; bottom: -2px; min-width: 14px; height: 13px; "
-    "padding: 0 3px; border-radius: 7px; background: #e2e8f0; color: #475569; "
-    f"{FONT} font-size: 8px; font-weight: 700; line-height: 13px; text-align: center; "
-    "pointer-events: none; box-shadow: 0 0 0 1.5px #f8fafc; display: none;"
+    "padding: 0 3px; border-radius: var(--cb-rail-n-radius, 7px); background: var(--cb-rail-n-bg, #e2e8f0); "
+    "color: var(--cb-rail-n-ink, #475569); font-family: var(--cb-rail-n-font, 'IBM Plex Sans', sans-serif); "
+    "font-size: 8px; font-weight: var(--cb-rail-n-weight, 700); line-height: 13px; text-align: center; "
+    "pointer-events: none; box-shadow: var(--cb-rail-n-ring, 0 0 0 1.5px #f8fafc); display: none;"
 )
 # The Jobs button's amber dot while a run waits for the tilt-filter review.
 _SB_DOT_STYLE = (
-    "position: absolute; right: 0; top: 0; width: 7px; height: 7px; border-radius: 50%; "
+    "position: absolute; right: 0; top: 0; width: 7px; height: 7px; border-radius: var(--cb-pip-radius, 50%); "
     "background: #f59e0b; box-shadow: 0 0 0 1.5px #f8fafc; pointer-events: none; display: none;"
 )
 
@@ -89,7 +92,6 @@ _JOBS_TIP = (
     "turns its view on or off, and the views that are on sit side by side."
 )
 _GALLERY_TIP = "Tomograms — the wall of reconstructions, all of them at once"
-_TABLE_TIP = "Pipeline — every job in the order data flows through them: what reads what, state, tilt series, elapsed"
 
 
 def _tomo_badge_tip(counts) -> str:
@@ -365,6 +367,14 @@ class RosterWidget(FingerprintedView):
             view_head_icon("layers.svg")
             ui.label("Jobs").style(VIEW_TITLE_STYLE)
             ui.element("div").style("flex: 1 1 auto;")
+            # The branch map: closes the open job page, and the pipeline frame shows the map in its place.
+            branch = (
+                ui.html(load_icon_svg("pipeline_table.svg", size=12), sanitize=False)
+                .classes("cb-view-close")
+                .style("display: flex; align-items: center; justify-content: center;")
+                .on("click", lambda _e: panel.close_job())
+            )
+            branch.props["title"] = "Show the branch map: every job as a card, cabled to what it reads"
             ui.icon("close", size="12px").classes("cb-view-close").props(
                 'title="Close the job roster and the job page"'
             ).on("click", lambda _e: self._on_pipeline_icon())
@@ -453,7 +463,7 @@ class RosterWidget(FingerprintedView):
                         )
                         ui.label(str(len(instances))).style(
                             "font-size: 9px; font-weight: 700; color: #6b7280; "
-                            "background: #e5e7eb; border-radius: 999px; "
+                            "background: #e5e7eb; border-radius: var(--cb-r-pill, 999px); "
                             "padding: 1px 5px; flex-shrink: 0;"
                         )
                         if missing:
@@ -822,7 +832,11 @@ class RosterWidget(FingerprintedView):
 
             if preview and preview.get("success") and preview.get("downstream_count", 0) > 0:
                 downstream = preview.get("downstream_jobs", [])
-                with ui.card().classes("w-full bg-orange-50 border border-orange-200 p-3 mb-2"):
+                with (
+                    ui.element("div")
+                    .classes("w-full bg-orange-50 p-3 mb-2")
+                    .style("border-radius: var(--cb-radius, 5px);")
+                ):
                     with ui.row().classes("items-center gap-2 mb-2"):
                         ui.icon("warning", size="20px").classes("text-orange-600")
                         ui.label(f"{len(downstream)} job(s) will become orphaned:").classes(
@@ -894,7 +908,11 @@ class RosterWidget(FingerprintedView):
             )
 
             if downstream:
-                with ui.card().classes("w-full bg-orange-50 border border-orange-200 p-3 mb-2"):
+                with (
+                    ui.element("div")
+                    .classes("w-full bg-orange-50 p-3 mb-2")
+                    .style("border-radius: var(--cb-radius, 5px);")
+                ):
                     with ui.row().classes("items-center gap-2 mb-1"):
                         ui.icon("warning", size="20px").classes("text-orange-600")
                         ui.label(f"{len(downstream)} downstream job(s) used the filtered tilts:").classes(
@@ -951,8 +969,8 @@ class RosterWidget(FingerprintedView):
         c = self._refs.get(ref_key)
         if c is not None:
             c.style(
-                f"background: {SB_ABG if on else 'transparent'}; "
-                f"box-shadow: {'inset 2px 0 0 #6366f1' if on else 'none'};"
+                f"background: {f'var(--cb-rail-on, {SB_ABG})' if on else 'transparent'}; "
+                f"box-shadow: {'var(--cb-rail-tick, inset 2px 0 0 #6366f1)' if on else 'none'};"
             )
 
     def set_active_views(self, views: set[str]) -> None:
@@ -968,7 +986,6 @@ class RosterWidget(FingerprintedView):
             ("dashboard_btn", "journey"),
             ("gallery_btn", "gallery"),
             ("protocol_btn", "protocols"),
-            ("table_btn", "table"),
         ):
             self._paint_view_btn(ref_key, m in views)
 
@@ -997,12 +1014,6 @@ class RosterWidget(FingerprintedView):
         if tp is not None:
             await tp()
 
-    async def _open_table(self):
-        """Toggle the pipeline table. Lazily built like the gallery."""
-        tt = self.panel.toggle_table
-        if tt is not None:
-            await tt()
-
     # ── Sidebar ───────────────────────────────────────────────────────────────
 
     def build_sidebar(self):
@@ -1030,11 +1041,6 @@ class RosterWidget(FingerprintedView):
                 badge=True,
                 dot=True,
             )
-
-            # Pipeline table — the same jobs as rows in dependency order (ui/pipeline_table_view.py).
-            if panel.toggle_table is not None:
-                ui.element("div").style("height: 1px;")
-                self._sb_svg_btn("pipeline_table.svg", _TABLE_TIP, self._open_table, ref_key="table_btn")
 
             if panel.toggle_workbench is not None:
                 ui.element("div").style("height: 1px;")
@@ -1156,7 +1162,7 @@ class RosterWidget(FingerprintedView):
         avatar = (
             ui.element("div")
             .style(
-                f"width: 34px; height: 34px; border-radius: 50%; "
+                f"width: 34px; height: 34px; border-radius: var(--cb-avatar-radius, 50%); "
                 f"background: {color}1a; border: 1.5px solid {color}66; "
                 f"display: flex; align-items: center; justify-content: center; "
                 f"cursor: pointer; flex-shrink: 0;"
@@ -1203,13 +1209,15 @@ class RosterWidget(FingerprintedView):
             current_base["path"] = result[0]
             await overview.refresh(force=True)
 
-        # The landing page's roster, in a dialog: the card is transparent so the roster's own
-        # border is the dialog's edge. The backdrop and Esc close it.
+        # The landing page's roster, in a dialog. The card is the white sheet the roster sits on (one box deep: a
+        # look may make the roster's own panel transparent, and the backdrop must not show through). The backdrop
+        # and Esc close it.
         with (
             ui.dialog() as dialog,
             ui.card().style(
                 "width: 94vw; max-width: 94vw; height: 90vh; padding: 0; overflow: visible; "
-                "background: transparent; box-shadow: none; display: flex; flex-direction: column;"
+                "background: var(--cb-panel, #ffffff); border-radius: var(--cb-radius, 5px); box-shadow: none; "
+                "display: flex; flex-direction: column;"
             ),
         ):
             overview = ProjectsOverview(
@@ -1247,7 +1255,7 @@ class RosterWidget(FingerprintedView):
             play_div = (
                 ui.element("div")
                 .style(
-                    "width: 30px; height: 30px; border-radius: 50%; cursor: pointer; "
+                    "width: 30px; height: 30px; border-radius: var(--cb-rail-btn-radius, 50%); cursor: pointer; "
                     "background: #f0fdf4; border: 1px solid #bbf7d0; color: #15803d; "
                     "display: flex; align-items: center; justify-content: center; flex-shrink: 0;"
                 )
@@ -1267,7 +1275,7 @@ class RosterWidget(FingerprintedView):
                 stop_div = (
                     ui.element("div")
                     .style(
-                        "width: 30px; height: 30px; border-radius: 50%; cursor: pointer; "
+                        "width: 30px; height: 30px; border-radius: var(--cb-rail-btn-radius, 50%); cursor: pointer; "
                         "background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c; "
                         "display: flex; align-items: center; justify-content: center; flex-shrink: 0;"
                     )
@@ -1359,7 +1367,7 @@ class RosterWidget(FingerprintedView):
         container = (
             ui.element("div")
             .style(
-                "width: 22px; height: 22px; border-radius: 4px; "
+                "width: 22px; height: 22px; border-radius: var(--cb-r-md, 4px); "
                 "display: flex; align-items: center; justify-content: center; "
                 "cursor: pointer; flex-shrink: 0;"
             )
@@ -1411,7 +1419,7 @@ class RosterWidget(FingerprintedView):
         container = (
             ui.element("div")
             .style(
-                "width: 22px; height: 22px; border-radius: 4px; "
+                "width: 22px; height: 22px; border-radius: var(--cb-r-md, 4px); "
                 "display: flex; align-items: center; justify-content: center; "
                 f"cursor: {'not-allowed' if disabled else 'pointer'}; flex-shrink: 0; position: relative;"
             )
@@ -1453,7 +1461,7 @@ class RosterWidget(FingerprintedView):
         container = (
             ui.element("div")
             .style(
-                "width: 22px; height: 22px; border-radius: 4px; "
+                "width: 22px; height: 22px; border-radius: var(--cb-r-md, 4px); "
                 "display: flex; align-items: center; justify-content: center; "
                 "cursor: pointer; flex-shrink: 0; position: relative;"
             )
@@ -1504,7 +1512,7 @@ class RosterWidget(FingerprintedView):
         container = (
             ui.element("div")
             .style(
-                "width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
+                "width: 30px; height: 30px; border-radius: var(--cb-r-md, 4px); margin: 1px 0; "
                 "background: transparent; "
                 "display: flex; align-items: center; justify-content: center; "
                 "cursor: pointer; flex-shrink: 0;"
@@ -1551,8 +1559,8 @@ class RosterWidget(FingerprintedView):
         container = (
             ui.element("div")
             .style(
-                f"width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
-                f"background: {bg}; position: relative; "
+                f"width: 30px; height: 30px; border-radius: var(--cb-ctl-radius, 4px); margin: 1px 0; "
+                f"background: {f'var(--cb-rail-on, {bg})' if active else bg}; position: relative; "
                 f"display: flex; align-items: center; justify-content: center; "
                 f"cursor: pointer; flex-shrink: 0;"
             )
@@ -1587,7 +1595,7 @@ class RosterWidget(FingerprintedView):
             ui.button(icon=icon_name)
             .props("flat dense")
             .style(
-                f"width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
+                f"width: 30px; height: 30px; border-radius: var(--cb-r-md, 4px); margin: 1px 0; "
                 f"color: {color}; background: transparent; min-width: 0;"
             )
         )
@@ -1597,7 +1605,7 @@ class RosterWidget(FingerprintedView):
                 .props('anchor="center right" self="center left" :offset="[8,0]"')
                 .style(
                     "background: #ffffff; border: 1px solid #e2e8f0; "
-                    "border-radius: 5px; overflow: hidden; min-width: 210px; "
+                    "border-radius: var(--cb-r-md, 5px); overflow: hidden; min-width: 210px; "
                     "padding: 0; box-shadow: 0 4px 12px rgba(0,0,0,0.08);"
                 )
             ):

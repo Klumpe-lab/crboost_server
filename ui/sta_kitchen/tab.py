@@ -463,7 +463,7 @@ class KitchenTab:
                     for which in ("kept", "removed"):
                         with ui.column().classes("items-center gap-1"):
                             img = ui.element("img").style(
-                                "width: 112px; height: 112px; border-radius: 6px; background: #0f172a; "
+                                "width: 112px; height: 112px; border-radius: var(--cb-r-lg, 6px); background: #0f172a; "
                                 "display: block; object-fit: cover;"
                             )
                             img.set_visibility(False)

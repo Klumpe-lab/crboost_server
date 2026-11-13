@@ -158,10 +158,11 @@ _FACET_ROW = "display: flex; align-items: center; gap: 6px; min-width: 0; flex-w
 _FACET_NAME = f"{_SMALL} color: {_PATH_COLOR}; width: 40px; flex-shrink: 0;"
 _PICK_BOX = (
     "display: flex; align-items: center; gap: 4px; cursor: pointer; padding: 0 5px; border: 1px solid #e2e8f0; "
-    "border-radius: 4px; background: #fff; height: 18px; box-sizing: border-box;"
+    "border-radius: var(--cb-r-md, 4px); background: #fff; height: 18px; box-sizing: border-box;"
 )
 _MENU_STYLE = (
-    "border: 1px solid #e2e8f0; border-radius: 6px; box-shadow: 0 8px 24px rgba(15,23,42,0.14); min-width: 240px;"
+    "border: 1px solid #e2e8f0; border-radius: var(--cb-r-lg, 6px); box-shadow: 0 8px 24px rgba(15,23,42,0.14); "
+    "min-width: 240px;"
 )
 _FACET_WORD = {IMAGES: "particle images", POSES: "poses"}
 
@@ -825,7 +826,7 @@ class IOConfigComponent:
             # The .cb-select box: 20 px tall, 1 px slate border, 5 px side padding.
             .style(
                 "flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 6px; "
-                "cursor: pointer; padding: 0 5px; border: 1px solid #e2e8f0; border-radius: 4px; "
+                "cursor: pointer; padding: 0 5px; border: 1px solid #e2e8f0; border-radius: var(--cb-r-md, 4px); "
                 "background: #fff; height: 20px; box-sizing: border-box;"
             )
         )
@@ -842,7 +843,8 @@ class IOConfigComponent:
                 ui.menu()
                 .props('no-parent-event anchor="bottom left" self="top left"')
                 .style(
-                    "border: 1px solid #e2e8f0; border-radius: 6px; box-shadow: 0 8px 24px rgba(15,23,42,0.14); "
+                    "border: 1px solid #e2e8f0; "
+                    "border-radius: var(--cb-r-lg, 6px); box-shadow: 0 8px 24px rgba(15,23,42,0.14); "
                     "min-width: 240px;"
                 )
             )

@@ -7,7 +7,9 @@ browser. Each field renders as a single horizontal row -- label inline-left
 of the input -- and rows stack vertically inside their collapsible.
 """
 
+import re
 from contextlib import contextmanager
+from html import escape
 from enum import Enum
 from collections.abc import Callable
 from typing import get_args
@@ -31,17 +33,42 @@ CLR_BORDER = "#e2e8f0"  # slate-200
 # labels line up vertically and the three sections read as one form.
 LABEL_W = 110
 
+
+def voice(kind: str, *, font: str, size: str, weight: int | str, ink: str, case: str = "none", track: str = "0") -> str:
+    """A voice's type as CSS variables (`--cb-<kind>-font/size/weight/case/track/ink`, ui/dashboard/css.py
+    `_THEME_CSS`), today's look in the fallbacks: a look sets the variables and every label, control, badge or
+    column head in that voice changes at once (roadmap 51 §6)."""
+    return (
+        f"font-family: var(--cb-{kind}-font, {font}); font-size: var(--cb-{kind}-size, {size}); "
+        f"font-weight: var(--cb-{kind}-weight, {weight}); text-transform: var(--cb-{kind}-case, {case}); "
+        f"letter-spacing: var(--cb-{kind}-track, {track}); color: var(--cb-{kind}-ink, {ink});"
+    )
+
+
+LABEL_VOICE = voice("label", font="'IBM Plex Sans', sans-serif", size="10px", weight=500, ink=CLR_LABEL)
 LABEL_STYLE = (
-    f"{SANS} font-size: 10px; font-weight: 500; color: {CLR_LABEL}; "
-    "line-height: 1.4; flex-shrink: 0; white-space: nowrap; "
-    f"width: {LABEL_W}px;"
+    f"{LABEL_VOICE} line-height: 1.4; flex-shrink: 0; white-space: nowrap; width: var(--cb-label-w, {LABEL_W}px);"
 )
 VALUE_WRAP_STYLE = f"{MONO} font-size: 11px; color: {CLR_VALUE}; flex: 1 1 0; min-width: 0;"
 # A fixed width, not max-width: a width-less q-input in a flex row shrink-wraps to a couple of
 # characters. 120 px holds ~16 monospace digits.
 VALUE_WRAP_NARROW = f"{MONO} font-size: 11px; color: {CLR_VALUE}; flex: 0 0 auto; width: 120px;"
 HELPER_STYLE = f"{SANS} font-size: 9px; color: {CLR_SUBLABEL};"
-SUFFIX_STYLE = f"{SANS} font-size: 9px; color: {CLR_SUBLABEL}; flex-shrink: 0;"
+SUFFIX_STYLE = f"{SANS} font-size: 9px; color: var(--cb-unit-ink, {CLR_SUBLABEL}); flex-shrink: 0;"
+
+
+_DECIMALS = re.compile(r"(\d)\.(\d+)")
+# A trailing unit after the last number: letters, symbols, a slash (µm, Å/px, e⁻/Å², %).
+_UNIT = re.compile(r"(\d(?:</span>)?\s?)([^\d\s<>&][^\d<>&]*)$")
+
+
+def num_html(text: object) -> str:
+    """A formatted value ("5.02 µm", "4.48 – 5.30 µm", "1.55 Å/px") as HTML with its decimals and its unit a step
+    back (`.cb-dec`, `.cb-unit`, ui/dashboard/css.py), which only a look that sets `--cb-unit-ink` makes visible
+    (roadmap 51 S5). The text is escaped; nothing else changes."""
+    out = _DECIMALS.sub(r'\1<span class="cb-dec">.\2</span>', escape(str(text)))
+    return _UNIT.sub(r'\1<span class="cb-unit">\2</span>', out)
+
 
 ROW_STYLE = "display: flex; align-items: baseline; gap: 8px; width: 100%; min-width: 0; min-height: 19px; padding: 0;"
 
@@ -70,11 +97,15 @@ PAGE_SECTION_STYLE = (
 # style's CSS variables (`--cb-*`, ui/dashboard/css.py `_THEME_CSS`); each fallback is the default
 # style's value. The outline is drawn over the content, so it costs no layout and the stripe can't
 # cover it.
+# One box deep (roadmap 51 §5): the ring, fill and shadow are the section's (`--cb-section-*`), which a look makes
+# transparent inside a card, so a section is its title stripe and its content. The padding goes in as longhands: a
+# `var()` padding shorthand loses its other longhands in Chromium once `fold_panel` sets `padding-bottom`.
 PANEL_STYLE = (
-    "background: var(--cb-panel, #ffffff); border-radius: var(--cb-radius, 5px); "
-    "padding: var(--cb-pad-y, 9px) var(--cb-pad-x, 11px) calc(var(--cb-pad-y, 9px) + 2px); box-sizing: border-box; "
-    "outline: 1px solid var(--cb-panel-line, #dbe3ec); outline-offset: -1px; "
-    "box-shadow: var(--cb-panel-shadow, 0 1px 2px rgba(16, 42, 67, 0.06));"
+    "background: var(--cb-section-fill, #ffffff); border-radius: var(--cb-radius, 5px); "
+    "padding-top: var(--cb-pad-y, 9px); padding-right: var(--cb-pad-x, 11px); "
+    "padding-bottom: calc(var(--cb-pad-y, 9px) + 2px); padding-left: var(--cb-pad-x, 11px); box-sizing: border-box; "
+    "outline: 1px solid var(--cb-section-ring, #dbe3ec); outline-offset: -1px; "
+    "box-shadow: var(--cb-section-shadow, 0 1px 2px rgba(16, 42, 67, 0.06));"
 )
 PANEL_TITLE_STYLE = (
     f"{SANS} font-size: var(--cb-head-size, 12px); font-weight: 600; color: var(--cb-head-ink, #12324f); "

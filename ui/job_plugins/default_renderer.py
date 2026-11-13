@@ -47,7 +47,7 @@ BASE_FIELDS: set[str] = {
 }
 
 # An open decision, under a field row's value column (label column + gap), in the Segment tab's amber.
-_NOTE_WARN_STYLE = f"{HELPER_STYLE} color: #b45309; margin: 0 0 4px {LABEL_W + 8}px;"
+_NOTE_WARN_STYLE = f"{HELPER_STYLE} color: #b45309; margin: 0 0 4px calc(var(--cb-label-w, {LABEL_W}px) + 8px);"
 
 
 def _get_description(job_model, param_name: str) -> str | None:
