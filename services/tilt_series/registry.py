@@ -337,6 +337,12 @@ class TiltSeriesRegistry:
     def has_unsaved_changes(self) -> bool:
         return bool(self._dirty_ts) or self._dirty_index
 
+    @property
+    def loaded_stamp(self) -> int | None:
+        """The on-disk index's mtime this copy was read at: a reader caching what it derived from the registry
+        keys it by this and the number of tilt series."""
+        return self._loaded_index_mtime_ns
+
     def is_stale_on_disk(self) -> bool:
         """True when the on-disk index has changed since this instance loaded —
         i.e. another process (a driver's supervisor ingest) wrote the registry."""

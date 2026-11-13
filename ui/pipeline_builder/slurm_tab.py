@@ -120,7 +120,7 @@ def _render_slurm_content(
                 job_type_val = job_model.job_type.value if job_model.job_type else "?"
                 ui.label(f"profile: {job_type_val}").style(
                     f"{MONO} font-size: 9px; color: #475569; background: var(--cb-hover, #e6eff8); "
-                    "padding: 1px 6px; border-radius: 3px; flex-shrink: 0;"
+                    "padding: 1px 6px; border-radius: var(--cb-r-sm, 3px); flex-shrink: 0;"
                 )
                 if overrides and not is_frozen:
 

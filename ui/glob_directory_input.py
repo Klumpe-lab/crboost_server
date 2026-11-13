@@ -101,7 +101,7 @@ class GlobDirectoryInput:
 
             self._dropdown = ui.element("div").style(
                 "position: absolute; top: 100%; left: 0; right: 0; z-index: 9999; "
-                "background: white; border: 1px solid #e5e7eb; border-radius: 4px; "
+                "background: white; border: 1px solid #e5e7eb; border-radius: var(--cb-r-md, 4px); "
                 "box-shadow: 0 4px 12px rgba(0,0,0,0.10); display: none; "
                 "max-height: 260px; overflow-y: auto;"
             )

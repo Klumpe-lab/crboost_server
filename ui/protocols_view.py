@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 _TICK_S = 15.0  # the view's poll re-reads the frozen copy (disk) → 15 s per CLAUDE.md
 _LIVE = (JobStatus.RUNNING, JobStatus.QUEUED)
 _GRID3 = "display: grid; grid-template-columns: max-content minmax(0, 1fr) minmax(0, 1fr); gap: 2px 14px; width: 100%;"
-_EDITED_CELL = "background: #fffbeb; border-radius: 3px; padding: 0 4px; color: #b45309;"
+_EDITED_CELL = "background: #fffbeb; border-radius: var(--cb-r-sm, 3px); padding: 0 4px; color: #b45309;"
 
 
 # ── shared with the rail light ────────────────────────────────────────────────

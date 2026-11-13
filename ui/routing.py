@@ -129,9 +129,6 @@ async def apply_route(callbacks: dict, route: Route, project_path: Path) -> None
         case View.PROTOCOLS:
             await _acall(callbacks, "show_protocols")
 
-        case View.TABLE:
-            await _acall(callbacks, "show_table")
-
 
 def _call(callbacks: dict, key: str, *args) -> None:
     fn = callbacks.get(key)

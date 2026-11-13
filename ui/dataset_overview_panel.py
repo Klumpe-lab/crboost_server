@@ -147,7 +147,7 @@ def build_dataset_overview_panel(
         ui.column()
         .classes("w-full gap-0")
         .style(
-            f"border: 1px solid {CLR_BORDER}; border-radius: 6px; background: #ffffff; "
+            f"border: 1px solid {CLR_BORDER}; border-radius: var(--cb-r-lg, 6px); background: #ffffff; "
             "min-width: 0; max-height: 420px; overflow-y: auto; overflow-x: auto;"
         )
     ):
@@ -614,7 +614,11 @@ def build_dry_run_summary(overview: DatasetOverview) -> None:
                 )
 
         # Data safety guarantee
-        with ui.column().classes("w-full gap-1").style("border-radius: 6px; padding: 10px 12px; background: #f0fdf4;"):
+        with (
+            ui.column()
+            .classes("w-full gap-1")
+            .style("border-radius: var(--cb-r-lg, 6px); padding: 10px 12px; background: #f0fdf4;")
+        ):
             with ui.row().classes("items-center gap-2"):
                 ui.icon("verified_user", size="16px").style("color: #16a34a;")
                 ui.label("Your original data will not be modified").style(

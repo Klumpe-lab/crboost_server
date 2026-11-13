@@ -47,7 +47,7 @@ _PATH_STYLE = (
 # A mark on that line (Interactive / Automatic, Experimental): the house chip, light blue, or warm for
 # what is still being built.
 _MARK_STYLE = (
-    "display: inline-flex; align-items: center; flex-shrink: 0; border-radius: 3px; padding: 0 6px; "
+    "display: inline-flex; align-items: center; flex-shrink: 0; border-radius: var(--cb-r-sm, 3px); padding: 0 6px; "
     "font: 600 9px 'IBM Plex Sans', sans-serif; line-height: 16px; white-space: nowrap; "
 )
 _MARK_INFO = _MARK_STYLE + "background: #edf4fb; border: 1px solid #c9dbee; color: #1f4e79;"
@@ -80,8 +80,8 @@ def create_save_handler(ui_mgr: UIStateManager) -> Callable:
 # user can drag taller; its view scrolls inside it.
 _LAZY_BOX_STYLE = (
     "width: 100%; min-height: 140px; resize: vertical; overflow: hidden; "
-    "display: flex; flex-direction: column; background: #fff; border-radius: 4px; "
-    "outline: 1px solid var(--cb-box-line, #dbe3ec); outline-offset: -1px;"
+    "display: flex; flex-direction: column; background: #fff; border-radius: var(--cb-r-md, 4px); "
+    "outline: 1px solid var(--cb-fold-line, #dbe3ec); outline-offset: -1px;"
 )
 _BOX_PX = 360
 # An array job's Tasks box holds the task list and the selected task's log beside it.
@@ -490,7 +490,9 @@ def _handle_delete(
 
         if preview and preview.get("success") and preview.get("downstream_count", 0) > 0:
             downstream = preview.get("downstream_jobs", [])
-            with ui.card().classes("w-full bg-orange-50 border border-orange-200 p-3 mb-2"):
+            with (
+                ui.element("div").classes("w-full bg-orange-50 p-3 mb-2").style("border-radius: var(--cb-radius, 5px);")
+            ):
                 with ui.row().classes("items-center gap-2 mb-2"):
                     ui.icon("warning", size="20px").classes("text-orange-600")
                     ui.label(f"{len(downstream)} job(s) will become orphaned:").classes(

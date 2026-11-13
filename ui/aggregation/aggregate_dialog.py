@@ -572,7 +572,7 @@ class _AggregateDialog:
                 f"flex: 1; min-width: 0; font-family: monospace; font-size: 9px; color: {SLATE_MUTED};"
             ).tooltip(r.star_path)
             ui.label(r.list_type).style(
-                f"font-size: 9px; color: {SLATE_MUTED}; border: 1px solid #e2e8f0; border-radius: 3px; "
+                f"font-size: 9px; color: {SLATE_MUTED}; border: 1px solid #e2e8f0; border-radius: var(--cb-r-sm, 3px); "
                 "padding: 0 4px; flex-shrink: 0;"
             )
             self._picks_cell(r.count, muted=not is_sel)

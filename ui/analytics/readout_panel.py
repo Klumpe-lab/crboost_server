@@ -130,7 +130,7 @@ class ReadoutPanel:
         for c in d["classes"]:
             k = c["class"]
             swatch = (
-                "<span style='display:inline-block;width:8px;height:8px;border-radius:2px;"
+                "<span style='display:inline-block;width:8px;height:8px;border-radius:var(--cb-r-sm, 2px);"
                 f"background:{class_color(k)}'></span>"
             )
             res = resolutions.get(k)
@@ -242,7 +242,8 @@ class ReadoutPanel:
                 ui.element("div").style(
                     f"width: {shown}px; height: {shown}px; background-image: url({url}); "
                     f"background-size: {cols * tile * scale}px {rows * tile * scale}px; "
-                    f"background-position: {-c * tile * scale}px {-r * tile * scale}px; border-radius: 2px;"
+                    f"background-position: {-c * tile * scale}px {-r * tile * scale}px; "
+                    "border-radius: var(--cb-r-sm, 2px);"
                 ).tooltip(f"{end} #{i + 1}: {values[i]}")
 
     def _subset_controls(self) -> None:

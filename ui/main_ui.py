@@ -111,7 +111,7 @@ def create_ui_router(backend: CryoBoostBackend):
                which ensure_assets_loaded() injects per client after connect,
                over the socket; structural styling goes inline on the elements. */
             .cb-select-popup {
-                border: 1px solid #e2e8f0; border-radius: 5px;
+                border: 1px solid #e2e8f0; border-radius: var(--cb-r-md, 5px);
                 box-shadow: 0 6px 18px rgba(15,23,42,.10);
             }
             .cb-select-popup .q-item {

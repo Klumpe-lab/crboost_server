@@ -250,7 +250,8 @@ def _render_body(
             ui.label("click a row to keep or leave out its tilt series").style(HELPER_STYLE)
 
     with ui.element("div").style(
-        "max-height: 420px; overflow-y: auto; width: 100%; background: #fff; border-radius: 4px; padding: 2px 8px;"
+        "max-height: 420px; overflow-y: auto; width: 100%; background: #fff; "
+        "border-radius: var(--cb-r-md, 4px); padding: 2px 8px;"
     ):
         table = ui.html("", sanitize=False)
         table.on("click", handler=on_click, js_handler=_ROW_CLICK_JS)

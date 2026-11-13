@@ -109,7 +109,7 @@ def open_config_settings(on_saved: Callable[[], None] | None = None) -> None:
         ui.dialog() as dialog,
         ui.card().style(
             "width: 92vw; max-width: 1060px; max-height: 90vh; padding: 0; overflow: hidden; "
-            "border-radius: 8px; box-shadow: 0 12px 32px rgba(15,23,42,0.18);"
+            "border-radius: var(--cb-r-lg, 8px); box-shadow: 0 12px 32px rgba(15,23,42,0.18);"
         ),
     ):
         _build_header(dialog, cs, on_saved)
@@ -151,7 +151,8 @@ def _override_badge(cs) -> None:
         with (
             ui.element("div")
             .style(
-                "display: flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 20px; "
+                "display: flex; align-items: center; gap: 5px; padding: 3px 9px; "
+                "border-radius: var(--cb-r-pill, 20px); "
                 "background: #eff6ff; border: 1px solid #bfdbfe; flex-shrink: 0;"
             )
             .tooltip(f"Your personal override is active:\n{cs.user_override_path}")
@@ -162,7 +163,8 @@ def _override_badge(cs) -> None:
         with (
             ui.element("div")
             .style(
-                "display: flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 20px; "
+                "display: flex; align-items: center; gap: 5px; padding: 3px 9px; "
+                "border-radius: var(--cb-r-pill, 20px); "
                 "background: #f1f5f9; border: 1px solid #e2e8f0; flex-shrink: 0;"
             )
             .tooltip("Using the shared server defaults. Edits below are saved to your home folder only.")
@@ -226,7 +228,7 @@ async def _confirm_revert(cs) -> bool:
         )
         ui.label(str(cs.user_override_path)).style(
             f"{MONO} font-size: 10px; color: {CLR_SUBLABEL}; margin-top: 6px; padding: 5px 7px; "
-            "background: #f8fafc; border-radius: 4px; word-break: break-all;"
+            "background: #f8fafc; border-radius: var(--cb-r-md, 4px); word-break: break-all;"
         )
         with ui.row().classes("w-full justify-end mt-3 gap-2"):
             house_button("Cancel", lambda: d.submit(False))

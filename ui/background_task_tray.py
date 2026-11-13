@@ -106,7 +106,7 @@ def _render_task_card(task: BackgroundTaskRecord, refresh_tray: Callable[[], Non
 
     with ui.element("div").style(
         f"background: {card_bg}; border: 1px solid {card_border}; "
-        "border-radius: 6px; padding: 8px 10px; "
+        "border-radius: var(--cb-r-lg, 6px); padding: 8px 10px; "
         "box-shadow: 0 4px 12px rgba(15,23,42,0.08); "
         "pointer-events: auto; font-family: ui-sans-serif, system-ui;"
     ):
@@ -134,7 +134,7 @@ def _render_task_card(task: BackgroundTaskRecord, refresh_tray: Callable[[], Non
             pct = task.progress_pct
             if pct is not None:
                 with ui.element("div").style(
-                    "width: 100%; height: 4px; background: #f1f5f9; border-radius: 2px; "
+                    "width: 100%; height: 4px; background: #f1f5f9; border-radius: var(--cb-r-sm, 2px); "
                     "overflow: hidden; margin-top: 6px;"
                 ):
                     ui.element("div").style(

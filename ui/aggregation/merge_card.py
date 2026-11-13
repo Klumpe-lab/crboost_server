@@ -690,7 +690,8 @@ class _MergeSelector:
                 twins = [c for c in self.candidates if c.catalog_id == cand.catalog_id]
                 chip = ui.label(f"⌗ {cand.catalog_id}").style(
                     f"font-size: 9px; font-family: ui-monospace, monospace; color: {STEEL}; "
-                    f"border: 1px solid {STEEL}; border-radius: 3px; padding: 0 4px; flex-shrink: 0; cursor: pointer;"
+                    f"border: 1px solid {STEEL}; "
+                    "border-radius: var(--cb-r-sm, 3px); padding: 0 4px; flex-shrink: 0; cursor: pointer;"
                 )
                 chip.tooltip(
                     f"Lab-catalog species '{cand.catalog_id}' — found in {len(twins)} project(s). "
@@ -896,7 +897,8 @@ def open_aggregation_merge_dialog(project_path) -> None:
             render_segmented(GRADE_TABS, GRADE_EXTRACTED, _switch_grade)
             if has_merged_outputs(d.state):
                 ui.label("merged").style(
-                    "background: #ecfdf5; border: 1px solid #a7f3d0; color: #047857; border-radius: 3px; "
+                    "background: #ecfdf5; border: 1px solid #a7f3d0; color: #047857; "
+                    "border-radius: var(--cb-r-sm, 3px); "
                     "padding: 0 6px; font: 600 9px 'IBM Plex Sans', sans-serif;"
                 )
             ui.space()
@@ -1114,7 +1116,7 @@ def _render_merge_record(d: _MergeDialog, m: AggregationMerge, is_active: bool) 
     with (
         ui.element("div")
         .classes("w-full")
-        .style(f"border: 1px solid {border}; border-radius: 6px; margin-bottom: 6px; overflow: hidden;")
+        .style(f"border: 1px solid {border}; border-radius: var(--cb-r-lg, 6px); margin-bottom: 6px; overflow: hidden;")
     ):
         # Header line
         head = (

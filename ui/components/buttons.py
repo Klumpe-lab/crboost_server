@@ -23,11 +23,13 @@ from collections.abc import Callable
 
 from nicegui import ui
 
+# The control voice (`--cb-ctl-*`, ui/dashboard/css.py `_THEME_CSS`), today's look in the fallbacks.
 _BASE_STYLE = (
-    "font-family: 'IBM Plex Sans', sans-serif; font-size: 10px; font-weight: 600; "
-    "letter-spacing: 0.02em; color: #24405e; background: #ffffff; "
-    "border: 1px solid var(--cb-btn-line, #b8cce0); border-radius: var(--cb-field-radius, 4px); "
-    "height: 22px; min-height: 22px; padding: 0 10px; min-width: 84px;"
+    "font-family: var(--cb-ctl-font, 'IBM Plex Sans', sans-serif); font-size: var(--cb-ctl-size, 10px); "
+    "font-weight: var(--cb-ctl-weight, 600); text-transform: var(--cb-ctl-case, none); "
+    "letter-spacing: var(--cb-ctl-track, 0.02em); color: var(--cb-btn-ink, #24405e); background: #ffffff; "
+    "border: 1px solid var(--cb-btn-line, #b8cce0); border-radius: var(--cb-ctl-radius, 4px); "
+    "height: 22px; min-height: 22px; padding: 0 10px; min-width: var(--cb-btn-minw, 84px);"
 )
 _KIND_STYLE = {
     "default": "",
@@ -61,7 +63,7 @@ def house_button(
 # Hover, pressed and armed states live in ui/dashboard/css.py (`.cb-icon-btn`).
 _ICON_STYLE = (
     "width: 20px; height: 20px; min-width: 20px; min-height: 20px; padding: 0; flex-shrink: 0; "
-    "border-radius: var(--cb-field-radius, 4px); color: #6b829b;"
+    "border-radius: var(--cb-ctl-radius, 4px); color: #6b829b;"
 )
 
 

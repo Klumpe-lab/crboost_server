@@ -113,8 +113,10 @@ class SpeciesPage:
                 ui.element("div")
                 .classes("cb-srail")
                 .style(
-                    "background: var(--cb-panel, #ffffff); border-right: none; border-radius: var(--cb-radius, 5px); "
-                    "margin: 0 0 10px 10px; height: auto; align-self: stretch;"
+                    "background: var(--cb-group-fill, #ffffff); "
+                    "border-right: 1px solid var(--cb-srail-line, transparent); "
+                    "border-radius: var(--cb-srail-radius, var(--cb-radius, 5px)); "
+                    "margin: var(--cb-srail-margin, 0 0 10px 10px); height: auto; align-self: stretch;"
                 )
             )
             self._rail = SpeciesRail(

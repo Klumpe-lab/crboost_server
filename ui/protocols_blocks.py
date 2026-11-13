@@ -15,7 +15,7 @@ TITLE = f"{FONT} font-size: 12px; font-weight: 700; color: #0f172a;"
 LABEL = f"{FONT} font-size: 9px; font-weight: 700; color: #94a3b8; letter-spacing: 0.06em; text-transform: uppercase;"
 TEXT = f"{FONT} font-size: 10px; color: #475569; line-height: 1.4;"
 VAL = f"{MONO} font-size: 10px; color: #0f172a;"
-CHIP = f"{MONO} font-size: 9px; border-radius: 4px; padding: 1px 6px; border: 1px solid #e2e8f0;"
+CHIP = f"{MONO} font-size: 9px; border-radius: var(--cb-r-md, 4px); padding: 1px 6px; border: 1px solid #e2e8f0;"
 # A dialog footer: its own padding, no band or rule above it.
 FOOTER = "padding: 6px 16px 14px;"
 KV_GRID = "display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 14px; width: 100%;"

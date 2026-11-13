@@ -1774,7 +1774,9 @@ def _show_upsample(mrc_path: str, key: str, project_path: Path) -> None:
                     size_label = ui.label("").style(f"{MONO} font-size: 9px; color: {_MUTED};")
 
                 res_buttons: dict = {}
-                btn_base = f"{MONO} font-size: 9px; padding: 1px 8px; border-radius: 3px; min-height: 0; "
+                btn_base = (
+                    f"{MONO} font-size: 9px; padding: 1px 8px; border-radius: var(--cb-r-sm, 3px); min-height: 0; "
+                )
                 active = btn_base + "color: white; background: #334155;"
                 inactive = btn_base + "color: #cbd5e1; background: transparent;"
 

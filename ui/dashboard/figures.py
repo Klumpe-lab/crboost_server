@@ -499,7 +499,8 @@ def _card_open(theme: ChartTheme) -> str:
 _TOOLTIP_CARD_OPEN = _card_open(DEFAULT_THEME)
 _TOOLTIP_IMG_JS = (
     "'<img src=\"' + __SRC__ + '\" style=\"display:block;width:336px;height:336px;margin-top:5px;"
-    "border-radius:3px;background:#f1f5f9;object-fit:contain\" onerror=\"this.style.display=\\'none\\'\">'"
+    'border-radius:var(--cb-r-sm, 3px);background:#f1f5f9;object-fit:contain" '
+    "onerror=\"this.style.display=\\'none\\'\">'"
 )
 _TOOLTIP_FORMATTER_JS = r"""
 (ps) => {
@@ -593,7 +594,7 @@ def _tooltip(formatter_js: str, *, trigger: str = "axis", theme: ChartTheme = DE
         "borderWidth": 1,
         "padding": [6, 8],
         "appendToBody": True,
-        "extraCssText": "box-shadow: 0 4px 14px rgba(16, 42, 67, 0.12); border-radius: 5px;",
+        "extraCssText": "box-shadow: 0 4px 14px rgba(16, 42, 67, 0.12); border-radius: var(--cb-r-md, 5px);",
         ":formatter": formatter_js,
         ":position": _TOOLTIP_POSITION_JS,
     }
@@ -725,11 +726,7 @@ def _drop_note(theme: ChartTheme, glyph: str = "○") -> list[dict]:
             "right": 4,
             "top": 2,
             "silent": True,
-            "style": {
-                "text": f"{glyph} dropped tilt",
-                "fill": theme.drop_color,
-                "font": f"9px {theme.name_font}",
-            },
+            "style": {"text": f"{glyph} dropped tilt", "fill": theme.drop_color, "font": f"9px {theme.name_font}"},
         }
     ]
 

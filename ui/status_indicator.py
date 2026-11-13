@@ -15,13 +15,21 @@ _DOT_COLORS = {
 }
 
 
+def _badge_colors(state: str, bg: str, ink: str) -> tuple[str, str]:
+    """A badge's fill and edge, and its ink, as the state's variables with today's colours as fallbacks."""
+    return (
+        f"background:var(--cb-{state}-bg,{bg});border:1px solid var(--cb-{state}-line,transparent);",
+        f"color:var(--cb-{state}-ink,{ink});",
+    )
+
+
 _BADGE_STYLES = {
-    JobStatus.SCHEDULED: ("background:#fef3c7;", "color:#92400e;"),
-    JobStatus.QUEUED: ("background:#eff6ff;", "color:#2563eb;"),
-    JobStatus.RUNNING: ("background:#dbeafe;", "color:#1e40af;"),
-    JobStatus.SUCCEEDED: ("background:#d1fae5;", "color:#065f46;"),
-    JobStatus.FAILED: ("background:#fee2e2;", "color:#991b1b;"),
-    JobStatus.UNKNOWN: ("background:#f3f4f6;", "color:#1f2937;"),
+    JobStatus.SCHEDULED: _badge_colors("warn", "#fef3c7", "#92400e"),
+    JobStatus.QUEUED: _badge_colors("que", "#eff6ff", "#2563eb"),
+    JobStatus.RUNNING: _badge_colors("run", "#dbeafe", "#1e40af"),
+    JobStatus.SUCCEEDED: _badge_colors("ok", "#d1fae5", "#065f46"),
+    JobStatus.FAILED: _badge_colors("bad", "#fee2e2", "#991b1b"),
+    JobStatus.UNKNOWN: _badge_colors("off", "#f3f4f6", "#1f2937"),
 }
 
 
@@ -52,10 +60,10 @@ def _halo(color: str) -> str:
 def _led_style(color: str, size_px: int, *, lit: bool = True) -> str:
     """Inline style of a status light: a flat dot and, when lit, its halo. Inline because
     the light is v-html content: no stylesheet involved."""
-    glow = f"box-shadow:{_halo(color)};" if lit else ""
+    glow = f"box-shadow:var(--cb-pip-halo,{_halo(color)});" if lit else ""
     return (
-        f"width:{size_px}px;height:{size_px}px;border-radius:50%;display:inline-block;flex-shrink:0;"
-        f"background:{color};{glow}"
+        f"width:{size_px}px;height:{size_px}px;border-radius:var(--cb-pip-radius,50%);display:inline-block;"
+        f"flex-shrink:0;background:{color};{glow}"
     )
 
 
@@ -67,12 +75,14 @@ def _running_led_html(size_px: int = 8, color: str = _DOT_COLORS[JobStatus.RUNNI
         f'<span style="position:relative;display:inline-block;width:{size_px}px;height:{size_px}px;'
         'flex-shrink:0;vertical-align:middle;">'
         f'<svg width="{3 * size_px}" height="{3 * size_px}" viewBox="0 0 30 30" style="position:absolute;'
-        f'left:-{size_px}px;top:-{size_px}px;overflow:visible;pointer-events:none;filter:blur(1px);">'
+        f"left:-{size_px}px;top:-{size_px}px;overflow:visible;pointer-events:none;filter:blur(1px);"
+        'display:var(--cb-run-halo,inline);">'
         f'<circle cx="15" cy="15" r="6" fill="{color}" opacity="0.3">'
         '<animate attributeName="r" values="6;10;6" dur="1.6s" repeatCount="indefinite"/>'
         '<animate attributeName="opacity" values="0.3;0.65;0.3" dur="1.6s" repeatCount="indefinite"/>'
         "</circle></svg>"
-        f'<span style="position:absolute;left:0;top:0;{_led_style(color, size_px)}" '
+        f'<span style="position:absolute;left:0;top:0;{_led_style(color, size_px)}'
+        'animation:var(--cb-run-blink,none);" '
         f'title="{JobStatus.RUNNING.value}"></span></span>'
     )
 
@@ -81,9 +91,9 @@ def _ring_html(color: str, size_px: int, tip: str) -> str:
     """A status light drawn as a ring, with its halo: a job that waits rather than works."""
     return (
         '<span class="status-dot" '
-        f'style="width:{size_px}px;height:{size_px}px;border-radius:50%;display:inline-block;flex-shrink:0;'
-        f"box-sizing:border-box;border:{size_px / 4:g}px solid {color};background:transparent;"
-        f'box-shadow:{_halo(color)};" title="{tip}"></span>'
+        f'style="width:{size_px}px;height:{size_px}px;border-radius:var(--cb-pip-radius,50%);display:inline-block;'
+        f"flex-shrink:0;box-sizing:border-box;border:{size_px / 4:g}px solid {color};background:transparent;"
+        f'box-shadow:var(--cb-pip-halo,{_halo(color)});" title="{tip}"></span>'
     )
 
 
@@ -117,8 +127,10 @@ def _badge_html(
     if status == JobStatus.QUEUED and slurm_job_id:
         label = f"Queued · {slurm_job_id}"
     html = (
-        f'<span style="{bg}{txt}font-size:12px;font-weight:700;'
-        f'padding:2px 8px;border-radius:9999px;white-space:nowrap;">'
+        f'<span style="{bg}{txt}font-family:var(--cb-badge-font,inherit);font-size:var(--cb-badge-size,12px);'
+        "font-weight:var(--cb-badge-weight,700);text-transform:var(--cb-badge-case,none);"
+        "letter-spacing:var(--cb-badge-track,0);padding:var(--cb-badge-pad,2px 8px);"
+        f'border-radius:var(--cb-badge-radius,9999px);white-space:nowrap;">'
         f"{label}</span>"
     )
     if is_orphaned:

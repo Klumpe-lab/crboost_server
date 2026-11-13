@@ -23,9 +23,9 @@ TOOLTIP_STYLE = "white-space: pre-line; max-width: 460px;"
 
 
 # A chart on a panel sits on white, as the Journey's chart tiles do.
-CHART_CELL_STYLE = "background: #ffffff; border-radius: 4px; padding: 6px; box-sizing: border-box;"
+CHART_CELL_STYLE = "background: #ffffff; border-radius: var(--cb-r-md, 4px); padding: 6px; box-sizing: border-box;"
 # A table on a panel: a white body under its white sticky head, no rule above it.
-TABLE_ON_PANEL_STYLE = "background: #ffffff; border-radius: 4px; border-top: none;"
+TABLE_ON_PANEL_STYLE = "background: #ffffff; border-radius: var(--cb-r-md, 4px); border-top: none;"
 
 
 def section(title: str, *, tooltip: str | None = None) -> None:

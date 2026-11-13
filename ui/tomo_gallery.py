@@ -1258,7 +1258,8 @@ class TomoGalleryPage:
                         self._render_wait_note()
                     with ui.element("div").classes("cb-gal-cap").style("cursor: default;"):
                         ui.element("div").style(
-                            "width: 45%; height: 8px; margin: 3.5px 0; border-radius: 2px; background: #e2e8f0;"
+                            "width: 45%; height: 8px; margin: 3.5px 0; "
+                            "border-radius: var(--cb-r-sm, 2px); background: #e2e8f0;"
                         )
 
     def _render_empty(self) -> None:
@@ -1429,7 +1430,8 @@ class TomoGalleryPage:
             .classes("cb-gal-mosaic-toggle" + (" on" if on else ""))
             .style(
                 "position: absolute; top: 3px; left: 3px; z-index: 2; width: 18px; height: 18px; "
-                "border-radius: 3px; display: flex; align-items: center; justify-content: center; cursor: pointer;"
+                "border-radius: var(--cb-r-sm, 3px); display: flex; align-items: center; justify-content: center; "
+                "cursor: pointer;"
             )
         )
         # .stop: in slice mode the toggle sits inside the frame, whose click zooms.
@@ -1898,7 +1900,7 @@ class TomoGalleryPage:
             .classes("cb-gal-zoom-chev")
             .style(
                 f"position: absolute; top: 50%; {side}: 6px; transform: translateY(-50%); z-index: 3; "
-                "width: 36px; height: 72px; border-radius: 6px; display: flex; align-items: center; "
+                "width: 36px; height: 72px; border-radius: var(--cb-r-lg, 6px); display: flex; align-items: center; "
                 "justify-content: center; cursor: pointer;"
             )
         )

@@ -93,6 +93,7 @@ from ui.dashboard.pixel_sanity import render_pixel_sanity_table
 from ui.dashboard.strip import build_strip
 from services.routes import View
 from ui.particles.pick_viewer import render_imported_particles_section, render_particles_section, xy_slab_render
+from ui.job_plugins._field_styles import num_html
 
 logger = logging.getLogger(__name__)
 
@@ -1024,7 +1025,7 @@ def _render_dataset_section(ts_name: str, project_state, project_path: Path, ref
             ui.label("Dataset").classes("cb-section-title")
             with ui.element("div").classes("cb-stats cb-stats-inline"):
                 for part in metric_parts:
-                    ui.label(part).classes("cb-stat-value")
+                    ui.html(num_html(part), sanitize=False).classes("cb-stat-value")
             ui.space()
             caret = ui.icon("expand_less", size="18px").classes("cb-collapse-caret")
         if collapsed:
@@ -1095,7 +1096,7 @@ def _stat_tiles(rows: list[tuple]) -> None:
         for row in rows:
             with ui.element("div").classes("cb-stat") as tile:
                 ui.label(row[0]).classes("cb-stat-label")
-                ui.label(str(row[1])).classes("cb-stat-value")
+                ui.html(num_html(row[1]), sanitize=False).classes("cb-stat-value")
             if len(row) > 2 and row[2]:
                 tile.tooltip(row[2])
 

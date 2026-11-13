@@ -30,7 +30,7 @@ def render_chip(
 
 _TAG_STYLE = (
     "font-size: 9px; font-weight: 700; text-transform: uppercase; "
-    "padding: 1px 5px; border-radius: 3px; letter-spacing: 0.5px;"
+    "padding: 1px 5px; border-radius: var(--cb-r-sm, 3px); letter-spacing: 0.5px;"
 )
 
 _METHOD_PALETTE = {

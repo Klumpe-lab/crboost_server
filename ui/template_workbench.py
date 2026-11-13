@@ -1089,7 +1089,8 @@ class TemplateWorkbench:
                 .classes("cb-tw-table")
                 .style(
                     f"--cb-tw-cols: {_TW_COLS}; --cb-accent: {_INDIGO}; --cb-accent-tint: {_INDIGO}14; "
-                    f"height: {_LIST_HEIGHT_PX}px; overflow-y: auto; background: #ffffff; border-radius: 4px;"
+                    f"height: {_LIST_HEIGHT_PX}px; overflow-y: auto; background: #ffffff; "
+                    "border-radius: var(--cb-r-md, 4px);"
                 )
             )
             with self._templates_table:
@@ -1249,7 +1250,7 @@ class TemplateWorkbench:
         badge = ui.label(label).style(
             f"color: {color}; font-size: 9px; font-weight: 700; "
             f"font-variant-numeric: tabular-nums; "
-            f"padding: 1px 4px; border-radius: 3px; "
+            f"padding: 1px 4px; border-radius: var(--cb-r-sm, 3px); "
             f"background: {color}1a; flex-shrink: 0;"
         )
         if "#dc2626" in color or "#ea580c" in color:
@@ -1505,7 +1506,8 @@ class TemplateWorkbench:
                 .classes("cb-tw-table")
                 .style(
                     f"--cb-tw-cols: {_TW_COLS}; --cb-accent: {_PURPLE}; --cb-accent-tint: {_PURPLE}14; "
-                    f"height: {_LIST_HEIGHT_PX}px; overflow-y: auto; background: #ffffff; border-radius: 4px;"
+                    f"height: {_LIST_HEIGHT_PX}px; overflow-y: auto; background: #ffffff; "
+                    "border-radius: var(--cb-r-md, 4px);"
                 )
             )
             with self._masks_table:
@@ -1693,7 +1695,7 @@ class TemplateWorkbench:
                 ui.card()
                 .tight()
                 .classes("w-full overflow-hidden")
-                .style("border: none; box-shadow: none; border-radius: 4px;")
+                .style("border: none; box-shadow: none; border-radius: var(--cb-r-md, 4px);")
             ):
                 # Grid-stacked (same as _stacked_panels): both panels share one
                 # cell, the hidden one is visibility-hidden, so the card always holds the

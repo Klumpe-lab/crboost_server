@@ -209,12 +209,35 @@ _MODE_VIEWS: dict[str, View] = {
     "gallery": View.TOMOGRAMS,
     "viewer": View.PICKS,
     "protocols": View.PROTOCOLS,
-    "table": View.TABLE,
 }
 
+
+def _lamella_ascii() -> str:
+    """A lamella under the tilt fan, in ASCII (the empty workspace's figure; roadmap 51 D3). HTML: the fan in the
+    accent (`.hi`)."""
+    labels = [" "] * 42
+    for col, text in ((9, "-60°"), (24, "0°"), (36, "+60°")):
+        labels[col : col + len(text)] = text
+    fan = ["".join(labels).rstrip()]
+    fan += [" " * (24 - 2 * r) + "\\" + " " * (2 * r - 1) + "|" + " " * (2 * r - 1) + "/" for r in range(6, 0, -1)]
+    fan.append(" " * 23 + "\\|/")
+    face = "-" * 29
+    body = [
+        " " * 9 + "+" + "-" * 14 + "+" + "-" * 14 + "+",
+        " " * 8 + "/" + "   o     .       o     .  o  " + "/|",
+        " " * 7 + "/" + "  .    o     .  o     .    . " + "/ +",
+        " " * 6 + "+" + face + "+ /",
+        " " * 6 + "|" + "  lamella · 180 nm".ljust(29) + "|/",
+        " " * 6 + "+" + face + "+",
+    ]
+    return "\n".join([f'<span class="hi">{line}</span>' for line in fan] + body)
+
+
+_LAMELLA_ASCII = _lamella_ascii()
+
 # Left-to-right order of the views that are on: the rail's order, the pipeline (job roster
-# + job page) first; the pick viewer, which has no icon, and the foot-of-rail Protocols last.
-_VIEW_ORDER = ("pipeline", "table", "workbench", "gallery", "journey", "viewer", "protocols")
+# + the branch map or a job page) first; the pick viewer, which has no icon, and the foot-of-rail Protocols last.
+_VIEW_ORDER = ("pipeline", "workbench", "gallery", "journey", "viewer", "protocols")
 
 # Every view's frame: its share of the main area's width when several are on is its weight
 # (`--cb-vw-<name>`, 1 until a splitter moves it; _VIEW_RESIZER_JS). It holds the view's title
@@ -224,7 +247,7 @@ _VIEW_ORDER = ("pipeline", "table", "workbench", "gallery", "journey", "viewer",
 # panels never butt edge to edge. The frame's overflow is visible: its splitter sits in the gap.
 _PANEL_GAP_PX = 8
 _CARD_EDGE = (
-    "border: 1px solid var(--cb-panel-line, #dbe3ec); border-radius: 6px; "
+    "border: 1px solid var(--cb-panel-line, #dbe3ec); border-radius: var(--cb-r-lg, 6px); "
     "box-shadow: var(--cb-panel-shadow, 0 1px 2px rgba(16, 42, 67, 0.06));"
 )
 _VIEW_STYLE = "min-width: 0; height: 100%; overflow: visible; display: none; flex-direction: row; position: relative;"
@@ -233,31 +256,33 @@ _VIEW_COLUMN_STYLE = (
     f"box-sizing: border-box; background: var(--cb-page, #f6f8fb); {_CARD_EDGE}"
 )
 # The job page's title line carries its roster row's blue tick on its left (pipeline_roster `_row_paint`),
-# so the page reads as that row opened.
-_JOB_HEAD_STYLE = VIEW_HEAD_STYLE + (
-    " box-shadow: 0 var(--cb-view-head-line-w, 1px) 0 var(--cb-view-head-line, #dbe3ec), "
+# so the page reads as that row opened; with no job open the frame shows the branch map under a plain line.
+_JOB_HEAD_TICK = (
+    "box-shadow: 0 var(--cb-view-head-line-w, 1px) 0 var(--cb-view-head-line, #dbe3ec), "
     "inset 2px 0 0 var(--cb-accent, #4a8fd4);"
 )
+_PLAIN_HEAD_TICK = "box-shadow: 0 var(--cb-view-head-line-w, 1px) 0 var(--cb-view-head-line, #dbe3ec);"
+_JOB_HEAD_STYLE = VIEW_HEAD_STYLE + " " + _JOB_HEAD_TICK
 _VIEW_BODY_STYLE = "flex: 1 1 0; min-width: 0; min-height: 0; overflow: hidden; display: flex; flex-direction: column;"
-# Each view's name on its title line; the pipeline's names the job its page shows (set_view_title).
+# Each view's name on its title line; the pipeline's names the job its page shows (set_view_title), and
+# is Pipeline while the branch map shows (the roster beside it already says Jobs).
 _VIEW_TITLES = {
-    "pipeline": "Jobs",
+    "pipeline": "Pipeline",
     "workbench": "Particles registry",
     "journey": "Journey",
     "gallery": "Tomograms",
     "viewer": "Pick viewer",
     "protocols": "Protocols",
-    "table": "Pipeline",
 }
-# Each view's glyph before its name: its rail icon. The job page has none: its title line is its roster
-# row opened.
+# Each view's glyph before its name: its rail icon. The pipeline's is the branch glyph while the map shows; a
+# job page has none: its title line is its roster row opened.
 _VIEW_ICONS = {
+    "pipeline": "pipeline_table.svg",
     "workbench": "particle.svg",
     "journey": "journey.svg",
     "gallery": "tomo_preview.svg",
     "viewer": "particle.svg",
     "protocols": "fact_check",
-    "table": "pipeline_table.svg",
 }
 # The two slots a view fills on its title line (`callbacks["view_head"]`): `lead`, right after its name
 # (what it shows: the Journey's tilt series), and `tools`, at the right end before the expand icon. The
@@ -295,7 +320,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
     # address bar names.
     _on: list[str] = ["pipeline"]
     _refs = {}
-    # Whether the pipeline view has a job open: without one its page leaves the main area and the roster stays.
+    # Whether the pipeline view has a job open: without one the pipeline frame shows the branch map.
     _job_open = {"on": True}
     client = ui.context.client
 
@@ -329,11 +354,11 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         route_writer.write(view)
 
     def _panes_of(name: str) -> list[str]:
-        """A view's panes, by the names _PANE_FOCUS_JS knows them by: the Jobs view's are the roster and,
-        while a job is open, the job page."""
+        """A view's panes, by the names _PANE_FOCUS_JS knows them by: the Jobs view's are the roster and the
+        pipeline frame (the map, or the open job's page)."""
         if name != "pipeline":
             return [name]
-        return ["roster", "pipeline"] if _job_open["on"] else ["roster"]
+        return ["roster", "pipeline"]
 
     def _focus_pane(pane: str) -> None:
         """Light `pane`'s title line: the pane Esc closes."""
@@ -344,9 +369,8 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         pipeline, i.e. job roster + job page, leftmost), sharing the width by their weights;
         hide the rest. Every view with a view to its left shows its splitter. The roster comes
         and goes with the pipeline view (the roster's set_active_views), and each view's
-        refresh timers run only while it shows. The job page shows only while a job is open
-        (set_job_open); the roster stays without one."""
-        shown = [name for name in _on if name != "pipeline" or _job_open["on"]]
+        refresh timers run only while it shows."""
+        shown = list(_on)
         first = True
         for i, name in enumerate(_VIEW_ORDER):
             c = _refs.get(f"{name}_frame")
@@ -369,14 +393,6 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         empty = _refs.get("empty_container")
         if empty is not None:
             empty.style(f"display: {'none' if shown else 'flex'};")
-            if not shown:
-                job_only = "pipeline" in _on
-                _refs["empty_title"].set_text("No job open." if job_only else "No view open.")
-                _refs["empty_hint"].set_text(
-                    "Pick a job in the roster, or turn a view on with the icons on the left."
-                    if job_only
-                    else "Turn views on and off with the icons on the left; several can show side by side."
-                )
 
         # Nav-icon highlights + roster hide/restore.
         set_views = callbacks.get("set_active_views")
@@ -399,14 +415,9 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         if on_wb:
             on_wb("workbench" in _on)
 
-        # The pick viewer's coalesced-rebuild timer, the gallery's pending-preview poll, the
-        # Protocols view's 15 s poll and the pipeline table's status watch.
-        for page_key, name in (
-            ("viewer_page", "viewer"),
-            ("gallery_page", "gallery"),
-            ("protocols_page", "protocols"),
-            ("table_page", "table"),
-        ):
+        # The pick viewer's coalesced-rebuild timer, the gallery's pending-preview poll and the
+        # Protocols view's 15 s poll.
+        for page_key, name in (("viewer_page", "viewer"), ("gallery_page", "gallery"), ("protocols_page", "protocols")):
             page = _refs.get(page_key)
             if page is not None:
                 page.set_active(name in _on)
@@ -448,11 +459,21 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         _write_mode_url()
 
     def _set_job_open(on: bool) -> None:
-        """The pipeline panel opened a job page or closed it (close_job)."""
+        """The pipeline panel opened a job page or closed it (close_job): the frame's title line takes the job's
+        tick, or the map's glyph and a plain line; its cross closes the job, or the view."""
         if _job_open["on"] == on:
             return
         _job_open["on"] = on
-        _apply_views()
+        head = _refs.get("pipeline_head_el")
+        if head is not None and not head.is_deleted:
+            head.style(_JOB_HEAD_TICK if on else _PLAIN_HEAD_TICK)
+        icon = _refs.get("pipeline_icon")
+        if icon is not None and not icon.is_deleted:
+            icon.set_visibility(not on)
+        close = _refs.get("pipeline_close")
+        if close is not None and not close.is_deleted:
+            close.props(f'title="{"Close this job" if on else "Close this view"}"')
+        _focus_pane("pipeline")
 
     def _solo(name: str) -> None:
         """The expand icon: this view alone fills the main area; every other view turns off."""
@@ -495,9 +516,14 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         is_job = name == "pipeline"
         with frame:
             with ui.element("div").style(_VIEW_COLUMN_STYLE):
-                with ui.element("div").style(_JOB_HEAD_STYLE if is_job else VIEW_HEAD_STYLE):
+                with ui.element("div").style(_JOB_HEAD_STYLE if is_job else VIEW_HEAD_STYLE) as head_el:
+                    if is_job:
+                        _refs["pipeline_head_el"] = head_el
                     if name in _VIEW_ICONS:
-                        view_head_icon(_VIEW_ICONS[name])
+                        icon_el = view_head_icon(_VIEW_ICONS[name])
+                        if is_job:
+                            _refs["pipeline_icon"] = icon_el
+                            icon_el.set_visibility(not _job_open["on"])
                     title = _refs[f"{name}_title"] = ui.label(_VIEW_TITLES[name]).style(VIEW_TITLE_STYLE)
                     lead = ui.element("div").style(_HEAD_LEAD_STYLE)
                     ui.element("div").style("flex: 1 1 auto;")
@@ -509,9 +535,18 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
                         .props('title="Show only this view"')
                         .on("click", lambda _e: _solo(name))
                     )
-                    ui.icon("close", size="12px").classes("cb-view-close").props(
-                        f'title="{"Close this job" if is_job else "Close this view"}"'
-                    ).on("click", lambda _e: callbacks["close_job"]() if is_job else _hide(name))
+                    close_el = (
+                        ui.icon("close", size="12px")
+                        .classes("cb-view-close")
+                        .props(f'title="{"Close this job" if is_job else "Close this view"}"')
+                    )
+                    if is_job:
+                        _refs["pipeline_close"] = close_el
+                        close_el.on(
+                            "click", lambda _e: callbacks["close_job"]() if _job_open["on"] else _hide("pipeline")
+                        )
+                    else:
+                        close_el.on("click", lambda _e: _hide(name))
                 body = ui.element("div").style(_VIEW_BODY_STYLE)
             ui.element("div").classes("cb-view-splitter")
         _refs[f"{name}_container"] = body
@@ -648,28 +683,6 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
                 page.set_active(True)
             await page.show()
 
-    _table_flight = SingleFlight()
-
-    async def _show_table():
-        """The rail's branch glyph: the pipeline table — every job of the roster in dependency
-        order. Built lazily like the gallery."""
-        async with _table_flight("show") as acquired:
-            if not acquired:
-                return
-            _show("table")
-            tc = _refs.get("table_container")
-            if tc is None:
-                return
-            page = _refs.get("table_page")
-            if page is None:
-                from ui.pipeline_table_view import PipelineTablePage
-
-                with tc:
-                    page = PipelineTablePage(tc, ui_mgr.project_path, callbacks)
-                _refs["table_page"] = page
-                page.set_active(True)
-            await page.show()
-
     _viewer_flight = SingleFlight()
 
     async def _open_pick_viewer(species_id: str | None, tomo_name: str | None) -> None:
@@ -747,8 +760,12 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
             raw = raw[0] if raw else ""
         pane = str(raw or "")
         if pane == "pipeline":
-            if "pipeline" in _on and _job_open["on"]:
+            if "pipeline" not in _on:
+                return
+            if _job_open["on"]:
                 callbacks["close_job"]()
+            else:
+                _hide("pipeline")
         elif pane == "roster":
             _hide("pipeline")
         else:
@@ -770,7 +787,6 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
     toggle_journey = _rail_toggle("journey", _show_journey, _journey_flight)
     toggle_gallery = _rail_toggle("gallery", _show_gallery, _gallery_flight)
     toggle_protocols = _rail_toggle("protocols", _show_protocols, _protocols_flight)
-    toggle_table = _rail_toggle("table", _show_table, _table_flight)
 
     callbacks["invalidate_gallery"] = _invalidate_gallery
     callbacks["select_ts"] = _select_ts
@@ -783,7 +799,6 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
     callbacks["show_journey"] = _show_journey
     callbacks["show_gallery"] = _show_gallery
     callbacks["show_protocols"] = _show_protocols
-    callbacks["show_table"] = _show_table
     callbacks["open_pick_viewer"] = _open_pick_viewer
     callbacks["set_view_title"] = _set_view_title
     callbacks["view_head"] = _view_head
@@ -843,7 +858,6 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
                     toggle_journey=toggle_journey,
                     toggle_gallery=toggle_gallery,
                     toggle_protocols=toggle_protocols,
-                    toggle_table=toggle_table,
                 )
 
             # Species page: built on its first showing (_ensure_species_page).
@@ -866,15 +880,18 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
             # Protocols: lazily built on the first click of the foot-of-rail protocol light.
             _view_frame("protocols")
 
-            # Pipeline table: lazily built on the first click of its rail icon.
-            _view_frame("table")
-
             # Every view turned off: say where they are rather than leave a blank page.
             empty_container = ui.element("div").classes("cb-empty").style("flex: 1 1 0; display: none;")
             _refs["empty_container"] = empty_container
             with empty_container:
-                ui.icon("view_column", size="40px").classes("text-gray-400")
-                _refs["empty_title"] = ui.label("No view open.").classes("text-sm text-gray-500")
+                ui.icon("view_column", size="40px").classes("text-gray-400 cb-undrawn")
+                # Harbor Mono's drawn things (roadmap 51 D3): a lamella in ASCII and a prompt, shown only by a look
+                # that sets --cb-drawn.
+                ui.html(f'<pre class="cb-ascii cb-drawn">{_LAMELLA_ASCII}</pre>', sanitize=False)
+                ui.html(
+                    '<div class="cb-prompt cb-drawn"><span class="p">~&gt;</span> no view open</div>', sanitize=False
+                )
+                _refs["empty_title"] = ui.label("No view open.").classes("text-sm text-gray-500 cb-undrawn")
                 _refs["empty_hint"] = ui.label(
                     "Turn views on and off with the icons on the left; several can show side by side."
                 ).classes("text-[11px] italic text-gray-400")
