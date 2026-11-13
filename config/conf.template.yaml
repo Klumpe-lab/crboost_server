@@ -96,7 +96,7 @@ job_resource_profiles:
 
   tsCtf:
     gres: "gpu:1"
-    mem: "8G"
+    mem: "32G"
     cpus_per_task: 2
     time: "0:10:00"
 
@@ -165,9 +165,9 @@ job_resource_profiles:
   # (CBE.next: "gpu:nvidia_b200_1g.23gb:1", one MIG slice).
   tmextractcand:
     gres: "gpu:1"
-    mem: "8G"
+    mem: "24G"
     cpus_per_task: 2
-    time: "0:15:00"
+    time: "1:00:00"
 
   # One CPU job over every tomogram: Ais runs one process per CPU.
   filamentPick:

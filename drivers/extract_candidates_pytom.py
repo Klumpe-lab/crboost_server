@@ -43,17 +43,29 @@ from drivers.driver_base import DriverContext, ToolCommand
 from services.subtomo_merge import write_optimisation_set
 from services.job_models import CandidateExtractPytomParams, ExtractionCutoffMethod
 
-# Saves disk space: TM's `{tomo}_angles.mrc` is a full-size float32 map (2 GB per tomogram at
-# 1024x1024x512, ~280 GB on a 140-tomogram project) that only candidate extraction reads, to look up
-# each peak's orientation. Once a tomogram's candidates are extracted it is deleted from the TM job.
-# The cost: extracting that TM job again (another cutoff, a second extraction job) needs TM re-run.
-# The scores map is kept. Set False to keep the angles maps.
-DELETE_ANGLES_AFTER_EXTRACTION = True
+# Extraction only reads the TM job's outputs, never deletes them: extracting the same TM job again
+# (a re-run, another cutoff, a second extraction job) must find what the first one found.
 
 
 # ----------------------------------------------------------------------
 # Helpers (shared supervisor + task)
 # ----------------------------------------------------------------------
+
+
+def _mem_gb(mem: str) -> float:
+    """A SLURM size ('8G', '24000M', '1T') in GB, so two requests compare; a size it cannot read raises."""
+    value, unit = str(mem).strip()[:-1], str(mem).strip()[-1:].upper()
+    if unit.isdigit():
+        value, unit = str(mem).strip(), "M"  # SLURM's default unit
+    return float(value) * {"K": 1 / 1048576, "M": 1 / 1024, "G": 1, "T": 1024}[unit]
+
+
+def _time_s(walltime: str) -> int:
+    """A SLURM walltime ('1:00:00', '1-00:00:00', '30:00') in seconds; one it cannot read raises."""
+    days, _, hms = str(walltime).strip().rpartition("-")
+    parts = [int(p) for p in hms.split(":")]
+    h, m, sec = ([0] * (3 - len(parts)) + parts)[-3:]
+    return int(days or 0) * 86400 + h * 3600 + m * 60 + sec
 
 
 def get_pixel_size_from_star(tomograms_star: Path) -> float:
@@ -153,23 +165,6 @@ def tomo_angles_path(local_tm_results: Path, tomo_name: str) -> Path:
     return local_tm_results / f"{tomo_name}_angles.mrc"
 
 
-def delete_angles_maps(local_tm_results: Path, tomo_names: list[str]) -> tuple[int, int]:
-    """Delete the TM job's angles map (and the staged symlink to it) for each tomogram.
-    Returns (files deleted, bytes freed)."""
-    n, freed = 0, 0
-    for name in tomo_names:
-        link = tomo_angles_path(local_tm_results, name)
-        if not link.is_symlink():
-            continue
-        target = link.resolve()
-        if target.is_file():
-            freed += target.stat().st_size
-            target.unlink()
-            n += 1
-        link.unlink()
-    return n, freed
-
-
 def tomo_particles_star_path(local_tm_results: Path, tomo_name: str) -> Path:
     """pytom writes `{tomo_name}_particles.star` under the output_dir."""
     return local_tm_results / f"{tomo_name}_particles.star"
@@ -247,12 +242,12 @@ class ExtractCandidatesPytomDriver(ArrayDriver):
         # Tophat morphology inflates per-task memory/runtime substantially:
         # scipy.ndimage opening on a ~2 GB float32 score volume allocates
         # 6–10 GB of intermediate buffers on top of PyTOM's ~5 GB baseline
-        # (scores + angles + Python + CUDA). The 8G default that's fine for
-        # non-tophat extraction gets OOM-killed here. Bump only when the
-        # filter is actually enabled so non-tophat runs stay efficient.
+        # (scores + angles + Python + CUDA). Plain extraction already fills 8G
+        # (AGG412 rerun job012: every task at 7.98 GB, 41/139 slowed past a
+        # 15 min limit), so the conf default is 24G / 1 h; tophat only raises.
         if ctx.params.score_filter_method == "tophat":
-            bumped_mem = "24G"
-            bumped_time = "0:30:00"
+            bumped_mem = max(per_task_cfg.mem, "24G", key=_mem_gb)
+            bumped_time = max(per_task_cfg.time, "1:00:00", key=_time_s)
             self.log(
                 f"tophat-filter enabled — bumping per-task SLURM "
                 f"(mem {per_task_cfg.mem}→{bumped_mem}, time {per_task_cfg.time}→{bumped_time}) "
@@ -355,11 +350,6 @@ class ExtractCandidatesPytomDriver(ArrayDriver):
         self.log("Created optimisation_set.star with absolute paths")
         self._write_analytics_sidecar(ctx)
 
-        if DELETE_ANGLES_AFTER_EXTRACTION:
-            # Only tomograms that extracted: a failed one keeps its map for the re-run.
-            n, freed = delete_angles_maps(local_tm_results, results.ok)
-            self.log(f"Deleted {n} TM angles map(s), {freed / 1e9:.1f} GB (DELETE_ANGLES_AFTER_EXTRACTION)")
-
     def _write_analytics_sidecar(self, ctx: DriverContext[CandidateExtractPytomParams]) -> None:
         """The candidate set in σ, per tomogram (counts, cutoff, ladder, cap, every score), as the
         job's analytics sidecar. A readout of outputs that are already complete: its failure —
@@ -401,8 +391,8 @@ class ExtractCandidatesPytomDriver(ArrayDriver):
         angles = tomo_angles_path(local_tm_results, item)
         if not angles.exists():
             raise FileNotFoundError(
-                f"TM angles map missing for {item}: {angles}. An earlier extraction from this TM job deletes "
-                "it (DELETE_ANGLES_AFTER_EXTRACTION in drivers/extract_candidates_pytom.py); re-run TM"
+                f"TM angles map missing for {item}: {angles}. Extraction needs the TM job's angles map; "
+                "extractions before 2026-11-13 deleted it after extracting, so a TM job they read must be re-run"
             )
         return job_json
 
