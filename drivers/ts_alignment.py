@@ -91,7 +91,7 @@ def build_alignment_command(params: TsAlignmentParams) -> ToolCommand | str:
 
 
 # The name a tilt-series runs under in its staging dir when its own name is longer than
-# AreTomo can take: AreTomo 1.0 writes no IMOD `.tlt` past ARETOMO_TS_NAME_MAX characters,
+# AreTomo can take: AreTomo writes no IMOD `.tlt` past ARETOMO_TS_NAME_MAX characters,
 # and WarpTools then drops the series as unselected (docs/known_bugs.md #3). A staging dir
 # holds exactly one series, so one fixed alias cannot collide; WarpTools names every output
 # after the tomostar, and collect renames them back.

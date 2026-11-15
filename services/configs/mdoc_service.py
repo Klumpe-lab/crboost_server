@@ -119,11 +119,13 @@ def describe_duplicate_ts_names(duplicates: dict[str, list[Path]]) -> str:
     )
 
 
-# AreTomo 1.0, the aligner in our Warp container, writes no IMOD `.tlt` for a tilt-series name
-# longer than this, and WarpTools then drops the series as unselected (docs/known_bugs.md #3).
-# Every 44-character name in the projects aligned and no 45+ one did (2026-10-04).
+# AreTomo writes no IMOD `.tlt` (or one under a mangled name) for a tilt-series name longer than
+# this, and WarpTools then drops the series as unselected (docs/known_bugs.md #3). AreTomo 1.0
+# took 44 characters (one dataset, 2026-10-04); AreTomo2 1.0.0 in the dev41 container takes 43: on
+# 2026-11-15 every 44-character name of the reruns failed (Grid3 36/36, Slot6 42/42, the
+# `.tlt` written as `<ts>_Imod/st`) and every 42-, 43- and 45+-character one aligned.
 # Alignment runs a longer name under a short alias (drivers/ts_alignment.py `staged_ts_name`).
-ARETOMO_TS_NAME_MAX = 44
+ARETOMO_TS_NAME_MAX = 43
 
 
 _T_LINE_RE = re.compile(r"^\[T\s*=\s*(.*?)\]?$")
