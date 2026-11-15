@@ -84,9 +84,15 @@ description and the UI label in GUI terms (order + 1 at oversampling 1); correct
 
 ## 3. Long tilt-series names break AreTomo's IMOD output; Warp drops the series and the pipeline runs on unaligned angles
 
-**Status:** WORKED AROUND 2026-10-04, NOT RUN. Alignment runs a name over 44 characters under a short alias
-(`drivers/ts_alignment.py` `staged_ts_name`, `rename_alias_files`, limit `ARETOMO_TS_NAME_MAX = 44` in
-`services/configs/mdoc_service.py`). Project creation no longer refuses long names (2026-10-27; it did from
+**Status:** WORKED AROUND 2026-10-04; limit lowered to 43 on 2026-11-15 for AreTomo2. Alignment runs a name over
+43 characters under a short alias (`drivers/ts_alignment.py` `staged_ts_name`, `rename_alias_files`, limit
+`ARETOMO_TS_NAME_MAX = 43` in `services/configs/mdoc_service.py`). The alias itself works (the AGG412 reruns of
+2026-11-15: every 45+-character name ran as `crbalias` and aligned).
+**2026-11-15, AreTomo2 (warp-2.0.0dev41_aretomo2-1.0.0 container):** the limit moved down by one. Every
+44-character name of the AGG412 reruns failed — `AGG412_20260311_412_Grid3_rerun` 36 of 36,
+`AGG412_20240204_412_Slot6_rerun` 42 of 42 (`Position_<1–9>_<k>`) — with AreTomo2 itself succeeding and writing
+the angles to `<ts>_Imod/st` instead of `<ts>_Imod/<ts>_st.tlt`; every 42- and 43-character name aligned. Under
+the old limit of 44 those names were not aliased. Project creation no longer refuses long names (2026-10-27; it did from
 2026-10-04, `describe_long_ts_names`): the alias carries them. The first project that relies on it is the check —
 its alignment `task_*.out` says `runs as '<alias>'`, and `warp_tiltseries/<ts>.xml` must not carry
 `UnselectManual="True"`. Earlier: driver guard + creation warning 2026-09-09 (`warp_marked_unselected`). The AreTomo
