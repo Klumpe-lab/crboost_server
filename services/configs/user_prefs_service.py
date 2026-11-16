@@ -200,6 +200,12 @@ class UserPrefsService:
         self._prefs = self._load_from_file() or UserPreferences()
         return self._prefs
 
+    def load_from_file_if_unloaded(self) -> UserPreferences:
+        """The server-side copy, when no page has loaded the browser's yet (startup). Disk: off the loop."""
+        if self._prefs is None:
+            self._prefs = self._load_from_file() or UserPreferences()
+        return self._prefs
+
     def save_to_app_storage(self, storage: dict[str, Any]):
         """Save preferences to NiceGUI's app.storage.user"""
         if self._prefs:

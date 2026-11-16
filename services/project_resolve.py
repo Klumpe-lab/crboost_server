@@ -49,7 +49,7 @@ def _resolved(path: Path) -> str:
         return str(path)
 
 
-def _search_bases() -> list[Path]:
+def known_project_bases() -> list[Path]:
     """Bases 3-5, in order, de-duplicated. Order matters only for reporting — a hit in
     any of them counts the same when checking for ambiguity."""
     prefs = get_prefs_service().prefs
@@ -97,7 +97,7 @@ def resolve_project(name: str, *, base: str | None = None, current: Path | str |
         if cur.name == name and _is_project(cur):
             return ok(path=cur, base=cur.parent)
 
-    bases = _search_bases()
+    bases = known_project_bases()
     hits: list[Path] = []
     seen: set[str] = set()
     for b in bases:
