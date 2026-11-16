@@ -19,6 +19,10 @@ between restarts. It never reaches across login nodes, where it could not check 
 With no server up, it offers `get_server_info`, which says how to start one, and tries again on every call;
 once the server answers, it announces the full tool list (`notifications/tools/list_changed`).
 
+A call the user must confirm (apply_changes_now) comes back with `confirm`: a dialog's text and a one-time token.
+The forwarder shows the text in Claude Code's own dialog (MCP elicitation), and only on the user's yes calls again
+with the token. The token never reaches the agent: the dialog is the user's answer, not the agent's.
+
     claude mcp add --scope user crboost -- <checkout>/crboost mcp
 
 The launcher runs it with the checkout's own uv (`.uv/bin/uv`, the one `uv.toml` pins), wherever Claude Code
@@ -199,6 +203,54 @@ class Forwarder:
             return {"success": False, "error": f"HTTP {r.status_code}: {r.text[:500]}"}
 
 
+CONFIRM_FIELD = "decision"
+
+
+async def ask_user(ctx, confirm: dict[str, Any]) -> bool | str:
+    """The user's answer in Claude Code's dialog: True for apply, False for anything else, or why it could not
+    be asked."""
+    caps = ctx.session.client_capabilities
+    if caps is None or caps.elicitation is None:
+        return "This Claude Code does not show a server's dialogs (no MCP elicitation)."
+    schema = {
+        "type": "object",
+        "properties": {
+            CONFIRM_FIELD: {
+                "type": "string",
+                "title": confirm["title"],
+                "oneOf": [{"const": "apply", "title": confirm["apply"]}, {"const": "keep", "title": confirm["keep"]}],
+                "default": "keep",
+            }
+        },
+        "required": [CONFIRM_FIELD],
+    }
+    try:
+        answer = await ctx.session.elicit_form(confirm["message"], schema, related_request_id=ctx.request_id)
+    except Exception as e:  # any failure to ask is reported to the agent as "not asked", never as a yes
+        print(f"crboost: the confirmation dialog failed: {e!r}", file=sys.stderr)
+        return f"The confirmation dialog could not be shown: {e}"
+    return answer.action == "accept" and (answer.content or {}).get(CONFIRM_FIELD) == "apply"
+
+
+async def confirmed(
+    ctx, forwarder: Forwarder, name: str, arguments: dict[str, Any], confirm: dict[str, Any], first: dict[str, Any]
+) -> dict[str, Any]:
+    """The call again with the server's one-time token when the user says yes in the dialog; else what happened,
+    for the agent, without the token."""
+    answer = await ask_user(ctx, confirm)
+    if answer is True:
+        return await forwarder.call(name, {**arguments, "confirmation": confirm["token"]})
+    if answer is False:
+        return {
+            "success": False,
+            "error": "The user did not apply the plan in the terminal dialog: nothing changed. Ask them what to "
+            "change, or leave it on its page.",
+            "declined": True,
+            "ui_url": first.get("ui_url"),
+        }
+    return {**first, "error": f"{answer} {first.get('error', '')}".strip()}
+
+
 def main() -> None:
     forwarder = Forwarder()
     bus = InMemorySubscriptionBus()
@@ -216,8 +268,12 @@ def main() -> None:
                 await ctx.session.send_tool_list_changed()
             except (RuntimeError, AttributeError) as e:
                 print(f"crboost: tool list change not sent on this session: {e}", file=sys.stderr)
+        arguments = dict(params.arguments or {})
         try:
-            result = await forwarder.call(params.name, dict(params.arguments or {}))
+            result = await forwarder.call(params.name, arguments)
+            confirm = result.pop("confirm", None)
+            if confirm:
+                result = await confirmed(ctx, forwarder, params.name, arguments, confirm, result)
         except httpx.HTTPError as e:
             result = {"success": False, "error": f"The CryoBoost server did not answer: {e}"}
         text = json.dumps(result, ensure_ascii=False, separators=(",", ":"))

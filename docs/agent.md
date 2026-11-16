@@ -34,7 +34,7 @@ In `~/.claude/settings.json`:
   "permissions": {
     "allow": [
       "mcp__crboost__get_*", "mcp__crboost__list_*", "mcp__crboost__inspect_*", "mcp__crboost__plan_*",
-      "mcp__crboost__apply_changes"
+      "mcp__crboost__apply_changes", "mcp__crboost__apply_changes_now"
     ],
     "deny": ["Edit(//**/project_params.json)", "Edit(//**/.crboost/user_settings.json)"]
   }
@@ -43,12 +43,16 @@ In `~/.claude/settings.json`:
 
 The reads then run without a prompt, and so do plans. The agent sends a whole change at once
 (`plan_changes`) and nothing changes yet: the server rehearses it on a copy of each project and answers with
-an overview, which the agent prints in the terminal as it is: per project the values of a new one, the
-roster after the plan, every setting as now → after, deletions with their sizes, what the run submits. Then:
+what the plan does: per project the values of a new one, the roster after the plan, every setting as
+now → after, deletions with their sizes, what the run submits. Then:
 
-- **In the terminal (the default):** the agent calls `apply_changes_now`, and Claude Code asks you. That one
-  prompt is the approval; "no" with what to change makes the agent plan again. It is not in the allow list on
-  purpose, and it carries `requiresUserInteraction`, so it always asks.
+- **In the terminal (the default):** the agent calls `apply_changes_now`, and the crboost MCP server opens a
+  dialog of its own in Claude Code (MCP elicitation) with that whole plan in it: Apply, or Do nothing. The
+  server applies the plan only when the forwarder hands back the one-time token it got for that dialog, which
+  the agent never sees, so neither the agent, an allow rule nor auto mode can say yes for you. That is why
+  `apply_changes_now` can sit in the allow list. An Elicitation hook in your settings could answer the dialog:
+  don't write one that matches `crboost`. A Claude Code that cannot show such a dialog (print mode) gets a
+  refusal and the page.
 - **On the page** (`/agent/plan/<id>`, the link under the overview): each project with its roster on the left,
   the selected job's parameters and SLURM settings on the right as its tab shows them, editable; deletions
   with a keep switch. An edit rewrites the plan and checks it again; Approve there, and the agent applies it

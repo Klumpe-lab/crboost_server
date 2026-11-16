@@ -113,3 +113,93 @@ def overview(plan: Plan, url: str) -> str:
         out += ["**Deleted for good** (approve these on the page): " + "; ".join(s.what for s in permanent), ""]
     out.append(f"Edit or approve it on the page: {url}")
     return "\n".join(out)
+
+
+# ── The terminal dialog ───────────────────────────────────────────────────────
+
+_INDENT = "  "
+
+
+def _columns(rows: list[list[str]], indent: str) -> list[str]:
+    """Rows as aligned columns of plain text; the last column runs free."""
+    if not rows:
+        return []
+    widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]) - 1)]
+    return [
+        (indent + "  ".join(c.ljust(w) for c, w in zip(r, widths, strict=False)) + "  " + r[-1]).rstrip() for r in rows
+    ]
+
+
+def _dialog_project(pp: ProjectPlan) -> list[str]:
+    tag = "  (new project)" if pp.new else ("  (your project, made by hand)" if pp.hand_made else "")
+    out = [f"{pp.name}{tag}"]
+    if pp.values:
+        out += _columns([[k, v] for k, v in pp.values], _INDENT)
+    moved = [j for j in pp.jobs if j.mark != "kept"]
+    if moved:
+        out += ["", _INDENT + "Jobs"]
+        for j in moved:
+            sign = {"added": "+", "cloned": "+", "removed": "-", "deleted": "-"}[j.mark]
+            what = {"cloned": f"clone of {j.clone_of}", "removed": "off the roster", "deleted": "to Trash"}
+            out.append(f"{_INDENT * 2}{sign} {j.name}" + (f"  ({what[j.mark]})" if j.mark in what else ""))
+    changed = [j for j in pp.jobs if j.changes]
+    if changed:
+        out += ["", _INDENT + "Settings"]
+        rows: list[list[str]] = []
+        for j in changed:
+            rows.append([j.name + ("  (as added)" if j.mark in ("added", "cloned") else ""), "now", "after"])
+            for f in j.changes:
+                label = _INDENT + f.label + (" (SLURM)" if f.kind == "slurm" else "")
+                rows.append([label, show(f.before), show(f.after)])
+        out += _columns(rows, _INDENT * 2)
+    if pp.deletions:
+        out += ["", _INDENT + "Deleted"]
+        rows = []
+        for d in pp.deletions:
+            size = format_bytes(d.size_bytes) if d.size_bytes is not None else "size not measured"
+            left = f"leaves without input: {', '.join(d.orphans)}" if d.orphans else ""
+            rows.append([d.what, size, "FOR GOOD" if d.permanent else "to Trash", left])
+        out += _columns(rows, _INDENT * 2)
+    if pp.also:
+        out += ["", _INDENT + "Also (not previewed)"] + [f"{_INDENT * 2}{s}" for s in pp.also]
+    if pp.run is not None:
+        jobs = pp.run.get("jobs") or []
+        held = pp.run.get("held_by_review")
+        out += [
+            "",
+            _INDENT
+            + f"Run: {len(jobs)} job{'s' * (len(jobs) != 1)} submitted"
+            + (f", held for the {held} review" if held else ""),
+        ]
+        rows = []
+        for job in jobs:
+            r = job.get("resources") or {}
+            cells = [
+                r.get("partition"),
+                r.get("gres"),
+                f"{show(r.get('cpus_per_task'))} CPUs",
+                r.get("mem"),
+                r.get("time"),
+            ]
+            rows.append([job["instance_id"]] + [show(c) for c in cells])
+        out += _columns(rows, _INDENT * 2)
+        out += [f"{_INDENT * 2}REFUSED: {x}" for x in pp.run.get("refusals") or []]
+        live = (pp.run.get("leaves") or {}).get("live")
+        if live:
+            out.append(f"{_INDENT * 2}left running: {', '.join(live)}")
+    if len(out) == 1:
+        out.append(_INDENT + "no change")
+    return out
+
+
+def dialog_text(plan: Plan, url: str) -> str:
+    """The whole plan as plain text with aligned columns, for the terminal dialog the user answers: what Claude
+    Code shows above Apply / Do nothing. No markdown, so it reads the same however the dialog renders it."""
+    out: list[str] = []
+    for pp in plan.projects.values():
+        out += [*_dialog_project(pp), ""]
+    notes = [s for s in plan.steps if s.note]
+    if notes:
+        out += ["Not previewed (they run all the same):"] + [f"{_INDENT}{s.what}: {s.note}" for s in notes] + [""]
+    out.append(f"Expires {plan.expires_at:%H:%M}. Edit it on the page instead: {url}")
+    return "\n".join(out)
