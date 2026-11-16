@@ -1,12 +1,18 @@
-"""Change plans over the API: `plan_changes`, `get_plan`, `apply_changes`.
+"""Change plans over the API: `plan_changes`, `get_plan`, `apply_changes`, `apply_changes_now`.
 
 A plan is every write of a change, sent at once. Proposing changes nothing: each step's input is checked and
-its project passed through the gate (`api/reach.py`), the steps that only edit a project's state (the roster,
-parameters, SLURM, inputs, a job's deletion, the run's plan) are rehearsed in order on a copy of the project,
-the others are described with what can be read now (sizes, orphans), and the plan is stored
-(`services/agent_plans.py`) for its page. The user approves it there; `apply_changes` then runs the steps in
-order through the same dispatch as single calls, the gate checked again per step, and stops at the first that
-fails. Nothing is rolled back: each step stands on its own, as a click in the UI does.
+its project passed through the gate (`api/reach.py`); the steps that edit a project's state (the roster,
+parameters, SLURM, inputs, a job's deletion, a catalog species, the run's plan) are rehearsed in order on a copy
+of the project, or on a blank one for a project the plan makes; the rest are described with what can be read
+now (sizes, orphans). The plan is stored (`services/agent_plans.py`) as the user reads it: jobs with their fields
+by title, now → after, and every step in a sentence. `plan_changes` answers with that as markdown for the
+terminal (`services/agent_plan_view.py`).
+
+Two ways to carry it out, the same run of the steps behind both: `apply_changes` after the user approved on the
+page (allow-listed, refused before), and `apply_changes_now`, which Claude Code asks the user to confirm in the
+terminal (`asks`), refused for a plan that deletes something for good. The steps run in order through the same
+dispatch as single calls, the gate checked again per step; the first that fails stops the plan. Nothing is rolled
+back: each step stands on its own, as a click in the UI does.
 """
 
 from __future__ import annotations
@@ -16,6 +22,7 @@ import hashlib
 import json
 import logging
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -23,20 +30,23 @@ from api.context import ApiContext, open_project
 from api.handlers import Call, _plain
 from api.reach import write_refusal
 from services import job_params, pipeline_edit
+from services.agent_plan_view import overview, show
 from services.agent_plans import (
-    Change,
     Deletion,
+    FieldView,
+    JobView,
+    Plan,
     PlanStatus,
     PlanStep,
     ProjectPlan,
-    RosterChip,
     StepState,
     get_plan_store,
 )
 from services.background_tasks import get_background_task_registry
-from services.jobs.spec import instance_display_name
-from services.models_base import JobType
+from services.jobs.spec import display_name, instance_display_name
+from services.models_base import JobType, SpeciesOrigin
 from services.path_resolution_service import consumers_of
+from services.project_create import ACQUISITION_FIELDS
 from services.project_disk_usage import read_cache
 from services.project_state import ProjectState, get_project_state_for
 from services.project_trash import list_trash
@@ -44,10 +54,152 @@ from services.result import ErrorCode, err, ok
 
 logger = logging.getLogger(__name__)
 
-# Deletes for good: Approve turns red and names them.
+# Deletes for good: Approve turns red and names them; the terminal path refuses them.
 PERMANENT = {"clear_trash", "delete_project", "delete_species", "delete_template", "delete_mask"}
 # Never a plan step: plans do not nest.
-NOT_A_STEP = {"apply_changes"}
+NOT_A_STEP = {"apply_changes", "apply_changes_now"}
+
+_ACQ_LABELS = {
+    "pixel_size_angstrom": "Pixel size (Å)",
+    "acceleration_voltage_kv": "Voltage (kV)",
+    "spherical_aberration_mm": "Cs (mm)",
+    "amplitude_contrast": "Amplitude contrast",
+    "dose_per_tilt": "Dose per tilt (e⁻/Å²)",
+    "tilt_axis_degrees": "Tilt axis (°)",
+    "detector_dimensions": "Detector (px)",
+    "invert_tilt_angles": "Invert tilt angles",
+    "invert_defocus_hand": "Invert defocus hand",
+    "eer_fractions_per_frame": "EER frames per fraction",
+}
+
+
+def _title(name: str) -> str:
+    return " ".join(w.capitalize() for w in name.split("_"))
+
+
+# ── Steps in words ────────────────────────────────────────────────────────────
+
+
+def _job_name(state: ProjectState | None, iid: str) -> str:
+    jm = state.jobs.get(iid) if state is not None else None
+    return instance_display_name(iid, jm) if jm is not None else iid
+
+
+def _field_label(state: ProjectState | None, iid: str, name: str) -> str:
+    jm = state.jobs.get(iid) if state is not None else None
+    field = type(jm).model_fields.get(name) if jm is not None else None
+    return field.title if field is not None and field.title else _title(name)
+
+
+def _settings_text(state: ProjectState | None, iid: str, values: dict[str, Any] | None) -> str:
+    return ", ".join(f"{_field_label(state, iid, k)} {show(v)}" for k, v in (values or {}).items())
+
+
+def _args_text(a) -> str:
+    shown = {k: v for k, v in a.model_dump().items() if k != "project" and v not in (None, [], {}, False, "")}
+    return "; ".join(f"{_title(k).lower()} {show(v)}" for k, v in shown.items())
+
+
+def _job_type_name(value: str) -> str:
+    try:
+        return display_name(JobType(value))
+    except ValueError:
+        return value
+
+
+def sentence(verb: str, a, state: ProjectState | None) -> str:
+    """A step as the user reads it; `state` names the jobs (the rehearsal's copy before this step)."""
+    j = lambda iid: _job_name(state, iid)  # noqa: E731
+    if verb == "create_project":
+        if a.tomograms_from:
+            sources = "; ".join(
+                f"{Path(s.project).name} ({s.job}" + (f", {len(s.names)} tomograms)" if s.names else ")")
+                for s in a.tomograms_from
+            )
+            return f"Make the project {a.name} in {a.base} from the tomograms of {sources}"
+        if a.protocol:
+            return f"Make the project {a.name} in {a.base} from the protocol {a.protocol}"
+        if a.directory or a.frames_glob:
+            series = f", {len(a.series)} series" if a.series else ", every series"
+            return f"Make the project {a.name} in {a.base} from {a.directory or a.frames_glob}{series}"
+        return f"Make the project {a.name} in {a.base}, with no raw data"
+    if verb == "add_job":
+        text = f"Add {_job_type_name(a.job_type)}"
+        if a.species:
+            text += f" for {a.species}"
+        if a.clone_of:
+            text += f", a clone of {j(a.clone_of)}"
+        if a.after:
+            text += f", after {j(a.after)}"
+        if a.reading:
+            text += ", reading " + ", ".join(f"{slot} from {src}" for slot, src in a.reading.items())
+        return text
+    if verb == "remove_job":
+        return f"Take {j(a.job)} off the roster"
+    if verb == "delete_job":
+        return f"Delete {j(a.job)}"
+    if verb == "set_params":
+        return f"Set {j(a.job)}: {_settings_text(state, a.job, a.values)}"
+    if verb == "set_slurm":
+        if a.reset:
+            return f"Reset {j(a.job)}'s SLURM settings to the project's and the job type's"
+        labels = dict(job_params.SLURM_FIELDS)
+        return f"Set {j(a.job)}'s SLURM: " + ", ".join(f"{labels.get(k, k)} {show(v)}" for k, v in a.values.items())
+    if verb == "set_input":
+        target = "automatic" if a.auto else (a.source or a.path or "automatic")
+        return f"Point {j(a.job)}'s input {a.slot} at {target}"
+    if verb == "reset_inputs":
+        return f"Let {j(a.job)} choose its inputs again at its next run"
+    if verb == "set_tilt_filter":
+        return f"Set {j(a.job)}: {_args_text(a).replace('job ' + a.job + '; ', '')}"
+    if verb == "exclude_tilt_series":
+        return f"{'Leave out' if a.excluded else 'Bring back'} the tilt series {a.ts}"
+    if verb == "set_gain":
+        return f"Use {a.path} as the gain reference" if a.path else "Use no gain reference"
+    if verb == "import_species":
+        return f"Import the species {a.catalog_id} from the lab catalog" + (f" (v{a.version})" if a.version else "")
+    if verb == "create_species":
+        return f"Make the species {a.name}"
+    if verb == "set_species":
+        return f"Edit the species {a.species}"
+    if verb == "add_template":
+        return f"Register {Path(a.path).name} as a template of {a.species}"
+    if verb == "add_mask":
+        return f"Register {Path(a.path).name} as a mask of {a.species}"
+    if verb == "make_template":
+        return f"Make a template for {a.species} ({a.kind})"
+    if verb == "make_mask":
+        return f"Make a mask for {a.species} ({a.kind})"
+    if verb == "select_template":
+        return f"Select the template {a.template_id} for {a.species}"
+    if verb == "select_mask":
+        return f"Select the mask {a.mask_id} for {a.species}"
+    if verb == "import_tomograms":
+        return f"Import tomograms ({a.mode})"
+    if verb == "run":
+        return "Run the roster"
+    if verb == "stop":
+        return "Stop the run: cancel every queued and running job"
+    if verb == "cancel_job":
+        return f"Cancel {j(a.job)}"
+    if verb == "predict_tilts":
+        return f"Run {j(a.job)}'s DL prediction"
+    if verb == "cancel_predict_tilts":
+        return f"Cancel {j(a.job)}'s DL prediction"
+    if verb == "cancel_leftovers":
+        return "Cancel the leftover SLURM jobs " + ", ".join(a.slurm_ids)
+    if verb == "delete_species":
+        return f"Delete the species {a.species}: its template and mask files, and its jobs"
+    if verb == "delete_template":
+        return f"Delete the template {a.template_id} of {a.species}"
+    if verb == "delete_mask":
+        return f"Delete the mask {a.mask_id} of {a.species}"
+    if verb == "clear_trash":
+        return "Empty the Trash" + (f": {', '.join(a.names)}" if a.names else "")
+    if verb == "delete_project":
+        return f"Delete the project {Path(a.project).name}"
+    text = _args_text(a)
+    return verb.replace("_", " ").capitalize() + (f": {text}" if text else "")
 
 
 # ── Rehearsal ─────────────────────────────────────────────────────────────────
@@ -93,6 +245,32 @@ def _rehearse(state: ProjectState, verb: str, a) -> dict[str, Any] | None:
     return None
 
 
+async def _rehearse_import_species(state: ProjectState, a) -> dict[str, Any]:
+    """A catalog species in the copy as `catalog.import_species` makes it, its files left where the catalog keeps
+    them (nothing is copied): enough for the particle jobs after it to take its template, mask and symmetry."""
+    from services.particles import catalog
+
+    try:
+        record = await asyncio.to_thread(catalog.read_species, a.catalog_id, a.version)
+    except (FileNotFoundError, ValueError) as e:
+        return err(str(e))
+    vdir = catalog.version_dir(record.catalog_id, record.version)
+    sp = state.add_species(record.name, origin=SpeciesOrigin.IMPORTED, color=record.color)
+    sp.catalog_id, sp.catalog_version = record.catalog_id, record.version
+    sp.diameter_ang, sp.symmetry, sp.notes = record.diameter_ang, record.symmetry, record.notes
+    if vdir is not None:
+        sp.templates = [
+            t.model_copy(update={"template_path": str(vdir / catalog.TEMPLATES_DIR / t.template_path)})
+            for t in record.templates
+        ]
+        sp.masks = [
+            m.model_copy(update={"mask_path": str(vdir / catalog.MASKS_DIR / m.mask_path)}) for m in record.masks
+        ]
+    sp.selected_template_id = record.selected_template_id or (sp.templates[0].id if sp.templates else "")
+    sp.selected_mask_id = record.selected_mask_id or (sp.masks[0].id if sp.masks else "")
+    return ok(species=sp.id)
+
+
 def _job_settings(jm) -> dict[str, dict[str, Any]]:
     return {
         "param": {n: _plain(getattr(jm, n, None)) for n in sorted(jm.USER_PARAMS)},
@@ -116,36 +294,142 @@ def fingerprint(state: ProjectState) -> str:
     return hashlib.sha256(json.dumps(data, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def _diff(before: dict[str, dict], after: dict[str, dict], iid: str) -> list[Change]:
-    out: list[Change] = []
-    for kind in ("param", "slurm", "input"):
-        b, a = before.get(kind, {}), after.get(kind, {})
-        for name in sorted(set(b) | set(a)):
-            if b.get(name) != a.get(name):
-                out.append(Change(job=iid, kind=kind, name=name, before=b.get(name), after=a.get(name)))
-    return out
+# ── Jobs as their tabs show them ──────────────────────────────────────────────
 
 
-def _roster(before: ProjectState, after: ProjectState, deleted: set[str], clones: dict[str, str]) -> list[RosterChip]:
-    """The roster after the plan, with the jobs it takes off left where they stood."""
+def _snapshot(jm) -> dict[str, dict[str, Any]]:
+    """A job's fields as values: parameters, effective SLURM settings, inputs set by hand."""
+    eff = jm.get_effective_slurm_config()
+    return {
+        "param": {n: _plain(getattr(jm, n, None)) for n in jm.USER_PARAMS},
+        "slurm": {n: _plain(getattr(eff, n, None)) for n, _ in job_params.SLURM_FIELDS},
+        "input": _plain(dict(jm.source_overrides)),
+    }
 
-    def chip(state: ProjectState, iid: str, mark: str) -> RosterChip:
-        jm = state.jobs.get(iid)
-        name = instance_display_name(iid, jm) if jm is not None else iid
-        status = jm.execution_status.value if jm is not None else ""
-        return RosterChip(iid, name, status, mark, clones.get(iid))
 
-    old = before.roster()
-    new = after.roster()
-    chips = [chip(after, iid, "kept" if iid in old else ("cloned" if iid in clones else "added")) for iid in new]
-    for i, iid in enumerate(old):
-        if iid in new:
+def _view_name(iid: str, jm) -> str:
+    """The job as the roster names it, with its species when it has one."""
+    name = instance_display_name(iid, jm)
+    return f"{name} · {jm.species_id}" if jm.species_id else name
+
+
+def _kind_of(value: Any) -> tuple[str, list[Any] | None]:
+    if isinstance(value, bool):
+        return "bool", None
+    if isinstance(value, Enum):
+        return "choice", [e.value for e in type(value)]
+    if isinstance(value, int):
+        return "int", None
+    if isinstance(value, float):
+        return "float", None
+    if isinstance(value, str):
+        return "text", None
+    return "list", None
+
+
+def _job_view(state: ProjectState, iid: str, mark: str, base: dict | None, clone_of: str | None) -> JobView:
+    jm = state.jobs[iid]
+    frozen = job_params.is_frozen(jm)
+    view = JobView(
+        instance_id=iid,
+        name=_view_name(iid, jm),
+        status=jm.execution_status.value,
+        mark=mark,
+        clone_of=clone_of,
+        species=jm.species_id,
+        frozen=frozen,
+    )
+    now = _snapshot(jm)
+    base = base or now
+    for name, info in type(jm).model_fields.items():
+        if name not in jm.USER_PARAMS:
             continue
-        mark = "deleted" if iid in deleted else "removed"
-        prev = next((p for p in reversed(old[:i]) if any(c.instance_id == p for c in chips)), None)
-        at = 0 if prev is None else next(k for k, c in enumerate(chips) if c.instance_id == prev) + 1
-        chips.insert(at, chip(before, iid, mark))
-    return chips
+        value = getattr(jm, name)
+        kind, choices = _kind_of(value)
+        try:
+            options = job_params.param_options(state, iid, name)
+        except (KeyError, LookupError, OSError, ValueError):
+            # Options that cannot be listed in a rehearsal (a species the copy lacks): the field is shown, not offered.
+            options = None
+        if options is not None and kind != "list":
+            kind, choices = "choice", _plain(options)
+        view.fields.append(
+            FieldView(
+                name=name,
+                label=info.title or _title(name),
+                kind="param",
+                before=base["param"].get(name),
+                after=now["param"].get(name),
+                type=kind,
+                choices=choices,
+                bounds=job_params.field_bounds(jm, name) or None,
+                help=info.description,
+                editable=not frozen and kind != "list",
+            )
+        )
+    for name, label in job_params.SLURM_FIELDS:
+        after = now["slurm"].get(name)
+        kind, _ = _kind_of(after)
+        view.fields.append(
+            FieldView(
+                name=name,
+                label=label,
+                kind="slurm",
+                before=base["slurm"].get(name),
+                after=after,
+                type=kind,
+                editable=not frozen and kind in ("int", "text"),
+            )
+        )
+    b_in, a_in = base["input"], now["input"]
+    for slot in sorted(set(b_in) | set(a_in)):
+        if b_in.get(slot) != a_in.get(slot):
+            view.fields.append(
+                FieldView(name=slot, label=slot, kind="input", before=b_in.get(slot), after=a_in.get(slot))
+            )
+    return view
+
+
+def _job_views(
+    before: ProjectState | None, after: ProjectState, baseline: dict, deleted: set[str], clones: dict[str, str]
+) -> list[JobView]:
+    """The roster after the plan, with the jobs it takes off left where they stood."""
+    old = before.roster() if before is not None else []
+    new = after.roster()
+    views = [
+        _job_view(
+            after,
+            iid,
+            "kept" if iid in old else ("cloned" if iid in clones else "added"),
+            baseline.get(iid),
+            clones.get(iid),
+        )
+        for iid in new
+        if iid in after.jobs
+    ]
+    for i, iid in enumerate(old):
+        if iid in new or before is None or iid not in before.jobs:
+            continue
+        jm = before.jobs[iid]
+        gone = JobView(
+            instance_id=iid,
+            name=_view_name(iid, jm),
+            status=jm.execution_status.value,
+            mark="deleted" if iid in deleted else "removed",
+            species=jm.species_id,
+            frozen=True,
+        )
+        prev = next((p for p in reversed(old[:i]) if any(v.instance_id == p for v in views)), None)
+        at = 0 if prev is None else next(k for k, v in enumerate(views) if v.instance_id == prev) + 1
+        views.insert(at, gone)
+    return views
+
+
+# ── Proposing ─────────────────────────────────────────────────────────────────
+
+
+def plan_url(ctx: ApiContext, plan_id: str) -> str:
+    return f"http://{ctx.host}:{ctx.port}/agent/plan/{plan_id}"
 
 
 def _sizes(project: Path) -> tuple[dict[str, int], int | None]:
@@ -159,89 +443,110 @@ def _trash_sizes(project: Path) -> dict[str, int]:
     return {e.name: e.size_bytes for e in list_trash(project)}
 
 
-def _what(verb: str, args: dict[str, Any]) -> str:
-    shown = {k: v for k, v in args.items() if k != "project" and v not in (None, [], {}, False)}
-    return verb + (" " + json.dumps(shown, default=str, sort_keys=True) if shown else "")
+async def _blank_state(target: Path, a) -> tuple[ProjectState, list[tuple[str, str]]]:
+    """A project the plan makes, as an empty state with its values: what its steps are rehearsed on. The values
+    are what `create_project` is given, or the first source's for tomograms from other projects."""
+    state = ProjectState(project_name=target.name, project_path=target)
+    values: list[tuple[str, str]] = []
+    if a.tomograms_from:
+        for s in a.tomograms_from:
+            what = f"{len(s.names)} tomograms" if s.names else "every tomogram"
+            values.append(("Tomograms", f"{what} of {Path(s.project).name}, {s.job}"))
+        src, why = await open_project(a.tomograms_from[0].project)
+        if why is None:
+            source = get_project_state_for(src)
+            state.microscope = source.microscope.model_copy()
+            state.acquisition = source.acquisition.model_copy()
+            values.append(("Values from", src.name))
+    else:
+        if a.protocol:
+            values.append(("Protocol", a.protocol))
+        if a.directory:
+            values.append(("Data folder", a.directory))
+        if a.frames_glob:
+            values.append(("Frames", a.frames_glob))
+        if a.mdocs_glob:
+            values.append(("Mdocs", a.mdocs_glob))
+        values.append(("Series", f"{len(a.series)} chosen" if a.series else "all"))
+        for name, (model, attr) in ACQUISITION_FIELDS.items():
+            given = getattr(a, name, None)
+            if given is not None:
+                setattr(getattr(state, model), attr, given)
+        values.append(("Gain reference", a.gain_reference or "none"))
+    for name, (model, attr) in ACQUISITION_FIELDS.items():
+        values.append((_ACQ_LABELS.get(name, _title(name)), show(_plain(getattr(getattr(state, model), attr)))))
+    if a.shared:
+        values.append(("Lab project", "yes"))
+    return state, values
 
 
-# ── Proposing ─────────────────────────────────────────────────────────────────
-
-
-def plan_url(ctx: ApiContext, plan_id: str) -> str:
-    return f"http://{ctx.host}:{ctx.port}/agent/plan/{plan_id}"
-
-
-async def plan_changes(call: Call) -> dict[str, Any]:
-    ctx = call.ctx
-    raw_steps = call.args.steps
+async def build(ctx: ApiContext, title: str, raw_steps: list[dict[str, Any]]) -> dict[str, Any]:
+    """Check and rehearse a plan's steps: `ok(steps, projects)`, or the refusal naming the step. Changes
+    nothing. Also the store's rebuilder, so an edit on the page is checked as a proposal is."""
     steps: list[PlanStep] = []
     typed: list[Any] = []
-    # Projects a create_project step makes: later steps may name them by name or path.
     made: dict[str, Path] = {}
+    creates: dict[str, Any] = {}
     projects: dict[str, ProjectPlan] = {}
 
     for i, raw in enumerate(raw_steps, start=1):
-        verb = ctx.verbs.get(raw.verb)
-        if verb is None or verb.kind != "write" or raw.verb in NOT_A_STEP:
-            return err(f"Step {i}: {raw.verb!r} is not a write verb a plan can hold.", step=i)
+        name, args = raw["verb"], raw.get("args") or {}
+        verb = ctx.verbs.get(name)
+        if verb is None or verb.kind != "write" or name in NOT_A_STEP:
+            return err(f"Step {i}: {name!r} is not a write verb a plan can hold.", step=i)
         try:
-            a = verb.model.model_validate(raw.args)
+            a = verb.model.model_validate(args)
         except ValueError as e:
-            return err(f"Step {i} ({raw.verb}): bad input: {e}", step=i)
+            return err(f"Step {i} ({name}): bad input: {e}", step=i)
         typed.append(a)
         target: Path | None = None
-        if raw.verb == "create_project" and getattr(a, "name", None):
-            base = getattr(a, "base", None) or await ctx.backend.get_default_project_base()
-            target = Path(base).expanduser() / a.name.strip()
-            made[a.name.strip()] = target
-            made[str(target)] = target
-            projects[str(target)] = ProjectPlan(
-                path=str(target),
-                name=target.name,
-                new=True,
-                creates={k: _plain(v) for k, v in a.model_dump().items() if v not in (None, [], {})},
-            )
+        if name == "create_project":
+            target = Path(a.base).expanduser() / a.name.strip()
+            if await asyncio.to_thread(target.exists):
+                return err(f"Step {i}: {target} exists already: the API makes new projects only.", step=i)
+            made[a.name.strip()] = made[str(target)] = target
+            creates[str(target)] = a
+            projects[str(target)] = ProjectPlan(path=str(target), name=target.name, new=True)
         elif verb.names_project:
             if a.project in made:
                 target = made[a.project]
             else:
                 target, why = await open_project(a.project)
                 if why is not None:
-                    return err(f"Step {i} ({raw.verb}): {why['error']}", step=i)
+                    return err(f"Step {i} ({name}): {why['error']}", step=i)
                 key = str(target)
                 if key not in projects:
-                    refusal = await write_refusal(get_project_state_for(target), target)
+                    state = get_project_state_for(target)
+                    refusal = await write_refusal(state, target)
                     if refusal:
                         return err(
-                            f"Step {i} ({raw.verb}): {refusal}",
+                            f"Step {i} ({name}): {refusal}",
                             step=i,
                             code=ErrorCode.NOT_WRITABLE,
                             ui_url=ctx.ui_url(target),
                         )
-                    state = get_project_state_for(target)
                     projects[key] = ProjectPlan(
                         path=key, name=target.name, hand_made=not state.made_by_api, fingerprint=fingerprint(state)
                     )
         steps.append(
             PlanStep(
                 index=i,
-                verb=raw.verb,
-                args=raw.args,
+                verb=name,
+                args=args,
                 project=str(target) if target is not None else None,
-                what=_what(raw.verb, raw.args),
-                simulated=False,
-                permanent=raw.verb in PERMANENT,
+                what=sentence(name, a, None),
+                permanent=name in PERMANENT,
             )
         )
 
     needs: list[dict[str, Any]] = []
     for key, pp in projects.items():
-        if pp.new:
-            pp.other = [s.what for s in steps if s.project == key and s.verb != "create_project"]
-            continue
-        problem = await _rehearse_project(call, Path(key), pp, steps, typed, needs)
+        problem = await _rehearse_project(ctx, Path(key), pp, steps, typed, needs, creates.get(key))
         if problem is not None:
             return problem
+    for step, a in zip(steps, typed, strict=True):
+        if step.project is None:
+            step.what = sentence(step.verb, a, None)
 
     if needs:
         return err(
@@ -249,41 +554,40 @@ async def plan_changes(call: Call) -> dict[str, Any]:
             code=ErrorCode.NEEDS_DECISION,
             needs=needs,
         )
-
-    plan = get_plan_store().add(call.args.title, steps, projects)
-    url = plan_url(ctx, plan.id)
-    return ok(
-        plan_id=plan.id,
-        ui_url=url,
-        projects=plan.lines(),
-        steps=len(steps),
-        permanent=[s.what for s in plan.permanent_steps],
-        expires_at=plan.expires_at.isoformat(timespec="minutes"),
-        message=(
-            "Nothing has changed yet. Show the user the project lines and the link; they review and approve the "
-            "plan on that page. Then apply_changes(plan_id)."
-        ),
-    )
+    return ok(steps=steps, projects=projects)
 
 
 async def _rehearse_project(
-    call: Call, path: Path, pp: ProjectPlan, steps: list[PlanStep], typed: list[Any], needs: list[dict]
+    ctx: ApiContext, path: Path, pp: ProjectPlan, steps: list[PlanStep], typed: list[Any], needs: list[dict], spec
 ) -> dict[str, Any] | None:
-    """Rehearse this project's steps on a copy; fill `pp`. An err to return when a step is refused."""
-    live = get_project_state_for(path)
-    before = await asyncio.to_thread(live.detached_copy)
-    copy = await asyncio.to_thread(live.detached_copy)
-    baseline: dict[str, dict] = {iid: _job_settings(jm) for iid, jm in before.jobs.items()}
+    """Rehearse this project's steps on a copy (a blank one for a new project) and fill `pp`. An err to return
+    when a step on an existing project is refused; on a new project a step that cannot be previewed is noted
+    and runs all the same."""
+    if pp.new:
+        copy, pp.values = await _blank_state(path, spec)
+        before, sizes, total = None, {}, None
+    else:
+        live = get_project_state_for(path)
+        before = await asyncio.to_thread(live.detached_copy)
+        copy = await asyncio.to_thread(live.detached_copy)
+        sizes, total = await asyncio.to_thread(_sizes, path)
+    baseline: dict[str, dict] = {iid: _snapshot(jm) for iid, jm in copy.jobs.items()}
     deleted: set[str] = set()
     clones: dict[str, str] = {}
-    sizes, total = await asyncio.to_thread(_sizes, path)
 
     for step, a in zip(steps, typed, strict=True):
         if step.project != str(path):
             continue
-        if step.verb == "run":
+        step.what = sentence(step.verb, a, copy)
+        if step.verb == "create_project":
             step.simulated = True
-            pp.run = await call.backend.pipeline_orchestrator.plan_run(path, state=copy)
+            continue
+        if step.verb == "run":
+            if pp.new:
+                pp.also.append(step.what + " (what it submits is planned once the project exists)")
+                continue
+            step.simulated = True
+            pp.run = await ctx.backend.pipeline_orchestrator.plan_run(path, state=copy)
             needs.extend(pp.run.get("needs") or [])
             continue
         if step.verb == "delete_job":
@@ -292,63 +596,116 @@ async def _rehearse_project(
             if job_dir is not None:
                 pp.deletions.append(
                     Deletion(
-                        what=f"{instance_display_name(a.job, jm)} ({job_dir}) to Trash",
+                        what=f"{instance_display_name(a.job, jm)} ({job_dir})",
                         size_bytes=sizes.get(job_dir),
                         permanent=False,
-                        orphans=consumers_of(copy, a.job),
+                        step=step.index,
+                        orphans=[_job_name(copy, o) for o in consumers_of(copy, a.job)],
                     )
                 )
                 deleted.add(a.job)
-        res = _rehearse(copy, step.verb, a)
+        if step.verb == "import_species":
+            res = await _rehearse_import_species(copy, a)
+        else:
+            res = _rehearse(copy, step.verb, a)
         if res is None:
-            pp.other.append(step.what)
-            await _describe_deletion(path, step, a, copy, pp, total)
+            if not await _describe_deletion(path, step, a, copy, pp, total):
+                pp.also.append(step.what)
             continue
-        step.simulated = True
         if not res["success"]:
-            return err(f"Step {step.index} ({step.verb}) on {path.name}: {res['error']}", step=step.index)
+            if pp.new:
+                step.note = res["error"]
+                pp.also.append(step.what)
+                continue
+            return err(f"Step {step.index} ({step.what}) on {path.name}: {res['error']}", step=step.index)
+        step.simulated = True
         needs.extend(res.get("needs") or [])
         if step.verb == "add_job":
             for iid in res.get("added") or [res.get("instance_id")]:
                 if iid and iid in copy.jobs and iid not in baseline:
-                    baseline[iid] = _job_settings(copy.jobs[iid])
+                    baseline[iid] = _snapshot(copy.jobs[iid])
             if a.clone_of and res.get("instance_id"):
-                clones[res["instance_id"]] = a.clone_of
+                clones[res["instance_id"]] = _job_name(copy, a.clone_of)
 
-    pp.roster = _roster(before, copy, deleted, clones)
-    for iid in copy.roster():
-        if iid in copy.jobs and iid in baseline:
-            pp.changes.extend(_diff(baseline[iid], _job_settings(copy.jobs[iid]), iid))
+    pp.jobs = _job_views(before, copy, baseline, deleted, clones)
     return None
 
 
-async def _describe_deletion(path: Path, step: PlanStep, a, state: ProjectState, pp: ProjectPlan, total) -> None:
-    """The deletions that are not rehearsed, with their sizes where they are known."""
+async def _describe_deletion(path: Path, step: PlanStep, a, state: ProjectState, pp: ProjectPlan, total) -> bool:
+    """The deletions that are not rehearsed, with their sizes where they are known. False for a step that
+    deletes nothing."""
     if step.verb == "delete_project":
-        pp.deletions.append(Deletion(what=f"the whole project {path.name}", size_bytes=total, permanent=True))
+        pp.deletions.append(
+            Deletion(what=f"the whole project {path.name}", size_bytes=total, permanent=True, step=step.index)
+        )
     elif step.verb == "clear_trash":
         trash = await asyncio.to_thread(_trash_sizes, path)
         names = a.names if a.names is not None else sorted(trash)
         size = sum(trash.get(n, 0) for n in names)
-        pp.deletions.append(Deletion(what=f"Trash: {', '.join(names) or 'nothing'}", size_bytes=size, permanent=True))
+        pp.deletions.append(
+            Deletion(what=f"Trash: {', '.join(names) or 'nothing'}", size_bytes=size, permanent=True, step=step.index)
+        )
     elif step.verb == "delete_species":
         refs = state.species_references(a.species)
         sp = state.get_species(a.species)
         n_files = len(sp.templates) + len(sp.masks) if sp is not None else 0
         pp.deletions.append(
             Deletion(
-                what=f"species {a.species}: its {n_files} template and mask files, and its jobs to Trash",
+                what=f"the species {a.species}: {n_files} template and mask files; its jobs go to Trash",
                 size_bytes=None,
                 permanent=True,
-                orphans=list(refs.get("jobs", [])),
+                step=step.index,
+                orphans=[_job_name(state, iid) for iid in refs.get("jobs", [])],
             )
         )
     elif step.verb in ("delete_template", "delete_mask"):
         kind = "template" if step.verb == "delete_template" else "mask"
         file_id = a.template_id if kind == "template" else a.mask_id
         pp.deletions.append(
-            Deletion(what=f"{kind} {file_id} of {a.species} (file and sidecar)", size_bytes=None, permanent=True)
+            Deletion(
+                what=f"the {kind} {file_id} of {a.species} (file and sidecar)",
+                size_bytes=None,
+                permanent=True,
+                step=step.index,
+            )
         )
+    else:
+        return False
+    return True
+
+
+def _answer(ctx: ApiContext, plan: Plan, **extra: Any) -> dict[str, Any]:
+    url = plan_url(ctx, plan.id)
+    return ok(
+        plan_id=plan.id,
+        revision=plan.revision,
+        status=plan.status.value,
+        overview=overview(plan, url),
+        projects=plan.lines(),
+        permanent=[s.what for s in plan.permanent_steps],
+        expires_at=plan.expires_at.isoformat(timespec="minutes"),
+        ui_url=url,
+        **extra,
+    )
+
+
+async def plan_changes(call: Call) -> dict[str, Any]:
+    raw = [{"verb": s.verb, "args": s.args} for s in call.args.steps]
+    res = await build(call.ctx, call.args.title, raw)
+    if not res["success"]:
+        return res
+    plan = get_plan_store().add(call.args.title, res["steps"], res["projects"])
+    if plan.permanent_steps:
+        how = (
+            "Print `overview` to the user exactly as it is. It deletes something for good, so the user approves it "
+            "on the page (ui_url); then apply_changes(plan_id, revision)."
+        )
+    else:
+        how = (
+            "Print `overview` to the user exactly as it is, then call apply_changes_now(plan_id, revision): Claude "
+            "Code asks the user to confirm. They may also edit or approve it on the page (ui_url)."
+        )
+    return _answer(call.ctx, plan, message="Nothing has changed yet. " + how)
 
 
 # ── Reading and applying ──────────────────────────────────────────────────────
@@ -365,15 +722,13 @@ async def get_plan(call: Call) -> dict[str, Any]:
     plan = get_plan_store().get(call.args.plan_id)
     if plan is None:
         return err(f"No plan {call.args.plan_id} (plans live in the server's memory: a restart forgets them).")
-    return ok(
-        plan_id=plan.id,
+    return _answer(
+        call.ctx,
+        plan,
         title=plan.title,
-        status=plan.status.value,
-        projects=plan.lines(),
         steps=[_step_row(s) for s in plan.steps],
         error=plan.error,
         task_id=plan.task_id,
-        ui_url=plan_url(call.ctx, plan.id),
     )
 
 
@@ -392,16 +747,15 @@ async def _wait_for_task(ctx: ApiContext, task_id: str) -> dict[str, Any]:
     return err(record.error if record is not None and record.error else f"Background task {task_id} did not finish.")
 
 
-async def apply_changes(call: Call) -> dict[str, Any]:
-    ctx = call.ctx
-    plan = get_plan_store().get(call.args.plan_id)
-    url = None if plan is None else plan_url(ctx, plan.id)
-    if plan is None:
-        return err(f"No plan {call.args.plan_id} (plans live in the server's memory: a restart forgets them).")
-    if plan.status == PlanStatus.PROPOSED:
-        return err(f"The user has not approved {plan.id} yet: it is approved on its page.", ui_url=url)
-    if plan.status != PlanStatus.APPROVED:
-        return err(f"{plan.id} is {plan.status.value}: nothing to apply. Propose the change again.", ui_url=url)
+async def _carry_out(ctx: ApiContext, plan: Plan, revision: int | None) -> dict[str, Any]:
+    """Run an approved or confirmed plan's steps in the background."""
+    url = plan_url(ctx, plan.id)
+    if revision is not None and revision != plan.revision:
+        return err(
+            f"{plan.id} was edited on its page (now revision {plan.revision}): show the user get_plan's overview "
+            "and ask again.",
+            ui_url=url,
+        )
     for key, pp in plan.projects.items():
         if pp.new:
             continue
@@ -426,7 +780,7 @@ async def apply_changes(call: Call) -> dict[str, Any]:
                 for rest in plan.steps[n + 1 :]:
                     rest.state = StepState.NOT_RUN
                 plan.status = PlanStatus.FAILED
-                plan.error = f"Step {step.index} ({step.verb}): {res.get('error')}"
+                plan.error = f"Step {step.index} ({step.what}): {res.get('error')}"
                 plan.finished_at = datetime.now()
                 raise RuntimeError(plan.error)
             step.state = StepState.DONE
@@ -442,5 +796,47 @@ async def apply_changes(call: Call) -> dict[str, Any]:
         task_id=plan.task_id,
         plan_id=plan.id,
         ui_url=url,
-        message="Applying the plan step by step in the background: follow it with get_plan or get_task.",
+        message="Applying the plan step by step in the background: follow it with get_plan.",
     )
+
+
+def _plan_or_err(plan_id: str) -> tuple[Plan | None, dict[str, Any] | None]:
+    plan = get_plan_store().get(plan_id)
+    if plan is None:
+        return None, err(f"No plan {plan_id} (plans live in the server's memory: a restart forgets them).")
+    return plan, None
+
+
+async def apply_changes(call: Call) -> dict[str, Any]:
+    plan, why = _plan_or_err(call.args.plan_id)
+    if why is not None:
+        return why
+    url = plan_url(call.ctx, plan.id)
+    if plan.status == PlanStatus.PROPOSED:
+        return err(
+            f"The user has not approved {plan.id} on its page. To confirm it in the terminal instead, print its "
+            "overview and call apply_changes_now.",
+            ui_url=url,
+        )
+    if plan.status != PlanStatus.APPROVED:
+        return err(f"{plan.id} is {plan.status.value}: nothing to apply. Propose the change again.", ui_url=url)
+    return await _carry_out(call.ctx, plan, call.args.revision)
+
+
+async def apply_changes_now(call: Call) -> dict[str, Any]:
+    """The terminal path: Claude Code's prompt for this call is the user's confirmation."""
+    plan, why = _plan_or_err(call.args.plan_id)
+    if why is not None:
+        return why
+    url = plan_url(call.ctx, plan.id)
+    if not plan.editable:
+        return err(f"{plan.id} is {plan.status.value}: nothing to apply. Propose the change again.", ui_url=url)
+    if plan.permanent_steps:
+        return err(
+            f"{plan.id} deletes something for good ({'; '.join(s.what for s in plan.permanent_steps)}): the user "
+            "approves that on the page, then apply_changes.",
+            ui_url=url,
+        )
+    plan.status = PlanStatus.APPROVED
+    plan.decided_at = datetime.now()
+    return await _carry_out(call.ctx, plan, call.args.revision)

@@ -21,10 +21,18 @@ something to see.
   acquisition values), then send every write at once: `plan_changes(title, steps=[{verb, args}, ...])`,
   each step exactly as the verb takes it alone, in the order they run, `run` last when the user asked for a
   run. Nothing changes yet: the server rehearses the steps on a copy of each project and refuses naming the
-  step that would fail, or answers with needs. Show the user only its per-project lines and its `ui_url`; do
-  not recap the steps as a list in the terminal. The user reviews and approves on that page (Approve there is
-  the only approval). When they say it is approved, or `get_plan` says `approved`, call
-  `apply_changes(plan_id)` and follow `get_plan` to the end; report a failed step with its error and stop.
+  step that would fail, or answers with needs.
+  - **Confirm in the terminal (the default).** Print the answer's `overview` to the user exactly as it is: it is
+    markdown the server wrote (each project's values, roster, settings now → after, deletions, the run). No
+    summary of your own, no list of the steps, nothing left out. Then call
+    `apply_changes_now(plan_id, revision)`: Claude Code asks the user to confirm, and that prompt is the
+    approval. If they say no and what to change, plan again with the change and show the new overview.
+  - **On the page.** A plan that deletes something for good (`permanent` is not empty) is approved on its page
+    (`ui_url`), and so is any plan the user prefers to read or edit there: give the link and wait. The page can
+    change parameters, SLURM values and drop deletions; each edit moves the plan's `revision`. When the user
+    says it is approved, call `get_plan`; if the revision moved since you showed it, print the new `overview`
+    first, then `apply_changes(plan_id, revision)`.
+  - Follow `get_plan` to the end; report a failed step with its error and stop.
 - A single write (one `set_params`, one `cancel_job`) is called on its own. Before a lone `run`, `plan_run`
   and show the user what it refuses or leaves open.
 - A failure is reported, not retried: read `get_job_tasks` (state filter `fail`) and `get_job_logs` (with `ts`
@@ -36,7 +44,7 @@ something to see.
   you to edit that project.
 - Deleting: `delete_job` moves a job that ran to the project's Trash (recoverable) and names the jobs it fed;
   `delete_species`, `delete_template`, `delete_mask` delete files for good. `clear_trash` and `delete_project`
-  run only as steps of an approved plan. Delete only what the user asked for.
+  run only as steps of a plan approved on its page. Delete only what the user asked for.
 - Never edit `project_params.json` or any project file, and never call sbatch or scancel on a CryoBoost
   project: the server's in-memory state is the truth and overwrites what is changed behind it.
 

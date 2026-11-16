@@ -1,0 +1,115 @@
+"""A change plan as the terminal shows it: markdown, per project its values, roster, settings (now → after),
+deletions, the steps not previewed, and the run. Claude Code renders it; the agent prints it as it is. Built
+from the same `Plan` the page shows, so the two never disagree."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from services.agent_plans import Plan, ProjectPlan, format_bytes
+
+_MARK = {"added": "+", "cloned": "+", "removed": "−", "deleted": "−"}
+
+
+def show(value: Any) -> str:
+    """A value as the user reads it: on/off, a dash for nothing, lists comma-joined, never JSON."""
+    if value is None or value == "":
+        return "—"
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    if isinstance(value, float):
+        return f"{value:g}"
+    if isinstance(value, (list, tuple)):
+        return ", ".join(show(v) for v in value) or "—"
+    if isinstance(value, dict):
+        return "; ".join(f"{k}: {show(v)}" for k, v in value.items()) or "—"
+    return str(value)
+
+
+def _cell(text: str) -> str:
+    return text.replace("|", "\\|").replace("\n", " ")
+
+
+def _roster_line(pp: ProjectPlan) -> str:
+    parts = []
+    for j in pp.jobs:
+        mark = _MARK.get(j.mark, "")
+        name = j.name + (f" (clone of {j.clone_of})" if j.clone_of else "")
+        if j.mark in ("added", "cloned"):
+            parts.append(f"**{mark} {name}**")
+        elif j.mark in ("removed", "deleted"):
+            parts.append(f"~~{name}~~" + (" (to Trash)" if j.mark == "deleted" else " (off the roster)"))
+        else:
+            parts.append(name + (" *(changed)*" if j.changes else ""))
+    return " · ".join(parts)
+
+
+def _project(pp: ProjectPlan) -> list[str]:
+    tag = " — new project" if pp.new else (" — your project, made by hand" if pp.hand_made else "")
+    out = [f"### {pp.name}{tag}", ""]
+    if pp.values:
+        out += ["| Value | |", "|---|---|"]
+        out += [f"| {_cell(k)} | {_cell(v)} |" for k, v in pp.values]
+        out.append("")
+    if pp.jobs:
+        out += [f"**Roster:** {_roster_line(pp)}", ""]
+    changes = pp.changes
+    if changes:
+        out += ["| Job | Setting | Now | After |", "|---|---|---|---|"]
+        for j, f in changes:
+            label = f.label + (" (SLURM)" if f.kind == "slurm" else "")
+            now = show(f.before) + (" *(as added)*" if j.mark in ("added", "cloned") else "")
+            out.append(f"| {_cell(j.name)} | {_cell(label)} | {_cell(now)} | **{_cell(show(f.after))}** |")
+        out.append("")
+    if pp.deletions:
+        out += ["| Deleted | Size | | Leaves without input |", "|---|---|---|---|"]
+        for d in pp.deletions:
+            size = format_bytes(d.size_bytes) if d.size_bytes is not None else "not measured"
+            kind = "**for good**" if d.permanent else "to Trash"
+            out.append(f"| {_cell(d.what)} | {size} | {kind} | {_cell(', '.join(d.orphans) or '—')} |")
+        out.append("")
+    if pp.also:
+        out += ["Also, not previewed:"] + [f"- {_cell(s)}" for s in pp.also] + [""]
+    if pp.run is not None:
+        jobs = pp.run.get("jobs") or []
+        held = pp.run.get("held_by_review")
+        head = f"**Run:** {len(jobs)} job{'s' * (len(jobs) != 1)} submitted"
+        out += [head + (f", held for the {held} review" if held else ""), ""]
+        if jobs:
+            out += ["| Job | Partition | GPUs | CPUs | Memory | Time |", "|---|---|---|---|---|---|"]
+            for job in jobs:
+                r = job.get("resources") or {}
+                name = job["instance_id"] + (" (waits for review)" if job.get("waits_for_review") else "")
+                cells = [name, r.get("partition"), r.get("gres"), r.get("cpus_per_task"), r.get("mem"), r.get("time")]
+                out.append("| " + " | ".join(_cell(show(c)) for c in cells) + " |")
+            out.append("")
+        for refusal in pp.run.get("refusals") or []:
+            out.append(f"**Run refused:** {_cell(refusal)}")
+        live = (pp.run.get("leaves") or {}).get("live")
+        if live:
+            out.append(f"Left running: {', '.join(live)}")
+        out.append("")
+    if not (pp.values or changes or pp.deletions or pp.also or pp.run or any(j.mark != "kept" for j in pp.jobs)):
+        out += ["No change.", ""]
+    return out
+
+
+def overview(plan: Plan, url: str) -> str:
+    """The whole plan as markdown, for the terminal."""
+    n = len(plan.steps)
+    out = [
+        f"**{plan.title}** — plan `{plan.id}`"
+        + (f", revision {plan.revision}" if plan.revision > 1 else "")
+        + f", {n} step{'s' * (n != 1)}, {plan.status.value}, expires {plan.expires_at:%H:%M}",
+        "",
+    ]
+    for pp in plan.projects.values():
+        out += _project(pp)
+    notes = [s for s in plan.steps if s.note]
+    if notes:
+        out += ["Not previewed (they run all the same):"] + [f"- {s.what}: {_cell(s.note)}" for s in notes] + [""]
+    permanent = plan.permanent_steps
+    if permanent:
+        out += ["**Deleted for good** (approve these on the page): " + "; ".join(s.what for s in permanent), ""]
+    out.append(f"Edit or approve it on the page: {url}")
+    return "\n".join(out)

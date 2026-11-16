@@ -25,8 +25,10 @@ from pydantic import TypeAdapter, ValidationError
 from api.context import ApiContext, open_project, record_write
 from api.handlers import API_VERSION, Call
 from api.models import Need
+from api.plans import build as build_plan
 from api.reach import write_refusal
 from api.verbs import VERBS, Verb
+from services.agent_plans import get_plan_store
 from services.event_log import events
 from services.project_state import get_project_state_for
 from services.result import ErrorCode, err
@@ -136,6 +138,12 @@ def create_api_router(backend, port: int) -> APIRouter:
         return await run_verb(ctx, verb, args, plan_id=plan_id)
 
     ctx.run_verb = _run
+
+    async def _rebuild(title: str, steps: list[dict[str, Any]]) -> dict[str, Any]:
+        return await build_plan(ctx, title, steps)
+
+    # An edit on a plan's page is checked and rehearsed as a proposal is.
+    get_plan_store().rebuilder = _rebuild
     router = APIRouter(prefix="/api/v1")
 
     @router.get("/tools", name="tools")
