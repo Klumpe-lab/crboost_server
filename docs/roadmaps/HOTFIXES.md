@@ -439,6 +439,56 @@ print(tempfile.gettempdir())"` → `/dev/shm`; without it → `/tmp`. Real: the 
 directory: /dev/shm/crboost-…/recon_pool_…`, `sstat`'s `fs/disk` stays in the tens of GB (the stacks read), no process
 in `D`, and steps/s against the same layout with the pool on BeeGFS.
 
+### H16 — A tilt series the alignment failed on keeps an older run's alignment and goes downstream
+
+**Status:** open, found 2026-11-16 (anchors at `330c6cc`). **Severity:** high: a series the alignment failed on is
+processed downstream with an alignment from a different run, silently; missAlign stops on it.
+
+**What is wrong.**
+- The tilt-series registry keeps one alignment output per series per job instance (`ts.outputs["aligntiltsWarp"]`),
+  whichever run of that instance wrote it last.
+- `TsAlignmentIngestAdapter.emit_star` (`services/tilt_series/adapters/ts_alignment.py:201-205`) writes every series
+  of the input star that has *an* output under the instance id; it never checks that the output is this job's
+  (`aln_output.job_dir`). `ingest` only writes outputs for the series that aligned now, so a series that aligned in an
+  earlier run of the instance and fails in this one keeps the old output, and `emit_star` writes it into this job's
+  `aligned_tilt_series.star` and `tilt_series/<ts>.star`, with the old run's values.
+
+**Evidence** (read only). `AGG412_20251031_412_FCIsolation_rerun`: Alignment job020 (2026-11-16) failed on
+`Position_8_4` (AreTomo2 exit 139; supervisor "162 ok, 1 fail"), yet its star lists 163 series; the registry's
+`aligntiltsWarp` output for `Position_8_4` has `job_dir` job009 (2026-11-15). missAlign job021 then failed twice
+in 4 s: `read_stacks` opened `job020/warp_tiltseries/tiltstack/…Position_8_4/…Position_8_4.st`, which does not exist
+(SLURM 1697013, 1701634). A scan of the eight `_crboost_data_api` reruns (each alignment star against the registry):
+this is the only stale series.
+
+**Impact.** Any job after an alignment rerun reads, for each series that failed this time but aligned before, the
+older alignment: TS CTF and Reconstruct would build that tomogram from a different run's geometry without a word;
+missAlign stops on the missing stack.
+
+**Fix.** `emit_star` keeps a series only when its output's `job_dir` is this job's (resolved); a stale one joins
+`problems` ("aligned by job009, not this job") and is dropped like a failed one. Look for the same pattern in the
+other adapters that read `ts.outputs[instance_id]` (TS CTF, Reconstruct, Denoise): the same rerun case applies.
+
+**Check.** Toy: a registry series whose output names another job directory is left out of the emitted star, with
+the reason in the log. Real: re-run the alignment's aggregate (or the job) on the project above; the star has 162
+series, and missAlign stages 162.
+
+### H17 — A Run that retries a failed job deletes the failed attempt's logs first
+
+**Status:** open, found 2026-11-16 (anchors at `330c6cc`). **Severity:** medium: the reason for a failure is gone
+the moment it is retried, so a retry that fails the same way is the only way to read it.
+
+**What is wrong.** Reusing a failed job's directory for an in-place retry removes `run.out` and `run.err` with the exit
+markers (`services/scheduling_and_orchestration/pipeline_orchestrator_service.py:786`).
+
+**Evidence.** `AGG412_20251031_412_FCIsolation_rerun` job021: SLURM 1697013 failed after 4 s at 11:00:59; a Run at
+11:02:40 reused the directory and its log was gone (only `job.star` and `run_submit.script` left) until the retry
+failed in turn.
+
+**Fix.** Keep the last attempt's logs beside the new ones (`run.out.prev`, `run.err.prev`, overwritten by the next
+retry); remove only the exit markers. The job page's log view can offer the previous attempt.
+
+**Check.** Fail a toy job, Run again: `run.out.prev` holds the first attempt's lines while the retry writes `run.out`.
+
 ## Fixed
 
 ### H7 — Template matching with T, O or I symmetry searches 3 to 15 times the orientations its increment asks for
