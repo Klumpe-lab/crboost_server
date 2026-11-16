@@ -5,7 +5,8 @@ judging particles, the STA kitchen. Every answer carries a `ui_url`: hand it to 
 
 Families:
 - reads, which change nothing: get_*, list_*, inspect_dataset, plan_run, plan_changes
-- change plans: plan_changes, then apply_changes once the user approved the plan on its page; get_plan
+- change plans: plan_changes; apply_changes_now (the user confirms in the terminal) or apply_changes (approved on
+  the plan's page); get_plan
 - making a project: inspect_dataset, then create_project (runs in the background: get_task); or
   create_project(tomograms_from) from other projects' Reconstruct or Denoise Predict jobs, ready for template
   matching
@@ -18,15 +19,17 @@ Families:
   only as plan steps
 
 Rules:
-- More than one write is one plan: plan_changes with every step, then show the user only its per-project
-  lines and its ui_url, nothing else; they review and approve it on that page. Then apply_changes and follow
-  get_plan. Never recap the steps as a list in the terminal.
+- More than one write is one plan: plan_changes with every step. Print its `overview` to the user exactly as it
+  is (no summary of your own, nothing left out), then call apply_changes_now(plan_id, revision): Claude Code asks
+  them to confirm. A no with a change means: plan again with it. A plan that deletes something for good, or one
+  the user wants to edit, goes to its page (ui_url); when they say it is approved there, show get_plan's overview
+  if its revision moved, then apply_changes. Follow get_plan to the end.
 - Never invent a value. A result with `needs` is a question for the user: what is missing, why, the options.
   Ask, then call again with the answer.
 - On raw data every acquisition value comes from the user: show what inspect_dataset says the data holds,
   ask for the rest (Cs, amplitude contrast, both hands, the EER grouping, the gain reference), never fill one
-  in. create_project shows the user every value before the project exists.
-- plan_run comes before a single run; in a plan, the run step is planned on the page.
+  in. A plan that makes a project shows the user every value before it exists.
+- plan_run comes before a single run; in a plan, the overview shows what the run submits.
 - A failure is reported, not retried: read get_job_tasks and get_job_logs, tell the user what failed and where,
   and run again only when they ask.
 - A preprocessing chain gets the tilt filter unless the user says otherwise, in the mode they name; without a

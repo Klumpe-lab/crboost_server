@@ -353,3 +353,11 @@ class PlanChangesIn(_In):
 
 class PlanIn(_In):
     plan_id: str = Field(description="The id plan_changes returned")
+
+
+class ApplyIn(PlanIn):
+    revision: int | None = Field(
+        None,
+        description="The revision the user was shown (plan_changes or get_plan); refused when the plan was edited on "
+        "its page since",
+    )

@@ -375,26 +375,38 @@ _VERBS: tuple[Verb, ...] = (
     # ── Change plans ──
     Verb(
         "plan_changes",
-        "Propose a change of more than one write as one plan: every step is a write verb with its arguments. "
-        "Nothing changes. The steps are checked, rehearsed on a copy of each project where they can be, and shown "
-        "to the user per project on one page (the ui_url), where they approve it once. Answers one line per "
-        "project; refuses naming the step that would fail, or with the needs the user has to answer first.",
+        "Propose a change of more than one write as one plan: every step is a write verb with its arguments, in "
+        "order. Nothing changes. The steps are checked and rehearsed on a copy of each project (a blank one for a "
+        "project the plan makes). Answers `overview`, the whole plan as markdown for the user (jobs, settings now -> "
+        "after, deletions, the run), and a page (ui_url) where the user can also edit and approve it. Refuses "
+        "naming the step that would fail, or with the needs the user has to answer first.",
         m.PlanChangesIn,
         "read",
         p.plan_changes,
     ),
     Verb(
         "get_plan",
-        "A change plan: proposed, approved, rejected, running, done, failed or expired, and each step's state.",
+        "A change plan: its overview and revision (an edit on the page moves it), proposed, approved, rejected, "
+        "running, done, failed or expired, and each step's state.",
         m.PlanIn,
         "read",
         p.get_plan,
     ),
     Verb(
+        "apply_changes_now",
+        "Carry out a change plan the user confirms now, in the terminal: print its overview to them first, exactly "
+        "as plan_changes or get_plan gave it; Claude Code then asks them. Refused for a plan that deletes "
+        "something for good (that is approved on the page), after an hour, or when a project changed since.",
+        m.ApplyIn,
+        "write",
+        p.apply_changes_now,
+        asks=True,
+    ),
+    Verb(
         "apply_changes",
         "Carry out a change plan the user approved on its page, step by step in the background (follow get_plan). "
         "Refused before the approval, after an hour, or when a project changed since the proposal.",
-        m.PlanIn,
+        m.ApplyIn,
         "write",
         p.apply_changes,
     ),

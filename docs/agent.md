@@ -41,13 +41,23 @@ In `~/.claude/settings.json`:
 }
 ```
 
-The reads then run without a prompt, and so do change plans: the agent sends a whole change at once
-(`plan_changes`), the server shows it per project on one page (`/agent/plan/<id>`: the roster after it,
-every setting as now → after, deletions with their sizes, what the run submits), and you approve it there
-once. `apply_changes` refuses until you have, so it needs no prompt of its own. A write called on its own
-still prompts; `create_project`, `run`, `stop`, `cancel_job`, `cancel_leftovers` and the two tilt-prediction
-verbs ask on every call whatever the rules say. The deny rules keep Claude Code's own file tools off the
-project files and off the switch below; they do not stop a script run through Bash.
+The reads then run without a prompt, and so do plans. The agent sends a whole change at once
+(`plan_changes`) and nothing changes yet: the server rehearses it on a copy of each project and answers with
+an overview, which the agent prints in the terminal as it is: per project the values of a new one, the
+roster after the plan, every setting as now → after, deletions with their sizes, what the run submits. Then:
+
+- **In the terminal (the default):** the agent calls `apply_changes_now`, and Claude Code asks you. That one
+  prompt is the approval; "no" with what to change makes the agent plan again. It is not in the allow list on
+  purpose, and it carries `requiresUserInteraction`, so it always asks.
+- **On the page** (`/agent/plan/<id>`, the link under the overview): each project with its roster on the left,
+  the selected job's parameters and SLURM settings on the right as its tab shows them, editable; deletions
+  with a keep switch. An edit rewrites the plan and checks it again; Approve there, and the agent applies it
+  with `apply_changes`, which refuses until you have. A plan that deletes something for good (emptying a
+  Trash, deleting a project, a species, a template or a mask) is approved only here.
+
+A write called on its own still prompts; `create_project`, `run`, `stop`, `cancel_job`, `cancel_leftovers`
+and the two tilt-prediction verbs ask on every call whatever the rules say. The deny rules keep Claude Code's
+own file tools off the project files and off the switch below; they do not stop a script run through Bash.
 
 ## Your own projects
 

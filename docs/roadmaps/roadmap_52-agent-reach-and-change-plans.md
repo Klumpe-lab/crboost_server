@@ -5,8 +5,10 @@ proposal on the live server, not run in a browser. Follows roadmap 42 (the agent
 decisions: D7 (the API changes only projects it made) and the per-call approval of §5.3. Group-writable
 projects are the default (D5). Another person stopping or adding to a running project you made for them (§13) is
 diagnosed, not built.
-**Pickup: the §10 checklist in a browser; then §13's decision (ask HPC for SLURM coordinator rights, or
-self-stopping jobs).**
+Plan review in the terminal and the page as an editor (§14, S6) scoped and built the same day (D6, D7 confirmed),
+checked on real projects read only and in NiceGUI's user simulation, not yet in a browser.
+**Pickup: the S6 check in a browser and one terminal-confirmed plan; §13's decision (ask HPC for SLURM coordinator
+rights, or self-stopping jobs).**
 
 **Ask (maintainer, 2026-11-16).**
 1. Through the API, an agent may also **delete** (jobs, files) and **edit projects it did not make**, the user's own
@@ -349,3 +351,108 @@ Ways out, none built:
   hands it to the other person's server, whose jobs from then on are theirs.
 
 Recommendation: A now (ask HPC), C next; B only if A is refused.
+
+## 14. Reviewing a plan: in the terminal by default, the page as an editor (scoped 2026-11-16, not built)
+
+The maintainer approved the first real plan (`p-449dfe46`, a demo) and judged the page: it reads like a JSON dump.
+Ask: review in the terminal by default (a long scrollable overview, a choice to confirm), and keep the page but make
+it a structured editor.
+
+### 14.1 Why it reads as a dump
+- Every step a plan does not rehearse is shown as `verb {json args}` (`api/plans.py:_what`), and a new project's
+  steps are never rehearsed (the project does not exist), so a new-project plan is nothing but such lines.
+- "Made with" prints the raw `create_project` input (`tomograms_from` as a list of dicts).
+- The settings table names fields by attribute (`sample_thickness_nm`, `preset`) with raw values; a SLURM change
+  shows the side effect `preset → Custom` as its own row.
+- The steps list repeats all of it a second time.
+
+### 14.2 One plan view, two renderings
+`services/agent_plan_view.py` turns a `Plan` into a structured view once, in words, and both the terminal and the
+page render that, so they never disagree:
+- **Steps in words**, one sentence per verb: "Add Template Match for 412_particle after Reconstruct", "Import the
+  species 412_particle from the lab catalog", "Make a project from 23 tomograms of AGG412_20260204_412_rerun
+  (Reconstruct, job008)", "Delete Alignment (job005) to Trash, 4.1 GB". A verb without a sentence keeps its name
+  and lists its arguments as `name: value` lines, never JSON.
+- **Fields by their titles** (`model_fields[name].title`, the job tab's labels) with units, under the job's display
+  name; booleans as on/off; a value equal to the code default says "default". SLURM side effects (`preset` going
+  Custom) fold into the row that caused them.
+- **New projects rehearsed too:** a blank `ProjectState` seeded with the spec's values (or the `tomograms_from`
+  sources' values, as `check_job_sources` reads them) takes the roster and parameter steps, so a new project shows
+  its roster and parameters like an existing one. Steps that need the project's files (imports, templates) are
+  sentences.
+
+### 14.3 The terminal, by default
+- `plan_changes` answers with `overview`: markdown the server renders from the view, per project a heading, the
+  roster as one line (`Import · Motion & CTF · +Template Match (412_particle) · −Alignment`), a settings table
+  (`Job | Field | Now | After`), deletions (`What | Size | Trash or for good`), the run (`Job | Partition | GPU | Time`),
+  and the new project's values. Claude Code renders markdown tables; the overview is as long as the plan and
+  scrolls with the conversation.
+- The agent prints `overview` verbatim (the skill says so: no summary of its own, nothing left out) and then calls
+  a new verb, `apply_changes_now(plan_id)`, which carries `asks`: Claude Code's permission prompt (a select: yes /
+  no, tell Claude what to change) is the one confirmation, and the harness enforces it, so the agent cannot
+  approve on the user's behalf. "No" plus a word ("drop the deletion", "250 nm") makes the agent propose again;
+  "edit it on the page" gives the link.
+- `apply_changes` (page-approved, allow-listed) stays for the page path; `apply_changes_now` refuses a plan with a
+  permanent deletion (D3: those are approved on the page, where Approve is red).
+
+### 14.4 The page, an editor
+Laid out as the app's own job views, not as tables of a report:
+- **Left, the plan's projects**, each with its roster as the roster rail draws it: one row per job in pipeline order,
+  status dot, the mark (added, cloned from, removed, to Trash) as the row's tint and a small badge; a click selects
+  the job.
+- **Right, the selected job** as its job tab draws its parameters: the job-tab field grid (`_field_styles.py`, the
+  110 px label column), each changed field showing the old value struck beside the new one, and **editable**
+  (`house_number` / `house_select` with the param class's bounds and choices, through `job_params.check_value`).
+  Then its SLURM section, likewise. A job the plan does not touch is shown read-only.
+- **Deletions** as a list with a keep switch per item, size, Trash or for good, and what it leaves without input.
+- **A new project:** its values as the landing page's acquisition grid, each with where it came from.
+- **An edit rewrites the plan:** a changed value merges into the plan's `set_params` / `set_slurm` step for that
+  job (adds one when there is none), a kept item drops its deletion step; the plan is rehearsed again and its
+  `revision` moves. `get_plan` returns the revision and the overview, so an agent that is waiting shows the user
+  the edited plan before applying. An edit after Approve sends the plan back to proposed.
+- Footer as today: `[Reject] [Approve]`, red when something goes for good.
+- Not on the page: adding jobs or species (the agent's or the roster's), and the run's job selection.
+
+### 14.5 Decisions
+| # | Question | Recommendation |
+|---|---|---|
+| D6 | The terminal confirmation | **Decided 2026-11-16:** `apply_changes_now` with `asks` (the harness's prompt, which the agent cannot fake) rather than the agent's own multiple-choice question, which the server cannot tell from the agent's word |
+| D7 | What the page edits | **Decided 2026-11-16:** parameters, SLURM values, keeping or dropping a deletion or a step; not adding jobs |
+
+### S6 — Plan review in the terminal and as an editor (§14)
+- `services/agent_plan_view.py` (sentences, titled fields, folded side effects, new-project rehearsal); `overview`
+  markdown in `plan_changes` and `get_plan`; `apply_changes_now` (asks, refuses permanent steps); the page rebuilt
+  as rail + job editor with plan revisions; skill and instructions: print the overview, then `apply_changes_now`.
+- *Success:* the demo plan (new project from tomograms, species, TM, Pick candidates) reads in the terminal as a
+  heading, a roster line, a values table and the TM parameters, with no JSON anywhere; approving it is one prompt; on
+  the page, changing TM's angular search and approving applies the edited value.
+
+**S6 — built 2026-11-16.**
+- `services/agent_plans.py`: the plan as the user reads it: per project `JobView`s (roster order, marks, the
+  ones taken off where they stood) with `FieldView`s (title, kind, now → after, type, choices, bounds, help,
+  editable), deletions carrying their step, `also` sentences, a new project's values; `Plan.revision`;
+  `steps_with_value` / `steps_without` turn a page edit into new steps; `PlanStore.revise` rehearses them through
+  the rebuilder the API registers (`api/router.py`), moves the revision and proposes the plan again.
+- `services/agent_plan_view.py`: `overview(plan, url)`, the markdown the terminal shows; `show()` formats values
+  (on/off, dashes, lists) so no JSON reaches the user.
+- `api/plans.py`: `build()` (checks and rehearsal, shared by `plan_changes` and page edits); every step a sentence
+  (`sentence()`); a new project rehearsed on a blank state seeded with its values (or the `tomograms_from`
+  source's), a catalog species rehearsed from the catalog without copying files; a step that cannot be previewed
+  on a new project is noted, not refused. `plan_changes` and `get_plan` answer `overview` and `revision`.
+  `apply_changes_now` (asks; refused for permanent steps) and `apply_changes` share `_carry_out`; both take the
+  revision the user saw and refuse an edited plan.
+- `ui/agent_plan_page.py`: rail of projects and their rosters (marks, status dots, "n set"), the selected job as a
+  field grid (job-tab label column, house fields, old value struck), project overview with values, settings,
+  deletions with keep switches, the run, steps. Edits commit on blur, Enter or change, and the view adopts the
+  new state instead of rebuilding under the field.
+- Instructions, skill and `docs/agent.md`: print the overview as it is, then `apply_changes_now`; permanent or
+  edited plans on the page.
+- Checked: on real projects read only, the demo plan (new project from the 20260204 rerun's tomograms, 412
+  species, TM with angular search 7, Pick candidates) renders as values, roster and the TM setting, all five
+  steps rehearsed; a clone of the alignment at 250 nm with 96G and a Warp Export deletion shows the roster with
+  the clone and the struck job, two settings and 47.7 GB to Trash. NiceGUI simulation of the page: overview,
+  a job's pane after a rail click, Approve by click; an edit through `revise` merges into the plan's set_params
+  step (revision 2, proposed again) and setting the value back drops the step. `apply_changes_now` refuses a
+  plan with a permanent step, `apply_changes` refuses before approval and on a stale revision.
+- Not checked: the page in a browser (blur commits, the adopt-instead-of-rebuild), a terminal-confirmed plan
+  through Claude Code.
