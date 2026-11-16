@@ -24,6 +24,7 @@ from services.agent_plans import (
     Plan,
     PlanStatus,
     ProjectPlan,
+    coerce,
     format_bytes,
     get_plan_store,
     steps_with_value,
@@ -95,18 +96,6 @@ def _table(head: list[str], rows: list[list[str]], inks: list[str | None] | None
                 for cell in row:
                     with ui.element("td").style(_CELL + (f" color: {ink};" if ink else "")):
                         ui.label(cell).style("white-space: pre-wrap; word-break: break-word;")
-
-
-def _coerce(f: FieldView, raw: Any) -> Any:
-    if raw is None or raw == "":
-        return None
-    if f.type == "int":
-        return round(float(raw))
-    if f.type == "float":
-        return float(raw)
-    if f.type == "bool":
-        return bool(raw)
-    return raw
 
 
 class _PlanView(FingerprintedView):
@@ -400,7 +389,7 @@ class _PlanView(FingerprintedView):
 
     async def _commit(self, path: str, iid: str, f: FieldView, raw: Any) -> None:
         try:
-            value = _coerce(f, raw)
+            value = coerce(f, raw)
         except (TypeError, ValueError):
             ui.notify(f"{f.label}: not a {f.type}", type="warning")
             return

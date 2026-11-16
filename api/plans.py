@@ -32,7 +32,7 @@ from api.context import ApiContext, open_project
 from api.handlers import Call, _plain
 from api.reach import write_refusal
 from services import job_params, pipeline_edit
-from services.agent_plan_view import dialog_text, overview, show
+from services.agent_plan_view import dialog_form, overview, show
 from services.agent_plans import (
     Deletion,
     FieldView,
@@ -42,7 +42,9 @@ from services.agent_plans import (
     PlanStep,
     ProjectPlan,
     StepState,
+    coerce,
     get_plan_store,
+    steps_with_edits,
 )
 from services.background_tasks import get_background_task_registry
 from services.jobs.spec import display_name, instance_display_name
@@ -849,24 +851,55 @@ async def apply_changes_now(call: Call) -> dict[str, Any]:
             ui_url=url,
         )
     given = call.args.confirmation
-    if given is None:
-        token = secrets.token_urlsafe(18)
-        plan.confirmation = (token, plan.revision)
+    if given is None and not call.args.dialog:
         return err(
-            f"{plan.id} waits for the user's yes in the terminal dialog. This client could not show it: the user "
+            f"{plan.id} waits for the user's yes in a terminal dialog, and this crboost MCP connection does not show "
+            "one (a forwarder older than the server: the user reconnects it with /mcp). Until then the user "
             "approves the plan on its page (ui_url), then apply_changes.",
             ui_url=url,
-            confirm={
-                "token": token,
-                "title": f"{plan.title} ({plan.id}, revision {plan.revision})",
-                "message": dialog_text(plan, url),
-                "apply": "Apply the plan",
-                "keep": "Do nothing (edit or approve it on the page)",
-            },
+        )
+    if given is None:
+        token = secrets.token_urlsafe(18)
+        message, schema, targets = dialog_form(plan, url)
+        plan.confirmation = (token, plan.revision, targets)
+        return err(
+            f"{plan.id} waits for the user's Accept in the terminal dialog. This client could not show it: the user "
+            "approves the plan on its page (ui_url), then apply_changes.",
+            ui_url=url,
+            confirm={"token": token, "message": message, "schema": schema},
         )
     held, plan.confirmation = plan.confirmation, None
     if held is None or not secrets.compare_digest(given, held[0]) or held[1] != plan.revision:
         return err(f"That confirmation is not {plan.id}'s current one: nothing was applied. Ask again.", ui_url=url)
+    edited = await _apply_dialog_edits(plan, held[2], call.args.edits or {})
+    if edited is not None:
+        return {**edited, "ui_url": url}
     plan.status = PlanStatus.APPROVED
     plan.decided_at = datetime.now()
     return await _carry_out(call.ctx, plan, plan.revision)
+
+
+async def _apply_dialog_edits(plan: Plan, targets: dict[str, Any], edits: dict[str, Any]) -> dict[str, Any] | None:
+    """The values the user changed in the dialog, made part of the plan (rehearsed again, as a page edit is).
+    None when they changed nothing or the plan took the change; the refusal otherwise, nothing applied."""
+    sets, drop = [], set()
+    for key, target in targets.items():
+        if key not in edits:
+            continue
+        if target[0] == "keep":
+            if edits[key] is False:
+                drop.add(target[1])
+            continue
+        _, project, job, f = target
+        try:
+            value = coerce(f, edits[key])
+        except (TypeError, ValueError):
+            return err(f"{f.label}: {edits[key]!r} is not a {f.type}. Nothing was applied.")
+        if value != f.after:
+            sets.append((project, job, f, value))
+    if not sets and not drop:
+        return None
+    res = await get_plan_store().revise(plan.id, steps_with_edits(plan, sets, drop))
+    if not res.get("success"):
+        return err(f"Your change in the dialog was refused: {res.get('error')} Nothing was applied.")
+    return None

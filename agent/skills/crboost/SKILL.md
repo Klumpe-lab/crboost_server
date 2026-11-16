@@ -23,9 +23,9 @@ something to see.
   run. Nothing changes yet: the server rehearses the steps on a copy of each project and refuses naming the
   step that would fail, or answers with needs.
   - **Confirm in the terminal (the default).** Call `apply_changes_now(plan_id, revision)` straight away: the
-    crboost server opens a dialog in the terminal with the whole plan (each project's values, roster, settings
-    now → after, deletions, the run) and applies it only when the user picks Apply there. You cannot answer it
-    for them. Don't print the plan yourself first; the dialog is it. If the answer says the dialog could not be
+    crboost server opens a form in the terminal with the whole plan (each project's values, the jobs it adds,
+    every setting it changes as a field to edit, each deletion as a switch, the run) and applies it, with what
+    the user changed there, only on their Accept. You cannot answer it for them. Don't print the plan yourself first; the dialog is it. If the answer says the dialog could not be
     shown, print `overview` exactly as it is and give the page (`ui_url`). If they decline, ask what to change
     and plan again.
   - **On the page.** A plan that deletes something for good (`permanent` is not empty) is approved on its page

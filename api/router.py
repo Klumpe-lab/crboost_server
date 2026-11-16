@@ -57,8 +57,13 @@ def tool_entry(verb: Verb) -> dict[str, Any]:
         "kind": verb.kind,
         "annotations": {"readOnlyHint": verb.kind == "read"},
     }
+    meta: dict[str, Any] = {}
     if verb.asks:
-        entry["_meta"] = {"anthropic/requiresUserInteraction": True}
+        meta["anthropic/requiresUserInteraction"] = True
+    if verb.dialog:
+        meta["crboost/dialog"] = True
+    if meta:
+        entry["_meta"] = meta
     return entry
 
 

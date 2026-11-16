@@ -179,9 +179,9 @@ class Plan:
     finished_at: datetime | None = None
     error: str | None = None
     task_id: str | None = None
-    # The one-time token apply_changes_now handed the MCP forwarder for the terminal dialog, with the revision
-    # it shows; the forwarder sends it back once the user said yes there.
-    confirmation: tuple[str, int] | None = None
+    # The terminal dialog apply_changes_now opened through the MCP forwarder: its one-time token, the revision
+    # it shows, and what each of its fields edits. The forwarder sends the token back on the user's Accept.
+    confirmation: tuple[str, int, dict[str, Any]] | None = None
 
     @property
     def expires_at(self) -> datetime:
@@ -228,36 +228,70 @@ def format_bytes(n: int) -> str:
 _SETTING_VERB = {"param": "set_params", "slurm": "set_slurm"}
 
 
-def steps_with_value(plan: Plan, project: str, job: str, f: FieldView, value: Any) -> list[dict[str, Any]]:
-    """The plan's steps with one field set to `value`: merged into the last step that sets that kind of field on
-    that job, else a new step after the project's last step that is not its run. Set back to what the job has
-    now, the field leaves the plan, and a step left with nothing to set goes with it."""
-    steps = plan.raw_steps()
+def coerce(f: FieldView, raw: Any) -> Any:
+    """A value typed in for a field (the page's input, the terminal dialog's answer) as the field's type.
+    Raises ValueError or TypeError for one that is not."""
+    if raw is None or raw == "":
+        return None
+    if f.type == "int":
+        return round(float(raw))
+    if f.type == "float":
+        return float(raw)
+    if f.type == "bool":
+        if isinstance(raw, str):
+            return raw.strip().lower() in ("true", "on", "yes", "1")
+        return bool(raw)
+    return raw
+
+
+Edit = tuple[str, str, FieldView, Any]  # (project, job, field, value)
+
+
+def _with_value(pairs: list[tuple[dict[str, Any], str | None]], edit: Edit) -> list[tuple[dict[str, Any], str | None]]:
+    project, job, f, value = edit
     verb = _SETTING_VERB[f.kind]
+    pairs = [({"verb": s["verb"], "args": dict(s["args"])}, p) for s, p in pairs]
     owner = None
-    for i, s in enumerate(steps):
-        if s["verb"] == verb and plan.steps[i].project == project and s["args"].get("job") == job:
+    for i, (s, p) in enumerate(pairs):
+        if s["verb"] == verb and p == project and s["args"].get("job") == job:
             owner = i
     back_to_now = value == f.before
     if owner is not None:
-        values = dict(steps[owner]["args"].get("values") or {})
+        values = dict(pairs[owner][0]["args"].get("values") or {})
         if back_to_now:
             values.pop(f.name, None)
         else:
             values[f.name] = value
         if values:
-            steps[owner]["args"]["values"] = values
+            pairs[owner][0]["args"]["values"] = values
         else:
-            del steps[owner]
-        return steps
+            del pairs[owner]
+        return pairs
     if back_to_now:
-        return steps
-    at = len(steps)
-    for i, s in enumerate(steps):
-        if plan.steps[i].project == project and s["verb"] != "run":
+        return pairs
+    at = len(pairs)
+    for i, (s, p) in enumerate(pairs):
+        if p == project and s["verb"] != "run":
             at = i + 1
-    steps.insert(at, {"verb": verb, "args": {"project": project, "job": job, "values": {f.name: value}}})
-    return steps
+    pairs.insert(at, ({"verb": verb, "args": {"project": project, "job": job, "values": {f.name: value}}}, project))
+    return pairs
+
+
+def steps_with_edits(plan: Plan, edits: list[Edit], drop: set[int] = frozenset()) -> list[dict[str, Any]]:
+    """The plan's steps with fields set and deletion steps dropped (by index). A field is merged into the last
+    step that sets that kind of field on that job, else a new step after the project's last step that is not its
+    run; set back to what the job has now, it leaves the plan, and a step left with nothing to set goes too."""
+    pairs = [
+        (raw, step.project) for raw, step in zip(plan.raw_steps(), plan.steps, strict=True) if step.index not in drop
+    ]
+    for edit in edits:
+        pairs = _with_value(pairs, edit)
+    return [s for s, _ in pairs]
+
+
+def steps_with_value(plan: Plan, project: str, job: str, f: FieldView, value: Any) -> list[dict[str, Any]]:
+    """The plan's steps with one field set to `value` (an edit on the page)."""
+    return steps_with_edits(plan, [(project, job, f, value)])
 
 
 def steps_without(plan: Plan, index: int) -> list[dict[str, Any]]:
