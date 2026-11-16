@@ -1868,6 +1868,10 @@ class CryoBoostBackend:
                 on_partial(found)
             projects = await scan
         self._project_scans[base_path] = projects
+        # An active pipeline nobody loaded (the server restarted; the project lives outside the bases
+        # recovery walks) is reconciled by nobody until it is opened: hand it to the monitor, and a
+        # later scan shows its real state.
+        self.pipeline_monitor.adopt(projects)
         # Sizes are measured in the background; a later scan picks the results up.
         get_disk_usage_service().request([p["path"] for p in projects if p["disk_usage_stale"]])
         return projects
