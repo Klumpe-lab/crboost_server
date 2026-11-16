@@ -17,12 +17,26 @@ something to see.
   (`values`: the value and where it was found, or `none`) and ask for each one, including those no mdoc
   records: Cs, amplitude contrast, the tilt-angle hand, the defocus hand, the EER grouping for EER movies, and
   the gain reference (a file, or none). Offer `gain_candidates` as candidates only.
-- `plan_run` before every `run`. Show the user the jobs, their inputs, their resources and anything the plan
-  refuses or leaves open; `run` submits exactly that and asks the user first.
+- **A change of more than one write is one plan.** Gather what the user has to decide first (needs,
+  acquisition values), then send every write at once: `plan_changes(title, steps=[{verb, args}, ...])`,
+  each step exactly as the verb takes it alone, in the order they run, `run` last when the user asked for a
+  run. Nothing changes yet: the server rehearses the steps on a copy of each project and refuses naming the
+  step that would fail, or answers with needs. Show the user only its per-project lines and its `ui_url`; do
+  not recap the steps as a list in the terminal. The user reviews and approves on that page (Approve there is
+  the only approval). When they say it is approved, or `get_plan` says `approved`, call
+  `apply_changes(plan_id)` and follow `get_plan` to the end; report a failed step with its error and stop.
+- A single write (one `set_params`, one `cancel_job`) is called on its own. Before a lone `run`, `plan_run`
+  and show the user what it refuses or leaves open.
 - A failure is reported, not retried: read `get_job_tasks` (state filter `fail`) and `get_job_logs` (with `ts`
   for one tilt series), tell the user what failed and the decisive log lines, and run again only when asked.
-- The API changes only the projects it made (`made_by_api`); any project can be read. For a hand-made one,
-  give the user its `ui_url`.
+- The API changes the projects it made and, while the user has turned on "Allow agents to access and edit my
+  projects" in User settings, the user's own; never lab-shared or other people's projects. Any project can be
+  read. `get_project` and `list_projects` say `agent_writable`; a refused write comes back `NOT_WRITABLE` with
+  the reason and the `ui_url`. Pass the reason on; do not ask the user to change the setting unless they asked
+  you to edit that project.
+- Deleting: `delete_job` moves a job that ran to the project's Trash (recoverable) and names the jobs it fed;
+  `delete_species`, `delete_template`, `delete_mask` delete files for good. `clear_trash` and `delete_project`
+  run only as steps of an approved plan. Delete only what the user asked for.
 - Never edit `project_params.json` or any project file, and never call sbatch or scancel on a CryoBoost
   project: the server's in-memory state is the truth and overwrites what is changed behind it.
 
@@ -33,8 +47,9 @@ something to see.
 2. Put every value to the user (confirm the found ones, ask for the rest), the series to import, whether
    folders that reuse names become folder-qualified names (`ts_names_by_folder`) or one project per folder
    (one `create_project` per folder, with that folder's series), and whether the project is a lab one.
-3. `create_project(...)` with every value; it runs in the background: follow `get_task(task_id)` until it has
-   finished, then give the user the project's `ui_url`. A `needs` answer means a value is still missing.
+3. `create_project(...)` with every value, as the first step of a plan when jobs follow it (the page shows
+   every value); alone, it runs in the background: follow `get_task(task_id)` until it has finished, then give
+   the user the project's `ui_url`. A `needs` answer means a value is still missing.
 
 ## Preprocessing
 
@@ -61,7 +76,7 @@ when the user asks.
 3. `add_job(templatematching, species=…)` then `add_job(tmextractcand, species=…)`; a particle job takes the
    species' template, mask, symmetry and diameter when it is added. TM needs tomograms (Reconstruct or Denoise
    Predict) on the roster or imported.
-4. `plan_run`, `run`; the score maps and picks are the user's to look at in the UI.
+4. Steps 1-3 and the `run` go in one plan; the score maps and picks are the user's to look at in the UI.
 
 ## Tomograms from other projects
 

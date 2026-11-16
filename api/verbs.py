@@ -1,8 +1,9 @@
 """The verb table: one entry per verb, the one list the HTTP routes and the MCP tool list are read from.
 
 A verb's name says what it does; its description is written for the model that calls it. Reads (`get_*`,
-`list_*`, `inspect_*`, `plan_*`) change nothing. A write changes only a project the API made, and the verbs
-that make a project or submit or cancel SLURM work ask the user every time (`asks`).
+`list_*`, `inspect_*`, `plan_*`, `plan_changes`) change nothing. A write changes only a project within the
+agent's reach (`api/reach.py`), the verbs that make a project or submit or cancel SLURM work ask the user every
+time (`asks`), and those that delete for good run only as a step of an approved change plan (`plan_only`).
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from pydantic import BaseModel
 
 from api import handlers as h
 from api import models as m
+from api import plans as p
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +29,8 @@ class Verb:
     # Ask the user on every call, whatever the permission rules say: it makes a project, or spends or ends
     # GPU hours.
     asks: bool = False
+    # Deletes for good: refused unless it is a step of a change plan the user approved on its page.
+    plan_only: bool = False
 
     @property
     def names_project(self) -> bool:
@@ -45,8 +49,8 @@ _VERBS: tuple[Verb, ...] = (
     ),
     Verb(
         "list_projects",
-        "The projects under a base folder (the server's default when omitted): status, size, and whether the API "
-        "made them (only those can be changed through it).",
+        "The projects under a base folder (the server's default when omitted): status, size, owner, whether the "
+        "API made them, and whether the agent may change them now (agent_writable, else why not).",
         m.ListProjectsIn,
         "read",
         h.list_projects,
@@ -316,6 +320,83 @@ _VERBS: tuple[Verb, ...] = (
         m.ImportTomogramsIn,
         "write",
         h.import_tomograms,
+    ),
+    # ── Deletions ──
+    Verb(
+        "delete_job",
+        "Delete a job as the roster's Delete does: a job that ran has its folder moved to the project's Trash "
+        "(recoverable until the Trash is cleared) and leaves the roster; one that has not run only leaves the "
+        "roster. Refused while it is queued or running or feeds such a job. Answers the jobs whose inputs it fed.",
+        m.JobIn,
+        "write",
+        h.delete_job,
+    ),
+    Verb(
+        "delete_species",
+        "Delete a species as its page does: its jobs to Trash, its template and mask files for good, its pick "
+        "lists and its entry. Refused while one of its jobs is queued or running.",
+        m.SpeciesIn,
+        "write",
+        h.delete_species,
+    ),
+    Verb(
+        "delete_template",
+        "Delete one of a species' templates as the workbench does: the file and its sidecar for good, the masks "
+        "made from it with it.",
+        m.SelectTemplateIn,
+        "write",
+        h.delete_template,
+    ),
+    Verb(
+        "delete_mask",
+        "Delete one of a species' masks as the workbench does: the file and its sidecar for good.",
+        m.SelectMaskIn,
+        "write",
+        h.delete_mask,
+    ),
+    Verb(
+        "clear_trash",
+        "Empty the project's Trash (deleted jobs' folders), all of it or the named entries, for good. Only as a "
+        "step of a change plan.",
+        m.ClearTrashIn,
+        "write",
+        h.clear_trash,
+        plan_only=True,
+    ),
+    Verb(
+        "delete_project",
+        "Delete a whole project folder for good. Refused while any of its jobs is live. Only as a step of a change "
+        "plan.",
+        m.ProjectIn,
+        "write",
+        h.delete_project,
+        plan_only=True,
+    ),
+    # ── Change plans ──
+    Verb(
+        "plan_changes",
+        "Propose a change of more than one write as one plan: every step is a write verb with its arguments. "
+        "Nothing changes. The steps are checked, rehearsed on a copy of each project where they can be, and shown "
+        "to the user per project on one page (the ui_url), where they approve it once. Answers one line per "
+        "project; refuses naming the step that would fail, or with the needs the user has to answer first.",
+        m.PlanChangesIn,
+        "read",
+        p.plan_changes,
+    ),
+    Verb(
+        "get_plan",
+        "A change plan: proposed, approved, rejected, running, done, failed or expired, and each step's state.",
+        m.PlanIn,
+        "read",
+        p.get_plan,
+    ),
+    Verb(
+        "apply_changes",
+        "Carry out a change plan the user approved on its page, step by step in the background (follow get_plan). "
+        "Refused before the approval, after an hour, or when a project changed since the proposal.",
+        m.PlanIn,
+        "write",
+        p.apply_changes,
     ),
     # ── Run controls ──
     Verb(

@@ -337,6 +337,35 @@ def remove_job(state: ProjectState, instance_id: str) -> dict[str, Any]:
     return ok(instance_id=instance_id)
 
 
+async def delete_job(backend, project_path, instance_id: str) -> dict[str, Any]:
+    """Delete a job as the roster's Delete does: a job that ran has its directory moved to the project's Trash/
+    (recoverable until the Trash is cleared), and the job leaves `jobs` and the roster; a job that has not run
+    only leaves the roster. Refused while it is queued or running or feeds a job that is. `ok(instance_id,
+    orphaned_jobs)`: the jobs whose inputs it fed. Saves (through `backend.delete_job`)."""
+    from services.models_base import instance_id_to_job_type
+
+    state = backend.state_service.state_for(project_path)
+    job_model = state.jobs.get(instance_id)
+    if job_model is None and instance_id not in state.pipeline_order:
+        return err(f"No job {instance_id} in {state.project_name}.")
+    if job_model is None or not job_model.relion_job_name:
+        return remove_job(state, instance_id)
+    res = await backend.delete_job(
+        instance_id_to_job_type(instance_id).value, project_path=project_path, instance_id=instance_id
+    )
+    if not res["success"]:
+        return res
+    # Off the roster too; `backend.delete_job` took it out of `jobs`, so this cannot refuse over its directory.
+    if instance_id in state.pipeline_order:
+        remove_job(state, instance_id)
+    return ok(
+        instance_id=instance_id,
+        trashed=job_model.relion_job_name.rstrip("/"),
+        orphaned_jobs=res.get("orphaned_jobs", []),
+        message=res.get("message", ""),
+    )
+
+
 async def exclude_tilt_series(
     state: ProjectState, ts_id: str, excluded: bool, *, reason: str | None = None
 ) -> dict[str, Any]:

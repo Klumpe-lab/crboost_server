@@ -496,15 +496,17 @@ class PipelineOrchestratorService:
             return err("Not started: " + "; ".join(bad), refused=bad), {}
         return None, set_inputs
 
-    async def plan_run(self, project_dir: Path) -> dict[str, Any]:
+    async def plan_run(self, project_dir: Path, state=None) -> dict[str, Any]:
         """What Run would do now, without doing any of it: nothing is allocated, written or submitted. The
         roster's jobs it would start, in submit order, those it leaves (finished, queued or running), the ones
         a tilt-filter review would hold, what would refuse the Run, and per input slot of each job the source
         automatic selection or a pin gives it and how; per job its SLURM resources. An input with no source,
-        or with two that tie, is a `needs` item."""
+        or with two that tie, is a `needs` item. `state`: a detached copy to plan on instead of the project's own
+        (a change plan's rehearsal)."""
         from services.job_params import describe_inputs
 
-        state = self.backend.state_service.state_for(project_dir)
+        if state is None:
+            state = self.backend.state_service.state_for(project_dir)
         selected = state.roster()
         to_run, live = _run_set(state, selected)
         finished = [iid for iid in selected if iid not in to_run and iid not in live]

@@ -226,3 +226,50 @@ def select_mask(state, species_id: str, mask_id: str) -> dict:
     if not found[0]:
         return err(f"No mask '{mask_id}' registered to '{species_id}'")
     return ok(mask_id=mask_id)
+
+
+def delete_template(state, species_id: str, template_id: str) -> dict:
+    """Delete a registered template: its file and sidecar from disk, its entry from the species, the masks made
+    from it with it; the selections move to the first left. The workbench's Delete and the agent API share it.
+    `ok(path, problem)`: `problem` names a file left behind (the entry is gone all the same). Blocking (file
+    removal); marks the state dirty, the caller saves."""
+    sp = state.get_species(species_id)
+    if sp is None:
+        return err(f"Unknown species '{species_id}'")
+    tpl = sp.get_template_by_id(template_id)
+    if tpl is None:
+        return err(f"No template '{template_id}' registered to '{species_id}'")
+    path = tpl.template_path
+    problem = delete_file_with_sidecar(path)
+
+    def _apply(s) -> None:
+        s.templates = [t for t in s.templates if t.id != template_id]
+        if s.selected_template_id == template_id:
+            s.selected_template_id = s.templates[0].id if s.templates else ""
+        s.masks = [m for m in s.masks if m.derived_from_template_id != template_id]
+        if s.selected_mask_id and not any(m.id == s.selected_mask_id for m in s.masks):
+            s.selected_mask_id = s.masks[0].id if s.masks else ""
+
+    state.mutate_species(species_id, _apply)
+    return ok(path=path, problem=problem)
+
+
+def delete_mask(state, species_id: str, mask_id: str) -> dict:
+    """Delete a registered mask: its file and sidecar, its entry; the selection moves to the first left.
+    `ok(path, problem)` as `delete_template`. Blocking; marks the state dirty, the caller saves."""
+    sp = state.get_species(species_id)
+    if sp is None:
+        return err(f"Unknown species '{species_id}'")
+    mask = sp.get_mask_by_id(mask_id)
+    if mask is None:
+        return err(f"No mask '{mask_id}' registered to '{species_id}'")
+    path = mask.mask_path
+    problem = delete_file_with_sidecar(path)
+
+    def _apply(s) -> None:
+        s.masks = [m for m in s.masks if m.id != mask_id]
+        if s.selected_mask_id == mask_id:
+            s.selected_mask_id = s.masks[0].id if s.masks else ""
+
+    state.mutate_species(species_id, _apply)
+    return ok(path=path, problem=problem)
