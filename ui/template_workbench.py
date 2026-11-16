@@ -51,7 +51,6 @@ from services.project_state import (
     is_in_loaded_project,
     is_registered_volume,
 )
-from services.species_admin import delete_file_with_sidecar
 from services.templating.template_metadata import read_template_header
 from ui.components.chip import render_method_chip, render_polarity_chip
 from ui.components.path_link import render_path_link
@@ -597,53 +596,19 @@ class TemplateWorkbench:
         dialog.open()
 
     def _do_delete_template(self, template_id: str) -> None:
-        sp = self._get_species()
-        if sp is None:
-            return
-        tpl = sp.get_template_by_id(template_id)
-        if tpl is None:
-            return
-        path = tpl.template_path
-        self._delete_file_with_sidecar(path)
-
-        def _apply(s: ParticleSpecies) -> None:
-            s.templates = [t for t in s.templates if t.id != template_id]
-            if s.selected_template_id == template_id:
-                s.selected_template_id = s.templates[0].id if s.templates else ""
-            # Also drop masks that were derived from this template
-            s.masks = [m for m in s.masks if m.derived_from_template_id != template_id]
-            if s.selected_mask_id and not any(m.id == s.selected_mask_id for m in s.masks):
-                s.selected_mask_id = s.masks[0].id if s.masks else ""
-
-        self._mutate_species(_apply)
-        asyncio.create_task(self._after_register())
-        self._log(f"Deleted template: {os.path.basename(path)}")
+        self._after_delete(species_admin.delete_template(self._state(), self.species_id, template_id), "template")
 
     def _do_delete_mask(self, mask_id: str) -> None:
-        sp = self._get_species()
-        if sp is None:
-            return
-        mask = sp.get_mask_by_id(mask_id)
-        if mask is None:
-            return
-        path = mask.mask_path
-        self._delete_file_with_sidecar(path)
+        self._after_delete(species_admin.delete_mask(self._state(), self.species_id, mask_id), "mask")
 
-        def _apply(s: ParticleSpecies) -> None:
-            s.masks = [m for m in s.masks if m.id != mask_id]
-            if s.selected_mask_id == mask_id:
-                s.selected_mask_id = s.masks[0].id if s.masks else ""
-
-        self._mutate_species(_apply)
+    def _after_delete(self, res: dict, kind: str) -> None:
+        if not res["success"]:
+            ui.notify(res["error"], type="warning")
+            return
+        if res["problem"] is not None:
+            ui.notify(res["problem"], type="warning")
         asyncio.create_task(self._after_register())
-        self._log(f"Deleted mask: {os.path.basename(path)}")
-
-    def _delete_file_with_sidecar(self, file_path: str) -> None:
-        # The file work lives in services.species_admin (shared with the species delete
-        # cascade); this wrapper only surfaces a leftover to the user.
-        problem = delete_file_with_sidecar(file_path)
-        if problem is not None:
-            ui.notify(problem, type="warning")
+        self._log(f"Deleted {kind}: {os.path.basename(res['path'])}")
 
     # ==================================================================
     # MOLSTAR BRIDGE

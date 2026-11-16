@@ -32,16 +32,31 @@ In `~/.claude/settings.json`:
 ```json
 {
   "permissions": {
-    "allow": ["mcp__crboost__get_*", "mcp__crboost__list_*", "mcp__crboost__inspect_*", "mcp__crboost__plan_*"],
-    "deny": ["Edit(//**/project_params.json)"]
+    "allow": [
+      "mcp__crboost__get_*", "mcp__crboost__list_*", "mcp__crboost__inspect_*", "mcp__crboost__plan_*",
+      "mcp__crboost__apply_changes"
+    ],
+    "deny": ["Edit(//**/project_params.json)", "Edit(//**/.crboost/user_settings.json)"]
   }
 }
 ```
 
-The reads then run without a prompt; every other verb prompts. `create_project`, `run`, `stop`, `cancel_job`,
-`cancel_leftovers` and the two tilt-prediction verbs ask on every call whatever the rules say: you see every
-value before a project exists, and every submission or cancellation of SLURM work. The deny rule keeps Claude
-Code's own file tools off the project files; it does not stop a script run through Bash.
+The reads then run without a prompt, and so do change plans: the agent sends a whole change at once
+(`plan_changes`), the server shows it per project on one page (`/agent/plan/<id>`: the roster after it,
+every setting as now → after, deletions with their sizes, what the run submits), and you approve it there
+once. `apply_changes` refuses until you have, so it needs no prompt of its own. A write called on its own
+still prompts; `create_project`, `run`, `stop`, `cancel_job`, `cancel_leftovers` and the two tilt-prediction
+verbs ask on every call whatever the rules say. The deny rules keep Claude Code's own file tools off the
+project files and off the switch below; they do not stop a script run through Bash.
+
+## Your own projects
+
+By default the agent changes only the projects it made. **User settings** (the person icon on the start
+page's toolbar) has "Allow agents to access and edit my projects": on, it may also change and delete in the
+projects you own. Lab-shared projects and other people's stay out of its reach either way, and reading is
+open either way. The switch lives in `~/.crboost/user_settings.json` (yours only, mode 0600) and is read on
+every write, so turning it off stops the next one. Emptying a Trash and deleting a project run only as steps
+of a plan you approved.
 
 ## What it does and does not do
 
@@ -53,11 +68,15 @@ Code's own file tools off the project files; it does not stop a script run throu
   tomograms do not give, or a mask's threshold.
 - It adds any combination of jobs the roster allows, sets any parameter, SLURM setting or input the job pages
   allow, plans a run and runs it, under the UI's rules: a refusal there is a refusal here.
-- It changes only the projects it made. Any project can be read; for one made by hand it gives you the link.
+- It changes the projects it made, and your own while User settings allow it (above). Any project can be read;
+  for one out of its reach it gives you the reason and the link.
+- It deletes what the UI deletes: a job (to Trash), a species, a template or mask; a Trash or a whole project
+  only inside a plan you approved.
 - Looking and judging stay with you in the UI: the tilt review and Approve, curating picks, judging particles,
   the STA kitchen. Every answer carries the link to what it touched.
 - It reports a failure with its log lines and runs again only when you ask.
-- Every write is a line in the project's `Logs/agent_api.jsonl` and an event on the server's console.
+- Every write is a line in the project's `Logs/agent_api.jsonl` (with its plan's id) and an event on the
+  server's console, which says when the project was made by hand.
 
 ## From a script or curl
 

@@ -19,6 +19,7 @@ from ui.open_project import load_project_into_tab, workspace_url
 from services.routes import Route, disambiguating_base, parse_route, route_to_path
 from ui.routing import RouteWriter, apply_route
 from ui.ui_state import get_ui_state_manager
+from ui.agent_plan_page import render_agent_plan_page
 from ui.components.buttons import house_button
 from ui.data_import_panel import build_data_import_panel
 from ui.io_ideas_preview import render_io_ideas
@@ -301,6 +302,12 @@ def create_ui_router(backend: CryoBoostBackend):
         ui.navigate.to(workspace_url(ui_mgr.project_path))
 
     # --- AUX PAGES ---
+    @ui.page("/agent/plan/{plan_id}")
+    async def agent_plan_page(client: Client, plan_id: str):
+        await client.connected()
+        ensure_assets_loaded()
+        render_agent_plan_page(plan_id)
+
     @ui.page("/cluster-info")
     async def cluster_info_page(client: Client):
         await client.connected()

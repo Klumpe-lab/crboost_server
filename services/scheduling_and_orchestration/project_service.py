@@ -35,6 +35,7 @@ from services.dataset_scan import data_values, differences, layer_problems
 from services.event_log import events
 from services.project_create import ProjectSpec, apply_values, spec_problems
 from services.result import err, ok
+from services.shared_files import make_group_writable_dir
 from services.tilt_series.preimport import DatasetOverview
 from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
 
@@ -402,6 +403,7 @@ class ProjectService:
         import result is returned as is (it carries `layer` / `frame_extension` / `n_frames`)."""
         try:
             project_dir.mkdir(parents=True, exist_ok=True)
+            make_group_writable_dir(project_dir)
             self.set_project_root(project_dir)
 
             (project_dir / "Logs").mkdir(exist_ok=True)

@@ -325,3 +325,31 @@ class ImportTomogramsIn(ProjectIn):
     )
     tomogram_binning: float = Field(1.0, gt=0.0)
     replace: bool = Field(False, description="Drop the batches imported before instead of adding to them")
+
+
+# ── Deletions ─────────────────────────────────────────────────────────────────
+
+
+class ClearTrashIn(ProjectIn):
+    names: list[str] | None = Field(
+        None, description="The Trash/ entries to delete for good (job folder names); all of them when omitted"
+    )
+
+
+# ── Change plans ──────────────────────────────────────────────────────────────
+
+
+class PlanStepIn(_In):
+    verb: str = Field(description="A write verb, e.g. add_job, set_params, delete_job, run")
+    args: dict[str, Any] = Field(
+        default_factory=dict, description="Its arguments, exactly as the verb takes them when called alone"
+    )
+
+
+class PlanChangesIn(_In):
+    title: str = Field(description="What the plan does, in a few words for the user")
+    steps: list[PlanStepIn] = Field(min_length=1, description="The writes, in the order they are to run")
+
+
+class PlanIn(_In):
+    plan_id: str = Field(description="The id plan_changes returned")

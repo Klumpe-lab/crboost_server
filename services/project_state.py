@@ -1272,7 +1272,18 @@ class ProjectState(BaseModel):
 
         with open(path) as f:
             data = json.load(f)
+        return cls.from_data(data, path, read_only=read_only)
 
+    def detached_copy(self) -> ProjectState:
+        """A copy of this state that shares nothing with it, registered nowhere: what a change plan rehearses
+        its steps on. Built as a save and a load would build it, so the copy is what the next load would see."""
+        data = json.loads(self.model_dump_json(fallback=str))
+        path = (self.project_path or Path(".")) / "project_params.json"
+        return type(self).from_data(data, path, read_only=True)
+
+    @classmethod
+    def from_data(cls, data: dict, path: Path, *, read_only: bool = False):
+        """`load` on data already read from `path`."""
         # ── Version check ─────────────────────────────────────────────
         file_ver = tuple(data.get("schema_version", (0, 0)))
         code_major, code_minor = SCHEMA_VERSION

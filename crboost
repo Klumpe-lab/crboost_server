@@ -23,6 +23,9 @@ env=$("$here/install.sh") || exit 1
 py="$env/bin/python3"
 unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONUSERBASE VIRTUAL_ENV CONDA_PREFIX
 export PYTHONNOUSERSITE=1
+# Projects are the lab's to work on together: what the server writes, and what its SLURM jobs write (sbatch
+# carries the submitter's umask into the job), is group-writable.
+umask 002
 
 case "${1:-}" in
     preflight) shift; exec "$py" "$here/preflight.py" "$@" ;;

@@ -1,6 +1,7 @@
 """The verbs' handlers. Each reads in-memory state or calls the door its UI button calls (services/), and answers
 with `ok()` / `err()` plus the link to what it touched. The router has already opened the project a verb names
-and, for a write, checked that the API made it; it saves and records after a write."""
+and, for a write, checked that it is within the agent's reach (`api/reach.py`); it saves and records after a
+write."""
 
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from api.context import ApiContext, record_write
+from api.reach import agents_allowed, refusal_for, write_refusal
 from services import (
     array_status_cache,
     dataset_scan,
@@ -35,7 +37,7 @@ from services.models_base import JobType
 from services.path_resolution_service import PathResolutionService, auto_exclusion, unreadable_reason
 from services.project_create import ACQUISITION_FIELDS, ProjectSpec, required_values, spec_problems
 from services.project_resolve import resolve_project
-from services.project_state import TemplateMask, get_project_state_for
+from services.project_state import SHARED_OWNER, TemplateMask, get_project_state_for
 from services.result import ErrorCode, err, need, ok
 from services.routes import View
 
@@ -103,11 +105,24 @@ async def get_server_info(call: Call) -> dict[str, Any]:
 async def list_projects(call: Call) -> dict[str, Any]:
     base = call.args.base or await call.backend.get_default_project_base()
     rows = await call.backend.scan_for_projects(base)
+    allowed = await agents_allowed()
+
+    def why_not(r) -> str | None:
+        return refusal_for(
+            r["name"],
+            made_by_api=r.get("made_by_api", False),
+            shared=r.get("owner") == SHARED_OWNER,
+            owner=(r.get("owner") or r.get("creator")),
+            allowed=allowed,
+        )
+
     projects = [
         {
             "name": r["name"],
             "path": r["path"],
             "made_by_api": r.get("made_by_api", False),
+            "agent_writable": why_not(r) is None,
+            "not_writable_because": why_not(r),
             "status": r.get("live_status"),
             "pipeline_active": r.get("pipeline_active"),
             "tilt_series": r.get("ts_count"),
@@ -154,6 +169,7 @@ async def get_project(call: Call) -> dict[str, Any]:
     await array_status_cache.refresh(call.path, state.jobs)
     roster = state.roster()
     hold = state.review_hold
+    refusal = await write_refusal(state, call.path)
     acquisition = {}
     for name, (model, attr) in ACQUISITION_FIELDS.items():
         acquisition[name] = _plain(getattr(getattr(state, model), attr))
@@ -162,6 +178,8 @@ async def get_project(call: Call) -> dict[str, Any]:
         path=str(call.path),
         ui_url=call.url(),
         made_by_api=state.made_by_api,
+        agent_writable=refusal is None,
+        not_writable_because=refusal,
         pipeline_active=state.pipeline_active,
         review_hold=None
         if hold is None
@@ -1031,3 +1049,47 @@ async def cancel_leftovers(call: Call) -> dict[str, Any]:
     res = await call.backend.slurm_service.scancel_jobs(sorted(asked))
     res["ui_url"] = call.url()
     return res
+
+
+# ── Deletions ─────────────────────────────────────────────────────────────────
+
+
+async def delete_job(call: Call) -> dict[str, Any]:
+    res = await pipeline_edit.delete_job(call.backend, call.path, call.args.job)
+    if res["success"]:
+        res["ui_url"] = call.url()
+    return res
+
+
+async def delete_species(call: Call) -> dict[str, Any]:
+    res = await species_admin.delete_species(call.backend, call.path, call.args.species)
+    res["ui_url"] = call.url(View.SPECIES) if res["success"] else call.url(View.SPECIES, call.args.species)
+    return res
+
+
+async def delete_template(call: Call) -> dict[str, Any]:
+    a = call.args
+    res = await asyncio.to_thread(species_admin.delete_template, call.state, a.species, a.template_id)
+    res["ui_url"] = call.url(View.SPECIES, a.species)
+    return res
+
+
+async def delete_mask(call: Call) -> dict[str, Any]:
+    a = call.args
+    res = await asyncio.to_thread(species_admin.delete_mask, call.state, a.species, a.mask_id)
+    res["ui_url"] = call.url(View.SPECIES, a.species)
+    return res
+
+
+async def clear_trash(call: Call) -> dict[str, Any]:
+    res = await call.backend.clear_project_trash(call.path, call.args.names)
+    res["ui_url"] = call.url()
+    return res
+
+
+async def delete_project(call: Call) -> dict[str, Any]:
+    """The whole project folder, for good. Refused while any of its jobs is queued or running."""
+    live = sorted(iid for iid, jm in call.state.jobs.items() if jm.execution_status.is_live)
+    if live:
+        return err(f"{call.path.name} has live jobs ({', '.join(live)}): stop the run before deleting the project.")
+    return await call.backend.delete_project(call.path)

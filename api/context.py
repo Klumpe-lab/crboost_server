@@ -32,6 +32,10 @@ class ApiContext:
     port: int
     host: str = "localhost"
     results: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # The verb table and the dispatcher's runner (`router.run_verb`), set by the router: a change plan runs its
+    # steps through them as single calls are run.
+    verbs: dict[str, Any] = field(default_factory=dict)
+    run_verb: Any = None
 
     def ui_url(self, project_path: Path | str, view: View = View.PIPELINE, a: str | None = None) -> str:
         """The link that opens what a verb touched in this server's UI."""
@@ -58,21 +62,30 @@ def _what(verb: str, args: dict[str, Any]) -> str:
     return verb + (" " + json.dumps(shown, default=str, sort_keys=True) if shown else "")
 
 
-async def record_write(project_path: Path, verb: str, args: dict[str, Any], result: dict[str, Any]) -> None:
+async def record_write(
+    project_path: Path,
+    verb: str,
+    args: dict[str, Any],
+    result: dict[str, Any],
+    *,
+    plan_id: str | None = None,
+    hand_made: bool = False,
+) -> None:
     """One line of the project's `Logs/agent_api.jsonl` per write verb, refused or not, and one console event per
-    write made."""
+    write made; one into a project made by hand says so. `plan_id`: the change plan the write was a step of."""
     if result.get("success"):
-        events.info("%s · agent: %s", project_path.name, _what(verb, args))
-    line = json.dumps(
-        {
-            "at": datetime.now().isoformat(timespec="seconds"),
-            "verb": verb,
-            "args": {k: v for k, v in args.items() if k != "project"},
-            "success": bool(result.get("success")),
-            "error": result.get("error"),
-        },
-        default=str,
-    )
+        who = "agent (hand-made project)" if hand_made else "agent"
+        events.info("%s · %s: %s", project_path.name, who, _what(verb, args))
+    entry = {
+        "at": datetime.now().isoformat(timespec="seconds"),
+        "verb": verb,
+        "args": {k: v for k, v in args.items() if k != "project"},
+        "success": bool(result.get("success")),
+        "error": result.get("error"),
+    }
+    if plan_id:
+        entry["plan_id"] = plan_id
+    line = json.dumps(entry, default=str)
 
     def _append() -> None:
         logs = project_path / "Logs"
