@@ -134,3 +134,30 @@ under the alias. Alignment FAILED (no name was short enough): press Run, it retr
 SUCCEEDED with series dropped: delete the alignment job and every job after it, re-add them, Run. A project
 from before 2026-09-09 whose alignment "succeeded" on nominal angles must re-run from alignment on. Open: does
 IMOD (`ts_etomo_patches`), which is not aliased, have a limit of its own?
+
+---
+
+## 4. AreTomo2 crashes on a tilt series the tilt filter left with a hole; the series is dropped
+
+**Status:** WORKED AROUND 2026-11-16 by the tilt filter's keep rule (`services/tilt_series/keep_rule.py`), on by
+default. Not fixed in AreTomo2 (no tool patches).
+
+**What happens.** Alignment (`aligntiltsWarp`, warp-2.0.0dev41_aretomo2-1.0.0) runs AreTomo2 on the tilts the
+committed verdict keeps. AreTomo2 segfaults (exit 139; WarpTools then aborts, `status -6` in the supervisor's drop
+list) when those tilts have a wide gap. AreTomo 1.0 aligned the same series. On the reruns (783 series),
+by the largest gap between kept tilts: 8 of 559 crashed at ≤ 3.5° (5 of them series the filter had emptied, which
+were still handed to AreTomo), 7 of 127 at 3.5–9.5°, 15 of 33 at 9.5–15.5°, 32 of 33 beyond. The holes were
+mostly tilts the model was unsure of (0.3 < P(bad) ≤ 0.9), which are many on data unlike its training set:
+11 % of all tilts on one unmilled sample against ≤ 3 % on most datasets, and 22 of 176 series lost there.
+
+**The keep rule.** A commit (Approve or the DL-auto job) keeps a tilt the filter calls bad where excluding it
+would leave its series unalignable: a gap wider than `keep_max_gap_deg` (6.5°: one missing tilt at a 3° step)
+is closed with the tilts inside it; a series left with fewer than `keep_min_tilts` (15) keeps every tilt it can;
+the tilt nearest 0° is kept when no kept tilt is near it. Never put back: a manual "bad" label and a blank
+exposure (under 1 % of the series' median counts); where those hold a gap open, the series is cut there, and the
+kept tilts beyond it are excluded instead. The kept tilts go through alignment, CTF and reconstruction like any
+other and are marked "kept although the filter calls it bad" in the Tilts views; the filter row counts them.
+Settings on the tilt filter's roster row (`keep rule`) and through the API's `set_tilt_filter`.
+
+**What to do.** A project whose alignment dropped series this way: delete the alignment job and every job after
+it, Re-open the tilt filter, Run (the filter commits again under the rule, alignment follows).

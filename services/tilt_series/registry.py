@@ -91,7 +91,10 @@ _LOCK_POLL_S = 0.5
 #         fails to validate a sidecar that holds one and skips that tilt series.
 # (1, 7): additive "easymode" DenoisePredictTomogramOutput.denoise_method. Code older than
 #         this fails to validate a sidecar that holds one and skips that tilt series.
-REGISTRY_SCHEMA_VERSION = (1, 7)
+# (1, 8): additive Frame.filter_kept_reason (a tilt the verdict keeps although the filter calls
+#         it bad). Every sidecar written from here on carries the field, and code older than this
+#         (Frame forbids extra fields) fails to validate it and skips that tilt series.
+REGISTRY_SCHEMA_VERSION = (1, 8)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -260,17 +263,21 @@ class TiltSeriesRegistry:
         """The set of TS ids the user has excluded from processing."""
         return {ts.id for ts in self._tilt_series.values() if ts.is_excluded}
 
-    def set_frame_filtered(self, frame_id: str, filtered: bool, *, reason: str | None = None) -> None:
+    def set_frame_filtered(
+        self, frame_id: str, filtered: bool, *, reason: str | None = None, kept_reason: str | None = None
+    ) -> None:
         """Record the tilt-filter's per-frame verdict, which alignment applies when it
-        snapshots the tomostars. Re-stamped on every commit, in both directions. A DL
-        prediction (`Frame.p_bad`) is left as it is. Mutates in memory + marks the parent
-        TS dirty; the caller persists via save()/save_async(). Raises KeyError if the
-        frame is unknown (caller decides whether that's fatal)."""
+        snapshots the tomostars. Re-stamped on every commit, in both directions. `reason` says
+        why an excluded tilt is excluded, `kept_reason` why a kept one is kept although the
+        filter calls it bad. A DL prediction (`Frame.p_bad`) is left as it is. Mutates in
+        memory + marks the parent TS dirty; the caller persists via save()/save_async().
+        Raises KeyError if the frame is unknown (caller decides whether that's fatal)."""
 
         def stamp(ts: TiltSeries) -> None:
             frame = ts.frame_by_id(frame_id)
             frame.is_filtered_out = filtered
             frame.filter_reason = reason if filtered else None
+            frame.filter_kept_reason = None if filtered else kept_reason
 
         self._change(self._ts_of_frame(frame_id).id, stamp)
 

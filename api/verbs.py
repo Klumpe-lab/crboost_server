@@ -192,7 +192,7 @@ _VERBS: tuple[Verb, ...] = (
     ),
     Verb(
         "set_tilt_filter",
-        "The tilt filter's mode (manual, dl_review, dl_auto), DL model and threshold.",
+        "The tilt filter's mode (manual, dl_review, dl_auto), DL model, threshold and keep rule.",
         m.SetTiltFilterIn,
         "write",
         h.set_tilt_filter,

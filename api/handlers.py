@@ -740,7 +740,15 @@ async def set_params(call: Call) -> dict[str, Any]:
 async def set_tilt_filter(call: Call) -> dict[str, Any]:
     a = call.args
     res = await job_params.set_tilt_filter(
-        call.backend, call.path, a.job, mode=a.mode, model=a.model, threshold=a.threshold
+        call.backend,
+        call.path,
+        a.job,
+        mode=a.mode,
+        model=a.model,
+        threshold=a.threshold,
+        keep_alignable=a.keep_alignable,
+        keep_max_gap_deg=a.keep_max_gap_deg,
+        keep_min_tilts=a.keep_min_tilts,
     )
     return _job_answer(call, res)
 

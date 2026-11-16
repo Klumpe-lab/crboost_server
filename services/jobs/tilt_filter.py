@@ -13,6 +13,7 @@ from services.jobs._base import AbstractJobParams
 from services.models_base import JobStatus, JobType, JobCategory
 from services.io_slots import InputSlot, OutputSlot, JobFileType
 from services.result import err, ok
+from services.tilt_series.keep_rule import Adjustment, KeepRule, adjust
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,10 @@ class TiltFilterCommit(BaseModel):
     dropped: int
     model: str | None = None  # the model behind the predictions (DL modes, when its run succeeded)
     threshold: float | None = None  # DL modes only
+    # Of `kept`, the tilts kept although the filter calls them bad, to keep their series alignable;
+    # of `dropped`, the good-called tilts cut past a gap nothing could close (keep_rule).
+    kept_despite: int = 0
+    cut: int = 0
 
 
 class TiltFilterPredictRun(BaseModel):
@@ -135,6 +140,20 @@ class TiltFilterParams(AbstractJobParams):
         description="A tilt with P(bad) at or above this is predicted bad",
     )
     dl_batch_size: int = Field(default=32, ge=1, le=256, description="Batch size for DL inference")
+    # The keep rule (services/tilt_series/keep_rule.py): a commit keeps a tilt the filter calls bad
+    # where excluding it would leave its series unalignable. On by default: AreTomo2 loses a
+    # series with a hole whole (one dataset, 2026-11-16), and a doubtful tilt costs less than a series.
+    keep_alignable: bool = Field(
+        default=True, description="Keep tilts the filter calls bad where excluding them leaves the series unalignable"
+    )
+    # 6.5°: one missing tilt at a 3° step. AreTomo2 crashed on 1 of 70 series whose largest gap was
+    # 3.5–6.5°, 6 of 57 at 6.5–9.5° and 15 of 33 at 9.5–15.5°.
+    keep_max_gap_deg: float = Field(
+        default=6.5, gt=0.0, le=90.0, description="Widest gap between kept tilts the filter may leave, in degrees"
+    )
+    keep_min_tilts: int = Field(
+        default=15, ge=0, le=200, description="A series the filter would leave with fewer tilts keeps all it can"
+    )
     tilt_labels: dict[str, str] = Field(default_factory=dict, description="Manual good/bad label overrides by tilt key")
     predict_run: TiltFilterPredictRun | None = None
     last_commit: TiltFilterCommit | None = None
@@ -235,9 +254,10 @@ def prediction_liveness(p_bad_by_series: Mapping[str, Sequence[float]]) -> tuple
 # ── commit-time verdict (shared by Approve and the DL-auto job) ──
 
 
-async def stamp_verdict(registry, labels: Mapping[str, str]) -> dict:
+async def stamp_verdict(registry, labels: Mapping[str, str], adjustment: Adjustment | None = None) -> dict:
     """Commit a tilt-filter verdict: stamp each frame's keep/drop decision (`labels`, frame id →
-    "good" / "bad"; anything but "good" drops) into the TiltSeries registry and save it.
+    "good" / "bad"; anything but "good" drops), as the keep rule's `adjustment` changes it, into
+    the TiltSeries registry and save it.
     Alignment applies the stamps when it snapshots the tomostar dir. Approve and the DL-auto
     job both commit through here.
 
@@ -246,7 +266,7 @@ async def stamp_verdict(registry, labels: Mapping[str, str]) -> dict:
     staleness convention. A label naming a frame the registry lacks refuses the commit before
     anything is stamped: its verdict would be lost.
 
-    Returns ok(kept=..., dropped=...) or err(...). A failure means the verdict was not
+    Returns ok(kept=..., dropped=..., kept_despite=..., cut=...) or err(...). A failure means the verdict was not
     recorded, so the caller must not mark the job succeeded."""
     if not registry.tilt_series_ids():
         return err("Cannot commit: the TiltSeries registry is empty. Reload the project to backfill it from mdocs.")
@@ -263,10 +283,20 @@ async def stamp_verdict(registry, labels: Mapping[str, str]) -> dict:
             f"Cannot commit: {len(unknown)} labelled tilts are not in the registry ({shown}). Reload the project."
         )
 
-    kept = dropped = 0
+    adj = adjustment or Adjustment()
+    kept = dropped = kept_despite = cut = 0
     for key, label in labels.items():
         bad = label != "good"
-        registry.set_frame_filtered(key, bad, reason="tilt-filter" if bad else None)
+        if bad and key in adj.keep:
+            registry.set_frame_filtered(key, False, kept_reason=adj.keep[key])
+            kept_despite += 1
+            bad = False
+        elif not bad and key in adj.cut:
+            registry.set_frame_filtered(key, True, reason=adj.cut[key])
+            cut += 1
+            bad = True
+        else:
+            registry.set_frame_filtered(key, bad, reason="tilt-filter" if bad else None)
         dropped += bad
         kept += not bad
 
@@ -275,7 +305,7 @@ async def stamp_verdict(registry, labels: Mapping[str, str]) -> dict:
     except Exception:
         logger.exception("tilt-filter commit: registry save failed")
         return err("Cannot commit: writing the tilt verdict to the registry failed. See the server log.")
-    return ok(kept=kept, dropped=dropped)
+    return ok(kept=kept, dropped=dropped, kept_despite=kept_despite, cut=cut)
 
 
 # ── the review: labels, Approve, Re-open (shared by the gallery and the job row) ──
@@ -293,6 +323,22 @@ def effective_label(
     if mode in DL_MODES and p_bad is not None and p_bad >= threshold:
         return "bad"
     return "good"
+
+
+def keep_rule(job_model: TiltFilterParams) -> KeepRule | None:
+    """The filter's keep rule, or None when it is switched off."""
+    if not job_model.keep_alignable:
+        return None
+    return KeepRule(max_gap_deg=job_model.keep_max_gap_deg, min_tilts=job_model.keep_min_tilts)
+
+
+def verdict(registry, job_model: TiltFilterParams) -> tuple[dict[str, str], Adjustment]:
+    """What a commit stamps: every frame's effective label, and what the keep rule changes in it."""
+    labels = verdict_labels(registry, job_model)
+    rule = keep_rule(job_model)
+    if rule is None:
+        return labels, Adjustment()
+    return labels, adjust(registry.all_tilt_series(), labels, job_model.tilt_labels, rule)
 
 
 def verdict_labels(registry, job_model: TiltFilterParams) -> dict[str, str]:
@@ -357,7 +403,7 @@ async def commit_verdict(state, project_path: Path, instance_id: str) -> dict:
         logger.exception("tilt-filter commit: registry unavailable")
         return err("Cannot commit: the TiltSeries registry could not be loaded. Reload the project and retry.")
 
-    res = await stamp_verdict(registry, verdict_labels(registry, job_model))
+    res = await stamp_verdict(registry, *verdict(registry, job_model))
     if not res["success"]:
         return res
 
@@ -374,6 +420,8 @@ async def commit_verdict(state, project_path: Path, instance_id: str) -> dict:
         dropped=res["dropped"],
         model=run.model if dl and run is not None and run.status == JobStatus.SUCCEEDED else None,
         threshold=job_model.threshold if dl else None,
+        kept_despite=res["kept_despite"],
+        cut=res["cut"],
     )
     state.mark_dirty()
     return res

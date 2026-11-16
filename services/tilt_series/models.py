@@ -298,6 +298,10 @@ class Frame(BaseModel):
     # the mislabeled TS-level TiltSeries.is_filtered_out placeholder.
     is_filtered_out: bool = False
     filter_reason: str | None = None
+    # Why the committed verdict keeps this tilt although the filter calls it bad
+    # (services/tilt_series/keep_rule.py: excluding it would leave its series unalignable).
+    # None for every other tilt; re-stamped with the verdict.
+    filter_kept_reason: str | None = None
     # The DL classifier's probability that this tilt is bad, from the latest prediction
     # run. A prediction, not a verdict: nothing downstream reads it until a commit turns
     # it into is_filtered_out.

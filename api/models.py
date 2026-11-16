@@ -186,6 +186,11 @@ class SetTiltFilterIn(JobIn):
     mode: Literal["manual", "dl_review", "dl_auto"] | None = None
     model: str | None = Field(None, description="One of conf.yaml's tilt_filter.models")
     threshold: float | None = Field(None, ge=0.0, le=1.0)
+    keep_alignable: bool | None = Field(
+        None, description="Keep tilts the filter calls bad where excluding them leaves the series unalignable"
+    )
+    keep_max_gap_deg: float | None = Field(None, description="Widest gap between kept tilts the filter may leave")
+    keep_min_tilts: int | None = Field(None, description="A series left with fewer tilts keeps all it can")
 
 
 class SetSlurmIn(JobIn):
