@@ -40,7 +40,7 @@ try:
         prediction_liveness,
         resolve_model,
         stamp_verdict,
-        verdict_labels,
+        verdict,
     )
 except ImportError as e:
     print("FATAL: Could not import services. Check PYTHONPATH.", file=sys.stderr)
@@ -202,7 +202,7 @@ def commit(job_model: TiltFilterParams, job_dir: Path, project_path: Path, model
 
     registry = get_registry_for(project_path)
     registry.raise_if_unreadable()
-    res = asyncio.run(stamp_verdict(registry, verdict_labels(registry, job_model)))
+    res = asyncio.run(stamp_verdict(registry, *verdict(registry, job_model)))
     if not res["success"]:
         raise RuntimeError(res["error"])
     record = TiltFilterCommit(
@@ -211,6 +211,8 @@ def commit(job_model: TiltFilterParams, job_dir: Path, project_path: Path, model
         dropped=res["dropped"],
         model=model_key,
         threshold=job_model.threshold,
+        kept_despite=res["kept_despite"],
+        cut=res["cut"],
     )
     (job_dir / COMMIT_RECORD).write_text(record.model_dump_json(indent=2))
     print(
@@ -218,6 +220,15 @@ def commit(job_model: TiltFilterParams, job_dir: Path, project_path: Path, model
         f"{record.dropped} excluded",
         flush=True,
     )
+    if job_model.keep_alignable:
+        print(
+            f"[DRIVER] Keep rule (gaps over {job_model.keep_max_gap_deg:g}°, under {job_model.keep_min_tilts} tilts): "
+            f"{record.kept_despite} of the kept tilts are called bad, kept to keep their series alignable; "
+            f"{record.cut} of the excluded are called good, cut past a gap nothing could close",
+            flush=True,
+        )
+    else:
+        print("[DRIVER] Keep rule off: every tilt called bad is excluded", flush=True)
 
 
 def main():

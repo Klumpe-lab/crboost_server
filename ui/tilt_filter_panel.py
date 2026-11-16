@@ -506,6 +506,14 @@ def _excluded_tip(jm, states, committed: bool) -> str:
         )
     else:
         lines.append(f"{n_manual} by a manual label.")
+    n_despite = sum(1 for s in states if s.kept_despite)
+    n_cut = sum(1 for s in states if s.review == "cut")
+    if jm is not None and jm.keep_alignable and (n_despite or n_cut):
+        lines.append(
+            f"Keep rule: {n_despite} tilts called bad stay in, since excluding them would leave their series "
+            f"unalignable (a gap over {jm.keep_max_gap_deg:g}° or under {jm.keep_min_tilts} tilts); "
+            f"{n_cut} called good are cut past a gap of blank or manually excluded tilts."
+        )
     return "\n".join(lines)
 
 

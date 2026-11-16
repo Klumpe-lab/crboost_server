@@ -445,10 +445,14 @@ async def set_tilt_filter(
     mode=None,
     model: str | None = None,
     threshold: float | None = None,
+    keep_alignable: bool | None = None,
+    keep_max_gap_deg: float | None = None,
+    keep_min_tilts: int | None = None,
 ) -> dict[str, Any]:
-    """The tilt filter's settings: its DL model (one of conf.yaml's `tilt_filter.models`) and threshold, fixed
-    while its DL-auto job runs, then its mode (`backend.set_tilt_filter_mode`, which saves and may submit the
-    jobs waiting for this filter's review: `resume`). The filter has no parameters for `set_params`."""
+    """The tilt filter's settings: its DL model (one of conf.yaml's `tilt_filter.models`), threshold and keep rule
+    (services/tilt_series/keep_rule.py), fixed while its DL-auto job runs, then its mode
+    (`backend.set_tilt_filter_mode`, which saves and may submit the jobs waiting for this filter's review:
+    `resume`). The filter has no parameters for `set_params`."""
     from services.configs.config_service import get_config_service
     from services.jobs.tilt_filter import FilterMode
 
@@ -456,8 +460,14 @@ async def set_tilt_filter(
     job_model = state.jobs.get(instance_id)
     if job_model is None or job_model.job_type != JobType.TILT_FILTER:
         return err(f"No tilt filter {instance_id} in this project.")
-    if (model is not None or threshold is not None) and job_model.auto_in_flight:
+    keep = {"keep_alignable": keep_alignable, "keep_max_gap_deg": keep_max_gap_deg, "keep_min_tilts": keep_min_tilts}
+    keep = {k: v for k, v in keep.items() if v is not None}
+    if (model is not None or threshold is not None or keep) and job_model.auto_in_flight:
         return err("Fixed while the DL-auto job runs.")
+    for name, value in keep.items():
+        keep[name], why = check_value(job_model, name, value)
+        if why:
+            return err(f"Not set: {name}: {why}", rejected={name: why})
     if model is not None:
         options = list(get_config_service().tilt_filter.models)
         if job_model.model and job_model.model not in options:
@@ -480,7 +490,18 @@ async def set_tilt_filter(
     if threshold is not None and threshold != job_model.threshold:
         job_model.threshold = threshold
         state.mark_dirty()
-    res = ok(mode=job_model.mode.value, model=job_model.model, threshold=job_model.threshold)
+    for name, value in keep.items():
+        if value != getattr(job_model, name):
+            setattr(job_model, name, value)
+            state.mark_dirty()
+    res = ok(
+        mode=job_model.mode.value,
+        model=job_model.model,
+        threshold=job_model.threshold,
+        keep_alignable=job_model.keep_alignable,
+        keep_max_gap_deg=job_model.keep_max_gap_deg,
+        keep_min_tilts=job_model.keep_min_tilts,
+    )
     if mode is not None:
         moved = await backend.set_tilt_filter_mode(Path(project_path), instance_id, mode)
         if not moved["success"]:

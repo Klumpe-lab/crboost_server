@@ -25,14 +25,7 @@ from nicegui import ui
 
 from services.configs.config_service import get_config_service
 from services.job_params import set_tilt_filter
-from services.jobs.tilt_filter import (
-    DL_MODES,
-    FilterMode,
-    calibrated_threshold,
-    effective_label,
-    reopen_lock,
-    resolve_model,
-)
+from services.jobs.tilt_filter import DL_MODES, FilterMode, calibrated_threshold, reopen_lock, resolve_model, verdict
 from services.models_base import JobStatus, JobType
 from services.project_state import get_project_state_for
 from services.tilt_series import get_registry_for
@@ -51,6 +44,7 @@ logger = logging.getLogger(__name__)
 _GREY, _BLUE, _AMBER, _GREEN, _RED = "#94a3b8", "#2563eb", "#b45309", "#15803d", "#dc2626"
 _METHODS = [("manual", "Manual"), ("dl", "DL")]
 _WHEN_DL = [(FilterMode.DL_REVIEW.value, "Stop for review"), (FilterMode.DL_AUTO.value, "Apply automatically")]
+_KEEP = [("on", "On"), ("off", "Off")]
 
 
 def _notify(message: str, kind: str) -> None:
@@ -65,14 +59,10 @@ def _statuses(state, job_type: JobType) -> list[JobStatus]:
 
 
 def _to_exclude(project_path: Path, jm) -> int:
-    """Tilts the review marks bad as it stands (effective_label): what Approve labels excludes."""
+    """Tilts the review excludes as it stands, keep rule included: what Approve labels excludes."""
     registry = get_registry_for(Path(project_path))
-    return sum(
-        1
-        for ts in registry.all_tilt_series()
-        for f in ts.frames
-        if effective_label(f.id, f.p_bad, jm.tilt_labels, jm.threshold, jm.mode) == "bad"
-    )
+    labels, adj = verdict(registry, jm)
+    return sum(1 for key, label in labels.items() if (label != "good" and key not in adj.keep) or key in adj.cut)
 
 
 def _plural(n: int, word: str) -> str:
@@ -100,6 +90,12 @@ def _committed_status(state, jm) -> tuple[str, str, str]:
     who = "The DL-auto job committed this verdict" if auto else "Approved"
     if lc is not None and lc.threshold is not None:
         who += f" at a confidence score ≥ {lc.threshold:.2f}"
+    if lc is not None and (lc.kept_despite or lc.cut):
+        text += f" · {lc.kept_despite} kept"
+        who += (
+            f"; the keep rule kept {lc.kept_despite} tilts called bad, which their series needed to stay alignable, "
+            f"and cut {lc.cut} called good past a gap nothing could close"
+        )
     if auto and lc is None:
         who += "; its counts were not recorded"
     alignment = _statuses(state, JobType.TS_ALIGNMENT)
@@ -282,7 +278,7 @@ class TiltFilterControls(FingerprintedView):
         if jm is None:
             return None
         # Not the threshold: its box is bound to it, and a repaint would take the box from under the cursor.
-        return (jm.mode, jm.model, jm.auto_in_flight)
+        return (jm.mode, jm.model, jm.auto_in_flight, jm.keep_alignable)
 
     def render(self):
         project_path = self._panel.ui_mgr.project_path
@@ -317,6 +313,7 @@ class TiltFilterControls(FingerprintedView):
                     with ui.element("div").style("opacity: 0.45; pointer-events: none;"):
                         render_segmented(_WHEN_DL, FilterMode.DL_REVIEW.value, self._on_when, classes="cb-seg-sm")
         self._render_threshold(jm, frozen)
+        self._render_keep(jm, frozen)
         if dl and (len(models.models) > 1 or (chosen and chosen not in models.models)):
             self._render_model(jm, chosen, frozen)
 
@@ -355,7 +352,51 @@ class TiltFilterControls(FingerprintedView):
                     "conf.yaml records no confidence-score cut for this model, so this threshold has not been measured."
                 )
 
+    def _render_keep(self, jm, frozen: bool) -> None:
+        tip = (
+            "Keep tilts the filter calls bad where excluding them would leave their series unalignable: AreTomo2 "
+            "crashes on a series with a gap wider than the limit between kept tilts, and on one with few tilts left. "
+            "Such a gap is closed with the tilts inside it, and a series under the floor keeps every tilt it can. "
+            "Never put back: a manual exclusion or a blank exposure; where those leave a gap, the series is cut there. "
+            "Kept tilts are marked in the Tilts views. Takes effect at the next commit."
+        )
+        with _setting("keep rule", tip):
+            seg = ui.element("div")
+            with seg:
+                render_segmented(_KEEP, "on" if jm.keep_alignable else "off", self._on_keep, classes="cb-seg-sm")
+            gap = house_number(
+                "", model=jm, attr="keep_max_gap_deg", min=0.5, max=90, step=0.5, width="w-12", on_change=self._on_save
+            )
+            ui.label("° gap").style(f"{FONT} font-size: 9px; color: {_GREY};")
+            floor = house_number(
+                "", model=jm, attr="keep_min_tilts", min=0, max=200, step=1, width="w-12", on_change=self._on_save
+            )
+            ui.label("tilts").style(f"{FONT} font-size: 9px; color: {_GREY};")
+            if frozen:
+                seg.style("opacity: 0.45; pointer-events: none;")
+                for box in (gap, floor):
+                    box.disable()
+                    box.tooltip("Fixed while the DL-auto job runs.")
+            elif not jm.keep_alignable:
+                for box in (gap, floor):
+                    box.disable()
+
     # ── handlers ──
+
+    async def _on_keep(self, key: str) -> None:
+        async with self._flight(f"tilt-filter-keep:{self._iid}") as acquired:
+            if not acquired:
+                return
+            res = await set_tilt_filter(
+                self._panel.backend, self._panel.ui_mgr.project_path, self._iid, keep_alignable=key == "on"
+            )
+            if not res["success"]:
+                _notify(res["error"], "warning")
+            await self._panel.backend.save_project(self._panel.ui_mgr.project_path, force=True)
+            self.refresh()
+
+    async def _on_save(self, _e) -> None:
+        await self._panel.backend.save_project(self._panel.ui_mgr.project_path, force=True, debounce_s=1.0)
 
     def _on_method(self, key: str):
         # Manual → DL stops for review first.

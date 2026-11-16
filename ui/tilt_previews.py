@@ -42,12 +42,11 @@ from typing import Any
 from nicegui import ui
 
 from services.dashboard_data import find_job_by_type, position_label
-from services.jobs.tilt_filter import DL_MODES
+from services.jobs.tilt_filter import DL_MODES, keep_rule
 from services.models_base import JobStatus, JobType
 from services.tilt_series import get_registry_for
+from services.tilt_series.exposure import BLANK_EXPOSURE_FRACTION, DIM_EXPOSURE_FRACTION
 from services.tilt_series.tilt_state import (
-    BLANK_EXPOSURE_FRACTION,
-    DIM_EXPOSURE_FRACTION,
     OUTLIER_BAND_DEG,
     OUTLIER_MIN_BAND,
     OUTLIER_ROBUST_SDS,
@@ -371,6 +370,7 @@ def tilt_context(state) -> dict:
         "mode": jm.mode if jm is not None else None,
         "labels": dict(jm.tilt_labels) if jm is not None else {},
         "threshold": jm.threshold if jm is not None else None,
+        "rule": keep_rule(jm) if jm is not None else None,
     }
 
 
@@ -397,7 +397,7 @@ def collect_tilt_groups(tilt_series: Iterable, png_dir: Path, ctx: dict) -> tupl
     series = list(tilt_series)
     per_series = [(ts, _tilt_metrics(ts, ctx)) for ts in series]
     bands = _project_bands(per_series)
-    review = {k: ctx[k] for k in ("alignment_instance", "committed", "labels", "threshold", "mode")}
+    review = {k: ctx[k] for k in ("alignment_instance", "committed", "labels", "threshold", "mode", "rule")}
     groups: list[dict] = []
     angles: list[float] = []
     marks: set[str] = set()
@@ -501,7 +501,7 @@ def restate_group(group: dict, ctx: dict, bands: dict) -> list[dict]:
     """Re-derive a group's tilts after the review changed (a label, the threshold, cleared
     labels): their states, looks, captions and popovers, its summary and strip ticks. The
     metrics and outliers stay as collected. Returns the tilts whose card changed."""
-    review = {k: ctx[k] for k in ("alignment_instance", "committed", "labels", "threshold", "mode")}
+    review = {k: ctx[k] for k in ("alignment_instance", "committed", "labels", "threshold", "mode", "rule")}
     states = {s.frame_id: s for s in tilt_states(group["series"], **review)}
     changed = []
     for i, old in enumerate(group["tilts"]):
@@ -600,9 +600,10 @@ def where_sentence(s: TiltState) -> str:
         return f"Excluded by the approved verdict{why}: not in the tomogram."
     if s.in_tomogram is False:
         return "Not in alignment's output: Warp's import left it out (it drops dark tilts at the end of a series)."
+    despite = f" Kept although the filter calls it bad: {s.kept_despite}." if s.kept_despite else ""
     if s.in_tomogram:
-        return "In the tomogram."
-    return "Alignment has not run for this tilt series."
+        return "In the tomogram." + despite
+    return "Alignment has not run for this tilt series." + despite
 
 
 def _status_line(s: TiltState, threshold: float | None) -> tuple[str, str] | None:
@@ -610,6 +611,11 @@ def _status_line(s: TiltState, threshold: float | None) -> tuple[str, str] | Non
     kept by a manual label. None for a tilt the review leaves alone."""
     if s.review == "human_bad":
         return "Excluded: manual label", _RED_TEXT
+    if s.review == "cut":
+        return f"Excluded: {s.cut_reason}", _RED_TEXT
+    if s.kept_despite:
+        score = f", confidence score {s.p_bad:.2f}" if s.p_bad is not None else ""
+        return f"Kept although the filter calls it bad{score}: {s.kept_despite}", _LABEL
     if s.review == "model_bad":
         cut = f", threshold {threshold:.2f}" if threshold is not None else ""
         return f"Excluded: confidence score {s.p_bad:.2f}{cut}", _RED_TEXT
@@ -952,10 +958,13 @@ def _words_html(words: Sequence[tuple[str, str, str]]) -> str:
 def _excluded_title(states: Sequence[TiltState]) -> str:
     n_model = sum(1 for t in states if t.review == "model_bad")
     n_manual = sum(1 for t in states if t.review == "human_bad")
-    if n_model or n_manual:
+    n_cut = sum(1 for t in states if t.review == "cut")
+    if n_model or n_manual or n_cut:
         text = (
             f"{len(states)} excluded, not approved yet: {n_model} by the confidence score at the threshold, "
-            f"{n_manual} by a manual label. Approve labels makes it final."
+            f"{n_manual} by a manual label"
+            + (f", {n_cut} cut past a gap alignment cannot bridge" if n_cut else "")
+            + ". Approve labels makes it final."
         )
     else:
         text = f"{len(states)} excluded by the approved verdict."

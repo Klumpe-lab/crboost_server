@@ -196,3 +196,30 @@ legacy cluster; their times come from file times and `task_N.out`):
   0.5 vs 1011 in the old project). Slot6 and Grid3: missAlign/tsCtf cancelled, `aligntiltsWarp__2` (clone, now
   under the 43-character alias limit) wired into missAlign → tsCtf; not run yet — the submitted-then-cancelled
   Reconstruct (both) and TM/candidates (Slot6) must leave the roster first (UI delete), or Run resubmits them.
+- **2026-11-15 ~21:00** — After the limit fix (committed by the maintainer, server restarted), Slot6, Grid3 and
+  unmilled2 re-aligned from scratch (SLURM 1688656/59/62, 4–7 min each): Slot6 123 = old 123, Grid3 96 vs old 95
+  (+Position_2_2), unmilled2 154 vs 164 (the same 12 AreTomo2 crashes on filter holes, same 0.301 verdict as
+  before: 1378 dropped). missAlign → tsCtf chained (1688657–58, 1688660–61, 1688663–64); nothing after tsCtf.
+- **2026-11-16 ~10:00** — unmilled2 job008 (154/176): all 22 drops are AreTomo2 exit 139 on what the 0.301 verdict
+  left. 5 had no tilt left at all (Position_5_6, 8, 18_2, 22_3, 32_3) and were still handed to AreTomo: they should
+  be dropped before alignment with that reason. 16 had a gap of 18–84°, one 12°. Pooled over five reruns (783
+  series), crash rate by largest gap: ≤ 3.5° 8/559 (5 = the empty ones), 3.5–9.5° 7/127, 9.5–15.5° 15/33, > 15.5°
+  32/33. The holes are mostly the model being unsure, not confident: unmilled2 has 11.1 % of tilts at 0.301 < p ≤
+  0.9 (FCIsolation 7.5 %, R1 3.3 %, the rest ≤ 2.8 %) and those two lose the most series (22, 21). Off-line estimate
+  for unmilled2: threshold 0.9 alone ~160 aligned; 0.9 with the verdict trimmed to the contiguous run around 0°
+  (cut at the first gap > 6.5°) ~165, the old project 164. Trimming is not in crboost (proposed: the filter's
+  verdict trims instead of punching holes, and a series left with too few tilts is dropped before alignment with
+  that reason). unmilled2's missAlign/tsCtf (1688663–64) were cancelled before starting (2026-11-15 20:09);
+  unmilled2 left alone. The other seven queued to Warp Export with R1's settings (missAlign paper/4 GPUs/2
+  training, halfmap_frames 0; Warp Export 412 binning 2 box 256 as in the old projects, ribosome binning 2 box 200,
+  new): Slot6 1695140–46, Grid3 1695150–56, FCIsolation 1695157–65 and SK 1695166–74 (both from missAlign: their
+  rosters had lost everything after the overnight re-alignments 1689586/1689591), Grid2 1695175–76, pilot
+  1695177–78, R1 1695179–80 (export only).
+- **2026-11-16 ~11:00** — Keep rule built (known_bugs #4, maintainer's choice of the proposed variant): a commit
+  keeps a bad-called tilt where excluding it leaves a gap > 6.5° or under 15 tilts; blank exposures and manual
+  "bad" labels are never put back, and a gap they hold open cuts the series there. Off-line on the live
+  registries: unmilled2 at 0.9 → 121 tilts kept despite the filter, 15 cut, largest gap left 6°, no empty
+  series (rule off: 604 excluded; on: 498); FCIsolation at 0.9 → 155 kept, 16 cut. Preview (open review) and
+  commit agree tilt for tilt. Not run on the cluster yet: needs the server restarted. Then unmilled2 and
+  FCIsolation (21 series dropped; the maintainer wants it redone from the filter too, its missAlign chain
+  1695157–65 was cancelled before starting) re-run from the filter at 0.9 with the rule.
