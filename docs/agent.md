@@ -47,8 +47,11 @@ what the plan does: per project the values of a new one, the roster after the pl
 now → after, deletions with their sizes, what the run submits. Then:
 
 - **In the terminal (the default):** the agent calls `apply_changes_now`, and the crboost MCP server opens a
-  dialog of its own in Claude Code (MCP elicitation) with that whole plan in it: Apply, or Do nothing. The
-  server applies the plan only when the forwarder hands back the one-time token it got for that dialog, which
+  form of its own in Claude Code (MCP elicitation): the gist in two lines, then the plan as rows (a new
+  project's values, the jobs added), each setting it changes as a field filled in with the plan's value, each
+  deletion as a switch. Change a field and Accept applies the plan with it (checked again, as an edit on the page
+  is); Decline changes nothing. The server applies the plan only when the forwarder hands back the one-time token
+  it got for that form, which
   the agent never sees, so neither the agent, an allow rule nor auto mode can say yes for you. That is why
   `apply_changes_now` can sit in the allow list. An Elicitation hook in your settings could answer the dialog:
   don't write one that matches `crboost`. A Claude Code that cannot show such a dialog (print mode) gets a

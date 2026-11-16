@@ -479,5 +479,22 @@ not appear at all. So the confirmation moved into the MCP server.
 - Checked: the dialog text for the demo plan and the alignment-clone plan; the token flow on the real plan code
   (wrong token, replay, right token, reuse); the forwarder over stdio with a stand-in server and an MCP client
   answering apply, keep, decline, and one without elicitation.
+- First try through Claude Code: the server had been restarted but not the forwarder, and the old forwarder
+  passed `confirm`, token and all, to the agent (which did not use it). Since then the server hands out a token
+  only to a call marked `dialog`, which the forwarder sets for tools whose `_meta` says `crboost/dialog` and
+  after dropping any `confirmation` the agent sent; an older forwarder gets "reconnect it with /mcp". Checked
+  over stdio: an agent-sent token is dropped and the dialog still decides.
+- Second try: Claude Code speaks the 2026-07-28 wire, where a server cannot send a request in the middle of a
+  call ("no back-channel"); it failed safe, nothing applied. On that wire the forwarder now answers the call
+  `InputRequiredResult` with the dialog, its state a random key into the forwarder's table (the token stays
+  there), and settles it when Claude Code retries with the user's answer; the handshake wire still asks mid-call.
+  Checked over stdio with the SDK client pinned to each wire: apply, keep, decline, and a forged token.
+- Third try: the dialog came up, and Claude Code shows a message's first two lines and "(+22 more lines)" but
+  every form field whole. So the dialog is a form (`agent_plan_view.dialog_form`): the gist in two lines; facts
+  as one-choice rows (project, values, jobs added, the run); each changed setting an editable field with the
+  plan's value (its now in the description); each deletion a yes/no. Accept sends the fields back with the token
+  (`ApplyNowIn.edits`, the forwarder's alone); the server folds changed values and kept deletions into the plan
+  (`steps_with_edits`, the same rewrite the page uses; `coerce` moved beside it) and revises it before carrying
+  it out; a refused edit applies nothing. No choice field any more: Enter on its default had answered Do nothing.
 - Not checked: how Claude Code lays the dialog out (the docs don't say whether `message` is markdown; it is plain
   text on purpose), and a long plan's scrolling outside fullscreen.

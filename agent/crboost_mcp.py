@@ -20,8 +20,9 @@ With no server up, it offers `get_server_info`, which says how to start one, and
 once the server answers, it announces the full tool list (`notifications/tools/list_changed`).
 
 A call the user must confirm (apply_changes_now) comes back with `confirm`: a dialog's text and a one-time token.
-The forwarder shows the text in Claude Code's own dialog (MCP elicitation), and only on the user's yes calls again
-with the token. The token never reaches the agent: the dialog is the user's answer, not the agent's.
+The forwarder shows the text in Claude Code's own dialog (MCP form elicitation: asked mid-call on the handshake
+wire, answered "input required" and resolved on Claude Code's retry on the 2026-07-28 wire), and only on the
+user's apply calls again with the token. The token never reaches the agent, nor Claude Code.
 
     claude mcp add --scope user crboost -- <checkout>/crboost mcp
 
@@ -34,8 +35,10 @@ from __future__ import annotations
 import getpass
 import json
 import os
+import secrets
 import socket
 import sys
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -131,6 +134,8 @@ class Forwarder:
         self.why = ""
         self.tools: list[types.Tool] = []
         self.signature: tuple = ()
+        # Tools the user confirms in this forwarder's dialog (`_meta["crboost/dialog"]`).
+        self.dialogs: set[str] = set()
 
     def _token(self) -> str:
         return TOKEN_FILE.read_text().strip()
@@ -164,6 +169,7 @@ class Forwarder:
         if signature == self.signature:
             return False
         self.signature = signature
+        self.dialogs = {t["name"] for t in served if (t.get("_meta") or {}).get("crboost/dialog")}
         self.tools = [
             types.Tool(
                 name=t["name"],
@@ -203,63 +209,90 @@ class Forwarder:
             return {"success": False, "error": f"HTTP {r.status_code}: {r.text[:500]}"}
 
 
-CONFIRM_FIELD = "decision"
+CONFIRM_KEY = "confirm"
+# How long an open dialog (2026-07-28 wire) waits for the user's answer before its token is forgotten.
+DIALOG_TTL_S = 3600.0
+NOT_APPLIED = (
+    "The user declined the plan in the terminal dialog: nothing changed. Ask them what to change, or leave it on "
+    "its page."
+)
+# Keys only this forwarder sets on a dialog verb's call; one the agent sends is dropped.
+FORWARDER_KEYS = ("confirmation", "edits", "dialog")
 
 
-async def ask_user(ctx, confirm: dict[str, Any]) -> bool | str:
-    """The user's answer in Claude Code's dialog: True for apply, False for anything else, or why it could not
-    be asked."""
+def accepted(answer: Any) -> dict[str, Any] | None:
+    """The form's fields when the user pressed Accept; None for a decline, a cancel, or anything malformed."""
+    if isinstance(answer, dict):
+        action, content = answer.get("action"), answer.get("content")
+    else:
+        action, content = getattr(answer, "action", None), getattr(answer, "content", None)
+    if action != "accept":
+        return None
+    return dict(content) if isinstance(content, dict) else {}
+
+
+def can_ask(ctx) -> bool:
     caps = ctx.session.client_capabilities
-    if caps is None or caps.elicitation is None:
-        return "This Claude Code does not show a server's dialogs (no MCP elicitation)."
-    schema = {
-        "type": "object",
-        "properties": {
-            CONFIRM_FIELD: {
-                "type": "string",
-                "title": confirm["title"],
-                "oneOf": [{"const": "apply", "title": confirm["apply"]}, {"const": "keep", "title": confirm["keep"]}],
-                "default": "keep",
-            }
-        },
-        "required": [CONFIRM_FIELD],
-    }
+    return caps is not None and caps.elicitation is not None
+
+
+class Dialogs:
+    """Dialogs open on the 2026-07-28 wire, where the server cannot ask mid-call: the tool answers "input
+    required" with the dialog, and Claude Code calls again with the user's answer and the opaque state. The state
+    is a random key into this table; the server's token stays here and never travels."""
+
+    def __init__(self) -> None:
+        self._open: dict[str, tuple[float, str, dict[str, Any], dict[str, Any], dict[str, Any]]] = {}
+
+    def open(self, name: str, arguments: dict[str, Any], confirm: dict[str, Any], first: dict[str, Any]):
+        now = time.monotonic()
+        self._open = {k: v for k, v in self._open.items() if now - v[0] < DIALOG_TTL_S}
+        state = secrets.token_urlsafe(18)
+        self._open[state] = (now, name, arguments, confirm, first)
+        request = types.ElicitRequest(
+            params=types.ElicitRequestFormParams(message=confirm["message"], requested_schema=confirm["schema"])
+        )
+        return types.InputRequiredResult(input_requests={CONFIRM_KEY: request}, request_state=state)
+
+    def take(self, state: str, name: str, arguments: dict[str, Any]):
+        """The dialog this retry answers, once; None when it is unknown, expired, or for another call."""
+        held = self._open.pop(state, None)
+        if held is None or time.monotonic() - held[0] >= DIALOG_TTL_S or held[1] != name or held[2] != arguments:
+            return None
+        return held
+
+
+async def ask_now(ctx, confirm: dict[str, Any]) -> dict[str, Any] | None | str:
+    """The handshake-era wire: ask in the middle of the call. The fields on Accept, None otherwise, or why it
+    could not be asked."""
     try:
-        answer = await ctx.session.elicit_form(confirm["message"], schema, related_request_id=ctx.request_id)
-    except Exception as e:  # any failure to ask is reported to the agent as "not asked", never as a yes
+        answer = await ctx.session.elicit_form(confirm["message"], confirm["schema"], related_request_id=ctx.request_id)
+    except Exception as e:  # any failure to ask is reported to the agent as "not asked", never as an Accept
         print(f"crboost: the confirmation dialog failed: {e!r}", file=sys.stderr)
         return f"The confirmation dialog could not be shown: {e}"
-    return answer.action == "accept" and (answer.content or {}).get(CONFIRM_FIELD) == "apply"
+    return accepted(answer)
 
 
-async def confirmed(
-    ctx, forwarder: Forwarder, name: str, arguments: dict[str, Any], confirm: dict[str, Any], first: dict[str, Any]
-) -> dict[str, Any]:
-    """The call again with the server's one-time token when the user says yes in the dialog; else what happened,
-    for the agent, without the token."""
-    answer = await ask_user(ctx, confirm)
-    if answer is True:
-        return await forwarder.call(name, {**arguments, "confirmation": confirm["token"]})
-    if answer is False:
-        return {
-            "success": False,
-            "error": "The user did not apply the plan in the terminal dialog: nothing changed. Ask them what to "
-            "change, or leave it on its page.",
-            "declined": True,
-            "ui_url": first.get("ui_url"),
-        }
+async def settle(forwarder: Forwarder, name: str, arguments: dict[str, Any], confirm, first, answer):
+    """The call again with the server's one-time token and the form's fields when the user pressed Accept; else
+    what happened, for the agent, without the token."""
+    if isinstance(answer, dict):
+        return await forwarder.call(name, {**arguments, "confirmation": confirm["token"], "edits": answer})
+    if answer is None:
+        return {"success": False, "error": NOT_APPLIED, "declined": True, "ui_url": first.get("ui_url")}
     return {**first, "error": f"{answer} {first.get('error', '')}".strip()}
 
 
 def main() -> None:
     forwarder = Forwarder()
+    dialogs = Dialogs()
     bus = InMemorySubscriptionBus()
 
     async def on_list_tools(ctx, params) -> types.ListToolsResult:
         await anyio.to_thread.run_sync(forwarder.connect)
         return types.ListToolsResult(tools=forwarder.listed())
 
-    async def on_call_tool(ctx, params: types.CallToolRequestParams) -> types.CallToolResult:
+    async def on_call_tool(ctx, params: types.CallToolRequestParams):
         changed = await anyio.to_thread.run_sync(forwarder.connect)
         if changed:
             # The handshake era takes a plain notification; the 2026-07-28 wire, the listen stream.
@@ -269,11 +302,31 @@ def main() -> None:
             except (RuntimeError, AttributeError) as e:
                 print(f"crboost: tool list change not sent on this session: {e}", file=sys.stderr)
         arguments = dict(params.arguments or {})
+        if params.name in forwarder.dialogs:
+            # Only this forwarder says a dialog can be shown or was answered; never the agent.
+            for key in FORWARDER_KEYS:
+                arguments.pop(key, None)
+            arguments["dialog"] = True
         try:
-            result = await forwarder.call(params.name, arguments)
-            confirm = result.pop("confirm", None)
-            if confirm:
-                result = await confirmed(ctx, forwarder, params.name, arguments, confirm, result)
+            if params.name in forwarder.dialogs and params.request_state is not None:
+                held = dialogs.take(params.request_state, params.name, arguments)
+                if held is None:
+                    result = {"success": False, "error": "That dialog is no longer open: nothing changed. Call again."}
+                else:
+                    _, _, _, confirm, first = held
+                    answer = (params.input_responses or {}).get(CONFIRM_KEY)
+                    result = await settle(forwarder, params.name, arguments, confirm, first, accepted(answer))
+            else:
+                result = await forwarder.call(params.name, arguments)
+                confirm = result.pop("confirm", None)
+                if confirm:
+                    if not can_ask(ctx):
+                        answer = "This Claude Code does not show a server's dialogs (no MCP elicitation)."
+                    elif ctx.session.can_send_request:
+                        answer = await ask_now(ctx, confirm)
+                    else:
+                        return dialogs.open(params.name, arguments, confirm, result)
+                    result = await settle(forwarder, params.name, arguments, confirm, result, answer)
         except httpx.HTTPError as e:
             result = {"success": False, "error": f"The CryoBoost server did not answer: {e}"}
         text = json.dumps(result, ensure_ascii=False, separators=(",", ":"))

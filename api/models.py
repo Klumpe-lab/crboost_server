@@ -368,3 +368,8 @@ class ApplyNowIn(ApplyIn):
     # The one-time answer the crboost MCP forwarder sends after the user confirmed the plan in its terminal
     # dialog. Not in the tool's schema: the agent never sees it, so it cannot confirm for the user.
     confirmation: SkipJsonSchema[str | None] = None
+    # Set by a forwarder that shows the dialog (it drops one an agent sends). Without it no token is handed out:
+    # an older forwarder would pass the token on to the agent.
+    dialog: SkipJsonSchema[bool] = False
+    # The dialog's fields as the user left them, with the confirmation (the forwarder's, never the agent's).
+    edits: SkipJsonSchema[dict[str, Any] | None] = None

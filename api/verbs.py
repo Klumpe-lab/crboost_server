@@ -31,6 +31,9 @@ class Verb:
     asks: bool = False
     # Deletes for good: refused unless it is a step of a change plan the user approved on its page.
     plan_only: bool = False
+    # Confirmed in a dialog the crboost MCP forwarder shows (`confirm` in the answer): the forwarder marks its
+    # calls (`dialog`), and without that mark the server hands out no confirmation token.
+    dialog: bool = False
 
     @property
     def names_project(self) -> bool:
@@ -400,6 +403,7 @@ _VERBS: tuple[Verb, ...] = (
         m.ApplyNowIn,
         "write",
         p.apply_changes_now,
+        dialog=True,
     ),
     Verb(
         "apply_changes",
