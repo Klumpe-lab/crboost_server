@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic.json_schema import SkipJsonSchema
 
 _PROJECT = "The project: its absolute path, or its folder name under one of the user's project bases."
 _JOB = "The job's instance id on the roster, e.g. `aligntiltsWarp` or `templatematching__2` (get_project lists them)."
@@ -361,3 +362,9 @@ class ApplyIn(PlanIn):
         description="The revision the user was shown (plan_changes or get_plan); refused when the plan was edited on "
         "its page since",
     )
+
+
+class ApplyNowIn(ApplyIn):
+    # The one-time answer the crboost MCP forwarder sends after the user confirmed the plan in its terminal
+    # dialog. Not in the tool's schema: the agent never sees it, so it cannot confirm for the user.
+    confirmation: SkipJsonSchema[str | None] = None

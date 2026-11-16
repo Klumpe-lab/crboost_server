@@ -22,11 +22,12 @@ something to see.
   each step exactly as the verb takes it alone, in the order they run, `run` last when the user asked for a
   run. Nothing changes yet: the server rehearses the steps on a copy of each project and refuses naming the
   step that would fail, or answers with needs.
-  - **Confirm in the terminal (the default).** Print the answer's `overview` to the user exactly as it is: it is
-    markdown the server wrote (each project's values, roster, settings now → after, deletions, the run). No
-    summary of your own, no list of the steps, nothing left out. Then call
-    `apply_changes_now(plan_id, revision)`: Claude Code asks the user to confirm, and that prompt is the
-    approval. If they say no and what to change, plan again with the change and show the new overview.
+  - **Confirm in the terminal (the default).** Call `apply_changes_now(plan_id, revision)` straight away: the
+    crboost server opens a dialog in the terminal with the whole plan (each project's values, roster, settings
+    now → after, deletions, the run) and applies it only when the user picks Apply there. You cannot answer it
+    for them. Don't print the plan yourself first; the dialog is it. If the answer says the dialog could not be
+    shown, print `overview` exactly as it is and give the page (`ui_url`). If they decline, ask what to change
+    and plan again.
   - **On the page.** A plan that deletes something for good (`permanent` is not empty) is approved on its page
     (`ui_url`), and so is any plan the user prefers to read or edit there: give the link and wait. The page can
     change parameters, SLURM values and drop deletions; each edit moves the plan's `revision`. When the user

@@ -456,3 +456,28 @@ Laid out as the app's own job views, not as tables of a report:
   plan with a permanent step, `apply_changes` refuses before approval and on a stale revision.
 - Not checked: the page in a browser (blur commits, the adopt-instead-of-rebuild), a terminal-confirmed plan
   through Claude Code.
+
+### S7 — the terminal confirmation shows the plan (built 2026-11-16)
+
+Tried through Claude Code, S6's confirmation was the permission prompt: a bare yes/no naming the tool and its
+arguments. The overview the agent printed before it is not part of that prompt, and in auto mode the prompt may
+not appear at all. So the confirmation moved into the MCP server.
+
+- `apply_changes_now` changes nothing on its first call: it answers `confirm`, the plan as plain text with aligned
+  columns (`agent_plan_view.dialog_text`: per project the values, jobs +/−, settings now/after grouped by job,
+  deletions, the run) and a one-time token bound to the plan's revision.
+- The forwarder (`agent/crboost_mcp.py`) strips `confirm` from what the agent sees and shows the text in Claude
+  Code's own dialog (MCP form elicitation, Claude Code 2.1.76+): one choice, "Apply the plan" or "Do nothing",
+  defaulting to Do nothing. On Apply it calls again with the token (`ApplyNowIn.confirmation`, kept out of the
+  tool's schema); anything else answers "declined, nothing changed". The token is spent on any try, and a page
+  edit (new revision) voids it.
+- No `asks` on `apply_changes_now` any more, and it joins the allow list: the dialog is the confirmation, and
+  neither an allow rule nor auto mode answers it. An Elicitation hook could; `docs/agent.md` says not to write
+  one for `crboost`. A client without elicitation (print mode) gets a refusal and the page.
+- The agent no longer prints the overview before applying (instructions, skill); it prints it only when the
+  dialog could not be shown.
+- Checked: the dialog text for the demo plan and the alignment-clone plan; the token flow on the real plan code
+  (wrong token, replay, right token, reuse); the forwarder over stdio with a stand-in server and an MCP client
+  answering apply, keep, decline, and one without elicitation.
+- Not checked: how Claude Code lays the dialog out (the docs don't say whether `message` is markdown; it is plain
+  text on purpose), and a long plan's scrolling outside fullscreen.

@@ -9,8 +9,9 @@ by title, now → after, and every step in a sentence. `plan_changes` answers wi
 terminal (`services/agent_plan_view.py`).
 
 Two ways to carry it out, the same run of the steps behind both: `apply_changes` after the user approved on the
-page (allow-listed, refused before), and `apply_changes_now`, which Claude Code asks the user to confirm in the
-terminal (`asks`), refused for a plan that deletes something for good. The steps run in order through the same
+page (allow-listed, refused before), and `apply_changes_now`, which the user confirms in a terminal dialog the
+MCP forwarder opens with the plan in it (`dialog_text`; a one-time token the agent never sees), refused for a plan
+that deletes something for good. The steps run in order through the same
 dispatch as single calls, the gate checked again per step; the first that fails stops the plan. Nothing is rolled
 back: each step stands on its own, as a click in the UI does.
 """
@@ -21,6 +22,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import secrets
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -30,7 +32,7 @@ from api.context import ApiContext, open_project
 from api.handlers import Call, _plain
 from api.reach import write_refusal
 from services import job_params, pipeline_edit
-from services.agent_plan_view import overview, show
+from services.agent_plan_view import dialog_text, overview, show
 from services.agent_plans import (
     Deletion,
     FieldView,
@@ -702,8 +704,8 @@ async def plan_changes(call: Call) -> dict[str, Any]:
         )
     else:
         how = (
-            "Print `overview` to the user exactly as it is, then call apply_changes_now(plan_id, revision): Claude "
-            "Code asks the user to confirm. They may also edit or approve it on the page (ui_url)."
+            "Call apply_changes_now(plan_id, revision) now: the server shows the user this plan in a terminal "
+            "dialog and applies it only on their yes. They may also edit or approve it on the page (ui_url)."
         )
     return _answer(call.ctx, plan, message="Nothing has changed yet. " + how)
 
@@ -814,8 +816,8 @@ async def apply_changes(call: Call) -> dict[str, Any]:
     url = plan_url(call.ctx, plan.id)
     if plan.status == PlanStatus.PROPOSED:
         return err(
-            f"The user has not approved {plan.id} on its page. To confirm it in the terminal instead, print its "
-            "overview and call apply_changes_now.",
+            f"The user has not approved {plan.id} on its page. To confirm it in the terminal instead, call "
+            "apply_changes_now.",
             ui_url=url,
         )
     if plan.status != PlanStatus.APPROVED:
@@ -824,7 +826,10 @@ async def apply_changes(call: Call) -> dict[str, Any]:
 
 
 async def apply_changes_now(call: Call) -> dict[str, Any]:
-    """The terminal path: Claude Code's prompt for this call is the user's confirmation."""
+    """The terminal path, in two calls. Without a confirmation it changes nothing: it answers the plan as the
+    crboost MCP forwarder shows it in a dialog of its own (`confirm`, with a one-time token), and the forwarder,
+    on the user's yes there, calls again with the token. The agent never sees the token, so neither it nor an
+    allow rule nor auto mode can say yes for the user."""
     plan, why = _plan_or_err(call.args.plan_id)
     if why is not None:
         return why
@@ -837,6 +842,31 @@ async def apply_changes_now(call: Call) -> dict[str, Any]:
             "approves that on the page, then apply_changes.",
             ui_url=url,
         )
+    if call.args.revision is not None and call.args.revision != plan.revision:
+        return err(
+            f"{plan.id} was edited on its page (now revision {plan.revision}): show the user get_plan's overview "
+            "and ask again.",
+            ui_url=url,
+        )
+    given = call.args.confirmation
+    if given is None:
+        token = secrets.token_urlsafe(18)
+        plan.confirmation = (token, plan.revision)
+        return err(
+            f"{plan.id} waits for the user's yes in the terminal dialog. This client could not show it: the user "
+            "approves the plan on its page (ui_url), then apply_changes.",
+            ui_url=url,
+            confirm={
+                "token": token,
+                "title": f"{plan.title} ({plan.id}, revision {plan.revision})",
+                "message": dialog_text(plan, url),
+                "apply": "Apply the plan",
+                "keep": "Do nothing (edit or approve it on the page)",
+            },
+        )
+    held, plan.confirmation = plan.confirmation, None
+    if held is None or not secrets.compare_digest(given, held[0]) or held[1] != plan.revision:
+        return err(f"That confirmation is not {plan.id}'s current one: nothing was applied. Ask again.", ui_url=url)
     plan.status = PlanStatus.APPROVED
     plan.decided_at = datetime.now()
-    return await _carry_out(call.ctx, plan, call.args.revision)
+    return await _carry_out(call.ctx, plan, plan.revision)

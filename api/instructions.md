@@ -19,9 +19,10 @@ Families:
   only as plan steps
 
 Rules:
-- More than one write is one plan: plan_changes with every step. Print its `overview` to the user exactly as it
-  is (no summary of your own, nothing left out), then call apply_changes_now(plan_id, revision): Claude Code asks
-  them to confirm. A no with a change means: plan again with it. A plan that deletes something for good, or one
+- More than one write is one plan: plan_changes with every step, then apply_changes_now(plan_id, revision): the
+  server shows the user the whole plan in a terminal dialog and applies it only on their yes. Print nothing of
+  your own before it. If it says the dialog could not be shown, print `overview` exactly as it is and give the
+  page. A no means: ask what to change, plan again with it. A plan that deletes something for good, or one
   the user wants to edit, goes to its page (ui_url); when they say it is approved there, show get_plan's overview
   if its revision moved, then apply_changes. Follow get_plan to the end.
 - Never invent a value. A result with `needs` is a question for the user: what is missing, why, the options.

@@ -394,13 +394,12 @@ _VERBS: tuple[Verb, ...] = (
     ),
     Verb(
         "apply_changes_now",
-        "Carry out a change plan the user confirms now, in the terminal: print its overview to them first, exactly "
-        "as plan_changes or get_plan gave it; Claude Code then asks them. Refused for a plan that deletes "
+        "Carry out a change plan once the user confirms it in the terminal: the crboost server shows them the "
+        "whole plan in a dialog of its own and applies it only on their yes. Refused for a plan that deletes "
         "something for good (that is approved on the page), after an hour, or when a project changed since.",
-        m.ApplyIn,
+        m.ApplyNowIn,
         "write",
         p.apply_changes_now,
-        asks=True,
     ),
     Verb(
         "apply_changes",
