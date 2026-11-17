@@ -643,3 +643,25 @@ def require_producer_input(path: Path, label: str, *, require_nonempty: bool = T
         return
     state = "is empty" if (exists and empty) else "not found"
     raise FileNotFoundError(f"{label} {state}: {path}{diagnose_stale_producer(path)}")
+
+
+def chosen_solvent_mask(params, paths: dict[str, Path]) -> Path | None:
+    """The solvent mask a relion_refine job runs with: the Mask job's mask while `mask_from_job` is set, else the
+    file in `solvent_mask_path`, else none. Both at once is refused: which one the job meant cannot be told."""
+    file_path = (getattr(params, "solvent_mask_path", "") or "").strip()
+    if getattr(params, "mask_from_job", False):
+        if file_path:
+            raise ValueError(
+                f"Both a mask from a Mask job and solvent_mask_path ({file_path}) are set: clear one of them."
+            )
+        mask = paths.get("input_mask")
+        if mask is None:
+            raise FileNotFoundError("mask_from_job is set but the job has no mask input: choose a Mask job.")
+        require_producer_input(mask, "Mask job's mask")
+        return mask
+    if file_path:
+        mask = Path(file_path)
+        if not mask.exists():
+            raise FileNotFoundError(f"Solvent mask not found: {mask}")
+        return mask
+    return None

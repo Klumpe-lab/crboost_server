@@ -31,7 +31,9 @@ from services.jobs.extract_pick_list import ExtractPickListParams
 from services.jobs.filament_pick import FilamentPickParams
 from services.jobs.fs_motion_ctf import FsMotionCtfParams
 from services.jobs.import_movies import ImportMoviesParams
+from services.jobs.mask_create import MaskCreateParams
 from services.jobs.miss_align import MissAlignParams
+from services.jobs.postprocess import PostProcessParams
 from services.jobs.reconstruct_particle import ReconstructParticleParams
 from services.jobs.refine3d import Refine3DParams
 from services.jobs.segment import SegmentParams
@@ -300,6 +302,24 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         dependencies=(JobType.RECONSTRUCT_PARTICLE,),
         driver="refine3d.py",
         log_format="relion",
+    ),
+    # A solvent mask from any map a particle job made (a refinement's, a reconstruction's, a sharpened one), for
+    # PostProcess, and for Class 3D and Refine 3D with mask_from_job set.
+    JobSpec(
+        JobType.MASK_CREATE,
+        MaskCreateParams,
+        "Mask",
+        PHASE_PARTICLES,
+        dependencies=(JobType.RECONSTRUCT_PARTICLE,),
+        driver="mask_create.py",
+    ),
+    JobSpec(
+        JobType.POSTPROCESS,
+        PostProcessParams,
+        "PostProcess",
+        PHASE_PARTICLES,
+        dependencies=(JobType.REFINE3D,),
+        driver="postprocess.py",
     ),
 )
 

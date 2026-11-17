@@ -418,6 +418,7 @@ WORDS = {
     "particles_star": "particles",
     "reference_map": "reference map",
     "half_map": "half map",
+    "mask": "mask",
 }
 # The input row's label per slot key; input_star depends on what it accepts.
 SLOT_LABELS = {
@@ -432,6 +433,9 @@ SLOT_LABELS = {
     "input_tm_job": "TM results",
     "input_optimisation": "particle set",
     "input_reference": "reference",
+    "input_map": "map",
+    "input_mask": "mask",
+    "input_half_map": "half maps",
 }
 STAR_LABELS = {
     "tilt_series_star": "tilt series",
@@ -461,6 +465,8 @@ NAMES = {
     "reconstructParticle": "Reconstruct particle",
     "class3d": "Class 3D",
     "refine3d": "Refine 3D",
+    "maskCreate": "Mask",
+    "postprocess": "PostProcess",
 }
 TOOLS = {
     "warp_aretomo": "WarpTools",
@@ -520,6 +526,9 @@ SLOT_GLOSS = {
     "TM results": "the template-matching score maps",
     "particle set": "a particle set: picks with their tomograms and tilt series",
     "reference": "a reference map to start from",
+    "map": "the map the mask is cut from",
+    "mask": "a soft solvent mask from a Mask job",
+    "half maps": "a refinement's two unfiltered half maps",
 }
 ICON = {
     "importmovies": "download",
@@ -542,6 +551,8 @@ ICON = {
     "reconstructParticle": "blur_circular",
     "class3d": "category",
     "refine3d": "auto_awesome",
+    "maskCreate": "blur_on",
+    "postprocess": "tune",
 }
 ADDABLE = (
     "aligntiltsWarp",
@@ -559,6 +570,8 @@ ADDABLE = (
     "reconstructParticle",
     "class3d",
     "refine3d",
+    "maskCreate",
+    "postprocess",
 )
 # Parameters the card's form leaves to the SLURM tab or never asks.
 HIDDEN_PARAMS = {"array_throttle", "perdevice", "do_at_most"}
@@ -732,6 +745,14 @@ def _identity(kind: str, jm) -> list[str]:
     if kind == "class3d":
         n_cl = getattr(jm, "n_classes", 1)
         identity.append(f"{n_cl} class{'es' if n_cl != 1 else ''} · {param_words(jm, 'n_iterations')} iterations")
+        if getattr(jm, "skip_align", False):
+            identity.append("no alignment")
+    if kind == "maskCreate":
+        thr = getattr(jm, "threshold", 0) or 0
+        cut = f"threshold {thr:g}" if thr > 0 else f"{getattr(jm, 'threshold_fraction', 0):g} × max"
+        identity.append(f"{param_words(jm, 'lowpass_ang')} Å · {cut}")
+    if kind == "postprocess":
+        identity.append("auto B" if getattr(jm, "auto_bfac", True) else f"B {param_words(jm, 'adhoc_bfac')}")
     return identity
 
 

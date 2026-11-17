@@ -8,7 +8,7 @@ import sys
 import traceback
 from pathlib import Path
 
-from drivers.driver_base import ToolCommand, get_driver_context, run_tool, start_supervisor
+from drivers.driver_base import chosen_solvent_mask, ToolCommand, get_driver_context, run_tool, start_supervisor
 from services.job_models import Class3DParams
 
 
@@ -64,7 +64,7 @@ def main():
             cmd.opt("--particle_diameter", params.particle_diameter)
         if params.tau_fudge > 0:
             cmd.opt("--tau2_fudge", params.tau_fudge)
-        if params.sigma_ang > 0:
+        if params.sigma_ang > 0 and not params.skip_align:
             cmd.opt("--sigma_ang", params.sigma_ang)
         if params.random_seed >= 0:
             cmd.opt("--random_seed", params.random_seed)
@@ -86,13 +86,14 @@ def main():
         if params.preread_images:
             cmd.flag("--preread_images")
 
-        solvent_mask = getattr(params, "solvent_mask_path", "")
-        if solvent_mask and solvent_mask.strip():
-            mask_path = Path(solvent_mask)
-            if not mask_path.exists():
-                raise FileNotFoundError(f"Solvent mask not found: {mask_path}")
+        mask_path = chosen_solvent_mask(params, paths)
+        if mask_path is not None:
+            print(f"[DRIVER] Solvent mask: {mask_path}", flush=True)
             cmd.opt_path("--solvent_mask", mask_path, quote=False)
             additional_binds.append(str(mask_path.parent.resolve()))
+        if params.skip_align:
+            # Classes from the poses the particles carry; with a mask on one region, a focused classification.
+            cmd.flag("--skip_align")
 
         if params.use_gpu:
             cmd.flag("--gpu")

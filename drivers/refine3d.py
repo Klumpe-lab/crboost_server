@@ -12,7 +12,7 @@ import sys
 import traceback
 from pathlib import Path
 
-from drivers.driver_base import ToolCommand, get_driver_context, run_tool, start_supervisor
+from drivers.driver_base import ToolCommand, chosen_solvent_mask, get_driver_context, run_tool, start_supervisor
 from services.jobs.refine3d import Refine3DParams
 from services.subtomo_merge import _parse_optimisation_set, _read_particles_star, write_optimisation_set
 
@@ -195,11 +195,9 @@ def main():
         if params.preread_images:
             cmd.flag("--preread_images")
 
-        solvent_mask = params.solvent_mask_path.strip()
-        if solvent_mask:
-            mask_path = Path(solvent_mask)
-            if not mask_path.exists():
-                raise FileNotFoundError(f"Solvent mask not found: {mask_path}")
+        mask_path = chosen_solvent_mask(params, paths)
+        if mask_path is not None:
+            print(f"[DRIVER] Solvent mask: {mask_path}", flush=True)
             cmd.opt_path("--solvent_mask", mask_path, quote=False)
             if params.solvent_correct_fsc:
                 cmd.flag("--solvent_correct_fsc")

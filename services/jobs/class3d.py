@@ -28,6 +28,8 @@ class Class3DParams(AbstractJobParams):
         "ini_high",
         "particle_diameter",
         "solvent_mask_path",
+        "mask_from_job",
+        "skip_align",
         "flatten_solvent",
         "firstiter_cc",
         "use_gpu",
@@ -51,6 +53,8 @@ class Class3DParams(AbstractJobParams):
             needs_extracted=True,
         ),
         InputSlot(key="input_reference", accepts=[JobFileType.REFERENCE_MAP], preferred_source="reconstructParticle"),
+        # A Mask job's mask, read only while mask_from_job is set; solvent_mask_path stays for a file made elsewhere.
+        InputSlot(key="input_mask", accepts=[JobFileType.MASK], preferred_source="maskCreate", when="mask_from_job"),
     ]
     OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = [
         OutputSlot(
@@ -83,6 +87,14 @@ class Class3DParams(AbstractJobParams):
 
     # Optional mask
     solvent_mask_path: str = Field(default="", description="Path to soft mask for references (optional)")
+    mask_from_job    : bool = Field(
+        default=False, description="Take the solvent mask from a Mask job (the mask input) instead of a file path"
+    )
+    # Focused classification: classes from the poses the particles carry, no search, usually with a mask on the
+    # region whose states differ (relion_refine --skip_align).
+    skip_align       : bool = Field(
+        default=False, description="Classify without aligning: keep the input poses (focused classification)"
+    )
 
     # Reference handling
     flatten_solvent: bool = Field(default=True, description="Apply mask to references during refinement")

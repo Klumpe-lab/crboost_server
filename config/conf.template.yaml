@@ -219,6 +219,20 @@ job_resource_profiles:
     cpus_per_task: 8
     time: "8:00:00"
 
+  # Mask and PostProcess run on CPUs only (relion_mask_create, relion_postprocess); see the tsImport note where the
+  # GPU partition refuses a job without a GPU.
+  maskCreate:
+    gres: ""
+    mem: "16G"
+    cpus_per_task: 4
+    time: "0:30:00"
+
+  postprocess:
+    gres: ""
+    mem: "16G"
+    cpus_per_task: 4
+    time: "0:30:00"
+
   # DL tilt-filter prediction run: one GPU job over every tilt of the project.
   tiltFilter:
     gres: "gpu:1"
