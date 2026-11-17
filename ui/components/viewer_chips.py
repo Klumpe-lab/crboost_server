@@ -1,6 +1,9 @@
 """The viewer chips in a tomogram preview's bottom-right corner: `napari` opens the volume in napari on a GPU
-node (ui/napari_session_dialog.py); `3dmod` copies the command that opens it in IMOD, to paste into a terminal
-with X11.
+node; `3dmod` copies the command that opens it in IMOD, to paste into a terminal with X11.
+
+With an Open OnDemand portal configured (conf.yaml `ood:`), `napari` is a link that opens a tab which ends up in
+napari showing the volume (ui/napari_open_page.py), and `▾` beside it opens the session dialog (a full GPU, Stop).
+Without one, `napari` opens the dialog (ui/napari_session_dialog.py), which hands over the SSH tunnel.
 
 Absolutely positioned, so the preview box must be positioned. Each click is `click.stop`, so a preview whose own
 click zooms does not also fire. Colours and hover live in `.cb-viewer-chip` (ui/dashboard/css.py)."""
@@ -10,8 +13,10 @@ from __future__ import annotations
 from nicegui import ui
 
 from backend import get_backend
+from services.configs.config_service import get_config_service
 from ui.components.copyable import _write_clipboard, imod_command
 from ui.job_plugins._field_styles import MONO
+from ui.napari_open_page import open_url
 from ui.napari_session_dialog import open_napari_dialog
 
 _CHIP_STYLE = (
@@ -22,6 +27,19 @@ _CHIP_STYLE = (
 
 def _chip(text: str, tooltip: str, on_click) -> None:
     chip = ui.label(text).classes("cb-viewer-chip").style(_CHIP_STYLE).on("click.stop", on_click)
+    with chip:
+        ui.tooltip(tooltip).style("white-space: pre-line;")
+
+
+def _link_chip(text: str, tooltip: str, href: str) -> None:
+    """A chip that is a link opening `href` in a new tab: the tab opens from the click itself, so no popup
+    blocker stands in the way. The click stops at the chip, as `_chip`'s does."""
+    chip = (
+        ui.link(text, href, new_tab=True)
+        .classes("cb-viewer-chip")
+        .style(_CHIP_STYLE + " text-decoration: none;")
+        .on("click", js_handler="(e) => e.stopPropagation()")
+    )
     with chip:
         ui.tooltip(tooltip).style("white-space: pre-line;")
 
@@ -41,5 +59,14 @@ def viewer_chips(volume) -> None:
         .classes("no-wrap")
         .style("position: absolute; right: 4px; bottom: 4px; z-index: 2; gap: 4px; align-items: center;")
     ):
-        _chip("napari", "Open this tomogram in napari on a GPU node", _napari)
+        if get_config_service().ood.enabled:
+            _link_chip(
+                "napari",
+                "Open this tomogram in napari, in a new browser tab (through the cluster's OnDemand portal). "
+                "Starts your napari session when none runs; when one does, shows this tomogram in it.",
+                open_url(volume),
+            )
+            _chip("▾", "Your napari session: status, start on a full GPU, Stop", _napari)
+        else:
+            _chip("napari", "Open this tomogram in napari on a GPU node", _napari)
         _chip("3dmod", f"Copy the command that opens this tomogram in 3dmod:\n{cmd}", _copy_3dmod)

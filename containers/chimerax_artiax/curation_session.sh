@@ -16,7 +16,10 @@
 #               CX_BIN (chimerax|ChimeraX), CX_DISPLAY, CX_GEOMETRY,
 #               CX_LOGIN_HOST, CB_SESSION_DIR, CX_VGL, CX_VNC_NOPASS (start the
 #               desktop with SecurityTypes None — NO password), CB_CXC (startup .cxc
-#               that preloads a tomogram + picks; see services/visualization/artiax_bridge.py).
+#               that preloads a tomogram + picks; see services/visualization/artiax_bridge.py),
+#               CB_WS_SIF (an image with websockify: serve the desktop as a websocket for the site's
+#               Open OnDemand noVNC, which reaches it through its /rnode relay, and keep Xvnc on the
+#               node's localhost; conf.yaml ood:, roadmap 55).
 # napari only:  CB_NAPARI_LAUNCHER (containers/napari/open_tomogram.py of the server's checkout;
 #               it reads its requests from CB_SESSION_DIR, or opens CB_NAPARI_VOLUMES,
 #               colon-separated, when there is no session dir).
@@ -60,6 +63,25 @@ for n in "$WANT_DISPLAY" $(seq 2 99); do
 done
 DISPLAY_NUM="${DISPLAY_NUM:-$WANT_DISPLAY}"
 VNC_PORT=$(( 5900 + DISPLAY_NUM ))
+
+# The browser route (CB_WS_SIF set): websockify listens on a free node port for the portal's relay and forwards
+# to Xvnc, which then listens on localhost only. Without it Xvnc listens on every interface, for the SSH tunnel.
+WS_SIF="${CB_WS_SIF:-}"
+WS_PORT=""
+XVNC_LOCALHOST=no
+if [ -n "$WS_SIF" ]; then
+  XVNC_LOCALHOST=yes
+  for p in $(( 25900 + DISPLAY_NUM )) $(shuf -i 26000-26999 -n 20); do
+    if ! (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null; then
+      WS_PORT="$p"
+      break
+    fi
+  done
+  if [ -z "$WS_PORT" ]; then
+    echo "No free port for websockify on $(hostname -s)." >&2
+    exit 1
+  fi
+fi
 USER_NAME="${USER:-$(id -un)}"
 
 # GPU / VirtualGL path: when CX_VGL is set (the *_GL.sif on a GPU node) inject the
@@ -202,6 +224,22 @@ fi
 # forward from a crashed prior session is exactly what makes the fresh tunnel fail
 # (and a leftover dead forward is the "connection refused" the user sees). \$( ) is
 # escaped so the worker stores it literally — it runs on the user's Mac, not the node.
+# websockify before session.json: crboost hands out the browser link once session.json exists, so the port must
+# be served by then. A websockify that dies at once (port taken, image unreadable) fails the session loudly.
+WS_PID=""
+if [ -n "$WS_PORT" ]; then
+  WS_LOG=/dev/null
+  [ -n "$SESSION_DIR" ] && WS_LOG="$SESSION_DIR/websockify.log"
+  apptainer exec "$WS_SIF" websockify "$WS_PORT" "127.0.0.1:$VNC_PORT" >"$WS_LOG" 2>&1 &
+  WS_PID=$!
+  sleep 2
+  if ! kill -0 "$WS_PID" 2>/dev/null; then
+    echo "websockify did not start on port $WS_PORT (image $WS_SIF):" >&2
+    [ -f "$WS_LOG" ] && tail -5 "$WS_LOG" >&2
+    exit 1
+  fi
+fi
+
 TUNNEL_CMD="kill \$(lsof -ti tcp:${VNC_PORT}) 2>/dev/null; ssh -f -N -o ExitOnForwardFailure=yes -L ${VNC_PORT}:${NODE}:${VNC_PORT} ${USER_NAME}@${LOGIN_HOST}"
 
 # Publish machine-readable connection info BEFORE blocking on ChimeraX so crboost
@@ -209,13 +247,18 @@ TUNNEL_CMD="kill \$(lsof -ti tcp:${VNC_PORT}) 2>/dev/null; ssh -f -N -o ExitOnFo
 if [ -n "$SESSION_DIR" ]; then
   mkdir -p "$SESSION_DIR"
   cat > "$SESSION_DIR/session.json" <<JSON
-{"status": "ready", "app": "${APP}", "node": "${NODE}", "display": ${DISPLAY_NUM}, "port": ${VNC_PORT}, "rest_port": ${REST_PORT:-null}, "password": "${VNC_PASS}", "login_host": "${LOGIN_HOST}", "user": "${USER_NAME}", "tunnel_cmd": "${TUNNEL_CMD}"}
+{"status": "ready", "app": "${APP}", "node": "${NODE}", "display": ${DISPLAY_NUM}, "port": ${VNC_PORT}, "rest_port": ${REST_PORT:-null}, "password": "${VNC_PASS}", "ws_port": ${WS_PORT:-null}, "login_host": "${LOGIN_HOST}", "user": "${USER_NAME}", "tunnel_cmd": "${TUNNEL_CMD}"}
 JSON
 fi
 
 REST_LINE=""
 if [ -n "$REST_PORT" ]; then
   REST_LINE="   rest:      127.0.0.1:$REST_PORT  (command channel — ssh-hop from headnode)
+"
+fi
+WS_LINE=""
+if [ -n "$WS_PORT" ]; then
+  WS_LINE="   websocket: $WS_PORT  (the portal's noVNC, through /rnode/$NODE/$WS_PORT/websockify)
 "
 fi
 cat <<EOF
@@ -225,7 +268,7 @@ cat <<EOF
    node:      $NODE
    display:   :$DISPLAY_NUM   (VNC rfb port $VNC_PORT)
    password:  ${VNC_PASS:-<none — SecurityTypes None>}
-${REST_LINE} On your Mac, open ONE tunnel (reuses your ControlMaster auth):
+${REST_LINE}${WS_LINE} On your Mac, open ONE tunnel (reuses your ControlMaster auth):
    $TUNNEL_CMD
  then point the TurboVNC Viewer at:
    localhost:$VNC_PORT
@@ -238,6 +281,7 @@ EOF
 # first avoids a confusing "display in use" failure from a previously crashed run.
 # Session ends when the app quits; then tear the VNC server down.
 cleanup() {
+  [ -n "$WS_PID" ] && kill "$WS_PID" 2>/dev/null || true
   apptainer exec "${BINDS[@]}" "$SIF" bash -lc \
     "\$(command -v vncserver || command -v tigervncserver) -kill :$DISPLAY_NUM" >/dev/null 2>&1 || true
   [ -n "$SESSION_DIR" ] && rm -f "$SESSION_DIR/session.json" 2>/dev/null || true
@@ -258,7 +302,7 @@ CONFIG_ENV="${CXCFG:+export XDG_CONFIG_HOME='$CXCFG'}"
 apptainer exec ${NV_FLAG} --writable-tmpfs "${BINDS[@]}" "$SIF" bash -lc "
   VS=\"\$(command -v vncserver || command -v tigervncserver)\"
   \"\$VS\" -kill :$DISPLAY_NUM >/dev/null 2>&1 || true
-  \"\$VS\" :$DISPLAY_NUM -geometry $GEOMETRY -depth 24 -localhost no -rfbport $VNC_PORT -SecurityTypes $VNC_SECURITY $PASSWD_ARG >/dev/null 2>&1
+  \"\$VS\" :$DISPLAY_NUM -geometry $GEOMETRY -depth 24 -localhost $XVNC_LOCALHOST -rfbport $VNC_PORT -SecurityTypes $VNC_SECURITY $PASSWD_ARG >/dev/null 2>&1
   $CONFIG_ENV
   export XDG_CACHE_HOME='$CXCACHE'
   export DISPLAY=:$DISPLAY_NUM

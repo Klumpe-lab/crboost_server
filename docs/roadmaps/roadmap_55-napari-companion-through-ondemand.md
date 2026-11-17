@@ -2,6 +2,8 @@
 
 **Status:** scoped 2026-11-17; S0 (the browser route, by hand) done the same day: the maintainer saw a tomogram in
 napari in a browser tab, through the cluster's Open OnDemand portal, with no SSH key, tunnel or VNC client.
+S1 built the same evening, with the one-click chip (§4 S1): checked on the node and in the server's code, not yet
+in a browser (R1 owed).
 Follows roadmap 54, which built the session (crboost starts napari on a GPU node and points it at tomograms)
 but handed it over as an SSH tunnel, which failed in practice and which most lab members cannot use: CBE.next
 SSH needs a key or certificate that many of them do not have.
@@ -93,7 +95,34 @@ Four parts. Only the last one depends on the colleague's package.
 
 **S0 — the route by hand.** Done 2026-11-17 (§2).
 
-**S1 — Open in browser** (napari and ChimeraX together, since they share the worker).
+**S1 — Open in browser** (napari and ChimeraX together, since they share the worker). **Built 2026-11-17**, as
+below, with these differences:
+- *One click.* The maintainer asked for one click from any tomogram to napari in a tab. The `napari` chip is now
+  a link (`<a target=_blank>`) to `/napari/open?volume=<path>` (`ui/napari_open_page.py`). That page shows the
+  tomogram in the user's napari session, starting one with *Start now* when none runs (D6). It moves the tab on to
+  the portal link as soon as the desktop is up. The tab has to open from the click itself, since a tab opened
+  later from the server is blocked as a popup, so it opens at once and waits on that page. With a session
+  already live, another chip click shows that tomogram in it and opens one more tab onto the same desktop (noVNC
+  connects shared). The session dialog moved behind the chip's `▾` (full GPU, Stop, status). A session started
+  before the portal was configured has no websocket: the page and both dialogs say so, and the page offers
+  *Stop and start again*.
+- *websockify comes from IT's image for now* (`ood.websockify_sif: /software/ood/desktop/ood-desktop.sif` in the
+  lab conf; blank means the session's own image). Our images are not rebuilt yet. Adding `websockify` to
+  `napari_GL.def` and `chimerax_artiax_GL.def` and blanking the key is owed.
+- *The fragment check is answered:* noVNC 1.3 reads every setting through `getConfigVar`, which reads the
+  fragment first (`app/webutil.js`, v1.3.0). So the link puts everything after `#`, and the password never
+  reaches the portal.
+- *The self-test* gets 302 from the portal for a browser's `Accept` and 401 otherwise, for *any* path, a made-up
+  noVNC version included, because sign-in stands in front of everything. So `test_ood_portal_answers` shows the
+  portal is up and reachable, not that `novnc_path` still exists. Only R1 shows that.
+- *Checked on the node* (job 1763560, cbe-g5-5, through the service's own submit path):
+  - `session.json` carries `ws_port`, and the link is built from it.
+  - Xvnc refuses connections from the headnode.
+  - websockify answers the websocket upgrade with `RFB 003.008`.
+  - napari showed the first tomogram, then a second one sent through the page's code against the live session.
+  - A headless-browser run of the page was not possible here.
+
+The plan as scoped:
 - Image: `websockify` in `napari_GL.def` (pip, into `/opt/napari`) and in `chimerax_artiax_GL.def`, so the
   session does not depend on a path inside IT's image.
 - Worker: picks a free port, starts websockify next to Xvnc, stops it at exit, writes `ws_port` into
@@ -155,7 +184,7 @@ The value is D4's.
 
 ## 5. Decisions
 
-- **D1 — the SSH tunnel where the portal is configured.** Recommend: not shown, and Xvnc on localhost only.
+- **D1 — the SSH tunnel where the portal is configured.** Taken 2026-11-17: not shown, and Xvnc on localhost only.
   The tunnel stays for sites without OnDemand (`ood.url` blank). The alternative is a collapsed "SSH tunnel"
   section for the few with keys, which keeps Xvnc on every interface.
 - **D2 — where the panel lives.** Recommend: in this repo, loaded from the server's checkout, so it is versioned
@@ -168,10 +197,13 @@ The value is D4's.
 - **D5 — telling IT.** We rely on the `/rnode` relay and the dashboard's noVNC for jobs OnDemand did not start.
   Recommend one message to the CBE.next Teams channel once S1 is in use, so an upgrade does not break it
   unannounced.
+- **D6 — what one click starts.** Taken 2026-11-17: *Start now* (software GL on an interactive MIG slice, up in
+  seconds). The full-GPU start stays in the session dialog.
 
 ## 6. Checks owed
 
-- **R1 (S1):** chip → *Start now* → *Open in browser* → tomogram in the tab. *Show this tomogram* from another
+- **R1 (S1):** one click on the chip → a tab that waits, then napari showing the tomogram (the first time through
+  the portal's sign-in). *Show this tomogram* from another
   tomogram updates the same tab. Stop ends the job, and the tab shows the disconnect.
 - **R2 (S1):** the same on a full GPU (VirtualGL), and a ChimeraX session through its control center.
 - **R3 (S1):** a second user's session is refused without the password: open the link with the password

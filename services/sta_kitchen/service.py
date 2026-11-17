@@ -679,9 +679,10 @@ async def set_frame_in(lp: LoadedPool, frame_key: str, on: bool) -> None:
 # ── Set filters (D9) ─────────────────────────────────────────────────────────────────────────────
 
 
-async def ensure_set_masks(lp: LoadedPool) -> bool:
-    """Match every set the draft names against the table (`setmatch.set_rows`), again only when the table
-    or the set moved. True when a match changed. A set that cannot be read holds nothing, and says why."""
+async def ensure_set_masks(lp: LoadedPool, draft: Draft | None = None) -> bool:
+    """Match every set the draft (the pool's, or `draft`) names against the table (`setmatch.set_rows`), again
+    only when the table or the set moved. True when a match changed. A set that cannot be read holds nothing,
+    and says why."""
     from services.sta_kitchen import setmatch
 
     table = lp.table
@@ -689,7 +690,8 @@ async def ensure_set_masks(lp: LoadedPool) -> bool:
         return False
     home = [m.key for m in lp.pool.members if Path(m.project_path).resolve() == lp.home]
     moved = False
-    for sid in dict.fromkeys(f.set_id for f in lp.pool.draft.filters if isinstance(f, SetFilter)):
+    named = (draft if draft is not None else lp.pool.draft).filters
+    for sid in dict.fromkeys(f.set_id for f in named if isinstance(f, SetFilter)):
         stamp = (table.version, await asyncio.to_thread(setmatch.set_stamp, lp.home, sid))
         hit = lp.set_masks.get(sid)
         if hit is not None and hit[0] == stamp:
@@ -1136,15 +1138,21 @@ async def prefer_source(lp: LoadedPool, source: str) -> int:
 
 
 async def plan_set(
-    lp: LoadedPool, name: str, scope: Scope | None = None, extra: dict[str, set[str]] | None = None
+    lp: LoadedPool,
+    name: str,
+    scope: Scope | None = None,
+    extra: dict[str, set[str]] | None = None,
+    draft: Draft | None = None,
 ) -> dict:
-    """What Make set would write from the pool's draft, or from it narrowed to `scope` instead of the draft's
-    own (a subset's Make set…); `extra`: uids of scope subsets the pool does not hold yet. The uids of every
-    subset the scope names go with the plan, so the set keeps them."""
+    """What Make set would write from the pool's draft (or `draft`, a recipe of its own that leaves the pool's
+    untouched), or from it narrowed to `scope` instead of its own (a subset's Make set…); `extra`: uids of scope
+    subsets the pool does not hold yet. The uids of every subset the scope names go with the plan, so the set
+    keeps them."""
     from services.sta_kitchen.export import plan
 
-    draft = lp.pool.draft if scope is None else lp.pool.draft.model_copy(update={"scope": scope}, deep=True)
-    await ensure_set_masks(lp)
+    base = draft if draft is not None else lp.pool.draft
+    draft = base if scope is None else base.model_copy(update={"scope": scope}, deep=True)
+    await ensure_set_masks(lp, draft)
     sel = await asyncio.to_thread(current_selection, lp, draft, extra)
     sp = (await asyncio.to_thread(project_view, lp.home)).state.get_species(lp.species_id)
     diameter = getattr(sp, "diameter_ang", None) if sp is not None else None

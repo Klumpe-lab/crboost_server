@@ -1,8 +1,9 @@
 """Single curation control center for a ChimeraX+ArtiaX manual-picking session.
 
 crboost does not proxy the desktop: it submits the VNC desktop as a SLURM job and
-hands the user the exact connection details — one SSH tunnel + a viewer + a
-password. The panel opens from the Picks & curation tab's per-tomogram "Curate picks".
+hands the user the way in: where the site has an Open OnDemand portal (conf.yaml
+`ood:`), an *Open in browser* link through it (roadmap 55); elsewhere one SSH tunnel +
+a viewer + a password. The panel opens from the Picks & curation tab's per-tomogram "Curate picks".
 Its layout is stable: a status chip (live / starting / off / failed) drives the
 chrome, Start/Stop swap in place, and the Connect + Scope + Save sections are built
 once — the live values (tunnel / address / password) fill into fixed slots when the
@@ -34,7 +35,8 @@ from pathlib import Path
 
 from nicegui import context, ui
 
-from ui.components.buttons import house_button, icon_button
+from services.configs.config_service import get_config_service
+from ui.components.buttons import house_button, icon_button, link_to, set_button_kind
 from ui.particles import session_status
 
 logger = logging.getLogger(__name__)
@@ -91,13 +93,25 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
     cmd_block = "\n".join(commands)
     _cur_cfg = getattr(getattr(backend, "config_service", None), "curation", None)
     passwordless = bool(getattr(_cur_cfg, "passwordless_vnc", False))
+    # With the portal the desktop listens on the node's localhost only: the link is the whole connection, and
+    # there is no tunnel, address or password to hand over (roadmap 55 D1).
+    portal = get_config_service().ood.enabled
     # The in-session switch rides the REST channel; with it off, Restart is the
     # only way to change what the viewer has open.
     rest_enabled = bool(getattr(_cur_cfg, "rest_enabled", False))
 
     # Live session values; copy buttons read from here (closures) so they stay
     # correct as the session transitions off → starting → live without a rebuild.
-    sv = {"tunnel": "", "address": "", "password": "", "node": "", "job_id": None, "rest_port": None, "scope": None}
+    sv = {
+        "tunnel": "",
+        "address": "",
+        "password": "",
+        "browser_url": "",
+        "node": "",
+        "job_id": None,
+        "rest_port": None,
+        "scope": None,
+    }
     state = {"session_dir": None, "timer": None, "busy": False, "kind": "off", "closing": False, "restarting": False}
 
     # Stable page-level host slot (see module docstring). Fall back to the caller's
@@ -155,6 +169,19 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
         return row
 
     def _troubleshooting_md() -> str:
+        if portal:
+            return (
+                "- **The tab asks you to sign in:** that is the cluster's OnDemand portal; sign in with your "
+                "institute account and the desktop opens.\n"
+                "- **Black/grey screen for a few seconds:** normal — the desktop + ChimeraX are still starting "
+                "(~5–10 s).\n"
+                '- **"Failed to connect" in the tab:** the session ended or never came up — press Stop then Start '
+                "(Stop also clears any leftover sessions).\n"
+                "- **Wrong tomogram open:** the session's scope is the one named above. Press *Curate picks* on the "
+                "tomogram you want; the panel then offers *Switch session to this tomogram* (save your lists in "
+                "ArtiaX first) or *Restart on this tomogram*.\n"
+                "- **Picks look shifted in ArtiaX:** tell us — the `.cxc` may need an explicit pixel-size line."
+            )
         addr = sv["address"] or "localhost:<port>"
         port = sv["address"].split(":")[-1] if sv["address"] else "<port>"
         return (
@@ -246,7 +273,20 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
                     job_lbl = ui.label("").classes("text-[11px] text-gray-500 whitespace-nowrap")
 
                 # ── SECTION 1 · CONNECT (always one place; values fill in when live) ──
-                with ui.column().classes(_SECTION):
+                tunnel_lbl = addr_lbl = pass_lbl = browser_btn = None
+                if portal:
+                    with ui.column().classes(_SECTION):
+                        _section_head("open_in_new", "Open the session")
+                        with ui.row().classes("items-center gap-2 w-full no-wrap"):
+                            browser_btn = house_button("Open in browser", kind="accent")
+                            browser_btn.set_visibility(False)
+                            ui.label(
+                                "Opens the desktop in a new tab through the cluster's OnDemand portal (it asks you "
+                                "to sign in the first time). Any number of tabs show the same desktop."
+                            ).classes("text-[11px] text-gray-600")
+                connect_section = ui.column().classes(_SECTION)
+                connect_section.set_visibility(not portal)
+                with connect_section:
                     hdr = _section_head("vpn_key", "Connect to the session")
                     with hdr:
                         ui.space()
@@ -441,7 +481,14 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
             mismatch = bool(tomo_name) and _refresh_scope()
             restart_btn.set_visibility(mismatch)
             switch_btn.set_visibility(mismatch and rest_enabled and bool(sv["rest_port"]))
+            if browser_btn is not None:
+                link_to(browser_btn, sv["browser_url"] or None)
+                browser_btn.set_visibility(bool(sv["browser_url"]))
+                # Switch / Restart are the primary action while the session has another scope.
+                set_button_kind(browser_btn, "default" if mismatch else "accent")
         else:
+            if browser_btn is not None:
+                browser_btn.set_visibility(False)
             tunnel_lbl.set_text("— start the session —")
             addr_lbl.set_text("—")
             pass_lbl.set_text("—")
@@ -462,8 +509,16 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
                 address=f"localhost:{info.get('port')}",
                 password=info.get("password") or "",
                 tunnel=info.get("tunnel_cmd") or "",
+                browser_url=info.get("browser_url") or "",
                 rest_port=info.get("rest_port"),
             )
+            if portal and not sv["browser_url"]:
+                ui.notify(
+                    "This session started before the portal was configured, so it cannot open in a browser: "
+                    "Stop it and Start again.",
+                    type="warning",
+                    timeout=10000,
+                )
             _stop_timer()
             _apply("live")
         elif st == "pending":
@@ -630,7 +685,7 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
             # we reconnected to — otherwise a stale session keeps getting re-found.
             await backend.stop_curation_session(sv["job_id"], project_path=project_path)
             _stop_timer()
-            sv.update(job_id=None, node="", address="", password="", tunnel="", scope=None)
+            sv.update(job_id=None, node="", address="", password="", tunnel="", browser_url="", scope=None)
             state["session_dir"] = None
             _apply("off")
             ui.notify("Curation session stopped", type="info")

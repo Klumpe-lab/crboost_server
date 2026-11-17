@@ -54,3 +54,30 @@ def test_agent_api_verb_table():
     app.include_router(create_api_router(SimpleNamespace(), 0))
     served = TestClient(app).get("/api/v1/tools").json()
     assert [t["name"] for t in served["tools"]] == list(VERBS)
+
+
+def test_ood_portal_answers():
+    """With `ood:` set, the portal answers at its noVNC page: a redirect to its sign-in counts, an error does not.
+    The sign-in stands before every path, so this shows the portal is up and reachable from here, not that the
+    noVNC page is still at `novnc_path` after an upgrade (roadmap 55 §2)."""
+    import urllib.error
+    import urllib.request
+
+    import pytest
+
+    ood = get_config_service().ood
+    if not ood.enabled:
+        pytest.skip("no ood.url/novnc_path: viewer sessions use the SSH tunnel")
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+
+    url = ood.url.rstrip("/") + ood.novnc_path
+    # A browser's Accept: the portal's OIDC sends a browser to its sign-in (302) and other clients a 401.
+    request = urllib.request.Request(url, headers={"Accept": "text/html"})
+    try:
+        status = urllib.request.build_opener(_NoRedirect).open(request, timeout=10).status
+    except urllib.error.HTTPError as e:  # a 3xx surfaces here once redirects are refused
+        status = e.code
+    assert status < 400 or status == 401, f"{url} answered {status}"

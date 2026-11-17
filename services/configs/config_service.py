@@ -251,6 +251,25 @@ class NapariConfig(BaseModel):
     software: NapariSoftwarePlacement = Field(default_factory=NapariSoftwarePlacement)
 
 
+class OodConfig(BaseModel):
+    """The site's Open OnDemand portal, through which a viewer session (napari, ChimeraX) opens in a browser tab.
+
+    The session job serves its VNC desktop as a websocket (websockify beside Xvnc), and the portal's noVNC
+    reaches it through its `/rnode/<node>/<port>` relay; logging in to the portal is the gate, the session's VNC
+    password the lock. Neither the relay nor the noVNC path is documented for jobs the portal did not start, so
+    both are config here (roadmap 55 §2). `url` empty = no portal: sessions are reached by SSH tunnel.
+    """
+
+    url: str = ""  # e.g. https://ood.example.org, no trailing slash
+    novnc_path: str = ""  # the dashboard's noVNC page, e.g. /pun/sys/dashboard/noVNC-1.3.0/vnc.html
+    # The image whose `websockify` serves the desktop to the portal; empty = the session's own image.
+    websockify_sif: str = ""
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.url and self.novnc_path)
+
+
 class TiltFilterModelConfig(BaseModel):
     """One tilt-classifier weights file the tilt-filter job can run."""
 
@@ -289,6 +308,7 @@ class Config(BaseModel):
     processing_defaults: ProcessingDefaultsConfig = Field(default_factory=ProcessingDefaultsConfig)
     curation: CurationConfig = Field(default_factory=CurationConfig)
     napari: NapariConfig = Field(default_factory=NapariConfig)
+    ood: OodConfig = Field(default_factory=OodConfig)
     tilt_filter: TiltFilterConfig = Field(default_factory=TiltFilterConfig)
     tools: dict[str, ToolConfig] = Field(default_factory=dict)
     container_runtime: ContainerRuntime = ContainerRuntime.APPTAINER
@@ -404,6 +424,10 @@ class ConfigService:
     @property
     def napari(self) -> NapariConfig:
         return self._config.napari
+
+    @property
+    def ood(self) -> OodConfig:
+        return self._config.ood
 
     @property
     def tilt_filter(self) -> TiltFilterConfig:

@@ -17,7 +17,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from api.context import ApiContext, record_write
+from api.context import ApiContext, open_project, record_write
 from api.reach import agents_allowed, refusal_for, write_refusal
 from services import (
     array_status_cache,
@@ -449,6 +449,219 @@ async def get_kitchen_subset_sources(call: Call) -> dict[str, Any]:
 
     res = await subset_sources.subset_sources(call.path, call.args.species, call.args.subset)
     res["ui_url"] = call.url(View.SPECIES, call.args.species)
+    return res
+
+
+def _recipe(a) -> Any:
+    """A verb's recipe fields as the kitchen's draft (`services/sta_kitchen/models.Draft`)."""
+    from services.sta_kitchen.models import Draft
+
+    return Draft.model_validate(
+        {
+            "filters": [f.model_dump() for f in a.filters],
+            "post": {"nn_a": a.min_distance_a, "top_n": a.top_n_per_tomogram},
+            "scope": {"include": list(a.in_subsets), "exclude": list(a.not_in_subsets)},
+        }
+    )
+
+
+def _kitchen_url(call: Call) -> str:
+    return call.url(View.SPECIES, call.args.species)
+
+
+async def get_kitchen(call: Call) -> dict[str, Any]:
+    from services.sta_kitchen import agent_ops
+
+    res = await agent_ops.state(call.path, call.args.species, _recipe(call.args))
+    res["ui_url"] = _kitchen_url(call)
+    return res
+
+
+def _discover_projects(home: Path, species_id: str) -> list[Path]:
+    """This project, the projects under the user's recent project roots, and those the pool reads: what Add
+    sources lists. Blocking."""
+    from services.aggregation.discovery import discover_pick_list_projects
+    from services.configs.user_prefs_service import get_prefs_service
+    from services.sta_kitchen import service as kitchen
+    from services.sta_kitchen import store
+
+    members: list[str] = []
+    lp = kitchen.loaded(home, species_id)
+    if lp is not None:
+        members = [m.project_path for m in lp.pool.members]
+    elif (store.kitchen_dir(home, species_id) / store.POOL_FILE).is_file():
+        members = [m.project_path for m in store.load_pool(home, species_id).members]
+    roots = [r.path for r in get_prefs_service().prefs.recent_project_roots if r.path]
+    out = [home.resolve()]
+    for p in [*discover_pick_list_projects(roots), *(Path(m).resolve() for m in members)]:
+        if p not in out:
+            out.append(p)
+    return out
+
+
+async def list_kitchen_sources(call: Call) -> dict[str, Any]:
+    from services.sta_kitchen import agent_ops
+
+    a = call.args
+    if a.projects:
+        paths = []
+        for ref in a.projects:
+            target, why = await open_project(ref)
+            if why is not None:
+                return why
+            paths.append(target)
+    else:
+        paths = await asyncio.to_thread(_discover_projects, call.path, a.species)
+    res = await agent_ops.offers(call.path, a.species, paths)
+    res["ui_url"] = _kitchen_url(call)
+    return res
+
+
+async def add_kitchen_sources(call: Call) -> dict[str, Any]:
+    from services.sta_kitchen import agent_ops
+
+    sources = []
+    for s in call.args.sources:
+        target, why = await open_project(s.project)
+        if why is not None:
+            return why
+        sources.append({"project": str(target), "job": s.job, "species": s.species})
+    res = await agent_ops.add_sources(call.path, call.args.species, sources)
+    res["ui_url"] = _kitchen_url(call)
+    return res
+
+
+async def remove_kitchen_source(call: Call) -> dict[str, Any]:
+    from services.sta_kitchen import agent_ops
+
+    res = await agent_ops.remove_source(call.path, call.args.species, call.args.source)
+    res["ui_url"] = _kitchen_url(call)
+    return res
+
+
+async def create_kitchen_subset(call: Call) -> dict[str, Any]:
+    from services.sta_kitchen import agent_ops
+
+    a = call.args
+    res = await agent_ops.create_subset(call.path, a.species, a.name, _recipe(a), a.group)
+    res["ui_url"] = _kitchen_url(call)
+    return res
+
+
+async def edit_kitchen_subset(call: Call) -> dict[str, Any]:
+    from services.sta_kitchen import agent_ops
+
+    a = call.args
+    if a.group and a.ungroup:
+        return err("group and ungroup: one or the other.")
+    res = await agent_ops.edit_subset(call.path, a.species, a.subset, a.name, a.group, a.ungroup)
+    res["ui_url"] = _kitchen_url(call)
+    return res
+
+
+async def delete_kitchen_subset(call: Call) -> dict[str, Any]:
+    from services.sta_kitchen import agent_ops
+
+    res = await agent_ops.delete_subset(call.path, call.args.species, call.args.subset)
+    res["ui_url"] = _kitchen_url(call)
+    return res
+
+
+async def create_kitchen_group(call: Call) -> dict[str, Any]:
+    from services.sta_kitchen import agent_ops
+
+    res = await agent_ops.create_group(call.path, call.args.species, call.args.name)
+    res["ui_url"] = _kitchen_url(call)
+    return res
+
+
+async def rename_kitchen_group(call: Call) -> dict[str, Any]:
+    from services.sta_kitchen import agent_ops
+
+    res = await agent_ops.rename_group(call.path, call.args.species, call.args.group, call.args.name)
+    res["ui_url"] = _kitchen_url(call)
+    return res
+
+
+async def delete_kitchen_group(call: Call) -> dict[str, Any]:
+    from services.sta_kitchen import agent_ops
+
+    res = await agent_ops.delete_group(call.path, call.args.species, call.args.group)
+    res["ui_url"] = _kitchen_url(call)
+    return res
+
+
+def _set_target(a) -> str:
+    if a.subset and a.group:
+        return "subset and group: one or the other."
+    return ""
+
+
+async def plan_kitchen_set(call: Call) -> dict[str, Any]:
+    from services.sta_kitchen import agent_ops
+
+    a = call.args
+    if why := _set_target(a):
+        return err(why)
+    res = await agent_ops.plan_sets(call.path, a.species, a.name, _recipe(a), a.subset, a.group)
+    res["ui_url"] = _kitchen_url(call)
+    return res
+
+
+async def make_kitchen_set(call: Call) -> dict[str, Any]:
+    """Plan the set(s) here, so a refusal comes back at once; write them in the background: a set of 350k picks
+    writes a per-tilt star per tomogram. Follow it with get_task."""
+    from services.sta_kitchen import agent_ops
+
+    a = call.args
+    if why := _set_target(a):
+        return err(why)
+    planned = await agent_ops.plan_sets(call.path, a.species, a.name, _recipe(a), a.subset, a.group)
+    if not planned["success"]:
+        return planned
+    if not any(not s["blockers"] and s["picks"] for s in planned["sets"]):
+        return err(
+            "No set to make: "
+            + "; ".join(f"{s['name']}: {'; '.join(s['blockers']) or 'no pick passes'}" for s in planned["sets"]),
+            sets=planned["sets"],
+        )
+    ctx, path = call.ctx, call.path
+
+    async def work(progress_cb) -> str:
+        res = await agent_ops.make_sets(path, a.species, a.name, _recipe(a), a.subset, a.group)
+        res["ui_url"] = ctx.ui_url(path, View.SPECIES, a.species)
+        await record_write(path, "make_kitchen_set", a.model_dump(), res)
+        ctx.results[task_id] = res
+        if not res["success"]:
+            raise RuntimeError(res["error"])
+        return ", ".join(f"{m['set']} ({m['picks']:,} picks)" for m in res["made"])
+
+    task_id = get_background_task_registry().submit(
+        work, title=f"Making kitchen set(s) in {path.name}", project_path=str(path)
+    )
+    return ok(
+        task_id=task_id,
+        sets=planned["sets"],
+        ui_url=_kitchen_url(call),
+        message="Making the set(s) in the background: follow it with get_task.",
+    )
+
+
+async def make_class_set(call: Call) -> dict[str, Any]:
+    """A set of a Class 3D's chosen classes, as its Results tab's Make set does."""
+    a = call.args
+    jm, problem = call.job(a.job)
+    if problem:
+        return problem
+    if jm.job_type != JobType.CLASS3D:
+        return err(f"{a.job} is a {jm.job_type.value} job, not a Class 3D.")
+    res = await call.backend.create_class_subset(
+        call.path, class3d_instance=a.job, classes=a.classes, name=a.name, species_id=jm.species_id or ""
+    )
+    if res["success"]:
+        ps = res.pop("set")
+        res.update(set=ps.id, name=ps.name, picks=ps.n_particles)
+    res["ui_url"] = call.url(View.PARTICLES, a.job)
     return res
 
 

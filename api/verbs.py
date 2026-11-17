@@ -137,6 +137,35 @@ _VERBS: tuple[Verb, ...] = (
         h.get_kitchen_subset_sources,
     ),
     Verb(
+        "get_kitchen",
+        "The STA kitchen of a species in a project, opened and its table built as the kitchen tab does: its sources "
+        "(picks, errors), subsets and groups, the particle sets made from it, the columns a recipe filters on "
+        "(number columns such as sigma; category columns such as project, with their values), picks per project, "
+        "and the choices that would stop Make set. With a recipe (filters, subsets in or out, post-ops): how many "
+        "picks it keeps, per project. Changes no pick, subset or verdict.",
+        m.GetKitchenIn,
+        "read",
+        h.get_kitchen,
+    ),
+    Verb(
+        "list_kitchen_sources",
+        "What a species' kitchen could read, as Add sources lists it: per project the species matched by its "
+        "lab-catalog id (never by name), its template-match picks (Pick candidates jobs) and pick lists with their "
+        "picks and tomograms, and whether each is in the pool already.",
+        m.KitchenSourcesIn,
+        "read",
+        h.list_kitchen_sources,
+    ),
+    Verb(
+        "plan_kitchen_set",
+        "What Make set would write, writing nothing: from a recipe, narrowed to a subset, or one set per subset of "
+        "a group. Picks, tomograms and projects, picks per project, those removed within half a diameter of a "
+        "better one, the hand verdicts, and what stops it.",
+        m.MakeKitchenSetIn,
+        "read",
+        h.plan_kitchen_set,
+    ),
+    Verb(
         "plan_run",
         "What run would do now, doing none of it: the jobs it would start in submit order with their inputs and "
         "resources, the jobs a tilt-filter review would hold, what would refuse the run, and the open decisions.",
@@ -323,6 +352,88 @@ _VERBS: tuple[Verb, ...] = (
         m.ImportTomogramsIn,
         "write",
         h.import_tomograms,
+    ),
+    # ── The STA kitchen ──
+    Verb(
+        "add_kitchen_sources",
+        "Add sources to a species' kitchen in the home project, as Add sources does: other projects' template-match "
+        "picks or pick lists (list_kitchen_sources), read and never written. Makes the kitchen when it has none, "
+        "builds its table, and reads each source's own curation in once as drops.",
+        m.AddKitchenSourcesIn,
+        "write",
+        h.add_kitchen_sources,
+    ),
+    Verb(
+        "remove_kitchen_source",
+        "Take a source out of a kitchen: its picks leave the table; verdicts and subsets that named them stay.",
+        m.RemoveKitchenSourceIn,
+        "write",
+        h.remove_kitchen_source,
+    ),
+    Verb(
+        "create_kitchen_subset",
+        'A new kitchen subset holding the picks a recipe keeps now (a snapshot, as the kitchen\'s "+ kept" '
+        "makes): filters such as sigma ≥ 10 or project = one project, subsets in or out, post-ops; the hand "
+        "verdicts apply. In a group, its picks leave the group's other subsets. The user's filter strip is not "
+        "changed.",
+        m.CreateKitchenSubsetIn,
+        "write",
+        h.create_kitchen_subset,
+    ),
+    Verb(
+        "edit_kitchen_subset",
+        "Rename a kitchen subset, move it into a group (refused when it shares picks with the group's subsets), or "
+        "take it out of its group.",
+        m.EditKitchenSubsetIn,
+        "write",
+        h.edit_kitchen_subset,
+    ),
+    Verb(
+        "delete_kitchen_subset",
+        "Delete a kitchen subset for good: its membership goes, the picks stay in the pool, and sets made from it "
+        "keep their own copy.",
+        m.KitchenSubsetIn,
+        "write",
+        h.delete_kitchen_subset,
+    ),
+    Verb(
+        "create_kitchen_group",
+        "A new group of kitchen subsets: its subsets never share a pick.",
+        m.CreateKitchenGroupIn,
+        "write",
+        h.create_kitchen_group,
+    ),
+    Verb(
+        "rename_kitchen_group",
+        "Rename a group of kitchen subsets.",
+        m.RenameKitchenGroupIn,
+        "write",
+        h.rename_kitchen_group,
+    ),
+    Verb(
+        "delete_kitchen_group",
+        "Delete a group of kitchen subsets; its subsets stay, ungrouped, and may overlap again.",
+        m.KitchenGroupIn,
+        "write",
+        h.delete_kitchen_group,
+    ),
+    Verb(
+        "make_kitchen_set",
+        "Make set, as the kitchen does: the picks a recipe keeps (narrowed to a subset, or one set per subset of a "
+        "group) become a particle set of the home project, fixed as they are now, that particle jobs read "
+        "(set_input). The hand verdicts and the source choices apply. Refused, naming why, when nothing passes or "
+        "a choice is open. Runs in the background: follow get_task.",
+        m.MakeKitchenSetIn,
+        "write",
+        h.make_kitchen_set,
+    ),
+    Verb(
+        "make_class_set",
+        "A particle set of a Class 3D's chosen classes (its last iteration's members and poses), as its Results "
+        "tab's Make set does. Which classes to keep is the user's call.",
+        m.MakeClassSetIn,
+        "write",
+        h.make_class_set,
     ),
     # ── Deletions ──
     Verb(

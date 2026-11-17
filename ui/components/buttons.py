@@ -58,6 +58,23 @@ def house_button(
     return btn
 
 
+def set_button_kind(btn: ui.button, kind: str) -> None:
+    """Re-dress a `house_button` as another variant, for a dialog whose one primary action moves with its state."""
+    btn.classes(replace="cb-btn" + ("" if kind == "default" else f" cb-btn--{kind}"))
+    btn.style(replace=_BASE_STYLE + _KIND_STYLE[kind])
+
+
+def link_to(btn: ui.button, href: str | None) -> None:
+    """Make `btn` a link that opens `href` in a new tab (a Quasar button with `href` renders as `<a>`): the tab
+    opens from the click itself, where one opened later from the server would be blocked as a popup."""
+    if href:
+        btn._props.update(href=href, target="_blank", rel="noopener")
+    else:
+        for key in ("href", "target", "rel"):
+            btn._props.pop(key, None)
+    btn.update()
+
+
 # The icon-only button of the house vocabulary: a 20 px square that sits flush with 16-20 px fields and
 # segmented strips in a header or toolbar. Muted until hovered; `danger` (deletes) turns red on hover only.
 # Hover, pressed and armed states live in ui/dashboard/css.py (`.cb-icon-btn`).
