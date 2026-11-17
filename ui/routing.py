@@ -1,6 +1,6 @@
 """Addressable URLs for the workspace.
 
-The workspace is one page whose seven views are sibling containers swapped by CSS
+The workspace is one page whose views are sibling containers swapped by CSS
 ``display`` (``ui/workspace_page.py``). Everything needed to *navigate* it already exists
 as the ``callbacks`` dict; what this module adds is the address bar:
 
@@ -128,6 +128,10 @@ async def apply_route(callbacks: dict, route: Route, project_path: Path) -> None
 
         case View.PROTOCOLS:
             await _acall(callbacks, "show_protocols")
+
+        case View.PARTICLES:
+            # The map reports a node the project does not have itself, once it has read the sets.
+            await _acall(callbacks, "show_particles", route.a)
 
 
 def _call(callbacks: dict, key: str, *args) -> None:

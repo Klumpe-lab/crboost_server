@@ -410,6 +410,7 @@ class RosterWidget(FingerprintedView):
                     self._build_new_species_btn()
                     self._build_import_tomograms_btn()
                     self._build_aggregation_merge_btn()
+                    self._build_particle_map_btn()
 
             for job_type in jobs:
                 instances = [iid for iid in roster if InstanceId.matches(iid, job_type)]
@@ -1479,6 +1480,31 @@ class RosterWidget(FingerprintedView):
                     "border-radius: 50%; background: #16a34a; pointer-events: none;"  # green-600
                 )
         self._refs["aggregation_merge_btn"] = container
+        return container
+
+    def _build_particle_map_btn(self):
+        """PARTICLES-header utility: the particle map, a view of its own beside the Jobs view: the particle jobs
+        and sets as cards, a Class 3D's classes as rows, the sets made of them hanging off those rows."""
+
+        async def _show():
+            show = self.panel.callbacks.get("show_particles")
+            if show is not None:
+                await show()
+
+        container = (
+            ui.element("div")
+            .style(
+                "width: 22px; height: 22px; border-radius: var(--cb-r-md, 4px); "
+                "display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0;"
+            )
+            .classes("cb-pm-open")
+            .on("click", _show)
+            .tooltip("Particle map: the particle jobs and sets, and the classes they hold")
+        )
+        with container:
+            ui.html(self._load_svg("pipeline_table.svg").replace("currentColor", SB_ACT), sanitize=False).style(
+                "width: 14px; height: 14px; display: flex; pointer-events: none;"
+            )
         return container
 
     def _build_dashboard_btn(self):

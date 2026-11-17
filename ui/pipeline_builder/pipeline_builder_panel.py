@@ -286,14 +286,19 @@ class PipelineBuilderPanel:
             set_open(on)
 
     def close_job(self, *, write_url: bool = True) -> None:
-        """The job page's close cross: no job open, the page leaves the main area, the roster stays."""
+        """The job page's close cross: no job open, the page leaves the main area, the roster stays. A page opened
+        from another view (the particle map) closes back onto it: the workspace's `job_closed` brings that view
+        back and writes the address bar."""
+        closed = self.ui_mgr.active_instance_id
         self.ui_mgr.clear_active_instance()
         for c in self._job_content_containers.values():
             c.set_visibility(False)
         self._sync_job_scopes()
         self._set_job_open(False)
+        back = self.callbacks.get("job_closed")
+        returned = bool(back(closed)) if back is not None and closed is not None else False
         set_url = self.callbacks.get("set_url")
-        if set_url and write_url:
+        if set_url and write_url and not returned:
             set_url(View.PIPELINE)
         self.roster.paint_active()
 

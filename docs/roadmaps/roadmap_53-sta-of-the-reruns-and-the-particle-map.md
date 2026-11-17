@@ -3,7 +3,8 @@
 **Status:** scoped 2026-11-17 from the eight finished reruns of roadmap 49; nothing run, nothing built. D1 and D2
 taken the same day (§8). Which particle jobs to build: §11; Mask, PostProcess, the mask input and `skip_align`
 built the same day (§11.1, not run through SLURM), M's facts read. The particle map scoped against the code: §10;
-the handoff for building it as its own view: §13. What happens next: §12.
+the handoff for building it as its own view: §13, its decisions and design settled the same afternoon, nothing built:
+§13.1. What happens next: §12.
 
 **In one line.** Average the ribosome and the 412 VLP over the eight AGG412 reruns, sort each into classes and
 refine every class on its own to the best resolution the data hold. Do every step that changes which particles are
@@ -261,7 +262,7 @@ map exist from the reruns, the old records at `/groups/klumpe/_crboost_archive/a
 | D4 | Geometry by M (a new job, multi-source, refines pixel scale per project) or RELION 5 tomo CtfRefine + frame alignment | M, built as one job (§11); RELION's only if M will not take eight Warp sources |
 | D5 | 412 symmetry, from V2's C1 map | decided by the map |
 | D6 | Delete the TM score and angle maps (~7 TB) now that every candidate is exported | yes, once R1 has fixed the ribosome σ cut and V1 the 412's |
-| D7 | The particle map is the same map as preprocessing (one Jobs view, the picker switching between tilt series and sets by phase) or a view of its own | the same map |
+| D7 | The particle map is the same map as preprocessing (one Jobs view, the picker switching between tilt series and sets by phase) or a view of its own | **taken (maintainer, 2026-11-17): a view of its own**, opened from the PARTICLES header (§13, §13.1); the Jobs map keeps showing particle jobs meanwhile |
 | D8 | A condition label per project (tissue, genotype, prep) for the per-class tables | the maintainer supplies them |
 
 ## 9. Runtime checklist (per phase)
@@ -543,3 +544,129 @@ branch map's rule) or stays in the Jobs view; whether the preprocessing map keep
 
 **Before using the new jobs:** restart the server (new job types, new slots); the lab install's `conf.yaml` gets the
 `maskCreate` and `postprocess` profile blocks (§11.1).
+
+### 13.1 Settled 2026-11-17, before any code (second session)
+
+Nothing of the builder is written yet. This is what the session read, decided and settled; build it this way.
+
+**The maintainer's answers to §13's questions:**
+- A job page opened from the particle view closes back onto it. The page takes the particle view's place while it is
+  open; its ✕ (or Esc) brings the particle view back as it was, and turns the Jobs view off again if it was off when
+  the page opened. A page opened from the roster still closes onto the Jobs map.
+- The preprocessing map keeps showing particle jobs while the particle view is built (it is the only map that adds
+  jobs until the particle view has its + per class row).
+- D7 is therefore taken: a view of its own (§8).
+
+**Facts the build stands on (read 2026-11-17):**
+- Every Class 3D on disk has K = 1 (copia-tutorial-20261015-1551 job011, MysteryLattice ×4, Copia_Aaron_Tutorial, two
+  archived AGG412 projects), and no project holds a class-subset set. The check runs on the copia tutorial's job011
+  (15 iterations, ~1.5k particles) with a class-1 set made in a scratch copy; rows of several classes are first seen
+  on phase A's K 4 runs.
+- The archived projects (`_crboost_archive/agg412_old_records`) still name their old `crboost_data` paths inside
+  their stars: no use as fixtures.
+- Tomograms that came from other projects' jobs carry `cbOriginProject` (the home project's
+  `Tomograms/tomograms.star`, a set's own `tomograms.star`). A tomogram's project is read from there, else it is the
+  home project's own; no guessing from name prefixes.
+- Every particle job declares an `OPTIMISATION_SET_STAR` output (`OUTPUT_SCHEMA`, `path_template`), and an
+  optimisation set names its particles star and its tomograms star (`subtomo_merge._parse_optimisation_set`). A Class
+  3D's current particles are its last iteration's `run_itNNN_optimisation_set.star` (current while it runs).
+- The branch map's pan/zoom script (`ui/branch_map/view.py` `_JS`) is page-global: `cbBranchMap.fit` / `zoomBy` take
+  the first `.cb-bm-canvas`, the zoom label updates every label, and `cb-bm-move` / `cb-bm-view` carry no map name,
+  so two maps on one page steer each other (a drag in one moves the other's card of the same id). Fixed first: a
+  `data-map` on each canvas and zoom label, the map name in every event, `fit(map)` / `zoomBy(f, map)`, and
+  `BranchMapView.on_move` / `on_view` ignoring other maps; the preprocessing map is `jobs` and behaves as today.
+- `check_look_literals.py`: a new `ui/` file may hold no hex, `font-family` or `text-transform` literal outside a
+  `var(--cb-…, fallback)`; colours and voices come from `ui/branch_map/style.py`. `check_boundaries.py`: services never
+  import `ui` (R1), and no module-level dict keyed by three or more `JobType` members (R4): key by kind strings, as the
+  branch map does.
+- A second server from this checkout recovers and reconciles every project with `pipeline_active` in the user's
+  bases, beside the maintainer's own server: never start one. The check starts its own copy of the app
+  (`server_app.setup_app`) with `PipelineMonitor.start` and `CurationWatcher.start` made no-ops, its own `HOME`
+  (prefs, NiceGUI storage, logs), no token gate, over a scratch project.
+
+**Design:**
+- **The split.** `services/particles/lineage.py` holds what only the disk knows: the sets as nodes (`list_sets`, the
+  recipe's parents, the classes of a `CLASS_SUBSET`, stale parents), the class rows of each Class 3D (count from
+  `rlnClassNumber`, share from `rlnClassDistribution`, named as such, and Class 3D's own estimate), counts by project
+  and by tomogram, and `set_of_input(jm, slot)` (a recorded `/Analytics/sets/<id>/` path, else `set_read_by`). Job →
+  job edges and the cards' input rows stay in `ui/branch_map/model.project_from_state`, so the two maps never
+  disagree on what a job reads; the particle model re-points a row that reads a set to the set's node.
+- **Off the loop.** Star reads (up to 350k rows) run in `run_in_worker` under a new `WorkKind.LINEAGE`, cached in the
+  server by the files' mtimes (stat in a thread). The view's signature reads memory only: the store's `version`; a
+  15 s poll stats the sets root, `operations.jsonl` and each Class 3D's last data star in a thread.
+- **Cards.** Jobs through `card.render_card`, no magazine (band 0). A Class 3D: one row per class above the footer
+  ("class 2 · 41,203 · 38 % · 11.2 Å (Class 3D estimate)", the share explained on hover), each with its port on the
+  right edge, drawn into the card; the footer, "→ particles, every class · it NNN", keeps the whole job's port. A set:
+  `render_card` with a slim spec (name, count, `sNNN`, one "from" row per parent, 220 px), cabled from its class rows
+  (one cable per class) or from its parent's footer. Parents in other projects are named, without a cable (source
+  cards come after this slice). No + menus in this slice.
+- **The large card.** PARAMETERS (`blocks.params_parts`) and RESULTS (`blocks.results_parts`, given a `tally=False`
+  so particle cards carry no tilt-series tally) from the shared `FactsStore`, passed the registry's series and stamp
+  as `_request_facts` passes them so both maps share its cache; and PARTICLES: one row per project (name, count, a bar)
+  and a histogram of particles per tomogram. No threshold marks until one is decided.
+- **The picked node** is the card made large last: `/p/<project>/particles/<node>` (a set as `set:<id>`), its card
+  ringed; a node the project does not have is named in a toast.
+- **Workspace.** `View.PARTICLES` (`_TARGETS` 1), `apply_route` → `show_particles(node)`; `_view_frame("particles")`
+  built on first show (the gallery's pattern), after `pipeline` in `_VIEW_ORDER`, titled "Particle map", in
+  `_MODE_VIEWS`, its URL from the page's node in `_write_mode_url`, `page.set_active` from `_apply_views`, timers on
+  `ui_mgr.view_scope("particles")`, its container of class `cb-bm-app` (the map's CSS then needs no edit). The return:
+  `callbacks["open_job_from"](view, iid)` hides the view (URL writes suppressed) and opens the job;
+  `PipelineBuilderPanel.close_job` asks `callbacks["job_closed"](iid)` before it writes its own URL, and the workspace
+  brings the view back.
+- **Entry.** The branch glyph (`pipeline_table.svg`) at the right of the roster's PARTICLES header →
+  `callbacks["show_particles"]`.
+- **The check,** `scripts/dev_particle_map_check.py`: `fixture` (the project's Python: copy `project_params.json` with
+  `project_path` rewritten, copy `registry/`, symlink the rest, make a class-1 set with
+  `set_ops.create_class_subset_set`), `serve` (the app as above), and the steps in Playwright's Python (the view opens
+  from the header button; the class rows; the set hangs off its row; the large card's three blocks; the URL names the
+  node; a header opens the job page; ✕ and Esc come back; Back), PNGs in `notes/screens/particles/`, failing on any
+  page error or an ERROR or Traceback line of the server.
+
+### 13.2 Built 2026-11-17: the first slice
+
+Built as §13.1 settled it, and checked in a headless browser on a scratch copy of copia-tutorial-20261015-1551 with
+a class-1 set (`scripts/dev_particle_map_check.py`: 11 steps, no server ERROR or Traceback, no page error). Not yet
+in the maintainer's own server: it needs a restart (the one on 24326 started before this code).
+
+**What is there:**
+- **Two maps on one page.** The pan/zoom script (`ui/branch_map/view.py` `_JS`) names its map on every canvas and
+  zoom label (`data-map`) and in every event; `fit(map)` / `zoomBy(f, map)`; `BranchMapView.on_move` / `on_view` /
+  `on_mark` ignore other maps. The Jobs map is `jobs`; the check zooms and drags it after the change.
+  `zoom_controls(map)` and `install_pan_zoom()` are shared with the particle map.
+- **`services/particles/lineage.py`.** The sets as nodes (`read_sets`: parents, the classes of a class subset, stale
+  parents, composition from the set's own per-tomogram counts and its tomograms star's `cbOriginProject`); a Class
+  3D's last iteration (`read_class3d`: members per class from `rlnClassNumber`, share from `rlnClassDistribution`,
+  Class 3D's estimate; rows naming a class the model star lacks are reported); every other particle job's particles
+  from the optimisation set it makes (the newest `run_itNNN_optimisation_set.star` while it runs), or, for a job
+  that makes a map, from the one it read. `set_of_input(jm, slot)`. `LineageStore` stats in a thread, reads in
+  `run_in_worker(WorkKind.LINEAGE, …)` (cap 2), keys by mtimes, moves `version` when a read lands.
+- **`ui/particle_map/`** (model, store, cards, view). Job → job rows come from `project_from_state`; a row reading a
+  set is pointed at the set's node; a preprocessing source is named, without a cable. A Class 3D card has one row
+  per class above its footer with its own port; a set made of classes takes one cable per class from those rows. Set
+  cards 220 px: name, `sNNN`, level badge, one "from" row per parent, count in the footer; foreign parents named.
+  Large: PARAMETERS and RESULTS (`results_parts(..., tally=False)`), PARTICLES (bars per project, a histogram per
+  tomogram from three tomograms up, what the reads flagged in amber); a set's large card shows RECIPE and PARTICLES.
+  The map fits itself again whenever a node comes or goes (the sets landing after the first draw).
+- **Wiring.** `View.PARTICLES` (`/p/<project>/particles/<node>`, a set as `set:<id>`, percent-encoded in the bar);
+  `apply_route` → `show_particles(node)`; the frame `particles` after `pipeline`, built on first show, titled
+  "Particle map", its timers on `view_scope("particles")` (3 s tick, 15 s lineage poll). The return:
+  `open_job_from(view, iid)` hides the view without writing the bar and opens the job;
+  `PipelineBuilderPanel.close_job` asks `job_closed(iid)` before writing its own URL. The entry is the branch glyph at
+  the right of the roster's PARTICLES header (`.cb-pm-open`). A job card's header opens its page; the size toggle
+  makes any card large, and the card made large last is the picked node (ringed, in the URL). A node the project does
+  not have is named in a toast.
+- **Shared code touched:** `render_card` / `header` take a `size_tip` (the particle cards' toggle says "particles", not
+  "tilt series"); `ui/branch_map/style.py` names `CABLE`.
+
+**Seen on the fixture:** job011 → "class 1 · 1,016 · 100 % · 8.7 Å (Class 3D estimate)"; the set `s001_class_1`
+hangs off that row (cable at y 85.5 of a 116 px card, the class row, not the footer); ✕ and Esc bring the map back
+with the Jobs view off as it was; Back returns to the job page.
+
+**Open, for the next slices:**
+- Rows of several classes are first seen on phase A's K 4 runs; the small card cuts the class line ("…(Class 3D
+  esti…"), the full line is on hover. Whether the small card should drop the estimate's words is the maintainer's
+  call once K 4 cards are on screen.
+- No + per class row yet; no source cards for foreign parents; no composition magazine; the trace (§10.5).
+- A large card is not re-fitted into view (as on the Jobs map): after making a card large near the edge, "fit".
+- `check_look_literals.py` fails on `ui/agent_plan_page.py` (15 literals, not in the allow-list); that file is not
+  part of this build.
