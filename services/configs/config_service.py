@@ -185,6 +185,9 @@ class CurationConfig(BaseModel):
     constraint: str = ""  # SLURM --constraint, e.g. the node features whose GPUs do OpenGL
     prefer: str = ""  # SLURM --prefer: features tried first, `constraint` when none is free (SlurmConfig.prefer)
     avoid: str = ""  # node features to stay off, sent as --exclude (SlurmConfig.avoid)
+    # SLURM --qos for the session; a site's interactive QOS usually starts a session hours sooner than the
+    # partition's default. Empty = the partition's default QOS.
+    qos: str = ""
     vgl: bool = False  # render ChimeraX via VirtualGL (vglrun -d egl) on the GPU — needs the _GL.sif + gres
     cpus: int = 4
     mem: str = "16G"
@@ -212,12 +215,26 @@ class CurationConfig(BaseModel):
     rest_enabled: bool = True
 
 
+class NapariSoftwarePlacement(BaseModel):
+    """Where *Start now* runs napari with software rendering: Mesa on the job's CPUs, no VirtualGL, so any node
+    will do, a MIG slice included (MIG slices do no OpenGL). Pick the placement that starts at once: on CBE.next a
+    B200 MIG slice with the interactive QOS lands on the weekday `interactive_gpu` reservation, which is what Open
+    OnDemand's sessions get. 2-D is as quick as on a full GPU; 3-D draws a binned level."""
+
+    partition: str = ""  # empty = no *Start now*
+    gres: str | None = None  # e.g. one MIG slice, where the partition refuses a job without a GPU
+    qos: str | None = None  # None = curation.qos
+    cpus: int = 4  # Mesa renders on as many threads as the job has CPUs
+
+
 class NapariConfig(BaseModel):
     """napari on a VNC desktop, opened from a tomogram's napari chip (napari_GL.sif, container_defs/napari_GL.def).
 
     It runs on the nodes the curation session runs on, through the same worker: the placement fields left unset
-    here (None) are `curation:`'s, and so are vgl, login_host and passwordless_vnc. With `curation.vgl` on, napari
-    renders on the GPU through VirtualGL, so the placement must give a full GPU that does OpenGL (not a MIG slice).
+    here (None) are `curation:`'s (qos included), and so are vgl, login_host and passwordless_vnc. With
+    `curation.vgl` on, napari renders on the GPU through VirtualGL, so the placement must give a full GPU that
+    does OpenGL (not a MIG slice). `software` adds *Start now*, napari with software rendering where a job
+    starts at once.
     """
 
     sif_path: str | None = None
@@ -230,6 +247,8 @@ class NapariConfig(BaseModel):
     constraint: str | None = None
     prefer: str | None = None
     avoid: str | None = None
+    qos: str | None = None
+    software: NapariSoftwarePlacement = Field(default_factory=NapariSoftwarePlacement)
 
 
 class TiltFilterModelConfig(BaseModel):

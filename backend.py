@@ -1521,8 +1521,10 @@ class CryoBoostBackend:
     # ── napari on a VNC desktop — the same worker, `-J cb-napari`; see
     # CurationSessionService's napari section ─────────────────────────────────
 
-    async def launch_napari_session(self, volumes: list[dict[str, str]], title: str) -> dict[str, Any]:
-        return await self.curation_service.launch_napari_session(volumes, title)
+    async def launch_napari_session(
+        self, volumes: list[dict[str, str]], title: str, *, software: bool = False
+    ) -> dict[str, Any]:
+        return await self.curation_service.launch_napari_session(volumes, title, software=software)
 
     async def open_in_napari_session(
         self, session_dir: str, volumes: list[dict[str, str]], title: str
