@@ -71,6 +71,9 @@ def _showing(info: dict, status: str) -> tuple[str, str]:
     voxel = layer.get("voxel_size")
     software = "llvmpipe" in str(opened.get("renderer") or "").lower()
     tail = " · software rendering" if software else ""
+    if opened.get("viewer") == "companion":
+        # The colleague's viewer: where its comments and particle STARs go (the tomogram's project, or not).
+        tail += f" · saves to {opened['outputs']}" if opened.get("outputs") else " · outside a project: saves to home"
     if not voxel:
         return f"Showing {title} · {x} × {y} × {z} · voxel size unknown (the header has none){tail}", "cb-badge-stale"
     return f"Showing {title} · {voxel[2]:.2f} Å/px · {x} × {y} × {z}{tail}", "cb-badge-ok"

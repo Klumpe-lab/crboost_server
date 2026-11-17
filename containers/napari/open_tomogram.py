@@ -21,6 +21,16 @@ the window title and ``opened.json`` say the voxel size is unknown.
 
 By hand, volumes can be given as arguments instead of a session directory; launch_napari_vnc.sh beside this file
 does that on a GPU node.
+
+With ``--companion <checkout>`` (conf.yaml ``napari.companion``) the window is the colleague's viewer instead
+(``napari_mrc_lowpass_fast.py``: low-pass, per-tomogram comments, particle points saved as STAR files), and a
+request opens its first volume there. That viewer saves into the folder its controls name; a request carries
+``outputs``, the tomogram's project folder ``<project>/Curation/napari/``, and the viewer holds one project at a
+time. Before it opens another tomogram, what it holds is saved (comments CSV, every particle layer's STAR), so the
+STARs then read back from the folder are what was on screen; moving to another project saves into the old
+folder, forgets the old project's tomograms, and points the controls at the new one. A request without
+``outputs`` (a volume outside every project) leaves the folders where the viewer started (the user's home) and
+says so. That viewer loads the whole volume, so 3-D needs a GPU that takes it as one texture.
 """
 
 from __future__ import annotations
@@ -245,10 +255,129 @@ class Session:
             )
 
 
+class CompanionSession(Session):
+    """The colleague's viewer driven by crboost's requests (see the module docstring)."""
+
+    def __init__(self, viewer: napari.Viewer, session_dir: Path | None, renderer: str, companion: Path):
+        super().__init__(viewer, session_dir, renderer)
+        sys.path.insert(0, str(companion))
+        from napari_mrc_lowpass_fast import LowPassController, RuntimeProfile
+        from napari_mrc_lowpass_hpc import SPECTRUM_CACHE_MIN_MEMORY_GB, allocated_cpus, allocated_memory_gb
+
+        workers = allocated_cpus()
+        memory_gb = allocated_memory_gb(workers)
+        cache = memory_gb is None or memory_gb >= SPECTRUM_CACHE_MIN_MEMORY_GB
+        self.controller = LowPassController(
+            viewer, profile=RuntimeProfile(name="crboost", workers=workers, cache_spectrum=cache)
+        )
+        self.outputs: Path | None = None
+        logger.info("companion viewer from %s: %d FFT threads, spectrum cache %s", companion, workers, cache)
+
+    def _save(self) -> None:
+        c = self.controller
+        if c.current_path is None:
+            return
+        c.save_comments_csv(c._comments_csv_path())
+        c.save_all_particle_layers()
+
+    def _point_at(self, outputs: Path | None) -> None:
+        """Move the viewer's saves to `outputs`, after saving what it holds into the folder it had. The tomograms
+        of that project are forgotten; the one on screen goes once the next has loaded (`_forget`)."""
+        c = self.controller
+        if self.outputs is not None:
+            self._save()
+        for path in list(c.loaded_paths):
+            if path != c.current_path:
+                self._forget(path)
+        base = outputs if outputs is not None else Path.cwd()
+        c.default_star_dir = base / "particle_stars"
+        c.default_comments_csv = base / "tomogram_comments.csv"
+        c.default_png_dir = base / "tomogram_pngs"
+        c.annotation_controls.star_dir.value = str(c.default_star_dir)
+        c.comment_controls.save_comments.value = str(c.default_comments_csv)
+        self.outputs = outputs
+
+    def _forget(self, path: Path) -> None:
+        """Drop `path` from the viewer's file list, comments and picks, so no later save writes it elsewhere."""
+        c = self.controller
+        if path in c.loaded_paths:
+            c.loaded_paths.remove(path)
+        c.comments.pop(path, None)
+        for per_path in c.particle_coordinates.values():
+            per_path.pop(path, None)
+        c._refresh_selected_file_choices()
+
+    def apply(self, request: dict, seq: int) -> None:
+        self.seq = seq
+        c = self.controller
+        title = str(request.get("title") or "")
+        specs = request.get("layers") or []
+        raw = request.get("outputs")
+        outputs = Path(raw) if raw else None
+        error = None
+        opened = []
+        try:
+            if not specs:
+                raise ValueError("the request names no volume")
+            path = Path(str(specs[0].get("path") or "")).resolve()
+            previous = c.current_path
+            new_project = outputs != self.outputs or previous is None
+            if new_project or path != previous:
+                if new_project:
+                    self._point_at(outputs)
+                elif self.outputs is not None:  # outside a project the viewer saves only when asked
+                    self._save()
+                for spec in specs:
+                    c.register_path(Path(str(spec.get("path") or "")))
+                c.load_mrc(path)
+                if new_project and previous is not None and previous != path:
+                    self._forget(previous)
+                if c.default_comments_csv.is_file():
+                    c.load_comments_csv(c.default_comments_csv)
+                if c.default_star_dir.is_dir():
+                    c.load_particle_stars_from_dir(c.default_star_dir)
+            data = c.original_data
+            voxel = float(c.voxel_size_angstrom)
+            opened.append(
+                {
+                    "name": str(specs[0].get("name") or path.stem),
+                    "path": str(path),
+                    "shape": list(data.shape) if data is not None else None,
+                    "voxel_size": [voxel, voxel, voxel],
+                    "shape_3d": list(data.shape) if data is not None else None,
+                }
+            )
+            self.viewer.title = title or path.stem
+            if outputs is None:
+                show_warning(
+                    f"This tomogram is outside every crboost project: comments and particles save in {Path.cwd()}."
+                )
+        except Exception as e:  # the viewer is the user's window: report and keep it open
+            logger.exception("companion viewer could not open %s", specs)
+            error = f"{type(e).__name__}: {e}"
+            show_error(f"Not opened: {error}")
+        if self.session_dir is not None:
+            write_ack(
+                self.session_dir,
+                {
+                    "seq": seq,
+                    "ok": error is None and bool(opened),
+                    "error": error,
+                    "layers": opened,
+                    "renderer": self.renderer,
+                    "viewer": "companion",
+                    "outputs": str(outputs) if outputs else None,
+                },
+            )
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("volumes", nargs="*", help="MRC volumes to open (by hand)")
     parser.add_argument("--session-dir", type=Path, help="crboost session directory holding open.json")
+    parser.add_argument(
+        "--companion", type=Path, help="checkout of the colleague's viewer to run instead of plain napari"
+    )
     args = parser.parse_args(argv)
     if not args.volumes and args.session_dir is None:
         parser.error("give volumes to open or --session-dir")
@@ -260,7 +389,10 @@ def main(argv: list[str] | None = None) -> None:
         qt_window.showMaximized()
     renderer = gl_renderer(viewer)
     logger.info("OpenGL renderer: %s", renderer)
-    session = Session(viewer, args.session_dir, renderer)
+    if args.companion is not None:
+        session = CompanionSession(viewer, args.session_dir, renderer, args.companion)
+    else:
+        session = Session(viewer, args.session_dir, renderer)
     if args.volumes:
         request = {
             "title": Path(args.volumes[0]).stem,

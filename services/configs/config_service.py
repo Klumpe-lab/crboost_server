@@ -249,6 +249,10 @@ class NapariConfig(BaseModel):
     avoid: str | None = None
     qos: str | None = None
     software: NapariSoftwarePlacement = Field(default_factory=NapariSoftwarePlacement)
+    # A checkout of the colleague's napari viewer (napari_mrc_lowpass_fast.py: low-pass, comments, particle STARs).
+    # Set, a session runs that viewer instead of plain napari, loaded from the checkout like the launcher is, and
+    # it saves into the tomogram's project, `<project>/Curation/napari/`. Empty = plain napari.
+    companion: str = ""
 
 
 class OodConfig(BaseModel):
