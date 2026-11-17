@@ -27,6 +27,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 from services.computing.slurm_service import SlurmConfig, SlurmService, avoided_nodes, check_constraint
 from services.configs.config_service import get_config_service
@@ -246,6 +247,10 @@ class CurationSessionService:
             f"#SBATCH -o {log}",
             f"#SBATCH -e {log}",
         ]
+        ood = self.config_service.ood
+        if ood.enabled:
+            # The browser route: websockify beside Xvnc for the portal's relay, Xvnc on localhost (roadmap 55).
+            env = {**env, "CB_WS_SIF": ood.websockify_sif or env["CX_SIF"]}
         lines += [f"export {k}={shlex.quote(v)}" for k, v in env.items()]
         lines.append(f"exec {shlex.quote(str(self._vnc_worker()))}")
         sbatch_script = session_dir / "submit.sh"
@@ -271,6 +276,31 @@ class CurationSessionService:
             return err(f"sbatch failed: {stderr.decode().strip()}")
         out = stdout.decode().strip()
         return ok(slurm_job_id=out.split()[-1] if out else None)
+
+    def browser_url(self, info: dict[str, Any]) -> str | None:
+        """The portal link that opens a live session's desktop in a browser tab, built from the current `ood:`
+        config and the session's `session.json` (`node`, `ws_port`, `password`), never from a string stored when
+        the session started. Everything rides in the fragment, which the browser does not send to the portal, so
+        the password stays out of its logs; noVNC 1.3 reads its settings from the fragment first. None when the
+        portal is not configured or the session serves no websocket (it started before the portal was set)."""
+        ood = self.config_service.ood
+        node, ws_port = info.get("node"), info.get("ws_port")
+        if not ood.enabled or not node or not ws_port:
+            return None
+        params = {
+            "autoconnect": "true",
+            "resize": "remote",
+            "path": f"rnode/{str(node).split('.')[0]}/{ws_port}/websockify",
+        }
+        if info.get("password"):
+            params["password"] = str(info["password"])
+        return f"{ood.url.rstrip('/')}{ood.novnc_path}#{urlencode(params, safe='/')}"
+
+    def _with_browser_url(self, info: dict[str, Any]) -> dict[str, Any]:
+        url = self.browser_url(info)
+        if url:
+            info["browser_url"] = url
+        return info
 
     # ── declared scope ─────────────────────────────────────────────────────────
 
@@ -430,7 +460,7 @@ class CurationSessionService:
             try:
                 data = json.loads(info_file.read_text())
                 data.update({"success": True, "status": "ready"})
-                return data
+                return self._with_browser_url(data)
             except Exception as e:
                 return ok(status="starting", detail=f"session.json not readable yet: {e}")
 
@@ -564,7 +594,7 @@ class CurationSessionService:
                 except Exception:
                     pass
             out.update(self._read_scope(sdir))
-            return out
+            return self._with_browser_url(out)
         return None
 
     # ── per-user session registry + REST command channel ───────────────────────
@@ -695,7 +725,7 @@ class CurationSessionService:
             except Exception:
                 pass
         out.update(self._read_scope(sdir))
-        return out
+        return self._with_browser_url(out)
 
     # ── napari sessions ───────────────────────────────────────────────────────
     #

@@ -1,9 +1,11 @@
 """napari for one tomogram: start napari on a GPU node showing it, or show it in the napari already running.
 
 crboost does not proxy the desktop: napari runs on a VNC desktop as a SLURM job (the curation worker with
-CB_APP=napari, services/curation/session_service.py) and this dialog hands over what to connect with, an SSH
-tunnel, an address and a password, the same three the ChimeraX control center gives. A user has one napari
-session. While it runs, any tomogram's napari chip offers to show that tomogram in it, which replaces the layers
+CB_APP=napari, services/curation/session_service.py). Where the site has an Open OnDemand portal (conf.yaml
+`ood:`), *Open in browser* opens the desktop in a tab through it; elsewhere this dialog hands over an SSH tunnel,
+an address and a password, the same three the ChimeraX control center gives. With the portal, the napari chip
+itself goes straight to the tab (ui/napari_open_page.py) and this dialog sits behind the chip's ▾. A user has one
+napari session. While it runs, any tomogram's napari chip offers to show that tomogram in it, which replaces the layers
 crboost opened there; layers the user made stay.
 
 The dialog keeps its shape: the connection rows are built once and filled when the session comes up, and one
@@ -20,7 +22,7 @@ from nicegui import ui
 
 from services.configs.config_service import get_config_service
 
-from ui.components.buttons import house_button, icon_button
+from ui.components.buttons import house_button, icon_button, link_to, set_button_kind
 from ui.components.copyable import _write_clipboard
 from ui.components.dialogs import dialog_host
 from ui.components.reactive import SingleFlight
@@ -40,7 +42,7 @@ _STATUS = {
 _flight = SingleFlight()
 
 
-def _when(iso: str | None) -> str:
+def when_text(iso: str | None) -> str:
     """SLURM's start estimate as the clock time, with the date when it is not today."""
     if not iso:
         return ""
@@ -88,15 +90,31 @@ async def open_napari_dialog(backend, volume: str | Path) -> None:
         config = get_config_service()
         passwordless = config.curation.passwordless_vnc
         software_offered = bool(config.napari.software.partition)
+        portal = config.ood.enabled
         active = await backend.find_active_napari_session()
-        _build(backend, path, name, volumes, passwordless, software_offered, active)
+        _build(backend, path, name, volumes, passwordless, software_offered, portal, active)
 
 
 def _build(
-    backend, path: str, name: str, volumes: list[dict], passwordless: bool, software_offered: bool, active: dict | None
+    backend,
+    path: str,
+    name: str,
+    volumes: list[dict],
+    passwordless: bool,
+    software_offered: bool,
+    portal: bool,
+    active: dict | None,
 ) -> None:
-    sv = {"session_dir": None, "job_id": None, "status": "off", "tunnel": "", "address": "", "password": ""}
-    state = {"timer": None, "polling": False, "closed": False}
+    sv = {
+        "session_dir": None,
+        "job_id": None,
+        "status": "off",
+        "tunnel": "",
+        "address": "",
+        "password": "",
+        "browser_url": "",
+    }
+    state = {"timer": None, "polling": False, "closed": False, "linked": ""}
     flight = SingleFlight()
 
     with (
@@ -115,10 +133,16 @@ def _build(
                 status_tip = ui.tooltip("")
         showing_lbl = ui.label("").style(f"{MONO} font-size: 10px; line-height: 1.45;")
 
-        ui.label(
-            "napari runs on a cluster node and you see it through a VNC viewer. Once per session: paste the tunnel "
-            "into a terminal on your computer, then open the address in the viewer and give the password."
-        ).style(f"{HELPER_STYLE} line-height: 1.45;")
+        if portal:
+            ui.label(
+                "napari runs on a cluster node and opens in a browser tab through the cluster's OnDemand portal "
+                "(the first time, it asks you to sign in)."
+            ).style(f"{HELPER_STYLE} line-height: 1.45;")
+        else:
+            ui.label(
+                "napari runs on a cluster node and you see it through a VNC viewer. Once per session: paste the "
+                "tunnel into a terminal on your computer, then open the address in the viewer and give the password."
+            ).style(f"{HELPER_STYLE} line-height: 1.45;")
 
         def _row(label: str, key: str, tip: str):
             with ui.row().classes("no-wrap").style(ROW_STYLE + " align-items: center;"):
@@ -132,10 +156,15 @@ def _build(
                 icon_button("content_copy", _copy, tooltip=tip)
             return value
 
-        tunnel_lbl = _row("Tunnel", "tunnel", "Copy the tunnel command")
-        address_lbl = _row("Address", "address", "Copy the VNC address")
-        password_lbl = _row("Password", "password", "Copy the password")
-        viewer_lbl = ui.label("").style(f"{HELPER_STYLE} line-height: 1.45;")
+        # With the portal the desktop listens on the node's localhost only, so there is no tunnel to hand over
+        # (roadmap 55 D1): the link is the whole connection.
+        if portal:
+            tunnel_lbl = address_lbl = password_lbl = viewer_lbl = None
+        else:
+            tunnel_lbl = _row("Tunnel", "tunnel", "Copy the tunnel command")
+            address_lbl = _row("Address", "address", "Copy the VNC address")
+            password_lbl = _row("Password", "password", "Copy the password")
+            viewer_lbl = ui.label("").style(f"{HELPER_STYLE} line-height: 1.45;")
 
         with ui.row().classes("w-full items-center no-wrap").style("gap: 6px; margin-top: 4px;"):
             stop_btn = house_button("Stop session", lambda: _stop(), kind="danger")
@@ -150,6 +179,13 @@ def _build(
             action_btn = house_button("Start now", lambda: _act(software=software_offered), kind="accent")
             with action_btn:
                 action_tip = ui.tooltip("")
+            browser_btn = house_button(
+                "Open in browser",
+                kind="accent",
+                tooltip="Open napari's desktop in a new tab, through the cluster's OnDemand portal. Any number of "
+                "tabs show the same desktop.",
+            )
+            browser_btn.set_visibility(False)
 
     def _apply(info: dict | None = None) -> None:
         status = sv["status"]
@@ -159,7 +195,7 @@ def _build(
         if node and status in ("starting", "ready"):
             text = f"{text} on {node}"
         elif status == "pending" and info_.get("expected_start"):
-            text = f"{text}, start expected {_when(info_['expected_start'])}"
+            text = f"{text}, start expected {when_text(info_['expected_start'])}"
         status_lbl.set_text(text)
         status_lbl.classes(replace=klass)
         tip = f"SLURM job {sv['job_id']}" if sv["job_id"] else "No napari session is running."
@@ -185,8 +221,26 @@ def _build(
             sv["tunnel"] = info.get("tunnel_cmd") or ""
             sv["address"] = f"localhost:{info['port']}" if info.get("port") else ""
             sv["password"] = info.get("password") or ""
+            sv["browser_url"] = info.get("browser_url") or ""
         elif status != "ready":
-            sv.update(tunnel="", address="", password="")
+            sv.update(tunnel="", address="", password="", browser_url="")
+        if portal:
+            if state["linked"] != sv["browser_url"]:  # written when it changes, not on every poll
+                state["linked"] = sv["browser_url"]
+                link_to(browser_btn, sv["browser_url"] or None)
+                browser_btn.set_visibility(bool(sv["browser_url"]))
+                # Once the desktop is up, opening it is the dialog's one primary action.
+                set_button_kind(action_btn, "default" if sv["browser_url"] else "accent")
+            if info is not None and status == "ready" and not sv["browser_url"]:
+                showing_lbl.set_text(
+                    "This session started before the portal was configured, so it cannot open in a browser: "
+                    "stop it and start again."
+                )
+                showing_lbl.classes(replace="cb-badge-err")
+                return
+            if info is not None:
+                _show_info(info, status)
+            return
         tunnel_lbl.set_text(sv["tunnel"] or "—")
         address_lbl.set_text(sv["address"] or "—")
         if status == "ready" and passwordless:
@@ -198,13 +252,16 @@ def _build(
             f"Any VNC viewer: TurboVNC, TigerVNC, RealVNC, or the Mac's Screen Sharing{screen_sharing}."
         )
         if info is not None:
-            if status == "ended":
-                showing_lbl.set_text(f"The session ended. {info.get('detail') or ''}".strip())
-                showing_lbl.classes(replace="cb-badge-err")
-            else:
-                text, klass = _showing(info, status)
-                showing_lbl.set_text(text)
-                showing_lbl.classes(replace=klass)
+            _show_info(info, status)
+
+    def _show_info(info: dict, status: str) -> None:
+        if status == "ended":
+            showing_lbl.set_text(f"The session ended. {info.get('detail') or ''}".strip())
+            showing_lbl.classes(replace="cb-badge-err")
+        else:
+            text, klass = _showing(info, status)
+            showing_lbl.set_text(text)
+            showing_lbl.classes(replace=klass)
 
     def _start_polling() -> None:
         if state["timer"] is None and not state["closed"]:

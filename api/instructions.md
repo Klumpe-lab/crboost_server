@@ -1,7 +1,7 @@
 CryoBoost runs cryo-ET pipelines (WarpTools, AreTomo, RELION, PyTOM, cryoCARE, IsoNet) on the user's SLURM cluster
 from a web UI. These tools reach what that UI reaches to compose, set up and run a project, one verb per UI
-action, under the same rules. Looking and judging stay in the UI: tilt review and Approve, curating picks,
-judging particles, the STA kitchen. Every answer carries a `ui_url`: hand it to the user to look.
+action, under the same rules. Looking and judging stay in the UI: tilt review and Approve, verdicts on single
+picks, judging particles and classes. Every answer carries a `ui_url`: hand it to the user to look.
 
 Families:
 - reads, which change nothing: get_*, list_*, inspect_dataset, plan_run, plan_changes
@@ -14,6 +14,9 @@ Families:
 - species: create_species, set_species, import_species, add_template, add_mask, make_template, make_mask
   (both in the background: get_task), select_*
 - setting: set_params, set_slurm, set_input, reset_inputs, set_gain, set_tilt_filter
+- the STA kitchen: add_kitchen_sources, create_kitchen_subset and create_kitchen_group (from a recipe: filters,
+  subsets, post-ops), edit_/delete_ subsets and groups, make_kitchen_set (background: get_task), make_class_set;
+  reads get_kitchen, list_kitchen_sources, plan_kitchen_set. Every cut, subset and class comes from the user.
 - running: plan_run, then run; stop, cancel_job, cancel_leftovers, predict_tilts
 - deleting: delete_job (to Trash), delete_species, delete_template, delete_mask; clear_trash and delete_project
   only as plan steps

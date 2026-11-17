@@ -142,8 +142,10 @@ job_resource_profiles:
     cpus_per_task: 2
     time: "0:20:00"
 
-  # Per tomogram. easymode peaked at 22 GB of GPU memory on a 264 x 530 x 530 tomogram: where the partition also
-  # offers smaller cards or MIG slices, name the full GPU's type (CBE.next: "gpu:nvidia_b200:1").
+  # Per tomogram. easymode peaked at 22 GB of GPU memory on a 264 x 530 x 530 tomogram: any full card of 24 GB or
+  # more will do, so don't pin one GPU type or prefer the fastest; where the partition also offers MIG slices, keep
+  # them out with `avoid` (CBE.next: constraint "b200|a100|rtx6000", avoid "mig"). A task takes ~20 min on an A100
+  # and about an hour on an RTX 6000.
   segment:
     gres: "gpu:1"
     mem: "32G"
@@ -286,6 +288,15 @@ napari:
     partition: ""
     gres: ""         # e.g. "gpu:<mig-slice-type>:1" where the partition refuses a job without a GPU
     cpus: 4          # Mesa renders on as many threads as the job has CPUs
+
+# Open OnDemand: open viewer sessions (napari, ChimeraX) in a browser tab through the site's portal, with no SSH
+# tunnel or VNC client. The session serves its desktop as a websocket and the portal's noVNC reaches it through
+# its /rnode relay; the portal login is the gate, the session's VNC password the lock. With url set the desktop
+# listens on the node's localhost only, so the SSH tunnel is not offered. Leave url "" for a site without one.
+ood:
+  url: ""            # e.g. "https://ood.example.org"
+  novnc_path: ""     # the dashboard's noVNC page, e.g. "/pun/sys/dashboard/noVNC-1.3.0/vnc.html"
+  websockify_sif: "" # an image with `websockify` on its PATH; "" = the session's own image
 
 # Lab-level species catalog. A shared directory holding species DEFINITIONS —
 # name, diameter, symmetry, notes, templates and masks with their provenance — so the same

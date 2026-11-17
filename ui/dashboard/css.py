@@ -1580,6 +1580,9 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 /* The `napari` and `3dmod` chips in a tomogram preview's corner (ui/components/viewer_chips.py). */
 .cb-viewer-chip { background: rgba(15, 23, 42, 0.62); color: #e2e8f0; }
 .cb-viewer-chip:hover { background: rgba(37, 99, 235, 0.88); color: #ffffff; }
+/* The napari chip is a link (it opens the OnDemand tab): keep the chip's colours over a link's. */
+a.cb-viewer-chip, a.cb-viewer-chip:visited { color: #e2e8f0; text-decoration: none; }
+a.cb-viewer-chip:hover { color: #ffffff; }
 /* ── Live-session marker ─────────────────────────────────────────────────────── */
 /* The 7 px green dot beside `Curate picks` on the tomogram the running ChimeraX + ArtiaX
  * session has open (Picks & curation tab). It breathes: a CSS animation, never a server
