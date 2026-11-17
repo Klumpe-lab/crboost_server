@@ -53,6 +53,7 @@ class WorkKind(StrEnum):
     KITCHEN = "kitchen"  # one member's column table of an STA kitchen pool
     KITCHEN_TILE = "kitchen_tile"  # a batch of one reconstruction's cutouts for the STA kitchen
     SNAPSHOT = "snapshot"  # a project snapshot's bundle: its pictures converted and zipped
+    LINEAGE = "lineage"  # the particle map's star reads: a set's or a job's particles, a Class 3D's classes
 
 
 # Concurrent tasks per kind. A preview or thumbnail pass is long and walks a whole job, so one at a
@@ -66,6 +67,7 @@ _CAPS: dict[WorkKind, int] = {
     WorkKind.KITCHEN: 2,
     WorkKind.KITCHEN_TILE: 3,
     WorkKind.SNAPSHOT: 1,
+    WorkKind.LINEAGE: 2,
 }
 _DEFAULT_WORKERS = 4
 # Added to the workers' nice value: under load the server's loop gets the CPU first.

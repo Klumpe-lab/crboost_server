@@ -40,6 +40,7 @@ DARK = "#0f172a"  # the Journey's canvas: pictures sit on it in every look
 RUN = tok("run-dot", "#3b82f6")  # a tilt series on the GPU now
 OFF = tok("off-dot", "#cbd5e1")  # a job not run yet
 QUEUED = tok("que-dot", "#60a5fa")
+CABLE = tok("bm-cable", "#94a3b8")  # a cable that is not on the picked node's lineage
 STATUS = {"done": GREEN, "running": RUN, "failed": RED, "queued": QUEUED, "scheduled": OFF}
 # The selected tilt series' chip, in the picker and on its handle.
 CHIP_ON = tok("bm-chip-on", "#334155")

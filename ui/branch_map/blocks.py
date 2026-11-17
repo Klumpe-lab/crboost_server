@@ -209,10 +209,10 @@ def params_parts(
 # ── results over every tilt series ───────────────────────────────────────────
 
 
-def results_parts(pr: Project, j: Job, inner_w: int, store: FactsStore) -> list[Part]:
+def results_parts(pr: Project, j: Job, inner_w: int, store: FactsStore, *, tally: bool = True) -> list[Part]:
     """What the job made over every tilt series: headline tiles, the pictures or plot with a caption, the tally,
     what else the job has to say. The magazine stays above the card, whatever its size. Until the facts are read
-    the block says so."""
+    the block says so. `tally=False`: no tilt-series tally (a card that counts particles, not tilt series)."""
     parts: list[Part] = []
     f = store.job_facts(j)
     if f is None:
@@ -230,7 +230,10 @@ def results_parts(pr: Project, j: Job, inner_w: int, store: FactsStore) -> list[
                 parts.append((LINE_H, lambda: _cap(f.plot.caption)))
         for line in f.lines:
             parts.append((LINE_H, lambda line=line: _cap(line)))
-    parts.append((LINE_H, lambda: text(pr.tally_words(j), 9, RED if j.status == "failed" else SOFT)))
+    if tally:
+        parts.append((LINE_H, lambda: text(pr.tally_words(j), 9, RED if j.status == "failed" else SOFT)))
+    elif not parts:
+        parts.append((LINE_H, lambda: _cap("nothing to show")))
     return parts
 
 

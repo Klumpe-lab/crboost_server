@@ -353,6 +353,7 @@ def header(
     on_discard=None,
     on_add=None,
     todo: list[str] = (),
+    size_tip: str | None = None,
 ) -> None:
     """The header band: the light, the type's name, the tool or method as a badge, the job number, the size
     toggle. A click on it opens the job's page (`on_open`); the number opens the job's menu (`on_menu`). The new
@@ -421,7 +422,9 @@ def header(
                 with btn:
                     ui.icon("close_fullscreen" if large else "open_in_full", size="10px")
                 btn.tooltip(
-                    "Back to the small card" if large else "Parameters, results and the tilt series on the card"
+                    "Back to the small card"
+                    if large
+                    else size_tip or "Parameters, results and the tilt series on the card"
                 )
                 btn.on("click.stop", on_size)
     if on_open:
@@ -556,6 +559,7 @@ def render_card(
     open_slot: str | None = None,
     use_label: str | None = None,
     on_use=None,
+    size_tip: str | None = None,
 ) -> ui.element:
     """One job card. Absolutely placed when x and y are given, in the flow otherwise. `middle` draws the block
     between the input rows and the output row (`box.extra` is its height). `on_socket(key)` is a click on an input
@@ -594,6 +598,7 @@ def render_card(
             on_discard=on_discard,
             on_add=on_add,
             todo=todo,
+            size_tip=size_tip,
         )
         # One row per input: its name, and the job it reads.
         for sk in spec.sockets:

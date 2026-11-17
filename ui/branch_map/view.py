@@ -74,6 +74,8 @@ _PREFS_KEY = "branch_map"
 class BranchMapView(FingerprintedView):
     """The map over one project, in one browser tab."""
 
+    MAP = "jobs"  # the name its canvas and events carry
+
     def __init__(self, container, panel, callbacks: dict[str, Callable]) -> None:
         super().__init__(container)
         self.panel = panel
@@ -179,18 +181,28 @@ class BranchMapView(FingerprintedView):
         p["view"] = [st.zoom, st.tx, st.ty] if st.zoom is not None else None
 
     # ── the browser's events ──
+    def ours(self, e) -> bool:
+        """The event came from this map's canvas: every map on the page hears every map's events."""
+        return e.args.get("map", "jobs") == self.MAP
+
     def on_move(self, e) -> None:
+        if not self.ours(e):
+            return
         nid = e.args.get("nid")
         if nid:
             self.st.moved[nid] = (float(e.args["x"]), float(e.args["y"]))
             self.persist()
 
     def on_view(self, e) -> None:
+        if not self.ours(e):
+            return
         self.st.zoom, self.st.tx, self.st.ty = float(e.args["zoom"]), float(e.args["tx"]), float(e.args["ty"])
         self.persist()
 
     def on_mark(self, e) -> None:
-        """A click on a magazine's mark, anywhere on the page."""
+        """A click on a magazine's mark on this map."""
+        if not self.ours(e):
+            return
         ts = e.args.get("ts")
         if self._pr is not None and ts in self._pr.ts_ids:
             self.pick(None if ts == self.st.active_ts else ts)
@@ -302,6 +314,17 @@ def _cable(
         f'<path d="{d}" fill="none" stroke="{color}" stroke-width="{width}"{dasha} '
         f'data-a="{a}" data-ax="{ax}" data-ay="{ay}" data-b="{b}" data-bx="{bx}" data-by="{by}"/>'
     )
+
+
+def zoom_controls(map_name: str) -> None:
+    """Zoom out, the zoom, zoom in, fit: for the map named `map_name` only."""
+    house_button("−").on("click", js_handler=f"() => window.cbBranchMap.zoomBy(1 / 1.25, '{map_name}')")
+    ui.label("100 %").classes("cb-bm-zoom-label").props(f'data-map="{map_name}"').style(
+        "font-family: var(--cb-sans, 'IBM Plex Sans', sans-serif); font-size: 10px; "
+        f"color: {BODY}; width: 40px; text-align: center;"
+    )
+    house_button("+").on("click", js_handler=f"() => window.cbBranchMap.zoomBy(1.25, '{map_name}')")
+    house_button("fit").on("click", js_handler=f"() => window.cbBranchMap.fit('{map_name}')")
 
 
 def _render_map(view: BranchMapView, pr: Project, state) -> None:
@@ -706,13 +729,7 @@ def _render_map(view: BranchMapView, pr: Project, state) -> None:
             )
         ui.element("div").style("flex: 1 1 0;")
         label("Zoom", 9, SOFT, case="none", track="0", extra="margin-left: 8px;")
-        house_button("−").on("click", js_handler="() => window.cbBranchMap.zoomBy(1 / 1.25)")
-        ui.label("100 %").classes("cb-bm-zoom-label").style(
-            "font-family: var(--cb-sans, 'IBM Plex Sans', sans-serif); font-size: 10px; "
-            f"color: {BODY}; width: 40px; text-align: center;"
-        )
-        house_button("+").on("click", js_handler="() => window.cbBranchMap.zoomBy(1.25)")
-        house_button("fit").on("click", js_handler="() => window.cbBranchMap.fit()")
+        zoom_controls(view.MAP)
 
     # ── the canvas: dotted paper; the world inside it pans and zooms in the browser ──
     canvas = (
@@ -724,6 +741,7 @@ def _render_map(view: BranchMapView, pr: Project, state) -> None:
             f"background-image: radial-gradient({PAPER_DOT} 1px, transparent 1.2px); background-size: 16px 16px;"
         )
     )
+    canvas.props(f'data-map="{view.MAP}"')
     if st.zoom is not None:
         canvas.props(f'data-zoom="{st.zoom}" data-tx="{st.tx}" data-ty="{st.ty}"')
     with canvas:
@@ -905,8 +923,9 @@ async def _add_new_job(view: BranchMapView, pr: Project, state, resolved: list[R
 
 # Pan, zoom and drag, in the browser: a pointer-down on a card moves it (its cables follow, by the offsets each
 # path carries), one on the paper pans, the wheel zooms about the pointer. A drag's end and a view change go to the
-# server as events, so the next redraw keeps them; a click on a magazine's mark sends its tilt series. Installed
-# once per page; a MutationObserver picks up every canvas the page builds afterwards.
+# server as events, so the next redraw keeps them; a click on a magazine's mark sends its tilt series. Each canvas
+# and zoom label names its map (`data-map`), and every event carries that name, so two maps on one page never steer
+# each other. Installed once per page; a MutationObserver picks up every canvas the page builds afterwards.
 _JS = """
 (function () {
   if (window.cbBranchMap) return;
@@ -925,13 +944,15 @@ _JS = """
       p.setAttribute('d', pathD(a.x + +p.dataset.ax, a.y + +p.dataset.ay, b.x + +p.dataset.bx, b.y + +p.dataset.by));
     });
   }
+  const mapOf = (c) => c.dataset.map || 'jobs';
   function apply(c) {
     c.querySelector('.cb-bm-world').style.transform = `translate(${c._tx}px, ${c._ty}px) scale(${c._z})`;
-    document.querySelectorAll('.cb-bm-zoom-label').forEach((l) => (l.textContent = Math.round(c._z * 100) + ' %'));
+    document.querySelectorAll(`.cb-bm-zoom-label[data-map="${mapOf(c)}"]`)
+      .forEach((l) => (l.textContent = Math.round(c._z * 100) + ' %'));
   }
   function emitView(c) {
     clearTimeout(c._t);
-    c._t = setTimeout(() => emitEvent('cb-bm-view', { zoom: c._z, tx: c._tx, ty: c._ty }), 300);
+    c._t = setTimeout(() => emitEvent('cb-bm-view', { map: mapOf(c), zoom: c._z, tx: c._tx, ty: c._ty }), 300);
   }
   function fit(c) {
     const w = c.querySelector('.cb-bm-world');
@@ -945,12 +966,15 @@ _JS = """
     c._tx = px - (px - c._tx) * (z / c._z); c._ty = py - (py - c._ty) * (z / c._z); c._z = z;
     apply(c); emitView(c);
   }
-  const canvas = () => document.querySelector('.cb-bm-canvas');
-  M.fit = () => { const c = canvas(); if (c) fit(c); };
-  M.zoomBy = (f) => { const c = canvas(); if (c) zoomAt(c, c.clientWidth / 2, c.clientHeight / 2, f); };
+  const canvas = (map) => document.querySelector(`.cb-bm-canvas[data-map="${map || 'jobs'}"]`);
+  M.fit = (map) => { const c = canvas(map); if (c) fit(c); };
+  M.zoomBy = (f, map) => { const c = canvas(map); if (c) zoomAt(c, c.clientWidth / 2, c.clientHeight / 2, f); };
   document.addEventListener('click', (e) => {
     const mark = e.target.closest && e.target.closest('.cb-bm-card [data-ts]');
-    if (mark) { e.stopPropagation(); emitEvent('cb-bm-ts', { ts: mark.dataset.ts }); }
+    if (!mark) return;
+    e.stopPropagation();
+    const c = mark.closest('.cb-bm-canvas');
+    emitEvent('cb-bm-ts', { map: c ? mapOf(c) : 'jobs', ts: mark.dataset.ts });
   }, { capture: true });
   function init(c) {
     if (c.dataset.init) return;
@@ -992,7 +1016,7 @@ _JS = """
         if (!moved) return;
         if (card) {
           card.classList.remove('cb-bm-dragging');
-          const p = pos(card); emitEvent('cb-bm-move', { nid: card.dataset.nid, x: p.x, y: p.y });
+          const p = pos(card); emitEvent('cb-bm-move', { map: mapOf(c), nid: card.dataset.nid, x: p.x, y: p.y });
         } else emitView(c);
         const swallow = (ce) => { ce.stopPropagation(); ce.preventDefault(); };
         window.addEventListener('click', swallow, { capture: true, once: true });
@@ -1008,6 +1032,11 @@ _JS = """
 """
 
 
+def install_pan_zoom() -> None:
+    """The pan, zoom and drag script, for every map on the page (installed once; it guards itself)."""
+    ui.run_javascript(_JS)
+
+
 def mount_branch_map(container, panel, callbacks: dict[str, Callable]) -> BranchMapView:
     """Build the map into `container` (the pipeline frame's body beside the job pages) and keep it current while
     the Jobs view shows: its timer is a `view_scope("pipeline")` timer, so a hidden Jobs view does nothing."""
@@ -1015,10 +1044,10 @@ def mount_branch_map(container, panel, callbacks: dict[str, Callable]) -> Branch
     ui.on("cb-bm-move", view.on_move)
     ui.on("cb-bm-view", view.on_view)
     ui.on("cb-bm-ts", view.on_mark)
-    ui.run_javascript(_JS)
+    install_pan_zoom()
     panel.ui_mgr.view_scope("pipeline").timer(_TICK_S, view.tick, container)
     view.refresh()
     return view
 
 
-__all__ = ["BranchMapView", "mount_branch_map"]
+__all__ = ["BranchMapView", "install_pan_zoom", "mount_branch_map", "zoom_controls"]
