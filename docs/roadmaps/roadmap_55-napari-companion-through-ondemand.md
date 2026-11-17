@@ -175,8 +175,57 @@ The plan as scoped:
 - The panel only writes into the dir its manifest names. It never touches job outputs
   (a job, or a viewer, never changes another job's outputs).
 
-**S6 — the colleague's package.** Scoped when the maintainer shows it (roadmap 54 §7). The panel and the
-exchange above are what it builds on.
+**S6 — the colleague's package.** Built 2026-11-17 evening, ahead of S2–S5, because the maintainer asked for it.
+
+*What the package is.* A private repo, cloned at `~/dev/<checkout>`; the lab install, which its author keeps up
+to date with `git pull`, is under `/groups/klumpe/software/Napari/` (the conf names it). `napari_mrc_lowpass_fast.py` is a
+`LowPassController` with four docks:
+- a low-pass filter in Å (hard, gaussian, butterworth or cosine), with a cached FFT
+- one comment per tomogram, saved to `tomogram_comments.csv`
+- particle annotation: a points layer per particle name, each saved as `particle_stars/<tomo stem>__<name>.star`
+  with ZYX in Å from the volume corner (voxel × pixel size) and `_rlnBoxSize` in Å
+- measurements in nm, and PNG export of a slice
+
+It writes into the folder it starts in. It saves on *Save*, *Save all* and window close, not on a tomogram switch,
+whatever its README says. *Save all* writes every tomogram it holds into the current folder, an empty STAR
+included for a tomogram that has the layer but no points. It loads the whole volume as float32. Its author pins
+napari 0.6.6 and PyQt5. A tilt-series excluder sits beside it, not used here.
+
+*The decisions, taken by the maintainer:*
+- **Environment: our image.** `napari_GL_v2.sif` is `napari_GL.def` plus `napari-mrcfile-reader` 0.2.0 (the
+  one package it needs beyond napari 0.10) and websockify 0.13 (S1). It was built on a CPU node in `/dev/shm`
+  (`/scratch/.../container_verify/build.sh`). `napari.sif_path` points at v2, and v1 stays for running sessions.
+- **Outputs: per project.** `<project>/Curation/napari/`: the project is the nearest folder above the volume with
+  `project_params.json`; the server creates the folder and sends it as `outputs` in `open.json`.
+
+*How it plugs in.* `napari.companion` names the checkout. The worker passes it to the launcher
+(`--companion`), binds it, and caps the BLAS/FFT threads at the job's CPUs. The launcher's `CompanionSession`
+builds the colleague's controller in place of plain napari, using his HPC helpers for threads and the FFT cache.
+It holds one project at a time:
+- Before another tomogram opens, what it holds is saved.
+- Moving to another project saves into the old folder and forgets the old project's tomograms, so nothing leaks
+  across.
+- The project's comments CSV and STARs are then read back, so a tomogram reopened later shows its picks.
+- A repeat request for the tomogram on screen does nothing.
+- A volume outside every project saves only when asked, into the home folder, and says so.
+
+`opened.json` carries `viewer: companion` and `outputs`, and the session dialog names the folder. Sessions get
+32 GB (`napari.mem`), so his FFT cache is on.
+
+*Checked.*
+- napari 0.10 with real OpenGL (Xvnc + llvmpipe): a tomogram loads in 13.6 s; a 40 Å gaussian takes 14.3 s on
+  4 threads without the cache; a STAR round trip gives voxel (10, 20, 30) → 62, 124, 186 Å.
+- The switching rules end to end, headless on three AGG412 tomograms: two picks and a comment survived a project
+  switch and came back, and the second project's folder held only its own tomogram.
+- A real session on cbe-g5-2 (job 1764453) on v2 through the service: the AGG412 rerun tomogram opened, with
+  outputs in that project's `Curation/napari/`.
+- 3-D in software rendering fails on a 1024×1024×512 volume (a 2 GB texture). His viewer has no binned levels,
+  so 3-D needs *Start on a full GPU*. A fix is his to make, not a patch of ours.
+
+*Owed.*
+- R5: pick in a browser tab, Save, reopen from the chip.
+- ChimeraX's image without websockify, which keeps `ood.websockify_sif` on IT's image.
+- The STARs into crboost pick lists: S5, with D3 below.
 
 **S7 — idle sessions.** A closed tab leaves the session holding its slice until its 8 h end. TigerVNC's
 `-MaxDisconnectionTime <s>` ends Xvnc when no client has been connected for that long, and the job ends with it.
@@ -189,9 +238,10 @@ The value is D4's.
   section for the few with keys, which keeps Xvnc on every interface.
 - **D2 — where the panel lives.** Recommend: in this repo, loaded from the server's checkout, so it is versioned
   with the server. Its own repo and an npe2 package only when someone wants it outside crboost.
-- **D3 — the save-back format for picks.** Today's watcher ingests ArtiaX's `.coords`. Either napari saves a
-  `.coords` too (the watcher stays as it is), or the watcher learns a napari points CSV. Recommend `.coords`,
-  unless the colleague's package already writes a format of its own.
+- **D3 — the save-back format for picks.** Settled by S6: the colleague's viewer writes its own STAR (ZYX Å from
+  the volume corner, one file per tomogram and particle name), so the watcher learns that format, converting
+  through `services/particles/coords.py` with the tomogram's shape and pixel size, and skips empty files. No
+  `.coords` from napari.
 - **D4 — idle stop.** How long after the last tab closes a session ends, or never. The maintainer's number;
   blank means off.
 - **D5 — telling IT.** We rely on the `/rnode` relay and the dashboard's noVNC for jobs OnDemand did not start.
@@ -208,6 +258,9 @@ The value is D4's.
 - **R2 (S1):** the same on a full GPU (VirtualGL), and a ChimeraX session through its control center.
 - **R3 (S1):** a second user's session is refused without the password: open the link with the password
   removed.
+- **R5 (S6):** one click on a project's tomogram opens the colleague's viewer in a tab. A pick and a comment, then
+  another tomogram's chip: the first one's STAR and comment are in `<project>/Curation/napari/`, and reopening it
+  shows them.
 - **R4 (S3–S5):** the layers, picks and a saved pick list end to end on one AGG412 rerun tomogram, the saved list
   showing up in the Picks & curation tab.
 - Roadmap 54's R2 (the tunnel pass) is replaced by R1 here.

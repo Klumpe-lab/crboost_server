@@ -22,7 +22,8 @@
 #               node's localhost; conf.yaml ood:, roadmap 55).
 # napari only:  CB_NAPARI_LAUNCHER (containers/napari/open_tomogram.py of the server's checkout;
 #               it reads its requests from CB_SESSION_DIR, or opens CB_NAPARI_VOLUMES,
-#               colon-separated, when there is no session dir).
+#               colon-separated, when there is no session dir), CB_NAPARI_COMPANION (a checkout of
+#               the colleague's viewer, which the launcher then drives instead of plain napari).
 set -euo pipefail
 
 # Make a pre-banner failure diagnosable. A couple of early apptainer calls below send
@@ -149,6 +150,9 @@ else
   if [ -n "$SESSION_DIR" ]; then
     CX_LAUNCH="$CX_LAUNCH --session-dir $(printf '%q' "$SESSION_DIR")"
   fi
+  if [ -n "${CB_NAPARI_COMPANION:-}" ]; then
+    CX_LAUNCH="$CX_LAUNCH --companion $(printf '%q' "$CB_NAPARI_COMPANION")"
+  fi
   if [ -n "${CB_NAPARI_VOLUMES:-}" ]; then
     IFS=: read -ra NAPARI_VOLUMES <<< "$CB_NAPARI_VOLUMES"
     for v in "${NAPARI_VOLUMES[@]}"; do
@@ -164,6 +168,12 @@ fi
 BINDS=(-B /tmp -B "$HOME")
 if [ "$APP" = napari ]; then
   BINDS+=(-B "$(dirname "$LAUNCHER")")
+  [ -n "${CB_NAPARI_COMPANION:-}" ] && BINDS+=(-B "$CB_NAPARI_COMPANION")
+  # FFT and BLAS threads to the job's CPUs, not every core of the shared node (as the colleague's HPC launcher).
+  if [ -n "${SLURM_CPUS_PER_TASK:-}" ]; then
+    export OMP_NUM_THREADS="$SLURM_CPUS_PER_TASK" OPENBLAS_NUM_THREADS="$SLURM_CPUS_PER_TASK"
+    export MKL_NUM_THREADS="$SLURM_CPUS_PER_TASK" NUMEXPR_NUM_THREADS="$SLURM_CPUS_PER_TASK"
+  fi
 fi
 if [ -n "${CX_BINDS:-}" ]; then
   IFS=: read -ra EXTRA_BINDS <<< "$CX_BINDS"

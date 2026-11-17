@@ -288,6 +288,9 @@ napari:
     partition: ""
     gres: ""         # e.g. "gpu:<mig-slice-type>:1" where the partition refuses a job without a GPU
     cpus: 4          # Mesa renders on as many threads as the job has CPUs
+  # A checkout of the colleague's napari viewer (low-pass, comments, particle STARs). Set, sessions run it instead
+  # of plain napari and save into the tomogram's project (<project>/Curation/napari/). "" = plain napari.
+  companion: ""
 
 # Open OnDemand: open viewer sessions (napari, ChimeraX) in a browser tab through the site's portal, with no SSH
 # tunnel or VNC client. The session serves its desktop as a websocket and the portal's noVNC reaches it through

@@ -745,13 +745,31 @@ class CurationSessionService:
     def _napari_launcher(self) -> Path:
         return self.server_dir / "containers" / "napari" / "open_tomogram.py"
 
+    @staticmethod
+    def _napari_outputs(volume: str) -> Path | None:
+        """Where the companion viewer saves for `volume`: `<project>/Curation/napari/` of the crboost project the
+        volume lies in (the nearest directory above it holding `project_params.json`), created here. None for a
+        volume outside every project; the launcher then says where its saves go instead."""
+        for parent in Path(volume).parents:
+            if (parent / "project_params.json").is_file():
+                out = parent / "Curation" / "napari"
+                out.mkdir(parents=True, exist_ok=True)
+                return out
+        return None
+
     @classmethod
     def _write_napari_request(cls, session_dir: Path, volumes: list[dict[str, str]], title: str) -> int:
         """Write `open.json` (renamed into place, so the launcher never reads half of it) and return its
         `seq`. A clock in ms: later than any request before it, a server restart included, which is all the
-        launcher compares."""
+        launcher compares. `outputs` is the first volume's project folder for the companion viewer's saves."""
         seq = time.time_ns() // 1_000_000
-        body = {"seq": seq, "title": title, "layers": [{"name": v["name"], "path": v["path"]} for v in volumes]}
+        outputs = cls._napari_outputs(volumes[0]["path"]) if volumes else None
+        body = {
+            "seq": seq,
+            "title": title,
+            "layers": [{"name": v["name"], "path": v["path"]} for v in volumes],
+            "outputs": str(outputs) if outputs else None,
+        }
         tmp = session_dir / (cls._NAPARI_REQUEST + ".tmp")
         tmp.write_text(json.dumps(body))
         os.replace(tmp, session_dir / cls._NAPARI_REQUEST)
@@ -799,6 +817,12 @@ class CurationSessionService:
         for needed in (self._vnc_worker(), self._napari_launcher()):
             if not needed.exists():
                 return err(f"Missing from the server's checkout: {needed}")
+        companion = cfg.companion
+        if companion and not await asyncio.to_thread((Path(companion) / "napari_mrc_lowpass_fast.py").is_file):
+            return err(
+                f"napari.companion is {companion!r}, which holds no napari_mrc_lowpass_fast.py: point it at a checkout "
+                'of the viewer, or set it to "" for plain napari.'
+            )
         if not volumes:
             return err("Nothing to open.")
         missing = await asyncio.to_thread(self._missing_volumes, volumes)
@@ -837,6 +861,8 @@ class CurationSessionService:
             "CB_SESSION_DIR": str(session_dir),
             "CB_NAPARI_LAUNCHER": str(self._napari_launcher()),
         }
+        if companion:
+            env["CB_NAPARI_COMPANION"] = companion
         if cur.vgl and not software:
             env["CX_VGL"] = "1"
         if cur.passwordless_vnc:

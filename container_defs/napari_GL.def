@@ -11,7 +11,10 @@ From: ubuntu:24.04
 #
 # napari, PyQt6 and mrcfile live in a venv at /opt/napari, apart from the system Python. crboost's launcher
 # (containers/napari/open_tomogram.py) is not baked in: the worker runs it from the server's checkout, so it always
-# matches the server that started the session.
+# matches the server that started the session. Two more packages are here for the session around napari:
+# napari-mrcfile-reader, which the colleague's viewer reads volumes with (conf.yaml napari.companion, loaded from
+# its own checkout like the launcher), and websockify, which serves the desktop to the site's Open OnDemand noVNC
+# (conf.yaml ood:, roadmap 55).
 #
 # Build (CBE.next has no subuid range, so the faked-based fakeroot fails):
 #   apptainer build --fakeroot --ignore-fakeroot-command napari_GL.sif container_defs/napari_GL.def
@@ -32,6 +35,8 @@ From: ubuntu:24.04
     export DEBIAN_FRONTEND=noninteractive
     NAPARI_VERSION=0.10.0
     MRCFILE_VERSION=1.5.4
+    MRCFILE_READER_VERSION=0.2.0
+    WEBSOCKIFY_VERSION=0.13.0
     VGL_VERSION=3.1.4
 
     # CBE.next builds run with --fakeroot --ignore-fakeroot-command (no subuid range), where only root is
@@ -87,7 +92,8 @@ JSON
     export PIP_DEFAULT_TIMEOUT=120 PIP_RETRIES=10
     python3 -m venv /opt/napari
     /opt/napari/bin/pip install --upgrade pip
-    /opt/napari/bin/pip install "napari[pyqt6]==${NAPARI_VERSION}" "mrcfile==${MRCFILE_VERSION}"
+    /opt/napari/bin/pip install "napari[pyqt6]==${NAPARI_VERSION}" "mrcfile==${MRCFILE_VERSION}" \
+        "napari-mrcfile-reader==${MRCFILE_READER_VERSION}" "websockify==${WEBSOCKIFY_VERSION}"
     /opt/napari/bin/pip freeze > /opt/napari/requirements.lock
     # The image is read-only at run time, so bytecode compiled now is what makes startup fast. A handful of
     # packages ship test data that is not valid Python; those files just stay uncompiled.
@@ -96,13 +102,14 @@ JSON
 
     # Verify here, not in %test: a failing %test does not fail an Apptainer build.
     /opt/napari/bin/python -c "
-import napari, mrcfile, vispy, numpy
+import napari, mrcfile, vispy, numpy, scipy, imageio, napari_mrcfile_reader, websockify
 from PyQt6 import QtCore
 print('napari', napari.__version__, 'mrcfile', mrcfile.__version__, 'vispy', vispy.__version__,
       'numpy', numpy.__version__, 'Qt', QtCore.QT_VERSION_STR)
 assert napari.__version__ == '${NAPARI_VERSION}', napari.__version__
 "
     test -x /opt/VirtualGL/bin/vglrun
+    test -x /opt/napari/bin/websockify
     command -v Xtigervnc || command -v Xvnc
 
 %test
@@ -115,6 +122,8 @@ assert napari.__version__ == '${NAPARI_VERSION}', napari.__version__
 %labels
     Tool napari
     Napari 0.10.0
+    NapariMrcfileReader 0.2.0
+    Websockify 0.13.0
     Qt PyQt6
     VirtualGL 3.1.4
     Base ubuntu:24.04
