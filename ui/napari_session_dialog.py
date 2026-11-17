@@ -67,9 +67,11 @@ def _showing(info: dict, status: str) -> tuple[str, str]:
     layer = (opened.get("layers") or [{}])[0]
     z, y, x = layer.get("shape") or (0, 0, 0)
     voxel = layer.get("voxel_size")
+    software = "llvmpipe" in str(opened.get("renderer") or "").lower()
+    tail = " · software rendering" if software else ""
     if not voxel:
-        return f"Showing {title} · {x} × {y} × {z} · voxel size unknown (the header has none)", "cb-badge-stale"
-    return f"Showing {title} · {voxel[2]:.2f} Å/px · {x} × {y} × {z}", "cb-badge-ok"
+        return f"Showing {title} · {x} × {y} × {z} · voxel size unknown (the header has none){tail}", "cb-badge-stale"
+    return f"Showing {title} · {voxel[2]:.2f} Å/px · {x} × {y} × {z}{tail}", "cb-badge-ok"
 
 
 async def open_napari_dialog(backend, volume: str | Path) -> None:
@@ -83,12 +85,16 @@ async def open_napari_dialog(backend, volume: str | Path) -> None:
         path = str(volume)
         name = Path(path).stem
         volumes = [{"name": name, "path": path}]
-        passwordless = get_config_service().curation.passwordless_vnc
+        config = get_config_service()
+        passwordless = config.curation.passwordless_vnc
+        software_offered = bool(config.napari.software.partition)
         active = await backend.find_active_napari_session()
-        _build(backend, path, name, volumes, passwordless, active)
+        _build(backend, path, name, volumes, passwordless, software_offered, active)
 
 
-def _build(backend, path: str, name: str, volumes: list[dict], passwordless: bool, active: dict | None) -> None:
+def _build(
+    backend, path: str, name: str, volumes: list[dict], passwordless: bool, software_offered: bool, active: dict | None
+) -> None:
     sv = {"session_dir": None, "job_id": None, "status": "off", "tunnel": "", "address": "", "password": ""}
     state = {"timer": None, "polling": False, "closed": False}
     flight = SingleFlight()
@@ -110,8 +116,8 @@ def _build(backend, path: str, name: str, volumes: list[dict], passwordless: boo
         showing_lbl = ui.label("").style(f"{MONO} font-size: 10px; line-height: 1.45;")
 
         ui.label(
-            "napari runs on a GPU node and you see it through a VNC viewer. Once per session: paste the tunnel into "
-            "a terminal on your computer, then open the address in the viewer and give the password."
+            "napari runs on a cluster node and you see it through a VNC viewer. Once per session: paste the tunnel "
+            "into a terminal on your computer, then open the address in the viewer and give the password."
         ).style(f"{HELPER_STYLE} line-height: 1.45;")
 
         def _row(label: str, key: str, tip: str):
@@ -135,7 +141,13 @@ def _build(backend, path: str, name: str, volumes: list[dict], passwordless: boo
             stop_btn = house_button("Stop session", lambda: _stop(), kind="danger")
             ui.space()
             house_button("Close", lambda: dialog.close())
-            action_btn = house_button("Start napari", lambda: _act(), kind="accent")
+            gpu_btn = house_button(
+                "Start on a full GPU",
+                lambda: _act(software=False),
+                tooltip="VirtualGL on a full B200, A100 or RTX 6000: 3-D at full resolution. It waits while those "
+                "cards are taken, which can be hours.",
+            )
+            action_btn = house_button("Start now", lambda: _act(software=software_offered), kind="accent")
             with action_btn:
                 action_tip = ui.tooltip("")
 
@@ -152,16 +164,23 @@ def _build(backend, path: str, name: str, volumes: list[dict], passwordless: boo
         status_lbl.classes(replace=klass)
         tip = f"SLURM job {sv['job_id']}" if sv["job_id"] else "No napari session is running."
         if status == "pending" and info_.get("slurm_reason"):
-            tip += f", waiting: {info_['slurm_reason']} (Priority/Resources: the GPUs it may use are taken)"
+            tip += f", waiting: {info_['slurm_reason']} (Priority/Resources: the nodes it may use are taken)"
+            if software_offered:
+                tip += ". To look now, stop it and use Start now."
         status_tip.set_text(tip)
         live = status in ("pending", "starting", "ready")
         stop_btn.set_visibility(live)
-        action_btn.set_text("Show this tomogram" if live else "Start napari")
-        action_tip.set_text(
-            "Replace what the running napari shows with this tomogram; layers you made stay."
-            if live
-            else "Start napari on a GPU node, showing this tomogram."
-        )
+        gpu_btn.set_visibility(software_offered and not live)
+        action_btn.set_text("Show this tomogram" if live else ("Start now" if software_offered else "Start napari"))
+        if live:
+            action_tip.set_text("Replace what the running napari shows with this tomogram; layers you made stay.")
+        elif software_offered:
+            action_tip.set_text(
+                "Start napari at once with software rendering (on an interactive MIG slice): 2-D as quick as on a "
+                "full GPU, 3-D from a half-size copy."
+            )
+        else:
+            action_tip.set_text("Start napari on a GPU node, showing this tomogram. It waits while the GPUs are taken.")
         if status == "ready" and info is not None:
             sv["tunnel"] = info.get("tunnel_cmd") or ""
             sv["address"] = f"localhost:{info['port']}" if info.get("port") else ""
@@ -213,14 +232,14 @@ def _build(backend, path: str, name: str, volumes: list[dict], passwordless: boo
             sv["session_dir"] = sv["job_id"] = None
         _apply(info)
 
-    async def _act() -> None:
+    async def _act(software: bool = False) -> None:
         async with flight("act") as acquired:
             if not acquired:
                 return
             if sv["session_dir"]:
                 res = await backend.open_in_napari_session(sv["session_dir"], volumes, name)
             else:
-                res = await backend.launch_napari_session(volumes, name)
+                res = await backend.launch_napari_session(volumes, name, software=software)
                 if res.get("success"):
                     sv.update(session_dir=res["session_dir"], job_id=res["slurm_job_id"], status="pending")
             if not res.get("success"):

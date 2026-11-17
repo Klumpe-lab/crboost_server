@@ -2,8 +2,13 @@
 
 **Status:** scoped 2026-11-17; D1–D3 taken and S0–S3 built the same day. Checked end to end on a CPU node with
 software GL: the image, the launcher, the worker, the service, the VNC password, a second tomogram, and the
-ChimeraX path through the changed worker (§6). **Owed:** the GPU run (R1, queued: every full B200 and RTX 6000 was
-taken), the browser pass (R2), 3-D on a GPU (R3). This is the first slice of bringing a colleague's napari package
+ChimeraX path through the changed worker (§6). The maintainer's first click in the UI failed: CBE.next refuses a
+GPU job without a task count, and the VNC submit never gave one (ChimeraX's neither). Fixed the same day, along
+with three additions from that try (§6, S5): *Start now* (software rendering on an interactive MIG slice,
+which starts within seconds as Open OnDemand's sessions do), the interactive QOS for viewer sessions, and a
+binned level for 3-D. **Owed:** the GPU run (R1, queued:
+every OpenGL-capable GPU was taken; the RTX 6000 and A100 runs then passed), the browser pass (R2), 3-D in
+software rendering (R3). A100s do OpenGL after all and joined the placement (R4). This is the first slice of bringing a colleague's napari package
 into crboost: it only opens a tomogram. What the package adds (§7) is scoped once we have read it.
 
 **In one line.** Every tomogram preview that has a `3dmod` chip now also has a `napari` chip. A click opens a dialog
@@ -41,6 +46,29 @@ colleague's plugins can later run alongside.
 **Decided (D1, 2026-11-17): B**, for speed. A is not built. D is the more complex route and is not taken; if the
 portal could later serve a desktop that crboost submits itself, it could replace the tunnel for ChimeraX and napari
 both, as a roadmap of its own. C stays possible (§6, S4) because the worker takes the app as a parameter.
+
+**Which GPUs** (partition `g` on 2026-11-17). VirtualGL needs a GPU that does OpenGL:
+
+| Card | Count | OpenGL | In the placement |
+|---|---|---|---|
+| B200, full (`cbe-g5-3,4,7,8`) | 32 | yes: the ChimeraX test log reads `NVIDIA B200 … OpenGL 4.6` | yes (`b200`, preferred) |
+| Quadro RTX 6000 (`cbe-g3-*`) | 39 | yes: a workstation card | yes (`rtx6000`) |
+| A100 40 GB, full (`cbe-g4-4,5,7,10,11`) | 20 | yes: `NVIDIA A100-SXM4-40GB … OpenGL 4.6` through VirtualGL for napari (job 1753560: 2-D and full-resolution 3-D, 15 redraws in 1.3 s) and ChimeraX (job 1753705); conf.yaml's old comment saying CUDA only was wrong | yes (`a100`, added 2026-11-17) |
+| B200 1g.23gb and A100 3g.20gb MIG slices | 224 + 8 | no: NVIDIA does not support graphics on MIG instances, and VirtualGL failed on one ("init3D") | no (`avoid: mig`) |
+
+When all of the first three are taken (they were on 2026-11-17: B200s and A100s in use, RTX 6000s held for a
+pending job), a full-GPU session waits, for hours that day. What starts at once is what Open OnDemand gets.
+CBE.next's submit filter puts an `interactive`-QOS job on a reservation: a MIG slice lands on `interactive_gpu`
+(7 B200 1g.23gb slices and 24 cores on `cbe-g5-5`, weekdays 9–17), and a CPU job lands on `interactive`
+(`cbe-c3-9`, which was draining, so a CPU session sat there indefinitely). A MIG slice cannot run VirtualGL (on
+one: `[VGL] ERROR: in init3D -- No EGL devices found`), so *Start now* runs napari there with software rendering
+(§5). Measured on a slice with 4 cores:
+- the first tomogram open in 2.8 s;
+- 20 plane changes in 0.19 s;
+- 3-D (the half-size level) up in 1.9 s, 15 redraws in 0.31 s.
+
+`sbatch --test-only` estimates were no guide: they put a slice job at 14:22 while the real job started in two
+seconds.
 
 ## 3. The image (D2, as built)
 
@@ -84,15 +112,28 @@ matches the server that started the session. It imports nothing from crboost.
   in 2-D on the middle plane. The first request waits for the event loop, so the view fits the maximized window.
 - **By hand:** `containers/napari/launch_napari_vnc.sh` (srun on a GPU node, volumes as arguments).
 
-The roadmap's earlier ideas of a display-binned copy for 3-D and a `--plugin` flag are dropped. 3-D reads the
-full volume in about 7 s per GB (§6, S0), and a GPU holds the texture (R3 checks it). napari's own plugin system
-loads whatever is installed in the image, so the colleague's package needs no hook of ours (§7).
+- **3-D.** 3-D draws a whole volume as one texture. Software rendering could not allocate the 2 GB a
+  1024 × 1024 × 512 tomogram takes as float32 (`GL_OUT_OF_MEMORY`, then napari crashed), and a 24 GB card would
+  have no room for a bin-2 one. So a volume over the renderer's budget (64 Mi voxels in software, 512 Mi on a
+  GPU) gets lazy 2 × 2 × 2 mean levels (dask), and napari draws the coarsest in 3-D (`napari/layers/_scalar_field`
+  takes `len(data) - 1` there) while 2-D picks the level by zoom. The renderer is read from GL at startup and goes
+  into `opened.json` (`renderer`, with each layer's `shape_3d`). On a GPU a bin-4 tomogram stays one full-resolution
+  level.
+- **Contrast range.** The slider's range is the sample's minimum to maximum, so the window can be widened past the
+  starting percentiles.
+
+The roadmap's earlier idea of a cached display-binned file is replaced by the lazy levels above, and the
+`--plugin` flag is dropped: napari's own plugin system loads whatever is installed in the image, so the colleague's
+package needs no hook of ours (§7).
 
 ## 5. crboost's side
 
 - **Config** (`services/configs/config_service.py` `NapariConfig`, `config/conf.template.yaml` `napari:`):
   `sif_path`, `cpus`, `mem`, `time`, `geometry`. The placement fields (`partition`, `gres`, `constraint`, `prefer`,
-  `avoid`) are `curation:`'s unless set. `vgl`, `login_host` and `passwordless_vnc` are always `curation:`'s.
+  `avoid`, `qos`) are `curation:`'s unless set. `vgl`, `login_host` and `passwordless_vnc` are always
+  `curation:`'s. `software:` (partition, gres, qos, cpus) adds *Start now*: no VirtualGL, Mesa on the job's
+  CPUs. The lab sets partition `g`, `gres: gpu:nvidia_b200_1g.23gb:1` and 4 CPUs, with the QOS from curation.
+  `curation.qos` (new; the lab sets `interactive`) goes to every viewer session as `--qos`.
 - **Worker** (`containers/chimerax_artiax/curation_session.sh`): `CB_APP=chimerax|napari` picks the launch line.
   ChimeraX keeps its REST channel, `.cxc` and save dir. napari gets the launcher with `--session-dir`, the user's
   own `~/.config/napari` and `"rest_port": null`. Both now write **their own VNC password file**
@@ -103,7 +144,9 @@ loads whatever is installed in the image, so the colleague's package needs no ho
   `get_napari_session_info`, `find_active_napari_session`, `stop_napari_session`, all delegated by the backend.
   - The job is named `cb-napari`, its registry is `~/.crboost/napari/registry.jsonl` and its session dirs are in
     `~/.crboost/napari/`, so a napari session and a ChimeraX session can run side by side.
-  - The sbatch writing moved into `_submit_vnc_job`; ChimeraX's `submit.sh` is unchanged line for line.
+  - The sbatch writing moved into `_submit_vnc_job`. Every session script now says `--nodes=1
+    --ntasks-per-node=1` (CBE.next's submit filter refuses a GPU job without a task count; ChimeraX's GPU
+    sessions had the same fault) and `--qos` when one is configured.
   - The registry search moved into `_find_live_registered`.
   - A queued session reports its SLURM reason (`slurm_reason`, which ChimeraX's poll now gets too) and SLURM's
     start estimate (`expected_start`, `SlurmService.expected_start`, asked at most once a minute).
@@ -135,9 +178,9 @@ loads whatever is installed in the image, so the colleague's package needs no ho
     in the title.
   - ChimeraX through the changed worker: the session came up, its password works, and the REST channel answers
     `version`.
-- **R1, the GPU run (owed).** Jobs 1751598 (`gpu:nvidia_b200:1`) and 1751600 (`gpu:quadro_rtx_6000:1`) run
-  `napari_test/napari_gl.sh`. They were queued behind full cards, with SLURM estimating 15:55 and 04:25 the next
-  day. Each log (`napari_test/napari_gl_<job>.log`) should name the NVIDIA renderer, not llvmpipe, and its
+- **R1, the GPU run (owed).** Jobs 1751598 (`gpu:nvidia_b200:1`) and 1751600 (`gpu:quadro_rtx_6000:1`, moved to
+  the interactive QOS) run `napari_test/napari_gl.sh`. They were queued behind full cards; SLURM's estimates moved
+  through the day (16:40 for the RTX 6000, the next morning for the B200). Each log (`napari_test/napari_gl_<job>.log`) should name the NVIDIA renderer, not llvmpipe, and its
   `out_<job>/` should hold the 2-D, 3-D and second-request screenshots.
 - **R2, the browser pass (owed).** The steps are:
   1. Click a tomogram's `napari` chip and *Start napari*. The status should go from Queued (with its estimate) to
@@ -145,14 +188,43 @@ loads whatever is installed in the image, so the colleague's package needs no ho
   2. Run the tunnel and connect a VNC viewer with the password.
   3. In another tomogram's dialog, click *Show this tomogram*.
   4. Click Stop.
-- **R3, 3-D on a GPU (owed).** Software GL could not allocate the 2 GB 3-D texture (`GL_OUT_OF_MEMORY`) and napari
-  crashed. A B200 holds it. An RTX 6000 (24 GB) should hold this one, but a bin-2 volume (16 GB as float32) may
-  not. If R1 shows trouble, the fix is a coarser level for 3-D in the launcher.
+- **R3, 3-D (owed).** Software GL could not allocate the 2 GB 3-D texture (`GL_OUT_OF_MEMORY`) and napari crashed;
+  the launcher's 3-D levels (§4) are the fix, to be seen working in software (`napari_cpu.sh`, job 1753579) and
+  on a GPU (R1).
 - **S4 (optional), option C:** napari on a live ChimeraX session's display. Built only if asked for.
+- **S5** (2026-11-17, after the maintainer's first try).
+  - The click failed with "sbatch failed: --gpus-per-task and --gpus-per-socket options require --ntasks
+    specification". `sbatch --test-only` on that very script was refused, and passed with `--nodes=1
+    --ntasks-per-node=1`; the helper now writes both.
+  - The `qos` setting and the 3-D levels above were added, and a CPU-partition choice. The maintainer then
+    waited 5 minutes for nothing while Open OnDemand gave them a B200 slice at once: the CPU session had been
+    put on the draining `interactive` reservation (§2). The choice became *Start now* on an interactive slice.
+  - The maintainer's own session (job 1753999, through the service, the lab's conf.yaml, 8 h) started 2 s
+    after submission on `cbe-g5-5` in `interactive_gpu`, so the reservation takes a job that runs past its
+    17:00 end. A screenshot of its desktop shows the tomogram, maximized, with the wider contrast range.
+  - The dialog has the accent *Start now* (software) and *Start on a full GPU* beside it, shot in headless
+    Chromium.
+  - The tunnel command named `cbe-login-0.inst.atlas.clip.vbc.ac.at`, the headnode's FQDN, which a Mac cannot
+    resolve. ChimeraX's tunnels had the same problem. The lab's `curation.login_host` is now
+    `cbenext.vbc.ac.at`, the CBE.next login name (both login nodes); `cbe.vbc.ac.at` is the old cluster's.
+- **R4, A100s (done 2026-11-17).** Both renderers are NVIDIA on an A100 (napari job 1753560, ChimeraX job 1753705),
+  so the lab's `curation.constraint` is `b200|rtx6000|a100` and napari inherits it.
+- **R1 partly done.** On the RTX 6000 (job 1751600) and the A100 (job 1753560), with the interactive QOS both
+  started within a minute.
+  - Renderer: NVIDIA.
+  - First tomogram: open in 4.4 and 5.6 s.
+  - 20 plane changes: 0.18 and 0.16 s.
+  - 3-D at full resolution: 6.9 and 7.3 s to the first frame; 15 redraws in 4.9 and 1.3 s.
+  - A second request with one missing file opens the good one and reports the missing one.
+  - The B200 run is still queued.
 
 Known limits, as built:
 
-- A session waits while the GPUs it may use are taken. The dialog shows the SLURM reason and its estimate.
+- A full-GPU session waits while those cards are taken. The dialog shows the SLURM reason and its estimate, and
+  says *Start now* is there. Outside weekdays 9–17 *Start now* asks for an ordinary MIG slice (224 on the
+  cluster), which usually starts quickly too.
+- ChimeraX has no *Start now* yet: its curation sessions still need a full GPU. The same software placement
+  would serve it.
 - A volume outside `container_binds` (and outside `$HOME`) is not visible in the session; the launcher reports it
   as unreadable.
 - One napari per user. *Show this tomogram* replaces what crboost opened there.

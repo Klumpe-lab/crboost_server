@@ -159,6 +159,7 @@ class CurationSessionService:
             job_name=self._CURATION_JOB,
             placement=placement,
             gres=cur.gres,
+            qos=cur.qos,
             cpus=cur.cpus,
             mem=cur.mem,
             walltime=cur.time,
@@ -204,6 +205,7 @@ class CurationSessionService:
         job_name: str,
         placement: SlurmConfig,
         gres: str | None,
+        qos: str,
         cpus: int,
         mem: str,
         walltime: str,
@@ -218,7 +220,14 @@ class CurationSessionService:
         except ValueError as e:
             return err(f"conf.yaml {conf_section}: {e}")
         log = session_dir / "slurm.log"
-        lines = ["#!/usr/bin/env bash", f"#SBATCH -p {placement.partition}"]
+        # One task on one node, said outright: a site's submit filter may turn --gres=gpu into per-task GPUs
+        # and then refuse a job with no task count (CBE.next does).
+        lines = [
+            "#!/usr/bin/env bash",
+            f"#SBATCH -p {placement.partition}",
+            "#SBATCH --nodes=1",
+            "#SBATCH --ntasks-per-node=1",
+        ]
         if gres:
             lines.append(f"#SBATCH --gres={gres}")
         if placement.constraint:
@@ -227,6 +236,8 @@ class CurationSessionService:
             lines.append(f'#SBATCH --prefer="{placement.prefer}"')
         if excluded:
             lines.append(f"#SBATCH --exclude={','.join(excluded)}")
+        if qos:
+            lines.append(f"#SBATCH --qos={qos}")
         lines += [
             f"#SBATCH --cpus-per-task={cpus}",
             f"#SBATCH --mem={mem}",
@@ -734,19 +745,25 @@ class CurationSessionService:
     def _missing_volumes(volumes: list[dict[str, str]]) -> list[str]:
         return [v["path"] for v in volumes if not Path(v["path"]).is_file()]
 
-    async def launch_napari_session(self, volumes: list[dict[str, str]], title: str) -> dict[str, Any]:
-        """Submit napari on a VNC desktop showing `volumes` (`[{"name", "path"}]`, absolute paths). The
-        placement is `napari:`'s where set, else `curation:`'s. Returns the SLURM job id, the session dir
-        (in ~/.crboost/napari) and the request's `seq`; poll with get_napari_session_info()."""
+    async def launch_napari_session(
+        self, volumes: list[dict[str, str]], title: str, *, software: bool = False
+    ) -> dict[str, Any]:
+        """Submit napari on a VNC desktop showing `volumes` (`[{"name", "path"}]`, absolute paths). On a full
+        GPU (VirtualGL) the placement is `napari:`'s where set, else `curation:`'s; `software` runs it with
+        software rendering where `napari.software` says, which starts at once. Returns the SLURM job id, the
+        session dir (in ~/.crboost/napari) and the request's `seq`; poll with get_napari_session_info()."""
         cfg = self.config_service.napari
         cur = self.config_service.curation
+        sw = cfg.software
+        if software and not sw.partition:
+            return err("napari.software.partition is not set in conf.yaml, so napari runs on a full GPU only.")
         sif = cfg.sif_path
         if not sif or not Path(sif).exists():
             return err(
                 f"napari image not found (napari.sif_path={sif!r}). Build container_defs/napari_GL.def and set "
                 "napari.sif_path in conf.yaml."
             )
-        partition = cfg.partition if cfg.partition is not None else cur.partition
+        partition = sw.partition if software else (cfg.partition if cfg.partition is not None else cur.partition)
         if not partition:
             return err("Neither napari.partition nor curation.partition is set in conf.yaml.")
         for needed in (self._vnc_worker(), self._napari_launcher()):
@@ -763,12 +780,21 @@ class CurationSessionService:
         await asyncio.to_thread(session_dir.mkdir, parents=True, exist_ok=True)
         seq = await asyncio.to_thread(self._write_napari_request, session_dir, volumes, title)
 
-        placement = SlurmConfig(
-            partition=partition,
-            constraint=cfg.constraint if cfg.constraint is not None else cur.constraint,
-            prefer=cfg.prefer if cfg.prefer is not None else cur.prefer,
-            avoid=cfg.avoid if cfg.avoid is not None else cur.avoid,
-        )
+        if software:
+            placement = SlurmConfig(partition=partition)
+            gres = sw.gres
+            qos = sw.qos if sw.qos is not None else cur.qos
+            cpus = sw.cpus
+        else:
+            placement = SlurmConfig(
+                partition=partition,
+                constraint=cfg.constraint if cfg.constraint is not None else cur.constraint,
+                prefer=cfg.prefer if cfg.prefer is not None else cur.prefer,
+                avoid=cfg.avoid if cfg.avoid is not None else cur.avoid,
+            )
+            gres = cfg.gres if cfg.gres is not None else cur.gres
+            qos = cfg.qos if cfg.qos is not None else cur.qos
+            cpus = cfg.cpus
         env = {
             "CB_APP": "napari",
             "CX_SIF": str(sif),
@@ -781,7 +807,7 @@ class CurationSessionService:
             "CB_SESSION_DIR": str(session_dir),
             "CB_NAPARI_LAUNCHER": str(self._napari_launcher()),
         }
-        if cur.vgl:
+        if cur.vgl and not software:
             env["CX_VGL"] = "1"
         if cur.passwordless_vnc:
             env["CX_VNC_NOPASS"] = "1"
@@ -789,8 +815,9 @@ class CurationSessionService:
             session_dir=session_dir,
             job_name=self._NAPARI_JOB,
             placement=placement,
-            gres=cfg.gres if cfg.gres is not None else cur.gres,
-            cpus=cfg.cpus,
+            gres=gres,
+            qos=qos,
+            cpus=cpus,
             mem=cfg.mem,
             walltime=cfg.time,
             env=env,
@@ -799,8 +826,10 @@ class CurationSessionService:
         if not submitted.get("success"):
             return submitted
         slurm_job_id = submitted["slurm_job_id"]
+        where = "software" if software else "gpu"
         await asyncio.to_thread(
-            (session_dir / "job.json").write_text, json.dumps({"slurm_job_id": slurm_job_id, "session_id": session_id})
+            (session_dir / "job.json").write_text,
+            json.dumps({"slurm_job_id": slurm_job_id, "session_id": session_id, "where": where}),
         )
         await self._register_curation_session(
             slurm_job_id=slurm_job_id,
@@ -809,8 +838,10 @@ class CurationSessionService:
             project_path=None,
             registry=self._napari_base() / "registry.jsonl",
         )
-        logger.info("napari session submitted: SLURM job %s (session %s), %s", slurm_job_id, session_id, title)
-        return ok(slurm_job_id=slurm_job_id, session_dir=str(session_dir), session_id=session_id, seq=seq)
+        logger.info(
+            "napari session submitted on %s: SLURM job %s (session %s), %s", where, slurm_job_id, session_id, title
+        )
+        return ok(slurm_job_id=slurm_job_id, session_dir=str(session_dir), session_id=session_id, seq=seq, where=where)
 
     async def open_in_napari_session(
         self, session_dir: str, volumes: list[dict[str, str]], title: str
