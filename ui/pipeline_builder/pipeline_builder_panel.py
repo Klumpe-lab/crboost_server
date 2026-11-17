@@ -10,6 +10,7 @@ from services.jobs.spec import instance_display_name
 from services.path_resolution_service import instance_override_key
 from services.job_params import set_input
 from services.pipeline_edit import add_job, remove_job
+from services.event_log import events
 from services.project_state import JobType, get_project_state_for
 from services.result import ErrorCode
 
@@ -387,7 +388,9 @@ class PipelineBuilderPanel:
         from the start. A refusal and the inputs pinned on the way are toasts. Returns the door's result."""
         state = current_project_state()
         res = add_job(state, job_type, species_id=species_id, after=after, reading=reading, clone_of=clone_of)
-        if not res["success"]:
+        if res["success"]:
+            events.info("%s · UI: added %s", state.project_name, res.get("instance_id", job_type.value))
+        else:
             if res.get("code") == ErrorCode.NEEDS_DECISION:
                 ui.notify(
                     f"{get_job_display_name(job_type)} needs a particle species — add it from the "
@@ -463,6 +466,9 @@ class PipelineBuilderPanel:
             if instance_id in state.pipeline_order:
                 ui.notify(res["error"], type="warning")
             return
+        # A console event, as an agent's writes have: a roster edit made here is otherwise invisible to the API
+        # and the agent reading the same state.
+        events.info("%s · UI: took %s off the roster", state.project_name, instance_id)
 
         if self.ui_mgr.is_project_created:
             asyncio.create_task(self.backend.save_project(project_path, force=True))

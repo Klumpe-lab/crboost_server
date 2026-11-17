@@ -223,3 +223,24 @@ legacy cluster; their times come from file times and `task_N.out`):
   commit agree tilt for tilt. Not run on the cluster yet: needs the server restarted. Then unmilled2 and
   FCIsolation (21 series dropped; the maintainer wants it redone from the filter too, its missAlign chain
   1695157–65 was cancelled before starting) re-run from the filter at 0.9 with the rule.
+- **2026-11-17** — All eight reruns through Warp Export (412 + ribosome). Compared with the archived records
+  (`_crboost_archive/agg412_old_records`); the old maps are gone, so tomogram quality is read from the metadata,
+  and the old 412 picks are read in the reruns' score maps (max within ±62 Å, the scale at which two TM runs on the
+  same tomograms place a 412 peak, ~100 Å apart; random interior places through the same window as the control).
+  - **Preprocessing: equal everywhere.** Per-movie CTF fit and motion: the same median in all eight, better/worse
+    split ~50/50. tsCtf per-series estimate, defocus, missAlign residual RMS: same medians, balanced. Tomograms
+    863 → 897: FCIsolation 138 → 162 and unmilled2 162 → 175 (0.9 + keep rule; +58 / +47 series also keep more
+    tilts), Grid3 +1; lost Slot6 Position_3_7 (missAlign), R1 Position_11_4 / 20_2, SK Position_27 / 27_4
+    (SK gains 6_2).
+  - **412: no sign of worse tomograms; the old counts were the split's σ scale.** Six old runs capped at 20 per
+    tomogram and seven ran TM split `-s 2 2 1` (σ inflated, top quartile 9.5–11σ vs 7.5–8.5σ now). Calibration on
+    R1, both old runs on the same old tomograms: job020's picks (like-for-like) read 6.98σ median in the new map, 45 %
+    above the new cutoff (7.05σ); legacy job017's 6.46σ, 21 %. The other six legacy-split runs read 6.1–6.7σ, 15–34 %
+    above: the legacy pattern, not a regression. Old picks below their own top quartile read 5.9–6.5σ, at the random
+    control's 99th percentile (6.3–6.9σ): noise in both runs. Old top quartile: 50–80 % above the new cutoff.
+  - **Ribosome (new):** 346,834 candidates in 897 tomograms, none at the 1,500 cap but one; ≥ 8σ 21–475 per tomo
+    median. 9–27 % of ribosome picks lie within 287.5 Å of a 412 pick (unmilled2 27 %, Grid2 22 %, FCIsolation 19 %):
+    cross-talk to look at before averaging either.
+  - **Disk** 14.98 → 11.44 TB; TM 7.7 TB of it (scores + angles, both species). **GPU** ~470 GPU-h for R2–R8:
+    missAlign 29 %, ribosome candidates 20 %, ribosome TM 16 %.
+  - Scripts and numbers: session scratchpad `compare_all.py`, `score_at_old.py`, `r_all.json`, `s_*.json`.
