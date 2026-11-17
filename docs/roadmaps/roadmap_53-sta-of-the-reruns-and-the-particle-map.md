@@ -1,8 +1,9 @@
 # Roadmap 53 — STA of the reruns: ribosome and 412 classes as far as they go, and the particle map built from doing it
 
 **Status:** scoped 2026-11-17 from the eight finished reruns of roadmap 49; nothing run, nothing built. D1 and D2
-taken the same day (§8). Which particle jobs to build: §11. The particle map scoped against the code: §10. What
-happens next: §12.
+taken the same day (§8). Which particle jobs to build: §11; Mask, PostProcess, the mask input and `skip_align`
+built the same day (§11.1, not run through SLURM), M's facts read. The particle map scoped against the code: §10;
+the handoff for building it as its own view: §13. What happens next: §12.
 
 **In one line.** Average the ribosome and the 412 VLP over the eight AGG412 reruns, sort each into classes and
 refine every class on its own to the best resolution the data hold. Do every step that changes which particles are
@@ -433,3 +434,112 @@ is the first fact. Then the species import from a RELION Refine 3D, and what M's
 4. **Code meanwhile, on a branch the maintainer names, on their word:** C1, U1 and U2 first, so that R1's classes
    appear on the map as sets when the Class 3D jobs finish; then C4 and C3 for phase B; M's S0 facts, read only.
 5. **Field notes** in §6 from step 1 on.
+
+### 11.1 Built (2026-11-17)
+
+On the maintainer's "implement those jobs we need here", in the main checkout, uncommitted at the end of the session.
+
+- **C1 class → set already existed**: `services/particles/set_ops.create_class_subset_set` (roadmap 30), through
+  `backend.create_class_subset`, from the Class 3D job's Results tab and the Species page's Analytics tab. A set
+  of classes 1 + 3 of a Class 3D is a ParticleSet with `SetOp.CLASS_SUBSET`, its recipe naming the job, the
+  classes and the iteration. Nothing new was written for it. Not an API verb: choosing classes is judging, which
+  stays in the UI.
+- **C4 Mask** (`maskCreate`, "Mask"): `services/jobs/mask_create.py`, `drivers/mask_create.py`. Reads any map
+  (`input_map`, a REFERENCE_MAP: Refine 3D's, Reconstruct particle's, PostProcess's). The driver low-pass filters the map
+  in numpy (raised-cosine edge, two shells), takes the threshold from that very map (`threshold_fraction` × its
+  maximum, default 0.4, or an absolute `threshold`), then `relion_mask_create --ini_threshold --extend_inimask
+  --width_soft_edge --angpix` on the low-passed map. Writes `mask.mrc`, `map_lowpass.mrc`, `mask_stats.json`
+  (range, threshold and its source, fraction enclosed); fails when the mask encloses under 0.2 % or over 90 % of the
+  box, naming the threshold against the map's range (F6). New file type `JobFileType.MASK`.
+- **C3 PostProcess** (`postprocess`): `services/jobs/postprocess.py`, `drivers/postprocess.py`. Reads Refine 3D's
+  new `output_half_map` (`run_half1_class001_unfil.mrc`; half 2 by RELION's own name rule) and a Mask job's mask;
+  refuses a mask whose box or pixel differs from the half maps, naming both. `relion_postprocess --auto_bfac
+  --autob_lowres` (or `--adhoc_bfac`, `--skip_fsc_weighting --low_pass`). Its last line names the resolution
+  "masked gold-standard FSC 0.143", and says when the B-factor fit had nothing to fit (map coarser than
+  `autob_lowres`: RELION then does not sharpen and says so only in a warning).
+- **Mask as an input of Class 3D and Refine 3D**: `mask_from_job` (bool) opens an `input_mask` slot (`when=`, the
+  template-matching pattern); `drivers/driver_base.chosen_solvent_mask` takes the job's mask, else
+  `solvent_mask_path`, and refuses both at once. Automatic wiring never takes a Mask made after the job it feeds
+  (`auto_exclusion`, "not upstream", which keeps wiring acyclic), so a Refine 3D's mask is chosen in its I/O
+  section; PostProcess's is wired automatically.
+- **C5 `skip_align`** on Class 3D (`--skip_align`, `sigma_ang` dropped with it): focused classification with the
+  mask input.
+- **Branch map:** names, icons, slot words, add menu (`ADDABLE`) for both jobs; large-card facts for Class 3D
+  (share per class with "Class 3D estimate" on the number, class slices), Refine 3D ("gold-standard FSC, unmasked
+  half maps", the FSC curve, slices), Mask (threshold against the range, fraction enclosed, slices) and PostProcess
+  ("masked gold-standard FSC", B, the corrected FSC curve, slices). `ui/branch_map/facts.py`.
+- **Config:** `maskCreate` and `postprocess` profiles in `conf.template.yaml` (CPU) and the dev `conf.yaml`
+  (partition g on an RTX 6000 / A100 / MIG ticket, as reconstructParticle). The lab install's `conf.yaml` needs the
+  same two blocks, else they take `slurm_defaults`.
+- **Checked** (session scratchpad `toy/`): the Mask and PostProcess steps on the archived 412 Refine 3D (old
+  20251113 job024, box 256, 3.1 Å) in the real RELION 5.0.1 container: mask at 0.4 × max encloses 10.4 %;
+  PostProcess 41.77 Å masked (the record said 41.8), auto B had nothing to fit at 41 Å (the note above came from
+  that). Roster: Reconstruct → Class 3D, Refine 3D, Mask, PostProcess added to a scratch copy of the pilot rerun's
+  state; inputs resolved (Mask ← Refine 3D or Reconstruct, PostProcess ← Refine 3D half maps + Mask, Refine 3D's
+  mask by choice). `ruff check`, `check_boundaries.py` clean. **Not run:** the server with these jobs (restart
+  needed), the job tabs in a browser, any of them through SLURM.
+
+**C6 M, S0 facts (2026-11-17, read only, the dev41 Warp image):** `MTools` (create_population, create_source,
+create_species, add_source, expand_symmetry, shift_species, rotate_species, update_mask, resample_trajectories) and
+`MCore` (`--population`, `--iter`, `--refine_imagewarp XxY`, `--refine_particles`, `--refine_mag`,
+`--refine_stageangles`, `--refine_volumewarp`, `--refine_tiltmovies`, `--ctf_defocus`, `--ctf_cs`, the Zernike
+orders, `--task_dir` for a queue on fast scratch, `--external_provisioner` for cluster workers) are in the image.
+`create_source` takes a processing `.settings` file and optionally a STAR of the items to keep (`--files`): a source
+is the folder a project's tilt series were processed in, and M refines their metadata there. `create_species` takes
+the two half maps, a binary mask and `--particles_relion` (a RELION data star), with `--angpix_coords` /
+`--angpix_shifts` overrides and `--ignore_unmatched`. So the open design point stands: the reruns must not be
+written, so the home project needs copies of each project's tilt-series XMLs and a settings file that points M at
+them, with the images read in place. Next for C6: read a rerun's `.settings` and one tilt-series XML to see which
+paths they hold, then write the job's design here. `expand_symmetry` and `shift_species` cover most of C7.
+
+## 13. Handoff: the particle builder (for the next session)
+
+**What the maintainer asked (2026-11-17):** a branching job builder for particles that opens as a separate view
+from the PARTICLES header of the roster, to begin with so that they can follow their classes there; developed as
+the STA goes. §10 is the scope; this section is where to start and what the first slice is.
+
+**Read first:** §10 (all of it), §11.1, roadmap 32 §15.8 (how the preprocessing map was mounted), CLAUDE.md's UI
+rules, the memories "Never commit", "One box deep". Look at the preprocessing map in a browser before writing
+anything (`./crboost`, a rerun project's Jobs view with no job open).
+
+**Where it goes:**
+- **Entry:** a button on the roster's PARTICLES header, beside the species / import tomograms / merge buttons
+  (`ui/pipeline_builder/pipeline_roster.py:408`, `_build_new_species_btn` and its neighbours show the pattern).
+- **View:** a new `View.PARTICLES` in `services/routes.py` (URL `/p/<project>/particles/<node>`, the node optional),
+  a `_view_frame("particles")` in `ui/workspace_page.py` (the frames are made around line 849; journey, gallery and
+  viewer are built lazily on first show — do the same), shown and hidden through `_show`, URL written by
+  `callbacks["set_url"]` on activation and on a node pick (CLAUDE.md, URL writes).
+- **Code:** a new package `ui/particle_map/` that reuses `ui/branch_map/`'s card, geometry, plots, blocks and facts
+  store (import them; do not fork them) with its own model, and a pure data module
+  `services/particles/lineage.py` (§10.2) that the UI only renders.
+
+**First slice: follow the classes (build this, in this order):**
+1. `lineage.py`: nodes = the home project's particle-phase jobs (`JOB_SPEC_BY_TYPE[...].phase == PHASE_PARTICLES`)
+   and its particle sets (`particle_sets.list_sets`); edges = each job's inputs (recorded `paths`, else
+   `source_overrides`, else the resolver's edge, as `ui/branch_map/model.project_from_state` does) and each set's
+   recipe parents (`Recipe.parents`; a CLASS_SUBSET set's parent is the Class 3D job, its classes in
+   `recipe.params["classes"]`). Per Class 3D node, per class of the last iteration: count from
+   `run_itNNN_data.star` (`rlnClassNumber`), share and Class 3D estimate from `run_itNNN_model.star`
+   (`class_readout._model_classes`), counts by project and by tomogram from `rlnTomoName` (the reruns' tomogram
+   names start with their project's name; a set that renamed tomograms records the origin in
+   `services/particles/set_origins.py`). Blocking reads: called in `asyncio.to_thread`, cached by mtimes.
+2. `ui/particle_map/view.py`: `ParticleMapView(FingerprintedView)`; `signature()` = particle jobs'
+   `execution_status`, the sets root's mtime and `operations.jsonl`'s, the picked node. Cards as the branch map's
+   (`ui/branch_map/card.render_card` with a particle `CardSpec`); a Class 3D card has one output row per class
+   (`card.output_row`) reading "class 2 · 41,203 · 38 % · 11.2 Å (Class 3D estimate)"; a set made from classes
+   hangs off its class row with a cable; set cards are slim (name, count, how chosen).
+3. The large card: PARAMETERS and RESULTS as the branch map's blocks (the facts for Class 3D, Refine 3D, Mask and
+   PostProcess exist since §11.1), PARTICLES = counts by project (bars) and per tomogram (histogram).
+4. The header click on a job card opens its job page the way the branch map does (`panel.switch_tab(iid)`, Jobs view).
+5. A check in the shape of `scripts/dev_branch_map_check.py` over a project with a Class 3D and a class subset.
+
+**After the first slice, in the order the STA needs them:** the + on a class row (Make set via
+`backend.create_class_subset`, then the jobs that read sets, the branch map's add flow); source cards for the
+foreign projects of kitchen sets; the composition magazine; Refine 3D / PostProcess blocks with the FSC kinds; the
+uid index and the trace (§10.5).
+
+**Ask the maintainer at the start:** whether a job page opened from the particle view returns to it on close (the
+branch map's rule) or stays in the Jobs view; whether the preprocessing map keeps showing particle jobs meanwhile.
+
+**Before using the new jobs:** restart the server (new job types, new slots); the lab install's `conf.yaml` gets the
+`maskCreate` and `postprocess` profile blocks (§11.1).
