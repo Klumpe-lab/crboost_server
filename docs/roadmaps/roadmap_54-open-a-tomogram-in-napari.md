@@ -182,7 +182,9 @@ package needs no hook of ours (§7).
   the interactive QOS) run `napari_test/napari_gl.sh`. They were queued behind full cards; SLURM's estimates moved
   through the day (16:40 for the RTX 6000, the next morning for the B200). Each log (`napari_test/napari_gl_<job>.log`) should name the NVIDIA renderer, not llvmpipe, and its
   `out_<job>/` should hold the 2-D, 3-D and second-request screenshots.
-- **R2, the browser pass (owed).** The steps are:
+- **R2, the browser pass: replaced by roadmap 55.** The tunnel failed in practice and most lab members have no
+  SSH key; the session now opens in a browser tab through Open OnDemand (roadmap 55, S0 worked 2026-11-17). The
+  tunnel steps were:
   1. Click a tomogram's `napari` chip and *Start napari*. The status should go from Queued (with its estimate) to
      Starting to Live.
   2. Run the tunnel and connect a VNC viewer with the password.
