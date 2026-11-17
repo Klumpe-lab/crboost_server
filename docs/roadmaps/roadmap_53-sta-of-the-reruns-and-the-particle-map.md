@@ -1,7 +1,8 @@
 # Roadmap 53 — STA of the reruns: ribosome and 412 classes as far as they go, and the particle map built from doing it
 
-**Status:** scoped 2026-11-17 from the eight finished reruns of roadmap 49; nothing run, nothing built. Decisions
-owed in §8, the first ones before stage A starts.
+**Status:** scoped 2026-11-17 from the eight finished reruns of roadmap 49; nothing run, nothing built. D1 and D2
+taken the same day (§8). Which particle jobs to build: §11. The particle map scoped against the code: §10. What
+happens next: §12.
 
 **In one line.** Average the ribosome and the 412 VLP over the eight AGG412 reruns, sort each into classes and
 refine every class on its own to the best resolution the data hold. Do every step that changes which particles are
@@ -68,8 +69,8 @@ What earlier work already tells us:
   from a job's output. A side run outside crboost (a diagnostic refine, a ChimeraX fit) is allowed; its result
   counts only once it comes back in as a set or a job input, and the field notes say what it was. This replaces
   July's agreement that 412 refinement runs outside crboost (D1).
-- **The science sets the order of the UI.** A UI stage is built only for something two science steps have already
-  needed. What hurt goes into §6 the day it hurt.
+- **The science sets the order of the UI.** A card or block is built on the real outputs of a run of the job it
+  shows, never on mock data, and lands while the next phase runs. What hurt goes into §6 the day it hurt.
 - **One home.** All STA jobs and kitchen sets live in one home project; the eight reruns are read, never written
   (D2).
 - **Classes are sets.** Every class worth keeping becomes a set with its parent (the job and the class number); a
@@ -196,13 +197,13 @@ changes is what flows along the cables.
 
 ### Stages
 
-| Stage | What | Needed by |
+| Stage | What | Lands with |
 |---|---|---|
 | U0 | Field notes (§6), kept from the first run on | all |
-| U1 | Data layer: class → set with parent (job, class), results back as facets (D18), a lineage graph of sets and jobs per home project with uid overlap between any two sets, kept current by mtimes | R1, V2 |
-| U2 | Particle cards on the map: set nodes, class ports, the + per class, the composition magazine | R2, V3 |
-| U3 | The trace: set picker, overlap per card, flow on the cables | R4, V4 |
-| U4 | The inspector blocks of the large card | R2 onwards |
+| U1 | Data layer: set nodes, class outputs, a uid index per node (§10.2) | phase A, while R1's Class 3D runs |
+| U2 | Particle cards on the map: source cards, set cards, class rows with +, the composition magazine (§10.3) | phase A |
+| U3 | The inspector: results and particles blocks of the large card per kind (§10.4) | phase B (Class 3D), C (Refine 3D, PostProcess, M) |
+| U4 | The trace: the set picker, overlap per card, flow on the cables (§10.5) | phase C |
 | U5 | Retire what the map and kitchen cover (Journey particles panel, merge / aggregate dialogs, roadmap 40 §9) | after R4 |
 
 Missing jobs (C) are built when the science reaches them, as cards from the start:
@@ -253,10 +254,10 @@ map exist from the reruns, the old records at `/groups/klumpe/_crboost_archive/a
 
 | # | Decision | Recommended |
 |---|---|---|
-| D1 | Every membership or pose change runs as a crboost job or kitchen set (replaces July's "412 refinement outside crboost"); side runs only for diagnostics, brought back as sets | yes: it is what makes the trace possible |
-| D2 | The home project: Slot6_rerun (the pools are there) or a new project for the STA of both species, the eight reruns read only | a new home project, so the eight stay as roadmap 49 left them; S0 checks that a project without tilt series of its own can hold kitchen pools and run particle jobs on foreign tomograms (roadmap 40 §14.8 says it can) |
+| D1 | Every membership or pose change runs as a crboost job or kitchen set (replaces July's "412 refinement outside crboost"); side runs only for diagnostics, brought back as sets | **taken (maintainer, 2026-11-17)** |
+| D2 | The home project: Slot6_rerun (the pools are there) or a new project for the STA of both species, the eight reruns read only | **taken (maintainer, 2026-11-17): a new home project**, made through the API (§12) |
 | D3 | Ribosome cleaning at bin 4 (new exports) or on the bin-2 exports | bin 4 |
-| D4 | Geometry by M (a new job, multi-source, refines pixel scale per project) or RELION 5 tomo CtfRefine + frame alignment | M; RELION's as the fallback if M will not take eight Warp sources |
+| D4 | Geometry by M (a new job, multi-source, refines pixel scale per project) or RELION 5 tomo CtfRefine + frame alignment | M, built as one job (§11); RELION's only if M will not take eight Warp sources |
 | D5 | 412 symmetry, from V2's C1 map | decided by the map |
 | D6 | Delete the TM score and angle maps (~7 TB) now that every candidate is exported | yes, once R1 has fixed the ribosome σ cut and V1 the 412's |
 | D7 | The particle map is the same map as preprocessing (one Jobs view, the picker switching between tilt series and sets by phase) or a view of its own | the same map |
@@ -272,3 +273,163 @@ map exist from the reruns, the old records at `/groups/klumpe/_crboost_archive/a
   class. The large card shows the three resolutions by name and the mask over the slices.
 - **D:** per-class ribosome maps with share per project; a 412 capsomer map past 35.8 Å or the reason it is not.
   Picking any class set on the map traces it back to its projects and σ bands.
+
+## 10. The particle map, scoped against the code (2026-11-17)
+
+The preprocessing branch map is in main (`ui/branch_map/`, roadmap 32 §15.8 S1–S3). The particle half is the same
+view, the same cards and the same look; what is new is what a node is, what flows along a cable, and what the large
+card shows.
+
+### 10.1 What the map does today (read 2026-11-17)
+
+- Nodes are jobs only. `project_from_state` (`ui/branch_map/model.py:738`) makes one `Job` per entry of
+  `state.jobs`. An input that reads a particle set (`Analytics/sets/<id>/`, where the kitchen's Make set publishes,
+  `services/particles/particle_sets.py`) is drawn as a named value with a cable to the set's first recipe parent
+  (`facts.set_parent`, `ui/branch_map/facts.py:199`). The set is not a node; a parent in another project gets no
+  cable at all.
+- `facts.job_facts` (`facts.py:212`) knows the particle kinds as far as Warp export (one count line) and Reconstruct
+  particle (three central slices, `map_slices_url`). Class 3D and Refine 3D show nothing.
+- The magazine above a card is one mark per tilt series (`card.strip_svg`, `series_states`); the picker
+  (`picker.py`) picks a tilt series; the large card's third block is that tilt series' facts (`blocks.ts_parts`).
+- What carries over as it is: card geometry and look, cables, columns by depth (`geometry.tidy`), the + per output
+  (`card.output_row`, `Project.offered_after`), the new-job card and its ✓ (`view._add_new_job`), the facts store
+  with its mtime cache and threaded loads (`FactsStore`), the SVG plots (`plots.svg_bars`, `svg_hist`, `svg_curve`,
+  `svg_stack`).
+- A pick's uid is a hash of project, frame, member and position (`services/sta_kitchen/table.uid_of`), so the uids
+  of a foreign template-match job's picks can be computed, not only read; rows a job made from a kitchen set carry
+  `cbPickUid` (the set writer in `services/particles/set_facets.py`).
+
+### 10.2 Data layer (U1): `services/particles/lineage.py`, no UI
+
+- **Nodes:** the home project's jobs (as today); its sets (`particle_sets.list_sets`); one source node per foreign
+  (project, job) that a set's recipe or a kitchen pool member names. A class is not a node: it is an output row of
+  its Class 3D node.
+- **Edges:** a set ← its recipe parents (jobs, `(job, class n)`, sets); a job ← what its input reads (`paths`,
+  `source_overrides`, the facet choices on the job).
+- **uid index:** per node a sorted int64 array of its uids, built in `run_in_worker` (a new `WorkKind`), cached by
+  the producing star's mtime: a set from its `particles.star`; a Class 3D per class from `run_itNNN_data.star`
+  (`rlnClassNumber`, `cbPickUid`); a Refine 3D or M from its particles; a foreign source from its `candidates.star`
+  through `uid_of`. The overlap of two nodes is `np.intersect1d` on two sorted arrays: milliseconds at 350k.
+- **Counts per node:** total, by project, by tomogram; σ per uid from the species' pool table where there is one.
+- **Facts read per kind:** Class 3D `run_itNNN_model.star` (class distribution, resolution estimate and accuracy per
+  class) and `run_itNNN_classNNN.mrc`; Refine 3D the gold-standard FSC per shell and the resolution of every
+  iteration from the model stars, `run_class001.mrc` and the half maps; PostProcess `postprocess.star` (masked,
+  unmasked and phase-randomised FSC, B-factor, final resolution); M as §11's facts say.
+- **C1, class → set,** uses the same reader: a set made from class rows is an ordinary ParticleSet whose recipe
+  names `(job, class n)`. Roadmap 30 S4 built a class subset (never run): reuse what holds.
+
+### 10.3 The cards (U2)
+
+- **Source cards.** The leftmost particle column, one per foreign project, folded to one line each: "Slot6_rerun ·
+  TM picks job018 · 1,513 · images: Warp export job020, bin 2, 256". The home project's map says where its
+  particles come from without opening eight projects. Its header opens that project's own map (read only).
+- **Set cards.** Slimmer than a job card: name, count, species colour, how it was chosen in one line ("σ ≥ 8.5,
+  1,204 kept by hand", "class 3 of job012", "classes 1 + 3 of job012"). The + offers the jobs that read sets (Warp
+  export, Reconstruct particle, Class 3D, Refine 3D) and "subset in the kitchen" (opens it with this set as a
+  filter).
+- **Class 3D cards.** One output row per class (`card.output_row`): "class 2 · 41,203 · 38 % · 11.2 Å (Class 3D
+  estimate)" and a small slice thumbnail. The + on a row offers Make set from this class, or a job reading it (the
+  set is made with the job's ✓). Refine 3D, PostProcess and M have one output row: map and poses.
+- **The magazine is composition.** One segment per project, width by count, a colour per project (per condition
+  once D8 is in); a Class 3D card stacks its class bars under it. Same band height as the tilt-series strip
+  (`strip_band`), so preprocessing and particle cards line up.
+- **Layout.** The particle region continues the columns by depth from the source cards; set cards take a narrow
+  column between producer and reader (`geometry.tidy` gets a width per node kind).
+
+### 10.4 The inspector: the large card per kind (U3)
+
+Three blocks as today; on particle cards the third, TILT SERIES, becomes PARTICLES.
+
+- **PARAMETERS:** unchanged, grouped as in the job tab.
+- **RESULTS:**
+  - Warp export: count, box · Å · bin, picks dropped and why; eight particle images (the zero tilt).
+  - Reconstruct particle: the slices (exist) and the radial profile (the curve that explained job048).
+  - Class 3D: a table of classes (count, %, estimate, slices); assignments changing per iteration; class × σ band as
+    stacked bars (R1's read-out); class × project (each project's share).
+  - Refine 3D: the FSC curve with the 0.143 line, its number labelled "unmasked half maps"; resolution and
+    accuracy per iteration; slices with the mask's outline over them; the angular distribution as a rot × tilt
+    histogram.
+  - PostProcess: masked, unmasked and phase-randomised FSC on one plot, "masked" on the number, B-factor; slices of
+    the sharpened map with the mask's outline.
+  - M: resolution per iteration; per source (project) the refined pixel scale and the mean defocus change; FSC before
+    and after.
+- **PARTICLES** (every particle card): counts by project → tomogram; particles per tilt series as a histogram with a
+  mark where geometry refinement gets thin (F3); σ histogram of the node's uids; depth in the tomogram; twelve
+  cutouts from the kitchen's tile cache (`services/sta_kitchen/tiles.py`); "open in the kitchen" with the node's
+  uids as a set filter (`services/sta_kitchen/setmatch.py`).
+- No bare Å anywhere: every resolution says which kind it is (F1).
+
+### 10.5 The trace (U4)
+
+- The picker above the map gets a particles mode: set chips and class rows instead of tilt-series cards, switched
+  by a two-word toggle ("tilt series · particles") or by where the map is scrolled.
+- Picking a node: every particle card shows "holds 1,203 of 2,000" as a thin bar under its header, cards holding
+  none fade, cables widen with the uids they carry. Upstream (which projects, σ bands, earlier classes they came
+  from) and downstream (which classes they ended in) at once.
+- A set of one: "trace this particle" from the kitchen's right-click menu follows one uid through every job that
+  read it: the particle's Journey.
+- Overlaps from the uid index in a worker, cached per (picked, node).
+
+### 10.6 Off the loop
+
+As the map today: `BranchMapView.signature` adds the sets root's mtime and `operations.jsonl`; facts through
+`FactsStore.load_job` with the new kinds; the uid index and overlaps in `run_in_worker`; no NiceGUI element per pick.
+
+### 10.7 Before it, and not here
+
+- Before: roadmap 32 §15.8's runtime checklist on the preprocessing map (open since 2026-11-12); the particle
+  region stands on the same view.
+- Not here: selecting particles on the map (the kitchen selects); maps in 3D in the browser (slices only); lineage
+  across two home projects.
+
+## 11. Which particle jobs to build (answer, 2026-11-17)
+
+**Build:** class → set (C1), Mask from a map (C4), PostProcess (C3), M refine (C6), Class 3D focus mask and
+`skip_align` fields (C5), symmetry expansion + recentre (C7, phase D). **Not now:** RELION 5's tomo CtfRefine and
+frame alignment.
+
+Why M and not RELION's geometry tools:
+
+- Everything upstream is Warp: motion, CTF, alignment, missAlign's output, the exports. M refines in Warp's own
+  metadata (the tilt-series XMLs), and a Warp export after it picks the refined geometry up. RELION's tools refine
+  RELION's copy of the geometry, which our next Warp export would not read.
+- On copia, RELION's CtfRefine on Warp-made metadata moved every tilt by −1 µm, a convention offset, not a
+  measurement (2026-09-09). M stays in one convention.
+- M does what neither RELION tool does and these data need: a pixel scale per source (eight sessions, 2024–2026),
+  image warp grids per tilt, and later the ribosome and the 412 refined together in the same tilt series.
+- RELION's tools stay the fallback if M's S0 shows it cannot take the eight projects as sources.
+
+**The jobs, sized:**
+
+| # | Job | Inputs → outputs | Size |
+|---|---|---|---|
+| C1 | Class → set | a Class 3D's data star + the classes → a set (§10.2) | small (roadmap 30 S4 may hold most of it) |
+| C4 | Mask | a map; low-pass, threshold shown against the map's own range (F6), extend, soft edge → `mask.mrc`; the command builder of `services/templating/template_service.py` (`relion_mask_create`) reused, as a job so it is on the map | small |
+| C3 | PostProcess | half maps of a Refine 3D or M + a mask; auto or given B-factor → `postprocess.mrc`, `postprocess.star` | small |
+| C5 | Class 3D fields | `skip_align`, a focus mask | small |
+| C6 | M refine | a Refine 3D result of a set (half maps, mask, particles) + the Warp tilt-series folders of the set's projects → refined maps and particles; refinement switches as fields (poses, warp grid, defocus, pixel scale), iterations | large |
+| C7 | Symmetry expand + recentre | a refined set + symmetry + an offset → a sub-particle set whose rows carry the parent uid | medium |
+
+**M's S0 (read only, before its design):** the MTools / MCore commands in the dev41 Warp image (July found them in
+the dev36 image, never run); how a population takes a source per project; where M writes. M updates the source's
+tilt-series XMLs, and those live in the eight reruns, which the home project never writes (§2). The likely shape: the
+home project holds the population and copies of the XMLs, images read in place from the reruns; whether M allows that
+is the first fact. Then the species import from a RELION Refine 3D, and what M's outputs look like for the card.
+
+## 12. What happens next (pickup)
+
+1. **The home project, through the API.** One plan, confirmed in the terminal: `AGG412_STA` in
+   `/groups/klumpe/_crboost_data_api`, `tomograms_from` the eight projects' Reconstruct jobs (every tomogram;
+   acquisition values come with them; the doses differ, Grid2 4.8 against ~3, which may come back as a need), and
+   both species from the catalog. Nothing is computed: it is the registry of ~890 tomograms the kitchen and the
+   jobs check against.
+2. **The kitchen, in the UI (the maintainer).** In `AGG412_STA`, each species' pool with the eight projects'
+   template-match picks as members, as was done in Slot6_rerun. Ribosome: Make set of every candidate, and a group
+   "by project" with one subset per project. 412: V1 begins, ≥ 8.5σ, looking and verdicts.
+3. **Phase A ribosome jobs, through the API** (one plan, `plan_run` in it): Reconstruct particle of the pilot's
+   ≥ 10σ picks (R0's reference, low-passed to 40 Å); one Warp export at bin 4, box 100 on the all-candidates set;
+   eight Class 3D, one per project subset, images from that export, K 4, C1, Ø 350, `ini_high` 40, T 4, 25
+   iterations, local search around the TM angles.
+4. **Code meanwhile, on a branch the maintainer names, on their word:** C1, U1 and U2 first, so that R1's classes
+   appear on the map as sets when the Class 3D jobs finish; then C4 and C3 for phase B; M's S0 facts, read only.
+5. **Field notes** in §6 from step 1 on.
