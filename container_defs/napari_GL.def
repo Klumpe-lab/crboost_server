@@ -1,0 +1,125 @@
+Bootstrap: docker
+From: ubuntu:24.04
+
+# napari on a GPU node, seen over a VNC desktop. TigerVNC's Xvnc draws the 2-D desktop; VirtualGL renders napari's
+# OpenGL on the GPU through its EGL back end (`vglrun -d egl`) under `apptainer exec --nv` and reads the frames back
+# into the desktop. This is the arrangement of chimerax_artiax_GL.def, and the same worker runs both
+# (containers/chimerax_artiax/curation_session.sh with CB_APP=napari).
+#
+# Ubuntu 24.04 because its glibc (2.39) loads the EL10 host GL/EGL libraries that --nv mounts; images with glibc
+# older than 2.36 fail on them with GLIBC_ABI_DT_RELR.
+#
+# napari, PyQt6 and mrcfile live in a venv at /opt/napari, apart from the system Python. crboost's launcher
+# (containers/napari/open_tomogram.py) is not baked in: the worker runs it from the server's checkout, so it always
+# matches the server that started the session.
+#
+# Build (CBE.next has no subuid range, so the faked-based fakeroot fails):
+#   apptainer build --fakeroot --ignore-fakeroot-command napari_GL.sif container_defs/napari_GL.def
+#
+# Run (the worker does this):
+#   apptainer exec --nv <binds> napari_GL.sif /opt/VirtualGL/bin/vglrun -d egl \
+#       /opt/napari/bin/python containers/napari/open_tomogram.py --session-dir <dir>
+
+%environment
+    export PATH=/opt/napari/bin:/opt/VirtualGL/bin:$PATH
+    # The user's home is bound into the container: a user-site package must not shadow the image's.
+    export PYTHONNOUSERSITE=1
+    # MIT-SHM does not work between the container's X clients and Xvnc.
+    export QT_X11_NO_MITSHM=1
+
+%post
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+    NAPARI_VERSION=0.10.0
+    MRCFILE_VERSION=1.5.4
+    VGL_VERSION=3.1.4
+
+    # CBE.next builds run with --fakeroot --ignore-fakeroot-command (no subuid range), where only root is
+    # mapped: apt cannot drop to its _apt user, and package scripts cannot chown to system users (EINVAL).
+    # apt stays root, and chown/chgrp are diverted to versions that ignore that while packages install.
+    echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/99-no-sandbox
+    for c in chown chgrp; do
+        dpkg-divert --local --rename --add /usr/bin/$c
+        printf '#!/bin/sh\n/usr/bin/%s.distrib "$@" 2>/dev/null || true\n' $c > /usr/bin/$c
+        chmod +x /usr/bin/$c
+    done
+
+    apt-get update
+    # x11vnc only for `x11vnc -storepasswd`: the worker mints the session's VncAuth password file with it, the same
+    # way in every image it runs. No xterm and no dbus: their packages set group ownership (utmp, messagebus) that
+    # this build cannot, and the session runs nothing but the window manager and napari.
+    apt-get install -y --no-install-recommends \
+        curl ca-certificates \
+        python3 python3-venv \
+        libgl1 libglx0 libglx-mesa0 libgl1-mesa-dri libegl1 libegl-mesa0 libopengl0 libglvnd0 libglu1-mesa \
+        mesa-utils \
+        tigervnc-standalone-server tigervnc-common fluxbox x11vnc \
+        fonts-dejavu-core \
+        libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
+        libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libxcb-xfixes0 libxcb-sync1 libxcb-glx0 libxcb-shm0 \
+        libxkbcommon-x11-0 libxkbcommon0 libx11-xcb1 libsm6 libice6 libxext6 libxrender1 libxi6 libxtst6 \
+        libxrandr2 libxfixes3 libxcursor1 libxdamage1 libxcomposite1 \
+        libfontconfig1 libfreetype6 libdbus-1-3 libglib2.0-0t64
+
+    # VirtualGL is not in apt: the .deb from its GitHub release.
+    curl -fSL -o /tmp/virtualgl.deb \
+        "https://github.com/VirtualGL/virtualgl/releases/download/${VGL_VERSION}/virtualgl_${VGL_VERSION}_amd64.deb"
+    apt-get install -y /tmp/virtualgl.deb
+    rm -f /tmp/virtualgl.deb
+
+    rm -rf /var/lib/apt/lists/*
+    for c in chown chgrp; do rm /usr/bin/$c; dpkg-divert --local --rename --remove /usr/bin/$c; done
+    test -z "$(dpkg --audit)"
+
+    # apptainer's --nv mounts the NVIDIA EGL library but not GLVND's vendor file that names it, so EGL would
+    # only find Mesa. The worker points __EGL_VENDOR_LIBRARY_FILENAMES at this file.
+    mkdir -p /usr/share/glvnd/egl_vendor.d
+    cat > /usr/share/glvnd/egl_vendor.d/10_nvidia.json <<'JSON'
+{
+    "file_format_version" : "1.0.0",
+    "ICD" : {
+        "library_path" : "libEGL_nvidia.so.0"
+    }
+}
+JSON
+
+    export PIP_ROOT_USER_ACTION=ignore PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1
+    export PIP_DEFAULT_TIMEOUT=120 PIP_RETRIES=10
+    python3 -m venv /opt/napari
+    /opt/napari/bin/pip install --upgrade pip
+    /opt/napari/bin/pip install "napari[pyqt6]==${NAPARI_VERSION}" "mrcfile==${MRCFILE_VERSION}"
+    /opt/napari/bin/pip freeze > /opt/napari/requirements.lock
+    # The image is read-only at run time, so bytecode compiled now is what makes startup fast. A handful of
+    # packages ship test data that is not valid Python; those files just stay uncompiled.
+    /opt/napari/bin/python -m compileall -q -j 0 /opt/napari/lib > /dev/null || true
+    chmod -R a+rX /opt/napari
+
+    # Verify here, not in %test: a failing %test does not fail an Apptainer build.
+    /opt/napari/bin/python -c "
+import napari, mrcfile, vispy, numpy
+from PyQt6 import QtCore
+print('napari', napari.__version__, 'mrcfile', mrcfile.__version__, 'vispy', vispy.__version__,
+      'numpy', numpy.__version__, 'Qt', QtCore.QT_VERSION_STR)
+assert napari.__version__ == '${NAPARI_VERSION}', napari.__version__
+"
+    test -x /opt/VirtualGL/bin/vglrun
+    command -v Xtigervnc || command -v Xvnc
+
+%test
+    # The real checks run at the end of %post (a failing %test does not fail the build).
+    /opt/napari/bin/python -c "import napari, mrcfile"
+
+%runscript
+    exec /opt/napari/bin/napari "$@"
+
+%labels
+    Tool napari
+    Napari 0.10.0
+    Qt PyQt6
+    VirtualGL 3.1.4
+    Base ubuntu:24.04
+
+%help
+    napari for crboost's viewer sessions: Xvnc + VirtualGL + napari in /opt/napari, run on a GPU node by
+    containers/chimerax_artiax/curation_session.sh with CB_APP=napari. The pip freeze of the venv is
+    /opt/napari/requirements.lock.

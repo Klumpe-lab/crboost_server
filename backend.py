@@ -1518,6 +1518,26 @@ class CryoBoostBackend:
     async def find_active_curation_session_any(self) -> dict[str, Any] | None:
         return await self.curation_service.find_active_curation_session_any()
 
+    # ── napari on a VNC desktop — the same worker, `-J cb-napari`; see
+    # CurationSessionService's napari section ─────────────────────────────────
+
+    async def launch_napari_session(self, volumes: list[dict[str, str]], title: str) -> dict[str, Any]:
+        return await self.curation_service.launch_napari_session(volumes, title)
+
+    async def open_in_napari_session(
+        self, session_dir: str, volumes: list[dict[str, str]], title: str
+    ) -> dict[str, Any]:
+        return await self.curation_service.open_in_napari_session(session_dir, volumes, title)
+
+    async def get_napari_session_info(self, session_dir: str, slurm_job_id: str | None = None) -> dict[str, Any]:
+        return await self.curation_service.get_napari_session_info(session_dir, slurm_job_id)
+
+    async def find_active_napari_session(self) -> dict[str, Any] | None:
+        return await self.curation_service.find_active_napari_session()
+
+    async def stop_napari_session(self, slurm_job_id: str | None) -> dict[str, Any]:
+        return await self.curation_service.stop_napari_session(slurm_job_id)
+
     async def send_chimerax_command(
         self, session_info: dict[str, Any], command: str, *, timeout: float = 60.0
     ) -> dict[str, Any]:

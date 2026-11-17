@@ -779,6 +779,13 @@ class SlurmService:
             result.setdefault(jid, (state, reason))
         return result
 
+    async def expected_start(self, job_id: str) -> str | None:
+        """SLURM's estimate of when a pending job starts (``squeue --start``, an ISO time), or None when it has
+        none (not pending, no estimate yet, or squeue failed)."""
+        success, stdout, _ = await self._run_command(["squeue", "--start", "-j", str(job_id), "-h", "-o", "%S"])
+        value = stdout.strip().splitlines()[0].strip() if success and stdout.strip() else ""
+        return value if value and value not in ("N/A", "Unknown") else None
+
     async def live_task_counts(self, job_ids: list[str]) -> dict[str, int] | None:
         """How many tasks of each of these jobs SLURM still has queued or running (1 for a job that
         is not an array); a job with none is absent. None when squeue failed, which the caller must

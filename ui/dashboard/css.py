@@ -1577,9 +1577,9 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 /* The zoom's previous / next chevrons: dim over the slice, solid under the pointer. */
 .cb-gal-zoom-chev { color: rgba(255, 255, 255, 0.4); background: rgba(15, 23, 42, 0.12); }
 .cb-gal-zoom-chev:hover { color: rgba(255, 255, 255, 0.95); background: rgba(15, 23, 42, 0.5); }
-/* The `3dmod` copy chip in a tomogram preview's corner (ui/components/copyable.py). */
-.cb-3dmod-chip { background: rgba(15, 23, 42, 0.62); color: #e2e8f0; }
-.cb-3dmod-chip:hover { background: rgba(37, 99, 235, 0.88); color: #ffffff; }
+/* The `napari` and `3dmod` chips in a tomogram preview's corner (ui/components/viewer_chips.py). */
+.cb-viewer-chip { background: rgba(15, 23, 42, 0.62); color: #e2e8f0; }
+.cb-viewer-chip:hover { background: rgba(37, 99, 235, 0.88); color: #ffffff; }
 /* ── Live-session marker ─────────────────────────────────────────────────────── */
 /* The 7 px green dot beside `Curate picks` on the tomogram the running ChimeraX + ArtiaX
  * session has open (Picks & curation tab). It breathes: a CSS animation, never a server

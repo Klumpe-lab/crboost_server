@@ -22,6 +22,7 @@ import os
 import re
 import shlex
 import socket
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -63,6 +64,8 @@ class CurationSessionService:
         # clicks cannot interleave their `close session` chains, and the scope written to
         # disk is the scope of the chain that ran last.
         self._switch_lock = asyncio.Lock()
+        # job id -> (monotonic time asked, SLURM's start estimate) for queued napari sessions.
+        self._start_estimates: dict[str, tuple[float, str | None]] = {}
 
     async def launch_curation_session(
         self, project_path: Path | None = None, cxc_path: Path | None = None, scope: dict[str, Any] | None = None
@@ -96,7 +99,7 @@ class CurationSessionService:
         if not cur.partition:
             return err("curation.partition is not set in conf.yaml.")
 
-        worker = self.server_dir / "containers" / "chimerax_artiax" / "curation_session.sh"
+        worker = self._vnc_worker()
         if not worker.exists():
             return err(f"Worker script missing: {worker}")
 
@@ -127,69 +130,44 @@ class CurationSessionService:
         # on the node (a zombie VNC server or another curation job there).
         display_num = 2 + (int(session_id[:6], 16) % 88)
 
-        sbatch_script = session_dir / "submit.sh"
         # GPU one-click: --gres + the VirtualGL switch mirror what `launch_curation_vnc.sh g`
         # does on the manual path — `export CX_VGL=1` flips the worker to `vglrun -d egl chimerax`
         # under apptainer --nv, so the _GL.sif renders on the GPU instead of software-GL llvmpipe.
-        gres_line = f"#SBATCH --gres={cur.gres}\n" if cur.gres else ""
         # Where the GPU may come from: --constraint, --prefer (tried first) and the nodes `avoid` names (sinfo).
         placement = SlurmConfig(partition=cur.partition, constraint=cur.constraint, prefer=cur.prefer, avoid=cur.avoid)
-        try:
-            await asyncio.to_thread(check_constraint, placement)
-            excluded = await asyncio.to_thread(avoided_nodes, placement)
-        except ValueError as e:
-            return err(f"conf.yaml curation: {e}")
-        gres_line += f'#SBATCH --constraint="{placement.constraint}"\n' if placement.constraint else ""
-        gres_line += f'#SBATCH --prefer="{placement.prefer}"\n' if placement.prefer else ""
-        gres_line += f"#SBATCH --exclude={','.join(excluded)}\n" if excluded else ""
-        vgl_export = "export CX_VGL=1\n" if cur.vgl else ""
-        # Opt-in only: the desktop then runs `-SecurityTypes None`, so anyone who can reach the rfb
-        # port on that node drives it. Off by default; the control center states the risk.
-        nopass_export = "export CX_VNC_NOPASS=1\n" if cur.passwordless_vnc else ""
         # The worker binds /tmp and $HOME itself; the site's roots and the project come from here.
         binds = [*self.config_service.config.container_binds, *([str(project_path)] if project_path else [])]
-        sbatch_script.write_text(
-            "#!/usr/bin/env bash\n"
-            f"#SBATCH -p {cur.partition}\n"
-            f"{gres_line}"
-            f"#SBATCH --cpus-per-task={cur.cpus}\n"
-            f"#SBATCH --mem={cur.mem}\n"
-            f"#SBATCH --time={cur.time}\n"
-            "#SBATCH -J cb-curation\n"
-            f"#SBATCH -o {session_dir / 'slurm.log'}\n"
-            f"#SBATCH -e {session_dir / 'slurm.log'}\n"
-            f"export CX_SIF={shlex.quote(str(sif))}\n"
-            f"export CX_BINDS={shlex.quote(':'.join(binds))}\n"
-            f"export CX_BIN={shlex.quote(cur.chimerax_bin)}\n"
-            f"export CX_GEOMETRY={shlex.quote(cur.geometry)}\n"
-            f"export CX_DISPLAY={display_num}\n"
-            f"export CX_LOGIN_HOST={shlex.quote(login_host)}\n"
-            f"export CB_SESSION_DIR={shlex.quote(str(session_dir))}\n"
-            f"{vgl_export}"
-            f"{nopass_export}"
-            + (f"export CB_CXC={shlex.quote(str(cxc_path))}\n" if cxc_path else "")
-            + f"exec {shlex.quote(str(worker))}\n"
+        env = {
+            "CX_SIF": str(sif),
+            "CX_BINDS": ":".join(binds),
+            "CX_BIN": cur.chimerax_bin,
+            "CX_GEOMETRY": cur.geometry,
+            "CX_DISPLAY": str(display_num),
+            "CX_LOGIN_HOST": login_host,
+            "CB_SESSION_DIR": str(session_dir),
+        }
+        if cur.vgl:
+            env["CX_VGL"] = "1"
+        # Opt-in only: the desktop then runs `-SecurityTypes None`, so anyone who can reach the rfb
+        # port on that node drives it. Off by default; the control center states the risk.
+        if cur.passwordless_vnc:
+            env["CX_VNC_NOPASS"] = "1"
+        if cxc_path:
+            env["CB_CXC"] = str(cxc_path)
+        submitted = await self._submit_vnc_job(
+            session_dir=session_dir,
+            job_name=self._CURATION_JOB,
+            placement=placement,
+            gres=cur.gres,
+            cpus=cur.cpus,
+            mem=cur.mem,
+            walltime=cur.time,
+            env=env,
+            conf_section="curation",
         )
-        sbatch_script.chmod(0o755)
-
-        # Strip SLURM_*/SBATCH_* so submission doesn't inherit a parent job context.
-        clean_env = {k: v for k, v in os.environ.items() if not k.startswith(("SLURM_", "SBATCH_"))}
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "sbatch",
-                str(sbatch_script),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(session_dir),
-                env=clean_env,
-            )
-            stdout, stderr = await proc.communicate()
-            if proc.returncode != 0:
-                return err(f"sbatch failed: {stderr.decode().strip()}")
-            out = stdout.decode().strip()
-            slurm_job_id = out.split()[-1] if out else None
-        except Exception as e:
-            return err(str(e))
+        if not submitted.get("success"):
+            return submitted
+        slurm_job_id = submitted["slurm_job_id"]
 
         # Persist the SLURM id into the session dir so a fresh UI render (or a
         # different browser tab) can recover + reconnect a session it didn't
@@ -214,6 +192,74 @@ class CurationSessionService:
 
         logger.info("Curation session submitted: SLURM job %s (session %s)", slurm_job_id, session_id)
         return ok(slurm_job_id=slurm_job_id, session_dir=str(session_dir), session_id=session_id)
+
+    def _vnc_worker(self) -> Path:
+        """The node-side worker every VNC session runs: ChimeraX curation and napari alike."""
+        return self.server_dir / "containers" / "chimerax_artiax" / "curation_session.sh"
+
+    async def _submit_vnc_job(
+        self,
+        *,
+        session_dir: Path,
+        job_name: str,
+        placement: SlurmConfig,
+        gres: str | None,
+        cpus: int,
+        mem: str,
+        walltime: str,
+        env: dict[str, str],
+        conf_section: str,
+    ) -> dict[str, Any]:
+        """Write `<session_dir>/submit.sh` (the SLURM lines, `env` exported, then the worker) and sbatch it.
+        `ok(slurm_job_id=...)`, or `err` naming the conf.yaml section when the placement is wrong."""
+        try:
+            await asyncio.to_thread(check_constraint, placement)
+            excluded = await asyncio.to_thread(avoided_nodes, placement)
+        except ValueError as e:
+            return err(f"conf.yaml {conf_section}: {e}")
+        log = session_dir / "slurm.log"
+        lines = ["#!/usr/bin/env bash", f"#SBATCH -p {placement.partition}"]
+        if gres:
+            lines.append(f"#SBATCH --gres={gres}")
+        if placement.constraint:
+            lines.append(f'#SBATCH --constraint="{placement.constraint}"')
+        if placement.prefer:
+            lines.append(f'#SBATCH --prefer="{placement.prefer}"')
+        if excluded:
+            lines.append(f"#SBATCH --exclude={','.join(excluded)}")
+        lines += [
+            f"#SBATCH --cpus-per-task={cpus}",
+            f"#SBATCH --mem={mem}",
+            f"#SBATCH --time={walltime}",
+            f"#SBATCH -J {job_name}",
+            f"#SBATCH -o {log}",
+            f"#SBATCH -e {log}",
+        ]
+        lines += [f"export {k}={shlex.quote(v)}" for k, v in env.items()]
+        lines.append(f"exec {shlex.quote(str(self._vnc_worker()))}")
+        sbatch_script = session_dir / "submit.sh"
+        await asyncio.to_thread(sbatch_script.write_text, "\n".join(lines) + "\n")
+        await asyncio.to_thread(sbatch_script.chmod, 0o755)
+
+        # Strip SLURM_*/SBATCH_* so submission doesn't inherit a parent job context.
+        clean_env = {k: v for k, v in os.environ.items() if not k.startswith(("SLURM_", "SBATCH_"))}
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "sbatch",
+                str(sbatch_script),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(session_dir),
+                env=clean_env,
+            )
+            stdout, stderr = await proc.communicate()
+        except OSError as e:
+            logger.exception("sbatch could not be run for %s", sbatch_script)
+            return err(f"sbatch could not be run: {e}")
+        if proc.returncode != 0:
+            return err(f"sbatch failed: {stderr.decode().strip()}")
+        out = stdout.decode().strip()
+        return ok(slurm_job_id=out.split()[-1] if out else None)
 
     # ── declared scope ─────────────────────────────────────────────────────────
 
@@ -297,8 +343,9 @@ class CurationSessionService:
             res = await self.send_chimerax_command(session_info, chain, timeout=120)
             if not res.get("success"):
                 return err(f"ArtiaX did not switch: {res.get('error')}", raw=res.get("raw"))
-            # A chain that returned ok is not proof the seed is open and selected. `info models` lists `#id, name, shown` per model; the seed's
-            # model is named after its file. Absent → the switch failed, whatever the chain said.
+            # A chain that returned ok is not proof the seed is open and selected. `info models` lists
+            # `#id, name, shown` per model; the seed's model is named after its file. Absent → the switch
+            # failed, whatever the chain said.
             probe = await self.send_chimerax_command(session_info, "info models", timeout=15)
             seed_model_id = _model_id_in_probe(probe, seed_name)
             if seed_model_id is None and probe.get("success") and probe.get("data") is not None:
@@ -380,7 +427,7 @@ class CurationSessionService:
         # cases get_user_jobs conflates (get_user_jobs returns [] on squeue failure, which
         # is indistinguishable from "no jobs"): None = squeue itself failed (a transient, not
         # "job gone"); {} = squeue is healthy and the job genuinely left.
-        state = None
+        state = reason = None
         squeue_ok = True
         if slurm_job_id:
             q = await self.slurm_service.query_jobs_by_ids([str(slurm_job_id)])
@@ -388,10 +435,10 @@ class CurationSessionService:
                 squeue_ok = False
             else:
                 hit = q.get(str(slurm_job_id).split("_", 1)[0]) or q.get(str(slurm_job_id))
-                state = hit[0] if hit else None
+                state, reason = hit if hit else (None, None)
 
         if state in ("PENDING", "CONFIGURING", "SCHEDULED"):
-            return ok(status="pending", slurm_state=state)
+            return ok(status="pending", slurm_state=state, slurm_reason=reason)
         if state is not None:
             # RUNNING (or similar) but session.json not visible yet — just started / NFS lag.
             return ok(status="starting", slurm_state=state)
@@ -451,13 +498,15 @@ class CurationSessionService:
         if not recorded:
             return []
         jobs = await self.slurm_service.get_user_jobs(force_refresh=True)
-        live = {j.job_id for j in jobs if j.name == "cb-curation" and j.state in self._CURATION_LIVE_STATES}
+        live = {j.job_id for j in jobs if j.name == self._CURATION_JOB and j.state in self._CURATION_LIVE_STATES}
         live_bases = {x.split("_", 1)[0] for x in live}
         return sorted({jid for jid in recorded if jid in live or jid.split("_", 1)[0] in live_bases})
 
-    # Curation jobs are submitted with `-J cb-curation`; a session is "live" iff
-    # its SLURM job is in one of these states (squeue is the source of truth, never a
-    # cached is-running flag).
+    # Curation jobs are submitted with `-J cb-curation`, napari sessions with `-J cb-napari`; a
+    # session is "live" iff its SLURM job is in one of these states (squeue is the source of
+    # truth, never a cached is-running flag).
+    _CURATION_JOB = "cb-curation"
+    _NAPARI_JOB = "cb-napari"
     _CURATION_LIVE_STATES = ("RUNNING", "PENDING", "CONFIGURING", "SCHEDULED", "COMPLETING")
 
     async def find_active_curation_session(self, project_path: Path) -> dict[str, Any] | None:
@@ -484,7 +533,7 @@ class CurationSessionService:
             return None
 
         jobs = await self.slurm_service.get_user_jobs(force_refresh=True)
-        live = {j.job_id: j for j in jobs if j.name == "cb-curation" and j.state in self._CURATION_LIVE_STATES}
+        live = {j.job_id: j for j in jobs if j.name == self._CURATION_JOB and j.state in self._CURATION_LIVE_STATES}
         for jid, sdir in recorded:
             match = live.get(jid) or next(
                 (j for j in live.values() if j.job_id.split("_", 1)[0] == jid.split("_", 1)[0]), None
@@ -520,14 +569,20 @@ class CurationSessionService:
         return Path.home() / ".crboost" / "curation" / "registry.jsonl"
 
     async def _register_curation_session(
-        self, *, slurm_job_id: str | None, session_id: str, session_dir: Path, project_path: Path | None
+        self,
+        *,
+        slurm_job_id: str | None,
+        session_id: str,
+        session_dir: Path,
+        project_path: Path | None,
+        registry: Path | None = None,
     ) -> None:
-        """Append a launched session to the user-level registry so find-or-reuse can
-        locate it from ANY project. Best-effort — never blocks a launch. Lock-guarded
-        against the prune-rewrite in find_active_curation_session_any so a concurrent
-        prune can't drop this just-appended line."""
+        """Append a launched session to the user-level registry (`registry`, the curation one
+        by default) so find-or-reuse can locate it from ANY project. Best-effort — never blocks
+        a launch. Lock-guarded against the prune-rewrite in _find_live_registered so a
+        concurrent prune can't drop this just-appended line."""
         try:
-            reg = self._curation_registry_file()
+            reg = registry or self._curation_registry_file()
             reg.parent.mkdir(parents=True, exist_ok=True)
             entry = {
                 "slurm_job_id": slurm_job_id,
@@ -543,10 +598,14 @@ class CurationSessionService:
 
     async def find_active_curation_session_any(self) -> dict[str, Any] | None:
         """The user's one live curation session across ALL projects (the per-user
-        reuse model), or None. Reads the registry, makes a single squeue call,
-        returns the first live `cb-curation` session merged with its session.json,
-        and self-prunes dead/missing entries. Liveness is squeue-derived."""
-        reg = self._curation_registry_file()
+        reuse model), or None. See _find_live_registered."""
+        return await self._find_live_registered(self._curation_registry_file(), self._CURATION_JOB)
+
+    async def _find_live_registered(self, reg: Path, job_name: str) -> dict[str, Any] | None:
+        """The newest live session in the user-level registry `reg` whose SLURM job is
+        `job_name`, or None. Reads the registry, makes a single squeue call, returns the
+        session merged with its session.json, and self-prunes dead/missing entries.
+        Liveness is squeue-derived."""
         if not reg.is_file():
             return None
         entries: list[dict[str, Any]] = []
@@ -567,7 +626,7 @@ class CurationSessionService:
             return None
 
         jobs = await self.slurm_service.get_user_jobs(force_refresh=True)
-        live = {j.job_id: j for j in jobs if j.name == "cb-curation" and j.state in self._CURATION_LIVE_STATES}
+        live = {j.job_id: j for j in jobs if j.name == job_name and j.state in self._CURATION_LIVE_STATES}
         live_bases = {jid.split("_", 1)[0]: j for jid, j in live.items()}
 
         # Pick the NEWEST live session: the registry is append-ordered (oldest→newest),
@@ -626,6 +685,179 @@ class CurationSessionService:
                 pass
         out.update(self._read_scope(sdir))
         return out
+
+    # ── napari sessions ───────────────────────────────────────────────────────
+    #
+    # One napari window per user on a VNC desktop, through the curation worker with
+    # CB_APP=napari: its own SLURM job name and registry, so it lives beside a ChimeraX
+    # session. napari has no command server; crboost writes what to show into the session
+    # dir's `open.json`, which containers/napari/open_tomogram.py polls, and the launcher
+    # answers in `opened.json`.
+
+    _NAPARI_REQUEST = "open.json"
+    _NAPARI_ACK = "opened.json"
+
+    @staticmethod
+    def _napari_base() -> Path:
+        return Path.home() / ".crboost" / "napari"
+
+    def _napari_launcher(self) -> Path:
+        return self.server_dir / "containers" / "napari" / "open_tomogram.py"
+
+    @classmethod
+    def _write_napari_request(cls, session_dir: Path, volumes: list[dict[str, str]], title: str) -> int:
+        """Write `open.json` (renamed into place, so the launcher never reads half of it) and return its
+        `seq`. A clock in ms: later than any request before it, a server restart included, which is all the
+        launcher compares."""
+        seq = time.time_ns() // 1_000_000
+        body = {"seq": seq, "title": title, "layers": [{"name": v["name"], "path": v["path"]} for v in volumes]}
+        tmp = session_dir / (cls._NAPARI_REQUEST + ".tmp")
+        tmp.write_text(json.dumps(body))
+        os.replace(tmp, session_dir / cls._NAPARI_REQUEST)
+        return seq
+
+    @classmethod
+    def _read_napari_state(cls, session_dir: Path) -> dict[str, Any]:
+        """`{"requested": open.json, "opened": opened.json}`, each None when absent. The launcher writes
+        `opened.json` by rename too, so a file that does not parse is a fault on one side, and says so."""
+        out: dict[str, Any] = {}
+        for key, name in (("requested", cls._NAPARI_REQUEST), ("opened", cls._NAPARI_ACK)):
+            try:
+                out[key] = json.loads((session_dir / name).read_text())
+            except FileNotFoundError:
+                out[key] = None
+            except (OSError, ValueError) as e:
+                out[key] = {"ok": False, "error": f"{name} unreadable: {e}"}
+        return out
+
+    @staticmethod
+    def _missing_volumes(volumes: list[dict[str, str]]) -> list[str]:
+        return [v["path"] for v in volumes if not Path(v["path"]).is_file()]
+
+    async def launch_napari_session(self, volumes: list[dict[str, str]], title: str) -> dict[str, Any]:
+        """Submit napari on a VNC desktop showing `volumes` (`[{"name", "path"}]`, absolute paths). The
+        placement is `napari:`'s where set, else `curation:`'s. Returns the SLURM job id, the session dir
+        (in ~/.crboost/napari) and the request's `seq`; poll with get_napari_session_info()."""
+        cfg = self.config_service.napari
+        cur = self.config_service.curation
+        sif = cfg.sif_path
+        if not sif or not Path(sif).exists():
+            return err(
+                f"napari image not found (napari.sif_path={sif!r}). Build container_defs/napari_GL.def and set "
+                "napari.sif_path in conf.yaml."
+            )
+        partition = cfg.partition if cfg.partition is not None else cur.partition
+        if not partition:
+            return err("Neither napari.partition nor curation.partition is set in conf.yaml.")
+        for needed in (self._vnc_worker(), self._napari_launcher()):
+            if not needed.exists():
+                return err(f"Missing from the server's checkout: {needed}")
+        if not volumes:
+            return err("Nothing to open.")
+        missing = await asyncio.to_thread(self._missing_volumes, volumes)
+        if missing:
+            return err(f"Not on disk: {', '.join(missing)}")
+
+        session_id = uuid.uuid4().hex[:8]
+        session_dir = self._napari_base() / session_id
+        await asyncio.to_thread(session_dir.mkdir, parents=True, exist_ok=True)
+        seq = await asyncio.to_thread(self._write_napari_request, session_dir, volumes, title)
+
+        placement = SlurmConfig(
+            partition=partition,
+            constraint=cfg.constraint if cfg.constraint is not None else cur.constraint,
+            prefer=cfg.prefer if cfg.prefer is not None else cur.prefer,
+            avoid=cfg.avoid if cfg.avoid is not None else cur.avoid,
+        )
+        env = {
+            "CB_APP": "napari",
+            "CX_SIF": str(sif),
+            # The worker binds /tmp, $HOME and the launcher's directory itself; volumes outside the
+            # site's roots are not visible in the session, and the launcher reports them as unreadable.
+            "CX_BINDS": ":".join(self.config_service.config.container_binds),
+            "CX_GEOMETRY": cfg.geometry,
+            "CX_DISPLAY": str(2 + (int(session_id[:6], 16) % 88)),
+            "CX_LOGIN_HOST": cur.login_host or socket.getfqdn(),
+            "CB_SESSION_DIR": str(session_dir),
+            "CB_NAPARI_LAUNCHER": str(self._napari_launcher()),
+        }
+        if cur.vgl:
+            env["CX_VGL"] = "1"
+        if cur.passwordless_vnc:
+            env["CX_VNC_NOPASS"] = "1"
+        submitted = await self._submit_vnc_job(
+            session_dir=session_dir,
+            job_name=self._NAPARI_JOB,
+            placement=placement,
+            gres=cfg.gres if cfg.gres is not None else cur.gres,
+            cpus=cfg.cpus,
+            mem=cfg.mem,
+            walltime=cfg.time,
+            env=env,
+            conf_section="napari (placement from curation)",
+        )
+        if not submitted.get("success"):
+            return submitted
+        slurm_job_id = submitted["slurm_job_id"]
+        await asyncio.to_thread(
+            (session_dir / "job.json").write_text, json.dumps({"slurm_job_id": slurm_job_id, "session_id": session_id})
+        )
+        await self._register_curation_session(
+            slurm_job_id=slurm_job_id,
+            session_id=session_id,
+            session_dir=session_dir,
+            project_path=None,
+            registry=self._napari_base() / "registry.jsonl",
+        )
+        logger.info("napari session submitted: SLURM job %s (session %s), %s", slurm_job_id, session_id, title)
+        return ok(slurm_job_id=slurm_job_id, session_dir=str(session_dir), session_id=session_id, seq=seq)
+
+    async def open_in_napari_session(
+        self, session_dir: str, volumes: list[dict[str, str]], title: str
+    ) -> dict[str, Any]:
+        """Ask a running napari session to show `volumes` instead of what it shows now. The answer arrives
+        in get_napari_session_info()'s `opened` once the window has it (within about a second)."""
+        if not volumes:
+            return err("Nothing to open.")
+        missing = await asyncio.to_thread(self._missing_volumes, volumes)
+        if missing:
+            return err(f"Not on disk: {', '.join(missing)}")
+        sdir = Path(session_dir)
+        if not await asyncio.to_thread(sdir.is_dir):
+            return err(f"The napari session's directory is gone: {sdir}")
+        seq = await asyncio.to_thread(self._write_napari_request, sdir, volumes, title)
+        return ok(seq=seq)
+
+    async def get_napari_session_info(self, session_dir: str, slurm_job_id: str | None = None) -> dict[str, Any]:
+        """get_curation_session_info() for a napari session, plus what was asked for (`requested`) and what
+        the window shows (`opened`). While it is queued, also SLURM's estimate of its start (`expected_start`):
+        a GPU session can wait hours when the cards are taken, and the user should see that."""
+        info = await self.get_curation_session_info(session_dir, slurm_job_id)
+        info.update(await asyncio.to_thread(self._read_napari_state, Path(session_dir)))
+        if info.get("status") == "pending" and slurm_job_id:
+            info["expected_start"] = await self._expected_start(str(slurm_job_id))
+        return info
+
+    async def _expected_start(self, slurm_job_id: str) -> str | None:
+        """`squeue --start` for one job, asked at most once a minute per job (the dialog polls every 3 s)."""
+        cached = self._start_estimates.get(slurm_job_id)
+        now = time.monotonic()
+        if cached is None or now - cached[0] > 60:
+            cached = (now, await self.slurm_service.expected_start(slurm_job_id))
+            self._start_estimates[slurm_job_id] = cached
+        return cached[1]
+
+    async def find_active_napari_session(self) -> dict[str, Any] | None:
+        """The user's live napari session, or None; with `requested` and `opened` when it has them."""
+        found = await self._find_live_registered(self._napari_base() / "registry.jsonl", self._NAPARI_JOB)
+        if found is not None:
+            found.update(await asyncio.to_thread(self._read_napari_state, Path(found["session_dir"])))
+        return found
+
+    async def stop_napari_session(self, slurm_job_id: str | None) -> dict[str, Any]:
+        if not slurm_job_id:
+            return err("no SLURM job id")
+        return await self.slurm_service.scancel_jobs([str(slurm_job_id)])
 
     async def send_chimerax_command(
         self, session_info: dict[str, Any], command: str, *, timeout: float = 60.0

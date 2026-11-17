@@ -45,32 +45,6 @@ def imod_command(volume) -> str:
     return f"3dmod {shlex.quote(str(volume))}"
 
 
-def copy_3dmod_chip(volume) -> None:
-    """The `3dmod` chip in a tomogram preview's bottom-right corner: a click copies the
-    command that opens this volume in 3dmod, to paste into a terminal with X11.
-
-    Absolutely positioned, so the preview box must be positioned. `click.stop`, so a
-    preview whose own click zooms does not also fire. Colors and hover live in
-    `.cb-3dmod-chip` (ui/dashboard/css.py)."""
-    cmd = imod_command(volume)
-
-    async def _copy():
-        await _write_clipboard(cmd)
-
-    chip = (
-        ui.label("3dmod")
-        .classes("cb-3dmod-chip")
-        .style(
-            "position: absolute; right: 4px; bottom: 4px; z-index: 2; padding: 0 6px; "
-            "border-radius: var(--cb-r-sm, 3px); "
-            f"{_MONO} font-size: 9px; line-height: 16px; cursor: pointer; user-select: none;"
-        )
-        .on("click.stop", _copy)
-    )
-    with chip:
-        ui.tooltip(f"Copy the command that opens this tomogram in 3dmod:\n{cmd}").style("white-space: pre-line;")
-
-
 def copy_on_click(element, text: str):
     """Make `element` copy `text` when clicked; it turns blue and underlines on hover
     (`.cb-copy-path`, ui/dashboard/css.py). `click.stop` so a clickable parent (a roster

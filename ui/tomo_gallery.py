@@ -79,7 +79,7 @@ from services.visualization.preview_orchestrator import read_preview_manifest
 from services.visualization.preview_render import is_output_stale
 from services.visualization.tomo_geometry import SOURCE_IMPORTED, TomoGeometry, all_geometries
 from ui.components.buttons import house_button, icon_button
-from ui.components.copyable import copy_3dmod_chip
+from ui.components.viewer_chips import viewer_chips
 from ui.components import feature_layers as fl
 from ui.components.dialogs import dialog_host
 from ui.components.hover_menu import Choice, ChoiceRows, hover_menu, tool_trigger
@@ -1772,7 +1772,7 @@ class TomoGalleryPage:
                 chip = self._refs["zoom_chip"] = ui.element("div").style("display: contents;")
                 with chip:
                     if src is not None and src.get("mrc"):
-                        copy_3dmod_chip(src["mrc"])
+                        viewer_chips(src["mrc"])
                 if i > 0:
                     self._render_zoom_chevron("left")
                 if i < len(order) - 1:
@@ -1887,7 +1887,7 @@ class TomoGalleryPage:
         chip.clear()
         with chip:
             if now.get("mrc"):
-                copy_3dmod_chip(now["mrc"])
+                viewer_chips(now["mrc"])
         rows = self._refs.get("zoom_version_rows")
         if rows is not None:
             rows.set_active(key)
