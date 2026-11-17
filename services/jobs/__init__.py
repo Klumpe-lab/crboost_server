@@ -28,6 +28,8 @@ from services.jobs.extract_pick_list import ExtractPickListParams
 from services.jobs.reconstruct_particle import ReconstructParticleParams
 from services.jobs.class3d import Class3DParams
 from services.jobs.refine3d import Refine3DParams
+from services.jobs.mask_create import MaskCreateParams
+from services.jobs.postprocess import PostProcessParams
 
 from collections.abc import Mapping
 
@@ -51,7 +53,9 @@ __all__ = [
     "FilamentPickParams",
     "FsMotionCtfParams",
     "ImportMoviesParams",
+    "MaskCreateParams",
     "MissAlignParams",
+    "PostProcessParams",
     "ReconstructParticleParams",
     "Refine3DParams",
     "SegmentParams",

@@ -399,7 +399,107 @@ def job_facts(kind: str, jm, job_dir: Path | None, reg: dict[str, dict], iid: st
             f"the average · box {param_words(jm, 'box_size')} · {param_words(jm, 'symmetry')} · "
             f"bin {getattr(jm, 'binning', 0):g}"
         )
+    elif kind == "class3d":
+        _class3d_facts(f, job_dir)
+    elif kind == "refine3d":
+        _refine3d_facts(f, job_dir)
+    elif kind == "maskCreate":
+        _mask_facts(f, job_dir)
+    elif kind == "postprocess":
+        _postprocess_facts(f, job_dir)
     return f
+
+
+def _star(path: Path) -> dict:
+    import starfile
+
+    return starfile.read(path, always_dict=True)
+
+
+def _class3d_facts(f: Facts, job_dir: Path) -> None:
+    """The last iteration's classes: share and Class 3D's own resolution estimate (not a gold-standard FSC)."""
+    from services.particles.class_readout import _model_classes, class3d_iterations
+
+    its = class3d_iterations(job_dir)
+    if not its:
+        f.lines = ["no iteration written yet"]
+        return
+    final = its[-1]
+    classes = _model_classes(job_dir / f"run_it{final:03d}_model.star")
+    f.lines = [
+        f"class {c['class']} · {c['distribution']:.0%}"
+        + (f" · {c['resolution_ang']:.1f} Å (Class 3D estimate)" if c["resolution_ang"] else "")
+        for c in classes
+    ]
+    f.plot = _plot_or_none([c["distribution"] * 100 for c in classes], "bars", f"share per class, % · it{final:03d}")
+    for c in classes[:6]:
+        url = map_slices_url(job_dir / f"run_it{final:03d}_class{c['class']:03d}.mrc")
+        if url:
+            f.pictures.append((url, f"class {c['class']}, three central slices"))
+    f.picture_caption = f"the classes of iteration {final}"
+
+
+def _refine3d_facts(f: Facts, job_dir: Path) -> None:
+    """The converged run's gold-standard FSC of the unmasked half maps, else the last iteration's resolution."""
+    model = job_dir / "run_model.star"
+    converged = model.exists()
+    if not converged:
+        models = sorted(job_dir.glob("run*_it*_half1_model.star"))
+        if not models:
+            f.lines = ["no iteration written yet"]
+            return
+        model = models[-1]
+    blocks = _star(model)
+    general = blocks.get("model_general")
+    res = general.get("rlnCurrentResolution") if isinstance(general, dict) else None
+    where = "converged" if converged else model.name.split("_half1")[0]
+    f.lines = [f"{float(res):.2f} Å (gold-standard FSC, unmasked half maps) · {where}" if res else where]
+    fsc = blocks.get("model_class_1")
+    if converged and fsc is not None and "rlnGoldStandardFsc" in getattr(fsc, "columns", ()):
+        f.plot = _plot_or_none([float(v) for v in fsc["rlnGoldStandardFsc"]], "curve", "gold-standard FSC by shell")
+    url = map_slices_url(job_dir / "run_class001.mrc")
+    if url:
+        f.pictures = [(url, "run_class001.mrc, three central slices")]
+        f.picture_caption = "the refined map"
+
+
+def _mask_facts(f: Facts, job_dir: Path) -> None:
+    stats_path = job_dir / "mask_stats.json"
+    if stats_path.exists():
+        st = json.loads(stats_path.read_text())
+        f.lines = [
+            f"threshold {st['threshold']:.4g} ({st['threshold_source']}) on the map low-passed at "
+            f"{st['lowpass_ang']:g} Å, range {st['lowpass_min']:.3g} … {st['lowpass_max']:.3g}",
+            f"encloses {st['enclosed_fraction']:.1%} of the box · grown {st['extend_px']} px, soft edge "
+            f"{st['soft_edge_px']} px",
+        ]
+    url = map_slices_url(job_dir / "mask.mrc")
+    if url:
+        f.pictures = [(url, "mask.mrc, three central slices")]
+        f.picture_caption = "the mask"
+
+
+def _postprocess_facts(f: Facts, job_dir: Path) -> None:
+    star = job_dir / "postprocess.star"
+    if not star.exists():
+        return
+    blocks = _star(star)
+    general = blocks.get("general")
+    if isinstance(general, dict) and "rlnFinalResolution" in general:
+        bfac = general.get("rlnBfactorUsedForSharpening")
+        f.lines = [
+            f"{float(general['rlnFinalResolution']):.2f} Å (masked gold-standard FSC, 0.143)"
+            + (f" · B {float(bfac):g} Å²" if bfac is not None else "")
+        ]
+    fsc = blocks.get("fsc")
+    if fsc is not None and "rlnFourierShellCorrelationCorrected" in getattr(fsc, "columns", ()):
+        f.plot = _plot_or_none(
+            [float(v) for v in fsc["rlnFourierShellCorrelationCorrected"]], "curve", "masked FSC, corrected, by shell"
+        )
+    url = map_slices_url(job_dir / "postprocess.mrc")
+    if url:
+        f.pictures = [(url, "postprocess.mrc, three central slices")]
+        f.picture_caption = "the sharpened map"
 
 
 def ts_facts(kind: str, jm, job_dir: Path | None, reg: dict, iid: str, ts: str) -> TsFacts | None:

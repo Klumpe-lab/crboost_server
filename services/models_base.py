@@ -138,6 +138,10 @@ class JobType(str, Enum):
 
     CLASS3D = "class3d"
     REFINE3D = "refine3d"
+    # A soft solvent mask cut from a map (relion_mask_create on the low-passed map).
+    MASK_CREATE = "maskCreate"
+    # Masked gold-standard FSC and sharpening of a refinement's half maps (relion_postprocess).
+    POSTPROCESS = "postprocess"
 
     # Synthetic source: not a real pipeline job. Used by PathResolutionService to
     # surface <project>/MergedSources/optimisation_set.star as a producer candidate

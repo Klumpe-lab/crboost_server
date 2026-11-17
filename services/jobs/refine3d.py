@@ -27,6 +27,7 @@ class Refine3DParams(AbstractJobParams):
         "low_resol_join_halves",
         "particle_diameter",
         "solvent_mask_path",
+        "mask_from_job",
         "solvent_correct_fsc",
         "flatten_solvent",
         "zero_mask",
@@ -51,6 +52,8 @@ class Refine3DParams(AbstractJobParams):
             needs_extracted=True,
         ),
         InputSlot(key="input_reference", accepts=[JobFileType.REFERENCE_MAP], preferred_source="reconstructParticle"),
+        # A Mask job's mask, read only while mask_from_job is set; solvent_mask_path stays for a file made elsewhere.
+        InputSlot(key="input_mask", accepts=[JobFileType.MASK], preferred_source="maskCreate", when="mask_from_job"),
     ]
     OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = [
         OutputSlot(
@@ -59,6 +62,8 @@ class Refine3DParams(AbstractJobParams):
             path_template="run_optimisation_set.star",
         ),
         OutputSlot(key="output_map", produces=JobFileType.REFERENCE_MAP, path_template="run_class001.mrc"),
+        # The unfiltered half maps of the converged run; PostProcess reads half1 and finds half2 beside it.
+        OutputSlot(key="output_half_map", produces=JobFileType.HALF_MAP, path_template="run_half1_class001_unfil.mrc"),
     ]
 
     # Angular / translational search
@@ -88,6 +93,9 @@ class Refine3DParams(AbstractJobParams):
 
     # Optional mask
     solvent_mask_path  : str  = Field(default="", description="Path to soft mask for references (optional)")
+    mask_from_job      : bool = Field(
+        default=False, description="Take the solvent mask from a Mask job (the mask input) instead of a file path"
+    )
     solvent_correct_fsc: bool = Field(default=True, description="With a solvent mask: report the mask-corrected FSC")
 
     # Reference handling
