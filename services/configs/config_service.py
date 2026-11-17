@@ -212,6 +212,26 @@ class CurationConfig(BaseModel):
     rest_enabled: bool = True
 
 
+class NapariConfig(BaseModel):
+    """napari on a VNC desktop, opened from a tomogram's napari chip (napari_GL.sif, container_defs/napari_GL.def).
+
+    It runs on the nodes the curation session runs on, through the same worker: the placement fields left unset
+    here (None) are `curation:`'s, and so are vgl, login_host and passwordless_vnc. With `curation.vgl` on, napari
+    renders on the GPU through VirtualGL, so the placement must give a full GPU that does OpenGL (not a MIG slice).
+    """
+
+    sif_path: str | None = None
+    cpus: int = 4
+    mem: str = "16G"
+    time: str = "08:00:00"  # must be <= the partition QOS MaxWall (0/unlimited is rejected by QOS)
+    geometry: str = "1920x1080"
+    partition: str | None = None
+    gres: str | None = None
+    constraint: str | None = None
+    prefer: str | None = None
+    avoid: str | None = None
+
+
 class TiltFilterModelConfig(BaseModel):
     """One tilt-classifier weights file the tilt-filter job can run."""
 
@@ -249,6 +269,7 @@ class Config(BaseModel):
     job_resource_profiles: dict[str, JobResourceProfile] = Field(default_factory=dict)
     processing_defaults: ProcessingDefaultsConfig = Field(default_factory=ProcessingDefaultsConfig)
     curation: CurationConfig = Field(default_factory=CurationConfig)
+    napari: NapariConfig = Field(default_factory=NapariConfig)
     tilt_filter: TiltFilterConfig = Field(default_factory=TiltFilterConfig)
     tools: dict[str, ToolConfig] = Field(default_factory=dict)
     container_runtime: ContainerRuntime = ContainerRuntime.APPTAINER
@@ -360,6 +381,10 @@ class ConfigService:
     @property
     def curation(self) -> CurationConfig:
         return self._config.curation
+
+    @property
+    def napari(self) -> NapariConfig:
+        return self._config.napari
 
     @property
     def tilt_filter(self) -> TiltFilterConfig:

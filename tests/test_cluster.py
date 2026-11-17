@@ -46,9 +46,11 @@ PROBES = {
         'm.version("easymode"); assert tf.config.list_physical_devices("GPU")\''
     ),
 }
-# ChimeraX (curation.sif_path) is no `tools:` entry: the curation worker starts it with a bare
-# `<runtime> exec`, and so does its probe.
+# ChimeraX (curation.sif_path) and napari (napari.sif_path) are no `tools:` entries: the curation worker
+# starts them with a bare `<runtime> exec`, and so do their probes.
 CHIMERAX = "chimerax"
+NAPARI = "napari"
+VIEWERS = [CHIMERAX, NAPARI]
 SELFTEST_ROOT = Path.home() / ".crboost" / "selftest"
 
 
@@ -60,6 +62,11 @@ def _job_command(name: str) -> str | None:
         if not cur.sif_path:
             return None
         return f"{config.container_runtime} exec {shlex.quote(cur.sif_path)} {shlex.quote(cur.chimerax_bin)} --version"
+    if name == NAPARI:
+        sif = config.napari.sif_path
+        if not sif:
+            return None
+        return f"{config.container_runtime} exec {shlex.quote(sif)} /opt/napari/bin/python -c 'import napari, mrcfile'"
     if name not in config.tools:
         return None
     prefix = driver_launch_prefix(server_dir=REPO_ROOT, driver_script=REPO_ROOT / "tests" / "cluster_probe.py")
@@ -72,7 +79,7 @@ def jobs():
     cfg = SlurmConfig.from_config_defaults().model_copy(update={"time": "0:15:00"})
     env = {k: v for k, v in os.environ.items() if not k.startswith(("SLURM_", "SBATCH_"))}
     submitted = {}
-    for name in [*PROBES, CHIMERAX]:
+    for name in [*PROBES, *VIEWERS]:
         command = _job_command(name)
         if command is None:
             continue
@@ -103,7 +110,7 @@ def test_every_tool_has_a_probe():
 
 
 @pytest.mark.cluster
-@pytest.mark.parametrize("name", [*PROBES, CHIMERAX])
+@pytest.mark.parametrize("name", [*PROBES, *VIEWERS])
 def test_runs_on_a_compute_node(jobs, name):
     if name not in jobs:
         pytest.skip(f"{name} is not configured")

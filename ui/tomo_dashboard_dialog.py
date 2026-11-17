@@ -69,7 +69,8 @@ from services.pixel_chain import apply_sanity_rules, compute_pixel_chain
 from services.visualization.preview_orchestrator import _find_warp_tomo_preview
 from ui.components.chip import render_chip
 from ui.components.buttons import icon_button
-from ui.components.copyable import copy_3dmod_chip, copy_on_click
+from ui.components.copyable import copy_on_click
+from ui.components.viewer_chips import viewer_chips
 from ui.components.feature_layers import FeatureFills, layers_for_ts
 from ui.components.reactive import owned_timer, slot_is_gone
 from ui.components.recon_compare import matched_render, recon_versions_for_ts
@@ -2395,7 +2396,7 @@ def _render_recon_big_preview(
                                 sanitize=False,
                             )
                         if mrc_path:
-                            copy_3dmod_chip(mrc_path)
+                            viewer_chips(mrc_path)
                     ui.label(f"WarpTools · {png_path.name}").classes("cb-recon-preview-caption")
                 else:
                     ui.label("No WarpTools preview PNG on disk.").classes("cb-section-placeholder")
@@ -2432,7 +2433,7 @@ def _render_recon_big_preview(
                                 f"<img src='{vis_asset_url(str(png))}' alt='{ts_name} {label} denoised' />",
                                 sanitize=False,
                             )
-                        copy_3dmod_chip(mrc)
+                        viewer_chips(mrc)
                     ui.label(f"{label} · denoised X/Y slab · {mrc.name}").classes("cb-recon-preview-caption")
 
                 RenderSlot(dn_render, _denoised, classes="cb-rslot-wide", style=_skeleton_shape(fills))
@@ -2484,7 +2485,7 @@ def _render_recon_version(v: dict, ts_name: str, fills: FeatureFills | None = No
                     _framed_preview(vis_asset_url(str(warp_png)), f"{ts_name} {v['job']}", fills, v["iid"])
                 else:
                     ui.html(f"<img src='{vis_asset_url(str(warp_png))}' alt='{ts_name} {v['job']}' />", sanitize=False)
-                copy_3dmod_chip(v["mrc"])
+                viewer_chips(v["mrc"])
             ui.label(f"WarpTools · {warp_png.name}").classes("cb-recon-preview-caption")
         else:
             ui.label("No WarpTools preview PNG on disk.").classes("cb-section-placeholder")
@@ -2551,7 +2552,7 @@ def _render_recon_versions(versions: list[dict], ts_name: str, project_path: Pat
                         ui.html(slab, sanitize=False)
                     else:
                         ui.html(_blink_html(v, ref, ts_name), sanitize=False).style("width: 100%;")
-                    copy_3dmod_chip(v["mrc"])
+                    viewer_chips(v["mrc"])
                 caption = _plane_caption(plane, ref["job"])
                 if v is not ref:
                     caption += f" · hold the pointer on it (or Space) to see {ref['job']}"

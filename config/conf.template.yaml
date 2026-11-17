@@ -266,6 +266,17 @@ curation:
   passwordless_vnc: false # true starts the desktop with SecurityTypes None — NO password, so anyone who
                           # can reach that node's VNC port can drive the session. Leave false if shared.
 
+# napari on a VNC desktop, opened from the `napari` chip on a tomogram preview (image: container_defs/napari_GL.def).
+# It runs on the nodes the curation session above runs on, through the same worker: leave the placement keys
+# (partition, gres, constraint, prefer, avoid) out to use curation's; vgl, login_host and passwordless_vnc are
+# always curation's. With vgl on it needs a full GPU that does OpenGL (not a MIG slice, not an A100).
+napari:
+  sif_path: "/path/to/napari_GL.sif"
+  cpus: 4
+  mem: "16G"
+  time: "08:00:00"  # must be <= the QOS MaxWall for the partition (0/unlimited is rejected)
+  geometry: "1920x1080"
+
 # Lab-level species catalog. A shared directory holding species DEFINITIONS —
 # name, diameter, symmetry, notes, templates and masks with their provenance — so the same
 # particle can be started from in any project instead of being re-registered by hand. Picks,

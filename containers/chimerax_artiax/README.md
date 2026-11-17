@@ -15,6 +15,13 @@ cluster filesystem. Designed for blitzing 40–80 tomograms in one persistent se
 - **One worker drives both** (`curation_session.sh`), selected by `CX_VGL` (set automatically by
   `./launch_curation_vnc.sh g`). Use GL when you want responsive 3-D; CPU when GPU nodes are scarce.
 
+## napari runs on the same worker
+`curation_session.sh` with `CB_APP=napari` starts napari instead of ChimeraX, from `napari_GL.sif`
+(`container_defs/napari_GL.def`), running `containers/napari/open_tomogram.py` from the server's checkout. crboost
+starts it from a tomogram's `napari` chip and tells it what to show through `open.json` in the session dir; by
+hand, `containers/napari/launch_napari_vnc.sh`. Each session, ChimeraX or napari, writes its own VNC password file
+(`~/.vnc/passwd.crboost.*`, removed at exit), so the two run side by side.
+
 ## Why this shape
 - **VNC, not `ssh -X`.** Only compressed frames cross the wire (the multi-second software-GL lag was
   the *render*, not transport — a viewer swap won't fix it; the GPU variant does). The X session
