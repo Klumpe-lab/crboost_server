@@ -325,15 +325,16 @@ class UIStateManager:
         self._notify()
 
     def load_from_project(self, project_path: Path, scheme_name: str):
-        """Point this tab at a project. The roster is read from the project whenever it is needed; the first job
-        opens unless the tab already has one open that is on the roster."""
+        """Point this tab at a project. The roster is read from the project whenever it is needed. The project opens
+        on the Pipeline view with no job open, unless this tab already had one of this project's jobs open."""
+        same_project = self._state.current_project_path == str(project_path)
         self._state.current_project_path = str(project_path)
         self._state.current_scheme_name = scheme_name
         self._state.project_created = True
 
-        roster = self.roster()
-        if self._state.active_job_tab not in roster:
-            self._state.active_job_tab = roster[0] if roster else None
+        # Another project's job of the same instance id (every project has a `tsReconstruct`) is not this one's.
+        if not same_project or self._state.active_job_tab not in self.roster():
+            self._state.active_job_tab = None
 
         self._notify()
 
