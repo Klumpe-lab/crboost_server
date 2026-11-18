@@ -1443,20 +1443,10 @@ def build_category_bars(labels: Sequence[str], counts: Sequence[int], *, x_name:
     }
 
 
-# A categorical set for classes: the house accent, ink and slate first, then distinct hues that hold
-# up in both themes. Classes beyond its length repeat it.
-CLASS_PALETTE = (
-    "#4f46e5",
-    "#0f172a",
-    "#94a3b8",
-    "#0e7490",
-    "#b45309",
-    "#be123c",
-    "#15803d",
-    "#7c3aed",
-    "#a16207",
-    "#475569",
-)
+# A categorical set for classes: eight hues in a fixed order, checked for separation under the common colour-
+# vision deficiencies on a white surface. Ink and slate are not in it: a class drawn in either reads as text or
+# as switched off. Classes beyond eight repeat it.
+CLASS_PALETTE = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948")
 
 
 def class_color(k: int) -> str:
@@ -1480,7 +1470,7 @@ def build_class_convergence_chart(iterations: Sequence[int], per_class: dict[int
             "stack": "classes",
             "data": [round(100.0 * v, 1) for v in per_class[k]],
             "barMaxWidth": 14,
-            "itemStyle": {"color": class_color(k), "borderColor": "#ffffff", "borderWidth": 1},
+            "itemStyle": {"color": class_color(k), "borderColor": "#ffffff", "borderWidth": 2},
         }
         for k in sorted(per_class)
     ]

@@ -53,6 +53,11 @@ def imod_command(volume) -> str:
     return f"3dmod {shlex.quote(str(volume))}"
 
 
+def chimerax_command(volume) -> str:
+    """The shell line that opens ``volume`` in ChimeraX."""
+    return f"chimerax {shlex.quote(str(volume))}"
+
+
 def copy_on_click(element, text: str):
     """Make `element` copy `text` when clicked; it turns blue and underlines on hover
     (`.cb-copy-path`, ui/dashboard/css.py). `click.stop` so a clickable parent (a roster
