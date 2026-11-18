@@ -1071,6 +1071,11 @@ class TomoGalleryPage:
             self._refs["seg_size"] = render_segmented(
                 [(k, lbl) for k, lbl, _w in _SIZES], self.size, self._select_size, classes="cb-seg-sm"
             )
+            icon_button(
+                "library_add",
+                self._import_tomograms,
+                tooltip="Import tomograms reconstructed outside crboost: IMOD .rec, .mrc, a tomograms.star",
+            )
             icon_button("refresh", self._reload_click, tooltip="Re-read the tomograms, tilts and previews from disk")
 
     def _controls_signature(self) -> tuple:
@@ -1267,8 +1272,8 @@ class TomoGalleryPage:
             ui.icon("grid_view", size="40px").classes("text-gray-400")
             ui.label("No tomograms yet.").classes("text-sm text-gray-500")
             ui.label(
-                "Run Reconstruct on a tilt-series, or import reconstructed volumes from the "
-                "PARTICLES header of the job roster — both land here."
+                "Run Reconstruct on a tilt-series, or import reconstructed volumes with the import "
+                "button on this view's title line — both land here."
             ).classes("text-[11px] italic text-gray-400 text-center").style("max-width: 460px;")
 
     def _render_tile(self, row: dict) -> None:
@@ -1641,6 +1646,35 @@ class TomoGalleryPage:
             if not acquired:
                 return
             await self.reload()
+
+    def _import_tomograms(self) -> None:
+        """The tomogram import dialog, refused with its reason in a project whose tomograms come from a Reconstruct
+        job; the wall re-collects and the rail's count moves once an import has committed."""
+        from backend import get_backend
+        from services.tomogram_import import import_refusal
+        from ui.tomogram_import_dialog import open_tomogram_import_dialog
+
+        refusal = import_refusal(get_project_state_for(self.project_path))
+        if refusal is not None:
+            ui.notify(refusal, type="warning")
+            return
+        backend = get_backend()
+        if backend is None:
+            ui.notify("The server's backend is not running; nothing can be imported.", type="negative")
+            return
+
+        def _committed() -> None:
+            refresh_counts = self.callbacks.get("refresh_counts")
+            if refresh_counts is not None:
+                refresh_counts()
+
+            async def _reload() -> None:
+                with self.container:
+                    await self._reload_click()
+
+            asyncio.create_task(_reload())
+
+        open_tomogram_import_dialog(backend, self.project_path, on_done=_committed)
 
     def _import_segmentations(self) -> None:
         """The import dialog; the wall re-collects once a batch has registered or been removed."""

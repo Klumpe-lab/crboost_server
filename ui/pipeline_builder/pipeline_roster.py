@@ -61,6 +61,10 @@ _LEAD_W = 10
 _ROW_GAP = 5
 _NAME_X = _LEAD_PAD + _LEAD_W + _ROW_GAP
 _NAME_COL_CH = max(len(get_job_display_name(jt)) for jobs in PHASE_JOBS.values() for jt in jobs)
+# The job's own column: its RELION job folder ("job011") or, before it has one, the instance suffix.
+_TAG_COL_CH = 7
+# The remove cross's slot at the right end of a row.
+_X_W = 15
 # The rail: one cell per job type down the roster's left edge, in the title stripe's tint, its glyph on the type's
 # first row; a hairline under each type runs across the rail and the rows alike.
 _ROW_H = 22
@@ -320,10 +324,6 @@ class RosterWidget(FingerprintedView):
             array_state,
             # The species glyph's hover names the species: a rename must repaint the row.
             current_project_state().species_identity(),
-            # The PARTICLES header's import button carries a green dot once tomograms have
-            # been imported. Without this input the dot only appeared on the NEXT unrelated
-            # change, so a successful import looked like it had done nothing.
-            self._imported_tomograms_fingerprint(),
             # Jobs a run parked behind the tilt-filter review draw an amber ring.
             self._review_hold_fingerprint(),
         )
@@ -332,13 +332,6 @@ class RosterWidget(FingerprintedView):
     def _review_hold_fingerprint() -> tuple:
         hold = current_project_state().review_hold
         return () if hold is None else (hold.barrier, tuple(hold.parked), hold.held_at)
-
-    @staticmethod
-    def _imported_tomograms_fingerprint() -> tuple:
-        rec = current_project_state().imported_tomograms
-        if rec is None:
-            return ()
-        return (bool(rec.star_path), int(rec.count or 0), len(rec.batches or []))
 
     async def refresh_array_status(self) -> None:
         """Re-read the array jobs' statuses in a thread (shared with every tab and the pipeline table),
@@ -414,9 +407,6 @@ class RosterWidget(FingerprintedView):
                 if phase_id == PHASE_PARTICLES:
                     ui.space()
                     self._build_new_species_btn()
-                    self._build_import_tomograms_btn()
-                    self._build_aggregation_merge_btn()
-                    self._build_particle_map_btn()
 
             for job_type in jobs:
                 instances = [iid for iid in roster if InstanceId.matches(iid, job_type)]
@@ -494,16 +484,18 @@ class RosterWidget(FingerprintedView):
             return
         pset = next((x for x in list_sets(Path(project_path)) if x.id == set_id), None)
         tag = ui.label(set_id.split("_", 1)[0]).style(
-            f"{MONO} font-size: 8px; color: #2c4a6b; flex-shrink: 0; white-space: nowrap;"
+            # Gives way before the name does (a narrow roster cuts the set tag first).
+            f"{MONO} font-size: 8px; color: #2c4a6b; flex: 0 1000 auto; min-width: 0; white-space: nowrap; "
+            "overflow: hidden; text-overflow: ellipsis;"
         )
         with tag:
             text = f"Reads {set_id}: {set_lineage(pset)}" if pset is not None else f"Reads {set_id}, which is gone"
             ui.tooltip(text).style("white-space: pre-line;")
 
     def _render_instance_row(self, panel, job_type, instance_id):
-        """One job: its light, its name and folder, what tells it apart (the particle set it reads, its species),
-        then its count (a click opens the magazine) or, for the tilt filter, where it is (a click opens its
-        settings), its extra tabs, and the remove cross that shows on hover."""
+        """One job: its light, its name and folder, the particle set it reads, then its count (a click opens the
+        magazine) or, for the tilt filter, where it is (a click opens its settings), its extra tabs, its species,
+        and the remove cross that shows on hover."""
         job_model = current_project_state().jobs.get(instance_id)
 
         base_name = get_job_display_name(job_type)
@@ -520,6 +512,8 @@ class RosterWidget(FingerprintedView):
 
         species_id = getattr(job_model, "species_id", None) if job_model else None
         species = current_project_state().get_species(species_id) if species_id else None
+        if species is not None and job_tag == species.id:
+            job_tag = None  # the species tag at the row's end says it
 
         is_active = panel.ui_mgr.active_instance_id == instance_id
         row_paint, name_paint = _row_paint(is_active)
@@ -535,13 +529,14 @@ class RosterWidget(FingerprintedView):
         with row:
             with ui.element("span").style("overflow: visible; line-height: 0; flex-shrink: 0;"):
                 self._status_widget(instance_id)
-            # Clickable name, then the job's own column. The job folder copies its full path
-            # on click (click.stop, so it does not also open the job).
+            # The name and the job's own column, each as wide on every row, so the job folders line up down the
+            # roster; the name gives way (ellipsis) only once the set tag has, in a roster too narrow for the row.
+            # The job folder copies its full path on click (click.stop, so it does not also open the job).
             with (
                 ui.element("div")
                 .style(
-                    "flex: 1; min-width: 0; cursor: pointer; overflow: hidden; "
-                    "display: flex; align-items: baseline; gap: 6px;"
+                    "flex: 1 1 0; min-width: 0; cursor: pointer; overflow: hidden; "
+                    f"display: flex; align-items: baseline; gap: {_ROW_GAP}px;"
                 )
                 .on("click", lambda iid=instance_id: panel.switch_tab(iid))
                 .props(f'data-cb-job="{instance_id}"')
@@ -552,18 +547,15 @@ class RosterWidget(FingerprintedView):
                     "white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
                 )
                 self._rows[instance_id] = (row, name_el)
-                if job_tag:
-                    tag = ui.label(job_tag).style(
-                        f"{MONO} font-size: 8px; color: #94a3b8; flex-shrink: 0; max-width: 10ch; "
-                        "white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
-                    )
-                    if full_path:
-                        with tag:
-                            ui.tooltip(f"{full_path}\nClick to copy").style("white-space: pre-line;")
-                        copy_on_click(tag, full_path)
+                tag = ui.label(job_tag or "").style(
+                    f"{MONO} font-size: 8px; color: #94a3b8; flex: 0 0 {_TAG_COL_CH}ch; "
+                    "white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
+                )
+                if full_path:
+                    with tag:
+                        ui.tooltip(f"{full_path}\nClick to copy").style("white-space: pre-line;")
+                    copy_on_click(tag, full_path)
                 self._set_tag(job_model, panel.ui_mgr.project_path)
-                if species is not None:
-                    ui.label(species.name).style(_SPECIES_TAG).props(f'title="Species: {species.name}"')
             is_filter = job_type == JobType.TILT_FILTER and job_model is not None
             if is_filter and panel.ui_mgr.project_path is not None:
                 # Where the filter is; a click opens its settings beside the row.
@@ -600,7 +592,14 @@ class RosterWidget(FingerprintedView):
                         lambda iid=instance_id, tk=et.key: panel.switch_to_job_subsection(iid, tk),
                         tooltip=et.label,
                     )
-                # A job in use by a queued or running one stays until that has finished or been cancelled.
+            # The species, last before the cross: its tag ends at the same place on every particle row.
+            if species is not None:
+                ui.label(species.name).style(_SPECIES_TAG).props(f'title="Species: {species.name}"')
+            # The remove cross keeps its slot on a job in use by a queued or running one (it stays until that has
+            # finished or been cancelled), so the rows' right ends line up.
+            with ui.element("div").style(
+                f"width: {_X_W}px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;"
+            ):
                 if instance_id not in self._in_use:
                     ui.icon("close", size="11px").classes("cb-rail-x").props('title="Remove"').on(
                         "click.stop", lambda _e, iid=instance_id: self._on_remove_click(iid)
@@ -1215,134 +1214,6 @@ class RosterWidget(FingerprintedView):
         )
         with container:
             ui.icon("add_circle_outline", size="15px").style(f"color: {SB_ACT}; pointer-events: none;")
-        return container
-
-    def _build_import_tomograms_btn(self):
-        """PARTICLES-header utility: import tomograms into a data-less project. A
-        project-level artifact, NOT a job (no SLURM/IO). Disabled when upstream tomograms
-        already exist (a regular project at the particle stage); a green dot marks an
-        import already committed. See ui/tomogram_import_dialog.py."""
-        from services.project_state import get_project_state_for
-        from services.tomogram_import import import_refusal
-        from ui.tomogram_import_dialog import open_tomogram_import_dialog
-
-        project_path = self.panel.ui_mgr.project_path
-        refusal = None
-        already = False
-        try:
-            state = get_project_state_for(project_path)
-            refusal = import_refusal(state)
-            already = state.imported_tomograms is not None and bool(state.imported_tomograms.star_path)
-        except Exception as e:
-            logger.debug("import-tomograms header button: could not read project state: %s", e)
-
-        disabled = refusal is not None
-        tip = refusal or ("Import more tomograms" if already else "Import tomograms")
-
-        def _committed():
-            # Three surfaces answer "did that land": this header's green dot (roster
-            # render), the Tomograms rail badge, and the wall itself. The first two are
-            # repainted here so the confirmation is on screen the moment the dialog
-            # closes; the wall is only invalidated, since it re-collects when visited.
-            self.panel.rebuild_pipeline_ui()
-            self.refresh_counts()
-            invalidate = self.panel.callbacks.get("invalidate_gallery")
-            if invalidate:
-                invalidate()
-
-        def _open():
-            if disabled:
-                return
-            open_tomogram_import_dialog(self.panel.backend, project_path, on_done=_committed)
-
-        container = (
-            ui.element("div")
-            .style(
-                "width: 22px; height: 22px; border-radius: var(--cb-r-md, 4px); "
-                "display: flex; align-items: center; justify-content: center; "
-                f"cursor: {'not-allowed' if disabled else 'pointer'}; flex-shrink: 0; position: relative;"
-            )
-            .on("click", lambda: _open())
-            .tooltip(tip)
-        )
-        with container:
-            ui.icon("library_add", size="15px").style(
-                f"color: {'#cbd5e1' if disabled else SB_ACT}; pointer-events: none;"
-            )
-            if already and not disabled:
-                ui.element("div").style(
-                    "position: absolute; top: 1px; right: 1px; width: 6px; height: 6px; "
-                    "border-radius: 50%; background: #16a34a; pointer-events: none;"
-                )
-        return container
-
-    def _build_aggregation_merge_btn(self):
-        """PARTICLES-header utility: open the Aggregate dialog on the coordinate grade (its
-        header switch reaches the extracted grade). Shows a small green dot when a merged
-        optimisation_set already exists, so you can see at a glance whether
-        the merge has been done.
-
-        Was a sidebar button gated on `state.is_aggregation` (de-novo S6 deleted that flag):
-        it belongs beside the other two PARTICLES-header utilities — new species, import
-        tomograms — because all three answer "where do this project's particles come from",
-        and it is now available in every project rather than only in ones whose creator
-        happened to tick a box."""
-        from services.project_state import get_project_state_for
-        from ui.aggregation.aggregate_dialog import open_aggregate_dialog
-        from ui.aggregation.merge_card import has_merged_outputs
-
-        project_path = self.panel.ui_mgr.project_path
-        merged = False
-        try:
-            merged = has_merged_outputs(get_project_state_for(project_path))
-        except Exception as e:
-            logger.debug("merge-sources header button: could not read project state: %s", e)
-        container = (
-            ui.element("div")
-            .style(
-                "width: 22px; height: 22px; border-radius: var(--cb-r-md, 4px); "
-                "display: flex; align-items: center; justify-content: center; "
-                "cursor: pointer; flex-shrink: 0; position: relative;"
-            )
-            .on("click", lambda: open_aggregate_dialog(project_path))
-            .tooltip(
-                "Aggregate — unite one species' picks across lists, tomograms and projects; "
-                "coordinates or extracted particles" + (" (aggregated)" if merged else "")
-            )
-        )
-        with container:
-            ui.icon("merge_type", size="14px").style(f"color: {SB_ACT}; pointer-events: none;")
-            if merged:
-                ui.element("div").style(
-                    "position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; "
-                    "border-radius: 50%; background: #16a34a; pointer-events: none;"  # green-600
-                )
-        self._refs["aggregation_merge_btn"] = container
-        return container
-
-    def _build_particle_map_btn(self):
-        """PARTICLES-header utility: the particle map, a view of its own beside the Jobs view: the particle jobs
-        and sets as cards, a Class 3D's classes as rows, the sets made of them hanging off those rows."""
-
-        async def _show():
-            show = self.panel.callbacks.get("show_particles")
-            if show is not None:
-                await show()
-
-        container = (
-            ui.element("div")
-            .style(
-                "width: 22px; height: 22px; border-radius: var(--cb-r-md, 4px); "
-                "display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0;"
-            )
-            .classes("cb-pm-open")
-            .on("click", _show)
-            .tooltip("Particle map: the particle jobs and sets, and the classes they hold")
-        )
-        with container:
-            ui.html(self._load_svg("pipeline_table.svg").replace("currentColor", SB_ACT), sanitize=False).style(
-                "width: 14px; height: 14px; display: flex; pointer-events: none;"
-            )
         return container
 
     def _build_dashboard_btn(self):

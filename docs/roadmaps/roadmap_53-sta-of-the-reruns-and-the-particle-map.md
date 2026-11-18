@@ -6,7 +6,9 @@ built the same day (§11.1, not run through SLURM), M's facts read. The particle
 the handoff for building it as its own view: §13, its decisions and design settled the same afternoon, nothing built:
 §13.1. What happens next: §12. Phase A partly run (references, bin-4 exports; no Class 3D yet): §12.1, read 2026-11-18; the nine Class 3D
 submitted the same day (§12.1). Class 3D on several GPUs (MPI) and continuing after a time-out: built 2026-11-18,
-not run (§11.2).
+not run (§11.2). The particle map taken out of the UI 2026-11-18, to come back as part of the branch map (§13.3,
+roadmap 32 §15.9). The PARTICLES header's Aggregate button removed and Import tomograms moved to the Tomograms view
+the same day (§14.7); the rest of §14 is owed.
 
 **In one line.** Average the ribosome and the 412 VLP over the eight AGG412 reruns, sort each into classes and
 refine every class on its own to the best resolution the data hold. Do every step that changes which particles are
@@ -208,7 +210,7 @@ changes is what flows along the cables.
 | U2 | Particle cards on the map: source cards, set cards, class rows with +, the composition magazine (§10.3) | phase A |
 | U3 | The inspector: results and particles blocks of the large card per kind (§10.4) | phase B (Class 3D), C (Refine 3D, PostProcess, M) |
 | U4 | The trace: the set picker, overlap per card, flow on the cables (§10.5) | phase C |
-| U5 | Retire what the map and kitchen cover (Journey particles panel, merge / aggregate dialogs, roadmap 40 §9) | after R4 |
+| U5 | Retire what the map and kitchen cover (Journey particles panel, merge / aggregate dialogs, roadmap 40 §9); Aggregate ripped out and deleted for the kitchen: §14 | after R4; §14 any time (it touches no running job) |
 
 Missing jobs (C) are built when the science reaches them, as cards from the start:
 
@@ -248,6 +250,7 @@ the UI and which stage takes it. Seeded with what earlier campaigns already wrot
 | F16 | Phase A, 2026-11-18 | On the particle map the phase read as lopsided and unexplained: eight per-project ribosome sets that nothing reads, one Reconstruct particle of one project, one 412 set and no per-project 412 sets. Each is by design (R0's reference is one project's ≥ 10σ picks; s003–s010 wait for R1's Class 3D, which were never added; the 412 is sorted as one pool, F15), but only the roadmap said so | a set that nothing reads says so on its card ("read by no job yet") |
 | F17 | V2 reference, 2026-11-18 | Reconstruct particle of s011 with the TM angles (job004) is the shell plus the tomogram's frame. Every 412 TM angle lies in one I1 asymmetric unit (tilt 4–44° on all 1,874 rows of job003), so the missing wedge and whatever surrounds the VLPs average coherently: the outer annulus differs from one side to the other by 0.40 sd in x and 0.26 sd in y, and the power at kz Nyquist is 82× the mean of the kz line (stripes along Z). The ribosome's job002 (C1 angles, tilt 9–171°) shows neither (≤ 0.04 sd, 0.1×). As the reference of a global search, the one-sided density pulls the alignment onto the surroundings | the Reconstruct card says when the poses it used cover only an asymmetric unit, and shows the side-to-side difference; V2 starts from a featureless shell (the rotational average of job004), as §4 V2 first said |
 | F18 | Phase A run, 2026-11-18 | The plan for the nine Class 3D said "Point …'s input input_optimisation at automatic" for the steps that choose each project's image source, and its table never named job001 or job003: the one choice Run refuses without was not in the dialog the maintainer accepted (HOTFIXES H21). The jobs read what was meant | the plan, and later the job's card, name where a set's images come from, per project |
+| F19 | V2 read, 2026-11-18 | Class 3D's table put the capsid at "0.0 Å" (`inf`) and the blobs at 27–36 Å: read by number, the one real class looked like the failed one. What told the story was the class × tomogram table (class 2 = four tomograms) and the maps' slices and radial profiles, all made by hand | class rows show `inf` as "no estimate", never 0.0 Å; each class row carries its slices, radial profile and a class × tomogram (or project) count (U3 large card) |
 
 ## 7. Order
 
@@ -510,6 +513,21 @@ Steps 1–2 done, step 3 half done: the references and the bin-4 exports ran, no
   particle (RELION's own count). The offsets are a sphere of 2.5 steps of 2 px (`offset_range` 5, `offset_step`
   2, in pixels: the job tab's "Å" is wrong); at `offset_range` 3 they are 19 (4.3× fewer). MPI (one
   `relion_refine_mpi` follower per GPU, as Refine 3D runs) divides the particles between GPUs.
+- **10:45** the 412 job queued again with `offset_range` 3 (SLURM 1779940). **10:58**, after the restart onto
+  `24e547c` (the MPI build committed), queued again as the first MPI Class 3D: `mpi_ranks` 3 (two followers sharing
+  its one B200), 10 CPUs, `g_long`, SLURM 1780088.
+- **Iterations slow as the resolution climbs** (minutes per iteration, from the model stars' times): pilot 10, 8, 12,
+  12, 14, 13; Slot6 14, 14, 18, 19; Grid3 17, 19, 25; Grid2 20, 21, 25. At ~1.6× the first, the 25 iterations come
+  to ~5.5 h (pilot) to ~29 h (unmilled2), and ~46 h for SK on its A100, at `g_medium`'s 2 days. If SK stops there,
+  Run continues it from its last finished iteration (§11.2: the re-run takes the new driver). Classes at 11:00 still
+  near even (pilot it006: 23 / 29 / 18 / 30 %, 24 Å Class 3D estimate; Slot6 it004: 21 / 30 / 31 / 18 %).
+- **V2 done (job013, SLURM 1780088): the first MPI Class 3D.** Started 11:33 on a B200 (cbe-g5-3), 25 iterations by
+  12:50: 1 h 17 min against the 2.25 h *per iteration* one process estimated on an A100 with 81 offsets (here 19
+  offsets, two followers on one card, `mpi_ranks` 3, 10 CPUs). Iterations ~3 min after the first (11 min with
+  loading). Classes at it025 (share, Class 3D estimate, rotational accuracy): 1 37.3 % 27.4 Å 1.4°; 2 23.4 % "0.0 Å"
+  0.1°; 3 2.1 % 36.1 Å; 4 17.3 % 28.3 Å; 5 5.9 % 34.5 Å; 6 14.1 % 30.5 Å. Class 2's 0.0 Å with a quarter of the
+  particles is RELION's estimate failing, not a number: look at its map before reading anything into it. Not looked
+  at yet: the maps (particle map, job013's Results), size per class, D5.
 
 ### 12.2 V2's starting reference: the rotational average of job004 (2026-11-18)
 
@@ -539,6 +557,59 @@ the run's plan) and is recorded here.
   correlation 1.000). The profile: lumen +0.023 to +0.025, the wall's main layer peaking at 161–174 Å, a second layer
   at ~225–235 Å (July's two sublayers at 180 and 223 Å, 412 playbook "mask lever"), zero at ~262 Å, negative from
   267 Å (−0.020 at 298 Å).
+
+### 12.3 V2's classes, read 2026-11-18
+
+job013 (Class 3D, s011, 1,874 picks, K 6, C1, from the featureless shell). Scripts, slices and profiles in
+`notes/sta_side_steps/412_v2_classes/` (`tables.py`, `maps.py`, `sym.py`, two PNGs).
+
+- **One class is the capsid, the rest are not.** Class 2 (438, 23 %) is a two-layer faceted shell: inner layer
+  peaking at ~170 Å, outer at ~236 Å, zero at 260 Å (Ø ~520 Å), the lumen below zero. Classes 1, 4, 6 (697, 324,
+  265) are solid blobs out to ~260–300 Å, two of them cut by a straight dark edge (a lamella surface or membrane);
+  3 and 5 (40, 110) are noise with one bright lump. Classes 1 and 4 also hold picks closer than 450 Å to each other
+  (172 of 532 and 152 of 291 with a neighbour in the same tomogram), as template matching does along a continuous
+  surface; class 2 has none (nearest neighbour median 533 Å: capsids touching, never overlapping).
+- **Class 2 is icosahedral (D5).** A search over 3,000 axes for the class-2 map's self-correlation under 72°
+  rotation (shell 124–273 Å, bin 8) gives exactly six peaks at CC 0.90–0.91 (next 0.745, median 0.69), at 61.6–65.6°
+  from each other (63.4° in I). The symmetry grew from a reference without any: no model bias in it.
+- **Class 2 lives in four tomograms.** 421 of its 438 picks: Grid2 Position_10 (171 of that tomogram's 172), Slot6
+  Position_10 (108 of 110), SK Position_11_2 (96 of 97), FCIsolation Position_18_4 (46 of 46); the rest from 8 more.
+  Per project: Grid2 179, Slot6 108, SK 96, FCIsolation 48, unmilled2 7, 20251113, Grid3 and pilot 0. unmilled2's
+  584 picks (a third of s011) are almost all classes 1 and 4. The other side of F3: ~100 particles a tilt series in
+  the four, so per-tilt-series geometry (M, CtfRefine) has something to fit this time.
+- **RELION's numbers.** Class 2's estimated resolution is `inf` (it was at it008 and it010 too) with rotational
+  accuracy 0.11° and max-probability 1.0 on its median particle: the estimate fails, the alignment does not. The
+  27–36 Å of the other classes are the resolution of blobs. 96 % of particles kept their class from it024, 86 %
+  from it020: converged. The raw TM score (`rlnLCCmax`) is 0.09 on class 2's median pick against 0.06 elsewhere.
+- **What it asks.** A class set of class 2 (the maintainer's pick); the class-2 map on RELION's I1 axes
+  (`relion_align_symmetry`, no crboost job does it: a side step like §12.2, back as a 412 template) and a mask from
+  it, thinner at the lumen; Refine 3D I1 on the reruns' bin-2 exports (box 256), then PostProcess: V3 at once, no
+  C1 Refine 3D first (the symmetry is already shown above). V1 comes back as growth, not cleaning: the four
+  tomograms below 8.5σ, where touching capsids may have scored lower than free ones.
+- **One size (the pleomorphism question).** Each pick cut from its own tomogram (6.2 Å/px, 694 Å cube, voxels within
+  30° of the xy plane so the missing wedge stays out), radial profile, best radial scale against class 2's mean
+  profile (`sizes.py`, `fit.py`, `sizes.png`, `sizes.csv`). Class 2 (424 of 438 inside the tomogram): scale 1.000,
+  5–95 % 0.990–1.010, i.e. outer layer at 247 ± 2.5 Å; profile correlation 0.98 on the median particle, > 0.8 on
+  420. Two T numbers would differ by 15–30 % in radius: none here. Per tomogram the medians differ by 1 %
+  (Grid2 1.005, Slot6 1.000, SK and FCIsolation 0.995), which looks like pixel size per session, for M. Outside
+  class 2, 59 picks have a capsid's profile (correlation > 0.8; 42 in class 1, 10 in class 6), the same size,
+  one to three a tomogram, mostly unmilled2 and FCIsolation: lone capsids Class 3D did not put in class 2. The
+  size is homogeneous in what was picked; TM's template has one size, so a capsid of another size could be
+  missing from s011, not sorted wrong.
+- **Taken (maintainer):** class 2 alone (set s012, 438). The I1 side step:
+  `notes/sta_side_steps/412_class2_I1/`, `relion_align_symmetry --sym I1 --angpix 6.2 --nr_uniform 2000` on
+  job013's class 2 (ROT 211.9, TILT 68.3, PSI 269.9; the aligned map against its I1-symmetrised copy CC 0.955 over
+  the shell), `relion_image_handler --rescale_angpix 3.1 --new_box 256` for the bin-2 reference; registered as a
+  412 template. Mask threshold fraction 0.15 (both layers, 140–265 Å, lumen out; the default 0.4 keeps half the
+  outer layer).
+- **Submitted 13:51** (plan `p-e1b4bf07`, accepted in the terminal):
+
+  | Job | Reads | What | SLURM |
+  |---|---|---|---|
+  | maskCreate · job016 | the I1-aligned map (bin 2) | threshold 0.15 × max, extend 3, soft 6 | 1784089 |
+  | refine3d · job015 | s012, images: the five reruns' own 412 Warp exports (bin 2, box 256) | I1, global (`sigma_ang` −1: the poses are in job013's frame, not the aligned one), Ø 600, `ini_high` 40, mask job016 | 1784090 |
+  | postprocess · job017 | job015 half maps, mask job016 | masked FSC, no sharpening (auto B off: the fit wants resolution past 10 Å) | 1784091 |
+  | class3d__10 · job014 | s012, images job003 (bin 4) | C1, K 3, from the featureless shell again, global, as job013 otherwise: pleomorphism in shape | 1784088 |
 
 ### 11.1 Built (2026-11-17)
 
@@ -627,9 +698,9 @@ main checkout, uncommitted.
   prefix; on a scratch copy of job008's real `run_it000`–`002` optimiser stars the checkpoint is iteration 2 (3 half
   written), unchanged settings pass, K 4 → 5 is named, a serial start continues under MPI with another `--j`, the
   mirror takes each iteration from the latest continuation as a hard link; `ruff`, `check_boundaries.py` clean.
-  **Not run:** relion_refine_mpi for Class 3D on a GPU, and a continuation through SLURM. The queued 412 job (SLURM
-  1779940) is the first to run the new driver, in its one-process form. The API and the job tab know `mpi_ranks`
-  only after a server restart.
+  **Run 2026-11-18:** after the restart, the 412 job (job013, SLURM 1780088, `mpi_ranks` 3 on one B200) ran the
+  new driver end to end: the MPI line, 25 iterations, the optimisation set mirrored, the analytics sidecar (§12.1).
+  **Not run yet:** a continuation through SLURM (first chance: SK, job012, if it meets `g_medium`'s 2 days).
 
 ## 13. Handoff: the particle builder (for the next session)
 
@@ -808,3 +879,115 @@ with the Jobs view off as it was; Back returns to the job page.
 - A large card is not re-fitted into view (as on the Jobs map): after making a card large near the edge, "fit".
 - `check_look_literals.py` fails on `ui/agent_plan_page.py` (15 literals, not in the allow-list); that file is not
   part of this build.
+
+### 13.3 Taken out of the UI (2026-11-18)
+
+**Asked (maintainer, 2026-11-18):** get rid of the particle map for now: it is too similar to the branch map, and the
+two should eventually be one. The merge is roadmap 32 §15.9; nothing of it is built.
+
+**Removed:** the branch glyph on the roster's PARTICLES header; the `particles` view in `ui/workspace_page.py` (its
+frame, `_show_particles`, its place in `_VIEW_ORDER`, titles and icons, its URL write and its view scope);
+`View.PARTICLES` (`services/routes.py`) and its case in `ui/routing.py`; the open-from-a-view return path only the
+map used (`_open_job_from`, `_job_closed`, the `job_closed` hook in `PipelineBuilderPanel.close_job`). An old
+`/p/<project>/particles/...` URL now says "Unknown view 'particles'" and shows the pipeline. The API's
+`make_class_set` hands the Class 3D's job page as its `ui_url` instead of the map.
+
+**Kept:** `services/particles/lineage.py` (U1, the data layer: a set's or a job's particles, a Class 3D's classes,
+compositions; `WorkKind.LINEAGE`), unused for now, for the merge. `ui/particle_map/` and
+`scripts/dev_particle_map_check.py` are unwired and left on disk for the maintainer to delete; the view as built is
+commit `7a8f5e3`.
+
+## 14. Aggregate goes; the kitchen is the one way to pool particles (scoped 2026-11-18)
+
+**Asked (maintainer, 2026-11-18):** is there any reason to keep "Aggregate" and "Import more tomograms" in the
+PARTICLES header of the Jobs roster, or does the STA kitchen do everything they do? Answer and decision: Aggregate is
+ripped out and its code deleted, not hidden, with the kitchen as the one way to pool picks and particles across
+projects. Import tomograms stays and moves (§14.5). Nothing built yet.
+
+### 14.1 What Aggregate does, and where the kitchen does it
+
+| Aggregate | The kitchen |
+|---|---|
+| Coordinate grade (`ui/aggregation/aggregate_dialog.py`, `services/particles/coord_merge.py`): one species' manual, imported, filtered or template-match lists across tomograms and projects, united into a MERGED pick list, then extracted (Pick candidates skipped) | Members are template-match picks and hand-picked, imported and merged lists of any project (`services/sta_kitchen/members.py`); filters, subsets and verdicts replace filtered lists; Make set gives a set that Warp export or Subtomo extraction read (poses facet) |
+| Extracted grade (`ui/aggregation/merge_card.py`, `services/aggregation/`): Subtomo extraction optimisation sets of several projects merged into `MergedSources/<slug>/`, curated or original picks per tomogram, every consumer's optimisation-set input rewired to the active merge (`apply_aggregation_overrides`) | A set takes each project's particle images from that project's own extraction (images facet, `services/particles/set_facets.py`), the choice per project on the job reading it; two sources of one tilt series are a choice Run refuses without. Proven on the reruns: job001 and job003 |
+| Species matched by eye: any project's extraction with any label (`merge_card.py` filters by label or catalog id) | Species matched by lab-catalog id only, never by name (`members.matching_species`, `services/sta_kitchen/members.py:72`) |
+
+The one thing Aggregate reaches and the kitchen does not: a project whose species was made by hand, without a catalog
+entry. Before the deletion the kitchen gets that (K1).
+
+### 14.2 What is deleted
+
+- `ui/aggregation/` (`aggregate_dialog.py`, `merge_card.py`, `__init__.py`), the roster's merge button
+  (`_build_aggregation_merge_btn`, `ui/pipeline_builder/pipeline_roster.py:1446`), the merge hooks in
+  `ui/pipeline_builder/pipeline_builder_panel.py` (~710), the merge count in `ui/pipeline_builder/io_config_component.py`
+  (~273), the pointer in `ui/job_plugins/subtomo_extraction.py`'s docstring.
+- The merge engine and its state: `discover_subtomo_optimisation_sets` and what only it uses
+  (`services/aggregation/discovery.py`), `apply_aggregation_overrides` and its call in `pipeline_edit.add_job`
+  (`services/pipeline_edit.py:266`), `ProjectState.aggregation_sources` / `aggregation_merges`, `AggregationSource`,
+  `AggregationMergeSource`, `active_merged_optset*`, `MERGED_DIR_NAME` and their readers in
+  `services/particles/analytics_store.py` (~185–201), `services/particles/set_ops.py` (~310) and
+  `services/particles/list_admin.py` (~59). `ProjectState` ignores unknown keys (pydantic's default; no
+  `extra="forbid"` in `services/project_state.py`), so older `project_params.json` files still load; check it on one.
+- The `mergedSources:MergedSources/<slug>` instance paths in the resolver (`services/path_resolution_service.py`) and
+  the branch map (`ui/branch_map/model.py:841`, `view.py:236`), once D9 says what old projects keep.
+- The coordinate-grade parts of `coord_merge.py` that only the dialog calls.
+
+### 14.3 What stays, and where it moves
+
+`services/aggregation/` is more than Aggregate; those parts move, with their callers, before the package goes:
+
+- `discover_pick_list_projects` (the kitchen's source picker `ui/sta_kitchen/sources.py:227`, the API
+  `api/handlers.py:483`) → `services/sta_kitchen/`.
+- The per-species and per-list extraction helpers of `services/aggregation/extraction.py`
+  (`subtomo_job_dir_for_species`, `extraction_params_for_species`, `extract_inputs_for_list`,
+  `extract_inputs_blocked_reason`, `pending_extractions`): per-list extraction, called from `backend.py` (~785,
+  ~1385), `ui/particles/list_actions.py`, `ui/species/picks_tab.py`, `ui/species/overview_tab.py`,
+  `services/particles/species_overview.py` → `services/particles/` beside `list_extraction.py`.
+- `counts_by_tomo` and `load_tomo_curation` (`services/particles/species_overview.py`) → `services/particles/`.
+- `coord_merge`'s union and path code, which the kitchen's own export and the set writer use
+  (`services/sta_kitchen/export.py`: `CoordSource`, `plan_merge`, `merge_coordinate_sources`, `_absolutize_paths`;
+  `services/particles/set_facets.py:616`) → `services/sta_kitchen/`, named for what it is there.
+- The `mergedSources` synthetic producer: kitchen sets are read through it (`mergedSources:particle_set__<id>`, every
+  Class 3D of §12.1). It stays.
+- MERGED pick lists stay a list type: the dashboard's list merge makes them (`ui/particles/list_actions.py:476`) and
+  the kitchen takes them as members.
+
+### 14.4 Decisions and the one gap
+
+| # | Decision | Recommended |
+|---|---|---|
+| D9 | Projects that ran a merge: keep resolving their `mergedSources:MergedSources/<slug>` inputs read only, or drop them | **Counted 2026-11-18: none.** 46 projects read (`/groups/klumpe/crboost_data`, `_crboost_data_api`, `_crboost_archive/agg412_old_records`, the dev `projects/`, and Lea / andreas / user / lab to depth 4): no `aggregation_merges`, no `aggregation_sources`, no `MergedSources/` folder, no job input naming `MergedSources/`. Drop, unless the lab install's users have projects elsewhere (ask before the deletion) |
+| D10 | Where Import tomograms goes | The Tomograms view (the rail and the wall), out of the PARTICLES header |
+
+**K1 (before the deletion).** The kitchen pools a project whose species has no catalog id: the source picker lists
+the project's species by name and the user picks which one is "this species", recorded on the member (never matched
+by name automatically, as `matching_species` says now).
+
+### 14.5 Import tomograms stays
+
+It is not a pooling tool and the kitchen never touches tomograms. It is the only UI way to bring tomograms
+reconstructed outside crboost (IMOD `.rec`, any `.mrc` with a voxel size, an existing `tomograms.star`:
+`services/tomogram_import.py`, modes reference / synthesize / jobs) into a project without a Reconstruct job, and the
+only way to add more after creation (`create_project(tomograms_from)` brings other projects' at creation only). It
+moves with D10; its refusal beside a Reconstruct job stays.
+
+### 14.6 Order and checks
+
+1. K1, with a check on a project whose species came from no catalog.
+2. Move what stays (§14.3), callers re-pointed; `ruff`, `check_boundaries.py`.
+3. D9's count; then delete §14.2 and the roster button; D10's move.
+4. Checks: the reruns' kitchens and the home project's nine Class 3D still resolve (`plan_run`), the Species page's
+   Picks and Overview tabs and per-list extraction work, an older project with an aggregate loads, `grep` finds no
+   `ui.aggregation` / `services.aggregation`.
+
+### 14.7 Built 2026-11-18: the header (not run in a browser)
+
+- The Aggregate button is gone from the PARTICLES header (`_build_aggregation_merge_btn`). Aggregate has no entry in
+  the UI now; its code (`ui/aggregation/`, `services/aggregation/`, the state fields) is untouched, and §14.6's
+  order still holds for deleting it: K1 first, then the moves of §14.3, then §14.2.
+- D10 done: Import tomograms is an icon on the Tomograms view's title line (`library_add`, before Refresh,
+  `TomoGalleryPage._import_tomograms`), no longer on the PARTICLES header. In a project with a Reconstruct job a
+  click says why it cannot import (`import_refusal`) instead of drawing a disabled icon. A committed import
+  re-reads the wall and moves the rail's count (`callbacks["refresh_counts"]`). The green "already imported" dot is
+  gone with the header button (the wall and the rail count say it). The wall's empty text points at the new place.
+- The PARTICLES header keeps New species only.

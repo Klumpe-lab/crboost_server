@@ -1702,6 +1702,10 @@ a.cb-viewer-chip:hover { color: #ffffff; }
 }
 /* ── The roster's rail (ui/pipeline_builder/pipeline_roster.py) and its popups (ui/components/magazine.py) ── */
 .cb-rail-row:hover { background: var(--cb-hover, #eaf1f8); }
+/* The species picker of a particle job's "+" (ui/pipeline_builder/species_picker.py): a row lights under the pointer
+ * and under the keyboard. */
+.cb-sp-pick:hover, .cb-sp-pick:focus-visible { background: var(--cb-hover, #eaf1f8); }
+.cb-sp-pick:focus-visible { box-shadow: inset 2px 0 0 var(--cb-accent, #4a8fd4); }
 .cb-rail-row .cb-rail-x { opacity: 0; color: #94a3b8; cursor: pointer; padding: 2px; }
 .cb-rail-row:hover .cb-rail-x { opacity: .7; }
 .cb-rail-row .cb-rail-x:hover { opacity: 1; color: #a61b1b; }
@@ -1805,6 +1809,13 @@ a.cb-viewer-chip:hover { color: #ffffff; }
 }
 .cb-view-splitter:hover::after,
 .cb-view-splitter.dragging::after { background: #93c5fd; width: 2px; }
+/* The divider between the job roster and the views (its box is inline, ui/workspace_page.py). */
+.cb-roster-resizer::after {
+    content: ''; position: absolute; left: 50%; top: 0; width: 1px; height: 100%; transform: translateX(-50%);
+    background: transparent; transition: background .12s ease, width .12s ease;
+}
+.cb-roster-resizer:hover::after,
+.cb-roster-resizer.dragging::after { background: #93c5fd; width: 2px; }
 /* ── The Journey (ui/tomo_dashboard_dialog.py, with the Particles section of
  * ui/particles/pick_viewer.py, which the full-page pick viewer shares) ──────── */
 /* The root: one chart tile size for every chart; tiles share a row and wrap below the minimum. */

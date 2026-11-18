@@ -670,7 +670,7 @@ class ImportBatch(BaseModel):
 
 
 class ImportedTomograms(BaseModel):
-    """Tomograms injected into a project via the PARTICLES-header import utility — a
+    """Tomograms injected into a project via the Tomograms view's import — a
     project-level artifact, not a pipeline job. The committed ``tomograms.star`` lives at
     ``star_path`` (``Tomograms/tomograms.star``, project-relative). See
     services/tomogram_import.py.
@@ -810,7 +810,7 @@ class ProjectState(BaseModel):
     # Older project_params.json files carry an `authoritative_pick_lists` key; it is not
     # read. What feeds a refinement is the source set the user selects in the
     # Aggregate-candidates flow.
-    # Tomograms injected via the PARTICLES-header import utility (particle-only projects
+    # Tomograms injected via the Tomograms view's import (particle-only projects
     # with no upstream recon). A project-level artifact, not a job — see ImportedTomograms
     # / services/tomogram_import.py. None ⇒ no import committed.
     imported_tomograms: ImportedTomograms | None = None

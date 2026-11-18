@@ -18,9 +18,12 @@ from ui.ui_state import get_ui_state_manager
 
 
 # Client-side resize for the job-roster panel: drag the divider, clamp to a
-# sane range, and persist the width in localStorage so it survives reloads. A
-# MutationObserver mirrors the roster's display onto the handle so the divider
-# hides with the roster outside the pipeline view. Idempotent (guarded by data-wired).
+# sane range, and persist the width in localStorage so it survives reloads. The
+# width is `--cb-roster-w` on the document root, which the roster's inline width
+# reads: the server re-sends the roster's whole style on every view toggle, and a
+# width written on the element itself would be lost with it. A MutationObserver
+# mirrors the roster's display onto the handle so the divider hides with the
+# roster outside the pipeline view. Idempotent (guarded by data-wired).
 _ROSTER_RESIZER_JS = """
 (function(){
   const roster = document.getElementById('cb-roster-panel');
@@ -29,7 +32,7 @@ _ROSTER_RESIZER_JS = """
   handle.dataset.wired = '1';
   const MINW = 240, MAXW = 720;
   const clamp = (w) => Math.min(MAXW, Math.max(MINW, w));
-  const apply = (w) => { roster.style.width = w+'px'; roster.style.minWidth = w+'px'; };
+  const apply = (w) => { document.documentElement.style.setProperty('--cb-roster-w', w+'px'); };
   try { const s = localStorage.getItem('cbRosterW'); if(s) apply(clamp(parseInt(s,10))); } catch(e){}
   let dragging=false, startX=0, startW=0;
   handle.addEventListener('mousedown', (e)=>{
@@ -211,7 +214,6 @@ _MODE_VIEWS: dict[str, View] = {
     "gallery": View.TOMOGRAMS,
     "viewer": View.PICKS,
     "protocols": View.PROTOCOLS,
-    "particles": View.PARTICLES,
 }
 
 
@@ -239,9 +241,8 @@ def _lamella_ascii() -> str:
 _LAMELLA_ASCII = _lamella_ascii()
 
 # Left-to-right order of the views that are on: the rail's order, the pipeline (job roster
-# + the branch map or a job page) first and the particle map beside it; the pick viewer, which has no icon, and the
-# foot-of-rail Protocols last.
-_VIEW_ORDER = ("pipeline", "particles", "workbench", "gallery", "journey", "viewer", "protocols")
+# + the branch map or a job page) first; the pick viewer, which has no icon, and the foot-of-rail Protocols last.
+_VIEW_ORDER = ("pipeline", "workbench", "gallery", "journey", "viewer", "protocols")
 
 # Every view's frame: its share of the main area's width when several are on is its weight
 # (`--cb-vw-<name>`, 1 until a splitter moves it; _VIEW_RESIZER_JS). It holds the view's title
@@ -277,7 +278,6 @@ _VIEW_TITLES = {
     "gallery": "Tomograms",
     "viewer": "Pick viewer",
     "protocols": "Protocols",
-    "particles": "Particle map",
 }
 # Each view's glyph before its name: its rail icon. The pipeline's is the branch glyph while the map shows; a
 # job page has none: its title line is its roster row opened.
@@ -288,7 +288,6 @@ _VIEW_ICONS = {
     "gallery": "tomo_preview.svg",
     "viewer": "particle.svg",
     "protocols": "fact_check",
-    "particles": "pipeline_table.svg",
 }
 # The two slots a view fills on its title line (`callbacks["view_head"]`): `lead`, right after its name
 # (what it shows: the Journey's tilt series), and `tools`, at the right end before the expand icon. The
@@ -350,10 +349,6 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         if view is View.PIPELINE and ui_mgr.active_instance_id:
             iid = ui_mgr.active_instance_id
             route_writer.write(View.JOB, iid, ui_mgr.get_job_ui_state(iid).active_monitor_tab)
-            return
-        if view is View.PARTICLES:
-            page = _refs.get("particles_page")
-            route_writer.write(View.PARTICLES, page.target() if page is not None else None)
             return
         if view is View.PICKS:
             page = _refs.get("viewer_page")
@@ -427,16 +422,10 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
 
         # The pick viewer's coalesced-rebuild timer, the gallery's pending-preview poll and the
         # Protocols view's 15 s poll.
-        for page_key, name in (
-            ("viewer_page", "viewer"),
-            ("gallery_page", "gallery"),
-            ("protocols_page", "protocols"),
-            ("particles_page", "particles"),
-        ):
+        for page_key, name in (("viewer_page", "viewer"), ("gallery_page", "gallery"), ("protocols_page", "protocols")):
             page = _refs.get(page_key)
             if page is not None:
                 page.set_active(name in _on)
-        ui_mgr.view_scope("particles").set_active("particles" in _on)
 
         # The lit pane stays lit while it shows; once it is gone, the pane of the view turned on last is.
         # A view turned on or off changes every other view's width, which Plotly's responsive figures
@@ -724,63 +713,6 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
             # written from the page's resolved selection, not from the arguments.
             _write_mode_url()
 
-    _particles_flight = SingleFlight()
-    # A job page opened from a view (open_job_from) closes back onto it: the view it came from, the job, and
-    # whether the Jobs view was on before the page took the view's place.
-    _return: dict = {}
-
-    async def _show_particles(node: str | None = None) -> None:
-        """The particle map: the roster's PARTICLES header button and its routes. Built on first showing; a node
-        (a particle job's instance id, a set as `set:<id>`) is picked once the map has read the sets."""
-        async with _particles_flight("show") as acquired:
-            if not acquired:
-                return
-            _return.clear()
-            pc = _refs.get("particles_container")
-            if pc is None:
-                return
-            page = _refs.get("particles_page")
-            if page is None:
-                from ui.particle_map import mount_particle_map
-
-                with pc:
-                    page = mount_particle_map(pc, ui_mgr.project_path, callbacks, ui_mgr)
-                _refs["particles_page"] = page
-            _show("particles")
-            await page.show(node)
-            _write_mode_url()
-
-    def _open_job_from(view: str, instance_id: str) -> None:
-        """A job card's header in a view other than the Jobs view: the job's page takes that view's place, and
-        its close (job_closed) brings the view back as it was. The view leaves without writing the address bar;
-        the job page writes it."""
-        name = next((n for n, v in _MODE_VIEWS.items() if v.value == view), view)
-        _return.update(view=name, iid=instance_id, pipeline_was_on="pipeline" in _on)
-        if name in _on:
-            was, route_writer.suppressed = route_writer.suppressed, True
-            try:
-                _hide(name)
-            finally:
-                route_writer.suppressed = was
-        callbacks["open_job"](instance_id)
-
-    def _job_closed(instance_id: str) -> bool:
-        """The pipeline panel closed a job page: when it was opened from a view, that view comes back (and the
-        Jobs view goes, if it was off before); True when the address bar was written here."""
-        if _return.get("iid") != instance_id:
-            _return.clear()
-            return False
-        back = dict(_return)
-        _return.clear()
-        if not back["pipeline_was_on"] and "pipeline" in _on:
-            was, route_writer.suppressed = route_writer.suppressed, True
-            try:
-                _hide("pipeline")
-            finally:
-                route_writer.suppressed = was
-        _show(back["view"])
-        return True
-
     def _invalidate_gallery():
         """Something added tomograms to the project — make the wall re-collect on its next
         visit instead of showing what it cached before the import."""
@@ -872,9 +804,6 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
     callbacks["show_journey"] = _show_journey
     callbacks["show_gallery"] = _show_gallery
     callbacks["show_protocols"] = _show_protocols
-    callbacks["show_particles"] = _show_particles
-    callbacks["open_job_from"] = _open_job_from
-    callbacks["job_closed"] = _job_closed
     callbacks["open_pick_viewer"] = _open_pick_viewer
     callbacks["set_view_title"] = _set_view_title
     callbacks["view_head"] = _view_head
@@ -896,7 +825,8 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
             .props("id=cb-roster-panel")
             .style(
                 # A card like the views (stretched to the row's height inside its margin).
-                f"width: 340px; min-width: 340px; align-self: stretch; margin: {_PANEL_GAP_PX}px 0 "
+                "width: var(--cb-roster-w, 340px); min-width: var(--cb-roster-w, 340px); align-self: stretch; "
+                f" margin: {_PANEL_GAP_PX}px 0 "
                 f"{_PANEL_GAP_PX}px {_PANEL_GAP_PX}px; flex-shrink: 0; box-sizing: border-box; "
                 f"background: var(--cb-surface, #ffffff); {_CARD_EDGE} "
                 "overflow-y: auto; overflow-x: hidden; "
@@ -909,7 +839,11 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         # drag is smooth and survives reloads via localStorage. It lies over the start of the
         # main area's padding, so the gap between the roster and the first view is the same as
         # the gap between two views.
-        ui.element("div").props("id=cb-roster-resizer").classes("cb-roster-resizer").style("margin-right: -6px;")
+        # Its box is inline: the shell stylesheet is served stale, and without a width the handle is not there.
+        ui.element("div").props("id=cb-roster-resizer").classes("cb-roster-resizer").style(
+            "width: 8px; flex-shrink: 0; align-self: stretch; margin-right: -8px; cursor: col-resize; "
+            "background: transparent; position: relative; z-index: 21;"
+        )
 
         # Styled once and never again: the view weights the splitters set on it must survive.
         main_area = (
@@ -935,10 +869,6 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
                     toggle_gallery=toggle_gallery,
                     toggle_protocols=toggle_protocols,
                 )
-
-            # The particle map: built on its first showing (_show_particles), its body the map's app box.
-            _view_frame("particles")
-            _refs["particles_container"].classes("cb-bm-app")
 
             # Species page: built on its first showing (_ensure_species_page).
             _view_frame("workbench")

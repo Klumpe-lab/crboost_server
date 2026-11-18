@@ -29,11 +29,10 @@ class View(StrEnum):
     SPECIES = "species"
     PICKS = "picks"
     PROTOCOLS = "protocols"
-    PARTICLES = "particles"
 
 
 # Views whose URL carries targets, and how many segments they take.
-_TARGETS: dict[View, int] = {View.JOB: 2, View.JOURNEY: 1, View.SPECIES: 2, View.PICKS: 2, View.PARTICLES: 1}
+_TARGETS: dict[View, int] = {View.JOB: 2, View.JOURNEY: 1, View.SPECIES: 2, View.PICKS: 2}
 
 # Mirrors of two vocabularies that live in modules which import THIS one, so they cannot
 # be imported back without a cycle. Job subsection keys are not here — those are read at
@@ -60,8 +59,7 @@ class Route:
     """Where the user is, as the URL says it.
 
     ``a`` / ``b`` are the view's positional targets: job → (instance_id, tab),
-    journey → (ts_name,), species → (species_id, tab), picks → (species_id, ts_name),
-    particles → (node,): a particle job's instance id or a set as ``set:<set_id>``.
+    journey → (ts_name,), species → (species_id, tab), picks → (species_id, ts_name).
     ``invalid`` is never serialised — it carries a segment the URL named that this build
     does not know, so :func:`apply_route` can say so instead of silently landing
     somewhere plausible.

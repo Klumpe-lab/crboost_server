@@ -20,6 +20,7 @@ from ui.components.reactive import SingleFlight
 from ui.current_project import current_project_state
 from ui.pipeline_builder.pipeline_constants import PHASE_JOBS, PHASE_PARTICLES
 from ui.pipeline_builder.pipeline_roster import RosterWidget
+from ui.pipeline_builder.species_picker import choose_species
 from ui.pipeline_builder.status_poller import StatusPoller
 from services.routes import View
 from services.models_base import InstanceId, instance_id_to_job_type
@@ -101,6 +102,7 @@ class PipelineBuilderPanel:
         self.callbacks["remove_instance_from_pipeline"] = self.remove_instance_from_pipeline
         self.callbacks["invalidate_tm_tabs"] = self.invalidate_tm_tabs
         self.callbacks["set_active_views"] = self.roster.set_active_views
+        self.callbacks["refresh_counts"] = self.roster.refresh_counts
         self.callbacks["on_pipeline_active"] = self.set_view_active
         self.callbacks["close_job"] = self.close_job
         # Species page: open a job in the pipeline view / add one for a species.
@@ -120,8 +122,8 @@ class PipelineBuilderPanel:
     # ── Species gate ──────────────────────────────────────────────────────────
 
     async def choose_species(self, job_type: JobType) -> str | None:
-        """The species a per-particle job of `job_type` is made for, asked in a dialog; None when there is none
-        to choose or the dialog was cancelled (said so, nothing added). SingleFlight: a second click while the
+        """The species a per-particle job of `job_type` is made for, asked in a dialog (ui/pipeline_builder/
+        species_picker.py); None when the dialog was closed (nothing added). SingleFlight: a second click while the
         dialog is open drops silently instead of stacking another dialog (the trigger can be destroyed and
         rebuilt mid-click by an unrelated refresh)."""
         async with self.flight(f"species_dialog:{job_type.value}") as acquired:
@@ -130,38 +132,7 @@ class PipelineBuilderPanel:
             project_path = self.ui_mgr.project_path
             if not project_path:
                 return None
-            state = get_project_state_for(project_path)
-            if not state.species_registry:
-                ui.notify(
-                    "No particle species yet — use “+” on the PARTICLES header to create one "
-                    "(no template needed), or create one in the Particles registry.",
-                    type="warning",
-                    timeout=4000,
-                )
-                return None
-
-            chosen = {"id": state.species_registry[0].id}
-
-            with ui.dialog() as dialog, ui.card().style("min-width: 300px; padding: 16px;"):
-                ui.label(f"Add {get_job_display_name(job_type)}").classes("text-base font-bold text-gray-800 mb-3")
-                options = {s.id: s.name for s in state.species_registry}
-                sel = (
-                    ui.select(options=options, value=chosen["id"], label="Particle species")
-                    .props("outlined dense")
-                    .classes("w-full")
-                )
-
-                def _on_change(e):
-                    chosen["id"] = e.value
-
-                sel.on_value_change(_on_change)
-
-                with ui.row().classes("w-full justify-end gap-2 mt-4"):
-                    house_button("Cancel", lambda: dialog.submit(False))
-                    house_button("Add", lambda: dialog.submit(True), kind="accent")
-
-            confirmed = await dialog
-            return chosen["id"] if confirmed else None
+            return await choose_species(self.backend, project_path, job_type)
 
     async def prompt_species_and_add(self, job_type: JobType, after: str | None = None):
         """Add a job of `job_type`, asking for its species first when it is a per-particle job.
@@ -286,19 +257,14 @@ class PipelineBuilderPanel:
             set_open(on)
 
     def close_job(self, *, write_url: bool = True) -> None:
-        """The job page's close cross: no job open, the page leaves the main area, the roster stays. A page opened
-        from another view (the particle map) closes back onto it: the workspace's `job_closed` brings that view
-        back and writes the address bar."""
-        closed = self.ui_mgr.active_instance_id
+        """The job page's close cross: no job open, the page leaves the main area, the roster stays."""
         self.ui_mgr.clear_active_instance()
         for c in self._job_content_containers.values():
             c.set_visibility(False)
         self._sync_job_scopes()
         self._set_job_open(False)
-        back = self.callbacks.get("job_closed")
-        returned = bool(back(closed)) if back is not None and closed is not None else False
         set_url = self.callbacks.get("set_url")
-        if set_url and write_url and not returned:
+        if set_url and write_url:
             set_url(View.PIPELINE)
         self.roster.paint_active()
 

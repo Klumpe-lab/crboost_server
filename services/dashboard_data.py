@@ -785,7 +785,7 @@ def collect_dashboard_journey(project_state, project_path: Path) -> tuple[dict[s
     for ts_name, st in subtomo_combined.items():
         journey.setdefault(ts_name, {})["subtomo"] = st
 
-    # Imported tomograms (PARTICLES-header import utility, a project-level artifact,
+    # Imported tomograms (the Tomograms view's import, a project-level artifact,
     # not a job): a data-less / particle-only project has no array stages, so its
     # tomograms reach the strip only here. No pipeline pills (nothing ran upstream) —
     # surfaced purely so the tomogram is selectable + the Particles section renders.

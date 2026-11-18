@@ -1737,3 +1737,25 @@ S3 is in. Screens: `notes/screens/final-*.png`.
 
 **Not in scope.** Species and particles streaming in from other projects (§15, deferred); forks across
 projects (stage 4); the pipeline table's lane layout (retired with it).
+
+### 15.9 The particle map merges into this map (decided 2026-11-18, not built)
+
+**Asked (maintainer, 2026-11-18):** the particle map (roadmap 53 §10, §13) is too similar to the branch map; take it
+out for now and, eventually, make the two one. It was taken out the same day (roadmap 53 §13.3): no view, no route,
+no entry on the roster.
+
+**What the one map has to carry from the particle map.** Particle jobs and particle sets as cards on the Jobs view's
+map, beside the preprocessing jobs, not in a view of their own:
+- a Class 3D's classes as rows on its card (class, particles, share, the resolution estimate named as Class 3D's),
+  and the sets made of them hanging off those rows by a cable from the row, not the footer;
+- a set as a card of its own (its lineage on hover), cabled to the jobs that read it;
+- the size toggle that counts particles on particle cards ("particles", not "tilt series");
+- later slices of roadmap 53 §10: a + per class row, source cards for foreign parents, the composition magazine,
+  the trace (§10.5).
+
+**What exists for it.** `services/particles/lineage.py` (the reads, off the loop, `WorkKind.LINEAGE`) is kept and
+unused until then. The particle map's cards and layout are in commit `7a8f5e3` (`ui/particle_map/`), to read, not
+to restore as a view. `render_card` / `header` already take a `size_tip`; `ui/branch_map/style.py` names `CABLE`.
+
+**Open.** Whether particle cards share the preprocessing map's lanes or sit in a band of their own below them; how
+a project with many species keeps the map readable (a species filter on the strip, or one band per species).

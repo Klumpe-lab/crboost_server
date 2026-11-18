@@ -661,7 +661,7 @@ async def make_class_set(call: Call) -> dict[str, Any]:
     if res["success"]:
         ps = res.pop("set")
         res.update(set=ps.id, name=ps.name, picks=ps.n_particles)
-    res["ui_url"] = call.url(View.PARTICLES, a.job)
+    res["ui_url"] = call.url(View.JOB, a.job)
     return res
 
 

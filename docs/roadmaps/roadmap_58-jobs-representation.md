@@ -138,3 +138,33 @@ in `ui/dashboard/css.py` has the same problem and needs checking in S5.
 
 Left: the other `!important` overrides of Quasar colour classes in `ui/dashboard/css.py` likely lose to the
 `quasar_importants` layer the same way the toasts did; check them when they are next touched.
+
+## 5. Roster pass (2026-11-18, later), not run in a browser
+
+Asked by the maintainer: the PARTICLES header's Aggregate and Import tomograms out, the particle map out, the roster
+resizable against the view beside it, the species tag right-aligned, the job folders in one column, and a species
+picker that is not a stock Material select.
+
+- The PARTICLES stripe keeps New species only (Aggregate: roadmap 53 §14.7; Import tomograms now on the Tomograms
+  view's title line, same place; the particle map: roadmap 53 §13.3, roadmap 32 §15.9).
+- Resizing. The divider was there but could not work: its box (`.cb-roster-resizer`, 6 px wide) was in the page
+  shell's stylesheet in `ui/main_ui.py`, which is served stale, so the handle could have no width; and every view
+  toggle re-sends the roster's inline style (`set_active_views`), which put `width: 340px` back over a dragged
+  width. Now the handle's box is inline (8 px, over the gap to the first view), its hover line is in
+  `ui/dashboard/css.py`, and the width is `--cb-roster-w` on the document root, which the roster's inline width
+  reads and the server never writes (240–720 px, kept in localStorage as before).
+- A row is [light][name][job folder][set it reads] … [filter status / count][extra tabs][species][×]. The name
+  column is as wide as the longest job name and the job-folder column 7 ch on every row, so `job011` lines up down
+  the roster; the set tag gives way before the name in a narrow roster. The species tag is the last thing before
+  the ×, whose 15 px slot is kept on a job in use (no ×), so species tags end at the same place on every row. Before
+  a job has a folder, a suffix that only repeats the species id is not shown (the species tag says it).
+- The species picker (`ui/pipeline_builder/species_picker.py`): a list of the project's species, nothing chosen
+  until a click (the old select pre-chose the first species). A row: colour, name, then what the job takes from the
+  species: for template matching, template or no template (amber), Ø (amber "Ø ?" when unset), symmetry; an
+  "N already" tag when the species has jobs of this type. Click or Enter adds the job. "New species…" makes one in the
+  species prompt and adds the job for it; a project without species gets the same dialog with that as its one action,
+  instead of a toast.
+
+Runtime check: drag the divider, toggle the Tomograms view on and off, the width stays; reload, it stays. Rows of a
+project with Template matching for two species, a Class 3D reading a set, and the tilt filter: job folders in one
+column, species tags flush right. Add a particle job with zero, one and several species.
