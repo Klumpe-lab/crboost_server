@@ -587,12 +587,13 @@ class RosterWidget(FingerprintedView):
                 count.on(
                     "click", lambda e, iid=instance_id: self._popups.open_magazine(iid, e.args), js_handler=ANCHOR_JS
                 )
-            # Extra tabs other than "tasks" (the magazine leads there) as on-row nav buttons.
+            # Extra tabs as on-row nav buttons, except "tasks" (the magazine leads there) and "results" (a tab of
+            # the job page, reached by opening the job).
             from ui.job_plugins import get_extra_tabs
 
             with ui.element("div").style("display: flex; align-items: center; gap: 0; flex-shrink: 0;"):
                 for et in get_extra_tabs(job_type):
-                    if et.key == "tasks":
+                    if et.key in ("tasks", "results"):
                         continue
                     icon_button(
                         et.icon,

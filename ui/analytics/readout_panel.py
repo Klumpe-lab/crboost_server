@@ -11,7 +11,8 @@ Reconstruct particle: the map's central slices and the half-map FSC with its 0.1
 
 from __future__ import annotations
 
-import shlex
+import math
+import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -32,21 +33,73 @@ from ui.analytics.common import (
     render_provenance,
 )
 from ui.components.buttons import house_button
-from ui.components.copyable import copy_on_click
 from ui.components.fields import house_text
 from ui.components.reactive import SingleFlight
+from ui.components.viewer_chips import viewer_chips
 from ui.dashboard.figures import build_class_convergence_chart, build_fsc_chart, class_color
 from ui.styles import MONO, SANS
 
 CHART_PX = 150
+# Three central slices side by side, at the 160 px a tile is rendered at.
+SLICES_W, SLICES_H = 360, 120
+INK = "#1e293b"
+MUTED = "#94a3b8"
+NO_ESTIMATE = (
+    "RELION gave no resolution estimate for this class (it wrote inf): its estimate failed, which says nothing "
+    "about the map. Look at the map."
+)
 
 
-def _open_commands(path: str) -> None:
-    """'3dmod' and 'ChimeraX' labels that copy the command opening `path`."""
-    for label, cmd in (("3dmod", f"3dmod {shlex.quote(path)}"), ("ChimeraX", f"chimerax {shlex.quote(path)}")):
-        el = ui.label(label).style(f"{MONO} font-size: 9px; color: #6366f1;")
-        copy_on_click(el, cmd)
-        el.tooltip(f"Copy: {cmd}")
+def _swatch(k: int, px: int = 8) -> str:
+    """The class's colour as a small square: the colour carries the class, the text beside it stays in ink."""
+    return (
+        f"<span style='display:inline-block;width:{px}px;height:{px}px;border-radius:var(--cb-r-sm, 2px);"
+        f"background:{class_color(k)};vertical-align:middle'></span>"
+    )
+
+
+def _class_label(k: int, extra: str = "", *, width: str | None = None) -> None:
+    """`■ class k` in ink, the square in the class's colour, and `extra` muted after it."""
+    w = f"width: {width};" if width else ""
+    html = f"{_swatch(k)} <span style='color:{INK};font-weight:600'>class {k}</span>"
+    if extra:
+        html += f" <span style='color:#64748b'>{esc(extra)}</span>"
+    ui.html(html, sanitize=False).style(f"{SANS} font-size: 10px; white-space: nowrap; {w}")
+
+
+def _map_preview(png: str | None, volume: str, what: str) -> None:
+    """A volume's central slices with the napari / 3dmod / ChimeraX chips in their corner."""
+    with ui.element("div").style(
+        f"position: relative; width: {SLICES_W}px; height: {SLICES_H}px; background: #0f172a; "
+        "border-radius: var(--cb-r-md, 4px); overflow: hidden;"
+    ):
+        if png:
+            ui.image(vis_asset_url(png)).style(f"width: {SLICES_W}px; height: {SLICES_H}px;").props("fit=contain")
+        else:
+            ui.label("map not on disk").classes(HINT_CLS).style("padding: 6px;")
+        viewer_chips(volume, what=what, chimerax=True)
+
+
+def _tomogram_names(classes: list[dict]) -> dict[str, str]:
+    """What the class table calls each tomogram: its position, and before it what tells its dataset from the
+    others' when the table holds more than one (a pooled set: every project has a Position_10). The datasets'
+    common start and end are dropped: AGG412_20260311_MyrGFP_Grid2_rerun_Position_10 -> 20260311_MyrGFP_Grid2 ·
+    Position_10."""
+    full = {t for c in classes for t, _n in c.get("top_tomograms") or []}
+    pos = {t: ts_display_name(t) for t in full}
+    source = {t: t[: -len(pos[t])].rstrip("_") if pos[t] != t and t.endswith(pos[t]) else "" for t in full}
+    sources = sorted({v for v in source.values() if v})
+    if len(sources) < 2:
+        return pos
+    head = os.path.commonprefix(sources)
+    tail = os.path.commonprefix([x[::-1] for x in sources])[::-1]
+    head, tail = head[: head.rfind("_") + 1], tail[tail.find("_") :] if "_" in tail else ""
+    out = {}
+    for t in full:
+        src = source[t]
+        short = src[len(head) : len(src) - len(tail)] if src else ""
+        out[t] = f"{short or src} · {pos[t]}" if src else pos[t]
+    return out
 
 
 class ReadoutPanel:
@@ -114,41 +167,54 @@ class ReadoutPanel:
         resolutions = {}
         if d.get("iterations"):
             resolutions = {c["class"]: c.get("resolution_ang") for c in d["iterations"][-1]["classes"]}
+        names = _tomogram_names(d["classes"])
+        with_projects = any(c.get("by_project") for c in d["classes"])
         head = (
-            "<th>class</th><th class='n'>particles</th><th class='n'>%</th><th class='n'>res Å</th>"
+            "<th>class</th><th class='n'>particles</th><th class='n'>%</th>"
+            "<th class='n' title='RELION&#39;s own estimate for each class map (model.star), not a gold-standard "
+            "FSC: a guide to which classes hold structure, never a resolution to report.'>Class 3D est. Å</th>"
             + "".join(f"<th class='n' title='{esc(b)}σ'>{esc(b)}</th>" for b in bins)
-            + "<th class='n'>tomograms</th><th>biggest tomograms</th><th>projects</th>"
+            + "<th class='n'>tomograms</th><th>biggest tomograms</th>"
+            + ("<th>projects</th>" if with_projects else "")
             + (
                 "<th class='n' title='Random-position decoys (0σ) that this class took in: the classifier's "
                 "false acceptances.'>decoys</th>"
                 if self.decoys
                 else ""
             )
-            + "<th></th>"
+            + f"<th title='{esc(CONCENTRATION_RULE)}'>spread</th>"
         )
         rows = []
         for c in d["classes"]:
             k = c["class"]
-            swatch = (
-                "<span style='display:inline-block;width:8px;height:8px;border-radius:var(--cb-r-sm, 2px);"
-                f"background:{class_color(k)}'></span>"
-            )
             res = resolutions.get(k)
+            if res is None:
+                res_cell = "<td class='n'>—</td>"
+            elif not math.isfinite(res):
+                res_cell = f"<td class='n' title='{esc(NO_ESTIMATE)}' style='color:{MUTED};cursor:help'>none</td>"
+            else:
+                res_cell = f"<td class='n'>{res:.1f}</td>"
             cells = [
-                f"<td class='nm'>{swatch} {k}</td>",
+                f"<td class='nm'>{_swatch(k)} {k}</td>",
                 f"<td class='n'>{c['n']:,}</td>",
                 f"<td class='n'>{100 * c['n'] / total:.1f}</td>",
-                f"<td class='n'>{'—' if not res else f'{res:.1f}'}</td>",
+                res_cell,
                 *[f"<td class='n'>{v:,}</td>" for v in c.get("sigma_bins") or [""] * len(bins)],
                 f"<td class='n'>{c.get('n_tomograms', '—')}</td>",
-                "<td>"
-                + esc(", ".join(f"{ts_display_name(t)} ({n})" for t, n in c.get("top_tomograms") or []))
+                "<td title='"
+                + esc("\n".join(t for t, _n in c.get("top_tomograms") or []))
+                + "'>"
+                + "<br>".join(esc(f"{names.get(t, t)} ({n})") for t, n in c.get("top_tomograms") or [])
                 + "</td>",
-                "<td>" + esc(", ".join(f"{p} {n}" for p, n in (c.get("by_project") or {}).items())) + "</td>",
+                (
+                    "<td>" + esc(", ".join(f"{p} {n}" for p, n in (c.get("by_project") or {}).items())) + "</td>"
+                    if with_projects
+                    else ""
+                ),
                 self._decoy_cell(k, c["n"]),
                 (
-                    f"<td class='mk' title='{esc(CONCENTRATION_RULE)} Ratio {c.get('concentration')}.'>"
-                    "concentrated</td>"
+                    f"<td title='{esc(CONCENTRATION_RULE)} Ratio {c.get('concentration')}.' "
+                    f"style='color:#64748b;cursor:help'>concentrated</td>"
                     if c.get("concentrated")
                     else "<td></td>"
                 ),
@@ -169,7 +235,7 @@ class ReadoutPanel:
         if not bins or not classes or "sigma_bins" not in classes[0]:
             return f"<span class='{HINT_CLS}'>These particles carry no score in σ.</span>"
         head = "<th>σ</th><th class='n'>n</th>" + "".join(
-            f"<th class='n' style='color:{class_color(c['class'])}'>{c['class']}</th>" for c in classes
+            f"<th class='n'>{_swatch(c['class'], 7)} {c['class']}</th>" for c in classes
         )
         rows = []
         for i, b in enumerate(bins):
@@ -187,19 +253,21 @@ class ReadoutPanel:
         maps = self.record.data.get("class_maps") or []
         if not maps:
             return
-        ui.label("class maps · central slices XY | XZ | YZ").classes(LABEL_CLS)
-        with ui.element("div").style("display: flex; gap: 12px; flex-wrap: wrap;"):
+        d = self.record.data
+        total = max(1, d["n_particles"])
+        sizes = {c["class"]: c["n"] for c in d["classes"]}
+        with ui.label("class maps · central slices XY | XZ | YZ").classes(LABEL_CLS):
+            ui.tooltip(
+                "Each slice is scaled to its own 1–99th percentile, so a weak class looks as contrasted as a strong "
+                "one: compare shapes here, and open the maps (napari, 3dmod, ChimeraX) to compare densities."
+            ).style(TOOLTIP_STYLE)
+        with ui.element("div").style("display: flex; gap: 14px; flex-wrap: wrap;"):
             for m in maps:
-                with ui.element("div").style("display: flex; flex-direction: column; gap: 2px;"):
-                    with ui.element("div").style("display: flex; align-items: baseline; gap: 6px;"):
-                        ui.label(f"class {m['class']}").style(
-                            f"{SANS} font-size: 10px; font-weight: 600; color: {class_color(m['class'])};"
-                        )
-                        _open_commands(m["map"])
-                    if m.get("png"):
-                        ui.image(vis_asset_url(m["png"])).style("width: 240px; height: 80px;").props("fit=contain")
-                    else:
-                        ui.label("map not on disk").classes(HINT_CLS)
+                k = m["class"]
+                with ui.element("div").style("display: flex; flex-direction: column; gap: 3px;"):
+                    n = sizes.get(k)
+                    _class_label(k, "" if n is None else f"{n:,} · {100 * n / total:.1f} %")
+                    _map_preview(m.get("png"), m["map"], "class map")
 
     def _galleries(self) -> None:
         g = self.record.data.get("galleries") or {}
@@ -215,7 +283,7 @@ class ReadoutPanel:
             ).style(TOOLTIP_STYLE)
         for k in sorted(per, key=int):
             with ui.element("div").style("display: flex; align-items: center; gap: 8px; flex-wrap: wrap;"):
-                ui.label(f"class {k}").style(f"{SANS} font-size: 10px; width: 52px; color: {class_color(int(k))};")
+                _class_label(int(k), width="62px")
                 for end in ("best", "worst"):
                     self._tiles(per[k].get(end) or {}, end)
 
@@ -232,7 +300,7 @@ class ReadoutPanel:
         values = entry.get("values") or []
         # Eight 48 px tiles and the label need ~430 px; a narrower panel wraps them.
         with ui.element("div").style("display: flex; flex-wrap: wrap; gap: 2px;"):
-            ui.label(end).style(f"{SANS} font-size: 9px; color: #94a3b8; width: 30px;")
+            ui.label(end).style(f"{SANS} font-size: 9px; color: {MUTED}; width: 30px;")
             for i in range(len(values)):
                 pos = (meta.get("index") or {}).get(str(i))
                 if not pos:
@@ -253,9 +321,11 @@ class ReadoutPanel:
         ):
             ui.label("classes").classes(LABEL_CLS)
             for c in d["classes"]:
-                ui.checkbox(str(c["class"]), on_change=lambda e, k=c["class"]: self._toggle(k, e.value)).props(
-                    "dense size=xs"
-                ).style(f"font-size: 10px; color: {class_color(c['class'])};")
+                with ui.element("div").style("display: flex; align-items: center; gap: 0;"):
+                    ui.html(_swatch(c["class"]), sanitize=False)
+                    ui.checkbox(str(c["class"]), on_change=lambda e, k=c["class"]: self._toggle(k, e.value)).props(
+                        "dense size=xs"
+                    ).style(f"font-size: 10px; color: {INK};")
             house_text(
                 "name",
                 value="",
@@ -299,10 +369,8 @@ class ReadoutPanel:
         d = self.record.data
         with ui.element("div").style("display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-start;"):
             with ui.element("div").style("display: flex; flex-direction: column; gap: 2px;"):
-                with ui.element("div").style("display: flex; align-items: baseline; gap: 6px;"):
-                    ui.label("merged.mrc · XY | XZ | YZ").classes(LABEL_CLS)
-                    _open_commands(d["merged"])
-                ui.image(vis_asset_url(d["slices_png"])).style("width: 360px; height: 120px;").props("fit=contain")
+                ui.label("merged.mrc · central slices XY | XZ | YZ").classes(LABEL_CLS)
+                _map_preview(d["slices_png"], d["merged"], "map")
             fsc = d.get("fsc")
             with ui.element("div").style(f"flex: 1 1 280px; min-width: 0; {CHART_CELL_STYLE}"):
                 if not fsc:
