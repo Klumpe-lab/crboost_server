@@ -24,6 +24,7 @@ from ui.napari_open_page import render_napari_open_page
 from ui.components.buttons import house_button
 from ui.data_import_panel import build_data_import_panel
 from ui.io_ideas_preview import render_io_ideas
+from ui.job_page_ideas import render_job_page_ideas
 from ui.io_layouts_preview import render_io_layouts
 from ui.tree_ideas_preview import render_tree_ideas
 from ui.branch_map_preview import render_branch_map
@@ -124,20 +125,6 @@ def create_ui_router(backend: CryoBoostBackend):
             .cb-select-popup .q-item.q-manual-focusable--focused,
             .cb-select-popup .q-item--active { background: #eef2f6; color: #1e293b; }
 
-            /* Draggable divider between the job roster and the params/main area.
-               A thin transparent grab-zone with a subtle line that lights up on
-               hover/drag; resize logic is client-side JS (workspace_page). */
-            .cb-roster-resizer {
-                width: 6px; flex-shrink: 0; height: 100%; cursor: col-resize;
-                background: transparent; position: relative; z-index: 21;
-            }
-            .cb-roster-resizer::after {
-                content: ''; position: absolute; left: 50%; top: 0;
-                transform: translateX(-50%); width: 1px; height: 100%;
-                background: transparent; transition: background .12s ease, width .12s ease;
-            }
-            .cb-roster-resizer:hover::after,
-            .cb-roster-resizer.dragging::after { background: #93c5fd; width: 2px; }
         </style>
     """)
 
@@ -340,6 +327,12 @@ def create_ui_router(backend: CryoBoostBackend):
         await client.connected()
         ensure_assets_loaded()
         render_tree_ideas()
+
+    @ui.page("/dev/job-page-ideas")
+    async def job_page_ideas_page(client: Client):
+        await client.connected()
+        ensure_assets_loaded()
+        render_job_page_ideas()
 
     @ui.page("/dev/io-ideas/branch")
     async def branch_map_page(client: Client):
