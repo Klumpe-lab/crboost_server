@@ -34,6 +34,7 @@ class Class3DParams(AbstractJobParams):
         "firstiter_cc",
         "use_gpu",
         "preread_images",
+        "mpi_ranks",
         "threads",
         "pool",
         "oversampling",
@@ -73,8 +74,8 @@ class Class3DParams(AbstractJobParams):
 
     # Angular sampling
     healpix_order: int   = Field(default=3, ge=1, le=6, description="Angular sampling (2=15deg, 3=7.5deg, 4=3.75deg)")
-    offset_range : int   = Field(default=5, ge=0, description="Translational search range (Angstroms)")
-    offset_step  : int   = Field(default=2, ge=1, description="Translational search step (Angstroms)")
+    offset_range : int   = Field(default=5, ge=0, description="Translational search range (pixels)")
+    offset_step  : int   = Field(default=2, ge=1, description="Translational search step (pixels)")
     sigma_ang    : float = Field(
         default=-1.0, description="Local angular search sigma in degrees (-1 = no local search)"
     )
@@ -116,8 +117,16 @@ class Class3DParams(AbstractJobParams):
 
     # Computation
     use_gpu       : bool = Field(default=True, description="Use GPU acceleration")
-    preread_images: bool = Field(default=True, description="Pre-read all particles into RAM")
-    threads       : int  = Field(default=4, ge=1, description="Number of threads")
+    preread_images: bool = Field(default=True, description="Pre-read all particles into RAM (every MPI follower)")
+    # One relion_refine, or a leader handing the particles out to followers that RELION spreads over the job's
+    # GPUs (the SLURM gres) in turn: GPUs + 1 for one follower per GPU, 2 x GPUs + 1 to fill a large card.
+    mpi_ranks     : int  = Field(
+        default=1,
+        ge=1,
+        description="MPI processes: 1 = one relion_refine; N > 1 = relion_refine_mpi, a leader and N-1 "
+        "followers over the job's GPUs (each follower pre-reads every particle)",
+    )
+    threads       : int  = Field(default=4, ge=1, description="Threads per process (--j)")
     pool          : int  = Field(default=30, ge=1, description="Number of particles to pool per thread")
     # Reproducibility: -1 = RELION's own time-based seed; >= 0 is passed as
     # --random_seed so a run can be repeated exactly.
