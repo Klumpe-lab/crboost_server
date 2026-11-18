@@ -4,7 +4,9 @@
 taken the same day (§8). Which particle jobs to build: §11; Mask, PostProcess, the mask input and `skip_align`
 built the same day (§11.1, not run through SLURM), M's facts read. The particle map scoped against the code: §10;
 the handoff for building it as its own view: §13, its decisions and design settled the same afternoon, nothing built:
-§13.1. What happens next: §12.
+§13.1. What happens next: §12. Phase A partly run (references, bin-4 exports; no Class 3D yet): §12.1, read 2026-11-18; the nine Class 3D
+submitted the same day (§12.1). Class 3D on several GPUs (MPI) and continuing after a time-out: built 2026-11-18,
+not run (§11.2).
 
 **In one line.** Average the ribosome and the 412 VLP over the eight AGG412 reruns, sort each into classes and
 refine every class on its own to the best resolution the data hold. Do every step that changes which particles are
@@ -241,6 +243,11 @@ the UI and which stage takes it. Seeded with what earlier campaigns already wrot
 | F11 | Phase A step 1, 2026-11-17 | The server restarted while the accepted plan was applying; the plan lived only in its memory, so the project was never made and nothing said so | a plan in flight survives a restart, or the restart names the plans it dropped (roadmap 52) |
 | F12 | Phase A step 1, 2026-11-17 | The plan showed tilt axis 84.4 and EER 32 "from Slot6"; the project made has −95.0 and no EER grouping, and `get_project` says 0 tilt series beside 897 tomograms. None of it is read by the particle jobs (they read the sources' tilt-series stars), but the plan promised values the project does not hold | the plan shows exactly the values the project will hold; a project from tomograms says "tilt series: in the sources" instead of 0 |
 | F13 | Phase A step 2, 2026-11-17 | The kitchen had no API verbs: the all-candidates set, a "by project" group of eight subsets and the pilot's ≥ 10σ set were eleven dialogs by hand, and the agent could only list subsets. Built the same day: `get_kitchen`, `list_kitchen_sources`, `plan_kitchen_set`, `add_kitchen_sources`, subset and group verbs, `make_kitchen_set`, `make_class_set` (`services/sta_kitchen/agent_ops.py`); a recipe goes with each call and the user's filter strip is left alone | (API, built) the class rows' + on the particle map makes the same class sets in the UI |
+| F14 | Phase A step 3, 2026-11-17 | Run A's plan rehearsed clean and was refused at its run step: I had named the sets as `particle_set__s00N_…` in `add_job(reading=…)`, not as the candidate `mergedSources:particle_set__…`. Re-pointed with `set_input`, ran at 14:20 | API: `reading` checked against the candidates (HOTFIXES H18), `plan_run` resolving inputs as Run does (H19). Also: a kitchen set's images are taken from finished jobs at Run, so the Class 3D go in a second run after the bin-4 export, never in its chain |
+| F15 | Phase A, 412, 2026-11-17 | V1 by hand was skipped on the maintainer's word ("make the subsets yourself"): the 412 pool (22,318 picks) took a by-project group and one set at σ ≥ 8.5 (s011, 1,881 picks), and V2's Class 3D does the sorting the gallery verdicts would have. Its reference is Reconstruct particle of s011 with the TM angles at bin 4 box 128 (the round shell, data-derived) | the per-class σ table must then show junk classes as V1 would have: if Class 3D cannot separate them, V1 comes back |
+| F16 | Phase A, 2026-11-18 | On the particle map the phase read as lopsided and unexplained: eight per-project ribosome sets that nothing reads, one Reconstruct particle of one project, one 412 set and no per-project 412 sets. Each is by design (R0's reference is one project's ≥ 10σ picks; s003–s010 wait for R1's Class 3D, which were never added; the 412 is sorted as one pool, F15), but only the roadmap said so | a set that nothing reads says so on its card ("read by no job yet") |
+| F17 | V2 reference, 2026-11-18 | Reconstruct particle of s011 with the TM angles (job004) is the shell plus the tomogram's frame. Every 412 TM angle lies in one I1 asymmetric unit (tilt 4–44° on all 1,874 rows of job003), so the missing wedge and whatever surrounds the VLPs average coherently: the outer annulus differs from one side to the other by 0.40 sd in x and 0.26 sd in y, and the power at kz Nyquist is 82× the mean of the kz line (stripes along Z). The ribosome's job002 (C1 angles, tilt 9–171°) shows neither (≤ 0.04 sd, 0.1×). As the reference of a global search, the one-sided density pulls the alignment onto the surroundings | the Reconstruct card says when the poses it used cover only an asymmetric unit, and shows the side-to-side difference; V2 starts from a featureless shell (the rotational average of job004), as §4 V2 first said |
+| F18 | Phase A run, 2026-11-18 | The plan for the nine Class 3D said "Point …'s input input_optimisation at automatic" for the steps that choose each project's image source, and its table never named job001 or job003: the one choice Run refuses without was not in the dialog the maintainer accepted (HOTFIXES H21). The jobs read what was meant | the plan, and later the job's card, name where a set's images come from, per project |
 
 ## 7. Order
 
@@ -440,6 +447,99 @@ is the first fact. Then the species import from a RELION Refine 3D, and what M's
    appear on the map as sets when the Class 3D jobs finish; then C4 and C3 for phase B; M's S0 facts, read only.
 5. **Field notes** in §6 from step 1 on.
 
+### 12.1 Where phase A stands (read 2026-11-18)
+
+Steps 1–2 done, step 3 half done: the references and the bin-4 exports ran, no Class 3D was ever added.
+
+- **Home:** `AGG412_STA` in `/groups/klumpe/_crboost_data_api`, made through the API; in both kitchens the eight
+  reruns' template-match picks are the members.
+- **Ribosome:** a group "by project" (eight subsets, all of each project's candidates); sets s001 every candidate
+  (346,834), s002 the pilot's ≥ 10σ (2,870), s003–s010 one per project from the subsets. Warp export job001 (s001,
+  bin 4 box 100: 346,381 rows, 884 tilt series) and Reconstruct particle job002 (s002, bin 2 box 200, R0's
+  reference; a ribosome, no frame artefacts) are green. s003–s010 have no reader: they are R1's eight Class 3D.
+- **412:** a group "by project" (eight subsets, no set made from them); set s011, σ ≥ 8.5 (1,881: unmilled2 584,
+  FCIsolation 348, Slot6 265, Grid2 240, SK 224, 20251113 169, Grid3 41, pilot 10). Warp export job003 (s011, bin 4
+  box 128: 1,874 rows, 329 tilt series) and Reconstruct particle job004 (s011, bin 4 box 128) are green; job004 carries
+  the tomogram's frame (F17) and is not V2's reference as it stands.
+- **The next run** holds R1's eight Class 3D and V2's one. What it has to settle:
+  - Each Class 3D reading a kitchen set finds two image sources per project, the rerun's own bin-2 export and the
+    home's bin-4 one, and Run refuses until the job names the home export (`set_input` facet, per project).
+  - The class3d profile (64G, 8 h) is short for the large projects. A bin-4 box-100 particle is 0.78 MB on disk (39
+    tilts, float16): unmilled2 69 GB, SK 53 GB, 20251113 39 GB, FCIsolation 35 GB, twice that as float32 in RAM with
+    `preread_images`; and Class 3D does not continue after a time-out (Refine 3D does).
+  - Open values: R1's `sigma_ang` (the ribosome TM step was 12°); V2's K (4–6), mask Ø (the shell's outer edge is at
+    ~260 Å in job004's radial profile), and its reference.
+- **Taken 2026-11-18 (maintainer):** R1 `sigma_ang` 5° at healpix order 3; V2 K 6; V2's reference the rotational
+  average of job004, made as a side step (§12.2); the large projects' Class 3D at 192G on `g_medium` (2 days). V2's
+  mask Ø: "slightly over, never under". 575 Å is the 412's Ø everywhere in crboost (the species, its spherical mask
+  `…_sphere_d575_s5`, the old Class 3D runs, job003's export); July's refine moved its particle diameter from 550 to
+  600 on the PI's word ("550 was a bit tight"); the shell turns negative at 267 Å radius (§12.2).
+- Asked before anything runs: why R1 runs per project when the maps come from every good particle. R1 only takes out
+  what template matching mistook for ribosomes; its kept classes of all eight become one set for R2, and the states
+  are classified on that pooled set (R4). Answered in the session; the maintainer took per project, and V2's mask
+  at 600 Å ("to be sure").
+- **Submitted 2026-11-18 09:39** (plan `p-f6ba241c`, accepted in the terminal), all nine on `g_medium`, 2 days:
+
+  | Job | Reads | Particles | Images | Reference | SLURM |
+  |---|---|---|---|---|---|
+  | class3d · job005 | s003 Slot6 | 24,100 | job001 | job002 | 1776668 |
+  | class3d__2 · job006 | s004 FCIsolation | 44,774 | job001 | job002 | 1776669, 192G |
+  | class3d__3 · job007 | s005 20251113 | 49,511 | job001 | job002 | 1776670, 192G |
+  | class3d__4 · job008 | s006 pilot | 15,620 | job001 | job002 | 1776671 |
+  | class3d__5 · job009 | s007 unmilled2 | 88,459 | job001 | job002 | 1776672, 192G |
+  | class3d__6 · job010 | s008 Grid3 | 35,586 | job001 | job002 | 1776673, 192G |
+  | class3d__7 · job011 | s009 Grid2 | 20,536 | job001 | job002 | 1776674 |
+  | class3d__8 · job012 | s010 SK | 67,795 | job001 | job002 | 1776675, 192G |
+  | class3d__9 · job013 | s011 412 ≥ 8.5σ | 1,874 | job003 | the shell (§12.2) | 1776676 |
+
+  R1: K 4, C1, Ø 350, `ini_high` 40, T 4, 25 iterations, `sigma_ang` 5 at healpix 3 (39 orientations a particle in
+  the first pass). V2: K 6, C1, Ø 600, global at 7.5° (36,864 orientations), `ini_high` 40, T 4, 25 iterations.
+  RELION took job002 (bin 2, box 200) for bin-4 images under `--trust_ref_size`. First iterations on a B200: the pilot
+  ~11 min, Slot6 ~16 min (about 0.65 min per thousand particles), so ~5 h for the pilot to roughly a day for
+  unmilled2; Grid3 (~10 h) would not have fitted in 8 h.
+- **Iteration times at 10:00** (RELION's estimate, B200 unless named): pilot 8.8 min, Slot6 14.4, Grid3 17.4,
+  Grid2 (A100) 20.6, FCIsolation 21.7, 20251113 24.8, unmilled2 46.2, SK (A100) 70, the 412 (A100) 135. At 25
+  iterations: ~4 h to ~19 h for the first seven, SK ~29 h, the 412 ~56 h: past `g_medium`'s 2 days, and Class 3D
+  does not continue after a time-out (Refine 3D does, `drivers/refine3d.py`). The 412's global pass (36,864
+  orientations × 81 translations × 6 classes) is the same every round, so later rounds will not be cheaper.
+  Put to the maintainer: Class 3D continuing from its last iteration as Refine 3D does, or the 412 job again on
+  `g_long`. **Taken:** the 412 job cancelled at 10:28 (SLURM 1776676, in its first iteration) and queued again at
+  10:33 as SLURM 1779904: `g_long`, 7 days, full B200s only (`constraint b200`; the profile's `avoid mig` excludes
+  the MIG nodes). B200 against A100 on the ribosome jobs: ~0.6 against ~1.0 min per thousand particles a round.
+- **Where the 412's time goes:** the first pass tries 36,864 orientations × 81 offsets × 6 classes = 17.9 M per
+  particle (RELION's own count). The offsets are a sphere of 2.5 steps of 2 px (`offset_range` 5, `offset_step`
+  2, in pixels: the job tab's "Å" is wrong); at `offset_range` 3 they are 19 (4.3× fewer). MPI (one
+  `relion_refine_mpi` follower per GPU, as Refine 3D runs) divides the particles between GPUs.
+
+### 12.2 V2's starting reference: the rotational average of job004 (2026-11-18)
+
+A side step under D1: made outside crboost, it comes back as a job input (a template of the 412 species, added in
+the run's plan) and is recorded here.
+
+- **Why.** V2's Class 3D searches every orientation, so its first round turns each particle to whatever matches the
+  reference best. job004 (Reconstruct particle of s011 with the TM angles) carries a one-sided density in the
+  tomogram's frame (F17): all 412 TM angles sit close to the identity (tilt 4–44° on every row; rot + psi within ±30°
+  on 1,724 of 1,874 rows and within ±60° on all), so whatever lies on one side of the VLPs in the tomograms adds up
+  instead of cancelling. The
+  shell itself has no direction, so that density would be the only thing the first round could align on: the
+  particles would be oriented, and then classified, by their surroundings. Its stripes along Z (the missing wedge, at
+  Nyquist) go with `ini_high` 40; the one-sided density sits at the shell's outer edge, inside the mask, and does not.
+  The rotational average keeps what does not depend on direction (radius, the wall's two layers, contrast, all from
+  these particles) and nothing that does: §4 V2's "featureless shell at the measured radius".
+- **How.** `notes/sta_side_steps/412_shell_reference/make_shell.py` (`notes/` is not tracked): low-pass job004's
+  `merged.mrc` at 25 Å (raised cosine from 30 Å, so the Nyquist stripes do not weigh on the few voxels of the smallest
+  radii; Class 3D cuts at 40 Å, so nothing it reads changes), then the mean over spherical shells 0.5 px thick, written
+  back by radius; box 128, 6.2 Å/px, protein white as in job004. Redo:
+  `./crboost python notes/sta_side_steps/412_shell_reference/make_shell.py
+  /groups/klumpe/_crboost_data_api/AGG412_STA/External/job004/merged.mrc notes/sta_side_steps/412_shell_reference`.
+- **Out:** `412_shell_rotavg_job004_apix6.20_box128.mrc`, `profile.tsv` (job004 low-passed and the shell, per px),
+  `job004_vs_shell_central_slices.png`, beside the script.
+- **Checked:** side-to-side differences of the outer ring 0.00 / 0.00 / 0.00 sd (job004 −0.40 / +0.26 / −0.11); power
+  at kz Nyquist 0.0 × the kz line's mean (job004 82×); radial profile the same as job004's low-passed one (r ≥ 3 px,
+  correlation 1.000). The profile: lumen +0.023 to +0.025, the wall's main layer peaking at 161–174 Å, a second layer
+  at ~225–235 Å (July's two sublayers at 180 and 223 Å, 412 playbook "mask lever"), zero at ~262 Å, negative from
+  267 Å (−0.020 at 298 Å).
+
 ### 11.1 Built (2026-11-17)
 
 On the maintainer's "implement those jobs we need here", in the main checkout, uncommitted at the end of the session.
@@ -496,6 +596,40 @@ the two half maps, a binary mask and `--particles_relion` (a RELION data star), 
 written, so the home project needs copies of each project's tilt-series XMLs and a settings file that points M at
 them, with the images read in place. Next for C6: read a rerun's `.settings` and one tilt-series XML to see which
 paths they hold, then write the job's design here. `expand_symmetry` and `shift_species` cover most of C7.
+
+### 11.2 Built 2026-11-18: Class 3D on several GPUs, and continuing after a time-out
+
+On the maintainer's "build mpi" (2026-11-18), after the 412's first iteration took 2.25 h on an A100 (§12.1). In the
+main checkout, uncommitted.
+
+- **MPI.** `Class3DParams.mpi_ranks` (default 1): 1 runs one `relion_refine` as before; N > 1 runs `mpirun
+  --oversubscribe --bind-to none -n N relion_refine_mpi`, Refine 3D's own prefix, a leader handing the particles out
+  to N − 1 followers that RELION maps onto the job's GPUs in turn (`--gpu` without ids). The GPUs come from the job's
+  SLURM gres; the driver prints the ranks against `CUDA_VISIBLE_DEVICES` and `SLURM_CPUS_PER_TASK`, and warns past
+  two followers a card. Sizing it: gres `gpu:G`, `mpi_ranks` G + 1 (one follower a card) or 2G + 1 (two sharing a
+  large card), CPUs about followers × `threads`, memory followers × the set in float32 (every follower pre-reads every
+  particle: 39 tilts × box² × 4 bytes a particle, 1.56 MB at box 100, 2.56 MB at box 128) or `preread_images` off.
+- **Continuing.** Refine 3D's checkpoint code moved to `drivers/relion_continue.py` (`latest_checkpoint` with the
+  iteration's file list, `changed_since_start`, `continue_command` for either program); Refine 3D reads it from there,
+  unchanged (old and new compared on a scratch checkpoint: same checkpoint, same continue command, same changes).
+  Class 3D re-run in place finds the last iteration with its data, model, sampling and every class map, refuses
+  settings that differ from `run_it000_optimiser.star`'s command (computation options aside), and runs
+  `relion_refine[_mpi] --continue … --o run_ct<N>`. When it ends, every `run_ct<N>_it<M>_*` file is linked (copied
+  where hard links fail) to its `run_it<M>_*` name, the latest continuation winning and replacing what a stopped
+  attempt left half written, so the Results tab, the particle map and class sets read a continued job as any other;
+  an iteration without an optimisation set gets one (its data star and the input set's tomograms). A job whose
+  iterations are all on disk finishes without running RELION.
+- **Units.** The Class 3D tab said Å for `offset_range` and `offset_step`; RELION reads pixels (the 412 log: 12.4 Å
+  steps from `offset_step` 2 at 6.2 Å/px). Now "(pixels)", as Refine 3D's.
+- **Checked** (session scratchpad `class3d_test/`): with `mpi_ranks` 1 the new driver builds, character for
+  character, the command each running ribosome Class 3D logged (job005, job006, job008, job012); the queued 412 job
+  gets the same relion_refine with K 6, `offset_range` 3, Ø 600, no `sigma_ang`; `mpi_ranks` 5 gives the mpirun
+  prefix; on a scratch copy of job008's real `run_it000`–`002` optimiser stars the checkpoint is iteration 2 (3 half
+  written), unchanged settings pass, K 4 → 5 is named, a serial start continues under MPI with another `--j`, the
+  mirror takes each iteration from the latest continuation as a hard link; `ruff`, `check_boundaries.py` clean.
+  **Not run:** relion_refine_mpi for Class 3D on a GPU, and a continuation through SLURM. The queued 412 job (SLURM
+  1779940) is the first to run the new driver, in its one-process form. The API and the job tab know `mpi_ranks`
+  only after a server restart.
 
 ## 13. Handoff: the particle builder (for the next session)
 

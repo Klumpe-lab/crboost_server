@@ -550,6 +550,25 @@ nothing and aggregates.
 **Check.** A Segment on 150+ tomograms submits its supervisor with about a day (`run_submit.script`, `#SBATCH
 --time`) under g_medium and Succeeds.
 
+### H21 — A plan says "at automatic" for a set_input that only chooses where a set's images come from
+
+**Status:** open, found 2026-11-18. **Severity:** low for the result, medium for trust: what the user accepts is not
+what the plan does. The job is right; the plan's words and its overview are not.
+
+**What is wrong.** `api/plans.py:158` words a `set_input` step as `a.source or a.path or "automatic"`, so a step that
+gives only `facet` (which kitchen-set source each project's images come from) reads "Point …'s input
+input_optimisation at automatic". `job_params.set_input` (`services/job_params.py:350`) keeps the source and only
+records the choice. The overview's table lists no facet choice at all, so the dialog never shows where a job's
+particle images will come from, which is the one choice Run refuses without.
+
+**Evidence.** Plan `p-f6ba241c` (AGG412_STA, nine Class 3D): steps 11–19 read "Point Class 3D's input
+input_optimisation at automatic"; the jobs submitted reading their sets, and their `input_set/particles.star` take
+every image from the chosen export (job005: 24,100 rows from job001; job013: 1,874 from job003).
+
+**Fix.** Word a facet-only step "Take {job}'s {facet} from {source label} for {project names}" (or "for the whole set"
+for `*`), and add a row per job and facet to the overview: "Images · from Warp Export (job001) · 8 projects".
+**Check.** The same plan's steps 11–19 and its overview name job001 / job003.
+
 ## Fixed
 
 ### H7 — Template matching with T, O or I symmetry searches 3 to 15 times the orientations its increment asks for
