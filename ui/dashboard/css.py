@@ -1656,33 +1656,73 @@ a.cb-viewer-chip:hover { color: #ffffff; }
 /* ── Pipeline table (ui/pipeline_table_view.py): a row is one job and opens it ── */
 .cb-pt-row:hover { background: #f1f5f9; }
 /* ── Toasts (every ui.notify) ──────────────────────────────────────────────── */
-/* A compact white card in the house type, its kind told by a 3 px left bar and the icon's
- * color, instead of Quasar's filled Material banner. `[class*=...]` outranks Quasar's
- * `!important` bg-* / text-* color classes. */
-.q-notification, .q-notification[class*="bg-"], .q-notification[class*="text-"] {
-    background: #ffffff !important; color: #1e293b !important;
-    border: 1px solid #e2e8f0; border-left: 3px solid #94a3b8; border-radius: var(--cb-r-md, 4px);
-    box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12); min-height: 0; padding: 3px 10px 3px 8px;
-    font-family: 'IBM Plex Sans', sans-serif; font-size: 11px; line-height: 1.4; max-width: 460px;
+/* The popup card's chrome: a title stripe with a square pip and the kind (Done, Error, Warning, Note, Copied), the
+ * message under it; bottom right. The kind comes from the type a call passes (Quasar's bg-* class), a copy names
+ * itself with `cb-toast-copied` (ui/components/copyable.py).
+ * Quasar's colour classes (.bg-positive, .text-white, ...) are `!important` inside the `quasar_importants` cascade
+ * layer, and for !important a layered rule beats every unlayered one, whatever its specificity. NiceGUI declares
+ * `theme` first, and for !important the first layer wins: the colours (and the list's alignment) go there. */
+@layer theme {
+    .q-notification { background: #ffffff !important; color: #1e293b !important; }
+    .q-notification .q-notification__message { color: #1e293b !important; }
+    .q-notification .q-notification__caption { color: #5b7089 !important; }
+    .q-notifications__list--bottom { align-items: flex-end !important; }
+}
+.q-notification { --cb-toast-pip: #94a3b8; --cb-toast-kind: "Note"; }
+.q-notification.bg-positive { --cb-toast-pip: #10b981; --cb-toast-kind: "Done"; }
+.q-notification.bg-negative { --cb-toast-pip: #ef4444; --cb-toast-kind: "Error"; }
+.q-notification.bg-warning { --cb-toast-pip: #f59e0b; --cb-toast-kind: "Warning"; }
+.q-notification.bg-info { --cb-toast-pip: #4a8fd4; --cb-toast-kind: "Note"; }
+.q-notification.bg-ongoing, .q-notification.bg-grey-8 { --cb-toast-pip: #4a8fd4; --cb-toast-kind: "Working"; }
+.q-notification.cb-toast-copied { --cb-toast-pip: #4a8fd4; --cb-toast-kind: "Copied"; }
+.q-notification {
+    border: 1px solid #c9d6e3; border-radius: 2px; box-shadow: 0 6px 18px rgba(16, 42, 67, .10);
+    padding: 0; min-height: 0; min-width: 240px; max-width: 460px;
+    font-family: var(--cb-sans, 'IBM Plex Sans', sans-serif); font-size: 10.5px; line-height: 1.4;
 }
 .q-notification .q-notification__wrapper { min-height: 0; }
-.q-notification .q-notification__message { font-size: 11px; padding: 3px 0; white-space: pre-line; }
-.q-notification .q-notification__caption { font-size: 10px; color: #64748b; opacity: 1; }
-.q-notification .q-notification__icon, .q-notification .q-notification__spinner {
-    font-size: 13px !important; margin-right: 7px; color: #94a3b8;
+.q-notification .q-notification__content { padding: 0; min-height: 0; }
+.q-notification .q-notification__content > div, .q-notification .q-notification__message { width: 100%; }
+.q-notification .q-notification__icon, .q-notification .q-notification__spinner,
+.q-notification .q-notification__avatar { display: none; }
+.q-notification .q-notification__message {
+    font-size: 10.5px; padding: 0 10px 7px; white-space: pre-line; overflow-wrap: anywhere;
 }
+.q-notification .q-notification__message::before {
+    content: var(--cb-toast-kind); display: block; margin: 0 -10px 6px; padding: 4px 10px 4px 24px;
+    font: 500 8.5px var(--cb-mono, 'IBM Plex Mono', monospace); text-transform: uppercase; letter-spacing: .07em;
+    color: #12324f; border-bottom: 1px solid #e4eaf1;
+    background: linear-gradient(var(--cb-toast-pip), var(--cb-toast-pip)) 10px 50% / 7px 7px no-repeat, #f2f6fb;
+}
+.q-notification .q-notification__caption { font-size: 10px; padding: 0 10px 7px; opacity: 1; }
+.q-notification .q-notification__actions { padding: 0 6px 4px; }
 .q-notification .q-notification__actions .q-btn { font-size: 10px; color: #475569 !important; text-transform: none; }
 .q-notification .q-notification__badge {
     font-size: 9px; padding: 0 4px; background: #475569 !important; color: #ffffff !important;
 }
-.q-notification.bg-positive { border-left-color: #16a34a; }
-.q-notification.bg-positive .q-notification__icon { color: #16a34a; }
-.q-notification.bg-negative { border-left-color: #dc2626; }
-.q-notification.bg-negative .q-notification__icon { color: #dc2626; }
-.q-notification.bg-warning { border-left-color: #d97706; }
-.q-notification.bg-warning .q-notification__icon { color: #d97706; }
-.q-notification.bg-info { border-left-color: #6366f1; }
-.q-notification.bg-info .q-notification__icon { color: #6366f1; }
+/* ── The roster's rail (ui/pipeline_builder/pipeline_roster.py) and its popups (ui/components/magazine.py) ── */
+.cb-rail-row:hover { background: var(--cb-hover, #eaf1f8); }
+.cb-rail-row .cb-rail-x { opacity: 0; color: #94a3b8; cursor: pointer; padding: 2px; }
+.cb-rail-row:hover .cb-rail-x { opacity: .7; }
+.cb-rail-row .cb-rail-x:hover { opacity: 1; color: #a61b1b; }
+.cb-rail-count { cursor: pointer; border-radius: 2px; padding: 0 3px; }
+.cb-rail-count:hover { background: #dbe7f3; box-shadow: inset 0 0 0 1px #a9c6e4; }
+.cb-rail-ghost .cb-rail-ghost-add { opacity: 0; }
+.cb-rail-ghost:hover { background: var(--cb-hover, #eaf1f8); }
+.cb-rail-ghost:hover .cb-rail-ghost-add { opacity: 1; }
+.cb-rail-band .cb-rail-glyph, .cb-rail-band .cb-rail-add { transition: opacity .1s; }
+.cb-rail-band .cb-rail-add { opacity: 0; cursor: pointer; color: #12324f; border-radius: 2px; }
+.cb-rail-band:hover .cb-rail-glyph { opacity: 0; }
+.cb-rail-band:hover .cb-rail-add { opacity: 1; }
+.cb-rail-band .cb-rail-add:hover { background: #dbe7f3; }
+.cb-mag-pop { animation: cb-mag-in .09s ease-out; }
+@keyframes cb-mag-in { from { opacity: 0; transform: translateX(-3px); } to { opacity: 1; transform: none; } }
+.cb-mag [data-ts] { cursor: pointer; }
+.cb-mag [data-ts]:hover, .cb-mag [data-ts].cb-mag-on { outline: 1.5px solid #12324f; outline-offset: 1px; }
+@keyframes cb-mag-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .32; } }
+.cb-mag-run { animation: cb-mag-pulse 1.3s ease-in-out infinite; }
+.cb-pop-x { cursor: pointer; color: #8aa0b8; }
+.cb-pop-x:hover { color: #12324f; }
 /* A view's expand icon and close cross (ui/workspace_page.py `_view_frame`), at the right end of
  * its title line. */
 .cb-view-close { color: #8aa0b8; cursor: pointer; border-radius: var(--cb-r-sm, 3px); width: 16px; height: 16px; }

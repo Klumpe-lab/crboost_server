@@ -5,7 +5,7 @@ from typing import Any, TYPE_CHECKING
 from nicegui import ui
 from services import array_status_cache
 from services.array_status_cache import is_array_job
-from services.array_tasks import TaskProgress, shorten_ts_names
+from services.array_tasks import TaskProgress
 from services.models_base import JobStatus
 from services.particles.particle_sets import list_sets, set_lineage, set_read_by
 from services.project_state import JobType
@@ -13,6 +13,8 @@ from ui.current_project import current_project_state
 
 from ui.components.buttons import house_button, icon_button
 from ui.components.copyable import copy_on_click
+from ui.components.job_glyph import job_glyph
+from ui.components.magazine import ANCHOR_JS, RosterPopups
 from ui.components.dialogs import dialog_host
 from ui.components.reactive import FingerprintedView, SingleFlight
 from ui.components.svg_icon import load_icon_svg
@@ -27,7 +29,7 @@ from ui.status_indicator import BoundStatusDot, _dot_html, _running_led_html
 from services.jobs.spec import JOB_SPEC_BY_TYPE, instance_display_name
 from services.models_base import InstanceId, instance_id_to_job_type
 from services.path_resolution_service import jobs_in_use
-from services.pipeline_edit import NOT_CLONED, in_use_notice, missing_deps
+from services.pipeline_edit import in_use_notice, missing_deps
 from ui.ui_state import get_job_display_name
 from ui.pipeline_builder.pipeline_constants import (
     PHASE_JOBS,
@@ -59,9 +61,21 @@ _LEAD_W = 10
 _ROW_GAP = 5
 _NAME_X = _LEAD_PAD + _LEAD_W + _ROW_GAP
 _NAME_COL_CH = max(len(get_job_display_name(jt)) for jobs in PHASE_JOBS.values() for jt in jobs)
-# What nests under a job row (the per-TS list, the filter's settings) indents to its name column.
-_NEST_INDENT = 18
-_SPECIES_GLYPH = "#94a3b8"
+# The rail: one cell per job type down the roster's left edge, in the title stripe's tint, its glyph on the type's
+# first row; a hairline under each type runs across the rail and the rows alike.
+_ROW_H = 22
+_PHASE_H = 22
+_RAIL_W = 28
+_RAIL_BG = "var(--cb-head, #f2f6fb)"
+_BAND_LINE = "var(--cb-line, #e4eaf1)"
+_GLYPH_INK = "#5b7089"
+_GLYPH_OFF = "#b3c0cf"
+# The species a job is for, as a small grey tag (named in full on hover).
+_SPECIES_TAG = (
+    f"{MONO} font-size: 7.5px; text-transform: uppercase; letter-spacing: .05em; color: #4f6782; "
+    "border: 1px solid #dbe3ec; border-radius: 2px; padding: 0 3px; line-height: 11px; flex-shrink: 0; "
+    "max-width: 15ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+)
 
 
 # The Journey glyph (a route from one point to another) is static/icons/journey.svg, the asset the
@@ -153,8 +167,29 @@ def _row_paint(active: bool) -> tuple[str, str]:
     return "background: white; border-left: 2px solid transparent;", "font-weight: 400; color: #1e293b;"
 
 
-def _header_border(active: bool) -> str:
-    return "var(--cb-accent, #4a8fd4)" if active else "transparent"
+def _tally(progress: TaskProgress | None, status) -> tuple[str, str, str]:
+    """A job's count on its row: (text, ink, hover). Done of all; red with failures, blue while it runs, green
+    once every task has settled without one, grey before it has a task list."""
+    if progress is None:
+        return "–", "#a9b8c9", "No task list yet: written when the job starts. Click for its magazine."
+    ok, total = progress.n_ok, progress.total
+    parts = [f"{ok} done"]
+    if progress.n_running:
+        parts.append(f"{progress.n_running} running")
+    if progress.n_fail:
+        parts.append(f"{progress.n_fail} failed")
+    if progress.n_skip:
+        parts.append(f"{progress.n_skip} skipped")
+    tip = f"{', '.join(parts)} of {total}. Click for its magazine."
+    if progress.n_fail:
+        ink = "var(--cb-bad-ink, #a61b1b)"
+    elif status in (JobStatus.RUNNING, JobStatus.QUEUED) or progress.n_settled < total:
+        ink = "var(--cb-run-ink, #1d4fa0)"
+    elif progress.n_settled == total:
+        ink = "var(--cb-ok-ink, #0f6b4c)"
+    else:
+        ink = "#94a3b8"
+    return f"{ok}/{total}", ink, tip
 
 
 class RosterWidget(FingerprintedView):
@@ -186,18 +221,14 @@ class RosterWidget(FingerprintedView):
         # only touches the DOM when a number actually moved.
         self._counts_paint: tuple | None = None
         self._refs: dict = {}
-        # Per-instance expansion state for per-TS sub-rows, persisted across
-        # roster refreshes (status_poller refreshes the roster every few seconds
-        # and would otherwise collapse rows the user had opened).
-        self._expanded_instances: dict[str, bool] = {}
-        # The rendered job rows ({instance: (row, name label)}) and multi-instance headers, so a job
-        # switch repaints the old and new active rows instead of rebuilding the roster.
+        # The rendered job rows ({instance: (row, name label)}), so a job switch repaints the old and new active
+        # rows instead of rebuilding the roster.
         self._rows: dict[str, tuple] = {}
-        self._headers: list[tuple] = []
         # Per-tick cache of array job state. Populated by signature(), read by
         # render(). Keyed by instance_id. Avoids redundant disk reads per tick.
         self._array_progress_cache: dict[str, TaskProgress | None] = {}
-        self._array_ts_cache: dict[str, tuple[list[str], dict[str, str], dict[str, str]] | None] = {}
+        # The magazine a job's count opens and the tilt filter's settings card: they outlive the rows.
+        self._popups = RosterPopups(panel)
         # In-flight row actions (the tilt filter's mode switch). Here rather than on
         # the row, which every repaint rebuilds.
         self._flight = SingleFlight()
@@ -254,17 +285,11 @@ class RosterWidget(FingerprintedView):
         # thread (services/array_status_cache.py): no disk read here. Kept for render() so the two
         # stay in lockstep.
         self._array_progress_cache = {}
-        self._array_ts_cache = {}
         for iid, jm in jobs.items():
             if not is_array_job(jm):
                 continue
-            # Expanded while running until the user toggles it. Seeded here, not in render(): a key
-            # render() adds moves this signature, and the next refresh repaints the whole roster.
-            self._expanded_instances.setdefault(iid, jm.execution_status == JobStatus.RUNNING)
             status = array_status_cache.get(ui_mgr.project_path, iid)
             self._array_progress_cache[iid] = status.progress if status is not None else None
-            if status is not None and self._expanded_instances.get(iid):
-                self._array_ts_cache[iid] = (list(status.items), status.statuses, shorten_ts_names(status.items))
 
         per_job = tuple(
             (
@@ -280,20 +305,8 @@ class RosterWidget(FingerprintedView):
             for iid, jm in sorted(jobs.items())
         )
 
-        # For expanded array jobs, fold in the per-TS status detail so toggling
-        # individual TS task outcomes (ok ↔ fail) re-renders even when summary
-        # counts are unchanged. For collapsed jobs, summary is enough.
-        array_state = tuple(
-            (
-                iid,
-                self._expanded_instances.get(iid, False),
-                self._array_progress_cache.get(iid),
-                tuple(sorted((self._array_ts_cache.get(iid) or (None, {}, None))[1].items()))
-                if self._expanded_instances.get(iid)
-                else None,
-            )
-            for iid in sorted(self._array_progress_cache.keys())
-        )
+        # The counts on the rows; the magazine follows the per-task states itself while it is open.
+        array_state = tuple((iid, self._array_progress_cache.get(iid)) for iid in sorted(self._array_progress_cache))
 
         return (
             self._flash_phase,
@@ -313,8 +326,6 @@ class RosterWidget(FingerprintedView):
             self._imported_tomograms_fingerprint(),
             # Jobs a run parked behind the tilt-filter review draw an amber ring.
             self._review_hold_fingerprint(),
-            # Every chevron, the tilt filter's settings included (array jobs fold theirs in above too).
-            tuple(sorted(self._expanded_instances.items())),
         )
 
     @staticmethod
@@ -356,13 +367,10 @@ class RosterWidget(FingerprintedView):
             row_paint, name_paint = _row_paint(iid == active)
             row.style(row_paint)
             name_el.style(name_paint)
-        for header, instances in self._headers:
-            if not header.is_deleted:
-                header.style(f"border-left: 2px solid {_header_border(active in instances)};")
 
     def render(self):
         panel = self.panel
-        self._rows, self._headers = {}, []
+        self._rows = {}
         # Read by every row: which jobs a queued or running one depends on (their × is hidden).
         self._in_use = jobs_in_use(current_project_state())
         # The panel's title line, the same as every view's (ui/workspace_page.py `_view_frame`); its cross
@@ -384,30 +392,24 @@ class RosterWidget(FingerprintedView):
             ).on("click", lambda _e: self._on_pipeline_icon())
         roster = panel.ui_mgr.roster()
         on_roster = set(roster)
+        self._popups.follow(on_roster)
         for phase_id, jobs in PHASE_JOBS.items():
-            icon_or_svg, phase_label, _ = PHASE_META[phase_id]
+            _icon_or_svg, phase_label, _ = PHASE_META[phase_id]
             is_flashing = self._flash_phase == phase_id
 
+            # The phase: a thin stripe across the roster, the rail included.
             with (
                 ui.element("div")
                 .props(f'id="{ROSTER_ANCHOR[phase_id]}"')
                 .style(
-                    "display: flex; align-items: center; gap: 5px; "
-                    # Set apart by the space above it; white, since it sticks over the rows.
-                    "padding: 10px 8px 3px 10px; "
-                    "background: #ffffff; "
-                    "position: sticky; top: 0; z-index: 2;"
+                    f"display: flex; align-items: center; gap: 4px; height: {_PHASE_H}px; padding: 0 6px 0 8px; "
+                    f"background: {_RAIL_BG}; border-bottom: 1px solid {_BAND_LINE}; "
+                    "position: sticky; top: 0; z-index: 2; flex-shrink: 0;"
                 )
             ):
-                if icon_or_svg.startswith("<svg"):
-                    ui.html(self._load_svg(icon_or_svg).replace("currentColor", "#94a3b8"), sanitize=False).style(
-                        "width: 12px; height: 12px; flex-shrink: 0; display: flex;"
-                    )
-                else:
-                    ui.icon(icon_or_svg, size="12px").style("color: #94a3b8; flex-shrink: 0;")
-
-                ui.label(phase_label.upper()).style(
-                    "font-size: 9px; font-weight: 700; color: #94a3b8; letter-spacing: 0.07em; line-height: 1;"
+                ui.label(phase_label).style(
+                    f"{MONO} font-size: 8px; text-transform: uppercase; letter-spacing: .08em; "
+                    "color: var(--cb-ink-3, #5b7089); line-height: 1;"
                 )
                 if phase_id == PHASE_PARTICLES:
                     ui.space()
@@ -418,72 +420,71 @@ class RosterWidget(FingerprintedView):
 
             for job_type in jobs:
                 instances = [iid for iid in roster if InstanceId.matches(iid, job_type)]
-                # A type made elsewhere (a Subset, from the tab of the job it cuts) has no add row or "+".
+                # A type made elsewhere (a Subset, from the tab of the job it cuts) has no template row and no "+".
                 addable = JOB_SPEC_BY_TYPE[job_type].roster_add
+                if not instances and not addable:
+                    continue
+                self._render_type_band(panel, job_type, instances, addable, on_roster, is_flashing)
 
-                if not instances:
-                    if not addable:
-                        continue
-                    # Unselected job type — single clickable row
-                    if is_flashing:
-                        row_bg, l_border, name_color = "#fefce8", "#fde68a", "#78716c"
-                    else:
-                        row_bg, l_border, name_color = "transparent", "transparent", "#9ca3af"
-
-                    with (
-                        ui.element("div")
-                        .style(
-                            f"display: flex; align-items: center; gap: {_ROW_GAP}px; "
-                            f"padding: 4px 8px 4px {_LEAD_PAD}px; cursor: pointer; "
-                            f"background: {row_bg}; border-left: 2px solid {l_border};"
-                        )
-                        .on("click", lambda j=job_type: self._on_unselected_click(j))
-                    ):
-                        ui.icon("check_box_outline_blank", size=f"{_LEAD_W}px").style("color: #d1d5db; flex-shrink: 0;")
-                        ui.label(get_job_display_name(job_type)).style(
-                            f"{MONO} font-size: 10px; font-weight: 400; color: {name_color}; "
-                            "flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                        )
-
-                elif len(instances) == 1:
-                    # Single instance — flat row, no header/instance split
-                    instance_id = instances[0]
-                    self._render_instance_row(panel, job_type, instance_id, show_add=addable)
-
-                else:
-                    # Multiple instances — a header, then instance rows laid out exactly like a
-                    # single instance's, so their lights stay in the roster's one column.
-                    missing = missing_deps(job_type, on_roster)
-                    any_active = any(panel.ui_mgr.active_instance_id == iid for iid in instances)
-                    header = ui.element("div").style(
-                        f"display: flex; align-items: center; gap: 6px; "
-                        f"padding: 4px 8px 4px {_NAME_X}px; "
-                        f"background: #f8fafc; border-left: 2px solid {_header_border(any_active)};"
+    def _render_type_band(self, panel, job_type, instances, addable, on_roster, is_flashing) -> None:
+        """One job type: its glyph in the rail on the left, its jobs on the right, one hairline under both. A type
+        with no job shows a grey template row that adds one; a type with jobs turns its glyph into a "+" on hover."""
+        name = get_job_display_name(job_type)
+        missing = missing_deps(job_type, on_roster) if instances else []
+        with (
+            ui.element("div")
+            .classes("cb-rail-band")
+            .style(f"display: flex; border-bottom: 1px solid {_BAND_LINE}; flex-shrink: 0;")
+        ):
+            with ui.element("div").style(
+                f"width: {_RAIL_W}px; flex-shrink: 0; position: relative; background: {_RAIL_BG}; "
+                f"border-right: 1px solid {_BAND_LINE}; min-height: {_ROW_H}px;"
+            ):
+                ink = "#d97706" if missing else (_GLYPH_INK if instances else _GLYPH_OFF)
+                glyph = ui.html(job_glyph(job_type, ink=ink), sanitize=False).style(
+                    f"position: absolute; left: {(_RAIL_W - 12) / 2}px; top: {(_ROW_H - 12) / 2}px;"
+                )
+                glyph.props["title"] = (
+                    f"{name}: missing " + ", ".join(get_job_display_name(d) for d in missing) if missing else name
+                )
+                if instances and addable:
+                    glyph.classes("cb-rail-glyph")
+                    ui.icon("add", size="13px").classes("cb-rail-add").style(
+                        f"position: absolute; left: {(_RAIL_W - 14) / 2}px; top: {(_ROW_H - 14) / 2}px;"
+                    ).props(f'title="Add another {name}"').on(
+                        "click", lambda _e, j=job_type: panel.prompt_species_and_add(j)
                     )
-                    self._headers.append((header, tuple(instances)))
-                    with header:
-                        ui.label(get_job_display_name(job_type)).style(
-                            f"{MONO} font-size: 10px; font-weight: 600; color: #374151; "
-                            "flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                        )
-                        ui.label(str(len(instances))).style(
-                            "font-size: 9px; font-weight: 700; color: #6b7280; "
-                            "background: #e5e7eb; border-radius: var(--cb-r-pill, 999px); "
-                            "padding: 1px 5px; flex-shrink: 0;"
-                        )
-                        if missing:
-                            ui.icon("warning", size="11px").style("color: #f59e0b; flex-shrink: 0;").tooltip(
-                                "Missing: " + ", ".join(get_job_display_name(d) for d in missing)
-                            )
-                        if addable:
-                            icon_button(
-                                "add",
-                                lambda j=job_type: panel.prompt_species_and_add(j),
-                                tooltip=f"Add another {get_job_display_name(job_type)}",
-                            )
+            with ui.element("div").style("flex: 1 1 auto; min-width: 0;"):
+                if not instances:
+                    self._render_template_row(job_type, is_flashing)
+                for instance_id in instances:
+                    self._render_instance_row(panel, job_type, instance_id)
 
-                    for instance_id in instances:
-                        self._render_instance_row(panel, job_type, instance_id)
+    def _render_template_row(self, job_type, is_flashing: bool) -> None:
+        """A type with no job: its name in grey, "+ add" on hover; a click adds one."""
+        bg = "#fefce8" if is_flashing else "transparent"
+        with (
+            ui.element("div")
+            .classes("cb-rail-ghost")
+            .style(
+                f"display: flex; align-items: center; gap: {_ROW_GAP}px; height: {_ROW_H}px; "
+                f"padding: 0 6px 0 {_LEAD_PAD + 2}px; cursor: pointer; background: {bg};"
+            )
+            .on("click", lambda j=job_type: self._on_unselected_click(j))
+        ):
+            ui.html(
+                '<span style="display:inline-block;width:7px;height:7px;box-sizing:border-box;'
+                'border:1px dashed #c5d3e2;border-radius:1px;"></span>',
+                sanitize=False,
+            ).style("display: flex; flex-shrink: 0;")
+            ui.label(get_job_display_name(job_type)).style(
+                f"{MONO} font-size: 10px; color: #a9b8c9; flex: 1; min-width: 0; "
+                "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+            )
+            ui.label("+ add").classes("cb-rail-ghost-add").style(
+                f"{MONO} font-size: 8.5px; text-transform: uppercase; letter-spacing: .07em; "
+                "color: var(--cb-ink-3, #5b7089); flex-shrink: 0;"
+            )
 
     @staticmethod
     def _set_tag(job_model, project_path) -> None:
@@ -499,8 +500,10 @@ class RosterWidget(FingerprintedView):
             text = f"Reads {set_id}: {set_lineage(pset)}" if pset is not None else f"Reads {set_id}, which is gone"
             ui.tooltip(text).style("white-space: pre-line;")
 
-    def _render_instance_row(self, panel, job_type, instance_id, show_add=False):
-        """Render a single job instance row — single line with icons at end."""
+    def _render_instance_row(self, panel, job_type, instance_id):
+        """One job: its light, its name and folder, what tells it apart (the particle set it reads, its species),
+        then its count (a click opens the magazine) or, for the tilt filter, where it is (a click opens its
+        settings), its extra tabs, and the remove cross that shows on hover."""
         job_model = current_project_state().jobs.get(instance_id)
 
         base_name = get_job_display_name(job_type)
@@ -516,21 +519,20 @@ class RosterWidget(FingerprintedView):
             job_tag = None if suffix is None else (f"#{suffix}" if suffix.isdigit() else suffix)
 
         species_id = getattr(job_model, "species_id", None) if job_model else None
-        species = None
-        if species_id and panel.ui_mgr.project_path:
-            from services.project_state import get_project_state_for
-
-            s_state = get_project_state_for(panel.ui_mgr.project_path)
-            species = s_state.get_species(species_id)
+        species = current_project_state().get_species(species_id) if species_id else None
 
         is_active = panel.ui_mgr.active_instance_id == instance_id
         row_paint, name_paint = _row_paint(is_active)
-        row = ui.element("div").style(
-            f"display: flex; align-items: center; gap: {_ROW_GAP}px; "
-            f"padding: 4px 4px 4px {_LEAD_PAD}px; {row_paint} min-width: 0;"
+        row = (
+            ui.element("div")
+            .classes("cb-rail-row")
+            .props(f'data-cb-anchor="{instance_id}"')
+            .style(
+                f"display: flex; align-items: center; gap: {_ROW_GAP}px; height: {_ROW_H}px; "
+                f"padding: 0 4px 0 {_LEAD_PAD}px; {row_paint} min-width: 0;"
+            )
         )
         with row:
-            # Status light
             with ui.element("span").style("overflow: visible; line-height: 0; flex-shrink: 0;"):
                 self._status_widget(instance_id)
             # Clickable name, then the job's own column. The job folder copies its full path
@@ -560,97 +562,35 @@ class RosterWidget(FingerprintedView):
                             ui.tooltip(f"{full_path}\nClick to copy").style("white-space: pre-line;")
                         copy_on_click(tag, full_path)
                 self._set_tag(job_model, panel.ui_mgr.project_path)
-            # The species: one grey glyph, the Particles registry's own, named on hover.
-            if species:
-                with ui.element("div").style("display: flex; flex-shrink: 0;"):
-                    ui.html(load_icon_svg("particle.svg", _SPECIES_GLYPH, size=11), sanitize=False).style(
-                        "display: flex;"
-                    )
-                    ui.tooltip(f"Species: {species.name}")
-            # The tilt filter says where it is where an array job shows its progress.
+                if species is not None:
+                    ui.label(species.name).style(_SPECIES_TAG).props(f'title="Species: {species.name}"')
             is_filter = job_type == JobType.TILT_FILTER and job_model is not None
-            show_filter_status = is_filter and panel.ui_mgr.project_path is not None
-            # Inline array progress (e.g., "17/18" green, or "17/18 1!" red).
-            # Read from the per-tick cache populated by signature() so render and
-            # signature can't disagree on what's being painted.
-            progress = self._array_progress_cache.get(instance_id)
-            # Either sits tight against the row's chevron (the first of the row actions).
-            if show_filter_status or progress is not None:
+            if is_filter and panel.ui_mgr.project_path is not None:
+                # Where the filter is; a click opens its settings beside the row.
                 with ui.element("div").style(
-                    "display: flex; align-items: center; gap: 3px; min-width: 0; margin-right: -4px;"
-                ):
-                    if show_filter_status:
-                        render_tilt_filter_status(panel.ui_mgr.project_path, instance_id)
-                    if progress is not None:
-                        n_ok, n_fail, n_skip, n_total = progress.n_ok, progress.n_fail, progress.n_skip, progress.total
-                        # Live "running now" chip — shows that a parallel array is actively
-                        # working even while the settled count (below) sits low between
-                        # throttle-waves, so the row no longer looks frozen at 0/N.
-                        if progress.n_running > 0:
-                            ui.label(f"▸{progress.n_running}").style(
-                                f"{MONO} font-size: 8px; font-weight: 700; color: #2563eb; flex-shrink: 0;"
-                            ).tooltip(f"{progress.n_running} tilt-series running now")
-                        # Skipped (muted) chip — settled by design, shown apart from the
-                        # ok count so "5/6 ⊘1" isn't mistaken for an incomplete run.
-                        if n_skip > 0:
-                            ui.label(f"⊘{n_skip}").style(
-                                f"{MONO} font-size: 8px; font-weight: 600; color: #94a3b8; flex-shrink: 0;"
-                            ).tooltip(f"{n_skip} tilt-series skipped (muted / nothing to do)")
-                        if n_fail > 0:
-                            # Show "ok/total fail!" — e.g. "17/18 1!"
-                            ui.label(f"{n_ok}/{n_total}").style(
-                                f"{MONO} font-size: 8px; font-weight: 600; color: #16a34a; flex-shrink: 0;"
-                            )
-                            ui.label(f"{n_fail}!").style(
-                                f"{MONO} font-size: 8px; font-weight: 700; color: #dc2626; flex-shrink: 0;"
-                            )
-                        elif progress.n_settled == n_total:
-                            ui.label(f"{n_ok}/{n_total}").style(
-                                f"{MONO} font-size: 8px; font-weight: 600; color: #16a34a; flex-shrink: 0;"
-                            )
-                        elif progress.n_settled > 0:
-                            ui.label(f"{n_ok}/{n_total}").style(
-                                f"{MONO} font-size: 8px; font-weight: 600; color: #2563eb; flex-shrink: 0;"
-                            )
-                        else:
-                            ui.label(f"0/{n_total}").style(
-                                f"{MONO} font-size: 8px; font-weight: 600; color: #9ca3af; flex-shrink: 0;"
-                            )
-            # Row actions (right-aligned, flex-shrink: 0). Config/Logs/Files are
-            # deliberately NOT repeated per row — they are reachable from the
-            # job's top-bar tab switcher once the job is opened by clicking its
-            # name, so the per-row icons were pure redundancy.
-            is_array = "array_throttle" in getattr(job_model, "USER_PARAMS", set()) if job_model else False
-            with ui.element("div").style("display: flex; align-items: center; gap: 0; flex-shrink: 0;"):
-                # Array jobs get a single on-row chevron that toggles the inline
-                # per-TS sub-row list in place. It renders for EVERY array job
-                # (keyed on array_throttle — the same condition as the sub-rows
-                # below), not only those that register a Tasks tab, so a job like
-                # Subtomo Extraction can't end up with a list it has no control to
-                # collapse. The glyph reflects the current expand state so it reads
-                # as a real toggle.
-                from ui.job_plugins import get_extra_tabs
+                    "display: flex; align-items: center; min-width: 0; cursor: pointer;"
+                ) as where:
+                    render_tilt_filter_status(panel.ui_mgr.project_path, instance_id)
+                where.props('title="The filter\'s settings"')
+                where.on(
+                    "click", lambda e, iid=instance_id: self._open_filter_settings(iid, e.args), js_handler=ANCHOR_JS
+                )
+            progress = self._array_progress_cache.get(instance_id)
+            if job_model is not None and is_array_job(job_model):
+                text, ink, tip = _tally(progress, job_model.execution_status)
+                count = (
+                    ui.label(text)
+                    .classes("cb-rail-count")
+                    .style(f"{MONO} font-size: 8.5px; color: {ink}; line-height: 14px; flex-shrink: 0;")
+                )
+                count.props(f'title="{tip}"')
+                count.on(
+                    "click", lambda e, iid=instance_id: self._popups.open_magazine(iid, e.args), js_handler=ANCHOR_JS
+                )
+            # Extra tabs other than "tasks" (the magazine leads there) as on-row nav buttons.
+            from ui.job_plugins import get_extra_tabs
 
-                if is_array:
-                    # Seed the same default the sub-row renderer uses (expanded
-                    # while running) so the glyph and the list can't disagree on
-                    # the very first paint.
-                    is_running_job = job_model is not None and job_model.execution_status == JobStatus.RUNNING
-                    expanded_now = self._expanded_instances.setdefault(instance_id, is_running_job)
-                    chevron = "expand_more" if expanded_now else "chevron_right"
-                    icon_button(
-                        chevron,
-                        lambda iid=instance_id: self._toggle_ts_expansion(iid),
-                        tooltip="Toggle tilt-series list",
-                    )
-                elif is_filter:
-                    # The same chevron opens the filter's settings; collapsed by default.
-                    chevron = "expand_more" if self._expanded_instances.get(instance_id) else "chevron_right"
-                    icon_button(
-                        chevron, lambda iid=instance_id: self._toggle_ts_expansion(iid), tooltip="The filter's settings"
-                    )
-                # Extra tabs other than "tasks" still render as on-row nav buttons.
-                # ("tasks" is the toggle above and stays reachable from the top bar.)
+            with ui.element("div").style("display: flex; align-items: center; gap: 0; flex-shrink: 0;"):
                 for et in get_extra_tabs(job_type):
                     if et.key == "tasks":
                         continue
@@ -659,128 +599,20 @@ class RosterWidget(FingerprintedView):
                         lambda iid=instance_id, tk=et.key: panel.switch_to_job_subsection(iid, tk),
                         tooltip=et.label,
                     )
-                if show_add:
-                    icon_button(
-                        "add",
-                        lambda j=job_type: panel.prompt_species_and_add(j),
-                        tooltip=f"Add {get_job_display_name(job_type)}",
-                    )
-                # Not the singletons: the tilt filter, the import written at submit.
-                if job_model is not None and job_type not in NOT_CLONED:
-                    icon_button(
-                        "content_copy",
-                        lambda _, iid=instance_id, j=job_type, sp=job_model.species_id: panel.add_instance_to_pipeline(
-                            j, species_id=sp, clone_of=iid
-                        ),
-                        tooltip=f"Clone: a new {get_job_display_name(job_type)} with these parameters, SLURM "
-                        "settings and inputs set by hand",
-                    )
                 # A job in use by a queued or running one stays until that has finished or been cancelled.
                 if instance_id not in self._in_use:
-                    icon_button(
-                        "close", lambda _, iid=instance_id: self._on_remove_click(iid), tooltip="Remove", kind="danger"
+                    ui.icon("close", size="11px").classes("cb-rail-x").props('title="Remove"').on(
+                        "click.stop", lambda _e, iid=instance_id: self._on_remove_click(iid)
                     )
 
-        # ── Per-TS sub-rows (collapsible, for array jobs) ──
-        # `is_array` computed above with the row actions; reuse it so the chevron
-        # and the sub-rows are gated on exactly the same condition.
-        if is_array:
-            is_running = job_model.execution_status == JobStatus.RUNNING
-            # Default to expanded while running; persist any user toggle across refreshes.
-            expanded = self._expanded_instances.setdefault(instance_id, is_running)
-            # signature() populated this cache for expanded array jobs only.
-            # When collapsed the on-row chevron is the only control; the per-TS
-            # detail loads on the next tick after the user expands.
-            ts_data = self._array_ts_cache.get(instance_id) if expanded else None
-            if ts_data is not None:
-                items, statuses, display_names = ts_data
-            else:
-                items, statuses, display_names = [], {}, {}
-            status = array_status_cache.get(panel.ui_mgr.project_path, instance_id)
-            job_dir = status.job_dir if status is not None else None
-            self._render_ts_sub_rows(
-                instance_id, items, statuses, display_names, _NEST_INDENT, expanded=expanded, job_dir=job_dir
-            )
-        elif is_filter:
-            # Expanded, the filter's settings sit under its row; collapsed, the row alone says where it is.
-            if self._expanded_instances.get(instance_id):
-                render_tilt_filter_controls(panel, instance_id, self._flight, _NEST_INDENT + 4)
-
-    def _render_ts_sub_rows(
-        self,
-        instance_id: str,
-        items: list[str],
-        statuses: dict[str, str],
-        display_names: dict[str, str],
-        indent: int,
-        expanded: bool = False,
-        job_dir: Path | None = None,
-    ):
-        """Render the collapsible per-tilt-series status list under an array job.
-
-        Visibility is driven solely by the on-row chevron toggle in
-        _render_instance_row (`expanded`); there is no separate arrow row
-        underneath the parent anymore — it used to render even before a job had
-        produced any tasks, which broke the visual flow of the roster. When the
-        list is expanded but the job hasn't run yet, a muted hint is shown
-        instead of an empty box. Rows are ordered by (stage, beam) ascending.
-        Clicking a row navigates the main pane to this job's Tasks tab and scrolls
-        to the matching entry there — no pop-up dialog, nothing to get auto-closed
-        by a background refresh.
-        """
-        from services.array_tasks import sort_ts_by_position
-
-        _TS_COLORS = {"ok": "#16a34a", "fail": "#dc2626", "running": "#2563eb", "pending": "#d1d5db"}
-        _TS_ICONS = {"ok": "check_circle", "fail": "error", "running": "sync", "pending": "radio_button_unchecked"}
-
-        container = ui.element("div").style(
-            f"display: {'block' if expanded else 'none'}; border-left: 2px solid #e2e8f0; margin-left: {indent - 4}px;"
-        )
-
-        display_order = sort_ts_by_position(items)
+    def _open_filter_settings(self, instance_id: str, anchor: dict) -> None:
+        """The tilt filter's settings, in a card beside its row (they used to fold out under it)."""
         panel = self.panel
-        with container:
-            if not display_order:
-                ui.label("Per-tilt-series tasks appear here once the job starts running.").style(
-                    f"{MONO} font-size: 8px; color: #94a3b8; font-style: italic; padding: 2px 6px 2px 8px;"
-                )
-            for ts_name in display_order:
-                status = statuses.get(ts_name, "pending")
-                color = _TS_COLORS.get(status, _TS_COLORS["pending"])
-                icon_name = _TS_ICONS.get(status, "radio_button_unchecked")
-                short_name = display_names.get(ts_name, ts_name)
 
-                row_style = "display: flex; align-items: center; gap: 5px; padding: 2px 6px 2px 8px;"
-                # Active when there is something to jump to (at least queued → started).
-                if status != "pending":
-                    row_style += " cursor: pointer;"
+        def build() -> None:
+            render_tilt_filter_controls(panel, instance_id, self._flight, 10)
 
-                row = ui.element("div").style(row_style)
-                if status != "pending":
-
-                    def _jump(_e, iid=instance_id, tn=ts_name):
-                        # One-shot deep link; the Tasks tab pops this to auto-expand
-                        # and scroll the matching row into view.
-                        panel.ui_mgr.focus_ts_by_instance[iid] = tn
-                        panel.switch_to_job_subsection(iid, "tasks")
-
-                    row.on("click", _jump)
-
-                with row:
-                    ui.icon(icon_name, size="11px").style(f"color: {color}; flex-shrink: 0;")
-                    ui.label(short_name).style(
-                        f"{MONO} font-size: 10px; color: #64748b; "
-                        "flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                    )
-                    ui.label(status).style(
-                        f"{MONO} font-size: 8px; color: {color}; text-transform: uppercase; "
-                        "font-weight: 600; flex-shrink: 0;"
-                    )
-
-    def _toggle_ts_expansion(self, instance_id: str) -> None:
-        """Flip a row's persisted chevron state: an array job's per-TS sub-rows, the tilt filter's settings."""
-        self._expanded_instances[instance_id] = not self._expanded_instances.get(instance_id, False)
-        self.refresh()
+        self._popups.open_card(f"filter:{instance_id}", anchor, 300, build, "Tilt filter")
 
     async def _on_unselected_click(self, job_type: JobType):
         panel = self.panel

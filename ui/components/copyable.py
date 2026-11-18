@@ -18,17 +18,25 @@ from ui.components.buttons import icon_button
 _MONO = "font-family: 'IBM Plex Mono', monospace;"
 
 
+def _copied(text: str) -> None:
+    """The toast a copy raises: COPIED over what was copied, or its size when it is more than a line."""
+    text = str(text)
+    lines = text.count("\n") + 1
+    shown = text if lines == 1 and len(text) <= 240 else f"{lines} lines, {len(text):,} characters"
+    ui.notify(shown, type="positive", classes="cb-toast-copied", timeout=1600)
+
+
 async def _write_clipboard(text: str) -> None:
     try:
         ui.clipboard.write(text)
-        ui.notify("Copied", type="positive", timeout=900)
+        _copied(text)
         return
     except Exception:
         pass
     safe = str(text).replace("`", "\\`")
     try:
         await ui.run_javascript(f"navigator.clipboard.writeText(`{safe}`)", respond=False)
-        ui.notify("Copied", type="positive", timeout=900)
+        _copied(text)
     except Exception as e:
         ui.notify(f"Clipboard failed: {e}", type="negative", timeout=2500)
 
