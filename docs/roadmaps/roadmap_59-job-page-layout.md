@@ -126,6 +126,29 @@ box's bottom.
 
 | # | Decision | Recommended |
 |---|---|---|
-| D5 | Header look: H1, H2 or H3 | H1 Rule: the flattest, nothing to read as a shadow; its group level is plain sans, a step under the mono caps of the section. It amends CLAUDE.md's "sections separate by whitespace, never underline rules": the hairline is the header's own, not a rule under a title |
-| D6 | Long paths: E1, E2 or E3 | E3 Open: one line by default, the whole path one click away, the file name kept longest |
+| D5 | Header look: H1, H2 or H3 | **H1 Rule** (maintainer, 2026-11-18). It amends CLAUDE.md's "sections separate by whitespace, never underline rules": the hairline is the header's own, not a rule under a title |
+| D6 | Long paths | **Middle cut** (§7), the maintainer's design, replacing E1–E3 |
 | D7 | Checkboxes: ours everywhere (a `house_check` in `ui/components/`), or Quasar's restyled to baseline alignment | Ours: B2 Rows takes job pages off checkboxes; dialogs and menus keep one, drawn by us |
+
+## 7. Long paths, as decided (2026-11-18)
+
+The maintainer's design, built in the prototype (`heads.mpath`, `MPATH_JS`, `MPATH_CSS`); E1–E3 are gone from the page.
+
+- **Cut in the middle.** As much of the path's start as fits, an ellipsis, then its last part (`/name`) whole. When the
+  name alone does not fit, the name is cut in its middle with its end (extension) kept. Inside the project the path is
+  written from the project folder, outside it whole. The cut is made in the browser in characters (the face is
+  monospaced; one character's width is measured in the element itself, and again once the fonts are ready), and made
+  again whenever the element's width changes (`ResizeObserver`), so a path only loses characters when its space does.
+- **Click copies** the whole absolute path (`copy_on_click`, the house toast). No copy icon beside a path any more.
+- **Hover unrolls it.** A lit copy (ink, a blue glow) is laid over the cut path, anchored at the ellipsis; the hidden
+  middle comes back a few characters a frame from both sides of it, then the project folder comes in on the left,
+  until the absolute path shows (~230 ms whatever its length). It is kept inside the window. It closes when the
+  pointer leaves, or when a scroll moves the path (a log scrolling elsewhere, or a scroll event that moved nothing,
+  does not close it).
+- **Checked** in headless Chromium on `/dev/job-page-ideas`: at 360 px `External/job013/in…/optimisation_set.star`,
+  `412_shell_rotavg…b004_apix6.20_box128.mrc`; a box resized 520 → 300 → 180 px re-cut live (whole,
+  `External…/optimisation_set.star`, `opti…t.star`); the clipboard held the absolute path after a click; the overlay's
+  edges per frame grew from the ellipsis outwards to the full path.
+- **Build:** the script as a static asset loaded once per client beside `ui/dashboard/css.py`'s styles (a `<script>`
+  injected after connect, as the CSS is), the component in `ui/components/` (`path_text(path, project)`), and every
+  `copyable_path` and path label in the job page, the roster's hover card and the dialogs moved onto it.

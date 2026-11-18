@@ -4,14 +4,14 @@ read and never written.
 Round 2 (the maintainer took A2 Rail, B2 Rows, D2 Table):
 H  header ladders (page, section, accented section, group): today's and three after Oxide's console, each on the
    picked page.
-E  long paths: Cut, Wrap, Open.
+E  long paths: cut in the middle, copied on click, unrolled on hover.
 F  checkboxes: today's against one whose label sits level with its box.
 
 Round 1, kept below for reference:
 A  the page: Strips, Rail, Flow. B  on/off options: Grid, Rows, Flags. C  the field geometry. D  Inputs & Outputs:
 Sockets, Table, Chain.
 
-The switches at the top apply to every option on the page: `?job=tm&head=rule&path=open&io=table&tog=rows`.
+The switches at the top apply to every option on the page: `?job=tm&head=rule&io=table&tog=rows`.
 """
 
 from __future__ import annotations
@@ -34,7 +34,6 @@ JOBS = [("motion", "Motion & CTF"), ("tm", "Template match"), ("class3d", "Class
 IOS = [("sockets", "D1 Sockets"), ("table", "D2 Table"), ("chain", "D3 Chain")]
 TOGS = [("grid", "B1 Grid"), ("rows", "B2 Rows"), ("flags", "B3 Flags")]
 HEADS = [("today", "Today"), ("rule", "H1 Rule"), ("tab", "H2 Tab"), ("band", "H3 Band")]
-PATHS = [("cut", "E1 Cut"), ("wrap", "E2 Wrap"), ("open", "E3 Open")]
 RAIL_W = 360
 
 
@@ -147,16 +146,15 @@ def _ladder(s) -> None:
             ui.label("A section that asks to be looked at.").style(f"{SANS} font-size: 10px; color: {SOFT};")
 
 
-def _paths(s, mode: str) -> None:
+def _paths(s) -> None:
     rows = [(i.word, i.path) for i in s.inputs if i.path] + [(o.word, o.path) for o in s.outputs if o.path]
     rows.append(("outside", "/groups/klumpe/software/Napari/Napari_crboost/examples/412_shell_rotavg_job004.mrc"))
     with ui.element("div").style(
-        "display: grid; grid-template-columns: 90px minmax(0, 1fr) 14px; align-items: start; gap: 4px 8px;"
+        "display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: center; gap: 4px 8px;"
     ):
         for word, p in rows:
-            ui.label(word).style(parts.SLOT + " line-height: 14px;")
-            heads.path(p, s.project, mode)
-            parts.copy_icon(p)
+            ui.label(word).style(parts.SLOT + " overflow: hidden; text-overflow: ellipsis;")
+            heads.mpath(p, s.project)
 
 
 def _checks() -> None:
@@ -203,12 +201,10 @@ def render_job_page_ideas() -> None:
 
     job = pick("job", JOBS, "class3d")
     head = pick("head", HEADS, "rule")
-    path = pick("path", PATHS, "open")
     io = pick("io", IOS, "table")
     tog = pick("tog", TOGS, "rows")
-    q = {"job": job, "head": head, "path": path, "io": io, "tog": tog}
-    ui.add_css(parts.CSS + heads.PATH_CSS + heads.CHECK_CSS)
-    parts.PATHS["mode"] = path
+    q = {"job": job, "head": head, "io": io, "tog": tog}
+    ui.add_css(parts.CSS + heads.MPATH_CSS + heads.CHECK_CSS)
     s = load(job)
     with ui.column().style("padding: 18px 26px 60px; gap: 6px; background: #f1f5f9; min-height: 100vh;"):
         ui.label("Job page: Parameters, Inputs & Outputs, SLURM").style(
@@ -221,7 +217,6 @@ def render_job_page_ideas() -> None:
         with ui.element("div").style("display: flex; flex-direction: column; gap: 5px; margin-top: 8px;"):
             _switch("job", JOBS, job, q)
             _switch("head", HEADS, head, q)
-            _switch("path", PATHS, path, q)
             _switch("io", IOS, io, q)
             _switch("tog", TOGS, tog, q)
 
@@ -269,21 +264,22 @@ def render_job_page_ideas() -> None:
         _heading(
             "E",
             "Long paths",
-            "Inside the project a path is written from the project folder; outside it, whole. Its file name is never "
-            "cut. Shown in the rail's width, where paths are cut today. Hover shows the whole path; the copy icon "
-            "beside it copies it.",
+            "Cut in the middle, never at the end: as much of the start as fits, an ellipsis, then the last part whole; "
+            "the name itself is cut (in its middle, its extension kept) only when it alone does not fit. The cut "
+            "follows "
+            "the width live. A click copies the whole path. Hovering lays a lit copy over it that unrolls from the "
+            "ellipsis towards both ends, then brings in the project folder on the left, until the absolute path shows.",
         )
-        for key, title, words in (
-            (
-                "cut",
-                "E1 · Cut",
-                "One line: the folder gives way with an ellipsis at its end, the file name never does.",
-            ),
-            ("wrap", "E2 · Wrap", "Every part, wrapping only after a slash: complete, at the cost of lines."),
-            ("open", "E3 · Open", "E1, and a click on it opens it to E2 in place; another click closes it."),
-        ):
-            with _panel(title, words, RAIL_W):
-                _paths(s, key)
+        for width in (RAIL_W, 240, 150):
+            with _panel(f"E · {width} px", "The same paths, narrower each time.", width):
+                _paths(s)
+        with _panel(
+            "E · Drag the corner",
+            "Resize this box from its bottom-right corner: the cut moves as it narrows and widens.",
+            HALF_W,
+        ) as frame:
+            frame.style("resize: horizontal; overflow: hidden; min-width: 120px; max-width: 1100px;")
+            _paths(s)
 
         _heading(
             "F",
@@ -294,6 +290,7 @@ def render_job_page_ideas() -> None:
         with _panel("F · Today against level", "Click either to flip it.", HALF_W):
             _checks()
 
+        ui.run_javascript(heads.MPATH_JS)
         ui.label("Round 1").style(f"{SANS} font-size: 15px; font-weight: 600; color: {INK}; margin-top: 40px;")
         _heading(
             "A",
