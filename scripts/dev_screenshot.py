@@ -64,6 +64,10 @@ def serve(port: int) -> None:
     except ImportError:
         pass
 
+    from ui.jobs_ideas import render_jobs_ideas
+
+    pages["/dev/jobs-ideas"] = render_jobs_ideas
+
     for route, render in pages.items():
 
         def make(render=render):
@@ -72,7 +76,10 @@ def serve(port: int) -> None:
                 ui.add_head_html(shell)
                 await client.connected()
                 ensure_assets_loaded()
-                render()
+                if render is render_jobs_ideas:
+                    await render(client)
+                else:
+                    render()
 
             return page
 

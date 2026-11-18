@@ -27,6 +27,7 @@ from ui.io_ideas_preview import render_io_ideas
 from ui.io_layouts_preview import render_io_layouts
 from ui.tree_ideas_preview import render_tree_ideas
 from ui.branch_map_preview import render_branch_map
+from ui.jobs_ideas import render_jobs_ideas
 from ui.workspace_page import build_workspace_page
 
 logger = logging.getLogger(__name__)
@@ -346,3 +347,9 @@ def create_ui_router(backend: CryoBoostBackend):
         await client.connected()
         ensure_assets_loaded()
         render_branch_map()
+
+    @ui.page("/dev/jobs-ideas")
+    async def jobs_ideas_page(client: Client):
+        await client.connected()
+        ensure_assets_loaded()
+        await render_jobs_ideas(client)
