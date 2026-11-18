@@ -21,6 +21,7 @@ from services.configs.mdoc_service import (
 )
 from services.configs.starfile_service import StarfileService
 from services.stack_import import choose_source_layer, resolve_stack, split_stack
+from services.job_links import sync_job_links
 from services.models_base import InstanceId
 from services.path_resolution_service import consumers_of, jobs_in_use
 from services.project_state import (
@@ -307,6 +308,8 @@ class ProjectService:
                 state.job_path_mapping.pop(iid, None)
 
             await self.backend.state_service.save_project(project_path=project_dir, force=True)
+            # A trashed folder's link would dangle.
+            await sync_job_links(project_dir, state)
 
             if errors:
                 return err(

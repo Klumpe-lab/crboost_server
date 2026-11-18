@@ -16,6 +16,7 @@ from services.configs.config_service import get_config_service
 from services.configs.starfile_service import StarfileService
 from services.job_models import ImportMoviesParams
 from services.jobs._base import SubmittedInput
+from services.job_links import sync_job_links
 from services.jobs.spec import JOB_SPEC_BY_TYPE, JOB_SPECS, driver_invocation
 from services.jobs.tilt_filter import FilterMode, dl_auto_filters, review_barrier, verdict_edges
 from services.path_resolution_service import PathResolutionError, PathResolutionService, find_cycle, get_context_paths
@@ -842,6 +843,8 @@ class PipelineOrchestratorService:
         # its dir, and a driver reads its paths from this file when it starts.
         state.mark_dirty()
         await self.backend.state_service.save_project(project_path=project_dir, force=True)
+        # The folders exist now: their readable links follow (a job that started over moves its link).
+        await sync_job_links(project_dir, state)
         if failed is not None:
             return err(failed)
 
