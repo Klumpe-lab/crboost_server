@@ -60,6 +60,7 @@ from services.tilt_series.tilt_state import (
 from services.visualization.preview_render import render_mrc_preview_b64
 from services.workers import WorkKind, run_in_worker
 from ui.components.buttons import house_button
+from ui.components.check import house_check
 from ui.components.dialogs import dialog_host
 from ui.components.segmented import render_segmented
 from ui.styles import MONO, SANS
@@ -1292,11 +1293,11 @@ class TiltGallery:
             with ui.menu().classes("cb-tg-menu"):
                 for key in offered:
                     metric = _METRIC[key]
-                    ui.checkbox(
+                    house_check(
                         metric.label,
                         value=key in self.metrics_on,
                         on_change=lambda e, k=key: self._set_metric(k, bool(e.value)),
-                    ).props("dense size=xs").tooltip(metric.tip)
+                    ).tooltip(metric.tip)
 
     def _render_legend(self) -> None:
         """The legend, icons only, each explained on hover: the marks the project's tilts carry,

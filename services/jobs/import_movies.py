@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import ClassVar
 from pydantic import Field
 
-from services.jobs._base import AbstractJobParams
+from services.jobs._base import M, S, AbstractJobParams, form
 from services.models_base import JobType, JobCategory
 from services.io_slots import InputSlot, OutputSlot, JobFileType
 
@@ -15,6 +15,7 @@ class ImportMoviesParams(AbstractJobParams):
     RUNS_INLINE: ClassVar[bool] = True  # tilt_series.star written inline; see _submit_chain
 
     USER_PARAMS: ClassVar[set[str]] = {"optics_group_name", "do_at_most"}
+    PARAM_GROUPS: ClassVar[tuple[str, ...]] = ("Import",)
 
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = []
     OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = [
@@ -22,8 +23,8 @@ class ImportMoviesParams(AbstractJobParams):
     ]
 
     # Job-specific parameters
-    optics_group_name: str = "opticsGroup1"
-    do_at_most: int = Field(default=-1)
+    optics_group_name: str = Field(default="opticsGroup1", title="Optics group", json_schema_extra=form("Import", M))
+    do_at_most: int = Field(default=-1, title="Max series", json_schema_extra=form("Import", S))
 
     def _get_job_specific_options(self) -> list[tuple[str, str]]:
         """Import uses relative paths - RELION runs from project root."""

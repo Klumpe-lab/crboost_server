@@ -33,13 +33,16 @@ from ui.analytics.common import (
     render_provenance,
 )
 from ui.components.buttons import house_button
+from ui.components.check import house_check
 from ui.components.fields import house_text
 from ui.components.reactive import SingleFlight
 from ui.components.viewer_chips import viewer_chips
-from ui.dashboard.figures import build_class_convergence_chart, build_fsc_chart, class_color
+from ui.components.plot import fsc_plot, plot, shares_plot
+from ui.dashboard.figures import class_color
 from ui.styles import MONO, SANS
 
-CHART_PX = 150
+# The plots' own size: they shrink with a narrower cell and keep their proportions.
+PLOT_WH = (520, 180)
 # Three central slices side by side, at the 160 px a tile is rendered at.
 SLICES_W, SLICES_H = 360, 120
 INK = "#1e293b"
@@ -141,7 +144,7 @@ class ReadoutPanel:
                         "Class shares at each iteration (model.star). The classification has settled when the bars "
                         "stop changing."
                     ).style(TOOLTIP_STYLE)
-                ui.echart(build_class_convergence_chart(its, per)).style(f"height: {CHART_PX}px; width: 100%;")
+                plot(shares_plot(its, per, class_color), *PLOT_WH)
             with ui.element("div").style(f"flex: 1 1 280px; min-width: 0; {CHART_CELL_STYLE}"):
                 with ui.label("each score bin, by class").style(
                     f"{SANS} font-size: 9px; font-weight: 600; color: #334155;"
@@ -323,9 +326,7 @@ class ReadoutPanel:
             for c in d["classes"]:
                 with ui.element("div").style("display: flex; align-items: center; gap: 0;"):
                     ui.html(_swatch(c["class"]), sanitize=False)
-                    ui.checkbox(str(c["class"]), on_change=lambda e, k=c["class"]: self._toggle(k, e.value)).props(
-                        "dense size=xs"
-                    ).style(f"font-size: 10px; color: {INK};")
+                    house_check(str(c["class"]), on_change=lambda e, k=c["class"]: self._toggle(k, e.value))
             house_text(
                 "name",
                 value="",
@@ -389,4 +390,4 @@ class ReadoutPanel:
                         "soft sphere of the species diameter. The halves come from RELION's random split; particles "
                         "closer than a diameter in opposite halves inflate it."
                     ).style(TOOLTIP_STYLE)
-                ui.echart(build_fsc_chart({k: v for k, v in fsc.items()})).style(f"height: {CHART_PX}px; width: 100%;")
+                plot(fsc_plot({k: v for k, v in fsc.items()}, *PLOT_WH), *PLOT_WH)

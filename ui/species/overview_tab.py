@@ -40,7 +40,7 @@ from ui.components.buttons import house_button
 from ui.components.chip import render_method_chip, render_polarity_chip
 from ui.components.color_swatch import render_color_swatch
 from ui.components.path_link import render_path_link
-from ui.job_plugins._field_styles import PANEL_HEAD_STYLE, PANEL_STYLE, PANEL_TITLE_STYLE
+from ui.job_plugins._field_styles import PANEL_STYLE, section_head
 from ui.particles.list_actions import commit_extraction_geometry
 from services.particles.catalog import is_enabled as catalog_is_enabled
 from ui.components.reactive import FingerprintedView, SingleFlight
@@ -51,12 +51,12 @@ logger = logging.getLogger(__name__)
 
 _DISK_REFRESH_S = 15.0  # status/sanity recompute cadence while shown (both touch disk)
 # Three ranks, and they must not collide — what is separate conceptually looks separate:
-#   SECTION  — a pale gray-blue panel (`PANEL_STYLE`) titled in `PANEL_TITLE_STYLE`, 12 px semibold
-#              MIXED case: "Species info" / "Template matching files" / "Extraction geometry".
+#   SECTION  — a panel (`PANEL_STYLE`) under its Rule head (`section_head`, mono caps with a hairline):
+#              "Species info" / "Template matching files" / "Extraction geometry".
 #   FIELD    — 9 px uppercase, muted: the label beside one input.
 #   HINT     — 10 px, lightest: the sentence explaining a section or a value.
-# A section title is never uppercase and a field label always is — that difference is
-# the hierarchy, so do not borrow one style to emphasise the other.
+# A section title draws its hairline and a field label does not — that difference is the hierarchy, so do not
+# borrow one style to emphasise the other.
 _TITLE_CLS = "text-sm font-semibold text-gray-800"
 _LABEL_CLS = "text-[9px] font-bold text-gray-400 uppercase tracking-wide"
 _HINT_CLS = "text-[10px] text-gray-400"
@@ -67,12 +67,9 @@ _NAME_INPUT_STYLE = "font-size: 12px; font-weight: 600; color: #1f2937;"
 
 
 def _section(title: str, *, tooltip: str | None = None) -> None:
-    """A section's title, the first line inside its panel (`PANEL_STYLE`). One helper so a new
-    section cannot invent a fourth heading style. No underline rule and no hint tail — panels are
-    separated by the page's gap, and anything worth saying rides the title's tooltip."""
-    lbl = ui.label(title).style(f"{PANEL_TITLE_STYLE} {PANEL_HEAD_STYLE} margin-bottom: 4px;")
-    if tooltip:
-        lbl.tooltip(tooltip)
+    """A section's Rule head, the first line inside its panel (`PANEL_STYLE`). One helper so a new section cannot
+    invent a fourth heading style. No hint tail: anything worth saying rides the title's tooltip."""
+    section_head(title, tooltip=tooltip).style("margin-bottom: 4px;")
 
 
 # `C1` IS "no symmetry", and most complexes are C1 (ribosome, proteasome) — the option

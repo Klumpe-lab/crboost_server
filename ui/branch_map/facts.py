@@ -431,7 +431,6 @@ def _class3d_facts(f: Facts, job_dir: Path) -> None:
         + (f" · {c['resolution_ang']:.1f} Å (Class 3D estimate)" if c["resolution_ang"] else "")
         for c in classes
     ]
-    f.plot = _plot_or_none([c["distribution"] * 100 for c in classes], "bars", f"share per class, % · it{final:03d}")
     for c in classes[:6]:
         url = map_slices_url(job_dir / f"run_it{final:03d}_class{c['class']:03d}.mrc")
         if url:
@@ -455,8 +454,13 @@ def _refine3d_facts(f: Facts, job_dir: Path) -> None:
     where = "converged" if converged else model.name.split("_half1")[0]
     f.lines = [f"{float(res):.2f} Å (gold-standard FSC, unmasked half maps) · {where}" if res else where]
     fsc = blocks.get("model_class_1")
-    if converged and fsc is not None and "rlnGoldStandardFsc" in getattr(fsc, "columns", ()):
-        f.plot = _plot_or_none([float(v) for v in fsc["rlnGoldStandardFsc"]], "curve", "gold-standard FSC by shell")
+    if fsc is not None and {"rlnResolution", "rlnGoldStandardFsc"} <= set(getattr(fsc, "columns", ())):
+        from services.particles.fsc_readout import crossing
+
+        freq = [float(v) for v in fsc["rlnResolution"]]
+        if crossing(freq, [float(v) for v in fsc["rlnGoldStandardFsc"]], 0.143) is None:
+            f.lines.append("the FSC never drops below 0.143: that number is the sampling limit, not a resolution")
+    f.lines.append("the FSC curve: the job's Results tab")
     url = map_slices_url(job_dir / "run_class001.mrc")
     if url:
         f.pictures = [(url, "run_class001.mrc, three central slices")]
@@ -491,11 +495,7 @@ def _postprocess_facts(f: Facts, job_dir: Path) -> None:
             f"{float(general['rlnFinalResolution']):.2f} Å (masked gold-standard FSC, 0.143)"
             + (f" · B {float(bfac):g} Å²" if bfac is not None else "")
         ]
-    fsc = blocks.get("fsc")
-    if fsc is not None and "rlnFourierShellCorrelationCorrected" in getattr(fsc, "columns", ()):
-        f.plot = _plot_or_none(
-            [float(v) for v in fsc["rlnFourierShellCorrelationCorrected"]], "curve", "masked FSC, corrected, by shell"
-        )
+    f.lines.append("the FSC curves: the job's Results tab")
     url = map_slices_url(job_dir / "postprocess.mrc")
     if url:
         f.pictures = [(url, "postprocess.mrc, three central slices")]

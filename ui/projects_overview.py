@@ -34,6 +34,7 @@ from services.project_state import SHARED_OWNER
 from ui.background_task import BackgroundTask
 from ui.components.buttons import house_button, icon_button
 from ui.components.copyable import copy_on_click
+from ui.components.path_text import path_text
 from ui.components.dialogs import dialog_host
 from ui.components.fields import house_field, house_select
 from ui.components.reactive import Debounced, SingleFlight
@@ -1448,9 +1449,9 @@ class ProjectsOverview:
                         self._render_status(proj)
 
                 # ---- Lines 2-3: where the project lives, where its data came from ----
-                self._render_path_line(path_str, color=CLR_LABEL, what="Project directory")
+                self._render_path_line(path_str)
                 if source_dir:
-                    self._render_path_line(source_dir, color=CLR_SUBLABEL, what="Raw data the project was created from")
+                    self._render_path_line(source_dir)
                 else:
                     ui.label("no raw-data path recorded").style(
                         f"{MONO} font-size: 9px; color: {CLR_GHOST}; font-style: italic;"
@@ -1895,15 +1896,10 @@ class ProjectsOverview:
         self._preview_open = bool(e.value)
 
     @staticmethod
-    def _render_path_line(path: str, *, color: str, what: str):
-        """One absolute path on its own line: tail-truncated, full text in the hover, and
-        the text itself copies on click (no icon)."""
-        label = ui.label(path).style(
-            f"{MONO} font-size: 9px; color: {color}; min-width: 0; max-width: 100%; align-self: flex-start; "
-            "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-        )
-        _set_title(label, f"{what}\n{path}\nClick to copy")
-        copy_on_click(label, path)
+    def _render_path_line(path: str):
+        """One absolute path on its own line, cut in its middle (`path_text`): a click copies it, hovering unrolls
+        it."""
+        path_text(path, style="align-self: stretch;")
 
     @staticmethod
     def _render_live_progress(proj: dict):

@@ -4,7 +4,7 @@ from typing import ClassVar
 from pydantic import Field
 
 from services.computing.slurm_service import SlurmConfig
-from services.jobs._base import AbstractJobParams
+from services.jobs._base import M, S, AbstractJobParams, form
 from services.models_base import JobType, JobCategory, AlignmentMethod
 from services.io_slots import InputSlot, OutputSlot, JobFileType
 
@@ -29,6 +29,7 @@ class TsAlignmentParams(AbstractJobParams):
         "imod_overlap",
         "array_throttle",
     }
+    PARAM_GROUPS: ClassVar[tuple[str, ...]] = ("Alignment", "AreTomo", "IMOD", "Processing")
 
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(key="input_star", accepts=[JobFileType.FS_MOTION_CTF_STAR], preferred_source="fsMotionAndCtf"),
@@ -58,18 +59,26 @@ class TsAlignmentParams(AbstractJobParams):
         ),
     ]
 
-    alignment_method: AlignmentMethod = AlignmentMethod.ARETOMO
-    rescale_angpixs: float = Field(default=12.0, ge=2.0, le=50.0)
-    tomo_dimensions: str = Field(default="4096x4096x2048")
-    sample_thickness_nm: float = Field(default=180.0, ge=50.0, le=1000.0)
-    do_at_most: int = Field(default=-1)
-    perdevice: int = Field(default=1, ge=0, le=8)
-    patch_x: int = Field(default=0, ge=0)
-    patch_y: int = Field(default=0, ge=0)
-    axis_iter: int = Field(default=0, ge=0)
-    axis_batch: int = Field(default=0, ge=0)
-    imod_patch_size: int = Field(default=200)
-    imod_overlap: int = Field(default=50)
+    alignment_method: AlignmentMethod = Field(
+        default=AlignmentMethod.ARETOMO, title="Method", json_schema_extra=form("Alignment", M),
+    )
+    rescale_angpixs: float = Field(
+        default=12.0, ge=2.0, le=50.0, title="Pixel size", json_schema_extra=form("Alignment", S, "Å/px"),
+    )
+    tomo_dimensions: str = Field(
+        default="4096x4096x2048", title="Tomogram size", json_schema_extra=form("Alignment", M, "px"),
+    )
+    sample_thickness_nm: float = Field(
+        default=180.0, ge=50.0, le=1000.0, title="Sample thickness", json_schema_extra=form("Alignment", S, "nm"),
+    )
+    do_at_most: int = Field(default=-1, title="Max series", json_schema_extra=form("Processing", S))
+    perdevice: int = Field(default=1, ge=0, le=8, title="Per GPU", json_schema_extra=form("Processing", S))
+    patch_x: int = Field(default=0, ge=0, title="Patches X", json_schema_extra=form("AreTomo", S))
+    patch_y: int = Field(default=0, ge=0, title="Patches Y", json_schema_extra=form("AreTomo", S))
+    axis_iter: int = Field(default=0, ge=0, title="Axis iterations", json_schema_extra=form("AreTomo", S))
+    axis_batch: int = Field(default=0, ge=0, title="Axis batch", json_schema_extra=form("AreTomo", S))
+    imod_patch_size: int = Field(default=200, title="Patch size", json_schema_extra=form("IMOD", S, "px"))
+    imod_overlap: int = Field(default=50, title="Patch overlap", json_schema_extra=form("IMOD", S))
     array_throttle: int = Field(
         default=40, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series alignment"
     )

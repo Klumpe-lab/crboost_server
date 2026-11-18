@@ -1,5 +1,5 @@
 """
-missAlign plugin: the default parameter form with a live summary above it of what the settings
+missAlign plugin: the default parameters with a live summary above them of what the settings
 resolve to — the pixel size and patch field of view of every macro-iteration on the stacks the job
 will read, and which process runs on which GPU and CPU — and of the settings that defeat themselves
 (an epoch cap at or below the last LR milestone, an unreadable schedule, milestone list or z_box, more
@@ -17,7 +17,7 @@ from services.jobs.miss_align import ScheduleEntry, parse_z_box, worker_plan
 from services.models_base import JobType
 from ui.job_plugins import register_params_renderer
 from ui.job_plugins._field_styles import CLR_HEADER, HELPER_STYLE, MONO
-from ui.job_plugins.default_renderer import render_config_preamble, render_default_params
+from ui.job_plugins.default_renderer import render_default_params_card
 
 _WARN_STYLE = HELPER_STYLE + " color: #b45309;"
 _ROW_STYLE = f"{MONO} font-size: 10px; color: {CLR_HEADER}; white-space: pre;"
@@ -25,14 +25,6 @@ _ROW_STYLE = f"{MONO} font-size: 10px; color: {CLR_HEADER}; white-space: pre;"
 
 @register_params_renderer(JobType.MISS_ALIGN)
 def render_miss_align_params(job_type, job_model, is_frozen, save_handler, *, ui_mgr=None, backend=None, **ctx):
-    render_config_preamble(job_model)
-
-    @ui.refreshable
-    def summary():
-        _render_summary(job_model)
-
-    summary()
-
     preset = job_model.iteration_preset
 
     def on_edit():
@@ -42,8 +34,17 @@ def render_miss_align_params(job_type, job_model, is_frozen, save_handler, *, ui
             preset = job_model.iteration_preset
         save_handler()
 
-    render_default_params(job_type, job_model, is_frozen, on_edit, exclude=ctx.get("exclude"))
-    return summary.refresh
+    def summary_block():
+        @ui.refreshable
+        def summary():
+            _render_summary(job_model)
+
+        summary()
+        return summary.refresh
+
+    return render_default_params_card(
+        job_type, job_model, is_frozen, on_edit, ui_mgr=ui_mgr, backend=backend, before=summary_block, **ctx
+    )
 
 
 def _groups(entries: tuple[ScheduleEntry, ...]) -> list[tuple[int, int, ScheduleEntry]]:

@@ -27,7 +27,7 @@ from ui.glob_directory_input import GlobDirectoryInput
 from ui.dataset_overview_panel import build_dataset_overview_panel, build_dry_run_summary
 from ui.dataset_split_panel import SPLIT_ONE_PROJECT, SPLIT_PER_FOLDER, FolderSplit, FolderSplitPanel
 from ui.projects_overview import ProjectsOverview
-from ui.job_plugins._field_styles import PANEL_HEAD_STYLE, PANEL_STYLE, PANEL_TITLE_STYLE
+from ui.job_plugins._field_styles import PANEL_STYLE, section_head
 from ui.styles import MONO, SANS as FONT
 
 logger = logging.getLogger(__name__)
@@ -1368,7 +1368,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                     view_switch("new")
 
                 with ui.column().classes("w-full").style(f"gap: 6px; {PANEL_STYLE}"):
-                    ui.label("Project").style(f"{PANEL_TITLE_STYLE} {PANEL_HEAD_STYLE}")
+                    section_head("Project")
                     with ui.row().classes("w-full gap-4"):
                         with ui.column().classes("gap-0").style("flex: 1;"):
                             ui.label("Project Name").style(field_label_style)
@@ -1437,7 +1437,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                 local_refs["raw_data_section"] = raw_data_section
 
                 with raw_data_section, ui.column().classes("w-full").style(section_style):
-                    ui.label("Raw data").style(f"{PANEL_TITLE_STYLE} {PANEL_HEAD_STYLE}")
+                    section_head("Raw data")
                     # Raw Frames & Mdocs (combined input)
                     with ui.column().classes("w-full gap-0"):
                         with ui.row().classes("w-full items-center justify-between"):

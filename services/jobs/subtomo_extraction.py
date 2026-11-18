@@ -3,7 +3,7 @@ from typing import ClassVar
 from pydantic import Field
 
 from services.computing.slurm_service import SlurmConfig
-from services.jobs._base import AbstractJobParams
+from services.jobs._base import S, SPECIES_GROUP, AbstractJobParams, form
 from services.models_base import JobType, JobCategory
 from services.io_slots import InputSlot, OutputSlot, JobFileType
 
@@ -34,6 +34,7 @@ class SubtomoExtractionParams(AbstractJobParams):
         "min_frames",
         "array_throttle",
     }
+    PARAM_GROUPS: ClassVar[tuple[str, ...]] = (SPECIES_GROUP, "Selection", "Output")
 
     # NOTE: additional_sources and merge_only are intentionally NOT in
     # USER_PARAMS. They are widget-managed state (the merge panel sets
@@ -83,38 +84,44 @@ class SubtomoExtractionParams(AbstractJobParams):
     # Extraction parameters
     binning: float = Field(
         default=1.0,
-        description=(
-            "Output voxel size = unbinned pixel size × this factor. box_size and crop_size are "
-            "counted in these binned voxels, so physical size (Å) = N × voxel. Higher binning → "
-            "coarser voxels, smaller & faster subtomos, lower attainable resolution. "
-            "E.g. 1.0 Å/px unbinned at bin 4 → 4 Å voxels."
-        ),
+        description="Output voxel size = unbinned pixel size × this factor. box_size and crop_size are counted in "
+        "these binned voxels, so physical size (Å) = N × voxel. Higher binning → coarser voxels, smaller & faster "
+        "subtomos, lower attainable resolution. E.g. 1.0 Å/px unbinned at bin 4 → 4 Å voxels.", title="Binning",
+        json_schema_extra=form(SPECIES_GROUP, S),
     )
     box_size: int = Field(
         default=384,
-        description=(
-            "Reconstruction box, in binned voxels: the cube RELION builds each pseudo-subtomogram "
-            "in. Must hold the particle PLUS the CTF-delocalized signal high defocus smears outward "
-            "(too small truncates high-res info). Aim ~2–3× particle diameter (1.5× floor). "
-            "E.g. bin 4 → 192 vox = 768 Å. Prefer even numbers."
-        ),
+        description="Reconstruction box, in binned voxels: the cube RELION builds each pseudo-subtomogram in. Must "
+        "hold the particle PLUS the CTF-delocalized signal high defocus smears outward (too small truncates high-res "
+        "info). Aim ~2–3× particle diameter (1.5× floor). E.g. bin 4 → 192 vox = 768 Å. Prefer even numbers.",
+        title="Box", json_schema_extra=form(SPECIES_GROUP, S, "px"),
     )
     crop_size: int = Field(
         default=224,
-        description=(
-            "Output box, in binned voxels: the central cube kept after reconstruction — what "
-            "Refine3D/Class3D load, so it sets file size + memory. Must be ≤ box_size and still "
-            "hold the particle + alignment-shift margin (aim ≥ ~1.5× diameter). -1 = no cropping "
-            "(output = box_size). E.g. bin 4 → 112 vox = 448 Å."
-        ),
+        description="Output box, in binned voxels: the central cube kept after reconstruction — what Refine3D/Class3D "
+        "load, so it sets file size + memory. Must be ≤ box_size and still hold the particle + alignment-shift margin "
+        "(aim ≥ ~1.5× diameter). -1 = no cropping (output = box_size). E.g. bin 4 → 112 vox = 448 Å.", title="Crop",
+        json_schema_extra=form(SPECIES_GROUP, S, "px"),
     )
     # Output format
-    do_float16: bool = Field(default=True, description="Write output in float16 to save space")
-    do_stack2d: bool = Field(default=True, description="Write as 2D stacks (preferred for RELION 4.1+)")
+    do_float16: bool = Field(
+        default=True, description="Write output in float16 to save space", title="Float16",
+        json_schema_extra=form("Output"),
+    )
+    do_stack2d: bool = Field(
+        default=True, description="Write as 2D stacks (preferred for RELION 4.1+)", title="2D stacks",
+        json_schema_extra=form("Output"),
+    )
 
     # Filtering
-    max_dose: float = Field(default=-1.0, description="Max dose to include (-1 = all)")
-    min_frames: int = Field(default=1, description="Min frames per tilt to include")
+    max_dose: float = Field(
+        default=-1.0, description="Max dose to include (-1 = all)", title="Max dose",
+        json_schema_extra=form("Selection", S, "e⁻/Å²"),
+    )
+    min_frames: int = Field(
+        default=1, description="Min frames per tilt to include", title="Min frames",
+        json_schema_extra=form("Selection", S),
+    )
 
     array_throttle: int = Field(
         default=40, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series subtomo extraction"

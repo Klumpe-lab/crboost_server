@@ -24,7 +24,6 @@ from ui.napari_open_page import render_napari_open_page
 from ui.components.buttons import house_button
 from ui.data_import_panel import build_data_import_panel
 from ui.io_ideas_preview import render_io_ideas
-from ui.job_page_ideas import render_job_page_ideas
 from ui.particle_card_ideas import render_particle_card_ideas
 from ui.io_layouts_preview import render_io_layouts
 from ui.tree_ideas_preview import render_tree_ideas
@@ -328,12 +327,6 @@ def create_ui_router(backend: CryoBoostBackend):
         await client.connected()
         ensure_assets_loaded()
         render_tree_ideas()
-
-    @ui.page("/dev/job-page-ideas")
-    async def job_page_ideas_page(client: Client):
-        await client.connected()
-        ensure_assets_loaded()
-        render_job_page_ideas()
 
     @ui.page("/dev/particle-card-ideas")
     async def particle_card_ideas_page(client: Client):

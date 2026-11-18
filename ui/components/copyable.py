@@ -2,14 +2,16 @@
 Reusable copy-to-clipboard affordances.
 
 App-wide rule: wherever an absolute path is shown, the path text itself copies it on a
-click (`copy_on_click`, `copyable_path` for inline path rows), so the user never has to
-hand-select truncated text and no row carries a copy icon. `copy_button` is for what is
+click, so the user never has to hand-select truncated text and no row carries a copy icon.
+A path is shown with `ui/components/path_text.py` (cut in its middle, unrolled on hover);
+`copy_on_click` makes any other text copy itself. `copy_button` is for what is
 not shown as text: a whole log, a command, a file's contents.
 """
 
 from __future__ import annotations
 
 import shlex
+from collections.abc import Callable
 
 from nicegui import ui
 
@@ -58,30 +60,13 @@ def chimerax_command(volume) -> str:
     return f"chimerax {shlex.quote(str(volume))}"
 
 
-def copy_on_click(element, text: str):
-    """Make `element` copy `text` when clicked; it turns blue and underlines on hover
-    (`.cb-copy-path`, ui/dashboard/css.py). `click.stop` so a clickable parent (a roster
-    row that opens or previews its project) does not also fire."""
+def copy_on_click(element, text: str | Callable[[], str]):
+    """Make `element` copy `text` when clicked (a callable is read at the click); it turns blue and underlines on
+    hover (`.cb-copy-path`, ui/dashboard/css.py). `click.stop` so a clickable parent (a roster row that opens or
+    previews its project) does not also fire."""
 
     async def _do():
-        await _write_clipboard(text)
+        await _write_clipboard(text() if callable(text) else text)
 
     return element.classes("cb-copy-path").on("click.stop", _do)
 
-
-def copyable_path(
-    path: str, *, color: str = "#475569", font_size: str = "10px", wrap: bool = True, copy_tooltip: str = "Copy path"
-):
-    """The FULL path (wrapping so it is always visible); a click copies it, `copy_tooltip` on hover.
-
-    Set wrap=False to ellipsize on one line instead (the hover then shows the path too).
-    """
-    if wrap:
-        text_style = "word-break: break-all; white-space: normal; line-height: 1.35;"
-    else:
-        text_style = "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-    label = ui.label(str(path)).style(
-        f"{_MONO} font-size: {font_size}; color: {color}; flex: 1 1 0; min-width: 0; {text_style}"
-    )
-    label.props["title"] = copy_tooltip if wrap else f"{copy_tooltip}\n{path}"
-    return copy_on_click(label, str(path))

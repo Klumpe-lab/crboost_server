@@ -1,9 +1,8 @@
 """Segment plugin: the method, then what it runs — easymode features picked from the weights
-cache's registry, or one Ais model and the feature its title names — then, after a gap, how it runs:
-TTA, easymode's output format, segmenting at easymode's 10 Å and smoothing plane-by-plane networks
-along Z. The input is the
-I/O section's; an IsoNet-denoised input is marked here and never blocked: easymode was trained on
-raw, even/odd and noise2noise reconstructions.
+cache's registry, or one Ais model and the feature its title names — then, in Settings, how it
+runs: TTA, easymode's output format, segmenting at easymode's 10 Å and smoothing plane-by-plane
+networks along Z. The input is the I/O section's; an IsoNet-denoised input is marked here and never
+blocked: easymode was trained on raw, even/odd and noise2noise reconstructions.
 
 The note on the input is what the job tab reruns after an edit in another section (the I/O choice
 changes it); the fields themselves are never rebuilt under the user."""
@@ -13,29 +12,19 @@ from pathlib import Path
 
 from nicegui import ui
 
-from services.models_base import DenoiseMethod, JobType, SegmentFormat, SegmentMethod
+from services.models_base import DenoiseMethod, JobType
 from services.path_resolution_service import PathResolutionService
 from services.project_state import get_project_state_for
 from services.job_params import easymode_catalog, set_params
 from services.segmentation.easymode import ais_model_title, easymode_cache_dir
 from services.segmentation.manifest import ENGINE_AIS, feature_slug
 from ui.job_plugins import register_params_renderer
-from ui.job_plugins._field_styles import (
-    HELPER_STYLE,
-    enum_field,
-    field_grid,
-    field_group,
-    multi_choice_row,
-    numeric_field,
-    path_row,
-    toggle_field,
-    toggle_row,
-)
-from ui.job_plugins.default_renderer import render_config_preamble
+from ui.job_plugins._field_styles import HELPER_STYLE, NOTE_INDENT, multi_choice_row, path_row
+from ui.job_plugins.default_renderer import render_default_params_card
 
 _WARN_STYLE = HELPER_STYLE + " color: #b45309;"
-# Under the value column of a field row (label column 110 px + gap).
-_NOTE_STYLE = " margin: 0 0 4px 118px;"
+# Under the box of a field row.
+_NOTE_STYLE = f" margin: 0 0 4px {NOTE_INDENT}px;"
 
 
 @lru_cache(maxsize=16)
@@ -59,77 +48,28 @@ def _set_note(label, text: str, warn: bool) -> None:
 
 @register_params_renderer(JobType.SEGMENT)
 def render_segment_params(job_type, job_model, is_frozen, save_handler, *, ui_mgr=None, **ctx):
-    render_config_preamble(job_model)
+    """The default parameters; the method shows only its own fields (`shows_param`). Features come from the weights
+    cache's registry, the Ais model's feature from its title; the note on the input under the group."""
+    instance_id = ctx.get("instance_id")
+    custom = {
+        "features": lambda _f: _render_features(
+            job_model, is_frozen, save_handler, ui_mgr=ui_mgr, instance_id=instance_id
+        ),
+        "ais_model_path": lambda _f: _render_ais_model(job_model, is_frozen, save_handler),
+    }
 
-    @ui.refreshable
-    def what_block():
-        if job_model.method == SegmentMethod.AIS_MODEL:
-            _render_ais_model(job_model, is_frozen, save_handler)
-        else:
-            _render_features(job_model, is_frozen, save_handler, ui_mgr=ui_mgr, instance_id=ctx.get("instance_id"))
-
-    @ui.refreshable
-    def how_block():
-        _render_settings(job_model, is_frozen, save_handler)
-
-    def on_method():
-        save_handler()
-        what_block.refresh()
-        how_block.refresh()
-
-    with field_grid():
-        enum_field(
-            "Method",
-            job_model,
-            "method",
-            SegmentMethod,
-            is_frozen=is_frozen,
-            save_handler=on_method,
-            hint=_description(job_model, "method"),
-        )
-    what_block()
-
-    @ui.refreshable
     def input_note():
-        _render_input_note(ui_mgr, ctx.get("instance_id"))
+        @ui.refreshable
+        def note():
+            _render_input_note(ui_mgr, instance_id)
 
-    input_note()
-    with field_group():
-        how_block()
-    return input_note.refresh
+        note()
+        return note.refresh
 
-
-def _render_settings(job_model, is_frozen: bool, save_handler) -> None:
-    """How the networks run: TTA for either method; easymode's storage format and its 10 Å; smoothing
-    along Z of the networks that decide plane by plane."""
-    easymode = job_model.method != SegmentMethod.AIS_MODEL
-    with field_grid():
-        numeric_field(
-            "TTA", job_model, "tta", is_frozen=is_frozen, save_handler=save_handler, hint=_description(job_model, "tta")
-        )
-        if easymode:
-            enum_field(
-                "Output format",
-                job_model,
-                "output_format",
-                SegmentFormat,
-                is_frozen=is_frozen,
-                save_handler=save_handler,
-                hint=_description(job_model, "output_format"),
-            )
-    with toggle_row():
-        if easymode:
-            toggle_field(
-                "Segment at 10 Å",
-                job_model,
-                "match_training_voxel",
-                is_frozen=is_frozen,
-                save_handler=save_handler,
-                hint=_description(job_model, "match_training_voxel"),
-            )
-            _smooth_toggle(job_model, is_frozen, save_handler, "Smooth 2.5D features along Z")
-        else:
-            _smooth_toggle(job_model, is_frozen, save_handler, "Smooth along Z (2D and 2.5D models)")
+    after = {"Segmentation": input_note}
+    return render_default_params_card(
+        job_type, job_model, is_frozen, save_handler, ui_mgr=ui_mgr, custom=custom, after=after, **ctx
+    )
 
 
 def _render_features(job_model, is_frozen: bool, save_handler, *, ui_mgr=None, instance_id: str | None = None) -> None:
@@ -213,17 +153,6 @@ def _render_ais_model(job_model, is_frozen: bool, save_handler) -> None:
     )
     text, warn = _model_note(job_model.ais_model_path)
     note = _note(text, warn=warn)
-
-
-def _smooth_toggle(job_model, is_frozen: bool, save_handler, label: str) -> None:
-    toggle_field(
-        label,
-        job_model,
-        "smooth_z",
-        is_frozen=is_frozen,
-        save_handler=save_handler,
-        hint=_description(job_model, "smooth_z"),
-    )
 
 
 def _model_note(path: str) -> tuple[str, bool]:

@@ -57,9 +57,6 @@ def serve(port: int) -> None:
         "/dev/io-ideas": render_io_ideas,
         "/dev/io-ideas/tree": render_tree_ideas,
     }
-    from ui.job_page_ideas import render_job_page_ideas
-
-    pages["/dev/job-page-ideas"] = render_job_page_ideas
     try:
         from ui.branch_map_preview import render_branch_map
 

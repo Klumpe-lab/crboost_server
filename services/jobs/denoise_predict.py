@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import ClassVar
 from pydantic import Field
 
-from services.jobs._base import AbstractJobParams
+from services.jobs._base import L, M, S, AbstractJobParams, form
 from services.models_base import JobType, JobCategory, DenoiseMethod, EasymodeDenoiser
 from services.io_slots import InputSlot, OutputSlot, JobFileType
 from services.computing.slurm_service import SlurmPreset, SlurmConfig
@@ -40,6 +40,7 @@ class DenoisePredictParams(AbstractJobParams):
         "easymode_tta",
         "easymode_iter",
     }
+    PARAM_GROUPS: ClassVar[tuple[str, ...]] = ("Denoiser", "Tomograms")
     # Owned by render_denoise_params (the Denoiser, then only what the chosen method reads), not the
     # generic parameter grid.
     DENOISER_FIELDS: ClassVar[set[str]] = {
@@ -69,16 +70,23 @@ class DenoisePredictParams(AbstractJobParams):
         OutputSlot(key="output_star", produces=JobFileType.DENOISED_TOMOGRAMS_STAR, path_template="tomograms.star")
     ]
 
-    denoise_method: DenoiseMethod = DenoiseMethod.CRYOCARE
+    denoise_method: DenoiseMethod = Field(
+        default=DenoiseMethod.CRYOCARE, title="Denoiser", json_schema_extra=form("Denoiser", L),
+    )
     # cryoCARE-only:
-    ntiles_x: int = Field(default=4, ge=1, title="Tiles X", description=_tiles_description("X"))
-    ntiles_y: int = Field(default=4, ge=1, title="Tiles Y", description=_tiles_description("Y"))
-    ntiles_z: int = Field(default=4, ge=1, title="Tiles Z", description=_tiles_description("Z"))
+    ntiles_x: int = Field(
+        default=4, ge=1, description=_tiles_description("X"), title="Tiles X", json_schema_extra=form("Denoiser", S),
+    )
+    ntiles_y: int = Field(
+        default=4, ge=1, description=_tiles_description("Y"), title="Tiles Y", json_schema_extra=form("Denoiser", S),
+    )
+    ntiles_z: int = Field(
+        default=4, ge=1, description=_tiles_description("Z"), title="Tiles Z", json_schema_extra=form("Denoiser", S),
+    )
     denoising_tomo_name: str = Field(
         default="",
-        title="Tomogram filter",
-        description="Denoise only the tomograms whose name contains this text; the others are skipped. "
-        "Empty: all of them.",
+        description="Denoise only the tomograms whose name contains this text; the others are skipped. Empty: all of "
+        "them.", title="Tomogram filter", json_schema_extra=form("Tomograms", M),
     )
     # Read by no denoise driver; kept so saved projects still load.
     perdevice: int = Field(default=1)
@@ -91,29 +99,23 @@ class DenoisePredictParams(AbstractJobParams):
         description="Whether IsoNet's CTF deconvolution was applied at training — set it the same as the "
         "denoise-train job that made the model. A noise2noise model (method auto / isonet2-n2n) reads the raw "
         "even/odd halves either way, so it only matters for an isonet2 (single-map) model. Only used when "
-        "denoise_method = IsoNet.",
+        "denoise_method = IsoNet.", title="IsoNet deconv", json_schema_extra=form("Denoiser"),
     )
     # easymode-only (ignored by cryoCARE and IsoNet):
     easymode_denoiser: EasymodeDenoiser = Field(
         default=EasymodeDenoiser.N2N,
-        title="easymode model",
-        description="n2n: noise2noise, denoises only. ddw: distilled DeepDeWedge, also fills the missing wedge. "
-        "iso: distilled IsoNet2, also fills the missing wedge.",
+        description="n2n: noise2noise, denoises only. ddw: distilled DeepDeWedge, also fills the missing wedge. iso: "
+        "distilled IsoNet2, also fills the missing wedge.", title="Model", json_schema_extra=form("Denoiser", M),
     )
     easymode_tta: int = Field(
-        default=1,
-        ge=1,
-        le=16,
-        title="TTA",
-        description="Test-time augmentation: how many rotated and flipped copies of each tomogram are denoised "
-        "and averaged (1–16). Smoother, and slower in proportion.",
+        default=1, ge=1, le=16,
+        description="Test-time augmentation: how many rotated and flipped copies of each tomogram are denoised and "
+        "averaged (1–16). Smoother, and slower in proportion.", title="TTA", json_schema_extra=form("Denoiser", S),
     )
     easymode_iter: int = Field(
-        default=1,
-        ge=1,
-        title="Iterations",
+        default=1, ge=1,
         description="How many times the denoiser runs (1 = once). More passes can raise contrast, and can add "
-        "artefacts.",
+        "artefacts.", title="Iterations", json_schema_extra=form("Denoiser", S),
     )
 
     def __init__(self, **data):

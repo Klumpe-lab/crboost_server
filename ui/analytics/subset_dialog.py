@@ -18,6 +18,7 @@ from services.array_tasks import ts_display_name
 from services.particles.particle_sets import ParentRef, ParticleSet, Rule, RuleKind
 from ui.analytics.common import ERROR_CLS, HINT_CLS, LABEL_CLS, esc
 from ui.components.buttons import house_button
+from ui.components.check import house_check
 from ui.components.dialogs import dialog_host
 from ui.components.fields import house_number, house_select, house_text
 from ui.components.reactive import SingleFlight
@@ -208,7 +209,7 @@ def _rule_row(r: _RuleRow, label: str, tip: str, defaults: SubsetDefaults, paren
         return _set
 
     with ui.row().classes("w-full items-center gap-2 no-wrap").style("min-height: 22px;"):
-        ui.checkbox(value=r.on, on_change=toggle).props("dense size=xs")
+        house_check(value=r.on, on_change=toggle)
         ui.label(label).style("font-size: 10px; color: #334155; width: 170px;").tooltip(tip)
         match r.kind:
             case RuleKind.DEPTH_BAND:

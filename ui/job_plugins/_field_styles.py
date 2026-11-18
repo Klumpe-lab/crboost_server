@@ -1,10 +1,10 @@
 """
-Shared visual language for job-page parameter renderers.
+Shared visual language for job pages and the panels built like them.
 
-All structural styling is inline (no dependency on a CSS class file). This
-keeps the layout robust even when static/main.css fails to refresh in the
-browser. Each field renders as a single horizontal row -- label inline-left
-of the input -- and rows stack vertically inside their collapsible.
+The header ladder (Rule): `section_head` / `section` / `config_section` / `panel_head` for a section, its title in
+mono caps with a hairline to the edge; `group_title` for a group inside one. The field geometry: a 132 px label
+column in the slot voice, the box at S / M / L (`box_style`), a 30 px unit column; an on/off parameter is a yes | no
+row. All structural styling is inline (no dependency on a stylesheet arriving).
 """
 
 import re
@@ -29,8 +29,8 @@ CLR_HEADER = "#475569"  # slate-600
 CLR_SUBLABEL = "#94a3b8"  # slate-400
 CLR_BORDER = "#e2e8f0"  # slate-200
 
-# Single label column width applied across Parameters / I/O / SLURM so
-# labels line up vertically and the three sections read as one form.
+# The label column of label/value rows outside the job form (the agent's plan page, the napari dialog); a look may
+# set it (`--cb-label-w`). The job form's own is FIELD_LABEL_W.
 LABEL_W = 110
 
 
@@ -49,6 +49,39 @@ LABEL_VOICE = voice("label", font="'IBM Plex Sans', sans-serif", size="10px", we
 LABEL_STYLE = (
     f"{LABEL_VOICE} line-height: 1.4; flex-shrink: 0; white-space: nowrap; width: var(--cb-label-w, {LABEL_W}px);"
 )
+# The job form's field geometry: a 132 px label column in the slot voice, then the box in one of three widths (S a
+# number, M a choice or a short code such as 500:10 or 2x2x1, L to the column's edge for a path or a list), then a
+# 30 px unit column after S and M, so their boxes line up down a group whatever the unit.
+FIELD_LABEL_W = 132
+UNIT_W = 30
+S, M, L = "S", "M", "L"
+BOX_WIDTH = {S: 64, M: 150}
+FIELD_LABEL_STYLE = (
+    f"{LABEL_VOICE} line-height: 1.4; flex-shrink: 0; width: {FIELD_LABEL_W}px; white-space: nowrap; "
+    "overflow: hidden; text-overflow: ellipsis;"
+)
+FIELD_ROW_STYLE = "display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; min-height: 20px;"
+UNIT_STYLE = (
+    f"{SANS} font-size: 9px; color: var(--cb-unit-ink, {CLR_SUBLABEL}); width: {UNIT_W}px; flex-shrink: 0; "
+    "white-space: nowrap;"
+)
+# Where a note under a field row starts: under the box, past the label column and the gap.
+NOTE_INDENT = FIELD_LABEL_W + 8
+
+
+def box_style(width: str) -> str:
+    """The box's place in a field row for a width class."""
+    if width in BOX_WIDTH:
+        return f"flex: 0 0 {BOX_WIDTH[width]}px; width: {BOX_WIDTH[width]}px; min-width: 0;"
+    return "flex: 1 1 0; min-width: 0;"
+
+
+# A read-only value in the box's place, drawn as the box (a frozen job's path).
+FROZEN_BOX_STYLE = (
+    "height: 20px; box-sizing: border-box; display: flex; align-items: center; padding: 0 5px; "
+    "border: 1px solid var(--cb-field-line, #d3dde8); border-radius: var(--cb-field-radius, 2px); background: #f8fafc;"
+)
+
 VALUE_WRAP_STYLE = f"{MONO} font-size: 11px; color: {CLR_VALUE}; flex: 1 1 0; min-width: 0;"
 # A fixed width, not max-width: a width-less q-input in a flex row shrink-wraps to a couple of
 # characters. 120 px holds ~16 monospace digits.
@@ -92,14 +125,11 @@ PAGE_SECTION_STYLE = (
     f"{SANS} font-size: 12px; font-weight: 600; color: var(--cb-head-ink, #12324f); line-height: 1; display: block;"
 )
 
-# A page's large blocks (a job page's sections): a panel and its title in the panel ink, as the
-# Journey's sections. Fields keep their white boxes on it. Colours, radius, padding and lines are the
-# style's CSS variables (`--cb-*`, ui/dashboard/css.py `_THEME_CSS`); each fallback is the default
-# style's value. The outline is drawn over the content, so it costs no layout and the stripe can't
-# cover it.
-# One box deep (roadmap 51 §5): the ring, fill and shadow are the section's (`--cb-section-*`), which a look makes
-# transparent inside a card, so a section is its title stripe and its content. The padding goes in as longhands: a
-# `var()` padding shorthand loses its other longhands in Chromium once `fold_panel` sets `padding-bottom`.
+# A page's large blocks outside the job page (a dialog's block, a Species tab's panel): a panel under its Rule head
+# (`section_head`). Colours, radius, padding and lines are the style's CSS variables (`--cb-*`,
+# ui/dashboard/css.py `_THEME_CSS`); each fallback is the default style's value. One box deep: the ring, fill and
+# shadow are the section's (`--cb-section-*`), which a look makes transparent inside a card. The padding goes in as
+# longhands: a `var()` padding shorthand loses its other longhands in Chromium once one of them is set.
 PANEL_STYLE = (
     "background: var(--cb-section-fill, #ffffff); border-radius: var(--cb-radius, 5px); "
     "padding-top: var(--cb-pad-y, 9px); padding-right: var(--cb-pad-x, 11px); "
@@ -107,21 +137,10 @@ PANEL_STYLE = (
     "outline: 1px solid var(--cb-section-ring, #dbe3ec); outline-offset: -1px; "
     "box-shadow: var(--cb-section-shadow, 0 1px 2px rgba(16, 42, 67, 0.06));"
 )
+# A dialog's or a page's own title (User settings, napari): the page rank, above the Rule ladder.
 PANEL_TITLE_STYLE = (
     f"{SANS} font-size: var(--cb-head-size, 12px); font-weight: 600; color: var(--cb-head-ink, #12324f); "
     "letter-spacing: var(--cb-head-track, 0); line-height: 1; display: block;"
-)
-# A panel's title line as a stripe across its top, edge to edge: the margins undo PANEL_STYLE's padding, so
-# it belongs on the panel's first child (the title label, or the row holding it). A style may rule it off
-# below and mark its left end (--cb-head-line, --cb-accent).
-PANEL_HEAD_STYLE = (
-    "background: var(--cb-head, #edf4fb); "
-    "margin: calc(-1 * var(--cb-pad-y, 9px)) calc(-1 * var(--cb-pad-x, 11px)) 0; "
-    "padding: var(--cb-head-pad, 5px) var(--cb-pad-x, 11px); width: calc(100% + 2 * var(--cb-pad-x, 11px)); "
-    "border-radius: var(--cb-radius, 5px) var(--cb-radius, 5px) 0 0; box-sizing: border-box; "
-    "box-shadow: 0 1px 0 var(--cb-head-line, #c9dbee), "
-    "inset var(--cb-accent-w, 2px) 0 0 var(--cb-accent, #4a8fd4), "
-    "inset 0 1px 0 var(--cb-head-glint, rgba(255, 255, 255, 0.9));"
 )
 
 
@@ -150,72 +169,106 @@ def view_head_icon(icon: str):
     return render_glyph(icon, size=14, color=VIEW_ICON_COLOR).style("margin-right: 2px;")
 
 
-def fold_panel(panel, head, open_: bool) -> None:
-    """A folding panel (a job page's Log and Files, the workbench's Activity log): folded, its title
-    stripe is the whole panel."""
-    panel.style(f"padding-bottom: {'calc(var(--cb-pad-y, 9px) + 2px)' if open_ else '0'};")
-    head.style(
-        f"border-radius: {'var(--cb-radius, 5px) var(--cb-radius, 5px) 0 0' if open_ else 'var(--cb-radius, 5px)'};"
-    )
-
-
 # A sub-block inside a Config section (SLURM's "Per-Task Resources" / "Supervisor"): spacing only, no box.
 GROUP_STYLE = "width: 100%; margin-top: 10px;"
 GROUP_MUTED_STYLE = GROUP_STYLE
 
 LABEL_PATH_STYLE = LABEL_STYLE  # path labels share the same column width
 
-# The one phrasing for the block of fields a job inherited from its species at
-# creation (template / mask / symmetry / Ø / extraction geometry). They are still job
-# parameters — snapshot-at-creation, nothing auto-propagates — so they are weakly
-# separated inside the same Parameters card, never boxed in a nested card of their own.
-SPECIES_SECTION_TITLE = "From species — override for this run"
 
 
-# ── Section heads ───────────────────────────────────────────────────────────
-def section_header(text: str, *, first: bool = False):
-    style = SECTION_HEADER_FIRST_STYLE if first else SECTION_HEADER_STYLE
-    ui.label(text).style(style)
+# ── Section heads: the Rule ladder ──────────────────────────────────────────
+# A section's head is its title in mono caps with a hairline running on from it to the right edge, and the
+# section's meta (what it is fixed at, its profile) at the far end; no fill, no corners. An accented section, one
+# that asks to be looked at (a failed job's Log, Results), has a square pip and its title and rule in the accent.
+# A group inside a section is a step quieter: sans semibold, no line. The hairline is an element of its own, so
+# the look needs no stylesheet to arrive.
+SECTION_TITLE_STYLE = (
+    "font-family: var(--cb-mono, 'IBM Plex Mono', monospace); font-size: 9.5px; font-weight: 600; "
+    "text-transform: uppercase; letter-spacing: .09em; line-height: 14px; white-space: nowrap; flex-shrink: 0;"
+)
+SECTION_META_STYLE = (
+    "font-family: var(--cb-mono, 'IBM Plex Mono', monospace); font-size: 8.5px; text-transform: uppercase; "
+    "letter-spacing: .09em; color: var(--cb-ink-4, #94a3b8); white-space: nowrap; flex-shrink: 0;"
+)
+_HEAD_INK = "var(--cb-head-ink, #12324f)"
+_ACCENT = "var(--cb-head-accent, #2f6fb3)"
+SECTION_RULE_STYLE = "flex: 1 1 auto; min-width: 12px; height: 1px; background: var(--cb-head-rule, #d6e0ea);"
+_ACCENT_RULE_STYLE = "flex: 1 1 auto; min-width: 12px; height: 1px; background: var(--cb-head-accent-soft, #a9c6e4);"
+SECTION_HEAD_STYLE = "display: flex; align-items: center; gap: 8px; min-height: 18px; width: 100%; min-width: 0;"
+# A section: its head over its content, one box deep (no ring, fill or padding of its own).
+SECTION_STYLE = "gap: 7px; width: 100%; min-width: 0;"
+GROUP_TITLE_STYLE = (
+    "font-family: var(--cb-sans, 'IBM Plex Sans', sans-serif); font-size: 10.5px; font-weight: 600; "
+    "color: var(--cb-ink-2, #1e293b); line-height: 14px; margin: 3px 0 2px; display: block;"
+)
+
+
+def section_head(
+    title: str, *, right: str = "", accent: bool = False, tooltip: str | None = None, caret: str | None = None
+) -> ui.element:
+    """A section's head: title, hairline to the edge, `right` as meta at the far end. Returns the row: controls built
+    `with` it land at its right end, after the meta. `caret` puts a fold's caret before the title (the row's `caret`
+    attribute, for the fold to turn); `tooltip` goes on the title."""
+    row = ui.element("div").classes("cb-shead").style(SECTION_HEAD_STYLE)
+    with row:
+        row.caret = None
+        if caret is not None:
+            row.caret = ui.label(caret).style(
+                "font-size: 9px; color: var(--cb-ink-4, #94a3b8); width: 8px; flex-shrink: 0; line-height: 14px;"
+            )
+        if accent:
+            ui.element("div").style(f"width: 6px; height: 6px; background: {_ACCENT}; flex-shrink: 0;")
+        lbl = ui.label(title).style(f"{SECTION_TITLE_STYLE} color: {_ACCENT if accent else _HEAD_INK};")
+        if tooltip:
+            lbl.tooltip(tooltip)
+        row.title_label = lbl
+        ui.element("div").style(_ACCENT_RULE_STYLE if accent else SECTION_RULE_STYLE)
+        if right:
+            row.meta_label = ui.label(right).style(SECTION_META_STYLE)
+    return row
+
+
+@contextmanager
+def section(title: str, *, right: str = "", accent: bool = False, tooltip: str | None = None):
+    """A section: its head (`section_head`), then what the caller builds under it. Yields the section's column;
+    its head is the column's `head`."""
+    with ui.column().classes("w-full").style(SECTION_STYLE) as col:
+        col.head = section_head(title, right=right, accent=accent, tooltip=tooltip)
+        yield col
+
+
+def group_title(text: str, *, tooltip: str | None = None) -> ui.label:
+    """A group's title inside a section (Angles & offsets, Reference & mask): sans semibold, no line."""
+    lbl = ui.label(text).style(GROUP_TITLE_STYLE)
+    if tooltip:
+        lbl.tooltip(tooltip)
+    return lbl
 
 
 # ── Containers ──────────────────────────────────────────────────────────────
 @contextmanager
-def panel_head(title: str, *, tooltip: str | None = None):
-    """A panel's title stripe with controls on it: the title on the left, the controls the caller builds
-    in the yielded row on the right, all centred on one line. The first child of a `PANEL_STYLE` panel."""
-    with ui.row().classes("items-center no-wrap").style(f"gap: 8px; min-height: 30px; {PANEL_HEAD_STYLE}"):
-        lbl = ui.label(title).style(PANEL_TITLE_STYLE)
-        if tooltip:
-            lbl.tooltip(tooltip)
-        ui.space()
+def panel_head(title: str, *, tooltip: str | None = None, right: str = "", accent: bool = False):
+    """A section's head with controls on it: the Rule head, the controls the caller builds in the yielded row at its
+    right end."""
+    with section_head(title, right=right, accent=accent, tooltip=tooltip) as row:
         with ui.row().classes("items-center no-wrap").style("gap: 6px;") as controls:
             yield controls
+    del row
 
 
 @contextmanager
-def config_section(title: str, *, tooltip: str | None = None):
-    """One section of a job's page (Parameters / Inputs / Outputs / SLURM resources): its
-    title over its content on a pale gray-blue panel, the Journey's section look. No border;
-    the page's column gap separates sections."""
-    with ui.column().classes("w-full").style(f"gap: 8px; {PANEL_STYLE}") as el:
-        lbl = ui.label(title).style(f"{PANEL_TITLE_STYLE} {PANEL_HEAD_STYLE}")
-        if tooltip:
-            lbl.tooltip(tooltip)
+def config_section(title: str, *, tooltip: str | None = None, right: str = "", accent: bool = False):
+    """One section of a page (a job page's Parameters, a dialog's block): its Rule head over its content."""
+    with section(title, right=right, accent=accent, tooltip=tooltip) as el:
         with ui.column().classes("w-full").style("gap: 0;"):
             yield el
 
 
 @contextmanager
 def field_grid():
-    """Auto-packing multi-column grid of field rows. Fields flow into as many
-    ~300px columns as the width allows (typically 2-4), so short numeric/enum
-    fields don't leave the right half of the panel empty and the section stays
-    short. Path fields stay full-width in their own column (they are rendered
-    outside field_grid); section headers sit above each grid."""
-    el = ui.element("div").style(
-        "display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); "
-        "column-gap: 18px; row-gap: 2px; width: 100%; align-items: start;"
-    )
+    """A group's field rows, one under the other at the field geometry (`FIELD_LABEL_W`, `box_style`)."""
+    el = ui.element("div").style("display: flex; flex-direction: column; gap: 3px; width: 100%; min-width: 0;")
     with el:
         yield el
 
@@ -229,10 +282,8 @@ def field_group(*, muted: bool = False):
 
 @contextmanager
 def toggle_row():
-    el = ui.element("div").style(
-        "display: flex; flex-wrap: wrap; column-gap: 18px; row-gap: 4px; "
-        "width: 100%; align-items: center; margin-top: 6px;"
-    )
+    """A group's on/off rows: like any field row, the switch where the box would be."""
+    el = ui.element("div").style("display: flex; flex-direction: column; gap: 3px; width: 100%; min-width: 0;")
     with el:
         yield el
 
@@ -241,28 +292,40 @@ def toggle_row():
 _INPUT_PROPS_BASE = "dense borderless hide-bottom-space"
 # Style applied to the inner <input> via Quasar's input-style prop.
 _INPUT_INNER_STYLE = (
-    "font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #1e293b; padding: 1px 2px; min-height: 0;"
+    "font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: #1e293b; padding: 1px 2px; min-height: 0;"
 )
 _INPUT_INNER_FROZEN = _INPUT_INNER_STYLE.replace("color: #1e293b", "color: #94a3b8")
 
 
-def _attach_input(inp, *, is_frozen: bool, narrow: bool):
+def _attach_input(inp, *, is_frozen: bool, width: str):
     # .cb-select (ui/dashboard/css.py) draws the same 1px box the enum selects have, so an
     # input's extent is visible and a number can't look cut off or rounded when it isn't.
     inp.classes("cb-select")
     inp.props(_INPUT_PROPS_BASE)
     inp.props(f'input-style="{_INPUT_INNER_FROZEN if is_frozen else _INPUT_INNER_STYLE}"')
-    inp.style(VALUE_WRAP_NARROW if narrow else VALUE_WRAP_STYLE)
+    inp.style(f"{MONO} font-size: 10.5px; color: {CLR_VALUE}; {box_style(width)}")
     if is_frozen:
         inp.props("readonly")
 
 
-def _label(text: str, hint: str | None, *, path_width: bool = False):
-    style = LABEL_PATH_STYLE if path_width else LABEL_STYLE
-    lbl = ui.label(text).style(style)
+def _select_chrome(sel, width: str) -> None:
+    sel.props(_INPUT_PROPS_BASE)
+    sel.props('popup-content-class="cb-select-popup"')
+    sel.classes("cb-select")
+    sel.style(box_style(width))
+
+
+def _label(text: str, hint: str | None, **_legacy):
+    lbl = ui.label(text).style(FIELD_LABEL_STYLE)
     if hint:
         lbl.tooltip(hint)
     return lbl
+
+
+def _unit(width: str, unit: str) -> None:
+    """The unit column after an S or M box; empty when the field has none, so the boxes line up."""
+    if width in BOX_WIDTH:
+        ui.label(unit).style(UNIT_STYLE)
 
 
 def text_field(
@@ -276,18 +339,20 @@ def text_field(
     suffix: str = "",
     narrow: bool = False,
     on_change: bool = True,
+    width: str | None = None,
 ):
-    with ui.element("div").style(ROW_STYLE):
+    """A text field's row; `width` S / M / L (M by default, S when `narrow`), `suffix` its unit."""
+    width = width or (S if narrow else M)
+    with ui.element("div").style(FIELD_ROW_STYLE):
         _label(label, hint)
         inp = ui.input().bind_value(job_model, attr)
-        _attach_input(inp, is_frozen=is_frozen, narrow=narrow)
+        _attach_input(inp, is_frozen=is_frozen, width=width)
         if not is_frozen:
             if on_change:
                 inp.on_value_change(lambda _e: save_handler())
             else:
                 inp.on("blur", lambda _e: save_handler())
-        if suffix:
-            ui.label(suffix).style(SUFFIX_STYLE)
+        _unit(width, suffix)
     return inp
 
 
@@ -383,8 +448,11 @@ def numeric_field(
     fmt: str | None = None,
     narrow: bool = True,
     on_change: bool = True,
+    width: str | None = None,
 ):
-    with ui.element("div").style(ROW_STYLE):
+    """A number's row; `width` S by default, `suffix` its unit."""
+    width = width or (S if narrow else M)
+    with ui.element("div").style(FIELD_ROW_STYLE):
         _label(label, hint)
         val = getattr(job_model, attr)
         is_int, _ = _numeric_kind(job_model, attr)
@@ -398,14 +466,13 @@ def numeric_field(
         # and 11.065 into 11.06.
         inp = ui.number(value=val, format=fmt, precision=0 if is_int else None, min=lo, max=hi)
         bind_numeric(inp, job_model, attr)
-        _attach_input(inp, is_frozen=is_frozen, narrow=narrow)
+        _attach_input(inp, is_frozen=is_frozen, width=width)
         if not is_frozen:
             if on_change:
                 inp.on_value_change(lambda _e: save_handler())
             else:
                 inp.on("blur", lambda _e: save_handler())
-        if suffix:
-            ui.label(suffix).style(SUFFIX_STYLE)
+        _unit(width, suffix)
     return inp
 
 
@@ -433,9 +500,19 @@ def enum_forward(job_model, attr: str, enum_type) -> Callable:
 
 
 def enum_field(
-    label: str, job_model, attr: str, enum_type, *, is_frozen: bool, save_handler: Callable, hint: str | None = None
+    label: str,
+    job_model,
+    attr: str,
+    enum_type,
+    *,
+    is_frozen: bool,
+    save_handler: Callable,
+    hint: str | None = None,
+    width: str = M,
+    unit: str = "",
 ):
-    with ui.element("div").style(ROW_STYLE):
+    """A static Enum's choice row; `width` M by default."""
+    with ui.element("div").style(FIELD_ROW_STYLE):
         _label(label, hint)
         options = [e.value for e in enum_type]
         sel = ui.select(options=options, value=getattr(job_model, attr)).bind_value(
@@ -443,14 +520,12 @@ def enum_field(
         )
         # `.cb-select` (themed in ui/dashboard/css.py) gives a clean 1px-bordered box and
         # a themed popup instead of the default Quasar Material underline/float.
-        sel.props(_INPUT_PROPS_BASE)
-        sel.props('popup-content-class="cb-select-popup"')
-        sel.classes("cb-select")
-        sel.style("flex: 1 1 0; min-width: 0;")
+        _select_chrome(sel, width)
         if is_frozen:
             sel.disable()
         else:
             sel.on_value_change(lambda _e: save_handler())
+        _unit(width, unit)
     return sel
 
 
@@ -467,6 +542,7 @@ def choice_row(
     placeholder: str = "none registered",
     empty_value: str = "",
     on_change: Callable[[str], None] | None = None,
+    width: str = L,
 ):
     """A select over a RUNTIME options dict (value -> display label), in the same row
     chrome as every other field. `enum_field` covers the static-Enum case; this covers
@@ -483,9 +559,9 @@ def choice_row(
     rather than `bind_value` so `empty_value` decides what "nothing chosen" means.
     `on_change`, when given, takes the chosen value instead of the write to `attr`.
     A shown value that is not among `options` shows `empty_value` if that is one of them,
-    else an empty box (NiceGUI refuses a value outside the options).
+    else an empty box (NiceGUI refuses a value outside the options). `width` L by default.
     """
-    with ui.element("div").style(ROW_STYLE):
+    with ui.element("div").style(FIELD_ROW_STYLE):
         _label(label, hint)
         if not options:
             sel = ui.select(options={"": placeholder}, value="")
@@ -494,10 +570,7 @@ def choice_row(
             if shown not in options:
                 shown = empty_value if empty_value in options else None
             sel = ui.select(options=options, value=shown)
-        sel.props(_INPUT_PROPS_BASE)
-        sel.props('popup-content-class="cb-select-popup"')
-        sel.classes("cb-select")
-        sel.style("flex: 1 1 0; min-width: 0;")
+        _select_chrome(sel, width)
         if is_frozen or not options:
             sel.disable()
         else:
@@ -510,6 +583,7 @@ def choice_row(
                 save_handler()
 
             sel.on_value_change(_on_change)
+        _unit(width, "")
     return sel
 
 
@@ -524,23 +598,21 @@ def multi_choice_row(
     hint: str | None = None,
     placeholder: str = "none available",
     on_change: Callable[[list[str]], None] | None = None,
+    width: str = L,
 ):
     """`choice_row` for a list field: any number of the options, shown comma-separated in the
     box. The field's values must be among `options` (the caller adds any it holds that are not,
     labelled as such, so they stay visible and removable). Writes a new sorted list, so the model
     sees an assignment and marks itself dirty. `on_change`, when given, takes the chosen list
-    instead of that write."""
-    with ui.element("div").style(ROW_STYLE):
+    instead of that write. `width` L by default."""
+    with ui.element("div").style(FIELD_ROW_STYLE):
         _label(label, hint)
         if not options:
             sel = ui.select(options={"": placeholder}, value="")
         else:
             current = [v for v in getattr(job_model, attr) or [] if v in options]
             sel = ui.select(options=options, value=current, multiple=True)
-        sel.props(_INPUT_PROPS_BASE)
-        sel.props('popup-content-class="cb-select-popup"')
-        sel.classes("cb-select")
-        sel.style("flex: 1 1 0; min-width: 0;")
+        _select_chrome(sel, width)
         if is_frozen or not options:
             sel.disable()
         else:
@@ -557,15 +629,13 @@ def multi_choice_row(
 
 
 def toggle_field(label: str, job_model, attr: str, *, is_frozen: bool, save_handler: Callable, hint: str | None = None):
-    cb = ui.checkbox(label).bind_value(job_model, attr).props("dense size=xs")
-    cb.style(f"{SANS} font-size: 10px; color: {CLR_HEADER};")
-    if hint:
-        cb.tooltip(hint)
-    if is_frozen:
-        cb.disable()
-    else:
-        cb.on_value_change(lambda _e: save_handler())
-    return cb
+    """An on/off parameter's row: the label in the label column, a yes | no switch where a box would be."""
+    from ui.components.check import yes_no
+
+    with ui.element("div").style(FIELD_ROW_STYLE):
+        _label(label, hint)
+        switch = yes_no(model=job_model, attr=attr, disabled=is_frozen, on_change=lambda _v: save_handler())
+    return switch
 
 
 def path_row(
@@ -577,11 +647,20 @@ def path_row(
     save_handler: Callable,
     hint: str | None = None,
     on_change: bool = True,
+    project=None,
 ):
-    with ui.element("div").style(ROW_STYLE):
-        _label(label, hint, path_width=True)
+    """A path parameter's row, the box to the column's edge. A frozen job's path shows cut in its middle
+    (`path_text`: a click copies it, hovering unrolls it); an editable one is a text box."""
+    from ui.components.path_text import path_text
+
+    with ui.element("div").style(FIELD_ROW_STYLE):
+        _label(label, hint)
+        value = getattr(job_model, attr) or ""
+        if is_frozen and value:
+            with ui.element("div").style(f"{FROZEN_BOX_STYLE} {box_style(L)}"):
+                return path_text(value, project)
         inp = ui.input().bind_value(job_model, attr)
-        _attach_input(inp, is_frozen=is_frozen, narrow=False)
+        _attach_input(inp, is_frozen=is_frozen, width=L)
         if not is_frozen:
             if on_change:
                 inp.on_value_change(lambda _e: save_handler())
@@ -592,8 +671,8 @@ def path_row(
 
 def kv_row(label: str, value: str, *, hint: str | None = None):
     """Read-only label/value pair (used by the I/O readonly view)."""
-    with ui.element("div").style(ROW_STYLE):
-        _label(label, hint, path_width=True)
+    with ui.element("div").style(FIELD_ROW_STYLE):
+        _label(label, hint)
         ui.label(value).style(
             f"{MONO} font-size: 10px; color: {CLR_HEADER}; flex: 1 1 0; "
             "min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"

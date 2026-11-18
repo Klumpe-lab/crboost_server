@@ -32,7 +32,7 @@ from services.tilt_series import get_registry_for
 from services.tilt_series.build import parse_position
 from ui.branch_map.model import TOOLS
 from ui.components.buttons import house_button
-from ui.components.copyable import copy_on_click
+from ui.components.path_text import path_text
 from ui.components.dialogs import dialog_host
 from ui.components.job_glyph import job_glyph
 from ui.current_project import current_project_state
@@ -378,11 +378,10 @@ class RosterPopups:
             relion = getattr(jm, "relion_job_name", None)
             if relion:
                 folder = str(project_path / relion.rstrip("/"))
-                with ui.element("div").style("display: flex; gap: 6px; min-width: 0;"):
+                with ui.element("div").style("display: flex; gap: 6px; min-width: 0; align-items: baseline;"):
                     ui.label("Folder").style(_LABEL)
-                    p = ui.label(folder).style(_PATH)
-                    p.props["title"] = f"{folder}\nClick to copy"
-                    copy_on_click(p, folder)
+                    with ui.element("div").style("flex: 1 1 0; min-width: 0;"):
+                        path_text(folder, project_path)
             counts: dict[str, int] = {}
             for _, s in tasks:
                 counts[s] = counts.get(s, 0) + 1
@@ -522,11 +521,10 @@ class RosterPopups:
                     ui.label(lab).style(_LABEL)
                     ui.label(val).style(f"{_VALUE} text-overflow: ellipsis;")
             if detail["log"]:
-                with ui.element("div").style("display: flex; gap: 6px; min-width: 0;"):
+                with ui.element("div").style("display: flex; gap: 6px; min-width: 0; align-items: baseline;"):
                     ui.label("Log").style(_LABEL)
-                    p = ui.label(detail["log"]).style(_PATH)
-                    p.props["title"] = f"{detail['log']}\nClick to copy"
-                    copy_on_click(p, detail["log"])
+                    with ui.element("div").style("flex: 1 1 0; min-width: 0;"):
+                        path_text(detail["log"])
         cap = f"{_LABEL} width: auto; padding: 2px 10px 1px;"
         if detail["err_tail"]:
             ui.label("stderr, last lines").style(cap)

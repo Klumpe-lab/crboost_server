@@ -72,7 +72,7 @@ from ui.background_task import BackgroundTask
 from ui.components.buttons import house_button, icon_button
 from ui.components.chip import render_chip
 from ui.components.reactive import FingerprintedView, SingleFlight
-from ui.job_plugins._field_styles import PANEL_HEAD_STYLE, PANEL_STYLE, PANEL_TITLE_STYLE, SECTION_HEADER_STYLE
+from ui.job_plugins._field_styles import PANEL_STYLE, SECTION_HEADER_STYLE, section_head
 from ui.components.svg_icon import load_icon_svg
 from ui.local_file_picker import local_file_picker
 from ui.particles import list_actions, session_status
@@ -285,12 +285,9 @@ class _PicksView(FingerprintedView):
 
     def render(self) -> None:
         c = self._tab.computed
-        with ui.row().classes("w-full items-center gap-2 px-1"):
-            # The title carries the save contract on hover.
-            ui.label("Picks & curation").style(PANEL_TITLE_STYLE).tooltip(
-                _save_contract(c.species_slug) if c is not None and not c.error else "computing…"
-            )
-            ui.space()
+        # The title carries the save contract on hover.
+        contract = _save_contract(c.species_slug) if c is not None and not c.error else "computing…"
+        with section_head("Picks & curation", tooltip=contract).classes("px-1"):
             if c is not None and not c.error:
                 # The watcher scans the session's folder every ~5 s and everything else every
                 # ~30 s; this sweeps the whole project now and recomputes the table.
@@ -600,8 +597,8 @@ class _PicksView(FingerprintedView):
     def _render_log(self) -> None:
         with ui.column().classes("w-full gap-0").style(PANEL_STYLE):
             events, unattributed = self._tab.watcher_view()
-            ui.label("Watcher").style(f"{PANEL_TITLE_STYLE} {PANEL_HEAD_STYLE} margin-bottom: 6px;").tooltip(
-                "What the server did with saves for this species."
+            section_head("Watcher", tooltip="What the server did with saves for this species.").style(
+                "margin-bottom: 6px;"
             )
             if not events:
                 ui.label("Nothing ingested yet for this species.").classes(_HINT_CLS)

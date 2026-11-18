@@ -6,7 +6,7 @@ from pydantic import Field
 
 from services.computing.slurm_service import SlurmConfig
 from services.io_slots import InputSlot, JobFileType, OutputSlot
-from services.jobs._base import AbstractJobParams
+from services.jobs._base import L, M, S, AbstractJobParams, form
 from services.models_base import JobCategory, JobType, SegmentFormat, SegmentMethod
 
 
@@ -31,6 +31,7 @@ class SegmentParams(AbstractJobParams):
         "smooth_z",
         "array_throttle",
     }
+    PARAM_GROUPS: ClassVar[tuple[str, ...]] = ("Segmentation", "Settings")
 
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         # easymode was trained on raw, even/odd and noise2noise reconstructions; a denoised input is
@@ -70,44 +71,44 @@ class SegmentParams(AbstractJobParams):
 
     method: SegmentMethod = Field(
         default=SegmentMethod.EASYMODE,
-        description="easymode: its pretrained networks for the features below. Ais model: one model you "
-        "trained in Ais (.scnm).",
+        description="easymode: its pretrained networks for the features below. Ais model: one model you trained in "
+        "Ais (.scnm).", title="Method", json_schema_extra=form("Segmentation", M),
     )
     features: list[str] = Field(
-        default_factory=list, description="easymode features to segment, from the weights cache's registry"
+        default_factory=list, description="easymode features to segment, from the weights cache's registry",
+        title="Features", json_schema_extra=form("Segmentation", L),
     )
     ais_model_path: str = Field(
-        default="", description="The Ais model (.scnm) to apply; its title becomes the feature's name"
+        default="", description="The Ais model (.scnm) to apply; its title becomes the feature's name",
+        title="Ais model", json_schema_extra=form("Segmentation", L),
     )
     tta: int = Field(
-        default=8,
-        ge=1,
-        le=8,
-        title="TTA",
-        description="Test-time augmentation: how many rotated and flipped copies of each tomogram are segmented "
-        "and averaged. More is smoother and slower: the networks take TTA times as long as one pass. Ais takes "
-        "at most 8.",
+        default=8, ge=1, le=8,
+        description="Test-time augmentation: how many rotated and flipped copies of each tomogram are segmented and "
+        "averaged. More is smoother and slower: the networks take TTA times as long as one pass. Ais takes at most 8.",
+        title="TTA", json_schema_extra=form("Settings", S),
     )
     output_format: SegmentFormat = Field(
         default=SegmentFormat.INT8,
-        description="How easymode's own 3D networks store p: int8 (p × 127, the smallest), uint16 (p × 255) "
-        "or float32 (p). Ais-engine features are always p × 255.",
+        description="How easymode's own 3D networks store p: int8 (p × 127, the smallest), uint16 (p × 255) or "
+        "float32 (p). Ais-engine features are always p × 255.", title="Output format",
+        json_schema_extra=form("Settings", M),
     )
     match_training_voxel: bool = Field(
         default=True,
-        title="Segment at 10 Å",
-        description="Resample each tomogram to 10 Å, the voxel size easymode's networks were trained on (its "
-        "spectrum cropped, as a 10 Å reconstruction holds it), segment that, and map every volume back onto the "
-        "tomogram's grid. Off, the tomogram is segmented as it is: easymode's 3D networks resample it themselves, "
-        "the Ais-engine ones (cytoplasm, nucleus, void, membrane, …) only in X/Y, so their Z context and contrast "
-        "differ from training. A tomogram within 5 % of 10 Å, or coarser, is segmented as it is either way.",
+        description="Resample each tomogram to 10 Å, the voxel size easymode's networks were trained on (its spectrum "
+        "cropped, as a 10 Å reconstruction holds it), segment that, and map every volume back onto the tomogram's "
+        "grid. Off, the tomogram is segmented as it is: easymode's 3D networks resample it themselves, the Ais-engine "
+        "ones (cytoplasm, nucleus, void, membrane, …) only in X/Y, so their Z context and contrast differ from "
+        "training. A tomogram within 5 % of 10 Å, or coarser, is segmented as it is either way.",
+        title="Segment at 10 Å", json_schema_extra=form("Settings"),
     )
     smooth_z: bool = Field(
         default=True,
-        title="Smooth along Z",
         description="Networks that decide each Z plane on its own (2D and 2.5D: cytoplasm, nucleus, void, "
         "mitochondrion, …) see X/Y at a coarse pixel (50 or 30 Å). Smooth their volumes along Z to that same "
         "resolution (a Gaussian whose FWHM is the network's X/Y pixel), which damps their plane-to-plane flips.",
+        title="Smooth along Z", json_schema_extra=form("Settings"),
     )
     array_throttle: int = Field(default=8, ge=1, le=64, description="Max concurrent SLURM array tasks (one GPU each)")
 
@@ -134,6 +135,14 @@ class SegmentParams(AbstractJobParams):
         if self.method == SegmentMethod.AIS_MODEL:
             return [] if self.ais_model_path.strip() else ["no Ais model chosen"]
         return [] if self.features else ["no features chosen"]
+
+    def shows_param(self, name: str) -> bool:
+        # easymode's features and storage format, or the one Ais model: what the method runs.
+        if name in ("features", "output_format", "match_training_voxel"):
+            return self.method != SegmentMethod.AIS_MODEL
+        if name == "ais_model_path":
+            return self.method == SegmentMethod.AIS_MODEL
+        return True
 
     def is_driver_job(self) -> bool:
         return True

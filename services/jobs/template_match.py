@@ -3,7 +3,7 @@ from typing import ClassVar
 from pydantic import Field, field_validator
 
 from services.computing.slurm_service import SlurmConfig
-from services.jobs._base import AbstractJobParams
+from services.jobs._base import L, M, S, SPECIES_GROUP, AbstractJobParams, form
 from services.models_base import JobType, JobCategory
 from services.io_slots import InputSlot, OutputSlot, JobFileType
 
@@ -63,6 +63,7 @@ class TemplateMatchPytomParams(AbstractJobParams):
         "search_exclude",
         "search_dilation_ang",
     }
+    PARAM_GROUPS: ClassVar[tuple[str, ...]] = ("Search", SPECIES_GROUP, "Weighting", "Search region", "GPUs")
 
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(
@@ -92,12 +93,12 @@ class TemplateMatchPytomParams(AbstractJobParams):
     # workbench: TemplateWorkbenchState = Field(default_factory=TemplateWorkbenchState)
 
     # Inputs (Strings here, resolved to Paths in resolve_paths)
-    template_path: str = Field(default="")
-    mask_path: str = Field(default="")
+    template_path: str = Field(default="", title="Template", json_schema_extra=form(SPECIES_GROUP, L))
+    mask_path: str = Field(default="", title="Mask", json_schema_extra=form(SPECIES_GROUP, L))
 
     # Algorithm Params
-    angular_search: str = Field(default="12.0")
-    symmetry: str = Field(default="C1")
+    angular_search: str = Field(default="12.0", title="Angular step", json_schema_extra=form("Search", S, "°"))
+    symmetry: str = Field(default="C1", title="Symmetry", json_schema_extra=form(SPECIES_GROUP, M))
 
     @field_validator("symmetry", mode="before")
     @classmethod
@@ -110,40 +111,38 @@ class TemplateMatchPytomParams(AbstractJobParams):
         return v if v in TM_SYMMETRY_CHOICES else "C1"
 
     # Flags
-    defocus_weight: bool = True
-    dose_weight: bool = True
-    spectral_whitening: bool = False
-    random_phase_correction: bool = False
+    defocus_weight: bool = Field(default=True, title="Defocus weight", json_schema_extra=form("Weighting"))
+    dose_weight: bool = Field(default=True, title="Dose weight", json_schema_extra=form("Weighting"))
+    spectral_whitening: bool = Field(default=False, title="Spectral whitening", json_schema_extra=form("Weighting"))
+    random_phase_correction: bool = Field(default=False, title="Random phase", json_schema_extra=form("Weighting"))
     half_precision: bool = Field(
         default=False,
         description="Search in float16 (pytom --half-precision). Roadmap 43 S1: the same candidates as float32, but "
-        "on a whole tomogram no faster and barely smaller; it only speeds up a volume split.",
+        "on a whole tomogram no faster and barely smaller; it only speeds up a volume split.", title="Half precision",
+        json_schema_extra=form("GPUs"),
     )
-    non_spherical_mask: bool = False
+    non_spherical_mask: bool = Field(default=False, title="Non-spherical mask", json_schema_extra=form("Search"))
 
-    bandpass_filter: str = Field(default="None")
+    bandpass_filter: str = Field(default="None", title="Bandpass", json_schema_extra=form("Search", M, "Å"))
     gpu_split: str = Field(
         default="auto",
         description="pytom's volume split (-s), x:y:z pieces searched one after another on each GPU. auto: the whole "
-        "tomogram when it fits the GPU the task gets, else the split with the least volume to search that fits "
-        "(sized on the node). None: no -s.",
+        "tomogram when it fits the GPU the task gets, else the split with the least volume to search that fits (sized "
+        "on the node). None: no -s.", title="GPU split", json_schema_extra=form("GPUs", M),
     )
-    perdevice: int = Field(default=1)
+    perdevice: int = Field(default=1, title="Per device", json_schema_extra=form("GPUs", S))
     lanes: int = Field(
-        default=3,
-        ge=1,
-        le=4,
+        default=3, ge=1, le=4,
         description="Tomograms matched at once on one full GPU, under MPS: the card's idle stretches in one search "
         "are another's work (roadmap 45 P7b on a B200: 1.75x the tomograms per hour at 2, 1.91x at 3, 1.97x at 4; "
         "maps byte for byte the same). A task asks for this many times the SLURM tab's CPUs and memory; on a MIG "
-        "slice it runs one at a time.",
+        "slice it runs one at a time.", title="Lanes", json_schema_extra=form("GPUs", S),
     )
     tomograms_per_lane: int = Field(
-        default=2,
-        ge=1,
-        le=8,
+        default=2, ge=1, le=8,
         description="Tomograms each lane matches one after another: a task matches lanes x this many, and its time "
         "limit is this many times the SLURM tab's. A tomogram that fails is rerun on its own.",
+        title="Tomograms / lane", json_schema_extra=form("GPUs", S),
     )
     # 16: a whole tomogram takes ~2 min on a B200, so 140 of them take ~20 min (roadmap 43 D3).
     array_throttle: int = Field(
@@ -154,10 +153,9 @@ class TemplateMatchPytomParams(AbstractJobParams):
         "tomograms",
     )
     every_nth_tomogram: int = Field(
-        default=1,
-        ge=1,
+        default=1, ge=1,
         description="Match every Nth tomogram (in name order) instead of all of them, e.g. 10 for a decoy or mirror "
-        "control on a tenth of the data. 1 = all.",
+        "control on a tenth of the data. 1 = all.", title="Every nth tomogram", json_schema_extra=form("Search", S),
     )
 
     # Search region: where in each tomogram the template is matched, from the tomograms' segmentations
@@ -165,16 +163,17 @@ class TemplateMatchPytomParams(AbstractJobParams):
     search_include: list[str] = Field(
         default_factory=list,
         description="Match only where one of these features has p ≥ 0.5. None: the whole tomogram, less what is "
-        "excluded.",
+        "excluded.", title="Search in", json_schema_extra=form("Search region", L),
     )
     search_exclude: list[str] = Field(
-        default_factory=list, description="Never match where one of these features has p ≥ 0.5."
+        default_factory=list, description="Never match where one of these features has p ≥ 0.5.", title="Leave out",
+        json_schema_extra=form("Search region", L),
     )
     search_dilation_ang: float = Field(
-        default=0.0,
-        ge=0.0,
+        default=0.0, ge=0.0,
         description="Grow the included region by this distance (Å) before the excluded features are cut out, so a "
-        "particle sitting on the region's edge is matched whole.",
+        "particle sitting on the region's edge is matched whole.", title="Grow by",
+        json_schema_extra=form("Search region", S, "Å"),
     )
 
     @property

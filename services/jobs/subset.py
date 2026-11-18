@@ -14,7 +14,7 @@ from typing import ClassVar, Final
 from pydantic import Field
 
 from services.io_slots import InputSlot, JobFileType, OutputSlot
-from services.jobs._base import AbstractJobParams
+from services.jobs._base import L, AbstractJobParams, form
 from services.models_base import JobCategory, JobType
 
 # The outputs a Subset can cut: per-tilt-series stars whose rows the jobs after them take their
@@ -35,13 +35,17 @@ class SubsetParams(AbstractJobParams):
     RUNS_INLINE: ClassVar[bool] = True  # the star is written at submit; see _submit_chain
 
     USER_PARAMS: ClassVar[set[str]] = {"ts_names"}
+    PARAM_GROUPS: ClassVar[tuple[str, ...]] = ("Tilt series",)
 
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [InputSlot(key="input_star", accepts=list(CUT_TYPES))]
     # Its output has the type of what it cuts, so the resolver takes it from the instance
     # (PathResolutionService._get_output_schema), not from the class.
     OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = []
 
-    ts_names: list[str] = Field(default_factory=list, description="The tilt series it keeps, by rlnTomoName")
+    ts_names: list[str] = Field(
+        default_factory=list, description="The tilt series it keeps, by rlnTomoName", title="Tilt series",
+        json_schema_extra=form("Tilt series", L),
+    )
 
     def get_tool_name(self) -> str:
         return "crboost"

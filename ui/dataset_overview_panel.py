@@ -11,8 +11,9 @@ from nicegui import ui
 
 from services.dataset_scan import layer_problems
 from services.tilt_series.preimport import DatasetOverview
+from ui.components.check import house_check
 from ui.components.segmented import render_segmented
-from ui.job_plugins._field_styles import PANEL_HEAD_STYLE, PANEL_TITLE_STYLE
+from ui.job_plugins._field_styles import section_head
 from ui.styles import MONO, SANS as FONT
 
 CLR_HEADING = "#0f172a"
@@ -37,7 +38,6 @@ CATEGORY_COLORS = {
 _DEFAULT_CAT = ("#d97706", "#fef3c7", "#fffbeb")  # fallback amber
 
 CB_STYLE = "padding: 0; margin: 0 2px;"
-CB_PROPS = "dense size=xs"
 CELL = "padding: 3px 5px;"
 COL_WIDTHS = "24px 72px 40px 40px 110px 58px 50px 50px 50px 1fr"
 
@@ -95,10 +95,7 @@ def build_dataset_overview_panel(
     all_pos_cbs: list[tuple] = []
 
     # --- Header: the title and the selection counts ---
-    with ui.row().classes("w-full items-baseline justify-between").style(PANEL_HEAD_STYLE):
-        title_lbl = ui.label(title).style(PANEL_TITLE_STYLE)
-        if title_tooltip:
-            title_lbl.tooltip(title_tooltip)
+    with section_head(title, tooltip=title_tooltip):
         summary_label = ui.label("")
     summary_label.style(f"{MONO} font-size: 10px; color: {CLR_SUBLABEL};")
 
@@ -170,7 +167,7 @@ def build_dataset_overview_panel(
                     cb.value = e.value
                 refresh_all()
 
-            (ui.checkbox(value=True, on_change=on_select_all).props(CB_PROPS).style(CB_STYLE))
+            (house_check(value=True, on_change=on_select_all).style(CB_STYLE))
             ui.label("POS").style(hdr_style)
             ui.label("BEAM").style(hdr_style)
             ui.label("TILTS").style(hdr_style)
@@ -472,8 +469,8 @@ def _build_position_group(pos, overview, refresh_all, row_registry):
 
                 with row_el:
                     cb = (
-                        ui.checkbox(value=ts.selected, on_change=lambda e, t=ts: on_ts_checkbox(t, e))
-                        .props(CB_PROPS)
+                        house_check(value=ts.selected, on_change=lambda e, t=ts: on_ts_checkbox(t, e))
+                        
                         .style(CB_STYLE)
                     )
                     ts_checkboxes.append(cb)
@@ -533,8 +530,8 @@ def _build_position_group(pos, overview, refresh_all, row_registry):
         .on("click", toggle_expand)
     ):
         pos_cb = (
-            ui.checkbox(value=pos.selected, on_change=on_pos_checkbox)
-            .props(CB_PROPS)
+            house_check(value=pos.selected, on_change=on_pos_checkbox)
+            
             .style(CB_STYLE)
             .on("click.stop", lambda: None)
         )

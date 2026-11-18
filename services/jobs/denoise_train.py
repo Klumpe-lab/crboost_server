@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import ClassVar
 from pydantic import Field
 
-from services.jobs._base import AbstractJobParams
+from services.jobs._base import M, S, AbstractJobParams, form
 from services.models_base import JobType, JobCategory, DenoiseMethod, IsoNetCTFMode, IsoNetRefineMethod
 from services.io_slots import InputSlot, OutputSlot, JobFileType
 from services.computing.slurm_service import SlurmConfig, get_cached_qos_maxwall_minutes
@@ -92,6 +92,7 @@ class DenoiseTrainParams(AbstractJobParams):
         "isonet_cube_size",
         "isonet_bfactor",
     }
+    PARAM_GROUPS: ClassVar[tuple[str, ...]] = ("Training", "cryoCARE", "IsoNet", "Processing")
 
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(key="input_star", accepts=[JobFileType.TOMOGRAMS_STAR], preferred_source="tsReconstruct")
@@ -100,81 +101,81 @@ class DenoiseTrainParams(AbstractJobParams):
         OutputSlot(key="output_model", produces=JobFileType.DENOISE_MODEL_TAR, path_template="denoising_model.tar.gz")
     ]
 
-    denoise_method: DenoiseMethod = DenoiseMethod.CRYOCARE
+    denoise_method: DenoiseMethod = Field(
+        default=DenoiseMethod.CRYOCARE, title="Method", json_schema_extra=form("Training", M),
+    )
     tomograms_for_training: str = Field(
         default="",
-        description="Substring filter on the reconstructed-tomogram filename — only tomograms whose "
-        "name CONTAINS this string are used for training (empty = all). It is a SUBSTRING match, so "
-        "e.g. 'Position_1' also matches Position_10, Position_11, … Position_19.",
+        description="Substring filter on the reconstructed-tomogram filename — only tomograms whose name CONTAINS "
+        "this string are used for training (empty = all). It is a SUBSTRING match, so e.g. 'Position_1' also matches "
+        "Position_10, Position_11, … Position_19.", title="Tomogram filter", json_schema_extra=form("Training", M),
     )
-    number_training_subvolumes: int = Field(default=600, ge=100)
-    subvolume_dimensions: int = Field(default=64, ge=32)
-    perdevice: int = Field(default=1)
+    number_training_subvolumes: int = Field(
+        default=600, ge=100, title="Subvolumes", json_schema_extra=form("cryoCARE", S)
+    )
+    subvolume_dimensions: int = Field(
+        default=64, ge=32, title="Subvolume size", json_schema_extra=form("cryoCARE", S, "px"),
+    )
+    perdevice: int = Field(default=1, title="Per GPU", json_schema_extra=form("Processing", S))
     # IsoNet-only (ignored when denoise_method == cryoCARE):
     isonet_method: IsoNetRefineMethod = Field(
         default=IsoNetRefineMethod.AUTO,
-        description="IsoNet refine strategy. 'auto' picks isonet2-n2n from even/odd halves "
-        "(missing-wedge correction + denoising). Only used when denoise_method = IsoNet.",
+        description="IsoNet refine strategy. 'auto' picks isonet2-n2n from even/odd halves (missing-wedge correction "
+        "+ denoising). Only used when denoise_method = IsoNet.", title="Strategy", json_schema_extra=form("IsoNet", M),
     )
     isonet_epochs: int = Field(
-        default=50,
-        ge=1,
-        le=200,
-        description="IsoNet refine training epochs. IsoNet2 advises against fewer than 50 (its isonet2-n2n "
-        "example uses 70); the noise2noise loss stays noise-dominated, so a flat loss curve is not a sign "
-        "of convergence. An epoch is a fixed 3000 subtomograms (≈12 min at cube 96 on one RTX 6000), so "
-        "cost is epochs × cube volume ÷ GPUs — more GPUs in the SLURM tab is the way to buy speed. Keep it "
-        "a multiple of 10: IsoNet keeps an epoch checkpoint every 10. Only used when denoise_method = IsoNet.",
+        default=50, ge=1, le=200,
+        description="IsoNet refine training epochs. IsoNet2 advises against fewer than 50 (its isonet2-n2n example "
+        "uses 70); the noise2noise loss stays noise-dominated, so a flat loss curve is not a sign of convergence. An "
+        "epoch is a fixed 3000 subtomograms (≈12 min at cube 96 on one RTX 6000), so cost is epochs × cube volume ÷ "
+        "GPUs — more GPUs in the SLURM tab is the way to buy speed. Keep it a multiple of 10: IsoNet keeps an epoch "
+        "checkpoint every 10. Only used when denoise_method = IsoNet.", title="Epochs",
+        json_schema_extra=form("IsoNet", S),
     )
     isonet_max_training_tomograms: int = Field(
-        default=0,
-        ge=0,
-        le=100,
+        default=0, ge=0, le=100,
         description="Cap on how many tomograms IsoNet trains on (0 = every tomogram that passes "
-        "tomograms_for_training). An epoch is 3000 subtomograms split across the training tomograms, so "
-        "more tomograms cost no training time — only ~2 min each of deconv/mask prep — and give the "
-        "network more variety. Only used when denoise_method = IsoNet.",
+        "tomograms_for_training). An epoch is 3000 subtomograms split across the training tomograms, so more "
+        "tomograms cost no training time — only ~2 min each of deconv/mask prep — and give the network more variety. "
+        "Only used when denoise_method = IsoNet.", title="Max tomograms", json_schema_extra=form("IsoNet", S),
     )
     isonet_ctf_mode: IsoNetCTFMode = Field(
         default=IsoNetCTFMode.NETWORK,
-        description="IsoNet refine --CTF_mode: how the network handles the CTF. 'network' (IsoNet2's "
-        "recommendation) applies a CTF-shaped filter to the network input so it learns CTF correction "
-        "along with denoising; 'wiener' filters the target instead and needs snrfalloff/deconvstrength "
-        "tuning; 'None' leaves the CTF uncorrected. The model carries it into predict. Only used when "
-        "denoise_method = IsoNet.",
+        description="IsoNet refine --CTF_mode: how the network handles the CTF. 'network' (IsoNet2's recommendation) "
+        "applies a CTF-shaped filter to the network input so it learns CTF correction along with denoising; 'wiener' "
+        "filters the target instead and needs snrfalloff/deconvstrength tuning; 'None' leaves the CTF uncorrected. "
+        "The model carries it into predict. Only used when denoise_method = IsoNet.", title="CTF mode",
+        json_schema_extra=form("IsoNet", M),
     )
     isonet_mw_weight: float = Field(
-        default=200.0,
-        ge=-1,
-        description="IsoNet refine --mw_weight: weight of the loss inside the missing wedge relative to "
-        "denoising. IsoNet2 recommends 20–200 to make the network actually fill the wedge; -1 or 0 "
-        "disables the split loss (IsoNet's default), and the network then mostly denoises. Only used "
-        "when denoise_method = IsoNet.",
+        default=200.0, ge=-1,
+        description="IsoNet refine --mw_weight: weight of the loss inside the missing wedge relative to denoising. "
+        "IsoNet2 recommends 20–200 to make the network actually fill the wedge; -1 or 0 disables the split loss "
+        "(IsoNet's default), and the network then mostly denoises. Only used when denoise_method = IsoNet.",
+        title="Wedge weight", json_schema_extra=form("IsoNet", S),
     )
     isonet_cube_size: int = Field(
-        default=96,
-        ge=32,
-        le=256,
-        description="IsoNet refine --cube_size: training subtomogram edge in voxels (IsoNet's default 96; "
-        "its isonet2-n2n example uses 128). Training time grows with the cube "
-        "volume — 128 costs ≈2.4× 96 per epoch. Only used when denoise_method = IsoNet.",
+        default=96, ge=32, le=256,
+        description="IsoNet refine --cube_size: training subtomogram edge in voxels (IsoNet's default 96; its "
+        "isonet2-n2n example uses 128). Training time grows with the cube volume — 128 costs ≈2.4× 96 per epoch. Only "
+        "used when denoise_method = IsoNet.", title="Cube size", json_schema_extra=form("IsoNet", S, "px"),
     )
     isonet_bfactor: float = Field(
-        default=0.0,
-        ge=0,
-        description="IsoNet refine --bfactor: high-frequency boost for the CTF correction. IsoNet2 recommends "
-        "0 for cellular tomograms and 200–300 for isolated samples. Only used when denoise_method = IsoNet.",
+        default=0.0, ge=0,
+        description="IsoNet refine --bfactor: high-frequency boost for the CTF correction. IsoNet2 recommends 0 for "
+        "cellular tomograms and 200–300 for isolated samples. Only used when denoise_method = IsoNet.",
+        title="B-factor", json_schema_extra=form("IsoNet", S, "Å²"),
     )
     isonet_deconv: bool = Field(
         default=True,
-        description="Build IsoNet's training mask from a CTF-deconvolved copy of the full tomogram. Rule: ON "
-        "for defocus-contrast data — IsoNet recommends it because a mask built from the raw reconstruction "
-        "tends to be poor; OFF for phase-plate data. With even/odd halves (method auto / isonet2-n2n) refine "
-        "and predict read the raw halves either way, so this only decides where training crops are taken; "
-        "with method isonet2 (single map) it also deconvolves the training input. The even/odd methods need "
-        "tsReconstruct run with deconv 0 (Warp's --deconv deconvolves the half-maps too), so IsoNet makes the "
-        "copy itself at the tsCtf defocus nearest 0° tilt; single-map isonet2 uses tsReconstruct's "
-        "reconstruction/deconv/ copy when it exists. Only used when denoise_method = IsoNet.",
+        description="Build IsoNet's training mask from a CTF-deconvolved copy of the full tomogram. Rule: ON for "
+        "defocus-contrast data — IsoNet recommends it because a mask built from the raw reconstruction tends to be "
+        "poor; OFF for phase-plate data. With even/odd halves (method auto / isonet2-n2n) refine and predict read the "
+        "raw halves either way, so this only decides where training crops are taken; with method isonet2 (single map) "
+        "it also deconvolves the training input. The even/odd methods need tsReconstruct run with deconv 0 (Warp's "
+        "--deconv deconvolves the half-maps too), so IsoNet makes the copy itself at the tsCtf defocus nearest 0° "
+        "tilt; single-map isonet2 uses tsReconstruct's reconstruction/deconv/ copy when it exists. Only used when "
+        "denoise_method = IsoNet.", title="Deconvolved mask", json_schema_extra=form("IsoNet"),
     )
 
     def _get_job_specific_options(self) -> list[tuple[str, str]]:

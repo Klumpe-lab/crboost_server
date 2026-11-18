@@ -28,7 +28,7 @@ from nicegui import ui
 from services.configs.config_service import check_path_exists, get_config_service
 from services.models_base import JobType
 from ui.components.buttons import house_button, icon_button
-from ui.job_plugins._field_styles import PANEL_TITLE_STYLE
+from ui.job_plugins._field_styles import section_head
 from ui.styles import MONO, SANS as FONT
 
 logger = logging.getLogger(__name__)
@@ -244,15 +244,9 @@ def _section(title: str, subtitle: str = ""):
     """One block of the dialog: a pale gray-blue panel with its title and subtitle inside; the rows
     keep their own side padding."""
     with ui.element("div").style(f"{_ROW_BOX} {_PANEL}"):
-        # The panels' title stripe (PANEL_HEAD_STYLE), fitted to this panel's padding.
-        head = (
-            "background: var(--cb-head, #edf4fb); margin: -10px 0 4px; padding: 6px 16px; "
-            "border-radius: var(--cb-radius, 5px) var(--cb-radius, 5px) 0 0; "
-            "box-shadow: 0 1px 0 var(--cb-head-line, #c9dbee), "
-            "inset var(--cb-accent-w, 2px) 0 0 var(--cb-accent, #4a8fd4);"
-        )
-        with ui.element("div").style(f"{_ROW_BOX} {head}"):
-            ui.label(title).style(PANEL_TITLE_STYLE)
+        # The section's Rule head, at the rows' side padding.
+        with ui.element("div").style(f"{_ROW_BOX} padding: 0 16px; margin-bottom: 4px;"):
+            section_head(title)
             if subtitle:
                 ui.label(subtitle).style(f"{FONT} font-size: 10px; color: {CLR_SUBLABEL}; margin-top: 3px;")
         yield

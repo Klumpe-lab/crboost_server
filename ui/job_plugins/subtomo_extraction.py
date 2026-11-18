@@ -17,10 +17,9 @@ here so the user knows before they touch Run, and the driver writes a
 .skipped_no_candidates.json sidecar and exits 0 rather than failing
 hard (see drivers/subtomo_extraction.py).
 
-Layout: one species line on top (pill + "open in Species"),
-the two sanity checks as one-line chips (same rules + text, less chrome — the
+Layout: the two sanity checks as one-line chips (same rules + text, less chrome — the
 box / crop / binning explainer lives in the Journey's Dataset pixel table
-tooltips), then the plain parameter form.
+tooltips), then the default parameters (the species is named on the page's header line).
 """
 
 import asyncio
@@ -35,9 +34,8 @@ from services.models_base import JobType
 from services.project_state import get_project_state_for
 from services.models_base import resolve_species
 from ui.components.reactive import Debounced, owned_timer
-from ui.components.species_pill import render_species_line, species_opener
 from ui.job_plugins import register_params_renderer
-from ui.job_plugins.default_renderer import render_config_preamble, render_default_params
+from ui.job_plugins.default_renderer import render_default_params_card
 
 logger = logging.getLogger(__name__)
 
@@ -47,35 +45,27 @@ _CHIP_STYLE = "border-radius: var(--cb-r-md, 4px); padding: 3px 8px; margin-top:
 @register_params_renderer(JobType.SUBTOMO_EXTRACTION)
 def render_subtomo_extraction_params(job_type, job_model, is_frozen, save_handler, *, ui_mgr=None, **ctx):
     instance_id = ctx.get("instance_id")
-    species = None
-    state = None
-    if ui_mgr and ui_mgr.project_path:
-        state = get_project_state_for(ui_mgr.project_path)
-        species, _ = resolve_species(state, job_model, instance_id)
+    state = get_project_state_for(ui_mgr.project_path) if ui_mgr and ui_mgr.project_path else None
+    species = resolve_species(state, job_model, instance_id)[0] if state is not None else None
+    holder: dict = {}
 
-    render_species_line(species, on_open=species_opener(ctx.get("callbacks"), species.id) if species else None)
+    def banners():
+        # Upstream picks empty across the board: nothing to tweak box_size for.
+        _render_empty_upstream_banner(job_model)
+        if state is not None and instance_id:
+            _render_local_warp_chip(state, instance_id)
+        # The box-vs-diameter check the dashboard runs after the fact, before the Run.
+        holder["warning"] = ui.column().classes("w-full gap-0")
+        _render_box_vs_diameter_warning(holder["warning"], state, species, job_model)
 
-    # Top-of-panel chip if upstream picks are empty across the board — the user
-    # shouldn't be tweaking box_size for a job that has nothing to extract.
-    _render_empty_upstream_banner(job_model)
-    if state is not None and instance_id:
-        _render_local_warp_chip(state, instance_id)
+    # The check is drawn again once typing in box_size / binning pauses.
+    refresh_warning = Debounced(lambda: _render_box_vs_diameter_warning(holder["warning"], state, species, job_model))
 
-    # Inline box-vs-diameter chip. Mirrors the dashboard's sanity rule so a
-    # user editing box_size sees the same advice before submission.
-    warning_container = ui.column().classes("w-full gap-0")
-    _render_box_vs_diameter_warning(warning_container, state, species, job_model)
-
-    # Wrap save_handler so the chip re-renders when box_size / binning changes, once typing pauses.
-    refresh_warning = Debounced(lambda: _render_box_vs_diameter_warning(warning_container, state, species, job_model))
-
-    def _on_save():
+    def on_save():
         save_handler()
         refresh_warning()
 
-    render_config_preamble(job_model)
-    # ctx exclude = array_throttle (rendered in the SLURM section, not here).
-    render_default_params(job_type, job_model, is_frozen, _on_save, exclude=set(ctx.get("exclude") or ()))
+    return render_default_params_card(job_type, job_model, is_frozen, on_save, ui_mgr=ui_mgr, before=banners, **ctx)
 
 
 def _render_empty_upstream_banner(job_model) -> None:
