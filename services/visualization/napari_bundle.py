@@ -7,6 +7,9 @@ volume is, so the viewer can show it beside the colleague's own particle layers:
   workbench holds for the tomogram (manual, imported, merged), in the species' colour and diameter.
 - ``segmentations``: every feature volume the registry records for the tomogram on the reconstruction the volume
   traces to, as the views draw it (p = 0.5), shown or hidden as the views have it.
+- ``volumes``: the pictures of the same tomogram on the volume's own grid, which the viewer can switch between
+  without moving a pick: that reconstruction, then every denoised volume made from it (cryoCARE, IsoNet,
+  easymode). A volume on another grid (another reconstruction's pixel size) is left out, with a note.
 
 Coordinates are voxels of the volume the session opens, ZYX (napari's order): RELION-5 centered Å through that
 volume's own header, ``voxel = centered / pixel + N / 2`` (``services.particles.coords``), so a denoised volume on
@@ -20,6 +23,7 @@ The bundle file's format is the viewer's (``crboost_bundle.py`` in the colleague
      "project": "/abs/project", "shape_zyx": [nz, ny, nx], "voxel_size": 10.0,
      "picks": [{"name", "species", "source", "color", "box_size", "coordinates_zyx": [[z, y, x], ...]}],
      "segmentations": [{"name", "path", "voxel_size", "shape_zyx", "level", "full_scale", "color", "visible"}],
+     "volumes": [{"name", "kind": "reconstruction" | "denoised", "path"}],
      "notes": ["..."]}
 """
 
@@ -67,6 +71,7 @@ class _Plan:
     tomo_name: str
     picks: list[_PickSource] = field(default_factory=list)
     segmentations: list[dict] = field(default_factory=list)
+    volumes: list[dict] = field(default_factory=list)  # {name, kind, path}: on the volume's grid once checked
     notes: list[str] = field(default_factory=list)
 
 
@@ -111,6 +116,20 @@ def _plan(state, registry, project: Path, volume: Path, tomo_name: str, producer
     shows = recon_of(state, producer, dirs) if producer in state.jobs else None
 
     tomogram = registry.get_tilt_series(tomo_name).tomogram
+    for out_producer, output in (tomogram.outputs if tomogram else {}).items():
+        if output.output_type == "ts_reconstruct" and (shows is None or out_producer == shows):
+            name = f"reconstruction ({out_producer})"
+            plan.volumes.append({"name": name, "kind": "reconstruction", "path": str(output.reconstructed_mrc)})
+        elif output.output_type == "denoise_predict":
+            made_from = recon_of(state, out_producer, dirs) if out_producer in state.jobs else None
+            if shows is None or made_from in (None, shows):
+                plan.volumes.append(
+                    {
+                        "name": f"denoised · {output.denoise_method} ({out_producer})",
+                        "kind": "denoised",
+                        "path": str(output.denoised_mrc),
+                    }
+                )
     for seg_producer, output in (tomogram.outputs if tomogram else {}).items():
         if output.output_type != "segmentation":
             continue
@@ -222,6 +241,23 @@ def _build(plan: _Plan) -> dict:
                 "coordinates_zyx": np.round(voxel_xyz[:, ::-1], 2).tolist(),
             }
         )
+    volumes = []
+    for vol in plan.volumes:
+        path = Path(vol["path"]) if Path(vol["path"]).is_absolute() else plan.project / vol["path"]
+        if not path.is_file():
+            notes.append(f"{vol['name']}: {path} is not on disk")
+            continue
+        try:
+            grid = _volume_geometry(path)
+        except (OSError, ValueError) as e:
+            notes.append(f"{vol['name']}: {e}")
+            continue
+        if not (np.array_equal(grid[0], n_xyz) and abs(grid[1] - px) < 1e-3 * px):
+            notes.append(f"{vol['name']}: on another grid ({grid[1]:.2f} Å/px), so not offered beside this one")
+            continue
+        volumes.append({**vol, "path": str(path)})
+    if not any(Path(v["path"]).resolve() == plan.volume.resolve() for v in volumes):
+        volumes.insert(0, {"name": f"opened ({plan.volume.name})", "kind": "opened", "path": str(plan.volume)})
     segs = []
     for seg in plan.segmentations:
         if not Path(seg["path"]).is_file():
@@ -238,6 +274,7 @@ def _build(plan: _Plan) -> dict:
         "voxel_size": px,
         "picks": picks,
         "segmentations": segs,
+        "volumes": volumes,
         "notes": notes,
     }
 

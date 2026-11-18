@@ -19,6 +19,9 @@ from ui.components.svg_icon import load_icon_svg
 from ui.job_plugins._field_styles import VIEW_HEAD_STYLE, VIEW_TITLE_STYLE, view_head_icon
 from ui.projects_overview import project_card_menu
 from ui.protocols_view import protocol_light
+from ui import napari_status
+from ui.napari_session_dialog import open_napari_dialog
+from services.configs.config_service import get_config_service
 from ui.styles import MONO
 from ui.status_indicator import BoundStatusDot, _dot_html, _running_led_html
 from services.jobs.spec import JOB_SPEC_BY_TYPE, instance_display_name
@@ -178,6 +181,7 @@ class RosterWidget(FingerprintedView):
         # Last (kind, tooltip) painted onto the foot-of-rail protocol light, so its
         # timer only touches the DOM when the state actually moved.
         self._protocol_paint: tuple[str, str] | None = None
+        self._napari_paint: tuple | None = None
         # Last (tomogram, tilt-series) counts painted onto the rail badges, so their timer
         # only touches the DOM when a number actually moved.
         self._counts_paint: tuple | None = None
@@ -1086,6 +1090,7 @@ class RosterWidget(FingerprintedView):
             # Pinned to the FOOT of the rail: one status light for protocol state. It is
             # not a place in the view stack above; it answers a question first, and says so
             # by sitting apart without a separator.
+            self._build_napari_btn()
             self._build_protocol_btn()
             ui.element("div").style("height: 6px;")
 
@@ -1554,6 +1559,75 @@ class RosterWidget(FingerprintedView):
         self._paint_protocol()
         ui.timer(_RAIL_LIGHT_TICK_S, self._tick_protocol)
         return container
+
+    def _build_napari_btn(self):
+        """Foot-of-rail napari light: grey with no session, amber while it queues or starts, blue while it is up.
+        Hover says where it runs and what it shows; a click opens the session dialog on that tomogram. Only where
+        napari is configured. The status comes from ui/napari_status.py's process-wide cache."""
+        if not get_config_service().napari.sif_path:
+            return None
+        container = (
+            ui.element("div")
+            .style(
+                "width: 30px; height: 30px; border-radius: var(--cb-r-md, 4px); margin: 1px 0; "
+                "background: transparent; display: flex; align-items: center; justify-content: center; "
+                "cursor: pointer; flex-shrink: 0;"
+            )
+            .on("click", self._open_napari)
+        )
+        with container:
+            icon = ui.icon("view_in_ar", size="18px").style(f"color: {SB_MUTE}; pointer-events: none;")
+            tip = ui.tooltip("").style("white-space: pre-line;")
+        self._refs["napari_icon"] = icon
+        self._refs["napari_tip"] = tip
+        self._paint_napari()
+        ui.timer(0.5, self._tick_napari, once=True)
+        ui.timer(_RAIL_LIGHT_TICK_S, self._tick_napari)
+        return container
+
+    async def _tick_napari(self):
+        await napari_status.poll(self.panel.backend)
+        self._paint_napari()
+
+    def _paint_napari(self):
+        """From the cache only; written when what it shows changes (timer-driven)."""
+        status, info = napari_status.snapshot()
+        requested = (info.get("requested") or {}).get("title") or ""
+        key = (status, info.get("node"), requested)
+        if key == self._napari_paint:
+            return
+        self._napari_paint = key
+        icon, tip = self._refs.get("napari_icon"), self._refs.get("napari_tip")
+        if icon is None or tip is None:
+            return
+        color = {
+            napari_status.READY: "#3b82c4",
+            napari_status.STARTING: "#d4a017",
+            napari_status.PENDING: "#d4a017",
+        }.get(status, SB_MUTE)
+        icon.style(f"color: {color}; pointer-events: none;")
+        if status == napari_status.READY:
+            text = f"napari · live on {info.get('node') or '?'}"
+        elif status == napari_status.STARTING:
+            text = f"napari · starting on {info.get('node') or '?'}"
+        elif status == napari_status.PENDING:
+            text = "napari · queued"
+        elif status == napari_status.OFF:
+            text = "napari · no session\nStart one from a tomogram's napari chip."
+        else:
+            err = napari_status.last_error()
+            text = "napari · status unknown" + (f"\n{err}" if err else "")
+        if requested and status != napari_status.OFF:
+            text += f"\nShowing {requested}\nClick: the session's controls."
+        tip.set_text(text)
+
+    async def _open_napari(self):
+        status, info = napari_status.snapshot()
+        volume = napari_status.shown_volume(info) if status != napari_status.OFF else None
+        if volume is None:
+            ui.notify("No napari session. Start one from a tomogram's napari chip.", type="info")
+            return
+        await open_napari_dialog(self.panel.backend, volume)
 
     def _tick_protocol(self):
         self._paint_protocol()

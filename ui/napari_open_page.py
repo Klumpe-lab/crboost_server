@@ -25,7 +25,7 @@ from services.result import err, ok
 
 from ui.components.buttons import house_button
 from ui.job_plugins._field_styles import CLR_VALUE, HELPER_STYLE, MONO, PANEL_TITLE_STYLE
-from ui.napari_session_dialog import POLL_S, when_text
+from ui.napari_session_dialog import POLL_S, connect_help, when_text
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,7 @@ async def _show_or_start(backend, volume: str) -> dict:
 
 def render_napari_open_page(backend, volume: str) -> None:
     name = Path(volume).stem if volume else ""
-    with ui.column().style("max-width: 560px; margin: 12vh auto 0; padding: 0 16px; gap: 10px;"):
+    with ui.column().style("max-width: 560px; margin: 12vh auto 0; padding: 0 16px; gap: 10px;") as page:
         with ui.row().classes("items-center no-wrap").style("gap: 8px;"):
             ui.label("napari").style(PANEL_TITLE_STYLE)
             ui.label(name).style(f"{MONO} font-size: 11px; color: {CLR_VALUE};").tooltip(volume)
@@ -86,6 +86,10 @@ def render_napari_open_page(backend, volume: str) -> None:
     if not volume:
         _say("No tomogram named: this page opens from a tomogram's napari chip.", "cb-badge-err")
         return
+
+    # Read while the tab waits: what to do if the desktop then does not show, or its tab is closed.
+    with page:
+        connect_help(get_config_service().ood.url, get_config_service().napari.time)
 
     sv: dict = {"session_dir": None, "job_id": None, "polling": False, "done": False}
 

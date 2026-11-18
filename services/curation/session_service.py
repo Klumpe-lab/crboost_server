@@ -296,7 +296,11 @@ class CurationSessionService:
         }
         if info.get("password"):
             params["password"] = str(info["password"])
-        return f"{ood.url.rstrip('/')}{ood.novnc_path}#{urlencode(params, safe='/')}"
+        # A query naming the session makes the browser fetch the page from the portal instead of its cache, so an
+        # expired sign-in shows the portal's sign-in page; from a cached page the websocket is refused, and noVNC
+        # only says "Failed to connect to server". Redirects keep the fragment.
+        session = f"{str(node).split('.')[0]}-{ws_port}"
+        return f"{ood.url.rstrip('/')}{ood.novnc_path}?session={session}#{urlencode(params, safe='/')}"
 
     def _with_browser_url(self, info: dict[str, Any]) -> dict[str, Any]:
         url = self.browser_url(info)

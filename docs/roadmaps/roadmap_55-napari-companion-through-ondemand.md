@@ -243,6 +243,11 @@ It holds one project at a time:
   - Checked by screenshot (jobs 1775702, 1775726, MyrGFP Position_10 and Position_1): the 412 candidates fall on
     the vesicles and the ribosome candidates in the cytoplasm, and the switch swaps the bundle.
   - Not in the bundle yet: kept/filtered subsets, kitchen sets, `.coords`-only lists.
+  - Denoised versions (2026-11-18): the bundle's `volumes` are the opened tomogram's pictures on its grid (its
+    reconstruction and every denoised volume made from it; cryoCARE, IsoNet and easymode all share the grid). With
+    two or more, a "crboost volume" dock in the viewer switches between them (`swap_volume`: the picture changes,
+    the opened tomogram, its picks, comments and STAR names do not). Checked on 20260820_B2G2_Tir_Env_Mut
+    Position_1 (easymode): 2.2 s a switch (job 1776677).
 
 *Owed.*
 - R5: pick in a browser tab, Save, reopen from the chip.
