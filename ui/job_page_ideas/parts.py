@@ -14,7 +14,8 @@ from services.models_base import JobStatus
 from ui.branch_map.style import BAND, CARD_BORDER, HAIR, INK, LINE, MUTED, SLATE, SOFT
 from ui.components.copyable import copy_on_click
 from ui.job_page_ideas.data import In, L, M, Param, S, Sample
-from ui.job_plugins._field_styles import PANEL_HEAD_STYLE, PANEL_STYLE, PANEL_TITLE_STYLE
+from ui.job_page_ideas import heads
+from ui.job_page_ideas.heads import section
 from ui.status_indicator import _dot_html
 
 BODY = "#334155"
@@ -30,13 +31,9 @@ BOX = (
     f"background: #fff; padding: 0 6px; {MONO} font-size: 10.5px; color: {INK}; line-height: 16px; "
     "white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
 )
-# A path or a file's tail on one line, cut with an ellipsis.
-PATH_TEXT = (
-    f"{MONO} font-size: 9.5px; color: {SOFT}; min-width: 0; overflow: hidden; text-overflow: ellipsis; "
-    "white-space: nowrap;"
-)
 ROW = "display: flex; align-items: center; gap: 8px; min-height: 20px; min-width: 0;"
-GROUP_TITLE = f"{SANS} font-size: 10.5px; font-weight: 600; color: {INK}; margin: 2px 0 3px;"
+# How paths show in the I/O blocks: heads.path's cut / wrap / open, set per panel by the page.
+PATHS = {"mode": "cut"}
 
 CSS = f"""
 .cbjp-tog {{ cursor: pointer; user-select: none; }}
@@ -87,17 +84,6 @@ def pill(text: str) -> None:
     )
 
 
-def section(title: str, *, right: str = "", extra: str = ""):
-    """A section of the page: its title stripe and its content (one box deep)."""
-    box = ui.column().classes("w-full cbjp-sec").style(f"gap: 6px; {PANEL_STYLE} {extra}")
-    with box:
-        with ui.element("div").style(f"{PANEL_HEAD_STYLE} display: flex; align-items: center;"):
-            ui.label(title).style(PANEL_TITLE_STYLE)
-            if right:
-                ui.label(right).style(f"{SMALL} margin-left: auto;")
-    return box
-
-
 # ── the header line ──────────────────────────────────────────────────────────
 
 
@@ -123,6 +109,12 @@ def header(s: Sample) -> None:
 def field_row(p: Param) -> None:
     with ui.element("div").style(ROW):
         ui.label(p.label).style(f"{SLOT} width: {LABEL_W}px; flex-shrink: 0;")
+        if p.width == L and p.value.startswith("/"):
+            # A path: the page's path display inside the box, so the file name is the last thing cut.
+            box = BOX.replace("height: 18px;", "min-height: 18px;").replace("white-space: nowrap;", "")
+            with ui.element("div").style(f"{box} flex: 1 1 0; min-width: 0; padding-top: 1px;"):
+                heads.path(p.value, None, PATHS["mode"])
+            return
         if p.width == L:
             ui.label(p.value or "none").style(
                 f"{BOX} flex: 1 1 0; min-width: 0; {'' if p.value else f'color: {MUTED}; font-style: italic;'}"
@@ -184,7 +176,7 @@ def flags(ps: list[Param]) -> None:
 def group(g, tog: str, *, title: bool = True) -> None:
     with ui.element("div").style("display: flex; flex-direction: column; gap: 3px; margin-bottom: 10px;"):
         if title:
-            ui.label(g.title).style(GROUP_TITLE)
+            heads.group_title(g.title)
         for p in g.fields:
             field_row(p)
         toggles(g.toggles, tog)
@@ -227,7 +219,8 @@ def io_sockets(s: Sample) -> None:
             ui.label(i.word).style(f"{SLOT} width: 104px; flex-shrink: 0;")
             _source(i)
             if i.source is not None and i.source.name == "File":
-                ui.label(s.rel(i.path)).style(PATH_TEXT)
+                with ui.element("div").style("min-width: 0; flex: 0 1 auto;"):
+                    heads.path(i.path, s.project, PATHS["mode"])
             ui.element("div").style("flex: 1;")
             if i.path:
                 copy_icon(i.path, "input path")
@@ -252,49 +245,48 @@ def io_sockets(s: Sample) -> None:
                     f"{SANS} font-size: 10.5px; color: {BODY}; width: 150px; flex-shrink: 0; white-space: nowrap; "
                     "overflow: hidden; text-overflow: ellipsis;"
                 )
-                ui.label(s.rel(o.path) if o.path else "after it runs").style(
-                    f"{MONO} font-size: 9.5px; color: {SOFT}; min-width: 0; overflow: hidden; "
-                    "text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left;"
-                )
+                with ui.element("div").style("min-width: 0; flex: 0 1 auto;"):
+                    if o.path:
+                        heads.path(o.path, s.project, PATHS["mode"])
                 ui.element("div").style("flex: 1;")
                 if o.path:
                     copy_icon(o.path, "output path")
 
 
 def io_table(s: Sample) -> None:
-    """One table for both: in and out rows, the file's tail in its own column, cut from the left."""
-    cell = f"{SANS} font-size: 10.5px; color: {INK}; padding: 2px 8px 2px 0; white-space: nowrap;"
+    """One grid for in and out. An input's row names its source; its file goes on the line under it, as wide as
+    the block, in the page's path display (heads.path). An output's file stands where a source would."""
     with ui.element("div").style(
-        "display: grid; grid-template-columns: 26px 104px auto 1fr 14px; align-items: center; row-gap: 1px;"
+        "display: grid; grid-template-columns: 24px 100px minmax(0, 1fr) 14px; align-items: center; row-gap: 1px;"
     ):
         for i in s.inputs:
             ui.label("in").style(f"{SLOT} font-size: 7.5px;")
             ui.label(i.word).style(SLOT)
-            with ui.element("div").style(f"{ROW} gap: 6px; padding-right: 10px;"):
+            with ui.element("div").style(f"{ROW} gap: 6px;"):
                 _source(i)
-            ui.label(_tail(i.path)).style(PATH_TEXT)
             if i.path:
-                copy_icon(i.path)
+                copy_icon(i.path, "input path")
             else:
                 ui.element("div")
-        ui.element("div").style(f"grid-column: 1 / -1; height: 1px; background: {HAIR}; margin: 4px 0;")
+            if i.path:
+                with ui.element("div").style("grid-column: 2 / -1; margin: 0 0 4px; min-width: 0;"):
+                    heads.path(i.path, s.project, PATHS["mode"])
+            for word, text in i.detail:
+                ui.label(word).style(f"{SLOT} font-size: 7.5px; grid-column: 2;")
+                ui.label(text).style(f"{SANS} font-size: 9.5px; color: {BODY}; grid-column: 3 / 5;")
+        ui.element("div").style(f"grid-column: 1 / -1; height: 1px; background: {HAIR}; margin: 3px 0;")
         for o in s.outputs:
             ui.label("out").style(f"{SLOT} font-size: 7.5px;")
             ui.label(o.word).style(SLOT)
-            ui.label("this job").style(f"{cell} color: {MUTED};")
-            ui.label(_tail(o.path) or "after it runs").style(PATH_TEXT)
+            with ui.element("div").style("min-width: 0;"):
+                if o.path:
+                    heads.path(o.path, s.project, PATHS["mode"])
+                else:
+                    ui.label("after it runs").style(f"{SANS} font-size: 9.5px; color: {MUTED};")
             if o.path:
-                copy_icon(o.path)
+                copy_icon(o.path, "output path")
             else:
                 ui.element("div")
-
-
-def _tail(path: str) -> str:
-    """The last two parts of a path: job008/tomograms.star."""
-    if not path:
-        return ""
-    parts = path.rstrip("/").split("/")
-    return "/".join(parts[-2:])
 
 
 def io_chain(s: Sample) -> None:

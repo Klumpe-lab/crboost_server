@@ -253,8 +253,6 @@ def _param(jm, name: str, label: str, width: str, unit: str) -> Param:
     if isinstance(v, bool):
         return Param(name, label, "", True, v, "", "")
     text = value_words(v)
-    if width == L and text and text.startswith("/"):
-        text = Path(text).name
     return Param(name, label, text if text not in ("", "None") else "", False, False, width or S, unit)
 
 
