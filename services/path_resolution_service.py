@@ -1194,7 +1194,7 @@ class PathResolutionService:
     def _add_imported_tomograms_candidates(
         self, index: dict[JobFileType, list[OutputCandidate]], project_root: Path
     ) -> None:
-        # Imported tomograms (PARTICLES-header utility) are a project-level artifact,
+        # Imported tomograms (the Tomograms view's import) are a project-level artifact,
         # not a pipeline job. Surface the committed tomograms.star as a synthetic
         # TOMOGRAMS_STAR producer so resolver-based consumers discover it like any
         # reconstructed-tomogram source (mirrors _add_merged_sources_candidates). The

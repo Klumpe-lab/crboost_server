@@ -1409,11 +1409,9 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                                 )
 
                     # Project creation has no type switches. Leaving the raw-data globs empty is
-                    # the request for a data-less project (see is_dataless()), and merging
-                    # particles across projects is a capability every project has, reachable
-                    # from the PARTICLES header of the roster. The
-                    # dataless_hint below says what is about to be created, so neither can happen
-                    # by accident.
+                    # the request for a data-less project (see is_dataless()); pooling particles
+                    # across projects is the STA kitchen's. The dataless_hint below says what is
+                    # about to be created, so it cannot happen by accident.
 
                     # Shared/lab ownership toggle: when on, the project is created
                     # with owner = SHARED_OWNER (grouped under "Lab / Shared" in the

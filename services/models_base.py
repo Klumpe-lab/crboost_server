@@ -149,7 +149,7 @@ class JobType(str, Enum):
     # state.jobs, jobtype_paramclass, or services.jobs.spec.JOB_SPECS.
     MERGED_SOURCES = "mergedSources"
 
-    # Synthetic source, same contract as MERGED_SOURCES: the PARTICLES-header tomogram
+    # Synthetic source, same contract as MERGED_SOURCES: the Tomograms view's tomogram
     # import (services/tomogram_import.py) is a project-level artifact, not a job, but its
     # committed Tomograms/tomograms.star has to be a resolver producer candidate. A type of
     # its own keeps a dangling imported star from reporting itself as a missing

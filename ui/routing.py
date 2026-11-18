@@ -129,10 +129,6 @@ async def apply_route(callbacks: dict, route: Route, project_path: Path) -> None
         case View.PROTOCOLS:
             await _acall(callbacks, "show_protocols")
 
-        case View.PARTICLES:
-            # The map reports a node the project does not have itself, once it has read the sets.
-            await _acall(callbacks, "show_particles", route.a)
-
 
 def _call(callbacks: dict, key: str, *args) -> None:
     fn = callbacks.get(key)

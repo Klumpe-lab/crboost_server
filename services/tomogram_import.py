@@ -1,7 +1,7 @@
 """Tomogram import — a project-level utility, not a pipeline job.
 
 Particle-only / data-less projects have no preprocessing pipeline to produce a
-``tomograms.star``; this module lets the PARTICLES-header import utility inject one,
+``tomograms.star``; this module lets the Tomograms view's import inject one,
 either by synthesizing it from a set of reconstructed ``.mrc`` files (reading dims +
 voxel size from each header) or by referencing an existing ``tomograms.star``.
 
