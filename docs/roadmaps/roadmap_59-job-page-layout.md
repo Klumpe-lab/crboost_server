@@ -78,11 +78,54 @@ Prototyped on **`/dev/job-page-ideas`**; nothing in the job page itself is chang
 - The job page's grid (`cb-jsec-*` classes in `ui/dashboard/css.py`) re-placed per the chosen A.
 - Check: every job type's page opened once (the 22 types), against today's for missing fields.
 
-## 5. Decisions owed
+## 5. Decisions
+
+| # | Decision | Taken |
+|---|---|---|
+| D1 | Page layout: A1, A2 or A3 | **A2 Rail** (maintainer, 2026-11-18) |
+| D2 | Toggle look: B1, B2 or B3 | **B2 Rows** |
+| D3 | I/O look: D1, D2 or D3 | **D2 Table** |
+| D4 | Field metadata: on the param classes, or a layout table per job type | Recommended: on the param classes |
+
+## 6. Round 2 (2026-11-18): headers, long paths, checkboxes
+
+The maintainer, after round 1: Harbor Mono's header (the blue-grey band, the accent on its left, the rounded top that
+reads as a shadow) is everywhere and everywhere the same. Wanted: a header language more like the rest of the look
+(Oxide's console as the reference), with more than one level: two or three for the important things, and a quieter one
+for the groups of one section (Angles & offsets, Reference & mask), subtly different from the section's. Also: long
+paths are cut too often, and checkbox labels sit above the box's bottom edge.
+
+On the same page, round 2 first; switches `?head=today|rule|tab|band` and `?path=cut|wrap|open`; the defaults are
+round 1's picks (`io=table`, `tog=rows`). Code: `ui/job_page_ideas/heads.py`.
+
+**H · Header ladders.** Each look has four levels: page (the job's title line), section (Parameters, Inputs &
+Outputs, SLURM, Tasks), accented section (one that asks to be looked at: a failed job's Log, Results), group (inside a
+section). Each panel shows the ladder, then the picked page (Rail, Rows, Table) drawn in it.
+- Today: the band, its left accent, the hairline; a group is bold text.
+- H1 Rule (Oxide's console): section title in mono caps, a hairline running on from it to the edge, meta at the far
+  end; no fill, no corners. Accent: a square pip, title and rule in blue. Group: sans semibold, no line.
+- H2 Tab: the title in a flat inverted tab (ink, white mono caps) on a full-width ink rule. Accent: tab and rule in
+  blue. Group: mono caps behind a small hollow square.
+- H3 Band: a flat square band ruled in ink along its top instead of its left. Accent: a 2 px blue top rule on a bluer
+  band. Group: sans semibold over a dotted hairline.
+
+**E · Long paths.** Inside the project a path is written from the project folder, outside it whole; the hover shows it
+whole, the copy icon copies it. The folder gives way before the file name (`flex-shrink` 1000 against 1), so the name
+is cut only once the folder is gone.
+- E1 Cut: one line.
+- E2 Wrap: every part, breaking only after a slash (a zero-width space after each).
+- E3 Open: E1, and a click opens it to E2 in place.
+In Table (D2) an input's file now goes on its own line under its source, the block's full width, instead of a narrow
+column; a path-valued parameter (Template, Mask) uses the same display inside its box.
+
+**F · Checkboxes.** Measured on the running server (Template match's tab): Quasar's `dense size=xs` box runs 0.75–14.25
+px in its row, the 10 px label is centred on it, so its baseline sits ~2 px above the box's bottom edge: the "elevated"
+look. Ours: a 10 px square box with no text in it (the tick is an out-of-flow pseudo-element), in an `inline-flex`
+row aligned on baselines, so the box's bottom edge is the label's baseline. The panel draws a red line along each
+box's bottom.
 
 | # | Decision | Recommended |
 |---|---|---|
-| D1 | Page layout: A1, A2 or A3 | A1: no column ever outgrows another, and it reads in the order a job runs |
-| D2 | Toggle look: B1, B2 or B3 | B1: lined up, and still reads as checkboxes |
-| D3 | I/O look: D1, D2 or D3 | D1: the builder's own rows, room for a set's facets |
-| D4 | Field metadata: on the param classes, or a layout table per job type | On the param classes: one place a field is declared |
+| D5 | Header look: H1, H2 or H3 | H1 Rule: the flattest, nothing to read as a shadow; its group level is plain sans, a step under the mono caps of the section. It amends CLAUDE.md's "sections separate by whitespace, never underline rules": the hairline is the header's own, not a rule under a title |
+| D6 | Long paths: E1, E2 or E3 | E3 Open: one line by default, the whole path one click away, the file name kept longest |
+| D7 | Checkboxes: ours everywhere (a `house_check` in `ui/components/`), or Quasar's restyled to baseline alignment | Ours: B2 Rows takes job pages off checkboxes; dialogs and menus keep one, drawn by us |

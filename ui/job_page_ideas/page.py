@@ -1,13 +1,17 @@
 """`/dev/job-page-ideas`: the job page's upper half (Parameters, Inputs & Outputs, SLURM) laid out again, on real jobs
 read and never written.
 
-A  the page: Strips (one column, I/O and SLURM as bands), Rail (a narrow right rail), Flow (every block in balanced
-   columns). Each at the job pane's real width.
-B  on/off options: Grid, Rows, Flags.
-C  the field geometry every option uses.
-D  Inputs & Outputs: Sockets (the builder's card rows), Table, Chain.
+Round 2 (the maintainer took A2 Rail, B2 Rows, D2 Table):
+H  header ladders (page, section, accented section, group): today's and three after Oxide's console, each on the
+   picked page.
+E  long paths: Cut, Wrap, Open.
+F  checkboxes: today's against one whose label sits level with its box.
 
-The switches at the top (job, I/O style, toggle style) apply to every option on the page: `?job=tm&io=sockets&tog=grid`.
+Round 1, kept below for reference:
+A  the page: Strips, Rail, Flow. B  on/off options: Grid, Rows, Flags. C  the field geometry. D  Inputs & Outputs:
+Sockets, Table, Chain.
+
+The switches at the top apply to every option on the page: `?job=tm&head=rule&path=open&io=table&tog=rows`.
 """
 
 from __future__ import annotations
@@ -18,7 +22,7 @@ from urllib.parse import urlencode
 from nicegui import ui
 
 from ui.branch_map.style import INK, SOFT
-from ui.job_page_ideas import parts
+from ui.job_page_ideas import heads, parts
 from ui.job_page_ideas.data import L, M, SAMPLES, Param, S, load
 from ui.job_page_ideas.parts import MONO, SANS, section
 
@@ -29,6 +33,9 @@ HALF_W = 560
 JOBS = [("motion", "Motion & CTF"), ("tm", "Template match"), ("class3d", "Class 3D"), ("recon", "Reconstruct")]
 IOS = [("sockets", "D1 Sockets"), ("table", "D2 Table"), ("chain", "D3 Chain")]
 TOGS = [("grid", "B1 Grid"), ("rows", "B2 Rows"), ("flags", "B3 Flags")]
+HEADS = [("today", "Today"), ("rule", "H1 Rule"), ("tab", "H2 Tab"), ("band", "H3 Band")]
+PATHS = [("cut", "E1 Cut"), ("wrap", "E2 Wrap"), ("open", "E3 Open")]
+RAIL_W = 360
 
 
 def _panel(title: str, words: str, width: int):
@@ -122,6 +129,50 @@ def _group_section(g, tog: str) -> None:
         parts.group(g, tog, title=False)
 
 
+# ── H, E, F ──────────────────────────────────────────────────────────────────
+
+
+def _ladder(s) -> None:
+    """The look's four levels, one under the other."""
+    with ui.element("div").style(
+        "display: flex; flex-direction: column; gap: 10px; padding-bottom: 14px; margin-bottom: 6px; "
+        "border-bottom: 1px dashed #cbd5e1;"
+    ):
+        heads.page_title(f"{s.name}", f"{s.number} · {s.rel(str(s.job_dir)) if s.job_dir else ''}")
+        with section("Parameters", right=f"{len(s.groups)} groups"):
+            heads.group_title(s.groups[0].title)
+            for p in s.groups[0].fields[:2]:
+                parts.field_row(p)
+        with section("Log", right="failed 12:31", accent=True):
+            ui.label("A section that asks to be looked at.").style(f"{SANS} font-size: 10px; color: {SOFT};")
+
+
+def _paths(s, mode: str) -> None:
+    rows = [(i.word, i.path) for i in s.inputs if i.path] + [(o.word, o.path) for o in s.outputs if o.path]
+    rows.append(("outside", "/groups/klumpe/software/Napari/Napari_crboost/examples/412_shell_rotavg_job004.mrc"))
+    with ui.element("div").style(
+        "display: grid; grid-template-columns: 90px minmax(0, 1fr) 14px; align-items: start; gap: 4px 8px;"
+    ):
+        for word, p in rows:
+            ui.label(word).style(parts.SLOT + " line-height: 14px;")
+            heads.path(p, s.project, mode)
+            parts.copy_icon(p)
+
+
+def _checks() -> None:
+    """Today's checkbox and ours, a red line along each box's bottom edge: today's label floats above it, ours sits
+    on it."""
+    with ui.element("div").classes("cbjp-guide").style("display: flex; gap: 60px;"):
+        for title in ("today", "level"):
+            with ui.element("div").style("display: flex; flex-direction: column; gap: 12px; width: 200px;"):
+                ui.label(title).style(parts.SLOT)
+                for lbl, on in (("Defocus weight", True), ("Spectral whitening", False), ("Pre-read images", True)):
+                    if title == "today":
+                        ui.checkbox(lbl, value=on).props("dense size=xs").style(f"{SANS} font-size: 10px;")
+                    else:
+                        heads.house_check(lbl, on)
+
+
 # ── C: the geometry ──────────────────────────────────────────────────────────
 
 
@@ -143,14 +194,21 @@ def geometry() -> None:
 
 
 def render_job_page_ideas() -> None:
-    """The page; its switches come from the address's query (`?job=…&io=…&tog=…`)."""
+    """The page; its switches come from the address's query (`?job=…&head=…&path=…&io=…&tog=…`)."""
     params = ui.context.client.request.query_params
-    job, io, tog = params.get("job", ""), params.get("io", ""), params.get("tog", "")
-    job = job if job in dict(JOBS) else "class3d"
-    io = io if io in dict(IOS) else "sockets"
-    tog = tog if tog in dict(TOGS) else "grid"
-    q = {"job": job, "io": io, "tog": tog}
-    ui.add_css(parts.CSS)
+
+    def pick(name: str, options: list[tuple[str, str]], default: str) -> str:
+        v = params.get(name, "")
+        return v if v in dict(options) else default
+
+    job = pick("job", JOBS, "class3d")
+    head = pick("head", HEADS, "rule")
+    path = pick("path", PATHS, "open")
+    io = pick("io", IOS, "table")
+    tog = pick("tog", TOGS, "rows")
+    q = {"job": job, "head": head, "path": path, "io": io, "tog": tog}
+    ui.add_css(parts.CSS + heads.PATH_CSS + heads.CHECK_CSS)
+    parts.PATHS["mode"] = path
     s = load(job)
     with ui.column().style("padding: 18px 26px 60px; gap: 6px; background: #f1f5f9; min-height: 100vh;"):
         ui.label("Job page: Parameters, Inputs & Outputs, SLURM").style(
@@ -158,13 +216,85 @@ def render_job_page_ideas() -> None:
         )
         ui.label(
             "Real jobs, read and never written. Nothing here saves; a toggle flips on click so its look can be judged. "
-            f"Showing {s.name} {s.number} of {s.project.name}."
+            f"Showing {s.name} {s.number} of {s.project.name}. Taken in round 1: A2 Rail, B2 Rows, D2 Table."
         ).style(f"{SANS} font-size: 10.5px; color: {SOFT};")
         with ui.element("div").style("display: flex; flex-direction: column; gap: 5px; margin-top: 8px;"):
             _switch("job", JOBS, job, q)
+            _switch("head", HEADS, head, q)
+            _switch("path", PATHS, path, q)
             _switch("io", IOS, io, q)
             _switch("tog", TOGS, tog, q)
 
+        _heading(
+            "H",
+            "Headers",
+            "A ladder per look, most important first: the page (the job's title line), a section (Parameters, Inputs & "
+            "Outputs, SLURM, Tasks), an accented section (one that asks to be looked at: a failed job's Log, Results), "
+            "a group inside a section (Angles & offsets). The group is one step under the section, never a box. "
+            "Under each ladder, the picked page drawn in it.",
+        )
+        for key, title, words in (
+            (
+                "today",
+                "Today · Harbor Mono",
+                "For comparison: the pale blue-grey band, its 2 px accent on the left and the hairline under it. The "
+                "same at every level; a group is only bold text.",
+            ),
+            (
+                "rule",
+                "H1 · Rule",
+                "Oxide's console: the section title in mono caps, a hairline running on from it to the edge, the meta "
+                "at the far end. No fill, no corners. Accent: a square pip and the title and rule in blue. Group: sans "
+                "semibold, no line.",
+            ),
+            (
+                "tab",
+                "H2 · Tab",
+                "The section title in a flat inverted tab (ink, white mono caps) sitting on a full-width ink rule. "
+                "Accent: the tab and rule in blue. Group: mono caps behind a small hollow square.",
+            ),
+            (
+                "band",
+                "H3 · Band",
+                "A flat square band, ruled in ink along its top instead of on its left. Accent: a 2 px blue top "
+                "rule on a bluer band. Group: sans semibold over a dotted hairline.",
+            ),
+        ):
+            heads.use(key)
+            with _panel(title, words, PANE_W):
+                _ladder(s)
+                layout_rail(s, io, tog)
+        heads.use(head)
+
+        _heading(
+            "E",
+            "Long paths",
+            "Inside the project a path is written from the project folder; outside it, whole. Its file name is never "
+            "cut. Shown in the rail's width, where paths are cut today. Hover shows the whole path; the copy icon "
+            "beside it copies it.",
+        )
+        for key, title, words in (
+            (
+                "cut",
+                "E1 · Cut",
+                "One line: the folder gives way with an ellipsis at its end, the file name never does.",
+            ),
+            ("wrap", "E2 · Wrap", "Every part, wrapping only after a slash: complete, at the cost of lines."),
+            ("open", "E3 · Open", "E1, and a click on it opens it to E2 in place; another click closes it."),
+        ):
+            with _panel(title, words, RAIL_W):
+                _paths(s, key)
+
+        _heading(
+            "F",
+            "Checkboxes",
+            "Today's (Quasar's, as the job tabs draw it) beside one drawn by us: a 10 px box and its label centred on "
+            "one 14 px line. The red lines are the box's top and bottom.",
+        )
+        with _panel("F · Today against level", "Click either to flip it.", HALF_W):
+            _checks()
+
+        ui.label("Round 1").style(f"{SANS} font-size: 15px; font-weight: 600; color: {INK}; margin-top: 40px;")
         _heading(
             "A",
             "The page",
