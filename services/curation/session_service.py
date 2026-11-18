@@ -31,7 +31,9 @@ from urllib.parse import urlencode
 
 from services.computing.slurm_service import SlurmConfig, SlurmService, avoided_nodes, check_constraint
 from services.configs.config_service import get_config_service
+from services.event_log import events
 from services.result import ErrorCode, err, ok
+from services.visualization.napari_bundle import tomogram_bundle, write_bundle
 
 logger = logging.getLogger(__name__)
 
@@ -737,6 +739,7 @@ class CurationSessionService:
 
     _NAPARI_REQUEST = "open.json"
     _NAPARI_ACK = "opened.json"
+    _NAPARI_BUNDLE = "bundle.json"
 
     @staticmethod
     def _napari_base() -> Path:
@@ -758,17 +761,25 @@ class CurationSessionService:
         return None
 
     @classmethod
-    def _write_napari_request(cls, session_dir: Path, volumes: list[dict[str, str]], title: str) -> int:
+    def _write_napari_request(
+        cls, session_dir: Path, volumes: list[dict[str, str]], title: str, bundle: dict | None = None
+    ) -> int:
         """Write `open.json` (renamed into place, so the launcher never reads half of it) and return its
         `seq`. A clock in ms: later than any request before it, a server restart included, which is all the
-        launcher compares. `outputs` is the first volume's project folder for the companion viewer's saves."""
+        launcher compares. `outputs` is the first volume's project folder for the companion viewer's saves;
+        `bundle`, the tomogram's picks and segmentations, goes to `bundle.json` first, which the request names."""
         seq = time.time_ns() // 1_000_000
         outputs = cls._napari_outputs(volumes[0]["path"]) if volumes else None
+        bundle_path = None
+        if bundle is not None:
+            bundle_path = session_dir / cls._NAPARI_BUNDLE
+            write_bundle(bundle, bundle_path)
         body = {
             "seq": seq,
             "title": title,
             "layers": [{"name": v["name"], "path": v["path"]} for v in volumes],
             "outputs": str(outputs) if outputs else None,
+            "bundle": str(bundle_path) if bundle_path else None,
         }
         tmp = session_dir / (cls._NAPARI_REQUEST + ".tmp")
         tmp.write_text(json.dumps(body))
@@ -832,7 +843,8 @@ class CurationSessionService:
         session_id = uuid.uuid4().hex[:8]
         session_dir = self._napari_base() / session_id
         await asyncio.to_thread(session_dir.mkdir, parents=True, exist_ok=True)
-        seq = await asyncio.to_thread(self._write_napari_request, session_dir, volumes, title)
+        bundle = await self._napari_bundle(volumes[0]["path"]) if companion else None
+        seq = await asyncio.to_thread(self._write_napari_request, session_dir, volumes, title, bundle)
 
         if software:
             placement = SlurmConfig(partition=partition)
@@ -912,8 +924,20 @@ class CurationSessionService:
         sdir = Path(session_dir)
         if not await asyncio.to_thread(sdir.is_dir):
             return err(f"The napari session's directory is gone: {sdir}")
-        seq = await asyncio.to_thread(self._write_napari_request, sdir, volumes, title)
+        bundle = await self._napari_bundle(volumes[0]["path"]) if self.config_service.napari.companion else None
+        seq = await asyncio.to_thread(self._write_napari_request, sdir, volumes, title, bundle)
         return ok(seq=seq)
+
+    async def _napari_bundle(self, volume: str) -> dict | None:
+        """The picks and segmentations crboost holds for the tomogram at `volume`, for the companion viewer; None
+        for a volume of no project, or when they cannot be read: the tomogram opens regardless, and the bundle's
+        absence says why in the log."""
+        try:
+            return await tomogram_bundle(volume)
+        except (OSError, ValueError, KeyError) as e:
+            logger.exception("napari bundle for %s not built", volume)
+            events.warning("napari: picks and segmentations of %s not shown: %s", Path(volume).name, e)
+            return None
 
     async def get_napari_session_info(self, session_dir: str, slurm_job_id: str | None = None) -> dict[str, Any]:
         """get_curation_session_info() for a napari session, plus what was asked for (`requested`) and what
