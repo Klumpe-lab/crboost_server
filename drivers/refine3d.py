@@ -6,13 +6,13 @@ A re-run in a job dir where an earlier attempt finished an iteration continues f
 (relion_refine --continue) instead of starting over.
 """
 
-import re
 import shutil
 import sys
 import traceback
 from pathlib import Path
 
 from drivers.driver_base import ToolCommand, chosen_solvent_mask, get_driver_context, run_tool, start_supervisor
+from drivers.relion_continue import changed_since_start, continue_command, latest_checkpoint, program_index
 from services.jobs.refine3d import Refine3DParams
 from services.subtomo_merge import _parse_optimisation_set, _read_particles_star, write_optimisation_set
 
@@ -21,11 +21,8 @@ ANGLE_COLS = ("rlnAngleRot", "rlnAngleTilt", "rlnAnglePsi")
 # of particles (one grid point among thousands).
 MAX_UNORIENTED_FRACTION = 0.01
 
-# On --continue relion_refine reads every option back from the checkpoint except these computation ones.
-CONTINUE_OPTIONS = ("--j", "--pool", "--gpu", "--preread_images", "--dont_combine_weights_via_disc")
 # A finished iteration: its optimiser star and the files that star points at. A continuation names them
 # run_ct<N>_it<M>_*.
-OPTIMISER_RE = re.compile(r"run(?:_ct\d+)?_it(\d{3})_optimiser\.star")
 ITERATION_FILES = (
     "_data.star",
     "_sampling.star",
@@ -56,59 +53,6 @@ def check_angle_priors(input_optimisation: Path) -> None:
             f"{unoriented}/{len(particles)} particles in {particles_star} sit at 0,0,0 (no orientation): a local "
             "angular search would keep them there. Set sigma_ang to -1 for a global search."
         )
-
-
-def latest_checkpoint(job_dir: Path) -> tuple[int, Path] | None:
-    """The last iteration (>= 1) an earlier attempt finished writing in job_dir, and its optimiser star."""
-    done = []
-    for optimiser in job_dir.glob("run*_optimiser.star"):
-        m = OPTIMISER_RE.fullmatch(optimiser.name)
-        prefix = optimiser.name.removesuffix("_optimiser.star")
-        if m and int(m.group(1)) >= 1 and all((job_dir / f"{prefix}{s}").is_file() for s in ITERATION_FILES):
-            done.append((int(m.group(1)), optimiser))
-    return max(done, default=None)
-
-
-def options_of(argv: list[str]) -> dict[str, tuple[str, ...]]:
-    """relion_refine arguments by option: '--sym C1 --ctf' -> {'--sym': ('C1',), '--ctf': ()}."""
-    options: dict[str, tuple[str, ...]] = {}
-    key = None
-    for token in argv:
-        if token.startswith("--"):
-            key = token
-            options[key] = ()
-        elif key is not None:
-            options[key] += (token,)
-    return options
-
-
-def changed_since_start(job_dir: Path, argv: list[str]) -> list[str]:
-    """The refinement options in argv that differ from those the run in job_dir was started with, as recorded in
-    its run_it000_optimiser.star. A continued run reads them from its checkpoint, so it would not apply these."""
-    first = job_dir / "run_it000_optimiser.star"
-    recorded = next((line[1:].split() for line in first.read_text().splitlines() if line.startswith("# --")), None)
-    if recorded is None:
-        raise ValueError(f"{first} does not record the command its run was started with")
-    skip = (*CONTINUE_OPTIONS, "--o")
-    then = {k: v for k, v in options_of(recorded).items() if k not in skip}
-    now = {k: v for k, v in options_of(argv).items() if k not in skip}
-
-    def shown(values: tuple[str, ...] | None) -> str:
-        return "unset" if values is None else " ".join(values) or "on"
-
-    return [f"{k} {shown(then.get(k))} -> {shown(now.get(k))}" for k in sorted(then | now) if then.get(k) != now.get(k)]
-
-
-def continue_command(fresh: ToolCommand, optimiser: Path, output_root: Path) -> ToolCommand:
-    """fresh as a continuation from optimiser: the same mpirun prefix and computation options; every other option
-    comes from the checkpoint."""
-    i = fresh.parts.index("relion_refine_mpi") + 1
-    cmd = ToolCommand(" ".join(fresh.parts[:i]))
-    cmd.opt_path("--continue", optimiser, quote=False).opt_path("--o", output_root, quote=False)
-    for option, values in options_of(fresh.parts[i:]).items():
-        if option in CONTINUE_OPTIONS:
-            cmd.raw(" ".join((option, *values)))
-    return cmd
 
 
 def main():
@@ -206,10 +150,10 @@ def main():
         if params.use_gpu:
             cmd.flag("--gpu")
 
-        checkpoint = latest_checkpoint(job_dir)
+        checkpoint = latest_checkpoint(job_dir, ITERATION_FILES)
         if checkpoint is not None:
             iteration, optimiser = checkpoint
-            changed = changed_since_start(job_dir, cmd.parts[cmd.parts.index("relion_refine_mpi") + 1 :])
+            changed = changed_since_start(job_dir, cmd.parts[program_index(cmd.parts) + 1 :])
             if changed:
                 raise RuntimeError(
                     f"{optimiser.name} holds iteration {iteration} of a run started with other settings "
