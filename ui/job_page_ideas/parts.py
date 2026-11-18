@@ -32,8 +32,6 @@ BOX = (
     "white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
 )
 ROW = "display: flex; align-items: center; gap: 8px; min-height: 20px; min-width: 0;"
-# How paths show in the I/O blocks: heads.path's cut / wrap / open, set per panel by the page.
-PATHS = {"mode": "cut"}
 
 CSS = f"""
 .cbjp-tog {{ cursor: pointer; user-select: none; }}
@@ -113,7 +111,7 @@ def field_row(p: Param) -> None:
             # A path: the page's path display inside the box, so the file name is the last thing cut.
             box = BOX.replace("height: 18px;", "min-height: 18px;").replace("white-space: nowrap;", "")
             with ui.element("div").style(f"{box} flex: 1 1 0; min-width: 0; padding-top: 1px;"):
-                heads.path(p.value, None, PATHS["mode"])
+                heads.mpath(p.value, None)
             return
         if p.width == L:
             ui.label(p.value or "none").style(
@@ -219,8 +217,8 @@ def io_sockets(s: Sample) -> None:
             ui.label(i.word).style(f"{SLOT} width: 104px; flex-shrink: 0;")
             _source(i)
             if i.source is not None and i.source.name == "File":
-                with ui.element("div").style("min-width: 0; flex: 0 1 auto;"):
-                    heads.path(i.path, s.project, PATHS["mode"])
+                with ui.element("div").style("min-width: 0; flex: 1 1 0;"):
+                    heads.mpath(i.path, s.project)
             ui.element("div").style("flex: 1;")
             if i.path:
                 copy_icon(i.path, "input path")
@@ -245,9 +243,9 @@ def io_sockets(s: Sample) -> None:
                     f"{SANS} font-size: 10.5px; color: {BODY}; width: 150px; flex-shrink: 0; white-space: nowrap; "
                     "overflow: hidden; text-overflow: ellipsis;"
                 )
-                with ui.element("div").style("min-width: 0; flex: 0 1 auto;"):
+                with ui.element("div").style("min-width: 0; flex: 1 1 0;"):
                     if o.path:
-                        heads.path(o.path, s.project, PATHS["mode"])
+                        heads.mpath(o.path, s.project)
                 ui.element("div").style("flex: 1;")
                 if o.path:
                     copy_icon(o.path, "output path")
@@ -255,9 +253,10 @@ def io_sockets(s: Sample) -> None:
 
 def io_table(s: Sample) -> None:
     """One grid for in and out. An input's row names its source; its file goes on the line under it, as wide as
-    the block, in the page's path display (heads.path). An output's file stands where a source would."""
+    the block, cut in its middle (heads.mpath: a click copies it, hovering unrolls it). An output's file stands where
+    a source would."""
     with ui.element("div").style(
-        "display: grid; grid-template-columns: 24px 100px minmax(0, 1fr) 14px; align-items: center; row-gap: 1px;"
+        "display: grid; grid-template-columns: 24px 100px minmax(0, 1fr); align-items: center; row-gap: 1px;"
     ):
         for i in s.inputs:
             ui.label("in").style(f"{SLOT} font-size: 7.5px;")
@@ -265,28 +264,20 @@ def io_table(s: Sample) -> None:
             with ui.element("div").style(f"{ROW} gap: 6px;"):
                 _source(i)
             if i.path:
-                copy_icon(i.path, "input path")
-            else:
-                ui.element("div")
-            if i.path:
                 with ui.element("div").style("grid-column: 2 / -1; margin: 0 0 4px; min-width: 0;"):
-                    heads.path(i.path, s.project, PATHS["mode"])
+                    heads.mpath(i.path, s.project)
             for word, text in i.detail:
                 ui.label(word).style(f"{SLOT} font-size: 7.5px; grid-column: 2;")
-                ui.label(text).style(f"{SANS} font-size: 9.5px; color: {BODY}; grid-column: 3 / 5;")
+                ui.label(text).style(f"{SANS} font-size: 9.5px; color: {BODY}; grid-column: 3 / 4;")
         ui.element("div").style(f"grid-column: 1 / -1; height: 1px; background: {HAIR}; margin: 3px 0;")
         for o in s.outputs:
             ui.label("out").style(f"{SLOT} font-size: 7.5px;")
             ui.label(o.word).style(SLOT)
             with ui.element("div").style("min-width: 0;"):
                 if o.path:
-                    heads.path(o.path, s.project, PATHS["mode"])
+                    heads.mpath(o.path, s.project)
                 else:
                     ui.label("after it runs").style(f"{SANS} font-size: 9.5px; color: {MUTED};")
-            if o.path:
-                copy_icon(o.path, "output path")
-            else:
-                ui.element("div")
 
 
 def io_chain(s: Sample) -> None:
