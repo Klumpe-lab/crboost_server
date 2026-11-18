@@ -62,7 +62,7 @@ job003/
 | tsCtf | `ctf` | — |
 | tsReconstruct | `reconstruct` | — |
 | denoisetrain | `denoise_train` | `denoise_method`: `cryocare` / `isonet` / … |
-| denoisepredict | `denoise_predict` | `denoise_method` |
+| denoisepredict | `denoise_predict` | the train job's method (`inherited_from_train`), else `denoise_method` |
 | segment | `segment` | `method`: `easymode` / `ais_model` |
 | subset | `subset` | — |
 | templatematching | `tm` | species id |
@@ -80,6 +80,9 @@ job003/
 Rules:
 - One qualifier at most: the species id if the job has one, else the method field named above, else none.
   Species ids are already slugs (`copia_particle`, `mysdonut`).
+- Denoise Predict is named by the method of the train job whose model it runs, as its driver does: its own
+  `denoise_method` can be stale (Vermicelli `job010` stored cryoCARE, ran IsoNet: "Inheriting denoise_method=IsoNet
+  from denoise-train (was cryoCARE)").
 - The whole name is lowercased, anything outside `[a-z0-9_-]` becomes `_`, and it is cut at 48 characters.
 - A clone (`templatematching__2`) needs nothing extra: it has its own folder number.
 - A method enum gaining a value needs no table edit: the slug is the lowercased value.
@@ -125,15 +128,30 @@ Where it is called (each is where `relion_job_name` changes or a folder goes awa
   (`is_dir(follow_symlinks=False)`, `project_delete.py:67`), so deleting a project never walks a job twice.
   `clear_staging_duplicates.py` globs `job*`, which a link name never matches. S1 greps for any other
   `iterdir`/`glob` over a category folder that would now see the links.
-- **RELION opening the project.** RELION lists `External/` by `default_pipeline.star`, not by `ls`; extra entries
+- **Globs, measured on the server's Python 3.11.** `Path.glob("**/x")` does not descend into a linked folder;
+  `Path.glob("*/x")` and `glob.glob(..., recursive=True)` do. No crboost code globs `External/*` (checked here and in
+  the lab install, 2026-11-18); a glob a user types (a segmentation import of `…/External/*/segmentations/*.mrc`)
+  would see every job twice. S2 covers that.
+- **A person removing a link.** `rm -rf External/005_x` removes the link; `rm -rf External/005_x/` (trailing slash,
+  which tab completion can add) empties `job005`. Measured. Worth one line wherever links are explained.
+- **Copies that follow links** (`rsync -L`, `cp -rL`, `tar -h`) copy each job twice; none of them does by default.
+- **Another server on older code** deleting a job leaves its link dangling until the next sync here.
+ RELION lists `External/` by `default_pipeline.star`, not by `ls`; extra entries
   are invisible to it.
 - **Drivers.** They get real paths from `job_model.paths`; nothing on a compute node sees a link unless a user
   pasted one (S2).
 
 ## 6. Stages
 
-**S1 — the links.** `dir_slug` on every `JobSpec` row; `services/job_links.py` (`link_name(job_model)` +
-`sync_job_links`); the calls in §4. Check: make a fresh copia project from the protocol, Run through Reconstruct and
+**S1 — the links. BUILT 2026-11-18, NOT RUN in the server.** `dir_slug` / `dir_qualifier` on every `JobSpec` row;
+`services/job_links.py` (`link_name`, `wanted_links` on the loop, `apply_links` in a thread, `sync_job_links`);
+called after pass 3's save in `_submit_chain` and after the save in `ProjectService.delete_job`. Tried on a scratch
+mirror of Copia_Aaron_Tutorial's folders (empty `jobNNN` dirs): 12 links; a second sync changes nothing; a job moved
+to a new folder moves its link; a deleted job loses it; a user's own link and a real `099_reconstruct` folder are left
+alone; a read-only `External/` logs two warnings and leaves no `.tmp`. Dry names on three real projects read right
+after the Denoise Predict fix (§3). Still owed: the check below, in the server.
+
+Check (owed): make a fresh copia project from the protocol, Run through Reconstruct and
 one TM, and read `ls -l External Import`: one link per job, run order, the alignment and TM qualified. Then delete a
 job (it goes to Trash) and see its link gone; make a FAILED alignment start over in a new folder by resetting its
 inputs and see the link move to the new number. The disk page's numbers for the project are unchanged.
@@ -154,7 +172,9 @@ project with a superseded attempt names it.
 
 ## 7. Open
 
-- **D1 — existing projects.** As built in S1, a project gets its links at its next Run or delete. Running
+- **D1 — existing projects.** The code is the same for old and new projects and only adds or removes its own
+  symlinks (§5), so repairing them is as safe as S1 itself; what is open is when. As built in S1, a project gets its
+  links at its next Run or delete. Running
   `sync_job_links` when a project is opened would give every old project links at once, but a read would then
   write into other users' projects, and the API reads any project. Default: no, links come with the next Run
   (memory `feedback_fresh_projects_not_backfills`). Say if open should do it for projects the user can write.

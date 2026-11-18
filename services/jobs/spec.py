@@ -94,6 +94,10 @@ class JobSpec:
     # How services/log_progress reads this job's run.out ("relion", "miss_align", ...); None = its
     # generic reader (the last progress bar of any kind).
     log_format: str | None = None
+    # The job's folder link (services/job_links.py): `External/005_alignment_aretomo -> job005`. The type part
+    # of the name, and the param field whose value follows it when the job has no species.
+    dir_slug: str = ""
+    dir_qualifier: str | None = None
 
 
 JOB_SPECS: Final[tuple[JobSpec, ...]] = (
@@ -103,6 +107,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         "Import",
         PHASE_PREPROCESSING,
         driver=None,  # native relion_python_tomo_import command, built inline
+        dir_slug="import",
     ),
     JobSpec(
         JobType.FS_MOTION_CTF,
@@ -113,6 +118,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         driver="fs_motion_and_ctf.py",
         plugins=("fs_motion_and_ctf", "array_tasks"),
         array_output_star="fs_motion_and_ctf.star",
+        dir_slug="motion_ctf",
     ),
     JobSpec(
         JobType.TS_IMPORT,
@@ -120,6 +126,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         "TS Import",
         None,  # silently-injected prerequisite; never in the roster
         driver="ts_import.py",
+        dir_slug="ts_import",
     ),
     # Optional insertable filter: runs after tsImport (its tomostar prerequisite
     # is auto-added) and reads the fs-motion star for the DL pass. Gated
@@ -134,6 +141,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         prerequisite=JobType.TS_IMPORT,
         driver="tilt_filter.py",
         plugins=("tilt_filter",),
+        dir_slug="tilt_filter",
     ),
     JobSpec(
         JobType.TS_ALIGNMENT,
@@ -145,6 +153,8 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         driver="ts_alignment.py",
         plugins=("array_tasks",),
         array_output_star="aligned_tilt_series.star",
+        dir_slug="alignment",
+        dir_qualifier="alignment_method",
     ),
     # Optional insertable refinement: requires alignment, but tsCtf does NOT
     # require it (tsCtf stays gated on TS_ALIGNMENT so the common no-missAlign
@@ -160,6 +170,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         refines=(JobFileType.ALIGNED_TILT_SERIES_STAR, JobFileType.WARP_TILTSERIES_DIR),
         items_from="input_star",
         log_format="miss_align",
+        dir_slug="missalign",
     ),
     JobSpec(
         JobType.TS_CTF,
@@ -171,6 +182,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         plugins=("array_tasks",),
         array_output_star="ts_ctf_tilt_series.star",
         items_from="input_star",
+        dir_slug="ctf",
     ),
     JobSpec(
         JobType.TS_RECONSTRUCT,
@@ -182,6 +194,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         plugins=("ts_reconstruct",),
         array_output_star="tomograms.star",
         items_from="input_star",
+        dir_slug="reconstruct",
     ),
     JobSpec(
         JobType.DENOISE_TRAIN,
@@ -192,6 +205,8 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         driver="denoise_train.py",
         items_from="input_star",
         log_format="denoise",
+        dir_slug="denoise_train",
+        dir_qualifier="denoise_method",
     ),
     JobSpec(
         JobType.DENOISE_PREDICT,
@@ -204,6 +219,8 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         driver="denoise_predict.py",
         plugins=("array_tasks",),
         items_from="input_star",
+        dir_slug="denoise_predict",
+        dir_qualifier="denoise_method",
     ),
     JobSpec(
         JobType.SEGMENT,
@@ -214,10 +231,19 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         driver="segment.py",
         plugins=("segment", "array_tasks"),
         items_from="input_tomograms",
+        dir_slug="segment",
+        dir_qualifier="method",
     ),
     # Made from the tab of the job whose output it cuts, never from the roster; written at submit.
     JobSpec(
-        JobType.SUBSET, SubsetParams, "Subset", PHASE_PREPROCESSING, driver=None, plugins=("subset",), roster_add=False
+        JobType.SUBSET,
+        SubsetParams,
+        "Subset",
+        PHASE_PREPROCESSING,
+        driver=None,
+        plugins=("subset",),
+        roster_add=False,
+        dir_slug="subset",
     ),
     JobSpec(
         JobType.TEMPLATE_MATCH_PYTOM,
@@ -228,6 +254,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         driver="template_match_pytom.py",
         plugins=("template_match", "array_tasks"),
         items_from="input_tomograms",
+        dir_slug="tm",
     ),
     JobSpec(
         JobType.TEMPLATE_EXTRACT_PYTOM,
@@ -237,6 +264,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         dependencies=(JobType.TEMPLATE_MATCH_PYTOM,),
         driver="extract_candidates_pytom.py",
         plugins=("candidate_extract", "array_tasks"),
+        dir_slug="pick",
     ),
     # Picks from a Segment job's volumes instead of template-matching scores: one CPU job, no array.
     JobSpec(
@@ -246,6 +274,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         PHASE_PARTICLES,
         dependencies=(JobType.SEGMENT,),
         driver="filament_pick.py",
+        dir_slug="filament_pick",
     ),
     JobSpec(
         JobType.SUBTOMO_EXTRACTION,
@@ -255,6 +284,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         dependencies=(JobType.TEMPLATE_EXTRACT_PYTOM,),
         driver="subtomo_extraction.py",
         plugins=("subtomo_extraction",),
+        dir_slug="extract",
     ),
     # Alternative producer of the particle optimisation set: WarpTools cuts the 2D particle
     # series with the full Warp model (local image warps included), which RELION extraction
@@ -267,13 +297,21 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         dependencies=(JobType.TEMPLATE_EXTRACT_PYTOM,),
         driver="warp_export.py",
         plugins=("warp_export", "array_tasks"),
+        dir_slug="warp_export",
     ),
     # Per-pick-list extraction. phase=None: this is NOT a roster job --
     # one instance exists per pick list and its home is the Species page's Picks tab,
     # not the pipeline. The row itself is mandatory even so, because jobtype_paramclass()
     # is derived from JOB_SPECS and ProjectState.load drops instances of a type with no
     # param class. Keeping it out of the sweeps is the param class's IS_INTERACTIVE.
-    JobSpec(JobType.EXTRACT_PICK_LIST, ExtractPickListParams, "Extract Pick List", None, driver="extract_pick_list.py"),
+    JobSpec(
+        JobType.EXTRACT_PICK_LIST,
+        ExtractPickListParams,
+        "Extract Pick List",
+        None,
+        driver="extract_pick_list.py",
+        dir_slug="pick_list",
+    ),
     JobSpec(
         JobType.RECONSTRUCT_PARTICLE,
         ReconstructParticleParams,
@@ -283,6 +321,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         driver="reconstruct_particle.py",
         plugins=("particle_results",),
         log_format="reconstruct",
+        dir_slug="recon_particle",
     ),
     JobSpec(
         JobType.CLASS3D,
@@ -293,6 +332,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         driver="class3d.py",
         plugins=("particle_results",),
         log_format="relion",
+        dir_slug="class3d",
     ),
     JobSpec(
         JobType.REFINE3D,
@@ -302,6 +342,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         dependencies=(JobType.RECONSTRUCT_PARTICLE,),
         driver="refine3d.py",
         log_format="relion",
+        dir_slug="refine3d",
     ),
     # A solvent mask from any map a particle job made (a refinement's, a reconstruction's, a sharpened one), for
     # PostProcess, and for Class 3D and Refine 3D with mask_from_job set.
@@ -312,6 +353,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         PHASE_PARTICLES,
         dependencies=(JobType.RECONSTRUCT_PARTICLE,),
         driver="mask_create.py",
+        dir_slug="mask",
     ),
     JobSpec(
         JobType.POSTPROCESS,
@@ -320,6 +362,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         PHASE_PARTICLES,
         dependencies=(JobType.REFINE3D,),
         driver="postprocess.py",
+        dir_slug="postprocess",
     ),
 )
 
