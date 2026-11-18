@@ -5,7 +5,6 @@ from typing import ClassVar
 from pydantic import Field
 
 from services.computing.slurm_service import SlurmConfig
-from services.configs.config_service import get_config_service
 from services.io_slots import InputSlot, JobFileType, OutputSlot
 from services.jobs._base import AbstractJobParams
 from services.models_base import JobCategory, JobType, SegmentFormat, SegmentMethod
@@ -115,7 +114,7 @@ class SegmentParams(AbstractJobParams):
     def _get_queue_options(self) -> list[tuple[str, str]]:
         """The parent sbatch is a CPU-only supervisor that submits the per-tomogram array, waits for it
         and aggregates; the job's SLURM settings describe one array task (see TsReconstructParams)."""
-        sup = get_config_service().supervisor_slurm_defaults
+        sup = self.supervisor_slurm()
         options = [
             ("do_queue", "Yes"),
             ("queuename", sup.partition),

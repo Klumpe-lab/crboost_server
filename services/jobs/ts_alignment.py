@@ -4,7 +4,6 @@ from typing import ClassVar
 from pydantic import Field
 
 from services.computing.slurm_service import SlurmConfig
-from services.configs.config_service import get_config_service
 from services.jobs._base import AbstractJobParams
 from services.models_base import JobType, JobCategory, AlignmentMethod
 from services.io_slots import InputSlot, OutputSlot, JobFileType
@@ -84,7 +83,7 @@ class TsAlignmentParams(AbstractJobParams):
         Override: alignment supervisor is a lightweight CPU-only job.
         The user-facing slurm config describes PER-TASK resources for the array.
         """
-        sup = get_config_service().supervisor_slurm_defaults
+        sup = self.supervisor_slurm()
         options = [
             ("do_queue", "Yes"),
             ("queuename", sup.partition),

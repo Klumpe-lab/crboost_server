@@ -384,6 +384,12 @@ def _slurm_walltime_to_minutes(t: str) -> int:
         return 0
 
 
+def minutes_to_walltime(minutes: int) -> str:
+    """Whole minutes as a SLURM walltime: 'H:MM:00', or 'D-HH:MM:00' from a day up."""
+    days, rest = divmod(max(0, int(minutes)), 1440)
+    return f"{days}-{rest // 60:02d}:{rest % 60:02d}:00" if days else f"{rest // 60}:{rest % 60:02d}:00"
+
+
 def scale_per_task(cfg: "SlurmConfig", *, resources: int = 1, time: int = 1) -> "SlurmConfig":
     """A per-item request made a task's that runs several (roadmap 45 L5): CPUs and memory times `resources`
     (items at once), the time limit times `time` (items one after another). A time or memory it cannot read is
@@ -399,8 +405,7 @@ def scale_per_task(cfg: "SlurmConfig", *, resources: int = 1, time: int = 1) -> 
         minutes = _slurm_walltime_to_minutes(str(cfg.time))
         if minutes in (0, _QOS_UNLIMITED):
             raise ValueError(f"time {cfg.time!r} is not a SLURM walltime like 1:30:00")
-        days, rest = divmod(minutes * time, 1440)
-        out.time = f"{days}-{rest // 60:02d}:{rest % 60:02d}:00" if days else f"{rest // 60}:{rest % 60:02d}:00"
+        out.time = minutes_to_walltime(minutes * time)
     return out
 
 

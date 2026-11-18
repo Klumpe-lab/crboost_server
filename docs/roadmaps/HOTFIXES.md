@@ -489,6 +489,67 @@ retry); remove only the exit markers. The job page's log view can offer the prev
 
 **Check.** Fail a toy job, Run again: `run.out.prev` holds the first attempt's lines while the retry writes `run.out`.
 
+### H18 — add_job's `reading` stores a source no candidate list holds
+
+**Status:** open, found 2026-11-17. **Severity:** medium: the job's input names nothing, and only Run says so.
+
+**What is wrong.** `pipeline_edit.add_job` checks that each slot of `reading` exists (`services/pipeline_edit.py:222-226`)
+and stores the source string as given (`:279-280`). `job_params.set_input` checks the same string against the slot's
+candidates and names the ones it could read (`services/job_params.py:385-391`). The API's `add_job(reading=…)` goes
+through the first.
+
+**Evidence.** AGG412_STA, 2026-11-17: `add_job(reconstructParticle, reading={input_optimisation:
+"particle_set__s002_ribosome_pilot_ge10"})` was taken; the candidate is `mergedSources:particle_set__s002_…`. Run
+refused: "the job directory this input was set to () belongs to no job now".
+
+**Fix.** Check `reading` against `get_candidates_for_slot` as `set_input` does, refusing with the sources listed.
+**Check.** The call above is refused naming `mergedSources:particle_set__s002_ribosome_pilot_ge10`.
+
+### H19 — plan_run passes a run that Run refuses for an unresolvable input
+
+**Status:** open, found 2026-11-17. **Severity:** medium: a change plan's rehearsal says "2 jobs submitted" and the
+plan then fails at its run step.
+
+**What is wrong.** `PipelineOrchestrator.plan_run` checks the preflight (`pipeline_orchestrator_service.py:519`) and
+describes the inputs; Run also resolves every input of the jobs it submits (`resolve_all_paths`, `:660-688`) and
+refuses on a `PathResolutionError`. `plan_run` never calls it, so a required input that resolves to nothing passes.
+
+**Evidence.** Plan `p-cb7f8e82` (AGG412_STA, H18's input) rehearsed clean; its step 5 failed with "Path resolution
+failed for warpExport … for reconstructParticle".
+
+**Fix.** In `plan_run`, resolve each job's inputs as Run does (no allocation: the pending job dir) and list a
+`PathResolutionError` among `refusals`.
+**Check.** H18's input, before H18 is fixed: `plan_run` refuses naming both jobs.
+
+### H20 — An array job's supervisor gets 4 h whatever its array: every task done, the job Failed
+
+**Status:** fix in the tree, found 2026-11-18, not yet seen on a run. **Severity:** high: a large project's array
+outlives its supervisor, which SLURM kills at the limit; the job reads Failed with every tilt series `.ok`, and
+nothing downstream is submitted.
+
+**What is wrong.** Every array job's parent sbatch took `supervisor_slurm` from conf.yaml as it stood
+(`_get_queue_options` in ten `services/jobs/*.py`), 4 h on this cluster. The supervisor waits for its whole array,
+queue time included; conf.yaml's own comment asked for `ceil(N_ts / array_throttle) × per-task time`, and nothing
+computed it. Without `--qos`, CBE.next refuses anything over 8 h (g_short); `--qos=g_medium` takes 2 days.
+
+**Evidence.** The seven Segment jobs of the `_crboost_data_api` reruns (job022, job030, job020, job015, job022,
+job019, job018): each `run.err` ends `CANCELLED AT 2026-11-17T23:57:16 DUE TO TIME LIMIT`, sacct says TIMEOUT
+04:00:28; `.task_status` holds 23 to 176 `.ok` and nothing else, the last written up to 08:15 the next morning.
+The 50-tomogram project's Segment fit in 4 h and Succeeded. `sbatch --test-only -p g … --time=1-03:00:00` is refused
+by QOS policy; with `--qos=g_medium` it starts as soon as a 4 h job.
+
+**Impact beside it.** The supervisor's SIGTERM handler (`install_cancel_handler`, `drivers/array_job_base.py`) is
+meant to scancel the array on a kill; it did not fire here (no "Caught signal" in any run.out), which is why the
+tasks finished. A supervisor that does catch it at its limit throws away the rest of its array.
+
+**Fix.** `AbstractJobParams.supervisor_slurm()` (`services/jobs/_base.py`): the configured supervisor, its time
+`ceil(tilt series / array_throttle) × the task's time limit + 1 h`, never below the configured time, capped at the
+QOS's probed MaxWall; every supervisor override takes it. Lab conf.yaml: `supervisor_slurm.qos: g_medium`.
+**Recovery of a job it hit.** Run it again once its array has drained: every item is `.ok`, so the supervisor submits
+nothing and aggregates.
+**Check.** A Segment on 150+ tomograms submits its supervisor with about a day (`run_submit.script`, `#SBATCH
+--time`) under g_medium and Succeeds.
+
 ## Fixed
 
 ### H7 — Template matching with T, O or I symmetry searches 3 to 15 times the orientations its increment asks for

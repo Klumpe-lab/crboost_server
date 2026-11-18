@@ -6,7 +6,6 @@ from services.jobs._base import AbstractJobParams
 from services.models_base import JobType, JobCategory, DenoiseMethod, EasymodeDenoiser
 from services.io_slots import InputSlot, OutputSlot, JobFileType
 from services.computing.slurm_service import SlurmPreset, SlurmConfig
-from services.configs.config_service import get_config_service
 
 
 def _tiles_description(axis: str) -> str:
@@ -150,7 +149,7 @@ class DenoisePredictParams(AbstractJobParams):
         slurm_defaults + per-job slurm_overrides) describes PER-TASK resources and is consumed
         by the supervisor when it builds the array sbatch in drivers/denoise_predict.py.
         Mirrors TsReconstructParams._get_queue_options."""
-        sup = get_config_service().supervisor_slurm_defaults
+        sup = self.supervisor_slurm()
         options = [
             ("do_queue", "Yes"),
             ("queuename", sup.partition),

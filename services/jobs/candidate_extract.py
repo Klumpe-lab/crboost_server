@@ -3,7 +3,6 @@ from typing import Any, ClassVar
 from pydantic import Field, model_validator
 
 from services.computing.slurm_service import SlurmConfig
-from services.configs.config_service import get_config_service
 from services.jobs._base import AbstractJobParams, ExtractionCutoffMethod
 from services.models_base import JobType, JobCategory
 from services.io_slots import InputSlot, OutputSlot, JobFileType
@@ -130,7 +129,7 @@ class CandidateExtractPytomParams(AbstractJobParams):
         small) are consumed by the supervisor when it builds the array sbatch
         -- NOT by this supervisor's own sbatch.
         """
-        sup = get_config_service().supervisor_slurm_defaults
+        sup = self.supervisor_slurm()
         options = [
             ("do_queue", "Yes"),
             ("queuename", sup.partition),
