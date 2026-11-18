@@ -1,14 +1,24 @@
 from __future__ import annotations
 import copy
 import logging
+import math
 from enum import Enum
 from pathlib import Path
 from typing import Any, ClassVar, Self, TYPE_CHECKING
 from pydantic import BaseModel, Field
 import pandas as pd
 
-from services.computing.slurm_service import SLURM_PRESET_MAP, SlurmConfig, SlurmPreset, gres_keeping_type
-from services.configs.config_service import get_config_service
+from services.computing.slurm_service import (
+    _QOS_UNLIMITED,
+    SLURM_PRESET_MAP,
+    SlurmConfig,
+    SlurmPreset,
+    _slurm_walltime_to_minutes,
+    get_cached_qos_maxwall_minutes,
+    gres_keeping_type,
+    minutes_to_walltime,
+)
+from services.configs.config_service import SupervisorSlurmConfig, get_config_service
 from services.models_base import JobType, AcquisitionParams, JobCategory, JobStatus, MicroscopeParams
 
 if TYPE_CHECKING:
@@ -313,6 +323,41 @@ class AbstractJobParams(BaseModel):
         """
         input_star = self.paths.get("input_star", "")
         return [("in_mic", str(input_star))]
+
+    def supervisor_slurm(self) -> SupervisorSlurmConfig:
+        """The resources of an array job's supervisor: conf.yaml's supervisor_slurm, its wall time long enough to
+        outlive the array it waits on. A supervisor killed at its limit fails the job with every task done (seven
+        Segment jobs on 2026-11-17: 4 h for arrays of 23 to 176 tomograms that queued for up to 12 h).
+
+        The array's worst case: every tilt series in waves of `array_throttle`, each wave the task's whole time
+        limit, plus an hour for the supervisor's own queue and the aggregation. Tasks that run several items take a
+        limit as many times longer, so about the same waves' worth. Never below the configured time; capped at the
+        supervisor QOS's MaxWall when the landing-page probe has read it (sbatch refuses a request over the limit,
+        so a cap it does not know shows as a refused submit, not a silent kill). The configured time unchanged when
+        the tilt-series count, the throttle or the task's time is unknown."""
+        sup = get_config_service().supervisor_slurm_defaults.model_copy()
+        floor = _slurm_walltime_to_minutes(sup.time)
+        n_items = getattr(self._project_state, "import_selected_tilt_series", 0) or 0
+        throttle = getattr(self, "array_throttle", 0) or 0
+        task = _slurm_walltime_to_minutes(str(self.get_effective_slurm_config().time))
+        if not (n_items and throttle and floor and task) or _QOS_UNLIMITED in (floor, task):
+            return sup
+        need = math.ceil(n_items / throttle) * task + 60
+        cap = get_cached_qos_maxwall_minutes(sup.qos)
+        if 0 < cap < _QOS_UNLIMITED and need > cap:
+            logger.info(
+                "%s: supervisor needs ~%s for %d items, %d at a time; capped at QOS %s's %s",
+                self.job_type.value if self.job_type else type(self).__name__,
+                minutes_to_walltime(need),
+                n_items,
+                throttle,
+                sup.qos or "(default)",
+                minutes_to_walltime(cap),
+            )
+            need = cap
+        if need > floor:
+            sup.time = minutes_to_walltime(need)
+        return sup
 
     def _get_queue_options(self) -> list[tuple[str, str]]:
         """Generate SLURM/queue options using paramN_value slots."""

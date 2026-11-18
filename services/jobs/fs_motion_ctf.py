@@ -3,7 +3,6 @@ from typing import ClassVar
 from pydantic import Field
 
 from services.computing.slurm_service import SlurmConfig
-from services.configs.config_service import get_config_service
 from services.jobs._base import AbstractJobParams
 from services.models_base import JobType, JobCategory
 from services.io_slots import InputSlot, OutputSlot, JobFileType
@@ -82,7 +81,7 @@ class FsMotionCtfParams(AbstractJobParams):
         Override: fs_motion_and_ctf supervisor is lightweight (reads STAR, dispatches array).
         The user-facing slurm config describes PER-TASK resources for the array.
         """
-        sup = get_config_service().supervisor_slurm_defaults
+        sup = self.supervisor_slurm()
         options = [
             ("do_queue", "Yes"),
             ("queuename", sup.partition),
