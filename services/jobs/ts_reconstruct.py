@@ -3,7 +3,7 @@ from typing import ClassVar
 from pydantic import Field
 
 from services.computing.slurm_service import SlurmConfig
-from services.jobs._base import AbstractJobParams
+from services.jobs._base import S, AbstractJobParams, form
 from services.models_base import JobType, JobCategory
 from services.io_slots import InputSlot, OutputSlot, JobFileType
 
@@ -22,6 +22,7 @@ class TsReconstructParams(AbstractJobParams):
         "tilt_series_per_task",
         "array_throttle",
     }
+    PARAM_GROUPS: ClassVar[tuple[str, ...]] = ("Reconstruction", "Half maps", "Processing")
 
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         # The tilt cut propagates natively (tiltFilter trims the tomostar
@@ -51,48 +52,41 @@ class TsReconstructParams(AbstractJobParams):
     ]
 
     rescale_angpixs: float = Field(
-        default=12.0,
-        ge=2.0,
-        le=50.0,
-        title="Pixel size (Å/px)",
+        default=12.0, ge=2.0, le=50.0,
         description="Voxel size of the reconstructed tomogram in Å (Warp --angpix); decimals are fine. The tilt "
-        "images are Fourier-binned from the acquisition pixel size down to this, so doubling it gives 8× fewer "
-        "voxels and drops everything finer than 2× this value (Nyquist). Set at project creation to the "
-        "acquisition pixel size × the configured reconstruction binning.",
+        "images are Fourier-binned from the acquisition pixel size down to this, so doubling it gives 8× fewer voxels "
+        "and drops everything finer than 2× this value (Nyquist). Set at project creation to the acquisition pixel "
+        "size × the configured reconstruction binning.", title="Pixel size",
+        json_schema_extra=form("Reconstruction", S, "Å/px"),
     )
-    halfmap_frames: int = Field(default=1, ge=0, le=1)
+    halfmap_frames: int = Field(default=1, ge=0, le=1, title="Frames", json_schema_extra=form("Half maps", S))
     halfmap_tilts: int = Field(
-        default=0,
-        ge=0,
-        le=1,
-        description="1 = the even/odd half-tomograms are built from alternate tilts (by angle) instead of "
-        "frame halves: they then carry independent alignment errors, which a tilt-split FSC between them "
-        "measures. Warp writes both kinds to the same even/odd folders, so set halfmap_frames to 0; "
-        "denoise training on these halves learns from tilt halves.",
+        default=0, ge=0, le=1,
+        description="1 = the even/odd half-tomograms are built from alternate tilts (by angle) instead of frame "
+        "halves: they then carry independent alignment errors, which a tilt-split FSC between them measures. Warp "
+        "writes both kinds to the same even/odd folders, so set halfmap_frames to 0; denoise training on these halves "
+        "learns from tilt halves.", title="Tilts", json_schema_extra=form("Half maps", S),
     )
     deconv: int = Field(
-        default=0,
-        ge=0,
-        le=1,
-        description="1 = also write a CTF-deconvolved copy (reconstruction/deconv/). Warp's --deconv deconvolves "
-        "the even/odd half-tomograms too, and those are what cryoCARE and IsoNet train and predict on, so keep "
-        "it 0 when the pipeline denoises: IsoNet refuses deconvolved halves and makes its own deconvolved mask copy.",
+        default=0, ge=0, le=1,
+        description="1 = also write a CTF-deconvolved copy (reconstruction/deconv/). Warp's --deconv deconvolves the "
+        "even/odd half-tomograms too, and those are what cryoCARE and IsoNet train and predict on, so keep it 0 when "
+        "the pipeline denoises: IsoNet refuses deconvolved halves and makes its own deconvolved mask copy.",
+        title="Deconvolved copy", json_schema_extra=form("Reconstruction", S),
     )
     perdevice: int = Field(
-        default=2,
-        ge=1,
-        le=8,
-        description="Warp workers on the GPU (--perdevice), each reconstructing a tilt series of the task's. Two "
-        "keep the card busy where one leaves it idle between steps (roadmap 45 P10: 1.38x on a B200, 1.42x on a MIG "
-        "slice; four add nothing). A task asks for this many times the SLURM tab's CPUs and memory.",
+        default=2, ge=1, le=8,
+        description="Warp workers on the GPU (--perdevice), each reconstructing a tilt series of the task's. Two keep "
+        "the card busy where one leaves it idle between steps (roadmap 45 P10: 1.38x on a B200, 1.42x on a MIG slice; "
+        "four add nothing). A task asks for this many times the SLURM tab's CPUs and memory.", title="Per GPU",
+        json_schema_extra=form("Processing", S),
     )
     tilt_series_per_task: int = Field(
-        default=8,
-        ge=1,
-        le=32,
+        default=8, ge=1, le=32,
         description="Tilt series one task reconstructs in one Warp call, so the container and Warp start once for "
         "them; its time limit is the SLURM tab's times the rounds its workers take. Tomograms are the same as one "
         "call each (P10: to 3e-5). If the call fails, all of its tilt series fail and a rerun redoes them.",
+        title="Series / task", json_schema_extra=form("Processing", S),
     )
     array_throttle: int = Field(
         default=40, ge=1, le=64, description="Max concurrent SLURM array tasks for tilt-series reconstruction"

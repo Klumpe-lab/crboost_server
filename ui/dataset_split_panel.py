@@ -18,7 +18,7 @@ from services.tilt_series.preimport import DatasetOverview
 from ui.components.fields import house_text
 from ui.components.segmented import render_segmented
 from ui.dataset_overview_panel import build_dataset_overview_panel, render_parse_warnings
-from ui.job_plugins._field_styles import PANEL_HEAD_STYLE, PANEL_STYLE, PANEL_TITLE_STYLE
+from ui.job_plugins._field_styles import PANEL_STYLE, section_head
 from ui.styles import MONO, SANS as FONT
 
 CLR_LABEL = "#475569"
@@ -64,9 +64,7 @@ class FolderSplitPanel:
         examples = ", ".join(sorted(collisions)[:3]) + (", …" if len(collisions) > 3 else "")
         body = f"{FONT} font-size: 10px; color: {CLR_LABEL};"
         with ui.column().classes("w-full").style(f"gap: 6px; {PANEL_STYLE}"):
-            ui.label(f"{len(split.folders)} acquisition folders reuse the same series names").style(
-                f"{PANEL_TITLE_STYLE} {PANEL_HEAD_STYLE}"
-            )
+            section_head(f"{len(split.folders)} acquisition folders reuse the same series names")
             ui.label(
                 f"{len(collisions)} series names ({examples}) occur in more than one folder. SerialEM restarts "
                 "Position_N for every session, so these look like separate sessions, and one project holds each "

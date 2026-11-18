@@ -64,6 +64,7 @@ from services.segmentation import display
 from services.visualization.tomo_geometry import TomoGeometry, geometry_for_ts, volume_dims
 from services.job_lineage import job_dirs, recon_of
 from ui.components.buttons import house_button, icon_button
+from ui.components.check import house_check
 from ui.components.feature_layers import FeatureFills, layers_for_ts
 from ui.components.hover_menu import Choice, ChoiceRows, hover_menu, tool_trigger
 from ui.components.layer_menu import LayerRow, layers_tool
@@ -2941,8 +2942,8 @@ def _render_gallery_body(
                 counter_label = ui.label("kept …/…").classes("cb-filter-counter")
                 if degenerate_indices:
                     exclude_degen_cb = (
-                        ui.checkbox(f"exclude {len(degenerate_indices)} not-extracted", value=True)
-                        .props("dense size=xs")
+                        house_check(f"exclude {len(degenerate_indices)} not-extracted", value=True)
+                        
                         .classes("cb-degen-toggle")
                         .tooltip(
                             "Picks that produced no subtomo cutout (no match / render failed). On (default) keeps "

@@ -5,7 +5,7 @@ from typing import ClassVar
 from pydantic import Field
 
 from services.io_slots import InputSlot, JobFileType, OutputSlot
-from services.jobs._base import AbstractJobParams
+from services.jobs._base import M, S, AbstractJobParams, form
 from services.models_base import JobCategory, JobType
 
 
@@ -27,6 +27,7 @@ class FilamentPickParams(AbstractJobParams):
         "min_curvature_radius_ang",
         "min_angle_from_z_deg",
     }
+    PARAM_GROUPS: ClassVar[tuple[str, ...]] = ("Tracing", "Filters")
 
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(key="input_segmentations", accepts=[JobFileType.SEGMENTATIONS], preferred_source="segment")
@@ -62,51 +63,37 @@ class FilamentPickParams(AbstractJobParams):
     )
 
     feature: str = Field(
-        default="microtubule",
-        title="Feature",
-        description="The Segment job's feature to trace (a name its segmentations.json lists)",
+        default="microtubule", description="The Segment job's feature to trace (a name its segmentations.json lists)",
+        title="Feature", json_schema_extra=form("Tracing", M),
     )
     spacing_ang: float = Field(
-        default=82.0,
-        gt=0,
-        title="Spacing (Å)",
-        description="Distance between points along a filament. 82 Å is one αβ-tubulin dimer.",
+        default=82.0, gt=0, description="Distance between points along a filament. 82 Å is one αβ-tubulin dimer.",
+        title="Spacing", json_schema_extra=form("Tracing", S, "Å"),
     )
     binning: int = Field(
-        default=2,
-        ge=1,
-        le=8,
-        title="Binning",
-        description="Ais traces the volumes binned by this factor (mean of each block): 2 is about four times "
-        "faster than 1 and plenty for a 25 nm tube.",
+        default=2, ge=1, le=8,
+        description="Ais traces the volumes binned by this factor (mean of each block): 2 is about four times faster "
+        "than 1 and plenty for a 25 nm tube.", title="Binning", json_schema_extra=form("Tracing", S),
     )
     min_volume_nm3: float = Field(
-        default=10000.0,
-        ge=0,
-        title="Min volume (nm³)",
-        description="Ais drops connected pieces smaller than this before tracing. 10 000 nm³ is about 20–30 nm "
-        "of microtubule.",
+        default=10000.0, ge=0,
+        description="Ais drops connected pieces smaller than this before tracing. 10 000 nm³ is about 20–30 nm of "
+        "microtubule.", title="Min volume", json_schema_extra=form("Filters", S, "nm³"),
     )
     min_length_ang: float = Field(
-        default=1000.0,
-        ge=0,
-        title="Min length (Å)",
-        description="Ais drops pieces and prunes side branches shorter than this; filaments still shorter after "
-        "the cut at junctions are marked.",
+        default=1000.0, ge=0,
+        description="Ais drops pieces and prunes side branches shorter than this; filaments still shorter after the "
+        "cut at junctions are marked.", title="Min length", json_schema_extra=form("Filters", S, "Å"),
     )
     min_curvature_radius_ang: float = Field(
-        default=1000.0,
-        ge=0,
-        title="Min bend radius (Å)",
+        default=1000.0, ge=0,
         description="A filament whose median radius of curvature is smaller is marked: a blob, not a tube.",
+        title="Min bend radius", json_schema_extra=form("Filters", S, "Å"),
     )
     min_angle_from_z_deg: float = Field(
-        default=30.0,
-        ge=0,
-        le=90,
-        title="Min angle from Z (°)",
-        description="A filament whose median direction lies closer to Z than this is marked: missing-wedge "
-        "streaks and lamella edges run along Z.",
+        default=30.0, ge=0, le=90,
+        description="A filament whose median direction lies closer to Z than this is marked: missing-wedge streaks "
+        "and lamella edges run along Z.", title="Min angle from Z", json_schema_extra=form("Filters", S, "°"),
     )
 
     def _get_job_specific_options(self) -> list[tuple[str, str]]:

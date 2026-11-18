@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import ClassVar
 from pydantic import Field
 
-from services.jobs._base import AbstractJobParams
+from services.jobs._base import S, AbstractJobParams, form
 from services.models_base import JobCategory, JobType
 
 
@@ -49,6 +49,7 @@ class ExtractPickListParams(AbstractJobParams):
         "do_stack2d",
         "do_float16",
     }
+    PARAM_GROUPS: ClassVar[tuple[str, ...]] = ("Extraction", "Selection", "Output")
 
     # ── which list this instance cuts (species_id lives on AbstractJobParams) ──
     tomo_name: str = Field(default="", description="Tomogram the pick list belongs to")
@@ -60,13 +61,32 @@ class ExtractPickListParams(AbstractJobParams):
     list_star: str = Field(default="", description="The pick list's star file (the positions to extract)")
 
     # ── geometry (mirrors backend.extract_pick_list's signature exactly) ──
-    box_size: int = Field(default=0, ge=0, description="Extraction box size in pixels (0 = not yet submitted)")
-    binning: float = Field(default=0.0, ge=0.0, description="Extraction binning (0 = not yet submitted)")
-    crop_size: int = Field(default=0, ge=0, description="Cropped box size in pixels; 0 = no crop")
-    max_dose: float = Field(default=-1.0, description="Dose cutoff; <= 0 = no cutoff")
-    min_frames: int = Field(default=1, ge=1, description="Minimum contributing frames per particle")
-    do_stack2d: bool = Field(default=True, description="Write 2D stacks")
-    do_float16: bool = Field(default=True, description="Write float16 output")
+    box_size: int = Field(
+        default=0, ge=0, description="Extraction box size in pixels (0 = not yet submitted)", title="Box",
+        json_schema_extra=form("Extraction", S, "px"),
+    )
+    binning: float = Field(
+        default=0.0, ge=0.0, description="Extraction binning (0 = not yet submitted)", title="Binning",
+        json_schema_extra=form("Extraction", S),
+    )
+    crop_size: int = Field(
+        default=0, ge=0, description="Cropped box size in pixels; 0 = no crop", title="Crop",
+        json_schema_extra=form("Extraction", S, "px"),
+    )
+    max_dose: float = Field(
+        default=-1.0, description="Dose cutoff; <= 0 = no cutoff", title="Max dose",
+        json_schema_extra=form("Selection", S, "e⁻/Å²"),
+    )
+    min_frames: int = Field(
+        default=1, ge=1, description="Minimum contributing frames per particle", title="Min frames",
+        json_schema_extra=form("Selection", S),
+    )
+    do_stack2d: bool = Field(
+        default=True, description="Write 2D stacks", title="2D stacks", json_schema_extra=form("Output"),
+    )
+    do_float16: bool = Field(
+        default=True, description="Write float16 output", title="Float16", json_schema_extra=form("Output"),
+    )
 
     # ── failure text ──
     # Outside USER_PARAMS: those fields are frozen once the job leaves SCHEDULED/FAILED,

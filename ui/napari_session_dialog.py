@@ -38,7 +38,7 @@ from ui.job_plugins._field_styles import (
     MONO,
     PANEL_TITLE_STYLE,
     ROW_STYLE,
-    section_header,
+    group_title,
 )
 
 logger = logging.getLogger(__name__)
@@ -175,7 +175,7 @@ def connect_help(portal_url: str | None, walltime: str) -> None:
         ),
     ]
     with ui.column().classes("w-full").style("gap: 5px;"):
-        section_header("Can't connect?")
+        group_title("Can't connect?")
         for question, answer in items:
             with ui.column().classes("w-full").style("gap: 0;"):
                 ui.label(question).style(f"{LABEL_VOICE} line-height: 1.4;")
@@ -272,7 +272,7 @@ def _build(
             value_tip.set_text(text)
 
         with ui.column().classes("w-full").style("gap: 2px;"):
-            section_header("Session", first=True)
+            group_title("Session")
             node_cell = _kv("Node")
             render_cell = _kv("Rendering")
             job_cell = _kv("SLURM job")
@@ -284,7 +284,7 @@ def _build(
                 else None
             )
         with ui.column().classes("w-full").style("gap: 2px;"):
-            section_header("Showing")
+            group_title("Showing")
             tomo_cell = _kv("Tomogram")
             grid_cell = _kv("Grid")
             saves_cell = _kv("Saves to", "saves", "Copy the folder")
@@ -296,7 +296,7 @@ def _build(
             tunnel_lbl = address_lbl = password_lbl = viewer_lbl = None
         else:
             with ui.column().classes("w-full").style("gap: 2px;"):
-                section_header("Connect")
+                group_title("Connect")
                 tunnel_lbl = _kv("Tunnel", "tunnel", "Copy the tunnel command")
                 address_lbl = _kv("Address", "address", "Copy the VNC address")
                 password_lbl = _kv("Password", "password", "Copy the password")

@@ -236,3 +236,55 @@ across both. Under 860 px one column. A header line: light, name, tool pill, num
 - Paths: hover unroll and click copy on a job page; a page with a running log (the scroll rule of §7).
 - `./crboost python -m ruff check .`, `./crboost python check_boundaries.py`; screenshots with
   `scripts/dev_screenshot.py --url` (token in the query; rename the PNGs, their names carry it).
+
+## 9. Built (2026-11-18): S1–S7
+
+All seven stages, in the main checkout, uncommitted; not yet seen in the running server (it needs a restart).
+
+- **S1.** `ui/components/path_text.py` (`path_text`, `set_path`; `PATH_CSS`, `PATH_JS` run per client from
+  `ensure_assets_loaded`), `ui/components/check.py` (`house_check`, `yes_no`; `CHECK_CSS`), the Rule ladder in
+  `_field_styles.py` (`section_head`, `section`, `group_title`; `config_section` and `panel_head` draw through it).
+  Variables `--cb-head-rule`, `--cb-head-accent`, `--cb-head-accent-soft` in `_HARBOR_MONO_CSS`.
+- **S2.** Every user field of the 22 param classes carries `title` and `json_schema_extra=form(group, width, unit)`
+  (`services/jobs/_base.py`, put on by a codemod; an AST comparison against HEAD shows no other argument changed);
+  each class orders its groups in `PARAM_GROUPS`; the species-derived fields are in `SPECIES_GROUP`.
+  `services/job_layout.py` reads them. `shows_param` on the class hides a row that means nothing now (Segment's
+  method fields, Pick candidates' two thresholds).
+- **S3.** `ui/job_plugins/params_renderer.py`: one renderer, hooks `before` / `custom` / `replace` / `after`; rows
+  are built once and hidden or shown, never rebuilt. `fs_motion_and_ctf.py` and `warp_export.py` are gone (the
+  renderer draws them); template_match, candidate_extract, segment, miss_align, subtomo_extraction and
+  ts_reconstruct keep only their hooks. Field helpers in `_field_styles.py` draw the 132 px geometry; `toggle_field`
+  is a yes | no row; a frozen job's path parameter is a `path_text` in the box.
+- **S4.** `io_config_component.py`: one "Inputs & Outputs" section (meta "fixed at submit" / "chosen at Run", Reset
+  inputs on its head), the `24px 100px 1fr` table with the builder's slot words, the roster's square light, type name
+  and number; each file under its row through `path_text`; `out` rows after a hairline. Menus, facets, set checks,
+  gain row, manual paths and `observe` unchanged.
+- **S5.** `slurm_tab.py`: the section's own head (profile as meta, Reset to profile on it), the two-column grid with
+  "At once" first, Nodes and Tasks/node behind a "nodes & tasks" check while they are 1, the supervisor one folded
+  line.
+- **S6.** The Rail grid (`minmax(0, 1fr) 360px`, `.cb-jsec-rail` holding I/O over SLURM so the rail never leaves a
+  gap between them), groups in 330 px CSS columns, folds with Rule heads (accent on a failed job's Log and on
+  Results). The header line: light, tool pill, number, named species, the folder as `path_text`.
+- **S7.** Every `PANEL_HEAD_STYLE` stripe and fold head moved onto `section_head` (13 files; `PANEL_HEAD_STYLE` and
+  `fold_panel` deleted); the Journey's `.cb-section-card-header` in the Rule look from `css.py`; `section_header`
+  gone (`group_title`); `copyable_path` gone, the end-cut path labels (protocols dialog, the roster's hover card,
+  the projects overview, the merge card) on `path_text`; all 19 `ui.checkbox` on `house_check` (it sends the event
+  `ui.checkbox` sends, so the handlers stand). CLAUDE.md amended. The prototype retired.
+
+Departures from the plan:
+- `--cb-head` keeps its value: selected rows (tilt series, layers, the branch map) use it. The Rule heads never read it.
+- The header line does not repeat the job's name: the view's title line above it names the job.
+- Subset keeps its own renderer (its one parameter is its table); denoise-predict's Denoiser block draws its group.
+
+Checks run:
+- In-process (a NiceGUI client with no socket, three projects of `_crboost_data_api` loaded read-only, nothing
+  saved): all 23 job types' pages built, a draft of each plus every real job of the three projects (succeeded,
+  running, queued) and two failed copies; every user parameter's label found on its page (denoise-predict's method
+  fields wait for a Denoiser, as before). Failed copies: Reset inputs on the head, the Log accented.
+- Behaviour, same way: a yes | no click writes the model and saves, a model change reaches the switch; Segment's
+  method swaps its rows after the edit refresh; missAlign's GPU count reaches SLURM's GRES (gpu:2 -> gpu:1);
+  `house_check` sends `on_change` on a click and on a set from code.
+- Headless Chromium on the shipped CSS and script: middle cut (`External…/optimisation_set.star` at 180 px), re-cut
+  on resize, the hover copy grows each frame to the absolute path, a stray scroll leaves it open, leaving closes it;
+  the checkbox's bottom edge on its label's baseline (0 px).
+- Owed: the real app after a restart: a pane under 860 px, a running log beside a hovered path, screenshots.

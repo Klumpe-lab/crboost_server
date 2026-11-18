@@ -3,7 +3,7 @@ from enum import Enum
 from typing import ClassVar
 from pydantic import Field
 
-from services.jobs._base import AbstractJobParams, SymmetryGroup
+from services.jobs._base import L, M, S, AbstractJobParams, SymmetryGroup, form
 from services.models_base import JobType, JobCategory
 from services.io_slots import InputSlot, OutputSlot, JobFileType
 
@@ -47,6 +47,7 @@ class ReconstructParticleParams(AbstractJobParams):
         "threads_out",
         "other_args",
     }
+    PARAM_GROUPS: ClassVar[tuple[str, ...]] = ("Reconstruction", "Helical", "Compute")
 
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(
@@ -58,36 +59,82 @@ class ReconstructParticleParams(AbstractJobParams):
     ]
 
     # Reconstruction parameters
-    box_size : int           = Field(default=384, description="Box size in pixels")
-    crop_size: int           = Field(default=224, description="Cropped box size (-1 = no cropping)")
-    symmetry : SymmetryGroup = Field(default=SymmetryGroup.C1, description="Point group symmetry")
-    binning  : int           = Field(default=1, ge=1, description="Binning factor")
+    box_size : int           = Field(
+        default=384, description="Box size in pixels", title="Box", json_schema_extra=form("Reconstruction", S, "px"),
+    )
+    crop_size: int           = Field(
+        default=224, description="Cropped box size (-1 = no cropping)", title="Crop",
+        json_schema_extra=form("Reconstruction", S, "px"),
+    )
+    symmetry : SymmetryGroup = Field(
+        default=SymmetryGroup.C1, description="Point group symmetry", title="Symmetry",
+        json_schema_extra=form("Reconstruction", M),
+    )
+    binning  : int           = Field(
+        default=1, ge=1, description="Binning factor", title="Binning", json_schema_extra=form("Reconstruction", S),
+    )
 
     # Reconstruction backend + SNR
-    snr  : float            = Field(default=0.0, ge=0.0, description="Assumed SNR (0 = auto)")
+    snr  : float            = Field(
+        default=0.0, ge=0.0, description="Assumed SNR (0 = auto)", title="SNR",
+        json_schema_extra=form("Reconstruction", S),
+    )
     theme: ReconstructTheme = Field(
-        default=ReconstructTheme.DEFAULT, description="Backend: default (RELION 5) or classic (RELION 4 legacy)"
+        default=ReconstructTheme.DEFAULT, description="Backend: default (RELION 5) or classic (RELION 4 legacy)",
+        title="Backend", json_schema_extra=form("Reconstruction", M),
     )
 
     # Noise / CTF
-    whiten: bool = Field(default=False, description="Whiten noise by flattening power spectrum")
-    no_ctf: bool = Field(default=False, description="Do not apply CTFs")
+    whiten: bool = Field(
+        default=False, description="Whiten noise by flattening power spectrum", title="Whiten noise",
+        json_schema_extra=form("Reconstruction"),
+    )
+    no_ctf: bool = Field(
+        default=False, description="Do not apply CTFs", title="No CTF", json_schema_extra=form("Reconstruction"),
+    )
 
     # Helical (only emitted when do_helix=True)
-    do_helix                   : bool  = Field(default=False, description="Apply helical reconstruction")
-    helical_twist              : float = Field(default=-1.0, description="Helical twist (deg); -1 disables")
-    helical_rise               : float = Field(default=0.0, description="Helical rise (Å)")
-    helical_z_percentage       : float = Field(default=30.0, description="Helical z-percentage")
-    helical_tube_outer_diameter: float = Field(default=-1.0, description="Helical tube outer diameter (Å); -1 disables")
-    helical_nr_asu             : int   = Field(default=1, ge=1, description="Number of asymmetric units along helix")
+    do_helix                   : bool  = Field(
+        default=False, description="Apply helical reconstruction", title="Helical", json_schema_extra=form("Helical"),
+    )
+    helical_twist              : float = Field(
+        default=-1.0, description="Helical twist (deg); -1 disables", title="Twist",
+        json_schema_extra=form("Helical", S, "°"),
+    )
+    helical_rise               : float = Field(
+        default=0.0, description="Helical rise (Å)", title="Rise", json_schema_extra=form("Helical", S, "Å"),
+    )
+    helical_z_percentage       : float = Field(
+        default=30.0, description="Helical z-percentage", title="Z percentage",
+        json_schema_extra=form("Helical", S, "%"),
+    )
+    helical_tube_outer_diameter: float = Field(
+        default=-1.0, description="Helical tube outer diameter (Å); -1 disables", title="Tube outer diameter",
+        json_schema_extra=form("Helical", S, "Å"),
+    )
+    helical_nr_asu             : int   = Field(
+        default=1, ge=1, description="Number of asymmetric units along helix", title="Units along helix",
+        json_schema_extra=form("Helical", S),
+    )
 
     # Threading (CPU-only job, no GPU)
-    threads    : int = Field(default=6, ge=1, description="Total OMP threads (--j)")
-    threads_in : int = Field(default=3, ge=1, description="Inner threads (slower, less memory)")
-    threads_out: int = Field(default=2, ge=1, description="Outer threads (faster, more memory)")
+    threads    : int = Field(
+        default=6, ge=1, description="Total OMP threads (--j)", title="Threads", json_schema_extra=form("Compute", S),
+    )
+    threads_in : int = Field(
+        default=3, ge=1, description="Inner threads (slower, less memory)", title="Inner threads",
+        json_schema_extra=form("Compute", S),
+    )
+    threads_out: int = Field(
+        default=2, ge=1, description="Outer threads (faster, more memory)", title="Outer threads",
+        json_schema_extra=form("Compute", S),
+    )
 
     # Free-form passthrough for obscure flags (--no_psf, --margin, --mem, ...)
-    other_args: str = Field(default="", description="Extra CLI flags appended verbatim to the relion command")
+    other_args: str = Field(
+        default="", description="Extra CLI flags appended verbatim to the relion command", title="Extra arguments",
+        json_schema_extra=form("Compute", L),
+    )
 
     def _get_job_specific_options(self) -> list[tuple[str, str]]:
         input_opt = self.paths.get("input_optimisation", "")

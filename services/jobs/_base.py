@@ -27,6 +27,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# Where a user parameter stands on the job page (`services/job_layout.py`): its group, its box's width class and its
+# unit, in `json_schema_extra` on its Field (`form(...)`); its label is the Field's `title`. Width classes: S a
+# number, M a choice or a short code (500:10, 2x2x1, a symmetry), L to the column's edge (a path, a list); an on/off
+# parameter has none.
+S, M, L = "S", "M", "L"
+# The group of the values a job took from its species when it was made (template, mask, symmetry, diameter,
+# extraction geometry): still the job's parameters, set apart only by this group.
+SPECIES_GROUP = "From species — override for this run"
+
+
+def form(group: str, width: str = "", unit: str = "") -> dict[str, str]:
+    """A user parameter's place on the job page, for its Field's `json_schema_extra`."""
+    return {"group": group, "width": width, "unit": unit}
+
+
 class SymmetryGroup(str, Enum):
     """RELION point group symmetry designations."""
 
@@ -124,6 +139,9 @@ class AbstractJobParams(BaseModel):
     # (no immutability, no dirty mark), so its edits don't auto-persist.
     # ------------------------------------------------------------------
     USER_PARAMS: ClassVar[set[str]] = set()
+    # The order of the parameter groups on the job page; a group not named here follows them, in the order its
+    # first field is declared.
+    PARAM_GROUPS: ClassVar[tuple[str, ...]] = ()
 
     # Job execution metadata only
     execution_status: JobStatus = Field(default=JobStatus.SCHEDULED)
@@ -156,6 +174,11 @@ class AbstractJobParams(BaseModel):
 
     # Private attribute, not a Pydantic model field.
     _project_state: ProjectState | None = None
+
+    def shows_param(self, name: str) -> bool:
+        """Whether the job page shows the parameter now. One that means something only under another parameter's
+        value (a method's own settings) is hidden while it means nothing; its value stays as it was."""
+        return True
 
     def get_effective_slurm_config(self) -> SlurmConfig:
         """

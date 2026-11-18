@@ -17,6 +17,7 @@ from services.array_tasks import ts_display_name, ts_position_sort_key
 from services.particles import analytics
 from services.particles.sigma import LADDER_SIGMAS
 from ui.analytics.common import TABLE_ON_PANEL_STYLE, HINT_CLS, esc, fmt_sci
+from ui.components.check import house_check
 from ui.components.fields import house_select
 
 MARKER_LABELS = {
@@ -206,7 +207,7 @@ class TomogramTable:
     def build(self) -> None:
         with ui.element("div").style("display: flex; align-items: center; gap: 12px; flex-wrap: wrap;"):
             house_select("sort", SORTS, value=self.sort, width="w-32", on_change=self._on_sort)
-            ui.checkbox("marked only", value=False, on_change=self._on_marked).props("dense size=xs").style(
+            house_check("marked only", value=False, on_change=self._on_marked).style(
                 "font-size: 10px; color: #475569;"
             )
             n_marked = len(self.markers)

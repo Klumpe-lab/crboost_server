@@ -1,19 +1,16 @@
 # ui/pipeline_builder/io_config_component.py
 """
-I/O slot configuration.
+I/O slot configuration: one "Inputs & Outputs" section, a table in three columns (24 px `in` / `out`, 100 px
+slot word, the rest).
 
-Renders a job's typed input/output slots as two labelled sections:
+  in   — the slot's source as a *selector*: the roster's square status light, the source's type name and its job
+         number; it opens a compact menu of the candidate upstream jobs and a "Manual path…" escape hatch with a
+         real file browser. The file it reads goes on the line under it, cut in its middle (`path_text`: a click
+         copies it, hovering unrolls it); a particle set's lineage, facet lines and Run checks under that.
+  out  — after a hairline, each output's file (predicted until the job runs).
 
-  Inputs   — each slot is a status-dotted source *selector* (a compact menu of
-             candidate upstream jobs, each row styled like a pipeline-roster job
-             row: colored status dot + disambiguated job name + status word),
-             plus a "Manual path…" escape hatch with a real file browser.
-  Outputs  — each slot shows its predicted absolute path (computed now; the file
-             only exists once the job runs), with a copy button.
-
-Every slot name carries a rich hover panel explaining the artifact type it deals
-in (for inputs: what each accepted type means + which producer it prefers; for
-outputs: the full path and that it is predicted until the job finishes).
+Every slot word carries a hover panel explaining the artifact type it deals in (for inputs: what each accepted
+type means + which producer it prefers; for outputs: that it is predicted until the job finishes).
 """
 
 import asyncio
@@ -41,10 +38,12 @@ from services.project_state import get_project_state_for
 from ui.current_project import current_project_state
 from ui.ui_state import get_job_display_name
 from ui.utils import snake_to_title
+from ui.branch_map.model import SLOT_LABELS, STAR_LABELS, WORDS
 from ui.components.buttons import house_button, icon_button
-from ui.components.copyable import copyable_path
+from ui.components.path_text import path_text
 from ui.components.reactive import FocusHold, owned_timer
-from ui.job_plugins._field_styles import LABEL_STYLE, LABEL_W, config_section
+from ui.job_plugins._field_styles import section
+from ui.status_indicator import _dot_html
 
 logger = logging.getLogger(__name__)
 
@@ -133,17 +132,27 @@ _FILETYPE_INFO: dict[JobFileType, tuple] = {
 }
 
 # ── Shared visual tokens ─────────────────────────────────────────────────────
-# Slot names use the Parameters label column, so the three Config sections line up.
-# Long slot names wrap rather than truncate.
-_SLOT_NAME_STYLE = LABEL_STYLE + " white-space: normal; cursor: help;"
-# One row shape for gain, input and output rows; detail lines sit under the value column.
-_ROW_STYLE = "display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; min-height: 22px;"
-_DETAIL_STYLE = f"padding-left: {LABEL_W + 8}px; width: 100%;"
+# The table: `in` / `out`, the slot word in the builder's slot voice, then the source or the file.
+_IO_GRID = (
+    "display: grid; grid-template-columns: 24px 100px minmax(0, 1fr); align-items: center; width: 100%; "
+    "min-width: 0; min-height: 22px;"
+)
+_SLOT_VOICE = (
+    "font-family: var(--cb-mono, 'IBM Plex Mono', monospace); text-transform: uppercase; letter-spacing: .06em; "
+    "white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
+)
+_SLOT_NAME_STYLE = f"{_SLOT_VOICE} font-size: 8.5px; color: #5b7089; cursor: help; padding-right: 6px;"
+_IO_MARK_STYLE = f"{_SLOT_VOICE} font-size: 7.5px; color: #94a3b8;"
+# A row of things in the source column.
+_ROW_STYLE = "display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; min-height: 22px;"
+# The lines under a row (its file, a set's lineage and facets, notes) start under the slot word.
+_DETAIL_STYLE = "padding-left: 24px; width: 100%; min-width: 0;"
+_HAIRLINE_STYLE = "height: 1px; width: 100%; background: var(--cb-line, #e4eaf1); margin: 5px 0 3px;"
 _PATH_COLOR = "#64748b"
 _MUTED = "#94a3b8"
 # Secondary text (status words, notes, tags) is one size everywhere.
 _SMALL = f"{FONT} font-size: 9px;"
-_DOT = "width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;"
+_DOT = "width: 7px; height: 7px; border-radius: var(--cb-pip-radius, 50%); flex-shrink: 0;"
 # The app tooltip's panel and frame come from ui/dashboard/css.py; only the room is set here.
 _TIP_PANEL_STYLE = "padding: 8px 10px; max-width: 380px;"
 _TIP_TITLE = f"{FONT} font-size: 11px; font-weight: 700; color: #0f172a;"
@@ -215,6 +224,48 @@ def _candidate_name(c) -> str:
     if folder and not folder.startswith("pending_"):
         return f"{base} ({folder}){sp_tag}"
     return f"{base}{sp_tag}"
+
+
+def _source_parts(c) -> tuple[str, str, str]:
+    """(type name, job number, species) of a candidate source, as the face shows them: "Reconstruct", "008",
+    the species it is wired to. Two instances of a type not yet on disk keep their instance suffix."""
+    if getattr(c, "label", None):
+        return c.label, "", ""
+    name = get_job_display_name(JobType(c.producer_job_type.value))
+    folder = _short_instance_label(c.instance_path or "")
+    number = folder[3:] if folder.startswith("job") and folder[3:].isdigit() else ""
+    if not number:
+        suffix = InstanceId.split(getattr(c, "producer_instance_id", "") or "")[1]
+        if suffix is not None:
+            name = f"{name} #{suffix}" if suffix.isdigit() else f"{name} · {suffix}"
+    return name, number, getattr(c, "species_id", None) or ""
+
+
+def _slot_word(slot) -> str:
+    """An input's word, as the job builder's card says it."""
+    accepts = [a.value for a in slot.accepts]
+    return SLOT_LABELS.get(slot.key) or STAR_LABELS.get(
+        accepts[0] if accepts else "", slot.key.removeprefix("input_").replace("_", " ")
+    )
+
+
+def _output_word(slot) -> str:
+    produces = getattr(slot, "produces", None)
+    return WORDS.get(produces.value if produces else "", "") or slot.key.removeprefix("output_").replace("_", " ")
+
+
+def _light(status: JobStatus | None = None, color: str | None = None) -> None:
+    """The roster's status light for a job; a square of `color` for a state that is not a job's; hollow for none."""
+    if status is not None:
+        ui.html(_dot_html(status, size_px=7), sanitize=False, tag="span").style("display: flex; flex-shrink: 0;")
+    elif color is not None:
+        ui.element("div").style(f"{_DOT} background: {color};")
+    else:
+        ui.element("div").style(f"{_DOT} box-sizing: border-box; border: 1.5px solid #94a3b8; background: none;")
+
+
+def _io_mark(text: str) -> None:
+    ui.label(text).style(_IO_MARK_STYLE)
 
 
 class IOConfigComponent:
@@ -302,33 +353,36 @@ class IOConfigComponent:
         # What a Subset cuts is set when it is made; another cut is another Subset.
         self._inputs_read_only = self.read_only or fixed or self.job_type == JobType.SUBSET
 
-        # Two Config-tab sections of their own, at the same scale as Parameters / SLURM resources.
-        if input_schema or wants_gain:
-            with config_section("Inputs"):
-                if fixed and job_model.execution_status == JobStatus.FAILED:
-                    with ui.element("div").style(_ROW_STYLE):
-                        house_button(
-                            "Reset inputs",
-                            self._reset_inputs,
-                            tooltip="Choose this job's inputs again at the next Run instead of the ones fixed at "
-                            "its last submit. If they come out different, the job starts over in a new folder; "
-                            "otherwise it resumes where it stopped.",
-                        )
-                mixed = resolver.mixed_chains(self.instance_id) if input_schema else None
-                if mixed:
-                    ui.label(
-                        f"Reads from {mixed[0]} and {mixed[1]}, and neither is upstream of the other: "
-                        "its inputs come from two chains."
-                    ).style(f"{_SMALL} color: {_AMBER};")
+        if not (input_schema or wants_gain or output_schema):
+            self._shown = self._signature()
+            return
+        with section("Inputs & Outputs", right="fixed at submit" if fixed else "chosen at Run") as sec:
+            if fixed and job_model.execution_status == JobStatus.FAILED:
+                with sec.head:
+                    house_button(
+                        "Reset inputs",
+                        self._reset_inputs,
+                        tooltip="Choose this job's inputs again at the next Run instead of the ones fixed at "
+                        "its last submit. If they come out different, the job starts over in a new folder; "
+                        "otherwise it resumes where it stopped.",
+                    )
+            mixed = resolver.mixed_chains(self.instance_id) if input_schema else None
+            if mixed:
+                ui.label(
+                    f"Reads from {mixed[0]} and {mixed[1]}, and neither is upstream of the other: "
+                    "its inputs come from two chains."
+                ).style(f"{_SMALL} color: {_AMBER};")
+            with ui.element("div").style("display: flex; flex-direction: column; gap: 1px; width: 100%;"):
                 if wants_gain:
                     self._gain_container = ui.column().classes("w-full gap-0")
                     with self._gain_container:
                         self._render_gain_row()
                 if input_schema:
                     self._render_input_slots(resolver, input_schema, job_model)
-        if output_schema:
-            with config_section("Outputs"):
-                self._render_output_slots(output_schema, job_model)
+                if output_schema:
+                    if input_schema or wants_gain:
+                        ui.element("div").style(_HAIRLINE_STYLE)
+                    self._render_output_slots(output_schema, job_model)
         self._shown = self._signature()
 
     def refresh_if_inputs_changed(self) -> None:
@@ -380,8 +434,10 @@ class IOConfigComponent:
         gain = getattr(state.acquisition, "gain_reference_path", None)
         is_set = bool(gain and str(gain).strip() and str(gain) != "None")
 
-        with ui.element("div").style(_ROW_STYLE):
-            name = ui.label("Gain Reference").style(_SLOT_NAME_STYLE)
+        project = current_project_state().project_path
+        with ui.element("div").style(_IO_GRID):
+            _io_mark("in")
+            name = ui.label("gain").style(_SLOT_NAME_STYLE)
             with name, ui.tooltip().style(_TIP_PANEL_STYLE):
                 ui.label("Gain Reference").style(_TIP_TITLE)
                 ui.label("Project-wide external input, auto-filled from project setup.").style(_TIP_LEAD)
@@ -391,17 +447,18 @@ class IOConfigComponent:
                     "the whole project; leave empty if your frames are already "
                     "gain-corrected."
                 ).style(_TIP_DESC)
-            # Value / placeholder
-            if is_set:
-                copyable_path(str(gain), color=_PATH_COLOR, copy_tooltip="Copy gain path")
-            else:
-                ui.label("not set · optional").style(
-                    f"{FONT} font-size: 10px; color: {_MUTED}; font-style: italic; flex: 1 1 0; min-width: 0;"
-                )
-            if not self.read_only:
-                icon_button("folder_open", self._pick_gain, tooltip="Browse for gain reference…")
+            with ui.element("div").style(_ROW_STYLE):
                 if is_set:
-                    icon_button("close", self._clear_gain, tooltip="Clear", kind="danger")
+                    with ui.element("div").style("flex: 1 1 0; min-width: 0;"):
+                        path_text(str(gain), project)
+                else:
+                    ui.label("not set · optional").style(
+                        f"{FONT} font-size: 10px; color: {_MUTED}; font-style: italic; flex: 1 1 0; min-width: 0;"
+                    )
+                if not self.read_only:
+                    icon_button("folder_open", self._pick_gain, tooltip="Browse for gain reference…")
+                    if is_set:
+                        icon_button("close", self._clear_gain, tooltip="Clear", kind="danger")
 
     async def _pick_gain(self):
         from ui.local_file_picker import local_file_picker
@@ -465,18 +522,20 @@ class IOConfigComponent:
             current_value = None
             manual_path = ""
 
-        with ui.element("div").style(_ROW_STYLE):
+        with ui.element("div").style(_IO_GRID):
+            _io_mark("in")
             self._input_name_label(slot)
-            if self._inputs_read_only:
-                self._render_static_source(slot, candidates, current_value, validation, skipped)
-            else:
-                self._render_source_selector(slot, candidates, current_value, validation, skipped)
-                if not slot.required:
-                    ui.label("optional").style(f"{_SMALL} color: {_MUTED}; flex-shrink: 0;")
-                if validation.is_user_override:
-                    icon_button("restart_alt", lambda s=slot: self._clear_override(s), tooltip="Reset to auto")
-            if current_value is not None:
-                self._input_state_tag(validation)
+            with ui.element("div").style(_ROW_STYLE):
+                if self._inputs_read_only:
+                    self._render_static_source(slot, candidates, current_value, validation, skipped)
+                else:
+                    self._render_source_selector(slot, candidates, current_value, validation, skipped)
+                    if not slot.required:
+                        ui.label("optional").style(f"{_SMALL} color: {_MUTED}; flex-shrink: 0;")
+                    if validation.is_user_override:
+                        icon_button("restart_alt", lambda s=slot: self._clear_override(s), tooltip="Reset to auto")
+                if current_value is not None:
+                    self._input_state_tag(validation)
 
         # Manual-path editor (editable mode only), in the same box as the Parameters inputs.
         manual_editing = current_value == "manual" and not self._inputs_read_only
@@ -497,11 +556,11 @@ class IOConfigComponent:
                 inp.style("flex: 1 1 0; min-width: 0;")
                 icon_button("folder_open", lambda s=slot: self._open_file_picker(s), tooltip="Browse…")
 
-        # Full resolved input path — always visible (wraps, never truncated); a click
-        # copies it. Skipped only while the manual editor above already shows it.
+        # The file it reads, on its own line, cut in its middle to the block's width; a click copies it, hovering
+        # unrolls it. Skipped only while the manual editor above already shows it.
         if validation.resolved_path and not manual_editing:
-            with ui.element("div").style(_DETAIL_STYLE + " display: flex;"):
-                copyable_path(validation.resolved_path, color=_PATH_COLOR, copy_tooltip="Copy input path")
+            with ui.element("div").style(_DETAIL_STYLE + " margin-bottom: 3px;"):
+                path_text(validation.resolved_path, current_project_state().project_path)
             if validation.awaiting_upstream:
                 _detail_line("not written yet — produced when the upstream job runs", italic=True)
             elif not validation.file_exists:
@@ -557,7 +616,8 @@ class IOConfigComponent:
         if rec is not None and Path(read).parent.name == INPUT_DIR:
             with ui.element("div").style(_DETAIL_STYLE + " display: flex; align-items: center; gap: 6px;"):
                 ui.label("reads its copy, written at Run:").style(f"{_SMALL} color: {_MUTED}; flex-shrink: 0;")
-                copyable_path(read, color=_PATH_COLOR, copy_tooltip="Copy the path of the copy it reads")
+                with ui.element("div").style("flex: 1 1 0; min-width: 0;"):
+                    path_text(read, project)
         choices = dict(rec.facets) if rec is not None else dict(job_model.facet_choices.get(slot.key) or {})
         box = ui.element("div").style(_DETAIL_STYLE + " display: flex; flex-direction: column; gap: 2px;")
         with box:
@@ -774,30 +834,38 @@ class IOConfigComponent:
         reason as an amber tag. A required slot with nothing chosen shows a red dot."""
         cur = next((c for c in candidates if c.source_key == current_value), None)
         if current_value == "manual":
-            self._selector_face(_MUTED, "Manual path", "custom file")
+            self._selector_face("Manual path", note="custom file")
         elif cur is not None:
+            name, number, species = _source_parts(cur)
             st = STATUS_STYLE.get(cur.execution_status, STATUS_STYLE[JobStatus.UNKNOWN])
-            self._selector_face(st["color"], _candidate_name(cur), st["label"], tag=skipped.get(cur.source_key))
+            self._selector_face(
+                name,
+                number=number,
+                note=species,
+                status=cur.execution_status,
+                tag=skipped.get(cur.source_key),
+                tip=f"{_candidate_name(cur)} · {st['label']}",
+            )
         elif validation.tied:
-            self._selector_face(_AMBER, "Ambiguous — pick a source", f"{len(validation.tied)} candidates")
+            self._selector_face("Ambiguous — pick a source", note=f"{len(validation.tied)} candidates", color=_AMBER)
         elif current_value:
-            self._selector_face("#f59e0b", current_value, "unresolved")
+            self._selector_face(current_value, note="unresolved", color="#f59e0b")
         else:
-            missing = STATUS_STYLE[JobStatus.FAILED]["color"] if slot.required else "#cbd5e1"
-            self._selector_face(missing, empty_name, "")
+            missing = STATUS_STYLE[JobStatus.FAILED]["color"] if slot.required else None
+            self._selector_face(empty_name, color=missing)
 
     def _render_static_source(self, slot, candidates, current_value, validation, skipped):
         """Read-only counterpart of the source selector: the chosen source shown
         as a static face (no menu), for completed/frozen jobs."""
         with ui.element("div").style(
-            "flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 0 5px; height: 20px;"
+            "flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 6px; height: 20px;"
         ):
             self._render_current_face(slot, candidates, current_value, validation, skipped, "—")
 
     def _input_name_label(self, slot):
         # Explains the artifact type only. The concrete resolved path is shown
         # inline beneath the row (copyable), not buried in this hover.
-        name = ui.label(snake_to_title(slot.key)).style(_SLOT_NAME_STYLE)
+        name = ui.label(_slot_word(slot)).style(_SLOT_NAME_STYLE)
         with name, ui.tooltip().style(_TIP_PANEL_STYLE):
             ui.label(snake_to_title(slot.key)).style(_TIP_TITLE)
             ui.element("div").style("height: 4px;")
@@ -875,14 +943,29 @@ class IOConfigComponent:
 
         selector.on("click", lambda _e, m=menu: m.open())
 
-    def _selector_face(self, color: str, name: str, status_word: str, tag: str | None = None):
-        ui.element("div").style(f"{_DOT} background: {color};")
-        ui.label(name).style(
-            f"{FONT} font-size: 11px; color: #1e293b; min-width: 0; "
+    def _selector_face(
+        self,
+        name: str,
+        *,
+        number: str = "",
+        note: str = "",
+        status: JobStatus | None = None,
+        color: str | None = None,
+        tag: str | None = None,
+        tip: str | None = None,
+    ):
+        """The source as the roster names a job: its light, type name and number; `note` a quiet word after."""
+        _light(status, color)
+        label = ui.label(name).style(
+            f"{FONT} font-size: 10.5px; color: #1e293b; min-width: 0; "
             "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
         )
-        if status_word:
-            ui.label(status_word).style(f"{_SMALL} color: {_MUTED}; flex-shrink: 0;")
+        if tip:
+            label.props["title"] = tip
+        if number:
+            ui.label(number).style(f"{MONO} font-size: 9.5px; color: {_MUTED}; flex-shrink: 0;")
+        if note:
+            ui.label(note).style(f"{_SMALL} color: {_MUTED}; flex-shrink: 0;")
         if tag:
             ui.label(tag).style(f"{_SMALL} font-weight: 600; color: {_AMBER}; flex-shrink: 0;").tooltip(
                 _EXCLUSION_TIPS.get(tag, tag)
@@ -959,12 +1042,10 @@ class IOConfigComponent:
     # ── Output slots ─────────────────────────────────────────────────────────
 
     def _render_output_slots(self, schema, job_model):
-        job_dir, job_dir_pred = self._get_job_dir(job_model)
-
-        if job_dir and not job_dir_pred:
-            with ui.element("div").style(_ROW_STYLE):
-                ui.label("Job folder").style(LABEL_STYLE)
-                copyable_path(str(job_dir), color=_PATH_COLOR, copy_tooltip="Copy job folder")
+        """One `out` row per output: the slot word, then its file (predicted from the job folder until the job has
+        run, a step lighter)."""
+        job_dir, _job_dir_pred = self._get_job_dir(job_model)
+        project_path = getattr(current_project_state(), "project_path", None)
 
         for slot in schema:
             resolved = (job_model.paths or {}).get(slot.key)
@@ -972,8 +1053,6 @@ class IOConfigComponent:
             full_path: str = ""
             if resolved:
                 p = Path(str(resolved))
-                state = current_project_state()
-                project_path = getattr(state, "project_path", None)
                 if project_path and not p.is_absolute():
                     p = project_path / p
                 full_path = str(p)
@@ -985,23 +1064,22 @@ class IOConfigComponent:
                 full_path = str(getattr(slot, "path_template", "") or "")
 
             pending = _is_pending_path(full_path)
-            # Name left, full path (wrapping, copyable) right, like every other row.
-            with ui.element("div").style(_ROW_STYLE):
+            with ui.element("div").style(_IO_GRID):
+                _io_mark("out")
                 self._output_name_label(slot, bool(resolved))
                 if pending or not full_path:
-                    ui.label(str(getattr(slot, "path_template", "")) or "—").style(
-                        f"{MONO} font-size: 10px; color: {_MUTED}; font-style: italic; flex: 1 1 0; min-width: 0;"
+                    ui.label(f"{getattr(slot, 'path_template', '') or '—'} · after it runs").style(
+                        f"{MONO} font-size: 9.5px; color: {_MUTED}; font-style: italic; min-width: 0; "
+                        "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
                     )
                 else:
-                    copyable_path(
-                        full_path, color=(_PATH_COLOR if resolved else _MUTED), copy_tooltip="Copy output path"
-                    )
+                    path_text(full_path, project_path, style="" if resolved else "opacity: 0.7;")
 
     def _output_name_label(self, slot, resolved: bool):
         produces = getattr(slot, "produces", None)
         info = _FILETYPE_INFO.get(produces)
         hname = info[0] if info else (produces.value if produces else "")
-        name = ui.label(snake_to_title(slot.key)).style(_SLOT_NAME_STYLE)
+        name = ui.label(_output_word(slot)).style(_SLOT_NAME_STYLE)
         with name, ui.tooltip().style(_TIP_PANEL_STYLE):
             ui.label(snake_to_title(slot.key)).style(_TIP_TITLE)
             if hname:

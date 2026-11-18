@@ -41,10 +41,9 @@ from ui.job_plugins._field_styles import (
     HELPER_STYLE,
     LABEL_STYLE,
     LABEL_VOICE,
-    PANEL_HEAD_STYLE,
     PANEL_STYLE,
-    PANEL_TITLE_STYLE,
     ROW_STYLE,
+    section_head,
 )
 from ui.styles import MONO, SANS
 
@@ -181,10 +180,7 @@ class _PlanView(FingerprintedView):
 
     def _rail_project(self, plan: Plan, pp: ProjectPlan) -> None:
         with ui.column().classes("w-full").style(f"{PANEL_STYLE} gap: 1px;"):
-            with ui.row().classes("items-center no-wrap").style(f"{PANEL_HEAD_STYLE} gap: 6px;"):
-                ui.label(pp.name).style(f"{PANEL_TITLE_STYLE} overflow: hidden; text-overflow: ellipsis;").tooltip(
-                    pp.path
-                )
+            with section_head(pp.name, tooltip=pp.path):
                 if pp.new:
                     _badge("new", _GREEN)
                 elif pp.hand_made:
@@ -224,7 +220,7 @@ class _PlanView(FingerprintedView):
 
     def _project_pane(self, plan: Plan, pp: ProjectPlan) -> None:
         with ui.column().classes("w-full").style(f"{PANEL_STYLE} gap: 2px;"):
-            ui.label(pp.name).style(f"{PANEL_TITLE_STYLE} {PANEL_HEAD_STYLE}")
+            section_head(pp.name)
             ui.label(pp.summary().split(": ", 1)[-1]).style(f"{HELPER_STYLE} margin-top: 6px;")
 
             if pp.values:
@@ -313,11 +309,9 @@ class _PlanView(FingerprintedView):
     def _job_pane(self, plan: Plan, pp: ProjectPlan, job: JobView) -> None:
         badge, ink, _ = _MARK.get(job.mark, _MARK["kept"])
         with ui.column().classes("w-full").style(f"{PANEL_STYLE} gap: 2px;"):
-            with ui.row().classes("items-center no-wrap").style(f"{PANEL_HEAD_STYLE} gap: 6px;"):
-                ui.label(job.name).style(PANEL_TITLE_STYLE)
+            with section_head(job.name, right=job.status):
                 if badge:
                     _badge({"new": "added by the plan", "clone": "added by the plan"}.get(badge, badge), ink)
-                ui.label(job.status).style(f"{HELPER_STYLE} margin-left: auto;")
             if job.clone_of:
                 ui.label(f"A clone of {job.clone_of}: it starts from that job's settings.").style(
                     f"{HELPER_STYLE} margin-top: 6px;"

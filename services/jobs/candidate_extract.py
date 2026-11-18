@@ -3,7 +3,7 @@ from typing import Any, ClassVar
 from pydantic import Field, model_validator
 
 from services.computing.slurm_service import SlurmConfig
-from services.jobs._base import AbstractJobParams, ExtractionCutoffMethod
+from services.jobs._base import M, S, SPECIES_GROUP, AbstractJobParams, ExtractionCutoffMethod, form
 from services.models_base import JobType, JobCategory
 from services.io_slots import InputSlot, OutputSlot, JobFileType
 
@@ -24,6 +24,7 @@ class CandidateExtractPytomParams(AbstractJobParams):
         "score_filter_value",
         "array_throttle",
     }
+    PARAM_GROUPS: ClassVar[tuple[str, ...]] = ("Pick threshold", SPECIES_GROUP, "Score map")
 
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(key="input_tm_job", accepts=[JobFileType.TM_RESULTS_DIR], preferred_source="templatematching"),
@@ -45,12 +46,18 @@ class CandidateExtractPytomParams(AbstractJobParams):
     ]
 
     # Particle params
-    particle_diameter_ang: float = Field(default=200.0)
+    particle_diameter_ang: float = Field(
+        default=200.0,
+        description="Particle diameter; also the least distance between two picks (non-maximum suppression).",
+        title="Diameter",
+        json_schema_extra=form(SPECIES_GROUP, S, "Å"),
+    )
     # ge=1: PyTOM's `-n` is a required, strictly-positive cap ("error: -n must be larger
     # than 0", argparse exit 2); without the bound a stored 0 only fails on the GPU node.
     # There is no "0 = uncapped" spelling; leave the cap high instead.
     max_num_particles: int = Field(
-        default=1500, ge=1, description="Hard cap on candidates per tilt-series after the cutoff is applied."
+        default=1500, ge=1, description="Hard cap on candidates per tilt-series after the cutoff is applied.",
+        title="Max picks / TS", json_schema_extra=form("Pick threshold", S),
     )
 
     # Thresholding strategy + per-strategy values.
@@ -61,15 +68,21 @@ class CandidateExtractPytomParams(AbstractJobParams):
     # flip (CC ≥ 1.0 → 0 picks), so each strategy has its own backing field and the UI
     # shows only the one matching `cutoff_method`. Older project files carry a single
     # `cutoff_value`; `_migrate_legacy_cutoff_value` below routes it on load.
-    cutoff_method: ExtractionCutoffMethod = Field(default=ExtractionCutoffMethod.FALSE_POSITIVES)
+    cutoff_method: ExtractionCutoffMethod = Field(
+        default=ExtractionCutoffMethod.FALSE_POSITIVES,
+        description="ManualCutOff: a raw LCC threshold (e.g. 0.10). NumberOfFalsePositives: PyTOM fits the score "
+        "map's noise and takes the threshold giving that many false positives per tomogram.",
+        title="Strategy",
+        json_schema_extra=form("Pick threshold", M),
+    )
     cc_threshold: float = Field(
-        default=0.1,
-        description="Manual LCC threshold; peaks with score ≥ this are kept. Typical 0.05–0.20.",
+        default=0.1, description="Manual LCC threshold; peaks with score ≥ this are kept. Typical 0.05–0.20.",
+        title="LCC threshold", json_schema_extra=form("Pick threshold", S),
     )
     expected_false_positives: float = Field(
         default=1.0,
-        description="Expected false positives per tomogram (FALSE_POSITIVES strategy). "
-        "Strict=1, moderate=10, loose=100.",
+        description="Expected false positives per tomogram (FALSE_POSITIVES strategy). Strict=1, moderate=10, "
+        "loose=100.", title="Expected FPs / TS", json_schema_extra=form("Pick threshold", S),
     )
 
     @model_validator(mode="before")
@@ -107,15 +120,34 @@ class CandidateExtractPytomParams(AbstractJobParams):
         return data
 
     # Score map pixel size
-    apix_score_map: str = Field(default="auto")
+    apix_score_map: str = Field(
+        default="auto",
+        description="Pixel size of the score map. 'auto' reads it from tomograms.star (recommended).",
+        title="Pixel size",
+        json_schema_extra=form("Score map", M, "Å/px"),
+    )
 
     # Filtering
-    score_filter_method: str = Field(default="None")
-    score_filter_value: str = Field(default="None")
+    score_filter_method: str = Field(default="None", title="Filter", json_schema_extra=form("Score map", M))
+    score_filter_value: str = Field(
+        default="None",
+        description="For tophat: '<connectivity>:<bins>' (e.g. '1:5'). Leave 'None' otherwise.",
+        title="Filter value",
+        json_schema_extra=form("Score map", M),
+    )
 
     array_throttle: int = Field(
         default=40, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tomogram candidate extraction"
     )
+
+    def shows_param(self, name: str) -> bool:
+        # The two strategies keep their thresholds apart (incomparable scales): only the chosen one's shows.
+        manual = ExtractionCutoffMethod(self.cutoff_method) == ExtractionCutoffMethod.MANUAL
+        if name == "cc_threshold":
+            return manual
+        if name == "expected_false_positives":
+            return not manual
+        return True
 
     def _get_job_specific_options(self) -> list[tuple[str, str]]:
         input_tm_job = self.paths.get("input_tm_job", "")

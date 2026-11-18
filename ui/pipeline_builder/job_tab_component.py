@@ -12,12 +12,13 @@ from services.path_resolution_service import cut_output
 from services.pipeline_edit import in_use_notice
 from services.project_state import JobStatus, JobType, get_project_state_for
 from ui.components.buttons import house_button, icon_button
-from ui.components.copyable import copy_on_click
+from ui.branch_map.model import TOOLS
+from ui.components.path_text import path_text
 from ui.components.reactive import Debounced
 from ui.current_project import current_project_state
 from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
 from ui.job_plugins import get_extra_tabs, get_full_panel_renderer
-from ui.job_plugins._field_styles import PANEL_HEAD_STYLE, PANEL_STYLE, PANEL_TITLE_STYLE, config_section, fold_panel
+from ui.job_plugins._field_styles import SECTION_STYLE, config_section, section_head
 from services.routes import View
 from ui.components.species_pill import render_species_mark
 from ui.status_indicator import BoundStatusDot
@@ -38,11 +39,14 @@ logger = logging.getLogger(__name__)
 # routing and outputs may still change).
 _EXPERIMENTAL_JOB_TYPES = {JobType.MISS_ALIGN}
 
-# The line under the view's title on every job page: no rule under it, the sections below are panels.
+# The line under the view's title (which names the job) on every job page: its light, tool, number, species and
+# folder, then its chips and actions.
 _JOB_LINE_STYLE = "flex-shrink: 0; gap: 8px; min-height: 22px; padding: 0 14px 6px;"
-_PATH_STYLE = (
-    "font-size: 10px; font-family: 'IBM Plex Mono', monospace; color: #94a3b8; "
-    "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;"
+_NUMBER_STYLE = "font-family: var(--cb-mono, 'IBM Plex Mono', monospace); font-size: 10px; color: #94a3b8;"
+_TOOL_PILL_STYLE = (
+    "font-family: var(--cb-mono, 'IBM Plex Mono', monospace); font-size: 8px; text-transform: uppercase; "
+    "letter-spacing: .06em; color: #5b7089; border: 1px solid #d3dde8; border-radius: var(--cb-r-sm, 2px); "
+    "padding: 0 4px; line-height: 13px; white-space: nowrap; flex-shrink: 0;"
 )
 # A mark on that line (Interactive / Automatic, Experimental): the house chip, light blue, or warm for
 # what is still being built.
@@ -131,16 +135,15 @@ def _task_panel_openers(instance_id: str, open_tasks: Callable, ui_mgr: UIStateM
     return {MonitorTab.LOGS.value: open_logs, _TASKS: lambda: open_on("show_focus")}
 
 
-def _render_lazy_section(title: str, box_px: int | None, *, open_: bool, dom_id: str, build: Callable) -> Callable:
-    """A folded section: its title line opens and closes it; the content is built on the first
-    opening. Returns its opener."""
+def _render_lazy_section(
+    title: str, box_px: int | None, *, open_: bool, dom_id: str, build: Callable, accent: bool = False
+) -> Callable:
+    """A folded section: its Rule head opens and closes it (the caret on its left); the content is built on the
+    first opening. `accent`: a section that asks to be looked at (a failed job's log, Results). Returns its opener."""
     built = {"done": False}
-    panel = ui.column().classes("w-full cb-jsec-fold").style(f"gap: 8px; {PANEL_STYLE}")
+    panel = ui.column().classes("w-full cb-jsec-fold").style(SECTION_STYLE)
     with panel.props(f"id={dom_id}"):
-        head_style = f"gap: 5px; cursor: pointer; user-select: none; {PANEL_HEAD_STYLE}"
-        with ui.row().classes("items-center no-wrap").style(head_style) as head:
-            caret = ui.label("▸").style("font-size: 9px; color: #94a3b8; width: 8px;")
-            ui.label(title).style(PANEL_TITLE_STYLE)
+        head = section_head(title, accent=accent, caret="▸").style("cursor: pointer; user-select: none;")
         body = ui.element("div").style(f"{_LAZY_BOX_STYLE} height: {box_px}px;" if box_px else "width: 100%;")
         body.set_visibility(False)
 
@@ -150,12 +153,26 @@ def _render_lazy_section(title: str, box_px: int | None, *, open_: bool, dom_id:
             with body:
                 build()
         body.set_visibility(on)
-        caret.set_text("▾" if on else "▸")
-        fold_panel(panel, head, on)
+        head.caret.set_text("▾" if on else "▸")
 
     head.on("click", lambda _e: set_open(not body.visible))
     set_open(open_)
     return lambda: set_open(True)
+
+
+def _tool_name(job_model) -> str:
+    """The tool a job runs, as the builder names it; CryoBoost for a step it runs itself."""
+    try:
+        raw = job_model.get_tool_name()
+    except NotImplementedError:
+        return "CryoBoost"
+    return TOOLS.get(raw, raw)
+
+
+def _job_number(job_model) -> str:
+    name = (job_model.relion_job_name or "").rstrip("/")
+    tail = name.rsplit("/", 1)[-1]
+    return tail[3:] if tail.startswith("job") else ""
 
 
 def _render_job_page(
@@ -197,7 +214,7 @@ def _render_job_page(
     # the view's title and the job's line above them (both 14 px in). The cb-job* classes place each
     # section in the two-column grid the styles lay a wide page out in (ui/dashboard/css.py `_THEME_CSS`).
     with ui.scroll_area().classes("w-full h-full cb-scroll-tight cb-jobscroll"):
-        with ui.column().classes("w-full cb-jobpage").style("padding: 4px 14px 16px; gap: 10px;") as page:
+        with ui.column().classes("w-full cb-jobpage").style("padding: 4px 14px 16px; gap: 14px;") as page:
             with config_section("Parameters") as params_sec:
                 params_sec.classes("cb-jsec-params")
                 params_refresh = render_config_tab(
@@ -213,10 +230,12 @@ def _render_job_page(
                 )
                 if params_refresh is not None:
                     edit_refreshes.append(params_refresh)
-            # An input chosen there changes what the other sections say of it (template matching's
-            # search-region note), so it is an edit like theirs.
-            io_sec = ui.element("div").classes("cb-jsec-io").style("width: 100%;")
-            with io_sec:
+            # The rail: Inputs & Outputs over SLURM. An input chosen there changes what the other sections say
+            # of it (template matching's search-region note), so it is an edit like theirs.
+            rail = ui.element("div").classes("cb-jsec-rail").style(
+                "width: 100%; min-width: 0; display: flex; flex-direction: column; gap: 14px;"
+            )
+            with rail, ui.element("div").classes("cb-jsec-io").style("width: 100%;"):
                 edit_refreshes.append(
                     render_io_tab(
                         job_type,
@@ -229,8 +248,7 @@ def _render_job_page(
                         observe=observers.append,
                     )
                 )
-            with config_section("SLURM resources") as slurm_sec:
-                slurm_sec.classes("cb-jsec-slurm")
+            with rail, ui.element("div").classes("cb-jsec-slurm").style("width: 100%;"):
                 slurm_refresh = render_slurm_tab(
                     job_model,
                     is_frozen,
@@ -254,12 +272,18 @@ def _render_job_page(
             # The section holding the job's log (an array job's Tasks panel) is open from the start once the
             # job has run, and when the URL names the log; the others when the URL names them.
             log_key = _TASKS if tasks else MonitorTab.LOGS.value
+            failed = job_model.execution_status == JobStatus.FAILED
             for key, title, box_px in _lazy_sections(job_type):
                 open_ = key == active or (
                     key == log_key and (bool(job_model.relion_job_name) or active == MonitorTab.LOGS.value)
                 )
                 openers[key] = _render_lazy_section(
-                    title, box_px, open_=open_, dom_id=_section_dom_id(instance_id, key), build=builders[key]
+                    title,
+                    box_px,
+                    open_=open_,
+                    dom_id=_section_dom_id(instance_id, key),
+                    build=builders[key],
+                    accent=key == "results" or (key == log_key and failed),
                 )
             if tasks:
                 openers.update(_task_panel_openers(instance_id, openers[_TASKS], ui_mgr))
@@ -293,28 +317,32 @@ def render_job_tab(
     frozen = is_job_frozen(instance_id)
     is_live = job_model.execution_status.is_live
 
-    # --- The job's line under the view's title (which names the job): its marks, folder and actions ---
+    # --- The job's line under the view's title (which names the job): light, tool, number, species, folder, then
+    # its chips and actions ---
     with ui.row().classes("w-full items-center no-wrap").style(_JOB_LINE_STYLE):
-        # Species glyph for particle jobs (templatematching / subtomo / reconstruct
-        # / class3d / candidate-extract), named on hover — the roster's own mark.
+        BoundStatusDot(instance_id)
+        ui.label(_tool_name(job_model)).style(_TOOL_PILL_STYLE)
+        number = _job_number(job_model)
+        if number:
+            ui.label(number).style(_NUMBER_STYLE)
+        # The species of a particle job, named, the roster's own mark.
         _sp_id = getattr(job_model, "species_id", None)
         _species = state.get_species(_sp_id) if _sp_id else None
         if _species is not None:
-            render_species_mark(_species)
+            render_species_mark(_species, named=True)
 
         if job_type in _EXPERIMENTAL_JOB_TYPES:
             ui.label("Experimental").style(_MARK_WARM).tooltip(
                 "Experimental — under active development; interface, routing and outputs may change"
             )
 
-        if job_model.relion_job_name and ui_mgr.project_path:
-            full_path = str(ui_mgr.project_path / job_model.relion_job_name.rstrip("/"))
-            copy_on_click(ui.label(full_path).style(_PATH_STYLE), full_path)
+        # The folder from the project, cut in its middle; a click copies its absolute path, hovering unrolls it.
+        with ui.element("div").style("flex: 1 1 0; min-width: 40px; margin-left: 6px;"):
+            if job_model.relion_job_name and ui_mgr.project_path:
+                path_text(ui_mgr.project_path / job_model.relion_job_name.rstrip("/"), ui_mgr.project_path)
 
         render_log_progress_chip(job_type, instance_id, ui_mgr)
         render_disk_footprint_chip(instance_id, ui_mgr)
-
-        ui.space()
 
         if cut_output(job_type) is not None:
             house_button(
@@ -371,10 +399,9 @@ def _render_interactive_job(
     with ui.row().classes("w-full items-center no-wrap").style(_JOB_LINE_STYLE):
         BoundStatusDot(instance_id)
         ui.label("Interactive" if interactive else "Automatic").style(_MARK_INFO).tooltip(pill_tip)
-        if job_model.relion_job_name and ui_mgr.project_path:
-            full_path = str(ui_mgr.project_path / job_model.relion_job_name.rstrip("/"))
-            ui.label(full_path).style(_PATH_STYLE)
-        ui.space()
+        with ui.element("div").style("flex: 1 1 0; min-width: 40px; margin-left: 6px;"):
+            if job_model.relion_job_name and ui_mgr.project_path:
+                path_text(ui_mgr.project_path / job_model.relion_job_name.rstrip("/"), ui_mgr.project_path)
         if ui_mgr.is_project_created:
             icon_button(
                 "delete",

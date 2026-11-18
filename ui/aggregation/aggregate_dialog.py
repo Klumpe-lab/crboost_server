@@ -45,6 +45,7 @@ from services.particles.list_ref import fs_slug
 from services.models_base import PickListType, PickSourceKind
 from services.project_state import MERGED_DIR_NAME, PickList, get_project_state_for
 from ui.components.buttons import house_button, icon_button
+from ui.components.check import house_check
 from ui.components.dialogs import dialog_host
 from ui.components.fields import house_select
 from ui.components.reactive import SingleFlight
@@ -522,10 +523,10 @@ class _AggregateDialog:
         pretty = ts_pretty_name(tomo_name)
 
         with ui.row().classes("w-full items-center gap-1.5 px-2 py-1 hover:bg-slate-50"):
-            ui.checkbox(
+            house_check(
                 value=n_sel == len(trows) and bool(trows),
                 on_change=lambda e, rs=trows: self.toggle_rows(rs, bool(e.value)),
-            ).props("dense size=xs")
+            )
             arrow = ui.icon("expand_more" if expanded else "chevron_right", size="14px").classes(
                 "text-slate-400 cursor-pointer"
             )
@@ -558,7 +559,7 @@ class _AggregateDialog:
         is_sel = r.key in self.selected
         glyph, tip = _TYPE_GLYPH.get(r.list_type, ("circle", r.list_type))
         with ui.row().classes("w-full items-center gap-1.5 px-2 py-0.5 hover:bg-slate-50"):
-            ui.checkbox(value=is_sel, on_change=lambda e, k=r.key: self.toggle(k, bool(e.value))).props("dense size=xs")
+            house_check(value=is_sel, on_change=lambda e, k=r.key: self.toggle(k, bool(e.value)))
             # Steelblue marks a curated list, grey a machine one — the coordinate-grade
             # reading of merge_card's curated/original highlight, and the single accent
             # this dialog spends.
@@ -936,9 +937,7 @@ def open_aggregate_dialog(project_path) -> None:
                 "species", {}, width="w-48", on_change=lambda e: d.on_species(str(e.value or ""))
             )
             ui.space()
-            ui.switch("Curated only", value=False, on_change=lambda e: d.set_curated_only(bool(e.value))).props(
-                "dense"
-            ).tooltip(
+            ui.switch("Curated only", value=False, on_change=lambda e: d.set_curated_only(bool(e.value))).tooltip(
                 "Hide machine candidate sets — show only lists a human placed, filtered, imported or already merged. "
                 "Anything already selected stays visible."
             )

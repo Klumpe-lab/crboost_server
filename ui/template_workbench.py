@@ -52,20 +52,14 @@ from services.project_state import (
     is_registered_volume,
 )
 from services.templating.template_metadata import read_template_header
+from ui.components.check import house_check
 from ui.components.chip import render_method_chip, render_polarity_chip
 from ui.components.path_link import render_path_link
 from ui.components.reactive import SingleFlight
 from ui.components.segmented import render_segmented
 from ui.components.buttons import house_button, icon_button
 from ui.components.fields import house_field as _field
-from ui.job_plugins._field_styles import (
-    PANEL_HEAD_STYLE,
-    PANEL_STYLE,
-    PANEL_TITLE_STYLE,
-    SECTION_HEADER_FIRST_STYLE,
-    fold_panel,
-    panel_head,
-)
+from ui.job_plugins._field_styles import PANEL_STYLE, SECTION_HEADER_FIRST_STYLE, panel_head, section_head
 from ui.components.template_viewer import TemplateViewerController, render_template_viewer
 from ui.local_file_picker import local_file_picker
 from ui.template_import_dialog import open_template_import_dialog
@@ -213,11 +207,9 @@ _SANS = "font-family: 'IBM Plex Sans', sans-serif;"
 
 
 def _section(title: str) -> None:
-    """A panel's title — Templates, Masks, Viewer, Activity log. `PANEL_TITLE_STYLE`, no
-    underline rule and no explanatory tail: the panel and the gap between panels carry the
-    structure, and the tables draw their own head border."""
-    with ui.row().classes("w-full items-baseline gap-2").style(f"{PANEL_HEAD_STYLE} margin-bottom: 4px;"):
-        ui.label(title).style(PANEL_TITLE_STYLE)
+    """A panel's title — Templates, Masks, Viewer, Activity log: the Rule head, no explanatory tail; the tables
+    draw their own head border."""
+    section_head(title).style("margin-bottom: 4px;")
 
 
 def _subsection(title: str) -> None:
@@ -898,7 +890,7 @@ class TemplateWorkbench:
                     with ui.row().classes("items-center gap-1 mt-0.5"):
                         ui.label("ISO").classes(_HINT_CLS + " shrink-0")
                         iso_slider = (
-                            ui.slider(min=0.5, max=5.0, step=0.1, value=abs(iso_value)).props("dense").classes("w-20")
+                            ui.slider(min=0.5, max=5.0, step=0.1, value=abs(iso_value)).classes("w-20")
                         )
                         iso_slider.on(
                             "change",
@@ -1289,7 +1281,7 @@ class TemplateWorkbench:
                 lambda: ui.number(value=self.shape_box_size, step=32, min=32).bind_value(self, "shape_box_size"),
                 hint="Box edge in pixels",
             )
-            auto = ui.checkbox("auto box", value=self.auto_box).props("dense size=xs").bind_value(self, "auto_box")
+            auto = house_check("auto box", value=self.auto_box).bind_value(self, "auto_box")
             auto.style(f"{_SANS} font-size: 10px; color: #475569;")
             auto.on_value_change(self._on_auto_box_toggle)
             _field(
@@ -1729,24 +1721,15 @@ class TemplateWorkbench:
         # House section header + plain disclosure caret instead of Quasar's boxed
         # ui.expansion — one less bordered widget on the page.
         state = {"open": False}
-        with ui.column().classes("w-full gap-0").style(PANEL_STYLE) as panel:
-            header = ui.row().classes("w-full items-center gap-1 cursor-pointer select-none")
-            with header.style(PANEL_HEAD_STYLE):
-                caret = (
-                    ui.icon("chevron_right", size="14px")
-                    .classes("text-gray-400")
-                    .style("transition: transform .12s ease;")
-                )
-                ui.label("Activity log").style(PANEL_TITLE_STYLE)
+        with ui.column().classes("w-full gap-0").style(PANEL_STYLE):
+            header = section_head("Activity log", caret="▸").style("cursor: pointer; user-select: none;")
             self._log_container = ui.column().classes("w-full gap-0.5 px-2 py-1 max-h-40 overflow-y-auto")
         self._log_container.set_visibility(False)
-        fold_panel(panel, header, False)
 
         def _toggle() -> None:
             state["open"] = not state["open"]
             self._log_container.set_visibility(state["open"])
-            caret.style(f"transform: rotate({90 if state['open'] else 0}deg);")
-            fold_panel(panel, header, state["open"])
+            header.caret.set_text("▾" if state["open"] else "▸")
 
         header.on("click", _toggle)
 

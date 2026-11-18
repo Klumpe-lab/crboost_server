@@ -5,7 +5,7 @@ from typing import ClassVar
 from pydantic import Field
 
 from services.io_slots import InputSlot, JobFileType, OutputSlot
-from services.jobs._base import AbstractJobParams
+from services.jobs._base import L, S, AbstractJobParams, form
 from services.models_base import JobCategory, JobType
 
 
@@ -28,6 +28,7 @@ class PostProcessParams(AbstractJobParams):
         "low_pass",
         "other_args",
     }
+    PARAM_GROUPS: ClassVar[tuple[str, ...]] = ("Sharpening", "Filtering", "Extra")
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(key="input_half_map", accepts=[JobFileType.HALF_MAP], preferred_source="refine3d"),
         InputSlot(key="input_mask", accepts=[JobFileType.MASK], preferred_source="maskCreate"),
@@ -36,18 +37,30 @@ class PostProcessParams(AbstractJobParams):
         OutputSlot(key="output_map", produces=JobFileType.REFERENCE_MAP, path_template="postprocess.mrc")
     ]
 
-    auto_bfac: bool = Field(default=True, description="Fit the sharpening B-factor from the Guinier plot")
+    auto_bfac: bool = Field(
+        default=True, description="Fit the sharpening B-factor from the Guinier plot", title="Fit B-factor",
+        json_schema_extra=form("Sharpening"),
+    )
     autob_lowres: float = Field(
-        default=10.0, gt=0, description="Lowest resolution used in the B-factor fit (Å); higher frequencies only"
+        default=10.0, gt=0, description="Lowest resolution used in the B-factor fit (Å); higher frequencies only",
+        title="Fit from", json_schema_extra=form("Sharpening", S, "Å"),
     )
     adhoc_bfac: float = Field(
-        default=0.0, le=0, description="B-factor to sharpen with when auto_bfac is off (Å², negative; 0 = none)"
+        default=0.0, le=0, description="B-factor to sharpen with when auto_bfac is off (Å², negative; 0 = none)",
+        title="B-factor", json_schema_extra=form("Sharpening", S, "Å²"),
     )
     skip_fsc_weighting: bool = Field(
-        default=False, description="No FSC weighting of the map; low-pass it at low_pass instead"
+        default=False, description="No FSC weighting of the map; low-pass it at low_pass instead",
+        title="Skip FSC weighting", json_schema_extra=form("Filtering"),
     )
-    low_pass: float = Field(default=0.0, ge=0, description="Low-pass filter (Å) with skip_fsc_weighting; 0 = none")
-    other_args: str = Field(default="", description="Extra relion_postprocess flags, appended verbatim")
+    low_pass: float = Field(
+        default=0.0, ge=0, description="Low-pass filter (Å) with skip_fsc_weighting; 0 = none", title="Low-pass",
+        json_schema_extra=form("Filtering", S, "Å"),
+    )
+    other_args: str = Field(
+        default="", description="Extra relion_postprocess flags, appended verbatim", title="Extra arguments",
+        json_schema_extra=form("Extra", L),
+    )
 
     def _get_job_specific_options(self) -> list[tuple[str, str]]:
         return [

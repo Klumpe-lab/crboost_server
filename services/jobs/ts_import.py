@@ -3,7 +3,7 @@ from typing import ClassVar
 
 from pydantic import Field
 
-from services.jobs._base import AbstractJobParams
+from services.jobs._base import M, S, AbstractJobParams, form
 from services.models_base import JobType, JobCategory
 from services.io_slots import InputSlot, OutputSlot, JobFileType
 
@@ -22,6 +22,7 @@ class TsImportParams(AbstractJobParams):
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
     USER_PARAMS: ClassVar[set[str]] = {"mdoc_pattern", "min_intensity", "do_at_most", "tomo_dimensions", "import_calls"}
+    PARAM_GROUPS: ClassVar[tuple[str, ...]] = ("Tilt series", "Processing")
 
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(key="input_star", accepts=[JobFileType.FS_MOTION_CTF_STAR], preferred_source="fsMotionAndCtf"),
@@ -38,7 +39,7 @@ class TsImportParams(AbstractJobParams):
         ),
     ]
 
-    mdoc_pattern: str = Field(default="*.mdoc")
+    mdoc_pattern: str = Field(default="*.mdoc", title="Mdoc pattern", json_schema_extra=form("Tilt series", M))
     # WarpTools `ts_import` runs a contiguous-run intensity walk outward from
     # 0-tilt and truncates all tilts past the first one whose
     # `AverageIntensity >= this * cos(angle) * MaxAverage * 0.999` check fails
@@ -52,16 +53,19 @@ class TsImportParams(AbstractJobParams):
     # in src/warp/tsAlignment.py:132-140), so setting min_intensity > 0 no
     # longer crashes the pipeline — it just excludes more tilts from the
     # reconstruction.
-    min_intensity: float = Field(default=0.0, ge=0.0, le=1.0)
-    do_at_most: int = Field(default=-1)
-    tomo_dimensions: str = Field(default="4096x4096x2048")
+    min_intensity: float = Field(
+        default=0.0, ge=0.0, le=1.0, title="Min intensity", json_schema_extra=form("Tilt series", S),
+    )
+    do_at_most: int = Field(default=-1, title="Max series", json_schema_extra=form("Processing", S))
+    tomo_dimensions: str = Field(
+        default="4096x4096x2048", title="Tomogram size", json_schema_extra=form("Tilt series", M, "px"),
+    )
     import_calls: int = Field(
-        default=4,
-        ge=1,
-        le=16,
-        description="WarpTools ts_import calls at once, each over a share of the mdocs, on a share of the SLURM "
-        "tab's CPUs. A call keeps about 2 CPUs busy and takes about a minute to start: 163 tilt series took 12 "
-        "minutes in one call on 1 CPU, 1.5 minutes in 4 calls on 16 CPUs, with the same tomostars.",
+        default=4, ge=1, le=16,
+        description="WarpTools ts_import calls at once, each over a share of the mdocs, on a share of the SLURM tab's "
+        "CPUs. A call keeps about 2 CPUs busy and takes about a minute to start: 163 tilt series took 12 minutes in "
+        "one call on 1 CPU, 1.5 minutes in 4 calls on 16 CPUs, with the same tomostars.", title="Parallel calls",
+        json_schema_extra=form("Processing", S),
     )
 
     def _get_job_specific_options(self) -> list[tuple[str, str]]:

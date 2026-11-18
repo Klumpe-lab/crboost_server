@@ -9,23 +9,21 @@ Cn (n=1..6) is honored by PyTOM's --z-axis-rotational-symmetry flag;
 D/T/O/I are honored via a custom angle list (auto-generated at submission
 by services.templating.angle_lists and passed to PyTOM as
 --angular-search <file>). Default is inherited from species.symmetry at
-job-creation time but the user can override here. The default-renderer
-skips template_path / mask_path / symmetry because we render all three
-in the "From species" section below.
+job-creation time but the user can override here. The three rows draw the
+"From species" group of the parameter layout in place of the default rows.
 
 Those three rows are job parameters with a species-shaped default, so they sit in the
-same Parameters card as everything else — one `section_header` + `field_grid` in the
-house vocabulary, never a nested card with its own font scale. Each row's tooltip
+same Parameters section as everything else — a group of rows in the house vocabulary,
+never a nested card with its own font scale. Each row's tooltip
 names the species value it defaulted from, because the driver reads the job's value:
 the species card can say I1 while the run is C1, and only this tooltip and the Species
 page's Jobs-tab drift chip will say so.
 
-The Config tab opens with the one species line (pill + "open in Species");
-species facts (templates, masks, Ø, symmetry) live on the species itself, not
-here. If species.templates is empty the row states the absence and
+The species is named on the job page's header line; species facts (templates, masks, Ø, symmetry)
+live on the species itself, not here. If species.templates is empty the row states the absence and
 points at the Species page rather than preselecting anything.
 
-The Search region section restricts matching to segmented features of the tomograms
+The Search region group restricts matching to segmented features of the tomograms
 (services/segmentation/search_region.py). The features offered are the project's: registered,
 or set on a Segment job. Its note names the segmentations the job will read (the I/O section's,
 which shows that input only while a region is set) and what they lack.
@@ -50,68 +48,57 @@ from services.templating.angle_lists import (
     pytom_angle_count,
 )
 from services.templating.template_metadata import read_template_header
+from services.jobs._base import SPECIES_GROUP
 from ui.components.reactive import FingerprintedView, FocusHold
-from ui.components.species_pill import render_species_line, species_opener
 from ui.job_plugins import register_params_renderer
 from ui.job_plugins._field_styles import (
     HELPER_STYLE,
-    SPECIES_SECTION_TITLE,
+    M,
+    NOTE_INDENT,
     choice_row,
     field_grid,
     multi_choice_row,
     numeric_field,
-    section_header,
 )
-from ui.job_plugins.default_renderer import render_config_preamble, render_default_params
+from ui.job_plugins.default_renderer import render_default_params_card
 
 _OVERRIDE_NOTE = "Changing it here affects only this job instance — the species is not modified."
-_SEARCH_FIELDS = {"search_include", "search_exclude", "search_dilation_ang"}
 _WARN_STYLE = HELPER_STYLE + " color: #b45309;"
-# Under the value column of a field row (label column 110 px + gap).
-_NOTE_STYLE = " margin: 0 0 4px 118px;"
+# Under the box of a field row.
+_NOTE_STYLE = f" margin: 0 0 4px {NOTE_INDENT}px;"
 # T, O and I lists used to keep far more than one rotation per orbit: what one at 12° tried, and the increment
 # that samples about as finely now.
 _SAMPLED_BEFORE = {"T": (3448, 8), "O": (3439, 7), "I1": (3398, 5), "I2": (3398, 5)}
 
 
 @register_params_renderer(JobType.TEMPLATE_MATCH_PYTOM)
-def render_template_match_params(job_type, job_model, is_frozen, save_handler, *, ui_mgr=None, backend=None, **_ctx):
-    instance_id = _ctx.get("instance_id")
-    observe = _ctx.get("observe")
+def render_template_match_params(job_type, job_model, is_frozen, save_handler, *, ui_mgr=None, backend=None, **ctx):
+    """The default parameters; the species group drawn by `_SpeciesRows` (template, mask and symmetry chosen from
+    the species' own) with the search's rotation count under it, the Search region group by `_SearchRegion` with
+    what it reads under it."""
+    instance_id = ctx.get("instance_id")
+    observe = ctx.get("observe")
+    state = get_project_state_for(ui_mgr.project_path) if ui_mgr and ui_mgr.project_path else None
+    replace = {}
+    if state is not None and instance_id is not None:
+        species, _sid = resolve_species(state, job_model, instance_id)
+        if species is not None:
 
-    species = None
-    state = None
-    if ui_mgr and ui_mgr.project_path:
-        state = get_project_state_for(ui_mgr.project_path)
-        species, _resolved_sid = resolve_species(state, job_model, instance_id)
+            def species_rows(_group):
+                holder = ui.element("div").style("width: 100%;")
+                rows = _SpeciesRows(state, instance_id, is_frozen, save_handler, holder)
+                rows.refresh()
+                if observe is not None:
+                    observe(rows.refresh)
+                return _render_search_note(job_model, observe)
 
-    render_species_line(species, on_open=species_opener(_ctx.get("callbacks"), species.id) if species else None)
-
-    # Render the regular params with template_path/mask_path/symmetry excluded —
-    # we handle these specially below (or via the species header). The ctx
-    # exclude (array_throttle → SLURM section) is honored too.
-    exclude = {"template_path", "mask_path", "symmetry"} | _SEARCH_FIELDS | set(_ctx.get("exclude") or ())
-    render_config_preamble(job_model)
-    render_default_params(job_type, job_model, is_frozen, save_handler, exclude=exclude)
-
-    if state is None or instance_id is None:
-        return None
-    refreshes = []
-    if species is not None:
-        # ── Template + mask + search symmetry ─────────────────────────────────
-        section_header(SPECIES_SECTION_TITLE)
-        rows = _SpeciesRows(state, instance_id, is_frozen, save_handler, ui.element("div").style("width: 100%;"))
-        rows.refresh()
-        if observe is not None:
-            observe(rows.refresh)
-        refreshes.append(_render_search_note(job_model, observe))
-    refreshes.append(_render_search_region(state, job_model, instance_id, is_frozen, save_handler, observe))
-
-    def refresh() -> None:
-        for r in refreshes:
-            r()
-
-    return refresh
+            replace[SPECIES_GROUP] = species_rows
+        replace["Search region"] = lambda _group: _render_search_region(
+            state, job_model, instance_id, is_frozen, save_handler, observe
+        )
+    return render_default_params_card(
+        job_type, job_model, is_frozen, save_handler, ui_mgr=ui_mgr, backend=backend, replace=replace, **ctx
+    )
 
 
 def _door(view: FingerprintedView, state, instance_id: str, save_handler):
@@ -281,7 +268,6 @@ class _SearchRegion(FingerprintedView):
 def _render_search_region(state, job_model, instance_id: str, is_frozen: bool, save_handler, observe):
     """The search region's rows; under them, what the job will read. Returns the note's refresh, which the
     job tab reruns after an edit, and which a change of the region made elsewhere reruns too."""
-    section_header("Search region")
     region = _SearchRegion(state, instance_id, is_frozen, save_handler, ui.element("div").style("width: 100%;"))
     region.refresh()
 
@@ -428,6 +414,7 @@ def _render_symmetry_dropdown(species, job_model, is_frozen: bool, write):
         value=value,
         empty_value="C1",
         on_change=lambda v: write("symmetry", v),
+        width=M,
         hint=(
             f"Species default: {'None (C1)' if species_sym == 'C1' else species_sym}. {_OVERRIDE_NOTE}\n"
             "Cn uses PyTOM's --z-axis-rotational-symmetry flag (n-fold around z). "
@@ -488,6 +475,6 @@ def _render_mask_dropdown(species, job_model, is_frozen: bool, write):
 def _absent_pointer(text: str) -> None:
     """The amber "nothing registered" pointer that rides under an empty row. Absent must
     read as absent, not as defaulted."""
-    with ui.row().classes("items-center gap-1 no-wrap").style("margin: -2px 0 4px 118px;"):
+    with ui.row().classes("items-center gap-1 no-wrap").style(f"margin: -2px 0 4px {NOTE_INDENT}px;"):
         ui.icon("warning", size="11px").classes("text-amber-600")
         ui.label(text).style("font-family: 'IBM Plex Sans', sans-serif; font-size: 9px; color: #b45309;")

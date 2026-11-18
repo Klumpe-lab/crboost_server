@@ -40,7 +40,8 @@ from services.project_state import (
 )
 from services.array_tasks import ts_position_sort_key, ts_pretty_name
 from ui.components.buttons import house_button, icon_button
-from ui.components.copyable import copy_on_click
+from ui.components.check import house_check
+from ui.components.path_text import path_text
 from ui.components.dialogs import dialog_host
 from ui.components.fields import house_select
 from ui.components.reactive import SingleFlight
@@ -663,10 +664,10 @@ class _MergeSelector:
         cur = self.curation.get(cand.optset_path)
 
         with ui.row().classes("w-full items-center gap-1.5 px-2 py-1 hover:bg-slate-50"):
-            ui.checkbox(
+            house_check(
                 value=fully_selected,
                 on_change=lambda e, c=cand: self._mutate(self.dlg.toggle_species_all, c, bool(e.value)),
-            ).props("dense size=xs")
+            )
 
             arrow = ui.icon("expand_more" if expanded else "chevron_right", size="14px").classes(
                 "text-slate-400 cursor-pointer"
@@ -762,7 +763,7 @@ class _MergeSelector:
 
         pretty = ts_pretty_name(t.ts_name)
         with ui.row().classes("w-full items-center gap-1.5 px-2 py-0.5 hover:bg-slate-50"):
-            ui.checkbox(value=is_sel, on_change=on_toggle).props("dense size=xs")
+            house_check(value=is_sel, on_change=on_toggle)
             ui.icon("filter_alt" if show_curated else "circle", size="9px").style(
                 f"color: {STEEL if show_curated else '#e2e8f0'}; flex-shrink: 0;"
             ).tooltip("curated picks" if show_curated else "original picks")
@@ -941,7 +942,7 @@ def open_aggregation_merge_dialog(project_path) -> None:
                 on_change=lambda e: selector.set_species_filter(str(e.value or "")),
             )
             selector.species_select = species_select
-            ui.switch("Show curated only", value=False, on_change=_toggle_curated_only).props("dense").tooltip(
+            ui.switch("Show curated only", value=False, on_change=_toggle_curated_only).tooltip(
                 "Show only sources that have a curated (filtered) set, and within them only the tomograms you reviewed."
             )
             ui.space()
@@ -1161,9 +1162,8 @@ def _render_merge_record(d: _MergeDialog, m: AggregationMerge, is_active: bool) 
                         ui.label(w).classes("text-[10px] text-amber-700")
                 optset = (d.merge_dir_for(m.slug) / "optimisation_set.star") if d.merge_dir_for(m.slug) else None
                 if optset is not None:
-                    with ui.row().classes("items-center gap-1 mt-1"):
-                        label = ui.label(str(optset)).classes("text-[9px] font-mono text-slate-400 truncate")
-                        copy_on_click(label.style("flex: 1; min-width: 0;").tooltip(str(optset)), str(optset))
+                    with ui.element("div").style("width: 100%; min-width: 0; margin-top: 4px;"):
+                        path_text(optset)
 
 
 def _render_merge_table(m: AggregationMerge) -> None:

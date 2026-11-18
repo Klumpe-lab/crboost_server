@@ -37,6 +37,7 @@ from nicegui import ui
 from services.project_state import get_project_state_for
 from services.tomogram_import import TOMOGRAM_SUFFIXES
 from ui.components.buttons import house_button
+from ui.components.check import house_check
 from ui.components.chip import render_chip
 from ui.components.fields import house_field, house_number, house_select
 from ui.dashboard.css import ensure_assets_loaded
@@ -102,9 +103,9 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
         ):
             if selectable:
                 is_on = selected.get(f["path"], True)
-                cb = ui.checkbox(
+                cb = house_check(
                     value=is_on, on_change=lambda e, p=f["path"], r=row_el: _on_toggle(p, bool(e.value), r)
-                ).props("dense")
+                )
                 row_checkboxes[f["path"]] = cb
                 if is_on:
                     row_el.classes("selected")
@@ -152,10 +153,10 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
             with ui.element("div").classes("cb-ltable-row cb-ltable-head").style(f"grid-template-columns: {tmpl};"):
                 if selectable:
                     n_sel = sum(1 for v in selected.values() if v)
-                    select_all_cb = ui.checkbox(
+                    select_all_cb = house_check(
                         value=bool(files) and n_sel == len(files),
                         on_change=lambda e: None if _sync["v"] else _toggle_all(bool(e.value)),
-                    ).props("dense")
+                    )
                 ui.label("Tomogram").classes("cb-ltable-h-name")
                 ui.label("Dims (px)").classes("cb-ltable-h-cell")
                 ui.label("Å/px").classes("cb-ltable-h-cell")

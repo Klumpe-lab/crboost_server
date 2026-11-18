@@ -6,6 +6,9 @@ Pure presentation; no logic.
 
 from nicegui import context, ui
 
+from ui.components.check import CHECK_CSS
+from ui.components.path_text import PATH_CSS, PATH_JS
+
 
 _CB_CSS = """
 .cb-sidebar {
@@ -1953,6 +1956,8 @@ img[src]:not([data-cb-img]) {
 .q-btn.cb-icon-btn--danger:hover { color: #b91c1c !important; background: #fef2f2; }
 .q-btn.cb-icon-btn.cb-icon-btn--armed { color: #ffffff !important; background: var(--cb-btn-accent, #1f4e79); }
 .q-btn.cb-icon-btn.cb-icon-btn--armed:hover { background: var(--cb-btn-accent-hover, #163a5c); }
+/* A flag on a view's title line that is on (the branch map's card size, magazines, folded start). */
+.q-btn.cb-icon-btn.cb-flag-on { color: var(--cb-head-ink, #12324f) !important; background: var(--cb-rail-on, #dbe7f3); }
 /* Checkboxes, switches and radios in the accent blue; their labels in the house face. */
 .q-checkbox__inner--truthy, .q-checkbox__inner--indet, .q-radio__inner--truthy,
 .q-toggle__inner--truthy { color: var(--cb-accent, #4a8fd4) !important; }
@@ -1967,19 +1972,32 @@ img[src]:not([data-cb-img]) {
     background: var(--cb-surface, #ffffff); border-bottom: 1px solid var(--cb-panel-line, #dbe3ec);
     margin-top: -6px; margin-bottom: 6px; min-height: 31px; box-sizing: border-box;
 }
-/* A Journey section's title line as the panels' stripe: edge to edge across the card's top. */
+/* A Journey section's title line in the Rule ladder (ui/job_plugins/_field_styles.py `section_head`): the title in
+ * mono caps, a hairline running from it to the right edge, the status and the caret at the far end; no band. The
+ * row's spacer is the hairline; a row without one draws it after its title and icons. */
 .cb-journey .cb-main > .cb-section-card > .cb-section-card-header:first-child {
-    margin: -12px -12px 12px; padding: 5px 12px; min-height: 30px; box-sizing: border-box;
-    background: var(--cb-head, #edf4fb); border-radius: var(--cb-radius, 5px) var(--cb-radius, 5px) 0 0;
-    box-shadow: 0 1px 0 var(--cb-head-line, #c9dbee), inset var(--cb-accent-w, 2px) 0 0 var(--cb-accent, #4a8fd4),
-        inset 0 1px 0 var(--cb-head-glint, rgba(255, 255, 255, 0.9));
+    margin: 0 0 10px; min-height: 18px; box-sizing: border-box;
 }
-/* Folded, the stripe is the whole card. */
+.cb-journey .cb-section-card-header .cb-section-title, .cb-particles-root .cb-section-card-header .cb-section-title {
+    font-family: var(--cb-mono, 'IBM Plex Mono', monospace); font-size: 9.5px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .09em; line-height: 14px; white-space: nowrap;
+    color: var(--cb-head-ink, #12324f);
+}
+.cb-journey .cb-section-card-header > .q-space, .cb-particles-root .cb-section-card-header > .q-space {
+    flex: 1 1 auto; min-width: 12px; height: 1px; align-self: center; background: var(--cb-head-rule, #d6e0ea);
+}
+.cb-journey .cb-section-card-header:not(:has(> .q-space))::after,
+.cb-particles-root .cb-section-card-header:not(:has(> .q-space))::after {
+    content: ''; order: 2; flex: 1 1 auto; min-width: 12px; height: 1px; background: var(--cb-head-rule, #d6e0ea);
+}
+.cb-journey .cb-section-card-header > .cb-section-status,
+.cb-particles-root .cb-section-card-header > .cb-section-status { order: 3; }
+/* Folded, the head is the whole section. */
 .cb-journey .cb-main > .cb-section-card:has(> .cb-section-card-header:first-child + .cb-collapsed) {
     padding-bottom: 0;
 }
 .cb-journey .cb-main > .cb-section-card > .cb-section-card-header:first-child:has(+ .cb-collapsed) {
-    margin-bottom: 0; border-radius: var(--cb-radius, 5px);
+    margin-bottom: 0;
 }
 .cb-params-icon { color: #8aa0b8; }
 .cb-params-icon:hover { color: var(--cb-head-ink, #12324f); }
@@ -2139,6 +2157,7 @@ _HARBOR_MONO_CSS = """
 :root {
     --cb-page: #ffffff; --cb-panel-line: #d6e0ea; --cb-panel-shadow: none; --cb-radius: 2px;
     --cb-head: #f2f6fb; --cb-head-line: #dbe3ec; --cb-head-glint: transparent; --cb-group-head: #f2f6fb;
+    --cb-head-rule: #d6e0ea; --cb-head-accent: #2f6fb3; --cb-head-accent-soft: #a9c6e4;
     --cb-hover: #eaf1f8; --cb-card-line: #d3dde8; --cb-card-radius: 3px; --cb-card-shadow: none;
     --cb-edge-shadow: none;
     --cb-field-radius: 2px; --cb-btn-line: #c5d3e2;
@@ -2223,7 +2242,30 @@ _BRANCH_MAP_CSS = """
 .cb-bm-canvas:active { cursor: grabbing; }
 .cb-bm-card svg [data-ts] { cursor: pointer; }
 .cb-bm-chip:hover { border-color: #94a3b8 !important; }
-.cb-bm-handle:hover span { color: #1f4e79; }
+/* The readable plot (ui/components/plot.py): its faces, and the readout under the pointer. */
+.cb-plot-num { font-family: var(--cb-mono, 'IBM Plex Mono', monospace); font-variant-numeric: tabular-nums; }
+.cb-plot-word {
+    font-family: var(--cb-label-font, 'IBM Plex Sans', sans-serif); text-transform: var(--cb-label-case, none);
+    letter-spacing: var(--cb-label-track, 0);
+}
+.cb-plot-hit .cb-plot-read { visibility: hidden; }
+.cb-plot-hit:hover .cb-plot-read { visibility: visible; }
+.cb-plot-hit:hover .cb-plot-cur { stroke: var(--cb-ink-3, #5b7089); }
+/* One click selects a job, in the roster and on the map at once; hovering the selected job's row or card header
+ * turns it into an invitation to open its page (a second click, or a double click, opens it). */
+.cb-open-cue {
+    display: none; font-family: var(--cb-mono, 'IBM Plex Mono', monospace); font-size: 8px; text-transform: uppercase;
+    letter-spacing: .08em; color: #ffffff; background: var(--cb-accent, #4a8fd4); border-radius: 2px;
+    padding: 0 5px; line-height: 13px; flex-shrink: 0; white-space: nowrap; pointer-events: none;
+}
+.cb-rail-row.cb-sel { box-shadow: inset 0 0 0 1px var(--cb-accent, #4a8fd4); }
+.cb-rail-row.cb-sel:hover { background: var(--cb-rail-on, #dbe7f3) !important; }
+.cb-rail-row.cb-sel:hover .cb-open-cue { display: inline-block; }
+.cb-bm-card.cb-sel { outline: 2px solid var(--cb-accent, #4a8fd4); outline-offset: 2px; }
+.cb-bm-card.cb-sel .cb-bm-head:hover { background: var(--cb-rail-on, #dbe7f3) !important; }
+.cb-bm-card.cb-sel .cb-bm-head:hover .cb-open-cue { display: inline-block; }
+.cb-bm-row.cb-sel { background: var(--cb-head, #edf4fb); box-shadow: inset 2px 0 0 var(--cb-accent, #4a8fd4); }
+.cb-bm-row.cb-sel:hover .cb-open-cue { display: inline-block; }
 @keyframes cb-bm-pulse {
     0% { box-shadow: 0 0 0 0 rgba(59,130,246,0.45); }
     70% { box-shadow: 0 0 0 6px rgba(59,130,246,0); }
@@ -2247,9 +2289,10 @@ def ensure_assets_loaded() -> None:
     ui.add_head_html(_TITLE_FONT_LINK)
     ui.add_head_html(
         f"<style>{_THEME_CSS}{_HARBOR_MONO_CSS}{_CB_CSS}{_PARTICLES_CSS}{_REGISTRY_CSS}{_KITCHEN_CSS}"
-        f"{_BRANCH_MAP_CSS}</style>"
+        f"{_BRANCH_MAP_CSS}{PATH_CSS}{CHECK_CSS}</style>"
     )
     client.run_javascript(_TITLE_TIP_JS)
+    client.run_javascript(PATH_JS)
     client.run_javascript(_IMG_STATE_JS)
 
 
@@ -2371,17 +2414,17 @@ _THEME_CSS = """
     --cb-group-ring: var(--cb-panel-line); --cb-group-fill: var(--cb-panel);
 }
 body { background: var(--cb-page) !important; }
-/* A wide job page in two columns: Parameters on the left, Inputs / Outputs over SLURM on the right,
- * the folded sections across both below. Narrower than 860 px it stays one column. */
+/* A wide job page in two columns: Parameters on the left (its groups in columns of 330 px), the 360 px rail
+ * on the right (Inputs & Outputs over SLURM), the folded sections across both below. Narrower than 860 px it
+ * stays one column. */
 .cb-jobscroll .q-scrollarea__content { container-type: inline-size; }
 @container (min-width: 860px) {
     .cb-jobpage {
-        display: grid !important; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
-        align-items: start; column-gap: 12px;
+        display: grid !important; grid-template-columns: minmax(0, 1fr) 360px;
+        align-items: start; column-gap: 22px !important;
     }
-    .cb-jsec-params { grid-column: 1; grid-row: 1 / span 2; }
-    .cb-jsec-io { grid-column: 2; grid-row: 1; }
-    .cb-jsec-slurm { grid-column: 2; grid-row: 2; }
+    .cb-jsec-params { grid-column: 1; grid-row: 1; }
+    .cb-jsec-rail { grid-column: 2; grid-row: 1; }
     .cb-jsec-fold { grid-column: 1 / -1; }
 }
 """

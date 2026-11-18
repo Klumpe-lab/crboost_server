@@ -5,7 +5,7 @@ from typing import ClassVar
 from pydantic import Field
 
 from services.io_slots import InputSlot, JobFileType, OutputSlot
-from services.jobs._base import AbstractJobParams
+from services.jobs._base import L, S, AbstractJobParams, form
 from services.models_base import JobCategory, JobType
 
 
@@ -29,6 +29,7 @@ class MaskCreateParams(AbstractJobParams):
         "soft_edge_px",
         "other_args",
     }
+    PARAM_GROUPS: ClassVar[tuple[str, ...]] = ("Threshold", "Edge", "Extra")
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(key="input_map", accepts=[JobFileType.REFERENCE_MAP], preferred_source="refine3d")
     ]
@@ -36,19 +37,31 @@ class MaskCreateParams(AbstractJobParams):
         OutputSlot(key="output_mask", produces=JobFileType.MASK, path_template="mask.mrc")
     ]
 
-    lowpass_ang: float = Field(default=15.0, gt=0, description="Low-pass filter on the map before thresholding (Å)")
+    lowpass_ang: float = Field(
+        default=15.0, gt=0, description="Low-pass filter on the map before thresholding (Å)", title="Low-pass",
+        json_schema_extra=form("Threshold", S, "Å"),
+    )
     threshold: float = Field(
-        default=0.0, description="Absolute threshold on the low-passed map; 0 = threshold_fraction of its maximum"
+        default=0.0, description="Absolute threshold on the low-passed map; 0 = threshold_fraction of its maximum",
+        title="Threshold", json_schema_extra=form("Threshold", S),
     )
     threshold_fraction: float = Field(
-        default=0.4,
-        gt=0,
-        lt=1,
+        default=0.4, gt=0, lt=1,
         description="Threshold as a fraction of the low-passed map's maximum (used while threshold is 0)",
+        title="Threshold fraction", json_schema_extra=form("Threshold", S),
     )
-    extend_px: int = Field(default=3, ge=0, description="Grow the binary mask by this many pixels")
-    soft_edge_px: int = Field(default=6, ge=0, description="Width of the cosine soft edge (pixels)")
-    other_args: str = Field(default="", description="Extra relion_mask_create flags, appended verbatim")
+    extend_px: int = Field(
+        default=3, ge=0, description="Grow the binary mask by this many pixels", title="Extend",
+        json_schema_extra=form("Edge", S, "px"),
+    )
+    soft_edge_px: int = Field(
+        default=6, ge=0, description="Width of the cosine soft edge (pixels)", title="Soft edge",
+        json_schema_extra=form("Edge", S, "px"),
+    )
+    other_args: str = Field(
+        default="", description="Extra relion_mask_create flags, appended verbatim", title="Extra arguments",
+        json_schema_extra=form("Extra", L),
+    )
 
     def _get_job_specific_options(self) -> list[tuple[str, str]]:
         return [("in_3dref", str(self.paths.get("input_map", "")))]

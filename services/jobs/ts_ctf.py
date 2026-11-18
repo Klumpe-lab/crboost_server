@@ -3,7 +3,7 @@ from typing import ClassVar
 from pydantic import Field
 
 from services.computing.slurm_service import SlurmConfig
-from services.jobs._base import AbstractJobParams
+from services.jobs._base import M, S, AbstractJobParams, form
 from services.models_base import JobType, JobCategory
 from services.io_slots import InputSlot, OutputSlot, JobFileType
 
@@ -23,6 +23,7 @@ class TsCtfParams(AbstractJobParams):
         "do_phase",
         "array_throttle",
     }
+    PARAM_GROUPS: ClassVar[tuple[str, ...]] = ("CTF", "Processing")
 
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(key="input_star", accepts=[JobFileType.ALIGNED_TILT_SERIES_STAR], preferred_source="aligntiltsWarp"),
@@ -46,12 +47,16 @@ class TsCtfParams(AbstractJobParams):
         ),
     ]
 
-    do_phase: bool = Field(default=False, description="Estimate phase shifts (CTF phase plate or spurious phase)")
-    window: int = Field(default=512, ge=128, le=2048)
-    range_min_max: str = Field(default="30:10")  # same band as fsMotionAndCtf; ts_ctf only refines its defoci
-    defocus_hand: str = Field(default="set_flip")
-    defocus_min_max: str = Field(default="1.1:8")
-    perdevice: int = Field(default=1, ge=0, le=8)
+    do_phase: bool = Field(
+        default=False, description="Estimate phase shifts (CTF phase plate or spurious phase)",
+        title="Estimate phase shifts", json_schema_extra=form("CTF"),
+    )
+    window: int = Field(default=512, ge=128, le=2048, title="Window", json_schema_extra=form("CTF", S, "px"))
+    # The same band as fsMotionAndCtf; ts_ctf only refines its defoci.
+    range_min_max: str = Field(default="30:10", title="Resolution range", json_schema_extra=form("CTF", M, "Å"))
+    defocus_hand: str = Field(default="set_flip", title="Defocus hand", json_schema_extra=form("CTF", M))
+    defocus_min_max: str = Field(default="1.1:8", title="Defocus range", json_schema_extra=form("CTF", M, "µm"))
+    perdevice: int = Field(default=1, ge=0, le=8, title="Per GPU", json_schema_extra=form("Processing", S))
     array_throttle: int = Field(
         default=40, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series CTF estimation"
     )

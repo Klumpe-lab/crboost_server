@@ -18,6 +18,7 @@ from services.sta_kitchen.models import PoolMember
 from services.sta_kitchen.snapshots import ProjectView, project_view
 from ui.analytics.common import ERROR_CLS, HINT_CLS
 from ui.components.buttons import house_button, icon_button
+from ui.components.check import house_check
 from ui.components.dialogs import dialog_host
 from ui.components.fields import house_select
 
@@ -91,11 +92,11 @@ async def open_sources(tab: KitchenTab) -> None:
                         ui.label("prefer, wherever it feeds a tomogram").classes(HINT_CLS)
                         for m in data["members"]:
                             house_button(f"{m['project']} · {m['label']} ({m['n']})", lambda _e, k=m["key"]: prefer(k))
-                        ui.checkbox(
+                        house_check(
                             "only the undecided",
                             value=ui_st["unresolved"],
                             on_change=lambda e: show_unresolved(e.value),
-                        ).props("dense size=xs").style(_CELL)
+                        ).style(_CELL)
             tree_box.clear()
             with tree_box:
                 for p in data["projects"]:
@@ -107,9 +108,9 @@ async def open_sources(tab: KitchenTab) -> None:
                             continue
                     opened = p["label"] in ui_st["open"] or ui_st["unresolved"]
                     with ui.row().classes("w-full items-center no-wrap gap-2").style(_ROW):
-                        ui.checkbox(
+                        house_check(
                             value=not p["out"], on_change=lambda e, lab=p["label"]: project_in(lab, e.value)
-                        ).props("dense size=xs")
+                        )
                         caret = ui.label("▾" if opened else "▸").style(_CARET)
                         caret.on("click", lambda _e, lab=p["label"]: toggle(lab))
                         name = ui.label(p["label"]).style("font-size: 11px; font-weight: 600; color: #1e293b;")
@@ -121,9 +122,7 @@ async def open_sources(tab: KitchenTab) -> None:
                         continue
                     for f in frames:
                         with ui.row().classes("w-full items-center no-wrap gap-2").style(f"{_ROW}padding-left: 22px;"):
-                            ui.checkbox(value=not f["out"], on_change=lambda e, k=f["key"]: frame_in(k, e.value)).props(
-                                "dense size=xs"
-                            )
+                            house_check(value=not f["out"], on_change=lambda e, k=f["key"]: frame_in(k, e.value))
                             ui.label(f["tomo"]).style(_CELL).classes("truncate").style("width: 230px;").tooltip(
                                 f["key"]
                             )
@@ -300,9 +299,9 @@ async def open_add_sources(tab: KitchenTab, *, on_added) -> None:
                                 if key in in_pool:
                                     ui.label("in the pool").classes(HINT_CLS).style("width: 70px;")
                                 else:
-                                    ui.checkbox(
+                                    house_check(
                                         value=key in r["ticked"], on_change=lambda e, r=r, k=key: tick(r, k, e.value)
-                                    ).props("dense size=xs")
+                                    )
                                 ui.label(o.label).style(_CELL)
                                 ui.label(_counts(o)).style(_MONO)
             if footer_count["label"] is not None:

@@ -23,7 +23,7 @@ from services.protocols.apply import apply_protocol
 from services.protocols.discovery import ProtocolInfo, list_protocols
 from services.protocols.schema import Protocol
 from ui.components.buttons import house_button
-from ui.components.copyable import copyable_path
+from ui.components.path_text import path_text
 from ui.components.dialogs import dialog_host
 from ui.components.fields import house_number, house_text
 from ui.components.reactive import SingleFlight
@@ -111,7 +111,7 @@ def _open_protocol_detail(info: ProtocolInfo) -> None:
                 ui.label(f"version {p.version}").style(VAL + " color: #94a3b8;")
             if p.description:
                 ui.label(p.description).style(TEXT)
-            copyable_path(str(info.bundle_dir), font_size="9px", color="#94a3b8")
+            path_text(info.bundle_dir)
         with ui.scroll_area().classes("w-full cb-scroll-tight").style("height: 70vh;"):
             with ui.column().classes("w-full gap-0").style("padding: 2px 16px 14px;"):
                 for sp in p.species:
