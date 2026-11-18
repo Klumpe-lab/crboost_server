@@ -174,7 +174,14 @@ project with a superseded attempt names it.
 
 - **D1 — existing projects.** The code is the same for old and new projects and only adds or removes its own
   symlinks (§5), so repairing them is as safe as S1 itself; what is open is when. As built in S1, a project gets its
-  links at its next Run or delete. Running
+  links at its next Run or delete.
+  **Done once by hand 2026-11-18:** a create-only pass (`~/.crboost/job_links_repair/repair.py`, outside the repo)
+  read every project in `/groups/klumpe/crboost_data` and `/groups/klumpe/_crboost_data_api` with
+  `ProjectState.load(read_only=True)` and made 350 links in 32 projects, none replaced, none failed; each is in
+  `manifest.jsonl` beside it. `repair.py undo` removes exactly those still pointing where they were made (tried on a
+  scratch copy). Skipped: `FilamentTracing1_SV_0326` (schema 0.0: reading it would migrate it). The servers running
+  older code do not keep these links: a job that moves to a new folder under one of them leaves its old link until
+  a server with S1 syncs the project. Running
   `sync_job_links` when a project is opened would give every old project links at once, but a read would then
   write into other users' projects, and the API reads any project. Default: no, links come with the next Run
   (memory `feedback_fresh_projects_not_backfills`). Say if open should do it for projects the user can write.
