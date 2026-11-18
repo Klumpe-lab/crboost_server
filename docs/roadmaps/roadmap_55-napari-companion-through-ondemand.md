@@ -219,8 +219,30 @@ It holds one project at a time:
   switch and came back, and the second project's folder held only its own tomogram.
 - A real session on cbe-g5-2 (job 1764453) on v2 through the service: the AGG412 rerun tomogram opened, with
   outputs in that project's `Curation/napari/`.
-- 3-D in software rendering fails on a 1024×1024×512 volume (a 2 GB texture). His viewer has no binned levels,
-  so 3-D needs *Start on a full GPU*. A fix is his to make, not a patch of ours.
+- *Show this tomogram* looked broken at first (the maintainer, 2026-11-17). The switch did happen, but:
+  - napari 0.10 left his viewer at slice 41 of 511, near the top, where tomograms look alike: his viewer sets the
+    pixel size after adding the layer.
+  - It took ~20 s on 4 CPUs with the FFT cache on, in a frozen window.
+  The launcher now centres the slice and fits the view after each load, and puts "Opening …" in the title first.
+  `napari.software.cpus` is 8. The switch takes 5–9 s, checked by screenshot on job 1765969.
+- 3-D in software rendering failed on a 1024×1024×512 volume (a 2 GB texture), and crboost's picks and
+  segmentations did not reach his viewer. Both built 2026-11-18 in a clone of his repo, for him to take
+  (a clone in the maintainer's home, uncommitted; conf `napari.companion` names it until he has them):
+  - `view3d.py`: while the canvas is in 3-D, every visible image layer over 64 M voxels draws as a binned copy
+    (density by mean, at most 64 M voxels; segmentations by max, at most 16 M), binned in parallel and cached.
+    Density draws as an attenuated MIP in inverted grey. Switching to 3-D took 5.2 s on a software session
+    (1.0 s cached), with no GL error.
+  - `crboost_bundle.py`: a bundle (JSON) of a tomogram's picks and segmentations, drawn with that tomogram and
+    never saved into his STARs. Picks draw in 2-D as sections of spheres of the species' diameter
+    (`projection_mode="rescale_spherical"`, with the Z slice thickness widened to the largest box).
+    `out_of_slice_display` does nothing on napari 0.10 at a 1-voxel thickness, his own layers included.
+  - crboost writes the bundle per request (`services/visualization/napari_bundle.py`): every species'
+    candidate-extract candidates, its workbench pick lists, and the registry's segmentations on the volume's
+    reconstruction, in the opened volume's voxels. What it leaves out is listed in `notes`. The launcher hands
+    it over afresh on every *Show this tomogram*.
+  - Checked by screenshot (jobs 1775702, 1775726, MyrGFP Position_10 and Position_1): the 412 candidates fall on
+    the vesicles and the ribosome candidates in the cytoplasm, and the switch swaps the bundle.
+  - Not in the bundle yet: kept/filtered subsets, kitchen sets, `.coords`-only lists.
 
 *Owed.*
 - R5: pick in a browser tab, Save, reopen from the chip.

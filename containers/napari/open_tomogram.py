@@ -30,7 +30,10 @@ time. Before it opens another tomogram, what it holds is saved (comments CSV, ev
 STARs then read back from the folder are what was on screen; moving to another project saves into the old
 folder, forgets the old project's tomograms, and points the controls at the new one. A request without
 ``outputs`` (a volume outside every project) leaves the folders where the viewer started (the user's home) and
-says so. That viewer loads the whole volume, so 3-D needs a GPU that takes it as one texture.
+says so. That viewer draws 3-D from binned copies of its volumes (its view3d.py), so 3-D works on software
+rendering too. A request may name ``bundle``, a JSON file crboost wrote beside the request with the tomogram's picks
+and segmentations (services/visualization/napari_bundle.py); the viewer shows it with the tomogram (its
+crboost_bundle.py), afresh on every request, so asking again for the same tomogram picks up new results.
 """
 
 from __future__ import annotations
@@ -49,6 +52,7 @@ import napari
 import numpy as np
 from napari.utils.notifications import show_error, show_warning
 from qtpy.QtCore import QTimer
+from qtpy.QtWidgets import QApplication
 
 logger = logging.getLogger("open_tomogram")
 
@@ -297,15 +301,44 @@ class CompanionSession(Session):
         c.comment_controls.save_comments.value = str(c.default_comments_csv)
         self.outputs = outputs
 
+    def _centre(self) -> None:
+        """The middle slice, the whole volume in view. The viewer sets the pixel size after it adds a layer, which
+        napari 0.10 leaves at the raw midpoint read in Å: slice 41 of 511, near the top, where tomograms look
+        alike."""
+        layer = self.controller.filtered_layer or self.controller.source_layer
+        if layer is None or layer.data.ndim != 3:
+            return
+        z_mid = layer.data.shape[0] // 2
+        self.viewer.dims.ndisplay = 2
+        self.viewer.dims.set_point(0, layer.data_to_world((z_mid, 0, 0))[0])
+        self.viewer.reset_view()
+
     def _forget(self, path: Path) -> None:
         """Drop `path` from the viewer's file list, comments and picks, so no later save writes it elsewhere."""
         c = self.controller
         if path in c.loaded_paths:
             c.loaded_paths.remove(path)
         c.comments.pop(path, None)
+        c.bundle.forget(path)
         for per_path in c.particle_coordinates.values():
             per_path.pop(path, None)
         c._refresh_selected_file_choices()
+
+    def _bundle(self, raw: str | None, path: Path) -> dict | None:
+        """Show the request's bundle with `path`'s tomogram: what it drew and what crboost left out, or None when the
+        request has none. A bundle that cannot be read leaves the tomogram open and says why."""
+        if not raw:
+            return None
+        try:
+            bundle = self.controller.load_bundle(Path(raw))
+        except (OSError, ValueError) as e:
+            logger.exception("bundle %s not shown", raw)
+            show_warning(f"crboost's picks and segmentations are not shown: {e}")
+            return {"error": f"{type(e).__name__}: {e}"}
+        if Path(bundle["tomogram"]).resolve() != path:
+            # A later request rewrote bundle.json before this one was read: that request follows within a second.
+            return {"error": f"the bundle is {bundle['tomogram']}'s"}
+        return {**self.controller.bundle.summary(), "notes": bundle.get("notes") or []}
 
     def apply(self, request: dict, seq: int) -> None:
         self.seq = seq
@@ -316,6 +349,8 @@ class CompanionSession(Session):
         outputs = Path(raw) if raw else None
         error = None
         opened = []
+        bundle = None
+        loaded = False
         try:
             if not specs:
                 raise ValueError("the request names no volume")
@@ -329,13 +364,21 @@ class CompanionSession(Session):
                     self._save()
                 for spec in specs:
                     c.register_path(Path(str(spec.get("path") or "")))
+                # The load reads the whole volume and its FFT on the Qt thread (~20 s on 4 CPUs) and the window
+                # freezes meanwhile: say what it is doing before it does.
+                self.viewer.title = f"Opening {title or path.stem}…"
+                QApplication.processEvents()
                 c.load_mrc(path)
+                loaded = True
                 if new_project and previous is not None and previous != path:
                     self._forget(previous)
                 if c.default_comments_csv.is_file():
                     c.load_comments_csv(c.default_comments_csv)
                 if c.default_star_dir.is_dir():
                     c.load_particle_stars_from_dir(c.default_star_dir)
+            bundle = self._bundle(request.get("bundle"), path)
+            if loaded:
+                self._centre()
             data = c.original_data
             voxel = float(c.voxel_size_angstrom)
             opened.append(
@@ -367,6 +410,7 @@ class CompanionSession(Session):
                     "renderer": self.renderer,
                     "viewer": "companion",
                     "outputs": str(outputs) if outputs else None,
+                    "bundle": bundle,
                 },
             )
 
