@@ -2368,7 +2368,10 @@ def _render_list_extras(sp: dict, lst: dict | None, project_path: Path, refresh)
     if copy_path:
         icon_button("content_copy", tooltip=copy_path).on(
             "click.stop",
-            lambda e, v=copy_path: (ui.clipboard.write(v), ui.notify("Copied path", type="positive", timeout=800)),
+            lambda e, v=copy_path: (
+                ui.clipboard.write(v),
+                ui.notify(v, type="positive", classes="cb-toast-copied", timeout=1600),
+            ),
         )
     if slug != "auto":
         label = lst.get("label") or slug
@@ -2554,7 +2557,10 @@ def _cmd_row(label: str, value: str, *, status: tuple[str, str, str] | None = No
             icon.tooltip(icon_tip)
         icon_button(
             "content_copy",
-            lambda: (ui.clipboard.write(cmd.value), ui.notify("Copied", type="positive", timeout=800)),
+            lambda: (
+                ui.clipboard.write(cmd.value),
+                ui.notify(cmd.value, type="positive", classes="cb-toast-copied", timeout=1600),
+            ),
             tooltip="Copy to clipboard",
         ).classes("cb-tb-btn")
     return {"cmd_input": cmd, "status_icon": icon}

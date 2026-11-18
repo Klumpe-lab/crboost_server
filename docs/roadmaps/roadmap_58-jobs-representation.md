@@ -84,7 +84,10 @@ board": the branch map's free cards with sockets and cables are what is replaced
 
 ## 3. Decisions (the maintainer's, 2026-11-18)
 
-- (a) Roster: **A2 Rail** ("amazingly close to what I envisaged").
+- (a) Roster: **A2 Rail** ("amazingly close to what I envisaged"), with two changes asked for when it was taken:
+  thin headers back to set Preprocessing apart from Particles, and one hairline under each type that runs across
+  the rail and the rows alike (the prototype ruled the rows only, so the rail's tint showed under a type's last
+  row; A3 Grid had it right).
 - (b) The count opens the magazine; the name keeps opening the job page (the interactions were approved as shown).
 - (c) Magazine: **B3 Tiles**, the marks squarer (20 x 17 px, 2 px apart, `Pos·Beam` in 7 px mono) and a muted
   green for done (`#5a9c80` instead of the status green). The other marks stay: amber = waiting in the queue, blue
@@ -94,7 +97,7 @@ board": the branch map's free cards with sockets and cables are what is replaced
 - (e) Glyphs: **drawn**.
 - (f) Toasts: the first round (stamp, ledger, stripe, ink tag) was turned down ("some of them I can't even read").
   Second round on the page: T0 copied-in-place for copies, and T1 card / T2 line / T3 status bar for everything
-  else, all dark ink on light, in the popup card's and the title stripe's chrome. **Open.**
+  else, all dark ink on light, in the popup card's and the title stripe's chrome. **T1 Card** taken (2026-11-18).
 
 ### Why some toasts were unreadable (and why today's look as they do)
 
@@ -109,19 +112,29 @@ and NiceGUI declares `@layer theme, base, quasar, …, quasar_importants`, so th
 `@layer theme { … }` (as in `ui/jobs_ideas/look.py`). Every other `!important` override of a Quasar colour class
 in `ui/dashboard/css.py` has the same problem and needs checking in S5.
 
-## 4. Stages, once decided (each built in the app, then checked once at the end)
+## 4. Built (2026-11-18), checked once in a browser on the AGG412 rerun
 
-- S1 The glyphs and the job-type description move onto `JobSpec` (`services/jobs/spec.py`), and `DESCRIPTION` in
-  `ui/jobs_ideas/data.py` goes away.
-- S2 The roster (`ui/pipeline_builder/pipeline_roster.py` `render` / `_render_instance_row`): the gutter as chosen.
-  Removed: the multi-instance header, the clone icon, the chevron and `_render_ts_sub_rows`,
-  `_expanded_instances`, and the `_array_ts_cache` work in `signature()`. The tilt filter's settings, which
-  hang under its row today, need a new home (its job page, or its own popup). The signature keeps the counts.
-- S3 The magazine popup as a component (`ui/components/magazine.py`): it reads `array_status_cache`, reads the task
-  log off the loop (`asyncio.to_thread`), and the task card's buttons go through `panel.switch_to_job_subsection`
-  and `callbacks["select_ts"]`. It closes on any roster rebuild that removes its job.
-- S4 (dropped: the branch map stays.)
-- S5 Toasts: the chosen rule in `ui/dashboard/css.py`, with its colours inside `@layer theme` (see above), replacing
-  today's `.q-notification` block; `copy_on_click` / `_write_clipboard` (`ui/components/copyable.py`) switch to T0
-  if it is chosen; the default position moves from Quasar's bottom centre.
-- S6 Delete `/dev/jobs-ideas` and `ui/jobs_ideas/`.
+- S1 `JobSpec` carries `summary` (one line on what the job does) and `glyph` (the 12 x 12 line drawing) for every
+  type (`services/jobs/spec.py`); `ui/components/job_glyph.py` draws a glyph.
+- S2 The roster (`ui/pipeline_builder/pipeline_roster.py`): a thin stripe per phase (the Particles one keeps its
+  four tools), then per type a band: the rail cell in the title-stripe tint with the type's glyph (amber, named on
+  hover, while a type it needs is missing; a `+` in its place on hover when the type can be added again), and the
+  type's jobs, or one grey template row ("+ add" on hover) that adds the first. One hairline under the band. A row:
+  light, name, job folder (copies), the particle set it reads, the species as a small tag, then the count (a click
+  opens the magazine), the extra tabs, and a × that shows on hover. Gone: the per-type header rows, the clone
+  icons, the chevrons, the per-tilt-series list under a row and the state behind it (`_expanded_instances`,
+  `_array_ts_cache`, `_render_ts_sub_rows`). The tilt filter's settings, which folded out under its row, open in a
+  card beside it from where the row says the filter is.
+- S3 `ui/components/magazine.py` `RosterPopups`: the magazine (Tiles: 20 x 17, `stage·beam` from the registry,
+  read in a thread), its facts (summary, Reads from the recorded inputs, species, folder, tasks counted), Open job /
+  Tasks / Logs; the task card (log and stderr tails read in a thread; In the Tasks tab, which focuses the task;
+  Journey). Parented at the layout slot, repainted when the task states move (3 s, the pipeline view's scope),
+  closed by Esc (the workspace's pane Esc steps aside while one is open: `.cb-mag-pop` in `_PANE_FOCUS_JS`'s busy
+  list), by a scroll outside it, by the cross, and when its job leaves the roster.
+- S5 Toasts: T1 Card for every `ui.notify` (`ui/dashboard/css.py`, colours and the list's alignment in
+  `@layer theme`), bottom right. A copy says COPIED over what was copied (`ui/components/copyable.py`, and the two
+  copy toasts in `ui/particles/pick_viewer.py`, one in `ui/species/picks_tab.py`).
+- S6 `/dev/jobs-ideas` and `ui/jobs_ideas/` removed.
+
+Left: the other `!important` overrides of Quasar colour classes in `ui/dashboard/css.py` likely lose to the
+`quasar_importants` layer the same way the toasts did; check them when they are next touched.

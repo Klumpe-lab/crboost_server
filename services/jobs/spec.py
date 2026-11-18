@@ -98,6 +98,11 @@ class JobSpec:
     # of the name, and the param field whose value follows it when the job has no species.
     dir_slug: str = ""
     dir_qualifier: str | None = None
+    # One line on what the job does: the magazine popup's header.
+    summary: str = ""
+    # The type's glyph on the roster's rail: the body of a 12 x 12 SVG drawn in one 1.1 px line in currentColor
+    # (ui/components/job_glyph.py draws it).
+    glyph: str = ""
 
 
 JOB_SPECS: Final[tuple[JobSpec, ...]] = (
@@ -108,6 +113,8 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         PHASE_PREPROCESSING,
         driver=None,  # native relion_python_tomo_import command, built inline
         dir_slug="import",
+        summary="Reads the raw movies and their .mdoc files into the project.",
+        glyph='<path d="M6 1.5v6M3.6 5.2 6 7.6l2.4-2.4M1.5 8.2v2.3h9V8.2"/>',
     ),
     JobSpec(
         JobType.FS_MOTION_CTF,
@@ -119,6 +126,8 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         plugins=("fs_motion_and_ctf", "array_tasks"),
         array_output_star="fs_motion_and_ctf.star",
         dir_slug="motion_ctf",
+        summary="Aligns each movie's frames and fits a CTF per tilt (WarpTools fs_motion_and_ctf).",
+        glyph=('<rect x="1.5" y="4" width="6.5" height="6.5"/><path d="M3.5 4V2h6.5v6.5H8"/>'),
     ),
     JobSpec(
         JobType.TS_IMPORT,
@@ -127,6 +136,8 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         None,  # silently-injected prerequisite; never in the roster
         driver="ts_import.py",
         dir_slug="ts_import",
+        summary="Groups the motion-corrected tilts into tilt series and writes Warp's settings.",
+        glyph='<path d="M6 1.5v6M3.6 5.2 6 7.6l2.4-2.4M1.5 8.2v2.3h9V8.2"/>',
     ),
     # Optional insertable filter: runs after tsImport (its tomostar prerequisite
     # is auto-added) and reads the fs-motion star for the DL pass. Gated
@@ -142,6 +153,8 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         driver="tilt_filter.py",
         plugins=("tilt_filter",),
         dir_slug="tilt_filter",
+        summary="Scores every tilt and takes the bad ones (beam-blocked, drifted, empty) out of the series.",
+        glyph='<path d="M1.5 2h9L7 6.4v3.4l-2 .9V6.4z"/>',
     ),
     JobSpec(
         JobType.TS_ALIGNMENT,
@@ -155,6 +168,8 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         array_output_star="aligned_tilt_series.star",
         dir_slug="alignment",
         dir_qualifier="alignment_method",
+        summary="Finds each tilt series' geometry: shifts, the tilt axis, the tilt angles.",
+        glyph='<path d="M6 10.5 2 2.8M6 10.5V1.5M6 10.5l4-7.7M3.2 8.6a3.6 3.6 0 0 1 5.6 0"/>',
     ),
     # Optional insertable refinement: requires alignment, but tsCtf does NOT
     # require it (tsCtf stays gated on TS_ALIGNMENT so the common no-missAlign
@@ -171,6 +186,8 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         items_from="input_star",
         log_format="miss_align",
         dir_slug="missalign",
+        summary="Refines an alignment with the learned miss-alignment model.",
+        glyph=('<path d="M6 10.5 2.2 3M6 10.5 9.8 3"/><circle cx="6" cy="3.6" r="1.4"/>'),
     ),
     JobSpec(
         JobType.TS_CTF,
@@ -183,6 +200,12 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         array_output_star="ts_ctf_tilt_series.star",
         items_from="input_star",
         dir_slug="ctf",
+        summary="Fits the defocus per tilt series, with the tilts' hand and geometry.",
+        glyph=(
+            '<circle cx="6" cy="6" r="4.6"/>'
+            '<circle cx="6" cy="6" r="2.6"/>'
+            '<circle cx="6" cy="6" r=".7" fill="currentColor"/>'
+        ),
     ),
     JobSpec(
         JobType.TS_RECONSTRUCT,
@@ -195,6 +218,8 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         array_output_star="tomograms.star",
         items_from="input_star",
         dir_slug="reconstruct",
+        summary="Back-projects each tilt series into a tomogram at the chosen pixel size.",
+        glyph='<path d="M6 1.5 10.5 4v4.8L6 11.3 1.5 8.8V4zM1.5 4 6 6.5 10.5 4M6 6.5v4.8"/>',
     ),
     JobSpec(
         JobType.DENOISE_TRAIN,
@@ -207,6 +232,13 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         log_format="denoise",
         dir_slug="denoise_train",
         dir_qualifier="denoise_method",
+        summary="Trains a denoising model on the tomograms' even/odd halves.",
+        glyph=(
+            '<circle cx="2.6" cy="3" r="1.1"/>'
+            '<circle cx="2.6" cy="9" r="1.1"/>'
+            '<circle cx="9.4" cy="6" r="1.1"/>'
+            '<path d="M3.6 3.5 8.4 5.6M3.6 8.5l4.8-2.1M2.6 4.1v3.8"/>'
+        ),
     ),
     JobSpec(
         JobType.DENOISE_PREDICT,
@@ -221,6 +253,8 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         items_from="input_star",
         dir_slug="denoise_predict",
         dir_qualifier="denoise_method",
+        summary="Denoises every tomogram with a trained model, or with a pretrained one.",
+        glyph='<path d="M1.8 10.2 7.4 4.6M8.6 1.4v2.2M7.5 2.5h2.2M10 5.2v1.4M9.3 5.9h1.4"/>',
     ),
     JobSpec(
         JobType.SEGMENT,
@@ -233,6 +267,11 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         items_from="input_tomograms",
         dir_slug="segment",
         dir_qualifier="method",
+        summary="Segments each tomogram into membranes, filaments and other features.",
+        glyph=(
+            '<path d="M2 6.2C2 3.4 4 1.8 6.4 2.2c2.6.4 3.8 2.4 3.4 4.6-.4 2.2-2.4 3.4-4.6 3.2C3.2 9.8 2 8.4 2 6.2z"/>'
+            '<path d="M4 8.6 8.2 4.4M3.2 6.2l3-3M6.2 9.4l3-3"/>'
+        ),
     ),
     # Made from the tab of the job whose output it cuts, never from the roster; written at submit.
     JobSpec(
@@ -244,6 +283,8 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         plugins=("subset",),
         roster_add=False,
         dir_slug="subset",
+        summary="A cut of another job's tilt series, picked by hand or by a rule.",
+        glyph='<path d="M1.5 2.5h9M1.5 5h9M1.5 7.5h5M1.5 10h2.5"/>',
     ),
     JobSpec(
         JobType.TEMPLATE_MATCH_PYTOM,
@@ -255,6 +296,8 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         plugins=("template_match", "array_tasks"),
         items_from="input_tomograms",
         dir_slug="tm",
+        summary="Scores every orientation of a template at every voxel (PyTOM), one tomogram per GPU.",
+        glyph=('<circle cx="6" cy="6" r="3.6"/><path d="M6 .8v2.6M6 8.6v2.6M.8 6h2.6M8.6 6h2.6"/>'),
     ),
     JobSpec(
         JobType.TEMPLATE_EXTRACT_PYTOM,
@@ -265,6 +308,14 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         driver="extract_candidates_pytom.py",
         plugins=("candidate_extract", "array_tasks"),
         dir_slug="pick",
+        summary="Picks candidates from the score maps: peaks above a threshold, a particle apart.",
+        glyph=(
+            '<circle cx="3" cy="3.2" r=".9" fill="currentColor"/>'
+            '<circle cx="8.8" cy="2.8" r=".9" fill="currentColor"/>'
+            '<circle cx="2.8" cy="9" r=".9" fill="currentColor"/>'
+            '<circle cx="8.2" cy="8.4" r="2.2"/>'
+            '<circle cx="8.2" cy="8.4" r=".7" fill="currentColor"/>'
+        ),
     ),
     # Picks from a Segment job's volumes instead of template-matching scores: one CPU job, no array.
     JobSpec(
@@ -275,6 +326,13 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         dependencies=(JobType.SEGMENT,),
         driver="filament_pick.py",
         dir_slug="filament_pick",
+        summary="Places points along the filaments of one segmented feature.",
+        glyph=(
+            '<path d="M1.5 9.5C4 9.5 4 2.5 6.5 2.5s2.4 4 4 4"/>'
+            '<circle cx="3.6" cy="7.4" r=".8" fill="currentColor"/>'
+            '<circle cx="6.5" cy="2.5" r=".8" fill="currentColor"/>'
+            '<circle cx="9.2" cy="5.6" r=".8" fill="currentColor"/>'
+        ),
     ),
     JobSpec(
         JobType.SUBTOMO_EXTRACTION,
@@ -285,6 +343,13 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         driver="subtomo_extraction.py",
         plugins=("subtomo_extraction",),
         dir_slug="extract",
+        summary="Cuts the particles out of the tomograms (RELION).",
+        glyph=(
+            '<rect x="1.5" y="1.5" width="3.8" height="3.8"/>'
+            '<rect x="6.7" y="1.5" width="3.8" height="3.8"/>'
+            '<rect x="1.5" y="6.7" width="3.8" height="3.8"/>'
+            '<rect x="6.7" y="6.7" width="3.8" height="3.8"/>'
+        ),
     ),
     # Alternative producer of the particle optimisation set: WarpTools cuts the 2D particle
     # series with the full Warp model (local image warps included), which RELION extraction
@@ -298,6 +363,8 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         driver="warp_export.py",
         plugins=("warp_export", "array_tasks"),
         dir_slug="warp_export",
+        summary="Exports the particles as 2-D stacks per tilt (WarpTools ts_export_particles).",
+        glyph='<path d="M6.5 2H2v8.5h8.5V6M7.5 1.5h3v3M10.5 1.5 5.8 6.2"/>',
     ),
     # Per-pick-list extraction. phase=None: this is NOT a roster job --
     # one instance exists per pick list and its home is the Species page's Picks tab,
@@ -311,6 +378,13 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         None,
         driver="extract_pick_list.py",
         dir_slug="pick_list",
+        summary="Cuts the particles of one pick list out of the tomograms.",
+        glyph=(
+            '<rect x="1.5" y="1.5" width="3.8" height="3.8"/>'
+            '<rect x="6.7" y="1.5" width="3.8" height="3.8"/>'
+            '<rect x="1.5" y="6.7" width="3.8" height="3.8"/>'
+            '<rect x="6.7" y="6.7" width="3.8" height="3.8"/>'
+        ),
     ),
     JobSpec(
         JobType.RECONSTRUCT_PARTICLE,
@@ -322,6 +396,8 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         plugins=("particle_results",),
         log_format="reconstruct",
         dir_slug="recon_particle",
+        summary="Averages the extracted particles into a first map.",
+        glyph=('<circle cx="6" cy="6" r="4.6"/><ellipse cx="6" cy="6" rx="4.6" ry="1.7"/>'),
     ),
     JobSpec(
         JobType.CLASS3D,
@@ -333,6 +409,10 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         plugins=("particle_results",),
         log_format="relion",
         dir_slug="class3d",
+        summary="Sorts the particles into classes by 3-D classification.",
+        glyph=(
+            '<circle cx="6" cy="2.9" r="1.6"/><circle cx="2.9" cy="8.5" r="1.6"/><circle cx="9.1" cy="8.5" r="1.6"/>'
+        ),
     ),
     JobSpec(
         JobType.REFINE3D,
@@ -343,6 +423,8 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         driver="refine3d.py",
         log_format="relion",
         dir_slug="refine3d",
+        summary="Gold-standard refinement of one class against two random halves.",
+        glyph=('<circle cx="6" cy="6" r="4.6"/><circle cx="6" cy="6" r="2" fill="currentColor"/>'),
     ),
     # A solvent mask from any map a particle job made (a refinement's, a reconstruction's, a sharpened one), for
     # PostProcess, and for Class 3D and Refine 3D with mask_from_job set.
@@ -354,6 +436,8 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         dependencies=(JobType.RECONSTRUCT_PARTICLE,),
         driver="mask_create.py",
         dir_slug="mask",
+        summary="A soft solvent mask from a map.",
+        glyph=('<circle cx="6" cy="6" r="4.6" stroke-dasharray="1.6 1.3"/><circle cx="6" cy="6" r="2.4"/>'),
     ),
     JobSpec(
         JobType.POSTPROCESS,
@@ -363,6 +447,8 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         dependencies=(JobType.REFINE3D,),
         driver="postprocess.py",
         dir_slug="postprocess",
+        summary="Gold-standard FSC and the sharpened map from a refinement's halves.",
+        glyph='<path d="M1.5 1.5v9h9M2.6 2.8c2.6 0 2.8 6 7.4 6.6"/>',
     ),
 )
 

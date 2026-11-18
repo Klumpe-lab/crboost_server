@@ -150,12 +150,14 @@ _VIEW_RESIZER_JS = """
 # (_focus_pane): a view turned on takes it, and when the pane holding it goes, the pane of the view
 # turned on last before it does (window.cbPaneKeep). The keydown listener captures on the window, so it
 # runs before the Escapes that dismiss something smaller (the slab lightbox, a pinned tilt popover, a
-# pick selection on screen) and leaves the key to them, as it does to an open dialog or menu.
+# pick selection on screen, the roster's magazine and settings cards) and leaves the key to them, as it
+# does to an open dialog or menu.
 _PANE_FOCUS_JS = """
 (function(){
   if (window.__cbPaneFocus) return;
   window.__cbPaneFocus = true;
-  const busy = '.q-dialog, .q-menu, .cb-slab-lightbox, .cb-tp-popover[data-pinned], .cb-gallery-tile.selected';
+  const busy = '.q-dialog, .q-menu, .cb-slab-lightbox, .cb-tp-popover[data-pinned], .cb-gallery-tile.selected, '
+    + '.cb-mag-pop';
   const paneOf = (name) => document.getElementById(name === 'roster' ? 'cb-roster-panel' : 'cb-view-' + name);
   const nameOf = (el) => el.id === 'cb-roster-panel' ? 'roster' : el.id.slice('cb-view-'.length);
   const focused = () => document.querySelector('[data-cb-focus]');

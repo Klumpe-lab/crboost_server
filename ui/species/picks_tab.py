@@ -861,7 +861,12 @@ class PicksTab:
 
     def copy(self, path: str) -> None:
         ui.clipboard.write(path)
-        ui.notify("Copied the save folder — paste it into ArtiaX's save dialog", type="positive", timeout=1500)
+        ui.notify(
+            "The save folder — paste it into ArtiaX's save dialog",
+            type="positive",
+            classes="cb-toast-copied",
+            timeout=1600,
+        )
 
     def copy_file(self, path: str) -> None:
         ui.clipboard.write(path)
