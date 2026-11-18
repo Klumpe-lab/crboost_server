@@ -90,6 +90,117 @@ class KitchenSubsetIn(SpeciesIn):
     subset: str = Field(description="The subset, by its id or name (list_kitchen_subsets lists them)")
 
 
+# ── The kitchen: recipes, sources, subsets, sets ──
+
+
+class KitchenRangeIn(_In):
+    kind: Literal["range"] = "range"
+    col: str = Field(description="A number column (get_kitchen's number_columns), e.g. sigma")
+    lo: float | None = Field(None, description="Keeps values ≥ lo; no lower bound when omitted")
+    hi: float | None = Field(None, description="Keeps values ≤ hi; no upper bound when omitted")
+    keep_missing: bool = Field(True, description="A pick with no value passes")
+
+
+class KitchenCategoryIn(_In):
+    kind: Literal["category"] = "category"
+    col: str = Field(description="A category column (get_kitchen's category_columns), e.g. project")
+    allowed: list[str] = Field(description="The values kept, as get_kitchen lists them")
+
+
+class KitchenSetFilterIn(_In):
+    kind: Literal["set"] = "set"
+    set_id: str = Field(description="A particle set of the home project, e.g. s003_ribosome")
+    mode: Literal["in", "out"] = Field("in", description="in: only its picks; out: none of them")
+
+
+class KitchenTomogramsIn(_In):
+    kind: Literal["tomograms"] = "tomograms"
+    excluded: list[str] = Field(description="Reconstructions (frame keys) whose picks fail")
+
+
+KitchenFilterIn = Annotated[
+    KitchenRangeIn | KitchenCategoryIn | KitchenSetFilterIn | KitchenTomogramsIn, Field(discriminator="kind")
+]
+
+
+class _Recipe(_In):
+    """Which picks: the filters (all must pass), then per tomogram the post-ops, then the hand verdicts and the
+    kitchen's source choices, as the kitchen's filter strip reads them. The user's own strip is not changed."""
+
+    filters: list[KitchenFilterIn] = Field(default_factory=list, description="Every one must pass; none: every pick")
+    min_distance_a: float | None = Field(None, gt=0, description="No two picks closer than this (Å), the better σ kept")
+    top_n_per_tomogram: int | None = Field(None, ge=1, description="At most this many per tomogram, best σ first")
+    in_subsets: list[str] = Field(default_factory=list, description="Only picks in at least one of these subsets")
+    not_in_subsets: list[str] = Field(default_factory=list, description="No pick of these subsets")
+
+
+class GetKitchenIn(SpeciesIn, _Recipe):
+    pass
+
+
+class KitchenSourcesIn(SpeciesIn):
+    projects: list[str] | None = Field(
+        None,
+        description="The projects to look in (paths or folder names); omitted: this one, the projects under the "
+        "user's recent project roots, and those the pool already reads, as Add sources lists them",
+    )
+
+
+class KitchenSourceIn(_In):
+    project: str = Field(description="The project the picks are in: its absolute path")
+    job: str = Field(description="Its template-match picks (a Pick candidates job's instance id) or a pick list")
+    species: str | None = Field(
+        None, description="The species there; omitted: the one from the same lab-catalog entry (never by name)"
+    )
+
+
+class AddKitchenSourcesIn(SpeciesIn):
+    sources: list[KitchenSourceIn] = Field(min_length=1, description="list_kitchen_sources lists them")
+
+
+class RemoveKitchenSourceIn(SpeciesIn):
+    source: str = Field(description="The source, by its key or as <project folder>:<job> (get_kitchen lists them)")
+
+
+class CreateKitchenSubsetIn(SpeciesIn, _Recipe):
+    name: str = Field(description="The new subset's name, unique in this kitchen")
+    group: str | None = Field(
+        None, description="A group (by name or id): its subsets never share a pick, so adding moves picks into it"
+    )
+
+
+class EditKitchenSubsetIn(SpeciesIn):
+    subset: str = Field(description="The subset, by its id or name")
+    name: str | None = Field(None, description="A new name")
+    group: str | None = Field(None, description="Move it into this group (refused when it shares picks there)")
+    ungroup: bool = Field(False, description="Take it out of its group")
+
+
+class KitchenGroupIn(SpeciesIn):
+    group: str = Field(description="The group, by its id or name")
+
+
+class CreateKitchenGroupIn(SpeciesIn):
+    name: str = Field(description="The new group's name, unique in this kitchen")
+
+
+class RenameKitchenGroupIn(KitchenGroupIn):
+    name: str = Field(description="Its new name")
+
+
+class MakeKitchenSetIn(SpeciesIn, _Recipe):
+    name: str | None = Field(
+        None, description="The set's name; omitted: the subset's name. Ignored with group (each set takes its subset's)"
+    )
+    subset: str | None = Field(None, description="Narrow the recipe to this subset, as a subset's Make set does")
+    group: str | None = Field(None, description="A set of each subset of this group, the recipe narrowed to each")
+
+
+class MakeClassSetIn(JobIn):
+    classes: list[int] = Field(min_length=1, description="The Class 3D's classes whose particles the set holds")
+    name: str = Field(description="The set's name")
+
+
 class TaskIn(_In):
     task_id: str = Field(description="The id a verb that runs in the background returned")
 
