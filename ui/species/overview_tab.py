@@ -1,7 +1,7 @@
 """The Species tab: what defines a species, in the job page's field geometry, then its status
 and its two actions.
 
-Species: name, overlay colour, diameter, symmetry, notes, and one line naming the template
+Species: name, overlay colour, glyph, diameter, symmetry, notes, and one line naming the template
 and mask template matching uses (changed on Templates & masks). Extraction geometry: box,
 binning and crop, empty until set. Status: one sentence. Then `[Delete species] [Publish
 to catalog]`.
@@ -30,7 +30,14 @@ from nicegui import ui
 from services.aggregation.extraction import extraction_params_for_species
 from services.jobs._base import SymmetryGroup
 from services.jobs.subtomo_extraction import SubtomoExtractionParams
-from services.models_base import SpeciesOrigin
+from services.models_base import (
+    DEFAULT_GLYPH_HUE,
+    DEFAULT_SPECIES_GLYPH,
+    SPECIES_GLYPH_HUES,
+    SPECIES_GLYPHS,
+    SpeciesOrigin,
+    species_glyph,
+)
 from services.particles.catalog import is_enabled as catalog_is_enabled
 from services.particles.species_overview import SpeciesOverview, species_overview
 from services.project_state import ParticleSpecies, TemplateMask, get_project_state_for
@@ -40,6 +47,7 @@ from ui.components.buttons import house_button
 from ui.components.color_swatch import render_color_swatch
 from ui.components.path_text import path_text
 from ui.components.reactive import FingerprintedView, SingleFlight
+from ui.components.species_pill import species_glyph_svg
 from ui.job_plugins._field_styles import (
     FIELD_LABEL_STYLE,
     FIELD_ROW_STYLE,
@@ -53,6 +61,7 @@ from ui.job_plugins._field_styles import (
     box_select,
     field_grid,
     section,
+    voice,
 )
 from ui.particles.list_actions import commit_extraction_geometry
 from ui.species.catalog import publish_to_catalog
@@ -69,6 +78,7 @@ _BODY = "#1e293b"
 _SOFT = "#5b7089"
 _WARN_INK = "#8a4b06"
 _WORDS = f"{SANS} font-size: 10px; color: {_BODY};"
+_TH = voice("th", font="'IBM Plex Sans', sans-serif", size="9px", weight=600, ink="#7d93ab")
 
 # `C1` IS "no symmetry", and most complexes are C1 (ribosome, proteasome) — the option
 # list says so instead of leaving the user to know it. One spelling across this tab,
@@ -120,7 +130,7 @@ def _provenance(sp: ParticleSpecies) -> tuple[str, str]:
 
 
 def render_species_rows(backend, project_path: Path, species_id: str) -> None:
-    """Name · overlay colour · diameter · symmetry · notes. Each edit = `set_species` (dirty +
+    """Name · overlay colour · glyph · diameter · symmetry · notes. Each edit = `set_species` (dirty +
     rev) and a 1-s debounced save."""
     sp = get_project_state_for(project_path).get_species(species_id)
     if sp is None:
@@ -153,6 +163,16 @@ def render_species_rows(backend, project_path: Path, species_id: str) -> None:
         render_color_swatch(sp.color or "#3b82f6", lambda c: _set(color=c), tooltip="The overlay palette")
 
     with ui.element("div").style(FIELD_ROW_STYLE):
+        _label(
+            "Glyph",
+            "How this species is marked in the app's chrome: the rail, the roster, job pages, the layers. Grey unless "
+            "a hue is picked; the canvases draw the overlay colour.",
+        )
+        slot = ui.element("div").style("display: inline-flex; min-width: 0;")
+        glyph_row = _GlyphRow(slot, project_path, species_id, _set)
+        glyph_row.refresh()
+
+    with ui.element("div").style(FIELD_ROW_STYLE):
         _label("Diameter", "Ø of the particle — the default for new Pick candidates jobs")
         diam = box_input(ui.number(value=sp.diameter_ang, min=0, step=10, placeholder="not set"), S)
         diam.props("debounce=400")
@@ -183,6 +203,74 @@ def render_species_rows(backend, project_path: Path, species_id: str) -> None:
         _label("Notes")
         notes = box_input(ui.input(value=sp.notes or "", placeholder="free-form, optional"), L)
         notes.props("debounce=400").on_value_change(lambda e: _set(notes=e.value or ""))
+
+
+class _GlyphRow(FingerprintedView):
+    """The species' glyph at 14 px, its name and its hue; a click opens the picker: the glyphs in a 6-wide grid of
+    36 px tiles, the default first and the current one ringed in the accent, the hues as 14 px squares under them.
+    A pick sets it at once and closes the menu; the row draws again when the species' glyph or hue moved."""
+
+    def __init__(self, container: ui.element, project_path: Path, species_id: str, set_fields) -> None:
+        super().__init__(container)
+        self._project_path = project_path
+        self._species_id = species_id
+        self._set = set_fields
+
+    def _species(self) -> ParticleSpecies | None:
+        return get_project_state_for(self._project_path).get_species(self._species_id)
+
+    def signature(self) -> Any:
+        sp = self._species()
+        return None if sp is None else (sp.glyph, sp.glyph_hue)
+
+    def _pick(self, **fields) -> None:
+        self._set(**fields)
+        self.refresh()
+
+    def render(self) -> None:
+        sp = self._species()
+        if sp is None:
+            return
+        key, _ink = species_glyph(sp)
+        hue = sp.glyph_hue or DEFAULT_GLYPH_HUE
+        name = SPECIES_GLYPHS[key].lower() + (" (default)" if key == DEFAULT_SPECIES_GLYPH else "")
+        with ui.element("div").style(
+            "display: inline-flex; align-items: center; gap: 7px; cursor: pointer; padding: 1px 6px 1px 3px; "
+            "border: 1px solid #dbe3ec; border-radius: 2px; min-width: 0;"
+        ):
+            ui.html(species_glyph_svg(sp, 14), sanitize=False).style("display: flex; flex-shrink: 0;")
+            ui.label(name).style(f"{SANS} font-size: 10px; color: {_BODY}; white-space: nowrap;")
+            ui.label(SPECIES_GLYPH_HUES.get(hue, SPECIES_GLYPH_HUES[DEFAULT_GLYPH_HUE])[0]).style(
+                f"{MONO} font-size: 9px; color: {_SOFT}; white-space: nowrap;"
+            )
+            ui.label("▾").style("font-size: 8px; color: #94a3b8;")
+            with ui.menu().props("auto-close"):
+                self._picker(sp, key, hue)
+
+    def _picker(self, sp: ParticleSpecies, current: str, hue: str) -> None:
+        with ui.element("div").style("display: flex; flex-direction: column; gap: 8px; padding: 8px; width: 252px;"):
+            ui.label("glyph").style(_TH)
+            with ui.element("div").style("display: grid; grid-template-columns: repeat(6, 36px); gap: 4px;"):
+                for key, title in SPECIES_GLYPHS.items():
+                    on = key == current
+                    tile = ui.element("div").style(
+                        "width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; "
+                        f"cursor: pointer; background: {'#f4f8fc' if on else '#ffffff'}; box-shadow: inset 0 0 0 1px "
+                        f"{'var(--cb-accent, #4a8fd4)' if on else '#e4eaf1'};"
+                    )
+                    tile.on("click", lambda _e, k=key: self._pick(glyph=k))
+                    with tile:
+                        ui.html(species_glyph_svg(sp, 22, key=key), sanitize=False).style("display: flex;")
+                    tile.tooltip(f"{title}: the default" if key == DEFAULT_SPECIES_GLYPH else title)
+            ui.label("hue").style(_TH)
+            with ui.element("div").style("display: flex; gap: 5px; flex-wrap: wrap;"):
+                for key, (word, ink) in SPECIES_GLYPH_HUES.items():
+                    ring = "2px #ffffff, 0 0 0 3px #12324f" if key == hue else "1px rgba(15, 29, 46, 0.15)"
+                    sw = ui.element("div").style(
+                        f"width: 14px; height: 14px; background: {ink}; cursor: pointer; box-shadow: 0 0 0 {ring};"
+                    )
+                    sw.on("click", lambda _e, k=key: self._pick(glyph_hue=k))
+                    sw.tooltip(word + (" (the default)" if key == DEFAULT_GLYPH_HUE else ""))
 
 
 # ── The template-matching line (in-memory only — safe to re-render on every tick) ──

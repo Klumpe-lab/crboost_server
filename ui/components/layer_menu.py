@@ -54,6 +54,7 @@ class LayerRow(NamedTuple):
     on_color: Callable[[str], None] | None = None
     on_gallery: Callable[[], None] | None = None
     in_gallery: bool = False
+    group_glyph: str = ""  # the group's species glyph, as markup, drawn before its name
 
 
 def shape_svg(shape: str, color: str, size: int = 10) -> str:
@@ -253,7 +254,12 @@ def _kind(
                 )
                 with group_row:
                     _cell()
-                    with _cell(span=cols.n - 1):
+                    with (
+                        _cell(span=cols.n - 1),
+                        ui.element("div").style("display: flex; align-items: center; gap: 4px; min-width: 0;"),
+                    ):
+                        if r.group_glyph:
+                            ui.html(r.group_glyph, sanitize=False).style("display: flex; flex-shrink: 0;")
                         ui.label(group)
             mark = (lambda c, size=10, s=r.shape: shape_svg(s, c, size)) if shaped else swatch_svg
             _row(project_path, r, shows, mark, verb, set_shown, cols, sources=sources)

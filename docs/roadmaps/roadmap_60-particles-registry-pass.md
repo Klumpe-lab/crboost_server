@@ -421,6 +421,14 @@ Built in a worktree of its own (`crboost_server_registry`, detached at `de0ad82`
   Make subset, Per project, Where the picks sit (funnel, slab, overlap), Controls. Gone: Particle sets (D5 (a), the
   kitchen lists them; `ui/analytics/sets_panel.py` deleted with the tab's set delete), Classes and maps (each job's
   Results tab), and, since S5, the per-tomogram table. The funnel still reads the species' sets for "class-kept".
+- **S7.** `ParticleSpecies.glyph` / `.glyph_hue` ("" = the capsid / grey; the defaults are stored as "");
+  `SPECIES_GLYPHS`, `SPECIES_GLYPH_HUES` and `species_glyph()` in `services/models_base.py`; `set_species` takes and
+  checks both, and so do the API's `set_species` (null = the default) and its species rows. `render_species_mark`
+  draws `static/icons/species/<key>.svg` in the hue (`species_glyph_svg`), so the rail, the title line and a job
+  page's species line follow; `species_identity()` carries both, so they repaint. The roster's species tag has the
+  glyph before the name; the wall's Layers menu has it before the species' group name. The Species tab's Glyph
+  row (under Overlay colour) opens the picker: the ten glyphs in a 6-wide grid of 36 px tiles, the current ringed
+  in the accent, the nine hues as 14 px squares; a click sets it and closes. CLAUDE.md has the species-mark rule.
 
 ## 6. Earlier rounds
 

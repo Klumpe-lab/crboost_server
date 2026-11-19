@@ -421,6 +421,16 @@ class SetSpeciesIn(SpeciesIn):
     diameter_ang: float | None = Field(None, description="null clears it")
     symmetry: str | None = None
     notes: str | None = None
+    glyph: str | None = Field(
+        None,
+        description="The glyph the app's chrome draws the species with: capsid (the default), ribosome, enveloped, "
+        "spike, membrane, filament, tube, barrel, pore, lattice; empty or null for the default",
+    )
+    glyph_hue: str | None = Field(
+        None,
+        description="The glyph's muted hue: grey (the default), slate, steel, verdigris, olive, ochre, sand, rust, "
+        "oxide; empty or null for the default. The overlay colour (color) stays on the canvases",
+    )
     extraction: Extraction | None = Field(None, description="The geometry new extraction jobs of the species take")
 
 

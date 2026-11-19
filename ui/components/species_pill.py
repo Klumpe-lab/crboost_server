@@ -1,10 +1,13 @@
 """The one species mark.
 
 Every surface that names a species — job-tab header, pipeline table, the Config tab
-of a particle-phase job, the Species rail and page header — draws the roster's grey
-particle glyph, named on hover. Where the name is the content (rail, page header,
-Config tab line) it follows the glyph in plain slate text. Species colors stay on the
-canvas overlays they key, never on names.
+of a particle-phase job, the registry's rail and title line, the roster's species tag, the
+wall's Layers menu — draws the species' glyph, named on hover. The glyph says what kind of
+particle it is: the icosahedral capsid by default, or one the species picked from
+`static/icons/species/`, in the theme's grey or a muted hue the species chose
+(`SPECIES_GLYPHS`, `SPECIES_GLYPH_HUES`). Where the name is the content (rail, title line,
+Config tab line) it follows the glyph in plain slate text. The overlay colour stays on the
+canvases it keys, never on names.
 """
 
 from __future__ import annotations
@@ -13,19 +16,24 @@ from collections.abc import Callable
 
 from nicegui import ui
 
+from services.models_base import species_glyph
 from ui.components.svg_icon import load_icon_svg
 from ui.styles import SANS
 
-_GLYPH = "#94a3b8"
+
+def species_glyph_svg(species, size: int = 11, *, key: str | None = None, ink: str | None = None) -> str:
+    """The markup of a species' glyph at `size` px in its hue; `key` / `ink` draw another of the set instead."""
+    own_key, own_ink = species_glyph(species)
+    return load_icon_svg(f"species/{key or own_key}.svg", ink or own_ink, size=size)
 
 
-def render_species_mark(species, *, named: bool = False, tooltip: str | None = None):
-    """Read-only species mark: the grey glyph, plus the name when `named`. The hover
+def render_species_mark(species, *, named: bool = False, tooltip: str | None = None, size: int = 11):
+    """Read-only species mark: the species' glyph, plus the name when `named`. The hover
     says `tooltip`, by default "Species: <name>"; "" gives it none (a caller whose own
     hover names the species)."""
     mark = ui.element("div").style("display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; min-width: 0;")
     with mark:
-        ui.html(load_icon_svg("particle.svg", _GLYPH, size=11), sanitize=False).style("display: flex;")
+        ui.html(species_glyph_svg(species, size), sanitize=False).style("display: flex;")
         if named:
             ui.label(species.name).style(
                 f"{SANS} font-size: 10px; color: #334155; font-weight: 600; white-space: nowrap; "
@@ -66,5 +74,6 @@ def render_species_line(species, *, on_open: Callable[[], None] | None = None) -
         render_species_mark(species, named=True)
         if on_open is not None:
             ui.label("open in Particles registry ↗").style(
-                f"{SANS} font-size: 10px; color: #6366f1; cursor: pointer; text-decoration: underline dotted;"
+                f"{SANS} font-size: 10px; color: var(--cb-head-ink, #12324f); cursor: pointer; "
+                "text-decoration: underline dotted;"
             ).on("click", lambda _e: on_open()).tooltip("Templates, masks, picks and settings of this species")
