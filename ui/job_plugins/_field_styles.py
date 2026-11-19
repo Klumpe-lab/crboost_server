@@ -176,7 +176,6 @@ GROUP_MUTED_STYLE = GROUP_STYLE
 LABEL_PATH_STYLE = LABEL_STYLE  # path labels share the same column width
 
 
-
 # ── Section heads: the Rule ladder ──────────────────────────────────────────
 # A section's head is its title in mono caps with a hairline running on from it to the right edge, and the
 # section's meta (what it is fixed at, its profile) at the far end; no fill, no corners. An accented section, one
@@ -313,6 +312,18 @@ def _select_chrome(sel, width: str) -> None:
     sel.props('popup-content-class="cb-select-popup"')
     sel.classes("cb-select")
     sel.style(box_style(width))
+
+
+def box_input(inp, width: str, *, frozen: bool = False):
+    """An input or number no job model binds, drawn as a field row's box at `width` (S / M / L)."""
+    _attach_input(inp, is_frozen=frozen, width=width)
+    return inp
+
+
+def box_select(sel, width: str):
+    """A select no job model binds, drawn as a field row's box at `width` (S / M / L)."""
+    _select_chrome(sel, width)
+    return sel
 
 
 def _label(text: str, hint: str | None, **_legacy):
