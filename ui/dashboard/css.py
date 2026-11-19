@@ -2258,6 +2258,12 @@ _BRANCH_MAP_CSS = """
     letter-spacing: .08em; color: #ffffff; background: var(--cb-accent, #4a8fd4); border-radius: 2px;
     padding: 0 5px; line-height: 13px; flex-shrink: 0; white-space: nowrap; pointer-events: none;
 }
+/* A particle job whose snapshot differs from its species: a 5 px slate notch in its species tag's top-right
+ * corner (ui/pipeline_builder/pipeline_roster.py), the differences on the tag's hover. */
+.cb-species-tag.notch::after {
+    content: ""; position: absolute; top: -1px; right: -1px; border-style: solid;
+    border-width: 0 5px 5px 0; border-color: transparent #4f6782 transparent transparent;
+}
 .cb-rail-row.cb-sel { box-shadow: inset 0 0 0 1px var(--cb-accent, #4a8fd4); }
 .cb-rail-row.cb-sel:hover { background: var(--cb-rail-on, #dbe7f3) !important; }
 .cb-rail-row.cb-sel:hover .cb-open-cue { display: inline-block; }

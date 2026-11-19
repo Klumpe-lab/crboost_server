@@ -1,17 +1,23 @@
-"""Species ↔ pipeline-job attribution over the whole particle phase.
+"""Species ↔ pipeline-job attribution over the whole particle phase, and drift.
 
 `dashboard_data.ce_instances_by_species` inverts `resolve_species` for candidate-extract
-instances only; the Species page's Jobs tab needs the same inversion for every
-particle-phase job type (Template Match · Pick candidates · Subtomo · Reconstruct ·
-Class3D), still honoring the unclaimed bucket — instances `resolve_species` cannot
-attribute to a REGISTERED species (bare id + no `species_id` with 2+ species, or a
-`species_id` naming a deleted species). Headless; in-memory reads only.
+instances only; `jobs_by_species` does the same for every particle-phase job type
+(Template Match · Pick candidates · Subtomo · Reconstruct · Class3D), still honoring the
+unclaimed bucket — instances `resolve_species` cannot attribute to a REGISTERED species
+(bare id + no `species_id` with 2+ species, or a `species_id` naming a deleted species).
+
+`job_drift` says where a job's snapshot differs from its species. A job keeps the values it
+was made with; nothing propagates, so the difference is shown (the notch on the roster's
+species tag), never fixed. Headless; in-memory reads only.
 """
 
 from __future__ import annotations
 
+import os
+
 from services.jobs.spec import JOB_SPECS, PHASE_PARTICLES
 from services.models_base import JobType, resolve_species
+from services.templating.template_metadata import get_effective_mask_path, get_effective_template_path
 
 PARTICLE_JOB_TYPES: tuple[JobType, ...] = tuple(s.job_type for s in JOB_SPECS if s.phase == PHASE_PARTICLES)
 _ORDER = {jt: i for i, jt in enumerate(PARTICLE_JOB_TYPES)}
@@ -40,3 +46,39 @@ def jobs_by_species(state) -> tuple[dict[str, list[tuple[str, object]]], list[tu
 def jobs_for_species(state, species_id: str) -> list[tuple[str, object]]:
     """The particle-phase instances attributed to `species_id` (pipeline order)."""
     return jobs_by_species(state)[0].get(species_id, [])
+
+
+def _sym(v) -> str:
+    return str(getattr(v, "value", v) or "C1")
+
+
+def job_drift(sp, jm) -> list[tuple[str, str]]:
+    """(what, message) per difference between a job's snapshot and its species `sp`: the
+    symmetry on Template Match / Reconstruct / Class 3D / Refine 3D, the diameter on Pick
+    candidates, and Template Match's template and mask against the species' selected ones.
+    Empty when the job agrees with its species."""
+    out: list[tuple[str, str]] = []
+    species_sym = sp.symmetry or "C1"
+    match getattr(jm, "job_type", None):
+        case JobType.TEMPLATE_MATCH_PYTOM:
+            job_sym = _sym(getattr(jm, "symmetry", None))
+            if job_sym != species_sym:
+                out.append(("symmetry", f"job {job_sym} ≠ species {species_sym}"))
+            want_t = get_effective_template_path(sp)
+            have_t = getattr(jm, "template_path", "") or ""
+            if want_t and have_t != want_t:
+                out.append(("template", f"job {os.path.basename(have_t) or '—'} ≠ selected {os.path.basename(want_t)}"))
+            want_m = get_effective_mask_path(sp)
+            have_m = getattr(jm, "mask_path", "") or ""
+            if want_m and have_m != want_m:
+                out.append(("mask", f"job {os.path.basename(have_m) or '—'} ≠ selected {os.path.basename(want_m)}"))
+        case JobType.TEMPLATE_EXTRACT_PYTOM:
+            if sp.diameter_ang:
+                job_d = float(getattr(jm, "particle_diameter_ang", 0.0) or 0.0)
+                if abs(job_d - float(sp.diameter_ang)) > 1e-6:
+                    out.append(("Ø", f"job {job_d:g} Å ≠ species {sp.diameter_ang:g} Å"))
+        case JobType.RECONSTRUCT_PARTICLE | JobType.CLASS3D | JobType.REFINE3D:
+            job_sym = _sym(getattr(jm, "symmetry", None))
+            if job_sym != species_sym:
+                out.append(("symmetry", f"job {job_sym} ≠ species {species_sym}"))
+    return out

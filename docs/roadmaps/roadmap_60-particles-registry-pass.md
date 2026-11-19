@@ -378,6 +378,11 @@ Built in a worktree of its own (`crboost_server_registry`, detached at `de0ad82`
   `_INDIGO` / `_PURPLE` / `COLOR_PALETTE` gone (the viewer's item colours offer the overlay palette), σ alone
   with min and max on hover, an amber dot on an unusual σ or a large file, red on a constant volume. The swatch
   is a 10 px square and its value. Pick-list rows lose the species dot.
+- **S2.** `jobs_tab.py` deleted. Drift is `job_drift` in `services/particles/species_jobs.py` (the Jobs tab's
+  `_drift`, moved); the roster's species tag is a `.cb-species-tag` span notched (`.notch`, `ui/dashboard/css.py`)
+  when the job differs, the differences on its hover, and the roster's signature carries the drift. Older tab keys
+  land through `species_tab` (`services/routes.py`, `jobs` → the Species tab). The empty states point at the
+  roster's PARTICLES +; `add_instance_for_species` (the Jobs tab's one-click add) went with it.
 
 ## 6. Earlier rounds
 

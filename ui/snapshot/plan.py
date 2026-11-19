@@ -24,7 +24,7 @@ from services.routes import Route, View, route_to_path
 from ui.dashboard.strip import _ordered, _ts_title
 
 # The species page's tabs a snapshot carries (`ui/species/page.py` TABS, less templates and kitchen).
-SPECIES_TABS = ("overview", "picks", "analytics", "jobs")
+SPECIES_TABS = ("overview", "picks", "analytics")
 # The workspace panes each view shows (`ui/workspace_page.py`: `cb-roster-panel`, `cb-view-<name>`).
 _JOBS_PANES = ["roster", "pipeline"]
 

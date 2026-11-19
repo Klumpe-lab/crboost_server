@@ -26,7 +26,7 @@ from pathlib import Path
 
 from nicegui import ui
 
-from services.routes import JOURNEY_SECTIONS, SPECIES_TABS, Route, View, route_to_path
+from services.routes import JOURNEY_SECTIONS, SPECIES_TABS, Route, View, route_to_path, species_tab
 
 logger = logging.getLogger(__name__)
 
@@ -112,8 +112,8 @@ async def apply_route(callbacks: dict, route: Route, project_path: Path) -> None
                 else:
                     _call(callbacks, "open_species", route.a)
                     if route.b:
-                        if route.b in SPECIES_TABS:
-                            _call(callbacks, "species_select_tab", route.b)
+                        if species_tab(route.b) is not None:
+                            _call(callbacks, "species_select_tab", species_tab(route.b))
                         else:
                             ui.notify(f"Unknown species tab '{route.b}' ({', '.join(SPECIES_TABS)}).", type="warning")
 

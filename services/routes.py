@@ -38,7 +38,17 @@ _TARGETS: dict[View, int] = {View.JOB: 2, View.JOURNEY: 1, View.SPECIES: 2, View
 # be imported back without a cycle. Job subsection keys are not here — those are read at
 # validation time (`_job_tab_keys`), because plugins register new ones.
 # `ui/species/page.py :: TABS`
-SPECIES_TABS: tuple[str, ...] = ("overview", "templates", "picks", "analytics", "kitchen", "jobs")
+SPECIES_TABS: tuple[str, ...] = ("overview", "templates", "picks", "analytics", "kitchen")
+# Tab keys older links carry, and the tab each lands on.
+SPECIES_TAB_ALIASES: dict[str, str] = {"jobs": "overview"}
+
+
+def species_tab(key: str) -> str | None:
+    """The species tab `key` names, an older key's included; None for no tab."""
+    key = SPECIES_TAB_ALIASES.get(key, key)
+    return key if key in SPECIES_TABS else None
+
+
 # `ui/tomo_dashboard_dialog.py :: _DASHBOARD_PANEL_KEYS` (also the `data-section` values
 # `_scroll_section_into_view` queries)
 JOURNEY_SECTIONS: tuple[str, ...] = (

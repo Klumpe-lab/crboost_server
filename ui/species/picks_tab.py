@@ -323,11 +323,10 @@ class _PicksView(FingerprintedView):
 
     def _render_no_picks_hint(self) -> None:
         with ui.row().classes("w-full items-center gap-1 px-1 pt-1"):
-            ui.label("No picks yet — 'Curate picks' on a tomogram below to pick into it in ArtiaX, or run").classes(
-                _HINT_CLS
-            )
-            ui.label("Pick candidates").classes(_LINK_CLS).on("click", lambda: self._tab.select_tab("jobs"))
-            ui.label("from the Jobs tab.").classes(_HINT_CLS)
+            ui.label(
+                "No picks yet — 'Curate picks' on a tomogram below to pick into it in ArtiaX, or add Pick candidates "
+                "with the roster's PARTICLES +."
+            ).classes(_HINT_CLS)
 
     # ── One tomogram ──────────────────────────────────────────────────────────
 

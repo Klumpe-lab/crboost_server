@@ -108,7 +108,6 @@ class PipelineBuilderPanel:
         # Species page: open a job in the pipeline view / add one for a species.
         self.callbacks["open_job"] = self.switch_tab
         self.callbacks["open_job_subsection"] = self.switch_to_job_subsection
-        self.callbacks["add_instance_for_species"] = self.add_instance_for_species
 
         self.rebuild_pipeline_ui()
 
@@ -144,21 +143,6 @@ class PipelineBuilderPanel:
         if species_id is None:
             return
         self.add_instance_to_pipeline(job_type, species_id=species_id, after=after)
-
-    async def add_instance_for_species(self, job_type: JobType, species_id: str) -> None:
-        """One-click add from the Species page's Jobs tab: the species is known, so no
-        chooser dialog — straight to `add_instance_to_pipeline(job_type, species_id=)`.
-        SingleFlight-guarded like `prompt_species_and_add`; the roster's missing-
-        dependency warning is repeated here since that surface isn't visible."""
-        async with self.flight(f"add_for_species:{job_type.value}:{species_id}") as acquired:
-            if not acquired:
-                return
-            res = self.add_instance_to_pipeline(job_type, species_id=species_id)
-            if not res["success"]:
-                return
-            for warning in res["warnings"]:
-                ui.notify(warning, type="warning", timeout=3000)
-            ui.notify(f"Added {get_job_display_name(job_type)} for species '{species_id}'", type="positive")
 
     # ── Tab management ────────────────────────────────────────────────────────
 
@@ -365,7 +349,7 @@ class PipelineBuilderPanel:
             if res.get("code") == ErrorCode.NEEDS_DECISION:
                 ui.notify(
                     f"{get_job_display_name(job_type)} needs a particle species — add it from the "
-                    "PARTICLES header “+” or the Particles registry's Jobs tab, which ask for one.",
+                    "PARTICLES header “+”, which asks for one.",
                     type="warning",
                     timeout=4000,
                 )
