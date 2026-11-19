@@ -18,7 +18,7 @@ from ui.analytics.common import ERROR_CLS, HINT_CLS
 from ui.analytics.results_section import ResultsSection
 from ui.components.plot import SERIES, fsc_plot, plot
 from ui.components.reactive import owned_timer
-from ui.job_plugins._field_styles import HELPER_STYLE, LABEL_VOICE, PANEL_TITLE_STYLE
+from ui.job_plugins._field_styles import HELPER_STYLE, PANEL_TITLE_STYLE
 from ui.styles import MONO, SANS
 from ui.dashboard.css import ensure_assets_loaded
 from ui.job_plugins import register_extra_tab
@@ -119,7 +119,6 @@ def _fsc_body(res: dict) -> None:
                     )
                     ui.label(name).style(f"{SANS} font-size: 10px; color: var(--cb-ink-2, #1e293b);")
         plot(fsc_plot(curves, *_PLOT_WH, mark=main), *_PLOT_WH)
-        ui.label("resolution and FSC under the pointer").style(f"{LABEL_VOICE} margin-top: 2px;")
 
 
 @register_extra_tab(JobType.REFINE3D, key="results", label="Results", icon="insights")

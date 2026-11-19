@@ -1,6 +1,7 @@
 """Particle sets of the home project as filters of a pool (D9): which pool rows a set holds.
 
-A set the kitchen made names its picks (``kitchen_uids.txt``). Any other set is matched by position:
+A set the kitchen made names its picks (``kitchen_uids.txt``); a set whose rows carry their picks' uids (``cbPickUid``,
+a class set of a Class 3D that read a kitchen set) is matched by them. Any other set is matched by position:
 each of its particles to the pick of the home project's members on the same tomogram within MATCH_A Å.
 A set's particles that match no pick of the pool are counted and said, never guessed at.
 
@@ -18,6 +19,7 @@ import numpy as np
 from services.sta_kitchen.export import UIDS_FILE
 from services.sta_kitchen.pool import PoolTable
 from services.particles.coords import CENTERED_COLS
+from services.particles.pick_uids import read_uid_column
 from services.particles.particle_sets import get_set, list_sets, set_dir
 from services.particles.records import file_mtime
 
@@ -59,6 +61,13 @@ def set_rows(table: PoolTable, home: Path, set_id: str, home_members: list[str])
         return mask, {**info, "n_set": len(wanted), "n_matched": int(mask.sum()), "how": "uids"}
     star = Path(pset.particles_star)
     df = _particle_block(star if star.is_absolute() else home / star)
+    col = read_uid_column(df)
+    if col is not None:
+        # Rows that carry their pick's uid (a class set of a Class 3D that read a kitchen set): matched by it, as a
+        # uid list is, wherever the picks lie; a row without a uid to trust is counted, never matched by position.
+        kept = [u for u in col.uids if u is not None]
+        mask = np.isin(table.uid, np.array([int(u, 16) for u in kept], dtype=np.float64))
+        return mask, {**info, "n_set": len(df), "n_matched": int(mask.sum()), "how": "uids"}
     mask = np.zeros(table.n, dtype=bool)
     rows = np.concatenate(
         [np.arange(table.n)[table.member_slices[k]] for k in home_members if k in table.member_slices]
