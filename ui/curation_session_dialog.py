@@ -3,7 +3,7 @@
 crboost does not proxy the desktop: it submits the VNC desktop as a SLURM job and
 hands the user the way in: where the site has an Open OnDemand portal (conf.yaml
 `ood:`), an *Open in browser* link through it (roadmap 55); elsewhere one SSH tunnel +
-a viewer + a password. The panel opens from the Picks & curation tab's per-tomogram "Curate picks".
+a viewer + a password. The panel opens from the Tomograms tab's per-tomogram "ArtiaX".
 Its layout is stable: a status chip (live / starting / off / failed) drives the
 chrome, Start/Stop swap in place, and the Connect + Scope + Save sections are built
 once — the live values (tunnel / address / password) fill into fixed slots when the

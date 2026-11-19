@@ -4,7 +4,7 @@
 polled per surface: one process-wide cached flag is refreshed at most every `POLL_S`, and
 every caller reads the cache. Callers `poll()` on whatever cadence suits them — the throttle
 here decides when a `squeue` actually happens, so adding another observer costs nothing.
-The observer is the Particles registry's Picks & curation tab, which polls while shown and
+The observer is the Particles registry's Tomograms tab, which polls while shown and
 paints the live marker on the in-session tomogram's `Curate picks` button. The control
 center forces a refresh after a scope switch so that marker moves at once rather than on
 the next tick.

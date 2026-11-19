@@ -345,7 +345,7 @@ async def open_extraction_logs(backend, project_path: Path, job: ExtractJob, *, 
 def geometry_inputs() -> tuple[ui.number, ui.number, ui.number]:
     """The three extraction-geometry fields (box / binning / crop), empty on purpose: a
     prefilled value would turn a silent default into a confirmed one. Shared by the
-    per-list prompt and the Picks tab's extract-all pre-flight."""
+    per-list prompt and the Tomograms tab's extract-all pre-flight."""
     box_in = house_number("Box size", min=16, step=2, width="w-28", hint="px, unbinned")
     bin_in = house_number("Binning", min=0.1, step=0.5, width="w-28")
     crop_in = house_number("Crop size", min=16, step=2, width="w-28", hint="px")
@@ -502,7 +502,7 @@ async def delete_list(
 
     Takes the identity rather than a ``ListRef`` so the Journey / viewer rail — which
     renders from ``sp`` / ``lst`` dicts and has no anchors resolved — can offer the same
-    delete as the Species page's Picks table without a disk pass to build one.
+    delete as the registry's Tomograms table without a disk pass to build one.
 
     An in-flight extraction is cancelled first: its output directory is what this removes,
     and its instance goes with the list, so a job left running would re-create the directory
@@ -751,9 +751,9 @@ def import_picks_from_path(
     tomogram picker — the .coords maps into ONE tomogram's frame, and the tomogram may have
     no picks yet, so the caller supplies the universe; ``ref`` is the initial choice.
 
-    ``initial_path`` pre-fills the field for a caller that already browsed to the file (the
-    Picks & curation import row). The dialog still opens rather than importing straight off
-    the pick: the frame a by-path file is read in is stated here and nowhere else."""
+    ``initial_path`` pre-fills the field for a caller that already browsed to the file.
+    The dialog still opens rather than importing straight off the pick: the frame a by-path
+    file is read in is stated here and nowhere else."""
     if tomo_options is None and ref.tomograms_star is None:
         ui.notify(f"No tomograms.star resolved for {ref.tomo_name} — cannot map .coords into it.", type="warning")
         return

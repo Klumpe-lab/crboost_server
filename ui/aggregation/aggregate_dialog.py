@@ -825,7 +825,7 @@ async def _extract_merged_list(d: _AggregateDialog, summary: dict, tomo_name: st
     if geom is None:
         ui.notify(
             f"‘{d.species_id}’ has no committed extraction geometry. Set box / crop / binning on the "
-            "Particles registry → Overview, then Extract the new merged list from Picks & curation.",
+            "Particles registry's Species tab, then extract the new merged list on its Tomograms tab.",
             type="warning",
             timeout=10000,
         )
@@ -855,7 +855,7 @@ async def _extract_merged_list(d: _AggregateDialog, summary: dict, tomo_name: st
         ui.notify(f"Extraction failed to submit: {result.get('error')}", type="negative", timeout=9000)
         return
     ui.notify(
-        f"Extraction submitted (job {result.get('slurm_job_id', '?')}). Watch it on Picks & curation.",
+        f"Extraction submitted (job {result.get('slurm_job_id', '?')}). Watch it on the registry's Tomograms tab.",
         type="positive",
         timeout=6000,
     )

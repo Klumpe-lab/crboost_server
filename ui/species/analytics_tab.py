@@ -19,7 +19,6 @@ import asyncio
 import logging
 import math
 import time
-from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -29,25 +28,15 @@ from nicegui import ui
 from services.jobs.spec import display_name
 from services.models_base import JobType
 from services.particles import analytics
-from services.particles.analytics_store import (
-    AnalyticsSource,
-    candidates_record,
-    job_dir_of,
-    sources_for_species,
-    species_diameter,
-    subtomo_instances_for_ce,
-    subtomo_record,
-    table_record,
-    tm_health_record,
-    tomogram_quality,
-)
+from services.particles.analytics_store import AnalyticsSource, candidates_record, species_diameter, tomogram_quality
 from services.particles.particle_sets import ParentRef, ParticleSet, SetOp, jobs_reading_set, list_sets
 from services.particles.records import Record
-from services.particles.set_ops import parent_options, parent_options_all_species, read_table
+from services.particles.set_ops import parent_options, parent_options_all_species
 from services.particles.species_jobs import jobs_for_species
+from services.particles.tomogram_table import SubtomoFacts, score_rows
 from services.project_state import get_project_state_for
 from ui.analytics.controls_panel import ControlsPanel
-from ui.analytics.common import ERROR_CLS, HINT_CLS, LABEL_CLS, TOOLTIP_STYLE, panel, render_provenance
+from ui.analytics.common import ERROR_CLS, HINT_CLS, panel, render_provenance
 from ui.analytics.funnel import FunnelLine, FunnelStep
 from ui.analytics.project_breakdown import ProjectBreakdown
 from ui.analytics.results_section import ResultsSection
@@ -55,7 +44,6 @@ from ui.analytics.score_panel import ScorePanel
 from ui.analytics.sets_panel import SetsPanel
 from ui.analytics.spatial_panel import SpatialPanel
 from ui.analytics.subset_dialog import SubsetDefaults, open_subset_dialog
-from ui.analytics.tomogram_table import MARKER_LABELS, TomogramTable
 from ui.components.buttons import house_button
 from ui.components.dialogs import dialog_host
 from ui.components.fields import house_select
@@ -70,17 +58,6 @@ _DISK_REFRESH_S = 15.0
 
 
 @dataclass
-class _Subtomo:
-    instance_id: str
-    record: Record | None
-    n_curated: int | None  # None: no curated subset exists
-
-    @property
-    def n_all(self) -> int | None:
-        return None if self.record is None else self.record.data.get("n_out")
-
-
-@dataclass
 class _Computed:
     sources: tuple[AnalyticsSource, ...] = ()
     source: AnalyticsSource | None = None
@@ -88,7 +65,7 @@ class _Computed:
     cand: Record | None = None
     rows: list[dict[str, Any]] = field(default_factory=list)
     markers: list[analytics.Marker] = field(default_factory=list)
-    subtomo: _Subtomo | None = None
+    subtomo: SubtomoFacts | None = None
     sets: list[ParticleSet] = field(default_factory=list)
     readers: dict[str, list[str]] = field(default_factory=dict)
     stale: dict[str, list[str]] = field(default_factory=dict)
@@ -130,66 +107,20 @@ class _Computed:
         )
 
 
-def _count_rows(path: Path) -> int | None:
-    try:
-        return len(read_table(path).df)
-    except (OSError, ValueError) as e:
-        logger.warning("Could not count rows of %s: %s", path, e)
-        return None
-
-
 def _compute(state, project_path: Path, species_id: str, wanted: str | None) -> _Computed:
-    sources = tuple(sources_for_species(state, species_id, project_path))
-    src = (
-        next((s for s in sources if s.key == wanted), None)
-        or next((s for s in sources if s.succeeded and not s.control), None)
-        or next((s for s in sources if s.succeeded), None)
-        or (sources[0] if sources else None)
+    scores = score_rows(state, project_path, species_id, wanted)
+    out = _Computed(
+        sources=scores.sources,
+        source=scores.source,
+        tm=scores.tm,
+        cand=scores.cand,
+        rows=scores.rows,
+        markers=scores.markers,
+        subtomo=scores.subtomo,
     )
-    out = _Computed(sources=sources, source=src)
-    notes: list[str] = []
-    errors: list[str] = []
-    if src is not None and src.kind != "jobs":
-        try:
-            out.cand = table_record(project_path, src)
-        except FileNotFoundError as e:
-            notes.append(str(e))
-        except Exception as e:
-            logger.exception("Analytics record for %s failed", src.key)
-            errors.append(f"{src.label}: {type(e).__name__}: {e}")
-        out.rows = analytics.tomogram_rows(None, out.cand.data if out.cand else None)
-    elif src is not None:
-        for attr, instance, fetch in (
-            ("tm", src.tm_instance, tm_health_record),
-            ("cand", src.ce_instance, candidates_record),
-        ):
-            if not instance:
-                continue
-            try:
-                setattr(out, attr, fetch(project_path, state, instance))
-            except FileNotFoundError as e:
-                notes.append(str(e))  # not run yet: said, not an error
-            except Exception as e:
-                logger.exception("Analytics record for %s failed", instance)
-                errors.append(f"{instance}: {type(e).__name__}: {e}")
-        if src.ce_instance:
-            subtomos = subtomo_instances_for_ce(state, src.ce_instance, project_path)
-            sub_dir = job_dir_of(state, project_path, subtomos[0]) if subtomos else None
-            if sub_dir is not None and (sub_dir / "particles.star").exists():
-                curated = sub_dir / "particles_filtered.star"
-                try:
-                    sub_rec = subtomo_record(project_path, state, subtomos[0])
-                except (OSError, ValueError) as e:
-                    logger.exception("Subtomo record for %s failed", subtomos[0])
-                    errors.append(f"{subtomos[0]}: {type(e).__name__}: {e}")
-                    sub_rec = None
-                out.subtomo = _Subtomo(subtomos[0], sub_rec, _count_rows(curated) if curated.exists() else None)
-        out.rows = analytics.tomogram_rows(
-            out.tm.data if out.tm else None,
-            out.cand.data if out.cand else None,
-            out.subtomo.record.data if out.subtomo and out.subtomo.record else None,
-        )
-        out.markers = analytics.tomogram_markers(out.rows)
+    notes, errors = list(scores.notes), list(scores.errors)
+    src = scores.source
+    if src is not None and src.kind == "jobs":
         try:
             out.quality = tomogram_quality(project_path)
         except (OSError, ValueError) as e:
@@ -200,7 +131,7 @@ def _compute(state, project_path: Path, species_id: str, wanted: str | None) -> 
     out.stale = {s.id: [p.label for p in st] for s in out.sets if (st := s.stale_parents())}
     out.parents = parent_options(state, project_path, species_id)
     out.others = [p for p in parent_options_all_species(state, project_path) if p.species_id != species_id]
-    for ctl in sources:
+    for ctl in scores.sources:
         if not ctl.control or not ctl.ce_instance or ctl is src:
             continue
         try:
@@ -345,12 +276,6 @@ class _AnalyticsView(FingerprintedView):
                 on_overlap=self._overlap_handler(c),
             )
             self._spatial.build()
-        with panel(
-            "Tomograms",
-            tooltip="One row per tomogram of the template match. Hover a cell for its detail, a marker for its rule.",
-        ):
-            self._render_marker_summary(c)
-            TomogramTable(c.rows, c.markers).build()
         if c.source is not None and c.source.kind == "jobs":
             with panel(
                 "Controls",
@@ -457,18 +382,6 @@ class _AnalyticsView(FingerprintedView):
         )
         steps.append(FunnelStep("refined", "—", "Refinement runs outside crboost; nothing to count here yet."))
         return steps, cut_index
-
-    def _render_marker_summary(self, c: _Computed) -> None:
-        if not c.markers:
-            return
-        counts = Counter(m.key for m in c.markers)
-        with ui.element("div").style("display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;"):
-            ui.label("markers").classes(LABEL_CLS)
-            for key, n in counts.items():
-                with ui.label(f"{MARKER_LABELS.get(key, key)} {n}").style(
-                    f"{SANS} font-size: 10px; color: #b45309; cursor: help;"
-                ):
-                    ui.tooltip(f"{analytics.MARKER_RULES[key]}\n{analytics.MARKERS_DROP_NOTHING}").style(TOOLTIP_STYLE)
 
 
 class AnalyticsTab:

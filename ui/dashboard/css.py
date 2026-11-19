@@ -280,9 +280,7 @@ _CB_CSS = """
 }
 .cb-ltable-row {
     display: grid;
-    /* swatch · name · picks · ext · path · delete · eye. The Picks & curation table
-     * re-orders these and adds source / origin / job / actions through .cb-ptable-row's
-     * own template below. */
+    /* swatch · name · picks · ext · path · delete · eye */
     grid-template-columns: 14px minmax(0, 1fr) 48px 26px 22px 22px 20px;
     align-items: center; gap: 8px;
     padding: 3px 7px; border-radius: var(--cb-r-md, 5px); cursor: pointer;
@@ -319,54 +317,6 @@ _CB_CSS = """
  * (ui/status_indicator._DOT_COLORS), so one job state reads the same colour everywhere. */
 .cb-badge-queued { color: #60a5fa; }
 .cb-badge-err { color: #dc2626; }
-/* That mark opens the job's logs, so the whole cell (and the glyph inside it, which
- * .cb-ltable-badge otherwise gives a help cursor) has to read as clickable. */
-.cb-ptable-job, .cb-ptable-job .cb-ltable-badge { cursor: pointer; }
-/* Species page · Picks & curation: the rail table's chrome (.cb-ltable*), one grid per
- * row: swatch · name · source · origin · kept/total · ext · job · actions (`job` = the live
- * per-list extraction instance; `origin` = the template+mask the picks came out of).
- * Rows are not selectable here (no detail pane), so no pointer cursor / selected state.
- *
- * Every track is fixed or `fr`, and the last one is fixed rather than `auto`: one table is
- * rendered per tomogram group, and a content-sized track (`minmax(a,b)` / `auto`) lets each
- * group settle on its own column widths, staggering the columns between groups.
- * `fr` depends only on the container width, which every group shares, so the columns line
- * up across groups and the row always spans the full line. */
-/* `.cb-ltable`'s `flex: 1 1 auto` sizes nothing here: it is a direct child of a ui.column, and
- * NiceGUI's .nicegui-column sets `align-items: flex-start`, so without an explicit width the box
- * shrinks to fit, the `fr` tracks resolve against max-content, and every tomogram group ends at
- * its own x. */
-.cb-ptable { width: 100%; }
-/* The `ext` track is 60px to fit the spelled-out `Extracted` header; an abbreviation over
- * a one-glyph column doesn't say what the glyph means. */
-.cb-ptable-row {
-    grid-template-columns: 14px minmax(0, 2fr) 72px minmax(0, 1.4fr) 56px 60px 24px 96px;
-    cursor: default;
-}
-/* Actions hug the right edge, so a row visibly ends AT the end of the line. */
-.cb-ptable-actions { justify-self: end; }
-/* The import affordance, one per tomogram group and present whether or not the group holds
- * lists (a tomogram with no picks is exactly where a de-novo .coords import starts). It sits
- * inside the table box, in the rows' own padding/radius, but outside the 8-column grid:
- * it is one action, not a row of data. Dashed and dim so it reads as an empty slot until
- * hovered. */
-.cb-ptable-import {
-    display: flex; align-items: center; gap: 6px;
-    padding: 3px 7px; border-radius: var(--cb-r-md, 5px); cursor: pointer;
-    border: 1px dashed #e1e7f0; background: transparent;
-    font-size: 10px; color: #b6c0cf;
-    transition: background 0.12s, border-color 0.12s, color 0.12s;
-}
-.cb-ptable-import:hover { background: #ffffff; border-color: #c7d2fe; color: #6366f1; }
-.cb-ptable-group {
-    display: flex; align-items: center; gap: 8px; width: 100%;
-    padding: 4px 6px 2px; margin-top: 4px;
-}
-.cb-ptable-group-name { font-size: 11px; font-weight: 700; color: #334155; font-family: ui-monospace, monospace; }
-.cb-ptable-source {
-    font-size: 10px; color: #64748b; cursor: help;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
 /* Shared small metadata text in the per-list detail chrome (provenance, pick
  * counts, sub-labels) — one slate tone + size instead of ad-hoc inline font
  * styles, so the list header / provenance / status rows read as one block. */
@@ -1093,7 +1043,7 @@ _CB_CSS = """
  * per-row facts (polarity or method, header, σ, size) sit in columns sized to their content. Only the file
  * column flexes. Selection is the roster's hairline ring in the accent, a class flip (`cb-sel`), never a
  * rebuild of the table the user just clicked; the in-use dot follows the same class. */
-.cb-tw-table { width: 100%; min-width: 0; }
+.cb-tw-table { width: 100%; min-width: 0; overflow-x: auto; }
 .cb-tw-head, .cb-tw-row {
     display: grid; align-items: center; column-gap: 8px; padding: 0 6px;
     grid-template-columns: var(--cb-tw-cols); min-width: 0; box-sizing: border-box;
@@ -1571,14 +1521,14 @@ fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round'>\
 a.cb-viewer-chip, a.cb-viewer-chip:visited { color: #e2e8f0; text-decoration: none; }
 a.cb-viewer-chip:hover { color: #ffffff; }
 /* ── Live-session marker ─────────────────────────────────────────────────────── */
-/* The 7 px green dot beside `Curate picks` on the tomogram the running ChimeraX + ArtiaX
- * session has open (Picks & curation tab). It breathes: a CSS animation, never a server
+/* The green dot beside ArtiaX on the tomogram the running ChimeraX + ArtiaX session has open
+ * (the registry's Tomograms tab, `.cb-tt-live`). It breathes: a CSS animation, never a server
  * tick, and shallow, because a marker that flashes is noise and one that breathes is status. */
 @keyframes cb-artiax-breathe {
     0%, 100% { opacity: 0.62; }
     50%      { opacity: 1; }
 }
-.cb-artiax-live { animation: cb-artiax-breathe 2.6s ease-in-out infinite; }
+.cb-artiax-live, .cb-tt-live { animation: cb-artiax-breathe 2.6s ease-in-out infinite; }
 /* The protocol light breathes the same way while the project's pipeline is running. */
 .cb-protocol-live { animation: cb-artiax-breathe 2.6s ease-in-out infinite; }
 
@@ -2050,6 +2000,73 @@ _REGISTRY_CSS = """
 @container cb-sdetail (max-width: 440px) {
     .cb-species-header .cb-seg-btn { padding: 2px 5px; }
 }
+/* Tomograms (ui/species/tomograms_tab.py): one HTML table, a tbody per tomogram, rows 22 px. A tomogram with
+ * several lists opens (`tbody.open`) to them as sub-rows; the browser sorts the tbodies by a column head. Inks and
+ * hairlines; the accent only on the sorted head and the live dot's neighbour. */
+.cb-tt { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.cb-tt th {
+    font-family: var(--cb-th-font, 'IBM Plex Sans', sans-serif); font-size: var(--cb-th-size, 9px);
+    font-weight: var(--cb-th-weight, 600); text-transform: var(--cb-th-case, none);
+    letter-spacing: var(--cb-th-track, 0); color: var(--cb-th-ink, #7d93ab);
+    text-align: left; padding: 0 6px; height: 20px; border-bottom: 1px solid var(--cb-head-rule, #d6e0ea);
+    white-space: nowrap; overflow: hidden; cursor: pointer; user-select: none;
+}
+.cb-tt th:hover, .cb-tt th.on { color: var(--cb-head-ink, #12324f); }
+.cb-tt th.n, .cb-tt td.n { text-align: right; }
+.cb-tt th.x { cursor: default; }
+.cb-tt th.x:hover { color: var(--cb-th-ink, #7d93ab); }
+.cb-tt td {
+    height: 22px; padding: 0 6px; border-bottom: 1px solid #eef2f6; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; color: #1e293b;
+    font-variant-numeric: tabular-nums;
+}
+.cb-tt tbody:hover tr.r td { background: var(--cb-hover, #eaf1f8); }
+.cb-tt td.nm { font-size: 10px; color: var(--cb-head-ink, #12324f); }
+.cb-tt td.nm [data-act="copy"] { cursor: copy; }
+.cb-tt .dim { color: #b3c0cf; }
+.cb-tt tr.sub { display: none; }
+.cb-tt tbody.open tr.sub { display: table-row; }
+.cb-tt tr.sub td {
+    background: #f8fafc; height: 20px; font-size: 9px; color: #334155; border-bottom: 1px solid #f1f5f9;
+}
+.cb-tt tbody.open tr.r td { border-bottom-color: transparent; }
+.cb-tt tr.sub td.w { font-family: 'IBM Plex Sans', sans-serif; font-size: 9.5px; color: #5b7089; }
+.cb-tt-car {
+    display: inline-block; width: 10px; color: #94a3b8; font-size: 8px; cursor: pointer; transition: transform .12s;
+}
+.cb-tt tbody.open .cb-tt-car { transform: rotate(90deg); color: var(--cb-head-ink, #12324f); }
+.cb-tt-nlists {
+    font-family: 'IBM Plex Mono', monospace; font-size: 8.5px; color: #5b7089; margin-left: 6px; cursor: pointer;
+}
+.cb-tt-mk {
+    font-family: 'IBM Plex Sans', sans-serif; font-size: 9.5px; color: #4f6782; border-bottom: 1px dotted #a9b8c9;
+    margin-right: 7px; cursor: default;
+}
+.cb-tt-vc {
+    font-family: 'IBM Plex Mono', monospace; font-size: 8.5px; color: #4f6782; border: 1px solid #d3dde8;
+    border-radius: 2px; padding: 0 4px; line-height: 13px; margin-right: 3px; cursor: pointer; text-decoration: none;
+}
+.cb-tt-vc:hover { color: var(--cb-head-ink, #12324f); border-color: #94a3b8; background: #f4f8fc; }
+.cb-tt-vc.off, .cb-tt-vc.off:hover { color: #b3c0cf; border-color: #e2e8f0; background: none; cursor: not-allowed; }
+.cb-tt-cur {
+    font-family: 'IBM Plex Sans', sans-serif; font-size: 9.5px; font-weight: 600; color: #24405e; background: #fff;
+    border: 1px solid var(--cb-btn-line, #b8cce0); border-radius: var(--cb-ctl-radius, 2px); height: 17px;
+    padding: 0 8px; line-height: 15px; cursor: pointer;
+}
+.cb-tt-cur:hover { background: #f4f8fc; border-color: #a9c6e4; }
+.cb-tt-cur.off, .cb-tt-cur.off:hover {
+    color: #b3c0cf; border-color: #e2e8f0; background: #fff; cursor: not-allowed; margin-left: 4px; font-weight: 500;
+}
+.cb-tt-live {
+    width: 5px; height: 5px; border-radius: 50%; background: #10b981; display: inline-block; margin-right: 5px;
+    vertical-align: middle;
+}
+.cb-tt-ib {
+    font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; color: #5b7089; cursor: pointer; padding: 0 3px;
+    line-height: 16px; border-radius: 2px; user-select: none;
+}
+.cb-tt-ib:hover { color: var(--cb-head-ink, #12324f); background: #e2eaf3; }
+.cb-tt-ib.x:hover { color: #b91c1c; background: #fee2e2; }
 /* Templates & masks: the tables and the viewer one above the other, the viewer beside the tables once the
  * detail column holds both (ui/template_workbench.py). */
 .cb-tm-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; align-items: start; width: 100%; }
@@ -2077,16 +2094,6 @@ _REGISTRY_CSS = """
 .cb-species-page .cb-tv-plots { justify-content: flex-start; overflow-x: auto; }
 .cb-species-page .cb-tv-plots > :first-child { margin-left: auto; }
 .cb-species-page .cb-tv-plots > :last-child { margin-right: auto; }
-/* Picks & curation: a tomogram's name line wraps, its verbs moving under the name as one unit; a long name
- * ellipsises and keeps the copy button beside it. */
-.cb-species-page .cb-ptable-group { flex-wrap: wrap; row-gap: 4px; }
-.cb-species-page .cb-ptable-group-name {
-    min-width: 0; max-width: calc(100% - 28px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-/* The list table keeps ~100 px for its name column; narrower, it scrolls sideways inside its own box. Every
- * group's rows share the one min-width, so the columns still line up across groups. */
-.cb-species-page .cb-ptable { overflow-x: auto; }
-.cb-species-page .cb-ptable-row { min-width: 560px; }
 /* Analytics: the tools on a panel's title line (`.cb-an-tools`, the row panel_head yields) wrap under the
  * title, at the right, when the two do not fit on one line. */
 .cb-species-page .nicegui-row:has(> .cb-an-tools) { flex-wrap: wrap; }

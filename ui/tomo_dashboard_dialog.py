@@ -213,12 +213,12 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         """The Particles section's route into the registry — used by the section header's
         'manage in Particles registry ↗' and the list toolbox's 'curate ↗'.
         Composed here, where the workspace's callbacks are in scope: select the species and
-        land on Picks & curation — the page otherwise reuses its last tab (Overview on a
-        fresh workspace), which has none of the pick-list actions."""
+        land on Tomograms — the page otherwise reuses its last tab (Species on a fresh
+        workspace), which has none of the pick-list actions."""
         _open_species(species_id)
         select_tab = (callbacks or {}).get("species_select_tab")
         if select_tab is not None:
-            select_tab("picks")
+            select_tab("tomograms")
 
     manage_species = _manage_species if _open_species is not None else None
     _, ts_names0 = collect_dashboard_journey(state, project_path)
@@ -554,7 +554,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             )
             # No curation-session liveness here: the Journey does not start or switch an
             # ArtiaX session, so it neither shows session state nor pays for a `squeue`.
-            # The Particles registry's Picks & curation tab polls the shared
+            # The Particles registry's Tomograms tab polls the shared
             # `ui/particles/session_status` cache instead.
             #
             # registry_rev: coarse in-memory counter of species / pick-list / template

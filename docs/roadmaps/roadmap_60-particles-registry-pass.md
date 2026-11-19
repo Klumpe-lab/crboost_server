@@ -403,6 +403,20 @@ Built in a worktree of its own (`crboost_server_registry`, detached at `de0ad82`
   own buttons, so the footer has none there); a refused make keeps the dialog open (`_make_template` / `_make_mask`
   return whether they submitted). The by-path import rows, `_LIST_HEIGHT_PX` and the Source panels are gone; the
   Activity log is one folded line whose meta counts the session's entries.
+- **S5.** `ui/species/tomograms_tab.py` replaces `picks_tab.py` (key `tomograms`, `picks` lands on it).
+  `services/particles/tomogram_table.py` holds `score_rows` (the analytics source and its per-tomogram rows and
+  markers, moved out of the Analytics tab's compute, which now calls it), `join_tomograms` (pure) and `match_coords`.
+  The table is one HTML element with one click handler: rows 22 px, sorted by position, a column head sorts in the
+  browser (ranks on each tbody), "open in [picks] [napari] [3dmod]", "curate in [ArtiaX] [napari]" (napari
+  disabled, "in development"; the live session's dot beside ArtiaX). A tomogram opens (▶) to its lists when it has
+  more than one, and also when its one list is hand-made, imported or merged, so that list's actions stay
+  reachable; a sub-row carries extract / re-extract, overlaps (merged), the job mark that opens its logs, copy of
+  the `.coords` path, ×. Import picks… takes a `.coords` or a folder of them and shows the pairs and the unpaired
+  (`match_coords`: a tomogram's name as a whole name in the file name; several only when one contains the rest)
+  before reading anything. The watcher is one folded line. Dialogs are parented with `dialog_host`. Deviation:
+  the "picks" chip keeps the pick viewer's one in-app entry (the old group's grid icon); the Journey icon is gone.
+  `ui/analytics/tomogram_table.py` and the `.cb-ptable*` CSS are deleted. AGG412_STA's 897 tomograms make a 0.9 MB
+  table, sent when its data changes.
 
 ## 6. Earlier rounds
 

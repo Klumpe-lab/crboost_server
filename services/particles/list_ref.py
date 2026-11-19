@@ -186,7 +186,7 @@ def species_tomo_map(
     """``(anchors, {tomo: tomograms.star | None})`` for every tomogram this species could
     hold picks on: ``extra_tomos`` (the caller's own rows) ∪ what the species itself knows
     (``_species_tomograms``) ∪ every tomogram the project describes. ONE disk pass the
-    Picks & curation tab builds all its refs from — a star per row's tomogram for the list
+    Tomograms tab builds all its refs from — a star per row's tomogram for the list
     table, plus one per tomogram GROUP, because a tomogram with no picks yet is still where
     de-novo picking starts and a legitimate ``.coords`` import target. Reads disk — run off
     the event loop."""
