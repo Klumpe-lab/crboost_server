@@ -1,6 +1,6 @@
 ---
 name: project-public-release-roadmap63
-description: "Public release / deployment plan for December 2026 (CI, CalVer tags, release folders, containers on GHCR, Munich pass); roadmap 63 WRITTEN 2026-11-19, D1-D15 owed, nothing built"
+description: "Public release / deployment plan for December 2026 (CI, CalVer tags, release folders, containers on GHCR, Munich pass); roadmap 63 written and DECIDED 2026-11-19 (one open: D3 history rewrite), nothing built"
 metadata:
   type: project
 ---
@@ -18,7 +18,8 @@ big until two-stage); the CUDA EULA keeps nvcc internal (publish runtime/base fi
 published; every SIF embeds its def (identity check without rebuilds); the lab install was found mode 777 under a
 777 group dir (flagged to the maintainer, not changed).
 
+Decisions 2026-11-19 (maintainer): D2 release folders + a `./crboost updates` CLI (status/fetch/install/use/clean); D3 the notes (memory/, docs/roadmaps/, docs/reports/) become local untracked files on the maintainer's machine, the maintainer's call not the PI's; OPEN: also erase them from history (rewrite before rc1) or not; D5 convert the 11 ui files, no --update; D6 .def + two-stage, CI builds every def (6 h ok, a few times a year), Munich gets images by Dropbox so S7 never holds the tag; D7 PyMOL removed (biopython in-process); D9 split in December; D11 local only, no outbound check; D12 'CryoBoost contributors'; D13 no NOT RUN triage, shipping some untested work is accepted; D15 the lab's GL ChimeraX image (ChimeraX may go later). After S9 lands, roadmaps and memory edits are no longer committed: leave them out of hand-off git commands.
+
 **Why:** public rollout + the Munich site installing and updating on its own.
-**How to apply:** next session, take the maintainer's answers to D1-D6 (they gate S2, S6-S8), then build from S1
-in order; build nothing before told. Related [[project_python_env_roadmap39]],
+**How to apply:** next session, get the D3 history answer, then build from S1 in order; build nothing before told. Related [[project_python_env_roadmap39]],
 [[project_release_prep_roadmaps_2026-09-29]], [[feedback_write_roadmaps_directly]].

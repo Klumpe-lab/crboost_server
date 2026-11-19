@@ -15,8 +15,8 @@ built and served, and where uv stands. Deployment, not scientific correctness.
 the defs) and S5 (Munich re-installs from the README), and the local half of roadmap 23 stage 6 (the update banner).
 Those roadmaps point here for them.
 
-**Pickup.** §3 lists the decisions and the stage each one gates; the calendar (§4) says when each is wanted. Send
-Munich §5's questions in the week of 23 Nov, then build from S1 in order. §2 is not a stage: it is wrong today.
+**Pickup.** The decisions are taken (§3, 2026-11-19) but one: whether D3's notes are also erased from history.
+Send Munich §5's questions in the week of 23 Nov, then build from S1 in order. §2 is not a stage: it is wrong today.
 
 ## 1. What there is (read 2026-11-19, at `80a874b`)
 
@@ -132,8 +132,8 @@ production has used since, others are true (PP24). Legacy CBE shuts down on 18 D
 
 **Settled, not reopened here:** one container per tool when pinnings differ; a newer version upgrades its container
 in place; `requirements.txt` lock, not pyproject, and no hashes in it (roadmap 39 D1, D2); per-user servers, no
-central VM; no automation around cluster-infrastructure failures; history is not rewritten (nothing secret, it would
-break every clone and SHA reference; HY14, OS7).
+central VM; no automation around cluster-infrastructure failures. History holds nothing secret (HY14, OS7); whether
+it is rewritten anyway is D3's open question.
 
 ## 2. Now, outside the stages
 
@@ -146,27 +146,35 @@ break every clone and SHA reference; HY14, OS7).
 - **`ruff check` fails on HEAD** in the recon dump script (E401, E741); fixed in the working tree with this
   roadmap's commit.
 
-## 3. Decisions owed
+## 3. Decisions (taken by the maintainer 2026-11-19)
 
-| D | Question | Recommendation | Gates | Owed by |
-|---|---|---|---|---|
-| D1 | Version scheme | CalVer `vYYYY.M.PATCH` (`v2026.12.0`), candidates `v2026.12.0rc1`; a one-line `VERSION` changed only in release commits. SemVer buys nothing while the agent API has its own `API_VERSION` and projects their `SCHEMA_VERSION`. Git's `--sort=v:refname` puts `rc1` after the final release, so anything that picks the newest tag sorts with `packaging.version` | S8 | maintainer |
-| D2 | What a site runs | Release folders per tag behind a `current` link. `<root>/repo.git` is a bare mirror the update command fetches into; `<root>/releases/v2026.12.0/` a local clone of it at the tag (hardlinked, cheap), owned by the site maintainer, read-only to users, its bytecode compiled at install; `<root>/current`; `<root>/site/` (conf, qsub, weights); one uv home shared by the releases. A running server and its queued jobs keep their release's code (closes roadmap 39 §6.2 without code), releases sit side by side, a code rollback is one `ln -sfn`. `site/` and the images are per site, not per release: a release whose upgrade notes change conf keys or images is rolled back with those too, so image files stay named by version until cleaned. The lab install moves to it; `main` stays the dev line. Not a `stable` branch sites `git pull`: a pull still changes code under queued jobs | S5, S8 | maintainer |
-| D3 | Where the notes go (`memory/`, `docs/roadmaps/`, `docs/reports/`, `scripts/file_roadmap_issues.py`) | A private notes repo cloned beside the checkout, before the first tag (Zenodo archives the release tree). Cost: two repos to commit to, and ~46 roadmap/report pointers in code comments go; the one runtime message (`drivers/driver_base.py:618`) points at a `docs/known_bugs.md` entry instead. Fallback if the notes stay: `export-ignore`, which keeps them out of release archives only, not off GitHub. Either way the reference docs that stay lose lab sample names and group paths | S9 | maintainer; the PI for the AGG412 results (HY2) |
-| D4 | The 48 unformatted files | One `ruff format .` commit, its sha in `.git-blame-ignore-revs` (GitHub's blame honours it), then the format gate. Loses the hand alignment of the `services/jobs` Field blocks | S2 | maintainer |
-| D5 | `check_look_literals.py` | `--update` to today's counts in its own commit, then gate; the allow-list shrinks as files convert | S2 | maintainer |
-| D6 | Image recipe and serving | **The `.def` stays the recipe.** A published image is a two-stage def (compile on CUDA devel, end on runtime or base or plain Ubuntu with runtime-only conda CUDA): no nvcc in it, and every SIF under GHCR's 10 GB layer cap. CI builds on the free runner, cold each time, and pushes `oras://ghcr.io/<org>/crboost-<tool>`; a per-release lock pins each by digest; sites `apptainer pull` by digest. Keeps D8's embedded-def check and the lab's build habits. **December:** the images that are ready get published; warp and relion, the two every site needs, are built by the site with `build.sh` (15–16 min each on a 16-core node; needs fakeroot and outbound access, asked in §5), a copy from the lab if their build host cannot; both two-stage and published in January. **Later, if a site wants CVMFS or layer caching:** Dockerfiles as the source, OCI images on GHCR, SIFs as their ORAS mirror (CR2) | S7 | maintainer |
-| D7 | Which images are published | All but ChimeraX (never: UCSF's licence, CR9), each once it carries no nvcc or other CUDA developer tool, is off Anaconda's channel, and has `/opt/licenses` with its GPL source commit. miss_alignment moves to `cuda-runtime` first. Packages under the org, not a person; each flipped public on first push (GHCR packages start private, CR16) | S7 | maintainer |
-| D8 | How the code knows an image is the right one (roadmap 39 S5, redone) | The hash of the image's embedded def (`apptainer inspect --deffile`), normalised (comments, blank lines and `%labels` stripped), against the hash `manifest.yaml` pins for that tool: the def that built the image in use. Works on every existing image without a rebuild, and S6's edits to the def files make nothing warn until an image is rebuilt and the manifest takes the new hash. `%labels crboost.tool/crboost.def` on the next rebuild for people reading `inspect`. Warns, never blocks | S6 | maintainer |
-| D9 | Resource profiles: who owns what | Split them. Memory, CPUs, time and GPU count are facts of how drivers chunk work and ship as tracked defaults; partition, GRES type, QOS, constraint, prefer/avoid stay in the site conf and overlay them. Otherwise every memory fix keeps missing every installed site, the lab's included (ONB-2). Built after the tag; in December, S5's drift report says what moved | January | maintainer |
-| D10 | NiceGUI before the tag | 3.19.x, the last 3.x (it needs `starlette>=1.3.1` and a FastAPI that allows it), not 4.0 (out 2026-11-04) in this release; Dependabot ignores NiceGUI majors until chosen. Early, on a branch in the week of 23 Nov, with a browser pass over every view: it is the release's regression risk. Fallback, staying on 3.0.3: FastAPI 0.118 pins starlette below 0.49, so five starlette advisories (two high) stay open, and the release notes say so | S3 | maintainer |
-| D11 | Telling a site an update exists | No network by default: the server reads the tags in `<root>/repo.git` (fetched by `./crboost update --check`) and shows "v2027.1.0 available". Opt-in `update_check: true`: one request a day per install to the `/releases/latest` redirect, outside the REST quota the shared headnode IP already half spends (UPD-1). Never sends anything | S8 | maintainer |
-| D12 | Copyright holder (NOTICE), author list and ORCIDs (CITATION.cff), Zenodo for the org | Ask the PI (and the institute's rule for employees' code). Zenodo needs an org admin to approve the app; a record can be deleted by its owner for 30 days, after that only on justified request, so try it once on sandbox.zenodo.org | S9, S10 | the PI |
-| D13 | What a release says about NOT RUN work | One triage pass (S10): exercised in production → the label goes; unverified on a default path → run, or it blocks the tag; opt-in → ships marked experimental in the notes | S10 | maintainer |
-| D14 | Default bind address | `127.0.0.1` unless `local.SshLoginHost` is set, then the headnode's cluster interface, not `::` (OS3). The lab sets SshLoginHost, so nothing changes for it | S4 | maintainer |
-| D15 | The CPU ChimeraX image the template names (`chimerax_artiax.sif`, def not in the repo) | Drop it: curation defaults to the GL image on a GPU partition, and the viewer chips hide when no image is set (C03, PP29) | S6 | maintainer |
+| D | Decided | Gates |
+|---|---|---|
+| D1 | CalVer `vYYYY.M.PATCH` (`v2026.12.0`), candidates `v2026.12.0rc1`, a one-line `VERSION` changed only in release commits. Git's `--sort=v:refname` puts `rc1` after the final release, so the update command picks the newest with `packaging.version` | S8 |
+| D2 | Release folders behind a `current` link. `<root>/repo.git`, a bare mirror the update command fetches into; `<root>/releases/<tag>/`, a local clone of it at the tag, owned by the site maintainer, read-only to users, bytecode compiled at install; `<root>/current`; `<root>/site/` (conf, qsub, weights); one uv home the releases share. A running server and its queued jobs keep their release's code; a code rollback is one link; `site/` and the images are per site, so a release that changed conf keys or images is rolled back with them. The lab install moves to it at `rc1`; `main` stays the dev line. **Plus** `./crboost updates`, one command to see and manage it all (S8) | S5, S8 |
+| D3 | The notes leave the repo: `memory/`, `docs/roadmaps/`, `docs/reports/`, `scripts/file_roadmap_issues.py`. They stay as local, untracked files on the maintainer's machine (the maintainer's call, not the PI's). Open: whether they are also erased from history, below | S9 |
+| D4 | One `ruff format .` commit, its sha in `.git-blame-ignore-revs`, then the format gate | S2 |
+| D5 | The 11 offending ui files converted to `--cb-*` variables and voices, then `check_look_literals.py` gates | S2 |
+| D6 | The `.def` stays the recipe; every published image two-stage (compile on CUDA devel, end on runtime, base or plain Ubuntu with runtime-only conda CUDA), so no nvcc in it and every SIF under GHCR's 10 GB layer cap. CI on the free runner builds **every** def (cold, up to the 6 h job limit) on a change to it, on a tag or by hand, a few times a year: a recipe that no longer builds shows up there. Images under 9.5 GB are pushed to `oras://ghcr.io/<org>/crboost-<tool>`, pinned per release by digest. Best effort for all images in December, warp and relion included. Munich gets the lab's images by Dropbox for `rc1`, so the release does not wait on this | S7 |
+| D7 | Everything but ChimeraX is published under the org, by the rule above (no nvcc, Miniforge, licences and GPL source commits in the image). PyMOL goes altogether: the three things `services/templating/pdb_service.py` asks of it (a structure's extent and residue count; rotating its coordinates onto an alignment; centring it and saving CIF for cisTEM) run in-process with biopython, which the lock already has | S7 |
+| D8 | The hash of each image's embedded def, normalised (comments, blank lines, `%labels` stripped), against the hash `manifest.yaml` pins per tool; works on every existing image without a rebuild, and editing a def file warns nothing until its image is rebuilt. `%labels crboost.tool/crboost.def` on the next rebuild. Warns, never blocks | S6 |
+| D9 | Split the resource profiles: memory, CPUs, time and GPU count ship as tracked defaults beside the job types; partition, GRES type, QOS, constraint, prefer/avoid stay in the site conf and overlay them. An old conf that still carries the code-owned keys keeps overriding, so the update command lists them for removal. In December | S5 |
+| D10 | NiceGUI 3.19.x (the last 3.x) with FastAPI on `starlette>=1.3.1`, on a branch from the week of 23 Nov, with one browser pass over every view. Fallback: 3.0.3 for December, said in the release notes (five starlette advisories stay open) | S3 |
+| D11 | Local only: the server reads the releases `./crboost updates fetch` brought into `<root>/repo.git` and shows "v2027.1.0 available". No outbound check of any kind | S8 |
+| D12 | Copyright "CryoBoost contributors" (NOTICE); `CITATION.cff` drafted, the author list filled in by the maintainer; a Zenodo DOI per release, tried once on sandbox.zenodo.org first (a record can be deleted by its owner for 30 days, after that only on justified request) | S9, S10 |
+| D13 | No triage of NOT RUN labels: they leave with the notes (D3), and the release ships what is built | S10 |
+| D14 | `127.0.0.1` unless `local.SshLoginHost` is set, then the headnode's cluster interface, not `::` | S4 |
+| D15 | Curation runs the GL image the lab uses; the CPU variant goes, and the viewer chips hide when no image is set. ChimeraX itself may go later | S6 |
 
-Not open here: the Claude Code plugin (roadmap 42 D6) waits for `v2027.1.0`; the forwarder's dependency lock is in S2.
+**Open: D3's history.** Untracking takes the notes out of the tree GitHub shows and out of every release from now
+on; the commits since September still hold them, as they hold the pre-scrub names, old profanity, a screenshot and
+a 19 MB EMDB map (HY14, OS7). Erasing them means a history rewrite (`git filter-repo` of those paths, a force-push).
+It costs less now than the recon assumed, because Munich re-clones for `rc1` and the lab install moves to release
+folders anyway. It still breaks: local branches and worktrees (rewritten in place, but every other clone must
+re-clone), commit SHAs quoted in issues and docs, and GitHub keeps the 24 PRs' refs and cached views until GitHub
+Support purges them (the same request the contributor cache already needs). If chosen: once, just before `rc1`.
+
+The Claude Code plugin (roadmap 42 D6) waits for `v2027.1.0`; the forwarder's dependency lock is in S2.
 
 ## 4. Stages
 
@@ -198,7 +206,12 @@ and go into `v2027.1.0`.
 
 Needs D4, D5.
 
-- The format commit, `.git-blame-ignore-revs`, the look-literals `--update` commit.
+- The format commit and `.git-blame-ignore-revs`.
+- The 11 ui files over the look-literals allow-list converted to `--cb-*` variables and `voice()` (`ui/agent_plan_page.py`,
+  `ui/analytics/readout_panel.py`, `ui/components/check.py`, `ui/components/path_text.py`,
+  `ui/job_plugins/params_renderer.py`, `ui/pipeline_builder/io_config_component.py`,
+  `ui/pipeline_builder/job_tab_component.py`, `ui/species/overview_tab.py`, `ui/species/rail.py`,
+  `ui/species/tomograms_tab.py`, `ui/tomo_gallery.py`; 76 literals, CI-2), the allow-list lowered to the new counts.
 - `scripts/ci.py` behind `./crboost ci [--fast]`: every step a subprocess with its time, all run even after one fails,
   a table at the end, exit 1 on any failure. Steps: ruff check, ruff format --check, `check_boundaries.py`,
   `check_look_literals.py`, compile of the tracked `.py` files, the import-every-module smoke (torch modules
@@ -272,10 +285,12 @@ Needs D2 (the site folder).
   `./crboost site-survey`, read-only, printing the same as an answer sheet.
 - The cluster tier: probes that need no GPU run on `supervisor_slurm` resources (16 min today, roadmap 39 §6.5); every
   GPU probe launches a kernel (cryocare and easymode only list devices); an MPS start/stop probe; the bridge's imports
-  in the miss_alignment probe (ONB-14, PP8, C02).
+  in the miss_alignment probe; the pymol probe goes with PyMOL (ONB-14, PP8, C02, D7).
 - `code_version()` written into `run_submit.script` at submit; the driver warns when it starts under another version.
   Under D2 that never fires; it is there for a site that still pulls (PP5).
-- **(January)** D9's split, the tracked defaults in code beside the job types that own them.
+- D9's split: memory, CPUs, time and GPU count as tracked defaults beside the job types that own them; the conf's
+  profiles keep placement only and overlay them; preflight lists the code-owned keys an older conf still sets, since
+  they would keep overriding (ONB-2).
 
 ### S6 — Containers I: one recipe per tool, in the repo, checked
 
@@ -300,14 +315,17 @@ Needs D8, D15.
 - `PYTHONNOUSERSITE=1` for every tool in the container wrapper, so a user's `~/.local` cannot shadow an image's
   packages (C16).
 
-### S7 — Containers II: slim, two-stage, published
+### S7 — Containers II: slim, two-stage, built in CI, published
 
-Needs D6, D7.
+Needs D6, D7. Best effort for December; the release does not wait on it (Munich gets the lab's images by Dropbox).
 
-- `.github/workflows/images.yml`: one matrix job per image, on a change to its def, on a tag, or by hand; a `df` check
-  that fails clearly, preinstalled software removed, `setup-apptainer` at a pinned version, build (cold), a size guard
-  at 9.5 GB, push `oras://ghcr.io/<org>/crboost-<tool>:<version>` and `:sha-<commit>`, an artifact attestation on the
-  digest. ChimeraX is linted, never built or pushed (CR4, CR9, CR14).
+- `.github/workflows/images.yml`, the proof that every recipe still builds: one matrix job per def, on a change to
+  it, on a tag, or by hand (a few times a year); a `df` check that fails clearly, preinstalled software removed,
+  `setup-apptainer` at a pinned version, the build (cold, within the 6 h job limit; RELION's is the long one), a
+  `%post` that fails on a broken import. Images under 9.5 GB are pushed to
+  `oras://ghcr.io/<org>/crboost-<tool>:<version>` and `:sha-<commit>` with an artifact attestation on the digest;
+  bigger ones are built and not pushed until they are two-stage. ChimeraX is built (the workflow sets the licence
+  build argument for the build only) and never pushed (CR4, CR9, CR14).
 - `container_defs/images.lock`: tool → reference and digest, per release; `./crboost images pull [tool]` pulls by
   digest into the site's image folder (cache and tmp on group scratch) and prints the conf lines to paste; it never
   edits the conf (CR17).
@@ -315,13 +333,16 @@ Needs D6, D7.
   (CR13).
 - Every published image: `/opt/licenses` with the upstream licence texts and a `SOURCE-COMMIT` per GPL tool;
   `THIRD_PARTY_LICENSES.md` beside the defs; each release links or attaches the GPL sources at those commits (CR11).
-- December's images: tilt_filter and napari as they are; imod without its unused conda env (after S6's Miniforge and
-  TLS); pymol as Python slim plus pinned pymol-open-source and what `pdb_service` calls, 8.9 GB to under 1 GB (C08,
+- PyMOL out (D7): `services/templating/pdb_service.py`'s three scripts (extent and CA count; coordinates rotated onto
+  an alignment and saved; centred and saved as CIF for cisTEM's `simulate`) become in-process biopython, checked
+  against PyMOL's output on one PDB before the `pymol` tool key, its def, image, template entry and probe go (C08,
   ONB-13).
-- **(January)** pytom, isonet, cryocare and easymode off the NVIDIA devel base onto Ubuntu with runtime-only conda or
-  pip CUDA; miss_alignment on `cuda-runtime`, checked with the cluster probe and one bridge run; warp and relion
-  two-stage (AreTomo2 and RELION compiled in a devel stage and copied into a runtime stage, RELION `make install`ed
-  into a prefix, source and build tree left behind) (C07, C08, CR3). Until then each ships as its def plus `build.sh`.
+- The images, in this order (each checked with `./crboost test -m cluster`, and one bridge run for miss_alignment):
+  tilt_filter and napari as they are; imod without its unused conda env (after S6's Miniforge and TLS); pytom, isonet,
+  cryocare and easymode off the NVIDIA devel base onto Ubuntu with runtime-only conda or pip CUDA; miss_alignment on
+  `cuda-runtime`; warp and relion two-stage (AreTomo2 and RELION compiled in a devel stage and copied into a runtime
+  stage, RELION `make install`ed into a prefix, source and build tree left behind) (C07, C08, CR3). Whatever is not
+  done by the tag ships as its def plus `build.sh`, and goes into `v2027.1.0`.
 - Weights: a fetch step per artefact that checks a committed sha256 (easymode's `models.sha256` committed; the tilt
   filter's on Zenodo with a release-asset copy once roadmap 39 D7 is answered) (C11, CR18).
 
@@ -341,19 +362,33 @@ Needs D1, D2, D11.
   ruleset forbids moving or deleting `v*`. The maintainer tags by hand; nothing else pushes tags.
 - The site layout of D2 in `docs/installation.md`. `install.sh` takes a shared uv home for the cache and CPython (today
   fixed at `install.sh:44`); a release folder's bytecode is compiled at install, since users cannot write there.
-- `./crboost update [--check]`: fetches into `<root>/repo.git`, picks the newest release with `packaging.version`,
-  shows its notes and upgrade block, the template diff between the two releases, the images to pull; with no `--check`
-  it clones the tag beside the current one, builds its environment and runs preflight, then prints the `ln -sfn` and
-  leaves it to the admin.
+- `./crboost updates`, one command for everything a site does with releases (D2). It finds `<root>` from the
+  install's resolved path and says so when the install is a plain checkout instead:
+  - `./crboost updates`: which release `current` points at; the releases in `releases/` with their date, size,
+    environment, and whether a server on this host runs from them; the newest release in `repo.git` and when it was
+    last fetched. Read-only, any user.
+  - `./crboost updates fetch`: fetches tags into `repo.git` and prints the notes and Upgrading block of every newer
+    release. The newest is picked with `packaging.version` (D1).
+  - `./crboost updates install [tag]` (the newest by default): clones it beside the others, builds its environment,
+    compiles its bytecode, runs its preflight against `site/`, and prints the conf keys new or changed since the
+    current release, the code-owned keys the site conf should drop (D9) and the images to pull or rebuild.
+  - `./crboost updates use <tag>`: moves `current` after a y/N, saying that running servers keep their release until
+    restarted. Going back is the same command.
+  - `./crboost updates clean`: lists the releases that are neither current nor the one before it and that no server
+    on this host runs, with the environments no remaining release uses; removes them after a y/N. It cannot see
+    other users' queued jobs on every cluster, so it never touches the previous release, and says so.
 - The update banner (roadmap 23 stage 6, local half): the running version against `current`'s, "a newer release is
-  installed, restart to use it"; and D11's notice.
+  installed, restart to use it"; and D11's notice from `repo.git`.
 
 ### S9 — The public face
 
 Needs D3, D12.
 
-- The notes out per D3; code comments lose their roadmap and report pointers; the runtime message at
-  `drivers/driver_base.py:618` points at `docs/known_bugs.md` (HY1). The reference docs that stay
+- The notes out per D3: `git rm --cached` of `memory/`, `docs/roadmaps/`, `docs/reports/` and
+  `scripts/file_roadmap_issues.py`, each ignored, the files left where they are on the maintainer's machine (other
+  clones and worktrees no longer get them); history per D3's open question. Code comments lose their roadmap and
+  report pointers; the runtime message at `drivers/driver_base.py:618` points at `docs/known_bugs.md` (HY1). The
+  reference docs that stay
   (`docs/known_bugs.md`, `docs/miss-alignment.md`, `docs/particle-data-flow.md`, `CLAUDE.md`) lose lab sample names,
   group paths and pointers into the notes.
 - README: what it is in three lines and a screenshot, what it needs, status and supported clusters, quick start for a
@@ -367,36 +402,35 @@ Needs D3, D12.
 - The Mol* embed's source recovered from a backup; **(January)** if it is lost, rebuilt from a pinned molstar release
   in `web/molstar_embed/` with its lockfile (HY5).
 - GitHub: description, topics, homepage; the five merged branches deleted and `pipeline_state_expansion` kept as an
-  `archive/` tag; issue titles with names or worse renamed to roles; roadmap-mirror issues labelled or closed under
-  D3; one milestone per release (HY13, PP9).
+  `archive/` tag; issue titles with names or worse renamed to roles; the roadmap-mirror issues (#114–#137, their
+  bodies carry lab paths and link roadmaps that leave) closed; one milestone per release (HY13, PP9).
 
-### S10 — The truth pass, the candidate, the release
+### S10 — The candidate and the release
 
-Needs D12, D13.
+Needs D12. No NOT RUN triage (D13).
 
-- D13's triage of every NOT RUN label on a default path; the stale docs fixed (roadmap 23's `main.py` and port
-  formula, roadmap 39 §6's `import main`, installation.md's update section) (PP23, PP24).
-- One DL tilt-filter run on a project from its image, or the template keeps it unregistered (PP26).
+- The user docs' stale parts fixed: installation.md's update section becomes `./crboost updates`, its image section
+  the manifest's table (PP23).
 - `v2026.12.0rc1` tagged by the maintainer; the lab install moves to the release layout on it.
-- §5's install pass at Munich on rc1; what it finds fixed; `rc2` if needed, and Munich updates to it through
-  `./crboost update` (the update drill).
+- §5's install pass at Munich on rc1; what it finds fixed; `rc2` if needed, and Munich updates to it with
+  `./crboost updates` (the update drill).
 - `v2026.12.0`, its GitHub release and Zenodo DOI.
 
 ### The cut line and the calendar
 
-December ships what lets Munich install and update without help and what a stranger sees first; January takes what
-only makes it better. Concretely, **(January)**: the remaining images rebased and published (pytom, isonet, cryocare,
-easymode, miss_alignment, warp, relion), the curation-session rework, D9's split, `site-survey`, the Mol* rebuild if
-its source is lost, the Claude Code plugin. If December still runs short, the next to move are S3's NiceGUI (D10's
-fallback, said in the notes) and S4's cookie and fonts; S1, S2, S5, S6, S8, S9 and the Munich pass are the release.
+December ships what lets Munich install and update without help and what a stranger sees first. The release is S1,
+S2, S5, S6, S8, S9 and the Munich pass; S7 is best effort and never holds the tag (Munich's images come by Dropbox).
+**(January)**: the curation-session rework, `site-survey`, the Mol* rebuild if its source is lost, the Claude Code
+plugin, and any image S7 did not finish. If December runs short, the next to move are S3's NiceGUI (D10's fallback,
+said in the notes) and S4's cookie and fonts.
 
-| Week of | Decisions | Stages |
-|---|---|---|
-| 23 Nov | D1–D8, D10, D14, D15; D3's AGG412 question and D12 asked of the PI; §5's questions sent | S1, S2; S3's NiceGUI branch started |
-| 30 Nov | D11, D13; D9 for January | S3, S4, S5 |
-| 7 Dec | D3 and D12 answered | S6, S7 (December's images), S8, S9; `rc1` at the end of the week |
-| 14 Dec | | S10: Munich's pass on rc1, fixes, `v2026.12.0` (legacy CBE shuts down on the 18th) |
-| January | | `v2027.1.0`: everything marked (January) |
+| Week of | Stages |
+|---|---|
+| 23 Nov | §5's questions sent; D3's history answered. S1, S2 (D5's conversion included); S3's NiceGUI branch started |
+| 30 Nov | S3, S4, S5 (D9 included), S6; `images.yml` running as soon as S6's defs are in (the builds are long) |
+| 7 Dec | S7 as far as it gets, S8, S9; the history rewrite if chosen, then `rc1` at the end of the week |
+| 14 Dec | S10: Munich's pass on rc1 (images by Dropbox), fixes, `v2026.12.0` (legacy CBE shuts down on the 18th) |
+| January | `v2027.1.0`: everything marked (January) and the images S7 did not finish |
 
 Cadence after that: `YYYY.M.0` monthly in the second week, after Dependabot's grouped lock PR and a week of lab use;
 `YYYY.M.N` patches for HOTFIX entries that change results or block runs, and within a week for a high or critical
@@ -407,7 +441,7 @@ advisory in the web stack (REL-3).
 **Ask now (week of 23 Nov), as a plain list:** GPU models and NVIDIA driver version (CUDA 12.9 images need a driver
 new enough for it); host OS and glibc; Apptainer and SLURM versions; partition, GRES type and QOS names; whether MPS
 may run on GPU nodes; SLURM accounting; whether `--fakeroot` builds work and the build host has outbound internet
-(December's warp and relion are built at their site, D6); outbound internet from the headnode; ssh from headnode to
+(for images that are not published yet); outbound internet from the headnode; ssh from headnode to
 nodes; CVMFS mounts (`unpacked.cern.ch` would let them skip pulls once images exist as OCI, CR8); whether login nodes
 reap long processes; their microscope's Cs, amplitude contrast, both hands and EER grouping (HOTFIXES H2, H3, H4 are
 blockers for them if these are not the lab's). Tell them the uv route is the supported one (their R1).
@@ -415,11 +449,12 @@ blockers for them if these are not the lab's). Tell them the uv route is the sup
 **The pass, on `rc1`.** Only their own `site/`, no local patches:
 1. The D2 layout: `repo.git`, `releases/v2026.12.0rc1`, `current`; `./install.sh`.
 2. `site/conf.yaml` from the template with their values; `./crboost preflight` until it is clean.
-3. Images: `./crboost images pull` for the published ones, `container_defs/build.sh` for warp, relion and the rest.
+3. Images: the lab's current images by Dropbox (`./crboost images pull` for any already published); their conf points
+   at them, and the identity check (D8) confirms each is the image the manifest names.
 4. `./crboost test`, then `./crboost test -m cluster`.
 5. The copia protocol on one EMPIAR-12580 tilt series, against stated expectations: each stage's status, wall time
    at CBE, the Class3D outcome (ONB-8).
-6. The update drill: `rc1` to `rc2` with `./crboost update`; a server left running on rc1 keeps working until it is
+6. The update drill: `rc1` to `rc2` with `./crboost updates`; a server left running on rc1 keeps working until it is
    restarted; a project saved by rc2 and opened in rc1 keeps its backup (and warns only if the schema moved).
 
 **Done when** an unmodified release and their `site/` pass preflight and the cluster tier, copia runs, and they
@@ -427,8 +462,6 @@ updated once without asking. That closes roadmap 20 S5; the result is recorded h
 
 ## 6. Not here
 
-- History rewrite: no secret in it, it would break every clone, worktree and SHA reference, and GitHub keeps PR refs
-  anyway (HY14, OS7).
 - A docs site: the README and `docs/*.md` render on GitHub. Later, Zensical on Pages (mkdocs-material reaches its end
   of life in May 2027) (DOC-1).
 - pre-commit.ci (a second ruff pin), Renovate (rejects the lock header), Docker Hub as a home, self-hosted runners,
