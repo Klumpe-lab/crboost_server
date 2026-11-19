@@ -1,0 +1,4 @@
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Spike / trimer on a stalk -->
+  <path d="M8 14.3 V8.6" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M3.2 14.3 H12.8" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round" fill="none"/><circle cx="8" cy="3.6" r="2.05" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round" fill="none"/><circle cx="5.55" cy="6.7" r="2.05" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round" fill="none"/><circle cx="10.45" cy="6.7" r="2.05" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>
