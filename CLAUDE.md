@@ -85,6 +85,7 @@ NiceGUI-based. `main_ui.py` defines routes. Key components:
 - **Logs** (`services/log_setup.py`): `logger.info` lands in the log file only (`~/.crboost/logs/crboost-<port>.log`, 5 × 20 MB); what an operator watches the console for goes through `services.event_log.events`, project name first (`"%s · %s queued as SLURM %s"`). Code that runs on a timer logs at DEBUG, or the file fills with it.
 - **Dirty tracking**: `ProjectState` has `mark_dirty()` / `is_dirty` / `save_if_dirty()` for deferred persistence.
 - **RELION compatibility**: The system generates RELION-compatible directory structures, `default_pipeline.star`, and `job.star` files so projects can also be opened in RELION directly.
+- **Warp's tilt-series model is more than the star.** A Warp XML holds what RELION's tilt-series star cannot: missAlign's local image warps (`GridMovementX/Y`), volume warps, level angles. Warp's own jobs (tsReconstruct, Warp export) apply them; a RELION program that cuts from the tilt images sees the star alone, 8–17 Å RMS off on the reruns (HOTFIXES H26). Every driver that hands RELION the tilt images calls `drivers/warp_bridge.carry_warp_geometry` first, which adds Warp's local geometry as RELION per-particle trajectories (`services/particles/warp_geometry.py`). Any new integration that reads tilt images or tilt-series geometry (RELION frame alignment, M, an external tool) takes Warp's whole model, through the bridge or the XML, never the star alone.
 
 ### UI reactivity patterns
 
