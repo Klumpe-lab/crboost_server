@@ -8,7 +8,9 @@ the handoff for building it as its own view: §13, its decisions and design sett
 submitted the same day (§12.1). Class 3D on several GPUs (MPI) and continuing after a time-out: built 2026-11-18,
 not run (§11.2). The particle map taken out of the UI 2026-11-18, to come back as part of the branch map (§13.3,
 roadmap 32 §15.9). The PARTICLES header's Aggregate button removed and Import tomograms moved to the Tomograms view
-the same day (§14.7); the rest of §14 is owed.
+the same day (§14.7); the rest of §14 is owed. 2026-11-19: the 412 at 9.2 Å masked on 438 capsids, I1, T = 9 (V3 at
+bin 2); R1 six of eight read, keep lists taken, R2 laid out (§12.4); the PI's copia try2 is the same capsid, the gap
+is per-tilt CTF (§12.5); the 412 growth run submitted; CtfRefine and M to be built, two routes (§15).
 
 **In one line.** Average the ribosome and the 412 VLP over the eight AGG412 reruns, sort each into classes and
 refine every class on its own to the best resolution the data hold. Do every step that changes which particles are
@@ -251,6 +253,10 @@ the UI and which stage takes it. Seeded with what earlier campaigns already wrot
 | F17 | V2 reference, 2026-11-18 | Reconstruct particle of s011 with the TM angles (job004) is the shell plus the tomogram's frame. Every 412 TM angle lies in one I1 asymmetric unit (tilt 4–44° on all 1,874 rows of job003), so the missing wedge and whatever surrounds the VLPs average coherently: the outer annulus differs from one side to the other by 0.40 sd in x and 0.26 sd in y, and the power at kz Nyquist is 82× the mean of the kz line (stripes along Z). The ribosome's job002 (C1 angles, tilt 9–171°) shows neither (≤ 0.04 sd, 0.1×). As the reference of a global search, the one-sided density pulls the alignment onto the surroundings | the Reconstruct card says when the poses it used cover only an asymmetric unit, and shows the side-to-side difference; V2 starts from a featureless shell (the rotational average of job004), as §4 V2 first said |
 | F18 | Phase A run, 2026-11-18 | The plan for the nine Class 3D said "Point …'s input input_optimisation at automatic" for the steps that choose each project's image source, and its table never named job001 or job003: the one choice Run refuses without was not in the dialog the maintainer accepted (HOTFIXES H21). The jobs read what was meant | the plan, and later the job's card, name where a set's images come from, per project |
 | F19 | V2 read, 2026-11-18 | Class 3D's table put the capsid at "0.0 Å" (`inf`) and the blobs at 27–36 Å: read by number, the one real class looked like the failed one. What told the story was the class × tomogram table (class 2 = four tomograms) and the maps' slices and radial profiles, all made by hand | class rows show `inf` as "no estimate", never 0.0 Å; each class row carries its slices, radial profile and a class × tomogram (or project) count (U3 large card) |
+| F20 | R1 read, 2026-11-19 | Judging eight Class 3D took the same hand-made tables as F19 (class × σ bin, junk share by σ, whether the keep/drop side is stable while the classes shuffle) and a 96-panel sheet of slices; a job page shows one job at a time | class rows show their σ composition and "same class / same side since it−5"; one sheet of every class of the Class 3D picked on the map, slices side by side (U3) |
+| F22 | 412 against the PI's, 2026-11-19 | "Why is the PI's 8.8 Å better?" took a by-hand FSC with matched masks: his mask holds the outer layer (215–271 Å), ours both layers, and our inner layer alone is at 21 Å. Two masked FSCs of the same capsids differed by what the masks held | a masked resolution names its mask's radial extent; the Mask and PostProcess cards show the FSC per radial shell (inner / outer layer) beside the masked one |
+| F21 | R2 planning, 2026-11-19 | R1's poses cannot follow its picks into R2: a set's images come whole from an export's rows (the TM poses), poses come from one source for the whole set, and R1 is eight Class 3D. R2 starts from the TM angles again: harmless here (R1 converged from them at `sigma_ang` 5), but only a code read said so | the Refine 3D card and the plan say where the starting poses come from, per project ("template matching, via the rerun's Warp export") |
+| F23 | C10 S0, 2026-11-19 | RELION's tomo CtfRefine takes its reference at the tilt series' pixel size and says nothing when it is not: the reference loader only pads to the box ("Padding reference from 448 to 512") or refuses a larger one; the pixel-size checks in the binary are relion_refine's. Our refinements are at bin 2, so the reference is a Reconstruct particle at binning 1 with its own Mask and PostProcess, three jobs before the one asked for | the CTF refine job refuses a reference off the tilt images' pixel size, naming the fix; its card shows what moved per tilt series (built, §15.5) |
 
 ## 7. Order
 
@@ -273,9 +279,9 @@ map exist from the reruns, the old records at `/groups/klumpe/_crboost_archive/a
 | D1 | Every membership or pose change runs as a crboost job or kitchen set (replaces July's "412 refinement outside crboost"); side runs only for diagnostics, brought back as sets | **taken (maintainer, 2026-11-17)** |
 | D2 | The home project: Slot6_rerun (the pools are there) or a new project for the STA of both species, the eight reruns read only | **taken (maintainer, 2026-11-17): a new home project**, made through the API (§12) |
 | D3 | Ribosome cleaning at bin 4 (new exports) or on the bin-2 exports | bin 4 |
-| D4 | Geometry by M (a new job, multi-source, refines pixel scale per project) or RELION 5 tomo CtfRefine + frame alignment | M, built as one job (§11); RELION's only if M will not take eight Warp sources |
+| D4 | Geometry by M (a new job, multi-source, refines pixel scale per project) or RELION 5 tomo CtfRefine + frame alignment | **taken (maintainer, 2026-11-19): both**, as two routes, CtfRefine first (§15) |
 | D5 | 412 symmetry, from V2's C1 map | decided by the map |
-| D6 | Delete the TM score and angle maps (~7 TB) now that every candidate is exported | yes, once R1 has fixed the ribosome σ cut and V1 the 412's |
+| D6 | Delete the TM score and angle maps (~7 TB) now that every candidate is exported | yes, once R1 has fixed the ribosome σ cut and V1 the 412's; **decidable 2026-11-19** (§12.4: no σ cut, nothing planned reads the old maps) |
 | D7 | The particle map is the same map as preprocessing (one Jobs view, the picker switching between tilt series and sets by phase) or a view of its own | **taken (maintainer, 2026-11-17): a view of its own**, opened from the PARTICLES header (§13, §13.1); the Jobs map keeps showing particle jobs meanwhile |
 | D8 | A condition label per project (tissue, genotype, prep) for the per-class tables | the maintainer supplies them |
 
@@ -402,7 +408,7 @@ As the map today: `BranchMapView.signature` adds the sets root's mtime and `oper
 
 **Build:** class → set (C1), Mask from a map (C4), PostProcess (C3), M refine (C6), Class 3D focus mask and
 `skip_align` fields (C5), symmetry expansion + recentre (C7, phase D). **Not now:** RELION 5's tomo CtfRefine and
-frame alignment.
+frame alignment (reversed 2026-11-19: both are built, §15).
 
 Why M and not RELION's geometry tools:
 
@@ -610,6 +616,130 @@ job013 (Class 3D, s011, 1,874 picks, K 6, C1, from the featureless shell). Scrip
   | refine3d · job015 | s012, images: the five reruns' own 412 Warp exports (bin 2, box 256) | I1, global (`sigma_ang` −1: the poses are in job013's frame, not the aligned one), Ø 600, `ini_high` 40, mask job016 | 1784090 |
   | postprocess · job017 | job015 half maps, mask job016 | masked FSC, no sharpening (auto B off: the fit wants resolution past 10 Å) | 1784091 |
   | class3d__10 · job014 | s012, images job003 (bin 4) | C1, K 3, from the featureless shell again, global, as job013 otherwise: pleomorphism in shape | 1784088 |
+
+- **What came back (14:30).** job015 ran on job003's **bin-4** images, not the reruns' bin 2: a class set keeps its
+  Class 3D's images and the per-project choice was silently ignored (HOTFIXES H22; the kitchen cannot remake the set
+  either, H23). RELION resized reference and mask to 6.2 Å / 128 itself, so job015 is a sound I1 refinement: 17
+  iterations, angles 0.35°, offsets 1.3 Å, **12.6 Å masked = Nyquist at bin 4**. PostProcess job017 refused the
+  bin-2 mask against bin-4 half maps (its own check).
+- **Shape (job014, C1 K 3).** Classes 2 and 3 (31 %, 37 %) are the same icosahedral capsid (six 5-folds at CC
+  0.79–0.88), and split by tomogram: Slot6 P10 mostly 2, SK P11_2 mostly 3. Class 1 (32 %) is 132 of Grid2 P10's 171:
+  same radii (173 / ~236 Å), outer layer smeared, 5-fold CC 0.44 against a 0.36 median. Not a second form in any
+  sense the map can show; Grid2 P10 (the MyrGFP grid, 2026-03-11 session) aligns worse. Open: that tomogram's quality,
+  or something per session (tilt hand, pixel size: its capsids measured 0.5 % larger). Grid2's tomograms carry the same
+  declared `rlnTomoHand` −1 as the rest.
+- **Submitted 15:00** (plan `p-453359b8`, accepted): Warp Export warpExport__3 reads job015 (its I1 poses and centres,
+  origins folded in) at bin 2, box 256, Ø 575 (clone of job003); Refine 3D refine3d__2 reads it, reference job015's
+  map, mask job016, local (`sigma_ang` 2, healpix 4), `ini_high` 25; PostProcess job017 re-pointed at it. Two stray
+  Scheduled jobs (TS CTF, Reconstruct, never run, origin unknown) taken off the roster in the same plan.
+
+### 12.4 Where both tracks stand, read 2026-11-19
+
+Scripts and sheets in `notes/sta_side_steps/r1_and_v3_read/` (`tables.py`, `keep.py`, `maps.py` → `r1_classes.png`;
+`v3.py`, `v3map.py` → `v3_map.png`, `tnum.py` → `v3_lattice.png`).
+
+**412, V3 at bin 2: 9.2 Å.** The 15:00 chain ran (the PostProcess is job020 now): Warp Export job018 cut s012's 438
+capsids from the 12 tilt series holding them (bin 2, box 256, job015's I1 poses); Refine 3D job019 converged in 16
+iterations at a working resolution of 10.9 Å, angles 0.32°, offsets 1.0 Å; PostProcess job020 (mask job016, no
+sharpening): **9.23 Å masked gold-standard FSC 0.143**, 9.8 Å on the unmasked half maps, FSC 0.5 at 10.7 Å; the
+phase-randomised masked FSC is ~0 past 15 Å, so the mask adds nothing. July's was 35.8 Å on 94 particles.
+
+- **Alignment-limited, not Nyquist-limited.** The FSC falls from 0.30 at 9.45 Å to 0.04 at 9.0 Å, just past the working
+  resolution, with bin 2's Nyquist at 6.2 Å: bin 1 is not the next lever; more capsids and geometry are.
+- **T = 9.** On the outer layer (225–255 Å, low-passed to 20 Å) the local minima, one per 11° neighbourhood, are 82:
+  20 on the 3-fold axes and 60 at 20–21° from a 5-fold and 11–12° from a 2-fold, a third of the way along each
+  5-fold–5-fold edge (63.4° / 3 = 21.1°); the pentamers are bright rings on the twelve 5-folds. 12 pentamers + 80
+  hexamers = 92 capsomers = 10T + 2, T = 9 (h 3, k 0). Radial profile: inner layer 167–174 Å, outer layer peak 239 Å,
+  zero at ~262 Å. For V4, per capsid: 12 pentamers (C5), 20 hexamers on the 3-folds (C3), 60 general hexamers; 438
+  capsids give 5,256 + 8,760 + 26,280 sub-particles.
+- **Composition.** 421 of 438 from four tilt series (Grid2 P10 171, Slot6 P10 108, SK P11_2 96, FCIsolation P18_4 46),
+  the rest 1–8 a tilt series. The capsid radius per session (§12.3: Grid2 1.005, Slot6 1.000, SK and FCIsolation 0.995)
+  is a ±0.5 % pixel size between sessions, 2.4 Å at the outer layer: a lever only a pixel scale per source reaches (M).
+- **Growth within the candidates.** s011 was σ ≥ 8.5 (1,881 of 22,318). Outside class 2 it holds 59 picks with a
+  capsid's profile, and the four rich tilt series may hold touching capsids below 8.5σ. Class 3D in I1 (60× fewer
+  orientations than C1) of every candidate at bin 4, the capsid as one reference, sorts them cheaply; a template
+  match with this map is the route to capsids the old template scored below the candidates' floor.
+
+**Ribosome, R1: six of eight read.** Kept and dropped, from the class maps' slices (`r1_classes.png`) and the class
+statistics:
+
+| Project | Job | Kept | Kept / all | Dropped |
+|---|---|---|---|---|
+| Slot6 | job005 | 1, 2 | 15,410 / 24,100 | 3 blob (32.5 %), 4 lamella edge (3.5 %) |
+| FCIsolation | job006 | 3, 4 | 24,437 / 44,774 | 1 blob (42.8 %), 2 lamella edge (2.6 %) |
+| 20251113 | job007 | 1, 2, 3 | 31,172 / 49,511 | 4 blurred ribosome-like blob (37.1 %) |
+| pilot | job008 | all | 15,620 | none formed |
+| Grid3 | job010 | all | 35,586 | none formed |
+| Grid2 | job011 | 1, 3, 4 | 14,406 / 20,536 | 2 noise (29.9 %) |
+| unmilled2 | job009, it017 of 25 | 1, 3 so far | 53,688 / 88,459 | 2 noise (38 %), 4 lamella edge (1.3 %) |
+| SK | job012, it013 of 25 | all four so far | 67,795 | none yet |
+
+Kept classes: 15–17 Å Class 3D estimates, angles 0.4–0.9°; dropped: 20–27 Å, angles 2.4–2.7° (the edges excepted),
+median 7.6σ against ~9σ.
+
+- **Junk against ribosome is converged, the classes of ribosomes are not.** 96–99 % of picks are on the same side from
+  it020 to it025; 45–72 % are in the same class. At 15–25 Å the ribosome classes are arbitrary splits: the states are
+  R4's, on the pooled set.
+- **The σ read-out (R1's question).** In the five projects with a junk class, the junk share is 71 % at 7–8σ, 38 % at
+  8–9σ, 16 % at 9–10σ, 6 % at 10–12σ, 1 % above 12σ. No σ cut replaces classification: ≥ 8σ keeps 38 % junk at its
+  edge and loses the 29 % of 7–8σ picks that are ribosomes. The candidates' floor is 7.25σ.
+- **pilot, Grid3 and SK formed no junk class** with K 4, though their σ distributions are like the others' (65–73 %
+  ≥ 8σ). At the others' rates they hold ~5,600, ~13,900 and ~22,300 junk picks (about a third): inside ribosome classes
+  (Grid3's class 1, 51 %, holds 63 % of its 7–8σ picks; SK's class 2 is 72 % at it013). They come out on the pooled
+  set after R2 (Class 3D, `skip_align`), not by running R1 again.
+- **Timing.** unmilled2: 1 h 33 min an iteration, it025 at ~21:00 on 2026-11-19. SK on an A100: 1 h 55 min, growing
+  ~1.5 min an iteration, it025 at ~08:00 on 2026-11-20 against its 2-day limit at 09:40; if it stops, Run continues it
+  (the continuation's first run through SLURM).
+
+**R2, as it can run once the eight are in.** Class sets of the kept classes (the maintainer's picks); in the ribosome
+kitchen one subset per class set (the set filter matches by uid, H23) and one kitchen set from all of them, ~258k
+picks; Refine 3D at bin 2 reading it, images from each rerun's own ribosome Warp export (box 200, chosen per
+project), local around the TM angles (`sigma_ang` 5, healpix 3, as R1 began; R1's poses do not travel, F21),
+reference job002, Ø 350; then Mask and PostProcess. ~750 GB of images a pass, too large to pre-read. Then Class 3D
+`skip_align` on the pooled set for the hidden junk.
+
+**D6 can be decided.** R1 answered the ribosome's σ question (no cut; floor 7.25σ, and the junk share rising below
+8σ), and the 412's growth reads the candidates or a new template match, never the old score maps. **Taken
+(maintainer, 2026-11-19): delete nothing for now.**
+
+**Taken 2026-11-19 (maintainer):** the keep lists above; R2 waits for all eight; the 412 growth run (V1 as growth);
+M built as a capability (C6); capsomers later.
+
+### 12.5 The PI's copia try2 is this capsid: 8.8 Å there, 9.2 Å here (2026-11-19)
+
+The maintainer asked how 8.9 and 8.7 Å were reached before with fewer particles. Those are the PI's `Copia/try2`
+(`<pi>/Processing/Copia/try2`, one tomogram, Position_11_2 of the 20251017 session): Refine3D job047, 120
+particles, 8.90 Å; job054, 76 particles, 8.79 Å; PostProcess job050/055/056 8.79 Å. Scripts:
+`notes/sta_side_steps/r1_and_v3_read/` (`vs_pi.py`, `pos.py`).
+
+- **The same objects.** 73 of job054's 76 lie within 100 Å of our 96 class-2 capsids in SK Position_11_2 (median 9 Å
+  after a 12 Å shift, no flip), and all 96 of ours are among job047's 120. Radial profiles: inner layer 166–183 Å
+  against our 174 Å, outer 239 against 239 Å, zero at 203 against 205 Å. The paper's "copia" (provenance doc §9) and
+  our 412 class 2 are one particle; which name is right is the lab's call.
+- **Like for like.** The PI's mask holds the outer layer only (215–271 Å), ours both layers (127–273 Å). The same FSC
+  code on both, unmasked by RELION's phase randomisation: outer shell 215–275 Å, ours 9.02 Å against his 8.79 Å; both
+  layers 140–265 Å, ours 9.23 against his 9.14. Our inner layer alone reaches 20.9 Å.
+- **What is off: 5.8× the particles bought nothing.** On the outer layer our FSC is higher down to ~10 Å (0.5 at 9.92 Å
+  against his 10.52) and then drops off a cliff; his reaches further. That is per-image error, not particle count.
+  His chain on the same tomogram: 9.78 Å (124, no cleaning) → 9.38 (cleaned) → 9.26 → 8.79 after RELION's CtfRefine
+  (`--do_defocus --d0 -6000 --d1 6000 --do_scale --per_frame_scale`, no regularisation; it left −0.22 µm on the −45°
+  tilt and −0.04 µm on +69°, failed fits on late tilts) and a Class 3D selection.
+- **Geometry agrees, CTF does not.** Both runs: `rlnTomoHand` −1, tilt angles of the same sign (stage −45° → `rlnTomoYTilt`
+  54°, a 9° offset), axis 84.4°. Warp fits one astigmatism per tilt series: 1.005 µm at 52° on every tilt of P11_2
+  (0.2–1.1 µm across the 12 tilt series of job018). His CtfRefine: 0.71 µm at 141° (the same axis, U and V swapped)
+  on the 12° tilt; mean defocus 4.556 against our 4.541 µm. A defocus error δz costs a phase πλδz/d² (λ 0.0197 Å):
+  at 9 Å 0.1 µm is 45°, 0.2 µm 90°; the 0.3 µm astigmatism difference is ±0.15 µm, ~66° along its axes.
+- Beside the CTF: four sessions at ±0.5 % pixel size (§12.4), which a one-tomogram set does not have.
+- §11's reason against RELION's CtfRefine (every tilt moved −1 µm on copia-tutorial) does not show in the PI's run on
+  this data: his refined 12° tilt is within 0.015 µm of our Warp value.
+
+**The growth run, submitted 2026-11-19** (plans `p-5ab997c9`: class sets s013–s018 and set s019 = every 412
+candidate; `p-f775f782` failed at its run on H18/H19, both fixed the same day; `p-0811a7dc` ran it): Warp Export
+warpExport__4 (s019, 22,318 picks, bin 4, box 128, poses as picked, so the known capsids get no head start; SLURM
+1808826), Class 3D class3d__11 (I1, K 4, reference job019 low-passed to 40 Å, Ø 600, global 7.5°, offset 3, 25
+iterations, 3 MPI ranks; SLURM 1808827). Its controls are inside it: the 438 capsids must land in one class and V2's
+1,436 rejected picks mostly not; the newcomers are then checked by their radial profile in their own tomogram and
+looked at in the kitchen before any set is made.
 
 ### 11.1 Built (2026-11-17)
 
@@ -991,3 +1121,140 @@ moves with D10; its refusal beside a Reconstruct job stays.
   re-reads the wall and moves the rail's count (`callbacks["refresh_counts"]`). The green "already imported" dot is
   gone with the header button (the wall and the rail count say it). The wall's empty text points at the new place.
 - The PARTICLES header keeps New species only.
+
+## 15. Geometry: RELION's CtfRefine now, M as the full refinement (decided 2026-11-19)
+
+**Decision (maintainer, 2026-11-19): build both.** §12.5 found the limit: per-image CTF (and per-session pixel size), not
+particle count. §11 had put RELION's tomo CtfRefine aside for M; its main reason (every tilt moved −1 µm on
+copia-tutorial) does not show on this data, and the PI's CtfRefine took these very capsids from 9.26 to 8.79 Å.
+
+**They do not chain; they are two routes.** RELION keeps its CTF and trajectories in its own stars (tomograms.star, the
+tilt-series stars, motion.star); M keeps them in Warp's tilt-series XMLs and never reads RELION's. "RELION's CtfRefine
+per tilt, then M for the particles only" would start M from Warp's CTF again, and writing RELION's values back into
+Warp's XMLs is the convention trap §11 warned of. M on particles alone is roughly RELION's frame alignment; M's value is
+refining per-tilt CTF, image warp, stage angles, a pixel scale per session and the particle poses together. So:
+
+- **RELION loop** (fast, inside RELION's metadata): CtfRefine (later frame alignment) → Refine 3D → PostProcess. Good at
+  bin 2 now; a Warp re-export (bin 1) does not carry it, so it runs again after one.
+- **M loop** (the full route, inside Warp's metadata): takes from RELION only the refined map, mask and particle poses;
+  its refined XMLs (copies in the home project) feed a Warp export at bin 1.
+
+Both run on the same 412 set and are read on the same masks (outer layer, both layers, §12.5): CtfRefine's gain is M's
+yardstick.
+
+### 15.1 C10 CtfRefine (build first)
+
+- **S0, read only** (the RELION 5.0.1 image): `relion_tomo_refine_ctf --help`; that it runs on our Warp-made
+  optimisation sets (2D stacks, `rlnTomoSubTomosAre2DStacks`; it reads the tilt images the tilt-series stars name,
+  Warp's frame-series averages, which are in the reruns); what it writes (tomograms.star, tilt-series stars, an
+  optimisation set); whether it refines astigmatism per tilt (the PI's output says yes: U and V moved apart per tilt).
+- **Job:** reads a Refine 3D's optimisation set (the poses and tomograms) and a reference **at the tilt series' pixel
+  size**: two half maps, their mask and their FSC (S0, below: a Reconstruct particle at binning 1, a Mask and a
+  PostProcess made from it; the PI's chain did the same, Reconstruct job036 `--bin 1 --b 786 --crop 448`). Fields:
+  defocus on/off, search range (the PI ±6000 Å), regularisation across tilts (lambda; the PI ran none and his late
+  tilts went to −0.22 µm), per-frame scale on/off, even/odd aberrations (off), box in tilt-image pixels (~1.5× Ø: the
+  PI 512 px at 1.55 Å for this capsid). Writes an optimisation set (same particles, refined tomograms.star) that the next
+  Refine 3D reads; the images stay (our exports are raw, `dont_premultiply`: RELION applies the CTF at refine).
+- **The driver says what moved** (never silent): per tilt, defocus and astigmatism before → after; it refuses or flags a
+  defocus ≤ 0 or a change over 1 µm from Warp's; a per-tilt-series table for the card.
+- **First run:** 412 job019 → Reconstruct particle (bin 1) → Mask → PostProcess → CtfRefine → Refine 3D local (from
+  job019) → PostProcess, read on the outer layer and both layers against job020 (9.0 / 9.2 Å) and the PI's 8.79 Å.
+- **Mask job: radial limits** (inner and outer radius), so the outer-layer mask (215–271 Å) is a Mask job, not a side
+  step (F22).
+
+### 15.2 C6 M (build second)
+
+§11.1's S0 facts stand. Next facts, read only: a rerun's processing `.settings` and one tilt-series XML (which paths
+they hold: frames, averages, alignment); the population/source layout; where MCore writes; how `create_species` takes a
+RELION refine (half maps, binary mask, `--particles_relion`, `--angpix_coords` / `--angpix_shifts`). Then the design
+here, then the build.
+
+- **Shape (§11):** the home project holds the population; one source per rerun project with **copies** of its tilt-series
+  XMLs and a settings file pointing M at them, images read in place (the reruns are never written); the species from a
+  Refine 3D and a Mask.
+- **Fields:** iterations; per-tilt CTF (defocus, astigmatism), image warp grid, stage angles, magnification per source
+  (the ±0.5 % sessions), particle poses; `--task_dir` on fast scratch.
+- **Outputs:** refined half maps and map (a card with the FSC), the refined XML copies; a Warp Export input "tilt-series
+  metadata from an M job" to cut bin-1 images from them.
+- **First run:** the 412 (the 438, or the grown set) from the best Refine 3D; the ribosome after R2.
+
+### 15.3 C11 Frame alignment (after C10, on its evidence)
+
+RELION's `relion_tomo_align` (per-particle motion over the tilts, per-tilt shifts). Its trajectories need a RELION
+re-extraction (the Subtomo extraction job) before the next Refine 3D. Copia's tutorial gain came from frame alignment and
+CtfRefine together (10.5 → 7.8 Å).
+
+### 15.4 Order
+
+1. Restart the server (H18/H19 and the rest of the uncommitted tree); read the growth run (§12.5's controls) and R1's
+   last two (unmilled2, SK: their keep lists go to the maintainer).
+2. Build C10 with the Mask job's radial limits (built 2026-11-19, §15.5); run it on the 412.
+3. R2 for the ribosome once the eight are in (§12.4); C10 on R2 as well.
+4. M: facts → design → build → the 412, then the ribosome.
+
+### 15.5 Built 2026-11-19: C10 CtfRefine, and the Mask's radial limits
+
+On the maintainer's "build both" (2026-11-19), CtfRefine first. In the main checkout, uncommitted.
+
+**S0 facts (RELION 5.0.1 image, the PI's `Copia/try2`, our job018/job019; read only).**
+
+- `relion_tomo_refine_ctf --help`: `--do_defocus` refines the astigmatic defocus per tilt (`--d0/--d1/--ds`, `--kmin`
+  30 Å), `--do_reg_defocus --lambda` (0.001) regularises across tilts, `--reset_to_common`; `--do_scale` with
+  `--per_frame_scale` or `--per_tomogram_scale`; even/odd aberrations; `--b` (required); `--fsc` a PostProcess star.
+- **The reference must be at the tilt series' pixel size (F23).** The tomo reference loader pads to `--b` or refuses a
+  larger map; it never reads the pixel size. job019's halves are 256 px at 3.10 Å, the tilt images 1.55 Å. The PI
+  reconstructed at bin 1 (`--b 786 --crop 448`) and ran `--b 512 --do_defocus --d0 -6000 --d1 6000 --do_scale
+  --per_frame_scale` with that pair, `MaskCreate/job013` and `PostProcess/job040`'s star.
+- **What it reads and writes.** It reads the tilt images the tilt-series stars name (ours: the reruns' Warp frame-series
+  averages, 4096², 1.55 Å) and the particles' poses; the 2D stacks are not read. It writes `optimisation_set.star`
+  (particles = the input's `run_data.star`, tomograms = its own), `tomograms.star`, `tilt_series/<TS>.star`, `temp/`,
+  `logfile.pdf`; unknown columns are kept (it warns and maintains them).
+- **No re-export after it.** Our export says `rlnCtfDataAreCtfPremultiplied 0`, and the PI's Refine 3D after CtfRefine
+  read `--tomograms CtfRefine/job042/tomograms.star` beside its particles: relion_refine takes each tilt's CTF from
+  the tomograms star. A Refine 3D reading CtfRefine's optimisation set refines on the same bin-2 images with the
+  refined CTF. (The PI re-extracted at bin 1 for his own reasons, not for the CTF.)
+- **The PI's run, compared tilt by tilt** (his input `External/job007` against `CtfRefine/job042`, with this build's
+  comparison): his input held 7 tilts at 1.6–2.2 µm instead of ~4.5 µm (failed fits); CtfRefine brought two back
+  (−27° +2.46 µm, +60° +2.35 µm) and sent five to a defocus at or below zero (−45°, −39°, +57°, +66°, +69°); moves
+  reach 2.5 µm with a ±0.6 µm search range, so `--d0/--d1` bound the first scan, not the result. The per-tilt scale went
+  negative on +54°…+63° (down to −0.12). The middle tilts moved by hundredths of a µm, the astigmatism fell from Warp's
+  0.99 to 0.54 µm (median; 0.71 µm at 51° on +12°, the 141° of §12.5 with U and V swapped). Our input (job018's tilt
+  series) has no such failed fits.
+
+**Built.**
+
+- **`ctfRefine`, "CTF refine"** (`services/jobs/ctf_refine.py`, `drivers/ctf_refine.py`, spec row after PostProcess,
+  `dependencies` Refine 3D, `log_format` reconstruct for "+ Tomogram k / n"). Inputs: `input_optimisation` (a Refine
+  3D's), `input_half_map` (preferred Reconstruct particle), `input_mask`, `input_fsc` (new `JobFileType.FSC_STAR`, a
+  PostProcess's `postprocess.star`). Output: `optimisation_set.star`, no `refines` (a Refine 3D is pointed at it by
+  choice: it sits earlier in pipeline order, so automatic wiring never takes it, and Run's topological order submits it
+  after). Fields: defocus (range ± default RELION's 3000 Å, steps, kmin, regularise + lambda, reset to common), scale
+  (per tilt, per tomogram), aberrations (even/odd and orders), box (0 = the reference's), largest move (1 µm), threads,
+  extra arguments; `shows_param` hides what a switch turns off; `run_problems` refuses "nothing to refine".
+- **The driver refuses before RELION:** half maps and mask not one grid; the reference off the tilt images' pixel size
+  (naming the fix: Reconstruct particle, binning 1, with its Mask and PostProcess); tomograms at several pixel sizes;
+  a box smaller than the reference or odd; an FSC measured on other half maps (`rlnUnfilteredMapHalf1`).
+- **The driver says what moved:** per tilt, the defocus pair and axis before and after (U ≥ V normalised, so a swap is no
+  move), into `ctf_changes.json` and a per-tilt-series table in run.out; it **fails** on a tilt at defocus ≤ 0, a move
+  over `max_defocus_change_um`, or a negative contrast scale, naming the tilts and the levers (regularise, a narrower
+  range, the scale over the dose).
+- **Reconstruct particle** gains the `output_half_map` slot (`half1.mrc`), **PostProcess** the `output_fsc` slot
+  (`postprocess.star`). PostProcess's half-map input still prefers a Refine 3D (rank: species, then preferred type), so
+  no existing input ties.
+- **Mask: radial limits** (`inner_radius_ang`, `outer_radius_ang`, group "Radius"): RELION's mask times a shell around
+  the box centre (voxel n // 2), 1 between the radii, a raised cosine to 0 over the soft edge beyond each limit (outside,
+  as RELION grows its own edge). `mask_stats.json` records the limits and the fraction before them.
+- **Branch map:** name, icon, add menu, slot words ("FSC"), identity line (defocus range, regularised, scale), the
+  Mask's radius; the large card: tiles (median move, largest, box), a line per tilt series (defocus before → after,
+  median and largest move, astigmatism before → after, scale range), the failed tilts.
+- **Config:** `ctfRefine` profiles in `conf.template.yaml` (CPU, 32G, 8 CPUs, 2 h) and the dev `conf.yaml` (partition
+  g on the GPU ticket). The lab install's `conf.yaml` needs the same block, else the job takes `slurm_defaults`.
+
+**Checked** (session scratchpad `c10/`): the comparison on the PI's own run (above: 13 tilts flagged, the scale check
+included); the radial shell on job016's mask at 215–271 Å (15.6 % → 9.6 % of the box, 1.0 between the radii, the
+inner layer gone); the pre-RELION checks on job018/job019/job020 (tilt images 1.55 Å, job019's halves 3.10 Å → refused;
+job020's FSC names job019's half 1 → accepted); the job page's groups from `layout_of`; the whole first run rehearsed on
+a copy of AGG412_STA's state (`add_job` with `reading`, as a plan adds them: Reconstruct particle → Mask → PostProcess →
+CTF refine → Refine 3D clone of job019 reading the CTF refine → outer Mask on job019 → three PostProcess), every input
+resolved by Run's own passes; `ruff`, `check_boundaries.py` clean. **Not run:** relion_tomo_refine_ctf on our metadata
+(the first run is the test), the job page in a browser. The server needs a restart for the new job type.

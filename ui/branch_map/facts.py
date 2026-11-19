@@ -407,6 +407,8 @@ def job_facts(kind: str, jm, job_dir: Path | None, reg: dict[str, dict], iid: st
         _mask_facts(f, job_dir)
     elif kind == "postprocess":
         _postprocess_facts(f, job_dir)
+    elif kind == "ctfRefine":
+        _ctf_refine_facts(f, job_dir)
     return f
 
 
@@ -477,6 +479,11 @@ def _mask_facts(f: Facts, job_dir: Path) -> None:
             f"encloses {st['enclosed_fraction']:.1%} of the box · grown {st['extend_px']} px, soft edge "
             f"{st['soft_edge_px']} px",
         ]
+        inner, outer = st.get("inner_radius_ang") or 0, st.get("outer_radius_ang") or 0
+        if inner or outer:
+            f.lines.append(
+                f"kept between {inner:g} and {outer:g} Å from the centre" if outer else f"kept beyond {inner:g} Å"
+            )
     url = map_slices_url(job_dir / "mask.mrc")
     if url:
         f.pictures = [(url, "mask.mrc, three central slices")]
@@ -500,6 +507,45 @@ def _postprocess_facts(f: Facts, job_dir: Path) -> None:
     if url:
         f.pictures = [(url, "postprocess.mrc, three central slices")]
         f.picture_caption = "the sharpened map"
+
+
+def _ctf_refine_facts(f: Facts, job_dir: Path) -> None:
+    """What moved, per tilt series: the defocus (mean of U and V) and the astigmatism, medians over the tilts, from
+    the driver's comparison of the refined tilt-series stars with those the job read."""
+    path = job_dir / "ctf_changes.json"
+    if not path.exists():
+        return
+    d = json.loads(path.read_text())
+    series = d.get("tilt_series") or []
+    if not series:
+        f.lines = ["no tilt series compared"]
+        return
+    worst = max(series, key=lambda s: abs(s["largest_move_um"]))
+    n_tilts = sum(len(s["tilts"]) for s in series)
+    moves = sorted(abs(t["mean_move_ang"]) / 1e4 for s in series for t in s["tilts"])
+    f.tiles = [
+        ("Moved", f"{moves[len(moves) // 2]:.2f} µm"),
+        ("Largest", f"{worst['largest_move_um']:+.2f} µm"),
+        ("Box", f"{d.get('box')} px"),
+    ]
+    f.lines = [
+        f"{len(series)} tilt series · {n_tilts} tilts · defocus moved median {moves[len(moves) // 2]:.3f} µm, largest "
+        f"{worst['largest_move_um']:+.3f} µm ({worst['name']}, {worst['largest_move_angle']:+.0f}°)"
+    ]
+    if d.get("flagged"):
+        f.lines.append(
+            f"{len(d['flagged'])} tilts failed the checks (defocus ≤ 0, a move over {d.get('limit_um')} µm or a "
+            "negative contrast scale)"
+        )
+    for s in series:
+        scale = s.get("scale_range")
+        f.lines.append(
+            f"{s['name']} · {len(s['tilts'])} tilts · defocus {s['mean_defocus_before_um']:.2f} → "
+            f"{s['mean_defocus_after_um']:.2f} · moved {s['median_move_um']:.2f} "
+            f"(largest {s['largest_move_um']:+.2f}) · "
+            f"astigmatism {s['astig_before_um']:.2f} → {s['astig_after_um']:.2f} µm"
+            + (f" · scale {scale[0]:.2f}–{scale[1]:.2f}" if scale else "")
+        )
 
 
 def ts_facts(kind: str, jm, job_dir: Path | None, reg: dict, iid: str, ts: str) -> TsFacts | None:

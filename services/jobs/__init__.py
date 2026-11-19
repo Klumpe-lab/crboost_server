@@ -30,6 +30,7 @@ from services.jobs.class3d import Class3DParams
 from services.jobs.refine3d import Refine3DParams
 from services.jobs.mask_create import MaskCreateParams
 from services.jobs.postprocess import PostProcessParams
+from services.jobs.ctf_refine import CtfRefineParams
 
 from collections.abc import Mapping
 
@@ -46,6 +47,7 @@ __all__ = [
     "AbstractJobParams",
     "CandidateExtractPytomParams",
     "Class3DParams",
+    "CtfRefineParams",
     "DenoisePredictParams",
     "DenoiseTrainParams",
     "ExtractPickListParams",

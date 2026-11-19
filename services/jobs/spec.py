@@ -25,6 +25,7 @@ from services.io_slots import JobFileType
 from services.jobs._base import AbstractJobParams
 from services.jobs.candidate_extract import CandidateExtractPytomParams
 from services.jobs.class3d import Class3DParams
+from services.jobs.ctf_refine import CtfRefineParams
 from services.jobs.denoise_predict import DenoisePredictParams
 from services.jobs.denoise_train import DenoiseTrainParams
 from services.jobs.extract_pick_list import ExtractPickListParams
@@ -451,6 +452,23 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         plugins=("particle_results",),
         summary="Gold-standard FSC and the sharpened map from a refinement's halves.",
         glyph='<path d="M1.5 1.5v9h9M2.6 2.8c2.6 0 2.8 6 7.4 6.6"/>',
+    ),
+    # Per-tilt defocus, astigmatism and scale against a reference at the tilt series' pixel size (a Reconstruct
+    # particle at binning 1, its Mask and PostProcess); a Refine 3D reads its optimisation set next.
+    JobSpec(
+        JobType.CTF_REFINE,
+        CtfRefineParams,
+        "CTF refine",
+        PHASE_PARTICLES,
+        dependencies=(JobType.REFINE3D,),
+        driver="ctf_refine.py",
+        log_format="reconstruct",
+        dir_slug="ctf_refine",
+        summary="Refines each tilt's defocus and astigmatism against a reference.",
+        glyph=(
+            '<ellipse cx="6" cy="6" rx="4.7" ry="3.5" transform="rotate(-30 6 6)"/>'
+            '<ellipse cx="6" cy="6" rx="2.2" ry="1.6" transform="rotate(-30 6 6)"/>'
+        ),
     ),
 )
 

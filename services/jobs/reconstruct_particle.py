@@ -55,7 +55,9 @@ class ReconstructParticleParams(AbstractJobParams):
         )
     ]
     OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = [
-        OutputSlot(key="output_map", produces=JobFileType.REFERENCE_MAP, path_template="merged.mrc")
+        OutputSlot(key="output_map", produces=JobFileType.REFERENCE_MAP, path_template="merged.mrc"),
+        # The two halves (half2.mrc beside it), for PostProcess and for CTF refinement's reference.
+        OutputSlot(key="output_half_map", produces=JobFileType.HALF_MAP, path_template="half1.mrc"),
     ]
 
     # Reconstruction parameters

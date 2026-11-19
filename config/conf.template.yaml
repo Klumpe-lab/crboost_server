@@ -237,6 +237,14 @@ job_resource_profiles:
     cpus_per_task: 4
     time: "0:30:00"
 
+  # CTF refine runs on CPUs (relion_tomo_refine_ctf, OpenMP: threads = cpus_per_task), one tilt series in memory
+  # at a time (its tilt images at full size, ~3 GB for 41 tilts of 4096 x 4096).
+  ctfRefine:
+    gres: ""
+    mem: "32G"
+    cpus_per_task: 8
+    time: "2:00:00"
+
   # DL tilt-filter prediction run: one GPU job over every tilt of the project.
   tiltFilter:
     gres: "gpu:1"

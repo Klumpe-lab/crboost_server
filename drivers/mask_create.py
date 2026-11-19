@@ -7,6 +7,9 @@ its maximum, or an absolute value when one is given. relion_mask_create then bin
 gives it a soft edge. The map's range, the threshold and the fraction of the box the mask encloses go to
 mask_stats.json and the log; a mask that encloses almost nothing or almost everything fails the job with those
 numbers, since a run would only find out later.
+
+Radial limits multiply RELION's mask by a shell around the box centre (voxel n // 2, RELION's origin): 1 between the
+radii, a raised cosine to 0 over the soft edge beyond each, so a capsid's outer layer can be masked alone.
 """
 
 import json
@@ -58,6 +61,27 @@ def lowpass(data: np.ndarray, apix: float, resolution_ang: float) -> np.ndarray:
     return np.fft.irfftn(np.fft.rfftn(data) * weight, s=data.shape).astype(np.float32)
 
 
+def radial_shell(shape: tuple[int, int, int], apix: float, inner_ang: float, outer_ang: float, edge_px: int):
+    """1 between `inner_ang` and `outer_ang` from the box centre, falling to 0 by a raised cosine over `edge_px`
+    pixels beyond each limit (outside the outer radius, inside the inner one); a limit of 0 is none."""
+    z, y, x = (np.arange(n, dtype=np.float32) - n // 2 for n in shape)
+    r = np.sqrt(z[:, None, None] ** 2 + y[None, :, None] ** 2 + x[None, None, :] ** 2) * np.float32(apix)
+    edge = max(edge_px, 0) * apix
+
+    def falloff(beyond: np.ndarray) -> np.ndarray:
+        if edge <= 0:
+            return (beyond <= 0).astype(np.float32)
+        t = np.clip(beyond / edge, 0.0, 1.0)
+        return (0.5 + 0.5 * np.cos(np.pi * t)).astype(np.float32)
+
+    shell = np.ones(shape, dtype=np.float32)
+    if outer_ang > 0:
+        shell *= falloff(r - outer_ang)
+    if inner_ang > 0:
+        shell *= falloff(inner_ang - r)
+    return shell
+
+
 def main():
     start_supervisor()
     print("--- SLURM JOB START (Mask) ---", flush=True)
@@ -73,6 +97,10 @@ def main():
         input_map = paths["input_map"]
         require_producer_input(input_map, "Input map")
         print(f"[DRIVER] Input map: {input_map}", flush=True)
+
+        inner, outer = params.inner_radius_ang, params.outer_radius_ang
+        if inner > 0 and outer > 0 and inner >= outer:
+            raise ValueError(f"The inner radius ({inner:g} Å) must be smaller than the outer radius ({outer:g} Å)")
 
         data, apix = read_map(input_map)
         lp = lowpass(data, apix, params.lowpass_ang)
@@ -115,7 +143,26 @@ def main():
         if not mask_path.exists():
             raise RuntimeError(f"relion_mask_create wrote no {MASK_NAME}; see run.out")
         with mrcfile.open(mask_path, permissive=True) as m:
-            mask = np.asarray(m.data, dtype=np.float32)
+            mask = np.asarray(m.data, dtype=np.float32).copy()
+        before_radius = float(mask.mean())
+        if inner > 0 or outer > 0:
+            half_box = min(mask.shape) // 2 * apix
+            if outer > half_box:
+                print(
+                    f"[DRIVER] NOTE: the outer radius {outer:g} Å lies beyond the box's half width {half_box:g} Å: "
+                    "it cuts only the corners",
+                    flush=True,
+                )
+            mask *= radial_shell(mask.shape, apix, inner, outer, params.soft_edge_px)
+            with mrcfile.open(mask_path, mode="r+", permissive=True) as m:
+                m.data[...] = mask.astype(m.data.dtype)
+            limits = f"{inner:g} Å" if inner > 0 else "the centre"
+            limits += f" to {outer:g} Å" if outer > 0 else " outwards"
+            print(
+                f"[DRIVER] Radial limits: kept from {limits}, soft edge {params.soft_edge_px} px beyond each; the "
+                f"mask enclosed {before_radius:.1%} of the box before them",
+                flush=True,
+            )
         enclosed = float(mask.mean())
         hard = float((lp >= threshold).mean())
         stats = {
@@ -133,6 +180,9 @@ def main():
             "enclosed_fraction": enclosed,
             "extend_px": params.extend_px,
             "soft_edge_px": params.soft_edge_px,
+            "inner_radius_ang": inner,
+            "outer_radius_ang": outer,
+            "enclosed_before_radius": before_radius,
         }
         (job_dir / STATS_NAME).write_text(json.dumps(stats, indent=1))
         print(

@@ -419,6 +419,7 @@ WORDS = {
     "reference_map": "reference map",
     "half_map": "half map",
     "mask": "mask",
+    "fsc_star": "FSC",
 }
 # The input row's label per slot key; input_star depends on what it accepts.
 SLOT_LABELS = {
@@ -436,6 +437,7 @@ SLOT_LABELS = {
     "input_map": "map",
     "input_mask": "mask",
     "input_half_map": "half maps",
+    "input_fsc": "FSC",
 }
 STAR_LABELS = {
     "tilt_series_star": "tilt series",
@@ -467,6 +469,7 @@ NAMES = {
     "refine3d": "Refine 3D",
     "maskCreate": "Mask",
     "postprocess": "PostProcess",
+    "ctfRefine": "CTF refine",
 }
 TOOLS = {
     "warp_aretomo": "WarpTools",
@@ -528,7 +531,8 @@ SLOT_GLOSS = {
     "reference": "a reference map to start from",
     "map": "the map the mask is cut from",
     "mask": "a soft solvent mask from a Mask job",
-    "half maps": "a refinement's two unfiltered half maps",
+    "half maps": "two unfiltered half maps, a refinement's or a reconstruction's",
+    "FSC": "a PostProcess's masked FSC of the reference's half maps: how far the reference is trusted",
 }
 ICON = {
     "importmovies": "download",
@@ -553,6 +557,7 @@ ICON = {
     "refine3d": "auto_awesome",
     "maskCreate": "blur_on",
     "postprocess": "tune",
+    "ctfRefine": "center_focus_strong",
 }
 ADDABLE = (
     "aligntiltsWarp",
@@ -572,6 +577,7 @@ ADDABLE = (
     "refine3d",
     "maskCreate",
     "postprocess",
+    "ctfRefine",
 )
 # Parameters the card's form leaves to the SLURM tab or never asks.
 HIDDEN_PARAMS = {"array_throttle", "perdevice", "do_at_most"}
@@ -751,8 +757,22 @@ def _identity(kind: str, jm) -> list[str]:
         thr = getattr(jm, "threshold", 0) or 0
         cut = f"threshold {thr:g}" if thr > 0 else f"{getattr(jm, 'threshold_fraction', 0):g} × max"
         identity.append(f"{param_words(jm, 'lowpass_ang')} Å · {cut}")
+        inner, outer = getattr(jm, "inner_radius_ang", 0) or 0, getattr(jm, "outer_radius_ang", 0) or 0
+        if inner or outer:
+            identity.append(f"radius {inner:g}–{outer:g} Å" if outer else f"radius from {inner:g} Å")
     if kind == "postprocess":
         identity.append("auto B" if getattr(jm, "auto_bfac", True) else f"B {param_words(jm, 'adhoc_bfac')}")
+    if kind == "ctfRefine":
+        what = [
+            w
+            for w, on in (("defocus", getattr(jm, "do_defocus", False)), ("scale", getattr(jm, "do_scale", False)))
+            if on
+        ]
+        if getattr(jm, "do_defocus", False):
+            what[0] = f"defocus ±{getattr(jm, 'defocus_range_ang', 0):g} Å"
+            if getattr(jm, "regularise", False):
+                what[0] += " regularised"
+        identity.append(" · ".join(what) or "nothing to refine")
     return identity
 
 
