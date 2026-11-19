@@ -496,5 +496,25 @@ not appear at all. So the confirmation moved into the MCP server.
   (`ApplyNowIn.edits`, the forwarder's alone); the server folds changed values and kept deletions into the plan
   (`steps_with_edits`, the same rewrite the page uses; `coerce` moved beside it) and revises it before carrying
   it out; a refused edit applies nothing. No choice field any more: Enter on its default had answered Do nothing.
+- Fourth try, accepted and applied: the form worked but read clunky, and editing belongs to the page. The rows are
+  now all facts, a table per project (■ project, its values, + jobs, each changed job with its settings
+  now → after beneath it, deletions with sizes, the run); the edit path (`edits`, `_apply_dialog_edits`) is gone
+  again. `steps_with_edits` and `coerce` stay in `services/agent_plans.py` for the page.
 - Not checked: how Claude Code lays the dialog out (the docs don't say whether `message` is markdown; it is plain
   text on purpose), and a long plan's scrolling outside fullscreen.
+
+## 15. The UI and an agent in one project at once (2026-11-17)
+
+What happened: an agent read unmilled2's roster (a Segment job, Scheduled, added in the UI), the maintainer took
+that job off the roster in the UI at 11:01:35, and the agent's plan a moment later refused with "No job segment
+in this project". Both read the one in-memory `ProjectState`; nothing was locked by the project being open, and
+the other seven projects' plans went through. The shortcoming: a roster edit made in the UI left no trace (the
+agent's writes go to the console and `Logs/agent_api.jsonl`, the UI's to neither), so the agent could not tell
+what changed under it, and misread the refusal as the plan rehearsing the file on disk.
+
+- **Built:** the roster's add and remove in the UI (`PipelineBuilderPanel.add_instance_to_pipeline`,
+  `remove_instance_from_pipeline`; Delete goes through the latter) write a console event,
+  `<project> · UI: added <job>` / `UI: took <job> off the roster`, beside the agent's `agent: add_job …`.
+- **Open:** a refusal for a job that is not there could say the roster changed since the agent's last read (a
+  roster revision on `ProjectState`, returned by `get_project` and checked by `plan_changes`), so the agent asks
+  instead of guessing. Parameter edits made in the UI are not logged either.

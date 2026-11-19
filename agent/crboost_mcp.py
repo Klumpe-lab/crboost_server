@@ -217,11 +217,12 @@ NOT_APPLIED = (
     "its page."
 )
 # Keys only this forwarder sets on a dialog verb's call; one the agent sends is dropped.
-FORWARDER_KEYS = ("confirmation", "edits", "dialog")
+FORWARDER_KEYS = ("confirmation", "dialog")
 
 
 def accepted(answer: Any) -> dict[str, Any] | None:
-    """The form's fields when the user pressed Accept; None for a decline, a cancel, or anything malformed."""
+    """The form's rows when the user pressed Accept (an Accept, whatever they hold); None for a decline, a
+    cancel, or anything malformed."""
     if isinstance(answer, dict):
         action, content = answer.get("action"), answer.get("content")
     else:
@@ -274,10 +275,10 @@ async def ask_now(ctx, confirm: dict[str, Any]) -> dict[str, Any] | None | str:
 
 
 async def settle(forwarder: Forwarder, name: str, arguments: dict[str, Any], confirm, first, answer):
-    """The call again with the server's one-time token and the form's fields when the user pressed Accept; else
-    what happened, for the agent, without the token."""
+    """The call again with the server's one-time token when the user pressed Accept; else what happened, for the
+    agent, without the token."""
     if isinstance(answer, dict):
-        return await forwarder.call(name, {**arguments, "confirmation": confirm["token"], "edits": answer})
+        return await forwarder.call(name, {**arguments, "confirmation": confirm["token"]})
     if answer is None:
         return {"success": False, "error": NOT_APPLIED, "declined": True, "ui_url": first.get("ui_url")}
     return {**first, "error": f"{answer} {first.get('error', '')}".strip()}

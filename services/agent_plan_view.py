@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from services.agent_plans import FieldView, JobView, Plan, ProjectPlan, format_bytes
+from services.agent_plans import Plan, ProjectPlan, format_bytes
 
 _MARK = {"added": "+", "cloned": "+", "removed": "−", "deleted": "−"}
 
@@ -209,14 +209,12 @@ def dialog_text(plan: Plan, url: str) -> str:
 #
 # Claude Code shows a server dialog's message clipped to its first lines ("… (+22 more lines)") and every form
 # field whole, one "title: value" row each. So the gist goes in the message's first two lines and the plan in
-# fields: facts as one-choice rows, the settings it changes as fields to edit (filled in with the plan's value),
-# each deletion as a yes/no. Accept applies the plan as the form stands; Decline changes nothing.
+# rows, per project a table: its values, the jobs it adds or takes off, every setting as now → after, deletions
+# with their sizes, the run. Every row is a fact (one choice, already chosen); nothing is edited here, that is the
+# page's. Accept applies the plan as shown; Decline changes nothing.
 
 # Claude Code cuts a field's title at about 50 characters.
 TITLE_MAX = 48
-
-# What a field of the form edits: a setting, ("set", project, job, field), or a deletion kept, ("keep", step).
-Target = tuple[str, str, str, FieldView] | tuple[str, int]
 
 
 def _title(text: str) -> str:
@@ -229,98 +227,53 @@ def _fact(title: str, value: str) -> dict[str, Any]:
     return {"type": "string", "title": _title(title), "oneOf": [{"const": value, "title": value}], "default": value}
 
 
-def _setting(job: JobView, f: FieldView) -> dict[str, Any]:
-    label = f.label + (" (SLURM)" if f.kind == "slurm" else "")
-    out: dict[str, Any] = {
-        "title": _title(f"{label} · {job.name}"),
-        "description": f"{job.name}: {label}, now {show(f.before)}" + (f". {f.help}" if f.help else ""),
-    }
-    if f.type == "bool":
-        out.update(type="boolean", default=bool(f.after))
-    elif f.type in ("int", "float"):
-        out["type"] = "integer" if f.type == "int" else "number"
-        if f.after is not None:
-            out["default"] = f.after
-        bounds = f.bounds or {}
-        for key, schema_key in (("ge", "minimum"), ("le", "maximum")):
-            if key in bounds:
-                out[schema_key] = bounds[key]
-    elif f.type == "choice" and f.choices:
-        out.update(
-            type="string",
-            oneOf=[{"const": str(c), "title": show(c)} for c in f.choices],
-            default=str(f.after) if f.after is not None else str(f.choices[0]),
+def _project_rows(pp: ProjectPlan) -> list[tuple[str, str]]:
+    tag = "new project" if pp.new else ("your project, made by hand" if pp.hand_made else "")
+    rows = [(f"■ {pp.name}", tag or pp.summary().split(": ", 1)[-1])]
+    rows += [(f"  {label}", value) for label, value in pp.values]
+    for j in pp.jobs:
+        if j.mark in ("added", "cloned"):
+            rows.append(("  + job", j.name + (f" (clone of {j.clone_of})" if j.clone_of else "")))
+        elif j.mark == "removed":
+            rows.append(("  − job", f"{j.name} (off the roster)"))
+    for j in pp.jobs:
+        if j.changes:
+            rows.append((f"  {j.name}", "now → after" + (" (as added)" if j.mark in ("added", "cloned") else "")))
+        for f in j.changes:
+            label = f.label + (" (SLURM)" if f.kind == "slurm" else "")
+            rows.append((f"    {label}", f"{show(f.before)} → {show(f.after)}"))
+    for d in pp.deletions:
+        size = format_bytes(d.size_bytes) if d.size_bytes is not None else "size not measured"
+        left = f", leaves without input: {', '.join(d.orphans)}" if d.orphans else ""
+        rows.append((f"  delete {d.what}", f"{size}, {'FOR GOOD' if d.permanent else 'to Trash'}{left}"))
+    rows += [("  also", s) for s in pp.also]
+    if pp.run is not None:
+        jobs = pp.run.get("jobs") or []
+        rows.append(
+            ("  runs", f"{len(jobs)} job{'s' * (len(jobs) != 1)}" + (" (REFUSED)" if pp.run.get("refusals") else ""))
         )
-    else:
-        out.update(type="string", default="" if f.after is None else str(f.after))
-    return out
-
-
-def dialog_form(plan: Plan, url: str) -> tuple[str, dict[str, Any], dict[str, Target]]:
-    """The plan as the terminal dialog shows it: (message, form schema, what each editable field edits)."""
-    props: dict[str, dict[str, Any]] = {}
-    targets: dict[str, Target] = {}
-
-    def add(prop: dict[str, Any], target: Target | None = None) -> None:
-        key = f"f{len(props)}"
-        props[key] = prop
-        if target is not None:
-            targets[key] = target
-
-    for path, pp in plan.projects.items():
-        tag = "new project" if pp.new else ("your project, made by hand" if pp.hand_made else "")
-        add(_fact("Project", pp.name + (f" ({tag})" if tag else "")))
-        for label, value in pp.values:
-            add(_fact(label, value))
-        for j in pp.jobs:
-            if j.mark in ("added", "cloned"):
-                add(_fact("Adds", j.name + (f" (clone of {j.clone_of})" if j.clone_of else "")))
-            elif j.mark == "removed":
-                add(_fact("Takes off the roster", j.name))
-        for j in pp.jobs:
-            for f in j.changes:
-                if f.editable and j.mark not in ("removed", "deleted"):
-                    add(_setting(j, f), ("set", path, j.instance_id, f))
-                else:
-                    add(_fact(f"{f.label} · {j.name}", f"{show(f.before)} → {show(f.after)}"))
-        for d in pp.deletions:
-            size = format_bytes(d.size_bytes) if d.size_bytes is not None else "size not measured"
-            add(
-                {
-                    "type": "boolean",
-                    "title": _title(f"Delete {d.what}"),
-                    "description": f"{d.what}: {size}, to Trash"
-                    + (f"; leaves without input: {', '.join(d.orphans)}" if d.orphans else "")
-                    + ". Off keeps it.",
-                    "default": True,
-                },
-                ("keep", d.step),
+        for job in jobs:
+            r = job.get("resources") or {}
+            rows.append(
+                (f"    {job['instance_id']}", " · ".join(show(r.get(k)) for k in ("partition", "gres", "time")))
             )
-        for s in pp.also:
-            add(_fact("Also", s))
-        if pp.run is not None:
-            jobs = pp.run.get("jobs") or []
-            add(
-                _fact(
-                    "Runs",
-                    f"{len(jobs)} job{'s' * (len(jobs) != 1)}" + (" (REFUSED)" if pp.run.get("refusals") else ""),
-                )
-            )
-            for job in jobs:
-                r = job.get("resources") or {}
-                add(_fact(job["instance_id"], " · ".join(show(r.get(k)) for k in ("partition", "gres", "time"))))
-    for s in plan.steps:
-        if s.note:
-            add(_fact("Not previewed", f"{s.what}: {s.note}"))
+    return rows
 
+
+def dialog_form(plan: Plan, url: str) -> tuple[str, dict[str, Any]]:
+    """The plan as the terminal dialog shows it: (message, form schema of rows)."""
+    rows: list[tuple[str, str]] = []
+    for pp in plan.projects.values():
+        rows += _project_rows(pp)
+    rows += [("not previewed", f"{s.what}: {s.note}") for s in plan.steps if s.note]
+    props = {f"r{i}": _fact(title, value) for i, (title, value) in enumerate(rows)}
     summary = "; ".join(p.summary() for p in plan.projects.values())
     message = "\n".join(
         [
             f"{plan.title}: {summary}",
-            f"Change a value below to edit the plan · Accept applies it as shown · Decline changes nothing · "
-            f"expires {plan.expires_at:%H:%M}",
+            f"Accept applies it as shown · Decline changes nothing · edit it on the page: {url}",
             "",
             dialog_text(plan, url),
         ]
     )
-    return message, {"type": "object", "properties": props}, targets
+    return message, {"type": "object", "properties": props}

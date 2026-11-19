@@ -23,6 +23,7 @@ from services.path_resolution_service import (
     jobs_in_use,
     override_instance_id,
     pin_sources_made_ambiguous,
+    unreadable_reason,
 )
 from services.project_state import ProjectState
 from services.result import ErrorCode, err, need, ok
@@ -224,6 +225,11 @@ def add_job(
         unknown = sorted(set(reading) - slots)
         if unknown:
             return err(f"{name} has no input {', '.join(unknown)} (its inputs: {', '.join(sorted(slots))}).")
+        reading, why = _checked_reading(
+            state, job_type, species_id=species_id, after=after, clone_of=clone_of, reading=reading
+        )
+        if why:
+            return err(why)
 
     instance_id = next_instance_id(job_type, state.roster(), list(state.jobs))
     warnings = []
@@ -287,6 +293,48 @@ def add_job(
 
     state.mark_dirty()
     return ok(instance_id=instance_id, added=added, pins=pins, warnings=warnings)
+
+
+def _checked_reading(
+    state: ProjectState,
+    job_type: JobType,
+    *,
+    species_id: str | None,
+    after: str | None,
+    clone_of: str | None,
+    reading: dict[str, str],
+) -> tuple[dict[str, str], str | None]:
+    """`reading` as the new job will hold it, and why it cannot: each source must be one its slot lists, as
+    `job_params.set_input` checks. A source may also be named the way job views show it, by its producer's
+    instance id or a set's id without its type; it then stands for the one candidate that name fits. Worked out on
+    a copy with the job added, so a refusal leaves `state` as it was."""
+    copy = state.detached_copy()
+    res = add_job(copy, job_type, species_id=species_id, after=after, clone_of=clone_of)
+    if not res["success"]:
+        return reading, None  # the call on the state refuses the same way
+    instance_id = res["instance_id"]
+    job_model = copy.jobs[instance_id]
+    resolver = PathResolutionService(copy)
+    schema = {s.key: s for s in resolver.get_input_schema_for_job(job_model.job_type, job_model)}
+    checked: dict[str, str] = {}
+    for slot, key in reading.items():
+        candidates = resolver.get_candidates_for_slot(
+            job_model.job_type, slot, consumer_species_id=job_model.species_id, consumer_instance_id=instance_id
+        )
+        hits = [c for c in candidates if c.source_key == key]
+        if not hits:
+            hits = [
+                c for c in candidates if key in (override_instance_id(c.source_key), c.source_key.partition(":")[2])
+            ]
+        if len(hits) != 1:
+            listed = ", ".join(c.source_key for c in candidates) or "none"
+            which = "names more than one" if hits else "is not one"
+            return reading, f"{key} {which} of the sources {instance_id}.{slot} can read (its sources: {listed})."
+        why = unreadable_reason(job_model.job_type, schema[slot], hits[0])
+        if why:
+            return reading, f"{instance_id}.{slot} cannot read {hits[0].source_key}: {why}."
+        checked[slot] = hits[0].source_key
+    return checked, None
 
 
 def _drop_overrides_naming(state: ProjectState, instance_id: str) -> None:

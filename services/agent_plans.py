@@ -179,9 +179,9 @@ class Plan:
     finished_at: datetime | None = None
     error: str | None = None
     task_id: str | None = None
-    # The terminal dialog apply_changes_now opened through the MCP forwarder: its one-time token, the revision
-    # it shows, and what each of its fields edits. The forwarder sends the token back on the user's Accept.
-    confirmation: tuple[str, int, dict[str, Any]] | None = None
+    # The terminal dialog apply_changes_now opened through the MCP forwarder: its one-time token and the revision
+    # it shows. The forwarder sends the token back on the user's Accept.
+    confirmation: tuple[str, int] | None = None
 
     @property
     def expires_at(self) -> datetime:

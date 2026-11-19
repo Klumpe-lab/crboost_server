@@ -492,5 +492,3 @@ class ApplyNowIn(ApplyIn):
     # Set by a forwarder that shows the dialog (it drops one an agent sends). Without it no token is handed out:
     # an older forwarder would pass the token on to the agent.
     dialog: SkipJsonSchema[bool] = False
-    # The dialog's fields as the user left them, with the confirmation (the forwarder's, never the agent's).
-    edits: SkipJsonSchema[dict[str, Any] | None] = None
