@@ -1,30 +1,28 @@
-"""Template Workbench — two columns.
+"""Template Workbench — the Templates & masks tab of the Particles registry.
 
-Visual structure (the species header lives on the Species page's Overview tab):
+  ┌ TEMPLATES ─────────── New template… ┐ ┌ VIEWER ──────┐   (the viewer beside the tables
+  │ table, as tall as its rows          │ │ molstar, once │    in a wide pane, under them in
+  ├ MASKS ─────────────── New mask… ────┤ │ loaded        │    a narrow one: `.cb-tm-split`)
+  │ table                               │ └───────────────┘
+  ▸ ACTIVITY (folded)
 
-  ┌ TEMPLATES  · rows + SOURCE ┐ ┌ MASKS · rows + SOURCE ┐   (one auto-fit grid;
-  └────────────────────────────┘ └───────────────────────┘    one column when narrow)
-    Viewer — molstar (3D), with a slice fallback toggle          (full width)
-    Activity log (collapsed)                                     (full width)
-
-Each column is <things> + <where new ones come from>. The lists are `.cb-tw-table`
-grids (CSS in ui/dashboard/css.py), not cards: a narrow card truncates most of its
-lines, while a column sized to its content does not.
+The tables are `.cb-tw-table` grids (CSS in ui/dashboard/css.py) in the job page's Table
+look: file (`path_text`), polarity or method, header, σ, size, then the eye and the ×. The
+creation forms sit in two dialogs (New template…: Shape, PDB, EMDB, Import, Edit current;
+New mask…: From template, Sphere, Import), built once.
 
 Design rules:
   - Inks and hairlines only. The accent marks state (the selected row's ring); an amber
     dot marks something to look at (a large file, an unusual σ), red only a broken volume.
     Polarity and method are words (`ui/components/chip.py`).
-  - Three font sizes: text-sm (section titles),
-    text-xs (body / form labels), text-[10px] (captions / chips / mono).
-    The creation forms use `Segmented` + `.cb-field`, not Quasar tabs and bare
-    QFields, which bring in their own larger sizes.
-  - Selection is a class flip across kept row handles; a list is rebuilt only when
+  - Selection is a class flip across kept row handles; a table is rebuilt only when
     its membership changes (register / delete). Clicking a row must not destroy it.
   - All template-producing actions (shape, pdb, emdb, import, resample,
     apply-lowpass, flip-polarity) write to canonical paths and skip the
     write if a registered entry already exists at that path.
   - Delete is confirmed in a modal; removes the file + sidecar from disk.
+  - One workbench per species, never rebuilt: the molstar iframe (mounted on the first
+    load) and its window `message` listener live as long as the page.
 
 Schema reference: services/project_state.py — species.templates and
 species.masks are sibling collections with UUID identity.
@@ -56,12 +54,13 @@ from services.project_state import (
 from services.templating.template_metadata import read_template_header
 from ui.components.check import house_check
 from ui.components.chip import render_method_chip, render_polarity_chip
-from ui.components.path_link import render_path_link
+from ui.components.dialogs import dialog_host
+from ui.components.path_text import path_text
 from ui.components.reactive import SingleFlight
 from ui.components.segmented import render_segmented
 from ui.components.buttons import house_button, icon_button
 from ui.components.fields import house_field as _field
-from ui.job_plugins._field_styles import PANEL_STYLE, SECTION_HEADER_FIRST_STYLE, panel_head, section_head
+from ui.job_plugins._field_styles import PANEL_TITLE_STYLE, SECTION_STYLE, section_head, voice
 from ui.components.template_viewer import TemplateViewerController, render_template_viewer
 from ui.local_file_picker import local_file_picker
 from ui.template_import_dialog import open_template_import_dialog
@@ -127,46 +126,30 @@ def serve_file(path: str):
 
 
 # ─── Shared style chrome ────────────────────────────────────────────────
-# Three font sizes total. Two accent colors total. The page's blocks are pale gray-blue
-# panels (`PANEL_STYLE`) a gap apart, never underlined or boxed in borders.
-
-# Three ranks; an element uses the one that matches what it is, so a page block
-# ("Source") and one input's label ("apix") never read at the same weight:
-#   SECTION  — `_section()` below: a panel's title, 12 px semibold MIXED case. Templates ·
-#              Masks · Viewer · Activity log. The page's structure; `_subsection()` (Source)
-#              is a block inside a panel.
-#   TOOL     — `_TOOL_CLS`: 10 px semibold mixed case. One tool inside a panel — Resample,
-#              Apply lowpass, Flip polarity. Named, but subordinate to its section.
-#   FIELD    — `_LABEL_CLS`: 9 px uppercase, muted. The label of ONE input, and the column
-#              heads of the tables. Never used for anything that has children.
+# The page's blocks are sections (a Rule head over its content), one box deep. Inside the
+# dialogs' forms: TOOL (`_TOOL_CLS`, 10 px semibold) names a tool that owns inputs, a field
+# label (`house_field`) one input, HINT a sentence.
 _TITLE_CLS = "text-sm font-semibold text-gray-800"
 _TOOL_CLS = "text-[10px] font-semibold text-slate-600"
-_LABEL_CLS = "text-[9px] font-bold text-gray-400 uppercase tracking-wide"
 _HINT_CLS = "text-[10px] text-gray-400"
 _MONO_CLS = "text-[10px] font-mono text-gray-600"
-# Inside a table row everything except the filename runs at 9 px, matching the stats and
-# size badges.
-_ROW_MONO_CLS = "text-[9px] font-mono text-gray-600"
-# Creation-form tabs. Sentence case, matching the Species page's own tab labels
-# ("Templates & masks", not "Templates & Masks"). "From template" says what the tool
-# does; which tool it is (relion_mask_create) is named in the panel's own hint.
-_SOURCE_TABS = (("shape", "Shape"), ("pdb", "PDB / EMDB"), ("import", "Import"), ("edit", "Edit current"))
+# The creation dialogs' forms. Sentence case, matching the registry's tab labels. PDB and
+# EMDB are two forms so each has one action in the footer. "From template" says what the
+# tool does; which tool it is (relion_mask_create) is named in the form's own hint.
+_SOURCE_TABS = (("shape", "Shape"), ("pdb", "PDB"), ("emdb", "EMDB"), ("import", "Import"), ("edit", "Edit current"))
 # "From template" first and the default: most particles are not spherical, so the
 # threshold-derived mask is the normal case and the sphere is the special one.
 _MASK_TABS = (("relion", "From template"), ("sphere", "Sphere"), ("import", "Import"))
-# One column shape for both lists: they sit side by side, so aligned columns read as one
-# system. Only FILE flexes (and therefore ellipsises); everything else is sized to its
-# content.
-_TW_COLS = "16px minmax(0, 1fr) 54px 112px 104px 50px 44px"
-# Both lists render at this fixed height (≈ head + 7 rows, scrolling beyond) so the two
-# columns' Source blocks start on the same line and list growth never reflows the page.
-_LIST_HEIGHT_PX = 186
-
+# One column shape for both tables: in use, file (the only one that flexes), polarity or
+# method, header, σ, size, actions.
+_TW_COLS = "10px minmax(0, 1fr) 84px 150px 64px 58px 46px"
 
 _SANS = "font-family: 'IBM Plex Sans', sans-serif;"
 _ROW_MONO = "font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; font-variant-numeric: tabular-nums;"
 _BODY = "#1e293b"
 _SOFT = "#5b7089"
+_CAPTION = f"{_SANS} font-size: 9.5px; color: {_SOFT}; line-height: 1.45;"
+_TH = voice("th", font="'IBM Plex Sans', sans-serif", size="9px", weight=600, ink="#7d93ab") + " white-space: nowrap;"
 # The two marks a row may carry: amber for something to look at, red only for a broken volume.
 _MARK_COLORS = {"warn": "#d97706", "bad": "#b91c1c"}
 
@@ -176,24 +159,6 @@ def _mark_dot(kind: str) -> None:
         f"width: 5px; height: 5px; border-radius: 50%; background: {_MARK_COLORS[kind]}; "
         "display: inline-block; margin-right: 4px; flex-shrink: 0;"
     )
-
-
-def _section(title: str) -> None:
-    """A panel's title — Templates, Masks, Viewer, Activity log: the Rule head, no explanatory tail; the tables
-    draw their own head border."""
-    section_head(title).style("margin-bottom: 4px;")
-
-
-def _subsection(title: str) -> None:
-    """A block inside a panel (Source): whitespace above it and the sub-section rank."""
-    with ui.row().classes("w-full items-baseline gap-2"):
-        ui.label(title).style(SECTION_HEADER_FIRST_STYLE)
-
-
-def _action_button(label: str, on_click) -> ui.button:
-    """A form's commit action: house chrome, pinned to the right edge of its row
-    (`ml-auto`) so every section's action sits in the same place at the same size."""
-    return house_button(label, on_click).classes("ml-auto")
 
 
 def _stacked_panels(holder: ui.element, panels: dict[str, ui.element]):
@@ -254,9 +219,9 @@ def _values_line(values: dict) -> str:
 
 class TemplateWorkbench:
     """Per-species workbench — templates, masks and the viewer of one species. Mounted
-    by the Species page's Templates & masks tab (`ui/species/templates_tab.py`); the
+    by the registry's Templates & masks tab (`ui/species/templates_tab.py`); the
     species' identity (name, color, Ø, symmetry, notes) and its delete cascade live on
-    the page's Overview tab."""
+    the Species tab."""
 
     def __init__(self, backend, project_path: str, species_id: str):
         self.backend = backend
@@ -352,6 +317,10 @@ class TemplateWorkbench:
         # UI refs
         self._templates_table: ui.element | None = None
         self._masks_table: ui.element | None = None
+        self._templates_count: ui.label | None = None
+        self._masks_count: ui.label | None = None
+        self._template_dialog: ui.dialog | None = None
+        self._mask_dialog: ui.dialog | None = None
         # entry id -> row element, kept by the render so a selection change is a class
         # flip rather than a rebuild of the list the user just clicked.
         self._template_rows: dict[str, ui.element] = {}
@@ -359,10 +328,15 @@ class TemplateWorkbench:
         self._edit_container: ui.element | None = None
         self._mask_source_label = None
         self._molstar_panel: ui.element | None = None
+        self._molstar_canvas: ui.element | None = None
+        self._iframe_mounted = False
+        self._viewer_empty: ui.label | None = None
         self._slice_panel: ui.element | None = None
         self._slice_controller: TemplateViewerController | None = None
         self._session_list_container: ui.element | None = None
         self._log_container: ui.element | None = None
+        self._log_meta: ui.label | None = None
+        self._log_n = 0
         self.client = None
 
         self._load_project_parameters()
@@ -766,6 +740,7 @@ class TemplateWorkbench:
             ui.notify("File missing on disk", type="warning")
             return
         if self.viewer_mode == "molstar":
+            self._ensure_molstar()
             self._pending_load_seq += 1
             self._pending_loads.append(
                 {
@@ -806,6 +781,7 @@ class TemplateWorkbench:
                 logger.warning("slice viewer update_paths failed: %s", e)
 
     def _update_session_tray(self) -> None:
+        self._apply_viewer_mode_visibility()
         if not self._session_list_container:
             return
         current_ids = {item.get("id") for item in self.loaded_items}
@@ -921,6 +897,7 @@ class TemplateWorkbench:
         """Draw the optimistic load spinners above the session list.
         Called whenever the pending list changes — clears and re-renders
         the small container so reorderings stay coherent with the model."""
+        self._apply_viewer_mode_visibility()
         if self._pending_loads_container is None:
             return
         self._pending_loads_container.clear()
@@ -965,26 +942,20 @@ class TemplateWorkbench:
     # ==================================================================
 
     def _render(self) -> None:
-        # Two columns of <things> + <where new ones come from>, then the viewer full
-        # width beneath. `auto-fit` + `minmax` is the same idiom `field_grid()` uses:
-        # two columns on a wide window, one when the workspace is narrow or the roster
-        # is open, with no breakpoint to maintain. `align-items: start` keeps a long
-        # template list from stretching the mask column.
-        # Each column is one panel: its list over the Source block that adds to it. The 560 px
-        # minimum holds a list row (520 px with a readable FILE column, `_REGISTRY_CSS`) plus the
-        # panel's padding; `min()` keeps one column inside a pane narrower than that.
-        with ui.column().classes("w-full p-2").style("gap: 10px;"):
-            with ui.element("div").style(
-                "display: grid; grid-template-columns: repeat(auto-fit, minmax(min(560px, 100%), 1fr)); "
-                "gap: 10px; width: 100%; align-items: start;"
-            ):
-                with ui.column().classes("gap-2 min-w-0").style(f"width: 100%; {PANEL_STYLE}"):
+        # The tables over each other, the viewer beside them in a wide pane and under them in a narrow one
+        # (`.cb-tm-split`, a container query on the registry's detail column in ui/dashboard/css.py), the log
+        # folded under everything. The creation forms live in the two dialogs, built once here so their
+        # handles (the Edit current form, the masks' derived-from line) stay valid.
+        with ui.column().classes("w-full").style("gap: 16px; padding: 12px 14px 18px;"):
+            with ui.element("div").classes("cb-tm-split"):
+                with ui.element("div").style("display: flex; flex-direction: column; gap: 18px; min-width: 0;"):
                     self._render_templates_section()
-                    self._render_source_panel()
-                with ui.column().classes("gap-2 min-w-0").style(f"width: 100%; {PANEL_STYLE}"):
                     self._render_masks_section()
-            self._render_viewer_panel()
+                with ui.element("div").style("display: flex; flex-direction: column; min-width: 0;"):
+                    self._render_viewer_panel()
             self._render_log_panel()
+        self._template_dialog = self._build_template_dialog()
+        self._mask_dialog = self._build_mask_dialog()
 
         # Per-species event channel: filter messages by THIS iframe's
         # contentWindow and route them to a species-scoped event name so
@@ -1004,26 +975,20 @@ class TemplateWorkbench:
         )
 
     # ------------------------------------------------------------------
-    # 2. TEMPLATES — selectable rows
+    # 2. TABLES — templates over masks, each as tall as its rows
     # ------------------------------------------------------------------
 
     def _render_templates_section(self) -> None:
-        with ui.column().classes("gap-1 min-w-0").style("width: 100%;"):
-            _section("Templates")
-            # Fixed-height, internally scrolling list (same in the masks column): the two
-            # columns sit side by side, so with sized-to-content lists their Source blocks
-            # started at different heights. A fixed list keeps the Source rows of both
-            # columns on one line, and a growing list scrolls instead of shoving the
-            # forms and viewer below it around.
-            self._templates_table = (
-                ui.element("div")
-                .classes("cb-tw-table")
-                .style(
-                    f"--cb-tw-cols: {_TW_COLS}; "
-                    f"height: {_LIST_HEIGHT_PX}px; overflow-y: auto; background: #ffffff; "
-                    "border-radius: var(--cb-r-md, 4px);"
-                )
+        with ui.column().style(SECTION_STYLE):
+            head = section_head(
+                "Templates",
+                right=" ",
+                tooltip="The template template matching uses is the filled dot; a click on a row selects it",
             )
+            self._templates_count = head.meta_label
+            with head:
+                house_button("New template…", lambda: self._open_dialog(self._template_dialog))
+            self._templates_table = ui.element("div").classes("cb-tw-table").style(f"--cb-tw-cols: {_TW_COLS};")
             with self._templates_table:
                 self._render_template_rows()
 
@@ -1032,21 +997,17 @@ class TemplateWorkbench:
         sp = self._get_species()
         if sp is None:
             return
-        self._render_table_head(("", "FILE", "POLARITY", "HEADER", "STATS", "SIZE", ""))
+        self._render_table_head(("", "file", "polarity", "header", "stats", "size", ""))
         templates = list(sp.templates)
         if not templates:
-            self._render_empty_state("No templates yet — import one below, or build one from Source.")
+            self._render_empty_state(
+                "No template yet: New template… makes one from a shape, a PDB or EMDB entry, or a file."
+            )
         else:
             sid = sp.selected_template_id
             for t in templates:
                 self._render_template_row(t, selected=(t.id == sid))
-        self._render_import_row(
-            "import a template .mrc by path…",
-            self._open_import_dialog,
-            "Opens the import dialog: browse to an existing MRC or paste its absolute path, and it reads the "
-            "header, asks you to confirm the metadata, copies the file into the project and appends it as a "
-            "new template. Same action as Source → Import.",
-        )
+        self._update_counts()
 
     def _render_template_row(self, tpl: ParticleTemplate, *, selected: bool) -> None:
         h = read_template_header(tpl.template_path)
@@ -1054,16 +1015,17 @@ class TemplateWorkbench:
         row.on("click", lambda i=tpl.id: self._select_template(i))
         self._template_rows[tpl.id] = row
         with row:
-            self._render_select_cell()
-            with ui.element("div").classes("cb-tw-cell"):
-                render_path_link(tpl.template_path, note=tpl.source or tpl.imported_from)
+            self._render_select_cell("template")
+            self._render_file_cell(tpl.template_path, tpl.source or tpl.imported_from)
             with ui.element("div").classes("cb-tw-cell"):
                 self._polarity_chip(tpl.polarity)
             with ui.element("div").classes("cb-tw-cell"):
-                ui.label(self._format_header_summary(h, tpl.lowpass_resolution_ang)).classes(_ROW_MONO_CLS)
+                ui.label(self._format_header_summary(h, tpl.lowpass_resolution_ang)).style(
+                    f"{_ROW_MONO} color: {_BODY};"
+                )
             with ui.element("div").classes("cb-tw-cell"):
                 self._render_stats_row(h)
-            with ui.element("div").classes("cb-tw-cell"):
+            with ui.element("div").classes("cb-tw-cell").style("justify-content: flex-end;"):
                 self._render_size_badge(tpl.template_path)
             self._render_row_actions(
                 on_load_to_viewer=lambda p=tpl.template_path, pol=tpl.polarity: self._load_to_viewer(
@@ -1072,40 +1034,44 @@ class TemplateWorkbench:
                 on_delete=lambda i=tpl.id: self._request_delete_template(i),
             )
 
-    # ── Table pieces shared by both lists ────────────────────────────
+    # ── Table pieces shared by both tables ───────────────────────────
 
     def _render_table_head(self, labels: tuple[str, ...]) -> None:
-        """Rendered even when the list is empty, so the columns' shapes are legible
+        """Rendered even when the table is empty, so the columns' shapes are legible
         before anything exists."""
         with ui.element("div").classes("cb-tw-head"):
-            for text in labels:
-                ui.label(text).classes(_LABEL_CLS)
+            for i, text in enumerate(labels):
+                ui.label(text).style(_TH + (" text-align: right;" if i == 5 else ""))
 
-    def _render_import_row(self, text: str, on_click, tooltip: str) -> None:
-        """By-path import at the foot of BOTH lists, present whether or not the list holds
-        anything — an empty list is exactly where an import starts, and the Source panel's
-        own button is a segmented-tab flip away and below the list's fold. It is the same
-        action, not a second one; it just sits where the thing it adds to is."""
-        row = ui.element("div").classes("cb-tw-import")
-        with row:
-            ui.label("+")
-            ui.label(text)
-        row.tooltip(tooltip)
-        row.on("click", lambda _e: on_click())
-
-    def _render_select_cell(self) -> None:
-        """Both radios; `.cb-tw-row.cb-sel` decides which one shows (CSS in
-        `ui/dashboard/css.py`) — so selecting costs a class flip, not a re-render."""
+    def _render_select_cell(self, what: str) -> None:
+        """The in-use dot: both are rendered and the row's `cb-sel` class decides which shows (CSS in
+        `ui/dashboard/css.py`), so selecting costs a class flip, not a re-render."""
         with ui.element("div").classes("cb-tw-cell"):
-            ui.icon("radio_button_checked", size="13px").classes("cb-tw-sel-on")
-            ui.icon("radio_button_unchecked", size="13px").classes("cb-tw-sel-off")
+            ui.element("span").classes("cb-tw-dot-on").props["title"] = f"The {what} template matching uses"
+            ui.element("span").classes("cb-tw-dot-off").props["title"] = f"Use this {what}"
+
+    def _render_file_cell(self, path: str, note: str | None) -> None:
+        """The file cut in its middle (hover unrolls it, a click copies it), its provenance on hover."""
+        with ui.element("div").classes("cb-tw-cell"):
+            p = path_text(path, self.project_path).style("flex: 1 1 0; min-width: 0;")
+            if note:
+                p.tooltip(note)
 
     def _render_row_actions(self, *, on_load_to_viewer, on_delete) -> None:
-        """Eye (load to viewer) + delete X. `click.stop` so an action never selects the
+        """Eye (load into the viewer) + delete ×. `click.stop` so an action never selects the
         row as a side effect."""
-        with ui.element("div").classes("cb-tw-cell").style("justify-content: flex-end;"):
-            icon_button("visibility", tooltip="Load into viewer").on("click.stop", lambda _e: on_load_to_viewer())
+        with ui.element("div").classes("cb-tw-cell cb-tw-acts").style("justify-content: flex-end;"):
+            icon_button("visibility", tooltip="Load into the viewer").on("click.stop", lambda _e: on_load_to_viewer())
             icon_button("close", tooltip="Delete", kind="danger").on("click.stop", lambda _e: on_delete())
+
+    def _update_counts(self) -> None:
+        sp = self._get_species()
+        for label, n in (
+            (self._templates_count, len(sp.templates) if sp else 0),
+            (self._masks_count, len(sp.masks) if sp else 0),
+        ):
+            if label is not None and label.text != str(n):
+                label.set_text(str(n))
 
     def _stats_cell(self, h) -> tuple[str, str, str] | None:
         """(text, mark, hover) for a volume's statistics: σ alone in the cell, min and max on the
@@ -1125,6 +1091,7 @@ class TemplateWorkbench:
     def _render_stats_row(self, h) -> None:
         res = self._stats_cell(h)
         if res is None:
+            ui.label("—").style(f"{_ROW_MONO} color: {_SOFT};").tooltip("The header carries no statistics")
             return
         text, mark, hover = res
         with ui.element("span").style(
@@ -1140,9 +1107,9 @@ class TemplateWorkbench:
         if h.apix_ang:
             parts.append(f"{h.apix_ang:.3g} Å/px")
         if h.box_px:
-            parts.append(f"box {h.box_px}")
+            parts.append(f"{h.box_px} px")
         if lowpass:
-            parts.append(f"lp {lowpass:g}Å")
+            parts.append(f"lp {lowpass:g} Å")
         return " · ".join(parts) if parts else "header unreadable"
 
     def _format_file_size(self, file_path: str) -> tuple[str, bool] | None:
@@ -1164,6 +1131,7 @@ class TemplateWorkbench:
     def _render_size_badge(self, file_path: str) -> None:
         res = self._format_file_size(file_path)
         if res is None:
+            ui.label("missing").style(f"{_ROW_MONO} color: #b91c1c;").tooltip("The file is not on disk")
             return
         label, large = res
         with ui.element("span").style(
@@ -1178,48 +1146,134 @@ class TemplateWorkbench:
     def _polarity_chip(self, polarity: str) -> None:
         render_polarity_chip(polarity)
 
-    def _method_chip(self, method: str | None) -> None:
-        render_method_chip(method)
-
     def _render_empty_state(self, text: str) -> None:
-        with ui.row().classes("items-center gap-2 px-3 py-2 text-gray-400"):
-            ui.icon("hourglass_empty", size="12px")
-            ui.label(text).classes(_HINT_CLS)
+        ui.label(text).style(f"{_CAPTION} padding: 6px;")
 
     # ------------------------------------------------------------------
-    # 3. SOURCE — text-only tabs
+    # 3. THE CREATION FORMS — in the New template… / New mask… dialogs
     # ------------------------------------------------------------------
 
-    def _render_source_panel(self) -> None:
-        # mt-3: clear air between the list block above and this one — the subsection
-        # boundary is whitespace, not another rule.
-        with ui.column().classes("gap-1 min-w-0 mt-3").style("width: 100%;"):
-            _subsection("Source")
+    def _open_dialog(self, dialog: ui.dialog | None) -> None:
+        if dialog is not None:
+            dialog.open()
 
-            # `Segmented`, not `ui.tabs()`: Quasar's QTab renders 14 px uppercase, louder
-            # than the section header above it. Switching flips visibility, so a panel's
-            # typed values survive the switch, and the grid-stacked holder keeps the
-            # height of the tallest panel, so the viewer below does not jump on a tab flip.
-            switcher = render_segmented(_SOURCE_TABS, "shape", lambda k: _switch(k))
-            holder = ui.element("div")
+    def _creation_dialog(self, title: str, tabs, actions: dict, run, *, subtitle=None):
+        """A dialog of segmented forms, grid-stacked so it keeps the tallest form's height on a switch, over the
+        `[Cancel] [action]` footer; the action follows the form shown, and a form whose tools carry their own
+        buttons (`actions[key]` None) shows none. `run(key)` returns True when the dialog may close: a refusal
+        keeps it open with what was typed. `subtitle` builds a line under the title. Returns the dialog, the
+        stacked panels to fill and the action button."""
+        state = {"tab": tabs[0][0]}
+        with (
+            ui.dialog() as dialog,
+            ui.card().style(
+                "width: 600px; max-width: 92vw; padding: 14px 16px; gap: 10px; border-radius: 3px; "
+                "box-shadow: 0 6px 18px rgba(16, 42, 67, .14);"
+            ),
+        ):
+            ui.label(title).style(PANEL_TITLE_STYLE)
+            if subtitle is not None:
+                subtitle()
             panels: dict[str, ui.element] = {}
-            _panel, _show = _stacked_panels(holder, panels)
-            with _panel("shape"):
-                self._render_basic_shape_form()
-            with _panel("pdb"):
-                self._render_pdb_emdb_form()
-            with _panel("import"):
-                self._render_import_form()
-            with _panel("edit"):
-                self._edit_container = ui.column().classes("w-full gap-2")
-                with self._edit_container:
-                    self._render_edit_current_form()
+            seg = render_segmented(tabs, tabs[0][0], lambda k: _show(k))
+            holder = ui.element("div")
+            _panel, _stack_show = _stacked_panels(holder, panels)
+            for key, _label in tabs:
+                _panel(key)
+            with ui.element("div").style(
+                "display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; align-self: stretch;"
+            ):
+                house_button("Cancel", dialog.close)
 
-            def _switch(key: str) -> None:
-                switcher.set_active(key)
-                _show(key)
+                async def _act() -> None:
+                    if await run(state["tab"]):
+                        dialog.close()
 
-            _show("shape")
+                action = house_button(actions[tabs[0][0]] or "", _act, kind="accent")
+
+            def _show(key: str) -> None:
+                state["tab"] = key
+                seg.set_active(key)
+                _stack_show(key)
+                label = actions.get(key)
+                action.set_visibility(bool(label))
+                if label:
+                    action.set_text(label)
+
+            _show(tabs[0][0])
+        return dialog, panels, action
+
+    def _build_template_dialog(self) -> ui.dialog:
+        actions = {
+            "shape": "Generate",
+            "pdb": "Fetch & simulate",
+            "emdb": "Fetch & resample",
+            "import": "Choose file…",
+            "edit": None,
+        }
+        dialog, panels, _action = self._creation_dialog(
+            f"New template · {self._species_name()}", _SOURCE_TABS, actions, self._run_template_form
+        )
+        with panels["shape"]:
+            self._render_basic_shape_form()
+        with panels["pdb"]:
+            self._render_pdb_form()
+        with panels["emdb"]:
+            self._render_emdb_form()
+        with panels["import"]:
+            ui.label(
+                "Choose an .mrc: the header is read, you confirm its metadata, and a copy is registered in the "
+                "project as a new template."
+            ).classes(_HINT_CLS)
+        with panels["edit"]:
+            self._edit_container = ui.column().classes("w-full gap-2")
+            with self._edit_container:
+                self._render_edit_current_form()
+        return dialog
+
+    async def _run_template_form(self, key: str) -> bool:
+        if key == "import":
+            # The import dialog is a dialog of its own: this one closes first, and the next is parented at the
+            # page's layout, not inside a dialog that is no longer shown.
+            self._template_dialog.close()
+            with dialog_host():
+                await self._open_import_dialog()
+            return False
+        run = {"shape": self._gen_shape, "pdb": self._fetch_and_simulate_pdb, "emdb": self._fetch_and_resample_emdb}
+        return bool(await run[key]())
+
+    def _build_mask_dialog(self) -> ui.dialog:
+        actions = {"relion": "Create mask", "sphere": "Create sphere", "import": "Choose file…"}
+
+        def _source_line() -> None:
+            # Which template new masks derive from: state, not a hint, so it follows the selection.
+            self._mask_source_label = ui.label("").classes(_HINT_CLS)
+
+        dialog, panels, action = self._creation_dialog(
+            f"New mask · {self._species_name()}", _MASK_TABS, actions, self._run_mask_form, subtitle=_source_line
+        )
+        action.bind_enabled_from(self, "masking_active", backward=lambda x: not x)
+        self._update_mask_source_label()
+        with panels["relion"]:
+            self._render_relion_mask_form()
+        with panels["sphere"]:
+            self._render_spherical_mask_form()
+        with panels["import"]:
+            ui.label("Choose an existing mask .mrc; it is registered as an imported mask, as it is.").classes(_HINT_CLS)
+        return dialog
+
+    async def _run_mask_form(self, key: str) -> bool:
+        if key == "import":
+            self._mask_dialog.close()
+            with dialog_host():
+                await self._import_mask()
+            return False
+        run = {"relion": self._create_relion_mask, "sphere": self._create_spherical_mask}
+        return bool(await run[key]())
+
+    def _species_name(self) -> str:
+        sp = self._get_species()
+        return sp.name if sp is not None else self.species_id
 
     def _render_basic_shape_form(self) -> None:
         with ui.row().classes("w-full gap-3 items-center").style("flex-wrap: wrap;"):
@@ -1254,83 +1308,70 @@ class TemplateWorkbench:
                 width="w-24",
                 hint="Optional filter applied to the generated shape (Å)",
             )
-            _action_button("Generate", self._gen_shape)
         ui.label("Writes _white.mrc + _black.mrc; registers both polarities as new entries.").classes(_HINT_CLS)
 
-    def _render_pdb_emdb_form(self) -> None:
-        with ui.column().classes("w-full gap-2"):
-            with ui.row().classes("w-full gap-3 items-center").style("flex-wrap: wrap;"):
-                _field("PDB", lambda: ui.input(placeholder="6Z6J").bind_value(self, "pdb_input_val"), width="w-20")
-                _field(
-                    "apix",
-                    lambda: ui.number(value=self.pdb_pixel_size, step=0.1, min=0).bind_value(self, "pdb_pixel_size"),
-                    hint="Pixel size of the simulated map (Å)",
-                )
-                _field(
-                    "box",
-                    lambda: ui.number(value=self.pdb_box_size, step=32, min=32).bind_value(self, "pdb_box_size"),
-                    hint="Box edge in pixels",
-                )
-                _field(
-                    "resolution",
-                    lambda: ui.number(value=self.pdb_lowpass, step=2, min=0, placeholder="10").bind_value(
-                        self, "pdb_lowpass"
-                    ),
-                    hint="Simulated map resolution (Å)",
-                )
-                _action_button("Fetch & simulate", self._fetch_and_simulate_pdb)
+    def _render_pdb_form(self) -> None:
+        with ui.row().classes("w-full gap-3 items-center").style("flex-wrap: wrap;"):
+            _field("PDB", lambda: ui.input(placeholder="6Z6J").bind_value(self, "pdb_input_val"), width="w-20")
+            _field(
+                "apix",
+                lambda: ui.number(value=self.pdb_pixel_size, step=0.1, min=0).bind_value(self, "pdb_pixel_size"),
+                hint="Pixel size of the simulated map (Å)",
+            )
+            _field(
+                "box",
+                lambda: ui.number(value=self.pdb_box_size, step=32, min=32).bind_value(self, "pdb_box_size"),
+                hint="Box edge in pixels",
+            )
+            _field(
+                "resolution",
+                lambda: ui.number(value=self.pdb_lowpass, step=2, min=0, placeholder="10").bind_value(
+                    self, "pdb_lowpass"
+                ),
+                hint="Simulated map resolution (Å)",
+            )
+        ui.label("Simulates a density map from the model at this sampling.").classes(_HINT_CLS)
 
-            with ui.row().classes("w-full gap-3 items-center").style("flex-wrap: wrap;"):
-                _field("EMDB", lambda: ui.input(placeholder="30210").bind_value(self, "emdb_input_val"), width="w-20")
-                _field(
-                    "apix",
-                    lambda: ui.number(value=self.emdb_pixel_size, step=0.1, min=0).bind_value(self, "emdb_pixel_size"),
-                    hint="Resample the fetched map to this pixel size (Å)",
-                )
-                _field(
-                    "box",
-                    lambda: ui.number(value=self.emdb_box_size, step=32, min=32).bind_value(self, "emdb_box_size"),
-                    hint="Box edge in pixels",
-                )
-                _field(
-                    "lowpass",
-                    lambda: ui.number(value=self.emdb_lowpass, step=5, min=0, placeholder="—").bind_value(
-                        self, "emdb_lowpass"
-                    ),
-                    width="w-24",
-                    hint="Optional filter (Å)",
-                )
-                _action_button("Fetch & resample", self._fetch_and_resample_emdb)
-
-    def _render_import_form(self) -> None:
-        # Hint left, action right — the same shape as every other form row on the page
-        # (fields flow left, the commit button holds the right edge).
-        with ui.row().classes("w-full gap-2 items-center no-wrap"):
-            ui.label(
-                "Pick an existing .mrc. The inspection dialog reads the header, asks you to confirm "
-                "metadata, copies the file into the project, and appends it as a new template."
-            ).classes(_HINT_CLS + " flex-1 min-w-0")
-            _action_button("Import…", self._open_import_dialog)
+    def _render_emdb_form(self) -> None:
+        with ui.row().classes("w-full gap-3 items-center").style("flex-wrap: wrap;"):
+            _field("EMDB", lambda: ui.input(placeholder="30210").bind_value(self, "emdb_input_val"), width="w-20")
+            _field(
+                "apix",
+                lambda: ui.number(value=self.emdb_pixel_size, step=0.1, min=0).bind_value(self, "emdb_pixel_size"),
+                hint="Resample the fetched map to this pixel size (Å)",
+            )
+            _field(
+                "box",
+                lambda: ui.number(value=self.emdb_box_size, step=32, min=32).bind_value(self, "emdb_box_size"),
+                hint="Box edge in pixels",
+            )
+            _field(
+                "lowpass",
+                lambda: ui.number(value=self.emdb_lowpass, step=5, min=0, placeholder="—").bind_value(
+                    self, "emdb_lowpass"
+                ),
+                width="w-24",
+                hint="Optional filter (Å)",
+            )
+        ui.label("Fetches the map from EMDB and resamples it.").classes(_HINT_CLS)
 
     # ── Edit Current — discrete action sections ──────────────────────
 
     def _render_edit_current_form(self) -> None:
         """The chip row and all three tool sections always render; with no selection they
-        are disabled behind one hint instead of collapsing to a single line. The panel is
-        the tallest in the source stack, so collapsing it would shift the viewer and
-        everything below it ~200 px on every selection change."""
+        are disabled behind one hint instead of collapsing to a single line, so the dialog
+        keeps its height whatever is selected."""
         sp = self._get_species()
         sel = sp.get_selected_template() if sp else None
 
         # Selected-template chip (read-only); same row shape when nothing is selected.
         with ui.row().classes("w-full items-center gap-2"):
-            ui.icon("category", size="12px").classes("text-slate-500" if sel else "text-gray-300")
             if sel is not None:
                 ui.label("operating on").classes(_HINT_CLS)
                 ui.label(os.path.basename(sel.template_path)).classes(_MONO_CLS)
                 self._polarity_chip(sel.polarity)
             else:
-                ui.label("select a template above first — these tools act on the selected row").classes(_HINT_CLS)
+                ui.label("select a template first — these tools act on the selected row").classes(_HINT_CLS)
 
         tools = ui.column().classes("w-full gap-1")
         if sel is None:
@@ -1374,14 +1415,14 @@ class TemplateWorkbench:
         whitespace and the TOOL-rank header, not by boxes."""
         with ui.column().classes("w-full gap-1 mt-2"):
             with ui.row().classes("w-full items-baseline gap-2"):
-                # `_TOOL_CLS`, not `_LABEL_CLS`: this names a tool that owns the inputs
+                # `_TOOL_CLS`, not a field label: this names a tool that owns the inputs
                 # under it, so it must not read at the same rank as "target apix".
                 ui.label(title).classes(_TOOL_CLS)
                 ui.label(description).classes(_HINT_CLS)
             with ui.row().classes("w-full gap-2 items-center").style("flex-wrap: wrap;"):
                 if inputs_builder is not None:
                     inputs_builder()
-                _action_button(button_label, on_click)
+                house_button(button_label, on_click).classes("ml-auto")
 
     def _render_resample_inputs(self) -> None:
         _field(
@@ -1413,70 +1454,37 @@ class TemplateWorkbench:
         )
 
     # ------------------------------------------------------------------
-    # 4. MASKS — selectable rows (same visual rules)
+    # 4. MASKS — the same table
     # ------------------------------------------------------------------
 
     def _render_masks_section(self) -> None:
-        with ui.column().classes("gap-1 min-w-0").style("width: 100%;"):
-            _section("Masks")
-            # Same fixed height as the templates list — see _render_templates_section.
-            self._masks_table = (
-                ui.element("div")
-                .classes("cb-tw-table")
-                .style(
-                    f"--cb-tw-cols: {_TW_COLS}; "
-                    f"height: {_LIST_HEIGHT_PX}px; overflow-y: auto; background: #ffffff; "
-                    "border-radius: var(--cb-r-md, 4px);"
-                )
+        with ui.column().style(SECTION_STYLE):
+            head = section_head(
+                "Masks",
+                right=" ",
+                tooltip="The mask template matching uses is the filled dot; a click on a row selects it",
             )
+            self._masks_count = head.meta_label
+            with head:
+                house_button("New mask…", lambda: self._open_dialog(self._mask_dialog))
+            self._masks_table = ui.element("div").classes("cb-tw-table").style(f"--cb-tw-cols: {_TW_COLS};")
             with self._masks_table:
                 self._render_mask_rows()
-
-            # Same two-line header shape as the templates column. The derived-from line
-            # states where new masks come from, so it sits on the Source header.
-            with ui.row().classes("w-full items-baseline gap-2 mt-3"):
-                ui.label("Source").style(SECTION_HEADER_FIRST_STYLE)
-                # Dynamic state, not a hint: says which template new masks derive from.
-                self._mask_source_label = ui.label("").classes(_HINT_CLS)
-                self._update_mask_source_label()
-
-            switcher = render_segmented(_MASK_TABS, "relion", lambda k: _switch(k))
-            holder = ui.element("div")
-            panels: dict[str, ui.element] = {}
-            _panel, _show = _stacked_panels(holder, panels)
-            with _panel("relion"):
-                self._render_relion_mask_form()
-            with _panel("sphere"):
-                self._render_spherical_mask_form()
-            with _panel("import"):
-                self._render_mask_import_form()
-
-            def _switch(key: str) -> None:
-                switcher.set_active(key)
-                _show(key)
-
-            _show("relion")
 
     def _render_mask_rows(self) -> None:
         self._mask_rows = {}
         sp = self._get_species()
         if sp is None:
             return
-        self._render_table_head(("", "FILE", "METHOD", "HEADER", "STATS", "SIZE", ""))
+        self._render_table_head(("", "file", "method", "header", "stats", "size", ""))
         masks = list(sp.masks)
         if not masks:
-            self._render_empty_state("No masks yet — import one below, or create one from Source.")
+            self._render_empty_state("No mask yet: New mask… makes one from a template, a sphere, or a file.")
         else:
             sid = sp.selected_mask_id
             for m in masks:
                 self._render_mask_row(m, selected=(m.id == sid))
-        self._render_import_row(
-            "import a mask .mrc by path…",
-            self._import_mask,
-            "Opens a file browser — paste an absolute path into its path bar to go straight to a file. The MRC "
-            "is appended as an imported mask exactly as it is; nothing is recomputed from it. Same action as "
-            "Source → Import.",
-        )
+        self._update_counts()
 
     def _render_mask_row(self, mask: TemplateMask, *, selected: bool) -> None:
         h = read_template_header(mask.mask_path)
@@ -1484,18 +1492,17 @@ class TemplateWorkbench:
         row.on("click", lambda i=mask.id: self._select_mask(i))
         self._mask_rows[mask.id] = row
         with row:
-            self._render_select_cell()
-            with ui.element("div").classes("cb-tw-cell"):
-                render_path_link(mask.mask_path, note=self._mask_note(mask))
+            self._render_select_cell("mask")
+            self._render_file_cell(mask.mask_path, self._mask_note(mask))
             with ui.element("div").classes("cb-tw-cell"):
                 # The relion_mask_create knobs are provenance, not a scanning column:
-                # they exist for one method only, so they ride the method chip's hover.
+                # they exist for one method only, so they ride the method's hover.
                 self._method_chip_with_knobs(mask)
             with ui.element("div").classes("cb-tw-cell"):
-                ui.label(self._format_header_summary(h, None)).classes(_ROW_MONO_CLS)
+                ui.label(self._format_header_summary(h, None)).style(f"{_ROW_MONO} color: {_BODY};")
             with ui.element("div").classes("cb-tw-cell"):
                 self._render_stats_row(h)
-            with ui.element("div").classes("cb-tw-cell"):
+            with ui.element("div").classes("cb-tw-cell").style("justify-content: flex-end;"):
                 self._render_size_badge(mask.mask_path)
             self._render_row_actions(
                 on_load_to_viewer=lambda p=mask.mask_path: self._load_to_viewer(p, kind="mask"),
@@ -1505,7 +1512,7 @@ class TemplateWorkbench:
     def _mask_note(self, mask: TemplateMask) -> str | None:
         """A mask has no `imported_from` — that field belongs to `ParticleTemplate`. A
         mask's provenance is the template it was derived from (`derived_from_template_id`,
-        a soft link); the method rides the chip next to it. None when neither is recorded,
+        a soft link); the method has its own column. None when neither is recorded,
         so the row shows only the path rather than implying a source it does not have."""
         if mask.derived_from_template_id:
             sp = self._get_species()
@@ -1531,9 +1538,9 @@ class TemplateWorkbench:
         sp = self._get_species()
         sel_tpl = sp.get_selected_template() if sp else None
         if sel_tpl is None:
-            self._mask_source_label.set_text("(select a template first — masks derive from it)")
+            self._mask_source_label.set_text("Select a template first: From template derives the mask from it.")
         else:
-            self._mask_source_label.set_text(f"derive new masks from {os.path.basename(sel_tpl.template_path)}")
+            self._mask_source_label.set_text(f"From template derives it from {os.path.basename(sel_tpl.template_path)}")
 
     def _render_spherical_mask_form(self) -> None:
         # Default diameter from species; user can still override per-mask.
@@ -1558,9 +1565,6 @@ class TemplateWorkbench:
                 lambda: ui.number(value=self.sphere_soft_edge, step=1, min=0).bind_value(self, "sphere_soft_edge"),
                 hint="Soft edge width in pixels",
             )
-            _action_button("Create sphere", self._create_spherical_mask).bind_enabled_from(
-                self, "masking_active", backward=lambda x: not x
-            )
         ui.label(
             "Solid soft-edged sphere centered in the box, sized to the species's particle "
             "diameter. Recommended for VLPs and globular particles where a threshold-derived "
@@ -1580,111 +1584,96 @@ class TemplateWorkbench:
             _field("ext", lambda: ui.number().bind_value(self, "mask_extend"), width="w-20", hint="Extend (px)")
             _field("soft", lambda: ui.number().bind_value(self, "mask_soft_edge"), width="w-20", hint="Soft edge (px)")
             _field("lowpass", lambda: ui.number().bind_value(self, "mask_lowpass"), hint="Lowpass (Å)")
-            _action_button("Create mask", self._create_relion_mask).bind_enabled_from(
-                self, "masking_active", backward=lambda x: not x
-            )
         ui.label(
             "Built from the currently selected template via relion_mask_create. "
             "If a black template is selected, its white sibling is used for thresholding."
         ).classes(_HINT_CLS)
 
-    def _render_mask_import_form(self) -> None:
-        with ui.row().classes("w-full gap-2 items-center no-wrap"):
-            ui.label("Pick an existing mask MRC; appended as a new mask entry.").classes(_HINT_CLS + " flex-1 min-w-0")
-            _action_button("Pick mask file…", self._import_mask)
-
     # ------------------------------------------------------------------
-    # 5. VIEWER
+    # 5. VIEWER — drawn once something is loaded
     # ------------------------------------------------------------------
 
     def _render_viewer_panel(self) -> None:
-        with ui.column().classes("w-full gap-1").style(PANEL_STYLE):
-            with panel_head("Viewer"):
-                ui.label("mode").classes(_HINT_CLS)
-                # `.cb-field` chrome so the select matches the 10 px label beside it
-                # instead of rendering as a 14 px Quasar field.
+        """The viewer's head (mode, clear, reset) over a "no volume loaded" line until the eye on a row loads
+        something: molstar's iframe is mounted on the first load (`_ensure_molstar`), never before, and its box
+        shows while it holds or is loading a volume. The slice fallback is built the first time it is chosen."""
+        with ui.column().style(SECTION_STYLE):
+            head = section_head(
+                "Viewer",
+                tooltip="molstar draws the volume in 3-D; slices is the fallback for a volume molstar will not load",
+            )
+            with head:
                 toggle = (
-                    ui.select(options={"molstar": "molstar (3D)", "slice": "slice (fallback)"}, value=self.viewer_mode)
+                    ui.select(options={"molstar": "molstar", "slice": "slices"}, value=self.viewer_mode)
                     .props('dense popup-content-class="cb-select-popup"')
-                    .classes("cb-field w-40")
+                    .classes("cb-field")
+                    .style("width: 84px;")
                 )
                 toggle.on_value_change(self._on_viewer_mode_changed)
+                icon_button("delete_sweep", self._sweep_viewer, tooltip="Clear the loaded volumes")
+                icon_button(
+                    "restart_alt", self._hard_reset_viewer, tooltip="Reset the viewer (remount — use if loads jam)"
+                )
+            self._viewer_empty = ui.label("No volume loaded: the eye on a row loads it.").style(_CAPTION)
+            self._molstar_panel = ui.element("div").style(
+                "display: flex; flex-direction: column; gap: 6px; width: 100%; min-width: 0;"
+            )
+            with self._molstar_panel:
+                self._molstar_canvas = ui.element("div").style(
+                    "position: relative; width: 100%; height: 320px; background: #1a1a1a; overflow: hidden; "
+                    "border-radius: 2px;"
+                )
+                self._pending_loads_container = ui.column().classes("w-full gap-1")
+                self._session_list_container = ui.column().classes("w-full gap-1")
+            self._slice_panel = ui.element("div").style("width: 100%; min-width: 0;")
+        self._apply_viewer_mode_visibility()
 
-            with (
-                ui.card()
-                .tight()
-                .classes("w-full overflow-hidden")
-                .style("border: none; box-shadow: none; border-radius: var(--cb-r-md, 4px);")
-            ):
-                # Grid-stacked (same as _stacked_panels): both panels share one
-                # cell, the hidden one is visibility-hidden, so the card always holds the
-                # 380 px molstar height and molstar ↔ slice never moves the Activity log.
-                with ui.element("div").style("display: grid; width: 100%;"):
-                    # gap-3, no tray border-r: whitespace separates the tray from the
-                    # viewer.
-                    self._molstar_panel = ui.row().classes("w-full gap-3").style("height: 380px; grid-area: 1 / 1;")
-                    with self._molstar_panel:
-                        with ui.column().classes("w-44 p-2 bg-white h-full"):
-                            with ui.row().classes("w-full items-center no-wrap mb-1").style("gap: 6px;"):
-                                ui.icon("layers", size="11px").classes("text-gray-400")
-                                ui.label("in viewer").classes(_LABEL_CLS)
-                                ui.space()
-                                icon_button("delete_sweep", self._sweep_viewer, tooltip="Clear loaded items")
-                                icon_button(
-                                    "restart_alt",
-                                    self._hard_reset_viewer,
-                                    tooltip="Reset viewer (remount — use if loads jam)",
-                                )
-                            self._pending_loads_container = ui.column().classes("w-full gap-1")
-                            self._session_list_container = ui.column().classes("w-full gap-1 overflow-y-auto flex-1")
-                        with ui.column().classes("flex-1 bg-black relative overflow-hidden h-full"):
-                            ui.element("iframe").props(f'src="/molstar-workbench" id="{self._iframe_id}"').classes(
-                                "absolute inset-0 w-full h-full border-none"
-                            )
-
-                    self._slice_panel = ui.column().classes("w-full p-2").style("grid-area: 1 / 1;")
-                    with self._slice_panel:
-                        sp = self._get_species()
-                        sel_t = sp.get_selected_template() if sp else None
-                        sel_m = sp.get_selected_mask() if sp else None
-                        tpath = sel_t.template_path if sel_t else ""
-                        mpath = sel_m.mask_path if sel_m else None
-                        self._slice_controller = render_template_viewer(tpath, mpath, height_px=260)
-
-                self._apply_viewer_mode_visibility()
+    def _ensure_molstar(self) -> None:
+        """Mount molstar's iframe, once: its `ready` flushes whatever was queued meanwhile."""
+        if self._iframe_mounted or self._molstar_canvas is None:
+            return
+        with self._molstar_canvas:
+            ui.element("iframe").props(f'src="/molstar-workbench" id="{self._iframe_id}"').classes(
+                "absolute inset-0 w-full h-full border-none"
+            )
+        self._iframe_mounted = True
 
     def _on_viewer_mode_changed(self, e) -> None:
         self.viewer_mode = e.value or "molstar"
+        if self.viewer_mode == "slice" and self._slice_controller is None and self._slice_panel is not None:
+            sp = self._get_species()
+            sel_t = sp.get_selected_template() if sp else None
+            sel_m = sp.get_selected_mask() if sp else None
+            with self._slice_panel:
+                self._slice_controller = render_template_viewer(
+                    sel_t.template_path if sel_t else "", sel_m.mask_path if sel_m else None, height_px=260
+                )
         self._apply_viewer_mode_visibility()
-        # Slice viewer reflects selection (it's cheap, Python-side).
-        # Molstar mode does NOT auto-load — user clicks the eye icon.
+        # The slice viewer reflects the selection (it's cheap, Python-side); molstar does
+        # NOT auto-load — the user clicks the eye.
         if self.viewer_mode == "slice":
             self._refresh_viewer()
 
     def _apply_viewer_mode_visibility(self) -> None:
-        # visibility, NOT set_visibility (display:none): a display-none panel stops
-        # sizing its grid cell, and the card would still collapse on a mode flip.
-        for panel, active in (
-            (self._molstar_panel, self.viewer_mode == "molstar"),
-            (self._slice_panel, self.viewer_mode == "slice"),
-        ):
-            if panel:
-                panel.style(
-                    "visibility: visible; pointer-events: auto;"
-                    if active
-                    else "visibility: hidden; pointer-events: none;"
-                )
+        if self._molstar_panel is None or self._viewer_empty is None or self._slice_panel is None:
+            return
+        molstar = self.viewer_mode == "molstar"
+        shown = molstar and self._iframe_mounted and bool(self.loaded_items or self._pending_loads)
+        self._molstar_panel.set_visibility(shown)
+        self._viewer_empty.set_visibility(molstar and not shown)
+        self._slice_panel.set_visibility(not molstar)
 
     # ------------------------------------------------------------------
-    # LOG
+    # LOG — one folded line under everything
     # ------------------------------------------------------------------
 
     def _render_log_panel(self) -> None:
-        # House section header + plain disclosure caret instead of Quasar's boxed
-        # ui.expansion — one less bordered widget on the page.
         state = {"open": False}
-        with ui.column().classes("w-full gap-0").style(PANEL_STYLE):
-            header = section_head("Activity log", caret="▸").style("cursor: pointer; user-select: none;")
+        with ui.column().classes("w-full").style("gap: 4px;"):
+            header = section_head("Activity", right="nothing this session", caret="▸").style(
+                "cursor: pointer; user-select: none;"
+            )
+            self._log_meta = header.meta_label
             self._log_container = ui.column().classes("w-full gap-0.5 px-2 py-1 max-h-40 overflow-y-auto")
         self._log_container.set_visibility(False)
 
@@ -1699,6 +1688,9 @@ class TemplateWorkbench:
         if self._log_container is not None:
             with self._log_container:
                 ui.label(f"• {msg}").classes(_MONO_CLS + " leading-tight")
+            self._log_n += 1
+            if self._log_meta is not None:
+                self._log_meta.set_text(f"{self._log_n} this session")
 
     # ==================================================================
     # FORM HANDLERS
@@ -1727,11 +1719,11 @@ class TemplateWorkbench:
     # GENERATION FLOWS (idempotent — file paths are canonical)
     # ==================================================================
 
-    async def _gen_shape(self) -> None:
+    async def _gen_shape(self) -> bool:
         if self.auto_box:
             self._recalculate_auto_box_for_shape()
         self._save_workbench_ui()
-        await self._make_template(
+        return await self._make_template(
             "shape",
             f"Generate shape · {self.basic_shape_def}",
             shape=self.basic_shape_def,
@@ -1740,11 +1732,11 @@ class TemplateWorkbench:
             lowpass=self.shape_lowpass if (self.shape_lowpass and self.shape_lowpass > 0) else None,
         )
 
-    async def _fetch_and_simulate_pdb(self) -> None:
+    async def _fetch_and_simulate_pdb(self) -> bool:
         if not self.pdb_input_val:
             ui.notify("Enter a PDB ID first", type="warning")
-            return
-        await self._make_template(
+            return False
+        return await self._make_template(
             "pdb",
             f"PDB → density · {self.pdb_input_val.strip().lower()}",
             pdb_id=self.pdb_input_val,
@@ -1753,11 +1745,11 @@ class TemplateWorkbench:
             lowpass=self.pdb_lowpass if (self.pdb_lowpass and self.pdb_lowpass > 0) else None,
         )
 
-    async def _fetch_and_resample_emdb(self) -> None:
+    async def _fetch_and_resample_emdb(self) -> bool:
         if not self.emdb_input_val:
             ui.notify("Enter an EMDB ID first", type="warning")
-            return
-        await self._make_template(
+            return False
+        return await self._make_template(
             "emdb",
             f"EMDB → resampled · {self.emdb_input_val.strip()}",
             emdb_id=self.emdb_input_val,
@@ -1766,10 +1758,10 @@ class TemplateWorkbench:
             lowpass=self.emdb_lowpass if (self.emdb_lowpass and self.emdb_lowpass > 0) else None,
         )
 
-    async def _make_template(self, kind: str, title: str, **values) -> None:
+    async def _make_template(self, kind: str, title: str, **values) -> bool:
         """Settle the template (a refusal or an open value shows at once), then make it in the background. The
         door registers and selects what it made and the task saves it, whether or not this page is still open;
-        the page repaints when it is."""
+        the page repaints when it is. False when it was refused, True once submitted."""
         from ui.background_task import BackgroundTask
 
         state = self._state()
@@ -1777,7 +1769,7 @@ class TemplateWorkbench:
         if not planned["success"]:
             self._log(f"{title}: {planned['error']}")
             ui.notify(planned["error"], type="warning")
-            return
+            return False
         plan = planned["plan"]
         if plan.source is not None:
             title = f"{title} · {os.path.basename(plan.source.template_path)}"
@@ -1794,6 +1786,7 @@ class TemplateWorkbench:
         BackgroundTask(
             title=title, subtitle=_values_line(plan.values()), dedup_key=plan.key, project_path=str(project_path)
         ).submit(_run, on_complete=self._after_make)
+        return True
 
     def _after_make(self, task) -> None:
         """Repaint once a make has settled, also one another click started (the same make asked for twice runs
@@ -1877,8 +1870,8 @@ class TemplateWorkbench:
         if e.value in thresholds:
             self.mask_threshold = round(thresholds[e.value], 4)
 
-    async def _create_relion_mask(self) -> None:
-        await self._make_mask(
+    async def _create_relion_mask(self) -> bool:
+        return await self._make_mask(
             "threshold",
             "RELION mask",
             threshold=float(self.mask_threshold),
@@ -1887,16 +1880,16 @@ class TemplateWorkbench:
             lowpass=float(self.mask_lowpass),
         )
 
-    async def _create_spherical_mask(self) -> None:
+    async def _create_spherical_mask(self) -> bool:
         """A soft-edged sphere on the selected template's grid; its diameter from this form, else the species'."""
-        await self._make_mask(
+        return await self._make_mask(
             "sphere",
             "Spherical mask",
             diameter_ang=float(self.sphere_diameter_ang or 0.0) or None,
             soft_edge=float(self.sphere_soft_edge or 0.0),
         )
 
-    async def _make_mask(self, kind: str, title: str, **values) -> None:
+    async def _make_mask(self, kind: str, title: str, **values) -> bool:
         """As `_make_template`, for a mask."""
         from ui.background_task import BackgroundTask
 
@@ -1905,7 +1898,7 @@ class TemplateWorkbench:
         if not planned["success"]:
             self._log(f"{title}: {planned['error']}")
             ui.notify(planned["error"], type="warning")
-            return
+            return False
         plan = planned["plan"]
         title = f"{title} · {os.path.basename(plan.input_path)}"
         self._log(f"{title}: {_values_line(plan.values())}")
@@ -1927,6 +1920,7 @@ class TemplateWorkbench:
         BackgroundTask(
             title=title, subtitle=_values_line(plan.values()), dedup_key=plan.key, project_path=str(project_path)
         ).submit(_run, on_complete=_done)
+        return True
 
     async def _import_mask(self) -> None:
         async with self._flight("import_mask") as acquired:
