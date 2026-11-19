@@ -26,7 +26,9 @@ all of them just re-render from the already-collected rows:
     Every layer follows the version: it shows over the versions of the reconstruction it was made on,
     so two picking arms on two alignments each sit on their own. Switching a layer by hand sets it apart from that; a
     layer shown over another reconstruction is flagged. The same menu imports segmentations made
-    outside crboost.
+    outside crboost, and sets how picks are drawn, for this user (`PickMarks`): a dot, a ring, a
+    ring as wide as the species, a cross or a point, its size, opacity and a dot's white edge; by
+    default a 3 px ring at 90 %, which marks a pick without covering the density in it.
   · **size** — how many tiles (and tilt cards) fit across.
 
 Tiles show a downscaled JPEG of each picture, and the browser fetches the other sources'
@@ -67,10 +69,11 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from nicegui import ui
+from nicegui import app, ui
 
 from services.dashboard_data import job_dir_for, position_label, tilt_thumb_dir, vis_asset_url
 from services.models_base import InstanceId, JobType
+from services.configs.user_prefs_service import PickMarks, get_prefs_service
 from services.project_state import get_project_state_for
 from services.segmentation import display
 from services import renders
@@ -79,6 +82,7 @@ from services.visualization.preview_orchestrator import read_preview_manifest
 from services.visualization.preview_render import is_output_stale
 from services.visualization.tomo_geometry import SOURCE_IMPORTED, TomoGeometry, all_geometries
 from ui.components.buttons import house_button, icon_button
+from ui.components.check import house_check
 from ui.components.viewer_chips import viewer_chips
 from ui.components import feature_layers as fl
 from ui.components.dialogs import dialog_host
@@ -132,8 +136,10 @@ _SKELETON_TILES = 12
 # rather than being the top-N. The zoom view draws the whole stored set.
 _MAX_DOTS = 1200
 _WALL_DOTS = 260
-_DOT_R_WALL = 1.1
-_DOT_R_ZOOM = 2.0
+# A wall tile draws a pick's mark at this share of its size on the zoom.
+_WALL_SCALE = 0.55
+# The marks the Layers menu offers (`PickMarks.mark`).
+_MARKS = (("dot", "dot"), ("ring", "ring"), ("scale", "to scale"), ("cross", "cross"), ("point", "point"))
 
 # A reconstruct job's volume or its WarpTools preview: `<tomogram>_<apix>Apx.mrc|png`.
 _RECON_FILE = re.compile(r"(.+)_[\d.]+Apx\.(mrc|png)")
@@ -1184,6 +1190,7 @@ class TomoGalleryPage:
                 self._render_layer_list(source_of(), row)
                 if name == "wall":
                     self._render_import_row()
+                    self._render_pick_look()
 
     def _render_import_row(self) -> None:
         item = ui.element("div").classes("cb-hmenu-item cb-hmenu-action")
@@ -1375,8 +1382,10 @@ class TomoGalleryPage:
         """What a tile's overlay draws over `source`: its image or not, the pick layers with their
         colors, and the segmentation layers (their colours are CSS variables, so not part of it)."""
         has_png = _has_png(row["sources"].get(source))
-        picks = tuple((p["id"], p["color"]) for p in self._visible_picks(row, source))
-        return has_png, picks, tuple(f["id"] for f in self._visible_features(row, source))
+        visible = self._visible_picks(row, source)
+        picks = tuple((p["id"], p["color"], self._scale_radius(row, p)) for p in visible)
+        look = tuple(self._pick_look().model_dump().values())
+        return has_png, picks, tuple(f["id"] for f in self._visible_features(row, source)), look
 
     def _render_tile_overlay(self, row: dict) -> None:
         """A tile's segmentation fills and dot layers, over an image only, for the wall's source."""
@@ -1384,7 +1393,7 @@ class TomoGalleryPage:
         self._overlay_keys[row["ts"]] = key
         if key[0]:
             self._render_feature_fills(row, self.source)
-            self._render_dot_layers(row, self._visible_picks(row, self.source), _DOT_R_WALL)
+            self._render_dot_layers(row, self._visible_picks(row, self.source), wall=True)
 
     def _render_feature_fills(self, row: dict, source: str) -> None:
         """One fill per segmentation layer over the frame, beneath the dots. Without the tomogram's
@@ -1487,18 +1496,118 @@ class TomoGalleryPage:
         with ui.element("div").classes("cb-gal-note cb-gal-note-wait"):
             ui.html(WAIT_SPINNER, sanitize=False)
 
-    def _render_dot_layers(
-        self, row: dict, visible: list[dict], radius: float, *, cap: int | None = _WALL_DOTS
-    ) -> None:
+    def _render_dot_layers(self, row: dict, visible: list[dict], *, wall: bool, cap: int | None = _WALL_DOTS) -> None:
         # No frame aspect means the frame box isn't the tomogram box, so a percentage
         # position in it means nothing. The badge says so; nothing is drawn.
         if not row["aspect"]:
             return
+        look = self._pick_look()
         for sp in visible:
             dots = _stride_sample(sp["dots"], cap) if cap else sp["dots"]
             if not dots:
                 continue
-            ui.html(_dots_svg(dots, sp["color"], radius), sanitize=False).classes("cb-gal-dotlayer")
+            svg = _dots_svg(
+                dots, sp["color"], look, wall=wall, scale_r=self._scale_radius(row, sp), extent=row["aspect"]
+            )
+            ui.html(svg, sanitize=False).classes("cb-gal-dotlayer")
+
+    # ── Pick marks (the user's, set in the Layers menu) ──────────────────────
+
+    @staticmethod
+    def _pick_look() -> PickMarks:
+        return get_prefs_service().prefs.pick_marks
+
+    def _scale_radius(self, row: dict, layer: dict) -> float | None:
+        """A ring to scale's radius in the tomogram's voxels: the species' diameter over its binned pixel size. None
+        when the look is not to scale, or the species has no diameter or the tomogram no pixel size (the ring is
+        then drawn at the chosen size, and the Layers menu says why)."""
+        if self._pick_look().mark != "scale":
+            return None
+        sp = get_project_state_for(self.project_path).get_species(layer.get("species_id") or "")
+        geom = self._geom_by_ts.get(row["ts"])
+        d = getattr(sp, "diameter_ang", None) if sp is not None else None
+        apix = geom.binned_apix if geom is not None else None
+        if not d or not apix or not geom.dims_xyz_px or tuple(geom.dims_xyz_px[:2]) != tuple(row["aspect"] or ()):
+            return None
+        return float(d) / 2.0 / float(apix)
+
+    def _set_pick_look(self, **fields) -> None:
+        """Keep the change for this user and redraw the marks; the menu's controls stay as they are."""
+        prefs = get_prefs_service()
+        prefs.prefs.pick_marks = prefs.prefs.pick_marks.model_copy(update=fields)
+        prefs.save_to_app_storage(app.storage.user)
+        readout = self._refs.get("pick_size_readout")
+        if readout is not None and not readout.is_deleted:
+            readout.set_text(_size_words(prefs.prefs.pick_marks))
+        self._refresh_overlays()
+        if self._zoom_ts is not None:
+            self._render_zoom_overlay()
+
+    def _render_pick_look(self) -> None:
+        """The Layers menu's pick marks: the mark, its size, opacity and the white edge, held for this user."""
+        look = self._pick_look()
+        ui.label("Pick marks").classes("cb-hmenu-title")
+        label = (
+            "font-family: 'IBM Plex Sans', sans-serif; font-size: 9.5px; color: #5b7089; width: 48px; flex-shrink: 0;"
+        )
+        with ui.element("div").style("display: flex; flex-direction: column; gap: 6px; padding: 2px 10px 8px;"):
+            with ui.element("div").style("display: flex; align-items: center; gap: 8px;"):
+                ui.label("mark").style(label)
+                render_segmented(_MARKS, look.mark, lambda k: self._on_mark(k), classes="cb-seg-sm")
+            with ui.element("div").style("display: flex; align-items: center; gap: 8px;"):
+                ui.label("size").style(label)
+                size = ui.slider(min=0.5, max=4.0, step=0.1, value=look.size).props(
+                    "dense track-size=2px thumb-size=10px"
+                )
+                size.classes("cb-fit-slider").style("width: 140px; margin: 0;")
+                size.on("change", lambda e: self._set_pick_look(size=float(e.args)))
+                self._refs["pick_size_readout"] = ui.label(_size_words(look)).style(
+                    "font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #1e293b; white-space: nowrap;"
+                )
+            with ui.element("div").style("display: flex; align-items: center; gap: 8px;"):
+                ui.label("opacity").style(label)
+                alpha = ui.slider(min=0.15, max=1.0, step=0.05, value=look.opacity).props(
+                    "dense track-size=2px thumb-size=10px"
+                )
+                alpha.classes("cb-fit-slider").style("width: 140px; margin: 0;")
+                alpha.on("change", lambda e: self._set_pick_look(opacity=float(e.args)))
+            with ui.element("div").style("display: flex; align-items: center; gap: 8px;"):
+                ui.label("").style(label)
+                house_check(
+                    "white edge on a dot", value=look.rim, on_change=lambda e: self._set_pick_look(rim=bool(e.value))
+                )
+            self._refs["pick_scale_note"] = ui.label("").style(
+                "font-family: 'IBM Plex Sans', sans-serif; font-size: 9.5px; color: #8a4b06; max-width: 300px;"
+            )
+            self._update_scale_note()
+
+    def _on_mark(self, key: str) -> None:
+        self._set_pick_look(mark=key)
+        self._update_scale_note()
+
+    def _update_scale_note(self) -> None:
+        """To scale needs each species' diameter and each tomogram's pixel size; what lacks one is drawn at the
+        chosen size, and said here."""
+        note = self._refs.get("pick_scale_note")
+        if note is None or note.is_deleted:
+            return
+        text = ""
+        if self._pick_look().mark == "scale":
+            state = get_project_state_for(self.project_path)
+            ids = {layer.get("species_id") for layer in self.layers if layer.get("species_id")}
+            missing = sorted(
+                sp.name for sid in ids if (sp := state.get_species(sid)) is not None and not sp.diameter_ang
+            )
+            no_apix = sum(1 for g in self._geom_by_ts.values() if not g.binned_apix)
+            bits = []
+            if missing:
+                bits.append(f"no diameter for {', '.join(missing)} (set it on the Species tab)")
+            if no_apix:
+                bits.append(f"{no_apix} tomogram{'s' if no_apix != 1 else ''} without a pixel size")
+            if bits:
+                text = "Drawn at the size, not to scale: " + "; ".join(bits) + "."
+        note.set_text(text)
+        note.set_visibility(bool(text))
 
     # ── Tilts tab ─────────────────────────────────────────────────────────────
 
@@ -1906,7 +2015,7 @@ class TomoGalleryPage:
         with overlay:
             if _has_png(row["sources"].get(self._zoom_source)):
                 self._render_feature_fills(row, self._zoom_source)
-                self._render_dot_layers(row, visible, _DOT_R_ZOOM, cap=None)
+                self._render_dot_layers(row, visible, wall=False, cap=None)
             self._render_pick_badge(visible)
 
     def _select_zoom_source(self, key: str) -> None:
@@ -1961,17 +2070,58 @@ def _zoom_section(glyph: str, title: str, tip: str | None = None) -> None:
         head.props["title"] = tip
 
 
-def _dots_svg(dots: list[tuple[float, float]], color: str, radius: float) -> str:
-    """One pick layer's dots as a single inline SVG.
+def _size_words(look: PickMarks) -> str:
+    if look.mark == "scale":
+        return "the species' diameter"
+    return f"r {look.size:.1f} px zoom · {look.size * _WALL_SCALE:.1f} px wall"
 
-    Percentage coordinates against the frame (which is the image box exactly), and a
-    radius in user units — with no viewBox those are CSS pixels, so a dot keeps its
-    size whether it sits on a 150 px thumbnail or the zoom view. One element per
-    layer instead of one per pick: a 40-tomogram wall is thousands of dots.
+
+def _dots_svg(
+    dots: list[tuple[float, float]],
+    color: str,
+    look: PickMarks,
+    *,
+    wall: bool,
+    scale_r: float | None = None,
+    extent: tuple | None = None,
+) -> str:
+    """One pick layer's marks as a single inline SVG, drawn as `look` asks.
+
+    Percentage coordinates against the frame (which is the image box exactly) and a size in
+    user units — with no viewBox those are CSS pixels, so a mark keeps its size whether it sits
+    on a 150 px thumbnail or the zoom view; a wall tile draws it at `_WALL_SCALE` of the zoom's.
+    A ring to scale is drawn in the tomogram's voxels instead (a viewBox of its X/Y `extent`,
+    `scale_r` the species' radius in voxels) with a stroke that does not scale; without a radius it
+    is a ring at the chosen size. One element per layer instead of one per pick: a 40-tomogram
+    wall is thousands of picks.
     """
-    circles = "".join(f'<circle cx="{fx:.2f}%" cy="{fy:.2f}%" r="{radius}"/>' for fx, fy in dots)
-    return (
-        '<svg xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">'
-        f'<g fill="{color}" stroke="rgba(255,255,255,0.8)" stroke-width="0.5">{circles}</g>'
-        "</svg>"
-    )
+    r = max(look.size * (_WALL_SCALE if wall else 1.0), 0.35)
+    line = 0.8 if wall else 1.0
+    opacity = f'opacity="{look.opacity:.2f}"'
+    head = '<svg xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">'
+    if look.mark == "scale" and scale_r and extent:
+        nx, ny = float(extent[0]), float(extent[1])
+        circles = "".join(
+            f'<circle cx="{fx * nx / 100:.1f}" cy="{fy * ny / 100:.1f}" r="{scale_r:.1f}" '
+            'vector-effect="non-scaling-stroke"/>'
+            for fx, fy in dots
+        )
+        return (
+            f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {nx:g} {ny:g}" preserveAspectRatio="none">'
+            f'<g fill="none" stroke="{color}" stroke-width="{line}" {opacity}>{circles}</g></svg>'
+        )
+    if look.mark == "cross":
+        mark_id = f"cbpk-x-{r:.2f}".replace(".", "-")
+        uses = "".join(f'<use href="#{mark_id}" x="{fx:.2f}%" y="{fy:.2f}%"/>' for fx, fy in dots)
+        return (
+            f'{head}<defs><path id="{mark_id}" d="M{-r:.2f} 0H{r:.2f}M0 {-r:.2f}V{r:.2f}"/></defs>'
+            f'<g fill="none" stroke="{color}" stroke-width="{line}" {opacity}>{uses}</g></svg>'
+        )
+    if look.mark == "point":
+        circles = "".join(f'<circle cx="{fx:.2f}%" cy="{fy:.2f}%" r="0.6"/>' for fx, fy in dots)
+        return f'{head}<g fill="{color}" {opacity}>{circles}</g></svg>'
+    circles = "".join(f'<circle cx="{fx:.2f}%" cy="{fy:.2f}%" r="{r:.2f}"/>' for fx, fy in dots)
+    if look.mark == "dot":
+        rim = 'stroke="rgba(255,255,255,0.8)" stroke-width="0.5"' if look.rim else ""
+        return f'{head}<g fill="{color}" {rim} {opacity}>{circles}</g></svg>'
+    return f'{head}<g fill="none" stroke="{color}" stroke-width="{line}" {opacity}>{circles}</g></svg>'
