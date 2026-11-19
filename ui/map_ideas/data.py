@@ -14,7 +14,7 @@ from pathlib import Path
 from services import array_status_cache
 from services.project_resolve import resolve_project
 from services.project_state import ProjectState
-from services.tilt_series import get_registry_for
+from services.tilt_series import get_registry_for, preload_registry
 from ui.branch_map.facts import FactsStore, set_parent
 from ui.branch_map.model import Job, Project, project_from_state
 
@@ -210,6 +210,7 @@ async def load(name: str) -> MapData:
     sources, source_of = _sources(pr, set_info)
     edges = _edges(pr, sources, source_of)
     try:
+        await preload_registry(path)  # its first read, off the loop
         registry = get_registry_for(path)
         series = list(registry.all_tilt_series())
         stamp = (registry.loaded_stamp, len(series))

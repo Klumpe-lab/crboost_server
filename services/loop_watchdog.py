@@ -44,6 +44,12 @@ _TOP_PLACES = 4
 # Innermost frames of a thread that is waiting, not working: such threads are left out of a report.
 _IDLE_FILES = ("threading.py", "queue.py", "selectors.py", "concurrent/futures/thread.py", "multiprocessing/")
 _SERVER_ROOT = str(Path(__file__).absolute().parents[1]) + os.sep
+# The interpreter and the environment the launcher builds live inside the checkout: their frames are a library's.
+_LIBRARY_ROOTS = (_SERVER_ROOT + ".uv" + os.sep, _SERVER_ROOT + "venv" + os.sep)
+
+
+def _own_code(path: str) -> bool:
+    return path.startswith(_SERVER_ROOT) and not path.startswith(_LIBRARY_ROOTS) and "site-packages" not in path
 
 
 class LoopWatchdog:
@@ -102,7 +108,7 @@ class LoopWatchdog:
         innermost = frame
         while frame is not None:
             path = frame.f_code.co_filename
-            if path.startswith(_SERVER_ROOT) and "site-packages" not in path:
+            if _own_code(path):
                 return f"{path[len(_SERVER_ROOT) :]}:{frame.f_code.co_name}"
             frame = frame.f_back
         if innermost is None:
