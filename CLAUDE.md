@@ -141,8 +141,9 @@ creation, nothing auto-propagates — they just have a species-shaped default. S
   `replace`, `ui/job_plugins/params_renderer.py`), with `choice_row` when the options
   come from project state rather than a static `Enum`.
 - **The tooltip names the species default**, so "why is this not what the species says"
-  is answerable without leaving the tab. The Species page's Jobs-tab drift chips are the
-  other half of that story and must keep agreeing with it.
+  is answerable without leaving the tab. The notch on the roster's species tag (its hover
+  lists the differences, `services/particles/species_jobs.job_drift`) is the other half of
+  that story and must keep agreeing with it.
 - **Absent is stated, never defaulted.** No template registered means the row says so and
   points at the Species page; it never silently picks the first file it finds.
 

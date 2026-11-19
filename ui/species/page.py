@@ -5,8 +5,9 @@ switch only flips visibility. The active species' mark and the segmented tabs si
 view's title line, after its name. Tabs: Overview (identity editor, status, sanity, delete) ·
 Templates & masks (the mounted workbench) · Picks & curation · Analytics (scores in σ, TM
 health, particle sets) · STA kitchen (one species' picks across tomograms and projects; the
-rail hides while it shows) · Jobs. The page owns the 3-s registry observe (species created /
-deleted elsewhere — roster "+", another browser tab, the Overview's delete) and the
+rail hides while it shows). A species' jobs are the roster's. The page owns the 3-s registry
+observe (species created / deleted elsewhere — roster "+", another browser tab, the
+Overview's delete) and the
 `on_workbench_active` / `workbench_select_species` hooks the workspace registers
 (`workspace_page._apply_views` / `_open_species`); the internal mode string stays "workbench"
 (roster `set_active_views` compares it).
@@ -21,7 +22,6 @@ from typing import Any
 from nicegui import ui
 
 from services.models_base import SpeciesOrigin
-from services.particles.species_jobs import jobs_for_species
 from services.project_state import get_project_state_for
 from ui.components.buttons import house_button
 from ui.components.reactive import FingerprintedView, SingleFlight
@@ -30,10 +30,9 @@ from ui.components.species_pill import render_species_mark
 from ui.components.svg_icon import load_icon_svg
 from ui.dashboard.css import ensure_assets_loaded
 from ui.sta_kitchen.tab import KitchenTab
-from services.routes import View
+from services.routes import View, species_tab
 from ui.species.analytics_tab import AnalyticsTab
 from ui.species.catalog import import_from_catalog
-from ui.species.jobs_tab import JobsTab
 from ui.species.overview_tab import OverviewTab
 from ui.species.picks_tab import PicksTab
 from ui.species.prompt import create_species
@@ -50,7 +49,6 @@ TABS: tuple[tuple[str, str], ...] = (
     ("picks", "Picks & curation"),
     ("analytics", "Analytics"),
     ("kitchen", "STA kitchen"),
-    ("jobs", "Jobs"),
 )
 # Tabs that fill the pane and scroll inside themselves, with the species rail hidden while they show.
 FULL_PANE_TABS = ("kitchen",)
@@ -178,8 +176,8 @@ class SpeciesPage:
         self.callbacks["on_workbench_active"] = self._set_active
         # "open in Species" from a job's Config tab (workspace_page._open_species).
         self.callbacks["workbench_select_species"] = self.select_species
-        # Cross-tab links inside this page (the Picks & curation tab's empty state points
-        # at Jobs) — a tab never reaches into the page object itself.
+        # Cross-tab links inside this page (the Overview's template line points at Templates &
+        # masks) — a tab never reaches into the page object itself.
         self.callbacks["species_select_tab"] = self.select_tab
         self.callbacks["species_toggle_rail"] = self.toggle_rail
 
@@ -208,6 +206,8 @@ class SpeciesPage:
         self._write_url()
 
     def select_tab(self, key: str) -> None:
+        # An older link's key lands on the tab that holds what it showed.
+        key = species_tab(key) or DEFAULT_TAB
         self.active_tab = key
         if self._segmented is not None:
             self._segmented.set_active(key)
@@ -258,8 +258,6 @@ class SpeciesPage:
                 return AnalyticsTab(ctx)
             case "kitchen":
                 return KitchenTab(ctx)
-            case "jobs":
-                return JobsTab(ctx)
         raise KeyError(f"unknown Species tab {key!r}")
 
     def _apply_visibility(self) -> None:
@@ -333,14 +331,12 @@ class SpeciesPage:
         state = get_project_state_for(self.project_path)
         sp = state.get_species(self.active_species_id) if self.active_species_id else None
         if sp is None:
-            for key in ("templates", "picks", "jobs"):
+            for key in ("templates", "picks"):
                 self._segmented.set_badge(key, "")
             return
         n_picks = sum(1 for pl in state.pick_lists if pl.species_id == sp.id)
         self._segmented.set_badge("templates", str(len(sp.templates)) if sp.templates else "")
         self._segmented.set_badge("picks", str(n_picks) if n_picks else "")
-        n_jobs = len(jobs_for_species(state, sp.id))
-        self._segmented.set_badge("jobs", str(n_jobs) if n_jobs else "")
 
     async def add_species(self) -> None:
         # SingleFlight: the "+" lives in a rail that repaints on registry changes, so a

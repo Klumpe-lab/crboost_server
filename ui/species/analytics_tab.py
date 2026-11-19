@@ -271,7 +271,8 @@ class _AnalyticsView(FingerprintedView):
                 ui.label(f"Unavailable — {e}").classes(ERROR_CLS).tooltip("Full traceback in the server log.")
             if not c.sources:
                 ui.label(
-                    "No template match or candidate extraction for this species yet — add them from the Jobs tab."
+                    "No template match or candidate extraction for this species yet — add them with the roster's "
+                    "PARTICLES +."
                 ).classes(HINT_CLS)
             for n in c.notes:
                 ui.label(n).classes(HINT_CLS)

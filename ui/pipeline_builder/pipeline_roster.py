@@ -8,6 +8,7 @@ from services.array_status_cache import is_array_job
 from services.array_tasks import TaskProgress
 from services.models_base import JobStatus
 from services.particles.particle_sets import list_sets, set_lineage, set_read_by
+from services.particles.species_jobs import job_drift
 from services.project_state import JobType
 from ui.current_project import current_project_state
 
@@ -74,12 +75,14 @@ _RAIL_BG = "var(--cb-head, #f2f6fb)"
 _BAND_LINE = "var(--cb-line, #e4eaf1)"
 _GLYPH_INK = "#5b7089"
 _GLYPH_OFF = "#b3c0cf"
-# The species a job is for, as a small grey tag (named in full on hover).
+# The species a job is for, as a small grey tag (named in full on hover). A job whose snapshot differs
+# from its species carries a notch in the tag's top-right corner (`.cb-species-tag.notch`, ui/dashboard/css.py).
 _SPECIES_TAG = (
     f"{MONO} font-size: 7.5px; text-transform: uppercase; letter-spacing: .05em; color: #4f6782; "
     "border: 1px solid #dbe3ec; border-radius: 2px; padding: 0 3px; line-height: 11px; flex-shrink: 0; "
-    "max-width: 15ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+    "max-width: 15ch; position: relative; display: inline-flex; align-items: center; min-width: 0;"
 )
+_SPECIES_TAG_NAME = "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;"
 
 
 # The Journey glyph (a route from one point to another) is static/icons/journey.svg, the asset the
@@ -324,9 +327,22 @@ class RosterWidget(FingerprintedView):
             array_state,
             # The species glyph's hover names the species: a rename must repaint the row.
             current_project_state().species_identity(),
+            # The notch on a particle row's species tag follows the job's drift from its species.
+            self._drift_fingerprint(),
             # Jobs a run parked behind the tilt-filter review draw an amber ring.
             self._review_hold_fingerprint(),
         )
+
+    @staticmethod
+    def _drift_fingerprint() -> tuple:
+        state = current_project_state()
+        out = []
+        for iid, jm in sorted(state.jobs.items()):
+            sid = getattr(jm, "species_id", None)
+            sp = state.get_species(sid) if sid else None
+            if sp is not None:
+                out.append((iid, tuple(job_drift(sp, jm))))
+        return tuple(out)
 
     @staticmethod
     def _review_hold_fingerprint() -> tuple:
@@ -594,7 +610,7 @@ class RosterWidget(FingerprintedView):
                     )
             # The species, last before the cross: its tag ends at the same place on every particle row.
             if species is not None:
-                ui.label(species.name).style(_SPECIES_TAG).props(f'title="Species: {species.name}"')
+                self._species_tag(species, job_model)
             # The remove cross keeps its slot on a job in use by a queued or running one (it stays until that has
             # finished or been cancelled), so the rows' right ends line up.
             with ui.element("div").style(
@@ -613,6 +629,20 @@ class RosterWidget(FingerprintedView):
             render_tilt_filter_controls(panel, instance_id, self._flight, 10)
 
         self._popups.open_card(f"filter:{instance_id}", anchor, 300, build, "Tilt filter")
+
+    @staticmethod
+    def _species_tag(species, job_model) -> None:
+        """The species tag at a particle row's end; notched when the job's snapshot differs from the species,
+        the differences on its hover."""
+        drift = job_drift(species, job_model)
+        tip = f"Species: {species.name}"
+        if drift:
+            tip += " · differs from the species: " + "; ".join(f"{what} {msg}" for what, msg in drift)
+            tip += " (a job keeps the values it was made with)"
+        tag = ui.element("span").classes("cb-species-tag" + (" notch" if drift else "")).style(_SPECIES_TAG)
+        with tag:
+            ui.label(species.name).style(_SPECIES_TAG_NAME)
+        tag.props["title"] = tip
 
     async def _on_unselected_click(self, job_type: JobType):
         panel = self.panel
