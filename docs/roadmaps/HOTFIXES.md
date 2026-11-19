@@ -520,6 +520,20 @@ nothing and aggregates.
 
 ## Fixed
 
+### H31 — "Every card small" on the branch map leaves a blank page
+
+**Fixed 2026-11-19 (uncommitted).** `M.draw` (`ui/branch_map/assets.py`) zeroes the cables' layer before it
+measures the world, then sizes the layer to the cards alone. **Checked** in the harness over AGG412_STA: every card
+large (world 10,015 px), scrolled to 6,009, every card small: 30 cards in view, scroll height 880, scrolled to 0.
+Before the fix the same steps left 0 cards in view, scroll height 10,369, scrolled to 6,009.
+
+**Status:** fixed 2026-11-19, reported by the maintainer the same day. **Severity:** medium: the cards were there,
+above, but the view showed empty paper until scrolled back up, and the scroll bar still spanned the large map.
+
+**What is wrong.** The cables' SVG is inside the world, absolutely placed, and `M.draw` set its size to the world's
+`scrollWidth` / `scrollHeight`, which count the SVG itself. Once the map had been tall, the layer kept it tall: the
+scroll area never shrank, so the browser never pulled the view back, and the view stood below the cards.
+
 ### H30 — Starting a particle job from the branch map does nothing: the species picker cannot open
 
 **Fixed 2026-11-19 (uncommitted).** `BranchMapView.on_start` is async and awaits `_start`; the new card's ✓ hands
