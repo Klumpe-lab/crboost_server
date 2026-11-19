@@ -391,6 +391,18 @@ Built in a worktree of its own (`crboost_server_registry`, detached at `de0ad82`
   model binds. The rail counts picks from `latest_overview` (`services/particles/species_overview.py` keeps the
   last overview per species); the page reads every species' overview in a thread on show, when the registry or a
   job's status moves, and every 60 s, so the rail's count is the status line's.
+- **S4.** D3 (a). The workbench renders two sections, Templates over Masks, each a `.cb-tw-table` in the Table look
+  (20 px head in the `th` voice, 22 px rows, the in-use dot, `path_text` with the provenance on hover, polarity or
+  method, "Å/px · px · lp", σ, size, the eye and × at 35 % until hover), as tall as their rows; the head's meta is
+  the count and its control "New template…" / "New mask…". `.cb-tm-split` puts the viewer beside the tables once
+  the detail column is 980 px wide (320 px column), under them otherwise. The viewer is a "No volume loaded" line
+  until the first eye: molstar's iframe is mounted then (`_ensure_molstar`), its box shows while it holds or is
+  loading a volume; clear and reset are on its head; the slice fallback is built the first time it is chosen. The
+  dialogs are built once (`_creation_dialog`): Shape · PDB · EMDB · Import · Edit current and From template ·
+  Sphere · Import, grid-stacked, the footer's accent action following the form (Edit current keeps its three tools'
+  own buttons, so the footer has none there); a refused make keeps the dialog open (`_make_template` / `_make_mask`
+  return whether they submitted). The by-path import rows, `_LIST_HEIGHT_PX` and the Source panels are gone; the
+  Activity log is one folded line whose meta counts the session's entries.
 
 ## 6. Earlier rounds
 

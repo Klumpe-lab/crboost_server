@@ -1089,50 +1089,34 @@ _CB_CSS = """
 .cb-proj-tagrow:hover .cb-proj-tagcheck { color: #4a8fd4; background: #edf4fb; }
 /* The other projects in the workspace's project card (`project_card_menu`): a line each, a link. */
 .cb-proj-other:hover { background: #e9f0f7; }
-/* Template workbench lists: table rows, so the per-row facts (apix / box / lp, sigma
- * stats, size, polarity) sit in columns sized to their content. Only the file column flexes.
- * Selection is the roster's hairline ring in the accent, a class flip (`cb-sel`), never a
- * rebuild of the list the user just clicked. */
-.cb-tw-table { width: 100%; min-width: 0; overflow-x: auto; }
+/* Templates & masks (ui/template_workbench.py): two tables in the job page's Table look, rows 22 px, so the
+ * per-row facts (polarity or method, header, σ, size) sit in columns sized to their content. Only the file
+ * column flexes. Selection is the roster's hairline ring in the accent, a class flip (`cb-sel`), never a
+ * rebuild of the table the user just clicked; the in-use dot follows the same class. */
+.cb-tw-table { width: 100%; min-width: 0; }
 .cb-tw-head, .cb-tw-row {
-    display: grid; align-items: center; column-gap: 6px;
-    grid-template-columns: var(--cb-tw-cols);
+    display: grid; align-items: center; column-gap: 8px; padding: 0 6px;
+    grid-template-columns: var(--cb-tw-cols); min-width: 0; box-sizing: border-box;
 }
-.cb-tw-head { padding: 1px 5px 2px 5px; border-bottom: 1px solid #e5e7eb; }
-.cb-tw-row {
-    padding: 1px 5px; border-bottom: 1px solid #f1f5f9; cursor: pointer; background: #ffffff;
-    min-height: 22px;
-}
-.cb-tw-row:last-child { border-bottom: none; }
+.cb-tw-head { height: 20px; border-bottom: 1px solid var(--cb-head-rule, #d6e0ea); }
+.cb-tw-head > * { overflow: hidden; }
+.cb-tw-row { height: 22px; border-bottom: 1px solid #eef2f6; cursor: pointer; background: #ffffff; }
 .cb-tw-row:hover { background: var(--cb-hover, #eaf1f8); }
 .cb-tw-row.cb-sel { background: #f4f8fc; box-shadow: inset 0 0 0 1px var(--cb-accent, #4a8fd4); }
-.cb-tw-cell { min-width: 0; display: flex; align-items: center; gap: 3px; }
+.cb-tw-cell { min-width: 0; display: flex; align-items: center; gap: 3px; overflow: hidden; white-space: nowrap; }
 .cb-tw-cell > * { min-width: 0; }
-/* Tight leading everywhere in the table: at 9-10 px the default 1.5 was adding more
- * height per row than the text itself. */
-.cb-tw-head > *, .cb-tw-row .cb-tw-cell { line-height: 1.25; }
-/* Row action buttons: kept small so the eye and the X don't set the row's height. */
 .cb-tw-row .q-btn { min-height: 16px; min-width: 16px; padding: 0 2px; }
 .cb-tw-row .q-btn .q-icon { font-size: 13px; }
-/* Both radios are rendered; the row's `selected` class decides which one shows, so a
- * selection change costs one class attribute and no server render. */
-.cb-tw-sel-on { display: none; color: var(--cb-accent, #4a8fd4); }
-.cb-tw-sel-off { color: #cbd5e1; }
-.cb-tw-row.cb-sel .cb-tw-sel-on { display: inline-flex; }
-.cb-tw-row.cb-sel .cb-tw-sel-off { display: none; }
-/* By-path import at the foot of BOTH lists — the same dim dashed affordance the Picks &
- * curation table ends with (.cb-ptable-import), in this table's tighter scale. It is a
- * single action, so it sits outside the grid the rows share. */
-.cb-tw-import {
-    display: flex; align-items: center; gap: 5px;
-    margin: 3px 5px; padding: 2px 5px; min-height: 18px;
-    border: 1px dashed #e5e7eb; border-radius: var(--cb-r-md, 4px); cursor: pointer;
-    font-size: 9px; color: #b6c0cf;
-    transition: background 0.12s, border-color 0.12s, color 0.12s;
+.cb-tw-acts { opacity: .35; transition: opacity .1s; }
+.cb-tw-row:hover .cb-tw-acts { opacity: 1; }
+.cb-tw-dot-on, .cb-tw-dot-off {
+    width: 6px; height: 6px; border-radius: 50%; display: inline-block; box-sizing: border-box;
 }
-.cb-tw-import:hover {
-    background: #f8fafc; border-color: var(--cb-accent, #4a8fd4); color: var(--cb-head-ink, #12324f);
-}
+.cb-tw-dot-on { display: none; background: var(--cb-accent, #4a8fd4); }
+.cb-tw-dot-off { border: 1px solid #cbd5e1; }
+.cb-tw-row:hover .cb-tw-dot-off { border-color: var(--cb-accent, #4a8fd4); }
+.cb-tw-row.cb-sel .cb-tw-dot-on { display: inline-block; }
+.cb-tw-row.cb-sel .cb-tw-dot-off { display: none; }
 /* Species header row: active pill left, segmented tabs right. It sits under the view's title line
  * with no rule between them. */
 .cb-species-header {
@@ -2065,6 +2049,12 @@ _REGISTRY_CSS = """
 .cb-species-head .cb-seg { max-width: 100%; flex-wrap: wrap; flex-shrink: 1; }
 @container cb-sdetail (max-width: 440px) {
     .cb-species-header .cb-seg-btn { padding: 2px 5px; }
+}
+/* Templates & masks: the tables and the viewer one above the other, the viewer beside the tables once the
+ * detail column holds both (ui/template_workbench.py). */
+.cb-tm-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; align-items: start; width: 100%; }
+@container cb-sdetail (min-width: 980px) {
+    .cb-tm-split { grid-template-columns: minmax(0, 1fr) 320px; }
 }
 /* House text buttons keep their own width and a one-line label; the rows around them wrap instead of
  * squeezing the label onto two lines inside a 22 px button. */
