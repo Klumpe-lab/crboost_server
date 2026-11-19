@@ -86,7 +86,7 @@ _SPECIES_TAG_NAME = "overflow: hidden; text-overflow: ellipsis; white-space: now
 
 
 # The Journey glyph (a route from one point to another) is static/icons/journey.svg, the asset the
-# Picks & curation tab's journey button and the Tomograms wall's tiles draw too.
+# Tomograms wall's tiles draw too.
 _SB_INFO = "#c0cad4"
 _AVATAR_PALETTE = ["#3b82f6", "#8b5cf6", "#06b6d4", "#10b981", "#f59e0b", "#ec4899"]
 

@@ -4,7 +4,7 @@ One component with two mounts:
 
 - ``mode="slim"`` — the Journey's Particles section: look, filter, cross-link. No
   curation, no extraction verbs.
-- ``mode="full"`` — the full page reached from the Particles registry's Picks & curation
+- ``mode="full"`` — the full page reached from the Particles registry's Tomograms
   tab, filling the workspace main area: bigger slabs, curation mode, the per-list
   extraction verb, fullscreen.
 
@@ -1104,7 +1104,7 @@ async def _render_single_list_cutouts(
     recon-sourced cutout sheet (these lists are not subtomo-extracted, so tiles
     are cut from the binned recon at each pick voxel). Its tools go into `head`, the gallery's tool row.
 
-    The merged-list overlap/dedup panel lives in the Particles registry's Picks & curation
+    The merged-list overlap/dedup panel lives in the Particles registry's Tomograms
     tab, which acts on every tomogram at once. The per-list extract verb shows in
     ``mode="full"`` only; it is the same `list_actions.extract_list` the registry row fires.
 
@@ -1154,7 +1154,7 @@ async def _render_single_list_cutouts(
 
 
 # Merging and the merged-list overlap/dedup panel are per-list actions, owned by the
-# Picks & curation tab across every tomogram (`ui/species/picks_tab.py` →
+# Tomograms tab across every tomogram (`ui/species/tomograms_tab.py` →
 # `list_actions.merge_lists` / `open_dedup_dialog`).
 
 
@@ -1673,7 +1673,7 @@ async def _prompt_new_species(project_path: Path, refresh) -> None:
             return
         ui.notify(
             f"Created species '{species.name}' — pick into it with 'curate' on this tomogram, in the Particles "
-            "registry's Picks & curation tab",
+            "registry's Tomograms tab",
             type="positive",
             timeout=5000,
         )
@@ -1878,7 +1878,7 @@ def render_particles_section(
 
         def _show_manage_link_for(sp: dict) -> None:
             """'manage in Particles registry ↗' for the shown species: the one-click route to
-            merge / dedup / extract / import (the Picks & curation tab, selected by
+            merge / dedup / extract / import (the Tomograms tab, selected by
             `manage_species`). Absent when the workspace gave us no route (a standalone
             journey mount) or the species has no id."""
             manage_host.clear()
@@ -1890,7 +1890,7 @@ def render_particles_section(
                     "text-[10px] text-slate-500 cursor-pointer underline decoration-dotted"
                 ).on("click", lambda _e, s=sid: manage_species(s)).tooltip(
                     "Curate in ArtiaX · import a .coords · extract · dedup · delete — opens this species' "
-                    "Picks & curation tab, where all of them live in one place."
+                    "Tomograms tab, where all of them live in one place."
                 )
 
         with ui.element("div").classes("cb-particles-split"):
@@ -3949,7 +3949,7 @@ class PickViewerPage:
                     ui.icon("scatter_plot", size="28px").classes("text-gray-400")
                     ui.label("No tomogram selected.").classes("text-[12px]")
                     ui.label(
-                        "Open the viewer from a tomogram group on the Particles registry's Picks & curation tab."
+                        "Open the viewer from a tomogram's row on the Particles registry's Tomograms tab."
                     ).classes("text-[10px] italic text-gray-500")
                 return
             rendered = render_particles_section(
@@ -3973,15 +3973,15 @@ class PickViewerPage:
 
     def _manage_species(self, species_id: str) -> None:
         """The route back into the registry, composed the way the Journey composes it:
-        select the species AND land on Picks & curation. Without the second half the page
-        reuses its last tab, and none of the verbs this link promises are on Overview."""
+        select the species AND land on Tomograms. Without the second half the page
+        reuses its last tab, and none of the verbs this link promises are on the Species tab."""
         open_species = self.callbacks.get("open_species")
         if open_species is None:
             return
         open_species(species_id)
         select_tab = self.callbacks.get("species_select_tab")
         if select_tab is not None:
-            select_tab("picks")
+            select_tab("tomograms")
 
     def _render_header(self, state) -> None:
         """Tomogram identity + the two back-links (registry row, Journey) and the close link.
@@ -3998,7 +3998,7 @@ class PickViewerPage:
                 ui.label("← Particles registry").classes(
                     "text-[10px] text-slate-500 cursor-pointer underline decoration-dotted"
                 ).on("click", lambda _e: self._manage_species(self.species_id)).tooltip(
-                    "Back to this species' Picks & curation tab — the row this viewer was opened from"
+                    "Back to this species' Tomograms tab — the row this viewer was opened from"
                 )
             if self.tomo_name and self.callbacks.get("show_journey") is not None:
                 ui.label("journey ↗").classes(

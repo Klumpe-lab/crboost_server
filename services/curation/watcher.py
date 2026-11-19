@@ -18,7 +18,7 @@ session's scope. Without a manifest (an older project, or a hand-made dir) the r
 species ids / known tomogram names are matched against the ``<species>/<tomo>`` directory
 slugs. A dir that resolves to nothing, or to two things (slug collision), or whose manifest
 names a species the registry no longer has, is reported through ``unattributed()`` and never
-guessed at; the Picks & curation tab turns each into an explicit "assign to species +
+guessed at; the registry's Tomograms tab turns each into an explicit "assign to species +
 tomogram" action. Dedup: ``_seen`` (project, coords file, int(mtime)) plus the list's
 ``created_at >= mtime`` guard, which makes a restart re-register nothing.
 
@@ -113,7 +113,7 @@ class CurationWatcher:
         self._task = None
         logger.info("CurationWatcher stopped")
 
-    # ── read API (the Picks & curation tab's watcher footer) ──────────────────────
+    # ── read API (the Tomograms tab's watcher line) ──────────────────────
 
     def events(self, project_path: Path) -> list[dict]:
         """Newest-last ingest / error / unattributed events for one project (in-memory,
@@ -123,7 +123,7 @@ class CurationWatcher:
     def unattributed(self, project_path: Path) -> list[dict]:
         """Curation dirs holding a user save that maps to no (registered species, known
         tomogram) — surfaced, never guessed. ``{"dir", "reason", "files"}`` per dir, sorted
-        by dir. The reason is what the Picks & curation tab shows so the user can fix the
+        by dir. The reason is what the Tomograms tab shows so the user can fix the
         name rather than wonder why a save did nothing, and ``files`` is what its "assign"
         action would move."""
         found = self._unattributed.get(_key(project_path), {})

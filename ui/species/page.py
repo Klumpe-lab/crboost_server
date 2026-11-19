@@ -3,9 +3,10 @@
 Detail = one container per (species, tab), built lazily on first selection and cached; a
 switch only flips visibility. The active species' mark and the segmented tabs sit on the
 view's title line, after its name. Tabs: Species (what defines the species, its extraction
-geometry, status, delete) · Templates & masks (the mounted workbench) · Picks & curation ·
-Analytics (scores in σ, TM health, particle sets) · STA kitchen (one species' picks across
-tomograms and projects; the rail hides while it shows). A species' jobs are the roster's.
+geometry, status, delete) · Templates & masks (the mounted workbench) · Tomograms (one row
+per tomogram, its lists, curation) · Analytics (scores in σ, TM health, particle sets) · STA
+kitchen (one species' picks across tomograms and projects; the rail hides while it shows). A
+species' jobs are the roster's.
 
 The page owns the 3-s registry observe (species created / deleted elsewhere — roster "+",
 another browser tab, the Species tab's delete), the off-loop count of every species' picks
@@ -38,11 +39,11 @@ from services.routes import View, species_tab
 from ui.species.analytics_tab import AnalyticsTab
 from ui.species.catalog import import_from_catalog
 from ui.species.overview_tab import OverviewTab
-from ui.species.picks_tab import PicksTab
 from ui.species.prompt import create_species
 from ui.species.rail import SpeciesRail
 from ui.species.tab import SpeciesTab, TabContext
 from ui.species.templates_tab import TemplatesTab
+from ui.species.tomograms_tab import TomogramsTab
 from ui.ui_state import get_ui_state_manager
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,7 @@ logger = logging.getLogger(__name__)
 TABS: tuple[tuple[str, str], ...] = (
     ("species", "Species"),
     ("templates", "Templates & masks"),
-    ("picks", "Picks & curation"),
+    ("tomograms", "Tomograms"),
     ("analytics", "Analytics"),
     ("kitchen", "STA kitchen"),
 )
@@ -276,8 +277,8 @@ class SpeciesPage:
                 return TemplatesTab(ctx)
             case "species":
                 return OverviewTab(ctx)
-            case "picks":
-                return PicksTab(ctx)
+            case "tomograms":
+                return TomogramsTab(ctx)
             case "analytics":
                 return AnalyticsTab(ctx)
             case "kitchen":
@@ -375,20 +376,17 @@ class SpeciesPage:
                 self._rail.refresh()
 
     def _push_tab_badges(self) -> None:
-        """Counts on the tab strip for the active species. All three
-        reads are in-memory, so this rides the 3-s observe with no disk cost;
+        """The template count on the tab strip for the active species. An
+        in-memory read, so this rides the 3-s observe with no disk cost;
         `set_badge` is a no-op when the number has not moved."""
         if self._segmented is None:
             return
         state = get_project_state_for(self.project_path)
         sp = state.get_species(self.active_species_id) if self.active_species_id else None
         if sp is None:
-            for key in ("templates", "picks"):
-                self._segmented.set_badge(key, "")
+            self._segmented.set_badge("templates", "")
             return
-        n_picks = sum(1 for pl in state.pick_lists if pl.species_id == sp.id)
         self._segmented.set_badge("templates", str(len(sp.templates)) if sp.templates else "")
-        self._segmented.set_badge("picks", str(n_picks) if n_picks else "")
 
     async def add_species(self) -> None:
         # SingleFlight: the "+" lives in a rail that repaints on registry changes, so a
