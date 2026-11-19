@@ -1,10 +1,11 @@
 """The branch map as the Jobs view's content: every job a card, in a grid in the order the jobs were made, wrapping
 at the view's width, scrolled down; nothing is dragged or zoomed. Cables run from each job's output to what reads
-it. A click on a card selects its job (in the roster too) and lights its lineage, everything it was made from and
-everything made from it, and dims the rest; a click on the selected card opens its page. `f` or `/` finds jobs.
+it, drawn only for the selected job's lineage, above the cards. A click on a card selects its job (in the roster
+too) and lights its lineage, everything it was made from and everything made from it, and dims the rest; a click on
+the selected card opens its page. `f` or `/` finds jobs.
 The header's "+" adds a job that reads it: the new job's card appears beside its parent, its inputs chosen in a
 palette that lights the jobs each can read, and ✓ adds it. A scheduled job's input rows choose what they read the
-same way. With "by species" each species is a band of its own.
+same way. With "by species" each species is a band of its own, folded by a click on its head.
 
 The cards are HTML strings (ui/branch_map/html.py), one element each; the browser lays them out and draws the
 cables, the lineage, find and the menus (ui/branch_map/assets.py) over a graph sent once per change. The view keeps
@@ -39,7 +40,7 @@ from ui.branch_map.model import NEW, TRUNK, Job, Project, project_from_state
 from ui.branch_map.picker import picker_body, render_ts_chip
 from ui.branch_map.state import MapState
 from ui.branch_map.style import HAIR, INK, MENU_STYLE, PAPER, SOFT, text
-from ui.components.buttons import icon_button
+from ui.components.buttons import house_button, icon_button
 from ui.components.check import house_check
 from ui.pipeline_builder.pipeline_constants import PHASE_JOBS, PHASE_PARTICLES
 
@@ -113,7 +114,10 @@ class BranchMapView:
         self._new_box: ui.element | None = None
         self._new_sig: tuple | None = None
         self._new_at: tuple | None = None  # (its grid, its place in it)
-        self._grids: list[tuple[str | None, ui.element]] = []  # per band: its title, its grid
+        self._grids: list[tuple[str | None, ui.element]] = []  # per band: its species key (None: no bands), its grid
+        self._band_heads: dict[str, ui.html] = {}  # species key → its band's head
+        self._band_html: dict[str, str] = {}
+        self._shown: dict[str, bool] = {}  # species key → whether its grid shows
         self._graph = ""
         self._slot = "null"
         self._cand_keys: dict[str, str] = {}  # the open input's candidates → the source key set_input takes
@@ -218,6 +222,7 @@ class BranchMapView:
         st.strips = bool(p.get("strips", True))
         st.trunk = bool(p.get("trunk", True))
         st.by_species = bool(p.get("by_species", False))
+        st.folded = set(p.get("folded") or [])
 
     def persist(self) -> None:
         p = self._prefs()
@@ -227,6 +232,7 @@ class BranchMapView:
         p["strips"] = st.strips
         p["trunk"] = st.trunk
         p["by_species"] = st.by_species
+        p["folded"] = sorted(st.folded)
         for gone in ("moved", "view"):  # kept by the map that was dragged and zoomed
             p.pop(gone, None)
 
@@ -276,7 +282,7 @@ class BranchMapView:
 
         order = self._order(pr, shared)
         bands = self._bands(pr, order)
-        shape = tuple((title, tuple(nids)) for title, nids in bands)
+        shape = tuple((key, title, tuple(nids)) for key, title, nids in bands)
         if shape != self._shape:
             self._build(pr, bands)
             self._shape = shape
@@ -306,6 +312,7 @@ class BranchMapView:
                 el.classes(add="large") if nid in large else el.classes(remove="large")
                 self._large_cls ^= {nid}
         self._place_new(pr, resolved, anchor)
+        self._fold(bands)
         if st.adding:
             self._draw_new(pr, state, resolved)
         graph = self._graph_json(pr, shared, resolved, anchor)
@@ -326,36 +333,57 @@ class BranchMapView:
     def _species_of(self, pr: Project, nid: str) -> str:
         return "" if nid == TRUNK else pr.by_id[nid].species or ""
 
-    def _bands(self, pr: Project, order: list[str]) -> list[tuple[str | None, list[str]]]:
+    def _bands(self, pr: Project, order: list[str]) -> list[tuple[str | None, str | None, list[str]]]:
+        """(species key, title, nodes) per band; one band without key or title when the map is not banded."""
         if not self.st.by_species:
-            return [(None, order)]
+            return [(None, None, order)]
         groups: dict[str, list[str]] = {}
         for nid in order:
             groups.setdefault(self._species_of(pr, nid), []).append(nid)
         keys = sorted(groups, key=lambda s: (s != "", order.index(groups[s][0])))
-        return [(pr.species_names.get(s, s) if s else _NO_SPECIES, groups[s]) for s in keys]
+        return [(s, pr.species_names.get(s, s) if s else _NO_SPECIES, groups[s]) for s in keys]
 
-    def _build(self, pr: Project, bands: list[tuple[str | None, list[str]]]) -> None:
+    def _build(self, pr: Project, bands: list[tuple[str | None, str | None, list[str]]]) -> None:
         """The skeleton: the cables' layer, then per band its head and its grid of empty cards (filled after)."""
         self._world.clear()
         self._cards.clear()
         self._html.clear()
         self._large_cls.clear()
         self._grids.clear()
+        self._band_heads.clear()
+        self._band_html.clear()
+        self._shown.clear()
         self._new_box, self._new_sig, self._new_at = None, None, None
         with self._world:
             ui.html("<svg></svg>", sanitize=False).classes("cb-bm-cables")
-            for title, nids in bands:
-                if title is not None:
-                    n = sum(1 for x in nids if x != TRUNK)
-                    ui.html(band_html(title, n), sanitize=False).classes("cb-bm-band")
+            for key, _title, nids in bands:  # the heads' words are written by _fold
+                if key is not None:
+                    head = ui.html("", sanitize=False).classes("cb-bm-band")
+                    head.props["data-band"] = key
+                    self._band_heads[key] = head
                 with ui.element("div").classes("cb-bm-grid") as grid:
                     for nid in nids:
                         el = ui.html("", sanitize=False).classes("cb-bm-node")
                         el.props["data-nid"] = nid
                         self._cards[nid] = el
-                self._grids.append((title, grid))
+                self._grids.append((key, grid))
         self._js("cbBm.mount()")
+
+    def _fold(self, bands: list[tuple[str | None, str | None, list[str]]]) -> None:
+        """Each band's head as its fold stands, and its grid shown or hidden; sent only where they changed."""
+        grids = dict(self._grids)
+        for key, title, nids in bands:
+            head, grid = self._band_heads.get(key), grids.get(key)
+            if key is None or head is None or grid is None or head.is_deleted:
+                continue
+            folded = key in self.st.folded
+            html = band_html(title or "", sum(1 for x in nids if x != TRUNK), folded=folded)
+            if self._band_html.get(key) != html:
+                head.set_content(html)
+                self._band_html[key] = html
+            if self._shown.get(key) != (not folded):
+                grid.set_visibility(not folded)
+                self._shown[key] = not folded
 
     def _place_new(self, pr: Project, resolved: list[Resolved], anchor) -> None:
         """The new job's card, in the grid right after the job its main input reads (first in its species' band,
@@ -373,8 +401,12 @@ class BranchMapView:
         parent_el = self._cards.get(parent) if parent else None
         grid = next((g for _, g in self._grids if parent_el is not None and parent_el in g.default_slot.children), None)
         if grid is None:
-            title = pr.species_names.get(st.species_id or "", st.species_id) if st.by_species else None
-            grid = next((g for t, g in self._grids if t == title), self._grids[0][1])
+            key = (st.species_id or "") if st.by_species else None
+            grid = next((g for k, g in self._grids if k == key), self._grids[0][1])
+        band = next((k for k, g in self._grids if g is grid), None)
+        if band in st.folded:  # the new card must show: its band unfolds
+            st.folded.discard(band)
+            self.persist()
         others = [c for c in grid.default_slot.children if c is not self._new_box]
         index = others.index(parent_el) + 1 if parent_el in others else 0
         fresh = self._new_box is None or self._new_box.is_deleted
@@ -618,7 +650,8 @@ class BranchMapView:
                 on_socket=lambda k: self._open_slot(NEW, k),
                 on_method=self._method_menu,
                 on_discard=lambda _e: self._discard(),
-                on_add=lambda _e: asyncio.create_task(_add_new_job(self, pr, state, resolve(pr, st))),
+                # The coroutine goes back to NiceGUI, which awaits it in the button's slot: its notes need one (H30).
+                on_add=lambda _e: _add_new_job(self, pr, state, resolve(pr, st)),
                 todo=[r.slot.label for r in unsettled(resolved)],
             )
 
@@ -697,7 +730,7 @@ class BranchMapView:
         return self._lead, self._tools
 
     def _render_head(self, pr: Project) -> None:
-        """The picked tilt series after the title; at the right end the tilt-series picker, the cards' size, the
+        """The picked tilt series after the title; at the right end the tilt-series picker, expand / collapse all, the
         magazines, the folded start, and the check that bands the map by species."""
         slots = self._head_slots()
         if slots is None:
@@ -705,18 +738,7 @@ class BranchMapView:
         st = self.st
         n_species = len({j.species for j in pr.jobs if j.species})
         foldable = len(pr.trunk()) >= 2
-        sig = (
-            len(pr.ts_ids),
-            bool(pr.jobs),
-            st.active_ts,
-            st.all_large,
-            bool(st.large),
-            st.strips,
-            st.trunk,
-            st.by_species,
-            n_species,
-            foldable,
-        )
+        sig = (len(pr.ts_ids), bool(pr.jobs), st.active_ts, st.strips, st.trunk, st.by_species, n_species, foldable)
         if sig == self._head_sig:
             return
         self._head_sig = sig
@@ -758,14 +780,14 @@ class BranchMapView:
 
                     menu.on_value_change(fill)
                 ui.element("div").style(f"width: 1px; height: 14px; background: {HAIR}; margin: 0 3px;")
-            any_large = st.all_large or bool(st.large)
-            size = icon_button(
-                "unfold_less" if any_large else "unfold_more",
-                lambda: self._set_size(not any_large),
-                tooltip="Every card small" if any_large else "Every card large: parameters and results on the card",
+            house_button(
+                "expand all",
+                lambda: self._set_size(True),
+                tooltip="Every card large: parameters and results on the card",
             )
-            if st.all_large:
-                size.classes("cb-flag-on")
+            house_button("collapse all", lambda: self._set_size(False), tooltip="Every card small")
+            if pr.ts_ids or foldable:
+                ui.element("div").style(f"width: 1px; height: 14px; background: {HAIR}; margin: 0 3px;")
             if pr.ts_ids:
                 mags = icon_button(
                     "view_week",
@@ -899,9 +921,11 @@ class BranchMapView:
         if self._pr is not None and ts in self._pr.ts_ids:
             self.pick(None if ts == self.st.active_ts else ts)
 
-    def on_start(self, e) -> None:
+    async def on_start(self, e) -> None:
+        # Awaited here, not in a task of its own: NiceGUI runs an async handler inside the page's slot, and the
+        # species picker _start may open needs one (H30).
         if self.ours(e):
-            asyncio.create_task(self._start(e.args.get("kind"), e.args.get("parent"), e.args.get("slot")))
+            await self._start(e.args.get("kind"), e.args.get("parent"), e.args.get("slot"))
 
     def on_job(self, e) -> None:
         """The number's menu: open, clone or remove the job."""
@@ -931,6 +955,15 @@ class BranchMapView:
             self.st.open_slot = None
             self._slot = "null"  # the browser closed it already
             self.redraw()
+
+    def on_band(self, e) -> None:
+        """A click on a species band's head: the band folds, or unfolds."""
+        key = e.args.get("key")
+        if not self.ours(e) or not isinstance(key, str):
+            return
+        self.st.folded ^= {key}
+        self.persist()
+        self.redraw()
 
     def on_trunk(self, e) -> None:
         if self.ours(e):
@@ -1076,6 +1109,7 @@ def mount_branch_map(container, panel, callbacks: dict[str, Callable]) -> Branch
         ("cb-bm-choose", view.on_choose),
         ("cb-bm-slot-close", view.on_slot_close),
         ("cb-bm-trunk", view.on_trunk),
+        ("cb-bm-band", view.on_band),
     ):
         ui.on(name, handler)
     panel.ui_mgr.view_scope("pipeline").timer(_TICK_S, view.tick, container)

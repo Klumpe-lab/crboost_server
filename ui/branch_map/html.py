@@ -337,9 +337,11 @@ def trunk_html(pr: Project, shared: list[str], *, strips: bool, active_ts: str |
     )
 
 
-def band_html(title: str, n: int) -> str:
-    """The head of a species' band: its name, a rule, how many jobs."""
+def band_html(title: str, n: int, *, folded: bool) -> str:
+    """The head of a species' band: a chevron, its name, a rule, how many jobs. A click folds or unfolds it."""
+    chevron, tip = ("chevron_right", "Unfold") if folded else ("expand_more", "Fold")
     return (
+        f'<i class="material-icons cb-bm-fold" title="{tip} this band">{chevron}</i>'
         f'<span class="t">{_e(title)}</span><span class="r"></span>'
-        f'<span class="m">{n} job{"" if n == 1 else "s"}</span>'
+        f'<span class="m">{n} job{"" if n == 1 else "s"}{" · folded" if folded else ""}</span>'
     )

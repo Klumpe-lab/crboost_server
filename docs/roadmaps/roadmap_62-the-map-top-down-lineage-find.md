@@ -338,3 +338,28 @@ project loaded read only (nothing saved; `notes/map-ideas/map_harness.py`, `driv
 **Found on the way: H29** ([HOTFIXES.md](HOTFIXES.md)): since 2026-11-18 adding a job with parameters from the map
 failed before its card appeared (a call to `_attach_input` with a keyword the job-page work removed). Fixed in the
 new card's form.
+
+## 8. After a day on it (2026-11-19, the maintainer's notes; uncommitted)
+
+The maintainer used the built map and asked for five changes; all made the same day:
+
+- **No cables at rest.** Every edge drawn at once read as a tangle. The cables are drawn as before (`M.draw`) but
+  the stylesheet shows only the selected job's lineage and the new job's inputs while it is added; a card in a
+  folded band gets none. This overrides §4's "side cables at rest go with Grid".
+- **The lineage's cables above the cards** (`.cb-bm-cables` at z-index 3, still `pointer-events: none`), so a line
+  is never broken by a dimmed card it passes.
+- **The selected job in its own colour.** Its ring and a tint of its header are `--cb-bm-sel` (orange, `#e8590c`);
+  the lineage keeps the accent's blue, so the selected card no longer reads as one more blue outline.
+- **Species bands fold.** A click on a band's head (a chevron before the name, "· folded" after the count) hides its
+  grid; folded bands are kept in the user's storage per project with the cards' sizes (`MapState.folded`, species
+  key, "" for the band of jobs without one). The skeleton is not rebuilt: the head's words and the grid's visibility
+  are sent alone (`BranchMapView._fold`). A new job's card that lands in a folded band unfolds it.
+- **"expand all" / "collapse all"** as two `house_button`s on the Pipeline title line, replacing the one icon that
+  flipped between them (it was easy to miss).
+- The size toggle and the "+" in a card's header sit 12 px apart: a click meant for the size could land on "+" and,
+  with its menu, start an add (the H30 errors the maintainer saw "when collapsing").
+
+Checked in the harness (`notes/map-ideas/map_harness.py` over AGG412_STA read only): at rest 36 cables drawn, none
+shown; selecting Class 3D 022 shows its 8 above the cards, ring `rgb(232, 89, 12)`; expand all 30 large, collapse all
+0; by species 2 bands, the first folds (its grid hidden) and unfolds; no browser errors. Owed: the look in the real
+app after a restart.

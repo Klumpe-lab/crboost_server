@@ -518,9 +518,83 @@ nothing and aggregates.
 **Check.** A Segment on 150+ tomograms submits its supervisor with about a day (`run_submit.script`, `#SBATCH
 --time`) under g_medium and Succeeds.
 
+## Fixed
+
+### H30 — Starting a particle job from the branch map does nothing: the species picker cannot open
+
+**Fixed 2026-11-19 (uncommitted).** `BranchMapView.on_start` is async and awaits `_start`; the new card's ✓ hands
+NiceGUI the `_add_new_job` coroutine instead of a task. NiceGUI's `handle_event` awaits a handler's coroutine inside
+the sender's slot (`nicegui/events.py`), so the picker's dialog and the ✓'s notes have a client again. **Checked:**
+ruff; NiceGUI's code read; the click in a restarted server is owed.
+
+**Status:** fixed 2026-11-19, found the same day in the log of the dev server (three clicks at 14:33).
+**Severity:** high for the map: no particle-phase job (all eleven, Template matching to CTF refine, which ask for a
+species first) could be started from it since 50685a0, and nothing on screen said why.
+
+**What is wrong.** `on_start` and the ✓ ran their work in `asyncio.create_task`. NiceGUI keeps a slot stack per task
+and a new one starts empty, so `choose_species` (`ui/pipeline_builder/species_picker.py:101`) raised `RuntimeError: The
+current slot cannot be determined` at `ui.dialog()`, in the task, to the log only. The ✓ had the same flaw on its
+`ui.notify` lines (`_add_new_job`, and `add_instance_to_pipeline`'s refusal): a refused add was lost the same way.
+
+### H29 — Adding a job with parameters from the branch map fails before its card appears
+
+**Fixed 2026-11-19 (uncommitted), in roadmap 62's rebuild of the map.** The new job's form calls
+`_attach_input(inp, is_frozen=False, width="M")` (`ui/branch_map/blocks.py`, `_ed_field`), the signature the job
+page's fields now have, and sets its own pixel width after. **Checked** on AGG412_STA loaded read only, in a page
+that mounts the real map with a stand-in panel (`notes/map-ideas/map_harness.py`): "+" on Class 3D 005 → Refine 3D
+→ its card appears with its 25 parameter fields, its reference is chosen in the palette, the ✓ turns ready.
+
+**Status:** fixed 2026-11-19, found the same day. **Severity:** high for the map: no job with parameters could be
+added from it since 2026-11-18, and nothing on screen said why.
+
+**What is wrong.** Roadmap 59 (7e65445, 2026-11-18) changed `_attach_input` in `ui/job_plugins/_field_styles.py`
+to `(inp, *, is_frozen, width)`. The map's form still passed `narrow=False`, so building the new job's card raised
+`TypeError: _attach_input() got an unexpected keyword argument 'narrow'` in the task started by the "+" menu, after
+the job type was chosen: the card never appeared, and the error went to the log only.
+
+### H28 — The loop watchdog puts every stall in a standard-library call down to the library, never to its caller
+
+**Fixed 2026-11-19 (uncommitted).** `services/loop_watchdog.py`: `_place` names the first frame of the server's own
+code (`_own_code`), and frames under the checkout's `.uv/` and `venv/` (the interpreter and the environment the
+launcher builds) no longer count as the server's. **Checked** with a toy (`notes/map-ideas/wd_toy.py`, copied into
+`services/` to run): a function of the checkout reading files on a busy loop, sampled by `_place` under the live
+server's interpreter (`.uv/env/3.11.18-8febfdb40744/bin/python3`). Before: 8 of 8 samples in
+`.uv/python/…/pathlib.py:open`, `read_bytes` or `_scandir`. After: 8 of 8 in the toy's function, under that
+interpreter and under `venv/bin/python`. The server needs a restart to pick it up.
+
+**Status:** fixed 2026-11-19, found the same day (roadmap 62 §1.10). **Severity:** medium: no stall in a file read,
+a lock or any other standard-library call could be placed, so the worst freezes of the server went unexplained.
+
+**What is wrong.** `_place` walked out from the innermost frame and took the first file under the checkout that is
+not in `site-packages`. Since roadmap 39 the launcher's interpreter lives in `.uv/python/` inside the checkout, so
+its standard library qualified: the innermost `pathlib.py` frame was reported, and the walk never reached the server
+function that called it.
+
+**Evidence.** `~/.crboost/logs/crboost-24326.log`: every stall line places itself in `.uv/python/cpython-3.11.18-…`
+(`pathlib.py:open`, `stat`, `resolve`, `logging/__init__.py:_releaseLock`, `asyncio/runners.py:run`), e.g.
+2026-11-19 13:31:08, 12.7 s in `pathlib.py:open` ×252, and 2026-11-18 11:44:32, 14.3 s in `pathlib.py:open` ×282.
+
+**Impact.** Stall lines name a place only when it is the server's own Python, which hides the most common kind,
+file reads on the event loop. Roadmap 62 §1.9's tally of 265 stall lines by place was made from such lines.
+
 ### H26 — RELION's tomo programs place particles without missAlign's local image warps: 8–17 Å RMS off
 
-**Status:** open, found 2026-11-19 (roadmap 53 §15.7–§15.8; the fix is a design choice, §15.8). **Severity:**
+**Fixed 2026-11-19 (uncommitted): the bridge** (roadmap 53 §15.9). Every driver that hands RELION the tilt images
+(Reconstruct particle, CTF refine, Subtomo extraction, pick-list extraction) first calls
+`drivers/warp_bridge.carry_warp_geometry`: `services/particles/warp_geometry.py` finds each tilt series' Warp XML
+(tsCtf job, Warp export's staging, a particle set's origin), refuses one whose rigid model is not the star's or whose
+extents disagree, and when an XML holds more than the rigid model, `containers/miss_alignment/warp_trajectories.py`
+(warpylib, in the miss_alignment container) writes `warp_trajectories.star`; the job hands RELION
+`warp_optimisation_set.star`, which names it. Particles without names (candidates) get `<tomogram>/<n>`. A set that
+already carries the bridge's trajectories for all its particles is used as it is; one naming other trajectories is
+refused. Extraction outputs keep the trajectories named; relion_refine and CTF refine carry the line by themselves.
+No XML beyond the rigid model: nothing changes. **Checked:** on job019's set the bridge writes the side step's
+trajectories to 5e-6 Å in 7 s, and RELION's bin-2 reconstruction from its set is the side step's (9.2 Å; maps equal
+to 1e-5 of their SD); on 2,853 unnamed SK candidates over 125 tilt series it names them and writes 2,853 blocks; a
+bridged set comes back unchanged; foreign trajectories are refused; the AreTomo XML reads rigid-only, missAlign's on.
+Not yet run as a crboost job (the C10 chain again, §15.9).
+
+**Status:** fixed 2026-11-19, found the same day (roadmap 53 §15.7–§15.8). **Severity:**
 high for any RELION tomo program on missAligned data: Reconstruct particle, CTF refine, frame alignment, RELION
 pseudo-subtomo extraction. A bin-1 reference from them is about 20 Å where Warp's stacks of the same particles give
 9 Å. A CTF refine fitted against such a reference, and itself cutting from the tilt images through the rigid star,
@@ -541,15 +615,12 @@ half-map FSC 0.143: rigid star 19.4 Å (all 438); with Warp's offsets carried as
 stacks' 9.1 Å (job019); offsets sign-flipped 20.3 Å. Per tomogram: SK 14.4 → 9.9 Å, Slot6 22.0 → 9.2, FCIso 19.8 →
 12.0, Grid2 30.5 → 15.0 (flipped: 22.7, 24.0, 29.4, 24.8).
 
-**Fix (to choose, §15.8).** Carry Warp's local geometry to RELION as per-particle trajectories
+**Fix (D11 taken: per consumer, §15.9).** Carry Warp's local geometry to RELION as per-particle trajectories
 (`rlnTomoTrajectoriesFile`, Polish's format): per particle and tilt, the shortest 3-D offset whose projection is
 Warp's full position minus its rigid one (`warpylib.get_position_in_all_tilts`), as `warp_trajectories.py` does.
 Verified: RELION's tomo programs apply it (above); `relion_refine` on 2D stacks ignores it (maps bit-identical) and
-carries it into its output set. Until then, those jobs should refuse missAligned tilt series, naming the warps' size.
-**Check.** Reconstruct particle of job019's poses at bin 1 reaches the stacks' resolution; CTF refine's moves stay
+carries it into its output set. **Check.** Reconstruct particle of job019's poses at bin 1 reaches the stacks' resolution; CTF refine's moves stay
 within its limit.
-
-## Fixed
 
 ### H27 — The branch map shows a job given a particle set as reading itself
 
