@@ -19,7 +19,14 @@ from typing import Any
 
 from services import species_admin, tomogram_import
 from services.jobs._base import SymmetryGroup
-from services.models_base import JobType, SpeciesOrigin
+from services.models_base import (
+    DEFAULT_GLYPH_HUE,
+    DEFAULT_SPECIES_GLYPH,
+    SPECIES_GLYPH_HUES,
+    SPECIES_GLYPHS,
+    JobType,
+    SpeciesOrigin,
+)
 from services.project_state import ExtractionParams, ProjectState, TemplateMask
 from services.result import ErrorCode, err, need, ok
 from services.templating.template_metadata import read_template_header
@@ -86,11 +93,14 @@ def set_species(
     diameter_ang: Any = KEEP,
     symmetry: Any = KEEP,
     notes: Any = KEEP,
+    glyph: Any = KEEP,
+    glyph_hue: Any = KEEP,
     extraction: Any = KEEP,
 ) -> dict[str, Any]:
-    """Edit a species: its identity (what the Particles registry's editor sets; a diameter of None clears it)
-    and its extraction geometry (box, binning, crop: all three, which the jobs added for it later take). Only
-    what is given changes; a job made earlier keeps the values it took. `ok(species)` as it now is."""
+    """Edit a species: its identity (what the Particles registry's editor sets; a diameter of None clears it; a
+    glyph or hue of "" is the default) and its extraction geometry (box, binning, crop: all three, which the jobs
+    added for it later take). Only what is given changes; a job made earlier keeps the values it took.
+    `ok(species)` as it now is."""
     if state.get_species(species_id) is None:
         listed = ", ".join(s.id for s in state.species_registry) or "none"
         return err(f"No species {species_id} in this project ({listed}).")
@@ -99,6 +109,10 @@ def set_species(
         None if diameter_ang is KEEP else diameter_ang,
         None if symmetry is KEEP else symmetry,
     )
+    if glyph is not KEEP and glyph and glyph not in SPECIES_GLYPHS:
+        problems.append(f"glyph: one of {', '.join(SPECIES_GLYPHS)}, or empty for the default")
+    if glyph_hue is not KEEP and glyph_hue and glyph_hue not in SPECIES_GLYPH_HUES:
+        problems.append(f"glyph_hue: one of {', '.join(SPECIES_GLYPH_HUES)}, or empty for the default")
     geometry = KEEP
     if extraction is not KEEP:
         box, binning, crop = extraction
@@ -120,6 +134,11 @@ def set_species(
             sp.symmetry = symmetry
         if notes is not KEEP:
             sp.notes = notes
+        # The defaults are stored as "", so a species never picked and one set back read the same.
+        if glyph is not KEEP:
+            sp.glyph = "" if glyph == DEFAULT_SPECIES_GLYPH else glyph
+        if glyph_hue is not KEEP:
+            sp.glyph_hue = "" if glyph_hue == DEFAULT_GLYPH_HUE else glyph_hue
         if geometry is not KEEP:
             sp.extraction_params = geometry
 
@@ -133,6 +152,8 @@ def set_species(
             "diameter_ang": sp.diameter_ang,
             "symmetry": sp.symmetry,
             "notes": sp.notes,
+            "glyph": sp.glyph or DEFAULT_SPECIES_GLYPH,
+            "glyph_hue": sp.glyph_hue or DEFAULT_GLYPH_HUE,
             "extraction": sp.extraction_params.model_dump() if sp.extraction_params else None,
         }
     )

@@ -33,7 +33,7 @@ from services.background_tasks import get_background_task_registry
 from services.code_version import code_version
 from services.configs.config_service import get_config_service
 from services.jobs.spec import JOB_SPECS, PARAM_CLASS_BY_TYPE, PHASE_PARTICLES, display_name, instance_display_name
-from services.models_base import JobType
+from services.models_base import DEFAULT_GLYPH_HUE, DEFAULT_SPECIES_GLYPH, JobType
 from services.path_resolution_service import PathResolutionService, auto_exclusion, unreadable_reason
 from services.project_create import ACQUISITION_FIELDS, ProjectSpec, required_values, spec_problems
 from services.project_resolve import resolve_project
@@ -397,6 +397,8 @@ def _species_row(sp) -> dict[str, Any]:
         "catalog_id": sp.catalog_id,
         "diameter_ang": sp.diameter_ang,
         "symmetry": sp.symmetry,
+        "glyph": sp.glyph or DEFAULT_SPECIES_GLYPH,
+        "glyph_hue": sp.glyph_hue or DEFAULT_GLYPH_HUE,
         "templates": len(sp.templates),
         "masks": len(sp.masks),
     }
@@ -1186,6 +1188,10 @@ async def set_species(call: Call) -> dict[str, Any]:
     a = call.args
     given = {name: getattr(a, name) for name in ("name", "color", "diameter_ang", "symmetry", "notes")}
     fields = {name: value for name, value in given.items() if name in a.model_fields_set}
+    # A glyph or hue given as null is the default, as "" is.
+    for name in ("glyph", "glyph_hue"):
+        if name in a.model_fields_set:
+            fields[name] = getattr(a, name) or ""
     if "extraction" in a.model_fields_set and a.extraction is not None:
         fields["extraction"] = (a.extraction.box_size, a.extraction.binning, a.extraction.crop_size)
     res = species_edit.set_species(call.state, a.species, **fields)

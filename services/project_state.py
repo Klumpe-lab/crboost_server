@@ -204,7 +204,12 @@ class ExtractionParams(BaseModel):
 class ParticleSpecies(BaseModel):
     id: str  # slug, used as folder name and instance suffix
     name: str  # display label
-    color: str = "#3b82f6"
+    color: str = "#3b82f6"  # the overlay colour, drawn on the canvases only
+
+    # The glyph and its muted hue the chrome draws the species with (`SPECIES_GLYPHS`, `SPECIES_GLYPH_HUES`);
+    # "" is the default: the icosahedral capsid in grey.
+    glyph: str = ""
+    glyph_hue: str = ""
 
     # How this species came to exist: "workbench" (template-driven), "manual"
     # (created de novo for hand picking), "imported". Empty on species that
@@ -896,9 +901,9 @@ class ProjectState(BaseModel):
         self._registry_rev += 1
 
     def species_identity(self) -> tuple:
-        """Precise fingerprint of what species pills / tabs / dots draw (id, name,
-        color per species) — the DOM-gate input for those renders."""
-        return tuple((s.id, s.name, s.color) for s in self.species_registry)
+        """Precise fingerprint of what species marks / tabs / dots draw (id, name, color,
+        glyph and its hue per species) — the DOM-gate input for those renders."""
+        return tuple((s.id, s.name, s.color, s.glyph, s.glyph_hue) for s in self.species_registry)
 
     def mutate_species(self, species_id: str, fn) -> bool:
         """The one way to edit a species in place (workbench header, swatch, template

@@ -86,6 +86,7 @@ from ui.components.hover_menu import Choice, ChoiceRows, hover_menu, tool_trigge
 from ui.components.layer_menu import LayerRow, render_layer_list
 from ui.components.reactive import SingleFlight, owned_timer
 from ui.components.render_slot import RenderSlot
+from ui.components.species_pill import species_glyph_svg
 from services.job_lineage import job_dirs, recon_of
 from ui.components.recon_compare import recon_version_labels
 from ui.components.segmented import render_segmented
@@ -1206,6 +1207,12 @@ class TomoGalleryPage:
         covers; for one tomogram (`row`, the zoom), the layers on it, with its picks of each."""
         picks_n = {e["id"]: e["n"] for e in row["picks"]} if row is not None else None
         on_tomo = {e["id"] for e in row["features"]} if row is not None else None
+        state = get_project_state_for(self.project_path)
+        glyphs = {
+            layer["species_id"]: species_glyph_svg(sp, 10)
+            for layer in self.layers
+            if (sp := state.get_species(layer["species_id"])) is not None
+        }
         picks = [
             LayerRow(
                 id=layer["id"],
@@ -1215,6 +1222,7 @@ class TomoGalleryPage:
                 recon=layer["recon"],
                 recon_label=layer["recon_label"],
                 group=layer["species"],
+                group_glyph=glyphs.get(layer["species_id"], ""),
             )
             for layer in self.layers
             if picks_n is None or layer["id"] in picks_n

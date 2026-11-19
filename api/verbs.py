@@ -338,8 +338,8 @@ _VERBS: tuple[Verb, ...] = (
     ),
     Verb(
         "set_species",
-        "Edit a species: name, colour, diameter, symmetry, notes, and the extraction geometry its new extraction "
-        "jobs take. Jobs made earlier keep their values.",
+        "Edit a species: name, overlay colour, glyph and its hue, diameter, symmetry, notes, and the extraction "
+        "geometry its new extraction jobs take. Jobs made earlier keep their values.",
         m.SetSpeciesIn,
         "write",
         h.set_species,

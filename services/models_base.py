@@ -380,6 +380,49 @@ def current_overlay_color(color: str) -> str:
         return color
 
 
+# A species' glyph: what kind of particle it is, drawn in the chrome (the rail, the roster's species tag, job pages,
+# the layers). `static/icons/species/<key>.svg`, one ink. The first is the default every species shows until one is
+# picked; a species stores "" for it.
+SPECIES_GLYPHS: dict[str, str] = {
+    "capsid": "Icosahedral capsid",
+    "ribosome": "Ribosome",
+    "enveloped": "Enveloped virus",
+    "spike": "Spike / trimer on a stalk",
+    "membrane": "Membrane protein",
+    "filament": "Filament (actin)",
+    "tube": "Tube (microtubule)",
+    "barrel": "Barrel (proteasome)",
+    "pore": "Ring / pore",
+    "lattice": "Lattice",
+}
+DEFAULT_SPECIES_GLYPH = "capsid"
+
+# The muted hues a glyph may be drawn in: (name, ink). The first, the theme's glyph grey, is the default a species
+# stores as "". Chrome only: the overlay colour stays on the canvases.
+SPECIES_GLYPH_HUES: dict[str, tuple[str, str]] = {
+    "grey": ("grey", "#94a3b8"),
+    "slate": ("slate", "#5f6f86"),
+    "steel": ("steel blue", "#4f7aa8"),
+    "verdigris": ("verdigris", "#3f8a78"),
+    "olive": ("olive", "#6f7f3a"),
+    "ochre": ("ochre", "#b08a2e"),
+    "sand": ("sand", "#a8916a"),
+    "rust": ("rust", "#b0643a"),
+    "oxide": ("oxide red", "#a14d4a"),
+}
+DEFAULT_GLYPH_HUE = "grey"
+
+
+def species_glyph(species) -> tuple[str, str]:
+    """(glyph key, ink) a species is drawn with: its own, else the default capsid in grey. A stored key this code does
+    not know draws the default."""
+    key = getattr(species, "glyph", "") or DEFAULT_SPECIES_GLYPH
+    hue = getattr(species, "glyph_hue", "") or DEFAULT_GLYPH_HUE
+    if key not in SPECIES_GLYPHS:
+        key = DEFAULT_SPECIES_GLYPH
+    return key, SPECIES_GLYPH_HUES.get(hue, SPECIES_GLYPH_HUES[DEFAULT_GLYPH_HUE])[1]
+
+
 def species_palette_color(species_id: str) -> str:
     """Deterministic palette color for a species id.
 

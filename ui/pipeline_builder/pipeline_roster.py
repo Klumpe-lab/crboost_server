@@ -18,6 +18,7 @@ from ui.components.job_glyph import job_glyph
 from ui.components.magazine import ANCHOR_JS, RosterPopups
 from ui.components.dialogs import dialog_host
 from ui.components.reactive import FingerprintedView, SingleFlight
+from ui.components.species_pill import species_glyph_svg
 from ui.components.svg_icon import load_icon_svg
 from ui.job_plugins._field_styles import VIEW_HEAD_STYLE, VIEW_TITLE_STYLE, view_head_icon
 from ui.projects_overview import project_card_menu
@@ -75,12 +76,12 @@ _RAIL_BG = "var(--cb-head, #f2f6fb)"
 _BAND_LINE = "var(--cb-line, #e4eaf1)"
 _GLYPH_INK = "#5b7089"
 _GLYPH_OFF = "#b3c0cf"
-# The species a job is for, as a small grey tag (named in full on hover). A job whose snapshot differs
+# The species a job is for, as a small grey tag: its glyph, its name (in full on hover). A job whose snapshot differs
 # from its species carries a notch in the tag's top-right corner (`.cb-species-tag.notch`, ui/dashboard/css.py).
 _SPECIES_TAG = (
     f"{MONO} font-size: 7.5px; text-transform: uppercase; letter-spacing: .05em; color: #4f6782; "
     "border: 1px solid #dbe3ec; border-radius: 2px; padding: 0 3px; line-height: 11px; flex-shrink: 0; "
-    "max-width: 15ch; position: relative; display: inline-flex; align-items: center; min-width: 0;"
+    "max-width: 17ch; position: relative; display: inline-flex; align-items: center; gap: 3px; min-width: 0;"
 )
 _SPECIES_TAG_NAME = "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;"
 
@@ -641,6 +642,7 @@ class RosterWidget(FingerprintedView):
             tip += " (a job keeps the values it was made with)"
         tag = ui.element("span").classes("cb-species-tag" + (" notch" if drift else "")).style(_SPECIES_TAG)
         with tag:
+            ui.html(species_glyph_svg(species, 9), sanitize=False).style("display: flex; flex-shrink: 0;")
             ui.label(species.name).style(_SPECIES_TAG_NAME)
         tag.props["title"] = tip
 
