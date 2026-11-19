@@ -81,6 +81,11 @@ MAP_JS = r"""
     if (!W || !M.g) return;
     const svg = W.querySelector('.cb-bm-cables svg');
     if (!svg) return;
+    // The layer is inside the world, so its last size counts in the world's scroll size: measured with it, a map
+    // that shrank (every card small again) kept its old height and showed blank paper where the view was. Zero
+    // it first; fit and the new size measure the cards alone.
+    svg.setAttribute('width', 0);
+    svg.setAttribute('height', 0);
     fit(W);
     const z = parseFloat(W.style.zoom) || 1;
     const wr = W.getBoundingClientRect();
