@@ -24,6 +24,7 @@ from ui.napari_open_page import render_napari_open_page
 from ui.components.buttons import house_button
 from ui.data_import_panel import build_data_import_panel
 from ui.workspace_page import build_workspace_page
+from ui.map_ideas import render_map_ideas
 
 logger = logging.getLogger(__name__)
 
@@ -296,6 +297,12 @@ def create_ui_router(backend: CryoBoostBackend):
         await client.connected()
         ensure_assets_loaded()
         render_napari_open_page(backend, volume)
+
+    @ui.page("/dev/map-ideas")
+    async def map_ideas_page(client: Client):
+        await client.connected()
+        ensure_assets_loaded()
+        await render_map_ideas(client)
 
     @ui.page("/cluster-info")
     async def cluster_info_page(client: Client):
