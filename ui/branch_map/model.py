@@ -846,15 +846,19 @@ def project_from_state(state, project_path: Path, *, set_parents: dict[str, tupl
             how = "fixed when the job ran"
             value = None
             recorded = jm.paths.get(slot.key) if jm.paths else None
+            # A job given a particle set stages a copy of it in its own folder (input_set/), and records that copy:
+            # the path then names the job itself, and the set it was given is its source override.
+            staged = False
             if recorded:
                 hit = next((d for d in dirs if recorded.startswith(d + "/") or recorded == d), None)
-                src = dirs[hit] if hit else None
+                staged = hit is not None and dirs[hit] == iid
+                src = dirs[hit] if hit and not staged else None
                 if src is None and "/Analytics/sets/" in recorded:
                     set_id = recorded.split("/Analytics/sets/", 1)[1].split("/", 1)[0]
                     parent_iid, value = set_parents.get(set_id, (None, f"set {set_id}"))
                     src = parent_iid if parent_iid in state.jobs else None
                     how = "a particle set pooled from that job's picks" if src else "a particle set, not a job"
-                elif src is None:
+                elif src is None and not staged:
                     value = Path(recorded).name
             if src is None and value is None:
                 override = (jm.source_overrides or {}).get(slot.key, "")
@@ -872,6 +876,8 @@ def project_from_state(state, project_path: Path, *, set_parents: dict[str, tupl
                     )
                 elif status == "scheduled":
                     how = "to choose"
+            if staged and src is None and value is None:
+                value = Path(recorded).name
             if slot.bundle and src is not None:
                 how = f"comes with the {vocab.slots[kind][0].label}"
             rows.append(InputRow(slot, src, how, value))

@@ -489,38 +489,6 @@ retry); remove only the exit markers. The job page's log view can offer the prev
 
 **Check.** Fail a toy job, Run again: `run.out.prev` holds the first attempt's lines while the retry writes `run.out`.
 
-### H18 — add_job's `reading` stores a source no candidate list holds
-
-**Status:** open, found 2026-11-17. **Severity:** medium: the job's input names nothing, and only Run says so.
-
-**What is wrong.** `pipeline_edit.add_job` checks that each slot of `reading` exists (`services/pipeline_edit.py:222-226`)
-and stores the source string as given (`:279-280`). `job_params.set_input` checks the same string against the slot's
-candidates and names the ones it could read (`services/job_params.py:385-391`). The API's `add_job(reading=…)` goes
-through the first.
-
-**Evidence.** AGG412_STA, 2026-11-17: `add_job(reconstructParticle, reading={input_optimisation:
-"particle_set__s002_ribosome_pilot_ge10"})` was taken; the candidate is `mergedSources:particle_set__s002_…`. Run
-refused: "the job directory this input was set to () belongs to no job now".
-
-**Fix.** Check `reading` against `get_candidates_for_slot` as `set_input` does, refusing with the sources listed.
-**Check.** The call above is refused naming `mergedSources:particle_set__s002_ribosome_pilot_ge10`.
-
-### H19 — plan_run passes a run that Run refuses for an unresolvable input
-
-**Status:** open, found 2026-11-17. **Severity:** medium: a change plan's rehearsal says "2 jobs submitted" and the
-plan then fails at its run step.
-
-**What is wrong.** `PipelineOrchestrator.plan_run` checks the preflight (`pipeline_orchestrator_service.py:519`) and
-describes the inputs; Run also resolves every input of the jobs it submits (`resolve_all_paths`, `:660-688`) and
-refuses on a `PathResolutionError`. `plan_run` never calls it, so a required input that resolves to nothing passes.
-
-**Evidence.** Plan `p-cb7f8e82` (AGG412_STA, H18's input) rehearsed clean; its step 5 failed with "Path resolution
-failed for warpExport … for reconstructParticle".
-
-**Fix.** In `plan_run`, resolve each job's inputs as Run does (no allocation: the pending job dir) and list a
-`PathResolutionError` among `refusals`.
-**Check.** H18's input, before H18 is fixed: `plan_run` refuses naming both jobs.
-
 ### H20 — An array job's supervisor gets 4 h whatever its array: every task done, the job Failed
 
 **Status:** fix in the tree, found 2026-11-18, not yet seen on a run. **Severity:** high: a large project's array
@@ -550,9 +518,157 @@ nothing and aggregates.
 **Check.** A Segment on 150+ tomograms submits its supervisor with about a day (`run_submit.script`, `#SBATCH
 --time`) under g_medium and Succeeds.
 
+### H26 — RELION's tomo programs place particles without missAlign's local image warps: 8–17 Å RMS off
+
+**Status:** open, found 2026-11-19 (roadmap 53 §15.7–§15.8; the fix is a design choice, §15.8). **Severity:**
+high for any RELION tomo program on missAligned data: Reconstruct particle, CTF refine, frame alignment, RELION
+pseudo-subtomo extraction. A bin-1 reference from them is about 20 Å where Warp's stacks of the same particles give
+9 Å. A CTF refine fitted against such a reference, and itself cutting from the tilt images through the rigid star,
+moved 275 tilts by more than 1 µm (job031, failed by its own check). Nothing was silently wrong in a result kept so
+far: job023 is only the C10 reference, and Refine 3D / Class 3D read Warp's stacks.
+
+**What is wrong.** missAlign writes local image warps into each tilt series' Warp XML (`GridMovementX/Y`, 3×3 per tilt).
+Warp's export cuts the 2D stacks with them (`drivers/warp_export.py`: "the tilt series' full Warp model, local
+image warps included"). The tilt-series star RELION reads holds only the rigid part (`ts_alignment` /
+`adapters/miss_align.py`, which says so in its docstring; the missAlign driver reports the warps' size). RELION
+programs that cut from the tilt images (`relion_tomo_reconstruct_particle`, `relion_tomo_refine_ctf`,
+`relion_tomo_align`, `relion_tomo_subtomo`) place each particle in each tilt by that rigid star alone.
+
+**Evidence** (AGG412_STA job019's 438 capsids, bin 2, job016's mask, scripts in
+`notes/sta_side_steps/412_ctf_reference_diag/`). Warp's full position minus its rigid one at the particles: 7.6 Å
+RMS (SK P11_2), 8.3 (FCIso P18_4), 9.2 (Slot6 P10), 17.3 Å (Grid2 P10), up to 64 Å. Tilt-image reconstructions,
+half-map FSC 0.143: rigid star 19.4 Å (all 438); with Warp's offsets carried as RELION trajectories 9.2 Å, the
+stacks' 9.1 Å (job019); offsets sign-flipped 20.3 Å. Per tomogram: SK 14.4 → 9.9 Å, Slot6 22.0 → 9.2, FCIso 19.8 →
+12.0, Grid2 30.5 → 15.0 (flipped: 22.7, 24.0, 29.4, 24.8).
+
+**Fix (to choose, §15.8).** Carry Warp's local geometry to RELION as per-particle trajectories
+(`rlnTomoTrajectoriesFile`, Polish's format): per particle and tilt, the shortest 3-D offset whose projection is
+Warp's full position minus its rigid one (`warpylib.get_position_in_all_tilts`), as `warp_trajectories.py` does.
+Verified: RELION's tomo programs apply it (above); `relion_refine` on 2D stacks ignores it (maps bit-identical) and
+carries it into its output set. Until then, those jobs should refuse missAligned tilt series, naming the warps' size.
+**Check.** Reconstruct particle of job019's poses at bin 1 reaches the stacks' resolution; CTF refine's moves stay
+within its limit.
+
+## Fixed
+
+### H27 — The branch map shows a job given a particle set as reading itself
+
+**Fixed 2026-11-19 (uncommitted).** `project_from_state` (`ui/branch_map/model.py`) no longer takes a recorded
+input path inside the job's own folder as its source. Such a path is the copy of a particle set the job stages in
+`input_set/`; the set it was given is its source override (`mergedSources:particle_set__<id>`), which the map
+already reads into a "set …" row (cabled to the job the set was pooled from, when it was). A staged copy without an
+override shows its file name. **Checked** on AGG412_STA's state loaded read-only, with the sets' parents read as the
+map reads them (session scratchpad `dump_graph.py`): no job is its own parent any more; Warp export 001/003/021,
+Reconstruct particle 002/004 and Class 3D 005–013 read their sets and start chains of their own; Class 3D 014 and
+Refine 3D 015 hang off Class 3D 013 through the class-2 set. The server needs a restart to pick it up.
+
+**Status:** fixed 2026-11-19, found the same day while measuring the map. **Severity:** medium: the lineage of
+every job that reads a kitchen set is wrong on the map, and the layout piles those jobs into its first column.
+
+**What is wrong.** A job given a particle set records `<its own job dir>/input_set/optimisation_set.star` in
+`paths`. `project_from_state` maps a recorded path to the job whose folder holds it (`model.py`, the `dirs` lookup),
+so the job became its own parent: a root nothing reaches (`tidy` never places it), drawn at depth 0, with a cable to
+itself.
+
+**Evidence.** AGG412_STA, 2026-11-19: 14 of 30 jobs had `parent` = their own id (warpExport, warpExport__2,
+warpExport__4, reconstructParticle, reconstructParticle__2, class3d … class3d__9).
+
+### H18 — add_job's `reading` stores a source no candidate list holds
+
+**Fixed 2026-11-19 (uncommitted).** `pipeline_edit.add_job` checks `reading` before it changes anything (`_checked_reading`: the job added on a `detached_copy`, each source matched against `get_candidates_for_slot` as `set_input` does, `unreadable_reason` applied) and stores the candidate's own source key. A source named the way job views name it, a producer's instance id (`warpExport__4`) or a set without its type (`particle_set__s002_…`), stands for the one candidate it fits; no fit or two refuses, listing the sources. **Seen again** 2026-11-19, plan `p-f775f782`: `add_job(class3d, reading={input_optimisation: "warpExport__4", input_reference: "refine3d__2"})` rehearsed clean and Run refused with the same "set to () belongs to no job now" for both inputs; recovered with `set_input` (plan `p-0811a7dc`). **Checked** on AGG412_STA's state loaded read-only (session scratchpad `h18/check.py`): that call now stores `warpExport:instance:warpExport__4` and `refine3d:instance:refine3d__2`; this entry's evidence stores `mergedSources:particle_set__s002_ribosome_pilot_ge10`; `reading={input_optimisation: "nope"}` is refused naming the sources, the roster unchanged.
+
+**Status:** fixed 2026-11-19, found 2026-11-17. **Severity:** medium: the job's input names nothing, and only Run says so.
+
+**What is wrong.** `pipeline_edit.add_job` checks that each slot of `reading` exists (`services/pipeline_edit.py:222-226`)
+and stores the source string as given (`:279-280`). `job_params.set_input` checks the same string against the slot's
+candidates and names the ones it could read (`services/job_params.py:385-391`). The API's `add_job(reading=…)` goes
+through the first.
+
+**Evidence.** AGG412_STA, 2026-11-17: `add_job(reconstructParticle, reading={input_optimisation:
+"particle_set__s002_ribosome_pilot_ge10"})` was taken; the candidate is `mergedSources:particle_set__s002_…`. Run
+refused: "the job directory this input was set to () belongs to no job now".
+
+**Fix.** Check `reading` against `get_candidates_for_slot` as `set_input` does, refusing with the sources listed.
+**Check.** The call above is refused naming `mergedSources:particle_set__s002_ribosome_pilot_ge10`.
+
+### H19 — plan_run passes a run that Run refuses for an unresolvable input
+
+**Fixed 2026-11-19 (uncommitted).** `plan_run` runs Run's first two passes on a copy (`_unresolved_inputs` in `pipeline_orchestrator_service.py`, in a thread: a provisional dir per job, the failed job's own when it is retried in place, then `resolve_all_paths` for each) and lists "Path resolution failed for …" among `refusals`, so a change plan's rehearsal refuses what Run would. Beside it, Run's "started …" event is written once something was submitted (it was written before resolution, so a refused Run still said "started"). **Checked** with the same state copy: a Class 3D pinned to `warpExport__4` / `refine3d__2` as stored before the H18 fix gives Run's own refusal line; pinned to the candidates' keys, none.
+
+**Status:** fixed 2026-11-19, found 2026-11-17. **Severity:** medium: a change plan's rehearsal says "2 jobs submitted" and the
+plan then fails at its run step.
+
+**What is wrong.** `PipelineOrchestrator.plan_run` checks the preflight (`pipeline_orchestrator_service.py:519`) and
+describes the inputs; Run also resolves every input of the jobs it submits (`resolve_all_paths`, `:660-688`) and
+refuses on a `PathResolutionError`. `plan_run` never calls it, so a required input that resolves to nothing passes.
+
+**Evidence.** Plan `p-cb7f8e82` (AGG412_STA, H18's input) rehearsed clean; its step 5 failed with "Path resolution
+failed for warpExport … for reconstructParticle".
+
+**Fix.** In `plan_run`, resolve each job's inputs as Run does (no allocation: the pending job dir) and list a
+`PathResolutionError` among `refusals`.
+**Check.** H18's input, before H18 is fixed: `plan_run` refuses naming both jobs.
+
+### H24 — Create particle layer fails in the companion napari viewer once crboost's layers are added
+
+**Fixed 2026-11-19 (uncommitted; two of the three fixes are in the colleague's viewer, not this repo).** In
+`napari_mrc_lowpass_fast.py`, the File and Particle layer dropdowns now take their choices from callables
+(`_file_choice_names`, `_particle_layer_choice_names`), and `_restore_particle_coordinates_for_current_path` clears
+each particle layer's selection before swapping in the next tomogram's points. The dev clone is fixed. The lab copy
+(`/groups/klumpe/software/Napari/Napari_crboost`) waits for its file to be copied over. The upstream repo has the
+same lines, in `napari_mrc_lowpass.py` too. On the crboost side, `containers/napari/open_tomogram.py`
+(`log_napari_errors`) now writes every error napari shows into the session's `slurm.log` with its traceback.
+
+**Status:** fixed 2026-11-19. A lab member reported it the same day as an error "regarding dimensions", and the
+maintainer hit it in a session. **Severity:** high. Creating a particle layer is the viewer's main job.
+
+**What is wrong.**
+1. napari re-reads every docked magicgui widget's choices (`reset_choices`) whenever a layer is added or removed. Both
+   dropdowns were made with a fixed list, so every added layer reset them to "No particle layers" / "No files
+   loaded". The viewer had no layers of its own after a particle layer, so this never showed. crboost's bundle
+   (segmentations, picks) and the 3-D surfaces add layers after it. Create on a name that already exists then sets
+   the dropdown to that name and raises `ValueError: 'ribosome' is not a valid choice. must be in ('No particle
+   layers',)`. A project with saved STARs always has one: the viewer loads them when it opens.
+2. napari 0.10 keeps `Points.selected_data` when `layer.data` is replaced. After a switch to another tomogram, a
+   selected point indexes past the new data: `IndexError` in `_apply_particle_layer_style` (`current_border_width`),
+   raised out of `load_mrc`. The layers after the failing one keep the previous tomogram's points, and the next save
+   can write them under the new tomogram's name.
+3. napari's own traceback view fails ("could not get source, probably due to dynamically evaluated source code"),
+   and text on the VNC desktop cannot be copied, so nothing reached the user but that line.
+
+**Evidence.** The maintainer's live session (job 1808177, Kilifish_collection1 Position_7_2 with 9 segmentations and
+an empty ribosome STAR saved the night before): a screenshot of the display showed the dropdown at "No particle
+layers" and the status at "1 particle layer(s)". `~/.crboost/napari_bundletest/drive_kili2.sh` (`STARS=` a copy of
+that project's `Curation/napari/particle_stars`) reproduces the ValueError. `drive_create.sh` reproduces the
+IndexError on a tomogram switch.
+
+**Check.** Both scripts pass every step against the dev clone. The dropdowns keep their entries through the bundle
+and 3-D, and no tomogram reloads on its own. `drive_log.py` shows a button's exception in the log.
+
+### H25 — Closing the branch map closes the job roster too
+
+**Fixed 2026-11-19 (uncommitted).** The Jobs view opens as the roster alone. The branch map is built and shown
+only when the roster's map icon is clicked (`PipelineBuilderPanel.show_map`, which mounts it on the first click).
+The pipeline frame's cross, and Esc on it, hide only the map again (`_set_map_hidden`, `ui/workspace_page.py`), and
+the roster stays. Without the map, the frame comes for a job page and goes again when it closes (`_frame_on`). The
+map's pollers stop while it is hidden (`sync_map_visible`). Every workspace opens without it; nothing is kept.
+
+**Status:** fixed 2026-11-19, reported by a lab member the same day. **Severity:** medium. The map could not be put
+away without losing the job list, so a user who prefers a fixed list (a CryoSPARC-like layout) had no way to get
+one. The maintainer's call: the map never opens unless asked for.
+
+**What is wrong.** Without a job open, the pipeline frame's cross called `_hide("pipeline")`. The roster is that
+view's navigation (`RosterWidget.set_active_views`), so it went too. And the frame showed the map whenever no job
+was open, so every project opened on it.
+
+**Check.** In a browser: a project opens on the roster alone, with "No job open." beside it. Open a job → its page.
+Close it → the roster alone. The map icon → the map. Its cross → the roster alone, the roster unchanged.
+
 ### H21 — A plan says "at automatic" for a set_input that only chooses where a set's images come from
 
-**Status:** open, found 2026-11-18. **Severity:** low for the result, medium for trust: what the user accepts is not
+**Fixed 2026-11-18 (uncommitted).** `api/plans.py`: a facet-only `set_input` step reads "Take {job}'s {slot} from …" (`_facet_text`: "each project's own warpExport (…)", or "<job> of <project> for …"); a step with a source and facets names both; the overview gets an "<slot> sources" row per job (`_facet_rows` in `_snapshot`). **Checked:** `_snapshot` of AGG412_STA's refine3d (job015) reads "each project's own warpExport (Slot6, FCIsolation, unmilled2, Grid2, SK reruns)"; class3d__7 "warpExport of AGG412_STA for …Grid2_rerun".
+
+**Status:** fixed 2026-11-18, found the same day. **Severity:** low for the result, medium for trust: what the user accepts is not
 what the plan does. The job is right; the plan's words and its overview are not.
 
 **What is wrong.** `api/plans.py:158` words a `set_input` step as `a.source or a.path or "automatic"`, so a step that
@@ -569,7 +685,43 @@ every image from the chosen export (job005: 24,100 rows from job001; job013: 1,8
 for `*`), and add a row per job and facet to the overview: "Images · from Warp Export (job001) · 8 projects".
 **Check.** The same plan's steps 11–19 and its overview name job001 / job003.
 
-## Fixed
+### H22 — An image choice on a class set is accepted, rehearsed and ignored
+
+**Fixed 2026-11-18 (uncommitted).** `job_params.facet_refusal` (blocking; called in a thread by the `set_input` handler, `api/handlers.py`, and by the plan rehearsal, `api/plans.py`) refuses facet choices on an input that reads no set or a set `reads_by_facets` turns down, naming the way out (a Warp Export reading it or the job that refined it). The UI's facet lines only ever showed for kitchen sets, so it was API-only. **Checked** on AGG412_STA read-only: s012 (class set) refused with the message, s011 (kitchen set) passes, a Warp Export source refused as "reads no particle set".
+
+**Status:** fixed 2026-11-18, found the same day. **Severity:** high for the result: the job runs on other images than the plan
+named, and the first sign is a later job failing on a size mismatch.
+
+**What is wrong.** `job_params.set_input(facet=…)` (`services/job_params.py:350`) records facet choices on any set.
+Only a kitchen set of picks is read through facets (`particle_sets.reads_by_facets`, `services/particles/particle_sets.py:397`:
+`op == POOL`, level COORDINATES, a uid column); a class set (`op class_subset`, level extracted) is read as written, so
+its images stay the Class 3D's. Neither `set_input` nor the plan's rehearsal says the choice does nothing.
+
+**Evidence.** Plan `p-e1b4bf07` (AGG412_STA): Refine 3D job015 read set s012 (job013 class 2) with the five reruns'
+bin-2 Warp exports chosen per project; it ran on job003's bin-4 images (`run_model.star`: 6.2 Å, box 128), RELION
+resizing the bin-2 reference and mask down. PostProcess job017 then failed: "The mask is (256, 256, 256) at 3.1 Å, the
+half maps (128, 128, 128) at 6.2 Å".
+
+**Fix.** `set_input` refuses `facet` on a set `reads_by_facets` says no to ("a class set takes its Class 3D's images; to
+cut them again, a Warp Export reading the class set or its Refine 3D"), and the plan's rehearsal refuses the step.
+**Check.** The same plan is refused at its step 7.
+
+### H23 — The kitchen's "in set" filter finds none of a class set's picks when they came from other projects
+
+**Fixed 2026-11-18 (uncommitted).** `setmatch.set_rows` matches a set by its rows' `cbPickUid` (`read_uid_column`; rows without a trustworthy uid are counted, never matched by position) before falling back to positions. **Checked:** all 438 of s012's uids are in s011's `kitchen_uids.txt`, the same uid space `table.uid` holds, so the filter keeps 438; the live kitchen check (plan_kitchen_set with `set s012 in`) waits for the server restart.
+
+**Status:** fixed 2026-11-18, found the same day. **Severity:** medium: a class set cannot become a kitchen set (picks with facets),
+so its picks cannot be cut again at another binning from their own projects.
+
+**What is wrong.** `setmatch.set_rows` (`services/sta_kitchen/setmatch.py`) matches a set without `kitchen_uids.txt` by
+position, against the home project's own members only. A class set of a Class 3D that read a kitchen set has no uid
+list, though its rows carry `cbPickUid`, and its picks lie in the eight reruns, not the home: 0 matched.
+
+**Evidence.** `plan_kitchen_set(AGG412_STA, 412_particle, filters=[set s012 in])`: 0 picks; s012 holds 438 rows with
+`cbPickUid`.
+
+**Fix.** Before matching by position, `set_rows` takes the set star's `cbPickUid` column when it has one (as the uid
+list). **Check.** The same call keeps 438 picks over 5 projects.
 
 ### H7 — Template matching with T, O or I symmetry searches 3 to 15 times the orientations its increment asks for
 
