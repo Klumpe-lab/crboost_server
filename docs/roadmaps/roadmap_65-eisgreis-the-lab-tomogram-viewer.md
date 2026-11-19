@@ -1,8 +1,19 @@
 # Roadmap 65 — EisGreis: the lab's tomogram viewer, with crboost's link as a module of its own
 
-Scoped 2026-11-19; the maintainer answered D1–D8 the same day; nothing built. Follows 54 (napari from a tomogram's
-chip), 55 (the colleague's viewer as crboost's companion) and 56 (3-D speed). Goes with 61 (the viewer in the user's
-own OnDemand desktop), which takes its environment and its command from here.
+Scoped 2026-11-19; the maintainer answered D1–D8 the same day, and the colleague his open points that evening (§2);
+nothing built. Follows 54 (napari from a tomogram's chip), 55 (the colleague's viewer as crboost's companion) and 56
+(3-D speed). Goes with 61 (the viewer in the user's own OnDemand desktop), which takes its environment and its command
+from here.
+
+## Pickup (next session)
+
+1. Check that the maintainer has pushed our 331 open lines to EisGreis's `crboost-bundle-and-3d`. That branch's head
+   is then past 825242d.
+2. Clone EisGreis at the work branch into `~/dev/EisGreis`. The work branch is `crboost-bundle-and-3d` unless the
+   maintainer names another.
+3. Build S1, S2 and S3 back to back, then roadmap 61 S3 and S4. Check once at the end (§8).
+4. Nothing goes to EisGreis's `main`. All work stays on the branch until the colleague merges one PR (D5).
+5. Hand every commit and push as line-by-line commands.
 
 **Why.** The lab looks through tomograms, keeps notes and marks particles in the colleague's napari viewer, and crboost
 already drives it (roadmap 55). He has published it as the lab's repository, `Klumpe-lab/EisGreis`, and agreed that we
@@ -102,20 +113,20 @@ Answered by the maintainer 2026-11-19:
 | # | Decision | Answer |
 |---|---|---|
 | D1 | The viewer's home and name | `Klumpe-lab/EisGreis`, public, his history kept. Distribution and import name `eisgreis`, command `eisgreis` |
-| D2 | Licence | BSD-3-Clause, napari's own. The colleague's yes is owed |
+| D2 | Licence | BSD-3-Clause, napari's own. The colleague agreed |
 | D3 | Where crboost's link lives | In EisGreis, as its own import package `eisgreis_crboost`. `eisgreis` never imports it. crboost's server reaches it only through the session files (§4) |
-| D4 | Stack | napari 0.10 + PyQt6, built with uv (`uv.lock`, uv-managed Python), no conda. IT is asked to add the five X libraries to its desktop image (roadmap 61 D5); until then the install carries them |
-| D5 | Turning his scripts into a package | One PR, agreed with the colleague. He merges or parks his open work, `git mv` keeps every file's history, and both sides continue on the new layout |
+| D4 | Stack | napari 0.10 + PyQt6, built with uv (`uv.lock`, uv-managed Python), no conda. The install carries the five X libraries, so nothing waits for IT. If IT adds them to its desktop image (roadmap 61 D5), the launcher stops using the carried copies |
+| D5 | Turning his scripts into a package | On a branch of EisGreis, never on his `main`: `crboost-bundle-and-3d`, which is ours already, unless the maintainer names another. The restructure is that branch's commits, with `git mv` keeping every file's history. It reaches `main` by one PR the colleague merges. His commits to `main` in the meantime are merged into the branch and ported into the new layout before the PR |
 | D6 | How EisGreis gets onto a cluster | Its own install (`/groups/klumpe/software/EisGreis`), which crboost's conf names. crboost's optional step only fetches a release and runs EisGreis's installer, so a viewer fix needs no crboost change |
 | D7 | crboost's GPU job route | Kept until 3-D in a desktop is checked (roadmap 61 D3) |
 | D8 | Starting with the desktop | Opt-in in User settings (roadmap 61 D4) |
 
-Still open with the colleague (S0a):
+Answered by the colleague 2026-11-19, through the maintainer:
 
-- his yes to the licence;
-- whether anything made him pin napari 0.6.6 (his code has run on 0.10 in crboost's image since 2026-11-17);
-- the day of the restructure;
-- how he wants to be credited. EisGreis is his, so the README and the authors in `pyproject.toml` are his call.
+- BSD-3-Clause is fine.
+- The napari 0.6.6 pin was arbitrary, so napari 0.10 stands.
+- His history is his credit: he is the first commit. No credit line beyond it.
+- The restructure needs no day agreed: it lives on a branch until he merges it (D5).
 
 ## 3. The shape
 
@@ -274,12 +285,12 @@ maintainer choose (owners open):
 
 **S0 — before any code (the maintainer).**
 
-- a. Ask the colleague the open points of §2: the licence, the napari 0.6.6 pin, the restructure day, the credit.
-- b. Put our open work onto EisGreis. The 331 lines are committed on `crboost-bundle-and-3d` and pushed there
-  (commands in the hand-over). The branch is merged into `main` before the restructure, by a PR with him.
-- c. Ask IT to add the five X libraries to `ood-desktop-image`, together with roadmap 61 D5.
+- a. **Done 2026-11-19.** The colleague's answers (§2).
+- b. Put our open work onto EisGreis. The 331 lines are committed on `crboost-bundle-and-3d` and pushed to that
+  branch, not to `main` (commands in the hand-over).
+- c. *Optional, not blocking.* Ask IT to add the five X libraries to `ood-desktop-image` (roadmap 61 D5).
 
-**S1 — the restructure PR** (D5), in a clone at `~/dev/EisGreis`.
+**S1 — the restructure** (D5), on the work branch, in a clone at `~/dev/EisGreis`.
 
 - `git mv` into the layout of §3, one module at a time as the table says, then the splits. The controller becomes
   `session.py` (state, no Qt) and one module per dock, behind `api.py`.
@@ -349,3 +360,6 @@ maintainer choose (owners open):
   - the same on a full B200 under `vglrun` (`s0c.sh`, job 1832128, `shot_gpu.png`).
 
   No EisGreis or crboost code changed.
+- **2026-11-19, evening.** The colleague's answers came in: BSD-3 is fine, the 0.6.6 pin was arbitrary, and his
+  history is his credit. D5 became branch-only: nothing of ours goes to his `main` until he merges a PR. The X
+  libraries are carried by the install, so IT's part is optional. Pickup section added.

@@ -97,14 +97,15 @@ Answered by the maintainer 2026-11-19:
   with him (roadmap 65 D1–D3). `napari.eisgreis` names its install (roadmap 65 S3). Until then the deployed copy stays
   `/groups/klumpe/software/Napari/Napari_crboost`.
 - **D2 — how the environment is built:** uv, with napari 0.10 and PyQt6 from PyPI (roadmap 65 D4). It runs in IT's
-  image once five X libraries are supplied: IT adds them (D5), and until then EisGreis's install carries them (S0b).
+  image once five X libraries are supplied. EisGreis's install carries them, so nothing waits for IT (S0b, D5).
 - **D3 — our job route:** kept until 3-D in a desktop is checked (R2). S0c shows a desktop on a full GPU draws
   through VirtualGL, so the route can retire (S6) once R2 passes, in either a software or a GPU desktop.
 - **D4 — starting with the desktop:** an opt-in in User settings (S4). Off, the command is run by hand.
 
-Still open:
+Still open, and blocking nothing:
 
-- **D5 — IT.** Tell them what we rely on: their image's libraries, TurboVNC, the form and its limits. Ask for:
+- **D5 — IT.** Tell them what we rely on: their image's libraries, TurboVNC, the form and its limits. Worth asking
+  for, though no stage waits on it:
   - the five X libraries in `ood-desktop-image`: `xcb-util-cursor`, `xcb-util-wm`, `xcb-util-image`,
     `xcb-util-keysyms`, `xcb-util-renderutil`;
   - 3-D acceleration in GPU desktops: `vglrun -d egl` works in their image on a full GPU today (S0c), so it is a
