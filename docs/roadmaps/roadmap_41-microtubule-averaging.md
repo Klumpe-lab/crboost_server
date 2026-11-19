@@ -4,6 +4,9 @@
 and D7 deferred (§5); S0 tracing run by hand on MyrGFP_Grid2 job045 (results under S0); S2 and S3 rewritten, D8–D10
 proposed. 2026-10-30: Tir_Env Segment jobs and traces (raw and iso input); denoising does not lift recall.
 **2026-11-01: S2 built (Filament pick job), not run** (§9). The axis-vs-wall look in ArtiaX is still owed.
+**2026-11-19:** the Filament pick job folds into
+[roadmap 64](roadmap_64-picking-from-segmentations.md) as the filament shape of Pick candidates (its D1, S6). This
+roadmap's S3 and S4 become 64's S4 and S6; S5–S7 stay here.
 
 **In one line.** Trace easymode's microtubule segmentations into oriented points along each filament, export them
 with Warp like any other picks, and refine them in RELION with helical priors (tilt and psi held near the filament

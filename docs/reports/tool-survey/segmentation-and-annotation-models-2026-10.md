@@ -132,7 +132,8 @@ eLife 2024; GPL-3. Annotate slices, train one network per feature, apply. 38 pub
   tangent, rot synthetic (k × twist), polarity arbitrary. Output `<tomo>__<target>_coords.star`, one
   `data_particles` block, no optics, no pixel size; **coordinates are 0-based voxel indices of the segmentation
   grid (corner origin)**. Filament rows carry `aisFilamentID`, `aisFilamentConnectivity`, curvature; no
-  `rlnHelicalTubeID`, no prior columns. Current master adds `-orient normal|long-axis` (PCA) for blobs.
+  `rlnHelicalTubeID`, no prior columns. Blobs get `-orient normal|long-axis` (PCA, with `-centroid`). Correction
+  2026-11-19: this is already in 1.2.38, with `-orient-sign`, not only on master (roadmap 64 §4).
 - **Files:** `.scnm` (Keras `.h5` + metadata: title, colour, apix, box size, threshold, …), `.scns` (annotated
   scene), `.scnt` (training stack). Model interactions (colocalise / avoid) live only in `.scnmgroup`; their use
   in the CLI is UNVERIFIED.
