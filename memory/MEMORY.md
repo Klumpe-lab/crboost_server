@@ -170,4 +170,4 @@
 - [Star files are untrusted](feedback_star_files_untrusted.md) — RELION/Warp stars: check what you rely on at every read, never guess
 - [PyTOM angle convention](reference_pytom_angle_convention.md) — template turn = ZYZ intrinsic matrix transposed; measured on ribosome picks
 - [Microtubule averaging roadmap 41](project_microtubule_averaging_roadmap41.md) — S2 Filament pick job BUILT 2026-11-01, NOT RUN; Tir_Env traced (iso ≈ raw, recall-limited); fine-tune route noted; conf.yaml needs filamentPick profile; ArtiaX look owed
-- [Public release roadmap 63](project_public_release_roadmap63.md) — 2026-11-19 recon 4/8 lenses in docs/reports/public-release/; roadmap 63 is a stub, read its Pickup first
+- [Public release roadmap 63](project_public_release_roadmap63.md) — WRITTEN 2026-11-19 (8/8 lenses); D1–D15 owed, then S1; rc1 wk of 7 Dec, v2026.12.0 wk of 14 Dec; lab install found 777

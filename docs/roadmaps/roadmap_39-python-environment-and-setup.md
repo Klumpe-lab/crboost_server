@@ -261,6 +261,8 @@ path, the numbers and the code as they were.
 
 ### S4 — CI and a pinned ruff
 
+**Moved to roadmap 63 S2 (2026-11-19)**, rewritten against today's tree; the text below is the original plan.
+
 - Fix the 6 E501 lines first.
 - `.github/workflows/lint.yml` (public repo, so GitHub Actions costs nothing): install `requirements.txt` (ruff
   0.15.12 is in it since S6), then run `ruff check .`, `ruff format --check .`, `python check_boundaries.py` and
@@ -269,6 +271,8 @@ path, the numbers and the code as they were.
   line about `sys.dont_write_bytecode` in `main.py` went 2026-10-28.
 
 ### S5 — Labelled containers and checksummed weights
+
+**Moved to roadmap 63 (2026-11-19)**: identity by the embedded def (its D8, S6), weights checks in its S5 and S7.
 
 - Every `.def` gets `%labels`: `crboost.tool <key>` and `crboost.def <file name>`. preflight reads
   `apptainer inspect --labels` for each configured `container_path` and warns when the image's definition differs

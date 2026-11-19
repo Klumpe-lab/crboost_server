@@ -281,6 +281,8 @@ One new module (e.g. `services/server_auth.py`, stdlib only) and edits to `main.
   release installs get different ports.
 
 ### Stage 6 — Shared install + update banner
+
+**Release side moved to roadmap 63 (2026-11-19)**: release folders behind `current` (its D2) replace "the release install is a main clone", and the banner is its S8.
 - §3.8.
 - *Success:* after the install is updated, running servers show the banner within 15 min; Restart brings
   up the new version on the same URL.

@@ -19,9 +19,9 @@ attribution trailer, no names) and let them commit. Items touching the same file
 2. **S2d — names (§1.6).** Done; see the stage log.
 3. **S2e — config hygiene (§1.3).** Done; see the stage log.
 4. **S3 — ChimeraX worker (§1.3) + container defs (§1.7).** Worker done; see the stage log. §1.7
-   (pinned container defs) is image-rebuild work, not code: do it with the next rebuild.
+   (pinned container defs) is image-rebuild work, not code: do it with the next rebuild. **Moved to roadmap 63 S6 (2026-11-19).**
 5. **S4 — self-test (§1.8).** Done; see the stage log.
-6. **S5** — the Munich re-install; the maintainer's step. Handoff checklist written 2026-10-15 under Stage 5.
+6. **S5** — the Munich re-install; the maintainer's step. Handoff checklist written 2026-10-15 under Stage 5. **Moved to roadmap 63 §5 (2026-11-19)**, rewritten for the uv install and release folders.
 
 **Owed by the maintainer (runtime):**
 1. `venv/bin/pip install 'pytest>=7'`, then `venv/bin/python -m pytest` and `venv/bin/python -m pytest -m cluster`
