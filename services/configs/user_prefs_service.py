@@ -9,7 +9,7 @@ import json
 import logging
 from pathlib import Path
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -27,6 +27,17 @@ class RecentPath(BaseModel):
 
 # Keep old name as alias for backward compat with stored prefs
 RecentProjectRoot = RecentPath
+
+
+class PickMarks(BaseModel):
+    """How the Tomograms wall and its zoom draw picks. `size` is the mark's radius on the zoom in CSS px; a wall tile
+    draws it at 0.55 of that. `scale` is a ring as wide as the species' diameter. The default marks a pick without
+    covering the density in it."""
+
+    mark: Literal["dot", "ring", "scale", "cross", "point"] = "ring"
+    size: float = Field(3.0, ge=0.5, le=4.0)
+    rim: bool = False  # a thin white edge around a dot
+    opacity: float = Field(0.9, ge=0.15, le=1.0)
 
 
 class UserPreferences(BaseModel):
@@ -58,6 +69,8 @@ class UserPreferences(BaseModel):
     # `dashboard_panel` is the one section the Journey shows ("all" = every section).
     # Dataset section starts collapsed (header + metrics only).
     dashboard_panel: str = "all"
+    # The Tomograms wall's pick marks, set in its Layers menu.
+    pick_marks: PickMarks = Field(default_factory=PickMarks)
     dashboard_dataset_collapsed: bool = True
 
     # --- shared helpers for both MRU lists ---

@@ -5,8 +5,9 @@ that go with particles must change. The Jobs tab is not needed at all. Picks & c
 each with "Curate picks". Templates & masks looks bad and is laid out badly. Improve all of it, and fold together or
 cut the functions these tabs repeat.
 
-Nothing is built yet. §1 records the page as it is (seen from the running server, 2026-11-19), §2 what it repeats,
-§3 the target, §4 the decisions it needs, §5 the stages.
+S1–S8 are built (2026-11-19, the build log at the end of §5); the screenshot check is owed. §1 records the page as
+it was (seen from the running server, 2026-11-19), §2 what it repeats, §3 the target, §4 the decisions, §5 the
+stages.
 
 ## 1. The page today
 
@@ -429,6 +430,22 @@ Built in a worktree of its own (`crboost_server_registry`, detached at `de0ad82`
   glyph before the name; the wall's Layers menu has it before the species' group name. The Species tab's Glyph
   row (under Overlay colour) opens the picker: the ten glyphs in a 6-wide grid of 36 px tiles, the current ringed
   in the accent, the nine hues as 14 px squares; a click sets it and closes. CLAUDE.md has the species-mark rule.
+- **S8.** `PickMarks` on the user's preferences (`services/configs/user_prefs_service.py`: mark, size 0.5–4 px,
+  white edge, opacity; default a 3 px ring, no edge, 90 %). `_dots_svg` (`ui/tomo_gallery.py`) draws the mark asked
+  for, a wall tile at `_WALL_SCALE` (0.55) of the zoom's size; a ring to scale is drawn in the tomogram's voxels (a
+  viewBox of its X/Y extent, a non-scaling stroke), its radius the species' diameter over the binned pixel size,
+  and where either is missing the ring is drawn at the size and the menu says which. A cross is one `<use>` of a
+  path per pick. The wall's Layers menu gains "Pick marks" under its list (mark, size with its px readout, opacity,
+  white edge); a change saves the preference and redraws the tiles and the zoom without rebuilding the menu. The
+  tiles' overlay key carries the look, so only a changed look redraws.
+
+**Checked** (read-only loads of the three projects, no server): ruff, `check_boundaries.py`, every touched module
+imports; the Tomograms compute and table on all three (Grid2 48 rows per species; MysteryLattice's Position_16 opens
+to its lists; AGG412_STA 897 rows, 0.9 MB); the Scores compute on Grid2; the colour migration (each species keeps its
+slot: Grid2's 412_particle `#ffea00` → `#e3cf3e`); drift: AGG412_STA's reconstructParticle__2, class3d__9 and
+class3d__10 (C1 against the species' I1) and MysteryLattice's C2 jobs carry the notch. **Owed:** the screenshots of the
+real page. A second server would recover AGG412_STA, which another session's server has open with jobs running, so
+none was started; the check wants the user's own server on this tree (or an isolated one, the user's call).
 
 ## 6. Earlier rounds
 
