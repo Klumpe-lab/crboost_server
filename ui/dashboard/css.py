@@ -2232,17 +2232,22 @@ _BRANCH_MAP_CSS = """
 .cb-bm-band .r { flex: 1 1 auto; border-top: 1px solid var(--cb-rule, #cfd8e3); }
 .cb-bm-band .m { font: 400 9px var(--cb-mono, 'IBM Plex Mono', monospace); color: var(--cb-ink-3, #64748b);
     white-space: nowrap; }
-/* The cables, under the cards: main inputs solid, side inputs dashed and faint; the selected job's lineage
- * accented, everything else faded. */
-.cb-bm-cables { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 0; line-height: 0; }
+.cb-bm-band[data-band] { cursor: pointer; user-select: none; }
+.cb-bm-band .cb-bm-fold { font-size: 14px; margin-right: -6px; color: var(--cb-ink-4, #94a3b8); }
+.cb-bm-band[data-band]:hover .cb-bm-fold, .cb-bm-band[data-band]:hover .t { color: var(--acc); }
+/* A folded band's grid is hidden: the next band's head keeps its gap below this one's. */
+.cb-bm-grid.hidden + .cb-bm-band { margin-top: 14px; }
+/* The cables, above the cards: none at rest; the selected job's lineage (main inputs solid, side inputs dashed)
+ * and the new job's while it is added. */
+.cb-bm-cables { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 3; line-height: 0; }
 .cb-bm-cables svg { overflow: visible; display: block; }
-.cb-bm-cables path { fill: none; stroke: var(--cb-bm-cable, #94a3b8); stroke-width: 1.5;
+.cb-bm-cables path { display: none; fill: none; stroke: var(--cb-bm-cable, #94a3b8); stroke-width: 1.5;
     transition: opacity .15s, stroke .15s; }
 .cb-bm-cables path.k-side { stroke-dasharray: 4 3; stroke-width: 1.2; opacity: .6; }
-.cb-bm-cables path.k-new { stroke: var(--cb-pick, #2563eb); stroke-width: 2; opacity: 1; }
+.cb-bm-cables path.k-new { display: inline; stroke: var(--cb-pick, #2563eb); stroke-width: 2; opacity: 1; }
 .cb-bm-cables path.k-loose { stroke-dasharray: 6 3; }
-.cb-bm-scroll[data-has-sel] .cb-bm-cables path { opacity: .14; }
-.cb-bm-scroll[data-has-sel] .cb-bm-cables path:is(.up, .down) { opacity: 1; stroke: var(--acc); stroke-width: 2.2; }
+.cb-bm-scroll[data-has-sel] .cb-bm-cables path:is(.up, .down) { display: inline; opacity: .9; stroke: var(--acc);
+    stroke-width: 2.2; }
 .cb-bm-scroll[data-has-sel] .cb-bm-cables path.k-side:is(.up, .down) { stroke-width: 1.5; opacity: .9; }
 .cb-bm-scroll:is([data-finding], [data-slotting]) .cb-bm-cables path:not(.hit):not(.k-new) { opacity: .12; }
 /* A node: the escort above its card (the set it reads, the magazine), then the card. */
@@ -2309,6 +2314,7 @@ _BRANCH_MAP_CSS = """
     opacity: .55; transition: opacity .12s, color .12s, border-color .12s, background .12s; }
 .cb-bm-add i { font-size: 12px; }
 .cb-bm-card:hover .cb-bm-add { opacity: 1; }
+.cb-bm-size + .cb-bm-add { margin-left: 12px; }  /* apart, so a click meant for the size never lands on "+" */
 .cb-bm-add:hover { color: #1f4e79; border-color: #1f4e79; background: #f1f5f9; }
 .cb-bm-x { opacity: 0.6; transition: opacity .12s, background .12s; }
 .cb-bm-x:hover { opacity: 1; background: #fee2e2; }
@@ -2373,12 +2379,16 @@ _BRANCH_MAP_CSS = """
 .cb-bm-trow .t { flex: 1 1 0; min-width: 0; font: 400 10px var(--cb-sans, 'IBM Plex Sans', sans-serif);
     color: var(--cb-ink-2, #334155); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cb-bm-trow .n { font: 400 10px var(--cb-mono, 'IBM Plex Mono', monospace); color: var(--cb-ink-4, #94a3b8); }
-.cb-bm-trow[data-l="sel"] { background: var(--cb-head, #edf4fb); box-shadow: inset 2px 0 0 var(--acc); }
+.cb-bm-trow[data-l="sel"] { background: color-mix(in srgb, var(--cb-bm-sel, #e8590c) 10%, #fff);
+    box-shadow: inset 2px 0 0 var(--cb-bm-sel, #e8590c); }
 .cb-bm-trow[data-l="sel"]:hover .cb-open-cue { display: inline-block; }
-/* The selected job ringed, its lineage outlined, everything else dimmed. Hovering the selected card says that
- * a second click opens its page. */
-.cb-bm-node[data-l="sel"] > .cb-bm-card { outline: 2px solid var(--acc); outline-offset: 2px; }
-.cb-bm-node[data-l="sel"] > .cb-bm-card:not(.cb-bm-trunk):hover .cb-bm-head { background: var(--cb-rail-on, #dbe7f3); }
+/* The selected job ringed and its header tinted in its own colour, its lineage outlined in the accent, everything
+ * else dimmed. Hovering the selected card says that a second click opens its page. */
+.cb-bm-node[data-l="sel"] > .cb-bm-card { outline: 2px solid var(--cb-bm-sel, #e8590c); outline-offset: 2px; }
+.cb-bm-node[data-l="sel"] > .cb-bm-card:not(.cb-bm-trunk) > .cb-bm-head {
+    background: color-mix(in srgb, var(--cb-bm-sel, #e8590c) 10%, #fff); }
+.cb-bm-node[data-l="sel"] > .cb-bm-card:not(.cb-bm-trunk):hover > .cb-bm-head {
+    background: color-mix(in srgb, var(--cb-bm-sel, #e8590c) 18%, #fff); }
 .cb-bm-node[data-l="sel"] > .cb-bm-card:hover .cb-bm-head .cb-open-cue { display: inline-block; }
 .cb-bm-node[data-l="sel"] > .cb-bm-card:hover .cb-bm-head .cb-bm-badge { display: none; }
 .cb-bm-node:is([data-l="up"], [data-l="down"]) > .cb-bm-card {

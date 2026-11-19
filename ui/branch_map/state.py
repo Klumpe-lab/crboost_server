@@ -20,6 +20,7 @@ class MapState:
     trunk: bool = True  # the shared start folded into one card
     strips: bool = True  # the tilt-series magazine above every card
     by_species: bool = False  # a band per species, each its own grid
+    folded: set[str] = field(default_factory=set)  # the species bands folded, by species id ("" = none)
     all_large: bool = False
     large: set[str] = field(default_factory=set)  # the cards shown large, by node id
     # The tilt series picked.
@@ -37,6 +38,7 @@ class MapState:
             self.trunk,
             self.strips,
             self.by_species,
+            tuple(sorted(self.folded)),
             self.all_large,
             tuple(sorted(self.large)),
             self.active_ts,

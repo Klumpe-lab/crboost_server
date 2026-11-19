@@ -4,7 +4,9 @@ The server sends the cards (HTML strings, ui/branch_map/html.py) into a grid the
 change of shape the graph: every node's words and menus, every edge. Here, over that graph:
 
 - the cables, drawn after layout and again whenever a card changes size: a main input from its parent's bottom
-  edge into the card's top, a side input dashed into its row's port, the new job's dashed while unsettled;
+  edge into the card's top, a side input dashed into its row's port, the new job's dashed while unsettled. Only
+  the new job's and the selected job's lineage show (the stylesheet), on a layer above the cards; a card in a
+  folded band has none;
 - the lineage of the selected job (everything it was made from and everything made from it, through main and
   side inputs): its cards and cables kept and accented, the rest dimmed; ↑ ↓ walk to what it read and what read
   it, ← → to its siblings, Esc lets it go;
@@ -87,7 +89,7 @@ MAP_JS = r"""
     const out = [];
     for (const e of M.g.edges) {
       const A = boxOf(e.a), B = boxOf(e.b);
-      if (!A || !B) continue;
+      if (!A || !B || !A.getClientRects().length || !B.getClientRects().length) continue;  // in a folded band
       const a = rel(A, wr, z), b = rel(B, wr, z);
       const x0 = a.x + a.w / 2, y0 = a.y + a.h;
       let d;
@@ -489,6 +491,8 @@ MAP_JS = r"""
     const trow = t.closest('.cb-bm-trow');
     if (trow) { M.select(trow.dataset.jid, false); emit('cb-bm-click', { nid: trow.dataset.jid }); return; }
     if (t.closest('.cb-bm-trunk')) { emit('cb-bm-trunk', {}); return; }
+    const band = t.closest('.cb-bm-band[data-band]');
+    if (band) { emit('cb-bm-band', { key: band.dataset.band }); return; }
     if (node && info(nid)) {
       if (M.mode === 'find') M.close();
       const jid = info(nid).job || nid;
