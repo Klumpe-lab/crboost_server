@@ -15,8 +15,8 @@ built and served, and where uv stands. Deployment, not scientific correctness.
 the defs) and S5 (Munich re-installs from the README), and the local half of roadmap 23 stage 6 (the update banner).
 Those roadmaps point here for them.
 
-**Pickup.** The decisions are taken (§3, 2026-11-19) but one: whether D3's notes are also erased from history.
-Send Munich §5's questions in the week of 23 Nov, then build from S1 in order. §2 is not a stage: it is wrong today.
+**Pickup.** The decisions are taken (§3, 2026-11-19). Read §4.0 (how it is built beside the lab) first, send
+Munich §5's questions in the week of 23 Nov, then build from S1 in order. §2 is not a stage: it is wrong today.
 
 ## 1. What there is (read 2026-11-19, at `80a874b`)
 
@@ -132,8 +132,8 @@ production has used since, others are true (PP24). Legacy CBE shuts down on 18 D
 
 **Settled, not reopened here:** one container per tool when pinnings differ; a newer version upgrades its container
 in place; `requirements.txt` lock, not pyproject, and no hashes in it (roadmap 39 D1, D2); per-user servers, no
-central VM; no automation around cluster-infrastructure failures. History holds nothing secret (HY14, OS7); whether
-it is rewritten anyway is D3's open question.
+central VM; no automation around cluster-infrastructure failures. History holds nothing secret (HY14, OS7); it is
+rewritten once anyway, for the notes (D3).
 
 ## 2. Now, outside the stages
 
@@ -152,7 +152,7 @@ it is rewritten anyway is D3's open question.
 |---|---|---|
 | D1 | CalVer `vYYYY.M.PATCH` (`v2026.12.0`), candidates `v2026.12.0rc1`, a one-line `VERSION` changed only in release commits. Git's `--sort=v:refname` puts `rc1` after the final release, so the update command picks the newest with `packaging.version` | S8 |
 | D2 | Release folders behind a `current` link. `<root>/repo.git`, a bare mirror the update command fetches into; `<root>/releases/<tag>/`, a local clone of it at the tag, owned by the site maintainer, read-only to users, bytecode compiled at install; `<root>/current`; `<root>/site/` (conf, qsub, weights); one uv home the releases share. A running server and its queued jobs keep their release's code; a code rollback is one link; `site/` and the images are per site, so a release that changed conf keys or images is rolled back with them. The lab install moves to it at `rc1`; `main` stays the dev line. **Plus** `./crboost updates`, one command to see and manage it all (S8) | S5, S8 |
-| D3 | The notes leave the repo: `memory/`, `docs/roadmaps/`, `docs/reports/`, `scripts/file_roadmap_issues.py`. They stay as local, untracked files on the maintainer's machine (the maintainer's call, not the PI's). Open: whether they are also erased from history, below | S9 |
+| D3 | The notes leave the repo: `memory/`, `docs/roadmaps/`, `docs/reports/`, `scripts/file_roadmap_issues.py`. They stay as local, untracked files on the maintainer's machine (the maintainer's call, not the PI's), and are erased from history by one rewrite just before `rc1`; no GitHub Support request (old PR refs may keep copies, accepted) | S9 |
 | D4 | One `ruff format .` commit, its sha in `.git-blame-ignore-revs`, then the format gate | S2 |
 | D5 | The 11 offending ui files converted to `--cb-*` variables and voices, then `check_look_literals.py` gates | S2 |
 | D6 | The `.def` stays the recipe; every published image two-stage (compile on CUDA devel, end on runtime, base or plain Ubuntu with runtime-only conda CUDA), so no nvcc in it and every SIF under GHCR's 10 GB layer cap. CI on the free runner builds **every** def (cold, up to the 6 h job limit) on a change to it, on a tag or by hand, a few times a year: a recipe that no longer builds shows up there. Images under 9.5 GB are pushed to `oras://ghcr.io/<org>/crboost-<tool>`, pinned per release by digest. Best effort for all images in December, warp and relion included. Munich gets the lab's images by Dropbox for `rc1`, so the release does not wait on this | S7 |
@@ -166,17 +166,43 @@ it is rewritten anyway is D3's open question.
 | D14 | `127.0.0.1` unless `local.SshLoginHost` is set, then the headnode's cluster interface, not `::` | S4 |
 | D15 | Curation runs the GL image the lab uses; the CPU variant goes, and the viewer chips hide when no image is set. ChimeraX itself may go later | S6 |
 
-**Open: D3's history.** Untracking takes the notes out of the tree GitHub shows and out of every release from now
-on; the commits since September still hold them, as they hold the pre-scrub names, old profanity, a screenshot and
-a 19 MB EMDB map (HY14, OS7). Erasing them means a history rewrite (`git filter-repo` of those paths, a force-push).
-It costs less now than the recon assumed, because Munich re-clones for `rc1` and the lab install moves to release
-folders anyway. It still breaks: local branches and worktrees (rewritten in place, but every other clone must
-re-clone), commit SHAs quoted in issues and docs, and GitHub keeps the 24 PRs' refs and cached views until GitHub
-Support purges them (the same request the contributor cache already needs). If chosen: once, just before `rc1`.
-
 The Claude Code plugin (roadmap 42 D6) waits for `v2027.1.0`; the forwarder's dependency lock is in S2.
 
 ## 4. Stages
+
+### 4.0 Built beside the lab, never under it
+
+The lab runs crboost every day from `/groups/klumpe/software/crboost_server` (a checkout of `main`, pulled by hand)
+with the images in `/groups/klumpe/software/containers/sifs/`. Nothing here changes either until `rc1`.
+
+- **`main` stays the trunk, and every commit keeps the lab install working as it is.** Defaults preserve today's
+  behaviour for a conf like the lab's: `CRBOOST_SITE_DIR` defaults to `config/`; D9's split lets the lab conf's
+  profiles, which still carry every key, keep overriding; D14 changes nothing where `SshLoginHost` is set; neutral
+  template values never touch an existing `conf.yaml`. The lab install pulls only a `main` that `./crboost ci` passed
+  (from S2 on), as it pulls today: by hand.
+- **On branches, each in its own worktree:** S3's NiceGUI 3.19 (its lock builds its own environment, so nothing is
+  shared) and anything else that changes what a lab member sees or does before it is checked in a browser. S4's
+  cookie change logs every browser out once: it lands with a word to the lab.
+- **A test server never shares the lab's project base.** Any server reconciles every active project in its bases
+  when it starts, and the dev checkout's `conf.yaml` today points at `/groups/klumpe/crboost_data`, the lab's. Tests
+  run with a base of their own (as the agent-API test server did) and with test projects: copies, never the lab's.
+- **Images are built and tried outside `sifs/`.** `container_defs/build.sh` writes to a staging folder in the
+  maintainer's scratch (where today's build scripts and logs are). A new image is tried by pointing the dev checkout's
+  `config/conf.yaml` (never `~/.crboost/conf.yaml`, which every server of the maintainer's reads, the lab's
+  included) at the staged SIF, then `./crboost test -m cluster -k <tool>`, then one job of a test project rerun on it
+  and compared with the job it copies. CI builds on GitHub's runners and touches nothing here.
+- **An image reaches the lab under a new file name.** It is copied into `sifs/` beside the old one, and the lab conf's
+  `container_path` for that tool is changed. Each job reads the conf when it starts (the container wrapper runs in the
+  driver, `services/computing/container_service.py:79`), so the edit reaches every job that starts after it, queued
+  ones included: swap an image between a project's runs, not in the middle of one. A SIF is never overwritten in
+  place: running jobs have it mounted. The old file goes once nothing uses it.
+- **The first container trial is pytom:** small, it compiles nothing, and it leaves the NVIDIA devel base for runtime
+  conda CUDA, the pattern four images follow. Then relion two-stage (the biggest saving, and RELION's binaries need
+  only the runtime libraries), then warp (AreTomo2 compiled in a devel stage, Warp's conda env bringing its own CUDA).
+- **The release layout is tried in a test root** (repo.git, releases/, current, site/ with a test base) before it
+  carries the lab. At `rc1` the lab moves: a new root, members start from its `current/crboost`, and the old checkout
+  keeps serving the servers and jobs it started until it is idle. Only then does the old path become a link to
+  `current`. The history rewrite comes right before `rc1`, after which the old checkout never pulls again.
 
 Each stage is one or a few commits, in this order. Items marked **(January)** are past December's cut line (below)
 and go into `v2027.1.0`.
@@ -386,7 +412,10 @@ Needs D3, D12.
 
 - The notes out per D3: `git rm --cached` of `memory/`, `docs/roadmaps/`, `docs/reports/` and
   `scripts/file_roadmap_issues.py`, each ignored, the files left where they are on the maintainer's machine (other
-  clones and worktrees no longer get them); history per D3's open question. Code comments lose their roadmap and
+  clones and worktrees no longer get them). Just before `rc1`, one `git filter-repo` drops those paths, the 19 MB
+  EMDB map and the old screenshot from every commit, and main is force-pushed; first every branch and worktree is
+  committed or stashed (they are rewritten with main), and the old lab checkout stops pulling (it is replaced by the
+  release layout at `rc1`, §4.0). Code comments lose their roadmap and
   report pointers; the runtime message at `drivers/driver_base.py:618` points at `docs/known_bugs.md` (HY1). The
   reference docs that stay
   (`docs/known_bugs.md`, `docs/miss-alignment.md`, `docs/particle-data-flow.md`, `CLAUDE.md`) lose lab sample names,
@@ -426,9 +455,9 @@ said in the notes) and S4's cookie and fonts.
 
 | Week of | Stages |
 |---|---|
-| 23 Nov | §5's questions sent; D3's history answered. S1, S2 (D5's conversion included); S3's NiceGUI branch started |
+| 23 Nov | §5's questions sent. S1, S2 (D5's conversion included); S3's NiceGUI branch started; S6's `build.sh` and the first two-stage trial (§4.0) |
 | 30 Nov | S3, S4, S5 (D9 included), S6; `images.yml` running as soon as S6's defs are in (the builds are long) |
-| 7 Dec | S7 as far as it gets, S8, S9; the history rewrite if chosen, then `rc1` at the end of the week |
+| 7 Dec | S7 as far as it gets, S8, S9; the history rewrite, then `rc1` at the end of the week |
 | 14 Dec | S10: Munich's pass on rc1 (images by Dropbox), fixes, `v2026.12.0` (legacy CBE shuts down on the 18th) |
 | January | `v2027.1.0`: everything marked (January) and the images S7 did not finish |
 
