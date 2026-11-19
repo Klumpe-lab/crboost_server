@@ -107,7 +107,7 @@ def subtomo_instances_for_ce(
 
 @dataclass(frozen=True, slots=True)
 class AnalyticsSource:
-    """One thing the Analytics tab can describe: a template match and the extraction made from it
+    """One thing the Scores tab can describe: a template match and the extraction made from it
     (either may be absent), or a particle table on its own — a particle set or a cross-project
     merge (`kind` "set" / "merge", read from `particles_star`)."""
 

@@ -1,5 +1,5 @@
 """Results tabs of the particle jobs. Class 3D and Reconstruct particle: the job's readout
-(ui/analytics/results_section.py), the same panel the Species page's Analytics tab shows. Refine 3D and
+(ui/analytics/results_section.py). Refine 3D and
 PostProcess: the resolution RELION reports, said with what it measures, and the FSC curves
 (services/particles/fsc_readout.py, read in a thread)."""
 

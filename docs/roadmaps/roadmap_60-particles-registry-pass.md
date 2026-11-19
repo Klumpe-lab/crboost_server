@@ -417,6 +417,10 @@ Built in a worktree of its own (`crboost_server_registry`, detached at `de0ad82`
   the "picks" chip keeps the pick viewer's one in-app entry (the old group's grid icon); the Journey icon is gone.
   `ui/analytics/tomogram_table.py` and the `.cb-ptable*` CSS are deleted. AGG412_STA's 897 tomograms make a 0.9 MB
   table, sent when its data changes.
+- **S6.** Analytics is Scores (key `scores`, `analytics` lands on it; `ScoresTab`): Scores in σ with the cut and
+  Make subset, Per project, Where the picks sit (funnel, slab, overlap), Controls. Gone: Particle sets (D5 (a), the
+  kitchen lists them; `ui/analytics/sets_panel.py` deleted with the tab's set delete), Classes and maps (each job's
+  Results tab), and, since S5, the per-tomogram table. The funnel still reads the species' sets for "class-kept".
 
 ## 6. Earlier rounds
 

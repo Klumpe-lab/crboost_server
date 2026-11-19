@@ -1,7 +1,7 @@
 """Results of the jobs after extraction — Class 3D and Reconstruct particle — for one species, one
-job at a time. Used by the Species page's Analytics tab (a job selector) and by those jobs' own
-Results tab (one fixed job). The readout is fetched off the event loop; the first read of a job that
-finished before its driver wrote a sidecar renders its images and takes a while.
+job at a time: those jobs' own Results tab (one fixed job), or a job selector over several. The
+readout is fetched off the event loop; the first read of a job that finished before its driver
+wrote a sidecar renders its images and takes a while.
 """
 
 from __future__ import annotations
