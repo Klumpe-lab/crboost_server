@@ -368,6 +368,17 @@ class RosterWidget(FingerprintedView):
         super().refresh()
         self.panel.follow_roster()
 
+    def paint_selected(self) -> None:
+        """Repaint the selection on the rendered rows (a click selected another job)."""
+        selected = self.panel.selected
+        for iid, (row, _name_el) in self._rows.items():
+            if row.is_deleted:
+                continue
+            if iid == selected:
+                row.classes(add="cb-sel")
+            else:
+                row.classes(remove="cb-sel")
+
     def paint_active(self) -> None:
         """Repaint the active-job highlight on the rendered rows (a job switch)."""
         active = self.panel.ui_mgr.active_instance_id
@@ -389,12 +400,13 @@ class RosterWidget(FingerprintedView):
             view_head_icon("layers.svg")
             ui.label("Jobs").style(VIEW_TITLE_STYLE)
             ui.element("div").style("flex: 1 1 auto;")
-            # The branch map: closes the open job page, and the pipeline frame shows the map in its place.
+            # The branch map: closes the open job page, and the pipeline frame shows the map in its place (shown
+            # again if the user had hidden it with the frame's cross).
             branch = (
                 ui.html(load_icon_svg("pipeline_table.svg", size=12), sanitize=False)
                 .classes("cb-view-close")
                 .style("display: flex; align-items: center; justify-content: center;")
-                .on("click", lambda _e: panel.close_job())
+                .on("click", lambda _e: panel.show_map())
             )
             branch.props["title"] = "Show the branch map: every job as a card, cabled to what it reads"
             ui.icon("close", size="12px").classes("cb-view-close").props(
@@ -536,7 +548,7 @@ class RosterWidget(FingerprintedView):
         row_paint, name_paint = _row_paint(is_active)
         row = (
             ui.element("div")
-            .classes("cb-rail-row")
+            .classes("cb-rail-row" + (" cb-sel" if panel.selected == instance_id else ""))
             .props(f'data-cb-anchor="{instance_id}"')
             .style(
                 f"display: flex; align-items: center; gap: {_ROW_GAP}px; height: {_ROW_H}px; "
@@ -548,14 +560,16 @@ class RosterWidget(FingerprintedView):
                 self._status_widget(instance_id)
             # The name and the job's own column, each as wide on every row, so the job folders line up down the
             # roster; the name gives way (ellipsis) only once the set tag has, in a roster too narrow for the row.
-            # The job folder copies its full path on click (click.stop, so it does not also open the job).
+            # A click selects the job (here and on the map); a click on the selected job opens its page, which
+            # the cue at the end of this box says while it is hovered. The job folder copies its full path on
+            # click (click.stop, so it does not also select the job).
             with (
                 ui.element("div")
                 .style(
                     "flex: 1 1 0; min-width: 0; cursor: pointer; overflow: hidden; "
                     f"display: flex; align-items: baseline; gap: {_ROW_GAP}px;"
                 )
-                .on("click", lambda iid=instance_id: panel.switch_tab(iid))
+                .on("click", lambda iid=instance_id: panel.activate(iid))
                 .props(f'data-cb-job="{instance_id}"')
             ):
                 name_el = ui.label(base_name).style(
@@ -573,6 +587,7 @@ class RosterWidget(FingerprintedView):
                         ui.tooltip(f"{full_path}\nClick to copy").style("white-space: pre-line;")
                     copy_on_click(tag, full_path)
                 self._set_tag(job_model, panel.ui_mgr.project_path)
+                ui.label("open ↗").classes("cb-open-cue").style("margin-left: auto;")
             is_filter = job_type == JobType.TILT_FILTER and job_model is not None
             if is_filter and panel.ui_mgr.project_path is not None:
                 # Where the filter is; a click opens its settings beside the row.

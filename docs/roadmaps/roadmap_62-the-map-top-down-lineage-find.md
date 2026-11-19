@@ -9,6 +9,10 @@ lineage. And with the Jobs view focused, `f` should open a find bar in the middl
 glass: typing "Clas" finds the Class 3D jobs, "ref" the Refine 3D ones, and the whole UI highlights the matches.
 Ideas first, as prototypes.
 
+**Built (2026-11-19, uncommitted): §7.** The branch map is a grid of HTML cards the browser lays out, cables
+always drawn and the selected job's lineage accented with the rest dimmed, find in a palette, choosing an input's
+source in the same palette; nothing is dragged or zoomed. `/dev/map-ideas` is retired. The roster is untouched.
+
 **Status (2026-11-19).** The lag is measured and explained (§1). The ideas are on `/dev/map-ideas` (§2, uncommitted),
 over the real project, read-only. One bug found on the way is fixed: H27 in [HOTFIXES.md](HOTFIXES.md) (a job given
 a particle set was drawn as reading itself). Nothing else of the real map has changed. The decisions are in §4,
@@ -216,9 +220,13 @@ The prototype's way, carried into `ui/branch_map/`:
 ## 4. Decisions owed (ask first; recommendations given)
 
 Decided 2026-11-19 (the maintainer, second round): **(a) Grid**, **(f) grouping by species is the user's check**, and
-the dotted paper goes. With Grid, **(i) has nothing left to decide**: the grid wraps at the view's width, so Fit
-goes too, and **(g) comes down to the lineage**: no cables at rest in Grid. Still open: (b), (c), (d), (e), (h), (j),
-and (k) below.
+the dotted paper goes. Third round, the same day, after the second prototype: **cables drawn at rest** (main
+solid, side inputs dashed and faint) **and accented on the lineage** ((g), (k)); **(b) Dim the rest**; **(d)
+Palette**; **(i) Fit**; **(j) straight into the map**, no further prototype. **(e) does not apply: the roster is
+not touched** (the maintainer's word: the real roster is the one to keep; only the graphical builder changes), so
+find and the lineage live on the map; the roster's own selection still follows a click on a card, as before.
+(c) and (h) went with the recommendations: the lineage runs through side inputs too, and the set or file a job
+reads rides on its card as a tab (no pills: the grid has no place for one).
 
 - **(a) Layout. Decided: Grid.** Every card in the order the jobs were made, wrapping at the view's width; a large
   card spans two columns and the rest reflow (`grid-auto-flow: dense`). Tree, Lanes and Layers were the other
@@ -273,10 +281,60 @@ every card goes large; a running array job's tick redraws only that job's card.
 
 ## 6. Pickup
 
-Restart the dev server (the route is in `ui/main_ui.py`) and open `/dev/map-ideas`: Grid, no bands, flat paper since
-the second round, e.g. `/dev/map-ideas?project=AGG412_STA&lineage=updown`; `&paper=dots` brings the dotted paper back
-for a comparison. The Pipeline title line reads how long each click took in this browser. Click inside the
-Pipeline frame, then press `f`. The screens are in `notes/screens/map-ideas/`: `today-map-small.png` and
-`today-map-all-large.png` (today, fitted to the view), the four layouts, the three lineage looks, the three find
-looks, a large card, a preprocessing project in Lanes, and the second round's `r2-grid*.png` (§2.1). Ask what is
-still open in §4 ((b)–(e), (h), (j), (k)), then build S1–S7 back to back.
+Built (§7). Restart the dev server, open a project's Jobs view and the map from the roster's map icon. Owed: the
+maintainer's look in their own browser (Chrome and Firefox), a ✓ that adds a job for real, and a project with a
+running array job (its tick must redraw that card only). The first round's screens are in
+`notes/screens/map-ideas/`, the build's in `notes/screens/map-build/`.
+
+## 7. The build (2026-11-19, uncommitted)
+
+What the map is now (`ui/branch_map/`):
+
+- **`html.py`**: every card an HTML string, one element. Small: the escort (the set or file its main input reads as
+  a tab, the magazine), the header (light, name, tool or method, the number that opens its menu, the size toggle,
+  the "+"), a row per input, the job's own words. Large: parameters, results, and the picked tilt series' section.
+  Ports are CSS pseudo-elements: main input on the top edge, output on the bottom edge, a side input on its row's
+  left edge. The folded shared start is one card with a row per job. **Magazines are one path per state**; the
+  hover names the tilt series from the pointer (`data-mag`, `data-st`), a click picks it.
+- **`assets.py`** (`MAP_JS`, run once per page): the cables after layout and on every resize, the lineage (Dim the
+  rest, cables accented), ↑ ↓ ← → along it, find (`f` or `/` with the Jobs view focused; the Palette), choosing an
+  input's source in the same palette with the candidates lit and pilled on the map ("use as reference"), the "+"
+  and number menus built from the graph, Fit (a map wider than its view shrinks to it, never below 45 %).
+- **`view.py`**: `BranchMapView` keeps its cards by job. A tick that moves the signature builds each card's HTML
+  and sends only those that changed; the skeleton (bands and grids) is built again only when the jobs, the folded
+  start or "by species" change; the graph and the open input go to the browser only when they change. The new job's
+  card (a real form, `card.render_new_card`, NiceGUI elements in the same classes) is placed after its parent and
+  moved, never rebuilt, as its main input changes. "by species" is a `house_check` on the Pipeline title line, kept
+  in the user's storage with the cards' sizes, the magazines and the folded start.
+- **`facts.py`**: class slices and overlays are served by URL (`/api/bm-pic/<key>.jpg`, kept in memory, keyed by
+  the file and its mtime), never inside a card.
+- **Gone**: dragging, panning, zooming, the dotted paper, the stored positions and view (dropped from the prefs on
+  the next save), `geometry.tidy` / `de_overlap` / `Box` / `path_d`, the per-card Quasar menus and tooltips,
+  `render_card` and the old trunk, `blocks`' NiceGUI results and tilt-series parts, `/dev/map-ideas` and
+  `ui/map_ideas/`. The workspace's Esc leaves the key to the palette, a card's menu and a lit lineage in the focused
+  Jobs view (`_PANE_FOCUS_JS`), so Esc lets those go first and closes the map after.
+- **Not done**: the model in a thread (§3): `project_from_state` reads the live `ProjectState`, which only the loop
+  may touch; it stays on the loop (3–8 ms warm) and runs only when the signature moves. Tree, Lanes and Layers are
+  not kept.
+
+**Measured** in a headless Chromium on a page that mounts the real `BranchMapView` with a stand-in panel over the
+project loaded read only (nothing saved; `notes/map-ideas/map_harness.py`, `drive_map.py`, `drive_ts.py`):
+
+| | today's map (§1) | the build |
+|---|---|---|
+| AGG412_STA open, 30 cards | 2,692 elements, 511 KB | 56 elements on the page, 724 DOM nodes |
+| select a card | 0.9 KB, painted in place | nothing sent; lineage 20 cables accented |
+| find "clas" | | nothing sent; 11 Class 3D lit and listed |
+| one card large (Class 3D 013 with its class slices) | the whole map, 600 KB | 15 KB, slices by URL |
+| that card small again | 534 KB | 3.2 KB |
+| "by species" on | | 48 KB (the skeleton) |
+| add a Refine 3D from "+" | the whole map | 51 KB: its form, 116 elements |
+| Esc on its palette, then ✕ | | nothing; 0.6 KB |
+| 10 s idle | nothing | nothing |
+| AGG412_20251113_412_rerun (15 jobs, §1.6), whole map | 518 KB of magazines | 32 KB of HTML, 17 magazine paths |
+| pick a tilt series from a magazine | the whole map | 38 KB (every magazine rings it) |
+| a large Segment card turned to that tilt series | | 26 KB |
+
+**Found on the way: H29** ([HOTFIXES.md](HOTFIXES.md)): since 2026-11-18 adding a job with parameters from the map
+failed before its card appeared (a call to `_attach_input` with a keyword the job-page work removed). Fixed in the
+new card's form.

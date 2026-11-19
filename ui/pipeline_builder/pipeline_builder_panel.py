@@ -81,6 +81,9 @@ class PipelineBuilderPanel:
         # The branch map (ui/branch_map/) and the job pages share the pipeline frame's body: one shows at a time.
         self.map = None
         self._map_container = None
+        # The job selected in this tab: one click on its roster row or its map card selects it in both places; a
+        # click on the selected job (or a double click) opens its page (`activate`).
+        self.selected: str | None = None
         # Guards async handlers that own a dialog (and other re-entrant work)
         # against rapid/double clicks. See ui/components/reactive.py.
         self.flight = SingleFlight()
@@ -105,6 +108,7 @@ class PipelineBuilderPanel:
         self.callbacks["refresh_counts"] = self.roster.refresh_counts
         self.callbacks["on_pipeline_active"] = self.set_view_active
         self.callbacks["close_job"] = self.close_job
+        self.callbacks["sync_map_visible"] = self.sync_map_visible
         # Species page: open a job in the pipeline view / add one for a species.
         self.callbacks["open_job"] = self.switch_tab
         self.callbacks["open_job_subsection"] = self.switch_to_job_subsection
@@ -230,8 +234,7 @@ class PipelineBuilderPanel:
             tabs.set_visibility(on)
         if self._map_container is not None and not self._map_container.is_deleted:
             self._map_container.set_visibility(not on)
-        if self.map is not None:
-            self.map.set_visible(not on)
+        self.sync_map_visible(job_open=on)
         if not on:
             set_title = self.callbacks.get("set_view_title")
             if set_title:
@@ -239,6 +242,29 @@ class PipelineBuilderPanel:
         set_open = self.callbacks.get("set_job_open")
         if set_open:
             set_open(on)
+
+    def sync_map_visible(self, job_open: bool | None = None) -> None:
+        """The map runs while it shows: no job page open and not hidden by the user (the workspace's map_hidden)."""
+        if self.map is None:
+            return
+        if job_open is None:
+            job_open = self.ui_mgr.active_instance_id is not None
+        hidden = self.callbacks.get("map_hidden")
+        self.map.set_visible(not job_open and not (hidden and hidden()))
+
+    def show_map(self) -> None:
+        """The roster's map icon: the branch map in the pipeline frame, built on the first click (the Jobs view
+        opens without it)."""
+        set_hidden = self.callbacks.get("set_map_hidden")
+        hidden = self.callbacks.get("map_hidden")
+        if set_hidden and hidden and hidden():
+            set_hidden(False)
+        self.close_job()
+        # Mounted once the frame shows the map's box, so its first render and fit see the space it has.
+        if self.map is None and self._map_container is not None and not self._map_container.is_deleted:
+            with self._map_container:
+                self.map = mount_branch_map(self._map_container, self, self.callbacks)
+            self.sync_map_visible(job_open=False)
 
     def close_job(self, *, write_url: bool = True) -> None:
         """The job page's close cross: no job open, the page leaves the main area, the roster stays."""
@@ -289,7 +315,23 @@ class PipelineBuilderPanel:
         if on:
             self.roster.refresh()
 
+    def select(self, instance_id: str | None) -> None:
+        """Select a job in the roster and on the map, without opening it."""
+        self.selected = instance_id
+        self.roster.paint_selected()
+        if self.map is not None:
+            self.map.paint_selected()
+
+    def activate(self, instance_id: str) -> None:
+        """A click on a job's roster row or map card header: selects it, or opens its page when it is selected."""
+        if self.selected == instance_id:
+            self.switch_tab(instance_id)
+        else:
+            self.select(instance_id)
+
     def switch_tab(self, instance_id: str):
+        if self.selected != instance_id:
+            self.select(instance_id)
         if self.ensure_pipeline_mode:
             self.ensure_pipeline_mode()
         self.ui_mgr.set_active_instance(instance_id)
@@ -668,6 +710,5 @@ def build_pipeline_builder_panel(
     panel.ui_mgr.panel_refs.job_tabs_container = tabs_container
 
     panel.build()
-    with panel._map_container:
-        panel.map = mount_branch_map(panel._map_container, panel, callbacks)
+    # The map itself is built on the first click of the roster's map icon (show_map).
     panel._set_job_open(panel.ui_mgr.active_instance_id is not None)

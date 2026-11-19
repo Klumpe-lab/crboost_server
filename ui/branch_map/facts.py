@@ -2,13 +2,14 @@
 denoised slabs and segmentation overlays, the training log, template-matching and pick analytics, the registry's
 numbers as plots. Every read runs off the event loop (`FactsStore` loads in a thread and the map draws again when
 a load lands); pictures on disk are served by the app's own asset route, so only the composites (a mask tinted onto
-a slice, the central slices of a map) are made here.
+a slice, the central slices of a map) are made here, kept in memory and served by URL (`/api/bm-pic/<key>.jpg`),
+never sent inside a card.
 """
 
 from __future__ import annotations
 
 import asyncio
-import base64
+import hashlib
 import io
 import json
 import logging
@@ -18,7 +19,11 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from fastapi import Response
+from nicegui import app
+
 from services.dashboard_data import vis_asset_url
+from services.http_responses import NO_GZIP
 from ui.branch_map.model import Facts, Job, Plot, TiltPlot, TsFacts, param_words
 
 logger = logging.getLogger(__name__)
@@ -26,7 +31,26 @@ logger = logging.getLogger(__name__)
 THUMB = 192
 # A running job's results change: its facts are read again when older than this.
 _LIVE_MAX_AGE_S = 15.0
-_thumbs: dict[tuple[str, float], str] = {}
+_thumbs: dict[tuple[str, float], str] = {}  # (what, mtime) → its URL
+_pics: dict[str, bytes] = {}  # the URL's key → the JPEG
+
+
+def _keep(key: tuple[str, float], jpeg: bytes) -> str:
+    """A picture made here, kept for the route below; its URL names the source and its mtime, so it is never stale."""
+    name = hashlib.sha1(repr(key).encode()).hexdigest()[:20]
+    _pics[name] = jpeg
+    url = f"/api/bm-pic/{name}.jpg"
+    _thumbs[key] = url
+    return url
+
+
+@app.get("/api/bm-pic/{name}.jpg")
+def _serve_pic(name: str) -> Response:
+    jpeg = _pics.get(name)
+    if jpeg is None:
+        return Response(status_code=404)
+    headers = {"Cache-Control": "public, max-age=31536000, immutable", **NO_GZIP}
+    return Response(content=jpeg, media_type="image/jpeg", headers=headers)
 
 
 # ── pictures ─────────────────────────────────────────────────────────────────
@@ -40,7 +64,7 @@ def picture_url(path: Path) -> str | None:
 
 
 def composite_url(path: Path, overlay: Path) -> str | None:
-    """A slice with the segmentation overlay tinted onto it, as a small JPEG data URL."""
+    """A slice with the segmentation overlay tinted onto it, as a small JPEG."""
     from PIL import Image, ImageFilter, ImageOps
 
     try:
@@ -62,13 +86,11 @@ def composite_url(path: Path, overlay: Path) -> str | None:
     except OSError:
         logger.exception("branch map: overlay of %s on %s", overlay, path)
         return None
-    url = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
-    _thumbs[key] = url
-    return url
+    return _keep(key, buf.getvalue())
 
 
 def map_slices_url(mrc: Path) -> str | None:
-    """Three central slices of a small map (a particle average), side by side, as a data URL."""
+    """Three central slices of a small map (a particle average), side by side, as a JPEG."""
     if not mrc.exists():
         return None
     try:
@@ -93,9 +115,7 @@ def map_slices_url(mrc: Path) -> str | None:
             sheet.paste(t, (i * (THUMB + 6), 0))
         buf = io.BytesIO()
         sheet.save(buf, "JPEG", quality=72)
-        url = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
-        _thumbs[key] = url
-        return url
+        return _keep(key, buf.getvalue())
     except (OSError, ValueError):
         logger.exception("branch map: slices of %s", mrc)
         return None

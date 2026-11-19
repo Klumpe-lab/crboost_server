@@ -153,14 +153,15 @@ _VIEW_RESIZER_JS = """
 # (_focus_pane): a view turned on takes it, and when the pane holding it goes, the pane of the view
 # turned on last before it does (window.cbPaneKeep). The keydown listener captures on the window, so it
 # runs before the Escapes that dismiss something smaller (the slab lightbox, a pinned tilt popover, a
-# pick selection on screen, the roster's magazine and settings cards) and leaves the key to them, as it
+# pick selection on screen, the roster's magazine and settings cards, the map's find palette, a card's menu and a
+# lineage lit in the focused Jobs view) and leaves the key to them, as it
 # does to an open dialog or menu.
 _PANE_FOCUS_JS = """
 (function(){
   if (window.__cbPaneFocus) return;
   window.__cbPaneFocus = true;
   const busy = '.q-dialog, .q-menu, .cb-slab-lightbox, .cb-tp-popover[data-pinned], .cb-gallery-tile.selected, '
-    + '.cb-mag-pop';
+    + '.cb-mag-pop, .cb-bm-find, .cb-bm-menu, #cb-view-pipeline[data-cb-focus] .cb-bm-scroll[data-has-sel]';
   const paneOf = (name) => document.getElementById(name === 'roster' ? 'cb-roster-panel' : 'cb-view-' + name);
   const nameOf = (el) => el.id === 'cb-roster-panel' ? 'roster' : el.id.slice('cb-view-'.length);
   const focused = () => document.querySelector('[data-cb-focus]');
@@ -327,6 +328,9 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
     _refs = {}
     # Whether the pipeline view has a job open: without one the pipeline frame shows the branch map.
     _job_open = {"on": True}
+    # The branch map shows only once the roster's map icon asks for it, and until its cross hides it: see _frame_on.
+    _map_hidden = {"on": True}
+    callbacks["map_hidden"] = lambda: _map_hidden["on"]
     client = ui.context.client
 
     if route_writer is None:
@@ -363,7 +367,23 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         pipeline frame (the map, or the open job's page)."""
         if name != "pipeline":
             return [name]
-        return ["roster", "pipeline"]
+        return ["roster", "pipeline"] if _frame_on("pipeline") else ["roster"]
+
+    def _frame_on(name: str) -> bool:
+        """Whether `name`'s frame shows in the main area: every view that is on, except the pipeline frame while
+        it would show the branch map nobody has asked for."""
+        if name not in _on:
+            return False
+        return name != "pipeline" or _job_open["on"] or not _map_hidden["on"]
+
+    def _set_map_hidden(hidden: bool) -> None:
+        """The roster's map icon shows the branch map, the pipeline frame's cross (no job open) hides it. Hidden,
+        the Jobs view is the roster alone until a job page opens."""
+        _map_hidden["on"] = hidden
+        sync = callbacks.get("sync_map_visible")
+        if sync:
+            sync()
+        _apply_views()
 
     def _focus_pane(pane: str) -> None:
         """Light `pane`'s title line: the pane Esc closes."""
@@ -374,8 +394,9 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         pipeline, i.e. job roster + job page, leftmost), sharing the width by their weights;
         hide the rest. Every view with a view to its left shows its splitter. The roster comes
         and goes with the pipeline view (the roster's set_active_views), and each view's
-        refresh timers run only while it shows."""
-        shown = list(_on)
+        refresh timers run only while it shows. The pipeline frame is the exception: with the
+        branch map hidden and no job open it stays off while the roster shows."""
+        shown = [name for name in _on if _frame_on(name)]
         first = True
         for i, name in enumerate(_VIEW_ORDER):
             c = _refs.get(f"{name}_frame")
@@ -398,6 +419,16 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         empty = _refs.get("empty_container")
         if empty is not None:
             empty.style(f"display: {'none' if shown else 'flex'};")
+            roster_alone = "pipeline" in _on
+            title, hint = _refs.get("empty_title"), _refs.get("empty_hint")
+            if title is not None and not title.is_deleted:
+                title.set_text("No job open." if roster_alone else "No view open.")
+            if hint is not None and not hint.is_deleted:
+                hint.set_text(
+                    "Open one from the job roster, or the branch map with the map icon in the Jobs title line."
+                    if roster_alone
+                    else "Turn views on and off with the icons on the left; several can show side by side."
+                )
 
         # Nav-icon highlights + roster hide/restore.
         set_views = callbacks.get("set_active_views")
@@ -465,10 +496,13 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
 
     def _set_job_open(on: bool) -> None:
         """The pipeline panel opened a job page or closed it (close_job): the frame's title line takes the job's
-        tick, or the map's glyph and a plain line; its cross closes the job, or the view."""
+        tick, or the map's glyph and a plain line; its cross closes the job, or hides the map. With the map hidden
+        the frame comes and goes with the job page."""
         if _job_open["on"] == on:
             return
         _job_open["on"] = on
+        if _map_hidden["on"] and "pipeline" in _on:
+            _apply_views()
         head = _refs.get("pipeline_head_el")
         if head is not None and not head.is_deleted:
             head.style(_JOB_HEAD_TICK if on else _PLAIN_HEAD_TICK)
@@ -477,8 +511,8 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
             icon.set_visibility(not on)
         close = _refs.get("pipeline_close")
         if close is not None and not close.is_deleted:
-            close.props(f'title="{"Close this job" if on else "Close this view"}"')
-        _focus_pane("pipeline")
+            close.props(f'title="{"Close this job" if on else "Hide the branch map (the job roster stays)"}"')
+        _focus_pane("pipeline" if _frame_on("pipeline") else "roster")
 
     def _solo(name: str) -> None:
         """The expand icon: this view alone fills the main area; every other view turns off."""
@@ -504,6 +538,9 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         """A view's title line, for the view to build its tools on: ``{"title": its name label, "lead":
         the slot after the name, "tools": the slot at the right end}``."""
         return _refs[f"{name}_head"]
+
+    # Registered before any view is built: the pipeline frame's branch map fills its title line while it mounts.
+    callbacks["view_head"] = _view_head
 
     def _view_frame(name: str, style: str = _VIEW_STYLE) -> ui.element:
         """A view's frame in the main area, styled by _apply_views; returns the box the view
@@ -548,7 +585,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
                     if is_job:
                         _refs["pipeline_close"] = close_el
                         close_el.on(
-                            "click", lambda _e: callbacks["close_job"]() if _job_open["on"] else _hide("pipeline")
+                            "click", lambda _e: callbacks["close_job"]() if _job_open["on"] else _set_map_hidden(True)
                         )
                     else:
                         close_el.on("click", lambda _e: _hide(name))
@@ -758,8 +795,8 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
         ui.timer(0, _apply, once=True)
 
     def _on_escape(e) -> None:
-        """Esc closes the lit pane (_PANE_FOCUS_JS) as its cross does: the job page closes its job, the
-        roster the Jobs view (the roster and the job page), any other pane its view."""
+        """Esc closes the lit pane (_PANE_FOCUS_JS) as its cross does: the job page closes its job, the map
+        hides itself, the roster closes the Jobs view (the roster and the job page), any other pane its view."""
         raw = e.args
         if isinstance(raw, list):
             raw = raw[0] if raw else ""
@@ -769,8 +806,8 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
                 return
             if _job_open["on"]:
                 callbacks["close_job"]()
-            else:
-                _hide("pipeline")
+            elif _frame_on("pipeline"):
+                _set_map_hidden(True)
         elif pane == "roster":
             _hide("pipeline")
         else:
@@ -806,8 +843,8 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
     callbacks["show_protocols"] = _show_protocols
     callbacks["open_pick_viewer"] = _open_pick_viewer
     callbacks["set_view_title"] = _set_view_title
-    callbacks["view_head"] = _view_head
     callbacks["set_job_open"] = _set_job_open
+    callbacks["set_map_hidden"] = _set_map_hidden
 
     with ui.element("div").style(
         "position: fixed; inset: 0; display: flex; flex-direction: row; "
