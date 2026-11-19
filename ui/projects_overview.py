@@ -39,6 +39,7 @@ from ui.components.dialogs import dialog_host
 from ui.components.fields import house_field, house_select
 from ui.components.reactive import Debounced, SingleFlight
 from ui.components.segmented import render_segmented
+from ui.job_plugins._field_styles import section_head
 from services.routes import Route, route_to_path
 from ui.styles import MONO, SANS as FONT, WAIT_SPINNER
 
@@ -98,10 +99,8 @@ _TAG_CHIP_STYLE = (
     "cursor: pointer; user-select: none; flex-shrink: 0;"
 )
 # A section title in the project hover card.
-_CARD_HEAD_STYLE = (
-    f"{FONT} font-size: 9px; font-weight: 600; color: {CLR_LABEL}; letter-spacing: 0.06em; "
-    "text-transform: uppercase; margin: 8px 0 3px;"
-)
+# Spacing around a hover card's section heads (`section_head`, the Rule ladder).
+_CARD_HEAD_STYLE = "margin: 8px 0 3px; flex-shrink: 0;"
 # The rail avatar's card rescans the project's base at most this often, when it opens.
 _OTHERS_RESCAN_S = 30.0
 _others_scanned_at: dict[str, float] = {}
@@ -1843,8 +1842,8 @@ class ProjectsOverview:
             if path:
                 copy_on_click(label, text)
 
-        def section(title: str, rows: list[tuple[str, str | None]], *, paths: bool = False) -> None:
-            ui.label(title).style(head_style)
+        def section(title: str, rows: list[tuple[str, str | None]], *, paths: bool = False, right: str = "") -> None:
+            section_head(title, right=right).style(head_style)
             with ui.element("div").style(grid):
                 for key, text in rows:
                     ui.label(key).style(key_style)
@@ -1853,7 +1852,12 @@ class ProjectsOverview:
         def num(v, unit: str = "") -> str | None:
             return None if v is None else f"{v:g}{unit}"
 
-        with ui.element("div").style("width: 600px; flex-shrink: 0; min-width: 0;"):
+        # A column no taller than the window: what `after` adds below may shrink and scroll (the workspace card's
+        # other projects), the facts above it never do.
+        with ui.element("div").style(
+            "width: 600px; flex-shrink: 0; min-width: 0; display: flex; flex-direction: column; "
+            "max-height: calc(100vh - 44px);"
+        ):
             if proj.get("mnemonic"):
                 ui.label(proj["mnemonic"]).style(f"{MONO} font-size: 10px; color: {CLR_HEADING};")
             if proj.get("protocol"):
@@ -1861,8 +1865,9 @@ class ProjectsOverview:
                     f"{FONT} font-size: 9px; color: {CLR_LABEL};"
                 )
             section(
-                "Paths · click to copy",
-                [
+                "Paths",
+                right="click to copy",
+                rows=[
                     ("Project", proj["path"]),
                     ("Raw data", proj.get("source_directory")),
                     ("Movies", facts.get("movies_glob")),
@@ -2335,13 +2340,17 @@ def project_card_menu(
                 'no-parent-event no-focus no-refocus anchor="top right" self="top left" '
                 ':offset="[10, 0]" transition-show="fade" transition-hide="fade" :transition-duration="80"'
             )
+            # Quasar writes its `max-height` prop over any inline one at every placing, and its own default is
+            # 65vh: the card's frame ended there while the list below drew on past it. The card fits the window
+            # by its own column instead (`_render_card_facts`).
+            .props('max-height="none"')
             .classes("cb-proj-card cb-proj-card--right cb-popover")
-            .style("overflow: visible; max-height: none;")
+            .style("overflow: visible;")
         )
     base = str(Path(project_path).parent) if backend is not None and project_path is not None else None
     # The list's box once the card is built, and what it was drawn from: the scan list (a new one per
     # scan), the MRU and the owner filter.
-    others: dict = {"box": None, "drawn": None}
+    others: dict = {"box": None, "meta": None, "drawn": None}
 
     def paint_others() -> None:
         box = others["box"]
@@ -2355,7 +2364,10 @@ def project_card_menu(
         others["drawn"] = drawn
         box.clear()
         with box:
-            _render_other_projects(rows, str(project_path))
+            n = _render_other_projects(rows, str(project_path))
+        meta = others["meta"]
+        if meta is not None and not meta.is_deleted:
+            meta.set_text("" if n is None else str(n))
 
     async def rescan() -> None:
         last = _others_scanned_at.get(base)
@@ -2367,8 +2379,15 @@ def project_card_menu(
             paint_others()
 
     def others_section() -> None:
-        ui.label("Other projects · click one to go there").style(_CARD_HEAD_STYLE)
-        others["box"] = ui.element("div").style("max-height: 280px; overflow-y: auto; margin: 0 -6px;")
+        head = section_head(
+            "Other projects", right=" ", tooltip="A click goes there; ⌘-click opens it in a new tab"
+        ).style(_CARD_HEAD_STYLE)
+        others["meta"] = head.meta_label
+        # The list shrinks to what the window leaves under the facts, and scrolls; a hairline closes it.
+        others["box"] = ui.element("div").style(
+            "flex: 0 1 auto; min-height: 44px; max-height: 320px; overflow-y: auto; margin: 0 -6px; "
+            "scrollbar-width: thin; border-bottom: 1px solid var(--cb-head-rule, #d6e0ea);"
+        )
 
     async def fill() -> None:
         if menu.is_deleted or menu.default_slot.children:
@@ -2402,15 +2421,15 @@ def project_card_menu(
     anchor.on("mouseleave", js_handler=_HOVER_CLOSE)
 
 
-def _render_other_projects(rows: list[dict] | None, here: str) -> None:
+def _render_other_projects(rows: list[dict] | None, here: str) -> int | None:
     """The base's projects but the one at `here`, a line each (`_other_project_line`): the most recently
     opened first, then the most recently active. The roster's Mine holds here too: the user's own and
-    the lab's projects only."""
+    the lab's projects only. Returns how many it listed, None while the base is still being read."""
     if rows is None:
         with ui.row().classes("items-center no-wrap").style("gap: 6px; padding: 2px 6px;"):
             ui.spinner("dots", size="xs").style(f"color: {CLR_SUBLABEL};")
             ui.label("Reading the other projects…").style(f"{FONT} font-size: 9px; color: {CLR_SUBLABEL};")
-        return
+        return None
     prefs = get_prefs_service().prefs
     eff = ProjectsOverview._eff_owner_of
     shown = [p for p in rows if here not in (p["path"], p["resolved_path"])]
@@ -2422,9 +2441,10 @@ def _render_other_projects(rows: list[dict] | None, here: str) -> None:
         ui.label("No other projects here").style(
             f"{FONT} font-size: 9px; color: {CLR_META}; font-style: italic; padding: 2px 6px;"
         )
-        return
+        return 0
     for proj in shown:
         _other_project_line(proj)
+    return len(shown)
 
 
 def _other_project_line(proj: dict) -> None:
@@ -2440,7 +2460,7 @@ def _other_project_line(proj: dict) -> None:
             stage += f" · {lp['ok']}/{lp['total']}"
         stage_color = CLR_RUNNING
     elif proj.get("furthest_done"):
-        stage, stage_color = f"→ {proj['furthest_done']['label']}", CLR_LABEL
+        stage, stage_color = proj["furthest_done"]["label"], CLR_META
     else:
         stage, stage_color = "—", CLR_GHOST
     when, _ = ProjectsOverview._activity_text(proj)
@@ -2449,21 +2469,23 @@ def _other_project_line(proj: dict) -> None:
         ui.link(target=ProjectsOverview._project_url(proj["path"]))
         .classes("cb-proj-other")
         .style(
-            "display: grid; grid-template-columns: 6px minmax(0, 1fr) 170px 74px; column-gap: 8px; "
-            "align-items: center; padding: 2px 6px; "
+            "display: grid; grid-template-columns: 6px minmax(0, 1fr) 150px 70px; column-gap: 8px; "
+            "align-items: center; height: 20px; padding: 0 6px; "
             "border-radius: var(--cb-r-sm, 3px); text-decoration: none; color: inherit;"
         )
     )
     _set_title(link, f"{proj['name']} · {badge['label'] if badge else 'idle'}\n{proj['path']}\nClick to go there")
     with link:
+        # The workspace's status light: a square pip, as on the roster's rows.
         dot = ui.element("div").style(
-            f"width: 6px; height: 6px; border-radius: 50%; background: {badge['color'] if badge else CLR_BORDER};"
+            "width: 6px; height: 6px; border-radius: var(--cb-pip-radius, 1px); "
+            f"background: {badge['color'] if badge else CLR_BORDER};"
         )
         if status == "running":
             dot.classes("cb-live-pulse")
         with ui.element("div").style("display: flex; align-items: baseline; gap: 6px; min-width: 0;"):
             ui.label(proj["name"]).style(
-                f"{FONT} font-size: 10px; font-weight: 600; color: {CLR_HEADING}; overflow: hidden; "
+                f"{MONO} font-size: 10px; font-weight: 500; color: var(--cb-ink-1, {CLR_HEADING}); overflow: hidden; "
                 "text-overflow: ellipsis; white-space: nowrap; min-width: 0;"
             )
             if owner != CURRENT_USER:
@@ -2471,7 +2493,7 @@ def _other_project_line(proj: dict) -> None:
                     f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; white-space: nowrap; flex-shrink: 0;"
                 )
         ui.label(stage).style(
-            f"{FONT} font-size: 9px; color: {stage_color}; overflow: hidden; text-overflow: ellipsis; "
+            f"{MONO} font-size: 9px; color: {stage_color}; overflow: hidden; text-overflow: ellipsis; "
             "white-space: nowrap;"
         )
         ui.label(when).style(f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; text-align: right; white-space: nowrap;")
