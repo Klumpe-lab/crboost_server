@@ -168,3 +168,138 @@ picker that is not a stock Material select.
 Runtime check: drag the divider, toggle the Tomograms view on and off, the width stays; reload, it stays. Rows of a
 project with Template matching for two species, a Class 3D reading a set, and the tilt filter: job folders in one
 column, species tags flush right. Add a particle job with zero, one and several species.
+
+## 6. Particle cards and class mosaics: prototypes (2026-11-18, round 2)
+
+**Retired 2026-11-19** at the maintainer's word, with every other `/dev/*ideas` page: the prototype is gone from
+the tree. Round 2's code is in git (`7e65445`, `ui/particle_card_ideas/`); round 3's changes were never committed
+and are lost. What it showed is described below; the open picks (P1–P3, P5, P7) stand on that.
+
+`/dev/particle-card-ideas` (`ui/particle_card_ideas/`), on real jobs of `AGG412_STA`, read and never written: Class 3D
+job013 (the 412, K 6, reads s011), job014 (K 3), job005 (ribosome, still iterating), Refine 3D job015 (reads s012),
+mask job016, PostProcess job017 (failed), Warp export job003 (reads s011). Switches: `?accent=ochre|verdigris|graphite`,
+`?classes=muted|today`, `?strip=S1..S7`. Maps at their own sampling (projections and central slices along z, y, x,
+256 px PNG data URLs made in a worker, kept per map and mtime). Large cards at 720 px (the map draws 600 today).
+
+The maintainer on round 1: more organized; the purple particle tint and the colours generally too loud; the fonts hard
+to read, mono used at random; small cards good; graphs OK, but in the job page's Results tab, not on the large card.
+
+**Type rule (every piece of the page).** Words (names, captions, project names, sentences) in the sans face, ≥ 10 px,
+captions 9.5, never mono. Numbers, ids (job013, s003), counts and values with their units in the mono face with even
+figures (`tabular-nums`), right-aligned in columns. Labels (a field's, a column's, a block's name) in the label voice,
+which the theme sets (Harbor Mono: mono capitals, 8.5 px), the one place mono carries words. Helpers `words`, `num`,
+`lab` (`ui/particle_card_ideas/parts.py`).
+
+**Colour rule.** Flat cards (no shadow), hover and selection as hairline rings, never a lift. A particle job is marked
+only by a muted accent: a 2 px left edge, its disc ports (squares stay for tilt series and maps) and its job number;
+the header band is the tilt-series card's. Candidates, all `--cb-particle-<name>` with these fallbacks: ochre #9a7631
+(default), verdigris #3f7a6e, graphite #46566a. Classes: a proposed muted palette (`--cb-class-1..8`: steel blue
+#4f7aa8, rust #b0643a, verdigris #3f8a78, ochre #b08a2e, olive #6f7f3a, oxide red #a14d4a, slate #5f6f86, sand
+#a8916a) against today's saturated `CLASS_PALETTE`; figures.py is unchanged.
+
+**Graphs.** Off every large card (no FSC, no stacked shares, no per-class sparklines); the large cards keep pictures,
+numbers and bars. The plot primitive moved to `ui/components/plot.py` (`fsc_plot`, `shares_plot`), which the Results
+tabs draw; section 3 of the page shows them against today's bare lines.
+
+- **1 Class 3D results.** A *Mosaic* (one tile per class, z projection big with the three axes under it, hover for the
+  slice, share, count, Class 3D's own estimate, rotational accuracy, tomograms and the top one, projects; click selects;
+  an iteration scrubber). B *Table* (one row per class, numbers in right-aligned columns). C *Small*.
+- **2 The particle-job card.** Small cards for export, Refine 3D, mask and the failed PostProcess; large Refine 3D (six
+  views, box / pixel / extent, the resolution and what it means, projects) and export (per project, per tomogram as
+  median / most / fewest).
+- **3 Graphs**, as the Results tab draws them.
+- **4 The set strip**, on three jobs at 236 px and on Refine 3D at 580 px:
+  - S1 *Ledger*: id, name, particles; a project bar with the projects named inside their segments.
+  - S2 *Tomograms*: one column per tomogram (height √ particles), grouped by project, the accent under each group; the
+    magazine's analogue. With one crowded tomogram it reads as a texture more than a count.
+  - S3 *Chain*: the steps back to the picks with the particles each held (`8 pick lists, ≥ 8.5 σ → s011 1,881 →
+    job013 class 2 1,874 → s012 438`); a narrow strip keeps the last two.
+  - S4 *Ruler*: this set as a share of what it was cut from (23 % of job013's 1,874); a pool shows S1's named bar.
+  - S5 *Status line*: fixed fields split by hairlines, the share as block characters.
+  - S6 *Tally*: particles per project as a small table (three and "+ n more" when narrow).
+  - S7 *Ruler, status bar* (round 3, the maintainer's pick): S4's ruler drawn as S5's block bar (`█` in the
+    accent over a `░` track), the share, "of" the parent's particles and where it was cut. Every strip's ledger line
+    now carries the species (its colour and name in the label voice) beside the set's id; the project names inside
+    the named bar are in the label voice, inked to read on their segment.
+
+
+**Round 3 (2026-11-18): fewer colours, no instructions.** The maintainer: too much colour across the panel, the
+round-2 scheme disliked, and no prompts that babysit ("click classes to select them", "click to select"). Now:
+- A class's colour shows only in the swatch beside its number; tile borders, share bars, selection rings and the
+  small card's bars are in ink. The particle accent only on a card's left edge and its set ports; job numbers, set
+  ids, the set strips' bars and the page's headings are ink. The species tag is its name alone.
+- Five schemes, `?scheme=` (accent and class colours together, everything else the theme's inks): **ink** (no hue:
+  the slate ink, classes as eight steps of it; the default), **steel** (the theme's blue and its lightness steps),
+  **phosphor** (one muted amber against the slate), **signal** (greys, one signal red for the particle mark),
+  **sage** (an instrument-panel grey-green with slate). `?accent=` and `?classes=` are gone.
+- No instruction text on the cards: the selection line shows only once something is selected, the table's title is
+  its iteration, the picture captions and the "no estimate" sentence are gone (the estimate's cell carries a hover
+  title). In the app: the species picker's subtitle and the Refine 3D / PostProcess Results tab's "under the
+  pointer" line are gone too.
+
+| # | Decision | Recommended |
+|---|---|---|
+| P1 | Class 3D's large card: A Mosaic, B Table, or A with B as its "rows" toggle | A, with B for K > 6 |
+| P2 | Large card width | 720 px |
+| P3 | Projection or central slice as a class's main picture | projection, slice on hover |
+| P4 | The colour scheme (round 3): ink, steel, phosphor, signal or sage | **decided 2026-11-18: steel** |
+| P5 | The class colours app-wide (figures.py `CLASS_PALETTE`) follow the scheme picked | yes |
+| P6 | The set strip | **decided 2026-11-18: S7**, with S1's named bar for pools; S3's chain on the strip's hover |
+| P7 | Selecting classes on the card makes the set (the Results tab's Make set) | yes, the same verb |
+| — | Graphs on the large card | decided 2026-11-18: no, in the Results tab |
+
+Found while building round 1: job015 refined at 6.2 Å/px, box 128 (job003's bin-4 images), not the bin-2 box-256
+exports §12.3 of roadmap 53 lists; its FSC never drops below 0.143, so its 12.6 Å is the Nyquist limit. job017 failed
+on that: the mask is 256³ at 3.1 Å, the half maps 128³ at 6.2 Å.
+
+## 7. The map's strips, selection and footer (2026-11-18), not run in a browser
+
+Asked by the maintainer: the Tilt series and Cards strips off the top of the map, the Cards switches as flags on the
+Pipeline title line; one click selects a job, in the roster and on the map at once, and opens it only once selected
+(or on a double click); the "→ particle set" footer off every card; large cards larger.
+
+- Title line (`BranchMapView._render_head`, ui/branch_map/view.py): after the name, the picked tilt series as a chip
+  with its ×; at the right end the tilt-series picker as a menu of the chips (`picker_body`), then flags: all large /
+  all small, magazines, the folded shared start (lit while on, `.cb-flag-on`), reset layout once a card was dragged,
+  then zoom −, %, +, fit as icons. They hide while a job page shows (`set_visible`). `callbacks["view_head"]` is
+  registered before the views are built, so the map can fill the line while it mounts. `MapState.picker_open` and
+  `picker_pinned` are gone.
+- Selection (`PipelineBuilderPanel.select` / `activate`, `selected` per tab): a click on a roster row's name or a
+  card's header selects the job, painted in place in both (`RosterWidget.paint_selected`, `BranchMapView.
+  paint_selected`, class `cb-sel`, no redraw); hovered while selected, the row or the header tints and shows
+  "OPEN ↗" (`.cb-open-cue`, ui/dashboard/css.py), and a click there opens the page (`switch_tab`, which also
+  selects). A double click is two clicks: select, then open. The folded start's rows select the same way. Explicit
+  openers stay direct: the card number's menu, the magazine's Open job, a row's extra-tab icons.
+- Footer gone: the card ends 6 px under its last row (`FOOT_H`); the "+" that adds a reading job sits in the header
+  beside the size toggle; the output port is on the right edge level with the header (`OUT_Y`), what the job makes
+  in its hover.
+- Large cards 600 px (was 480), pictures 128 px tall (was 104); §6's P2 recommends 720 for the class mosaic.
+
+Runtime check: select in the roster, the card rings; select on the map, the row outlines; hover the selected one,
+"OPEN ↗"; second click opens; with a job page open the title-line flags are gone and come back on close; cables
+leave from the header-level port and follow a dragged card.
+
+## 8. The graphs go to the job page's Results tab (2026-11-18), not run in a browser
+
+Decided by the maintainer on §6's round 1: keep the readable plots, but in the job page's Results tab, not on the
+large card.
+
+- `ui/components/plot.py`: the plot primitive out of the prototype (axes with units, labelled ticks, named reference
+  lines, marks, a readout under the pointer in CSS only: `.cb-plot-*` in ui/dashboard/css.py), muted series (accent,
+  slate, ochre, verdigris as `--cb-plot-s1…4`), numbers in the mono face with even figures, titles in the label voice.
+  `fsc_plot` (a 1/Å axis named in Å, 0.143 and 0.5, the crossing marked, or "> N Å (Nyquist)" when there is none)
+  and `shares_plot` (classes stacked to 100 % by iteration).
+- Class 3D and Reconstruct particle Results (ui/analytics/readout_panel.py): the convergence and FSC ECharts are these
+  plots now; `build_class_convergence_chart` and `build_fsc_chart` deleted from ui/dashboard/figures.py.
+- Refine 3D and PostProcess have a Results tab (ui/job_plugins/particle_results.py, `plugins` on their JobSpec rows):
+  the resolution in large mono figures with what it measures (gold-standard of the unmasked half maps; masked and
+  corrected after PostProcess), converged or which iteration, the B-factor, box, pixel and Nyquist, the FSC curves
+  with a legend (PostProcess: corrected, unmasked, masked, phase-randomised). A curve that never drops below 0.143
+  says the number is the sampling limit, not a resolution (job015 of AGG412_STA: 12.6 Å at 6.2 Å/px); a failed job
+  shows RELION's last error line (job017: the mask's box and pixel do not match the half maps'). Read in a thread by
+  `services/particles/fsc_readout.py`.
+- The map's large cards for Class 3D, Refine 3D and PostProcess carry no plot any more; Refine 3D's lines say when
+  its number is the sampling limit, and point to the Results tab.
+
+Runtime check: open job015 and job017 of AGG412_STA, Results tab; job013's Results tab (the stacked shares); hover
+each plot for the readout; a narrow job pane (the plots shrink with their cell).
