@@ -55,10 +55,11 @@ CSS = r"""
   padding: 0 3px; max-width: 74px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cbmi-pipe { flex: 1 1 0; }
 .cbmi-scroll { flex: 1 1 0; min-height: 0; overflow: auto; position: relative;
-  border-radius: 0 0 var(--cb-r-md, 6px) var(--cb-r-md, 6px);
-  background: var(--cb-bm-paper, #f1f4f8);
-  background-image: radial-gradient(var(--cb-bm-paper-dot, #c3cbd6) 1px, transparent 1.2px);
+  border-radius: 0 0 var(--cb-r-md, 6px) var(--cb-r-md, 6px); background: var(--cb-bm-paper, #f1f4f8); }
+.cbmi-scroll.cbmi-dots { background-image: radial-gradient(var(--cb-bm-paper-dot, #c3cbd6) 1px, transparent 1.2px);
   background-size: 16px 16px; }
+/* Flat paper on purpose: the dotted paper of the dragging map (a radial gradient tiled every 16 px) is repainted
+   with every scroll frame, selection and find keystroke, and was most of what each of them cost. */
 .cbmi-world { position: relative; width: 100%; min-height: 100%; box-sizing: border-box; padding: 26px 30px 70px; }
 .cbmi-cables { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 0; line-height: 0; }
 .cbmi-cables svg { overflow: visible; }
@@ -698,19 +699,44 @@ JS = r"""
     for (const n of $$('.cbmi-node', W)) if (!n.__cbmiSeen) { n.__cbmiSeen = true; W.__cbmi.observe(n); }
   };
 
-  // What each update from the server weighs: the readout on the Pipeline title line.
+  // The readout on the Pipeline title line, measured in this browser: how long the last click or key took to be
+  // painted, and when the server had to answer, how long it took and what its update weighed.
+  let t0 = 0, lastUpdate = '', total = 0;
+  const live = (text) => { const el = document.getElementById('cbmi-live'); if (el) el.textContent = text; };
+  const kb = (b) => (b < 1024 ? b + ' B' : (b / 1024).toFixed(1) + ' KB');
+  const afterPaint = (fn) => requestAnimationFrame(() => setTimeout(fn, 0));
+  const stamp = (e) => {
+    const F = frame();
+    if (F && (F.contains(e.target) || (e.target.closest && e.target.closest('.cbmi-find, .cbmi-controls')))) {
+      t0 = performance.now();
+    }
+  };
+  document.addEventListener('click', stamp, true);  // the click, not the press: a press lasts ~100 ms
+  document.addEventListener('keydown', stamp, true);
+  const paintNow = M.paint;
+  M.paint = () => {
+    paintNow();
+    if (!t0) return;
+    const t = t0;
+    afterPaint(() => {
+      if (t === t0) live(`painted ${Math.round(performance.now() - t)} ms after the click${lastUpdate}`);
+    });
+  };
   M.hookPerf = () => {
     if (M.hooked || !window.socket) return;
     M.hooked = true;
-    let total = 0;
     window.socket.onAny((ev, ...args) => {
       if (ev !== 'update') return;
       let n = 0;
       try { n = JSON.stringify(args).length; } catch (x) { n = 0; }
       total += n;
-      const el = document.getElementById('cbmi-live');
-      const kb = (b) => (b < 1024 ? b + ' B' : (b / 1024).toFixed(1) + ' KB');
-      if (el) el.textContent = `last update ${kb(n)} · ${kb(total)} since load`;
+      if (!t0) { lastUpdate = ` · last update ${kb(n)}`; return; }
+      const t = t0;
+      t0 = 0;
+      afterPaint(() => {
+        lastUpdate = ` · last update ${kb(n)}, ${kb(total)} since load`;
+        live(`server answered and painted ${Math.round(performance.now() - t)} ms after the click${lastUpdate}`);
+      });
     });
   };
 })();

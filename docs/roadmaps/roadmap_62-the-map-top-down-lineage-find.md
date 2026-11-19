@@ -14,6 +14,12 @@ over the real project, read-only. One bug found on the way is fixed: H27 in [HOT
 a particle set was drawn as reading itself). Nothing else of the real map has changed. The decisions are in §4,
 the build in §5.
 
+**Second round (2026-11-19, after the maintainer's look).** Grid is the layout (§4 a). Grouping by species is the
+user's own check, off by default (§4 f). The dotted paper is gone (§2.1). The main complaint was speed: the
+prototype's own clicks measure fast, and what stood out in the server's log is the event loop frozen 1.5–13 s at a
+time by file reads that no stall line could place, because the watchdog took the interpreter's own files for the
+server's code (H28, fixed: §1.10).
+
 ## 1. Where the lag comes from (measured 2026-11-19)
 
 Measured with a headless Chromium (Playwright) against the running dev server, on AGG412_STA (30 jobs, no tilt
@@ -67,6 +73,14 @@ What that says:
    logging's lock. Since 2026-10-21 this log holds 265 stall lines. By the frame they were caught in: 127 other,
    43 in `dashboard_data`, 27 unattributed (worst 211 s), 25 in logging, 24 in file reads, 19 in the branch map
    (worst 8.5 s). A session run with `CRBOOST_TRACE_STALLS=1` names them.
+10. **Why those stall lines named no caller (H28).** The watchdog names the first frame of the server's own code,
+    by path under the checkout. Since the launcher builds the environment in `.uv/` (roadmap 39), the interpreter's
+    standard library lives under the checkout too, so a stall in `pathlib.open` was put down to `pathlib.py:open`
+    itself and never to the server function that called it. Fixed 2026-11-19: frames under `.uv/` and `venv/` count
+    as a library's. The tally above was made from such lines: the "other" and "file reads" stalls are unplaced, not
+    shown to be elsewhere. One came during the second round: 12.7 s at 13:31:08 in `pathlib.open` ×252, with
+    Kilifish_collection1 open and a napari session starting, no map open. After a restart every stall line names
+    its caller. Those freezes stop every tab, the map's included, and are likely much of the slowness felt.
 
 **Found on the way: H27.** A job given a particle set records the copy it stages in its own folder
 (`input_set/optimisation_set.star`), and the map took that path as the job reading itself: 14 of AGG412_STA's 30
@@ -92,6 +106,34 @@ a card changes size. Selecting, the lineage and find run in the browser over a g
 AGG412_STA: 30 cards and 2 set pills in 93–137 elements on the whole page (by layout), built in 2–4 ms, 32 KB. Expanding a card sends that card
 only: 74 KB for Class 3D 013 with its class slices, 39 KB for Refine 3D 019 (today: the whole map, 600 KB).
 Selecting a job and finding send nothing.
+
+### 2.1 Second round (2026-11-19)
+
+The maintainer's look: the prototype felt slow; Grid looks much better; the panel kept from the dragging map
+might be what slows it; grouping by species should be the user's choice. What changed on the page:
+
+- **Grid by default.** The other layouts stay on the switch for comparison.
+- **Grouping by species is a check on the Pipeline view's title line** ("by species", a `house_check`, off by
+  default, disabled with a tooltip when the project has one species), where the app will hold it. It is no longer
+  on by itself when a project has two species (`r2-grid-species.png`).
+- **Flat paper.** The dotted paper (a radial gradient tiled every 16 px) was the dragging canvas's look; with nothing
+  to pan it means nothing. Measured A/B in headless Chromium, three rounds alternating, Grid with and without species
+  bands: scroll frames 16.7 ms, a selection painted in two frames (33 ms), with the dots or without
+  (`notes/map-ideas/ab_paper.py`). A first run that blamed the dots (83 ms frames, 90–190 ms selects) was taken while
+  the login node ran at a load of 22; it did not repeat. So the dots go for their meaning, not for their cost in
+  Chromium; whether they cost more in Firefox is not measured. `?paper=dots` brings them back for a look.
+- **The page measures itself in the user's browser.** The Pipeline title line says how long the last click or key
+  took to be painted ("painted 15 ms after the click") and, when the server had to answer, how long that took and
+  what its update weighed ("server answered and painted 42 ms after the click · last update 37.6 KB"). Selecting,
+  the lineage and find never ask the server; the layout switch, the species check and a card's size do.
+- Measured in headless Chromium on AGG412_STA (`notes/map-ideas/probe_modes.py`): every lineage look, Lanes,
+  species bands, and every card large (8,800 px tall, 914 KB over the session) scroll at 16.7 ms frames, select in
+  two frames, no long tasks; so does AGG412_20251113_412_rerun (15 cards with their magazines, 518 KB: §1.6).
+  Loading the page took 1–17 s, the time to read the project (`load()`). Its first read of the tilt-series registry
+  ran on the event loop, of the server hosting the page; it is now `preload_registry` first, the house way.
+
+Screens: `r2-grid.png`, `r2-grid-sel.png` (Refine 3D 024 selected: dimmed, its lineage's cables across the grid),
+`r2-grid-species.png`, `r2-grid-large.png`.
 
 ### Layouts (no dragging, no zoom)
 
@@ -173,8 +215,14 @@ The prototype's way, carried into `ui/branch_map/`:
 
 ## 4. Decisions owed (ask first; recommendations given)
 
-- **(a) Layout.** Tree, Lanes, Layers or Grid. Recommended: Lanes (a chain costs height, never width; ends beside
-  their parent), and Grid as a second view if a card overview is wanted.
+Decided 2026-11-19 (the maintainer, second round): **(a) Grid**, **(f) grouping by species is the user's check**, and
+the dotted paper goes. With Grid, **(i) has nothing left to decide**: the grid wraps at the view's width, so Fit
+goes too, and **(g) comes down to the lineage**: no cables at rest in Grid. Still open: (b), (c), (d), (e), (h), (j),
+and (k) below.
+
+- **(a) Layout. Decided: Grid.** Every card in the order the jobs were made, wrapping at the view's width; a large
+  card spans two columns and the rest reflow (`grid-auto-flow: dense`). Tree, Lanes and Layers were the other
+  candidates (Lanes was recommended).
 - **(b) Lineage look.** Dim the rest, Up and down, or Trace. Recommended: Up and down, which says which way each
   job lies.
 - **(c) Lineage reach.** Through side inputs too (reference, mask, half maps), as prototyped, or main inputs only.
@@ -182,22 +230,32 @@ The prototype's way, carried into `ui/branch_map/`:
 - **(d) Find look.** Spotlight, Palette or Dock. Recommended: Spotlight, as asked, with ↵ walking the matches.
 - **(e) Find scope.** The roster reacts with the map, and `f` works in the Jobs view without the map open (the map
   now opens only from the roster's icon, H25). Recommended: yes.
-- **(f) Species bands** when the project has more than one species. Recommended: yes.
-- **(g) Side-input cables.** Faint at rest, or only on the selected lineage. Recommended: faint.
+- **(f) Species bands. Decided: the user's choice.** A "by species" check on the Pipeline view's title line, off by
+  default, disabled (with a tooltip) when the project has one species; checked, each species is a band with its own
+  grid. Kept per user with the view's other settings.
+- **(g) Side-input cables.** Faint at rest, or only on the selected lineage. With Grid there are no cables at rest;
+  see (k).
 - **(h) Sets and files on the map.** A pill when several jobs read it, a tab when one does: the small form of
   roadmap 32 §15.9's "a set as a card of its own". Recommended: yes.
-- **(i) Scale.** No zoom; natural size scrolling down, with Fit as the one scale control, off by default.
-  Recommended.
+- **(i) Scale.** No zoom; natural size scrolling down, with Fit as the one scale control, off by default. With Grid:
+  no Fit, no zoom; the grid wraps.
 - **(j) Today's map until then.** Quick relief first (menus on demand, `title` tooltips, results redrawing their own
   card, pictures by URL: about a day), or straight to the build, whose S1–S3 replace the same code. Recommended:
   straight to the build.
+- **(k) The lineage in Grid: cables or marks.** A grid places a job's parents anywhere, so the lineage's cables
+  cross the grid, under other cards (`r2-grid-sel.png`). Either they stay (main inputs solid, side inputs dashed), or
+  Grid draws no cables at all and the lineage is the marks alone: the ring on the job, ↑ on what it was made from,
+  ↓ on what was made from it, the rest faded (the "Up and down" look of (b)), with the title line's "11 above · 2
+  below". Recommended: marks alone, with Up and down; once a cable passes under other cards, a reader can no longer
+  follow it.
 
 ## 5. Stages (after §4)
 
 - **S1 — Cards as HTML.** `card_html` and the large card's blocks as builders over the live `Project`; tooltips as
   `title`; the two menus on demand. The new job's card (a real form, ✓ / ✕) stays NiceGUI elements.
-- **S2 — The view.** The skeleton of the chosen layout, keyed card updates, the two signatures, cables drawn by
-  script, bands, sets as pills and tabs, Fit. Dragging, panning, zooming and the stored positions go.
+- **S2 — The view.** The Grid skeleton, keyed card updates, the two signatures, the lineage per (k), the "by
+  species" check and its bands, sets as tabs (and pills, per (h)). The paper is flat. Dragging, panning, zooming,
+  Fit and the stored positions go.
 - **S3 — Selection and lineage in the browser.** Roster rows carry `data-nid`, `panel.select` hears one event, the
   lineage look from (b), and arrow keys walk the lineage.
 - **S4 — Find.** `f` and `/` with the Jobs view focused (`data-cb-focus` on `#cb-roster-panel` or
@@ -215,8 +273,10 @@ every card goes large; a running array job's tick redraws only that job's card.
 
 ## 6. Pickup
 
-Restart the dev server (the route is in `ui/main_ui.py`) and open `/dev/map-ideas`, e.g.
-`/dev/map-ideas?project=AGG412_STA&layout=lanes&lineage=updown&find=spotlight&group=species`. Click inside the
+Restart the dev server (the route is in `ui/main_ui.py`) and open `/dev/map-ideas`: Grid, no bands, flat paper since
+the second round, e.g. `/dev/map-ideas?project=AGG412_STA&lineage=updown`; `&paper=dots` brings the dotted paper back
+for a comparison. The Pipeline title line reads how long each click took in this browser. Click inside the
 Pipeline frame, then press `f`. The screens are in `notes/screens/map-ideas/`: `today-map-small.png` and
 `today-map-all-large.png` (today, fitted to the view), the four layouts, the three lineage looks, the three find
-looks, a large card, and a preprocessing project in Lanes. Ask (a)–(j), then build S1–S7 back to back.
+looks, a large card, a preprocessing project in Lanes, and the second round's `r2-grid*.png` (§2.1). Ask what is
+still open in §4 ((b)–(e), (h), (j), (k)), then build S1–S7 back to back.

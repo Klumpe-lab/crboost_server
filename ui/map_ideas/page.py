@@ -1,10 +1,12 @@
 """`/dev/map-ideas`: the job map top-down, a job's lineage, and a find bar, on a real project read and never written.
 
-Layout   tree · layers · grid (ui/map_ideas/layouts.py); nothing is dragged, the browser lays the cards out
+Layout   grid (the default) · tree · lanes · layers (ui/map_ideas/layouts.py); nothing is dragged, the browser lays
+         the cards out; grouping by species is the user's own check on the Pipeline view's title line
 Lineage  dim the rest · up and down in two inks · trace
 Find     spotlight · palette · dock: `f` (or `/`) while the Jobs view has the focus
 
-`?project=<name or path>` (default AGG412_STA), `?layout=`, `?lineage=`, `?find=`, `?group=species`, `?large=all`.
+`?project=<name or path>` (default AGG412_STA), `?layout=`, `?lineage=`, `?find=`, `?group=species`, `?large=all`,
+`?paper=dots` (the dragging map's dotted paper, to compare what it costs).
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from urllib.parse import urlencode
 
 from nicegui import Client, ui
 
+from ui.components.check import house_check
 from ui.map_ideas.assets import CSS, JS
 from ui.map_ideas.cards import card_html, roster_html, source_html
 from ui.map_ideas.data import DEFAULT_PROJECT, MapData, graph_json, load
@@ -27,6 +30,11 @@ from ui.map_ideas.layouts import LAYOUTS
 logger = logging.getLogger(__name__)
 
 LAYOUT_WORDS = {
+    "grid": (
+        "Grid",
+        "Every card in the order the jobs were made, wrapping at the view's width: nothing to scroll sideways, ever. "
+        "No cables at rest; select a job and its lineage's cables are drawn across the grid.",
+    ),
     "tree": (
         "Tree",
         "Each chain runs down its own column, a parent centred over what reads it. Siblings that end there, the same "
@@ -43,11 +51,6 @@ LAYOUT_WORDS = {
         "Layers",
         "A row per generation: a job sits one row below the deepest job it reads, main input or side input. Rows "
         "wrap at the view's width, so the map grows down, not sideways.",
-    ),
-    "grid": (
-        "Grid",
-        "Every card in the order the jobs were made, wrapping at the view's width: nothing to scroll sideways, ever. "
-        "No cables at rest; select a job and its lineage's cables are drawn across the grid.",
     ),
 }
 LINEAGE_WORDS = {
@@ -78,7 +81,7 @@ TODAY = [
 
 @dataclass
 class State:
-    layout: str = "tree"
+    layout: str = "grid"
     lin: str = "dim"
     find: str = "spotlight"
     group: str = "none"
@@ -108,12 +111,13 @@ def _seg(name: str, options: dict[str, tuple[str, str]], current: str, on_pick) 
 async def render_map_ideas(client: Client) -> None:
     q = client.request.query_params
     st = State(
-        layout=q.get("layout") if q.get("layout") in LAYOUT_WORDS else "tree",
+        layout=q.get("layout") if q.get("layout") in LAYOUT_WORDS else "grid",
         lin=q.get("lineage") if q.get("lineage") in LINEAGE_WORDS else "dim",
         find=q.get("find") if q.get("find") in FIND_WORDS else "spotlight",
-        group=q.get("group") if q.get("group") in ("none", "species") else "",
+        group="species" if q.get("group") == "species" else "none",
     )
     project = q.get("project") or DEFAULT_PROJECT
+    dots = q.get("paper") == "dots"
     ui.add_css(CSS)
     ui.run_javascript(JS)
     ui.query("body").style("background: #fff;")
@@ -127,8 +131,6 @@ async def render_map_ideas(client: Client) -> None:
         loading.set_text(f"Could not read {project}: {e}")
         return
     loading.delete()
-    if not st.group:
-        st.group = "species" if len({j.species for j in d.pr.jobs if j.species}) > 1 else "none"
     if q.get("large") == "all":
         st.large = {j.id for j in d.pr.jobs}
     pr = d.pr
@@ -136,6 +138,8 @@ async def render_map_ideas(client: Client) -> None:
 
     def url_state() -> None:
         params = {"project": project, "layout": st.layout, "lineage": st.lin, "find": st.find, "group": st.group}
+        if dots:
+            params["paper"] = "dots"
         ui.run_javascript(f"history.replaceState(null, '', '?{urlencode(params)}')")
 
     def note_html() -> str:
@@ -156,12 +160,6 @@ async def render_map_ideas(client: Client) -> None:
             _seg("layout", LAYOUT_WORDS, st.layout, lambda k: (setattr(st, "layout", k), rebuild()))
             _seg("lineage", LINEAGE_WORDS, st.lin, lambda k: (setattr(st, "lin", k), client_mode("lin", k)))
             _seg("find", FIND_WORDS, st.find, lambda k: (setattr(st, "find", k), client_mode("find", k)))
-            _seg(
-                "group",
-                {"none": ("None", "One map"), "species": ("Species", "A band per species, its jobs under it")},
-                st.group,
-                lambda k: (setattr(st, "group", k), rebuild()),
-            )
             _seg(
                 "side inputs",
                 {"all": ("Drawn", "Every side input's cable, faint"), "sel": ("On select", "Only the lineage's")},
@@ -198,8 +196,18 @@ async def render_map_ideas(client: Client) -> None:
                     ui.html(chip, sanitize=False).style("min-width: 0;")
                     ui.element("div").style("flex: 1 1 0;")
                     built = ui.label("").classes("cbmi-headtext")
+                    n_species = len({j.species for j in pr.jobs if j.species})
+                    house_check(
+                        "by species",
+                        value=st.group == "species",
+                        on_change=lambda e: (setattr(st, "group", "species" if e.value else "none"), rebuild()),
+                        disabled=n_species < 2,
+                        tooltip="A band per species, its jobs under it"
+                        if n_species > 1
+                        else "One species in this project: nothing to group",
+                    )
                     ui.html('<span id="cbmi-live" class="cbmi-headtext"></span>', sanitize=False)
-                with ui.element("div").classes("cbmi-scroll"):
+                with ui.element("div").classes("cbmi-scroll" + (" cbmi-dots" if dots else "")):
                     world = ui.element("div").classes("cbmi-world")
 
         ui.html(
