@@ -83,7 +83,7 @@ logger = logging.getLogger(__name__)
 
 _DISK_REFRESH_S = 15.0  # rows/refs/curation-dir recompute cadence while shown (star reads + globs)
 _HINT_CLS = "text-[10px] text-gray-400"
-_LINK_CLS = "text-[10px] text-indigo-500 cursor-pointer underline decoration-dotted"
+_LINK_CLS = "text-[10px] text-slate-700 cursor-pointer underline decoration-dotted"
 
 
 # What the save contract promises, derived from the watcher's own cadence: a full sweep of
@@ -457,8 +457,9 @@ class _PicksView(FingerprintedView):
     def _render_row(self, c: _Computed, tomo: str, row: ListRow) -> None:
         ref = self._tab.ref(tomo, row.slug)
         with ui.element("div").classes("cb-ltable-row cb-ptable-row"):
+            # The list type's shape in slate: a species' colour stays on the canvases.
             ui.element("div").classes(f"cb-ltable-swatch cb-swatch-{glyph_for(PickListType(row.list_type))}").style(
-                f"background: {c.species_color};"
+                "background: #94a3b8;"
             ).tooltip(f"{row.list_type} list")
             # One grid child: the name and, for a hand-picked list, the copy-path button
             # beside it. The name is the file name itself, not an alias, with its path one

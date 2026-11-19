@@ -367,6 +367,18 @@ Places where the prototype differs from §3, for the maintainer to accept or tur
 - Curate is 17 px tall so that it fits a 22 px row.
 - With one list per tomogram, which list it is gets said once above the table rather than on each row.
 
+### Build log (2026-11-19)
+
+Built in a worktree of its own (`crboost_server_registry`, detached at `de0ad82`), one commit per stage.
+
+- **S1.** `SPECIES_OVERLAY_COLORS` is Cockpit; `current_overlay_color` (`services/models_base.py`) moves a colour
+  of the old palette to the same slot, on every project load (species and segmentation features, which draw from
+  the same palette) and on a catalog import; any other colour stays. Polarity is a word behind a 7 px square,
+  method plain mono (`ui/components/chip.py`). The workbench: selection is `cb-sel` (the roster's hairline ring),
+  `_INDIGO` / `_PURPLE` / `COLOR_PALETTE` gone (the viewer's item colours offer the overlay palette), σ alone
+  with min and max on hover, an amber dot on an unusual σ or a large file, red on a constant volume. The swatch
+  is a 10 px square and its value. Pick-list rows lose the species dot.
+
 ## 6. Earlier rounds
 
 The August round on the same surfaces (picking_ui 03–06, rows P-13 to P-31 of

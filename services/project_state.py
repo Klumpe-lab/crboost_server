@@ -28,6 +28,7 @@ from services.models_base import (
     ListExtractionState,
     MicroscopeParams,
     AcquisitionParams,
+    current_overlay_color,
     species_palette_color,
 )
 from services.code_version import code_version
@@ -1388,6 +1389,16 @@ class ProjectState(BaseModel):
             logger.exception("Could not load the segmentation feature registry")
             project_state.load_warnings.append(f"Segmentation features could not be loaded and were reset ({e})")
             project_state.feature_registry = []
+        # Colours stored in the legacy overlay palette move to the same slot of the current one.
+        recoloured = 0
+        for entry in [*project_state.species_registry, *project_state.feature_registry]:
+            moved = current_overlay_color(entry.color)
+            if moved != entry.color:
+                entry.color = moved
+                recoloured += 1
+        if recoloured:
+            logger.info("Moved %d overlay colour(s) in %s to the current palette", recoloured, path.parent.name)
+            project_state.mark_dirty()
         try:
             project_state.segmentation_imports = [SegmentationImport(**b) for b in data.get("segmentation_imports", [])]
         except (ValidationError, TypeError) as e:
