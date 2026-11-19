@@ -153,6 +153,10 @@ presumably write real 3×3 `GridMovement` grids.
   writes and nothing converts to.
 - **Consequence** after a `[3,3]` run: picks come from deformation-corrected tomograms, and RELION
   extraction cuts particles with rigid geometry only — off by the local deformation at each tilt.
+- **Bridged 2026-11-19** (HOTFIXES H26, roadmap 53 §15.8–§15.9): measured on the AGG412 reruns, 8–17 Å RMS at the
+  particles, a bin-1 Reconstruct particle at 20 Å where Warp's stacks gave 9 Å. Every driver that hands RELION the tilt
+  images now carries Warp's local geometry as per-particle RELION trajectories (`drivers/warp_bridge.py`); RELION
+  then reconstructs from the tilt images what Warp's stacks give. Nothing changes for an XML with the rigid model only.
 
 **So a Warp export job would be an additional producer**, not a replacement: same outputs
 (`particles.star`, `tomograms.star`, `optimisation_set.star`) as subtomoExtraction, so reconstructParticle

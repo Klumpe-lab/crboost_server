@@ -102,6 +102,18 @@ def _parse_optimisation_set(opt_path: Path) -> tuple[Path, Path]:
     return (_resolve_path(particles, base=base), _resolve_path(tomograms, base=base))
 
 
+def optimisation_set_trajectories(opt_path: Path) -> Path | None:
+    """The trajectories file an optimisation set names (`_rlnTomoTrajectoriesFile`), None when it names none or
+    `""` (what relion_refine writes for none)."""
+    for raw in opt_path.read_text().splitlines():
+        line = raw.strip()
+        if line.startswith("_rlnTomoTrajectoriesFile"):
+            parts = line.split(None, 1)
+            value = parts[1].strip().strip('"').strip("'") if len(parts) == 2 else ""
+            return _resolve_path(value, base=opt_path.parent) if value else None
+    return None
+
+
 def _find_df_block(star_dict: dict[str, Any], required_cols: Sequence[str]) -> pd.DataFrame:
     req = set(required_cols)
     for v in star_dict.values():
@@ -187,20 +199,23 @@ def _read_tomograms_star(tomograms_star: Path) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
-def write_optimisation_set(path: Path, *, particles_star: Path, tomograms_star: Path) -> None:
-    """Canonical writer for optimisation_set.star in RELION key-value format."""
-    txt = "\n".join(
-        [
-            "# version 50001",
-            "",
-            "data_",
-            "",
-            f"_rlnTomoParticlesFile            {particles_star.resolve()!s}",
-            f"_rlnTomoTomogramsFile            {tomograms_star.resolve()!s}",
-            "",
-        ]
-    )
-    path.write_text(txt)
+def write_optimisation_set(
+    path: Path, *, particles_star: Path, tomograms_star: Path, trajectories_star: Path | None = None
+) -> None:
+    """Canonical writer for optimisation_set.star in RELION key-value format. `trajectories_star`: per-particle
+    trajectories RELION's tomo programs apply when they cut from the tilt images (Warp's local geometry,
+    services/particles/warp_geometry.py); relion_refine carries the line on."""
+    lines = [
+        "# version 50001",
+        "",
+        "data_",
+        "",
+        f"_rlnTomoParticlesFile            {particles_star.resolve()!s}",
+        f"_rlnTomoTomogramsFile            {tomograms_star.resolve()!s}",
+    ]
+    if trajectories_star is not None:
+        lines.append(f"_rlnTomoTrajectoriesFile         {trajectories_star.resolve()!s}")
+    path.write_text("\n".join([*lines, ""]))
 
 
 def _format_star_value(x: Any) -> str:

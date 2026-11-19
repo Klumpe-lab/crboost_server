@@ -47,7 +47,7 @@ from services.subtomo_merge import _parse_optimisation_set, write_optimisation_s
 CENTERED_COLS = ["rlnCenteredCoordinateXAngst", "rlnCenteredCoordinateYAngst", "rlnCenteredCoordinateZAngst"]
 
 
-def write_extracted_optset(out_run_dir: Path, tomograms_star: Path) -> Path:
+def write_extracted_optset(out_run_dir: Path, tomograms_star: Path, trajectories: Path | None = None) -> Path:
     """Write the ``optimisation_set.star`` that points at a COMPLETED extraction's
     ``particles.star`` (in ``out_run_dir``, produced by relion_tomo_subtomo) + the
     shared ``tomograms.star``. This is the per-list extraction's canonical output —
@@ -55,7 +55,12 @@ def write_extracted_optset(out_run_dir: Path, tomograms_star: Path) -> Path:
     the optset path."""
     out_run_dir = Path(out_run_dir)
     optset = out_run_dir / "optimisation_set.star"
-    write_optimisation_set(optset, particles_star=out_run_dir / "particles.star", tomograms_star=Path(tomograms_star))
+    write_optimisation_set(
+        optset,
+        particles_star=out_run_dir / "particles.star",
+        tomograms_star=Path(tomograms_star),
+        trajectories_star=trajectories,  # Warp's local geometry, for the tilt-image programs downstream
+    )
     return optset
 
 

@@ -58,9 +58,11 @@ from drivers.array_job_base import (
     STATUS_DIR_NAME,
 )
 from drivers.driver_base import DriverContext, ToolCommand
+from drivers.warp_bridge import carry_warp_geometry
 from services.particles.set_origins import origins_of
 from services.subtomo_merge import (
     _parse_optimisation_set,
+    optimisation_set_trajectories,
     _read_input_particles_lenient,
     _read_particles_star,
     _read_tomograms_star,
@@ -84,10 +86,13 @@ def _stage_per_ts(
     particles_df: pd.DataFrame,
     tomograms_df: pd.DataFrame,
     general_kv: dict,
+    trajectories: Path | None = None,
 ) -> None:
     """Write per-TS particles.star, tomograms.star, and a key-value
     optimisation_set.star into `.staging/task_<ts>/`. Idempotent — overwrites
-    on every supervisor run.
+    on every supervisor run. `trajectories`: the job's Warp-geometry
+    trajectories (drivers/warp_bridge.py), named in every per-TS set; RELION
+    matches them by particle name, so the whole job's file serves each TS.
 
     `optics_df=None` for TM-candidate-style inputs: in that case the staged
     particles.star has no optics block (matches the input shape;
@@ -124,7 +129,9 @@ def _stage_per_ts(
 
     _write_particles_star(particles_out, optics_df=ts_optics, particles_df=ts_particles, general_kv=general_kv)
     _write_tomograms_star(tomograms_out, ts_tomograms)
-    write_optimisation_set(optset_out, particles_star=particles_out, tomograms_star=tomograms_out)
+    write_optimisation_set(
+        optset_out, particles_star=particles_out, tomograms_star=tomograms_out, trajectories_star=trajectories
+    )
 
 
 # ----------------------------------------------------------------------
@@ -133,7 +140,11 @@ def _stage_per_ts(
 
 
 def _merge_per_ts_outputs(
-    job_dir: Path, ts_names: list[str], upstream_general_kv: dict, upstream_tomograms_star: Path
+    job_dir: Path,
+    ts_names: list[str],
+    upstream_general_kv: dict,
+    upstream_tomograms_star: Path,
+    trajectories: Path | None = None,
 ) -> None:
     """Concatenate per-TS particles.star into job_dir/particles.star and
     move each task's Subtomograms/<TS>/ subdir into job_dir/Subtomograms/.
@@ -213,8 +224,12 @@ def _merge_per_ts_outputs(
     target_tomograms = job_dir / "tomograms.star"
     shutil.copy2(upstream_tomograms_star, target_tomograms)
 
+    # The trajectories stay named: Reconstruct particle and CTF refine downstream cut from the tilt images too
     write_optimisation_set(
-        job_dir / "optimisation_set.star", particles_star=job_dir / "particles.star", tomograms_star=target_tomograms
+        job_dir / "optimisation_set.star",
+        particles_star=job_dir / "particles.star",
+        tomograms_star=target_tomograms,
+        trajectories_star=trajectories,
     )
 
     extracted_ts = len(ts_names) - len(empty_extracts)
@@ -262,6 +277,7 @@ class SubtomoExtractionDriver(ArrayDriver):
     driver_script = Path(__file__).resolve()
     poll_secs = 15
     _origins = None  # name in the set -> Origin, when the input is a particle set recording them
+    _trajectories = None  # Warp's local geometry for RELION (drivers/warp_bridge.py), when the tilt series hold any
 
     # ---------------- supervisor ----------------
 
@@ -278,6 +294,10 @@ class SubtomoExtractionDriver(ArrayDriver):
         input_optimisation = ctx.paths["input_optimisation"]
         if not input_optimisation.exists():
             raise FileNotFoundError(f"Input optimisation_set.star not found: {input_optimisation}")
+        # RELION cuts the particles from the tilt images: it must place them by Warp's whole model (H26). The
+        # set handed on may name the particles anew (candidates have no names to match trajectories by).
+        input_optimisation = carry_warp_geometry(input_optimisation, ctx.job_dir)
+        self._trajectories = optimisation_set_trajectories(input_optimisation)
 
         upstream_particles_star, upstream_tomograms_star = _parse_optimisation_set(input_optimisation)
         self.log(f"Upstream particles: {upstream_particles_star}")
@@ -421,7 +441,13 @@ class SubtomoExtractionDriver(ArrayDriver):
         staging_root.mkdir(parents=True, exist_ok=True)
         for ts_name in self._ts_with_picks:
             _stage_per_ts(
-                staging_root, ts_name, self._optics_df, self._particles_df, self._tomograms_df, self._general_kv
+                staging_root,
+                ts_name,
+                self._optics_df,
+                self._particles_df,
+                self._tomograms_df,
+                self._general_kv,
+                self._trajectories,
             )
         self.log(f"Staged per-TS inputs for {len(self._ts_with_picks)} TS under {staging_root}")
 
@@ -438,7 +464,9 @@ class SubtomoExtractionDriver(ArrayDriver):
         # skipped TS never staged or wrote anything, and dropped TS failed.
         dropped = set(results.dropped)
         extracted = [ts for ts in self._ts_with_picks if ts not in dropped]
-        _merge_per_ts_outputs(ctx.job_dir, extracted, self._general_kv, self._upstream_tomograms_star)
+        _merge_per_ts_outputs(
+            ctx.job_dir, extracted, self._general_kv, self._upstream_tomograms_star, self._trajectories
+        )
 
         # Aggregation merge (additional_sources) — opt-in, runs only if the
         # job model has sources configured.
@@ -514,7 +542,8 @@ class SubtomoExtractionDriver(ArrayDriver):
         # Bind both the staging dir (read input optimisation set) and the
         # upstream optimisation set's directory (relion follows the
         # absolute paths inside it).
-        return [staged["staging_dir"].resolve(), staged["per_ts_optset"].parent.resolve()]
+        # The job dir holds the Warp-geometry trajectories the staged set may name.
+        return [staged["staging_dir"].resolve(), staged["per_ts_optset"].parent.resolve(), ctx.job_dir.resolve()]
 
     def task_cwd(self, ctx: DriverContext[SubtomoExtractionParams], item: str, staged) -> Path:
         return staged["out_dir"]

@@ -35,7 +35,9 @@ import traceback
 from pathlib import Path
 
 from drivers.driver_base import ToolCommand, get_driver_context, run_tool, start_supervisor
+from drivers.warp_bridge import carry_warp_geometry
 from services.job_models import ExtractPickListParams
+from services.subtomo_merge import optimisation_set_trajectories
 from services.particles.list_extraction import (
     build_list_optset,
     build_list_optset_from_tomograms,
@@ -88,6 +90,9 @@ def _run(params: ExtractPickListParams, job_dir: Path, project_binds: list[str])
     tomograms_star = Path(prep["tomograms"])
     n = int(prep["count"])
     print(f"[extract-list] built input optset ({n} picks): {input_optset}", flush=True)
+    # RELION cuts the picks from the tilt images: it must place them by Warp's whole model (H26)
+    input_optset = carry_warp_geometry(input_optset, job_dir, project_binds)
+    trajectories = optimisation_set_trajectories(input_optset)
 
     # 2) relion_tomo_subtomo into out/ (idempotent: skip if already extracted).
     out_run = job_dir / "out"
@@ -99,7 +104,7 @@ def _run(params: ExtractPickListParams, job_dir: Path, project_binds: list[str])
         print(f"[DRIVER] Command: {cmd}", flush=True)
         # The project binds cover the tilt series / tomograms the optset points at; the
         # tomograms.star and schema-source dirs may sit outside the project.
-        binds = [*project_binds, tomograms_star.parent, source_dir]
+        binds = [*project_binds, tomograms_star.parent, source_dir, job_dir]
         run_tool(cmd, tool_name=params.get_tool_name(), cwd=out_run, binds=binds)
         if not (out_run / "particles.star").exists():
             raise RuntimeError(f"relion_tomo_subtomo produced no particles.star in {out_run}")
@@ -107,7 +112,7 @@ def _run(params: ExtractPickListParams, job_dir: Path, project_binds: list[str])
             raise RuntimeError(f"relion_tomo_subtomo produced no Subtomograms/ in {out_run}")
 
     # 3) Final optimisation_set the dashboard records as this list's extracted_path.
-    final_optset = write_extracted_optset(out_run, tomograms_star)
+    final_optset = write_extracted_optset(out_run, tomograms_star, trajectories)
     print(f"[extract-list] wrote extracted optset: {final_optset}", flush=True)
     return {"ok": True, "optimisation_set": str(final_optset), "particles": str(out_run / "particles.star"), "count": n}
 
