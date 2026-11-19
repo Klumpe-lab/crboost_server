@@ -166,7 +166,7 @@
 - [Pane focus + Particles tools 2026-10-27](project_pane_focus_particles_tools_2026-10-27.md) — Esc closes the lit pane; Particles dropdowns boxed over slabs/gallery; layers tables; missAlign view = roadmap 21 §7; NOT RUN
 - [missAlign Journey stage 7 2026-10-27](project_missalign_journey_stage7.md) — Refinement section + warp strip + blink built, NOT RUN; warpylib: +AxisOffset −GridMovement
 - [Render registry + skeletons 2026-10-28](project_render_registry_2026-10-28.md) — services/renders.py + RenderSlot replace auto-kicks; 3 buttons gone; layers table; registry reflow; NOT RUN
-- [STA kitchen = roadmap 40](project_sta_kitchen.md) — S0–S8 + §14 built 2026-10-29 (NOT RUN in browser); job048 first set run OK 2026-10-30; §15 one set/many facets: layout A taken, build handoff §15.8, re-run rule open; /dev/io-layouts + /dev/io-ideas mocks; then D18
+- [STA kitchen = roadmap 40](project_sta_kitchen.md) — S0–S8 + §14 built 2026-10-29 (NOT RUN in browser); job048 first set run OK 2026-10-30; §15 one set/many facets: layout A taken, build handoff §15.8, re-run rule open; the /dev/io-layouts + /dev/io-ideas mocks were retired 2026-11-19; then D18
 - [Star files are untrusted](feedback_star_files_untrusted.md) — RELION/Warp stars: check what you rely on at every read, never guess
 - [PyTOM angle convention](reference_pytom_angle_convention.md) — template turn = ZYZ intrinsic matrix transposed; measured on ribosome picks
 - [Microtubule averaging roadmap 41](project_microtubule_averaging_roadmap41.md) — S2 Filament pick job BUILT 2026-11-01, NOT RUN; Tir_Env traced (iso ≈ raw, recall-limited); fine-tune route noted; conf.yaml needs filamentPick profile; ArtiaX look owed

@@ -23,12 +23,6 @@ from ui.agent_plan_page import render_agent_plan_page
 from ui.napari_open_page import render_napari_open_page
 from ui.components.buttons import house_button
 from ui.data_import_panel import build_data_import_panel
-from ui.io_ideas_preview import render_io_ideas
-from ui.particle_card_ideas import render_particle_card_ideas
-from ui.registry_ideas.page import render_registry_ideas
-from ui.io_layouts_preview import render_io_layouts
-from ui.tree_ideas_preview import render_tree_ideas
-from ui.branch_map_preview import render_branch_map
 from ui.workspace_page import build_workspace_page
 
 logger = logging.getLogger(__name__)
@@ -310,39 +304,3 @@ def create_ui_router(backend: CryoBoostBackend):
         with ui.column().classes("p-8"):
             ui.label("Cluster Info Stub")
             house_button("Back", lambda: ui.navigate.back())
-
-    @ui.page("/dev/io-layouts")
-    async def io_layouts_page(client: Client):
-        await client.connected()
-        ensure_assets_loaded()
-        render_io_layouts()
-
-    @ui.page("/dev/io-ideas")
-    async def io_ideas_page(client: Client):
-        await client.connected()
-        ensure_assets_loaded()
-        render_io_ideas()
-
-    @ui.page("/dev/io-ideas/tree")
-    async def tree_ideas_page(client: Client):
-        await client.connected()
-        ensure_assets_loaded()
-        render_tree_ideas()
-
-    @ui.page("/dev/particle-card-ideas")
-    async def particle_card_ideas_page(client: Client):
-        await client.connected()
-        ensure_assets_loaded()
-        render_particle_card_ideas()
-
-    @ui.page("/dev/registry-ideas")
-    async def registry_ideas_page(client: Client):
-        await client.connected()
-        ensure_assets_loaded()
-        await render_registry_ideas()
-
-    @ui.page("/dev/io-ideas/branch")
-    async def branch_map_page(client: Client):
-        await client.connected()
-        ensure_assets_loaded()
-        render_branch_map()

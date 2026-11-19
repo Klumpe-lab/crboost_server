@@ -123,7 +123,7 @@ ui.kitchen, recon_cutouts without CUTOUT_BOX_FACTOR); handed a "finish the renam
 ~160 Å radius), no facets (TM angles disagree); FSC 37 Å is the round shell only. Roadmap 40 §15 written: one set,
 many facets (set = uids, no level; job picks each facet's source on its I/O, written + frozen at Run; per-project
 sources combine only with identical params; never combine columns of two jobs; "Run one Warp export on this set"
-when they differ). Open: I/O layout (mock page /dev/io-layouts = ui/io_layouts_preview.py, delete after the pick;
+when they differ). Open: I/O layout (mock page /dev/io-layouts, retired 2026-11-19 and in git history;
 route added in ui/main_ui.py) and in-place retry rule (failed jobs retry in place comparing inputs only, params
 editable → mixed boxes possible; maintainer leans "forbid", I proposed params+inputs equal). Found: s001
 particles.star rlnTomoTiltSeriesPixelSize 6.2 copied from TM vs 1.55 in tomograms.star.

@@ -152,15 +152,18 @@ the overlap count. Particle sets: see D5.
 ## 4. Decisions
 
 **Taken (2026-11-19).**
-- D1: (b), one palette everywhere, overlays included, muted from neon but built on strong hues, after industrial
-  panels, terminals, control rooms and cockpits. Four candidates are on the prototype (Cockpit, Reactor, Terminal,
-  Industrial, slot for slot with today's); which one is still open.
+- D1: (b), one palette everywhere, overlays included, muted from neon but built on strong hues: **Cockpit** (a glass
+  cockpit's display colours), picked from four candidates (Cockpit, Reactor, Terminal, Industrial). Slot for slot
+  with today's `SPECIES_OVERLAY_COLORS` (red, cyan, yellow, magenta, green, blue, orange, pink):
+  `#e8504a #2cc8dc #e3cf3e #d65ad6 #4cc96a #4f8ff0 #f0a030 #ef7aa6`.
 - D2: as written. D3: (a), two tables stacked. D4: the roster mark, as M2 (a corner notch on the species tag).
   D5: (a). D8: as written.
 - D6: Curate stays ArtiaX; napari sits beside it, disabled, its tooltip saying napari's curation is in development.
-- D7: the first set was too cartoonish. Round 2 draws each molecule as a small coarse-grained model, in two
-  styles, density (iso-contours of the model) and beads; the style, the default and the set are still open.
-- Still open: the five places S0 differs from §3 ("S0 as built").
+- D7: round 1's line glyphs (round 2's bead and density molecules were turned down), the **icosahedral capsid as
+  the default** for every species, the other nine to pick from, the nine hues as drawn. The assets are in
+  `static/icons/species/` (below).
+- The five places S0 differed from §3 ("S0 as built") were not answered one by one; the maintainer called the
+  prototype that had them "great" twice. Build them as prototyped.
 
 - **D1. Species colour in the chrome.**
   - (a) Keep the vivid overlay palette for canvases, where it must stand out on grey, and take colour out of the
@@ -194,13 +197,20 @@ the overlap count. Particle sets: see D5.
   says in its tooltip that its picks are not read back. After 55 S5: Curate offers both. Recommended: as written;
   this roadmap does not build 55 S5.
 - **D7. The species glyph** (asked 2026-11-19: a new default glyph, and a set a species can pick from with a hue).
-  Every species shows one default glyph in the theme's grey. A species may pick another of ten (ribosome,
-  icosahedral capsid, enveloped virus, spike on a stalk, membrane protein, filament, tube, barrel, ring / pore,
-  lattice) and a muted hue (grey, slate, steel blue, verdigris, olive, ochre, sand, rust, oxide red: roadmap 58's
-  palette). The glyph and its hue are chrome; the overlay colour stays on the canvases, and the two are set apart on
-  the Species tab. The registry's own icon in the workspace rail keeps today's hexagon.
-  - Default: today's hexagon, Trimer (three subunits), Blob (a lumpy outline with its centre) or Target (a ring and
-    its centre). Recommended: Trimer, which reads as a molecule at 11 px and is not the registry's own icon.
+  Every species shows the default glyph, the icosahedral capsid, in the theme's grey. A species may pick another of
+  the set and a muted hue. The glyph and its hue are chrome; the overlay colour stays on the canvases, and the two
+  are set apart on the Species tab. The registry's own icon in the workspace rail keeps today's hexagon
+  (`static/icons/particle.svg`).
+  - The set: `static/icons/species/<key>.svg`, 16-unit grid, one ink (`currentColor`, which `load_icon_svg`
+    replaces), keys `capsid` (the default), `ribosome`, `enveloped`, `spike`, `membrane`, `filament`, `tube`,
+    `barrel`, `pore`, `lattice`; their names: Icosahedral capsid, Ribosome, Enveloped virus, Spike / trimer on a
+    stalk, Membrane protein, Filament (actin), Tube (microtubule), Barrel (proteasome), Ring / pore, Lattice.
+  - The hues (key, name, ink): `grey` #94a3b8 (the default, today's glyph grey), `slate` #5f6f86, `steel` steel blue
+    #4f7aa8, `verdigris` #3f8a78, `olive` #6f7f3a, `ochre` #b08a2e, `sand` #a8916a, `rust` #b0643a, `oxide` oxide
+    red #a14d4a (roadmap 58's muted palette).
+  - The picker: a menu from the Species tab's Glyph row (beside Overlay colour): the glyphs in a 6-wide grid of
+    36 px tiles, the default first, the current one ringed in the accent; under them the hues as 14 px squares. A
+    click sets it at once. The row shows the glyph at 14 px, its name ("icosahedral capsid (default)") and the hue.
   - Model: `ParticleSpecies.glyph` and `.glyph_hue`, "" meaning the default and grey. `render_species_mark`
     (`ui/components/species_pill.py`) draws them, so the rail, the registry's title line and a job page's species
     line follow; the roster's species tag gains the glyph in front of the name; the wall's Layers menu shows it
@@ -209,8 +219,11 @@ the overlap count. Particle sets: see D5.
   is mostly dots). The wall and its zoom draw every pick as a filled dot of a fixed size (radius 1.1 px on a tile,
   2 px on the zoom) with a white edge. The wall's Layers menu gains the look, held per user: the mark (dot, ring,
   ring as wide as the species' diameter, cross, point), its size, the white edge on or off, opacity; species on or
-  off is already there. Recommended default: a 3 px ring, no white edge, 90 % opacity, which marks a pick without
-  covering the density in it. The pick viewer's dots (`.cb-pick-ghost`) are not part of this.
+  off is already there. Default: a 3 px ring, no white edge, 90 % opacity, which marks a pick without covering the
+  density in it. As prototyped: the size is the zoom's radius, 0.5 to 4 px (a tile draws 0.55 of it, as today's
+  1.1 against 2); "to scale" is a ring of the species' diameter in the picture's pixels (`diameter_ang / 2 / apix ×
+  picture width / tomogram width`); a ring or cross is 1 px on the zoom, 0.8 on a tile; the wall still draws at most
+  260 picks per species per tile (`_WALL_DOTS`). The pick viewer's dots (`.cb-pick-ghost`) are not part of this.
 
 ## 5. Stages
 
@@ -228,9 +241,9 @@ on both. The maintainer chooses; nothing in the page changes.
   `COLOR_PALETTE` go; the swatch is `ui/components/color_swatch.py`.
 - `ui/species/picks_tab.py`: no species dot on rows.
 - The size badge gets the amber dot.
-- The palette picked under D1 replaces `SPECIES_OVERLAY_COLORS`. A species' stored colour moves to the same slot of
-  the new palette, once, by a migration, so no species changes hue family; the swatch, the gallery, the pick viewer,
-  napari's layers and the kitchen read the new colours.
+- The palette picked under D1 (Cockpit, §4) replaces `SPECIES_OVERLAY_COLORS`. A species' stored colour moves to
+  the same slot of the new palette, once, by a migration, so no species changes hue family; the swatch, the gallery,
+  the pick viewer, napari's layers and the kitchen read the new colours.
 
 Check: no saturated colour left in the registry outside the one swatch and the canvases; each species keeps its hue
 family across the migration.
@@ -281,8 +294,8 @@ from a sub-row; a 48-tomogram species fits in one screen; Extract all pending su
 **S6. Scores.** Analytics renamed. Classes and maps removed (the job Results tabs keep it). Particle sets per D5.
 Check: the σ cut and Make subset produce the same set as before.
 
-**S7. The species glyph (D7).** The glyph set as `static/icons/species/<name>.svg` (from
-`ui/registry_ideas/glyphs.py`); `glyph` and `glyph_hue` on `ParticleSpecies`, written through `set_species` (and so
+**S7. The species glyph (D7).** The glyph set is already in `static/icons/species/`; `glyph` and `glyph_hue` on
+`ParticleSpecies`, written through `set_species` (and so
 the API's `set_species`); the Glyph row and its picker on the Species tab; `render_species_mark` and the roster's
 species tag draw them. Check: pick a glyph and a hue on one species and see them in the rail, the title line, the
 roster and a job page; a species that never picked shows the default in grey.
@@ -291,7 +304,34 @@ roster and a job page; a species that never picked shows the default in grey.
 (`ui/tomo_gallery.py`) draws the mark asked for, on the tiles at 0.55 of the zoom's size as today. Check: Grid2's
 Position_6 (1,321 picks) and a tomogram with about 300, at each mark.
 
-### S0 as built (2026-11-19)
+### Pickup for the build (2026-11-19)
+
+Every decision is taken (§4 "Taken"); S1–S8 are the build, in that order, back to back, one commit each, checked
+once at the end. Read §1–§5 first, then CLAUDE.md's UI rules.
+- **Where.** Other sessions keep uncommitted work in the main tree, some of it in files these stages touch
+  (`ui/pipeline_builder/pipeline_roster.py`, `species_picker.py`, `ui/workspace_page.py` on 2026-11-19). Run
+  `git status` first; build in a worktree of its own if those files are still dirty.
+- **S1** carries the palette: Cockpit replaces `SPECIES_OVERLAY_COLORS` (`services/models_base.py`), and a one-off
+  migration moves each species' stored `color` to the same slot (a colour outside the old palette stays as it is).
+  Everything that draws the overlay colour reads the new values: the gallery, the pick viewer, napari's layers
+  (`services/visualization/napari_bundle.py`), the kitchen, the Species tab's swatch.
+- **S2** puts drift on the roster as M2, a corner notch on the species tag (the prototype's `.cbri-tag.notch`: a
+  5 px slate triangle in the tag's top-right corner), the differences in the tag's hover; CLAUDE.md's "Job parameter
+  tabs" text changes with it.
+- **S4** is D3 (a). **S5** ends each row with "curate in [ArtiaX] [napari]", napari disabled (D6).
+- **S7** adds `glyph` and `glyph_hue` to the API's `set_species` as well (the API mirrors every UI action), and
+  `species_pill.py`'s docstring and CLAUDE.md's species-mark text say the mark may carry a chosen muted hue.
+- **Check** with screenshots of the real page, before and after (`scripts/dev_screenshot.py --url`, or
+  `~/.crboost/ui_shots/shoot.sh`), on `AGG412_20260311_MyrGFP_Grid2_rerun`, `AGG412_STA` (drift) and
+  `MysteryLattice` (one tomogram with six lists).
+
+### S0 as built (2026-11-19), retired the same day
+
+The prototype is gone from the tree (with every other `/dev/*ideas` page, at the maintainer's word); what was decided
+on it is in §4 and §5, the glyphs in `static/icons/species/`. Its code is in git: `94262f0` (rounds 1 and 2:
+frame, Species tab, Templates & masks, Tomograms, chips, drift marks) and `e0cde47` (round 3: palettes, the glyph
+picker, the pick-mark controls, the molecules that were turned down); `git show <commit>:ui/registry_ideas/page.py`.
+The Tomograms table's join (`data._tomos`) and its HTML (`parts.tomo_table_html`) are the closest thing to S5's.
 
 `/dev/registry-ideas` (`ui/registry_ideas/`, route in `ui/main_ui.py`), on three projects read and never written:
 `?project=grid2` (AGG412 Grid2 rerun: 48 tomograms, one list each, two species), `sta` (AGG412_STA: three 412
