@@ -25,6 +25,7 @@ from ui.components.buttons import house_button
 from ui.data_import_panel import build_data_import_panel
 from ui.io_ideas_preview import render_io_ideas
 from ui.particle_card_ideas import render_particle_card_ideas
+from ui.registry_ideas.page import render_registry_ideas
 from ui.io_layouts_preview import render_io_layouts
 from ui.tree_ideas_preview import render_tree_ideas
 from ui.branch_map_preview import render_branch_map
@@ -333,6 +334,12 @@ def create_ui_router(backend: CryoBoostBackend):
         await client.connected()
         ensure_assets_loaded()
         render_particle_card_ideas()
+
+    @ui.page("/dev/registry-ideas")
+    async def registry_ideas_page(client: Client):
+        await client.connected()
+        ensure_assets_loaded()
+        await render_registry_ideas()
 
     @ui.page("/dev/io-ideas/branch")
     async def branch_map_page(client: Client):
