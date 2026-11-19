@@ -296,6 +296,14 @@ This file is why one aggregation UI can serve both stages.
 optics block at all — *"Only `rlnTomoName` is required."* Feeding ③ a merged coordinate
 set needs no driver change.
 
+**A third line: `rlnTomoTrajectoriesFile`.** Per particle and tilt, a 3-D offset RELION adds before it projects the
+particle into a tilt image. crboost writes one only to carry Warp's local geometry (missAlign's image warps), which the
+tilt-series star cannot hold: `drivers/warp_bridge.py` computes `warp_trajectories.star` in any job that hands RELION
+the tilt images (Reconstruct particle, CTF refine, ③) and names it in the set it hands on (`warp_optimisation_set.star`;
+③'s output set keeps it). RELION matches it by `rlnTomoParticleName`, so a file holding more particles serves a subset;
+relion_refine ignores it on 2D stacks and carries the line into its own output set, as CTF refine does. Without it,
+those jobs cut missAligned data 8–17 Å off (HOTFIXES H26).
+
 ---
 
 ## 4. Where merging can happen

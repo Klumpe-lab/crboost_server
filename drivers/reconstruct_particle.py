@@ -15,7 +15,9 @@ import traceback
 from pathlib import Path
 
 from drivers.driver_base import ToolCommand, get_driver_context, run_tool, start_supervisor
+from drivers.warp_bridge import carry_warp_geometry
 from services.job_models import ReconstructParticleParams
+from services.subtomo_merge import _parse_optimisation_set
 
 
 def main():
@@ -38,6 +40,8 @@ def main():
 
         print(f"[DRIVER] Input optimisation_set: {input_optimisation}", flush=True)
         print(f"[DRIVER] Job dir: {job_dir}", flush=True)
+        # RELION cuts the particles from the tilt images: it must place them by Warp's whole model (H26)
+        input_optimisation = carry_warp_geometry(input_optimisation, job_dir, additional_binds)
 
         # Build command
         cmd = (
@@ -96,6 +100,8 @@ def main():
         print(f"[DRIVER] Command: {cmd}", flush=True)
 
         additional_binds.append(str(input_optimisation.parent.resolve()))
+        # A bridged set sits in the job dir and names the particles and tomograms where they are
+        additional_binds += [str(p.parent.resolve()) for p in _parse_optimisation_set(input_optimisation)]
 
         run_tool(cmd, tool_name=params.get_tool_name(), cwd=job_dir, binds=additional_binds)
 

@@ -26,6 +26,7 @@ import starfile
 
 from drivers.driver_base import ToolCommand, get_driver_context, require_producer_input, run_tool, start_supervisor
 from drivers.postprocess import second_half
+from drivers.warp_bridge import carry_warp_geometry
 from services.jobs.ctf_refine import CtfRefineParams
 from services.subtomo_merge import _parse_optimisation_set
 
@@ -195,6 +196,8 @@ def main():
         ):
             require_producer_input(path, label)
 
+        # RELION cuts the particles from the tilt images: it must place them by Warp's whole model (H26)
+        input_set = carry_warp_geometry(input_set, job_dir)
         particles_star, tomograms_star = _parse_optimisation_set(input_set)
         require_producer_input(particles_star, "Particles star")
         require_producer_input(tomograms_star, "Tomograms star")
@@ -316,8 +319,10 @@ def main():
             raise ValueError(
                 f"{len(changes['flagged'])} tilts failed the checks (defocus above zero, a move of at most "
                 f"{params.max_defocus_change_um:g} µm, a contrast scale of at least zero): {shown}"
-                f"{f'; and {more} more' if more > 0 else ''}. Regularise across tilts, narrow the search range or "
-                "refine the scale over the dose instead of per tilt; raise the limit if a move is real"
+                f"{f'; and {more} more' if more > 0 else ''}. First look at the reference"
+                f"{f' ({float(fsc_res):.1f} Å, masked FSC 0.143)' if fsc_res is not None else ''}: past its "
+                "resolution the fit has nothing to hold on to. Then regularise across tilts, narrow the "
+                "search range or refine the scale over the dose instead of per tilt; raise the limit if a move is real"
             )
         print(f"[DRIVER] Output: {out_set}", flush=True)
         print("--- SLURM JOB END (Exit Code: 0) ---", flush=True)
