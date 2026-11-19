@@ -37,17 +37,48 @@ PROJECTS: dict[str, tuple[str, str]] = {
     ),
 }
 
-# The muted palette roadmap 58 proposed for classes (`--cb-class-1..8`), matched by hue to the overlay palette.
-MUTED: dict[str, str] = {
-    "#ff1744": "#a14d4a",  # vivid red -> oxide red
-    "#00e5ff": "#3f8a78",  # vivid cyan -> verdigris
-    "#ffea00": "#b08a2e",  # vivid yellow -> ochre
-    "#d500f9": "#5f6f86",  # vivid magenta-purple -> slate
-    "#76ff03": "#6f7f3a",  # neon green -> olive
-    "#2979ff": "#4f7aa8",  # vivid blue -> steel blue
-    "#ff9100": "#b0643a",  # vivid orange -> rust
-    "#f50057": "#a8916a",  # vivid pink -> sand
+# Overlay palettes, slot for slot in the order of `SPECIES_OVERLAY_COLORS` (red, cyan, yellow, magenta, green, blue,
+# orange, pink), so a species' colour maps by its slot. "today" is that palette; the others keep strong hues but
+# come down from neon, after instrument panels: (title, what it is after, colours).
+PALETTES: dict[str, tuple[str, str, tuple[str, ...]]] = {
+    "today": (
+        "Today",
+        "the saturated primaries the overlays use now",
+        ("#ff1744", "#00e5ff", "#ffea00", "#d500f9", "#76ff03", "#2979ff", "#ff9100", "#f50057"),
+    ),
+    "cockpit": (
+        "Cockpit",
+        "a glass cockpit's display: magenta course, cyan, green, amber, warning red",
+        ("#e8504a", "#2cc8dc", "#e3cf3e", "#d65ad6", "#4cc96a", "#4f8ff0", "#f0a030", "#ef7aa6"),
+    ),
+    "reactor": (
+        "Reactor",
+        "a control room's annunciators and mimic board, Cherenkov blue, the trefoil's magenta",
+        ("#d8453c", "#46b8c6", "#e6b43c", "#b4509f", "#44a86a", "#3d9cf0", "#e2762e", "#d8708c"),
+    ),
+    "terminal": (
+        "Terminal",
+        "a terminal's ANSI accents, Solarized-like, the yellow and green lifted to read on grey",
+        ("#dc322f", "#2aa198", "#d1a10c", "#d33682", "#93b316", "#268bd2", "#cb4b16", "#7c80d4"),
+    ),
+    "industrial": (
+        "Industrial",
+        "RAL signal and traffic colours: traffic red, turquoise blue, signal yellow, telemagenta, traffic green",
+        ("#d4302a", "#1f9aa0", "#f2b100", "#c03f80", "#2f9a5a", "#2b7cc0", "#e45a1d", "#c96fa5"),
+    ),
 }
+
+
+def slot(color: str) -> int:
+    """A colour's slot in the overlay palette, -1 when it is not one of them."""
+    today = PALETTES["today"][2]
+    return today.index(color.lower()) if color.lower() in today else -1
+
+
+def in_palette(color: str, palette: str) -> str:
+    """A species' colour in another palette: the same slot, or the colour itself when it has none."""
+    i = slot(color)
+    return PALETTES[palette][2][i] if i >= 0 else color
 
 
 @dataclass(frozen=True)
@@ -146,13 +177,26 @@ class Registry:
 
 
 @dataclass(frozen=True)
+class Layer:
+    """One species' picks on the picture."""
+
+    species: str
+    vivid: str  # its overlay colour
+    index: int  # its slot in the palettes (`slot`), -1 when it has none
+    dots: tuple[tuple[float, float], ...]  # x, y in % of the picture
+    diameter: float | None  # Å, the species' own
+
+
+@dataclass(frozen=True)
 class Overlay:
     tomo: str
     short: str
     url: str
     width: int
     height: int
-    layers: tuple[tuple[str, str, str, tuple[tuple[float, float], ...]], ...]  # (species, vivid, muted, dots in %)
+    layers: tuple[Layer, ...]
+    apix: float  # of the reconstruction
+    nx: int  # its width in voxels
 
 
 # ── pictures ─────────────────────────────────────────────────────────────────
@@ -393,20 +437,21 @@ def registry(key: str) -> Registry:
 # ── the overlay picture ──────────────────────────────────────────────────────
 
 
-def overlay(key: str, width: int = 520) -> Overlay | None:
-    """The reconstruction with the most picks across the project's species, as WarpTools drew its central slice, with
-    every species' candidates on it. Dots follow the tomogram wall's convention (`ui/tomo_gallery._normalized_dots`:
-    x right, y up). None when the project has no WarpTools picture or no candidates."""
+def overlay(key: str, near: int | None = None, width: int = 560) -> Overlay | None:
+    """One reconstruction as WarpTools drew its central slice, with every species' candidates on it: the one with the
+    most picks of every species, or with `near`, the one whose picks of all species together come closest to that
+    many. Dots follow the tomogram wall's convention (`ui/tomo_gallery._normalized_dots`: x right, y up). None when
+    the project has no WarpTools picture or no candidates."""
     import mrcfile
     from PIL import Image
 
+    from services.array_tasks import ts_display_name
     from services.particles.species_overview import species_overview
     from services.project_state import ProjectState
-    from services.array_tasks import ts_display_name
 
     folder = Path(PROJECTS[key][0])
     state = ProjectState.load(folder / "project_params.json", read_only=True)
-    per_species: list[tuple[str, str, dict[str, np.ndarray]]] = []
+    per_species: list[tuple[str, str, float | None, dict[str, np.ndarray]]] = []
     for sp in state.species_registry:
         ov = species_overview(state, folder, sp.id)
         star = next((r.star_path for r in ov.rows if r.list_type == "auto" and r.star_path), None)
@@ -422,19 +467,19 @@ def overlay(key: str, width: int = 520) -> Overlay | None:
             str(t): g[["rlnCenteredCoordinateXAngst", "rlnCenteredCoordinateYAngst"]].to_numpy(float)
             for t, g in df.groupby("rlnTomoName")
         }
-        per_species.append((sp.name, sp.color, groups))
+        per_species.append((sp.name, sp.color, sp.diameter_ang, groups))
     if not per_species:
         return None
     recon = sorted(folder.glob("External/*/warp_tiltseries/reconstruction/*.png"))
     by_name = {p.name.rsplit("_", 1)[0]: p for p in recon}
-    best = max(
-        by_name,
-        key=lambda t: (
-            min(len(g.get(t, ())) for _n, _c, g in per_species),
-            sum(len(g.get(t, ())) for _n, _c, g in per_species),
-        ),
-        default=None,
-    )
+
+    def total(t: str) -> int:
+        return sum(len(g.get(t, ())) for *_x, g in per_species)
+
+    if near is None:
+        best = max(by_name, key=lambda t: (min(len(g.get(t, ())) for *_x, g in per_species), total(t)), default=None)
+    else:
+        best = min(by_name, key=lambda t: abs(total(t) - near), default=None)
     if best is None:
         return None
     png = by_name[best]
@@ -442,18 +487,18 @@ def overlay(key: str, width: int = 520) -> Overlay | None:
     with mrcfile.open(mrc, header_only=True, permissive=True) as m:
         nx, ny, apix = int(m.header.nx), int(m.header.ny), float(m.voxel_size.x)
     layers = []
-    for name, color, groups in per_species:
+    for name, color, diameter, groups in per_species:
         xy = groups.get(best)
         if xy is None or not len(xy):
             continue
         fx = np.clip((xy[:, 0] / apix + nx / 2) / nx, 0, 1) * 100
         fy = (1 - np.clip((xy[:, 1] / apix + ny / 2) / ny, 0, 1)) * 100
         dots = tuple((round(float(a), 2), round(float(b), 2)) for a, b in zip(fx, fy, strict=True))
-        layers.append((name, color, MUTED.get(color.lower(), "#5f6f86"), dots))
+        layers.append(Layer(name, color, slot(color), dots, diameter))
     pic = Image.open(png).convert("L")
     h = round(width * pic.size[1] / pic.size[0])
     pic = pic.resize((width, h), Image.LANCZOS)
     buf = io.BytesIO()
     pic.save(buf, "PNG", optimize=True)
     url = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
-    return Overlay(best, ts_display_name(best), url, width, h, tuple(layers))
+    return Overlay(best, ts_display_name(best), url, width, h, tuple(layers), apix, nx)
