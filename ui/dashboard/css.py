@@ -2210,35 +2210,248 @@ _HARBOR_MONO_CSS = """
 .rounded-sm, .rounded, .rounded-md, .rounded-lg, .rounded-xl, .rounded-2xl { border-radius: var(--cb-r-md) !important; }
 """
 
-# The branch map (ui/branch_map/): its hover states and its two animations. Structure is inline on the elements.
-# In the Jobs view the map is the frame's content, one box deep: the picker and the controls are strips across it.
+# The branch map (ui/branch_map/): its cards are HTML strings (ui/branch_map/html.py) drawn by these classes, the
+# browser lays them out and draws the cables (ui/branch_map/assets.py). The new job's card is NiceGUI elements
+# wearing the same classes. In the Jobs view the map is the frame's content, one box deep.
 _BRANCH_MAP_CSS = """
 .cb-bm-app {
     --cb-bm-box-line: transparent; --cb-bm-box-radius: 0; --cb-bm-box-gap: 0; --cb-bm-box-pad: 12px;
     --cb-bm-box-rule: 0 1px 0 var(--cb-bm-hair, #e9eef3); --cb-bm-paper-line: transparent; --cb-bm-paper-radius: 0;
 }
-.cb-bm-card { cursor: grab; }
-.cb-bm-card.cb-bm-dragging { cursor: grabbing; z-index: 6;
-    box-shadow: 0 2px 4px rgba(15,23,42,0.08), 0 16px 36px rgba(15,23,42,0.16) !important; }
+/* The map: a grid of cards on flat paper, scrolled down, never dragged or zoomed. */
+.cb-bm-scroll { flex: 1 1 0; min-height: 0; align-self: stretch; overflow: auto; position: relative;
+    background: var(--cb-bm-paper, #f1f4f8); --acc: var(--cb-accent, #4a8fd4); }
+.cb-bm-world { position: relative; width: 100%; min-height: 100%; box-sizing: border-box; padding: 22px 26px 64px; }
+.cb-bm-grid { display: grid; grid-template-columns: repeat(auto-fill, 236px); grid-auto-flow: row dense;
+    justify-content: center; align-items: start; gap: 22px 18px; }
+.cb-bm-grid > .cb-bm-node.large { grid-column: span 2; }
+.cb-bm-band { display: flex; align-items: center; gap: 10px; margin: 2px 0 14px; }
+.cb-bm-grid + .cb-bm-band { margin-top: 34px; }
+.cb-bm-band .t { font: 400 9.5px var(--cb-mono, 'IBM Plex Mono', monospace); text-transform: uppercase;
+    letter-spacing: .08em; color: var(--cb-ink-1, #0f172a); white-space: nowrap; }
+.cb-bm-band .r { flex: 1 1 auto; border-top: 1px solid var(--cb-rule, #cfd8e3); }
+.cb-bm-band .m { font: 400 9px var(--cb-mono, 'IBM Plex Mono', monospace); color: var(--cb-ink-3, #64748b);
+    white-space: nowrap; }
+/* The cables, under the cards: main inputs solid, side inputs dashed and faint; the selected job's lineage
+ * accented, everything else faded. */
+.cb-bm-cables { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 0; line-height: 0; }
+.cb-bm-cables svg { overflow: visible; display: block; }
+.cb-bm-cables path { fill: none; stroke: var(--cb-bm-cable, #94a3b8); stroke-width: 1.5;
+    transition: opacity .15s, stroke .15s; }
+.cb-bm-cables path.k-side { stroke-dasharray: 4 3; stroke-width: 1.2; opacity: .6; }
+.cb-bm-cables path.k-new { stroke: var(--cb-pick, #2563eb); stroke-width: 2; opacity: 1; }
+.cb-bm-cables path.k-loose { stroke-dasharray: 6 3; }
+.cb-bm-scroll[data-has-sel] .cb-bm-cables path { opacity: .14; }
+.cb-bm-scroll[data-has-sel] .cb-bm-cables path:is(.up, .down) { opacity: 1; stroke: var(--acc); stroke-width: 2.2; }
+.cb-bm-scroll[data-has-sel] .cb-bm-cables path.k-side:is(.up, .down) { stroke-width: 1.5; opacity: .9; }
+.cb-bm-scroll:is([data-finding], [data-slotting]) .cb-bm-cables path:not(.hit):not(.k-new) { opacity: .12; }
+/* A node: the escort above its card (the set it reads, the magazine), then the card. */
+.cb-bm-node { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: stretch;
+    min-width: 0; transition: opacity .15s; }
+.cb-bm-mag { line-height: 0; margin-bottom: 6px; }
+.cb-bm-mag svg { cursor: pointer; display: block; }
+.cb-bm-tab { align-self: flex-start; display: flex; align-items: center; gap: 5px; height: 16px; padding: 0 7px;
+    margin: 0 0 -1px 10px; background: #fff; border: 1px solid var(--cb-bm-card-line, #d6dee8); border-bottom: none;
+    border-radius: 4px 4px 0 0; font: 400 9px var(--cb-sans, 'IBM Plex Sans', sans-serif);
+    color: var(--cb-ink-2, #334155); max-width: 210px; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; position: relative; z-index: 2; }
+.cb-bm-tab .k { font: 400 7.5px var(--cb-mono, 'IBM Plex Mono', monospace); text-transform: uppercase;
+    letter-spacing: .07em; color: var(--cb-ink-4, #94a3b8); }
+/* The card. Its ports are its pseudo-elements: the main input on the top edge, the output on the bottom edge. */
+.cb-bm-card { position: relative; width: 100%; box-sizing: border-box; background: #fff;
+    border: 1px solid var(--cb-bm-card-line, #d6dee8); border-radius: var(--cb-bm-card-radius, 8px);
+    padding-bottom: 6px; cursor: pointer;
+    box-shadow: var(--cb-bm-card-shadow, 0 1px 2px rgba(15,23,42,0.05), 0 6px 16px rgba(15,23,42,0.05));
+    transition: box-shadow .15s, outline-color .15s; }
 .cb-bm-card:hover {
-    box-shadow: var(--cb-bm-card-hover, 0 1px 2px rgba(15,23,42,0.06), 0 10px 24px rgba(15,23,42,0.10)) !important;
-}
-.cb-bm-card .cb-bm-add { opacity: 0.55; transition: opacity .12s, color .12s, border-color .12s, background .12s; }
-.cb-bm-card:hover .cb-bm-add, .cb-bm-add:hover { opacity: 1; }
-.cb-bm-add:hover { color: #1f4e79 !important; border-color: #1f4e79 !important; background: #f1f5f9 !important; }
-.cb-bm-card .cb-bm-size { opacity: 0.3; transition: opacity .12s; }
-.cb-bm-card:hover .cb-bm-size, .cb-bm-size:hover { opacity: 1; }
+    box-shadow: var(--cb-bm-card-hover, 0 1px 2px rgba(15,23,42,0.06), 0 10px 24px rgba(15,23,42,0.10)) !important; }
+.cb-bm-card.off { opacity: .55; }
+.cb-bm-card.cb-bm-newcard { border: 1.5px dashed var(--cb-bm-port, #64748b); cursor: default; }
+.cb-bm-card::before, .cb-bm-card::after { content: ""; position: absolute; left: calc(50% - 4px); width: 8px;
+    height: 8px; box-sizing: border-box; background: #fff; border: 2px solid var(--cb-bm-port, #64748b);
+    border-radius: var(--cb-bm-port-radius, 2px); z-index: 3; }
+.cb-bm-card::before { top: -5px; }
+.cb-bm-card::after { bottom: -5px; }
+.cb-bm-card.root::before { display: none; }
+.cb-bm-head { display: flex; align-items: center; height: 26px; padding: 0 9px 0 13px; box-sizing: border-box;
+    background: var(--cb-bm-band, #f8fafc); border-bottom: 1px solid var(--cb-bm-hair, #e9eef3);
+    border-radius: calc(var(--cb-bm-card-radius, 8px) - 1px) calc(var(--cb-bm-card-radius, 8px) - 1px) 0 0; }
+.cb-bm-light { width: 8px; height: 8px; flex: 0 0 auto; border-radius: var(--cb-pip-radius, 50%);
+    background: var(--cb-off-dot, #cbd5e1); margin-right: 7px; box-sizing: border-box; }
+.cb-bm-light.done { background: var(--cb-ok-dot, #10b981); }
+.cb-bm-light.running { background: var(--cb-run-dot, #3b82f6);
+    animation: var(--cb-run-blink, cb-bm-pulse 1.6s ease-out infinite); }
+.cb-bm-light.failed { background: var(--cb-bad-dot, #ef4444); }
+.cb-bm-light.queued { background: var(--cb-que-dot, #60a5fa); }
+.cb-bm-title { font: 600 12px var(--cb-sans, 'IBM Plex Sans', sans-serif); color: var(--cb-ink-1, #0f172a);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: -0.01em; min-width: 0;
+    flex: 0 1 auto; margin-right: 7px; }
+.cb-bm-badge { flex: 0 0 auto; height: 14px; line-height: 12px; padding: 0 5px; box-sizing: border-box;
+    border: 1px solid var(--cb-tag-line, #cfd8e3); background: var(--cb-tag, #f1f5f9);
+    border-radius: var(--cb-tag-radius, 3px); font-family: var(--cb-tag-font, 'IBM Plex Sans', sans-serif);
+    font-size: var(--cb-tag-size, 9px); font-weight: var(--cb-tag-weight, 600);
+    text-transform: var(--cb-tag-case, none); letter-spacing: var(--cb-tag-track, 0.01em);
+    color: var(--cb-tag-ink, var(--cb-ink-2, #334155)); white-space: nowrap; }
+.cb-bm-fill { flex: 1 1 0; }
+.cb-bm-head .cb-open-cue { margin-left: 4px; }
+.cb-bm-num { flex: 0 0 auto; font: 400 10px var(--cb-mono, 'IBM Plex Mono', monospace);
+    color: var(--cb-ink-4, #94a3b8); margin-left: 4px; padding: 0 3px; border-radius: 3px; cursor: pointer; }
+.cb-bm-num:hover { background: var(--cb-bm-hover, #f1f5f9); color: var(--cb-ink-1, #0f172a); }
+.cb-bm-num.nomenu { cursor: inherit; }
+.cb-bm-num.nomenu:hover { background: none; color: var(--cb-ink-4, #94a3b8); }
+.cb-bm-size { font-size: 11px !important; color: var(--cb-ink-4, #94a3b8); margin-left: 5px; opacity: .3;
+    cursor: pointer; transition: opacity .12s; }
+.cb-bm-card:hover .cb-bm-size { opacity: 1; }
+.cb-bm-size:hover { color: var(--cb-ink-1, #0f172a); }
+.cb-bm-add { width: 16px; height: 16px; box-sizing: border-box; border-radius: var(--cb-field-radius, 4px);
+    border: 1px solid var(--cb-btn-line, #b8cce0); background: #fff; display: flex; align-items: center;
+    justify-content: center; cursor: pointer; flex-shrink: 0; color: var(--cb-ink-3, #64748b); margin-left: 5px;
+    opacity: .55; transition: opacity .12s, color .12s, border-color .12s, background .12s; }
+.cb-bm-add i { font-size: 12px; }
+.cb-bm-card:hover .cb-bm-add { opacity: 1; }
+.cb-bm-add:hover { color: #1f4e79; border-color: #1f4e79; background: #f1f5f9; }
 .cb-bm-x { opacity: 0.6; transition: opacity .12s, background .12s; }
 .cb-bm-x:hover { opacity: 1; background: #fee2e2; }
 .cb-bm-ok-ready { box-shadow: 0 0 0 3px rgba(16,185,129,0.25); }
 .cb-bm-ok-ready:hover { filter: brightness(1.08); }
-.cb-bm-list { opacity: 0.6; transition: opacity .12s, background .12s; }
-.cb-bm-list:hover { opacity: 1; background: #f1f5f9; }
-.cb-bm-row:hover { background: var(--cb-bm-hover, #f8fafc); }
 .cb-bm-menu-row:hover { background: var(--cb-bm-hover, #f1f5f9); }
-.cb-bm-canvas:active { cursor: grabbing; }
-.cb-bm-card svg [data-ts] { cursor: pointer; }
 .cb-bm-chip:hover { border-color: #94a3b8 !important; }
+/* One row per input: its name, what it reads; a side input's port on the row's left edge. */
+.cb-bm-row { position: relative; display: flex; align-items: center; gap: 6px; height: 17px; padding: 0 10px 0 28px; }
+.cb-bm-row.edit { cursor: pointer; }
+.cb-bm-row.edit:hover { background: var(--cb-bm-hover, #f8fafc); }
+.cb-bm-row[data-open] { background: var(--cb-bm-open, #fffbeb); box-shadow: inset 2px 0 0 var(--cb-warn-dot, #d97706); }
+.cb-bm-lbl { width: 70px; flex: 0 0 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-family: var(--cb-label-font, 'IBM Plex Sans', sans-serif); font-size: var(--cb-label-size, 8px);
+    font-weight: var(--cb-label-weight, 600); text-transform: var(--cb-label-case, uppercase);
+    letter-spacing: var(--cb-label-track, 0.05em); color: var(--cb-label-ink, var(--cb-ink-4, #94a3b8)); }
+.cb-bm-val { flex: 1 1 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font: 400 10px var(--cb-sans, 'IBM Plex Sans', sans-serif); color: var(--cb-ink-1, #0f172a); }
+.cb-bm-val.v-explicit { color: var(--cb-pick, #2563eb); font-weight: 600; }
+.cb-bm-val:is(.v-named, .v-automatic) { color: var(--cb-ink-2, #334155); }
+.cb-bm-val.v-ambiguous { color: var(--cb-warn-dot, #d97706); font-weight: 600; }
+.cb-bm-val.v-missing { color: var(--cb-bad-dot, #ef4444); }
+.cb-bm-val:is(.v-optional, .v-pending) { color: var(--cb-ink-4, #94a3b8); }
+.cb-bm-row.rides .cb-bm-val { opacity: .7; }
+.cb-bm-row.side::before { content: ""; position: absolute; left: -5px; top: 4.5px; width: 8px; height: 8px;
+    box-sizing: border-box; background: var(--cb-bm-port, #64748b); border: 2px solid var(--cb-bm-port, #64748b);
+    border-radius: var(--cb-bm-port-radius, 2px); }
+.cb-bm-row.side.s-explicit::before { background: var(--cb-pick, #2563eb); border-color: var(--cb-pick, #2563eb); }
+.cb-bm-foot { padding: 3px 10px 0 28px; font: 400 9px var(--cb-sans, 'IBM Plex Sans', sans-serif);
+    color: var(--cb-ink-3, #64748b); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* A large card's blocks under the rows: parameters, results, the picked tilt series. */
+.cb-bm-sec { margin: 6px 12px 0; padding-top: 5px; border-top: 1px solid var(--cb-bm-hair, #e9eef3); }
+.cb-bm-sec-h { font: 400 8px var(--cb-mono, 'IBM Plex Mono', monospace); letter-spacing: .06em;
+    color: var(--cb-ink-4, #94a3b8); margin-bottom: 4px; }
+.cb-bm-params { display: grid; grid-template-columns: 1fr 1fr; column-gap: 14px; }
+.cb-bm-params .p { display: flex; gap: 8px; height: 17px; align-items: center; min-width: 0; }
+.cb-bm-params .p.wide { grid-column: 1 / -1; }
+.cb-bm-params .pl { width: 96px; flex: 0 0 auto; font: 400 9px var(--cb-sans, 'IBM Plex Sans', sans-serif);
+    color: var(--cb-ink-3, #64748b); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cb-bm-params .pv { font: 400 10px var(--cb-mono, 'IBM Plex Mono', monospace); color: var(--cb-ink-1, #0f172a);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.cb-bm-tiles { display: flex; gap: 20px; margin-bottom: 4px; flex-wrap: wrap; }
+.cb-bm-tiles .tl { display: block; font: 400 9px var(--cb-sans, 'IBM Plex Sans', sans-serif);
+    color: var(--cb-ink-3, #64748b); }
+.cb-bm-tiles .tv { display: block; font: 400 11px var(--cb-mono, 'IBM Plex Mono', monospace);
+    color: var(--cb-ink-1, #0f172a); }
+.cb-bm-pics { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 3px; }
+.cb-bm-pics img { height: 112px; width: auto; max-width: 100%; border-radius: var(--cb-img-radius, 5px);
+    display: block; }
+.cb-bm-pics .arrow { color: var(--cb-ink-4, #94a3b8); font-size: 12px; }
+.cb-bm-cap { font: 400 9px var(--cb-sans, 'IBM Plex Sans', sans-serif); color: var(--cb-ink-3, #64748b);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 13px; }
+.cb-bm-cap.bad { color: var(--cb-bad-dot, #ef4444); }
+.cb-bm-cap.run { color: var(--cb-run-dot, #3b82f6); }
+.cb-bm-plot { line-height: 0; margin: 2px 0; }
+.cb-bm-tplots { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; margin: 2px 0; }
+.cb-bm-tplots .cb-plot-label { line-height: 12px; height: 12px; padding: 0; white-space: nowrap; }
+/* The shared start, folded: a row per job it stands for. */
+.cb-bm-trow { display: flex; align-items: center; gap: 6px; height: 19px; padding: 0 10px 0 14px; cursor: pointer; }
+.cb-bm-trow:hover { background: var(--cb-bm-hover, #f8fafc); }
+.cb-bm-trow .cb-bm-light { width: 6px; height: 6px; margin-right: 6px; }
+.cb-bm-trow .t { flex: 1 1 0; min-width: 0; font: 400 10px var(--cb-sans, 'IBM Plex Sans', sans-serif);
+    color: var(--cb-ink-2, #334155); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cb-bm-trow .n { font: 400 10px var(--cb-mono, 'IBM Plex Mono', monospace); color: var(--cb-ink-4, #94a3b8); }
+.cb-bm-trow[data-l="sel"] { background: var(--cb-head, #edf4fb); box-shadow: inset 2px 0 0 var(--acc); }
+.cb-bm-trow[data-l="sel"]:hover .cb-open-cue { display: inline-block; }
+/* The selected job ringed, its lineage outlined, everything else dimmed. Hovering the selected card says that
+ * a second click opens its page. */
+.cb-bm-node[data-l="sel"] > .cb-bm-card { outline: 2px solid var(--acc); outline-offset: 2px; }
+.cb-bm-node[data-l="sel"] > .cb-bm-card:not(.cb-bm-trunk):hover .cb-bm-head { background: var(--cb-rail-on, #dbe7f3); }
+.cb-bm-node[data-l="sel"] > .cb-bm-card:hover .cb-bm-head .cb-open-cue { display: inline-block; }
+.cb-bm-node[data-l="sel"] > .cb-bm-card:hover .cb-bm-head .cb-bm-badge { display: none; }
+.cb-bm-node:is([data-l="up"], [data-l="down"]) > .cb-bm-card {
+    outline: 1px solid color-mix(in srgb, var(--acc) 60%, transparent); outline-offset: 2px; }
+.cb-bm-scroll[data-has-sel] .cb-bm-node:not([data-l]) { opacity: .22; }
+/* Find: the matches stay, the rest fades; the matched letters are marked where they show. */
+.cb-bm-scroll[data-finding] .cb-bm-node:not([data-f]) { opacity: .16; }
+.cb-bm-node[data-f] > .cb-bm-card { outline: 1.5px solid var(--acc); outline-offset: 2px; }
+.cb-bm-node[data-f="cur"] > .cb-bm-card { outline-width: 2.5px; outline-offset: 3px;
+    box-shadow: 0 0 0 7px color-mix(in srgb, var(--acc) 16%, transparent), 0 10px 24px rgba(15,23,42,.10); }
+::highlight(cb-bm-find) { background-color: #fde68a; color: #0f172a; }
+/* Choosing what an input reads: the jobs it can read lit, each with its pill, the rest faded. */
+.cb-bm-scroll[data-slotting] .cb-bm-node:not([data-c]) { opacity: .2; }
+.cb-bm-node:is([data-c="yes"], [data-c="cur"]) > .cb-bm-card { outline: 1.5px solid var(--cb-pick, #2563eb);
+    outline-offset: 2px; }
+.cb-bm-node[data-c="cur"] > .cb-bm-card { outline-width: 2.5px;
+    box-shadow: 0 0 0 7px color-mix(in srgb, var(--cb-pick, #2563eb) 14%, transparent); }
+.cb-bm-node[data-c="now"] > .cb-bm-card { outline: 2px solid var(--cb-pick, #2563eb); outline-offset: 2px;
+    background: var(--cb-bm-chosen, #f5f9ff); }
+.cb-bm-node[data-use]::after { content: attr(data-use); position: absolute; right: 8px; bottom: -9px; z-index: 4;
+    height: 18px; padding: 0 8px; border-radius: var(--cb-bm-chip-radius, 9px); background: var(--cb-pick, #2563eb);
+    color: #fff; font: 600 9px var(--cb-sans, 'IBM Plex Sans', sans-serif); line-height: 18px; white-space: nowrap;
+    box-shadow: 0 2px 6px rgba(37,99,235,0.3); pointer-events: none; }
+.cb-bm-node[data-c="now"]::after { background: #fff; color: var(--cb-pick, #2563eb);
+    box-shadow: inset 0 0 0 1px var(--cb-pick, #2563eb); }
+/* The palette: frosted glass over the map, for find and for choosing what an input reads. */
+.cb-bm-find { position: fixed; z-index: 9000; display: none; box-sizing: border-box;
+    background: rgba(248, 250, 252, 0.62); -webkit-backdrop-filter: blur(14px) saturate(160%);
+    backdrop-filter: blur(14px) saturate(160%); border: 1px solid rgba(148, 163, 184, 0.45);
+    border-radius: var(--cb-r-lg, 10px);
+    box-shadow: 0 18px 50px rgba(15, 23, 42, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.7); }
+.cb-bm-find-title { display: none; padding: 9px 14px 0 42px; font: 600 10px var(--cb-sans, 'IBM Plex Sans', sans-serif);
+    color: var(--cb-ink-2, #334155); }
+.cb-bm-find[data-mode="slot"] .cb-bm-find-title { display: block; }
+.cb-bm-find-bar { display: flex; align-items: center; gap: 10px; height: 46px; padding: 0 14px; }
+.cb-bm-find-bar .material-icons { color: var(--cb-ink-3, #64748b); font-size: 18px; }
+.cb-bm-find input { all: unset; flex: 1 1 auto; min-width: 0; color: #0f172a; caret-color: var(--cb-accent, #4a8fd4);
+    font: 500 15px var(--cb-sans, 'IBM Plex Sans', sans-serif); }
+.cb-bm-find input::placeholder { color: #94a3b8; font-weight: 400; }
+.cb-bm-find-count { font: 400 10px var(--cb-mono, 'IBM Plex Mono', monospace); color: #475569; white-space: nowrap; }
+.cb-bm-find-x { cursor: pointer; font-size: 15px !important; opacity: .6; }
+.cb-bm-find-x:hover { opacity: 1; }
+.cb-bm-find-list { border-top: 1px solid rgba(148, 163, 184, 0.35); padding: 4px 0; max-height: 320px;
+    overflow-y: auto; }
+.cb-bm-find-list:empty { display: none; }
+.cb-bm-find-item { display: flex; align-items: center; gap: 8px; height: 26px; padding: 0 14px; cursor: pointer; }
+.cb-bm-find-item:hover { background: rgba(74, 143, 212, 0.08); }
+.cb-bm-find-item.on { background: rgba(74, 143, 212, 0.16); }
+.cb-bm-find-item .cb-bm-light { margin-right: 0; }
+.cb-bm-find-item .t { font: 500 12px var(--cb-sans, 'IBM Plex Sans', sans-serif); color: #0f172a; white-space: nowrap; }
+.cb-bm-find-item .n { font: 400 10px var(--cb-mono, 'IBM Plex Mono', monospace); color: #64748b; }
+.cb-bm-find-item .now { font: 600 8px var(--cb-mono, 'IBM Plex Mono', monospace); text-transform: uppercase;
+    letter-spacing: .06em; color: var(--cb-pick, #2563eb); white-space: nowrap; }
+.cb-bm-find-item .c { font: 400 10px var(--cb-sans, 'IBM Plex Sans', sans-serif); color: #64748b; flex: 1 1 0;
+    min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+.cb-bm-find-hint { font: 400 9px var(--cb-mono, 'IBM Plex Mono', monospace); color: #64748b; padding: 6px 14px 8px 42px;
+    border-top: 1px solid rgba(148, 163, 184, 0.35); }
+/* A card's menu: the "+" (job types that can read it) and the number (open, clone, remove). */
+.cb-bm-menu { position: fixed; z-index: 9100; min-width: 220px; max-width: 420px; padding: 4px 0 6px;
+    background: #fff; border: 1px solid var(--cb-line, #e2e8f0); border-radius: var(--cb-bm-menu-radius, 8px);
+    box-shadow: var(--cb-bm-menu-shadow, 0 10px 28px rgba(15,23,42,0.16)); }
+.cb-bm-menu .h { padding: 4px 12px 6px; font: 600 9px var(--cb-sans, 'IBM Plex Sans', sans-serif);
+    color: var(--cb-ink-3, #64748b); }
+.cb-bm-menu .r { display: flex; align-items: center; gap: 8px; padding: 5px 12px; cursor: pointer; }
+.cb-bm-menu .r:hover { background: var(--cb-bm-hover, #f1f5f9); }
+.cb-bm-menu .r.off { opacity: .5; cursor: default; }
+.cb-bm-menu .r.off:hover { background: none; }
+.cb-bm-menu .r i { font-size: 13px; color: var(--cb-bm-port, #64748b); }
+.cb-bm-menu .r .t { width: 128px; flex: 0 0 auto; font: 600 10px var(--cb-sans, 'IBM Plex Sans', sans-serif);
+    color: var(--cb-ink-1, #0f172a); }
+.cb-bm-menu .r.off .t { font-weight: 400; }
+.cb-bm-menu .r .w { font: 400 9px var(--cb-sans, 'IBM Plex Sans', sans-serif); color: var(--cb-ink-3, #64748b); }
+.cb-bm-menu .r.bad :is(i, .t) { color: var(--cb-bad-dot, #b91c1c); }
 /* The readable plot (ui/components/plot.py): its faces, and the readout under the pointer. */
 .cb-plot-num { font-family: var(--cb-mono, 'IBM Plex Mono', monospace); font-variant-numeric: tabular-nums; }
 .cb-plot-word {
@@ -2264,11 +2477,6 @@ _BRANCH_MAP_CSS = """
 .cb-rail-row.cb-sel { box-shadow: inset 0 0 0 1px var(--cb-accent, #4a8fd4); }
 .cb-rail-row.cb-sel:hover { background: var(--cb-rail-on, #dbe7f3) !important; }
 .cb-rail-row.cb-sel:hover .cb-open-cue { display: inline-block; }
-.cb-bm-card.cb-sel { outline: 2px solid var(--cb-accent, #4a8fd4); outline-offset: 2px; }
-.cb-bm-card.cb-sel .cb-bm-head:hover { background: var(--cb-rail-on, #dbe7f3) !important; }
-.cb-bm-card.cb-sel .cb-bm-head:hover .cb-open-cue { display: inline-block; }
-.cb-bm-row.cb-sel { background: var(--cb-head, #edf4fb); box-shadow: inset 2px 0 0 var(--cb-accent, #4a8fd4); }
-.cb-bm-row.cb-sel:hover .cb-open-cue { display: inline-block; }
 @keyframes cb-bm-pulse {
     0% { box-shadow: 0 0 0 0 rgba(59,130,246,0.45); }
     70% { box-shadow: 0 0 0 6px rgba(59,130,246,0); }

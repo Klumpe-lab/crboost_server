@@ -1,5 +1,5 @@
 """Measure the branch map in a headless Chromium against a running server: element and DOM counts, the size of each
-websocket update, how long a click takes to come back and settle, long tasks, and frame times while panning.
+websocket update, how long a click takes to come back and settle, long tasks, and frame times while scrolling.
 
 It opens a project's Jobs view, shows the map from the roster's map icon, and clicks view controls only (card sizes,
 the flags on the Pipeline title line, a card's header); nothing in the project changes. It runs in the Playwright
@@ -57,7 +57,7 @@ COUNT = r"""
     dom_nodes: document.getElementsByTagName('*').length,
     map_dom_nodes: world ? world.getElementsByTagName('*').length : 0,
     cards: cards.length,
-    large_cards: [...cards].filter((c) => parseFloat(c.style.width) > 300).length,
+    large_cards: document.querySelectorAll('.cb-bm-node.large').length,
     world_px: world ? [parseFloat(world.style.width), parseFloat(world.style.height)] : null,
   };
   if (full) out.tags = Object.entries(tags).sort((a, b) => b[1] - a[1]).slice(0, 10);
@@ -127,9 +127,9 @@ def main() -> None:
             ".find((x) => x.textContent.trim() === 'close_fullscreen');"
             " if (!s) return false; s.click(); return true; })()",
         )
-        report["pan_small"] = pan(page)
+        report["scroll_small"] = pan(page)
         act("all_large", flag.replace("{icon}", "unfold_more"), full=True, shot="probe-all-large.png")
-        report["pan_large"] = pan(page)
+        report["scroll_large"] = pan(page)
         act("all_small", flag.replace("{icon}", "unfold_less"))
         act("magazines_off", flag.replace("{icon}", "view_week"))
         act("magazines_on", flag.replace("{icon}", "view_week"))
@@ -155,10 +155,10 @@ def settle(page, quiet_ms: int = 1500, cap_ms: int = 40000) -> None:
 
 
 def pan(page) -> dict:
-    """Wheel-zoom and drag the paper; frame intervals from requestAnimationFrame."""
-    box = page.locator(".cb-bm-canvas").bounding_box()
+    """Scroll the map down and back with the wheel; frame intervals from requestAnimationFrame."""
+    box = page.locator(".cb-bm-scroll").bounding_box()
     if box is None:
-        return {"skipped": "no canvas"}
+        return {"skipped": "no map"}
     lt0 = page.evaluate("performance.now()")
     page.evaluate(
         "window.__fr = []; window.__frOn = true; (function loop(t0) { requestAnimationFrame((t) => { "
@@ -166,16 +166,9 @@ def pan(page) -> dict:
     )
     cx, cy = box["x"] + box["width"] * 0.5, box["y"] + box["height"] * 0.5
     page.mouse.move(cx, cy)
-    for i in range(24):
-        page.mouse.wheel(0, -60 if i < 12 else 60)
+    for i in range(48):
+        page.mouse.wheel(0, 80 if i < 24 else -80)
         page.wait_for_timeout(16)
-    px, py = box["x"] + box["width"] - 30, box["y"] + box["height"] - 30
-    page.mouse.move(px, py)
-    page.mouse.down()
-    for i in range(40):
-        page.mouse.move(px - 8 * i, py - 4 * i)
-        page.wait_for_timeout(16)
-    page.mouse.up()
     page.wait_for_timeout(300)
     page.evaluate("window.__frOn = false")
     fr = [f for f in page.evaluate("window.__fr") if f > 0]

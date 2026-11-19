@@ -116,11 +116,8 @@ async def choose_species(backend, project_path: Path, job_type: JobType) -> str 
 
         with ui.column().classes("w-full").style("gap: 3px;"):
             ui.label(f"Add {job_name}").style(PANEL_TITLE_STYLE)
-            ui.label(
-                "For which species? A click adds the job; it takes the species' values as its own."
-                if registry
-                else "This project has no species yet. Make one, and the job is added for it."
-            ).style(HELPER_STYLE)
+            if not registry:
+                ui.label("This project has no species yet.").style(HELPER_STYLE)
         if registry:
             with ui.element("div").style(
                 f"width: 100%; border-top: 1px solid {_LINE}; max-height: 50vh; overflow-y: auto;"

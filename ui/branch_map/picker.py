@@ -1,7 +1,6 @@
-"""The tilt-series picker above the map: a handle naming the tilt series picked (or how many there are), the pin,
-and, while open, one chip per tilt series with its position and a trail of per-job marks. Picking one rings its
-square in every magazine and turns the large cards to it; it is the workspace's selected tilt series, so the
-Journey and the Tomograms view follow."""
+"""The tilt-series picker, a menu on the map's title line: one chip per tilt series with its position and a trail
+of per-job marks; and the chip naming the one picked. Picking one rings its square in every magazine and turns the
+large cards to it; it is the workspace's selected tilt series, so the Journey and the Tomograms view follow."""
 
 from __future__ import annotations
 
@@ -20,14 +19,10 @@ from ui.branch_map.style import (
     CHIP_ON_INK,
     CHIP_ON_LINE,
     CHIP_ON_SOFT,
-    HAIR,
     INK,
     MUTED,
-    SOFT,
     hrow,
-    label,
     text,
-    tok,
 )
 
 
@@ -88,67 +83,27 @@ def picker_body(pr: Project, st: MapState, pick: Callable[[str], None]) -> None:
             chip.on("click", lambda _e, t=ts: pick(t))
 
 
-def render_picker(pr: Project, st: MapState, redraw, pick: Callable[[str | None], None]) -> None:
-    """The bar above the map: a handle that names the tilt series picked (or how many there are), the pin, and the
-    chips while it is open."""
-    with ui.element("div").style(
-        f"border: 1px solid var(--cb-bm-box-line, {CARD_BORDER}); border-radius: var(--cb-bm-box-radius, 8px); "
-        "background: var(--cb-bm-box-bg, #fff); margin-bottom: var(--cb-bm-box-gap, 8px); "
-        "padding: 0 var(--cb-bm-box-pad, 10px); box-shadow: var(--cb-bm-box-rule, none); flex-shrink: 0;"
-    ):
-        with hrow(8, "height: 26px;"):
-            handle = hrow(5, "cursor: pointer; height: 26px;").classes("cb-bm-handle")
-            with handle:
-                ui.icon("expand_less" if st.picker_open else "expand_more", size="14px").style(f"color: {SOFT};")
-                label("Tilt series", 10, INK, case="none", track="0")
-                text(str(len(pr.ts_ids)), 10, MUTED, mono=True)
-            handle.on("click", lambda _e: (setattr(st, "picker_open", not st.picker_open), redraw()))
-            if st.active_ts:
-                chip = hrow(
-                    5,
-                    "height: 18px; padding: 0 4px 0 8px; border-radius: var(--cb-bm-chip-radius, 9px); "
-                    f"background: {CHIP_ON}; box-shadow: inset 0 0 0 1px {CHIP_ON_LINE};",
-                )
-                with chip:
-                    text(pr.ts_title(st.active_ts), 9, CHIP_ON_INK, bold=True)
-                    text(
-                        st.active_ts,
-                        9,
-                        CHIP_ON_SOFT,
-                        mono=True,
-                        extra="max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
-                    )
-                    x = ui.element("div").style(
-                        "width: 14px; height: 14px; display: flex; align-items: center; justify-content: center; "
-                        f"cursor: pointer; color: {CHIP_ON_SOFT};"
-                    )
-                    with x:
-                        ui.icon("close", size="11px")
-                    x.tooltip("No tilt series picked: the large cards show every tilt series again")
-                    x.on("click.stop", lambda _e: pick(None))
-            else:
-                text("pick one to ring it in every magazine and turn the large cards to it", 9, MUTED)
-            ui.element("div").style("flex: 1 1 0;")
-            if st.picker_open or st.picker_pinned:
-                pin = ui.element("div").style(
-                    "width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; "
-                    f"cursor: pointer; color: {INK if st.picker_pinned else tok('off-dot', '#cbd5e1')}; "
-                    f"transform: rotate({0 if st.picker_pinned else 45}deg);"
-                )
-                with pin:
-                    ui.icon("push_pin", size="13px")
-                pin.tooltip("Pinned: stays open after a pick" if st.picker_pinned else "Pin the picker open")
-                pin.on(
-                    "click",
-                    lambda _e: (
-                        setattr(st, "picker_pinned", not st.picker_pinned),
-                        setattr(st, "picker_open", True),
-                        redraw(),
-                    ),
-                )
-        if st.picker_open:
-            with ui.element("div").style(
-                f"border-top: 1px solid {HAIR}; padding: 2px 0 4px; max-height: 220px; overflow-y: auto; "
-                "scrollbar-width: thin;"
-            ):
-                picker_body(pr, st, pick)
+def render_ts_chip(pr: Project, ts: str, clear: Callable[[], None]) -> None:
+    """The picked tilt series, named on the map's title line, with the cross that lets it go."""
+    chip = hrow(
+        5,
+        "height: 18px; padding: 0 4px 0 8px; border-radius: var(--cb-bm-chip-radius, 9px); min-width: 0; "
+        f"background: {CHIP_ON}; box-shadow: inset 0 0 0 1px {CHIP_ON_LINE};",
+    )
+    with chip:
+        text(pr.ts_title(ts), 9, CHIP_ON_INK, bold=True, extra="white-space: nowrap;")
+        text(
+            ts,
+            9,
+            CHIP_ON_SOFT,
+            mono=True,
+            extra="max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;",
+        )
+        x = ui.element("div").style(
+            "width: 14px; height: 14px; display: flex; align-items: center; justify-content: center; "
+            f"cursor: pointer; color: {CHIP_ON_SOFT}; flex-shrink: 0;"
+        )
+        with x:
+            ui.icon("close", size="11px")
+        x.tooltip("No tilt series picked: the large cards show every tilt series again")
+        x.on("click.stop", lambda _e: clear())

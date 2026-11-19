@@ -1,7 +1,6 @@
-"""The large card's blocks between the input rows and the footer: the job's parameters in the job tab's
-arrangement (read-only for a job in the project, the tab's own fields for the job being added), its results over
-every tilt series, and the picked tilt series' Journey for this job. Each block is a list of `(height, draw)`
-parts, so the card's height is known before it is drawn and the cables land on it."""
+"""The form of the job being added, on its card (ui/branch_map/card.py): its parameters as the job tab arranges
+them, in the tab's own fields, with the species' values where nothing was typed. Each block is a list of
+`(height, draw)` parts under a labelled section."""
 
 from __future__ import annotations
 
@@ -10,22 +9,14 @@ from math import ceil
 
 from nicegui import ui
 
-from ui.branch_map.card import CardSpec
-from ui.branch_map.facts import FactsStore
-from ui.branch_map.geometry import LARGE_W, SIDE, Box, card_height
-from ui.branch_map.model import FieldSpec, Job, Project
-from ui.branch_map.plots import svg_plot, svg_tilt
+from ui.branch_map.geometry import LARGE_W, SIDE
+from ui.branch_map.model import FieldSpec, Project
 from ui.branch_map.state import MapState
-from ui.branch_map.style import HAIR, INK, MUTED, RED, RUN, SOFT, hrow, label, text, voice
-from ui.job_plugins._field_styles import VALUE_WRAP_STYLE, _attach_input, num_html
+from ui.branch_map.style import HAIR, INK, MUTED, SOFT, hrow, label, text, voice
+from ui.job_plugins._field_styles import VALUE_WRAP_STYLE, _attach_input
 
 Part = tuple[float, Callable[[], None]]
 Section = tuple[str, list[Part]]
-PIC_H = 104
-PLOT_H = 56
-TILE_H = 32
-TILT_PLOT_H = 58
-TILT_LABEL_H = 12
 ROW_RO = 17  # a read-only parameter row
 ROW_ED = 22  # an editable parameter row, the job tab's chrome
 SEC_PAD_T, SEC_LABEL_H, SEC_GAP, SEC_PAD_B = 6, 14, 4, 5
@@ -43,19 +34,6 @@ def _cap(content: str) -> None:
     text(content, 9, SOFT, extra="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;")
 
 
-def _tiles(rows: list[tuple[str, str]]) -> None:
-    """The Journey's stat tiles (`.cb-stat`, ui/dashboard/css.py): a 9 px label over an 11 px mono value."""
-    with (
-        ui.element("div")
-        .classes("cb-stats")
-        .style(f"gap: 20px; margin: 0; height: {TILE_H}px; overflow: hidden; flex-wrap: nowrap; line-height: 1.3;")
-    ):
-        for lbl, value in rows:
-            with ui.element("div").classes("cb-stat").style("flex-shrink: 0;"):
-                ui.label(lbl).classes("cb-stat-label")
-                ui.html(num_html(value), sanitize=False).classes("cb-stat-value")
-
-
 def section_height(parts: list[Part]) -> float:
     return SEC_PAD_T + SEC_LABEL_H + SEC_GAP + sum(h for h, _ in parts) + SEC_GAP * max(0, len(parts) - 1) + SEC_PAD_B
 
@@ -69,20 +47,6 @@ def draw_section(lbl: str, parts: list[Part]) -> None:
         for h, draw in parts:
             with ui.element("div").style(f"height: {h}px; flex-shrink: 0; line-height: 0; overflow: hidden;"):
                 draw()
-
-
-def _pictures(pics: list[tuple[str, str]], *, arrow: bool, h: int) -> None:
-    """Thumbnails in a row, each named on hover."""
-    with hrow(8 if arrow else 6):
-        for i, (url, tip) in enumerate(pics):
-            if arrow and i:
-                text("→", 12, MUTED)
-            img = ui.html(
-                f'<img src="{url}" style="height: {h}px; width: auto; max-width: 100%; '
-                'border-radius: var(--cb-img-radius, 5px); display: block;">',
-                sanitize=False,
-            ).style("line-height: 0; flex-shrink: 1; min-width: 0;")
-            img.tooltip(tip)
 
 
 # ── parameters ───────────────────────────────────────────────────────────────
@@ -126,7 +90,7 @@ def _ro_field(fs: FieldSpec, value, *, label_w: int) -> None:
             "white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
         )
         if fs.hint:
-            lbl.tooltip(fs.hint)
+            lbl.props["title"] = fs.hint
         text(
             _value_words(value),
             10,
@@ -144,7 +108,7 @@ def _ed_field(fs: FieldSpec, value, on_change, *, label_w: int, box_w: int) -> N
             f"width: {label_w}px; overflow: hidden; text-overflow: ellipsis;"
         )
         if fs.hint:
-            lbl.tooltip(fs.hint)
+            lbl.props["title"] = fs.hint
         if fs.kind == "number":
             inp = ui.number(value=value, on_change=on_change)
         elif fs.kind == "select":
@@ -154,7 +118,7 @@ def _ed_field(fs: FieldSpec, value, on_change, *, label_w: int, box_w: int) -> N
             inp.props('popup-content-class="cb-select-popup"')
         else:
             inp = ui.input(value="" if value is None else str(value), on_change=on_change)
-        _attach_input(inp, is_frozen=False, narrow=False)
+        _attach_input(inp, is_frozen=False, width="M")
         # A fixed width: a width-less q-field in a grid cell grows past the cell (and the card's edge).
         inp.style(VALUE_WRAP_STYLE + f" flex: 0 0 auto; width: {box_w}px; max-width: {box_w}px;")
 
@@ -206,142 +170,8 @@ def params_parts(
     return parts
 
 
-# ── results over every tilt series ───────────────────────────────────────────
-
-
-def results_parts(pr: Project, j: Job, inner_w: int, store: FactsStore, *, tally: bool = True) -> list[Part]:
-    """What the job made over every tilt series: headline tiles, the pictures or plot with a caption, the tally,
-    what else the job has to say. The magazine stays above the card, whatever its size. Until the facts are read
-    the block says so. `tally=False`: no tilt-series tally (a card that counts particles, not tilt series)."""
-    parts: list[Part] = []
-    f = store.job_facts(j)
-    if f is None:
-        parts.append((LINE_H, lambda: _cap("reading the results…")))
-    else:
-        if f.tiles:
-            parts.append((TILE_H, lambda: _tiles(f.tiles)))
-        if f.pictures:
-            parts.append((PIC_H, lambda: _pictures(f.pictures, arrow=f.arrow, h=PIC_H)))
-            if f.picture_caption:
-                parts.append((LINE_H, lambda: _cap(f.picture_caption)))
-        if f.plot is not None and f.plot.values:
-            parts.append((PLOT_H, lambda: ui.html(svg_plot(f.plot, inner_w, PLOT_H), sanitize=False)))
-            if f.plot.caption:
-                parts.append((LINE_H, lambda: _cap(f.plot.caption)))
-        for line in f.lines:
-            parts.append((LINE_H, lambda line=line: _cap(line)))
-    if tally:
-        parts.append((LINE_H, lambda: text(pr.tally_words(j), 9, RED if j.status == "failed" else SOFT)))
-    elif not parts:
-        parts.append((LINE_H, lambda: _cap("nothing to show")))
-    return parts
-
-
-# ── one tilt series ──────────────────────────────────────────────────────────
-
-
-def ts_parts(pr: Project, j: Job, ts: str, inner_w: int, store: FactsStore) -> list[Part]:
-    """The Journey's section of this job for the picked tilt series: the stat tiles, the pictures of that tomogram,
-    the per-tilt plots two to a row, the lines."""
-    state = pr.ts_state(j, ts)
-    parts: list[Part] = []
-    if state in ("none", "out"):
-        return [(LINE_H, lambda: _cap(f"{pr.ts_title(ts)} is not in this job"))]
-    if state == "pending":
-        return [(LINE_H, lambda: _cap(f"{pr.ts_title(ts)} is still waiting in this job"))]
-    if state == "fail":
-        parts.append((LINE_H, lambda: text(f"{pr.ts_title(ts)} failed in this job", 9, RED)))
-    if state == "running":
-        parts.append((LINE_H, lambda: text(f"{pr.ts_title(ts)} is on the GPU now", 9, RUN)))
-    known, f = store.ts_facts(j, ts)
-    if not known:
-        parts.append((LINE_H, lambda: _cap("reading this tilt series…")))
-        return parts
-    if f is None:
-        parts.append((LINE_H, lambda: _cap("nothing recorded for this tilt series")))
-        return parts
-    if f.tiles:
-        parts.append((TILE_H, lambda: _tiles(f.tiles)))
-    if f.pictures:
-        parts.append((PIC_H, lambda: _pictures(f.pictures, arrow=f.arrow, h=PIC_H)))
-    if f.plots:
-        col_w = int((inner_w - 10) / 2)
-        rows = ceil(len(f.plots) / 2)
-
-        def plots() -> None:
-            with ui.element("div").style(f"display: grid; grid-template-columns: {col_w}px {col_w}px; gap: 4px 10px;"):
-                for tp in f.plots:
-                    with ui.element("div").style("display: flex; flex-direction: column;"):
-                        ui.label(tp.label).classes("cb-plot-label").style(
-                            f"line-height: {TILT_LABEL_H}px; height: {TILT_LABEL_H}px; padding: 0; "
-                            "white-space: nowrap; cursor: default;"
-                        )
-                        ui.html(svg_tilt(tp, col_w, TILT_PLOT_H), sanitize=False).style("line-height: 0;")
-
-        parts.append((rows * (TILT_LABEL_H + TILT_PLOT_H) + (rows - 1) * 4, plots))
-    for line in f.lines:
-        parts.append((LINE_H, lambda line=line: _cap(line)))
-    return parts
-
-
-def middle_sections(
-    pr: Project,
-    st: MapState,
-    spec: CardSpec,
-    inner_w: int,
-    store: FactsStore,
-    *,
-    on_param=None,
-    new_defaults: dict | None = None,
-) -> list[Section]:
-    """A large card's middle: the parameters, the results, the picked tilt series: each a labelled block whose
-    height is known before it is drawn. `new_defaults`: the species' values the job being added will take, shown
-    in its form where nothing was typed."""
-    secs: list[Section] = []
-    if spec.ghost:
-        fields = pr.param_fields.get(spec.kind, ())
-        values = {**(new_defaults or {}), **st.params}
-        secs.append(("PARAMETERS", params_parts(fields, values, inner_w, editable=True, on_change=on_param)))
-        return secs
-    j = spec.job
-    assert j is not None
-    fields = pr.param_fields.get(j.kind, ())
-    when = "not run yet" if j.status in ("scheduled", "queued") else "as run"
-    secs.append((f"PARAMETERS · {when}", params_parts(fields, j.param_values, inner_w, editable=False)))
-    if j.status in ("done", "failed", "running"):
-        secs.append(("RESULTS · every tilt series", results_parts(pr, j, inner_w, store)))
-        if st.active_ts:
-            secs.append((f"TILT SERIES · {pr.ts_title(st.active_ts)}", ts_parts(pr, j, st.active_ts, inner_w, store)))
-    return secs
-
-
-def middle_height(secs: list[Section]) -> float:
-    return sum(section_height(parts) for _, parts in secs)
-
-
-def draw_middle(secs: list[Section]) -> None:
-    for lbl, parts in secs:
-        draw_section(lbl, parts)
-
-
-def box_of(
-    pr: Project,
-    spec: CardSpec,
-    st: MapState,
-    store: FactsStore,
-    *,
-    large: bool,
-    on_param=None,
-    new_defaults: dict | None = None,
-) -> tuple[Box, list[Section]]:
-    """A card's measurements before it is drawn, and the sections of its middle block when large."""
-    from ui.branch_map.card import strip_band
-
-    secs = (
-        middle_sections(pr, st, spec, LARGE_W - 2 * SIDE, store, on_param=on_param, new_defaults=new_defaults)
-        if large
-        else []
-    )
-    extra = middle_height(secs)
-    band = 0 if spec.job is None else strip_band(pr, st)
-    return Box(LARGE_W if large else 236, card_height(len(spec.sockets), extra), extra, band), secs
+def new_sections(pr: Project, st: MapState, *, on_param, new_defaults: dict | None) -> list[Section]:
+    """The job being added: its parameters, editable; the species' values where nothing was typed."""
+    fields = pr.param_fields.get(st.adding or "", ())
+    values = {**(new_defaults or {}), **st.params}
+    return [("PARAMETERS", params_parts(fields, values, LARGE_W - 2 * SIDE, editable=True, on_change=on_param))]
