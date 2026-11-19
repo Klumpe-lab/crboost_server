@@ -415,6 +415,22 @@ class CompanionSession(Session):
             )
 
 
+def log_napari_errors() -> None:
+    """Every error napari shows as a notification (an exception in a button's handler, say) goes into the session's
+    log with its traceback too: text on a VNC desktop cannot be copied out, and napari's own traceback view fails on
+    code it cannot find the source of."""
+    import traceback
+
+    from napari.utils.notifications import ErrorNotification, notification_manager
+
+    def _log(event) -> None:
+        if isinstance(event, ErrorNotification):
+            exc = event.exception
+            logger.error("%s", "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)).rstrip())
+
+    notification_manager.notification_ready.connect(_log)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("volumes", nargs="*", help="MRC volumes to open (by hand)")
@@ -428,6 +444,7 @@ def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(name)s %(message)s")
 
     viewer = napari.Viewer(title="napari")
+    log_napari_errors()
     qt_window = getattr(viewer.window, "_qt_window", None)
     if qt_window is not None:
         qt_window.showMaximized()
