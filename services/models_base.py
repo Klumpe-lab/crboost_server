@@ -352,18 +352,32 @@ class AcquisitionParams(BaseModel):
 # ProjectState.add_species), not a render-time choice; services.dashboard_data
 # re-exports it for the renderers that read it as an overlay constant.
 #
-# Saturated primaries on purpose: these sit over a greyscale tomogram (no
-# mid-grays) so the dots pop at either end of the backdrop.
+# One palette for canvases and chrome alike: strong hues, muted from neon, after a glass
+# cockpit's display colours. They sit over a greyscale tomogram, so each stays clear of
+# the mid-greys. Slot for slot with `_LEGACY_OVERLAY_COLORS`.
 SPECIES_OVERLAY_COLORS = [
-    "#ff1744",  # vivid red
-    "#00e5ff",  # vivid cyan
-    "#ffea00",  # vivid yellow
-    "#d500f9",  # vivid magenta-purple
-    "#76ff03",  # neon green
-    "#2979ff",  # vivid blue
-    "#ff9100",  # vivid orange
-    "#f50057",  # vivid pink
+    "#e8504a",  # red
+    "#2cc8dc",  # cyan
+    "#e3cf3e",  # yellow
+    "#d65ad6",  # magenta
+    "#4cc96a",  # green
+    "#4f8ff0",  # blue
+    "#f0a030",  # orange
+    "#ef7aa6",  # pink
 ]
+
+# The neon palette older projects and catalog entries were stored with; a stored colour in
+# it moves to the same slot of `SPECIES_OVERLAY_COLORS` (`current_overlay_color`).
+_LEGACY_OVERLAY_COLORS = ["#ff1744", "#00e5ff", "#ffea00", "#d500f9", "#76ff03", "#2979ff", "#ff9100", "#f50057"]
+
+
+def current_overlay_color(color: str) -> str:
+    """`color` moved to the same slot of the current palette when it is one of the legacy
+    palette's; any other colour (a user's own, the current palette's) as it is."""
+    try:
+        return SPECIES_OVERLAY_COLORS[_LEGACY_OVERLAY_COLORS.index((color or "").strip().lower())]
+    except ValueError:
+        return color
 
 
 def species_palette_color(species_id: str) -> str:

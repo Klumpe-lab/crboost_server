@@ -12,8 +12,9 @@ grids (CSS in ui/dashboard/css.py), not cards: a narrow card truncates most of i
 lines, while a column sized to its content does not.
 
 Design rules:
-  - Color palette is gray + indigo (templates) + purple (masks) +
-    white/black polarity chips. No blue/emerald/amber tints elsewhere.
+  - Inks and hairlines only. The accent marks state (the selected row's ring); an amber
+    dot marks something to look at (a large file, an unusual σ), red only a broken volume.
+    Polarity and method are words (`ui/components/chip.py`).
   - Three font sizes: text-sm (section titles),
     text-xs (body / form labels), text-[10px] (captions / chips / mono).
     The creation forms use `Segmented` + `.cb-field`, not Quasar tabs and bare
@@ -43,6 +44,7 @@ from nicegui import app, context, ui
 
 from services import species_admin, species_edit
 from services.http_responses import NO_GZIP
+from services.models_base import SPECIES_OVERLAY_COLORS
 from services.project_state import (
     ParticleSpecies,
     ParticleTemplate,
@@ -124,46 +126,6 @@ def serve_file(path: str):
     return FileResponse(p, media_type="application/octet-stream", headers=NO_GZIP)
 
 
-COLOR_PALETTE = [
-    0x5C6BC0,
-    0x7986CB,
-    0x9FA8DA,
-    0x42A5F5,
-    0x64B5F6,
-    0x90CAF9,
-    0x26C6DA,
-    0x4DD0E1,
-    0x80DEEA,
-    0x26A69A,
-    0x4DB6AC,
-    0x80CBC4,
-    0x66BB6A,
-    0x81C784,
-    0xA5D6A7,
-    0x9CCC65,
-    0xAED581,
-    0xC5E1A5,
-    0xFFA726,
-    0xFFB74D,
-    0xFFCC80,
-    0xFFEE58,
-    0xFFF176,
-    0xFFF59D,
-    0xEF5350,
-    0xE57373,
-    0xEF9A9A,
-    0xEC407A,
-    0xF06292,
-    0xF48FB1,
-    0xAB47BC,
-    0xBA68C8,
-    0xCE93D8,
-    0x7E57C2,
-    0x9575CD,
-    0xB39DDB,
-]
-
-
 # ─── Shared style chrome ────────────────────────────────────────────────
 # Three font sizes total. Two accent colors total. The page's blocks are pale gray-blue
 # panels (`PANEL_STYLE`) a gap apart, never underlined or boxed in borders.
@@ -185,8 +147,6 @@ _MONO_CLS = "text-[10px] font-mono text-gray-600"
 # Inside a table row everything except the filename runs at 9 px, matching the stats and
 # size badges.
 _ROW_MONO_CLS = "text-[9px] font-mono text-gray-600"
-_INDIGO = "#6366f1"
-_PURPLE = "#a855f7"
 # Creation-form tabs. Sentence case, matching the Species page's own tab labels
 # ("Templates & masks", not "Templates & Masks"). "From template" says what the tool
 # does; which tool it is (relion_mask_create) is named in the panel's own hint.
@@ -204,6 +164,18 @@ _LIST_HEIGHT_PX = 186
 
 
 _SANS = "font-family: 'IBM Plex Sans', sans-serif;"
+_ROW_MONO = "font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; font-variant-numeric: tabular-nums;"
+_BODY = "#1e293b"
+_SOFT = "#5b7089"
+# The two marks a row may carry: amber for something to look at, red only for a broken volume.
+_MARK_COLORS = {"warn": "#d97706", "bad": "#b91c1c"}
+
+
+def _mark_dot(kind: str) -> None:
+    ui.element("span").style(
+        f"width: 5px; height: 5px; border-radius: 50%; background: {_MARK_COLORS[kind]}; "
+        "display: inline-block; margin-right: 4px; flex-shrink: 0;"
+    )
 
 
 def _section(title: str) -> None:
@@ -257,9 +229,9 @@ def _flip_selection(rows: dict, selected_id: str) -> None:
     another is in flight still hits a live element."""
     for entry_id, row in rows.items():
         if entry_id == selected_id:
-            row.classes(add="selected")
+            row.classes(add="cb-sel")
         else:
-            row.classes(remove="selected")
+            row.classes(remove="cb-sel")
 
 
 def _membership_moved(rows: dict, species, attr: str) -> bool:
@@ -625,8 +597,8 @@ class TemplateWorkbench:
     DEDUP_WINDOW_S = 0.2
     _DEDUP_ACTIONS = frozenset({"setVisibility", "setColor", "setIsoValue", "deleteItem"})
     # Files above this on disk are likely to choke molstar (a ~345 MB
-    # volume at 1.55 Å/px stalls it). The row size badge turns red above
-    # this and orange at half-threshold as a pre-load warning.
+    # volume at 1.55 Å/px stalls it). The row's size carries an amber mark
+    # from half this threshold up, as a pre-load warning.
     MOLSTAR_WARN_MB = 300
     # A pending load_volume that hasn't been reconciled by itemsChanged
     # within PENDING_ERROR_S is flipped to error; pruned PENDING_PRUNE_S
@@ -865,10 +837,10 @@ class TemplateWorkbench:
                     color_btn = ui.button(icon="circle").props("flat round dense size=xs").style(f"color: {color_hex}")
                     with ui.menu().props("auto-close") as color_menu:
                         with ui.grid(columns=6).classes("gap-0.5 p-1"):
-                            for pc in COLOR_PALETTE:
+                            for pc in SPECIES_OVERLAY_COLORS:
                                 ui.button().props("flat dense").style(
-                                    f"background:{f'#{pc:06x}'};width:16px;height:16px;min-width:16px;"
-                                ).on("click", lambda c=pc, i=iid: self._post_to_viewer("setColor", itemId=i, color=c))
+                                    f"background:{pc};width:16px;height:16px;min-width:16px;"
+                                ).on("click", lambda c=pc, i=iid: self._set_item_color(i, c))
                     color_btn.on("click", color_menu.open)
                     ui.label(iid).classes(_MONO_CLS + " max-w-[120px] truncate")
                     vis_btn = icon_button(
@@ -889,9 +861,7 @@ class TemplateWorkbench:
                     is_inv = item.get("isInverted", False)
                     with ui.row().classes("items-center gap-1 mt-0.5"):
                         ui.label("ISO").classes(_HINT_CLS + " shrink-0")
-                        iso_slider = (
-                            ui.slider(min=0.5, max=5.0, step=0.1, value=abs(iso_value)).classes("w-20")
-                        )
+                        iso_slider = ui.slider(min=0.5, max=5.0, step=0.1, value=abs(iso_value)).classes("w-20")
                         iso_slider.on(
                             "change",
                             lambda e, i=iid, inv=is_inv: self._post_to_viewer(
@@ -907,6 +877,10 @@ class TemplateWorkbench:
             "iso_label": iso_label,
             "iso_slider": iso_slider,
         }
+
+    def _set_item_color(self, iid: str, color: str) -> None:
+        """One of the overlay palette's colours on a loaded item; molstar takes it as an int."""
+        self._post_to_viewer("setColor", itemId=iid, color=int(color.lstrip("#"), 16))
 
     def _update_session_item(self, iid: str, item) -> None:
         refs = self.session_item_containers.get(iid)
@@ -956,7 +930,7 @@ class TemplateWorkbench:
                 # Inline row, matching the flat session items — no card chrome.
                 with ui.row().classes("items-center gap-1 w-full min-w-0 px-1"):
                     if status == "loading":
-                        ui.spinner("dots", size="xs").classes("text-indigo-500 shrink-0")
+                        ui.spinner("dots", size="xs").classes("text-slate-500 shrink-0")
                     else:
                         ui.icon("error_outline", size="12px").classes("text-red-600 shrink-0")
                     ui.label(entry["filename"]).classes(_MONO_CLS + " truncate flex-1 min-w-0")
@@ -1045,7 +1019,7 @@ class TemplateWorkbench:
                 ui.element("div")
                 .classes("cb-tw-table")
                 .style(
-                    f"--cb-tw-cols: {_TW_COLS}; --cb-accent: {_INDIGO}; --cb-accent-tint: {_INDIGO}14; "
+                    f"--cb-tw-cols: {_TW_COLS}; "
                     f"height: {_LIST_HEIGHT_PX}px; overflow-y: auto; background: #ffffff; "
                     "border-radius: var(--cb-r-md, 4px);"
                 )
@@ -1076,7 +1050,7 @@ class TemplateWorkbench:
 
     def _render_template_row(self, tpl: ParticleTemplate, *, selected: bool) -> None:
         h = read_template_header(tpl.template_path)
-        row = ui.element("div").classes("cb-tw-row" + (" selected" if selected else ""))
+        row = ui.element("div").classes("cb-tw-row" + (" cb-sel" if selected else ""))
         row.on("click", lambda i=tpl.id: self._select_template(i))
         self._template_rows[tpl.id] = row
         with row:
@@ -1120,7 +1094,7 @@ class TemplateWorkbench:
         row.on("click", lambda _e: on_click())
 
     def _render_select_cell(self) -> None:
-        """Both radios; `.cb-tw-row.selected` decides which one shows (CSS in
+        """Both radios; `.cb-tw-row.cb-sel` decides which one shows (CSS in
         `ui/dashboard/css.py`) — so selecting costs a class flip, not a re-render."""
         with ui.element("div").classes("cb-tw-cell"):
             ui.icon("radio_button_checked", size="13px").classes("cb-tw-sel-on")
@@ -1133,38 +1107,33 @@ class TemplateWorkbench:
             icon_button("visibility", tooltip="Load into viewer").on("click.stop", lambda _e: on_load_to_viewer())
             icon_button("close", tooltip="Delete", kind="danger").on("click.stop", lambda _e: on_delete())
 
-    def _format_stats_line(self, h) -> tuple[str, str] | None:
-        """Return (label, color) for a min/max/σ chip line. None if the
-        header doesn't carry stats (file unreadable / no stats in header).
-
-        Color flags the normalization state:
-          - std around 1 (post-normalize): gray, looks good.
-          - std much smaller than 0.1 (un-normalized RELION class): orange.
-          - dmin == dmax (constant volume / mask-likely-empty): red.
-        """
+    def _stats_cell(self, h) -> tuple[str, str, str] | None:
+        """(text, mark, hover) for a volume's statistics: σ alone in the cell, min and max on the
+        hover. `mark` flags the normalization state: "" (σ about 1, post-normalize), "warn" (σ far
+        from 1: an un-normalized RELION class, say), "bad" (min = max: a constant volume, likely an
+        empty mask or a failed run). None when the header carries no statistics."""
         if h.dmin is None or h.dmax is None:
             return None
-        if h.dmin == h.dmax:
-            # Constant volume — likely an empty mask or a TM sentinel.
-            return f"min {h.dmin:.3g} · max {h.dmax:.3g} · constant", "#dc2626"
         std = h.rms or 0.0
+        hover = f"min {h.dmin:.3g} · max {h.dmax:.3g} · σ {std:.3g}"
+        if h.dmin == h.dmax:
+            return "constant", "bad", f"{hover}. A constant volume: likely an empty mask or an unsuccessful TM run"
         if std > 0 and (std < 0.1 or std > 5.0):
-            color = "#ea580c"
-        else:
-            color = "#6b7280"
-        return f"min {h.dmin:.3g} · max {h.dmax:.3g} · σ {std:.3g}", color
+            return f"σ {std:.2g}", "warn", f"{hover}. Unusual σ: the values may not be σ-normalized"
+        return f"σ {std:.2g}", "", hover
 
     def _render_stats_row(self, h) -> None:
-        res = self._format_stats_line(h)
+        res = self._stats_cell(h)
         if res is None:
             return
-        label, color = res
-        chip = ui.label(label).style(f"color: {color}; font-size: 9px; font-variant-numeric: tabular-nums;")
-        if color != "#6b7280":
-            if color == "#dc2626":
-                chip.tooltip("Constant volume — likely an empty mask or unsuccessful TM run")
-            else:
-                chip.tooltip("Unusual σ — values may not be σ-normalized")
+        text, mark, hover = res
+        with ui.element("span").style(
+            f"display: inline-flex; align-items: center; {_ROW_MONO} color: {_BODY if mark else _SOFT};"
+        ) as cell:
+            if mark:
+                _mark_dot(mark)
+            ui.label(text)
+        cell.tooltip(hover)
 
     def _format_header_summary(self, h, lowpass: float | None) -> str:
         parts: list[str] = []
@@ -1176,10 +1145,9 @@ class TemplateWorkbench:
             parts.append(f"lp {lowpass:g}Å")
         return " · ".join(parts) if parts else "header unreadable"
 
-    def _format_file_size(self, file_path: str) -> tuple[str, str] | None:
-        """Return (human-readable size, css color). Gray under half the
-        warn threshold, orange between half and full, red above. Used to
-        warn the user before they ask molstar to load a giant volume."""
+    def _format_file_size(self, file_path: str) -> tuple[str, bool] | None:
+        """(human-readable size, large). Large is from half the warn threshold up: a pre-load
+        warning before the user asks molstar for a volume it may stall on."""
         try:
             size_bytes = Path(file_path).stat().st_size
         except OSError:
@@ -1191,27 +1159,21 @@ class TemplateWorkbench:
             label = f"{mb:.0f} MB"
         else:
             label = f"{size_bytes / 1024:.0f} KB"
-        if mb >= self.MOLSTAR_WARN_MB:
-            color = "#dc2626"
-        elif mb >= self.MOLSTAR_WARN_MB / 2:
-            color = "#ea580c"
-        else:
-            color = "#6b7280"
-        return label, color
+        return label, mb >= self.MOLSTAR_WARN_MB / 2
 
     def _render_size_badge(self, file_path: str) -> None:
         res = self._format_file_size(file_path)
         if res is None:
             return
-        label, color = res
-        badge = ui.label(label).style(
-            f"color: {color}; font-size: 9px; font-weight: 700; "
-            f"font-variant-numeric: tabular-nums; "
-            f"padding: 1px 4px; border-radius: var(--cb-r-sm, 3px); "
-            f"background: {color}1a; flex-shrink: 0;"
-        )
-        if "#dc2626" in color or "#ea580c" in color:
-            badge.tooltip("Large file — molstar may stall on load")
+        label, large = res
+        with ui.element("span").style(
+            f"display: inline-flex; align-items: center; {_ROW_MONO} color: {_SOFT}; flex-shrink: 0;"
+        ) as cell:
+            if large:
+                _mark_dot("warn")
+            ui.label(label)
+        if large:
+            cell.tooltip("Large file: molstar may stall loading it")
 
     def _polarity_chip(self, polarity: str) -> None:
         render_polarity_chip(polarity)
@@ -1362,7 +1324,7 @@ class TemplateWorkbench:
 
         # Selected-template chip (read-only); same row shape when nothing is selected.
         with ui.row().classes("w-full items-center gap-2"):
-            ui.icon("category", size="12px").classes("text-indigo-500" if sel else "text-gray-300")
+            ui.icon("category", size="12px").classes("text-slate-500" if sel else "text-gray-300")
             if sel is not None:
                 ui.label("operating on").classes(_HINT_CLS)
                 ui.label(os.path.basename(sel.template_path)).classes(_MONO_CLS)
@@ -1451,7 +1413,7 @@ class TemplateWorkbench:
         )
 
     # ------------------------------------------------------------------
-    # 4. MASKS — selectable rows (same visual rules, purple accent)
+    # 4. MASKS — selectable rows (same visual rules)
     # ------------------------------------------------------------------
 
     def _render_masks_section(self) -> None:
@@ -1462,7 +1424,7 @@ class TemplateWorkbench:
                 ui.element("div")
                 .classes("cb-tw-table")
                 .style(
-                    f"--cb-tw-cols: {_TW_COLS}; --cb-accent: {_PURPLE}; --cb-accent-tint: {_PURPLE}14; "
+                    f"--cb-tw-cols: {_TW_COLS}; "
                     f"height: {_LIST_HEIGHT_PX}px; overflow-y: auto; background: #ffffff; "
                     "border-radius: var(--cb-r-md, 4px);"
                 )
@@ -1518,7 +1480,7 @@ class TemplateWorkbench:
 
     def _render_mask_row(self, mask: TemplateMask, *, selected: bool) -> None:
         h = read_template_header(mask.mask_path)
-        row = ui.element("div").classes("cb-tw-row" + (" selected" if selected else ""))
+        row = ui.element("div").classes("cb-tw-row" + (" cb-sel" if selected else ""))
         row.on("click", lambda i=mask.id: self._select_mask(i))
         self._mask_rows[mask.id] = row
         with row:

@@ -686,7 +686,7 @@ _CB_CSS = """
     pointer-events: auto !important;
     cursor: pointer;
     width: 3px !important; height: 3px !important;
-    background: var(--sp-color, #00e5ff) !important;
+    background: var(--sp-color, #2cc8dc) !important;
     /* The tomogram gallery's dot (ui/tomo_gallery.py _dots_svg): species color with a hairline
      * white edge, so the picks mark the slab without hiding what they sit on. */
     box-shadow: 0 0 0 0.5px rgba(255,255,255,0.8) !important;
@@ -702,7 +702,7 @@ _CB_CSS = """
 .cb-pick-ghost.cb-ghost-active {
     width: 8px !important; height: 8px !important;
     box-shadow: 0 0 0 1px rgba(0,0,0,1), 0 0 0 2px rgba(255,255,255,1),
-                0 0 11px 4px var(--sp-color, #00e5ff) !important;
+                0 0 11px 4px var(--sp-color, #2cc8dc) !important;
     z-index: 8;
 }
 /* Selected pick: a persistent amber ring that survives the pointer leaving,
@@ -1091,8 +1091,7 @@ _CB_CSS = """
 .cb-proj-other:hover { background: #e9f0f7; }
 /* Template workbench lists: table rows, so the per-row facts (apix / box / lp, sigma
  * stats, size, polarity) sit in columns sized to their content. Only the file column flexes.
- * The accent is a custom property set per list on the container (indigo for templates,
- * purple for masks), so one rule serves both. Selection is a class flip, never a
+ * Selection is the roster's hairline ring in the accent, a class flip (`cb-sel`), never a
  * rebuild of the list the user just clicked. */
 .cb-tw-table { width: 100%; min-width: 0; overflow-x: auto; }
 .cb-tw-head, .cb-tw-row {
@@ -1102,11 +1101,11 @@ _CB_CSS = """
 .cb-tw-head { padding: 1px 5px 2px 5px; border-bottom: 1px solid #e5e7eb; }
 .cb-tw-row {
     padding: 1px 5px; border-bottom: 1px solid #f1f5f9; cursor: pointer; background: #ffffff;
-    border-left: 2px solid transparent; min-height: 22px;
+    min-height: 22px;
 }
 .cb-tw-row:last-child { border-bottom: none; }
-.cb-tw-row:hover { background: #f8fafc; }
-.cb-tw-row.selected { background: var(--cb-accent-tint); border-left-color: var(--cb-accent); }
+.cb-tw-row:hover { background: var(--cb-hover, #eaf1f8); }
+.cb-tw-row.cb-sel { background: #f4f8fc; box-shadow: inset 0 0 0 1px var(--cb-accent, #4a8fd4); }
 .cb-tw-cell { min-width: 0; display: flex; align-items: center; gap: 3px; }
 .cb-tw-cell > * { min-width: 0; }
 /* Tight leading everywhere in the table: at 9-10 px the default 1.5 was adding more
@@ -1117,14 +1116,13 @@ _CB_CSS = """
 .cb-tw-row .q-btn .q-icon { font-size: 13px; }
 /* Both radios are rendered; the row's `selected` class decides which one shows, so a
  * selection change costs one class attribute and no server render. */
-.cb-tw-sel-on { display: none; color: var(--cb-accent); }
+.cb-tw-sel-on { display: none; color: var(--cb-accent, #4a8fd4); }
 .cb-tw-sel-off { color: #cbd5e1; }
-.cb-tw-row.selected .cb-tw-sel-on { display: inline-flex; }
-.cb-tw-row.selected .cb-tw-sel-off { display: none; }
+.cb-tw-row.cb-sel .cb-tw-sel-on { display: inline-flex; }
+.cb-tw-row.cb-sel .cb-tw-sel-off { display: none; }
 /* By-path import at the foot of BOTH lists — the same dim dashed affordance the Picks &
  * curation table ends with (.cb-ptable-import), in this table's tighter scale. It is a
- * single action, so it sits outside the grid the rows share; `--cb-accent` is the table's
- * own (indigo for templates, purple for masks), so each column's row hovers to its colour. */
+ * single action, so it sits outside the grid the rows share. */
 .cb-tw-import {
     display: flex; align-items: center; gap: 5px;
     margin: 3px 5px; padding: 2px 5px; min-height: 18px;
@@ -1132,7 +1130,9 @@ _CB_CSS = """
     font-size: 9px; color: #b6c0cf;
     transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
-.cb-tw-import:hover { background: #f8fafc; border-color: var(--cb-accent); color: var(--cb-accent); }
+.cb-tw-import:hover {
+    background: #f8fafc; border-color: var(--cb-accent, #4a8fd4); color: var(--cb-head-ink, #12324f);
+}
 /* Species header row: active pill left, segmented tabs right. It sits under the view's title line
  * with no rule between them. */
 .cb-species-header {

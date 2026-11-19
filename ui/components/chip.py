@@ -2,12 +2,14 @@
 
 `.cb-chip` capsule — LABEL · value — tinted by `status` (`ok | warn | error | info |
 neutral`, CSS in `ui/dashboard/css.py`). Used by the Journey, the tomogram-import dialog
-and the Species page.
+and the Species page. Below it, the polarity and method tags of templates and masks.
 """
 
 from __future__ import annotations
 
 from nicegui import ui
+
+from ui.styles import MONO
 
 
 def render_chip(
@@ -24,39 +26,37 @@ def render_chip(
     return chip
 
 
-# ── Tiny tag chips ───────────────────────────────────────────────────────────
-# Shared by the template workbench and the Species page's bindings block, both of
-# which state how a template or mask was made. Structurally one thing: a 9 px uppercase tag.
+# ── Polarity and method ──────────────────────────────────────────────────────
+# How a template or mask was made, said in words: ink and slate, no fill. Shared by the
+# template workbench and the Species tab.
 
-_TAG_STYLE = (
-    "font-size: 9px; font-weight: 700; text-transform: uppercase; "
-    "padding: 1px 5px; border-radius: var(--cb-r-sm, 3px); letter-spacing: 0.5px;"
-)
-
-_METHOD_PALETTE = {
-    "spherical": ("#e9d5ff", "#581c87"),
-    "cylindrical": ("#e9d5ff", "#581c87"),
-    "relion": ("#e9d5ff", "#581c87"),
-    "manual": ("#e5e7eb", "#374151"),
-    "imported": ("#e5e7eb", "#374151"),
-}
-
-
-def render_tag_chip(text: str, bg: str, fg: str, *, tooltip: str | None = None) -> ui.element:
-    chip = ui.label(text).style(f"background: {bg}; color: {fg}; {_TAG_STYLE}")
-    if tooltip:
-        chip.tooltip(tooltip)
-    return chip
+_BODY = "#1e293b"
+_SOFT = "#5b7089"
 
 
 def render_polarity_chip(polarity: str, *, tooltip: str | None = None) -> ui.element:
-    """Density polarity of a template — white-on-black vs black-on-white."""
-    if polarity == "white":
-        return render_tag_chip("white", "#fff7ed", "#9a3412", tooltip=tooltip)
-    return render_tag_chip(polarity or "black", "#1f2937", "#f9fafb", tooltip=tooltip)
+    """Density polarity of a template as a word behind a small square: filled for black (dark
+    density on a light background), hollow for white."""
+    word = polarity or "black"
+    square = (
+        f"background: {_BODY}; border: 1px solid {_BODY};"
+        if word == "black"
+        else f"background: #ffffff; border: 1px solid {_SOFT};"
+    )
+    with ui.element("span").style(
+        f"display: inline-flex; align-items: center; gap: 5px; {MONO} font-size: 9.5px; color: {_BODY}; "
+        "white-space: nowrap;"
+    ) as tag:
+        ui.element("i").style(f"width: 7px; height: 7px; display: inline-block; box-sizing: border-box; {square}")
+        ui.label(word)
+    if tooltip:
+        tag.tooltip(tooltip)
+    return tag
 
 
 def render_method_chip(method: str | None, *, tooltip: str | None = None) -> ui.element:
-    """How a mask was made (spherical / relion / imported / …)."""
-    bg, fg = _METHOD_PALETTE.get(method or "", ("#e5e7eb", "#374151"))
-    return render_tag_chip(method or "—", bg, fg, tooltip=tooltip)
+    """How a mask was made (spherical / relion / imported / …), in plain mono text."""
+    tag = ui.label(method or "—").style(f"{MONO} font-size: 9.5px; color: {_BODY}; white-space: nowrap;")
+    if tooltip:
+        tag.tooltip(tooltip)
+    return tag

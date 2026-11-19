@@ -40,7 +40,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from services.configs.config_service import get_config_service
-from services.models_base import SpeciesOrigin
+from services.models_base import SpeciesOrigin, current_overlay_color
 from services.project_state import ParticleSpecies, ParticleTemplate, TemplateMask, sidecar_ensure, slugify
 
 logger = logging.getLogger(__name__)
@@ -311,7 +311,7 @@ def import_species(state, project_path: Path, catalog_id: str, version: int | No
     if vdir is None:
         raise FileNotFoundError("no species catalog is configured (species_catalog_root)")
 
-    species = state.add_species(record.name, origin=SpeciesOrigin.IMPORTED, color=record.color)
+    species = state.add_species(record.name, origin=SpeciesOrigin.IMPORTED, color=current_overlay_color(record.color))
     species.catalog_id = record.catalog_id
     species.catalog_version = record.version
     species.diameter_ang = record.diameter_ang
