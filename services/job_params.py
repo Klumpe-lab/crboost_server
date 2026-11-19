@@ -21,6 +21,7 @@ from services.computing.slurm_service import SlurmConfig
 from services.jobs.spec import instance_display_name
 from services.jobs.template_match import TM_SYMMETRY_CHOICES, set_symmetry
 from services.models_base import DenoiseMethod, JobStatus, JobType, SegmentMethod, resolve_species
+from services.particles.particle_sets import SET_PRODUCER_PREFIX, get_set, reads_by_facets
 from services.path_resolution_service import (
     PathResolutionService,
     instance_override_key,
@@ -410,6 +411,31 @@ def set_input(
             job_model.facet_choices.pop(slot, None)
     state.mark_dirty()
     return ok(slot=slot, source=job_model.source_overrides.get(slot))
+
+
+def facet_refusal(state: ProjectState, instance_id: str, slot: str, source: str | None) -> dict[str, Any] | None:
+    """Why facet choices for `slot` would do nothing, as an `err`, or None when they apply. Only a kitchen set of
+    picks is read through facets (`reads_by_facets`); any other set is read as written, so a choice recorded on it
+    would be kept and ignored at Run. `source`: the one the same call sets, else the job's current one.
+    Blocking (the set's record and star header): call in a thread."""
+    job_model = state.jobs.get(instance_id)
+    if job_model is None:
+        return None  # set_input says so
+    key = source if source is not None else (job_model.source_overrides or {}).get(slot)
+    _type, _, ref = str(key or "").partition(":")
+    if not ref.startswith(SET_PRODUCER_PREFIX):
+        return err(f"{instance_id}.{slot} reads no particle set: facet choices apply only to a kitchen set of picks.")
+    set_id = ref[len(SET_PRODUCER_PREFIX) :]
+    pset = get_set(Path(state.project_path), set_id)
+    if pset is None:
+        return err(f"No particle set {set_id} in this project.")
+    if reads_by_facets(pset):
+        return None
+    return err(
+        f"Set {set_id} ({pset.name}) is read as written: it keeps the images it was made with, and facet choices "
+        "apply only to a kitchen set of picks. To cut its particles again at another binning, add a Warp Export "
+        "reading it (or the job that refined it) and read that."
+    )
 
 
 def reset_inputs(state: ProjectState, instance_id: str) -> dict[str, Any]:

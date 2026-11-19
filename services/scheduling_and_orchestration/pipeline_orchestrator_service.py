@@ -88,6 +88,38 @@ def _restore_allocation(state, previous: dict[str, tuple]) -> None:
             state.job_path_mapping[instance_id] = mapped
 
 
+def _unresolved_inputs(state, project_dir: Path, to_run: list[str]) -> list[str]:
+    """Run's first two passes on a copy: each job of the run takes a dir (its own when a failed job is retried
+    in place, else the next free number), then every input is resolved as Run resolves it. One line per job
+    whose inputs would refuse Run; `state` is not touched. Blocking (a state copy, stat calls): call in a
+    thread."""
+    copy = state.detached_copy()
+    taken = [jm.relion_job_number or 0 for jm in copy.jobs.values()]
+    next_num = max([copy.job_dir_counter or 0, max(taken, default=0) + 1, 1])
+    rels: dict[str, str] = {}
+    for iid in to_run:
+        job_model = copy.jobs.get(iid)
+        if job_model is None:
+            continue
+        rel = _reused_dir(job_model, project_dir)
+        if rel is None:
+            category = JobCategory.IMPORT if job_model.job_type == JobType.IMPORT_MOVIES else JobCategory.EXTERNAL
+            rel = f"{category.value}/job{next_num:03d}"
+            next_num += 1
+        job_model.relion_job_name = rel + "/"
+        copy.job_path_mapping[iid] = rel
+        rels[iid] = rel
+    resolver = PathResolutionService(copy, active_instance_ids=set(rels))
+    unresolved: list[str] = []
+    for iid, rel in rels.items():
+        job_model = copy.jobs[iid]
+        try:
+            resolver.resolve_all_paths(job_model.job_type, job_model, project_dir / rel, instance_id=iid)
+        except PathResolutionError as e:
+            unresolved.append(f"{iid}: {e}")
+    return unresolved
+
+
 def _reused_dir(job_model: AbstractJobParams, project_dir: Path) -> str | None:
     """The dir a FAILED job is retried in, in place, when a run reaches it: its own, where
     `.task_status/*.ok` keeps the tilt series its last attempt finished. None for a job that
@@ -240,8 +272,6 @@ class PipelineOrchestratorService:
                     message=f"Nothing to start: {len(parked)} job(s) wait for the tilt-filter review.",
                 )
 
-        events.info("%s · started %s", project_dir.name, ", ".join(instances_to_run))
-
         # Submit the whole remaining set (FAILED + fresh) as SLURM dependencies. _submit_chain
         # allocates External/jobNNN dirs and wires the afterok edges; edges to already-SUCCEEDED
         # producers are dropped (their outputs exist on disk).
@@ -250,6 +280,8 @@ class PipelineOrchestratorService:
             # the hold; its submit_parked waits on the lock for this submit to finish.
             state.review_hold = ReviewHold(barrier=barrier, parked=parked)
         res = await self._submit_chain(project_dir=project_dir, instances_to_run=instances_to_run, state=state)
+        if res["success"] or res.get("submitted"):
+            events.info("%s · started %s", project_dir.name, ", ".join(instances_to_run))
         if parked and res["success"]:
             res["parked"] = parked
         elif not res["success"] and not res.get("submitted"):
@@ -520,6 +552,10 @@ class PipelineOrchestratorService:
         refusal, _ = await self._preflight(project_dir, state, to_run, record=False) if to_run else (None, {})
         if refusal is not None:
             refusals.extend(refusal.get("refused") or [refusal["error"]])
+        elif to_run:
+            unresolved = await asyncio.to_thread(_unresolved_inputs, state, project_dir, to_run)
+            if unresolved:
+                refusals.append("Path resolution failed for " + "; for ".join(unresolved))
 
         jobs: list[dict[str, Any]] = []
         needs: list[dict[str, Any]] = []

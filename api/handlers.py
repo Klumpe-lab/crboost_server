@@ -992,6 +992,10 @@ async def set_slurm(call: Call) -> dict[str, Any]:
 
 async def set_input(call: Call) -> dict[str, Any]:
     a = call.args
+    if a.facet:
+        why = await asyncio.to_thread(job_params.facet_refusal, call.state, a.job, a.slot, a.source)
+        if why:
+            return why
     res = job_params.set_input(call.state, a.job, a.slot, source=a.source, path=a.path, auto=a.auto, facet=a.facet)
     return _job_answer(call, res)
 

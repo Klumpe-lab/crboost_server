@@ -23,9 +23,9 @@ something to see.
   run. Nothing changes yet: the server rehearses the steps on a copy of each project and refuses naming the
   step that would fail, or answers with needs.
   - **Confirm in the terminal (the default).** Call `apply_changes_now(plan_id, revision)` straight away: the
-    crboost server opens a form in the terminal with the whole plan (each project's values, the jobs it adds,
-    every setting it changes as a field to edit, each deletion as a switch, the run) and applies it, with what
-    the user changed there, only on their Accept. You cannot answer it for them. Don't print the plan yourself first; the dialog is it. If the answer says the dialog could not be
+    crboost server opens a dialog in the terminal with the whole plan, a table per project (its values, the jobs
+    it adds, every setting now → after, deletions, the run), and applies it only on their Accept. You cannot
+    answer it for them. Edits are made on the page. Don't print the plan yourself first; the dialog is it. If the answer says the dialog could not be
     shown, print `overview` exactly as it is and give the page (`ui_url`). If they decline, ask what to change
     and plan again.
   - **On the page.** A plan that deletes something for good (`permanent` is not empty) is approved on its page
@@ -94,6 +94,33 @@ without raw data from other projects' Reconstruct or Denoise Predict jobs (names
 `import_tomograms(mode="jobs", sources=[…])` adds more. Their tilt series come along, so TM and Pick candidates
 run with no pins; the sources are only read. Their voltage, Cs, amplitude contrast, voxel size and hand must
 agree: a `needs` answer lists the groups, and the user picks one or has one project made per group.
+
+## Sets in the STA kitchen
+
+A species' kitchen in a home project pools picks from any projects (read, never written); subsets name groups
+of its picks; Make set turns what a recipe keeps into a particle set of the home project that particle jobs read
+(`set_input` on their particle input).
+
+1. `list_kitchen_sources(home, species)`: per project its template-match picks (Pick candidates jobs) and pick
+   lists of the species with the same catalog id. `add_kitchen_sources(home, species, sources=[{project, job}])`
+   makes the kitchen when it has none and builds its table.
+2. `get_kitchen(home, species)`: sources, subsets, groups, the sets made, the columns a recipe filters on (number
+   columns like `sigma`, categories like `project` with their values), picks per project. Give it a recipe to
+   see what it keeps, per project.
+3. A recipe is `filters` (`{kind: range, col, lo, hi}`, `{kind: category, col, allowed}`, `{kind: set, set_id,
+   mode}`), `in_subsets` / `not_in_subsets`, and `min_distance_a` / `top_n_per_tomogram`. The hand verdicts
+   apply as in the kitchen; the user's filter strip is never changed.
+4. `create_kitchen_group` and `create_kitchen_subset(name, group, recipe)` (a snapshot of what the recipe keeps
+   now; in a group a pick sits in one subset only). `plan_kitchen_set` shows a Make set without writing;
+   `make_kitchen_set` (from a recipe, a `subset`, or one set per subset of a `group`) runs in the background:
+   `get_task`.
+5. Every recipe, subset and set comes from the user's words (which σ, which projects, which classes): never
+   pick a cut for them. Several kitchen writes are one plan, like any other.
+6. `make_class_set(project, job, classes, name)`: a set of a Class 3D's classes, as its Results tab makes it.
+   Which classes to keep is the user's call, from what they saw.
+
+Verdicts on single picks, the review sample, and the choice between two reconstructions or sources of one tilt
+series stay in the kitchen: `get_kitchen` says when such a choice stops Make set; give the user the `ui_url`.
 
 ## A kitchen subset, matched again in a new project
 

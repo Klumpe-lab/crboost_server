@@ -47,11 +47,10 @@ what the plan does: per project the values of a new one, the roster after the pl
 now → after, deletions with their sizes, what the run submits. Then:
 
 - **In the terminal (the default):** the agent calls `apply_changes_now`, and the crboost MCP server opens a
-  form of its own in Claude Code (MCP elicitation): the gist in two lines, then the plan as rows (a new
-  project's values, the jobs added), each setting it changes as a field filled in with the plan's value, each
-  deletion as a switch. Change a field and Accept applies the plan with it (checked again, as an edit on the page
-  is); Decline changes nothing. The server applies the plan only when the forwarder hands back the one-time token
-  it got for that form, which
+  dialog of its own in Claude Code (MCP elicitation): the gist in two lines, then a table per project as rows
+  (a new project's values, the jobs added, each setting now → after, deletions with sizes, the run). Accept
+  applies it as shown; Decline changes nothing; edits are made on the page. The server applies the plan only
+  when the forwarder hands back the one-time token it got for that dialog, which
   the agent never sees, so neither the agent, an allow rule nor auto mode can say yes for you. That is why
   `apply_changes_now` can sit in the allow list. An Elicitation hook in your settings could answer the dialog:
   don't write one that matches `crboost`. A Claude Code that cannot show such a dialog (print mode) gets a
@@ -89,8 +88,11 @@ of a plan you approved.
   for one out of its reach it gives you the reason and the link.
 - It deletes what the UI deletes: a job (to Trash), a species, a template or mask; a Trash or a whole project
   only inside a plan you approved.
-- Looking and judging stay with you in the UI: the tilt review and Approve, curating picks, judging particles,
-  the STA kitchen. Every answer carries the link to what it touched.
+- It works the STA kitchen as its tab does: adds sources to a species' pool, makes subsets and groups from the
+  recipe you give it (σ cuts, projects, other subsets), makes sets from a recipe, a subset or each subset of a
+  group, and a set of the Class 3D classes you name. Your filter strip is left as it is.
+- Looking and judging stay with you in the UI: the tilt review and Approve, verdicts on single picks, judging
+  particles and classes. Every answer carries the link to what it touched.
 - It reports a failure with its log lines and runs again only when you ask.
 - Every write is a line in the project's `Logs/agent_api.jsonl` (with its plan's id) and an event on the
   server's console, which says when the project was made by hand.

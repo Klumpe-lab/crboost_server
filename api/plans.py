@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from api.context import ApiContext, open_project
-from api.handlers import Call, _plain
+from api.handlers import Call, _plain, _recipe
 from api.reach import write_refusal
 from services import job_params, pipeline_edit
 from services.agent_plan_view import dialog_form, overview, show
@@ -42,9 +42,7 @@ from services.agent_plans import (
     PlanStep,
     ProjectPlan,
     StepState,
-    coerce,
     get_plan_store,
-    steps_with_edits,
 )
 from services.background_tasks import get_background_task_registry
 from services.jobs.spec import display_name, instance_display_name
@@ -59,7 +57,14 @@ from services.result import ErrorCode, err, ok
 logger = logging.getLogger(__name__)
 
 # Deletes for good: Approve turns red and names them; the terminal path refuses them.
-PERMANENT = {"clear_trash", "delete_project", "delete_species", "delete_template", "delete_mask"}
+PERMANENT = {
+    "clear_trash",
+    "delete_project",
+    "delete_species",
+    "delete_template",
+    "delete_mask",
+    "delete_kitchen_subset",
+}
 # Never a plan step: plans do not nest.
 NOT_A_STEP = {"apply_changes", "apply_changes_now"}
 
@@ -150,8 +155,13 @@ def sentence(verb: str, a, state: ProjectState | None) -> str:
         labels = dict(job_params.SLURM_FIELDS)
         return f"Set {j(a.job)}'s SLURM: " + ", ".join(f"{labels.get(k, k)} {show(v)}" for k, v in a.values.items())
     if verb == "set_input":
+        if a.facet is not None and not (a.auto or a.source or a.path is not None):
+            return f"Take {j(a.job)}'s {a.slot} " + (
+                f"from {_facet_text(a.facet)}" if a.facet else "from its set's sources as Run finds them"
+            )
         target = "automatic" if a.auto else (a.source or a.path or "automatic")
-        return f"Point {j(a.job)}'s input {a.slot} at {target}"
+        text = f"Point {j(a.job)}'s input {a.slot} at {target}"
+        return text + (f", taking it from {_facet_text(a.facet)}" if a.facet else "")
     if verb == "reset_inputs":
         return f"Let {j(a.job)} choose its inputs again at its next run"
     if verb == "set_tilt_filter":
@@ -202,8 +212,54 @@ def sentence(verb: str, a, state: ProjectState | None) -> str:
         return "Empty the Trash" + (f": {', '.join(a.names)}" if a.names else "")
     if verb == "delete_project":
         return f"Delete the project {Path(a.project).name}"
+    if verb.endswith(("kitchen_sources", "kitchen_source", "kitchen_subset", "kitchen_group", "kitchen_set")):
+        return _kitchen_sentence(verb, a)
+    if verb == "make_class_set":
+        classes = ", ".join(str(c) for c in a.classes)
+        return f"Make the set {a.name} of {j(a.job)}'s class{'es' if len(a.classes) > 1 else ''} {classes}"
     text = _args_text(a)
     return verb.replace("_", " ").capitalize() + (f": {text}" if text else "")
+
+
+def _recipe_text(a) -> str:
+    """The recipe in one line, a category filter with its values named (the kitchen's own line counts them)."""
+    from services.sta_kitchen.service import describe_draft
+
+    draft = _recipe(a).model_dump()
+    named = [f"{f['col']} = {' or '.join(f['allowed'])}" for f in draft["filters"] if f["kind"] == "category"]
+    draft["filters"] = [f for f in draft["filters"] if f["kind"] != "category"]
+    rest = describe_draft(draft).replace("every row", "every pick")
+    return " · ".join(named + ([rest] if rest != "every pick" or not named else []))
+
+
+def _kitchen_sentence(verb: str, a) -> str:
+    """A kitchen step in words; subsets and groups by the names the step gives."""
+    where = f"in the {a.species} kitchen"
+    if verb == "add_kitchen_sources":
+        return f"Add to the {a.species} kitchen: " + "; ".join(f"{Path(x.project).name} {x.job}" for x in a.sources)
+    if verb == "remove_kitchen_source":
+        return f"Take {a.source} out of the {a.species} kitchen"
+    if verb == "create_kitchen_subset":
+        group = f" in the group {a.group}" if a.group else ""
+        return f"Make the subset {a.name}{group} {where}: {_recipe_text(a)}"
+    if verb == "edit_kitchen_subset":
+        parts = [f"name {a.name}" if a.name else "", f"into the group {a.group}" if a.group else ""]
+        parts.append("out of its group" if a.ungroup else "")
+        return f"Edit the subset {a.subset} {where}: " + ", ".join(p for p in parts if p)
+    if verb == "delete_kitchen_subset":
+        return f"Delete the subset {a.subset} {where} (its picks stay in the pool)"
+    if verb == "create_kitchen_group":
+        return f"Make the group {a.name} {where}"
+    if verb == "rename_kitchen_group":
+        return f"Rename the group {a.group} {where} to {a.name}"
+    if verb == "delete_kitchen_group":
+        return f"Delete the group {a.group} {where} (its subsets stay)"
+    if verb == "make_kitchen_set":
+        if a.group:
+            return f"Make a set of each subset of the group {a.group} {where}: {_recipe_text(a)}"
+        source = f"the subset {a.subset}, " if a.subset else ""
+        return f"Make the set {a.name or a.subset} {where} from {source}{_recipe_text(a)}"
+    return verb
 
 
 # ── Rehearsal ─────────────────────────────────────────────────────────────────
@@ -307,7 +363,32 @@ def _snapshot(jm) -> dict[str, dict[str, Any]]:
     return {
         "param": {n: _plain(getattr(jm, n, None)) for n in jm.USER_PARAMS},
         "slurm": {n: _plain(getattr(eff, n, None)) for n, _ in job_params.SLURM_FIELDS},
-        "input": _plain(dict(jm.source_overrides)),
+        "input": {**_plain(dict(jm.source_overrides)), **_facet_rows(jm)},
+    }
+
+
+def _facet_text(facet: dict[str, str]) -> str:
+    """Facet choices as words: per source (`<project path>|<instance id>`) the projects it serves; a project taking
+    them from a job of its own is named once, as "each project's own <job>"."""
+    own: dict[str, list[str]] = {}
+    by_source: dict[str, list[str]] = {}
+    for project, source in facet.items():
+        where, _, iid = source.partition("|")
+        if iid and project != "*" and Path(where) == Path(project):
+            own.setdefault(iid, []).append(Path(project).name)
+        else:
+            by_source.setdefault(source, []).append("the whole set" if project == "*" else Path(project).name)
+    parts = [f"each project's own {iid} ({', '.join(sorted(names))})" for iid, names in own.items()]
+    for source, projects in by_source.items():
+        where, _, iid = source.partition("|")
+        parts.append((f"{iid} of {Path(where).name}" if iid else source) + f" for {', '.join(sorted(projects))}")
+    return "; ".join(parts)
+
+
+def _facet_rows(jm) -> dict[str, str]:
+    """A row per input whose kitchen-set sources were chosen: where each project's picks are taken from."""
+    return {
+        f"{slot} sources": _facet_text(dict(choices)) for slot, choices in (jm.facet_choices or {}).items() if choices
     }
 
 
@@ -610,6 +691,9 @@ async def _rehearse_project(
                 deleted.add(a.job)
         if step.verb == "import_species":
             res = await _rehearse_import_species(copy, a)
+        elif step.verb == "set_input" and a.facet:
+            why = await asyncio.to_thread(job_params.facet_refusal, copy, a.job, a.slot, a.source)
+            res = why or _rehearse(copy, step.verb, a)
         else:
             res = _rehearse(copy, step.verb, a)
         if res is None:
@@ -860,8 +944,8 @@ async def apply_changes_now(call: Call) -> dict[str, Any]:
         )
     if given is None:
         token = secrets.token_urlsafe(18)
-        message, schema, targets = dialog_form(plan, url)
-        plan.confirmation = (token, plan.revision, targets)
+        message, schema = dialog_form(plan, url)
+        plan.confirmation = (token, plan.revision)
         return err(
             f"{plan.id} waits for the user's Accept in the terminal dialog. This client could not show it: the user "
             "approves the plan on its page (ui_url), then apply_changes.",
@@ -871,35 +955,6 @@ async def apply_changes_now(call: Call) -> dict[str, Any]:
     held, plan.confirmation = plan.confirmation, None
     if held is None or not secrets.compare_digest(given, held[0]) or held[1] != plan.revision:
         return err(f"That confirmation is not {plan.id}'s current one: nothing was applied. Ask again.", ui_url=url)
-    edited = await _apply_dialog_edits(plan, held[2], call.args.edits or {})
-    if edited is not None:
-        return {**edited, "ui_url": url}
     plan.status = PlanStatus.APPROVED
     plan.decided_at = datetime.now()
     return await _carry_out(call.ctx, plan, plan.revision)
-
-
-async def _apply_dialog_edits(plan: Plan, targets: dict[str, Any], edits: dict[str, Any]) -> dict[str, Any] | None:
-    """The values the user changed in the dialog, made part of the plan (rehearsed again, as a page edit is).
-    None when they changed nothing or the plan took the change; the refusal otherwise, nothing applied."""
-    sets, drop = [], set()
-    for key, target in targets.items():
-        if key not in edits:
-            continue
-        if target[0] == "keep":
-            if edits[key] is False:
-                drop.add(target[1])
-            continue
-        _, project, job, f = target
-        try:
-            value = coerce(f, edits[key])
-        except (TypeError, ValueError):
-            return err(f"{f.label}: {edits[key]!r} is not a {f.type}. Nothing was applied.")
-        if value != f.after:
-            sets.append((project, job, f, value))
-    if not sets and not drop:
-        return None
-    res = await get_plan_store().revise(plan.id, steps_with_edits(plan, sets, drop))
-    if not res.get("success"):
-        return err(f"Your change in the dialog was refused: {res.get('error')} Nothing was applied.")
-    return None
