@@ -4,8 +4,8 @@ Detail = one container per (species, tab), built lazily on first selection and c
 switch only flips visibility. The active species' mark and the segmented tabs sit on the
 view's title line, after its name. Tabs: Species (what defines the species, its extraction
 geometry, status, delete) · Templates & masks (the mounted workbench) · Tomograms (one row
-per tomogram, its lists, curation) · Analytics (scores in σ, TM health, particle sets) · STA
-kitchen (one species' picks across tomograms and projects; the rail hides while it shows). A
+per tomogram, its lists, curation) · Scores (the template match's scores in σ, where the picks
+sit) · STA kitchen (one species' picks across tomograms and projects; the rail hides while it shows). A
 species' jobs are the roster's.
 
 The page owns the 3-s registry observe (species created / deleted elsewhere — roster "+",
@@ -36,7 +36,7 @@ from ui.components.svg_icon import load_icon_svg
 from ui.dashboard.css import ensure_assets_loaded
 from ui.sta_kitchen.tab import KitchenTab
 from services.routes import View, species_tab
-from ui.species.analytics_tab import AnalyticsTab
+from ui.species.analytics_tab import ScoresTab
 from ui.species.catalog import import_from_catalog
 from ui.species.overview_tab import OverviewTab
 from ui.species.prompt import create_species
@@ -52,7 +52,7 @@ TABS: tuple[tuple[str, str], ...] = (
     ("species", "Species"),
     ("templates", "Templates & masks"),
     ("tomograms", "Tomograms"),
-    ("analytics", "Analytics"),
+    ("scores", "Scores"),
     ("kitchen", "STA kitchen"),
 )
 # Tabs that fill the pane and scroll inside themselves, with the species rail hidden while they show.
@@ -279,8 +279,8 @@ class SpeciesPage:
                 return OverviewTab(ctx)
             case "tomograms":
                 return TomogramsTab(ctx)
-            case "analytics":
-                return AnalyticsTab(ctx)
+            case "scores":
+                return ScoresTab(ctx)
             case "kitchen":
                 return KitchenTab(ctx)
         raise KeyError(f"unknown Species tab {key!r}")

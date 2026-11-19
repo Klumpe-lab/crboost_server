@@ -38,9 +38,14 @@ _TARGETS: dict[View, int] = {View.JOB: 2, View.JOURNEY: 1, View.SPECIES: 2, View
 # be imported back without a cycle. Job subsection keys are not here — those are read at
 # validation time (`_job_tab_keys`), because plugins register new ones.
 # `ui/species/page.py :: TABS`
-SPECIES_TABS: tuple[str, ...] = ("species", "templates", "tomograms", "analytics", "kitchen")
+SPECIES_TABS: tuple[str, ...] = ("species", "templates", "tomograms", "scores", "kitchen")
 # Tab keys older links carry, and the tab each lands on.
-SPECIES_TAB_ALIASES: dict[str, str] = {"overview": "species", "jobs": "species", "picks": "tomograms"}
+SPECIES_TAB_ALIASES: dict[str, str] = {
+    "overview": "species",
+    "jobs": "species",
+    "picks": "tomograms",
+    "analytics": "scores",
+}
 
 
 def species_tab(key: str) -> str | None:

@@ -1171,7 +1171,7 @@ def build_excluded_per_series_chart(names: list[str], counts: dict[str, list[int
     }
 
 
-# ── Particle analytics (Species page · Analytics tab) ──
+# ── Particle analytics (Particles registry · Scores tab) ──
 
 # Hover card of the σ charts: the hovered σ (or bin), then each series' value at it. Values are
 # counts; a fractional one (the Gaussian expectation) keeps two significant digits.

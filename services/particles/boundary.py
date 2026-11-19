@@ -110,7 +110,7 @@ def save_label(
             module=__name__,
             computed_by="user",
             producer=Producer("tmextractcand", ce_instance, str(ce_job_dir)),
-            note="labels a user gave picks near a σ cut in the Analytics tab",
+            note="labels a user gave picks near a σ cut in the Scores tab",
         ),
         {"labels": labels},
     )
