@@ -52,6 +52,7 @@ class JobFileType(str, Enum):
     REFERENCE_MAP = "reference_map"  # merged.mrc from reconstruct_particle (or refined map)
     HALF_MAP = "half_map"  # half1.mrc (half2 derived by RELION naming convention)
     MASK = "mask"  # External/jobXXX/mask.mrc from a Mask job: soft-edged, 0..1, on a map's box and pixel
+    FSC_STAR = "fsc_star"  # External/jobXXX/postprocess.star: the masked FSC of a pair of half maps
 
 
 # -----------------------------------------------------------------------------

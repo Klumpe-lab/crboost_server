@@ -34,7 +34,9 @@ class PostProcessParams(AbstractJobParams):
         InputSlot(key="input_mask", accepts=[JobFileType.MASK], preferred_source="maskCreate"),
     ]
     OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = [
-        OutputSlot(key="output_map", produces=JobFileType.REFERENCE_MAP, path_template="postprocess.mrc")
+        OutputSlot(key="output_map", produces=JobFileType.REFERENCE_MAP, path_template="postprocess.mrc"),
+        # The FSC of these half maps in this mask: how far CTF refinement trusts them as its reference.
+        OutputSlot(key="output_fsc", produces=JobFileType.FSC_STAR, path_template="postprocess.star"),
     ]
 
     auto_bfac: bool = Field(

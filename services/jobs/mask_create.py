@@ -16,6 +16,9 @@ class MaskCreateParams(AbstractJobParams):
     value: a fraction of its maximum unless an absolute threshold is given, because maps from different jobs and
     scales share no greyscale (the 0.15 of the tutorials selects nothing on ours). The driver writes the map's
     range, the threshold it used and the fraction of the box the mask encloses into `mask_stats.json`.
+
+    Radial limits keep a shell of the mask (a capsid's outer layer): between the radii, measured from the box centre,
+    the mask is RELION's; beyond each limit it falls to zero over the soft edge, as RELION grows its own edge outwards.
     """
 
     job_type: JobType = Field(default=JobType.MASK_CREATE)
@@ -27,9 +30,11 @@ class MaskCreateParams(AbstractJobParams):
         "threshold_fraction",
         "extend_px",
         "soft_edge_px",
+        "inner_radius_ang",
+        "outer_radius_ang",
         "other_args",
     }
-    PARAM_GROUPS: ClassVar[tuple[str, ...]] = ("Threshold", "Edge", "Extra")
+    PARAM_GROUPS: ClassVar[tuple[str, ...]] = ("Threshold", "Edge", "Radius", "Extra")
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(key="input_map", accepts=[JobFileType.REFERENCE_MAP], preferred_source="refine3d")
     ]
@@ -57,6 +62,14 @@ class MaskCreateParams(AbstractJobParams):
     soft_edge_px: int = Field(
         default=6, ge=0, description="Width of the cosine soft edge (pixels)", title="Soft edge",
         json_schema_extra=form("Edge", S, "px"),
+    )
+    inner_radius_ang: float = Field(
+        default=0.0, ge=0, description="Zero the mask inside this radius from the box centre (Å); 0 = no inner limit",
+        title="Inner radius", json_schema_extra=form("Radius", S, "Å"),
+    )
+    outer_radius_ang: float = Field(
+        default=0.0, ge=0, description="Zero the mask outside this radius from the box centre (Å); 0 = no outer limit",
+        title="Outer radius", json_schema_extra=form("Radius", S, "Å"),
     )
     other_args: str = Field(
         default="", description="Extra relion_mask_create flags, appended verbatim", title="Extra arguments",

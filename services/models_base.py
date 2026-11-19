@@ -142,6 +142,8 @@ class JobType(str, Enum):
     MASK_CREATE = "maskCreate"
     # Masked gold-standard FSC and sharpening of a refinement's half maps (relion_postprocess).
     POSTPROCESS = "postprocess"
+    # Each tilt's defocus, astigmatism and contrast scale refined against a reference (relion_tomo_refine_ctf).
+    CTF_REFINE = "ctfRefine"
 
     # Synthetic source: not a real pipeline job. Used by PathResolutionService to
     # surface <project>/MergedSources/optimisation_set.star as a producer candidate
