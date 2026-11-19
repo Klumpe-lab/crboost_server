@@ -58,7 +58,7 @@ async def import_from_catalog(backend, project_path: Path, *, on_done=None) -> N
         if not entries:
             ui.notify(
                 f"The species catalog at {catalog.catalog_root()} has nothing published yet — "
-                "publish a species from its Overview tab first.",
+                "publish a species from its Species tab first.",
                 type="info",
                 timeout=7000,
             )

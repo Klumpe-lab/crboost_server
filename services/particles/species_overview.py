@@ -238,7 +238,7 @@ def species_overview(state, project_path: Path, species_id: str) -> SpeciesOverv
                 )
             )
 
-    return SpeciesOverview(
+    overview = SpeciesOverview(
         species_id=species_id,
         n_tomos_with_picks=len({r.tomo_name for r in rows if r.count > 0}),
         n_picks=sum(r.count for r in rows),
@@ -248,6 +248,18 @@ def species_overview(state, project_path: Path, species_id: str) -> SpeciesOverv
         subtomo_iid=sub[0] if sub else None,
         rows=tuple(rows),
     )
+    _LATEST[(str(project_path), species_id)] = overview
+    return overview
+
+
+# The last overview computed per (project, species), whoever computed it: what a view that must not read disk
+# (the registry's rail) shows, so its count is the one the Species tab's status line shows.
+_LATEST: dict[tuple[str, str], SpeciesOverview] = {}
+
+
+def latest_overview(project_path: Path, species_id: str) -> SpeciesOverview | None:
+    """The last `species_overview` computed for this species in this process; None before the first."""
+    return _LATEST.get((str(Path(project_path)), species_id))
 
 
 def all_species_overview(state, project_path: Path) -> list[SpeciesOverview]:

@@ -1,6 +1,6 @@
 """Species administration — the delete cascade, headless.
 
-Headless so the Species page's Overview tab can delete a species without a mounted
+Headless so the Particles registry's Species tab can delete a species without a mounted
 workbench. Order matters: bound pipeline jobs first (`backend.delete_job` reads the job
 model for its directory, so the state must still describe them), then template / mask
 files (+ `.meta.json` sidecars), then the empty-only `templates/<sid>` rmdir, then

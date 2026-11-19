@@ -1,27 +1,31 @@
-"""The Species page — `[rail 200px | detail]`.
+"""The Particles registry page — `[rail 200px | detail]`.
 
 Detail = one container per (species, tab), built lazily on first selection and cached; a
 switch only flips visibility. The active species' mark and the segmented tabs sit on the
-view's title line, after its name. Tabs: Overview (identity editor, status, sanity, delete) ·
-Templates & masks (the mounted workbench) · Picks & curation · Analytics (scores in σ, TM
-health, particle sets) · STA kitchen (one species' picks across tomograms and projects; the
-rail hides while it shows). A species' jobs are the roster's. The page owns the 3-s registry
-observe (species created / deleted elsewhere — roster "+", another browser tab, the
-Overview's delete) and the
-`on_workbench_active` / `workbench_select_species` hooks the workspace registers
-(`workspace_page._apply_views` / `_open_species`); the internal mode string stays "workbench"
-(roster `set_active_views` compares it).
+view's title line, after its name. Tabs: Species (what defines the species, its extraction
+geometry, status, delete) · Templates & masks (the mounted workbench) · Picks & curation ·
+Analytics (scores in σ, TM health, particle sets) · STA kitchen (one species' picks across
+tomograms and projects; the rail hides while it shows). A species' jobs are the roster's.
+
+The page owns the 3-s registry observe (species created / deleted elsewhere — roster "+",
+another browser tab, the Species tab's delete), the off-loop count of every species' picks
+the rail shows, and the `on_workbench_active` / `workbench_select_species` hooks the
+workspace registers (`workspace_page._apply_views` / `_open_species`); the internal mode
+string stays "workbench" (roster `set_active_views` compares it).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
 from nicegui import ui
 
 from services.models_base import SpeciesOrigin
+from services.particles.species_overview import latest_overview, species_overview
 from services.project_state import get_project_state_for
 from ui.components.buttons import house_button
 from ui.components.reactive import FingerprintedView, SingleFlight
@@ -44,7 +48,7 @@ from ui.ui_state import get_ui_state_manager
 logger = logging.getLogger(__name__)
 
 TABS: tuple[tuple[str, str], ...] = (
-    ("overview", "Overview"),
+    ("species", "Species"),
     ("templates", "Templates & masks"),
     ("picks", "Picks & curation"),
     ("analytics", "Analytics"),
@@ -52,7 +56,22 @@ TABS: tuple[tuple[str, str], ...] = (
 )
 # Tabs that fill the pane and scroll inside themselves, with the species rail hidden while they show.
 FULL_PANE_TABS = ("kitchen",)
-DEFAULT_TAB = "overview"
+DEFAULT_TAB = "species"
+# How often the rail's pick counts are read again while the page shows and nothing in memory moved (star reads).
+_COUNT_REFRESH_S = 60.0
+
+
+def _count_picks(state, project_path: Path, species_ids: list[str]) -> dict[str, str]:
+    """Thread body: one overview per species (each lands in `latest_overview`); the species whose count failed, with
+    the cause."""
+    errors: dict[str, str] = {}
+    for sid in species_ids:
+        try:
+            species_overview(state, project_path, sid)
+        except Exception as e:  # reported on the rail row, traceback to the log
+            logger.exception("Counting the picks of species %s failed", sid)
+            errors[sid] = f"{type(e).__name__}: {e}"
+    return errors
 
 
 class _PillView(FingerprintedView):
@@ -80,8 +99,8 @@ class SpeciesPage:
         self.active_species_id: str | None = None
         self.active_tab: str = DEFAULT_TAB
         # Whether the workspace currently shows this view (`on_workbench_active`); tab
-        # refreshes (the Overview's disk-backed recompute) only run while shown — the
-        # 3-s observe itself is in-memory and keeps ticking.
+        # refreshes (the Species tab's disk-backed recompute) and the rail's pick count only
+        # run while shown — the 3-s observe itself is in-memory and keeps ticking.
         self.visible: bool = False
         # (species_id, tab_key) → (container, tab object); built on first selection, kept.
         self._tabs: dict[tuple[str, str], tuple[ui.element, SpeciesTab]] = {}
@@ -92,6 +111,10 @@ class SpeciesPage:
         self._flight = SingleFlight()
         # The rail toggle of a full-pane tab: the rail shows beside it only when asked for.
         self._rail_in_full_pane = False
+        # The rail's pick counts: when they were last read, against which in-memory key, and what failed.
+        self._count_key: Any = None
+        self._count_at = 0.0
+        self.count_errors: dict[str, str] = {}
 
     # ── Layout ────────────────────────────────────────────────────────────────
 
@@ -124,6 +147,7 @@ class SpeciesPage:
                 on_select=self.select_species,
                 on_add=self.add_species,
                 on_add_from_catalog=self.add_species_from_catalog,
+                count_errors=lambda: self.count_errors,
             )
             with (
                 ui.element("div")
@@ -176,7 +200,7 @@ class SpeciesPage:
         self.callbacks["on_workbench_active"] = self._set_active
         # "open in Species" from a job's Config tab (workspace_page._open_species).
         self.callbacks["workbench_select_species"] = self.select_species
-        # Cross-tab links inside this page (the Overview's template line points at Templates &
+        # Cross-tab links inside this page (the Species tab's template line points at Templates &
         # masks) — a tab never reaches into the page object itself.
         self.callbacks["species_select_tab"] = self.select_tab
         self.callbacks["species_toggle_rail"] = self.toggle_rail
@@ -250,7 +274,7 @@ class SpeciesPage:
         match key:
             case "templates":
                 return TemplatesTab(ctx)
-            case "overview":
+            case "species":
                 return OverviewTab(ctx)
             case "picks":
                 return PicksTab(ctx)
@@ -321,6 +345,34 @@ class SpeciesPage:
             self._refresh_visible_tab()
         self._refresh_chrome()
         self._push_tab_badges()
+        self._maybe_count_picks()
+
+    def _maybe_count_picks(self) -> None:
+        """While the page shows: read every species' pick count again when the registry or a job's status moved, a
+        species has none yet, or `_COUNT_REFRESH_S` passed."""
+        if not self.visible:
+            return
+        state = get_project_state_for(self.project_path)
+        key = (
+            state.registry_rev,
+            tuple(sorted((iid, str(getattr(jm, "execution_status", ""))) for iid, jm in state.jobs.items())),
+        )
+        missing = any(latest_overview(self.project_path, sp.id) is None for sp in state.species_registry)
+        stale = time.monotonic() - self._count_at >= _COUNT_REFRESH_S
+        if key != self._count_key or missing or stale:
+            asyncio.create_task(self._count_picks(key))
+
+    async def _count_picks(self, key: Any) -> None:
+        async with self._flight("count_picks") as acquired:
+            if not acquired:
+                return
+            state = get_project_state_for(self.project_path)
+            ids = [sp.id for sp in state.species_registry]
+            self.count_errors = await asyncio.to_thread(_count_picks, state, self.project_path, ids)
+            self._count_key = key
+            self._count_at = time.monotonic()
+            if self._rail is not None:
+                self._rail.refresh()
 
     def _push_tab_badges(self) -> None:
         """Counts on the tab strip for the active species. All three

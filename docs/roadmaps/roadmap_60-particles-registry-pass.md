@@ -383,6 +383,14 @@ Built in a worktree of its own (`crboost_server_registry`, detached at `de0ad82`
   when the job differs, the differences on its hover, and the roster's signature carries the drift. Older tab keys
   land through `species_tab` (`services/routes.py`, `jobs` → the Species tab). The empty states point at the
   roster's PARTICLES +; `add_instance_for_species` (the Jobs tab's one-click add) went with it.
+- **S3.** The tab's key is `species` (`overview` and `jobs` land on it). Sections Species (name L, overlay colour,
+  diameter S, symmetry M, notes L, the template-matching line with `path_text` and "Templates & masks →"; the
+  provenance is the head's meta, the id and the sources its hover), Extraction geometry (three S boxes, "not set"
+  as their placeholder; the head's meta says what is in use, the explanation is its tooltip) and Status, then
+  `[Delete species] [Publish to catalog]`. `_field_styles.py` gains `box_input` / `box_select` for rows no job
+  model binds. The rail counts picks from `latest_overview` (`services/particles/species_overview.py` keeps the
+  last overview per species); the page reads every species' overview in a thread on show, when the registry or a
+  job's status moves, and every 60 s, so the rail's count is the status line's.
 
 ## 6. Earlier rounds
 
