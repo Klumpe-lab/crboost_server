@@ -19,12 +19,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 from types import SimpleNamespace
 from urllib.parse import urlencode
 
 from nicegui import ui
 
-from services.models_base import SPECIES_OVERLAY_COLORS
 from services.workers import WorkKind, run_in_worker
 from ui.components.buttons import house_button, icon_button
 from ui.components.check import house_check
@@ -32,7 +32,6 @@ from ui.components.chip import render_method_chip, render_polarity_chip
 from ui.components.fields import house_field
 from ui.components.path_text import path_text
 from ui.components.segmented import render_segmented
-from ui.components.svg_icon import load_icon_svg
 from ui.job_plugins._field_styles import (
     FIELD_LABEL_STYLE,
     FIELD_ROW_STYLE,
@@ -52,13 +51,14 @@ from ui.job_plugins._field_styles import (
     text_field,
     view_head_icon,
 )
-from ui.registry_ideas import data, parts
+from ui.registry_ideas import data, glyphs, marks, parts
 from ui.registry_ideas.data import Registry, Species, Vol
 from ui.registry_ideas.parts import AMBER, BODY, CAPTION, FAINT, INK, SOFT, WARN_INK, WORDS
 
 logger = logging.getLogger(__name__)
 
 PANE = {"wide": 1060, "narrow": 720}
+ZOOM_PANEL_W = marks.TILE_W + marks.ZOOM_W + 60
 RAIL_W = 200
 TABS = (
     ("species", "Species"),
@@ -133,18 +133,14 @@ def _switch(name: str, options: list[tuple[str, str]], current: str, q: dict) ->
                 )
 
 
-def _glyph(size: int = 11, color: str = "#94a3b8") -> None:
-    ui.html(load_icon_svg("particle.svg", color, size=size), sanitize=False).style("display: flex;")
-
-
 # ── A: the frame, the rail and the Species tab ───────────────────────────────
 
 
 class _Frame:
     """The registry as one view: its title line (the active species and the tabs), the rail, the tab's page."""
 
-    def __init__(self, reg: Registry, sp: Species, pane: str, tm: str, q: dict) -> None:
-        self.reg, self.sp, self.pane, self.tm, self.q = reg, sp, pane, tm, q
+    def __init__(self, reg: Registry, sp: Species, pane: str, tm: str, q: dict, looks: marks.Looks) -> None:
+        self.reg, self.sp, self.pane, self.tm, self.q, self.looks = reg, sp, pane, tm, q, looks
         self.tab = "species"
         self.body: ui.element | None = None
         self.seg = None
@@ -159,14 +155,14 @@ class _Frame:
                 with ui.element("div").style(
                     "display: inline-flex; align-items: center; gap: 4px; margin-right: 10px;"
                 ):
-                    _glyph()
+                    marks.live(self.looks, lambda: marks.mark(self.looks, self.sp.id), "display: flex;")
                     ui.label(self.sp.name).style(f"{SANS} font-size: 10px; color: #334155; font-weight: 600;")
                 self.seg = render_segmented(TABS, self.tab, self._switch)
             with ui.element("div").style("display: flex; min-height: 420px;"):
                 with ui.element("div").style(
                     f"width: {RAIL_W}px; flex-shrink: 0; border-right: 1px solid #e4eaf1; padding: 6px 0;"
                 ):
-                    self._rail()
+                    marks.live(self.looks, self._rail, "display: block;")
                 self.body = ui.element("div").style(
                     f"width: {PANE[self.pane]}px; padding: 12px 14px 18px; box-sizing: border-box; "
                     "display: flex; flex-direction: column; gap: 14px; min-width: 0;"
@@ -179,7 +175,7 @@ class _Frame:
             row = ui.element("div").classes("cbri-rrow" + (" sel" if on else ""))
             row.on("click", lambda _e, sid=s.id: ui.navigate.to("?" + urlencode({**self.q, "species": sid})))
             with row:
-                _glyph()
+                marks.mark(self.looks, s.id)
                 ui.label(s.name).style(
                     f"{SANS} font-size: 10px; color: #334155; font-weight: 600; overflow: hidden; "
                     "text-overflow: ellipsis; white-space: nowrap; min-width: 0;"
@@ -210,7 +206,7 @@ class _Frame:
         self.body.clear()
         with self.body:
             if self.tab == "species":
-                species_tab(self.reg, self.sp, go=self._switch)
+                species_tab(self.reg, self.sp, go=self._switch, looks=self.looks)
             elif self.tab == "templates":
                 _Volumes(self.reg, self.sp, self.tm, self.pane).build()
             elif self.tab == "tomograms":
@@ -227,7 +223,7 @@ class _Frame:
                 )
 
 
-def species_tab(reg: Registry, sp: Species, *, go) -> None:
+def species_tab(reg: Registry, sp: Species, *, go, looks: marks.Looks) -> None:
     """The Species tab: what defines the species, in the job page's field geometry, then its status and its two
     actions."""
     ext = sp.extraction
@@ -249,7 +245,8 @@ def species_tab(reg: Registry, sp: Species, *, go) -> None:
                     "Drawn on the canvases only: tomogram overlays, the pick viewer, napari, the gallery. Here, and "
                     "nowhere else in the chrome."
                 )
-                _swatch(sp.color)
+                _swatch(data.in_palette(sp.color, looks.palette), looks.palette)
+            marks.glyph_row(looks, sp.id)
             text_field("Diameter", model, "diameter", is_frozen=False, save_handler=_noop, width=S, suffix="Å")
             text_field("Symmetry", model, "symmetry", is_frozen=False, save_handler=_noop, width=M)
             text_field("Notes", model, "notes", is_frozen=False, save_handler=_noop, width=L)
@@ -309,7 +306,7 @@ def species_tab(reg: Registry, sp: Species, *, go) -> None:
         )
 
 
-def _swatch(color: str) -> None:
+def _swatch(color: str, palette: str = "today") -> None:
     """The one place the overlay colour shows in the chrome: a 10 px square and its value, the palette on click."""
     with ui.element("div").style("display: inline-flex; align-items: center; gap: 6px; cursor: pointer;") as box:
         sq = ui.element("div").style(
@@ -317,7 +314,7 @@ def _swatch(color: str) -> None:
         )
         label = ui.label(color).style(f"{MONO} font-size: 9.5px; color: {SOFT};")
         with ui.menu().props("auto-close"), ui.element("div").style("display: flex; gap: 4px; padding: 6px;"):
-            for c in SPECIES_OVERLAY_COLORS:
+            for c in data.PALETTES[palette][2]:
 
                 def pick(c=c) -> None:
                     sq.style(f"background: {c};")
@@ -327,12 +324,12 @@ def _swatch(color: str) -> None:
                     f"width: 14px; height: 14px; background: {c}; cursor: pointer; "
                     f"box-shadow: 0 0 0 1px {'#12324f' if c == color else 'rgba(15, 29, 46, .2)'};"
                 ).on("click", pick)
-    box.tooltip("The overlay palette: saturated on purpose, to stand out on a greyscale tomogram")
+    box.tooltip(f"The overlay palette ({data.PALETTES[palette][0]}): what this species' picks are drawn in")
 
 
 # ── B: Templates & masks ─────────────────────────────────────────────────────
 
-_VOL_COLS = "10px minmax(0, 1fr) 96px 150px 70px 58px 46px"
+_VOL_COLS = "10px minmax(0, 1fr) 96px 166px 70px 58px 46px"
 
 
 class _Volumes:
@@ -710,7 +707,7 @@ def _today_size_badge(text: str, color: str) -> None:
     )
 
 
-def colours_chips(sp: Species) -> None:
+def colours_chips(sp: Species, palette: str) -> None:
     """Each colour the registry draws today against what it becomes."""
     with ui.element("div").style(
         "display: grid; grid-template-columns: 170px 240px 240px; align-items: center; gap: 9px 16px;"
@@ -783,7 +780,7 @@ def colours_chips(sp: Species) -> None:
                 f"width: 12px; height: 12px; border-radius: 50%; background: {sp.color}; "
                 "box-shadow: 0 0 0 2px #fff, 0 0 0 3px #e5e7eb;"
             ),
-            lambda: _swatch(sp.color),
+            lambda: _swatch(data.in_palette(sp.color, palette), palette),
         )
 
         def today_sel() -> None:
@@ -803,23 +800,34 @@ def colours_chips(sp: Species) -> None:
         )
 
 
-def colours_overlay(ov: data.Overlay) -> None:
-    size = 420
-    total = sum(len(d) for *_x, d in ov.layers)
-    with ui.element("div").style("display: flex; gap: 18px; flex-wrap: wrap;"):
-        for muted, title in ((False, "(a) the overlay palette, kept on canvases"), (True, "(b) a muted palette")):
-            with ui.element("div").style("display: flex; flex-direction: column; gap: 5px;"):
-                ui.label(title).style(parts.TH)
-                ui.html(parts.overlay_html(ov, muted=muted, size=size), sanitize=False)
-                with ui.element("div").style("display: flex; gap: 12px; flex-wrap: wrap;"):
-                    for name, vivid, muted_c, dots in ov.layers:
-                        with ui.element("div").style("display: flex; align-items: center; gap: 5px;"):
-                            c = muted_c if muted else vivid
-                            ui.element("div").style(f"width: 8px; height: 8px; border-radius: 50%; background: {c};")
-                            ui.label(f"{name} · {len(dots):,}").style(f"{MONO} font-size: 9px; color: {SOFT};")
+def palettes_panel(dense: data.Overlay, typical: data.Overlay | None, current: str, href) -> None:
+    """Each overlay palette: its eight colours, every pick of the densest tomogram dealt to them in turn (each colour
+    judged on the grey), and the species as they are on a typical one; rings, as G proposes."""
+    size = 250
+    with ui.element("div").style(
+        f"display: grid; grid-template-columns: repeat({len(data.PALETTES)}, {size}px); gap: 18px;"
+    ):
+        for key, (title, words, colours) in data.PALETTES.items():
+            on = key == current
+            with ui.element("div").style("display: flex; flex-direction: column; gap: 6px;"):
+                with ui.link(target=href(key)).style(
+                    "text-decoration: none; display: flex; align-items: baseline; gap: 8px;"
+                ):
+                    ui.label(title).style(f"{SANS} font-size: 11px; font-weight: 600; color: {INK};")
+                    if on:
+                        ui.label("on this page").style(parts.TH)
+                ui.label(words).style(f"{CAPTION} min-height: 42px;")
+                with ui.element("div").style("display: flex; gap: 3px;"):
+                    for c in colours:
+                        ui.element("div").style(f"width: 26px; height: 12px; background: {c};").tooltip(c)
+                look = parts.DotLook(mark="ring", r=2.4, alpha=0.9, palette=key)
+                ui.html(parts.dots_html(dense, replace(look, deal=True), size=size), sanitize=False)
+                if typical is not None:
+                    ui.html(parts.dots_html(typical, look, size=size), sanitize=False)
     ui.label(
-        f"{ov.short} as WarpTools drew it (its central slice), with all {total:,} candidates of every species. The "
-        "muted colours are roadmap 58's proposed class palette, matched by hue."
+        f"Top: {dense.short}'s {sum(len(x.dots) for x in dense.layers):,} picks dealt to the eight colours in turn. "
+        + (f"Bottom: {typical.short} with each species in its own colour. " if typical is not None else "")
+        + "A palette's title puts it on the whole page."
     ).style(CAPTION)
 
 
@@ -865,10 +873,11 @@ async def _registry(key: str, fresh: bool) -> Registry:
     return _REG[key]
 
 
-async def _overlay(key: str, fresh: bool) -> data.Overlay | None:
-    if fresh or key not in _OVERLAY:
-        _OVERLAY[key] = await run_in_worker(WorkKind.RENDER, data.overlay, key)
-    return _OVERLAY[key]
+async def _overlay(key: str, fresh: bool, near: int | None = None) -> data.Overlay | None:
+    k = f"{key}:{near}"
+    if fresh or k not in _OVERLAY:
+        _OVERLAY[k] = await run_in_worker(WorkKind.RENDER, data.overlay, key, near)
+    return _OVERLAY[k]
 
 
 async def render_registry_ideas() -> None:
@@ -881,6 +890,12 @@ async def render_registry_ideas() -> None:
     key = pick("project", data.PROJECTS, "grid2")
     pane = pick("pane", PANE, "wide")
     tm = pick("tm", ("a", "c"), "a")
+    gstyle = pick("gstyle", dict(glyphs.STYLES), "density")
+    candidates = [k for k, _t, _w in glyphs.catalogue(gstyle)[0]]
+    glyph = pick("glyph", candidates, "trimer" if gstyle == "line" else "globule")
+    palette = pick("palette", data.PALETTES, "reactor")
+    looks = marks.Looks(glyph, gstyle)
+    looks.palette = palette
     fresh = params.get("reload") == "1"
     ui.add_css(parts.CSS)
     with ui.column().style(
@@ -897,13 +912,24 @@ async def render_registry_ideas() -> None:
         reg = await _registry(key, fresh)
         waiting.delete()
         sp = next((s for s in reg.species if s.id == params.get("species")), reg.species[0] if reg.species else None)
-        q = {"project": key, "species": sp.id if sp else "", "pane": pane, "tm": tm}
+        q = {
+            "project": key,
+            "species": sp.id if sp else "",
+            "pane": pane,
+            "tm": tm,
+            "glyph": glyph,
+            "gstyle": gstyle,
+            "palette": palette,
+        }
         with ui.element("div").style("display: flex; flex-direction: column; gap: 5px; margin-top: 8px;"):
             _switch("project", [(k, k) for k in data.PROJECTS], key, {k: v for k, v in q.items() if k != "species"})
             if reg.species:
                 _switch("species", [(s.id, s.name) for s in reg.species], sp.id, q)
             _switch("pane", [("wide", f"wide {PANE['wide']}"), ("narrow", f"narrow {PANE['narrow']}")], pane, q)
             _switch("tm", [("a", "D3 (a) stacked"), ("c", "D3 (c) one table")], tm, q)
+            _switch("palette", [(k, v[0]) for k, v in data.PALETTES.items()], palette, q)
+            _switch("gstyle", list(glyphs.STYLES), gstyle, {**q, "glyph": ""})
+            _switch("glyph", [(k, t) for k, t, _w in glyphs.catalogue(gstyle)[0]], glyph, q)
         ui.label(f"{reg.name}: {data.PROJECTS[key][1]}.").style(f"{CAPTION} margin-top: 4px;")
         if sp is None:
             ui.label("This project has no species.").style(WORDS)
@@ -920,7 +946,7 @@ async def render_registry_ideas() -> None:
         )
         frame = _panel("The registry at the workspace's width", "", RAIL_W + PANE[pane] + 30)
         with frame:
-            _Frame(reg, sp, pane, tm, q).build()
+            _Frame(reg, sp, pane, tm, q, looks).build()
 
         _heading(
             "B",
@@ -961,19 +987,29 @@ async def render_registry_ideas() -> None:
             "canvases and in the Species tab's one swatch.",
         )
         with _panel("Chips and marks", "", 760):
-            colours_chips(sp)
-        ov = await _overlay(key, fresh)
+            colours_chips(sp, palette)
+        overlays = {}
+        for name, near in (("typical", 300), ("dense", None)):
+            o = await _overlay(key, fresh, near)
+            if o is not None and o.tomo not in {x.tomo for x in overlays.values()}:
+                overlays[name] = o
         with _panel(
-            "The overlay palette on a real slice",
-            "D1 (a) keeps today's palette on canvases; (b) would mute it everywhere, overlays included.",
-            900,
+            "The overlay palettes on real slices",
+            "Taken: (b), one palette for canvases and chrome alike, muted from neon but on strong hues. Four "
+            "candidates after instrument panels, today's for comparison.",
+            5 * 250 + 4 * 18 + 30,
         ):
-            if ov is None:
+            if "dense" not in overlays and "typical" not in overlays:
                 ui.label(
                     "This project has no WarpTools reconstruction picture with candidates on it; switch to grid2."
                 ).style(CAPTION)
             else:
-                colours_overlay(ov)
+                palettes_panel(
+                    overlays.get("dense") or overlays["typical"],
+                    overlays.get("typical") if "dense" in overlays else None,
+                    palette,
+                    lambda k: "?" + urlencode({**q, "palette": k}),
+                )
 
         _heading(
             "E",
@@ -994,3 +1030,43 @@ async def render_registry_ideas() -> None:
             ui.label("No job here differs from its species: switch to sta or mystery to see the mark.").style(
                 f"{CAPTION} color: {AMBER};"
             )
+
+        _heading(
+            "F",
+            "The species glyph (D7)",
+            "Every species shows one default glyph in the theme's grey, as everything else in the chrome is. A species "
+            "may pick another, to say what kind of particle it is, and a muted hue; the overlay colour stays on the "
+            "canvases. The picker is on the Species tab (A, the Glyph row), and here beside the places the mark is "
+            "drawn. The registry's own icon in the workspace rail keeps today's hexagon.",
+        )
+        with _panel(
+            "F1 · The default glyph",
+            "Today's hexagon beside this set's candidates (the switch gstyle picks the set). A click puts one on the "
+            "whole page, as the switch glyph does.",
+            PANE["wide"],
+        ):
+            marks.defaults_panel(glyph, lambda k: "?" + urlencode({**q, "glyph": k}), sp.name, gstyle)
+        with _panel(
+            "F2 · The set and the hues, in place",
+            f"For {sp.name}. A pick here also changes the frame in A.",
+            PANE["wide"],
+        ):
+            with ui.element("div").style("display: flex; gap: 28px; align-items: flex-start;"):
+                with ui.element("div").style("border: 1px solid #e4eaf1;"):
+                    marks.picker(looks, sp.id)
+                with ui.element("div").style("flex: 1 1 0; min-width: 0; padding-top: 6px;"):
+                    marks.in_place(looks, sp, sp.n_picks)
+
+        _heading(
+            "G",
+            "Picks on the tomogram picture (D8)",
+            "The wall and its zoom draw every pick as a dot of a fixed size with a white edge, so a tomogram with a "
+            "few hundred ribosomes is mostly dots. The controls would sit in the wall's Layers menu and hold for the "
+            "user: the mark, its size, the edge, opacity, the palette, which species. Today's look above, the "
+            "controls' below, on the same tomogram.",
+        )
+        with _panel("Picks on the wall and the zoom", "", ZOOM_PANEL_W):
+            if not overlays:
+                ui.label("No WarpTools picture with candidates in this project; switch to grid2.").style(CAPTION)
+            else:
+                marks.DotsPanel(overlays, palette).build()

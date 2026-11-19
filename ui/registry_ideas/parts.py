@@ -8,10 +8,11 @@ volume. A species' overlay colour is drawn on canvases and in its one swatch, ne
 
 from __future__ import annotations
 
+from dataclasses import dataclass, replace
 from html import escape
 
 from ui.job_plugins._field_styles import MONO, SANS, voice
-from ui.registry_ideas.data import Overlay, Species, Tomo
+from ui.registry_ideas.data import PALETTES, Overlay, Species, Tomo
 
 INK = "var(--cb-head-ink, #12324f)"
 BODY = "#1e293b"
@@ -91,6 +92,8 @@ CSS = f"""
   border: 1px solid var(--cb-btn-line, #b8cce0); border-radius: var(--cb-ctl-radius, 2px); height: 17px;
   padding: 0 8px; line-height: 15px; cursor: pointer; }}
 .cbri-cur:hover {{ background: #f4f8fc; border-color: #a9c6e4; }}
+.cbri-cur.off {{ color: #b3c0cf; border-color: #e2e8f0; cursor: not-allowed; margin-left: 4px; font-weight: 500; }}
+.cbri-cur.off:hover {{ background: #fff; border-color: #e2e8f0; }}
 .cbri-live {{ width: 5px; height: 5px; border-radius: 50%; background: #10b981; display: inline-block;
   margin-left: 5px; vertical-align: middle; }}
 
@@ -180,7 +183,12 @@ _COLS: list[tuple[str, str, str, str]] = [
         "Rules that point a human at a tomogram; nothing is dropped by them. Hover for the rule.",
     ),
     ("", "open in", "104px", "The viewer chips every tomogram preview carries."),
-    ("", "", "70px", ""),
+    (
+        "",
+        "curate in",
+        "118px",
+        "ArtiaX opens the tomogram with this species' picks; napari's curation is in development.",
+    ),
 ]
 _LIST_WORDS = {"auto": "candidates", "manual": "hand-picked", "imported": "imported", "merged": "merged"}
 _STATE_WORDS = {"extracted": "yes", "not_extracted": "–", "stale": "stale", "n/a": ""}
@@ -234,7 +242,7 @@ def _tomo_rows(sp: Species, t: Tomo, live: str) -> str:
             "no geometry</span>"
         )
     extracted = t.extracted or "–"
-    cur_tip = f"Open {t.short} in ArtiaX with this species' picks" + (
+    cur_tip = f"Curate: open {t.short} in ArtiaX with this species' picks" + (
         f"; {t.n_saves} saved list(s) waiting in its folder" if t.n_saves else ""
     )
     live_dot = '<span class="cbri-live" title="open in the live ArtiaX session"></span>' if t.name == live else ""
@@ -253,7 +261,9 @@ def _tomo_rows(sp: Species, t: Tomo, live: str) -> str:
         f'<span class="cbri-vc" data-act="3dmod" data-tomo="{_e(t.name)}" '
         'title="Copy the 3dmod command">3dmod</span></td>'
         f'<td style="text-align: right;"><button class="cbri-cur" data-act="curate" data-tomo="{_e(t.name)}" '
-        f'title="{_e(cur_tip)}">Curate</button>{live_dot}</td>'
+        f'title="{_e(cur_tip)}">ArtiaX</button>{live_dot}'
+        '<button class="cbri-cur off" disabled title="Curating in napari: in development. Its saved picks are not read '
+        'back into crboost yet.">napari</button></td>'
         "</tr>"
     )
     subs = "".join(_list_row(t, pl) for pl in t.lists) if many else ""
@@ -294,19 +304,71 @@ def _list_row(t: Tomo, pl) -> str:
 # ── Overlays ─────────────────────────────────────────────────────────────────
 
 
-def overlay_html(ov: Overlay, *, muted: bool, size: int) -> str:
-    """The reconstruction with every species' picks as dots, the gallery's way (`_dots_svg`): a filled dot with a thin
-    white rim, one SVG per layer over the picture."""
+@dataclass
+class DotLook:
+    """How picks are drawn on a tomogram picture. `r` is the mark's radius in CSS px on the zoom; the wall's tiles draw
+    it at `WALL_SCALE` of that, as the gallery does today (1.1 against 2.0)."""
+
+    mark: str = "dot"  # dot | ring | scale (a ring as wide as the particle) | cross | point
+    r: float = 1.2
+    rim: bool = False  # the thin white edge the gallery draws today
+    alpha: float = 0.9
+    palette: str = "today"  # data.PALETTES
+    hidden: frozenset[str] = frozenset()  # species not drawn
+    deal: bool = False  # every pick dealt to the palette's eight colours in turn, to judge each colour on the grey
+
+
+WALL_SCALE = 0.55
+TODAY_ZOOM = DotLook(mark="dot", r=2.0, rim=True, alpha=1.0)
+TODAY_WALL = DotLook(mark="dot", r=2.0, rim=True, alpha=1.0)  # 1.1 px once WALL_SCALE applies
+WALL_CAP = 260  # the gallery's `_WALL_DOTS`: a tile draws at most this many picks per layer
+
+
+def _stride(items: tuple, cap: int | None) -> tuple:
+    if cap is None or len(items) <= cap:
+        return items
+    step = len(items) / cap
+    return tuple(items[int(i * step)] for i in range(cap))
+
+
+def dots_html(ov: Overlay, look: DotLook, *, size: int, wall: bool = False) -> str:
+    """The reconstruction at `size` px wide with every species' picks drawn as `look` says; on a wall tile (`wall`) the
+    picks are thinned to `WALL_CAP` per species and the mark drawn at `WALL_SCALE`."""
     h = round(size * ov.height / ov.width)
-    layers = "".join(
-        f'<g fill="{muted_c if muted else vivid}" stroke="rgba(255,255,255,0.8)" stroke-width="0.5">'
-        + "".join(f'<circle cx="{x:.2f}%" cy="{y:.2f}%" r="3"/>' for x, y in dots)
-        + "</g>"
-        for _name, vivid, muted_c, dots in ov.layers
-    )
+    k = WALL_SCALE if wall else 1.0
+    r = max(look.r * k, 0.35)
+    px_per_vox = size / ov.nx
+    colours = PALETTES[look.palette][2]
+    layers = [x for x in ov.layers if x.species not in look.hidden]
+    if look.deal and layers:
+        every = [d for x in layers for d in x.dots]
+        layers = [
+            replace(layers[0], species=str(i), index=i, dots=tuple(every[i::8]), vivid=colours[i]) for i in range(8)
+        ]
+    groups = []
+    for layer in layers:
+        c = colours[layer.index] if layer.index >= 0 else layer.vivid
+        pts = [(x / 100 * size, y / 100 * h) for x, y in _stride(layer.dots, WALL_CAP if wall else None)]
+        rim = 'stroke="rgba(255,255,255,0.8)" stroke-width="0.5"' if look.rim else ""
+        if look.mark == "dot":
+            body = "".join(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r:.2f}"/>' for x, y in pts)
+            g = f'<g fill="{c}" {rim}>{body}</g>'
+        elif look.mark == "point":
+            body = "".join(f'<rect x="{x - 0.5:.1f}" y="{y - 0.5:.1f}" width="1" height="1"/>' for x, y in pts)
+            g = f'<g fill="{c}">{body}</g>'
+        elif look.mark in ("ring", "scale"):
+            rr = r
+            if look.mark == "scale" and layer.diameter and ov.apix:
+                rr = max(layer.diameter / 2 / ov.apix * px_per_vox, 1.0)
+            body = "".join(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{rr:.2f}"/>' for x, y in pts)
+            g = f'<g fill="none" stroke="{c}" stroke-width="{0.8 if wall else 1.0}">{body}</g>'
+        else:  # cross
+            body = "".join(f"M{x - r:.1f} {y:.1f}H{x + r:.1f}M{x:.1f} {y - r:.1f}V{y + r:.1f}" for x, y in pts)
+            g = f'<path d="{body}" stroke="{c}" stroke-width="{0.8 if wall else 1.0}" fill="none"/>'
+        groups.append(f'<g opacity="{look.alpha:.2f}">{g}</g>')
     return (
-        f'<div style="position: relative; width: {size}px; height: {h}px; background: #0f1d2e;">'
+        f'<div style="position: relative; width: {size}px; height: {h}px; background: #0f1d2e; flex-shrink: 0;">'
         f'<img src="{ov.url}" style="width: {size}px; height: {h}px; display: block;">'
-        f'<svg xmlns="http://www.w3.org/2000/svg" style="position: absolute; inset: 0; width: 100%; height: 100%;">'
-        f"{layers}</svg></div>"
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {size} {h}" '
+        f'style="position: absolute; inset: 0; width: 100%; height: 100%;">{"".join(groups)}</svg></div>'
     )
