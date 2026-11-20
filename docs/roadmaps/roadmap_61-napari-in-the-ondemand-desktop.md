@@ -233,3 +233,33 @@ ChimeraX keeps its job route and the curation worker. Roadmap 63's December imag
     window is closed waits for the next one.
   - **Checked** (roadmap 65 §10): crboost's service found a desktop viewer in IT's image and showed two projects'
     tomograms in it; the launcher drew on a full B200 through VirtualGL. Owed: R1–R3 with the portal's own desktop.
+- **2026-11-20. S0d, from OnDemand's own records** (`~/ondemand/data/sys/dashboard/batch_connect/sys/desktop/`). The
+  Remote Desktop app's token is `sys/desktop`, so its form is
+  `/pun/sys/dashboard/batch_connect/sys/desktop/session_contexts/new`, now `napari.desktop.form` in both confs. The
+  desktop starts with `apptainer exec` into an instance, without `--cleanenv`, so the job's `SLURM_JOB_ID` should
+  reach its terminals; R1 shows it (the dialog's SLURM job row for a desktop viewer).
+- **2026-11-20, later. The job route runs IT's desktop.** The maintainer still got the old look from the chip: fluxbox's
+  bar along the bottom and a grainier picture, because *Start now* and *Start on a full GPU* ran `napari_GL_v2.sif`
+  (TigerVNC, fluxbox). Now `containers/napari/desktop_session.sh` starts the portal's own desktop image the way the
+  portal's Remote Desktop app does (an apptainer instance of `ood-desktop.sif`, TurboVNC with its password file,
+  Xfce through `ood-desktop`, the image's glvnd libraries in front of `--nv`'s), then websockify and
+  `eisgreis-crboost --session-dir`; it writes the same `session.json`, so the dialog, the open page and the browser
+  link are unchanged. `napari.sif_path` names that image (`/software/ood/desktop/ood-desktop.sif`, IT's link to its
+  current one), and preflight checks it has `ood-desktop`, `vncserver` and `vncpasswd`. `curation_session.sh` is
+  ChimeraX's alone again; `napari_GL.def` is no longer run. The desktop sets `EISGREIS_NO_AUTOSTART`, so a user's
+  autostart entry stands down there rather than start a second viewer. This is S6's image retirement, early; the job
+  route itself stays (one click from the chip, no portal form).
+  - The picture: the portal's noVNC link carries the card's compression and image-quality sliders (defaults 6 and 2,
+    remembered per browser); crboost's link sets neither, so noVNC uses its own (quality 6). With TurboVNC on both
+    sides now, the server is the same.
+  - *Stop* now saves. A plain `scancel` signals every process of the job at once, so the VNC server died beside the
+    viewer, which never got to save (as with the old worker). crboost now signals the worker's script alone
+    (`scancel --batch --signal=TERM`); its cleanup, which a second signal no longer cuts short, sends SIGTERM to the
+    viewer itself, found by its command line (inside the instance it has a pid of another namespace), waits up to
+    20 s while the viewer closes its window and saves, then takes the desktop down. Meanwhile crboost counts the
+    session as gone. One still running a minute later is shown again, and a Stop then cancels it outright, as it does
+    a queued job (which refuses the signal: "Job can not be altered now").
+  - Checked on nodes with test session folders (never the live registry): a CPU node (cbe-c3-9, job 1840030: IT's
+    Xfce with the panel at the top, the viewer maximized in it, llvmpipe) and a full B200 (job 1840290: "NVIDIA
+    B200/PCIe/SSE2" through VirtualGL); a stop through crboost's own `stop_napari_session` saved the comments CSV and
+    ended the job (1840283); two signals 0.3 s apart (1840317) saved, cleaned up and ended the job in 7 s.

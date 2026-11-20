@@ -9,11 +9,10 @@ the user's own OnDemand desktop), which takes its environment and its command fr
 
 S1–S3 and roadmap 61 S3–S4 are built (§10, 2026-11-19, late); nothing is committed. Next:
 
-1. The maintainer commits EisGreis in `~/dev/EisGreis` onto `crboost-bundle-and-3d` (three commits: the renames, the
-   package, the install) and pushes that branch; then crboost's commit. The commands were handed over.
-2. The lab install, from the lab checkout: `./crboost eisgreis-install /groups/klumpe/software/EisGreis --ref
-   crboost-bundle-and-3d`. The lab conf's `napari.companion` becomes `napari.eisgreis: /groups/klumpe/software/EisGreis`,
-   with `napari.desktop.hint` (the dev conf has both).
+1. *Done 2026-11-20:* EisGreis's three commits pushed (b8ab0f9), crboost's commit in; the lab install built.
+2. One clone for everyone, `/groups/klumpe/software/EisGreis`: the install and the development checkout (§10). Both
+   confs name it. The lab conf keeps `napari.companion` until the lab checkout runs the new code; then that line goes
+   and its `napari.sif_path` becomes IT's desktop image (roadmap 61 §7).
 3. The checks: §8 R1–R3 and roadmap 61 R1–R3. GitHub Actions runs on the push.
 4. Then the PR to the colleague, `crboost-bundle-and-3d` into `main`, merged with a merge commit: a squash would drop
    the renames that keep his files' history.
@@ -427,3 +426,16 @@ maintainer choose (owners open):
     dropped a stray module path, kept `glvnd` and `/.singularity.d/libs`, ran `vglrun -d egl`, and the viewer drew on
     "NVIDIA B200/PCIe/SSE2". Not done here: the job route through crboost's sbatch (R3), a user's own desktop through
     the portal (61 R1), the colleague's Mac (R2).
+- **2026-11-20. Committed, pushed, installed.** EisGreis `crboost-bundle-and-3d`: dab1d98 (the renames, every one
+  at 100 %), 28b1349 (the package), b8ab0f9 (the install); GitHub Actions passed on the push (50 s). crboost:
+  1b38651, with parts in the parallel session's commits (d48ada0 the config, 3c3c398 the deletion of
+  `open_tomogram.py`, d342875 the worker and the launcher). The lab install is `/groups/klumpe/software/EisGreis` at
+  b8ab0f9 (`./crboost eisgreis-install … --ref crboost-bundle-and-3d`), the same environment as the dev clone's
+  (`3.12.13-a4edcf912300`); `eisgreis-crboost --check` passes from it. The lab conf names it beside `companion`, which
+  the lab checkout (80a874b) still runs: delete `companion` once that checkout is past 1b38651.
+- **2026-11-20, later. One clone for everyone.** The maintainer wants one EisGreis, the lab's and his own, so that
+  what he runs is what the lab runs, and one thing to manage. `/groups/klumpe/software/EisGreis` is now both the
+  install and the development checkout (on `crboost-bundle-and-3d`, editable, so an edit there is live for everyone);
+  `~/dev/EisGreis` is gone (it was clean and pushed). The dev conf and the lab conf both name it. Updating it: `git
+  pull` in it, and `./install.sh` when `uv.lock` changed (or `./crboost eisgreis-install
+  /groups/klumpe/software/EisGreis --ref crboost-bundle-and-3d`, which does both).
