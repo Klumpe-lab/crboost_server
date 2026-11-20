@@ -30,7 +30,9 @@ set -euo pipefail
 # their output to /dev/null; under `set -e` a failure there would kill the worker with a
 # 0-byte slurm.log, and crboost could then only report a blank "session exited". This ERR
 # trap prints the failing line to stderr (→ slurm.log) before the shell exits, naming the
-# node and the command that died.
+# node and the command that died. rc is assigned at the start of the trap's own string, which ShellCheck does
+# not count as an assignment.
+# shellcheck disable=SC2154
 trap 'rc=$?; echo "==== curation worker FAILED (exit $rc) on $(hostname -s 2>/dev/null) at line ${LINENO}: ${BASH_COMMAND} ====" >&2' ERR
 
 SIF="${CX_SIF:?CX_SIF must be set to the chimerax_artiax.sif path (conf.yaml curation.sif_path)}"
