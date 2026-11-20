@@ -142,7 +142,7 @@ class TiltFilterParams(AbstractJobParams):
     dl_batch_size: int = Field(default=32, ge=1, le=256, description="Batch size for DL inference")
     # The keep rule (services/tilt_series/keep_rule.py): a commit keeps a tilt the filter calls bad
     # where excluding it would leave its series unalignable. On by default: AreTomo2 loses a
-    # series with a hole whole (AGG412, 2026-11-16), and a doubtful tilt costs less than a series.
+    # series with a hole whole, and a doubtful tilt costs less than a series.
     keep_alignable: bool = Field(
         default=True, description="Keep tilts the filter calls bad where excluding them leaves the series unalignable"
     )

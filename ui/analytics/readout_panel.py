@@ -86,8 +86,7 @@ def _map_preview(png: str | None, volume: str, what: str) -> None:
 def _tomogram_names(classes: list[dict]) -> dict[str, str]:
     """What the class table calls each tomogram: its position, and before it what tells its dataset from the
     others' when the table holds more than one (a pooled set: every project has a Position_10). The datasets'
-    common start and end are dropped: AGG412_20260311_MyrGFP_Grid2_rerun_Position_10 -> 20260311_MyrGFP_Grid2 ·
-    Position_10."""
+    common start and end are dropped: lab_20260311_grid2_rerun_Position_10 -> 20260311_grid2 · Position_10."""
     full = {t for c in classes for t, _n in c.get("top_tomograms") or []}
     pos = {t: ts_display_name(t) for t in full}
     source = {t: t[: -len(pos[t])].rstrip("_") if pos[t] != t and t.endswith(pos[t]) else "" for t in full}

@@ -153,8 +153,6 @@ creation, nothing auto-propagates — they just have a species-shaped default. S
 - **Absent is stated, never defaulted.** No template registered means the row says so and
   points at the Species page; it never silently picks the first file it finds.
 
-Full guideline of record: `docs/picking_ui/overview.md`.
-
 ## Results and exceptions — one idiom
 
 Service-level outcomes are dicts built by `ok(...)` / `err(...)` from `services/result.py` — never

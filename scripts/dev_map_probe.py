@@ -5,7 +5,7 @@ It opens a project's Jobs view, shows the map from the roster's map icon, and cl
 the flags on the Pipeline title line, a card's header); nothing in the project changes. It runs in the Playwright
 Python of scripts/dev_screenshot.py:
 
-    ~/.local/share/crboost-dev/pw/bin/python scripts/dev_map_probe.py http://localhost:24300 AGG412_STA notes/screens
+    ~/.local/share/crboost-dev/pw/bin/python scripts/dev_map_probe.py http://localhost:24300 my_project notes/screens
 
 The numbers print one line per action and land in <out>/probe.json, with a PNG of the map small and all large.
 """
@@ -20,8 +20,10 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
-BASE = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:24326"
-PROJECT = sys.argv[2] if len(sys.argv) > 2 else "AGG412_STA"
+if len(sys.argv) < 3:
+    sys.exit(__doc__)
+BASE = sys.argv[1]
+PROJECT = sys.argv[2]
 OUT = Path(sys.argv[3]) if len(sys.argv) > 3 else Path(".")
 TOKEN = (Path.home() / ".crboost" / "token").read_text().strip()
 

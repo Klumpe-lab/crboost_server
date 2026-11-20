@@ -1,7 +1,7 @@
 """The tilts a tilt-filter verdict keeps although it calls them bad, so each series stays alignable.
 
-AreTomo2 (alignment, in the Warp dev41 image) crashes on a tilt series with a hole in it. On the
-AGG412 reruns (783 series, 2026-11-16), by the largest gap between the tilts the filter kept, it
+AreTomo2 (alignment, in the Warp dev41 image) crashes on a tilt series with a hole in it. Over
+783 series, by the largest gap between the tilts the filter kept, it
 crashed on 8 of 559 series at ≤ 3.5° (5 of them series the filter had emptied), 7 of 127 at
 3.5–9.5°, 15 of 33 at 9.5–15.5° and 32 of 33 beyond. The holes were mostly tilts the model was
 unsure of, and a crashed series is lost whole. So a commit keeps a bad-called tilt where excluding

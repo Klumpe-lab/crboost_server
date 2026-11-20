@@ -380,7 +380,7 @@ class ConfigService:
             raise FileNotFoundError(
                 f"Configuration file not found at: {config_path}\n"
                 f"Repo root: {REPO_ROOT}\n"
-                f"Run 'python preflight.py' to create one from the template."
+                f"Run '{REPO_ROOT / 'crboost'} preflight' to create one from the template."
             )
 
         with open(config_path) as f:

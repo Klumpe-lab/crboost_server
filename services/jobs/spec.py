@@ -13,6 +13,7 @@ module is imported by the package `__init__`.
 from __future__ import annotations
 
 import os
+import shlex
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -569,8 +570,12 @@ def driver_launch_prefix(*, server_dir: Path, driver_script: Path) -> str:
             f"empty = the interpreter running the server)"
         )
     # Only this checkout on the path, and no ~/.local site-packages: whatever a cluster module or the user's
-    # shell put on PYTHONPATH must not shadow the venv's packages.
-    return f"export PYTHONPATH={server_dir} PYTHONNOUSERSITE=1; {python_exe} {driver_script}"
+    # shell put on PYTHONPATH must not shadow the venv's packages. Quoted for the shell, so an install path with a
+    # space in it still runs; a plain path comes out as it went in.
+    return (
+        f"export PYTHONPATH={shlex.quote(str(server_dir))} PYTHONNOUSERSITE=1; "
+        f"{shlex.quote(str(python_exe))} {shlex.quote(str(driver_script))}"
+    )
 
 
 def driver_invocation(*, server_dir: Path, driver_script: Path, instance_id: str, project_path: Path) -> str:
@@ -589,5 +594,5 @@ def driver_invocation(*, server_dir: Path, driver_script: Path, instance_id: str
     return (
         f"{driver_launch_prefix(server_dir=server_dir, driver_script=driver_script)} "
         f"--instance_id {instance_id} "
-        f"--project_path {project_path}"
+        f"--project_path {shlex.quote(str(project_path))}"
     )

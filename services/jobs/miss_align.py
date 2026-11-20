@@ -451,8 +451,8 @@ class MissAlignParams(AbstractJobParams):
         "max_epochs_per_iteration` steps. The learning rate halves at each of `lr_milestones`, and early "
         "stopping only starts after the last one — with the epoch cap at or below it, neither happens. The "
         "tool's own budget is 1000 steps × 30 epochs: about 11 h per iteration on an A100.\n\n"
-        "**Long runs.** The default queue limit is usually 8 h; set a longer QOS in the SLURM tab (e.g. "
-        "`g_long`) and the requested wall-time follows the estimate up to that QOS's limit. The job "
+        "**Long runs.** The default queue limit is usually 8 h; set a longer QOS in the SLURM tab and the "
+        "requested wall-time follows the estimate up to that QOS's limit. The job "
         "checkpoints once per macro-iteration: **if it runs out of time, re-run it** and it continues from "
         "the last finished iteration (the schedule and inputs must be unchanged).\n\n"
         "**Volume box (`z_box`).** The tool trains and scores patches across the whole volume box; the "
@@ -496,7 +496,7 @@ class MissAlignParams(AbstractJobParams):
         "• 2 GPUs (1 training) with 16 CPUs → 1 trainer, 10 loaders, 5 builders.\n"
         "• GPUs on the cluster are mostly taken one at a time: a 4-GPU job waits for a whole node to empty "
         "(days), a 1–2 GPU job for any gap (often minutes).\n"
-        "• The profile says where the cards come from (full B200s when free, else A100s, on CBE.next); num_gpus "
+        "• The profile in the site's conf says which cards (a GPU type, a partition); num_gpus "
         "sets how many. An RTX 6000 is "
         "card-bound at ~2.3 steps/s, an A100 ~3, a B200 ≥ 3.7 with its trainer mostly idle: feed it CPUs.\n"
         "• The training pool (pool_size × ~5.3 MB) lives in the node's RAM and is added to the memory request.\n"
@@ -813,7 +813,7 @@ class MissAlignParams(AbstractJobParams):
             return (
                 f"One macro-iteration needs ~{_minutes_to_hms(int(longest))} (conservative estimate) but {where} "
                 f"allows {_minutes_to_hms(limit)} per run: the job would die inside it and every re-run restarts "
-                f"it. Set a longer QOS in the SLURM tab (e.g. g_long), or lower steps_per_epoch / epochs."
+                f"it. Set a longer QOS in the SLURM tab, or lower steps_per_epoch / epochs."
             )
         if minutes > limit:
             return (

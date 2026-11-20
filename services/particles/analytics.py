@@ -623,7 +623,7 @@ class Marker:
 
 
 def node_family(node: str | None) -> str:
-    """'clip-g3-5.cbe.vbc.ac.at' → 'clip-g3': the hostname without domain and trailing node number."""
+    """'node-g3-5.cluster.example.org' → 'node-g3': the hostname without domain and trailing node number."""
     if not node:
         return ""
     short = node.split(".", 1)[0]

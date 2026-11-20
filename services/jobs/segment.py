@@ -62,7 +62,7 @@ class SegmentParams(AbstractJobParams):
         "One GPU per tomogram, with at least 24 GB: easymode peaked at 22 GB",
         "On a 264 × 530 × 530 tomogram, membrane, void, cytoplasm and ribosome together peaked at 22.2 GB of GPU "
         "memory, on a 24 GB card. A smaller card runs out of memory, so set the constraint to the nodes whose "
-        "cards have 24 GB or more (on CBE: g3 = RTX 6000, g4 = A100).\n\n"
+        "cards have 24 GB or more (an RTX 6000 or an A100, for example).\n\n"
         "• On 1024 × 1024 × 512 tomograms at 6.2 Å with TTA 2, cytoplasm and nucleus took about 1.5 min each and "
         "ribosome 4.7 min, plus a minute of start-up per task. The networks' time grows with TTA: 8 takes four "
         "times as long as 2. At 10 Å the 2.5D networks have fewer planes to go through.\n"

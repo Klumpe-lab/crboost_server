@@ -6,7 +6,7 @@ Done once per cluster. Each user then runs their own server from the same instal
 **You need:** a headnode with SLURM and Apptainer (or Singularity), GPU compute nodes, and a shared
 filesystem that the headnode and all compute nodes see under the same paths. Put everything — the
 install, the containers, your data and your projects — on that shared filesystem. About 2 GB for the
-install, 1–12 GB per container.
+install, and 0.5–14 GB per container: 26 GB for the two every site needs (Warp/AreTomo and RELION).
 
 ## 1. Download and install
 
@@ -229,8 +229,8 @@ over by hand.
 <details>
 <summary>Upgrading an install with older config files</summary>
 
-The easiest way: rename your old `config/conf.yaml` and `config/qsub.sh`, run `preflight.py` to get fresh
-ones, and copy your values over. If you edit the old files instead, they must have:
+The easiest way: rename your old `config/conf.yaml` and `config/qsub.sh`, run `./crboost preflight` to get
+fresh ones, and copy your values over. If you edit the old files instead, they must have:
 
 **`config/conf.yaml`**
 - `container_runtime` and `container_binds`.
@@ -252,8 +252,8 @@ ones, and copy your values over. If you edit the old files instead, they must ha
 `./install.sh` (it leaves the old `venv/` alone), delete the Python `module load` lines from `config/qsub.sh`,
 and delete `venv/` once no server runs from it.
 
-Then run `preflight.py` and `pytest -m cluster`, and start the server with `./crboost` (it used to be
-`main.py`). Every browser needs the new `?token=` link once. The `.nicegui/` folder in the install is no
+Then run `./crboost preflight` and `./crboost test -m cluster`, and start the server with `./crboost` (it used
+to be `main.py`). Every browser needs the new `?token=` link once. The `.nicegui/` folder in the install is no
 longer used; you can delete it.
 
 </details>

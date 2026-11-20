@@ -3,9 +3,9 @@ around it, and under them the same slabs of its template match's template turned
 
 The template is turned the way the matched angles mean it: R = ZYZ(rot, tilt, psi) (intrinsic, degrees),
 transposed, applied to the template. Of six conventions (ZYZ, zyz, ZXZ, each as is and transposed) it is
-the one that made the template agree with the tomogram at each of the twelve best ribosome picks of
-AGG412_20260311_MyrGFP_Grid2 job027: normalised cross-correlation 0.18 against 0.07–0.08 for the others and
-for random turns.
+the one that made the template agree with the tomogram at each of the twelve best ribosome picks of one
+template-matching job: normalised cross-correlation 0.18 against 0.07–0.08 for the others and for random
+turns.
 
 Worker-safe: plain arguments, writes only `out`.
 """

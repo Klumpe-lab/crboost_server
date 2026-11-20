@@ -4,8 +4,8 @@ A Warp tilt-series XML holds the rigid per-tilt model the tilt-series star also 
 AxisOffsetX/Y), and what the star cannot hold: local image warps (GridMovementX/Y, written by miss-alignment's
 [N,N] iterations), volume warps, level angles. Warp applies all of it (tsReconstruct, Warp export). RELION's programs
 that cut particles from the tilt images (relion_tomo_reconstruct_particle, _refine_ctf, _subtomo, and frame
-alignment when it comes) read the star alone. On the AGG412 reruns that placed every particle 8–17 Å RMS off in every
-tilt: a bin-1 reference of 20 Å where the same particles give 9 Å, and a CTF refine that ran away.
+alignment when it comes) read the star alone. On data aligned with miss-alignment that placed every particle 8–17 Å
+RMS off in every tilt: a bin-1 reference of 20 Å where the same particles give 9 Å, and a CTF refine that ran away.
 
 The bridge: per particle and tilt, the offset that takes RELION's rigid placement to Warp's, as a RELION
 trajectories file (`rlnTomoTrajectoriesFile`, the format Polish writes) named in an optimisation set the job hands
