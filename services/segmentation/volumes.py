@@ -9,10 +9,14 @@ function in a worker, with the encoding `infer_full_scale` read off the data (or
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from services.visualization.preview_render import central_slab
+
+if TYPE_CHECKING:
+    from services.segmentation.manifest import SegmentationEntry
 
 # The p at which a voxel counts as the feature on the overlays: the convention of easymode, Pom and
 # MemBrain.
@@ -112,6 +116,28 @@ def volume_problem(path: Path, shape_zyx) -> str | None:
     if size < data_start + int(np.prod(shape)) * dtype.itemsize:
         return "truncated (the run stopped while writing it)"
     return None
+
+
+def entry_dtype(entry: SegmentationEntry) -> np.dtype:
+    """The data type of a manifest entry's volume, whose header must agree with the entry: the grid picks are
+    placed on, and a type that reaches the full scale the manifest states."""
+    import mrcfile
+
+    with mrcfile.open(entry.path, header_only=True, permissive=True) as m:
+        h = m.header
+        shape = (int(h.nz), int(h.ny), int(h.nx))
+        dtype = mrcfile.utils.data_dtype_from_header(h)
+    if shape != tuple(entry.shape_zyx):
+        raise ValueError(
+            f"{entry.path.name}: its grid {shape} (z, y, x) is not the manifest's {tuple(entry.shape_zyx)}"
+        )
+    if dtype.kind not in "iuf":
+        raise ValueError(f"{entry.path.name}: data type {dtype} holds no probabilities")
+    if dtype.kind in "iu" and entry.full_scale > np.iinfo(dtype).max:
+        raise ValueError(
+            f"{entry.path.name}: {dtype} never reaches the full scale {entry.full_scale:g} the manifest states"
+        )
+    return dtype
 
 
 def summarize_volume(

@@ -16,8 +16,10 @@ Mode is determined by the SLURM_ARRAY_TASK_ID env var:
 
 - Set:    TASK mode. One tomogram per array index. Reads the manifest, finds
           its `{tomo}_{apix}Apx_job.json` in the staged tmResults dir, runs
-          pytom's candidate extraction on it (`NO_DEVICE_LAUNCH`), and atomically
-          writes `.task_status/{tomo}.{ok|fail}`.
+          pytom's candidate extraction on it (`NO_DEVICE_LAUNCH`), adds the
+          context columns of the segmentations input while Context is on
+          (services/particles/pick_context.py), and atomically writes
+          `.task_status/{tomo}.{ok|fail}`.
 
 Enumeration is from the TM output (one `*_job.json` per tomogram TM actually
 processed), not the input star; the coordinate list follows what TM produced.
@@ -42,11 +44,15 @@ import pandas as pd
 import starfile
 
 from drivers.array_job_base import ArrayDriver, ArrayResults
+from drivers.array_job_base import read_manifest as read_task_manifest
 from drivers.candidate_views import write_candidate_views
-from drivers.driver_base import DriverContext, ToolCommand
-from drivers.pick_from_segmentation import PickFromSegmentationDriver
+from drivers.driver_base import DriverContext, ToolCommand, print_cmd_only, require_producer_input
+from drivers.pick_from_segmentation import VOXEL_TOLERANCE, PickFromSegmentationDriver
 from services.models_base import PickSource
-from services.subtomo_merge import write_optimisation_set
+from services.particles.coords import binned_tomo_size_from_tomo_row, pixel_size_from_tomo_row
+from services.particles.pick_context import context_frame_problem, tomogram_context
+from services.segmentation.search_region import read_segmentations
+from services.subtomo_merge import _read_tomograms_star, write_optimisation_set
 from services.job_models import CandidateExtractPytomParams, ExtractionCutoffMethod
 
 # Extraction only reads the TM job's outputs, never deletes them: extracting the same TM job again
@@ -186,6 +192,11 @@ def tomo_particles_star_path(local_tm_results: Path, tomo_name: str) -> Path:
     return local_tm_results / f"{tomo_name}_particles.star"
 
 
+def tomo_context_path(local_tm_results: Path, tomo_name: str) -> Path:
+    """The tomogram's context summary, written once its particles star carries the context columns."""
+    return local_tm_results / f"{tomo_name}_context.json"
+
+
 def read_star_tomo_names(tomograms_star: Path) -> list[str]:
     """rlnTomoName values from the input tomograms star (first DataFrame block)."""
     data = starfile.read(tomograms_star, always_dict=True)
@@ -200,6 +211,9 @@ class ExtractCandidatesPytomDriver(ArrayDriver):
     job_name = "extract_candidates_pytom"
     driver_script = Path(__file__).resolve()
     poll_secs = 15
+
+    _context: str | None = None  # the supervisor's: segmentations checked for context
+    _task_manifest: dict | None = None
 
     # ---------------- supervisor ----------------
 
@@ -250,8 +264,52 @@ class ExtractCandidatesPytomDriver(ArrayDriver):
 
         return tomo_names
 
+    def pre_dispatch(self, ctx: DriverContext[CandidateExtractPytomParams], items: list[str]) -> None:
+        self._context = self._context_source(ctx, items)
+
+    def _context_source(self, ctx: DriverContext[CandidateExtractPytomParams], items: list[str]) -> str | None:
+        """The segmentations the picks take their context from, checked against the tomograms: computed on the
+        picks' reconstruction, each volume on its tomogram's grid. None when Context is off or nothing is wired."""
+        if not ctx.params.context:
+            self.log("Context: off")
+            return None
+        source = ctx.paths.get("input_segmentations")
+        if source is None:
+            self.log("Context: no segmentations input, so the picks record none")
+            return None
+        require_producer_input(source, "Context segmentations")
+        own = {ctx.instance_id: {k: str(v) for k, v in ctx.paths.items()}}
+        problem = context_frame_problem(ctx.state, ctx.instance_id, paths=own)
+        if problem:
+            raise ValueError(f"Context: {problem}")
+        manifest = read_segmentations(source)
+        tomo_df = _read_tomograms_star(ctx.paths["input_tomograms"])
+        rows = tomo_df.set_index(tomo_df["rlnTomoName"].astype(str))
+        wanted = set(items)
+        for e in manifest.entries:
+            if e.tomogram not in wanted or e.tomogram not in rows.index:
+                continue
+            row = rows.loc[e.tomogram]
+            apix = pixel_size_from_tomo_row(row)
+            size = tuple(int(v) for v in binned_tomo_size_from_tomo_row(row, project_root=ctx.project_path))
+            if abs(apix - e.voxel_angstrom) > VOXEL_TOLERANCE * e.voxel_angstrom or size != tuple(e.shape_zyx[::-1]):
+                raise ValueError(
+                    f"Context: {e.feature} of {e.tomogram} is {tuple(e.shape_zyx[::-1])} (x y z) at "
+                    f"{e.voxel_angstrom:g} Å, its tomogram {size} at {apix:g} Å: segmentations of another frame"
+                )
+        covered = len({e.tomogram for e in manifest.entries} & wanted)
+        self.log(
+            f"Context: {', '.join(manifest.features())} from {manifest.producer} ({source}), for {covered} of "
+            f"{len(items)} tomograms"
+        )
+        return str(source)
+
     def manifest_extras(self, ctx: DriverContext[CandidateExtractPytomParams], items: list[str]) -> dict:
-        return {"apix": self._apix, "input_tomograms_star": str(ctx.paths["input_tomograms"])}
+        return {
+            "apix": self._apix,
+            "input_tomograms_star": str(ctx.paths["input_tomograms"]),
+            "context_segmentations": self._context,
+        }
 
     def per_task_slurm_config(self, ctx: DriverContext[CandidateExtractPytomParams]):
         per_task_cfg = ctx.params.get_effective_slurm_config()
@@ -319,6 +377,18 @@ class ExtractCandidatesPytomDriver(ArrayDriver):
             job_dir / "optimisation_set.star", particles_star=candidates_star, tomograms_star=output_tomograms
         )
         self.log("Created optimisation_set.star with absolute paths")
+        if self._context:
+            # A tomogram settled by an earlier run without context has none (None).
+            per_tomo = {
+                item: json.loads(path.read_text())
+                if (path := tomo_context_path(local_tm_results, item)).is_file()
+                else None
+                for item in results.ok
+            }
+            (job_dir / "context.json").write_text(
+                json.dumps({"segmentations": self._context, "per_tomogram": per_tomo}, indent=2)
+            )
+            self.log(f"Context of {len(per_tomo)} tomograms: context.json")
         self._write_analytics_sidecar(ctx)
 
     def _write_analytics_sidecar(self, ctx: DriverContext[CandidateExtractPytomParams]) -> None:
@@ -347,9 +417,16 @@ class ExtractCandidatesPytomDriver(ArrayDriver):
 
     # ---------------- task ----------------
 
+    def _task_context(self, ctx: DriverContext[CandidateExtractPytomParams]) -> str | None:
+        """In a task: the segmentations the supervisor checked for context, or None."""
+        if self._task_manifest is None:
+            self._task_manifest = read_task_manifest(ctx.job_dir)
+        return self._task_manifest.get("context_segmentations")
+
     def task_already_done(self, ctx: DriverContext[CandidateExtractPytomParams], item: str) -> bool:
         out_star = tomo_particles_star_path(ctx.job_dir / "tmResults", item)
-        if out_star.exists() and out_star.stat().st_size > 0:
+        context_done = not self._task_context(ctx) or tomo_context_path(ctx.job_dir / "tmResults", item).is_file()
+        if out_star.exists() and out_star.stat().st_size > 0 and context_done:
             self.log(f"Particles already extracted, skipping: {out_star}")
             return True
         return False
@@ -369,6 +446,32 @@ class ExtractCandidatesPytomDriver(ArrayDriver):
 
     def build_command(self, ctx: DriverContext[CandidateExtractPytomParams], item: str, staged) -> ToolCommand:
         return build_extract_base_cmd(ctx.params).opt_path("-j", staged, quote=False)
+
+    def execute(self, ctx: DriverContext[CandidateExtractPytomParams], item: str, staged) -> None:
+        super().execute(ctx, item, staged)
+        if not print_cmd_only() and self._task_context(ctx):
+            self._add_context(ctx, item)
+
+    def _add_context(self, ctx: DriverContext[CandidateExtractPytomParams], item: str) -> None:
+        """pytom's picks of this tomogram with the context columns, written over its star in one rename; then the
+        context summary, whose presence marks the tomogram done."""
+        local_tm_results = ctx.job_dir / "tmResults"
+        star = tomo_particles_star_path(local_tm_results, item)
+        if not star.is_file():
+            raise FileNotFoundError(f"pytom_extract_candidates reported success but particles STAR missing: {star}")
+        blocks = starfile.read(star, always_dict=True)
+        name = next(k for k, v in blocks.items() if isinstance(v, pd.DataFrame))
+        manifest = read_segmentations(self._task_context(ctx))
+        entries = {e.feature: e for e in manifest.entries if e.tomogram == item}
+        blocks[name], summary = tomogram_context(
+            blocks[name], entries, manifest.features(), ctx.params.particle_diameter_ang
+        )
+        tmp = local_tm_results / f".{item}_particles.star.tmp"
+        starfile.write(blocks, tmp, overwrite=True)
+        os.replace(tmp, star)
+        tomo_context_path(local_tm_results, item).write_text(json.dumps(summary, indent=2))
+        inside = ", ".join(f"{f} {s['inside']}" for f, s in summary.items() if s is not None)
+        self.log(f"Context of {len(blocks[name])} picks: inside {inside or 'no feature segmented here'}")
 
     def verify_outputs(self, ctx: DriverContext[CandidateExtractPytomParams], item: str, staged) -> None:
         out_star = tomo_particles_star_path(ctx.job_dir / "tmResults", item)

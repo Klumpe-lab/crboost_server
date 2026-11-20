@@ -62,7 +62,8 @@ logger = logging.getLogger(__name__)
 # 3.13: +made_by_api (the agent API changes only the projects it made)
 # 3.14: +ImportBatch.job_sources, +ImportedTomograms.tilt_series_star (tomograms from other projects' jobs)
 # 3.15: +ParticleSpecies.segmentation_feature (the feature Pick candidates picks the species from)
-SCHEMA_VERSION: tuple[int, int] = (3, 15)
+# 3.16: +Pick candidates' context (on; a job submitted before it existed loads with it off)
+SCHEMA_VERSION: tuple[int, int] = (3, 16)
 
 
 # Sentinel `owner` value marking a project as shared/lab-owned rather than
@@ -1480,6 +1481,10 @@ class ProjectState(BaseModel):
                 job_type_value = job_data.get("job_type") or instance_id
                 job_type = JobType.from_string(job_type_value)
                 param_class = param_class_map.get(job_type)
+                # A Pick candidates job submitted before context existed ran without it, and keeps that.
+                submitted = job_data.get("execution_status", JobStatus.SCHEDULED.value) != JobStatus.SCHEDULED.value
+                if job_type == JobType.TEMPLATE_EXTRACT_PYTOM and submitted and (file_major, file_minor) < (3, 16):
+                    job_data.setdefault("context", False)
                 if param_class:
                     job_params, repairs = cls._build_job_params(param_class, job_data)
                     job_params._project_state = project_state

@@ -26,6 +26,7 @@ from services.event_log import events
 from services.result import ErrorCode, err, ok
 from services.project_state import AbstractJobParams, JobCategory, JobType, JobStatus, ReviewHold
 from services.segmentation.manifest import segment_feature_id
+from services.particles.pick_context import context_frame_problem
 from services.segmentation.search_region import search_region_problem
 from services.subsets import subset_problem, write_subset_star
 from services.supervisor_owner import read_owner
@@ -765,6 +766,26 @@ class PipelineOrchestratorService:
         if region_problems:
             _restore_allocation(state, previous)
             return err("Search region not ready — " + "; ".join(region_problems))
+
+        # Pick candidates from template matching takes context only from segmentations of its picks'
+        # reconstruction: another one would put every neighbour elsewhere.
+        context_problems = []
+        for iid in instances_to_run:
+            job_model = state.jobs[iid]
+            if job_model.job_type != JobType.TEMPLATE_EXTRACT_PYTOM or not resolved[iid].get("input_segmentations"):
+                continue
+            problem = await asyncio.to_thread(
+                context_frame_problem,
+                state,
+                iid,
+                producer=resolver.source_of(iid, "input_segmentations"),
+                paths=resolved,
+            )
+            if problem:
+                context_problems.append(f"{iid}: {problem}")
+        if context_problems:
+            _restore_allocation(state, previous)
+            return err("Context not on the picks' reconstruction — " + "; ".join(context_problems))
 
         # Derive the dependency DAG, restrict to the SUBMITTED set, toposort (cycle-checked).
         # Inline-completed providers (RUNS_INLINE, e.g. IMPORT) are never submitted; an edge from

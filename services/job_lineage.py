@@ -4,6 +4,7 @@ Pure functions of the project state, for the UI (which reconstruction a pick lay
 segmentation sits on) and for the drivers (which reconstruction a job's output traces to).
 """
 
+from collections.abc import Mapping
 from pathlib import Path
 
 from services.models_base import JobType
@@ -16,13 +17,17 @@ def job_dirs(state) -> dict[Path, str]:
     return {project / jm.relion_job_name.rstrip("/"): iid for iid, jm in state.jobs.items() if jm.relion_job_name}
 
 
-def recon_of(state, iid: str, dirs: dict[Path, str] | None = None) -> str | None:
+def recon_of(
+    state, iid: str, dirs: dict[Path, str] | None = None, paths: Mapping[str, Mapping[str, str]] | None = None
+) -> str | None:
     """The reconstruct instance whose tomograms `iid` works on, followed back through the job
     dirs its input paths point into (candidate extraction <- template matching <- reconstruct;
     denoise <- reconstruct); `iid` itself when it is one. None when no input leads to one. A
     Segment job a job reads is not followed: its tomograms are not that job's (template matching
-    restricted to a region reads one beside its own tomograms, which may come from elsewhere)."""
+    restricted to a region reads one beside its own tomograms, which may come from elsewhere).
+    `paths`: input paths by instance that stand in for those recorded (what a Run has just resolved)."""
     dirs = job_dirs(state) if dirs is None else dirs
+    paths = paths or {}
     queue, seen = [iid], set()
     while queue:
         cur = queue.pop(0)
@@ -34,7 +39,7 @@ def recon_of(state, iid: str, dirs: dict[Path, str] | None = None) -> str | None
             return cur
         if jm.job_type == JobType.SEGMENT and cur != iid:
             continue
-        for value in (jm.paths or {}).values():
+        for value in (paths.get(cur) or jm.paths or {}).values():
             if not isinstance(value, str) or not value.startswith("/"):
                 continue
             path = Path(value)

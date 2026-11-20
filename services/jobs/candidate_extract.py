@@ -10,6 +10,7 @@ from services.io_slots import InputSlot, OutputSlot, JobFileType
 # The parameters each source reads; the other source's are hidden on the job page (`shows_param`).
 TM_PARAMS = frozenset(
     {
+        "context",
         "max_num_particles",
         "cutoff_method",
         "cc_threshold",
@@ -33,6 +34,7 @@ class CandidateExtractPytomParams(AbstractJobParams):
 
     USER_PARAMS: ClassVar[set[str]] = {
         "source",
+        "context",
         "feature",
         "p_threshold",
         "min_piece",
@@ -73,12 +75,14 @@ class CandidateExtractPytomParams(AbstractJobParams):
             required=True,
             when="from_template_matching",
         ),
-        # A Segment job's volumes, or imported ones: the evidence of the segmentation source.
+        # A Segment job's volumes, or imported ones: the evidence of the segmentation source, and the context every
+        # pick records (of template matching's, while Context is on).
         InputSlot(
             key="input_segmentations",
             accepts=[JobFileType.SEGMENTATIONS],
             preferred_source="segment",
-            when="from_segmentation",
+            when="reads_segmentations",
+            required_when="from_segmentation",
             beside=True,
         ),
     ]
@@ -98,6 +102,14 @@ class CandidateExtractPytomParams(AbstractJobParams):
         "Segmentation: the pieces of one feature's probability volumes (a Segment job's, or imported segmentations), "
         "with no template and no GPU.",
         title="Source", json_schema_extra=form("Source", M),
+    )
+    # A job submitted before Context existed ran without it, and loads with it off (ProjectState.from_data).
+    context: bool = Field(
+        default=True,
+        description="Record at every pick what the segmentations input says around it: each feature's mean p "
+        "inside the particle, and its distance to the feature's surface, as columns the kitchen filters on. Only "
+        "segmentations of the picks' own reconstruction are read. No: the input is not read.",
+        title="Context", json_schema_extra=form("Source"),
     )
     # Species-derived (the species' segmentation feature); empty is absent and stated on the page, never guessed.
     feature: str = Field(
@@ -243,6 +255,12 @@ class CandidateExtractPytomParams(AbstractJobParams):
     @property
     def from_template_matching(self) -> bool:
         return not self.from_segmentation
+
+    @property
+    def reads_segmentations(self) -> bool:
+        """Whether the job reads its segmentations input: the evidence it picks from, or template matching's
+        context while Context is on."""
+        return self.from_segmentation or bool(self.context)
 
     @property
     def effective_orientation(self) -> PickOrientation:

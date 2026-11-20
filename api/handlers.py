@@ -316,7 +316,13 @@ async def list_job_types(call: Call) -> dict[str, Any]:
                 "added_with": spec.prerequisite.value if spec.prerequisite else None,
                 "species": spec.phase == PHASE_PARTICLES,
                 "inputs": [
-                    {"slot": s.key, "accepts": [t.value for t in s.accepts], "required": s.required, "when": s.when}
+                    {
+                        "slot": s.key,
+                        "accepts": [t.value for t in s.accepts],
+                        "required": s.required,
+                        "when": s.when,
+                        "required_when": s.required_when,
+                    }
                     for s in getattr(cls, "INPUT_SCHEMA", None) or []
                 ],
                 "outputs": [

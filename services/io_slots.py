@@ -127,6 +127,11 @@ class InputSlot(BaseModel):
     # read only while a search region is set). None: the input always exists.
     when: str | None = Field(default=None)
 
+    # The name of a bool attribute of the job's parameters: while it is False the input is optional (Pick
+    # candidates' segmentations: its evidence when it picks from them, only context beside template matching).
+    # None: `required` alone says.
+    required_when: str | None = Field(default=None)
+
     # Read beside the job's main inputs rather than down their chain (a search region's segmentations,
     # a solvent mask, a trained model): it is no chain of its own when the I/O section checks that a
     # job's inputs lie on one chain (`PathResolutionService.mixed_chains`).

@@ -107,6 +107,14 @@ no template and on CPUs only. Its `source` is `segmentation`.
    count, where its angles came from (`cbAngleSource`), and `cbMarkReason` `edge` within half a diameter of the
    volume's edge. Judging them is the user's, in the UI.
 
+**Context, from either source.** Every pick also records what the job's segmentations input says around it:
+per feature, `cbP_<feature>` (the mean p inside the particle) and `cbDistAngst_<feature>` (the distance to the
+feature's surface, negative inside), e.g. `cbP_nucleus_ais` for nuclear ribosomes. The segmentation source takes
+it from the features it does not pick. A template-matching job reads segmentations while its `context` is on (the
+default for new jobs) and records none when the project has none. Run refuses segmentations of another
+reconstruction than its picks, naming both: put that to the user, who chooses others (`set_input`) or turns
+`context` off.
+
 ## Tomograms from other projects
 
 `create_project(name, base, gain_reference=null, tomograms_from=[{project, job, names}])` makes a project

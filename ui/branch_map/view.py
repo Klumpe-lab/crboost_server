@@ -430,7 +430,8 @@ class BranchMapView:
             for kind, slot, why in pr.offered_after(j):
                 words = why
                 if slot is not None:
-                    others = [s for s in pr.slots_of(kind) if s.key != slot.key and not s.bundle and s.required]
+                    method = pr.method_reading(kind, slot.key)
+                    others = [s for s in pr.slots_of(kind, method) if s.key != slot.key and not s.bundle and s.required]
                     others = [s for s in others if not s.quiet]
                     words = f"as its {slot.label}" + (
                         f" · also needs {', '.join(s.label for s in others)}" if others else ""
@@ -695,10 +696,10 @@ class BranchMapView:
             if species_id is None:
                 return
         st = self.st
-        # The first method that reads the input it is added from: Pick candidates from a Segment job's output
-        # picks from the segmentations.
+        # The method that needs the input it is added from: Pick candidates from a Segment job's output picks from
+        # the segmentations.
         methods = [v for v, _words in pr.methods.get(kind, ())]
-        method = next((v for v in methods if slot_key in {s.key for s in pr.slots_of(kind, v)}), None)
+        method = pr.method_reading(kind, slot_key)
         st.adding, st.method, st.picks, st.params = (
             kind,
             method if method is not None else (methods[0] if methods else None),

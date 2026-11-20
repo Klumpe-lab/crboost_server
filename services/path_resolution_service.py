@@ -758,7 +758,7 @@ class PathResolutionService:
         resolve_inputs would use (`_select_source`), with how it was chosen (`input_state`).
         """
         v = self._validate_input_slot(job_type, job_model, slot_key, check_filesystem, consumer_instance_id)
-        slot = next((s for s in self._get_input_schema(job_type) if s.key == slot_key), None)
+        slot = self._input_slot(job_type, job_model, slot_key)
         if slot is not None:
             src = self._select_source(job_type, job_model, slot, self._build_output_index(), consumer_instance_id)
             v.input_state, v.refined_by = src.state, src.refined_by
@@ -773,8 +773,7 @@ class PathResolutionService:
         check_filesystem: bool,
         consumer_instance_id: str | None,
     ) -> InputSlotValidation:
-        input_schema = self._get_input_schema(job_type)
-        slot = next((s for s in input_schema if s.key == slot_key), None)
+        slot = self._input_slot(job_type, job_model, slot_key)
 
         if not slot:
             return InputSlotValidation(
@@ -1607,14 +1606,28 @@ class PathResolutionService:
     # -------------------------------------------------------------------------
 
     def _get_input_schema(self, job_type: JobType, job_model: AbstractJobParams | None = None) -> list[InputSlot]:
-        """The inputs of `job_type`; with `job_model`, only those it has now (`InputSlot.when`)."""
+        """The inputs of `job_type`; with `job_model`, only those it has now (`InputSlot.when`), each required as
+        its parameters say now (`InputSlot.required_when`)."""
         from services.job_models import jobtype_paramclass
 
         cls = jobtype_paramclass().get(job_type)
         schema = list(getattr(cls, "INPUT_SCHEMA", None) or []) if cls else []
         if job_model is not None:
             schema = [s for s in schema if s.when is None or getattr(job_model, s.when, False)]
+            schema = [
+                s.model_copy(update={"required": False})
+                if s.required and s.required_when and not getattr(job_model, s.required_when, False)
+                else s
+                for s in schema
+            ]
         return schema
+
+    def _input_slot(self, job_type: JobType, job_model: AbstractJobParams, slot_key: str) -> InputSlot | None:
+        """One input of the job as its parameters have it now; an input it does not have now (`InputSlot.when`)
+        as the type declares it."""
+        return next((s for s in self._get_input_schema(job_type, job_model) if s.key == slot_key), None) or next(
+            (s for s in self._get_input_schema(job_type) if s.key == slot_key), None
+        )
 
     def _get_output_schema(self, job_type: JobType, job_model: AbstractJobParams | None = None) -> list[OutputSlot]:
         """The outputs of `job_type`. A Subset's have the type of what it cuts, so they come from

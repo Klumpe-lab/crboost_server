@@ -9,8 +9,9 @@ every array task.
   One array task per tomogram with a volume. Afterwards merges the per-tomogram rows into candidates.star, copies
   the frame as tomograms.star, and writes a coordinates-only optimisation_set.star and summary.json.
 - Task: Ais's blob pick (`ais pick`, in the easymode image, one process) on the tomogram's volume, linked alone
-  into ais/<tomo>/in; then, in this environment, its picks become candidate rows (services/particles/seg_picks.py):
-  picks/<tomo>.star and picks/<tomo>.json. Ais's own star stays in ais/<tomo>/out as the raw record.
+  into ais/<tomo>/in; then, in this environment, its picks become candidate rows (services/particles/seg_picks.py)
+  with the context of the segmentations' other features (services/particles/pick_context.py): picks/<tomo>.star and
+  picks/<tomo>.json. Ais's own star stays in ais/<tomo>/out as the raw record.
 """
 
 import json
@@ -32,6 +33,7 @@ from services.io_slots import JobFileType
 from services.job_models import CandidateExtractPytomParams
 from services.models_base import JobType, PickOrientation
 from services.particles.coords import pixel_size_from_tomo_row
+from services.particles.pick_context import context_columns, tomogram_context
 from services.particles.seg_picks import (
     AIS_ORIENT,
     EDGE,
@@ -49,6 +51,7 @@ from services.particles.seg_picks import (
 from services.particles.set_origins import origins_of
 from services.segmentation.manifest import SegmentationEntry, SegmentationManifest
 from services.segmentation.search_region import read_segmentations
+from services.segmentation.volumes import entry_dtype
 from services.subtomo_merge import _read_tomograms_star, write_optimisation_set
 
 AIS_DIR = "ais"
@@ -86,26 +89,6 @@ def frame_star(manifest: SegmentationManifest, state, project_path: Path) -> Pat
     return Path(project_path) / jm.relion_job_name.rstrip("/") / slot.path_template
 
 
-def volume_dtype(entry: SegmentationEntry) -> np.dtype:
-    """The data type of a volume whose header agrees with its manifest entry: the grid the picks are placed on,
-    and a type that reaches the full scale the manifest states."""
-    with mrcfile.open(entry.path, header_only=True, permissive=True) as m:
-        h = m.header
-        shape = (int(h.nz), int(h.ny), int(h.nx))
-        dtype = mrcfile.utils.data_dtype_from_header(h)
-    if shape != tuple(entry.shape_zyx):
-        raise ValueError(
-            f"{entry.path.name}: its grid {shape} (z, y, x) is not the manifest's {tuple(entry.shape_zyx)}"
-        )
-    if dtype.kind not in "iuf":
-        raise ValueError(f"{entry.path.name}: data type {dtype} holds no probabilities")
-    if dtype.kind in "iu" and entry.full_scale > np.iinfo(dtype).max:
-        raise ValueError(
-            f"{entry.path.name}: {dtype} never reaches the full scale {entry.full_scale:g} the manifest states"
-        )
-    return dtype
-
-
 def detection(p: CandidateExtractPytomParams) -> Detection:
     return Detection(
         p_threshold=p.p_threshold,
@@ -123,6 +106,12 @@ def read_star_block(path: Path) -> pd.DataFrame:
         if isinstance(block, pd.DataFrame):
             return block
     return pd.DataFrame()
+
+
+def context_features(manifest: SegmentationManifest, feature: str) -> list[str]:
+    """The features every pick records as context: all the segmentations hold but the one picked, whose score
+    already says it."""
+    return sorted(set(manifest.features()) - {feature})
 
 
 class PickFromSegmentationDriver(ArrayDriver):
@@ -220,7 +209,9 @@ class PickFromSegmentationDriver(ArrayDriver):
             rows = read_star_block(job_dir / PICKS_DIR / f"{item}.star")
             if len(rows):
                 blocks.append(rows)
-        table = pd.concat(blocks, ignore_index=True) if blocks else pd.DataFrame(columns=OUTPUT_COLUMNS)
+        features = context_features(manifest, p.feature)
+        empty = pd.DataFrame(columns=[*OUTPUT_COLUMNS, *context_columns(features)])
+        table = pd.concat(blocks, ignore_index=True) if blocks else empty
 
         summary = {
             "source": "segmentation",
@@ -237,6 +228,7 @@ class PickFromSegmentationDriver(ArrayDriver):
                 "diameter_ang": p.particle_diameter_ang,
                 "seed": job_seed(ctx.instance_id),
             },
+            "context_features": features,
             "tomograms": len(per_tomo),
             "tomograms_with_picks": sum(1 for s in per_tomo.values() if s["picks"]),
             "picks": len(table),
@@ -281,7 +273,7 @@ class PickFromSegmentationDriver(ArrayDriver):
         `ais pick` picks every volume of the feature in the folder it is given."""
         _, _, entries = self._volumes(ctx)
         entry = entries[item]
-        dtype = volume_dtype(entry)
+        dtype = entry_dtype(entry)
         work = ctx.job_dir / AIS_DIR / item
         if work.exists():
             shutil.rmtree(work)
@@ -347,6 +339,19 @@ class PickFromSegmentationDriver(ArrayDriver):
                 det=detection(p),
                 rng=tomogram_rng(job_seed(ctx.instance_id), item),
             )
+        _, manifest, _ = self._volumes(ctx)
+        others = {c.feature: c for c in manifest.entries if c.tomogram == item and c.feature != p.feature}
+        for c in others.values():
+            if tuple(c.shape_zyx) != tuple(e.shape_zyx) or abs(c.voxel_angstrom - e.voxel_angstrom) > (
+                VOXEL_TOLERANCE * e.voxel_angstrom
+            ):
+                raise ValueError(
+                    f"{item}: its {c.feature} volume ({tuple(c.shape_zyx)} at {c.voxel_angstrom:g} Å) is not on the "
+                    f"grid of its {p.feature} volume ({tuple(e.shape_zyx)} at {e.voxel_angstrom:g} Å)"
+                )
+        rows, summary["context"] = tomogram_context(
+            rows, others, context_features(manifest, p.feature), p.particle_diameter_ang
+        )
         out = ctx.job_dir / PICKS_DIR
         out.mkdir(exist_ok=True)
         (out / f"{item}.json").write_text(json.dumps(summary, indent=2))

@@ -117,6 +117,14 @@ def ais_size_px(min_voxels: int, binning: int) -> float:
     return (min_voxels - 0.5) * binning**3
 
 
+def ais_peak_border_ang(det: Detection, voxel_angstrom: float) -> float:
+    """How far from the volume's faces Ais places no distance-transform peak, in Å: skimage's `peak_local_max`
+    leaves out peaks within its `min_distance` of the border (`exclude_border` at its default), and Ais gives it the
+    spacing in binned voxels, at least 3. Pieces there get no pick; Ais's `-m` does not change it."""
+    binned = voxel_angstrom * det.binning
+    return max(3, int(det.diameter_ang / binned)) * binned
+
+
 def detection_grid(stored: np.ndarray, binning: int) -> np.ndarray:
     """The volume as Ais detects on it: float32, cut to whole blocks and mean-binned in Ais's order of means, so a
     voxel on the threshold falls the same way here as in Ais."""
@@ -295,5 +303,6 @@ def pick_rows(
         "angle_sources": {str(k): int(v) for k, v in pd.Series(source).value_counts().sort_index().items()},
         "min_piece_voxels": min_voxels,
         "ais_threshold": threshold,
+        "no_peaks_within_ang": None if det.one_per_piece else ais_peak_border_ang(det, voxel_angstrom),
     }
     return rows, summary

@@ -9,7 +9,7 @@ large card shows of a job's results comes from `ui/branch_map/facts.py`, read of
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 
@@ -34,7 +34,8 @@ TRUNK = "trunk"  # the node id of the shared start, folded
 class Slot:
     """One input of a job type. `bundle`: normally read from the same job as the first (main) slot, so it rides
     that choice. `unless_method`: the methods under which the input is not read (easymode needs no model).
-    `quiet`: a settings file that rides along: a row on the card, no cable on the map."""
+    `optional_method`: those under which it is read but optional (Pick candidates' segmentations, context beside
+    template matching). `quiet`: a settings file that rides along: a row on the card, no cable on the map."""
 
     key: str
     label: str
@@ -43,6 +44,7 @@ class Slot:
     bundle: bool = False
     unless_method: tuple[str, ...] = ()
     quiet: bool = False
+    optional_method: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -283,8 +285,25 @@ class Project:
 
     # ── inputs ──
     def slots_of(self, kind: str, method: str | None = None) -> tuple[Slot, ...]:
-        """A type's inputs, given its method: an easymode denoising needs no trained model."""
-        return tuple(s for s in self.slots.get(kind, ()) if method is None or method not in s.unless_method)
+        """A type's inputs, given its method: an easymode denoising needs no trained model, and Pick candidates
+        from template matching reads segmentations only as optional context."""
+        return tuple(
+            replace(s, required=False) if method in s.optional_method else s
+            for s in self.slots.get(kind, ())
+            if method is None or method not in s.unless_method
+        )
+
+    def method_reading(self, kind: str, slot_key: str) -> str | None:
+        """The method a job of `kind` made from an output into `slot_key` takes: the first that needs that input,
+        else the first that reads it (Pick candidates from a Segment job's output picks from the segmentations).
+        None for a type without methods, or none that reads it."""
+        methods = [v for v, _words in self.methods.get(kind, ())]
+        for wanted in (True, False):
+            for v in methods:
+                slot = next((s for s in self.slots_of(kind, v) if s.key == slot_key), None)
+                if slot is not None and (slot.required or not wanted):
+                    return v
+        return None
 
     def candidates_for(self, slot: Slot) -> list[Job]:
         """The jobs whose main output a new job's input could read: by type, not scheduled."""
@@ -714,12 +733,14 @@ def vocabulary() -> Vocabulary:
             # The methods under which the job has no such input (easymode needs no trained model; Pick candidates
             # from segmentations reads no template matching).
             unless = tuple(v for v, p in by_method.items() if when and not getattr(p, when, True))
+            need = getattr(s, "required_when", None)
+            optional = tuple(v for v, p in by_method.items() if need and v not in unless and not getattr(p, need))
             bundle = s.key != main_key and s.preferred_source == main_pref and main_pref is not None
             quiet = s.key == "warp_tiltseries_settings" and s.key != main_key
             # A slot read only under a condition the method does not decide (the search restricted to
-            # segmentations) is optional here.
-            required = bool(s.required) and (not when or bool(unless))
-            rows.append(Slot(s.key, label, accepts, required, bundle, unless, quiet))
+            # segmentations) is optional here; one the method makes required is required under it.
+            required = bool(s.required) and (not when or bool(unless) or bool(need))
+            rows.append(Slot(s.key, label, accepts, required, bundle, unless, quiet, optional))
         # The main slot first: the card's first row is the lineage.
         rows.sort(key=lambda r: 0 if r.key == main_key else 1)
         slots[kind] = tuple(rows)
@@ -861,7 +882,11 @@ def project_from_state(state, project_path: Path, *, set_parents: dict[str, tupl
         method_raw = getattr(jm, mf, None) if mf else None
         method = value_words(method_raw) if method_raw is not None else ""
         rows: list[InputRow] = []
-        for slot in (s for s in vocab.slots.get(kind, ()) if method not in s.unless_method):
+        for slot in (
+            replace(s, required=False) if method in s.optional_method else s
+            for s in vocab.slots.get(kind, ())
+            if method not in s.unless_method
+        ):
             src = None
             how = "fixed when the job ran"
             value = None
