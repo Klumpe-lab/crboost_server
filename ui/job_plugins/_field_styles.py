@@ -49,6 +49,15 @@ LABEL_VOICE = voice("label", font="'IBM Plex Sans', sans-serif", size="10px", we
 LABEL_STYLE = (
     f"{LABEL_VOICE} line-height: 1.4; flex-shrink: 0; white-space: nowrap; width: var(--cb-label-w, {LABEL_W}px);"
 )
+# A table's column heads.
+TH_VOICE = voice("th", font="'IBM Plex Sans', sans-serif", size="9px", weight=600, ink="#7d93ab")
+
+
+def keep_case(text: str) -> str:
+    """`text` as HTML that keeps its case in a voice that capitalises: σ stays σ in a column head."""
+    return f"<span style=text-transform:none>{text}</span>"
+
+
 # The job form's field geometry: a 132 px label column in the slot voice, then the box in one of three widths (S a
 # number, M a choice or a short code such as 500:10 or 2x2x1, L to the column's edge for a path or a list), then a
 # 30 px unit column after S and M, so their boxes line up down a group whatever the unit.

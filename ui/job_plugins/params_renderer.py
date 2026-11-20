@@ -47,6 +47,8 @@ GROUP_STYLE = (
     "min-width: 0;"
 )
 _PATHLIKE = ("path", "dir", "glob", "pattern", "file", "folder")
+# A value's ink.
+_VALUE_INK = "var(--cb-ink-2, #1e293b)"
 
 Build = Callable[..., Any]
 
@@ -117,7 +119,7 @@ def render_field(
             values = getattr(job_model, f.name) or []
             ui.label(", ".join(map(str, values)) or "none").style(
                 f"{FROZEN_BOX_STYLE} {box_style(L)} {MONO} font-size: 10.5px; overflow: hidden; "
-                f"white-space: nowrap; text-overflow: ellipsis; color: {'#1e293b' if values else CLR_SUBLABEL};"
+                f"white-space: nowrap; text-overflow: ellipsis; color: {_VALUE_INK if values else CLR_SUBLABEL};"
             )
         return None
     if f.width == L and _is_pathlike(f.name):

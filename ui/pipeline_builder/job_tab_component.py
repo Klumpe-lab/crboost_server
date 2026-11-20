@@ -42,11 +42,14 @@ _EXPERIMENTAL_JOB_TYPES = {JobType.MISS_ALIGN}
 # The line under the view's title (which names the job) on every job page: its light, tool, number, species and
 # folder, then its chips and actions.
 _JOB_LINE_STYLE = "flex-shrink: 0; gap: 8px; min-height: 22px; padding: 0 14px 6px;"
-_NUMBER_STYLE = "font-family: var(--cb-mono, 'IBM Plex Mono', monospace); font-size: 10px; color: #94a3b8;"
+_NUMBER_STYLE = (
+    "font-family: var(--cb-mono, 'IBM Plex Mono', monospace); font-size: 10px; color: var(--cb-ink-4, #94a3b8);"
+)
 _TOOL_PILL_STYLE = (
-    "font-family: var(--cb-mono, 'IBM Plex Mono', monospace); font-size: 8px; text-transform: uppercase; "
-    "letter-spacing: .06em; color: #5b7089; border: 1px solid #d3dde8; border-radius: var(--cb-r-sm, 2px); "
-    "padding: 0 4px; line-height: 13px; white-space: nowrap; flex-shrink: 0;"
+    "font-family: var(--cb-mono, 'IBM Plex Mono', monospace); font-size: 8px; "
+    "text-transform: var(--cb-pill-case, uppercase); letter-spacing: var(--cb-pill-track, .06em); "
+    "color: var(--cb-ink-3, #5b7089); border: 1px solid var(--cb-pill-line, #d3dde8); "
+    "border-radius: var(--cb-r-sm, 2px); padding: 0 4px; line-height: 13px; white-space: nowrap; flex-shrink: 0;"
 )
 # A mark on that line (Interactive / Automatic, Experimental): the house chip, light blue, or warm for
 # what is still being built.

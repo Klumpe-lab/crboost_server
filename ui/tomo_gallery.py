@@ -1279,7 +1279,7 @@ class TomoGalleryPage:
                     with ui.element("div").classes("cb-gal-cap").style("cursor: default;"):
                         ui.element("div").style(
                             "width: 45%; height: 8px; margin: 3.5px 0; "
-                            "border-radius: var(--cb-r-sm, 2px); background: #e2e8f0;"
+                            "border-radius: var(--cb-r-sm, 2px); background: var(--cb-gallery-bar, #e2e8f0);"
                         )
 
     def _render_empty(self) -> None:
@@ -1548,7 +1548,8 @@ class TomoGalleryPage:
         look = self._pick_look()
         ui.label("Pick marks").classes("cb-hmenu-title")
         label = (
-            "font-family: 'IBM Plex Sans', sans-serif; font-size: 9.5px; color: #5b7089; width: 48px; flex-shrink: 0;"
+            "font-family: var(--cb-sans, 'IBM Plex Sans', sans-serif); font-size: 9.5px; "
+            "color: var(--cb-ink-3, #5b7089); width: 48px; flex-shrink: 0;"
         )
         with ui.element("div").style("display: flex; flex-direction: column; gap: 6px; padding: 2px 10px 8px;"):
             with ui.element("div").style("display: flex; align-items: center; gap: 8px;"):
@@ -1562,7 +1563,8 @@ class TomoGalleryPage:
                 size.classes("cb-fit-slider").style("width: 140px; margin: 0;")
                 size.on("change", lambda e: self._set_pick_look(size=float(e.args)))
                 self._refs["pick_size_readout"] = ui.label(_size_words(look)).style(
-                    "font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #1e293b; white-space: nowrap;"
+                    "font-family: var(--cb-mono, 'IBM Plex Mono', monospace); font-size: 9px; "
+                    "color: var(--cb-ink-2, #1e293b); white-space: nowrap;"
                 )
             with ui.element("div").style("display: flex; align-items: center; gap: 8px;"):
                 ui.label("opacity").style(label)
@@ -1577,7 +1579,8 @@ class TomoGalleryPage:
                     "white edge on a dot", value=look.rim, on_change=lambda e: self._set_pick_look(rim=bool(e.value))
                 )
             self._refs["pick_scale_note"] = ui.label("").style(
-                "font-family: 'IBM Plex Sans', sans-serif; font-size: 9.5px; color: #8a4b06; max-width: 300px;"
+                "font-family: var(--cb-sans, 'IBM Plex Sans', sans-serif); font-size: 9.5px; "
+                "color: var(--cb-warn-ink, #8a4b06); max-width: 300px;"
             )
             self._update_scale_note()
 
@@ -1621,11 +1624,13 @@ class TomoGalleryPage:
             return
         notes: list[tuple[str, str, bool]] = []
         if self.tilt_error:
-            notes.append((self.tilt_error, "#b45309", False))
+            notes.append((self.tilt_error, "var(--cb-gallery-warn, #b45309)", False))
         if self.tilt_awaiting:
             running = self._thumbs_running()
             tail = "; they are being rendered in the background." if running else "."
-            notes.append((f"{self.tilt_awaiting} tilts have no preview image yet{tail}", "#94a3b8", running))
+            notes.append(
+                (f"{self.tilt_awaiting} tilts have no preview image yet{tail}", "var(--cb-ink-4, #94a3b8)", running)
+            )
         self.tilt_gallery.render(notes)
 
     # ── Selection ─────────────────────────────────────────────────────────────
