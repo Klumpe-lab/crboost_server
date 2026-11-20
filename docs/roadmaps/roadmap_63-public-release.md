@@ -529,7 +529,7 @@ updated once without asking. That closes roadmap 20 S5; the result is recorded h
 - HOTFIXES H32: the napari companion saves into the session's folder, never its working directory (toy checked;
   a real session on a volume outside every project is owed).
 
-### S2 — built 2026-11-20; the first run on GitHub and the settings are owed
+### S2 — built 2026-11-20, pushed at `2dee937`; the first run read and its failures fixed the same day
 
 - `./crboost ci [--fast]` (`scripts/ci.py`): ruff check and format, boundaries, look literals, compile, the import of
   every module, `tests/test_repo.py` (6: the conf template reads clean, the qsub template renders, every protocol
@@ -553,27 +553,68 @@ updated once without asking. That closes roadmap 20 S5; the result is recorded h
   the serve smoke of CI-5 (the token redirect is a 302, not the recon's 307); actionlint 1.7.12, sha256-checked,
   over both workflows with shellcheck. actionlint is clean here.
 - `weekly.yml` (Mondays 05:17 UTC, and by hand): install.sh uncached on Ubuntu and on AlmaLinux 9 and 10 (by
-  digest); pip-audit 2.10.1; lychee over `README.md` and `docs/*.md`; gitleaks 8.30.1 over the history
-  (`.gitleaks.toml` allows its one false positive, `slot.key, consumer_…=`, by pattern, so the rewrite keeps it).
-  A failure opens an issue or comments on the open one. The first run fails pip-audit: pillow 12.0.0, requests
-  2.31.0 and starlette 0.48.0 have advisories (S3).
-- `dependabot.yml`: `uv` monthly, a group for version updates and one for security updates, 7-day cooldown, NiceGUI
-  majors ignored; `github-actions` monthly, grouped.
+  digest); pip-audit 2.10.1; lychee over `README.md` and `docs/*.md` (a 429 counts as live); gitleaks 8.30.1 over
+  the history (`.gitleaks.toml` allows its one false positive, `slot.key, consumer_…=`, by pattern, so the rewrite
+  keeps it). A failure opens an issue or comments on the open one.
+- `dependabot.yml`: `uv` monthly, version updates in one group, 7-day cooldown, NiceGUI majors ignored;
+  `github-actions` monthly, grouped. Security updates do not go through it (first run, below).
 - `install.sh` fetches uv's x86-64 archive from its GitHub release and checks the sha256 `uv.toml` carries beside
   `required-version` (agreed three ways: the release's `.sha256`, the download, the binary already in `.uv/bin`);
   any other platform takes `CRBOOST_UV`. Tried in a scratch checkout: fetch and lock (lock identical), reuse, a wrong
   sum, no network. `docs/installation.md` names the five hosts the build reaches.
-- Repo settings, by hand. The dependency graph saw no manifest because it is opt-in now ("not enabled by default",
-  public repos included) and was never switched on: the SBOM export answers 404, GraphQL lists 0 manifests, and
-  `requirements.txt` is a manifest it reads. Dependabot alerts were already on.
+- Repo settings, by hand: all set 2026-11-20, and each read back from the API the same day. The dependency graph saw
+  no manifest because it is opt-in now ("not enabled by default", public repos included) and was never switched on:
+  the SBOM export answered 404, GraphQL listed 0 manifests. On, its SBOM holds the lock's 78 PyPI pins, 2 actions
+  and the repo; it reads `requirements.in` as well, so most Pillow advisories alert twice. Dependabot alerts were
+  already on.
   - Dependency graph: Settings, Advanced Security, Dependency graph, Enable.
   - `gh api -X PUT repos/Klumpe-lab/crboost_server/vulnerability-alerts`
   - `gh api -X PUT repos/Klumpe-lab/crboost_server/automated-security-fixes`
-  - `gh api -X PATCH repos/Klumpe-lab/crboost_server -f 'security_and_analysis[secret_scanning][status]=enabled'
-    -f 'security_and_analysis[secret_scanning_push_protection][status]=enabled'`
+  - `gh repo edit Klumpe-lab/crboost_server --enable-secret-scanning`
+  - `gh repo edit Klumpe-lab/crboost_server --enable-secret-scanning-push-protection`
   - `gh api -X PUT repos/Klumpe-lab/crboost_server/private-vulnerability-reporting`
   - `gh api -X PATCH repos/Klumpe-lab/crboost_server/code-scanning/default-setup -f state=configured`
   - `gh api -X PUT repos/Klumpe-lab/crboost_server/actions/permissions -F enabled=true -f allowed_actions=all
     -F sha_pinning_required=true`
   - `gh repo edit Klumpe-lab/crboost_server --enable-wiki=false`
   - `gh repo edit Klumpe-lab/crboost_server --enable-discussions`
+- First run on GitHub, 2026-11-20, on `2dee937`:
+  - ci: 11 of 12 steps green. shellcheck, run for the first time anywhere (absent here), failed on one warning:
+    SC2154 on the ERR trap of `containers/napari/desktop_session.sh`, whose `rc=$?` sits inside the trap's string;
+    the same directive `containers/chimerax_artiax/curation_session.sh` carries silences it (it went in with the
+    napari session's `7e150ba`, and ci on `87a2a33` is green). The serve smoke passed
+    (the title, 401 without the token, the pages with the Bearer header, the `?token=` 302 that sets the cookie,
+    no traceback); actionlint clean.
+  - weekly, started by hand: install.sh with nothing cached passed on Ubuntu 24.04 (`#!/bin/sh`, so dash),
+    AlmaLinux 9 and AlmaLinux 10 (12, 30, 31 s); gitleaks found nothing in 890 commits. pip-audit failed as planned:
+    pillow 12.0.0 (61 advisories, fixed by 13.0.0), requests 2.31.0 (3, by 2.33.0), starlette 0.48.0 (6, by
+    1.3.1), all S3's. lychee: 21 of 23 links live; deepwiki.com's two answered the runner 429 (200 from here), so a
+    429 now counts as live (lychee 0.24.2: a 429 passes, a 404 still fails). The report job opened issue #138; it
+    stays open until S3's audit passes.
+  - CodeQL default setup (Python, JavaScript/TypeScript): green, 17 open alerts, for S4 to triage. 11
+    `py/path-injection` in `server_app.py`'s three file routes, each of which resolves the path and checks a guard
+    CodeQL does not model (the loaded project roots; a Warp reconstruction PNG under a project); 2
+    `py/weak-sensitive-data-hashing`, sha1 as a half split (`services/particles/pick_uids.py:44`) and a cache key
+    (`services/sta_kitchen/service.py:1281`), no secret in either; `py/clear-text-logging-sensitive-data` at
+    `crboost.py:143`, the banner's token URL (by design until S4's cookie work); `py/stack-trace-exposure` at
+    `ui/snapshot/routes.py:50` and `ui/sta_kitchen/routes.py:98`; `js/xss-through-dom` at
+    `ui/snapshot/frozen.js:104`. Secret scanning: none.
+  - Dependabot alerts: 86 open, all `pip`: Pillow and pillow, NiceGUI (14, fixed between 3.4 and 3.12),
+    starlette, requests, biopython. S3's bumps close every one.
+  - Dependabot version updates: `github-actions` had none. `uv` opened #139, ten bumps in one PR: NiceGUI 3.19.0,
+    FastAPI 0.162.5 (starlette 1.10.0), uvicorn 0.54.0, pydantic 2.14.3, requests 2.34.2, Pillow 13.0.0, biopython
+    1.88, matplotlib 3.11.2, pytest 9.2.0, ruff 0.17.5. Its lock step passed, so DEP-1 had nothing to do. It fails
+    on what S3 has to change: starlette 1.x has no `add_event_handler` (`server_app.py:165`; `setup_app` raises,
+    and the repo test and the serve smoke both catch it), and ruff 0.17.5 adds RUF071, 4 `os.path.commonprefix`
+    calls that take a string prefix on purpose (`ui/analytics/readout_panel.py:98-99`,
+    `ui/glob_directory_input.py:197`, `ui/local_file_picker.py:287`), and RUF036 at `agent/crboost_mcp.py:266`
+    (fixable). #139 is S3's bump: it stays open, unmerged, until S3 lands or replaces it. numpy, pandas, scipy and tifffile could not move: the
+    cluster-module pins (pandas 2.1.3 needs numpy < 2), which S3 drops.
+  - How Dependabot resolves, from its logs and dependabot-core: on its newest Python (3.15.2) in both ecosystems.
+    `.python-version` counts only when the exact string (3.11.18) is in its `pyenv install --list`, and it is not.
+    The `uv` job reads no `uv.toml`; from the lock's header it takes only a `--python-version`, so that is the one
+    flag that would move into the compile command if lock PRs keep failing. Security updates do not come through
+    `dependabot.yml`: the graph reads `requirements.txt` as pip, so each package gets a `pip` job of its own
+    (pip-compile 7.6.1). Pillow's failed after 6 minutes building numpy 1.26.2 and pandas 2.1.3 from source (no
+    cp315 wheels); the others will too until S3 drops those pins, and whether they resolve after it is S3's to see.
+    `dependabot.yml` says so now, and its security group, which nothing used, is gone.

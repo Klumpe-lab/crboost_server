@@ -1,8 +1,11 @@
 ---
 name: project-public-release-roadmap63
-description: "Public release plan for December 2026 (roadmap 63, decided 11-19): S1 committed 11-20; S2 built 11-20 (./crboost ci, D4, D5, workflows, checked uv download); first GitHub run + repo settings owed"
+description: "Public release plan for December 2026 (roadmap 63, decided 11-19): S1 and S2 done 11-20 (pushed 2dee937, settings on, first run read, fixes handed); #139 + security PRs wait for S3; next S3"
 metadata:
+  node_type: memory
   type: project
+  originSessionId: b14df66b-8aa0-471d-9a7f-b4b20c23ddbf
+  modified: 2026-11-20T11:10:00.432Z
 ---
 
 2026-11-19: the maintainer asked for a plan to make crboost release-ready by December 2026 (free GitHub CI/CD,
@@ -27,10 +30,18 @@ session's napari switch through shared files; rebuilt from patches before the pu
 dependabot), `.gitleaks.toml`, install.sh's sha256-checked uv and the S2 record were handed as patches. The
 branch_map worktree is superseded (main rebuilt the map; clean, never pushed). The repo is public already
 (Klumpe-lab/crboost_server, an org: gitleaks runs as a binary, its action needs a licence there).
-Owed: read the first CI run after the push (`gh run list`, `gh run view --log-failed`); the settings in the S2
-record (the dependency graph is opt-in and was never on); weekly's pip-audit fails until S3 (pillow, requests,
-starlette); H32's record (the EisGreis session's paragraph names the pre-rebuild sha `3c3c398`); the Munich
-questions draft was handed 11-20. Next stage: S3, NiceGUI, on its own worktree.
+Pushed 11-20 at `2dee937` (H32's record fixed in it); every S2 repo setting on the same day, read back from the API.
+First run read 11-20 (S2 record, "First run on GitHub"): ci failed only shellcheck (SC2154, the napari
+`desktop_session.sh` ERR trap; the directive `curation_session.sh` has went in with the napari session's `7e150ba`,
+ci green on `87a2a33`); serve smoke, install.sh under dash
+and on AlmaLinux 9/10, gitleaks passed; lychee got 429 from deepwiki.com, now `--accept`ed; pip-audit fails until
+S3 (issue #138 stays open). CodeQL: 17 alerts, for S4 to triage. Dependabot: #139 (NiceGUI 3.19, starlette 1.10
+which drops `add_event_handler`, ruff 0.17.5's RUF071/RUF036) is S3's bump, left open; its lock passed. Dependabot
+resolves on its newest Python (3.15), never reads uv.toml, takes only `--python-version` from the lock header;
+security updates run as `pip` jobs outside dependabot.yml and fail until S3 drops the numpy/pandas cluster pins.
+The lychee and dependabot.yml fixes and the record were handed 11-20 as two patches; check `git log` for whether
+they landed. Next stage: S3 on its own worktree (NiceGUI 3.19 + starlette lifespan, ruff,
+pins out; then see whether security PRs resolve).
 
 **Why:** public rollout + the Munich site installing and updating on its own.
 **How to apply:** read roadmap 63 §4.0 (build beside the lab: main stays lab-safe, test servers never on the lab's base /groups/klumpe/crboost_data, images staged outside sifs/, first trial pytom) and §7's stage records; hand commits as checked patches; build nothing before told. Related [[project_python_env_roadmap39]],
