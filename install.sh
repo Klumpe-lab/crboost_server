@@ -45,24 +45,37 @@ run_uv() {
         "$uv" --config-file "$here/uv.toml" "$@"
 }
 
+# uv itself: its x86-64 Linux archive from uv's GitHub release, checked against the sha256 that uv.toml carries beside
+# required-version before anything in it runs. Elsewhere (another platform, no way out to GitHub) CRBOOST_UV names a
+# uv binary of your own.
 ensure_uv() {
     [ -z "${CRBOOST_UV:-}" ] || return 0
     want=$(sed -n 's/^required-version *= *"==\([0-9][0-9.]*\)".*/\1/p' "$here/uv.toml")
     [ -n "$want" ] || die 'uv.toml has no required-version = "==x.y.z"'
-    if [ "$("$uv" --version 2>/dev/null | cut -d' ' -f2)" != "$want" ]; then
-        log "fetching uv $want into $here/.uv/bin"
-        # Into a scratch directory and renamed, so two first starts never write the same binary.
-        fetch=$here/.uv/fetch-$$
+    [ "$("$uv" --version 2>/dev/null | cut -d' ' -f2)" != "$want" ] || return 0
+    sum=$(sed -n 's/^# *uv-x86_64-unknown-linux-gnu\.tar\.gz sha256 *= *"\([0-9a-f]\{64\}\)".*/\1/p' "$here/uv.toml")
+    [ -n "$sum" ] || die "uv.toml has no sha256 for uv $want's archive"
+    yours="put a uv $want binary at $uv, or point CRBOOST_UV at one"
+    [ "$(uname -sm)" = "Linux x86_64" ] || die "uv is fetched for x86-64 Linux only; $yours"
+    url=https://github.com/astral-sh/uv/releases/download/$want/uv-x86_64-unknown-linux-gnu.tar.gz
+    log "fetching uv $want into $here/.uv/bin"
+    # Into a scratch directory and renamed, so two first starts never write the same binary.
+    fetch=$here/.uv/fetch-$$
+    rm -rf "$fetch"
+    mkdir -p "$fetch"
+    if ! curl -fsSL --retry 3 -o "$fetch/uv.tar.gz" "$url"; then
         rm -rf "$fetch"
-        curl -LsSf "https://astral.sh/uv/$want/install.sh" | env UV_UNMANAGED_INSTALL="$fetch" sh >&2 || true
-        if [ -x "$fetch/uv" ]; then
-            mkdir -p "$here/.uv/bin"
-            mv -f "$fetch/uv" "$uv"
-        fi
-        rm -rf "$fetch"
-        [ "$("$uv" --version 2>/dev/null | cut -d' ' -f2)" = "$want" ] ||
-            die "could not fetch uv $want from astral.sh; put a uv $want binary at $uv, or point CRBOOST_UV at one"
+        die "could not download $url; $yours"
     fi
+    if [ "$(sha256sum "$fetch/uv.tar.gz" | cut -d' ' -f1)" != "$sum" ]; then
+        rm -rf "$fetch"
+        die "$url is not the archive whose sha256 uv.toml names; nothing was installed"
+    fi
+    tar -xzf "$fetch/uv.tar.gz" -C "$fetch"
+    mkdir -p "$here/.uv/bin"
+    mv -f "$fetch/uv-x86_64-unknown-linux-gnu/uv" "$uv"
+    rm -rf "$fetch"
+    [ "$("$uv" --version 2>/dev/null | cut -d' ' -f2)" = "$want" ] || die "the uv at $uv is not $want; $yours"
 }
 
 # venv -> the environment this checkout is on, for editors and habit. Nothing here depends on it, and a venv/ that
