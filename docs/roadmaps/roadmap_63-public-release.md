@@ -498,3 +498,31 @@ updated once without asking. That closes roadmap 20 S5; the result is recorded h
 - Hashes in the lock (roadmap 39 D2 stands; reopening it is a separate decision).
 - The conda/pip route for running the server (Munich's R1): unsupported, the own-Python start stays as documented.
 - Polling load on SLURM (roadmap 46): the install doc states today's rate for the admins.
+
+## 7. Stage records
+
+### S1 — built 2026-11-19, uncommitted
+
+- `.gitignore` rewritten: `/*.md`, `**env`, `--git-common-dir`, `!munich_handoff_note.md`, `promptbuilder.py`,
+  `.abacusai` and `source_me` out; `/.uv` and `/venv` without a trailing slash (in the worktrees they are links);
+  `/config/conf.yaml*` and `/config/qsub.sh*` also cover the site conf's dated backups (the lab install keeps ten).
+  Checked in this checkout, both worktrees and the lab install (read only): the new rules leave visible exactly the
+  untracked files the old ones did. `.gitattributes` as planned.
+- `static/molstar/LICENSE` is Mol*'s upstream file, byte for byte; `static/icons/gear.svg` deleted.
+- Links: `docs/README.md` points at `roadmaps/preprocessing-metrics-inventory.md`, where the catalogue lives (code
+  and three roadmaps cite it as `docs/…`: S9 decides whether it stays, as a reference doc); the dead companion link
+  of `docs/miss-alignment.md` and CLAUDE.md's pointer to a `docs/picking_ui/overview.md` that never existed are
+  gone; `docs/known_bugs.md` #2 names `copia-tutorial`. README, CLAUDE.md and `docs/*.md`: 0 broken relative links.
+- HOTFIXES H12 (`3585c73`), H14 and H15 (`e95c07f`) under Fixed.
+- Strings: the no-conf error names `<install>/crboost preflight`; installation.md's upgrade lines use the launcher,
+  containers are 0.5–14 GB; Segment's and missAlign's help name no cluster or QOS; the hand tooltip no lab; AGG412
+  out of the code (8 files; `scripts/dev_map_probe.py` takes the project as a required argument), and a neutral
+  hostname in `node_family`'s docstring.
+- `config/qsub.template.sh`: `cd "${JOB_DIR}" || exit 1`. A site's `config/qsub.sh` is its own copy (the lab's
+  included) and keeps its line until its maintainer copies this one. `driver_launch_prefix` and `driver_invocation`
+  quote the interpreter, `PYTHONPATH`, the driver and the project path with `shlex.quote`: byte-identical for plain
+  paths (checked on real ones), and a path with spaces reaches the driver as one argument (toy through bash).
+- `install.sh`: `uv venv -q`; a failed Python download ends on the `UV_PYTHON_INSTALL_MIRROR` hint (toy: a mirror
+  on a closed port).
+- HOTFIXES H32: the napari companion saves into the session's folder, never its working directory (toy checked;
+  a real session on a volume outside every project is owed).

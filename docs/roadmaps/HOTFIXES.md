@@ -319,26 +319,6 @@ v1 filters every shape at 45 Å (`src/gui/generateTemplate.py:452-453` there) an
 
 **Check.** The toy's shape is registered with `lowpass_resolution_ang: 45.0`.
 
-### H12 — The startup banner tells you to kill a running server's workers
-
-**Status:** fix built 2026-11-10 in the `agent_api` merge, not committed; moves to Fixed with its commit. Found
-2026-11-10. **Severity:** high: every start prints a `kill -9` line for the workers of a server that is running,
-and following it takes that server's render and preview workers away.
-
-**What is wrong.** The port survey knows a server by the script in its command line, `crboost` or `main.py`
-(`services/port_survey.py:207`). Since the sh launcher (roadmap 39), a server runs `python3 …/crboost.py`, so no
-server started since then is known as one. Its workers then have no server for a parent and are listed as "CryoBoost
-worker whose server is gone", with `End them with: kill -9 …`; the server itself is left out of the survey. CryoBoost
-v1 has no port survey: this is new with the launcher.
-
-**Evidence** (real processes, read only). 2026-11-10 on cbe-login-0: a test server's banner listed 24292 and 24293
-as leftovers; `ps -o ppid` gives 23406 for both, the lab install's server, running on port 24330 since 14:10.
-
-**Fix.** `crboost.py` joins the names the survey knows a server by.
-
-**Check.** `survey()` on that node lists 23406 as a server on 24330, with 24292 and 24293 as its workers and no
-leftovers; a second server's banner names neither.
-
 ### H13 — The API's set_params picks a missAlign preset without the fields the preset sets
 
 **Status:** fix built 2026-11-10 in the main checkout, not committed (the test server and roadmap 49's queued chain
@@ -363,81 +343,6 @@ lists the fields the preset moved.
 **Check.** Toy run of `set_params` on a fresh `MissAlignParams` (2026-11-10): `paper` → 1000 / 30 / `5,15` / auto,
 applied `steps_per_epoch` and `z_box`; `paper` with `z_box: full` → 1000 and full; back to `default` → 250. Owed:
 the same through the API on the test server once it runs this code.
-
-### H14 — missAlign's effective SLURM config drops the profile's GPU type, so the training job lands on any card
-
-**Status:** fix built 2026-11-10 in the main checkout (`gres_with_count` keeps the profile's type; the dev conf, `conf.template.yaml` and the lab copy name `gpu:nvidia_b200:1`), not committed, not run; moves to Fixed with its commit. Found 2026-11-10 (roadmap 49 R1; anchors at `3c0cc3e`). **Severity:** high on CBE.next: the run's
-length follows the card it happens to get, and the profile has no way to choose one.
-
-**What is wrong.**
-- `MissAlignParams.get_effective_slurm_config` (`services/jobs/miss_align.py:806-807`) replaces the profile's `gres`
-  with `gpu:{num_gpus}` whenever the job carries no `gres` override, so `job_resource_profiles.missAlign.gres` in
-  `conf.yaml` can never name a card. Every other GPU profile pins one by a typed GRES (`gpu:nvidia_b200:1` on
-  tsReconstruct) or a constraint.
-- A `constraint: b200` would not do either: the `b200` feature is on the MIG nodes too (`cbe-g5-1/2/5/6`, features
-  `b200,mig`), where `gpu:2` is two 23 GB slices, and SLURM constraints cannot exclude a feature. Only the typed GRES
-  (`gpu:nvidia_b200:N`) picks a whole card.
-- `gpu_count()` (`:647-657`) already reads a typed override (`gpu:nvidia_b200:2` → 2) and the driver reads
-  `SLURM_GPUS_ON_NODE`, so the type only has to survive the effective config.
-
-**Evidence** (real jobs, read only, 2026-11-10). R1's missAlign, SLURM 1526891
-(`AGG412_20251113_412_rerun/External/job006`): `ReqTRES gres/gpu=2`, no features, allocated
-`gres/gpu:quadro_rtx_6000=2` on `cbe-g3-1` while every full B200 was taken. It trains at 2.29 steps/s with GPU 0
-at 100 % in every sample: the RTX 6000 is the limit, and CPUs would not help. The same job on one B200 with half the
-CPUs (SLURM 1514330) runs 3.65–4.09 steps/s with its trainer at 24 % of the card. To repeat:
-`MissAlignParams().get_effective_slurm_config().gres` with the profile's `gres` set to `gpu:nvidia_b200:1` → `gpu:1`.
-
-**Impact.** A PAPER run over ~140 series: ~2.7 h of training per macro-iteration on the RTX 6000 against ≤ 1.6 h on
-a B200, nine times over; R1 is heading for 27–31 h instead of a working day (roadmap 50 §3). A `gres` override by
-hand on every job is the only way round it today.
-
-**Fix.** Keep the profile's type and set only the count: read `cfg.gres` as `gpu[:type][:count]` and write back
-`gpu[:type]:{num_gpus}`; an override stays untouched. The profile then reads `gres: gpu:nvidia_b200:1` in the dev
-conf, `conf.template.yaml` and the lab conf (roadmap 50 S1 sets its CPUs and memory with it).
-
-**Check.** Toy: profile `gpu:nvidia_b200:1` and `num_gpus` 2 → `gpu:nvidia_b200:2`; profile `gpu:1` → `gpu:2`; an
-override `gpu:nvidia_a100-sxm4-40gb:2` → unchanged; `gpu_count()` 2 in each case. Real: the next missAlign's `sacct`
-shows `gres/gpu:nvidia_b200=2`.
-
-### H15 — missAlign's training pool streams through the shared BeeGFS: tens of terabytes a run for a 5 GB working set
-
-**Status:** fix built 2026-11-10 in the main checkout (`pool_root()` in the driver: `/dev/shm/crboost-<user>-<job id>` as the tool's `TMPDIR`, removed after training; `pool_size × 5.3 MB` added to the memory request), not committed, not run; moves to Fixed with its commit. Found 2026-11-10 (anchors at `3c0cc3e`). **Severity:** high for the cluster and for the run: every
-run writes and reads its training cubes through the site's shared scratch at about 1 GB/s for the whole training
-phase, and the builders and loaders wait on it.
-
-**What is wrong.**
-- The tool keeps its pool of training cubes under `tempfile.gettempdir()` (in the container,
-  `miss_alignment/data/training_datamodule.py:205`: `recon_pool_<hash>`): each patch builder writes every 96³ triplet
-  as a 5.3 MB pickle (`_reconstruction_worker.py:232`), each loader lists its partition, reads one file and deletes it,
-  per sample. crboost sets no `TMPDIR` for the tool (`drivers/miss_align.py:706-709` sets USER, thread and dynamo
-  variables only; `--cleanenv` drops the host's), so the pool goes to the container's `/tmp`.
-- On CBE.next a job's `/tmp` is not local disk: it is the job's private directory on BeeGFS (roadmap 45 §2; `df /tmp`
-  inside both running jobs → `beegfs_nodev`, 1.3 PB). The node has no local disk (`TmpDisk=0`); its RAM-backed
-  `/dev/shm` (756 GB tmpfs, charged to the job's `--mem`) is the only node-local store. The container sees the job's
-  private one (probe 2026-11-10 in SLURM 1514330: a directory made host-side was listed inside `apptainer exec`, a
-  file made inside appeared outside, the tool's own `sem.mp-*` semaphores sit there), and SLURM's `namespace/tmpfs`
-  removes it at job end.
-
-**Evidence** (`sstat`, 2026-11-10 ~21:00). SLURM 1514330 (one B200, 3 builders, 4 loaders): `fs/disk` 26.2 TB after
-7 h 22, about 1 GB/s (3.7 steps/s × 32 files × 5.3 MB, written once and read once); SLURM 1526891 (R1, two RTX
-6000s): 2.8 TB after 1 h 27. `top` inside both jobs showed loaders and builders in `D` (waiting on I/O); the pools
-held 135 files / 0.7 GB and 991 files / 4.9 GB. Roadmap 45 §3 had noted "missAlign's 5 TB is its training cubes in
-`/tmp`" without the filesystem behind it.
-
-**Impact.** Every missAlign run puts a sustained ~1 GB/s of churn on the shared scratch for 10–25 h, for a working
-set of 5 GB; the producers wait on that churn, part of why a B200 trainer holds 24 % of its card (roadmap 50 §1).
-This is the kind of traffic the site asked the lab about (roadmap 45 §1).
-
-**Fix.** The driver makes `/dev/shm/crboost-<user>-<SLURM job id>` before training, passes `TMPDIR=<that>` in the
-tool's environment prefix (the tool's `tempfile.gettempdir()` follows it), removes the directory in its `finally`
-(the tool deletes its own pool on teardown; the job's namespace goes at job end anyway), and the estimate and the
-SLURM tab note add the pool (`pool_size × 5.3 MB`, 16 GB at 3000) to the memory request. The directory must exist
-first: `tempfile` falls back to `/tmp` silently when `TMPDIR` does not.
-
-**Check.** Toy (done 2026-11-10 in the container): `TMPDIR=/dev/shm python -c "import tempfile;
-print(tempfile.gettempdir())"` → `/dev/shm`; without it → `/tmp`. Real: the next run's `run.out` says `Created pool
-directory: /dev/shm/crboost-…/recon_pool_…`, `sstat`'s `fs/disk` stays in the tens of GB (the stacks read), no process
-in `D`, and steps/s against the same layout with the pool on BeeGFS.
 
 ### H16 — A tilt series the alignment failed on keeps an older run's alignment and goes downstream
 
@@ -519,6 +424,28 @@ nothing and aggregates.
 --time`) under g_medium and Succeeds.
 
 ## Fixed
+
+### H32 — The companion napari viewer saves into its working directory for a tomogram outside every project
+
+**Fixed 2026-11-19 (uncommitted).** `CompanionSession` (`containers/napari/open_tomogram.py`) points the viewer's
+three save paths (comments CSV, particle STARs, PNGs) at `_unfiled_dir()` when a request carries no `outputs`: the
+session's own folder, `~/.crboost/napari/<id>/`, or `~/.crboost/napari/by-hand/` for a window started by hand. It
+does so when it starts as well, since the viewer's own default is the working directory, and the notice names the
+folder. **Checked** with a toy: the real methods, napari and Qt stubbed, a stand-in controller whose paths start at
+the working directory. A request without `outputs` gives `<session>/tomogram_comments.csv` and
+`<session>/particle_stars`; by hand, `~/.crboost/napari/by-hand/…`; a project's `outputs`,
+`<project>/Curation/napari/…`; the working directory stays empty. The same toy on HEAD's file gives
+`<working directory>/tomogram_comments.csv`. Owed: a real session opening a volume outside every project.
+
+**Status:** fixed 2026-11-19, found the same day (recon HY16, roadmap 63 S1). **Severity:** low in a checkout,
+where it leaves files in the tree (the untracked `tomogram_comments.csv` in the dev checkout, 2026-11-19 09:17, is
+one); medium once members cannot write the install, where the save fails.
+
+**What is wrong.** `_point_at` used `outputs` when the request had them and `Path.cwd()` otherwise, and the
+colleague's viewer starts with all three paths at `Path.cwd()` (its `napari_mrc_lowpass_fast.py`). The server sends
+`outputs` only for a volume with a `project_params.json` above it (`_napari_outputs`,
+`services/curation/session_service.py`), and a window started by hand (`launch_napari_vnc.sh`) never has them. The
+working directory is wherever the server or the shell was, often the checkout or the shared install.
 
 ### H31 — "Every card small" on the branch map leaves a blank page
 
@@ -807,6 +734,101 @@ list, though its rows carry `cbPickUid`, and its picks lie in the eight reruns, 
 
 **Fix.** Before matching by position, `set_rows` takes the set star's `cbPickUid` column when it has one (as the uid
 list). **Check.** The same call keeps 438 picks over 5 projects.
+
+### H14 — missAlign's effective SLURM config drops the profile's GPU type, so the training job lands on any card
+
+**Status:** fixed 2026-11-10 in `e95c07f` (`gres_with_count` keeps the profile's type; the dev conf, `conf.template.yaml` and the lab copy name `gpu:nvidia_b200:1`). Found 2026-11-10 (roadmap 49 R1; anchors at `3c0cc3e`). **Severity:** high on CBE.next: the run's
+length follows the card it happens to get, and the profile has no way to choose one.
+
+**What is wrong.**
+- `MissAlignParams.get_effective_slurm_config` (`services/jobs/miss_align.py:806-807`) replaces the profile's `gres`
+  with `gpu:{num_gpus}` whenever the job carries no `gres` override, so `job_resource_profiles.missAlign.gres` in
+  `conf.yaml` can never name a card. Every other GPU profile pins one by a typed GRES (`gpu:nvidia_b200:1` on
+  tsReconstruct) or a constraint.
+- A `constraint: b200` would not do either: the `b200` feature is on the MIG nodes too (`cbe-g5-1/2/5/6`, features
+  `b200,mig`), where `gpu:2` is two 23 GB slices, and SLURM constraints cannot exclude a feature. Only the typed GRES
+  (`gpu:nvidia_b200:N`) picks a whole card.
+- `gpu_count()` (`:647-657`) already reads a typed override (`gpu:nvidia_b200:2` → 2) and the driver reads
+  `SLURM_GPUS_ON_NODE`, so the type only has to survive the effective config.
+
+**Evidence** (real jobs, read only, 2026-11-10). R1's missAlign, SLURM 1526891
+(`AGG412_20251113_412_rerun/External/job006`): `ReqTRES gres/gpu=2`, no features, allocated
+`gres/gpu:quadro_rtx_6000=2` on `cbe-g3-1` while every full B200 was taken. It trains at 2.29 steps/s with GPU 0
+at 100 % in every sample: the RTX 6000 is the limit, and CPUs would not help. The same job on one B200 with half the
+CPUs (SLURM 1514330) runs 3.65–4.09 steps/s with its trainer at 24 % of the card. To repeat:
+`MissAlignParams().get_effective_slurm_config().gres` with the profile's `gres` set to `gpu:nvidia_b200:1` → `gpu:1`.
+
+**Impact.** A PAPER run over ~140 series: ~2.7 h of training per macro-iteration on the RTX 6000 against ≤ 1.6 h on
+a B200, nine times over; R1 is heading for 27–31 h instead of a working day (roadmap 50 §3). A `gres` override by
+hand on every job is the only way round it today.
+
+**Fix.** Keep the profile's type and set only the count: read `cfg.gres` as `gpu[:type][:count]` and write back
+`gpu[:type]:{num_gpus}`; an override stays untouched. The profile then reads `gres: gpu:nvidia_b200:1` in the dev
+conf, `conf.template.yaml` and the lab conf (roadmap 50 S1 sets its CPUs and memory with it).
+
+**Check.** Toy: profile `gpu:nvidia_b200:1` and `num_gpus` 2 → `gpu:nvidia_b200:2`; profile `gpu:1` → `gpu:2`; an
+override `gpu:nvidia_a100-sxm4-40gb:2` → unchanged; `gpu_count()` 2 in each case. Real: the next missAlign's `sacct`
+shows `gres/gpu:nvidia_b200=2`.
+
+### H15 — missAlign's training pool streams through the shared BeeGFS: tens of terabytes a run for a 5 GB working set
+
+**Status:** fixed 2026-11-10 in `e95c07f` (`pool_root()` in the driver: `/dev/shm/crboost-<user>-<job id>` as the tool's `TMPDIR`, removed after training; `pool_size × 5.3 MB` added to the memory request). Found 2026-11-10 (anchors at `3c0cc3e`). **Severity:** high for the cluster and for the run: every
+run writes and reads its training cubes through the site's shared scratch at about 1 GB/s for the whole training
+phase, and the builders and loaders wait on it.
+
+**What is wrong.**
+- The tool keeps its pool of training cubes under `tempfile.gettempdir()` (in the container,
+  `miss_alignment/data/training_datamodule.py:205`: `recon_pool_<hash>`): each patch builder writes every 96³ triplet
+  as a 5.3 MB pickle (`_reconstruction_worker.py:232`), each loader lists its partition, reads one file and deletes it,
+  per sample. crboost sets no `TMPDIR` for the tool (`drivers/miss_align.py:706-709` sets USER, thread and dynamo
+  variables only; `--cleanenv` drops the host's), so the pool goes to the container's `/tmp`.
+- On CBE.next a job's `/tmp` is not local disk: it is the job's private directory on BeeGFS (roadmap 45 §2; `df /tmp`
+  inside both running jobs → `beegfs_nodev`, 1.3 PB). The node has no local disk (`TmpDisk=0`); its RAM-backed
+  `/dev/shm` (756 GB tmpfs, charged to the job's `--mem`) is the only node-local store. The container sees the job's
+  private one (probe 2026-11-10 in SLURM 1514330: a directory made host-side was listed inside `apptainer exec`, a
+  file made inside appeared outside, the tool's own `sem.mp-*` semaphores sit there), and SLURM's `namespace/tmpfs`
+  removes it at job end.
+
+**Evidence** (`sstat`, 2026-11-10 ~21:00). SLURM 1514330 (one B200, 3 builders, 4 loaders): `fs/disk` 26.2 TB after
+7 h 22, about 1 GB/s (3.7 steps/s × 32 files × 5.3 MB, written once and read once); SLURM 1526891 (R1, two RTX
+6000s): 2.8 TB after 1 h 27. `top` inside both jobs showed loaders and builders in `D` (waiting on I/O); the pools
+held 135 files / 0.7 GB and 991 files / 4.9 GB. Roadmap 45 §3 had noted "missAlign's 5 TB is its training cubes in
+`/tmp`" without the filesystem behind it.
+
+**Impact.** Every missAlign run puts a sustained ~1 GB/s of churn on the shared scratch for 10–25 h, for a working
+set of 5 GB; the producers wait on that churn, part of why a B200 trainer holds 24 % of its card (roadmap 50 §1).
+This is the kind of traffic the site asked the lab about (roadmap 45 §1).
+
+**Fix.** The driver makes `/dev/shm/crboost-<user>-<SLURM job id>` before training, passes `TMPDIR=<that>` in the
+tool's environment prefix (the tool's `tempfile.gettempdir()` follows it), removes the directory in its `finally`
+(the tool deletes its own pool on teardown; the job's namespace goes at job end anyway), and the estimate and the
+SLURM tab note add the pool (`pool_size × 5.3 MB`, 16 GB at 3000) to the memory request. The directory must exist
+first: `tempfile` falls back to `/tmp` silently when `TMPDIR` does not.
+
+**Check.** Toy (done 2026-11-10 in the container): `TMPDIR=/dev/shm python -c "import tempfile;
+print(tempfile.gettempdir())"` → `/dev/shm`; without it → `/tmp`. Real: the next run's `run.out` says `Created pool
+directory: /dev/shm/crboost-…/recon_pool_…`, `sstat`'s `fs/disk` stays in the tens of GB (the stacks read), no process
+in `D`, and steps/s against the same layout with the pool on BeeGFS.
+
+### H12 — The startup banner tells you to kill a running server's workers
+
+**Status:** fixed 2026-11-10 in `3585c73`. Found
+2026-11-10. **Severity:** high: every start prints a `kill -9` line for the workers of a server that is running,
+and following it takes that server's render and preview workers away.
+
+**What is wrong.** The port survey knows a server by the script in its command line, `crboost` or `main.py`
+(`services/port_survey.py:207`). Since the sh launcher (roadmap 39), a server runs `python3 …/crboost.py`, so no
+server started since then is known as one. Its workers then have no server for a parent and are listed as "CryoBoost
+worker whose server is gone", with `End them with: kill -9 …`; the server itself is left out of the survey. CryoBoost
+v1 has no port survey: this is new with the launcher.
+
+**Evidence** (real processes, read only). 2026-11-10 on cbe-login-0: a test server's banner listed 24292 and 24293
+as leftovers; `ps -o ppid` gives 23406 for both, the lab install's server, running on port 24330 since 14:10.
+
+**Fix.** `crboost.py` joins the names the survey knows a server by.
+
+**Check.** `survey()` on that node lists 23406 as a server on 24330, with 24292 and 24293 as its workers and no
+leftovers; a second server's banner names neither.
 
 ### H7 — Template matching with T, O or I symmetry searches 3 to 15 times the orientations its increment asks for
 
