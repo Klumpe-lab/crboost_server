@@ -224,10 +224,12 @@ class CurationSessionService:
         env: dict[str, str],
         conf_section: str,
         worker: Path | None = None,
+        term_before_end_s: int | None = None,
     ) -> dict[str, Any]:
         """Write `<session_dir>/submit.sh` (the SLURM lines, `env` exported, then `worker`, the curation worker by
-        default) and sbatch it. `ok(slurm_job_id=...)`, or `err` naming the conf.yaml section when the placement is
-        wrong."""
+        default) and sbatch it. With `term_before_end_s`, SLURM sends SIGTERM to the script alone that long before
+        the time limit (up to a minute earlier), as a Stop does, where at the limit it would kill every process of the
+        job at once. `ok(slurm_job_id=...)`, or `err` naming the conf.yaml section when the placement is wrong."""
         try:
             await asyncio.to_thread(check_constraint, placement)
             excluded = await asyncio.to_thread(avoided_nodes, placement)
@@ -260,6 +262,8 @@ class CurationSessionService:
             f"#SBATCH -o {log}",
             f"#SBATCH -e {log}",
         ]
+        if term_before_end_s:
+            lines.append(f"#SBATCH --signal=B:TERM@{term_before_end_s}")
         ood = self.config_service.ood
         if ood.enabled:
             # The browser route: websockify beside Xvnc for the portal's relay, Xvnc on localhost (roadmap 55).
@@ -951,6 +955,8 @@ class CurationSessionService:
             env=env,
             conf_section="napari (placement from curation)",
             worker=self._napari_worker(),
+            # At the time limit too, the worker closes the viewer (which saves) before the desktop goes.
+            term_before_end_s=120,
         )
         if not submitted.get("success"):
             return submitted

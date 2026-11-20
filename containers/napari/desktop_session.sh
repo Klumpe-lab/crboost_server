@@ -14,6 +14,8 @@
 #               through), CX_VNC_NOPASS (no VNC password), CB_WS_SIF (an image with websockify: serve the desktop as a
 #               websocket for the portal's noVNC, and keep the VNC server on the node's localhost).
 set -euo pipefail
+# rc is assigned at the start of the trap's own string, which ShellCheck does not count as an assignment.
+# shellcheck disable=SC2154
 trap 'rc=$?; echo "==== napari desktop FAILED (exit $rc) on $(hostname -s 2>/dev/null) at line ${LINENO}: ${BASH_COMMAND} ====" >&2' ERR
 trap 'exit 143' TERM
 trap 'exit 129' HUP
@@ -55,13 +57,14 @@ cleanup() {
   trap '' TERM HUP
   # The viewer first, with the display still up: on SIGTERM it closes its window, which saves the comments and the
   # particle STARs, and removes its desktop.json. The signal goes to the viewer's own process, found by its command
-  # line (this session's folder ends it): apptainer's wrapper does not pass it on in time, and inside the instance
-  # the viewer has a pid of another namespace. crboost stops a session by signalling this script alone
-  # (scancel --batch), so the desktop is still up meanwhile.
-  local viewer="eisgreis-crboost --session-dir $SESSION_DIR\$"
-  if pkill -TERM -u "$USER_NAME" -f -- "$viewer" 2>/dev/null; then
+  # line (this session's folder ends it) inside the instance, where only this session's processes are: a search of
+  # the whole node reads every process's command line and can stall behind someone else's busy process (50 s, once).
+  # apptainer's wrapper (VIEWER_PID) does not pass a signal on, but lives exactly as long as the viewer. crboost
+  # stops a session by signalling this script alone (scancel --batch), so the desktop is still up meanwhile.
+  if [ -n "$VIEWER_PID" ] && kill -0 "$VIEWER_PID" 2>/dev/null &&
+    apptainer exec "instance://$INSTANCE" pkill -TERM -f -- "eisgreis-crboost --session-dir $SESSION_DIR\$" 2>/dev/null; then
     for _ in $(seq 1 40); do
-      pgrep -u "$USER_NAME" -f -- "$viewer" >/dev/null 2>&1 || break
+      kill -0 "$VIEWER_PID" 2>/dev/null || break
       sleep 0.5
     done
   fi
@@ -99,8 +102,12 @@ HTTPD=()
 if apptainer exec "instance://$INSTANCE" vncserver -help 2>&1 | grep -q nohttpd; then
   HTTPD=(-nohttpd)
 fi
+# -alr: half a second after the picture stops changing, what went out as JPEG goes again losslessly, so a still
+# tomogram is exactly what the viewer drew. noVNC asks for JPEG quality level 6 (JPEG 79); a whole screen of a real
+# tomogram is ~0.5 MB that way and ~1 MB lossless, and both still frames matched a lossless capture pixel for pixel
+# (roadmap 61, 2026-11-20).
 VNC_OUT="$(apptainer exec "instance://$INSTANCE" vncserver -log "$SESSION_DIR/vnc.log" "${SECURITY[@]}" \
-  "${HTTPD[@]}" -noxstartup -geometry "$GEOMETRY" "${LOCAL[@]}" 2>&1)"
+  "${HTTPD[@]}" -noxstartup -alr 0.5 -geometry "$GEOMETRY" "${LOCAL[@]}" 2>&1)"
 DISPLAY_NUM="$(printf '%s\n' "$VNC_OUT" | awk -F: '/^Desktop/{print $NF}')"
 if [ -z "$DISPLAY_NUM" ]; then
   echo "The VNC server did not start: $VNC_OUT" >&2
@@ -161,9 +168,10 @@ if [ -n "$WS_PORT" ]; then
 fi
 printf '%s\n\n' "=================================================================="
 
-# The window manager first, so the viewer's window opens maximized.
+# The window manager first, so the viewer's window opens maximized. Looked for inside the instance, as the viewer is
+# in cleanup(): a search of the whole node took 42 s on a busy one.
 for _ in $(seq 1 40); do
-  pgrep -u "$USER_NAME" -f xfwm4 >/dev/null 2>&1 && break
+  apptainer exec "instance://$INSTANCE" pgrep -x xfwm4 >/dev/null 2>&1 && break
   sleep 0.5
 done
 
