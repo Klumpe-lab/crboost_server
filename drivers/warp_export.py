@@ -45,6 +45,7 @@ from drivers.driver_base import DriverContext, ToolCommand, require_producer_inp
 from drivers.ts_ctf import LOCAL_SETTINGS_NAME, LOCAL_TOMOSTAR_NAME
 from services.jobs.warp_export import WarpExportParams
 from services.particles.set_origins import origins_of
+from services.particles.warp_geometry import relion_model_names
 from services.particles.warp_export import (
     TOMOSTAR_SUFFIX,
     check_volume_agrees,
@@ -136,6 +137,14 @@ class WarpExportDriver(ArrayDriver):
         self._input_optimisation = input_optimisation
         self._particles_df, _, _ = _read_input_particles_lenient(particles_star)
         self._tomograms_df = _read_tomograms_star(tomograms_star)
+        picked = set(self._particles_df["rlnTomoName"].astype(str)) if not self._particles_df.empty else set()
+        relion_rows = [t for t in relion_model_names(self._tomograms_df) if t in picked]
+        if relion_rows:
+            raise ValueError(
+                f"{len(relion_rows)} tilt series of the set carry RELION's model from a frame alignment "
+                f"({', '.join(relion_rows[:3])}{' …' if len(relion_rows) > 3 else ''}): Warp would cut them with its "
+                "own model at positions that belong to RELION's. Cut this set with Subtomo Extraction"
+            )
         # A particle set's tomograms record where each lives: its Warp files are found in its own project, under
         # its name there, and no exclusions apply to it.
         self._origins = origins_of(self._tomograms_df)

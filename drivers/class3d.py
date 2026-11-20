@@ -18,6 +18,7 @@ from pathlib import Path
 from drivers.driver_base import ToolCommand, chosen_solvent_mask, get_driver_context, run_tool, start_supervisor
 from drivers.relion_continue import changed_since_start, continue_command, latest_checkpoint, program_index
 from services.jobs.class3d import Class3DParams
+from services.particles.warp_geometry import require_images
 from services.subtomo_merge import _parse_optimisation_set, write_optimisation_set
 
 # What a continuation from iteration N writes: run_ctN_itMMM_<rest>.
@@ -176,6 +177,7 @@ def main():
         print(f"[DRIVER] Input optimisation_set: {input_optimisation}", flush=True)
         print(f"[DRIVER] Input reference: {input_reference}", flush=True)
         print(f"[DRIVER] Job dir: {job_dir}", flush=True)
+        require_images(_parse_optimisation_set(input_optimisation)[0])
 
         mask_path = chosen_solvent_mask(params, paths)
         if mask_path is not None:

@@ -470,6 +470,7 @@ NAMES = {
     "maskCreate": "Mask",
     "postprocess": "PostProcess",
     "ctfRefine": "CTF refine",
+    "frameAlign": "Frame alignment",
 }
 TOOLS = {
     "warp_aretomo": "WarpTools",
@@ -558,6 +559,7 @@ ICON = {
     "maskCreate": "blur_on",
     "postprocess": "tune",
     "ctfRefine": "center_focus_strong",
+    "frameAlign": "control_camera",
 }
 ADDABLE = (
     "aligntiltsWarp",
@@ -578,6 +580,7 @@ ADDABLE = (
     "maskCreate",
     "postprocess",
     "ctfRefine",
+    "frameAlign",
 )
 # Parameters the card's form leaves to the SLURM tab or never asks.
 HIDDEN_PARAMS = {"array_throttle", "perdevice", "do_at_most"}
@@ -773,6 +776,18 @@ def _identity(kind: str, jm) -> list[str]:
             if getattr(jm, "regularise", False):
                 what[0] += " regularised"
         identity.append(" · ".join(what) or "nothing to refine")
+    if kind == "frameAlign":
+        what = [
+            w
+            for w, attr in (
+                ("angles", "refine_angles"),
+                ("shifts", "refine_shifts"),
+                ("positions", "refine_positions"),
+                ("motion", "motion"),
+            )
+            if getattr(jm, attr, False)
+        ]
+        identity.append(f"{' · '.join(what) or 'nothing to refine'} · ±{param_words(jm, 'max_shift_px')} px")
     return identity
 
 

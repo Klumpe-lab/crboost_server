@@ -1675,3 +1675,132 @@ Were the data the limit, frame alignment's +49 % SNR would move the crossing by 
    source (Grid2's 0.3 %) and a bin-1 export that keeps the refined CTF. Unmeasured here, and the larger build.
 4. **Per-session pixel sizes: no build of their own** (Grid2 only, 0.3 %; M refines it).
 5. **Stop:** further CTF rounds (T1: 0–0.16 Å), and dropping Grid2 (T2: equal; fix its geometry instead).
+
+### 15.11 Bin 1 running, C11 built next, M after (2026-11-20)
+
+**The maintainer's word (2026-11-20, on §15.10's recommendation): "add this to the roadmap and get to work on it".**
+The order stands: bin 1 in the project (no build), then C11 frame alignment, then M (C6); no per-session pixel-size
+build; no more CTF rounds; Grid2 stays in. The maintainer also asked what else we do not use yet: below.
+
+**Bin 1, submitted 2026-11-20 09:52** (plan `p-d540aaca`, accepted in the terminal):
+- job046 Subtomo Extraction of job040's set (job040's poses, job045's CTF; the bridge's carried case logged,
+  job038's trajectories): binning 1, box 768 cropped to 448 (694 Å), 2D stacks, float16, CTF-premultiplied. 437 of
+  438: RELION dropped Slot6 P10/99, "too close to the edge in all images" at this box. Per tomogram: Grid2 P10 171,
+  Slot6 107, SK 96, FCIso P18_4 46, Grid2 P10_3 8, and seven tomograms with 1–2 each (P27_3, six of unmilled2).
+- job048 Mask, both layers at 1.55 Å: job016's recipe (0.15 × the 15 Å low-passed maximum) on job039's map, extend
+  6 and soft edge 12 px (job016's 3 and 6 at 3.1 Å, as job034/job041 did for the outer layer). Above the threshold
+  4.43·10⁷ Å³ against job016's 4.49·10⁷.
+- job047 Refine 3D: job040's settings (local, σ 2°, healpix 4, from 25 Å, I1, Ø 600, offsets ±5 px in steps of 1,
+  now ±7.75 Å in steps of 1.55 Å), reference job039 (1.55 Å, 448 px), mask job048. Two B200s, 3 ranks × 5 threads,
+  256 GB, 24 h under `g_medium` (bin 2 took 1 h 07 and 34 GB; bin 1 is ~3× per image, ~5× per reconstruction).
+- job049 / job050 PostProcess as job043 / job044 (no B-factor), in job048 (both layers) and job041 (outer layer).
+- The same Run continued job022 (the growth Class 3D, timed out at iteration 20 of 25): Run takes every unfinished
+  job. It is the first continuation after a time-out through SLURM (§11.2).
+- Read against job043 / job044 (8.27 / 8.02 Å): past ~7.8 Å, bin 2 was the ceiling; ~8.0 Å, the data are the limit.
+
+**C11, frame alignment: the design** (from T3, `relion_tomo_align --help` in the 5.0.1 image, and the code).
+- A job `frameAlign` with CTF refine's four inputs (a Refine 3D's set; half maps at the tilt series' pixel size, their
+  mask, their PostProcess FSC) and CTF refine's reference checks. After a bin-1 Refine 3D (job047) its own half maps,
+  job048 and job049 serve; after a bin-2 one, a Reconstruct particle at binning 1 as for C10.
+- The bridge runs first, as for every tilt-image job: Warp's offsets centre the cross-correlation windows (T3: the
+  result is the same without them) and are what the frozen tilt series keep (below).
+- Fields: max shift (`--r`, 30 px: Grid2's warps reach 41 Å), iterations (`--it`, 10,000), motion on (`--motion`,
+  `--s_vel` 0.5 Å/dose, `--s_div` 5000 Å, `--sq_exp_ker`), what is refined (frame angles, frame shifts, particle
+  positions: `--const_a/_s/_p` turned around), `--per_frame_noise`, box (0 = the reference's), threads, extra flags.
+  The deformation options stay in the extra flags until §15.10's alternative carrier has had its S0 check.
+- **Sparse tilt series can be kept.** RELION refines each tilt series' rigid model from its own particles; with one or
+  two its angles and shifts ran up to 6° and 81 Å (T3). A tilt series with fewer than `min_particles` keeps what it
+  came with: its tilt-series star, its particles' rows and their trajectories (the bridge's offsets). Default 1: every
+  tilt series refined, as RELION does and as T3/T3d measured; keeping the 412's eight under 10 (17 capsids) bought
+  nothing (built, below).
+- **The output is RELION's whole model**, written beside RELION's own files: `aligned_optimisation_set.star` naming
+  `aligned_particles.star` (RELION's, origins folded into the coordinates, the frozen rows put back, no
+  `rlnImageName`: the old stacks were cut with the old model, so a Refine 3D must read stacks cut anew by Subtomo
+  Extraction, and refuses the set otherwise), `aligned_tomograms.star` (the refined tilt-series stars in `tilt_series/`,
+  the frozen ones' own) and `aligned_motion.star` (RELION's motion, the frozen particles' bridge offsets).
+- **The origin marker** is a column of the tomograms star, `cbGeometry`: `relion` (the tilt-series star and the
+  set's trajectories are RELION's model) or `warp` (Warp's rigid star; the set's trajectories hold the bridge's
+  offsets), with `cbGeometryTiltStar` naming the tilt-series star a `relion` row's motion belongs to. RELION keeps
+  unknown labels ("will ignore (but maintain)": the `cbOrigin*` columns crossed job045's CTF refine and T3's align),
+  so the marker travels with the set.
+- **The bridge steps aside** for a marked set: handed on as is, after checking that every particle has a trajectory
+  and that each `relion` row's tilt-series star still holds the rigid model of `cbGeometryTiltStar` (a CTF refine
+  after C11 changes only CTF columns). `warp` rows keep the XML checks. An unmarked set whose star RELION rewrote
+  still fails the XML's rigid check, as today: refused, not misplaced.
+- **Warp Export refuses `relion` rows**: Warp would cut them with its own model at RELION's positions. Subtomo
+  Extraction is the way to stacks after C11.
+- **The driver says what moved**, per tilt series: frozen or refined, particles, per-tilt shift and angle changes
+  against the input star (RMS and largest), the motion's RMS, the particles' position change; `frame_align_changes.json`
+  and the card. Re-run in place, it adds `--only_do_unfinished` (RELION's per-tomogram `temp/`).
+- **First run, once built and the server restarted:** job047's set, its half maps, job048, job049 → C11 → Subtomo
+  Extraction at bin 1 (as job046) → Refine 3D (as job047) → PostProcess in job048 and job041, against job049/job050.
+
+**What else we do not use yet** (the maintainer's question, 2026-11-20). RELION 5.0.1's tomo programs and Warp's
+MTools/MCore, against these data:
+
+| Not used | What it does | Here | Verdict |
+|---|---|---|---|
+| M (MCore, C6) | per-tilt CTF, image warp grid, stage angles, volume warps, magnification per source, particle poses (and tilt movies), jointly, in Warp's XMLs; a bin-1 Warp export from its XMLs after | all of C10 and C11 in one convention, plus Grid2's 0.3 %; the strongest single lever, unmeasured | the large build, after C11 |
+| `relion_tomo_align` (C11) | per-tilt rigid model and per-particle motion | +49 % SNR at 9 Å, Grid2 15.0 → 10.6 Å (T3, T3d) | building now |
+| `relion_tomo_fit_bfactors` | per-tilt B-factor and scale from each tilt's FCC, written into the tilt-series stars (`bfactor_fit.cpp`): weights fitted instead of the dose model | four sessions with their own tilt schemes; Grid2's late tilts | a side step on job047, then a job (C10's shape) if it pays |
+| `relion_tomo_refine_mag` | a 2×2 magnification matrix per tomogram against the reference; prints it, writes nothing (`mag_fit.cpp`) | an independent check of T4's Grid2 +0.3 %; §15.10's "RELION's tomo tools cannot": they measure it, nothing applies it | run as a side step (below): Grid2 +0.1 %, and SK ±0.41 % anisotropic; no build |
+| `relion_tomo_compute_FCC` | per-tilt, per-tomogram Fourier cylinder correlation | which tilts of which tomograms carry signal | a side step with the B-factor fit |
+| CTF refine's scale and aberrations (C10 has the fields) | per-tilt scale; even and odd Zernike terms | odd: 0.5 mrad of beam tilt is 0.06 rad at 8 Å with Cs 2.7 mm, 0.5 rad only at 4 Å | not at this resolution |
+| Symmetry expansion and sub-particle refinement (C7, V4) | faces or vertices refined on their own (block-based) | capsid flexibility, and the defocus spread through a 600 Å particle (±250 Å: 0.24 rad at 8 Å, 0.43 at 6 Å, after RELION's per-particle defocus) | after bin 1 and C11, if the outer layer keeps beating both layers |
+| Local resolution (`relion_postprocess --locres`) | resolution per voxel | where the map is good (outer layer against inner) | cheap: a PostProcess field |
+| `relion_tomo_local_particle_refine` | particle poses refined on the tilt images | Refine 3D on 2D stacks does this | no |
+| More particles (job022) | Class 3D over all 22,318 candidates | +49 % SNR moved 0.16 Å at bin 2; bin 1 decides what particles are worth | continuing now |
+
+**Why C11 before M, in numbers:** C11 is measured (+49 % SNR at 9 Å, Grid2's reconstruction 15.0 → 10.6 Å) and is
+one job of C10's shape; M is unmeasured and the largest build left (population, a source per rerun with copied XMLs,
+a species from a Refine 3D, MCore on GPUs, an export from M's XMLs). C11 also says how much geometry RELION finds
+that M would have to beat.
+
+**Built 2026-11-20: C11 frame alignment** (main checkout, uncommitted; the server needs a restart to know the job).
+- `services/jobs/frame_align.py` (`FrameAlignParams`, `JobType.FRAME_ALIGN = "frameAlign"`, "Frame alignment", after
+  Refine 3D, CTF refine's four inputs, output `aligned_optimisation_set.star`); `drivers/frame_align.py` (bridge first,
+  `read_input` splits kept/refined, `build_command`, `--only_do_unfinished` when `temp/` holds this command's results,
+  `assemble` writes the job's set, `frame_align_changes.json`); `drivers/tomo_reference.py` (CTF refine's reference
+  checks, now shared: pixel size, one grid, the FSC measured on these halves, the box); spec row, job package, the
+  map's name, icon, add menu, identity line and card facts; `frameAlign` profiles in `conf.template.yaml` and the dev
+  `conf.yaml` (CPU, as `ctfRefine`).
+- The marker: `services/particles/warp_geometry.py` (`cbGeometry`, `cbGeometryTiltStar`; `plan` skips the XML checks
+  for `relion` rows and checks their rigid model against the star their motion belongs to; `check_marked`;
+  `require_images`); `drivers/warp_bridge.py` hands a marked set on as it is; `drivers/warp_export.py` refuses `relion`
+  rows; `drivers/refine3d.py` and `drivers/class3d.py` refuse particles without images (a frame alignment's output).
+- **Checked on T3's own relion_tomo_align output** (job038's set in, motion on; side step `c11_check.py`, under
+  `C11_check/`): with `min_particles` 10, 4 tilt series refined (421 capsids) and 8 kept (17); every particle's
+  trajectory is RELION's (refined) or the bridge's (kept), to 1e-5 Å; the tomograms star carries the marker; the
+  bridge's planner accepts the set (marked, 4 `relion` rows, 8 `warp` rows with local geometry, every particle with a
+  trajectory); Refine 3D's check refuses it. RELION reads it: `relion_tomo_reconstruct_particle` (bin 2, 1 min 12) and
+  `relion_tomo_subtomo` (bin 2, 38 s) ran on it and kept `cbGeometry` ("will ignore (but maintain)").
+
+| Bin-2 reconstruction from the tilt images (half-map FSC, job016's mask) | 0.143 | 10 Å | 9 Å | 8 Å |
+|---|---|---|---|---|
+| job038's set through the bridge (Warp's model) | 9.12 Å | 0.44 | 0.14 | −0.01 |
+| T3: relion_tomo_align's own set (RELION's model on all 12) | 8.53 Å | 0.47 | 0.23 | 0.10 |
+| C11's set, the 8 sparse tilt series kept on Warp's model | 8.72 Å | 0.45 | 0.22 | 0.08 |
+
+  Keeping the sparse tilt series bought nothing (17 of 438 capsids, within the noise of a curve near 0.143 from 8.5 to
+  8.9 Å), so `min_particles` defaults to 1 (every tilt series refined, T3/T3d's configuration) and stays a field.
+  `ruff`, `check_boundaries.py`, `./crboost test` clean; every driver imports. **Not run:** the job through the
+  server and SLURM (restart first), its page in a browser.
+
+**`relion_tomo_refine_mag`, run as a side step (2026-11-20; `tests.sh mag`, `mag_read.py`, under `MAG/`).** Box 512,
+reference job039's halves (bin 1, 448 px) in job048's both-layer mask with job042's FSC, 1 min 11 on 16 CPUs per set.
+RELION 5.0.1 prints one 2×2 magnification matrix per tomogram and writes nothing. Particle-weighted per session:
+
+| Set | Grid2 (179) scale | SK (96) scale | Slot6 (108) scale | FCIso (55) scale | SK x against y | the others' x against y |
+|---|---|---|---|---|---|---|
+| job040 (CTF round 2, the bridge) | +0.095 % | −0.017 % | +0.035 % | −0.022 % | **+0.413 %** | −0.002 to +0.070 % |
+| job033 (CTF round 1, the bridge) | +0.093 % | −0.016 % | +0.034 % | −0.021 % | **+0.407 %** | −0.004 to +0.075 % |
+| C11's set (RELION's model, T3) | +0.106 % | −0.013 % | +0.034 % | −0.022 % | **+0.403 %** | −0.010 to +0.060 % |
+
+- **Scale per session:** Grid2 is ~0.1 % larger than the others, which agree within 0.06 %. T4 read 0.3 % from the maps at
+  10–20 Å; both are small (0.1 % is 0.25 Å at the outer layer, 0.2 rad at 8 Å). Per-session pixel sizes stay unbuilt.
+- **New: SK P11_2 has an anisotropic magnification of ±0.41 %** (x stretched against y by 0.8 %; the off-diagonal terms
+  ≤0.12 %), the same on all three sets, so it does not depend on the poses, the CTF round or the geometry model, and
+  frame alignment does not absorb it. No other tomogram with more than two particles passes 0.08 %. It looks like the
+  2025-10-17 session's optics. At the outer layer (r ≈ 250 Å) it is ±1.0 Å, ~0.8 rad at 8 Å, on the best tomogram's 96
+  capsids (SK alone: FSC 0.37 at 10 Å). RELION's tomo programs measure it and apply nothing; M refines magnification
+  per source. One more reason for M after C11; nothing to build for it now.

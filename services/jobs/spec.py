@@ -31,6 +31,7 @@ from services.jobs.denoise_predict import DenoisePredictParams
 from services.jobs.denoise_train import DenoiseTrainParams
 from services.jobs.extract_pick_list import ExtractPickListParams
 from services.jobs.filament_pick import FilamentPickParams
+from services.jobs.frame_align import FrameAlignParams
 from services.jobs.fs_motion_ctf import FsMotionCtfParams
 from services.jobs.import_movies import ImportMoviesParams
 from services.jobs.mask_create import MaskCreateParams
@@ -469,6 +470,23 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         glyph=(
             '<ellipse cx="6" cy="6" rx="4.7" ry="3.5" transform="rotate(-30 6 6)"/>'
             '<ellipse cx="6" cy="6" rx="2.2" ry="1.6" transform="rotate(-30 6 6)"/>'
+        ),
+    ),
+    # Each tilt's rigid alignment, the particles' positions and their motion against a reference at the tilt
+    # series' pixel size; its set is RELION's whole model, cut again by Subtomo Extraction before a Refine 3D.
+    JobSpec(
+        JobType.FRAME_ALIGN,
+        FrameAlignParams,
+        "Frame alignment",
+        PHASE_PARTICLES,
+        dependencies=(JobType.REFINE3D,),
+        driver="frame_align.py",
+        log_format="reconstruct",
+        dir_slug="frame_align",
+        summary="Refines each tilt's alignment and the particles' motion against a reference.",
+        glyph=(
+            '<rect x="1.5" y="2.5" width="6" height="6" rx="0.6"/>'
+            '<rect x="4.5" y="3.5" width="6" height="6" rx="0.6" stroke-dasharray="1.4 1.1"/>'
         ),
     ),
 )

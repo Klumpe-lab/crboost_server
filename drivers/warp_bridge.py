@@ -1,5 +1,6 @@
 """The optimisation set a RELION tilt-image program should read: the input's, or one that carries Warp's local
-geometry as trajectories (services/particles/warp_geometry.py; HOTFIXES H26).
+geometry as trajectories (services/particles/warp_geometry.py; HOTFIXES H26). A set marked as carrying RELION's own
+model (frame alignment, roadmap 53 §15.11) is handed on as it is, once checked.
 
 Called by every driver that hands RELION the tilt images (Reconstruct particle, CTF refine, Subtomo extraction,
 pick-list extraction) before it builds its command. The computation runs in the miss_alignment container
@@ -32,6 +33,17 @@ def carry_warp_geometry(input_set: Path, job_dir: Path, binds=()) -> Path:
             f"WARN: no Warp XML found for {len(p.unlocated)} tilt series ({', '.join(p.unlocated[:5])}"
             f"{' …' if len(p.unlocated) > 5 else ''}): RELION places their particles by the tilt-series star alone"
         )
+    if p.relion_model or p.marked:
+        wg.check_marked(p)
+        if p.relion_model:
+            _say(
+                f"{len(p.relion_model)} tilt series carry RELION's own model (frame alignment): their stars and motion "
+                "go to RELION as they are, without Warp's local geometry"
+            )
+        if p.series:
+            _say(f"{len(p.series)} tilt series keep Warp's model, with the bridge's offsets the set carries")
+        _say(f"the set is handed on as it is (trajectories: {p.trajectories or 'none'})")
+        return input_set
     if not p.needed:
         if p.rigid_only:
             _say(f"{len(p.rigid_only)} tilt series: Warp's model is the star's rigid one; nothing to carry")

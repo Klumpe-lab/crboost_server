@@ -245,6 +245,14 @@ job_resource_profiles:
     cpus_per_task: 8
     time: "2:00:00"
 
+  # Frame alignment runs on CPUs as CTF refine does (relion_tomo_align, OpenMP: threads = cpus_per_task), one tilt
+  # series in memory at a time. The 412's 438 capsids took 1.5 min on 16 CPUs at box 512 (roadmap 53 §15.10 T3).
+  frameAlign:
+    gres: ""
+    mem: "32G"
+    cpus_per_task: 8
+    time: "2:00:00"
+
   # DL tilt-filter prediction run: one GPU job over every tilt of the project.
   tiltFilter:
     gres: "gpu:1"
