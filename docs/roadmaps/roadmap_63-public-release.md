@@ -503,7 +503,7 @@ updated once without asking. That closes roadmap 20 S5; the result is recorded h
 
 ## 7. Stage records
 
-### S1 — built 2026-11-19, uncommitted
+### S1 — built 2026-11-19, committed 2026-11-20 (`3dbf48f`; H32 in `18b31c0`)
 
 - `.gitignore` rewritten: `/*.md`, `**env`, `--git-common-dir`, `!munich_handoff_note.md`, `promptbuilder.py`,
   `.abacusai` and `source_me` out; `/.uv` and `/venv` without a trailing slash (in the worktrees they are links);
@@ -528,3 +528,52 @@ updated once without asking. That closes roadmap 20 S5; the result is recorded h
   on a closed port).
 - HOTFIXES H32: the napari companion saves into the session's folder, never its working directory (toy checked;
   a real session on a volume outside every project is owed).
+
+### S2 — built 2026-11-20; the first run on GitHub and the settings are owed
+
+- `./crboost ci [--fast]` (`scripts/ci.py`): ruff check and format, boundaries, look literals, compile, the import of
+  every module, `tests/test_repo.py` (6: the conf template reads clean, the qsub template renders, every protocol
+  bundle validates, every job's tool is in the template, the verb table, `setup_app` builds), the lock in sync, the
+  MCP forwarder's lock and handshake, `sh -n`, and shellcheck (required when `CI` is set). The template conf, an empty
+  HOME and tracked files only; `--fast` skips the network steps. 11 of 12 green here, shellcheck skipped (absent).
+- The forwarder's lock is `agent/crboost_mcp.py.lock` (`uv lock --script`, uv 0.13.7); `./crboost mcp` runs
+  `--locked`.
+- D4: `302f738` formats 48 files (45 with identical syntax trees, 3 differ by whitespace inside docstrings);
+  `.git-blame-ignore-revs` names it (`177810b`). D3's rewrite changes every sha: the file is regenerated from
+  filter-repo's commit map then.
+- D5: the 11 files' literals are variables, and every one renders as before under Harbor Mono (checked against the
+  theme's values): a theme variable of the same value (the ink scale, accent, surface, warn ink, box line, bad dot,
+  button accent), else a component variable no look sets yet (`--cb-plan-*`, `--cb-readout-*`, `--cb-check-*`,
+  `--cb-unfurl-*`, `--cb-gallery-*`, `--cb-slot-*`, `--cb-pill-*`, `--cb-io-unresolved`, `--cb-glyph-on`).
+  `TH_VOICE` and `keep_case` live in `_field_styles.py`. `check_look_literals.py` no longer counts a face or case
+  whose value is a `--cb-*` variable (17 declarations in 8 files). The allow-list went down, none up: 994 literals in
+  88 files to 703 in 73 (8 entries were deleted files, 16 files other sessions had converted). The pipeline
+  builder's I/O and job tab keep their older literals (35, 7).
+- `.github/workflows/ci.yml` (`ubuntu-24.04`, `contents: read`, a concurrency group, actions by SHA): `./crboost ci`;
+  the serve smoke of CI-5 (the token redirect is a 302, not the recon's 307); actionlint 1.7.12, sha256-checked,
+  over both workflows with shellcheck. actionlint is clean here.
+- `weekly.yml` (Mondays 05:17 UTC, and by hand): install.sh uncached on Ubuntu and on AlmaLinux 9 and 10 (by
+  digest); pip-audit 2.10.1; lychee over `README.md` and `docs/*.md`; gitleaks 8.30.1 over the history
+  (`.gitleaks.toml` allows its one false positive, `slot.key, consumer_…=`, by pattern, so the rewrite keeps it).
+  A failure opens an issue or comments on the open one. The first run fails pip-audit: pillow 12.0.0, requests
+  2.31.0 and starlette 0.48.0 have advisories (S3).
+- `dependabot.yml`: `uv` monthly, a group for version updates and one for security updates, 7-day cooldown, NiceGUI
+  majors ignored; `github-actions` monthly, grouped.
+- `install.sh` fetches uv's x86-64 archive from its GitHub release and checks the sha256 `uv.toml` carries beside
+  `required-version` (agreed three ways: the release's `.sha256`, the download, the binary already in `.uv/bin`);
+  any other platform takes `CRBOOST_UV`. Tried in a scratch checkout: fetch and lock (lock identical), reuse, a wrong
+  sum, no network. `docs/installation.md` names the five hosts the build reaches.
+- Repo settings, by hand. The dependency graph saw no manifest because it is opt-in now ("not enabled by default",
+  public repos included) and was never switched on: the SBOM export answers 404, GraphQL lists 0 manifests, and
+  `requirements.txt` is a manifest it reads. Dependabot alerts were already on.
+  - Dependency graph: Settings, Advanced Security, Dependency graph, Enable.
+  - `gh api -X PUT repos/Klumpe-lab/crboost_server/vulnerability-alerts`
+  - `gh api -X PUT repos/Klumpe-lab/crboost_server/automated-security-fixes`
+  - `gh api -X PATCH repos/Klumpe-lab/crboost_server -f 'security_and_analysis[secret_scanning][status]=enabled'
+    -f 'security_and_analysis[secret_scanning_push_protection][status]=enabled'`
+  - `gh api -X PUT repos/Klumpe-lab/crboost_server/private-vulnerability-reporting`
+  - `gh api -X PATCH repos/Klumpe-lab/crboost_server/code-scanning/default-setup -f state=configured`
+  - `gh api -X PUT repos/Klumpe-lab/crboost_server/actions/permissions -F enabled=true -f allowed_actions=all
+    -F sha_pinning_required=true`
+  - `gh repo edit Klumpe-lab/crboost_server --enable-wiki=false`
+  - `gh repo edit Klumpe-lab/crboost_server --enable-discussions`

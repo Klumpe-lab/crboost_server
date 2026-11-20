@@ -1,6 +1,6 @@
 ---
 name: project-public-release-roadmap63
-description: "Public release / deployment plan for December 2026 (CI, CalVer tags, release folders, containers on GHCR, Munich pass); roadmap 63 written and DECIDED 2026-11-19 (all decided), nothing built"
+description: "Public release plan for December 2026 (roadmap 63, decided 11-19): S1 committed 11-20; S2 built 11-20 (./crboost ci, D4, D5, workflows, checked uv download); first GitHub run + repo settings owed"
 metadata:
   type: project
 ---
@@ -20,6 +20,18 @@ published; every SIF embeds its def (identity check without rebuilds); the lab i
 
 Decisions 2026-11-19 (maintainer): D2 release folders + a `./crboost updates` CLI (status/fetch/install/use/clean); D3 the notes (memory/, docs/roadmaps/, docs/reports/) become local untracked files on the maintainer's machine, the maintainer's call not the PI's; erased from history by one filter-repo just before rc1, no GitHub Support request; D5 convert the 11 ui files, no --update; D6 .def + two-stage, CI builds every def (6 h ok, a few times a year), Munich gets images by Dropbox so S7 never holds the tag; D7 PyMOL removed (biopython in-process); D9 split in December; D11 local only, no outbound check; D12 'CryoBoost contributors'; D13 no NOT RUN triage, shipping some untested work is accepted; D15 the lab's GL ChimeraX image (ChimeraX may go later). After S9 lands, roadmaps and memory edits are no longer committed: leave them out of hand-off git commands.
 
+Built 2026-11-20. S1 committed (`3dbf48f`, H32 `18b31c0`). The first three commits had swept in the EisGreis
+session's napari switch through shared files; rebuilt from patches before the push
+([[feedback_shared_checkout_commits_from_patches]]). `./crboost ci` (`1cf2493`); README without the agent API
+(D16, decided 11-20, `9e0b9bf`); D4 `302f738` + `.git-blame-ignore-revs` `177810b`. D5, `.github/` (ci, weekly,
+dependabot), `.gitleaks.toml`, install.sh's sha256-checked uv and the S2 record were handed as patches. The
+branch_map worktree is superseded (main rebuilt the map; clean, never pushed). The repo is public already
+(Klumpe-lab/crboost_server, an org: gitleaks runs as a binary, its action needs a licence there).
+Owed: read the first CI run after the push (`gh run list`, `gh run view --log-failed`); the settings in the S2
+record (the dependency graph is opt-in and was never on); weekly's pip-audit fails until S3 (pillow, requests,
+starlette); H32's record (the EisGreis session's paragraph names the pre-rebuild sha `3c3c398`); the Munich
+questions draft was handed 11-20. Next stage: S3, NiceGUI, on its own worktree.
+
 **Why:** public rollout + the Munich site installing and updating on its own.
-**How to apply:** next session, read roadmap 63 §4.0 (build beside the lab: main stays lab-safe, test servers never on the lab's base /groups/klumpe/crboost_data, images staged outside sifs/, first trial pytom), then build from S1 in order; build nothing before told. Related [[project_python_env_roadmap39]],
+**How to apply:** read roadmap 63 §4.0 (build beside the lab: main stays lab-safe, test servers never on the lab's base /groups/klumpe/crboost_data, images staged outside sifs/, first trial pytom) and §7's stage records; hand commits as checked patches; build nothing before told. Related [[project_python_env_roadmap39]],
 [[project_release_prep_roadmaps_2026-09-29]], [[feedback_write_roadmaps_directly]].
