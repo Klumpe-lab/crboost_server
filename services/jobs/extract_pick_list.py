@@ -62,30 +62,44 @@ class ExtractPickListParams(AbstractJobParams):
 
     # ── geometry (mirrors backend.extract_pick_list's signature exactly) ──
     box_size: int = Field(
-        default=0, ge=0, description="Extraction box size in pixels (0 = not yet submitted)", title="Box",
+        default=0,
+        ge=0,
+        description="Extraction box size in pixels (0 = not yet submitted)",
+        title="Box",
         json_schema_extra=form("Extraction", S, "px"),
     )
     binning: float = Field(
-        default=0.0, ge=0.0, description="Extraction binning (0 = not yet submitted)", title="Binning",
+        default=0.0,
+        ge=0.0,
+        description="Extraction binning (0 = not yet submitted)",
+        title="Binning",
         json_schema_extra=form("Extraction", S),
     )
     crop_size: int = Field(
-        default=0, ge=0, description="Cropped box size in pixels; 0 = no crop", title="Crop",
+        default=0,
+        ge=0,
+        description="Cropped box size in pixels; 0 = no crop",
+        title="Crop",
         json_schema_extra=form("Extraction", S, "px"),
     )
     max_dose: float = Field(
-        default=-1.0, description="Dose cutoff; <= 0 = no cutoff", title="Max dose",
+        default=-1.0,
+        description="Dose cutoff; <= 0 = no cutoff",
+        title="Max dose",
         json_schema_extra=form("Selection", S, "e⁻/Å²"),
     )
     min_frames: int = Field(
-        default=1, ge=1, description="Minimum contributing frames per particle", title="Min frames",
+        default=1,
+        ge=1,
+        description="Minimum contributing frames per particle",
+        title="Min frames",
         json_schema_extra=form("Selection", S),
     )
     do_stack2d: bool = Field(
-        default=True, description="Write 2D stacks", title="2D stacks", json_schema_extra=form("Output"),
+        default=True, description="Write 2D stacks", title="2D stacks", json_schema_extra=form("Output")
     )
     do_float16: bool = Field(
-        default=True, description="Write float16 output", title="Float16", json_schema_extra=form("Output"),
+        default=True, description="Write float16 output", title="Float16", json_schema_extra=form("Output")
     )
 
     # ── failure text ──

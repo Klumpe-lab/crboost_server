@@ -8,6 +8,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
 class StarfileService:
     def read(self, path: str | Path) -> dict[str, Any]:
         if not Path(path).exists():
@@ -20,7 +21,7 @@ class StarfileService:
                 data = self._escape_star_data(data)
             elif isinstance(data, pd.DataFrame):
                 data = self._escape_dataframe(data)
-            
+
             starfile.write(data, path, overwrite=True)
         except Exception as e:
             logger.error("Failed to write %s: %s", path, e)
@@ -42,11 +43,9 @@ class StarfileService:
         if df.empty:
             return df
         df_escaped = df.copy()
-        for col in df_escaped.select_dtypes(include=['object']):
-            df_escaped[col] = df_escaped[col].apply(
-                lambda x: self._escape_string(x) if isinstance(x, str) else x
-            )
-        
+        for col in df_escaped.select_dtypes(include=["object"]):
+            df_escaped[col] = df_escaped[col].apply(lambda x: self._escape_string(x) if isinstance(x, str) else x)
+
         return df_escaped
 
     def _escape_string(self, s: str) -> str:
@@ -54,10 +53,10 @@ class StarfileService:
         if not isinstance(s, str):
             return s
         replacements = {
-            '\n': ' ',      # Replace newlines with spaces
-            '\t': ' ',      # Replace tabs with spaces
-            '"': "'",       # Replace double quotes with single quotes
-            '\\': '/',      # Replace backslashes with forward slashes
+            "\n": " ",  # Replace newlines with spaces
+            "\t": " ",  # Replace tabs with spaces
+            '"': "'",  # Replace double quotes with single quotes
+            "\\": "/",  # Replace backslashes with forward slashes
         }
         for find, replace in replacements.items():
             s = s.replace(find, replace)

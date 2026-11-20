@@ -56,8 +56,11 @@ class CandidateExtractPytomParams(AbstractJobParams):
     # than 0", argparse exit 2); without the bound a stored 0 only fails on the GPU node.
     # There is no "0 = uncapped" spelling; leave the cap high instead.
     max_num_particles: int = Field(
-        default=1500, ge=1, description="Hard cap on candidates per tilt-series after the cutoff is applied.",
-        title="Max picks / TS", json_schema_extra=form("Pick threshold", S),
+        default=1500,
+        ge=1,
+        description="Hard cap on candidates per tilt-series after the cutoff is applied.",
+        title="Max picks / TS",
+        json_schema_extra=form("Pick threshold", S),
     )
 
     # Thresholding strategy + per-strategy values.
@@ -76,13 +79,17 @@ class CandidateExtractPytomParams(AbstractJobParams):
         json_schema_extra=form("Pick threshold", M),
     )
     cc_threshold: float = Field(
-        default=0.1, description="Manual LCC threshold; peaks with score ≥ this are kept. Typical 0.05–0.20.",
-        title="LCC threshold", json_schema_extra=form("Pick threshold", S),
+        default=0.1,
+        description="Manual LCC threshold; peaks with score ≥ this are kept. Typical 0.05–0.20.",
+        title="LCC threshold",
+        json_schema_extra=form("Pick threshold", S),
     )
     expected_false_positives: float = Field(
         default=1.0,
         description="Expected false positives per tomogram (FALSE_POSITIVES strategy). Strict=1, moderate=10, "
-        "loose=100.", title="Expected FPs / TS", json_schema_extra=form("Pick threshold", S),
+        "loose=100.",
+        title="Expected FPs / TS",
+        json_schema_extra=form("Pick threshold", S),
     )
 
     @model_validator(mode="before")

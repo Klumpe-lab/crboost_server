@@ -54,17 +54,20 @@ class TsImportParams(AbstractJobParams):
     # longer crashes the pipeline — it just excludes more tilts from the
     # reconstruction.
     min_intensity: float = Field(
-        default=0.0, ge=0.0, le=1.0, title="Min intensity", json_schema_extra=form("Tilt series", S),
+        default=0.0, ge=0.0, le=1.0, title="Min intensity", json_schema_extra=form("Tilt series", S)
     )
     do_at_most: int = Field(default=-1, title="Max series", json_schema_extra=form("Processing", S))
     tomo_dimensions: str = Field(
-        default="4096x4096x2048", title="Tomogram size", json_schema_extra=form("Tilt series", M, "px"),
+        default="4096x4096x2048", title="Tomogram size", json_schema_extra=form("Tilt series", M, "px")
     )
     import_calls: int = Field(
-        default=4, ge=1, le=16,
+        default=4,
+        ge=1,
+        le=16,
         description="WarpTools ts_import calls at once, each over a share of the mdocs, on a share of the SLURM tab's "
         "CPUs. A call keeps about 2 CPUs busy and takes about a minute to start: 163 tilt series took 12 minutes in "
-        "one call on 1 CPU, 1.5 minutes in 4 calls on 16 CPUs, with the same tomostars.", title="Parallel calls",
+        "one call on 1 CPU, 1.5 minutes in 4 calls on 16 CPUs, with the same tomostars.",
+        title="Parallel calls",
         json_schema_extra=form("Processing", S),
     )
 

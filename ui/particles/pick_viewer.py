@@ -2943,7 +2943,6 @@ def _render_gallery_body(
                 if degenerate_indices:
                     exclude_degen_cb = (
                         house_check(f"exclude {len(degenerate_indices)} not-extracted", value=True)
-                        
                         .classes("cb-degen-toggle")
                         .tooltip(
                             "Picks that produced no subtomo cutout (no match / render failed). On (default) keeps "

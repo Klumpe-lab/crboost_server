@@ -235,15 +235,7 @@ def header(pr: Project, spec: CardSpec, *, on_method, on_discard, on_add, todo: 
 
 
 def render_new_card(
-    pr: Project,
-    spec: CardSpec,
-    *,
-    sections: list[Section],
-    on_socket,
-    on_method,
-    on_discard,
-    on_add,
-    todo: list[str],
+    pr: Project, spec: CardSpec, *, sections: list[Section], on_socket, on_method, on_discard, on_add, todo: list[str]
 ) -> ui.element:
     """The job being added: its header (the method menu, ✕, ✓), a row per input (a click chooses what it reads,
     `on_socket(key)`), its parameters as the job tab's fields."""

@@ -232,8 +232,10 @@ def _render_job_page(
                     edit_refreshes.append(params_refresh)
             # The rail: Inputs & Outputs over SLURM. An input chosen there changes what the other sections say
             # of it (template matching's search-region note), so it is an edit like theirs.
-            rail = ui.element("div").classes("cb-jsec-rail").style(
-                "width: 100%; min-width: 0; display: flex; flex-direction: column; gap: 14px;"
+            rail = (
+                ui.element("div")
+                .classes("cb-jsec-rail")
+                .style("width: 100%; min-width: 0; display: flex; flex-direction: column; gap: 14px;")
             )
             with rail, ui.element("div").classes("cb-jsec-io").style("width: 100%;"):
                 edit_refreshes.append(

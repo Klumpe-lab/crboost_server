@@ -108,9 +108,7 @@ async def open_sources(tab: KitchenTab) -> None:
                             continue
                     opened = p["label"] in ui_st["open"] or ui_st["unresolved"]
                     with ui.row().classes("w-full items-center no-wrap gap-2").style(_ROW):
-                        house_check(
-                            value=not p["out"], on_change=lambda e, lab=p["label"]: project_in(lab, e.value)
-                        )
+                        house_check(value=not p["out"], on_change=lambda e, lab=p["label"]: project_in(lab, e.value))
                         caret = ui.label("▾" if opened else "▸").style(_CARET)
                         caret.on("click", lambda _e, lab=p["label"]: toggle(lab))
                         name = ui.label(p["label"]).style("font-size: 11px; font-weight: 600; color: #1e293b;")

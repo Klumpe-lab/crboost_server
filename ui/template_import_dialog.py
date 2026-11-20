@@ -29,9 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 async def open_template_import_dialog(
-    project_path: str,
-    species: ParticleSpecies,
-    initial_path: str | None = None,
+    project_path: str, species: ParticleSpecies, initial_path: str | None = None
 ) -> ParticleTemplate | None:
     """Open the import dialog. Returns a populated ParticleTemplate on
     confirm (the file has already been copied into the project), or None
@@ -80,10 +78,7 @@ async def open_template_import_dialog(
                     .props("dense outlined")
                     .classes("flex-1 font-mono text-xs")
                 )
-                refs["path_input"].on(
-                    "blur",
-                    lambda e: _try_inspect(refs["path_input"].value or ""),
-                )
+                refs["path_input"].on("blur", lambda e: _try_inspect(refs["path_input"].value or ""))
                 house_button("Browse…", _browse)
 
             # Analysis section
@@ -233,9 +228,9 @@ async def open_template_import_dialog(
                 if ins.inferred_polarity == "ambiguous":
                     ui.label("(auto-detect inconclusive)").classes("text-[11px] text-amber-600 italic")
                 else:
-                    ui.label(
-                        f"(auto-detected: {ins.inferred_polarity}, conf {ins.polarity_confidence:.2f})"
-                    ).classes("text-[11px] text-gray-400 italic")
+                    ui.label(f"(auto-detected: {ins.inferred_polarity}, conf {ins.polarity_confidence:.2f})").classes(
+                        "text-[11px] text-gray-400 italic"
+                    )
 
             # Source
             with ui.row().classes("w-full items-center gap-3"):

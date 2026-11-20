@@ -71,22 +71,24 @@ class DenoisePredictParams(AbstractJobParams):
     ]
 
     denoise_method: DenoiseMethod = Field(
-        default=DenoiseMethod.CRYOCARE, title="Denoiser", json_schema_extra=form("Denoiser", L),
+        default=DenoiseMethod.CRYOCARE, title="Denoiser", json_schema_extra=form("Denoiser", L)
     )
     # cryoCARE-only:
     ntiles_x: int = Field(
-        default=4, ge=1, description=_tiles_description("X"), title="Tiles X", json_schema_extra=form("Denoiser", S),
+        default=4, ge=1, description=_tiles_description("X"), title="Tiles X", json_schema_extra=form("Denoiser", S)
     )
     ntiles_y: int = Field(
-        default=4, ge=1, description=_tiles_description("Y"), title="Tiles Y", json_schema_extra=form("Denoiser", S),
+        default=4, ge=1, description=_tiles_description("Y"), title="Tiles Y", json_schema_extra=form("Denoiser", S)
     )
     ntiles_z: int = Field(
-        default=4, ge=1, description=_tiles_description("Z"), title="Tiles Z", json_schema_extra=form("Denoiser", S),
+        default=4, ge=1, description=_tiles_description("Z"), title="Tiles Z", json_schema_extra=form("Denoiser", S)
     )
     denoising_tomo_name: str = Field(
         default="",
         description="Denoise only the tomograms whose name contains this text; the others are skipped. Empty: all of "
-        "them.", title="Tomogram filter", json_schema_extra=form("Tomograms", M),
+        "them.",
+        title="Tomogram filter",
+        json_schema_extra=form("Tomograms", M),
     )
     # Read by no denoise driver; kept so saved projects still load.
     perdevice: int = Field(default=1)
@@ -99,23 +101,34 @@ class DenoisePredictParams(AbstractJobParams):
         description="Whether IsoNet's CTF deconvolution was applied at training — set it the same as the "
         "denoise-train job that made the model. A noise2noise model (method auto / isonet2-n2n) reads the raw "
         "even/odd halves either way, so it only matters for an isonet2 (single-map) model. Only used when "
-        "denoise_method = IsoNet.", title="IsoNet deconv", json_schema_extra=form("Denoiser"),
+        "denoise_method = IsoNet.",
+        title="IsoNet deconv",
+        json_schema_extra=form("Denoiser"),
     )
     # easymode-only (ignored by cryoCARE and IsoNet):
     easymode_denoiser: EasymodeDenoiser = Field(
         default=EasymodeDenoiser.N2N,
         description="n2n: noise2noise, denoises only. ddw: distilled DeepDeWedge, also fills the missing wedge. iso: "
-        "distilled IsoNet2, also fills the missing wedge.", title="Model", json_schema_extra=form("Denoiser", M),
+        "distilled IsoNet2, also fills the missing wedge.",
+        title="Model",
+        json_schema_extra=form("Denoiser", M),
     )
     easymode_tta: int = Field(
-        default=1, ge=1, le=16,
+        default=1,
+        ge=1,
+        le=16,
         description="Test-time augmentation: how many rotated and flipped copies of each tomogram are denoised and "
-        "averaged (1–16). Smoother, and slower in proportion.", title="TTA", json_schema_extra=form("Denoiser", S),
+        "averaged (1–16). Smoother, and slower in proportion.",
+        title="TTA",
+        json_schema_extra=form("Denoiser", S),
     )
     easymode_iter: int = Field(
-        default=1, ge=1,
+        default=1,
+        ge=1,
         description="How many times the denoiser runs (1 = once). More passes can raise contrast, and can add "
-        "artefacts.", title="Iterations", json_schema_extra=form("Denoiser", S),
+        "artefacts.",
+        title="Iterations",
+        json_schema_extra=form("Denoiser", S),
     )
 
     def __init__(self, **data):

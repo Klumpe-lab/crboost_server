@@ -27,24 +27,14 @@ import pandas as pd
 
 from services.configs.metadata_service import WarpXmlParser
 from services.tilt_series.adapters._base import BaseIngestAdapter, pos_float
-from services.tilt_series.models import (
-    TiltSeries,
-    TsCtfPerFrameCtf,
-    TsCtfTiltSeriesOutput,
-)
+from services.tilt_series.models import TiltSeries, TsCtfPerFrameCtf, TsCtfTiltSeriesOutput
 
 logger = logging.getLogger(__name__)
 
 
 # Columns written by a tsCTF run. Listed explicitly so emit_star can't
 # silently drop one as the STAR schema evolves.
-CTF_COLUMNS = (
-    "rlnDefocusU",
-    "rlnDefocusV",
-    "rlnDefocusAngle",
-    "rlnCtfAstigmatism",
-    "rlnTomoHand",
-)
+CTF_COLUMNS = ("rlnDefocusU", "rlnDefocusV", "rlnDefocusAngle", "rlnCtfAstigmatism", "rlnTomoHand")
 
 
 class TsCtfIngestAdapter(BaseIngestAdapter):
@@ -75,10 +65,7 @@ class TsCtfIngestAdapter(BaseIngestAdapter):
             xml_path = self.warp_dir / f"{ts_id}.xml"
             output = self._build_ts_output(ts, xml_path)
             self.registry.attach_ts_output(ts_id, output)
-            logger.info(
-                "tsCtf: ingested %s (%d/%d frames have CTF)",
-                ts_id, len(output.per_frame), ts.frame_count,
-            )
+            logger.info("tsCtf: ingested %s (%d/%d frames have CTF)", ts_id, len(output.per_frame), ts.frame_count)
 
     def emit_star(
         self,
@@ -136,9 +123,7 @@ class TsCtfIngestAdapter(BaseIngestAdapter):
                 continue
 
             updated_df, errors = self._apply_ctf_to_tilt_df(
-                ts=ts,
-                ctf_output=ctf_output,
-                tilt_df=self._read_only_block(per_ts_in),
+                ts=ts, ctf_output=ctf_output, tilt_df=self._read_only_block(per_ts_in)
             )
             if errors:
                 unresolved.extend(f"{ts_id}: {e}" for e in errors)
@@ -150,8 +135,7 @@ class TsCtfIngestAdapter(BaseIngestAdapter):
 
         if unresolved:
             raise RuntimeError(
-                "tsCtf emit_star: " + str(len(unresolved)) + " per-TS problem(s):\n  - "
-                + "\n  - ".join(unresolved)
+                "tsCtf emit_star: " + str(len(unresolved)) + " per-TS problem(s):\n  - " + "\n  - ".join(unresolved)
             )
 
         # Set rlnTomoHand on the global block from each TS's ingested output.
@@ -212,9 +196,7 @@ class TsCtfIngestAdapter(BaseIngestAdapter):
         if missing:
             sample = missing[:5]
             suffix = "..." if len(missing) > 5 else ""
-            problems.append(
-                f"{len(missing)} warp rows could not be resolved to registry frames: {sample}{suffix}"
-            )
+            problems.append(f"{len(missing)} warp rows could not be resolved to registry frames: {sample}{suffix}")
         if ambiguous:
             problems.append(f"{len(ambiguous)} ambiguous warp rows: {ambiguous[:5]}")
         if problems:
@@ -246,10 +228,7 @@ class TsCtfIngestAdapter(BaseIngestAdapter):
         )
 
     def _apply_ctf_to_tilt_df(
-        self,
-        ts: TiltSeries,
-        ctf_output: TsCtfTiltSeriesOutput,
-        tilt_df: pd.DataFrame,
+        self, ts: TiltSeries, ctf_output: TsCtfTiltSeriesOutput, tilt_df: pd.DataFrame
     ) -> tuple[pd.DataFrame, list[str]]:
         """Overlay per-frame CTF values onto the input tilt-DataFrame.
 
@@ -300,14 +279,13 @@ class TsCtfIngestAdapter(BaseIngestAdapter):
 
         if filtered_idx:
             tilt_df = tilt_df.drop(index=filtered_idx).reset_index(drop=True)
-            logger.info(
-                "tsCtf: TS %s: dropped %d tilt-filtered row(s) from output STAR",
-                ts.id, len(filtered_idx),
-            )
+            logger.info("tsCtf: TS %s: dropped %d tilt-filtered row(s) from output STAR", ts.id, len(filtered_idx))
         if skipped > 0:
             logger.info(
                 "tsCtf: TS %s: %d/%d rows retain fs_motion per-frame defocus (ts_import filtered these from tomostar)",
-                ts.id, skipped, len(tilt_df),
+                ts.id,
+                skipped,
+                len(tilt_df),
             )
 
         return tilt_df, errors
@@ -327,12 +305,7 @@ def _parse_unit_vec3(text: str | None) -> tuple[float, float, float] | None:
     return parts[0], parts[1], parts[2]
 
 
-def legacy_copy_per_ts_stars(
-    input_star_path: Path,
-    output_dir: Path,
-    *,
-    subfolder: str = "tilt_series",
-) -> None:
+def legacy_copy_per_ts_stars(input_star_path: Path, output_dir: Path, *, subfolder: str = "tilt_series") -> None:
     """Copy per-TS star files from input → output when no modifications are
     needed (e.g. for a downstream job that only reads the global block).
     Not used by TsCtfIngestAdapter; kept here in case a future adapter needs

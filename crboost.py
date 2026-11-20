@@ -1,4 +1,5 @@
 """The server. The `crboost` launcher runs this with the checkout's own Python environment; start it no other way."""
+
 import pycache_setup  # noqa: F401  (first: it decides where every later import is compiled to)
 import argparse
 import getpass
