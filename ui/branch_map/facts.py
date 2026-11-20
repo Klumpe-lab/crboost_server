@@ -429,6 +429,8 @@ def job_facts(kind: str, jm, job_dir: Path | None, reg: dict[str, dict], iid: st
         _postprocess_facts(f, job_dir)
     elif kind == "ctfRefine":
         _ctf_refine_facts(f, job_dir)
+    elif kind == "frameAlign":
+        _frame_align_facts(f, job_dir)
     return f
 
 
@@ -565,6 +567,49 @@ def _ctf_refine_facts(f: Facts, job_dir: Path) -> None:
             f"(largest {s['largest_move_um']:+.2f}) · "
             f"astigmatism {s['astig_before_um']:.2f} → {s['astig_after_um']:.2f} µm"
             + (f" · scale {scale[0]:.2f}–{scale[1]:.2f}" if scale else "")
+        )
+
+
+def _frame_align_facts(f: Facts, job_dir: Path) -> None:
+    """What moved, per tilt series, against the model it came with: the tilt shifts and angles RELION refined, the
+    particles' positions and motion, from the driver's `frame_align_changes.json`."""
+    path = job_dir / "frame_align_changes.json"
+    if not path.exists():
+        return
+    d = json.loads(path.read_text())
+    series = d.get("tilt_series") or []
+    refined = [s for s in series if not s.get("kept")]
+    if not refined:
+        f.lines = ["no tilt series refined"]
+        return
+    worst = max(refined, key=lambda s: s["shift_max_ang"])
+    motion = [s["motion_rms_ang"] for s in refined if s.get("motion_rms_ang") is not None]
+    f.tiles = [
+        ("Refined", f"{len(refined)} of {len(series)}"),
+        ("Largest shift", f"{worst['shift_max_ang']:.0f} Å"),
+        ("Box", f"{d.get('box')} px"),
+    ]
+    if motion:
+        f.tiles.insert(1, ("Motion", f"{max(motion):.1f} Å"))
+    kept = [s for s in series if s.get("kept")]
+    f.lines = [
+        f"{len(refined)} tilt series refined ({sum(s['particles'] for s in refined)} particles)"
+        + (
+            f", {len(kept)} kept as they came ({sum(s['particles'] for s in kept)} particles, under "
+            f"{d.get('min_particles')} each)"
+            if kept
+            else ""
+        ),
+        "the set's particles name no images: Subtomo Extraction cuts them with this model",
+    ]
+    for s in refined:
+        came = s.get("trajectories_in_rms_ang")
+        f.lines.append(
+            f"{s['name']} · {s['particles']} particles · tilt shifts {s['shift_rms_ang']:.1f} Å RMS "
+            f"(largest {s['shift_max_ang']:.1f}) · angles up to {s['angle_max_deg']:.2f}° · positions "
+            f"{s['position_rms_ang']:.1f} Å"
+            + (f" · motion {s['motion_rms_ang']:.1f} Å" if s.get("motion_rms_ang") is not None else "")
+            + (f" · came with {came:.1f} Å" if came is not None else "")
         )
 
 
