@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
-# Node-side worker for a viewer session on a VNC desktop: ChimeraX+ArtiaX curation, or napari.
+# Node-side worker for a ChimeraX+ArtiaX curation session on a VNC desktop. (napari sessions run on the site's
+# remote desktop instead: containers/napari/desktop_session.sh.)
 #
 # Runs ON a compute node — either submitted by crboost via sbatch (the UI
-# "Launch ChimeraX/ArtiaX" button, a tomogram's napari chip) or started by hand via
+# "Launch ChimeraX/ArtiaX" button) or started by hand via
 # launch_curation_vnc.sh (srun --pty). Starts an Xvnc desktop + the app from the SIF, then:
 #   - writes a machine-readable session.json into $CB_SESSION_DIR (so crboost can
 #     read back the node/port/password and show the user the tunnel command), and
 #   - prints the same connection info as a human banner (for the manual path).
 # The session lives until the app quits; then the VNC server is torn down.
 #
-# Required env: CX_SIF (path to chimerax_artiax(_GL).sif, or napari_GL.sif with CB_APP=napari, of which only the
-#               desktop is used).
-# Optional env: CB_APP (chimerax, the default, or napari),
-#               CX_BINDS (colon-separated host paths to bind besides /tmp and $HOME),
+# Required env: CX_SIF (path to chimerax_artiax(_GL).sif).
+# Optional env: CX_BINDS (colon-separated host paths to bind besides /tmp and $HOME),
 #               CX_BIN (chimerax|ChimeraX), CX_DISPLAY, CX_GEOMETRY,
 #               CX_LOGIN_HOST, CB_SESSION_DIR, CX_VGL, CX_VNC_NOPASS (start the
 #               desktop with SecurityTypes None — NO password), CB_CXC (startup .cxc
@@ -20,10 +19,6 @@
 #               CB_WS_SIF (an image with websockify: serve the desktop as a websocket for the site's
 #               Open OnDemand noVNC, which reaches it through its /rnode relay, and keep Xvnc on the
 #               node's localhost; conf.yaml ood:, roadmap 55).
-# napari only:  CB_EISGREIS (an EisGreis install, conf.yaml napari.eisgreis: its eisgreis-crboost runs
-#               in the image's desktop from the install's own environment, reads crboost's requests
-#               from CB_SESSION_DIR, and decides itself whether VirtualGL draws: on a full GPU under
-#               --nv), CB_NAPARI_VOLUMES (colon-separated volumes to open, by hand).
 set -euo pipefail
 
 # Make a pre-banner failure diagnosable. A couple of early apptainer calls below send
@@ -44,12 +39,8 @@ GEOMETRY="${CX_GEOMETRY:-1920x1080}"
 LOGIN_HOST="${CX_LOGIN_HOST:-$(hostname -f)}"
 SESSION_DIR="${CB_SESSION_DIR:-}"
 NODE="$(hostname -s)"
-APP="${CB_APP:-chimerax}"
-case "$APP" in
-  chimerax) APP_TITLE="CHIMERAX + ARTIAX CURATION SESSION" ;;
-  napari) APP_TITLE="NAPARI SESSION" ;;
-  *) echo "CB_APP must be chimerax or napari, not '$APP'" >&2; exit 2 ;;
-esac
+APP=chimerax
+APP_TITLE="CHIMERAX + ARTIAX CURATION SESSION"
 
 # Choose the X display for this session. CX_DISPLAY (set by crboost, unique-ish per
 # session) is the PREFERENCE; if it's already taken on this node — a concurrent
@@ -142,38 +133,12 @@ if [ "$APP" = chimerax ]; then
   else
     SAVE_DIR="$HOME"
   fi
-else
-  # napari is EisGreis's eisgreis-crboost: it reads crboost's requests from the session dir
-  # (open.json) and answers in it (opened.json, desktop.json). Its launcher runs it under
-  # VirtualGL on a full GPU itself, so no vglrun prefix here.
-  EISGREIS="${CB_EISGREIS:?CB_EISGREIS must name an EisGreis install (conf.yaml napari.eisgreis)}"
-  REST_PORT=""
-  CX_LAUNCH="$(printf '%q' "$EISGREIS/eisgreis-crboost")"
-  if [ -n "$SESSION_DIR" ]; then
-    CX_LAUNCH="$CX_LAUNCH --session-dir $(printf '%q' "$SESSION_DIR")"
-  fi
-  if [ -n "${CB_NAPARI_VOLUMES:-}" ]; then
-    IFS=: read -ra NAPARI_VOLUMES <<< "$CB_NAPARI_VOLUMES"
-    for v in "${NAPARI_VOLUMES[@]}"; do
-      CX_LAUNCH="$CX_LAUNCH $(printf '%q' "$v")"
-    done
-  fi
-  SAVE_DIR="$HOME"
 fi
 
 # /tmp carries the node-wide X locks and $HOME the VNC password. Everything else the session
 # opens (the site's data/software roots, the project) arrives as CX_BINDS, colon-separated:
 # crboost passes conf.yaml's container_binds + the project. A path this node lacks is skipped.
 BINDS=(-B /tmp -B "$HOME")
-if [ "$APP" = napari ]; then
-  # The install: its launchers, its environment and the uv-managed Python that environment runs on.
-  BINDS+=(-B "$EISGREIS")
-  # FFT and BLAS threads to the job's CPUs, not every core of the shared node (as EisGreis's hpc profile does).
-  if [ -n "${SLURM_CPUS_PER_TASK:-}" ]; then
-    export OMP_NUM_THREADS="$SLURM_CPUS_PER_TASK" OPENBLAS_NUM_THREADS="$SLURM_CPUS_PER_TASK"
-    export MKL_NUM_THREADS="$SLURM_CPUS_PER_TASK" NUMEXPR_NUM_THREADS="$SLURM_CPUS_PER_TASK"
-  fi
-fi
 if [ -n "${CX_BINDS:-}" ]; then
   IFS=: read -ra EXTRA_BINDS <<< "$CX_BINDS"
   for p in "${EXTRA_BINDS[@]}"; do
@@ -189,8 +154,6 @@ module load Apptainer 2>/dev/null || module load apptainer 2>/dev/null || true
 # ChimeraX must write its config/cache to a WRITABLE dir — the SIF's baked
 # /opt/cx is read-only (only XDG_DATA_HOME, where ArtiaX lives, stays read-only).
 # Unique per-run dirs so two sessions on one shared node don't collide.
-# napari keeps the user's own ~/.config/napari (preferences persist between sessions)
-# and gets a per-run cache.
 CXCFG=""
 if [ "$APP" = chimerax ]; then
   CXCFG="$(mktemp -d /tmp/cx-config.XXXXXX)"

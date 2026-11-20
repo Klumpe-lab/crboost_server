@@ -112,7 +112,12 @@ def render_napari_open_page(backend, volume: str) -> None:
             if not res.get("success"):
                 _say(res.get("error") or "The session could not be stopped.", "cb-badge-err")
                 return
-        await asyncio.sleep(2)  # squeue takes a moment to drop the cancelled job
+        # Until no session answers: a stopped one counts as gone at once, one cancelled outright (a pending job)
+        # leaves squeue a moment later.
+        for _ in range(20):
+            await asyncio.sleep(2)
+            if not await backend.find_active_napari_session():
+                break
         await _begin()
 
     async def _poll() -> None:

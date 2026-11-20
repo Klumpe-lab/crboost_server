@@ -917,6 +917,15 @@ class SlurmService:
         logger.info("scancel returned non-zero (may be already gone): %s", stderr.strip())
         return err(stderr.strip(), cancelled=job_ids)
 
+    async def signal_batch_script(self, job_id: str, signal: str = "TERM") -> dict[str, Any]:
+        """Send `signal` to a running job's batch script alone (`scancel --batch`), not to every process of the job,
+        so the script can stop what it started in order. `err` when the job is not running (pending, or gone)."""
+        success, _stdout, stderr = await self._run_command(["scancel", "--batch", f"--signal={signal}", job_id])
+        if success:
+            logger.info("Sent SIG%s to the batch script of job %s", signal, job_id)
+            return ok(signalled=job_id)
+        return err(stderr.strip() or f"scancel --batch --signal={signal} {job_id} failed")
+
     async def get_cluster_summary(self) -> dict[str, Any]:
         partitions = await self.get_partitions_info()
         user_jobs = await self.get_user_jobs()

@@ -128,6 +128,7 @@ def check_config():
     if cfg.curation.sif_path and not cfg.curation.partition:
         warn("curation.partition is not set; curation sessions cannot start")
     check_eisgreis(cfg)
+    check_napari_desktop(cfg)
 
     if not cfg.crboost_python:
         ok(f"drivers run {sys.executable} (this interpreter, the one ./crboost uses)")
@@ -208,6 +209,33 @@ def check_eisgreis(cfg) -> None:
     reads = ", ".join(str(v) for v in versions["protocol"])
     viewer = f"EisGreis {versions['eisgreis']} at {root}"
     ok(f"napari.eisgreis: {viewer} reads protocol {reads}; crboost writes {chosen['protocol']}")
+
+
+def check_napari_desktop(cfg) -> None:
+    """napari.sif_path: the remote-desktop image a napari job of crboost's runs (TurboVNC, Xfce through ood-desktop)."""
+    sif = cfg.napari.sif_path
+    if not sif:
+        return
+    if not Path(sif).is_file():
+        fail(f"napari.sif_path: {sif} does not exist")
+        return
+    needed = ("ood-desktop", "vncserver", "vncpasswd")
+    try:
+        proc = subprocess.run(
+            [str(cfg.container_runtime), "exec", sif, "sh", "-c", "command -v " + " ".join(needed)],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        warn(f"napari.sif_path: could not look inside {sif}: {e}")
+        return
+    found = {Path(line).name for line in proc.stdout.split()}
+    missing = [name for name in needed if name not in found]
+    if missing:
+        fail(f"napari.sif_path: {sif} has no {', '.join(missing)}; napari jobs need the site's remote-desktop image")
+    else:
+        ok(f"napari.sif_path: {sif} (a remote desktop: TurboVNC, ood-desktop)")
 
 
 def check_slurm(cfg) -> None:
