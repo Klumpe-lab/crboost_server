@@ -41,10 +41,16 @@ yourself, start `crboost.py` with that Python directly; the jobs it submits foll
 <details>
 <summary>No internet on the headnode</summary>
 
-The build downloads uv (astral.sh), its Python (GitHub) and the wheels (PyPI). Behind a mirror, set uv's own
-variables before `./install.sh`: `UV_INDEX_URL` for the wheels and `UV_PYTHON_INSTALL_MIRROR` for the Python.
-For uv itself, put a binary of the version named in `uv.toml` (`required-version`) at `.uv/bin/uv`, or point
-`CRBOOST_UV` at one.
+The build reaches these hosts, and nothing else:
+
+- `github.com` and `release-assets.githubusercontent.com`: uv itself, an archive checked against the sha256 in
+  `uv.toml`;
+- `releases.astral.sh`: uv's Python (python-build-standalone);
+- `pypi.org` and `files.pythonhosted.org`: the wheels.
+
+Behind a proxy, `https_proxy` is enough. Behind a mirror, set uv's own variables before `./install.sh`:
+`UV_INDEX_URL` for the wheels and `UV_PYTHON_INSTALL_MIRROR` for the Python. For uv itself, put a binary of the
+version named in `uv.toml` (`required-version`) at `.uv/bin/uv`, or point `CRBOOST_UV` at one.
 
 </details>
 
