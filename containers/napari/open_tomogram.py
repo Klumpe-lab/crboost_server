@@ -29,11 +29,13 @@ request opens its first volume there. That viewer saves into the folder its cont
 time. Before it opens another tomogram, what it holds is saved (comments CSV, every particle layer's STAR), so the
 STARs then read back from the folder are what was on screen; moving to another project saves into the old
 folder, forgets the old project's tomograms, and points the controls at the new one. A request without
-``outputs`` (a volume outside every project) leaves the folders where the viewer started (the user's home) and
-says so. That viewer draws 3-D from binned copies of its volumes (its view3d.py), so 3-D works on software
-rendering too. A request may name ``bundle``, a JSON file crboost wrote beside the request with the tomogram's picks
-and segmentations (services/visualization/napari_bundle.py); the viewer shows it with the tomogram (its
-crboost_bundle.py), afresh on every request, so asking again for the same tomogram picks up new results.
+``outputs`` (a volume outside every project) points them at the session's own folder (``~/.crboost/napari/<id>/``,
+or ``~/.crboost/napari/by-hand/`` for a window started by hand) and says so: the viewer never saves into its
+working directory, which is wherever the server or the shell was. That viewer draws 3-D from binned copies of its
+volumes (its view3d.py), so 3-D works on software rendering too. A request may name ``bundle``, a JSON file crboost
+wrote beside the request with the tomogram's picks and segmentations (services/visualization/napari_bundle.py); the
+viewer shows it with the tomogram (its crboost_bundle.py), afresh on every request, so asking again for the same
+tomogram picks up new results.
 """
 
 from __future__ import annotations
@@ -275,6 +277,9 @@ class CompanionSession(Session):
             viewer, profile=RuntimeProfile(name="crboost", workers=workers, cache_spectrum=cache)
         )
         self.outputs: Path | None = None
+        # The viewer's own default folder is the working directory; a save by hand before crboost's first request
+        # would land there.
+        self._point_at(None)
         logger.info("companion viewer from %s: %d FFT threads, spectrum cache %s", companion, workers, cache)
 
     def _save(self) -> None:
@@ -284,16 +289,24 @@ class CompanionSession(Session):
         c.save_comments_csv(c._comments_csv_path())
         c.save_all_particle_layers()
 
+    def _unfiled_dir(self) -> Path:
+        """Where the viewer saves for a volume outside every project: the session's own folder, or
+        ~/.crboost/napari/by-hand/ for a window started by hand without one."""
+        base = self.session_dir if self.session_dir is not None else Path.home() / ".crboost" / "napari" / "by-hand"
+        base.mkdir(parents=True, exist_ok=True)
+        return base
+
     def _point_at(self, outputs: Path | None) -> None:
-        """Move the viewer's saves to `outputs`, after saving what it holds into the folder it had. The tomograms
-        of that project are forgotten; the one on screen goes once the next has loaded (`_forget`)."""
+        """Move the viewer's saves to `outputs` (None: `_unfiled_dir`), after saving what it holds into the folder
+        it had. The tomograms of that project are forgotten; the one on screen goes once the next has loaded
+        (`_forget`)."""
         c = self.controller
         if self.outputs is not None:
             self._save()
         for path in list(c.loaded_paths):
             if path != c.current_path:
                 self._forget(path)
-        base = outputs if outputs is not None else Path.cwd()
+        base = outputs if outputs is not None else self._unfiled_dir()
         c.default_star_dir = base / "particle_stars"
         c.default_comments_csv = base / "tomogram_comments.csv"
         c.default_png_dir = base / "tomogram_pngs"
@@ -393,7 +406,8 @@ class CompanionSession(Session):
             self.viewer.title = title or path.stem
             if outputs is None:
                 show_warning(
-                    f"This tomogram is outside every crboost project: comments and particles save in {Path.cwd()}."
+                    "This tomogram is outside every crboost project: comments and particles save in "
+                    f"{c.default_comments_csv.parent}."
                 )
         except Exception as e:  # the viewer is the user's window: report and keep it open
             logger.exception("companion viewer could not open %s", specs)
