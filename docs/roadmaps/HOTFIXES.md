@@ -462,7 +462,7 @@ watchdog's log after a day of use.
 
 ### H32 — The companion napari viewer saves into its working directory for a tomogram outside every project
 
-**Fixed 2026-11-19 (uncommitted).** `CompanionSession` (`containers/napari/open_tomogram.py`) points the viewer's
+**Fixed 2026-11-19.** `CompanionSession` (`containers/napari/open_tomogram.py`) points the viewer's
 three save paths (comments CSV, particle STARs, PNGs) at `_unfiled_dir()` when a request carries no `outputs`: the
 session's own folder, `~/.crboost/napari/<id>/`, or `~/.crboost/napari/by-hand/` for a window started by hand. It
 does so when it starts as well, since the viewer's own default is the working directory, and the notice names the
@@ -472,15 +472,15 @@ the working directory. A request without `outputs` gives `<session>/tomogram_com
 `<project>/Curation/napari/…`; the working directory stays empty. The same toy on HEAD's file gives
 `<working directory>/tomogram_comments.csv`. Owed: a real session opening a volume outside every project.
 
-**Where the fix lives now (2026-11-20).** `open_tomogram.py` is gone (roadmap 65 S3): 3c3c398, the commit named for
-this fix, records its deletion, so the change above never reached a commit. The same rule is EisGreis's link
+**Where the fix lives now (2026-11-20).** `open_tomogram.py` is gone (roadmap 65 S3): the fix above is `18b31c0`,
+and `6f19b19`, the switch to EisGreis, deleted the file. The same rule is EisGreis's link
 (`eisgreis_crboost/agent.py`): a request without `outputs` saves into the session folder's `outputs/`, and so do
 files given to `eisgreis-crboost` by hand, which makes a session folder of its own. Checked by EisGreis's
 `test_outside_every_project_saves_into_the_session_folder` and the end-to-end run of roadmap 65 §10. The
 standalone `eisgreis` still saves into its working directory, as the colleague's viewer always did: there the user
 chose that folder.
 
-**Status:** fixed 2026-11-19, found the same day (recon HY16, roadmap 63 S1). **Severity:** low in a checkout,
+**Status:** fixed 2026-11-19 in `18b31c0`, found the same day (recon HY16, roadmap 63 S1). **Severity:** low in a checkout,
 where it leaves files in the tree (the untracked `tomogram_comments.csv` in the dev checkout, 2026-11-19 09:17, is
 one); medium once members cannot write the install, where the save fails.
 
