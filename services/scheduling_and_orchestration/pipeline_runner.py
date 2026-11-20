@@ -7,6 +7,7 @@ from typing import Any
 from typing import TYPE_CHECKING
 
 from services.array_tasks import any_task_started, manifest_array_job_id, mark_stopped_tasks_failed
+from services.computing.processes import run_process
 from services.jobs.tilt_filter import COMMIT_RECORD, TiltFilterCommit
 from services.models_base import FeatureOrigin, JobType
 from services.project_state import JobStatus
@@ -564,12 +565,9 @@ class PipelineRunnerService:
         if dependency_after_ids:
             args.append("--dependency=afterok:" + ":".join(str(i) for i in dependency_after_ids))
         args.append(str(script_path))
-        process = await asyncio.create_subprocess_exec(
-            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=str(cwd), env=clean_env
-        )
-        stdout_b, stderr_b = await process.communicate()
-        stdout = stdout_b.decode()
-        stderr = stderr_b.decode()
+        process = await run_process(args, cwd=cwd, env=clean_env)
+        stdout = process.stdout.decode()
+        stderr = process.stderr.decode()
         if process.returncode != 0:
             raise RuntimeError(f"sbatch rc={process.returncode} stderr={stderr!r}")
         # "Submitted batch job 12345"

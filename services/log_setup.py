@@ -13,12 +13,14 @@ development checkout and the shared install running side by side never rotate ea
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
+import queue
 import re
 import sys
 import time
-from logging.handlers import RotatingFileHandler
+from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 from pathlib import Path
 from typing import TextIO
 
@@ -252,8 +254,16 @@ def setup_logging(*, debug: bool, port: int) -> Path | None:
         return None
     file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(logging.Formatter(_FILE_FORMAT, _FILE_DATEFMT))
-    file_handler.addFilter(_FileFilter())
-    root.addHandler(file_handler)
+    # The file is under ~/.crboost, on NFS on a cluster, and every record stats it (the rollover check) and writes
+    # to it: a slow file server held the event loop on a log line. Records go into a queue a thread writes out.
+    records: queue.SimpleQueue[logging.LogRecord] = queue.SimpleQueue()
+    queued = QueueHandler(records)
+    queued.setLevel(logging.INFO)
+    queued.addFilter(_FileFilter())
+    root.addHandler(queued)
+    writer = QueueListener(records, file_handler)
+    writer.start()
+    atexit.register(writer.stop)
     return log_file
 
 

@@ -7,6 +7,7 @@ import os
 import pwd
 import re
 import shutil
+import subprocess
 import threading
 import time
 from collections.abc import Callable
@@ -20,6 +21,7 @@ from services.templating.pdb_service import PDBService
 from services.scheduling_and_orchestration.project_service import ProjectService
 from services.scheduling_and_orchestration.pipeline_orchestrator_service import PipelineOrchestratorService
 from services.computing.container_service import get_container_service
+from services.computing.processes import run_process
 from services.scheduling_and_orchestration.pipeline_runner import PipelineRunnerService
 from services.scheduling_and_orchestration.pipeline_monitor import PipelineMonitor
 from services.array_tasks import eta_s as task_eta_s, manifest_items, progress as task_progress
@@ -417,14 +419,8 @@ class CryoBoostBackend:
         await self.state_service.save_project(project_path=project_path, force=True)
 
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "sbatch",
-                str(sbatch_path),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(run_dir),
-            )
-            stdout, stderr = await proc.communicate()
+            proc = await run_process(["sbatch", str(sbatch_path)], cwd=run_dir)
+            stdout, stderr = proc.stdout, proc.stderr
         except OSError as e:
             logger.exception("Tilt filter DL: sbatch could not be started")
             run.status = JobStatus.FAILED
@@ -703,14 +699,8 @@ class CryoBoostBackend:
                 driver_cmd,
                 name=crboost_job_name(instance_id),
             )
-            proc = await asyncio.create_subprocess_exec(
-                "sbatch",
-                str(sbatch_path),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(out_dir),
-            )
-            stdout, stderr = await proc.communicate()
+            proc = await run_process(["sbatch", str(sbatch_path)], cwd=out_dir)
+            stdout, stderr = proc.stdout, proc.stderr
             if proc.returncode != 0:
                 msg = f"sbatch failed: {stderr.decode().strip()}"
                 jm.execution_status = JobStatus.FAILED
@@ -2369,27 +2359,15 @@ class CryoBoostBackend:
                 final_command = command
                 logger.info("Running natively: %s", final_command)
 
-            process = await asyncio.create_subprocess_shell(
-                final_command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd or self.server_dir,
-            )
-
             try:
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120.0)
-
-                logger.debug("Process completed with return code: %s", process.returncode)
-                if process.returncode == 0:
-                    return ok(output=stdout.decode())
-                else:
-                    return err(stderr.decode(), output=stdout.decode())
-
-            except TimeoutError:
+                process = await run_process(final_command, shell=True, cwd=cwd or self.server_dir, timeout=120.0)
+            except subprocess.TimeoutExpired:
                 logger.error("Command timed out after 120 seconds: %s", final_command)
-                process.terminate()
-                await process.wait()
                 return err("Command execution timed out", output="")
+            logger.debug("Process completed with return code: %s", process.returncode)
+            if process.returncode == 0:
+                return ok(output=process.stdout.decode())
+            return err(process.stderr.decode(), output=process.stdout.decode())
 
         except Exception as e:
             logger.error("Exception in run_shell_command: %s", e)

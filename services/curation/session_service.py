@@ -22,6 +22,7 @@ import os
 import re
 import shlex
 import socket
+import subprocess
 import time
 import uuid
 from datetime import datetime
@@ -29,6 +30,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
+from services.computing.processes import run_process
 from services.computing.slurm_service import SlurmConfig, SlurmService, avoided_nodes, check_constraint
 from services.configs.config_service import get_config_service
 from services.curation import napari_link
@@ -263,21 +265,13 @@ class CurationSessionService:
         # Strip SLURM_*/SBATCH_* so submission doesn't inherit a parent job context.
         clean_env = {k: v for k, v in os.environ.items() if not k.startswith(("SLURM_", "SBATCH_"))}
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "sbatch",
-                str(sbatch_script),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(session_dir),
-                env=clean_env,
-            )
-            stdout, stderr = await proc.communicate()
+            done = await run_process(["sbatch", str(sbatch_script)], cwd=session_dir, env=clean_env)
         except OSError as e:
             logger.exception("sbatch could not be run for %s", sbatch_script)
             return err(f"sbatch could not be run: {e}")
-        if proc.returncode != 0:
-            return err(f"sbatch failed: {stderr.decode().strip()}")
-        out = stdout.decode().strip()
+        if done.returncode != 0:
+            return err(f"sbatch failed: {done.stderr.decode().strip()}")
+        out = done.stdout.decode().strip()
         return ok(slurm_job_id=out.split()[-1] if out else None)
 
     def browser_url(self, info: dict[str, Any]) -> str | None:
@@ -457,19 +451,43 @@ class CurationSessionService:
             return {}
         return {"scope": data} if isinstance(data, dict) else {}
 
+    @classmethod
+    def _session_files(cls, sdir: Path) -> dict[str, Any]:
+        """What a live session's dir says of it: its session.json, once the worker has published it, and its scope.
+        Called in a thread: session dirs live on NFS, where a read can take seconds."""
+        out: dict[str, Any] = {}
+        info_file = sdir / "session.json"
+        if info_file.exists():
+            try:
+                out.update(json.loads(info_file.read_text()))
+            except (OSError, ValueError):
+                pass  # the worker is still writing it; the next poll reads it whole
+        out.update(cls._read_scope(sdir))
+        return out
+
+    @staticmethod
+    def _read_session_json(sdir: Path) -> dict[str, Any] | None:
+        """A session dir's session.json, None while the worker has not published it. Called in a thread (NFS)."""
+        info_file = sdir / "session.json"
+        return json.loads(info_file.read_text()) if info_file.exists() else None
+
+    @staticmethod
+    def _read_log_tail(log_file: Path) -> str | None:
+        """The last 1200 characters of a session's slurm.log, None when the job has not written one. In a thread."""
+        return log_file.read_text()[-1200:].strip() if log_file.exists() else None
+
     async def get_curation_session_info(self, session_dir: str, slurm_job_id: str | None = None) -> dict[str, Any]:
         """Poll a launched curation session. Once the job is RUNNING and has
         published session.json, returns its connection info (node/port/password/
         tunnel_cmd); otherwise reports pending/starting/ended."""
         sdir = Path(session_dir)
-        info_file = sdir / "session.json"
-        if info_file.exists():
-            try:
-                data = json.loads(info_file.read_text())
-                data.update({"success": True, "status": "ready"})
-                return self._with_browser_url(data)
-            except Exception as e:
-                return ok(status="starting", detail=f"session.json not readable yet: {e}")
+        try:
+            data = await asyncio.to_thread(self._read_session_json, sdir)
+        except (OSError, ValueError) as e:
+            return ok(status="starting", detail=f"session.json not readable yet: {e}")
+        if data is not None:
+            data.update({"success": True, "status": "ready"})
+            return self._with_browser_url(data)
 
         # No session.json yet — ask SLURM why. query_jobs_by_ids distinguishes the two
         # cases get_user_jobs conflates (get_user_jobs returns [] on squeue failure, which
@@ -499,9 +517,8 @@ class CurationSessionService:
         # ran (its log exists); otherwise this is the brief post-sbatch window before it
         # registers, so report pending. If it ran but wrote nothing (0-byte log), it died in
         # the node-side container/VNC bring-up before logging; say so, so the user retries.
-        log_file = sdir / "slurm.log"
-        if log_file.exists():
-            tail = log_file.read_text()[-1200:].strip()
+        tail = await asyncio.to_thread(self._read_log_tail, sdir / "slurm.log")
+        if tail is not None:
             return ok(
                 status="ended",
                 detail=tail
@@ -528,21 +545,28 @@ class CurationSessionService:
             return err("no SLURM job id")
         return await self.slurm_service.scancel_jobs(ids)
 
+    @staticmethod
+    def _recorded_project_sessions(project_path: Path) -> list[tuple[str, Path]]:
+        """(SLURM job id, session dir) of each session recorded under the project's `.curation_sessions/*/job.json`,
+        in name order; a job.json that cannot be read is left out. Called in a thread: the project is on NFS."""
+        base = project_path / ".curation_sessions"
+        if not base.is_dir():
+            return []
+        recorded: list[tuple[str, Path]] = []
+        for job_file in sorted(base.glob("*/job.json")):
+            try:
+                jid = json.loads(job_file.read_text()).get("slurm_job_id")
+            except (OSError, ValueError, AttributeError):
+                continue  # half-written or not a session's record: it names no job to look for
+            if jid:
+                recorded.append((str(jid), job_file.parent))
+        return recorded
+
     async def _live_project_curation_job_ids(self, project_path: Path) -> list[str]:
         """Live cb-curation SLURM job ids recorded under this project's
         `.curation_sessions/*/job.json` (squeue-derived liveness, never a stored
         bool). Shared by launch + stop housekeeping to clear zombie sessions."""
-        base = Path(project_path) / ".curation_sessions"
-        if not base.is_dir():
-            return []
-        recorded: set = set()
-        for jf in base.glob("*/job.json"):
-            try:
-                jid = json.loads(jf.read_text()).get("slurm_job_id")
-            except Exception:
-                jid = None
-            if jid:
-                recorded.add(str(jid))
+        recorded = {jid for jid, _sdir in await asyncio.to_thread(self._recorded_project_sessions, Path(project_path))}
         if not recorded:
             return []
         jobs = await self.slurm_service.get_user_jobs(force_refresh=True)
@@ -565,18 +589,7 @@ class CurationSessionService:
         merged with its `session.json` connection details when already published.
         Liveness is derived from squeue, never a stored boolean.
         """
-        base = Path(project_path) / ".curation_sessions"
-        if not base.is_dir():
-            return None
-        recorded = []
-        for job_file in sorted(base.glob("*/job.json")):
-            try:
-                data = json.loads(job_file.read_text())
-            except Exception:
-                continue
-            jid = data.get("slurm_job_id")
-            if jid:
-                recorded.append((jid, job_file.parent))
+        recorded = await asyncio.to_thread(self._recorded_project_sessions, Path(project_path))
         if not recorded:
             return None
 
@@ -594,13 +607,7 @@ class CurationSessionService:
                 "slurm_state": match.state,
                 "node": match.nodelist or None,
             }
-            info_file = sdir / "session.json"
-            if info_file.exists():
-                try:
-                    out.update(json.loads(info_file.read_text()))
-                except Exception:
-                    pass
-            out.update(self._read_scope(sdir))
+            out.update(await asyncio.to_thread(self._session_files, sdir))
             return self._with_browser_url(out)
         return None
 
@@ -654,21 +661,10 @@ class CurationSessionService:
         `job_name`, or None. Reads the registry, makes a single squeue call, returns the
         session merged with its session.json, and self-prunes dead/missing entries.
         Liveness is squeue-derived."""
-        if not reg.is_file():
-            return None
-        entries: list[dict[str, Any]] = []
         try:
-            for ln in reg.read_text().splitlines():
-                ln = ln.strip()
-                if not ln:
-                    continue
-                try:
-                    d = json.loads(ln)
-                except Exception:
-                    continue
-                if d.get("slurm_job_id") and d.get("session_dir") and Path(d["session_dir"]).is_dir():
-                    entries.append(d)
-        except Exception:
+            entries = await asyncio.to_thread(self._registered_sessions, reg)
+        except OSError:
+            # An unreadable registry names no session; the next poll reads it again.
             return None
         if not entries:
             return None
@@ -697,23 +693,12 @@ class CurationSessionService:
         # lock so a concurrent launch's append isn't lost to a stale rewrite, and drop
         # only entries confirmed dead.
         if jobs and dead_dirs:
-            try:
-                async with self._curation_registry_lock:
-                    fresh: list[str] = []
-                    for ln in reg.read_text().splitlines():
-                        ln = ln.strip()
-                        if not ln:
-                            continue
-                        try:
-                            dd = json.loads(ln)
-                        except Exception:
-                            continue
-                        if dd.get("session_dir") in dead_dirs:
-                            continue
-                        fresh.append(json.dumps(dd))
-                    reg.write_text("".join(s + "\n" for s in fresh))
-            except Exception:
-                pass
+            async with self._curation_registry_lock:
+                try:
+                    await asyncio.to_thread(self._prune_registry, reg, dead_dirs)
+                except OSError:
+                    # Pruning only tidies: the dead entries are skipped on every read until a later prune lands.
+                    logger.warning("Could not prune dead sessions from %s", reg, exc_info=True)
         if chosen is None:
             return None
 
@@ -725,22 +710,51 @@ class CurationSessionService:
             "slurm_state": match.state,
             "node": match.nodelist or None,
         }
-        info_file = sdir / "session.json"
-        if info_file.exists():
-            try:
-                out.update(json.loads(info_file.read_text()))
-            except Exception:
-                pass
-        out.update(self._read_scope(sdir))
+        out.update(await asyncio.to_thread(self._session_files, sdir))
         return self._with_browser_url(out)
+
+    @staticmethod
+    def _registry_lines(reg: Path) -> list[dict[str, Any]]:
+        """Each entry of a user-level session registry (one JSON object a line), unreadable lines left out."""
+        entries: list[dict[str, Any]] = []
+        for ln in reg.read_text().splitlines():
+            ln = ln.strip()
+            if not ln:
+                continue
+            try:
+                d = json.loads(ln)
+            except ValueError:
+                continue  # a line cut short by a crash mid-append: it names no session
+            if isinstance(d, dict):
+                entries.append(d)
+        return entries
+
+    @classmethod
+    def _registered_sessions(cls, reg: Path) -> list[dict[str, Any]]:
+        """The registry's entries whose session dir is still there, oldest first. Called in a thread: ~/.crboost is
+        on NFS, where these reads took the event loop for seconds."""
+        if not reg.is_file():
+            return []
+        return [
+            d
+            for d in cls._registry_lines(reg)
+            if d.get("slurm_job_id") and d.get("session_dir") and Path(d["session_dir"]).is_dir()
+        ]
+
+    @classmethod
+    def _prune_registry(cls, reg: Path, dead_dirs: set[Any]) -> None:
+        """Rewrite the registry without the entries of `dead_dirs`, read afresh so a launch's append made meanwhile
+        stays. Called in a thread, under the registry lock."""
+        fresh = [json.dumps(d) for d in cls._registry_lines(reg) if d.get("session_dir") not in dead_dirs]
+        reg.write_text("".join(s + "\n" for s in fresh))
 
     # ── napari sessions ───────────────────────────────────────────────────────
     #
     # A user's napari is EisGreis (conf.yaml napari.eisgreis). It runs in the user's own remote desktop, where the
-    # viewer registered itself (a registry line of kind "desktop"), or as a job of ours: the curation worker with
-    # CB_APP=napari on a VNC desktop, `-J cb-napari`, registered here when submitted. Either way crboost writes
-    # what to show into the session dir's `open.json` and the viewer answers in `opened.json`; the viewer's
-    # `desktop.json` says which protocol versions it reads (services/curation/napari_link.py).
+    # viewer registered itself (a registry line of kind "desktop"), or as a job of ours: the site's remote desktop
+    # started by containers/napari/desktop_session.sh, `-J cb-napari`, registered here when submitted. Either way
+    # crboost writes what to show into the session dir's `open.json` and the viewer answers in `opened.json`; the
+    # viewer's `desktop.json` says which protocol versions it reads (services/curation/napari_link.py).
 
     _NAPARI_REQUEST = "open.json"
     _NAPARI_ACK = "opened.json"
@@ -1161,23 +1175,15 @@ class CurationSessionService:
             str(node),
             remote,
         ]
-        proc = None
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-            )
-            out, err_out = await asyncio.wait_for(proc.communicate(), timeout=timeout + 15)
-        except TimeoutError:
-            # wait_for cancels the await but not the OS process — reap the orphaned ssh.
-            if proc is not None:
-                try:
-                    proc.kill()
-                    await asyncio.wait_for(proc.wait(), timeout=5)
-                except Exception:
-                    pass
+            # On the timeout run_process kills the ssh before it raises.
+            proc = await run_process(cmd, timeout=timeout + 15)
+        except subprocess.TimeoutExpired:
             return err(f"ChimeraX command timed out after {timeout}s")
-        except Exception as e:
+        except OSError as e:
+            logger.exception("ssh to %s could not be started", node)
             return err(str(e))
+        out, err_out = proc.stdout, proc.stderr
         if proc.returncode != 0:
             detail = err_out.decode(errors="replace").strip() or out.decode(errors="replace").strip()
             return err(f"ssh/curl to {node} failed: {detail}")
