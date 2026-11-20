@@ -3,14 +3,14 @@
 #
 # Runs ON a compute node — either submitted by crboost via sbatch (the UI
 # "Launch ChimeraX/ArtiaX" button, a tomogram's napari chip) or started by hand via
-# launch_curation_vnc.sh / containers/napari/launch_napari_vnc.sh (srun --pty). Starts an
-# Xvnc desktop + the app from the SIF, then:
+# launch_curation_vnc.sh (srun --pty). Starts an Xvnc desktop + the app from the SIF, then:
 #   - writes a machine-readable session.json into $CB_SESSION_DIR (so crboost can
 #     read back the node/port/password and show the user the tunnel command), and
 #   - prints the same connection info as a human banner (for the manual path).
 # The session lives until the app quits; then the VNC server is torn down.
 #
-# Required env: CX_SIF (path to chimerax_artiax(_GL).sif, or napari_GL.sif with CB_APP=napari).
+# Required env: CX_SIF (path to chimerax_artiax(_GL).sif, or napari_GL.sif with CB_APP=napari, of which only the
+#               desktop is used).
 # Optional env: CB_APP (chimerax, the default, or napari),
 #               CX_BINDS (colon-separated host paths to bind besides /tmp and $HOME),
 #               CX_BIN (chimerax|ChimeraX), CX_DISPLAY, CX_GEOMETRY,
@@ -20,10 +20,10 @@
 #               CB_WS_SIF (an image with websockify: serve the desktop as a websocket for the site's
 #               Open OnDemand noVNC, which reaches it through its /rnode relay, and keep Xvnc on the
 #               node's localhost; conf.yaml ood:, roadmap 55).
-# napari only:  CB_NAPARI_LAUNCHER (containers/napari/open_tomogram.py of the server's checkout;
-#               it reads its requests from CB_SESSION_DIR, or opens CB_NAPARI_VOLUMES,
-#               colon-separated, when there is no session dir), CB_NAPARI_COMPANION (a checkout of
-#               the colleague's viewer, which the launcher then drives instead of plain napari).
+# napari only:  CB_EISGREIS (an EisGreis install, conf.yaml napari.eisgreis: its eisgreis-crboost runs
+#               in the image's desktop from the install's own environment, reads crboost's requests
+#               from CB_SESSION_DIR, and decides itself whether VirtualGL draws: on a full GPU under
+#               --nv), CB_NAPARI_VOLUMES (colon-separated volumes to open, by hand).
 set -euo pipefail
 
 # Make a pre-banner failure diagnosable. A couple of early apptainer calls below send
@@ -143,17 +143,14 @@ if [ "$APP" = chimerax ]; then
     SAVE_DIR="$HOME"
   fi
 else
-  # napari has no command server: the launcher reads crboost's requests from the session
-  # dir (open.json) and answers in it (opened.json). By hand there is no session dir, and
-  # the volumes come as arguments instead.
-  LAUNCHER="${CB_NAPARI_LAUNCHER:?CB_NAPARI_LAUNCHER must name containers/napari/open_tomogram.py}"
+  # napari is EisGreis's eisgreis-crboost: it reads crboost's requests from the session dir
+  # (open.json) and answers in it (opened.json, desktop.json). Its launcher runs it under
+  # VirtualGL on a full GPU itself, so no vglrun prefix here.
+  EISGREIS="${CB_EISGREIS:?CB_EISGREIS must name an EisGreis install (conf.yaml napari.eisgreis)}"
   REST_PORT=""
-  CX_LAUNCH="${VGL_PREFIX}/opt/napari/bin/python $(printf '%q' "$LAUNCHER")"
+  CX_LAUNCH="$(printf '%q' "$EISGREIS/eisgreis-crboost")"
   if [ -n "$SESSION_DIR" ]; then
     CX_LAUNCH="$CX_LAUNCH --session-dir $(printf '%q' "$SESSION_DIR")"
-  fi
-  if [ -n "${CB_NAPARI_COMPANION:-}" ]; then
-    CX_LAUNCH="$CX_LAUNCH --companion $(printf '%q' "$CB_NAPARI_COMPANION")"
   fi
   if [ -n "${CB_NAPARI_VOLUMES:-}" ]; then
     IFS=: read -ra NAPARI_VOLUMES <<< "$CB_NAPARI_VOLUMES"
@@ -169,9 +166,9 @@ fi
 # crboost passes conf.yaml's container_binds + the project. A path this node lacks is skipped.
 BINDS=(-B /tmp -B "$HOME")
 if [ "$APP" = napari ]; then
-  BINDS+=(-B "$(dirname "$LAUNCHER")")
-  [ -n "${CB_NAPARI_COMPANION:-}" ] && BINDS+=(-B "$CB_NAPARI_COMPANION")
-  # FFT and BLAS threads to the job's CPUs, not every core of the shared node (as the colleague's HPC launcher).
+  # The install: its launchers, its environment and the uv-managed Python that environment runs on.
+  BINDS+=(-B "$EISGREIS")
+  # FFT and BLAS threads to the job's CPUs, not every core of the shared node (as EisGreis's hpc profile does).
   if [ -n "${SLURM_CPUS_PER_TASK:-}" ]; then
     export OMP_NUM_THREADS="$SLURM_CPUS_PER_TASK" OPENBLAS_NUM_THREADS="$SLURM_CPUS_PER_TASK"
     export MKL_NUM_THREADS="$SLURM_CPUS_PER_TASK" NUMEXPR_NUM_THREADS="$SLURM_CPUS_PER_TASK"

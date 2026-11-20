@@ -1315,7 +1315,8 @@ class RosterWidget(FingerprintedView):
         """Foot-of-rail napari light: grey with no session, amber while it queues or starts, blue while it is up.
         Hover says where it runs and what it shows; a click opens the session dialog on that tomogram. Only where
         napari is configured. The status comes from ui/napari_status.py's process-wide cache."""
-        if not get_config_service().napari.sif_path:
+        napari = get_config_service().napari
+        if not (napari.sif_path or napari.eisgreis):
             return None
         container = (
             ui.element("div")
@@ -1357,7 +1358,9 @@ class RosterWidget(FingerprintedView):
             napari_status.PENDING: "#d4a017",
         }.get(status, SB_MUTE)
         icon.style(f"color: {color}; pointer-events: none;")
-        if status == napari_status.READY:
+        if status == napari_status.READY and info.get("route") == "desktop":
+            text = f"napari · in your desktop on {info.get('node') or '?'}"
+        elif status == napari_status.READY:
             text = f"napari · live on {info.get('node') or '?'}"
         elif status == napari_status.STARTING:
             text = f"napari · starting on {info.get('node') or '?'}"

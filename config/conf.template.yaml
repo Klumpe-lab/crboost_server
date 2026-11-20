@@ -281,26 +281,31 @@ curation:
   passwordless_vnc: false # true starts the desktop with SecurityTypes None — NO password, so anyone who
                           # can reach that node's VNC port can drive the session. Leave false if shared.
 
-# napari on a VNC desktop, opened from the `napari` chip on a tomogram preview (image: container_defs/napari_GL.def).
-# It runs on the nodes the curation session above runs on, through the same worker: leave the placement keys
-# (partition, gres, constraint, prefer, avoid) out to use curation's; vgl, login_host and passwordless_vnc are
-# always curation's. With vgl on it needs a full GPU that does OpenGL (not a MIG slice, not an A100).
+# napari, through EisGreis (the lab's tomogram viewer: low-pass, comments, particle STARs, crboost's picks and
+# segmentations, 3-D on any renderer), opened from the `napari` chip on a tomogram preview. `eisgreis` names its install:
+# `./crboost eisgreis-install /path/to/EisGreis` makes one and prints the line. It runs in the user's own remote desktop
+# of the site's Open OnDemand portal (`desktop:` holds what the dialog tells a user who has none running), or as a job
+# of crboost's on a VNC desktop from sif_path (image: container_defs/napari_GL.def; only its desktop is used), on the
+# nodes the curation session above runs on, through the same worker: leave the placement keys (partition, gres,
+# constraint, prefer, avoid) out to use curation's; vgl, login_host and passwordless_vnc are always curation's. With
+# vgl on the job needs a full GPU that does OpenGL (not a MIG slice, not an A100).
 napari:
+  eisgreis: ""      # e.g. "/path/to/software/EisGreis"
+  desktop:
+    form: ""        # the portal's Remote Desktop form under ood.url, e.g. "/pun/sys/dashboard/batch_connect/sys/desktop/session_contexts/new"
+    hint: ""        # what to ask that form for, e.g. "partition c, 32 GB, 8 cores; for 3-D partition g with a full GPU"
   sif_path: "/path/to/napari_GL.sif"
   cpus: 4
   mem: "16G"
   time: "08:00:00"  # must be <= the QOS MaxWall for the partition (0/unlimited is rejected)
   geometry: "1920x1080"
-  # "Start now": napari with software rendering (Mesa on the job's CPUs, no VirtualGL), placed where a job
+  # "Start now": the job with software rendering (Mesa on the job's CPUs, no VirtualGL), placed where a job
   # starts at once: a CPU partition, or a MIG slice on an interactive QOS/reservation where the partition
   # wants a GPU. 2-D as quick as on a full GPU; 3-D from a binned copy. partition "" = no "Start now".
   software:
     partition: ""
     gres: ""         # e.g. "gpu:<mig-slice-type>:1" where the partition refuses a job without a GPU
     cpus: 4          # Mesa renders on as many threads as the job has CPUs
-  # A checkout of the colleague's napari viewer (low-pass, comments, particle STARs). Set, sessions run it instead
-  # of plain napari and save into the tomogram's project (<project>/Curation/napari/). "" = plain napari.
-  companion: ""
 
 # Open OnDemand: open viewer sessions (napari, ChimeraX) in a browser tab through the site's portal, with no SSH
 # tunnel or VNC client. The session serves its desktop as a websocket and the portal's noVNC reaches it through

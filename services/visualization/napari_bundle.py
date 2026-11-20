@@ -1,7 +1,7 @@
-"""One tomogram's picks and segmentations from crboost, as a bundle for the colleague's napari viewer.
+"""One tomogram's picks and segmentations from crboost, as a bundle for EisGreis, the viewer behind the napari chip.
 
 A napari session opens a volume by path (``open.json``); this finds what the project holds for the tomogram that
-volume is, so the viewer can show it beside the colleague's own particle layers:
+volume is, so the viewer can show it beside the user's own particle layers:
 
 - ``picks``: per species, its candidate-extract job's candidates (one layer per job) and every pick list the
   workbench holds for the tomogram (manual, imported, merged), in the species' colour and diameter.
@@ -17,7 +17,8 @@ the reconstruction's grid takes the same picks. A segmentation keeps its own gri
 it (both grids share the volume's corner). What is left out, and why, is listed in ``notes``: nothing is dropped
 without a line there.
 
-The bundle file's format is the viewer's (``crboost_bundle.py`` in the colleague's checkout reads it):
+The bundle file's format, version 1, is described in EisGreis's ``docs/crboost-protocol.md`` (its
+``eisgreis_crboost/bundle.py`` reads it); a change here goes there too, with the version the viewer reads:
 
     {"format": "crboost-napari-bundle", "version": 1, "tomogram": "/abs/vol.mrc", "tomo_name": "...",
      "project": "/abs/project", "shape_zyx": [nz, ny, nx], "voxel_size": 10.0,

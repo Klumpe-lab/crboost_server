@@ -46,8 +46,9 @@ PROBES = {
         'm.version("easymode"); assert tf.config.list_physical_devices("GPU")\''
     ),
 }
-# ChimeraX (curation.sif_path) and napari (napari.sif_path) are no `tools:` entries: the curation worker
-# starts them with a bare `<runtime> exec`, and so do their probes.
+# ChimeraX (curation.sif_path) and napari are no `tools:` entries: the curation worker starts them with a bare
+# `<runtime> exec`, and so do their probes. napari is the EisGreis install (napari.eisgreis), whose own environment
+# runs in the session image's desktop (napari.sif_path); `eisgreis-crboost --check` loads napari and Qt offscreen.
 CHIMERAX = "chimerax"
 NAPARI = "napari"
 VIEWERS = [CHIMERAX, NAPARI]
@@ -63,10 +64,11 @@ def _job_command(name: str) -> str | None:
             return None
         return f"{config.container_runtime} exec {shlex.quote(cur.sif_path)} {shlex.quote(cur.chimerax_bin)} --version"
     if name == NAPARI:
-        sif = config.napari.sif_path
-        if not sif:
+        install, sif = config.napari.eisgreis, config.napari.sif_path
+        if not install or not sif:
             return None
-        return f"{config.container_runtime} exec {shlex.quote(sif)} /opt/napari/bin/python -c 'import napari, mrcfile'"
+        command = shlex.quote(str(Path(install).expanduser() / "eisgreis-crboost"))
+        return f"{config.container_runtime} exec -B {shlex.quote(install)} {shlex.quote(sif)} {command} --check"
     if name not in config.tools:
         return None
     prefix = driver_launch_prefix(server_dir=REPO_ROOT, driver_script=REPO_ROOT / "tests" / "cluster_probe.py")
