@@ -6,7 +6,7 @@
   - [protocols.md](protocols.md) — writing a protocol bundle
   - [particle-data-flow.md](particle-data-flow.md) — template matching → picks → extraction → aggregation
   - [binning-and-resolution.md](binning-and-resolution.md) — pixel size / binning / resolution arithmetic
-  - [preprocessing-metrics-inventory.md](preprocessing-metrics-inventory.md) — Warp/AreTomo readouts catalogue
+  - [preprocessing-metrics-inventory.md](roadmaps/preprocessing-metrics-inventory.md) — Warp/AreTomo readouts catalogue
   - [miss-alignment.md](miss-alignment.md) — the miss-alignment job and its container
   - [known_bugs.md](known_bugs.md) — known pitfalls and their workarounds
 - **[roadmaps/](roadmaps/README.md)** — `roadmap_*` plans still open; finished or superseded ones in

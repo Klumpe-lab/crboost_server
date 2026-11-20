@@ -153,8 +153,11 @@ trap 'exit 143' TERM
 
 log "building environment $name (once per lock and Python; servers already running are not affected)"
 # --no-bin: uv would otherwise put a python3.11 shim in ~/.local/bin, outside this checkout.
-run_uv python install --no-bin "$python" >&2
-run_uv venv --relocatable --python "$python" "$tmp" >&2
+run_uv python install --no-bin "$python" >&2 ||
+    die "could not download Python $python. Behind a mirror, set UV_PYTHON_INSTALL_MIRROR" \
+        "(docs/installation.md, 'No internet on the headnode')"
+# -q: its "Activate with" line would name the temporary directory, renamed away below.
+run_uv venv -q --relocatable --python "$python" "$tmp" >&2
 run_uv pip sync --python "$tmp/bin/python3" "$lock" >&2
 "$tmp/bin/python3" -I -c "import sys; assert '.'.join(map(str, sys.version_info[:3])) == '$python', sys.version"
 

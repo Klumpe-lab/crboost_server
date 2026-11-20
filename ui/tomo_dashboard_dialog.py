@@ -948,8 +948,8 @@ def _render_stage0_chips(project_state, project_path: Path) -> None:
         src = "from Import output" if disk_hand is not None else "from acquisition config"
         tooltip = (
             f"_rlnTomoHand={config_hand:+d} ({src}). Sign convention for "
-            f"depth-dependent defocus in CTF correction. The Klumpe-lab Titan "
-            f"convention is -1 (invert_defocus_hand=True)."
+            f"depth-dependent defocus in CTF correction. The code default is -1 "
+            f"(invert_defocus_hand=True)."
         )
 
     # Third authority (registry): the hand Warp actually applied (ts_defocus_hand,

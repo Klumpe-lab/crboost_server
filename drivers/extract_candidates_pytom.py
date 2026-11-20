@@ -243,7 +243,7 @@ class ExtractCandidatesPytomDriver(ArrayDriver):
         # scipy.ndimage opening on a ~2 GB float32 score volume allocates
         # 6–10 GB of intermediate buffers on top of PyTOM's ~5 GB baseline
         # (scores + angles + Python + CUDA). Plain extraction already fills 8G
-        # (rerun job012: every task at 7.98 GB, 41/139 slowed past a
+        # (on a 139-series run every task peaked at 7.98 GB and 41 slowed past a
         # 15 min limit), so the conf default is 24G / 1 h; tophat only raises.
         if ctx.params.score_filter_method == "tophat":
             bumped_mem = max(per_task_cfg.mem, "24G", key=_mem_gb)
