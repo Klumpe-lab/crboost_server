@@ -1,6 +1,6 @@
 """The viewer chips in a volume preview's bottom-right corner (a tomogram, a class map, a reconstruction):
-`napari` opens the volume in napari on a GPU node; `3dmod` and `ChimeraX` copy the command that opens it in IMOD or
-ChimeraX, to paste into a terminal with X11.
+`napari` opens the volume in napari (EisGreis), in the user's own remote desktop or on a GPU node; `3dmod` and
+`ChimeraX` copy the command that opens it in IMOD or ChimeraX, to paste into a terminal with X11.
 
 With an Open OnDemand portal configured (conf.yaml `ood:`), `napari` is a link that opens a tab which ends up in
 napari showing the volume (ui/napari_open_page.py), and `▾` beside it opens the session dialog (a full GPU, Stop).
@@ -74,7 +74,7 @@ def viewer_chips(volume, *, what: str = "tomogram", chimerax: bool = False) -> N
             )
             _chip("▾", "Your napari session: status, start on a full GPU, Stop", _napari)
         else:
-            _chip("napari", f"Open this {what} in napari on a GPU node", _napari)
+            _chip("napari", f"Open this {what} in napari: in your own remote desktop, or on a GPU node", _napari)
         _chip("3dmod", f"Copy the command that opens this {what} in 3dmod:\n{cmd}", _copy_3dmod)
         if chimerax:
             _chip("ChimeraX", f"Copy the command that opens this {what} in ChimeraX:\n{cx_cmd}", _copy_chimerax)

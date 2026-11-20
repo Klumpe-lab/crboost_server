@@ -1,7 +1,8 @@
 # Roadmap 61 — napari in the OnDemand desktop: the viewer as a side-car environment, no image of ours
 
-Scoped 2026-11-19, nothing built. Follows 54 (napari from a tomogram's chip), 55 (the session through OnDemand's
-relay, the colleague's viewer as the companion) and 56 (3-D speed). **Revised the same day.** The viewer is now
+Scoped 2026-11-19. **S3 and S4 built the same night** with roadmap 65 S1–S3 (§7); uncommitted, R1–R3 owed. Follows
+54 (napari from a tomogram's chip), 55 (the session through OnDemand's relay, the colleague's viewer as the companion)
+and 56 (3-D speed). **Revised the same day.** The viewer is now
 EisGreis, the lab's repository of the colleague's viewer (roadmap 65), which owns the environment and the command
 that S1 and S2 had planned here. D1–D4 are answered (§3), and S0b and S0c are settled (§4): a uv environment runs in
 IT's desktop, and a desktop on a full GPU draws through VirtualGL.
@@ -154,7 +155,7 @@ Still open, and blocking nothing:
   `desktop`, and opens files given on the command line.
 - The launcher leaves `containers/` (roadmap 65 S3).
 
-**S3 — crboost finds the desktop.**
+**S3 — crboost finds the desktop.** *Built 2026-11-19 (§7).*
 
 - `find_active_napari_session` also takes registry lines of kind `desktop`. They are live while their SLURM job runs
   (by id: the desktop's job is OnDemand's `ood-desktop`, not `cb-napari`) and the heartbeat is under 30 s old. The
@@ -170,7 +171,7 @@ Still open, and blocking nothing:
   - the one command, `<napari.eisgreis>/eisgreis-crboost`, with a copy button.
 - *On a GPU node* (D3) stays beside it until S6. The chips and *Show this tomogram* do not change.
 
-**S4 — with the desktop (D4).** The User settings switch writes `~/.config/autostart/crboost-napari.desktop`, whose
+**S4 — with the desktop (D4).** *Built 2026-11-19 (§7).* The User settings switch writes `~/.config/autostart/crboost-napari.desktop`, whose
 `Exec` is `<napari.eisgreis>/eisgreis-crboost --wait`. That registers the desktop and opens no window until the first
 request. Turning the switch off removes the file. Xfce reads it in every desktop the user opens (S0's facts); the
 login nodes run no Xfce.
@@ -207,3 +208,28 @@ ChimeraX keeps its job route and the curation worker. Roadmap 63's December imag
 - MCP, the bare-repo origin, the wheel store, and container recipes in git: the wider self-containment, which waits.
 - ChimeraX's route.
 - The viewer's code, licence and structure: roadmap 65.
+
+## 7. Records
+
+- **2026-11-19, late. S3 and S4 built** (crboost; EisGreis's side is roadmap 65 S1–S2, the same night).
+  - **Finding the desktop** (`services/curation/session_service.py`, `services/curation/napari_link.py`).
+    `find_active_napari_session` reads both kinds of registry line: a job of ours is live while its `cb-napari` job
+    is; a `desktop` line while its SLURM job runs, whatever its name, and `alive` is under 30 s old. A desktop line
+    without a job id (S0d is still open: whether `SLURM_JOB_ID` reaches a desktop's terminal) is live on the
+    heartbeat alone. The newest live one wins, and the answer says `route`. A session folder without crboost's
+    `job.json` is a desktop's: it is ready while its heartbeat is fresh, ended when not.
+  - **Versions.** crboost writes `protocol` into `open.json`: the newest version the viewer's `desktop.json` reads,
+    or, before a viewer runs, what the install's `eisgreis-crboost --version` says (kept five minutes). None shared:
+    the dialog shows "EisGreis <version> at <install> reads protocol …, this crboost writes …: update <side>".
+  - **The dialog.** With a live desktop viewer: its node (and "waiting for a tomogram" while a `--wait` viewer has no
+    window), *Show in my desktop*, no Stop (the desktop is the user's). With none running: *In your desktop*, the
+    portal link (`napari.desktop.form` under `ood.url` when set, else the portal), the site's hint
+    (`napari.desktop.hint`; the dev conf says "partition c, 32 GB, 8 cores; for 3-D, partition g with a full GPU, an
+    RTX 6000 first"), and the command with a copy button. *On a GPU node* stays beside it (D3). The open page shows a
+    tomogram in a desktop viewer and says so, with no tab to move to; the rail's light reads "in your desktop".
+  - **S4.** User settings, *Start EisGreis with my remote desktop*: writes or removes
+    `~/.config/autostart/crboost-napari.desktop` (`Exec=<napari.eisgreis>/eisgreis-crboost --wait`). The file itself
+    is the setting. A `--wait` viewer registers the desktop, opens its window on the first request, and after the
+    window is closed waits for the next one.
+  - **Checked** (roadmap 65 §10): crboost's service found a desktop viewer in IT's image and showed two projects'
+    tomograms in it; the launcher drew on a full B200 through VirtualGL. Owed: R1–R3 with the portal's own desktop.

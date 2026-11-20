@@ -9,19 +9,18 @@ From: ubuntu:24.04
 # Ubuntu 24.04 because its glibc (2.39) loads the EL10 host GL/EGL libraries that --nv mounts; images with glibc
 # older than 2.36 fail on them with GLIBC_ABI_DT_RELR.
 #
-# napari, PyQt6 and mrcfile live in a venv at /opt/napari, apart from the system Python. crboost's launcher
-# (containers/napari/open_tomogram.py) is not baked in: the worker runs it from the server's checkout, so it always
-# matches the server that started the session. Two more packages are here for the session around napari:
-# napari-mrcfile-reader, which the colleague's viewer reads volumes with (conf.yaml napari.companion, loaded from
-# its own checkout like the launcher), and websockify, which serves the desktop to the site's Open OnDemand noVNC
-# (conf.yaml ood:, roadmap 55).
+# The viewer is not this image's: crboost runs EisGreis from its own install (conf.yaml napari.eisgreis, bound in by
+# the worker), whose eisgreis-crboost uses the install's environment and starts VirtualGL itself on a full GPU. Of
+# this image only the desktop is used: Xvnc, fluxbox, VirtualGL, the X and GL libraries Qt needs, and websockify,
+# which serves the desktop to the site's Open OnDemand noVNC (conf.yaml ood:). The napari venv at /opt/napari
+# (napari, PyQt6, mrcfile, napari-mrcfile-reader) is no longer started by crboost; websockify lives in it.
 #
 # Build (CBE.next has no subuid range, so the faked-based fakeroot fails):
 #   apptainer build --fakeroot --ignore-fakeroot-command napari_GL.sif container_defs/napari_GL.def
 #
 # Run (the worker does this):
-#   apptainer exec --nv <binds> napari_GL.sif /opt/VirtualGL/bin/vglrun -d egl \
-#       /opt/napari/bin/python containers/napari/open_tomogram.py --session-dir <dir>
+#   apptainer exec --nv -B <eisgreis install> <binds> napari_GL.sif <eisgreis install>/eisgreis-crboost \
+#       --session-dir <dir>
 
 %environment
     export PATH=/opt/napari/bin:/opt/VirtualGL/bin:$PATH

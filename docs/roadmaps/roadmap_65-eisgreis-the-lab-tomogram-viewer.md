@@ -1,19 +1,23 @@
 # Roadmap 65 — EisGreis: the lab's tomogram viewer, with crboost's link as a module of its own
 
-Scoped 2026-11-19; the maintainer answered D1–D8 the same day, and the colleague his open points that evening (§2);
-nothing built. Follows 54 (napari from a tomogram's chip), 55 (the colleague's viewer as crboost's companion) and 56
-(3-D speed). Goes with 61 (the viewer in the user's own OnDemand desktop), which takes its environment and its command
-from here.
+Scoped 2026-11-19; the maintainer answered D1–D8 the same day, and the colleague his open points that evening (§2).
+S1–S3 built the same night, with roadmap 61 S3–S4 (§10); uncommitted, the checks of §8 owed. Follows 54 (napari from a
+tomogram's chip), 55 (the colleague's viewer as crboost's companion) and 56 (3-D speed). Goes with 61 (the viewer in
+the user's own OnDemand desktop), which takes its environment and its command from here.
 
 ## Pickup (next session)
 
-1. Check that the maintainer has pushed our 331 open lines to EisGreis's `crboost-bundle-and-3d`. That branch's head
-   is then past 825242d.
-2. Clone EisGreis at the work branch into `~/dev/EisGreis`. The work branch is `crboost-bundle-and-3d` unless the
-   maintainer names another.
-3. Build S1, S2 and S3 back to back, then roadmap 61 S3 and S4. Check once at the end (§8).
-4. Nothing goes to EisGreis's `main`. All work stays on the branch until the colleague merges one PR (D5).
-5. Hand every commit and push as line-by-line commands.
+S1–S3 and roadmap 61 S3–S4 are built (§10, 2026-11-19, late); nothing is committed. Next:
+
+1. The maintainer commits EisGreis in `~/dev/EisGreis` onto `crboost-bundle-and-3d` (three commits: the renames, the
+   package, the install) and pushes that branch; then crboost's commit. The commands were handed over.
+2. The lab install, from the lab checkout: `./crboost eisgreis-install /groups/klumpe/software/EisGreis --ref
+   crboost-bundle-and-3d`. The lab conf's `napari.companion` becomes `napari.eisgreis: /groups/klumpe/software/EisGreis`,
+   with `napari.desktop.hint` (the dev conf has both).
+3. The checks: §8 R1–R3 and roadmap 61 R1–R3. GitHub Actions runs on the push.
+4. Then the PR to the colleague, `crboost-bundle-and-3d` into `main`, merged with a merge commit: a squash would drop
+   the renames that keep his files' history.
+5. Nothing goes to EisGreis's `main` from us (D5). Every commit and push is handed as line-by-line commands.
 
 **Why.** The lab looks through tomograms, keeps notes and marks particles in the colleague's napari viewer, and crboost
 already drives it (roadmap 55). He has published it as the lab's repository, `Klumpe-lab/EisGreis`, and agreed that we
@@ -290,7 +294,7 @@ maintainer choose (owners open):
   branch, not to `main` (commands in the hand-over).
 - c. *Optional, not blocking.* Ask IT to add the five X libraries to `ood-desktop-image` (roadmap 61 D5).
 
-**S1 — the restructure** (D5), on the work branch, in a clone at `~/dev/EisGreis`.
+**S1 — the restructure** (D5), on the work branch, in a clone at `~/dev/EisGreis`. *Built 2026-11-19 (§10).*
 
 - `git mv` into the layout of §3, one module at a time as the table says, then the splits. The controller becomes
   `session.py` (state, no Qt) and one module per dock, behind `api.py`.
@@ -318,9 +322,10 @@ maintainer choose (owners open):
 - Not in S1: new features.
 
 **S2 — the install** (§5): `install.sh`, the launchers and `xlibs/`, and the lab install at
-`/groups/klumpe/software/EisGreis`. The old copies under `/groups/klumpe/software/Napari/` stay until R4.
+`/groups/klumpe/software/EisGreis`. The old copies under `/groups/klumpe/software/Napari/` stay until R4. *Built
+2026-11-19 (§10); the lab install waits for the push (Pickup 2).*
 
-**S3 — crboost points at EisGreis** (crboost repo).
+**S3 — crboost points at EisGreis** (crboost repo). *Built 2026-11-19 (§10).*
 
 - conf `napari.eisgreis: <install>` replaces `napari.companion`. `NapariConfig` changes, and preflight checks that the
   install's launchers exist, that `eisgreis-crboost --version` answers, and which protocol it reads. A conf that
@@ -363,3 +368,62 @@ maintainer choose (owners open):
 - **2026-11-19, evening.** The colleague's answers came in: BSD-3 is fine, the 0.6.6 pin was arbitrary, and his
   history is his credit. D5 became branch-only: nothing of ours goes to his `main` until he merges a PR. The X
   libraries are carried by the install, so IT's part is optional. Pickup section added.
+
+- **2026-11-19, late. S1–S3 built**, with roadmap 61 S3–S4. The branch head was 7504c51 (our 331 lines on 825242d;
+  `main` still a072b3f, so nothing of the colleague's to merge). Clone at `~/dev/EisGreis`; nothing committed.
+  - **S1.** The layout of §3: `src/eisgreis/` (`app.py` the controller, `session.py` its state without Qt, `docks/`
+    one module per dock, `io/`, `filters.py`, `runtime.py`, `reference.py`, `view3d.py`, `scalebar.py`, `_napari.py`,
+    `tilts/`, `api.py`) and `src/eisgreis_crboost/` (`protocol.py`, `agent.py`, `bundle.py`, `desktop.py`,
+    `__main__.py`). `pyproject.toml` (uv_build, both packages in one distribution), `uv.lock` (124 packages:
+    napari 0.10.0, PyQt6 6.12.1, as the probe ran), `.python-version` 3.12.13, `LICENSE` (BSD-3, "the EisGreis
+    contributors"), README without a credit line, the colleague's `.codex` skill moved to the new layout.
+  - **The napari 0.10 port found two faults** the 331 lines still had on 0.10: the scale bar never showed (napari
+    renamed `_overlay_to_visual`, so the patch never found its visual), and a tomogram opened at slice 2 of 32 (the
+    slider keeps its world position when the scale changes). Both fixed; the slice is centred on every open.
+  - **What napari 0.10 covers, and what it does not.** Its text visual has the DPI fallback, so that patch went. Its
+    scale bar takes the layers' unit but prints Å compacted ("1.2 kÅ"), so the nm label stays: one patch of the
+    overlay's `_calculate_best_length`, per viewer, in `_napari.py`. `out_of_slice_display` now means
+    `rescale_linear`, which shrinks a point by the slab's margin, not its own size: particle layers use
+    `rescale_spherical` like the reference picks, and the Z slab is at least the largest box. Shapes ignore the slab,
+    so measurements stay in their plane. Docks take no title from the widget any more ("Dock widget 1"): names are
+    passed.
+  - **Where S1 differs from §3.** `eisgreis-bandpass` is a fourth command (the crYOLO-style widget was its own
+    script). The tilt excluder's low-pass is `LowPassFilter` (same masks, the full-grid filter dropped).
+    `napari-mrcfile-reader` stays a dependency for napari's own File > Open; the viewer reads with mrcfile. The
+    crboost dock is the generic *Reference* dock. The API grew what the agent needed: `register`, `tomograms`,
+    `outputs`, `shape`, `pixel_size`, `maximize`, and reference calls take `tomogram=` and `pixel_size=` (a
+    reference set is kept per tomogram, drawn while it is on screen). `desktop.json` carries `window` (false while a
+    `--wait` viewer has no window). `eisgreis-crboost --version` prints JSON without starting Qt; `--check` loads
+    napari and Qt offscreen.
+  - **Tests**: 77, run in IT's image on a private TurboVNC display (offscreen Qt, OpenGL through it): io, filters
+    against the full-grid filter, session, the import boundary, protocol and `desktop.json`, the viewer on a napari
+    window (centring, nm scale bar, particles per tomogram, recalibration, volume swap, reference layers, 3-D
+    surfaces, dock names), and the link on fixtures crboost's own writers made (`scripts/eisgreis_fixtures.py` in
+    crboost): a request opens its tomogram, a project switch saves into the old folder first and reads back, a bundle
+    shows, outside every project saves into the session folder, protocol 2 and a request without one are refused.
+    GitHub Actions: uv sync, ruff, pytest under xvfb.
+  - **The rename commit.** The files were moved in the working tree, so the renames-only commit is built in the index
+    from HEAD's blob ids (`git update-index --cacheinfo`), then the package commit on top. The controller's file
+    becomes `app.py`, which holds its successor (`Controller`), so `git log --follow src/eisgreis/app.py` walks back
+    into `napari_mrc_lowpass_fast.py`; `napari_viewer_hpc.sh` becomes the launcher `eisgreis`.
+  - **S2.** `install.sh` (uv 0.13.7 fetched into `.uv/bin`, uv's Python, `.uv/env/3.12.13-a4edcf912300`, built in
+    about a minute; EisGreis installed editable), `launch.sh` sourced by `eisgreis` and `eisgreis-crboost`. The
+    X libraries: conda-forge's `xcb-util-wm-0.4.2-hb711507_0`, `-image-0.4.0-hb83e432_3`, `-keysyms-0.4.1-hb711507_0`
+    and `-renderutil-0.3.10-hb83e432_1` give the probe's copies byte for byte; `xcb-util-cursor-0.1.6-hb03c661_0`
+    is the probe's version and compiler (its copy differs in 527 bytes). Pinned by URL and sha256.
+  - **S3** (crboost). `napari.eisgreis` replaces `napari.companion` (a conf naming the old key is told the new one),
+    `napari.desktop.form` and `.hint` for 61 S3. The job route runs `<install>/eisgreis-crboost --session-dir` in the
+    image's desktop (`CB_EISGREIS`, the install bound), its launcher deciding VirtualGL; `containers/napari/` is gone.
+    `open.json` carries `protocol`, the newest the viewer's `desktop.json` reads, or before it runs the install's
+    `--version` (`services/curation/napari_link.py`); no shared version is an error naming the side to update.
+    Preflight checks the install and the protocol; `./crboost eisgreis-install`; the cluster test runs `--check` in
+    the session image. The dev conf names `~/dev/EisGreis`, installed in place.
+  - **Checked end to end** (`~/.crboost/eisgreis_test/e2e/`, a test registry, never the live one): EisGreis by its
+    launcher in IT's desktop image (carried X libraries, llvmpipe), found by crboost's service as a desktop session,
+    a tomogram with crboost's picks and segmentation shown in 21 s from start, a second project in 2 s with the
+    first's CSV saved before the switch, SIGTERM removing `desktop.json` and `alive`. The same install in
+    `napari_GL_v2.sif` with `--session-dir` (the job route; the image's own X libraries, `/.singularity.d/libs`
+    kept). On a full B200 under `--nv` in IT's image with a GPU desktop's library path (job 1833014): the launcher
+    dropped a stray module path, kept `glvnd` and `/.singularity.d/libs`, ran `vglrun -d egl`, and the viewer drew on
+    "NVIDIA B200/PCIe/SSE2". Not done here: the job route through crboost's sbatch (R3), a user's own desktop through
+    the portal (61 R1), the colleague's Mac (R2).

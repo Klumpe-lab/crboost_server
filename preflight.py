@@ -127,6 +127,7 @@ def check_config():
             fail(f"{key} is not set")
     if cfg.curation.sif_path and not cfg.curation.partition:
         warn("curation.partition is not set; curation sessions cannot start")
+    check_eisgreis(cfg)
 
     if not cfg.crboost_python:
         ok(f"drivers run {sys.executable} (this interpreter, the one ./crboost uses)")
@@ -180,6 +181,33 @@ def check_config():
     else:
         ok(f"gpu_kernel_cache: {cache}")
     return cfg
+
+
+def check_eisgreis(cfg) -> None:
+    """napari.eisgreis: an EisGreis install whose launchers are there, whose eisgreis-crboost answers, and which reads
+    a protocol version this crboost writes."""
+    from services.curation import napari_link
+
+    install = cfg.napari.eisgreis
+    if not install:
+        warn("napari.eisgreis is not set: the napari chip has no viewer to start (./crboost eisgreis-install)")
+        return
+    root = Path(install).expanduser()
+    missing = [name for name in ("eisgreis", napari_link.COMMAND) if not os.access(root / name, os.X_OK)]
+    if missing:
+        fail(f"napari.eisgreis: {root} has no {' or '.join(missing)}; is it an EisGreis install?")
+        return
+    versions = napari_link.install_versions(root)
+    if not versions.get("success"):
+        fail(f"napari.eisgreis: {versions['error']}")
+        return
+    chosen = napari_link.choose_protocol(versions["protocol"], eisgreis=versions["eisgreis"], install=str(root))
+    if not chosen.get("success"):
+        fail(f"napari.eisgreis: {chosen['error']}")
+        return
+    reads = ", ".join(str(v) for v in versions["protocol"])
+    viewer = f"EisGreis {versions['eisgreis']} at {root}"
+    ok(f"napari.eisgreis: {viewer} reads protocol {reads}; crboost writes {chosen['protocol']}")
 
 
 def check_slurm(cfg) -> None:
