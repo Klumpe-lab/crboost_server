@@ -255,11 +255,40 @@ ChimeraX keeps its job route and the curation worker. Roadmap 63's December imag
   - *Stop* now saves. A plain `scancel` signals every process of the job at once, so the VNC server died beside the
     viewer, which never got to save (as with the old worker). crboost now signals the worker's script alone
     (`scancel --batch --signal=TERM`); its cleanup, which a second signal no longer cuts short, sends SIGTERM to the
-    viewer itself, found by its command line (inside the instance it has a pid of another namespace), waits up to
-    20 s while the viewer closes its window and saves, then takes the desktop down. Meanwhile crboost counts the
+    viewer itself, found by its command line inside the instance (apptainer's wrapper passes no signal on), waits up
+    to 20 s while the viewer closes its window and saves, then takes the desktop down. Meanwhile crboost counts the
     session as gone. One still running a minute later is shown again, and a Stop then cancels it outright, as it does
     a queued job (which refuses the signal: "Job can not be altered now").
   - Checked on nodes with test session folders (never the live registry): a CPU node (cbe-c3-9, job 1840030: IT's
     Xfce with the panel at the top, the viewer maximized in it, llvmpipe) and a full B200 (job 1840290: "NVIDIA
     B200/PCIe/SSE2" through VirtualGL); a stop through crboost's own `stop_napari_session` saved the comments CSV and
     ended the job (1840283); two signals 0.3 s apart (1840317) saved, cleaned up and ended the job in 7 s.
+- **2026-11-20, later still. The picture, measured; no stalls on a busy node; the time limit saves.** The maintainer
+  still found the picture a bit grainy. A small RFB client asking what noVNC 1.3 asks (Tight, a JPEG quality level, a
+  compression level) read the JPEG TurboVNC 3.3 sends: noVNC's default level 6 is JPEG quality 79 (4:4:4), the portal
+  card's default level 2 is 41 (4:2:0), 7 is 86, 8 is 92, 9 is 100. On a real tomogram (the AGG412 rerun's
+  Position_11_3, 6.2 Å/px, on a 1600x1000 desktop), against a lossless capture, in the tomogram's area:
+
+  | level | full screen | PSNR | mean / max error (grey levels) |
+  |---|---|---|---|
+  | 2 (the portal card) | 0.27 MB | 26.8 dB | 8.2 / 169 |
+  | 6 (noVNC's, crboost's link) | 0.46 MB | 32.7 dB | 4.1 / 73 |
+  | 7 | 0.55 MB | 35.5 dB | 3.0 / 64 |
+  | 8 | 0.67 MB | 39.6 dB | 1.9 / 42 |
+  | 9 | 1.27 MB | 54.9 dB | 0.2 / 5 |
+  | lossless | 0.98 MB | exact | |
+
+  - The worker starts TurboVNC with `-alr 0.5`: half a second after the picture stops changing, what went out as
+    JPEG goes again losslessly (Tight's copy and palette filters, both of which noVNC 1.3 decodes; it has no gradient
+    filter). Checked (job 1840647): 3 s after connecting at level 6, and half a second after a two-click zoom, the
+    client's screen matched a lossless capture pixel for pixel; each refresh was ~1 MB. Motion still goes as JPEG at
+    the browser's level (noVNC's settings panel changes it, per browser). What grain remains is the tomogram's own
+    noise, for EisGreis's low-pass.
+  - `pgrep -f` over the whole node took 42 s on a busy one (it reads every process's command line, other users' too,
+    and one can stall); inside the instance it took 0.04 s. The window-manager wait at start and Stop's search for
+    the viewer now look inside the instance. A Stop ends the job in 2 s: the viewer is signalled 49 ms after the
+    script's TERM and has closed and saved 46 ms later.
+  - At the time limit SLURM killed every process at once, which lost unsaved work as Stop used to. The napari job
+    now carries `--signal=B:TERM@120`, so the worker gets the Stop treatment first: a 4-minute session launched
+    through `launch_napari_session` (test registry, CPU node, job 1840703) got the signal at 1:43, saved and ended
+    1 s later.
