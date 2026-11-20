@@ -425,6 +425,41 @@ nothing and aggregates.
 
 ## Fixed
 
+### H33 — Every squeue stops the whole server for up to 4 s; curation polls and the Journey read NFS on the loop
+
+**Fixed 2026-11-20 (uncommitted).** Every child process goes through `services/computing/processes.run_process`
+(`subprocess.run` in a thread): `slurm_service._run_command`, the sbatch calls of `pipeline_runner`, `backend` and
+`session_service`, the ChimeraX ssh, the relion project init, cisTEM and `backend.run_shell_command`. The curation
+polls (`get_curation_session_info`, `find_active_curation_session[_any]`, `_live_project_curation_job_ids`) read
+their registry, job.json, session.json, scope.json and slurm.log in a thread. The Journey no longer collects on the
+loop when it mounts (the first paint, collected in a thread, settles the selection), nor when the pick viewer
+refreshes the strip or the section switch redraws the pane; the recon map is read with the collect. The log file is
+written by a `QueueListener` thread (`services/log_setup.py`).
+
+**Status:** fixed 2026-11-20, found the same day. **Severity:** high: the UI freezes for seconds several times an
+hour, for every tab.
+
+**What is wrong.**
+- uvicorn runs on uvloop, whose `create_subprocess_exec` forks the server while holding the GIL and waits for the
+  child's exec. The fork copies the page tables of the whole process, so the freeze grows with the heap, and with
+  the user's memory cgroup reclaiming (`memory.events` max 19636 on cbe-login, 64 GB cap) it reaches seconds. The
+  watchdog can only sample once the GIL is back: `(of 1 checks)`, and before H28 at the logging module's after-fork
+  hook (`logging/__init__.py:_releaseLock`).
+- `_find_live_registered` and `get_curation_session_info` read files under `~/.crboost` (NFS) on the loop, every
+  16 s while the Particles registry's Tomograms tab shows; the Journey's builder ran `collect_dashboard_journey`
+  (which parses a subtomo job's particles.star) on the loop at every mount.
+
+**Evidence.** `~/.crboost/logs/crboost-24326.log` since H28: `slurm_service.py:_run_command ×1 (of 1 checks)` for
+1.3–4.4 s, 13 times from 2026-11-19 13:49 to 2026-11-20 10:11; `_find_live_registered` 1.3–7.2 s (×22 to ×141), six
+times; `_extracted_ts_cached` 2.1 and 2.4 s at a Journey open; `logging/handlers.py:shouldRollover ×18` in a 1.2 s
+stall. A toy (uvloop, a heap of 2.3 GB of small objects, `squeue --me` six times each): `create_subprocess_exec`
+holds the loop 78 ms a spawn (median, worst 104 ms), `subprocess.run` in a thread 0 ms. At an empty heap both are
+1 ms.
+
+**Check.** The toy, and `run_process` / `_run_command` against squeue (output, a timeout killed, a missing binary as
+`OSError`, stdin); a log record with a traceback reaches the file through the queue in the same format. Owed: the
+watchdog's log after a day of use.
+
 ### H32 — The companion napari viewer saves into its working directory for a tomogram outside every project
 
 **Fixed 2026-11-19 (uncommitted).** `CompanionSession` (`containers/napari/open_tomogram.py`) points the viewer's

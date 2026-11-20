@@ -2,10 +2,12 @@ import os
 import json
 import asyncio
 import logging
+import subprocess
 from pathlib import Path
 import textwrap
 from typing import Any
 from services.computing.container_service import get_container_service
+from services.computing.processes import run_process
 from services.configs.config_service import get_config_service
 from services.result import err, ok
 from services.templating.template_service import normalize_white_and_negate_to_black
@@ -334,7 +336,6 @@ except Exception as e:
         Supports both container and binary modes via ContainerService.
         """
 
-        import asyncio
         import textwrap
         from pathlib import Path
 
@@ -468,22 +469,13 @@ except Exception as e:
             )
 
             # 3. Execute without blocking the event loop
-            process = await asyncio.create_subprocess_shell(
-                full_command,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(output_folder),
-            )
-
             try:
-                stdout_b, stderr_b = await asyncio.wait_for(
-                    process.communicate(input=stdin_input.encode("utf-8")), timeout=600
+                process = await run_process(
+                    full_command, shell=True, cwd=output_folder, input=stdin_input.encode("utf-8"), timeout=600
                 )
-            except TimeoutError:
-                process.kill()
-                await process.wait()
+            except subprocess.TimeoutExpired:
                 return err("cisTEM timeout (>600s)")
+            stdout_b, stderr_b = process.stdout, process.stderr
 
             stdout = (stdout_b or b"").decode("utf-8", errors="replace")
             stderr = (stderr_b or b"").decode("utf-8", errors="replace")
