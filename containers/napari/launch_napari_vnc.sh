@@ -30,7 +30,8 @@ export CB_APP=napari
 export CX_SIF="$NAPARI_SIF"
 export CX_VGL=1
 export CB_NAPARI_LAUNCHER="$HERE/open_tomogram.py"
-export CB_NAPARI_VOLUMES="$(IFS=:; echo "${volumes[*]}")"
+CB_NAPARI_VOLUMES="$(IFS=:; echo "${volumes[*]}")"
+export CB_NAPARI_VOLUMES
 export CX_BINDS="${CX_BINDS:-$(IFS=:; echo "${dirs[*]}")}"
 # The worker runs on the compute node; the tunnel it prints goes through this login node.
 export CX_LOGIN_HOST="${CX_LOGIN_HOST:-$(hostname -f)}"

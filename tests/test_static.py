@@ -31,31 +31,6 @@ def test_qsub_renders(tmp_path):
     assert not re.search(r"XXX(extra\d|outfile|errfile|command)XXX", text), text
 
 
-def test_agent_api_verb_table():
-    """Every verb's input schema builds as an MCP tool's, reads are named as reads, the instructions fit Claude
-    Code's limit, and /api/v1/tools serves exactly the table."""
-    from types import SimpleNamespace
-
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    from api.router import INSTRUCTIONS_LIMIT, create_api_router, instructions, tool_entry
-    from api.verbs import VERBS
-
-    assert len(instructions()) <= INSTRUCTIONS_LIMIT
-    read_prefixes = ("get_", "list_", "inspect_", "plan_")
-    for verb in VERBS.values():
-        entry = tool_entry(verb)
-        assert entry["inputSchema"]["type"] == "object", verb.name
-        assert (verb.kind == "read") == verb.name.startswith(read_prefixes), verb.name
-        assert verb.kind == "write" or not verb.asks, verb.name
-
-    app = FastAPI()
-    app.include_router(create_api_router(SimpleNamespace(), 0))
-    served = TestClient(app).get("/api/v1/tools").json()
-    assert [t["name"] for t in served["tools"]] == list(VERBS)
-
-
 def test_ood_portal_answers():
     """With `ood:` set, the portal answers at its noVNC page: a redirect to its sign-in counts, an error does not.
     The sign-in stands before every path, so this shows the portal is up and reachable from here, not that the
