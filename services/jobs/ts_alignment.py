@@ -60,16 +60,16 @@ class TsAlignmentParams(AbstractJobParams):
     ]
 
     alignment_method: AlignmentMethod = Field(
-        default=AlignmentMethod.ARETOMO, title="Method", json_schema_extra=form("Alignment", M),
+        default=AlignmentMethod.ARETOMO, title="Method", json_schema_extra=form("Alignment", M)
     )
     rescale_angpixs: float = Field(
-        default=12.0, ge=2.0, le=50.0, title="Pixel size", json_schema_extra=form("Alignment", S, "Å/px"),
+        default=12.0, ge=2.0, le=50.0, title="Pixel size", json_schema_extra=form("Alignment", S, "Å/px")
     )
     tomo_dimensions: str = Field(
-        default="4096x4096x2048", title="Tomogram size", json_schema_extra=form("Alignment", M, "px"),
+        default="4096x4096x2048", title="Tomogram size", json_schema_extra=form("Alignment", M, "px")
     )
     sample_thickness_nm: float = Field(
-        default=180.0, ge=50.0, le=1000.0, title="Sample thickness", json_schema_extra=form("Alignment", S, "nm"),
+        default=180.0, ge=50.0, le=1000.0, title="Sample thickness", json_schema_extra=form("Alignment", S, "nm")
     )
     do_at_most: int = Field(default=-1, title="Max series", json_schema_extra=form("Processing", S))
     perdevice: int = Field(default=1, ge=0, le=8, title="Per GPU", json_schema_extra=form("Processing", S))

@@ -115,18 +115,13 @@ class BackgroundTaskRegistry:
             for t in self._tasks.values():
                 if t.is_running and t.dedup_key == dedup_key:
                     logger.info(
-                        "BackgroundTaskRegistry: dedup hit on '%s' — returning existing task %s",
-                        dedup_key, t.id,
+                        "BackgroundTaskRegistry: dedup hit on '%s' — returning existing task %s", dedup_key, t.id
                     )
                     return t.id
 
         task_id = uuid.uuid4().hex
         record = BackgroundTaskRecord(
-            id=task_id,
-            title=title,
-            subtitle=subtitle,
-            project_path=project_path,
-            dedup_key=dedup_key,
+            id=task_id, title=title, subtitle=subtitle, project_path=project_path, dedup_key=dedup_key
         )
         self._tasks[task_id] = record
 
@@ -222,19 +217,13 @@ class BackgroundTaskRegistry:
     def _prune(self) -> None:
         now = datetime.now()
         # Drop finished tasks older than retention window or beyond cap.
-        finished = [
-            (t.finished_at or t.started_at, t.id)
-            for t in self._tasks.values()
-            if not t.is_running
-        ]
+        finished = [(t.finished_at or t.started_at, t.id) for t in self._tasks.values() if not t.is_running]
         # Remove anything past the time horizon.
         for ts, tid in finished:
             if (now - ts).total_seconds() > _FINISHED_RETENTION_SEC:
                 self._tasks.pop(tid, None)
         # And cap the rest.
-        finished = sorted(
-            [(t.finished_at or t.started_at, t.id) for t in self._tasks.values() if not t.is_running]
-        )
+        finished = sorted([(t.finished_at or t.started_at, t.id) for t in self._tasks.values() if not t.is_running])
         if len(finished) > _MAX_FINISHED:
             for _, tid in finished[: len(finished) - _MAX_FINISHED]:
                 self._tasks.pop(tid, None)

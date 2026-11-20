@@ -52,13 +52,7 @@ class TsReconstructIngestAdapter(BaseIngestAdapter):
 
     # ── Public API ─────────────────────────────────────────────────────────
 
-    def ingest(
-        self,
-        expected_ts_ids: Iterable[str],
-        *,
-        rescale_angpixs: float,
-        frame_pixel_size: float,
-    ) -> None:
+    def ingest(self, expected_ts_ids: Iterable[str], *, rescale_angpixs: float, frame_pixel_size: float) -> None:
         """Populate the registry with per-TS reconstruction outputs.
 
         `rescale_angpixs` is the reconstructed-tomogram pixel size (params.rescale_angpixs);
@@ -113,15 +107,12 @@ class TsReconstructIngestAdapter(BaseIngestAdapter):
             )
             self.registry.attach_tomogram_output(ts_id, output)
             logger.info(
-                "tsReconstruct: ingested %s (%dx%dx%d, %.2f A/px)",
-                ts_id, size_x, size_y, size_z, rescale_angpixs,
+                "tsReconstruct: ingested %s (%dx%dx%d, %.2f A/px)", ts_id, size_x, size_y, size_z, rescale_angpixs
             )
 
         if problems:
             detail = "\n  - ".join(f"{tid}: {reason}" for tid, reason in sorted(problems.items()))
-            raise RuntimeError(
-                f"tsReconstruct ingest failed for {len(problems)} tilt-series:\n  - {detail}"
-            )
+            raise RuntimeError(f"tsReconstruct ingest failed for {len(problems)} tilt-series:\n  - {detail}")
 
     def emit_star(self, input_star_path: Path, output_star_path: Path, *, excluded_ids: set[str] | None = None) -> None:
         """Write `tomograms.star` — the single-block global STAR that carries
@@ -178,10 +169,7 @@ class TsReconstructIngestAdapter(BaseIngestAdapter):
             out_ts_df.at[idx, "rlnTomoTiltSeriesStarFile"] = str(ts_star_abs)
 
         if problems:
-            raise RuntimeError(
-                f"tsReconstruct emit_star: {len(problems)} problem(s):\n  - "
-                + "\n  - ".join(problems)
-            )
+            raise RuntimeError(f"tsReconstruct emit_star: {len(problems)} problem(s):\n  - " + "\n  - ".join(problems))
 
         out_ts_df = self._drop_excluded(out_ts_df, excluded)
 
@@ -194,6 +182,7 @@ class TsReconstructIngestAdapter(BaseIngestAdapter):
     @staticmethod
     def _read_mrc_dims(path: Path) -> tuple[int, int, int]:
         import mrcfile
+
         with mrcfile.open(str(path), header_only=True, mode="r") as mrc:
             # MRC header is (nz, ny, nx) in many conventions; mrcfile normalizes
             # to data.shape = (z, y, x). Use header fields for reliability.

@@ -51,64 +51,93 @@ class FsMotionCtfParams(AbstractJobParams):
         ),
     ]
 
-    do_phase          : bool       = Field(
-        default=False, description="Estimate phase shifts (CTF phase plate or spurious phase)",
-        title="Estimate phase shifts", json_schema_extra=form("CTF"),
+    do_phase: bool = Field(
+        default=False,
+        description="Estimate phase shifts (CTF phase plate or spurious phase)",
+        title="Estimate phase shifts",
+        json_schema_extra=form("CTF"),
     )
-    m_range_min_max   : str        = Field(
-        default="500:10", description="Motion estimation range min:max in Angstroms", title="Range",
+    m_range_min_max: str = Field(
+        default="500:10",
+        description="Motion estimation range min:max in Angstroms",
+        title="Range",
         json_schema_extra=form("Motion", M, "Å"),
     )
-    m_bfac            : int        = Field(
-        default=-500, description="B-factor for motion estimation (negative = more smoothing)", title="B-factor",
+    m_bfac: int = Field(
+        default=-500,
+        description="B-factor for motion estimation (negative = more smoothing)",
+        title="B-factor",
         json_schema_extra=form("Motion", S, "Å²"),
     )
-    m_grid            : str        = Field(
-        default="1x1x3", description="Motion estimation grid XxYxZ", title="Grid", json_schema_extra=form("Motion", M),
+    m_grid: str = Field(
+        default="1x1x3", description="Motion estimation grid XxYxZ", title="Grid", json_schema_extra=form("Motion", M)
     )
     # High end at 10 Å: on low-dose tilts the Thon rings are noise beyond it and the 2D fit runs to wrong minima.
-    c_range_min_max   : str        = Field(
-        default="30:10", description="CTF fitting resolution range min:max in Angstroms", title="Resolution range",
+    c_range_min_max: str = Field(
+        default="30:10",
+        description="CTF fitting resolution range min:max in Angstroms",
+        title="Resolution range",
         json_schema_extra=form("CTF", M, "Å"),
     )
-    c_defocus_min_max : str        = Field(
-        default="1.1:8", description="Defocus search range min:max in microns", title="Defocus range",
+    c_defocus_min_max: str = Field(
+        default="1.1:8",
+        description="Defocus search range min:max in microns",
+        title="Defocus range",
         json_schema_extra=form("CTF", M, "µm"),
     )
-    c_grid            : str        = Field(
-        default="2x2x1", description="CTF estimation grid XxYxZ", title="Grid", json_schema_extra=form("CTF", M),
+    c_grid: str = Field(
+        default="2x2x1", description="CTF estimation grid XxYxZ", title="Grid", json_schema_extra=form("CTF", M)
     )
-    c_use_sum         : bool       = Field(
-        default=False, description="Use frame sum for CTF estimation instead of individual frames",
-        title="Use frame sum", json_schema_extra=form("CTF"),
+    c_use_sum: bool = Field(
+        default=False,
+        description="Use frame sum for CTF estimation instead of individual frames",
+        title="Use frame sum",
+        json_schema_extra=form("CTF"),
     )
-    c_window          : int        = Field(
-        default=512, ge=128, description="CTF estimation window size in pixels", title="Window",
+    c_window: int = Field(
+        default=512,
+        ge=128,
+        description="CTF estimation window size in pixels",
+        title="Window",
         json_schema_extra=form("CTF", S, "px"),
     )
-    out_average_halves: bool       = Field(
-        default=True, description="Output half-set averages for independent validation", title="Average halves",
+    out_average_halves: bool = Field(
+        default=True,
+        description="Output half-set averages for independent validation",
+        title="Average halves",
         json_schema_extra=form("Output"),
     )
-    out_skip_first    : int        = Field(
-        default=0, description="Skip this many initial tilts", title="Skip first",
+    out_skip_first: int = Field(
+        default=0,
+        description="Skip this many initial tilts",
+        title="Skip first",
         json_schema_extra=form("Output", S, "tilts"),
     )
-    out_skip_last     : int        = Field(
-        default=0, description="Skip this many final tilts", title="Skip last",
+    out_skip_last: int = Field(
+        default=0,
+        description="Skip this many final tilts",
+        title="Skip last",
         json_schema_extra=form("Output", S, "tilts"),
     )
-    perdevice         : int        = Field(
-        default=2, ge=0, le=8, description="Parallel tilt series per GPU", title="Per GPU",
+    perdevice: int = Field(
+        default=2,
+        ge=0,
+        le=8,
+        description="Parallel tilt series per GPU",
+        title="Per GPU",
         json_schema_extra=form("Processing", S),
     )
-    do_at_most        : int        = Field(
-        default=-1, description="Process at most N tilt series (-1 = all)", title="Max series",
+    do_at_most: int = Field(
+        default=-1,
+        description="Process at most N tilt series (-1 = all)",
+        title="Max series",
         json_schema_extra=form("Processing", S),
     )
-    gain_operations   : str | None = Field(
-        default=None, description="Colon-separated gain operations: flip_x, flip_y, transpose (e.g. flip_x:transpose)",
-        title="Gain operations", json_schema_extra=form("Processing", M),
+    gain_operations: str | None = Field(
+        default=None,
+        description="Colon-separated gain operations: flip_x, flip_y, transpose (e.g. flip_x:transpose)",
+        title="Gain operations",
+        json_schema_extra=form("Processing", M),
     )
     array_throttle: int = Field(
         default=40, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series motion/CTF"

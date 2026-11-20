@@ -95,8 +95,8 @@ def _registry_ts_count(project_dir: Path) -> int:
         return 0
 
 
-_RECON_PNG_APIX    = re.compile(r"_(\d+(?:\.\d+)?)Apx\.png$")
-_JOB_NUMBER        = re.compile(r"job(\d+)")
+_RECON_PNG_APIX = re.compile(r"_(\d+(?:\.\d+)?)Apx\.png$")
+_JOB_NUMBER = re.compile(r"job(\d+)")
 _PIPELINE_POSITION = {jt.value: i for i, jt in enumerate(PIPELINE_ORDER)}
 
 
@@ -250,18 +250,18 @@ def _read_extraction_outdir(out_dir: Path) -> tuple[str, dict]:
 class CryoBoostBackend:
     def __init__(self, server_dir: Path):
         global _backend_instance
-        _backend_instance          = self
-        self.username              = getpass.getuser()
-        self.server_dir            = server_dir
-        self.config_service        = get_config_service()
-        self.project_service       = ProjectService(self)
+        _backend_instance = self
+        self.username = getpass.getuser()
+        self.server_dir = server_dir
+        self.config_service = get_config_service()
+        self.project_service = ProjectService(self)
         self.pipeline_orchestrator = PipelineOrchestratorService(self)
-        self.container_service     = get_container_service()
-        self.slurm_service         = SlurmService(self.username)
-        self.pipeline_runner       = PipelineRunnerService(self)
-        self.state_service         = get_state_service()
-        self.template_service      = TemplateService(self)
-        self.pdb_service           = PDBService(self)
+        self.container_service = get_container_service()
+        self.slurm_service = SlurmService(self.username)
+        self.pipeline_runner = PipelineRunnerService(self)
+        self.state_service = get_state_service()
+        self.template_service = TemplateService(self)
+        self.pdb_service = PDBService(self)
         # PipelineMonitor is the single server-side observer of pipeline
         # status across all projects. Started in server_app.py's FastAPI startup
         # hook; not auto-started here so unit-test / one-shot driver paths
@@ -902,9 +902,7 @@ class CryoBoostBackend:
         values = None
         if mode == TOMO_IMPORT_JOBS:
             sources = [s.model_dump() for b in all_batches if b.source_mode == TOMO_IMPORT_JOBS for s in b.job_sources]
-            checked = await asyncio.to_thread(
-                check_job_sources, sources, self.config_service.config.container_binds
-            )
+            checked = await asyncio.to_thread(check_job_sources, sources, self.config_service.config.container_binds)
             if not checked["success"]:
                 return checked
             values = checked["values"]

@@ -41,11 +41,7 @@ from collections.abc import Awaitable, Callable
 
 from nicegui import ui
 
-from services.background_tasks import (
-    BackgroundTaskRecord,
-    ProgressCallback,
-    get_background_task_registry,
-)
+from services.background_tasks import BackgroundTaskRecord, ProgressCallback, get_background_task_registry
 
 logger = logging.getLogger(__name__)
 
@@ -59,12 +55,7 @@ class BackgroundTask:
     the global registry and outlives this object."""
 
     def __init__(
-        self,
-        *,
-        title: str,
-        subtitle: str | None = None,
-        dedup_key: str | None = None,
-        project_path: str | None = None,
+        self, *, title: str, subtitle: str | None = None, dedup_key: str | None = None, project_path: str | None = None
     ) -> None:
         self.title = title
         self.subtitle = subtitle
@@ -104,30 +95,19 @@ class BackgroundTask:
 
         already_running = None
         if self.dedup_key:
-            already_running = next(
-                (t for t in registry.all() if t.is_running and t.dedup_key == self.dedup_key),
-                None,
-            )
+            already_running = next((t for t in registry.all() if t.is_running and t.dedup_key == self.dedup_key), None)
 
         task_id = registry.submit(
-            work,
-            title=self.title,
-            subtitle=self.subtitle,
-            project_path=self.project_path,
-            dedup_key=self.dedup_key,
+            work, title=self.title, subtitle=self.subtitle, project_path=self.project_path, dedup_key=self.dedup_key
         )
 
         if show_start_toast:
             try:
                 if already_running is not None:
-                    ui.notify(
-                        f"{self.title} already in flight — see tray (bottom-right)",
-                        type="info", timeout=2500,
-                    )
+                    ui.notify(f"{self.title} already in flight — see tray (bottom-right)", type="info", timeout=2500)
                 else:
                     ui.notify(
-                        f"{self.title} started — track progress in the tray (bottom-right)",
-                        type="info", timeout=2500,
+                        f"{self.title} started — track progress in the tray (bottom-right)", type="info", timeout=2500
                     )
             except RuntimeError:
                 # Client gone — task still submitted, just no toast.
@@ -146,9 +126,7 @@ class BackgroundTask:
         so the panel can attach a fresh poll and show in-flight state
         instead of re-offering the trigger UI."""
         registry = get_background_task_registry()
-        return next(
-            (t for t in registry.all() if t.is_running and t.dedup_key == dedup_key), None
-        )
+        return next((t for t in registry.all() if t.is_running and t.dedup_key == dedup_key), None)
 
     @staticmethod
     def attach(

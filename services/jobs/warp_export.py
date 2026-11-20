@@ -54,33 +54,43 @@ class WarpExportParams(AbstractJobParams):
         default=1.0,
         description="Output pixel size = tilt-series pixel size × this factor (Warp's --output_angpix). Same meaning "
         "as subtomoExtraction's binning, so both paths can cut the same particles at the same voxel size.",
-        title="Binning", json_schema_extra=form(SPECIES_GROUP, S),
+        title="Binning",
+        json_schema_extra=form(SPECIES_GROUP, S),
     )
     box_size: int = Field(
         default=224,
         description="Particle image size in output pixels (even). No larger box is cropped afterwards: the box must "
-        "hold the particle plus the signal defocus spreads outward, so aim ~2× the particle diameter.", title="Box",
+        "hold the particle plus the signal defocus spreads outward, so aim ~2× the particle diameter.",
+        title="Box",
         json_schema_extra=form(SPECIES_GROUP, S, "px"),
     )
     diameter_ang: float = Field(
         default=200.0,
         description="Particle diameter in Å. Warp marks a tilt as not visible when the particle is closer than half "
-        "of this to the image edge.", title="Diameter", json_schema_extra=form(SPECIES_GROUP, S, "Å"),
+        "of this to the image edge.",
+        title="Diameter",
+        json_schema_extra=form(SPECIES_GROUP, S, "Å"),
     )
     max_missing_tilts: int = Field(
-        default=999, ge=0,
+        default=999,
+        ge=0,
         description="Drop particles not visible in more than this many tilts. The default keeps every particle "
-        "visible in at least one tilt, as subtomoExtraction's min_frames 1 does.", title="Max missing tilts",
+        "visible in at least one tilt, as subtomoExtraction's min_frames 1 does.",
+        title="Max missing tilts",
         json_schema_extra=form("Selection", S),
     )
     dont_premultiply: bool = Field(
         default=True,
         description="Write raw particle images and let RELION apply the CTF and dose weighting, with the same hand as "
-        "the RELION extraction path. Off = Warp premultiplies them.", title="Raw images",
+        "the RELION extraction path. Off = Warp premultiplies them.",
+        title="Raw images",
         json_schema_extra=form("Selection"),
     )
     perdevice: int = Field(
-        default=1, ge=1, description="Warp worker processes per GPU", title="Per GPU",
+        default=1,
+        ge=1,
+        description="Warp worker processes per GPU",
+        title="Per GPU",
         json_schema_extra=form("Processing", S),
     )
 

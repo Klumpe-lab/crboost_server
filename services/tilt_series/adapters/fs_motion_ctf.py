@@ -137,8 +137,7 @@ class FsMotionCtfIngestAdapter(BaseIngestAdapter):
             sample = unresolved[:5]
             suffix = "..." if len(unresolved) > 5 else ""
             raise RuntimeError(
-                f"fs_motion_and_ctf ingest: {len(unresolved)} frame XML(s) missing "
-                f"(sample): {sample}{suffix}"
+                f"fs_motion_and_ctf ingest: {len(unresolved)} frame XML(s) missing (sample): {sample}{suffix}"
             )
 
     def emit_star(
@@ -181,10 +180,7 @@ class FsMotionCtfIngestAdapter(BaseIngestAdapter):
                 continue
 
             ts = self.registry.get_tilt_series(ts_id)
-            updated_df, errors = self._apply_motion_ctf_to_tilt_df(
-                ts=ts,
-                tilt_df=self._read_only_block(per_ts_in),
-            )
+            updated_df, errors = self._apply_motion_ctf_to_tilt_df(ts=ts, tilt_df=self._read_only_block(per_ts_in))
             if errors:
                 unresolved.extend(f"{ts_id}: {e}" for e in errors)
                 continue
@@ -193,16 +189,16 @@ class FsMotionCtfIngestAdapter(BaseIngestAdapter):
 
         if unresolved:
             raise RuntimeError(
-                "fs_motion_and_ctf emit_star: " + str(len(unresolved)) + " per-TS problem(s):\n  - "
+                "fs_motion_and_ctf emit_star: "
+                + str(len(unresolved))
+                + " per-TS problem(s):\n  - "
                 + "\n  - ".join(unresolved)
             )
 
         out_ts_df = self._drop_excluded(out_ts_df, excluded)
 
         # Rewrite per-TS paths in the global block to point to the new tilt_dir.
-        out_ts_df["rlnTomoTiltSeriesStarFile"] = out_ts_df["rlnTomoName"].apply(
-            lambda name: f"tilt_series/{name}.star"
-        )
+        out_ts_df["rlnTomoTiltSeriesStarFile"] = out_ts_df["rlnTomoName"].apply(lambda name: f"tilt_series/{name}.star")
 
         self.starfile_service.write({"global": out_ts_df}, output_star_path)
         logger.info("fs_motion_and_ctf: wrote output STAR to %s", output_star_path)
@@ -259,9 +255,7 @@ class FsMotionCtfIngestAdapter(BaseIngestAdapter):
             warp_xml_path=xml_path,
         )
 
-    def _apply_motion_ctf_to_tilt_df(
-        self, ts: TiltSeries, tilt_df: pd.DataFrame
-    ) -> tuple[pd.DataFrame, list[str]]:
+    def _apply_motion_ctf_to_tilt_df(self, ts: TiltSeries, tilt_df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         """Overlay per-frame motion+CTF outputs onto the tilt DataFrame.
 
         Resolution: tilt_row['rlnMicrographMovieName'] → Frame via
@@ -282,9 +276,7 @@ class FsMotionCtfIngestAdapter(BaseIngestAdapter):
 
             out = frame.outputs.get(self.job_instance_id)
             if out is None or out.output_type != "fs_motion_ctf":
-                errors.append(
-                    f"row {idx}: frame {frame.id!r} has no fs_motion_and_ctf output in registry"
-                )
+                errors.append(f"row {idx}: frame {frame.id!r} has no fs_motion_and_ctf output in registry")
                 continue
 
             seen_frame_ids[frame.id] = seen_frame_ids.get(frame.id, 0) + 1

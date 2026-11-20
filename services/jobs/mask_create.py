@@ -43,36 +43,58 @@ class MaskCreateParams(AbstractJobParams):
     ]
 
     lowpass_ang: float = Field(
-        default=15.0, gt=0, description="Low-pass filter on the map before thresholding (Å)", title="Low-pass",
+        default=15.0,
+        gt=0,
+        description="Low-pass filter on the map before thresholding (Å)",
+        title="Low-pass",
         json_schema_extra=form("Threshold", S, "Å"),
     )
     threshold: float = Field(
-        default=0.0, description="Absolute threshold on the low-passed map; 0 = threshold_fraction of its maximum",
-        title="Threshold", json_schema_extra=form("Threshold", S),
+        default=0.0,
+        description="Absolute threshold on the low-passed map; 0 = threshold_fraction of its maximum",
+        title="Threshold",
+        json_schema_extra=form("Threshold", S),
     )
     threshold_fraction: float = Field(
-        default=0.4, gt=0, lt=1,
+        default=0.4,
+        gt=0,
+        lt=1,
         description="Threshold as a fraction of the low-passed map's maximum (used while threshold is 0)",
-        title="Threshold fraction", json_schema_extra=form("Threshold", S),
+        title="Threshold fraction",
+        json_schema_extra=form("Threshold", S),
     )
     extend_px: int = Field(
-        default=3, ge=0, description="Grow the binary mask by this many pixels", title="Extend",
+        default=3,
+        ge=0,
+        description="Grow the binary mask by this many pixels",
+        title="Extend",
         json_schema_extra=form("Edge", S, "px"),
     )
     soft_edge_px: int = Field(
-        default=6, ge=0, description="Width of the cosine soft edge (pixels)", title="Soft edge",
+        default=6,
+        ge=0,
+        description="Width of the cosine soft edge (pixels)",
+        title="Soft edge",
         json_schema_extra=form("Edge", S, "px"),
     )
     inner_radius_ang: float = Field(
-        default=0.0, ge=0, description="Zero the mask inside this radius from the box centre (Å); 0 = no inner limit",
-        title="Inner radius", json_schema_extra=form("Radius", S, "Å"),
+        default=0.0,
+        ge=0,
+        description="Zero the mask inside this radius from the box centre (Å); 0 = no inner limit",
+        title="Inner radius",
+        json_schema_extra=form("Radius", S, "Å"),
     )
     outer_radius_ang: float = Field(
-        default=0.0, ge=0, description="Zero the mask outside this radius from the box centre (Å); 0 = no outer limit",
-        title="Outer radius", json_schema_extra=form("Radius", S, "Å"),
+        default=0.0,
+        ge=0,
+        description="Zero the mask outside this radius from the box centre (Å); 0 = no outer limit",
+        title="Outer radius",
+        json_schema_extra=form("Radius", S, "Å"),
     )
     other_args: str = Field(
-        default="", description="Extra relion_mask_create flags, appended verbatim", title="Extra arguments",
+        default="",
+        description="Extra relion_mask_create flags, appended verbatim",
+        title="Extra arguments",
         json_schema_extra=form("Extra", L),
     )
 
