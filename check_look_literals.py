@@ -3,7 +3,8 @@
 A look is one block of `--cb-*` values in `ui/dashboard/css.py`; a component names a voice or a state and reads them.
 Literals that predate the rule are counted per file in `check_look_literals.json`, the allow-list that shrinks as
 files convert. A file over its count, or a new file with any, fails. A literal inside a `var(--cb-…, <fallback>)` is
-the variable's fallback and is not counted.
+the variable's fallback and is not counted, and a `font-family` or `text-transform` whose value is a `--cb-*`
+variable is not a literal.
 
     ./crboost python check_look_literals.py            # check
     ./crboost python check_look_literals.py --update   # write today's counts (after converting a file)
@@ -21,7 +22,7 @@ ALLOW = ROOT / "check_look_literals.json"
 # The theme block and the voice helpers are where the values live.
 EXEMPT = {"ui/dashboard/css.py", "ui/job_plugins/_field_styles.py", "ui/branch_map/style.py"}
 _FALLBACK = re.compile(r"var\(--cb-[\w-]+,[^()]*(?:\([^()]*\)[^()]*)*\)")
-_LITERAL = re.compile(r"#[0-9a-fA-F]{3,8}\b|font-family\s*:|text-transform\s*:")
+_LITERAL = re.compile(r"#[0-9a-fA-F]{3,8}\b|(?:font-family|text-transform)\s*:(?!\s*var\(--cb-)")
 
 
 def counts() -> dict[str, int]:
@@ -30,7 +31,7 @@ def counts() -> dict[str, int]:
         rel = path.relative_to(ROOT).as_posix()
         if rel in EXEMPT:
             continue
-        n = len(_LITERAL.findall(_FALLBACK.sub("", path.read_text(encoding="utf-8"))))
+        n = len(_LITERAL.findall(_FALLBACK.sub("var(--cb-)", path.read_text(encoding="utf-8"))))
         if n:
             out[rel] = n
     return out

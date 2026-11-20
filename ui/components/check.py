@@ -21,25 +21,28 @@ from nicegui.events import ValueChangeEventArguments, handle_event
 CHECK_CSS = """
 .cb-check { display: inline-flex; align-items: baseline; gap: 6px; cursor: pointer; user-select: none; }
 .cb-check .cb-check-b { position: relative; display: inline-block; width: 10px; height: 10px; box-sizing: border-box;
-  border: 1px solid #5b7089; border-radius: 1px; flex-shrink: 0; background: #ffffff; }
+  border: 1px solid var(--cb-ink-3, #5b7089); border-radius: 1px; flex-shrink: 0;
+  background: var(--cb-surface, #ffffff); }
 .cb-check:hover .cb-check-b { border-color: var(--cb-field-focus, #4a8fd4); }
-.cb-check.on .cb-check-b { background: #334155; border-color: #334155; }
-.cb-check.on .cb-check-b::before { content: '✓'; position: absolute; inset: 0; color: #fff; font-size: 8px;
+.cb-check.on .cb-check-b { background: var(--cb-check-on, #334155); border-color: var(--cb-check-on, #334155); }
+.cb-check.on .cb-check-b::before { content: '✓'; position: absolute; inset: 0; color: var(--cb-check-on-ink, #fff);
+  font-size: 8px;
   line-height: 8px; text-align: center; }
 .cb-check .cb-check-t { font-family: var(--cb-sans, 'IBM Plex Sans', sans-serif); font-size: 10px; line-height: 14px;
-  color: #334155; white-space: nowrap; }
+  color: var(--cb-check-ink, #334155); white-space: nowrap; }
 .cb-check.cb-dis { cursor: default; opacity: .55; }
-.cb-check.cb-dis:hover .cb-check-b { border-color: #5b7089; }
+.cb-check.cb-dis:hover .cb-check-b { border-color: var(--cb-ink-3, #5b7089); }
 .cb-yn { display: inline-flex; flex-shrink: 0; height: 20px; box-sizing: border-box; cursor: pointer;
   user-select: none; border: 1px solid var(--cb-field-line, #d3dde8); border-radius: var(--cb-field-radius, 2px);
-  overflow: hidden; background: #ffffff; }
+  overflow: hidden; background: var(--cb-field-bg, #ffffff); }
 .cb-yn > span { font-family: var(--cb-mono, 'IBM Plex Mono', monospace); font-size: 9px; padding: 0 7px;
-  line-height: 18px; color: #94a3b8; }
+  line-height: 18px; color: var(--cb-ink-4, #94a3b8); }
 .cb-yn:hover { border-color: var(--cb-field-line-hover, #a9c6e4); }
-.cb-yn.on > .y, .cb-yn:not(.on) > .n { background: #334155; color: #ffffff; }
+.cb-yn.on > .y, .cb-yn:not(.on) > .n { background: var(--cb-check-on, #334155);
+  color: var(--cb-check-on-ink, #ffffff); }
 .cb-yn.cb-dis { cursor: default; }
 .cb-yn.cb-dis:hover { border-color: var(--cb-field-line, #d3dde8); }
-.cb-yn.cb-dis.on > .y, .cb-yn.cb-dis:not(.on) > .n { background: #94a3b8; }
+.cb-yn.cb-dis.on > .y, .cb-yn.cb-dis:not(.on) > .n { background: var(--cb-ink-4, #94a3b8); }
 """
 
 

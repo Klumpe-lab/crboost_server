@@ -61,7 +61,7 @@ from ui.job_plugins._field_styles import (
     box_select,
     field_grid,
     section,
-    voice,
+    TH_VOICE,
 )
 from ui.particles.list_actions import commit_extraction_geometry
 from ui.species.catalog import publish_to_catalog
@@ -74,11 +74,12 @@ _TITLE_CLS = "text-sm font-semibold text-gray-800"
 _HINT_CLS = "text-[10px] text-gray-400"
 _BODY_CLS = "text-xs text-gray-700"
 _MONO_CLS = "text-[10px] font-mono text-gray-600"
-_BODY = "#1e293b"
-_SOFT = "#5b7089"
-_WARN_INK = "#8a4b06"
+_BODY = "var(--cb-ink-2, #1e293b)"
+_SOFT = "var(--cb-ink-3, #5b7089)"
+_WARN_INK = "var(--cb-warn-ink, #8a4b06)"
 _WORDS = f"{SANS} font-size: 10px; color: {_BODY};"
-_TH = voice("th", font="'IBM Plex Sans', sans-serif", size="9px", weight=600, ink="#7d93ab")
+# The chosen hue's swatch: a gap in the page's colour, then a ring.
+_HUE_ON_RING = "2px var(--cb-surface, #ffffff), 0 0 0 3px var(--cb-ink-1, #12324f)"
 
 # `C1` IS "no symmetry", and most complexes are C1 (ribosome, proteasome) — the option
 # list says so instead of leaving the user to know it. One spelling across this tab,
@@ -160,7 +161,11 @@ def render_species_rows(backend, project_path: Path, species_id: str) -> None:
             "What this species' picks are drawn in on the canvases: tomogram overlays, the pick viewer, napari, the "
             "gallery. Here, and nowhere else in the chrome.",
         )
-        render_color_swatch(sp.color or "#3b82f6", lambda c: _set(color=c), tooltip="The overlay palette")
+        render_color_swatch(
+            sp.color or ParticleSpecies.model_fields["color"].default,
+            lambda c: _set(color=c),
+            tooltip="The overlay palette",
+        )
 
     with ui.element("div").style(FIELD_ROW_STYLE):
         _label(
@@ -236,36 +241,37 @@ class _GlyphRow(FingerprintedView):
         name = SPECIES_GLYPHS[key].lower() + (" (default)" if key == DEFAULT_SPECIES_GLYPH else "")
         with ui.element("div").style(
             "display: inline-flex; align-items: center; gap: 7px; cursor: pointer; padding: 1px 6px 1px 3px; "
-            "border: 1px solid #dbe3ec; border-radius: 2px; min-width: 0;"
+            "border: 1px solid var(--cb-box-line, #dbe3ec); border-radius: 2px; min-width: 0;"
         ):
             ui.html(species_glyph_svg(sp, 14), sanitize=False).style("display: flex; flex-shrink: 0;")
             ui.label(name).style(f"{SANS} font-size: 10px; color: {_BODY}; white-space: nowrap;")
             ui.label(SPECIES_GLYPH_HUES.get(hue, SPECIES_GLYPH_HUES[DEFAULT_GLYPH_HUE])[0]).style(
                 f"{MONO} font-size: 9px; color: {_SOFT}; white-space: nowrap;"
             )
-            ui.label("▾").style("font-size: 8px; color: #94a3b8;")
+            ui.label("▾").style("font-size: 8px; color: var(--cb-ink-4, #94a3b8);")
             with ui.menu().props("auto-close"):
                 self._picker(sp, key, hue)
 
     def _picker(self, sp: ParticleSpecies, current: str, hue: str) -> None:
         with ui.element("div").style("display: flex; flex-direction: column; gap: 8px; padding: 8px; width: 252px;"):
-            ui.label("glyph").style(_TH)
+            ui.label("glyph").style(TH_VOICE)
             with ui.element("div").style("display: grid; grid-template-columns: repeat(6, 36px); gap: 4px;"):
                 for key, title in SPECIES_GLYPHS.items():
                     on = key == current
+                    fill = "var(--cb-glyph-on, #f4f8fc)" if on else "var(--cb-surface, #ffffff)"
+                    edge = "var(--cb-accent, #4a8fd4)" if on else "var(--cb-line, #e4eaf1)"
                     tile = ui.element("div").style(
                         "width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; "
-                        f"cursor: pointer; background: {'#f4f8fc' if on else '#ffffff'}; box-shadow: inset 0 0 0 1px "
-                        f"{'var(--cb-accent, #4a8fd4)' if on else '#e4eaf1'};"
+                        f"cursor: pointer; background: {fill}; box-shadow: inset 0 0 0 1px {edge};"
                     )
                     tile.on("click", lambda _e, k=key: self._pick(glyph=k))
                     with tile:
                         ui.html(species_glyph_svg(sp, 22, key=key), sanitize=False).style("display: flex;")
                     tile.tooltip(f"{title}: the default" if key == DEFAULT_SPECIES_GLYPH else title)
-            ui.label("hue").style(_TH)
+            ui.label("hue").style(TH_VOICE)
             with ui.element("div").style("display: flex; gap: 5px; flex-wrap: wrap;"):
                 for key, (word, ink) in SPECIES_GLYPH_HUES.items():
-                    ring = "2px #ffffff, 0 0 0 3px #12324f" if key == hue else "1px rgba(15, 29, 46, 0.15)"
+                    ring = _HUE_ON_RING if key == hue else "1px rgba(15, 29, 46, 0.15)"
                     sw = ui.element("div").style(
                         f"width: 14px; height: 14px; background: {ink}; cursor: pointer; box-shadow: 0 0 0 {ring};"
                     )
@@ -475,7 +481,7 @@ class _StatusView(FingerprintedView):
         Picks tab, the jobs on the roster, the template and mask above."""
         c = self._tab.computed
         if c is None:
-            ui.label("computing…").style(f"{SANS} font-size: 10px; color: #94a3b8;")
+            ui.label("computing…").style(f"{SANS} font-size: 10px; color: var(--cb-ink-4, #94a3b8);")
             return
         if c.error:
             ui.label(f"Status unavailable — {c.error}").classes("text-[11px] text-red-600").tooltip(

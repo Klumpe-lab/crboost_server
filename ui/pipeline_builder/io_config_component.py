@@ -138,11 +138,11 @@ _IO_GRID = (
     "min-width: 0; min-height: 22px;"
 )
 _SLOT_VOICE = (
-    "font-family: var(--cb-mono, 'IBM Plex Mono', monospace); text-transform: uppercase; letter-spacing: .06em; "
-    "white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
+    "font-family: var(--cb-mono, 'IBM Plex Mono', monospace); text-transform: var(--cb-slot-case, uppercase); "
+    "letter-spacing: var(--cb-slot-track, .06em); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
 )
-_SLOT_NAME_STYLE = f"{_SLOT_VOICE} font-size: 8.5px; color: #5b7089; cursor: help; padding-right: 6px;"
-_IO_MARK_STYLE = f"{_SLOT_VOICE} font-size: 7.5px; color: #94a3b8;"
+_SLOT_NAME_STYLE = f"{_SLOT_VOICE} font-size: 8.5px; color: var(--cb-ink-3, #5b7089); cursor: help; padding-right: 6px;"
+_IO_MARK_STYLE = f"{_SLOT_VOICE} font-size: 7.5px; color: var(--cb-ink-4, #94a3b8);"
 # A row of things in the source column.
 _ROW_STYLE = "display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; min-height: 22px;"
 # The lines under a row (its file, a set's lineage and facets, notes) start under the slot word.
@@ -153,6 +153,8 @@ _MUTED = "#94a3b8"
 # Secondary text (status words, notes, tags) is one size everywhere.
 _SMALL = f"{FONT} font-size: 9px;"
 _DOT = "width: 7px; height: 7px; border-radius: var(--cb-pip-radius, 50%); flex-shrink: 0;"
+# A light with no state: its ring alone.
+_HOLLOW = "var(--cb-ink-4, #94a3b8)"
 # The app tooltip's panel and frame come from ui/dashboard/css.py; only the room is set here.
 _TIP_PANEL_STYLE = "padding: 8px 10px; max-width: 380px;"
 _TIP_TITLE = f"{FONT} font-size: 11px; font-weight: 700; color: #0f172a;"
@@ -261,7 +263,7 @@ def _light(status: JobStatus | None = None, color: str | None = None) -> None:
     elif color is not None:
         ui.element("div").style(f"{_DOT} background: {color};")
     else:
-        ui.element("div").style(f"{_DOT} box-sizing: border-box; border: 1.5px solid #94a3b8; background: none;")
+        ui.element("div").style(f"{_DOT} box-sizing: border-box; border: 1.5px solid {_HOLLOW}; background: none;")
 
 
 def _io_mark(text: str) -> None:
@@ -849,7 +851,7 @@ class IOConfigComponent:
         elif validation.tied:
             self._selector_face("Ambiguous — pick a source", note=f"{len(validation.tied)} candidates", color=_AMBER)
         elif current_value:
-            self._selector_face(current_value, note="unresolved", color="#f59e0b")
+            self._selector_face(current_value, note="unresolved", color="var(--cb-io-unresolved, #f59e0b)")
         else:
             missing = STATUS_STYLE[JobStatus.FAILED]["color"] if slot.required else None
             self._selector_face(empty_name, color=missing)
@@ -957,7 +959,7 @@ class IOConfigComponent:
         """The source as the roster names a job: its light, type name and number; `note` a quiet word after."""
         _light(status, color)
         label = ui.label(name).style(
-            f"{FONT} font-size: 10.5px; color: #1e293b; min-width: 0; "
+            f"{FONT} font-size: 10.5px; color: var(--cb-ink-2, #1e293b); min-width: 0; "
             "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
         )
         if tip:
