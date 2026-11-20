@@ -9,11 +9,9 @@ From: ubuntu:24.04
 # Ubuntu 24.04 because its glibc (2.39) loads the EL10 host GL/EGL libraries that --nv mounts; images with glibc
 # older than 2.36 fail on them with GLIBC_ABI_DT_RELR.
 #
-# The viewer is not this image's: crboost runs EisGreis from its own install (conf.yaml napari.eisgreis, bound in by
-# the worker), whose eisgreis-crboost uses the install's environment and starts VirtualGL itself on a full GPU. Of
-# this image only the desktop is used: Xvnc, fluxbox, VirtualGL, the X and GL libraries Qt needs, and websockify,
-# which serves the desktop to the site's Open OnDemand noVNC (conf.yaml ood:). The napari venv at /opt/napari
-# (napari, PyQt6, mrcfile, napari-mrcfile-reader) is no longer started by crboost; websockify lives in it.
+# crboost no longer runs this image: napari sessions run EisGreis from its own install on the site's remote desktop
+# (conf.yaml napari.sif_path, the portal's ood-desktop image; containers/napari/desktop_session.sh). It lacks
+# ood-desktop, which that worker needs.
 #
 # Build (CBE.next has no subuid range, so the faked-based fakeroot fails):
 #   apptainer build --fakeroot --ignore-fakeroot-command napari_GL.sif container_defs/napari_GL.def

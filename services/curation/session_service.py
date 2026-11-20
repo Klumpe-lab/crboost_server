@@ -72,6 +72,8 @@ class CurationSessionService:
         self._switch_lock = asyncio.Lock()
         # job id -> (monotonic time asked, SLURM's start estimate) for queued napari sessions.
         self._start_estimates: dict[str, tuple[float, str | None]] = {}
+        # job id -> monotonic time a napari job was asked to stop (stop_napari_session).
+        self._stop_requests: dict[str, float] = {}
 
     async def launch_curation_session(
         self, project_path: Path | None = None, cxc_path: Path | None = None, scope: dict[str, Any] | None = None
@@ -201,8 +203,12 @@ class CurationSessionService:
         return ok(slurm_job_id=slurm_job_id, session_dir=str(session_dir), session_id=session_id)
 
     def _vnc_worker(self) -> Path:
-        """The node-side worker every VNC session runs: ChimeraX curation and napari alike."""
+        """The node-side worker a ChimeraX curation session runs."""
         return self.server_dir / "containers" / "chimerax_artiax" / "curation_session.sh"
+
+    def _napari_worker(self) -> Path:
+        """The node-side worker a napari session runs: EisGreis on the site's remote desktop."""
+        return self.server_dir / "containers" / "napari" / "desktop_session.sh"
 
     async def _submit_vnc_job(
         self,
@@ -217,9 +223,11 @@ class CurationSessionService:
         walltime: str,
         env: dict[str, str],
         conf_section: str,
+        worker: Path | None = None,
     ) -> dict[str, Any]:
-        """Write `<session_dir>/submit.sh` (the SLURM lines, `env` exported, then the worker) and sbatch it.
-        `ok(slurm_job_id=...)`, or `err` naming the conf.yaml section when the placement is wrong."""
+        """Write `<session_dir>/submit.sh` (the SLURM lines, `env` exported, then `worker`, the curation worker by
+        default) and sbatch it. `ok(slurm_job_id=...)`, or `err` naming the conf.yaml section when the placement is
+        wrong."""
         try:
             await asyncio.to_thread(check_constraint, placement)
             excluded = await asyncio.to_thread(avoided_nodes, placement)
@@ -257,7 +265,7 @@ class CurationSessionService:
             # The browser route: websockify beside Xvnc for the portal's relay, Xvnc on localhost (roadmap 55).
             env = {**env, "CB_WS_SIF": ood.websockify_sif or env["CX_SIF"]}
         lines += [f"export {k}={shlex.quote(v)}" for k, v in env.items()]
-        lines.append(f"exec {shlex.quote(str(self._vnc_worker()))}")
+        lines.append(f"exec {shlex.quote(str(worker or self._vnc_worker()))}")
         sbatch_script = session_dir / "submit.sh"
         await asyncio.to_thread(sbatch_script.write_text, "\n".join(lines) + "\n")
         await asyncio.to_thread(sbatch_script.chmod, 0o755)
@@ -580,6 +588,9 @@ class CurationSessionService:
     _CURATION_JOB = "cb-curation"
     _NAPARI_JOB = "cb-napari"
     _CURATION_LIVE_STATES = ("RUNNING", "PENDING", "CONFIGURING", "SCHEDULED", "COMPLETING")
+    # How long a napari job asked to stop counts as gone while it closes its viewer. One that still runs after this is
+    # shown again, and a Stop then cancels it outright.
+    _STOP_GRACE_S = 60.0
 
     async def find_active_curation_session(self, project_path: Path) -> dict[str, Any] | None:
         """Return the project's one live curation session, or None.
@@ -858,9 +869,10 @@ class CurationSessionService:
     async def launch_napari_session(
         self, volumes: list[dict[str, str]], title: str, *, software: bool = False
     ) -> dict[str, Any]:
-        """Submit EisGreis on a VNC desktop showing `volumes` (`[{"name", "path"}]`, absolute paths). On a full GPU
-        (VirtualGL) the placement is `napari:`'s where set, else `curation:`'s; `software` runs it with software
-        rendering where `napari.software` says, which starts at once. Returns the SLURM job id, the session dir (in
+        """Submit EisGreis on the site's remote desktop (napari.sif_path, the image its Open OnDemand desktop runs)
+        showing `volumes` (`[{"name", "path"}]`, absolute paths). On a full GPU (VirtualGL) the placement is
+        `napari:`'s where set, else `curation:`'s; `software` runs it with software rendering where `napari.software`
+        says, which starts at once. Returns the SLURM job id, the session dir (in
         ~/.crboost/napari) and the request's `seq`; poll with get_napari_session_info()."""
         cfg = self.config_service.napari
         cur = self.config_service.curation
@@ -879,8 +891,8 @@ class CurationSessionService:
         partition = sw.partition if software else (cfg.partition if cfg.partition is not None else cur.partition)
         if not partition:
             return err("Neither napari.partition nor curation.partition is set in conf.yaml.")
-        if not self._vnc_worker().exists():
-            return err(f"Missing from the server's checkout: {self._vnc_worker()}")
+        if not self._napari_worker().exists():
+            return err(f"Missing from the server's checkout: {self._napari_worker()}")
         if not volumes:
             return err("Nothing to open.")
         missing = await asyncio.to_thread(self._missing_volumes, volumes)
@@ -914,13 +926,11 @@ class CurationSessionService:
             qos = cfg.qos if cfg.qos is not None else cur.qos
             cpus = cfg.cpus
         env = {
-            "CB_APP": "napari",
             "CX_SIF": str(sif),
-            # The worker binds /tmp, $HOME and the EisGreis install itself; volumes outside the site's roots are not
-            # visible in the session, and the viewer reports them as unreadable.
+            # The worker binds the session folder and the EisGreis install itself; volumes outside the site's roots
+            # are not visible in the session, and the viewer reports them as unreadable.
             "CX_BINDS": ":".join(self.config_service.config.container_binds),
             "CX_GEOMETRY": cfg.geometry,
-            "CX_DISPLAY": str(2 + (int(session_id[:6], 16) % 88)),
             "CX_LOGIN_HOST": cur.login_host or socket.getfqdn(),
             "CB_SESSION_DIR": str(session_dir),
             "CB_EISGREIS": installed["install"],
@@ -940,6 +950,7 @@ class CurationSessionService:
             walltime=cfg.time,
             env=env,
             conf_section="napari (placement from curation)",
+            worker=self._napari_worker(),
         )
         if not submitted.get("success"):
             return submitted
@@ -1054,8 +1065,9 @@ class CurationSessionService:
 
     async def find_active_napari_session(self) -> dict[str, Any] | None:
         """The user's live napari, or None; the newest one started when several run. A job of ours is live while its
-        `cb-napari` job is; a viewer in the user's desktop (registry kind "desktop") while its SLURM job runs (any
-        name: the portal's desktop job) and its heartbeat is fresh. The answer carries `route` ("job" or "desktop"),
+        `cb-napari` job is, unless it was asked to stop less than `_STOP_GRACE_S` ago (it is closing its viewer); a
+        viewer in the user's desktop (registry kind "desktop") while its SLURM job runs (any name: the portal's
+        desktop job) and its heartbeat is fresh. The answer carries `route` ("job" or "desktop"),
         and `requested` and `opened` when the session has them. Dead lines are pruned when squeue answered."""
         reg = self._napari_base() / "registry.jsonl"
         entries = await asyncio.to_thread(self._registry_entries, reg)
@@ -1076,7 +1088,8 @@ class CurationSessionService:
                 elif (jid and job is None) or not await asyncio.to_thread((sdir / napari_link.DESKTOP).exists):
                     dead.add(d["session_dir"])
             elif job is not None and job.name == self._NAPARI_JOB:
-                chosen = (d, job, "job")
+                if not self._stopping(jid):
+                    chosen = (d, job, "job")
             else:
                 dead.add(d["session_dir"])
 
@@ -1121,11 +1134,28 @@ class CurationSessionService:
         out.update(await asyncio.to_thread(self._read_napari_state, sdir))
         return out
 
+    def _stopping(self, job_id: str) -> bool:
+        """The napari job was asked to stop less than `_STOP_GRACE_S` ago: it is closing its viewer, and ends."""
+        asked = self._stop_requests.get(job_id)
+        return asked is not None and time.monotonic() - asked < self._STOP_GRACE_S
+
     async def stop_napari_session(self, slurm_job_id: str | None) -> dict[str, Any]:
-        """scancel a napari job of ours. A viewer in the user's own desktop is never stopped from here."""
+        """Stop a napari job of ours. A running one is asked: its worker alone gets SIGTERM and closes the viewer
+        while the desktop is still up, which saves the comments and particle STARs, then ends the job; meanwhile the
+        session counts as gone (`_stopping`). A pending job, or one that still runs `_STOP_GRACE_S` after it was
+        asked, is cancelled outright. A viewer in the user's own desktop is never stopped from here."""
         if not slurm_job_id:
             return err("no SLURM job id")
-        return await self.slurm_service.scancel_jobs([str(slurm_job_id)])
+        job_id = str(slurm_job_id)
+        if self._stopping(job_id):  # asked already: it is closing its viewer
+            return ok(cancelled=[job_id], graceful=True)
+        if job_id not in self._stop_requests:
+            signalled = await self.slurm_service.signal_batch_script(job_id, "TERM")
+            if signalled.get("success"):
+                self._stop_requests[job_id] = time.monotonic()
+                return ok(cancelled=[job_id], graceful=True)
+        self._stop_requests.pop(job_id, None)
+        return await self.slurm_service.scancel_jobs([job_id])
 
     async def send_chimerax_command(
         self, session_info: dict[str, Any], command: str, *, timeout: float = 60.0

@@ -244,10 +244,11 @@ class NapariConfig(BaseModel):
 
     `eisgreis` names an EisGreis install (`./crboost eisgreis-install`); crboost runs its `eisgreis-crboost` and talks
     to it only through session files in ~/.crboost/napari (EisGreis's docs/crboost-protocol.md). It runs either in
-    the user's own remote desktop (`desktop` holds the dialog's hints for starting one) or as a job of crboost's: a
-    VNC desktop from `sif_path` (napari_GL.sif, container_defs/napari_GL.def, of which only the desktop is used) on
-    the nodes the curation session runs on, through the same worker. The placement fields left unset here (None) are
-    `curation:`'s (qos included), and so are vgl, login_host and passwordless_vnc. With `curation.vgl` on, the job
+    the user's own remote desktop (`desktop` holds the dialog's hints for starting one) or as a job of crboost's: the
+    same remote desktop, from `sif_path` (the site's desktop image, as its Open OnDemand app runs it: TurboVNC, Xfce
+    through ood-desktop), started by containers/napari/desktop_session.sh on the nodes the curation session runs on.
+    The placement fields left unset here (None) are `curation:`'s (qos included), and so are vgl, login_host and
+    passwordless_vnc. With `curation.vgl` on, the job
     draws on the GPU through VirtualGL, so the placement must give a full GPU that does OpenGL (not a MIG slice).
     `software` adds *Start now*, the job with software rendering where it starts at once.
     """

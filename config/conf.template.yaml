@@ -293,16 +293,17 @@ curation:
 # segmentations, 3-D on any renderer), opened from the `napari` chip on a tomogram preview. `eisgreis` names its install:
 # `./crboost eisgreis-install /path/to/EisGreis` makes one and prints the line. It runs in the user's own remote desktop
 # of the site's Open OnDemand portal (`desktop:` holds what the dialog tells a user who has none running), or as a job
-# of crboost's on a VNC desktop from sif_path (image: container_defs/napari_GL.def; only its desktop is used), on the
-# nodes the curation session above runs on, through the same worker: leave the placement keys (partition, gres,
-# constraint, prefer, avoid) out to use curation's; vgl, login_host and passwordless_vnc are always curation's. With
-# vgl on the job needs a full GPU that does OpenGL (not a MIG slice, not an A100).
+# of crboost's: the same remote desktop, from sif_path (the site's desktop image, built from CLIP-HPC/ood-desktop-image:
+# TurboVNC, Xfce through ood-desktop), started by containers/napari/desktop_session.sh on the nodes the curation
+# session above runs on: leave the placement keys (partition, gres, constraint, prefer, avoid) out to use curation's;
+# vgl, login_host and passwordless_vnc are always curation's. With vgl on the job needs a full GPU that does OpenGL (not
+# a MIG slice, not an A100).
 napari:
   eisgreis: ""      # e.g. "/path/to/software/EisGreis"
   desktop:
     form: ""        # the portal's Remote Desktop form under ood.url, e.g. "/pun/sys/dashboard/batch_connect/sys/desktop/session_contexts/new"
     hint: ""        # what to ask that form for, e.g. "partition c, 32 GB, 8 cores; for 3-D partition g with a full GPU"
-  sif_path: "/path/to/napari_GL.sif"
+  sif_path: "/path/to/ood-desktop.sif"   # the remote-desktop image the portal's own desktop runs
   cpus: 4
   mem: "16G"
   time: "08:00:00"  # must be <= the QOS MaxWall for the partition (0/unlimited is rejected)
