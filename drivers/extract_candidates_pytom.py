@@ -2,7 +2,7 @@
 """
 Pick candidates driver: the job's source chooses the half that runs (`main`), in the supervisor and in
 every array task, which all start this script. This file is the template-matching half: a supervisor
-and a per-tomogram SLURM array task.
+and a per-tomogram SLURM array task. The segmentation half is drivers/pick_from_segmentation.py.
 
 Mode is determined by the SLURM_ARRAY_TASK_ID env var:
 
@@ -35,7 +35,6 @@ import json
 import os
 import shlex
 import shutil
-import sys
 import traceback
 from pathlib import Path
 
@@ -43,7 +42,9 @@ import pandas as pd
 import starfile
 
 from drivers.array_job_base import ArrayDriver, ArrayResults
+from drivers.candidate_views import write_candidate_views
 from drivers.driver_base import DriverContext, ToolCommand
+from drivers.pick_from_segmentation import PickFromSegmentationDriver
 from services.models_base import PickSource
 from services.subtomo_merge import write_optimisation_set
 from services.job_models import CandidateExtractPytomParams, ExtractionCutoffMethod
@@ -312,52 +313,7 @@ class ExtractCandidatesPytomDriver(ArrayDriver):
         output_tomograms = job_dir / "tomograms.star"
         shutil.copy2(input_tomograms, output_tomograms)
 
-        try:
-            from services.visualization.imod_vis import generate_candidate_vis
-
-            self.log("Generating IMOD visualization...")
-            generate_candidate_vis(
-                candidates_star=candidates_star,
-                tomograms_star=output_tomograms,
-                particle_diameter_ang=float(ctx.params.particle_diameter_ang),
-                output_dir=job_dir,
-                project_root=ctx.project_path,
-            )
-        except Exception as vis_err:
-            # Visualization is a convenience artifact — its failure must not
-            # fail a job whose scientific outputs are complete.
-            print(f"[SUPERVISOR WARN] Visualization generation failed (non-fatal): {vis_err}", flush=True)
-
-        try:
-            from services.visualization.preview_orchestrator import generate_candidate_previews
-
-            self.log("Rendering candidate preview PNGs...")
-            # Pass `project_state` so the orchestrator can walk this
-            # project's SUBTOMO_EXTRACTION jobs and build a per-pick
-            # cutout atlas. Without it the orchestrator silently sets
-            # cutout_atlas=None on every entry — the dashboard then
-            # complains "Subtomo cutout atlas not built" even when the
-            # subtomo extraction completed and coords match exactly.
-            preview_summary = generate_candidate_previews(
-                candidates_star=candidates_star,
-                tomograms_star=output_tomograms,
-                particle_diameter_ang=float(ctx.params.particle_diameter_ang),
-                output_dir=job_dir,
-                project_root=ctx.project_path,
-                project_state=ctx.state,
-                instance_id=ctx.instance_id,
-                job_model=ctx.params,
-            )
-            self.log(
-                "Previews: "
-                f"{len(preview_summary['ok'])} rendered, "
-                f"{len(preview_summary['skipped_cached'])} cached, "
-                f"{len(preview_summary['missing_volume'])} missing volume, "
-                f"{len(preview_summary['errored'])} errored"
-            )
-        except Exception as preview_err:
-            # Same convenience-artifact reasoning as the IMOD visualization.
-            print(f"[SUPERVISOR WARN] Preview rendering failed (non-fatal): {preview_err}", flush=True)
+        write_candidate_views(ctx, candidates_star, output_tomograms, self.log)
 
         write_optimisation_set(
             job_dir / "optimisation_set.star", particles_star=candidates_star, tomograms_star=output_tomograms
@@ -425,9 +381,9 @@ def main() -> None:
     so each reads the source here and runs the same half."""
     ctx = DriverContext.load(CandidateExtractPytomParams)
     if PickSource(ctx.params.source) == PickSource.SEGMENTATION:
-        print("[DRIVER] FATAL: picking from segmentations is not part of this checkout", file=sys.stderr, flush=True)
-        sys.exit(1)
-    ExtractCandidatesPytomDriver().main(ctx)
+        PickFromSegmentationDriver().main(ctx)
+    else:
+        ExtractCandidatesPytomDriver().main(ctx)
 
 
 if __name__ == "__main__":

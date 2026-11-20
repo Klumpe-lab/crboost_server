@@ -4,7 +4,7 @@ from pydantic import Field, model_validator
 
 from services.computing.slurm_service import SlurmConfig
 from services.jobs._base import L, M, S, SPECIES_GROUP, AbstractJobParams, ExtractionCutoffMethod, form
-from services.models_base import JobType, JobCategory, PickSource
+from services.models_base import JobType, JobCategory, PickOrientation, PickSource
 from services.io_slots import InputSlot, OutputSlot, JobFileType
 
 # The parameters each source reads; the other source's are hidden on the job page (`shows_param`).
@@ -19,7 +19,7 @@ TM_PARAMS = frozenset(
         "score_filter_value",
     }
 )
-SEGMENTATION_PARAMS = frozenset({"feature"})
+SEGMENTATION_PARAMS = frozenset({"feature", "p_threshold", "min_piece", "one_per_piece", "binning", "orientation"})
 
 
 class CandidateExtractPytomParams(AbstractJobParams):
@@ -34,6 +34,11 @@ class CandidateExtractPytomParams(AbstractJobParams):
     USER_PARAMS: ClassVar[set[str]] = {
         "source",
         "feature",
+        "p_threshold",
+        "min_piece",
+        "one_per_piece",
+        "binning",
+        "orientation",
         "particle_diameter_ang",
         "max_num_particles",
         "cutoff_method",
@@ -98,6 +103,40 @@ class CandidateExtractPytomParams(AbstractJobParams):
     feature: str = Field(
         default="", description="The feature to pick, one of those the segmentations hold.",
         title="Feature", json_schema_extra=form("Segmentation", L),
+    )
+
+    # Detection on the feature's volumes (Ais's blob pick), and the picks' starting angles.
+    p_threshold: float = Field(
+        default=0.5, gt=0.0, lt=1.0,
+        description="A voxel is the feature where its p is at least this; on a binned volume, the mean p of its "
+        "block. 0.5 is the network's own decision, and the fill the wall shows.",
+        title="p threshold", json_schema_extra=form("Detection", S),
+    )
+    min_piece: float = Field(
+        default=0.24, ge=0.0,
+        description="Pieces smaller than this fraction of one particle (a sphere of the diameter) are left out. "
+        "easymode's ribosome example keeps pieces from 0.24 of one.",
+        title="Min piece", json_schema_extra=form("Detection", S, "× Ø"),
+    )
+    one_per_piece: bool = Field(
+        default=False,
+        description="One pick at the centre of each piece, instead of the points deepest inside the pieces, at "
+        "least a diameter apart. For particles that never touch. Only these picks can take a piece's axis as their "
+        "angles; the others start from random angles.",
+        title="One per piece", json_schema_extra=form("Detection"),
+    )
+    binning: int = Field(
+        default=2, ge=1, le=8,
+        description="The volumes are binned by this (the mean of each block) before detection: faster, and "
+        "coarser by as much. The score is read on the volume as it is.",
+        title="Binning", json_schema_extra=form("Detection", S),
+    )
+    orientation: PickOrientation = Field(
+        default=PickOrientation.RANDOM,
+        description="Random: uniform over all orientations, seeded per job; refinement then searches globally. Long "
+        "or short axis: the reference's Z along the piece's longest axis (rods) or shortest (discs), rot random; "
+        "a piece too round for its axis takes random angles.",
+        title="Angles", json_schema_extra=form("Orientation", M),
     )
 
     # Particle params
@@ -205,11 +244,19 @@ class CandidateExtractPytomParams(AbstractJobParams):
     def from_template_matching(self) -> bool:
         return not self.from_segmentation
 
+    @property
+    def effective_orientation(self) -> PickOrientation:
+        """The angles the segmentation source gives its picks: a piece's axis needs one pick per piece, so the
+        distance-transform placement always takes random angles."""
+        return PickOrientation(self.orientation) if self.one_per_piece else PickOrientation.RANDOM
+
     def shows_param(self, name: str) -> bool:
         if name in TM_PARAMS and self.from_segmentation:
             return False
         if name in SEGMENTATION_PARAMS and self.from_template_matching:
             return False
+        if name == "orientation":
+            return self.one_per_piece
         # The two strategies keep their thresholds apart (incomparable scales): only the chosen one's shows.
         manual = ExtractionCutoffMethod(self.cutoff_method) == ExtractionCutoffMethod.MANUAL
         if name == "cc_threshold":

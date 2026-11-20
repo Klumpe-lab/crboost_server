@@ -87,6 +87,26 @@ when the user asks.
    Predict) on the roster or imported.
 4. Steps 1-3 and the `run` go in one plan; the score maps and picks are the user's to look at in the UI.
 
+## Picks from a segmentation
+
+Pick candidates also picks a species from one feature's segmentations (a Segment job's, or imported ones), with
+no template and on CPUs only. Its `source` is `segmentation`.
+
+1. `add_job(tmextractcand, species=…, reading={"input_segmentations": <source>})`, the source as
+   `get_input_candidates` gives it: a job made reading segmentations and no template-matching output starts with
+   the segmentation source. Or `set_params(source="segmentation")` on one that has not run.
+2. The `feature` is the species' segmentation feature when the species names one (`get_species`). Otherwise put
+   the segmentations' features to the user (Segment jobs name theirs `<feature>_ais`, imports keep theirs);
+   never choose one by its name. Run refuses the job without one.
+3. Detection: `p_threshold` (a voxel is the feature where p ≥ it), `min_piece` (pieces smaller than this fraction
+   of a sphere of the diameter are left out), `one_per_piece` (one pick at each piece's centre, instead of the
+   deepest points a diameter apart), `binning`. `orientation` (random, long axis, short axis; the axes only with
+   one pick per piece) sets the starting angles: random ones are uniform over all orientations, so the first
+   refinement of these picks searches globally. Set only what the user names.
+4. Each pick carries its score (`rlnAutopickFigureOfMerit`, the mean p near it), its piece's volume and pick
+   count, where its angles came from (`cbAngleSource`), and `cbMarkReason` `edge` within half a diameter of the
+   volume's edge. Judging them is the user's, in the UI.
+
 ## Tomograms from other projects
 
 `create_project(name, base, gain_reference=null, tomograms_from=[{project, job, names}])` makes a project

@@ -78,6 +78,15 @@ class PickSource(str, Enum):
     SEGMENTATION = "segmentation"
 
 
+class PickOrientation(str, Enum):
+    """The starting angles of picks from a segmentation: uniform over all orientations, or a piece's longest or
+    shortest axis (rods, discs) as the reference's Z, with rot uniform about it."""
+
+    RANDOM = "random"
+    LONG_AXIS = "long axis"
+    SHORT_AXIS = "short axis"
+
+
 class IsoNetRefineMethod(str, Enum):
     """IsoNet `refine --method` strategy. Values match the CLI strings. AUTO selects
     isonet2-n2n when even/odd halves are present (missing-wedge correction + denoising)."""
