@@ -1,0 +1,9 @@
+# gitleaks (the weekly workflow) with its own rules, and one exception: its generic-api-key rule reads a slot's key
+# passed as an argument (`slot.key, consumer_instance_id=...`) as a key.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "a slot's key passed as an argument"
+regexTarget = "line"
+regexes = ['''slot\.key, consumer_[a-z_]+=''']

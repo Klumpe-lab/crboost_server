@@ -1,0 +1,30 @@
+# Monthly, one pull request per ecosystem; security updates come as they are published, also grouped.
+# Dependabot compiles requirements.in without uv.toml, so a lock PR can fail the `lock` step of `./crboost ci`:
+# `./crboost lock` on its branch recompiles it the checkout's way.
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    groups:
+      python:
+        applies-to: version-updates
+        patterns: ["*"]
+      python-security:
+        applies-to: security-updates
+        patterns: ["*"]
+    ignore:
+      # A NiceGUI major is a branch of its own, with a pass over every view in a browser.
+      - dependency-name: nicegui
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]

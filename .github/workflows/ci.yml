@@ -1,0 +1,115 @@
+# On every push to main and every pull request.
+# checks: `./crboost ci`, which builds the environment with install.sh first, so the real install runs on every push,
+#   under the runner's dash.
+# serve: a server on the template conf, with an empty HOME, asked for its pages through the token gate.
+# workflows: these files, with actionlint (which runs the shell steps through the runner's shellcheck).
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: ./crboost ci
+        run: ./crboost ci
+
+  serve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CRBOOST_PLAIN_LOG: "1"
+      PORT: "24300"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the environment
+        run: ./install.sh > /dev/null
+      - name: Serve on 127.0.0.1 and ask for the pages
+        run: |
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME"
+          cp config/conf.template.yaml config/conf.yaml
+          cp config/qsub.template.sh config/qsub.sh
+          url="http://127.0.0.1:$PORT"
+          ./crboost --port "$PORT" --host 127.0.0.1 > "$RUNNER_TEMP/serve.out" 2>&1 &
+          echo "SERVER_PID=$!" >> "$GITHUB_ENV"
+          # The token is written before the socket answers: masked before anything could print it.
+          for _ in $(seq 120); do [ -s "$HOME/.crboost/token" ] && break; sleep 1; done
+          token=$(cat "$HOME/.crboost/token")
+          echo "::add-mask::$token"
+          # The socket listens before the app is up, so poll until the token gate answers.
+          code=000
+          for _ in $(seq 120); do
+            code=$(curl -s -o /dev/null --max-time 2 -w '%{http_code}' "$url/") || true
+            [ "$code" = 401 ] && break
+            sleep 1
+          done
+          if [ "$code" != 401 ]; then
+            echo "::error::$url/ never answered 401 (last: $code)"
+            exit 1
+          fi
+          auth="Authorization: Bearer $token"
+          curl -fsS --max-time 60 -H "$auth" -o "$RUNNER_TEMP/root.html" "$url/"
+          grep -q '<title>CryoBoost Server</title>' "$RUNNER_TEMP/root.html"
+          curl -fsS --max-time 60 -H "$auth" -o "$RUNNER_TEMP/tools.json" "$url/api/v1/tools"
+          jq -e '.tools | length > 20' "$RUNNER_TEMP/tools.json" > /dev/null
+          code=$(curl -s --max-time 60 -o /dev/null -D "$RUNNER_TEMP/redirect.txt" -w '%{http_code}' "$url/?token=$token")
+          if [ "$code" != 302 ] || ! grep -qi '^set-cookie: ' "$RUNNER_TEMP/redirect.txt"; then
+            echo "::error::/?token= answered $code, not a 302 that sets the cookie"
+            exit 1
+          fi
+      - name: Stop it, show its output, and fail on a traceback
+        if: always()
+        run: |
+          home="$RUNNER_TEMP/home"
+          if [ -s "$home/.crboost/token" ]; then echo "::add-mask::$(cat "$home/.crboost/token")"; fi
+          if [ -n "${SERVER_PID:-}" ]; then
+            kill -TERM "$SERVER_PID" 2> /dev/null || true
+            for _ in $(seq 15); do kill -0 "$SERVER_PID" 2> /dev/null || break; sleep 1; done
+          fi
+          log="$home/.crboost/logs/crboost-$PORT.log"
+          echo "::group::server output"
+          cat "$RUNNER_TEMP/serve.out" || true
+          echo "::endgroup::"
+          echo "::group::server log"
+          cat "$log" || true
+          echo "::endgroup::"
+          if grep -q Traceback "$RUNNER_TEMP/serve.out" "$log" 2> /dev/null; then
+            echo "::error::a traceback in the server's output"
+            exit 1
+          fi
+
+  workflows:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: actionlint
+        env:
+          VERSION: 1.7.12
+          SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/actionlint.tar.gz" \
+            "https://github.com/rhysd/actionlint/releases/download/v$VERSION/actionlint_${VERSION}_linux_amd64.tar.gz"
+          echo "$SHA256  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color
