@@ -165,6 +165,7 @@ rewritten once anyway, for the notes (D3).
 | D13 | No triage of NOT RUN labels: they leave with the notes (D3), and the release ships what is built | S10 |
 | D14 | `127.0.0.1` unless `local.SshLoginHost` is set, then the headnode's cluster interface, not `::` | S4 |
 | D15 | Curation runs the GL image the lab uses; the CPU variant goes, and the viewer chips hide when no image is set. ChimeraX itself may go later | S6 |
+| D16 | The README neither advertises nor mentions the agent API (the Claude Code tools); decided 2026-11-20 | S9 |
 
 The Claude Code plugin (roadmap 42 D6) waits for `v2027.1.0`; the forwarder's dependency lock is in S2.
 
@@ -421,7 +422,8 @@ Needs D3, D12.
   (`docs/known_bugs.md`, `docs/miss-alignment.md`, `docs/particle-data-flow.md`, `CLAUDE.md`) lose lab sample names,
   group paths and pointers into the notes.
 - README: what it is in three lines and a screenshot, what it needs, status and supported clusters, quick start for a
-  new site, then using an existing install with `<install dir>`, Claude Code, cite, licence, the tools it wraps;
+  new site, then using an existing install with `<install dir>`, cite, licence, the tools it wraps (no agent API,
+  D16);
   badges for CI, release, licence, DOI (HY6).
 - `CITATION.cff`, `CONTRIBUTING.md` (dev setup, `./crboost ci`, house idioms, `main` is dev), `SECURITY.md` (private
   reporting; threat model: per-user server, token, tunnel; shared projects make group members trusted),
