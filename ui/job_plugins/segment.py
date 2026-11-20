@@ -17,7 +17,7 @@ from services.path_resolution_service import PathResolutionService
 from services.project_state import get_project_state_for
 from services.job_params import easymode_catalog, set_params
 from services.segmentation.easymode import ais_model_title, easymode_cache_dir
-from services.segmentation.manifest import ENGINE_AIS, feature_slug
+from services.segmentation.manifest import ENGINE_AIS, segment_feature_id
 from ui.job_plugins import register_params_renderer
 from ui.job_plugins._field_styles import HELPER_STYLE, NOTE_INDENT, multi_choice_row, path_row
 from ui.job_plugins.default_renderer import render_default_params_card
@@ -165,7 +165,7 @@ def _model_note(path: str) -> tuple[str, bool]:
         return f"No such file: {path}", True
     except (OSError, ValueError) as e:
         return str(e), True
-    return f"Feature: {feature_slug(title)} (the model's title, “{title}”)", False
+    return f"Feature: {segment_feature_id(title)} (the model's title, “{title}”, with _ais after it)", False
 
 
 def _render_input_note(ui_mgr, instance_id: str | None) -> None:

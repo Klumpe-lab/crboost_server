@@ -1,8 +1,9 @@
 """The Species tab: what defines a species, in the job page's field geometry, then its status
 and its two actions.
 
-Species: name, overlay colour, glyph, diameter, symmetry, notes, and one line naming the template
-and mask template matching uses (changed on Templates & masks). Extraction geometry: box,
+Species: name, overlay colour, glyph, diameter, the segmentation feature it is picked from,
+symmetry, notes, and one line naming the template and mask template matching uses (changed on
+Templates & masks). Extraction geometry: box,
 binning and crop, empty until set. Status: one sentence. Then `[Delete species] [Publish
 to catalog]`.
 
@@ -21,6 +22,7 @@ import asyncio
 import logging
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -28,6 +30,7 @@ from typing import Any
 from nicegui import ui
 
 from services.aggregation.extraction import extraction_params_for_species
+from services.job_params import project_features
 from services.jobs._base import SymmetryGroup
 from services.jobs.subtomo_extraction import SubtomoExtractionParams
 from services.models_base import (
@@ -129,12 +132,26 @@ def _provenance(sp: ParticleSpecies) -> tuple[str, str]:
     return " · ".join(bits), hover
 
 
-def render_species_rows(backend, project_path: Path, species_id: str) -> None:
-    """Name · overlay colour · glyph · diameter · symmetry · notes. Each edit = `set_species` (dirty +
-    rev) and a 1-s debounced save."""
+def _feature_options(project_path: Path, species_id: str) -> dict[str, str]:
+    """The segmentation features a species can name: the project's (segmented, or a Segment job is set to make
+    them), and the one it names if the project has none such, said so."""
+    state = get_project_state_for(project_path)
+    sp = state.get_species(species_id)
+    features = project_features(state)
+    options = {"": "not set"} | {f: f for f in features}
+    held = sp.segmentation_feature if sp is not None else None
+    if held and held not in options:
+        options[held] = f"{held} · not segmented in this project"
+    return options
+
+
+def render_species_rows(backend, project_path: Path, species_id: str) -> Callable[[], None]:
+    """Name · overlay colour · glyph · diameter · segmentation feature · symmetry · notes. Each edit =
+    `set_species` (dirty + rev) and a 1-s debounced save. Returns the refresh of the feature's choices, which
+    move as the project's Segment jobs and imports do; nothing else is rebuilt."""
     sp = get_project_state_for(project_path).get_species(species_id)
     if sp is None:
-        return
+        return lambda: None
 
     def _set(**fields) -> None:
         res = set_species(get_project_state_for(project_path), species_id, **fields)
@@ -191,6 +208,25 @@ def render_species_rows(backend, project_path: Path, species_id: str) -> None:
 
     with ui.element("div").style(FIELD_ROW_STYLE):
         _label(
+            "Feature",
+            "The segmentation feature this species is picked from: the default of new Pick candidates jobs that pick "
+            "from segmentations. A Segment job writes easymode's ribosome as ribosome_ais. Not set: the job's feature "
+            "row says so; a feature is never matched to the species by its name.",
+        )
+        options = _feature_options(project_path, species_id)
+        feature = box_select(ui.select(options=options, value=sp.segmentation_feature or ""), M)
+        feature.on_value_change(lambda e: _set(segmentation_feature=e.value or ""))
+        ui.label("").style(UNIT_STYLE)
+
+    def refresh_features() -> None:
+        if feature.is_deleted:
+            return
+        fresh = _feature_options(project_path, species_id)
+        if fresh != feature.options:
+            feature.set_options(fresh, value=feature.value if feature.value in fresh else "")
+
+    with ui.element("div").style(FIELD_ROW_STYLE):
+        _label(
             "Symmetry",
             "Point-group symmetry of the particle. Most complexes are C1; the default for new Template Match, "
             "Reconstruct and Class 3D jobs, which can still override it.",
@@ -203,6 +239,7 @@ def render_species_rows(backend, project_path: Path, species_id: str) -> None:
         _label("Notes")
         notes = box_input(ui.input(value=sp.notes or "", placeholder="free-form, optional"), L)
         notes.props("debounce=400").on_value_change(lambda e: _set(notes=e.value or ""))
+    return refresh_features
 
 
 class _GlyphRow(FingerprintedView):
@@ -504,6 +541,7 @@ class OverviewTab:
         self._template_line: _TemplateLineView | None = None
         self._geometry: ExtractionGeometry | None = None
         self._status: _StatusView | None = None
+        self._refresh_features: Callable[[], None] = lambda: None
 
     # ── Tab protocol ──────────────────────────────────────────────────────────
 
@@ -513,7 +551,7 @@ class OverviewTab:
         meta, hover = _provenance(sp) if sp is not None else ("", "")
         with container, ui.column().classes("w-full").style("gap: 18px; padding: 12px 14px 18px;"):
             with section("Species", right=meta, tooltip=hover), field_grid():
-                render_species_rows(ctx.backend, ctx.project_path, ctx.species_id)
+                self._refresh_features = render_species_rows(ctx.backend, ctx.project_path, ctx.species_id)
                 line_slot = ui.element("div").style("width: 100%; min-width: 0;")
                 self._template_line = _TemplateLineView(line_slot, self)
             self._geometry = ExtractionGeometry(self)
@@ -545,6 +583,7 @@ class OverviewTab:
         """Page tick / on show (only while this tab is visible): recompute when the
         in-memory key moved, else at most every `_DISK_REFRESH_S`; repaint through the
         signature gate either way."""
+        self._refresh_features()  # in memory; the choices are set again only when they moved
         if self._template_line is not None:
             self._template_line.refresh()  # in-memory + signature-gated: free on a quiet tick
         if self._geometry is not None:

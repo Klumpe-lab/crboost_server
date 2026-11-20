@@ -56,7 +56,13 @@ class Refine3DParams(AbstractJobParams):
         ),
         InputSlot(key="input_reference", accepts=[JobFileType.REFERENCE_MAP], preferred_source="reconstructParticle"),
         # A Mask job's mask, read only while mask_from_job is set; solvent_mask_path stays for a file made elsewhere.
-        InputSlot(key="input_mask", accepts=[JobFileType.MASK], preferred_source="maskCreate", when="mask_from_job"),
+        InputSlot(
+            key="input_mask",
+            accepts=[JobFileType.MASK],
+            preferred_source="maskCreate",
+            when="mask_from_job",
+            beside=True,
+        ),
     ]
     OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = [
         OutputSlot(

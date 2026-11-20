@@ -81,6 +81,7 @@ class TemplateMatchPytomParams(AbstractJobParams):
             accepts=[JobFileType.SEGMENTATIONS],
             preferred_source="segment",
             when="restricts_search",
+            beside=True,
         ),
     ]
     OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = [

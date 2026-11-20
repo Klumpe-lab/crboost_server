@@ -61,7 +61,8 @@ logger = logging.getLogger(__name__)
 # 3.12: +saved_by (the checkout that last saved the project)
 # 3.13: +made_by_api (the agent API changes only the projects it made)
 # 3.14: +ImportBatch.job_sources, +ImportedTomograms.tilt_series_star (tomograms from other projects' jobs)
-SCHEMA_VERSION: tuple[int, int] = (3, 14)
+# 3.15: +ParticleSpecies.segmentation_feature (the feature Pick candidates picks the species from)
+SCHEMA_VERSION: tuple[int, int] = (3, 15)
 
 
 # Sentinel `owner` value marking a project as shared/lab-owned rather than
@@ -234,6 +235,9 @@ class ParticleSpecies(BaseModel):
     diameter_ang: float | None = None
     symmetry: str = "C1"
     notes: str = ""
+    # The segmentation feature this species is picked from (`ribosome_ais`): the default of a Pick candidates job's
+    # feature. None: not named, and a job's feature row says so; never matched by name.
+    segmentation_feature: str | None = None
 
     # ── Templates and masks ──────────────────────────────────────────────
     # Templates and masks are independent registers; the workbench manages

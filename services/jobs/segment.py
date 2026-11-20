@@ -13,8 +13,9 @@ from services.models_base import JobCategory, JobType, SegmentFormat, SegmentMet
 class SegmentParams(AbstractJobParams):
     """Segment every tomogram of the input into feature probability volumes, one GPU per tomogram:
     easymode's pretrained networks for the features chosen, or one Ais model trained by the user.
-    The volumes are written on the tomogram's own grid as segmentations/<tomogram>__<feature>.mrc,
-    and segmentations.json lists them with their provenance."""
+    Each feature's id is its name with `_ais` after it (`ribosome_ais`), so it never shares a name or
+    a colour with a species. The volumes are written on the tomogram's own grid as
+    segmentations/<tomogram>__<feature id>.mrc, and segmentations.json lists them with their provenance."""
 
     job_type: JobType = Field(default=JobType.SEGMENT)
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
@@ -50,10 +51,11 @@ class SegmentParams(AbstractJobParams):
         "Each tomogram is one SLURM array task on one GPU. **easymode** runs its pretrained network for every "
         "feature chosen, from the weights cache in `tools.easymode.cache_dir` and never from the network, so a "
         "run always uses the same weights; **Ais model** applies one model (`.scnm`) you trained in Ais, and "
-        "the model's title names the feature.\n\n"
+        "the model's title names the feature. Every feature's id ends in `_ais` (easymode's ribosome is "
+        "`ribosome_ais`), so a species and a feature never share a name or a colour.\n\n"
         "easymode's networks were trained on 10 Å reconstructions, so by default each tomogram is resampled to "
         "10 Å for them, and every volume is mapped back onto the tomogram's grid.\n\n"
-        "Every volume has the tomogram's shape and voxel size: `segmentations/<tomogram>__<feature>.mrc`, "
+        "Every volume has the tomogram's shape and voxel size: `segmentations/<tomogram>__<feature>_ais.mrc`, "
         "probability × 127 (int8) or × 255. The Tomograms view shows each feature as a transparent fill "
         "where p ≥ 0.5, on the reconstruction the input traces back to."
     )

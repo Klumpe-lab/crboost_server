@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-extract_candidates_pytom driver — supervisor + per-tomogram SLURM array task.
+Pick candidates driver: the job's source chooses the half that runs (`main`), in the supervisor and in
+every array task, which all start this script. This file is the template-matching half: a supervisor
+and a per-tomogram SLURM array task.
 
 Mode is determined by the SLURM_ARRAY_TASK_ID env var:
 
@@ -14,8 +16,8 @@ Mode is determined by the SLURM_ARRAY_TASK_ID env var:
 
 - Set:    TASK mode. One tomogram per array index. Reads the manifest, finds
           its `{tomo}_{apix}Apx_job.json` in the staged tmResults dir, runs
-          `pytom_extract_candidates.py -j <job.json>`, and atomically writes
-          `.task_status/{tomo}.{ok|fail}`.
+          pytom's candidate extraction on it (`NO_DEVICE_LAUNCH`), and atomically
+          writes `.task_status/{tomo}.{ok|fail}`.
 
 Enumeration is from the TM output (one `*_job.json` per tomogram TM actually
 processed), not the input star; the coordinate list follows what TM produced.
@@ -31,7 +33,9 @@ code all live in ArrayDriver; this file is the extraction-specific hooks.
 
 import json
 import os
+import shlex
 import shutil
+import sys
 import traceback
 from pathlib import Path
 
@@ -40,11 +44,22 @@ import starfile
 
 from drivers.array_job_base import ArrayDriver, ArrayResults
 from drivers.driver_base import DriverContext, ToolCommand
+from services.models_base import PickSource
 from services.subtomo_merge import write_optimisation_set
 from services.job_models import CandidateExtractPytomParams, ExtractionCutoffMethod
 
 # Extraction only reads the TM job's outputs, never deletes them: extracting the same TM job again
 # (a re-run, another cutoff, a second extraction job) must find what the first one found.
+
+# pytom_extract_candidates.py, started so that a node without a GPU runs it. Extraction is numpy on the CPU,
+# but pytom_tm imports voltools, which asks cupy for the device count at import and stops on a node without
+# one (cudaErrorNoDevice): it catches only a missing cupy. The launcher answers "no devices" first, and voltools
+# keeps to the CPU, where extraction runs anyway; on a node with a GPU nothing changes but the count.
+NO_DEVICE_LAUNCH = (
+    "import sys; import cupy.cuda.runtime as rt; rt.getDeviceCount = lambda: 0; "
+    "from pytom_tm.entry_points import extract_candidates; "
+    "sys.argv[0] = 'pytom_extract_candidates.py'; sys.exit(extract_candidates())"
+)
 
 
 # ----------------------------------------------------------------------
@@ -115,7 +130,7 @@ def cleanup_tomo_names(candidates_star: Path, apix_fallback: float) -> int:
 
 def build_extract_base_cmd(params: CandidateExtractPytomParams) -> ToolCommand:
     base_cmd = (
-        ToolCommand("pytom_extract_candidates.py")
+        ToolCommand(f"python -c {shlex.quote(NO_DEVICE_LAUNCH)}")
         .opt("-n", params.max_num_particles)
         # The full diameter: PyTOM halves it itself and keeps peaks at least diameter/2 apart.
         .opt("--particle-diameter", params.particle_diameter_ang)
@@ -405,6 +420,16 @@ class ExtractCandidatesPytomDriver(ArrayDriver):
             raise FileNotFoundError(f"pytom_extract_candidates reported success but particles STAR missing: {out_star}")
 
 
+def main() -> None:
+    """The half of Pick candidates the job's source runs. The supervisor and every array task start this script,
+    so each reads the source here and runs the same half."""
+    ctx = DriverContext.load(CandidateExtractPytomParams)
+    if PickSource(ctx.params.source) == PickSource.SEGMENTATION:
+        print("[DRIVER] FATAL: picking from segmentations is not part of this checkout", file=sys.stderr, flush=True)
+        sys.exit(1)
+    ExtractCandidatesPytomDriver().main(ctx)
+
+
 if __name__ == "__main__":
     os.environ["TQDM_DISABLE"] = "1"
-    ExtractCandidatesPytomDriver().main()
+    main()

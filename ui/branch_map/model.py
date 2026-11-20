@@ -490,6 +490,7 @@ METHOD_FIELD = {
     "denoisepredict": "denoise_method",
     "segment": "method",
     "tiltFilter": "mode",
+    "tmextractcand": "source",
 }
 METHOD_WORDS = {
     "dl_review": "DL review",
@@ -515,6 +516,8 @@ GLOSS = {
     "MemBrain-seg": "MemBrain-seg: a membrane segmentation network",
     "PyTOM": "pytom-match-pick: template matching on the GPU",
     "CryoBoost": "a step CryoBoost runs itself, no external tool",
+    "template matching": "picks the peaks of a Template Match job's score maps, a particle apart",
+    "segmentation": "picks the pieces of one segmented feature (Ais on the CPU), no template, no GPU",
 }
 SLOT_GLOSS = {
     "frames": "the raw frames of every tilt",
@@ -616,6 +619,17 @@ def job_dir_of(jm, project: Path) -> Path | None:
     return None
 
 
+def _protos_by_method(cls, mf: str | None) -> dict[str, object]:
+    """A job of `cls` under each value of its method field (`METHOD_FIELD`), by value: what tells which inputs a
+    method reads. Empty for a type without one."""
+    if not mf or mf not in cls.model_fields:
+        return {}
+    ann = cls.model_fields[mf].annotation
+    if not (isinstance(ann, type) and issubclass(ann, Enum)):
+        return {}
+    return {e.value: cls(**{mf: e}) for e in ann}
+
+
 def _tool_of(jm, fallback: str) -> str:
     try:
         return TOOLS.get(jm.get_tool_name(), jm.get_tool_name())
@@ -679,8 +693,10 @@ def vocabulary() -> Vocabulary:
         spec = JOB_SPEC_BY_TYPE.get(jt)
         names[kind] = NAMES.get(kind, spec.display_name if spec else kind)
         job_types[kind] = jt
+        mf = METHOD_FIELD.get(kind)
         try:
             proto = cls()
+            by_method = _protos_by_method(cls, mf)
         except Exception:  # a class whose defaults need the project (none known); shown without a form
             logger.exception("branch map: defaults of %s", kind)
             continue
@@ -695,11 +711,14 @@ def vocabulary() -> Vocabulary:
                 accepts[0], s.key.removeprefix("input_").replace("_", " ")
             )
             when = getattr(s, "when", None)
-            unless = ("easymode",) if when == "uses_trained_model" else ()
+            # The methods under which the job has no such input (easymode needs no trained model; Pick candidates
+            # from segmentations reads no template matching).
+            unless = tuple(v for v, p in by_method.items() if when and not getattr(p, when, True))
             bundle = s.key != main_key and s.preferred_source == main_pref and main_pref is not None
             quiet = s.key == "warp_tiltseries_settings" and s.key != main_key
-            # A slot read only under a condition (the search restricted to segmentations) is optional here.
-            required = bool(s.required) and not (when and when != "uses_trained_model")
+            # A slot read only under a condition the method does not decide (the search restricted to
+            # segmentations) is optional here.
+            required = bool(s.required) and (not when or bool(unless))
             rows.append(Slot(s.key, label, accepts, required, bundle, unless, quiet))
         # The main slot first: the card's first row is the lineage.
         rows.sort(key=lambda r: 0 if r.key == main_key else 1)
@@ -708,7 +727,6 @@ def vocabulary() -> Vocabulary:
             produces[kind] = out_schema[0].produces.value
             makes[kind] = WORDS.get(produces[kind], produces[kind])
         tool[kind] = _tool_of(proto, "CryoBoost")
-        mf = METHOD_FIELD.get(kind)
         if mf and mf in proto.model_fields:
             ann = proto.model_fields[mf].annotation
             if isinstance(ann, type) and issubclass(ann, Enum):
@@ -744,7 +762,9 @@ def _identity(kind: str, jm) -> list[str]:
         identity.append(f"{len(getattr(jm, 'features', []) or [])} features")
     if kind == "templatematching":
         identity.append(f"{param_words(jm, 'angular_search')}° · {param_words(jm, 'symmetry')}")
-    if kind == "tmextractcand":
+    if kind == "tmextractcand" and getattr(jm, "from_segmentation", False):
+        identity.append(getattr(jm, "feature", "") or "no feature chosen")
+    elif kind == "tmextractcand":
         identity.append(f"cut at {getattr(jm, 'expected_false_positives', 0):g} false positive")
     if kind == "reconstructParticle":
         identity.append(f"box {param_words(jm, 'box_size')} · {param_words(jm, 'symmetry')}")

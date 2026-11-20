@@ -695,9 +695,13 @@ class BranchMapView:
             if species_id is None:
                 return
         st = self.st
+        # The first method that reads the input it is added from: Pick candidates from a Segment job's output
+        # picks from the segmentations.
+        methods = [v for v, _words in pr.methods.get(kind, ())]
+        method = next((v for v in methods if slot_key in {s.key for s in pr.slots_of(kind, v)}), None)
         st.adding, st.method, st.picks, st.params = (
             kind,
-            pr.methods.get(kind, ((None, ""),))[0][0],
+            method if method is not None else (methods[0] if methods else None),
             {slot_key: parent},
             {},
         )
@@ -1071,6 +1075,7 @@ async def _add_new_job(view: BranchMapView, pr: Project, state, resolved: list[R
         "denoisetrain": "denoise_method",
         "segment": "method",
         "tiltFilter": "mode",
+        "tmextractcand": "source",
     }
     if kind == "denoisepredict":
         if st.method == "easymode":

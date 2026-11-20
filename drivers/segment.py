@@ -58,6 +58,7 @@ from services.segmentation.manifest import (
     SegmentationEntry,
     SegmentationManifest,
     feature_slug,
+    segment_feature_id,
     tomogram_outputs,
     write_manifest,
 )
@@ -75,7 +76,9 @@ _DISTRIBUTIONS = {"easymode": "easymode", "ais": "ais-cryoet"}
 
 
 def _volume_path(job_dir: Path, tomo: str, target: dict) -> Path:
-    return job_dir / OUTPUT_DIR / f"{tomo}__{target['suffix']}.mrc"
+    """The finished volume, named after the feature's id (`final`). Targets settled before features carried
+    their id have no `final`: theirs were named after the tool's suffix."""
+    return job_dir / OUTPUT_DIR / f"{tomo}__{target.get('final') or target['suffix']}.mrc"
 
 
 def _overlay_paths(job_dir: Path, tomo: str, target: dict) -> tuple[Path, Path]:
@@ -92,8 +95,28 @@ def _task_dir(job_dir: Path, tomo: str) -> Path:
 
 
 def _tool_output(job_dir: Path, tomo: str, target: dict) -> Path:
-    """Where the tool writes a volume, on the grid it segments, before the task finishes it."""
-    return _task_dir(job_dir, tomo) / "out" / _volume_path(job_dir, tomo, target).name
+    """Where the tool writes a volume, on the grid it segments, before the task finishes it: named as the tool
+    names it, after its own suffix."""
+    return _task_dir(job_dir, tomo) / "out" / f"{tomo}__{target['suffix']}.mrc"
+
+
+def _take_over(job_dir: Path, tomo: str, previous: dict, target: dict) -> None:
+    """An earlier run's volume and overlays of a feature, made by the same network with the same settings, under
+    the name the feature has now."""
+    pairs = [(_volume_path(job_dir, tomo, previous), _volume_path(job_dir, tomo, target))]
+    pairs += zip(_overlay_paths(job_dir, tomo, previous), _overlay_paths(job_dir, tomo, target), strict=True)
+    for old, new in pairs:
+        if old != new and old.exists() and not new.exists():
+            old.rename(new)
+
+
+def _sidecar_complete(job_dir: Path, tomo: str, targets: list[dict]) -> bool:
+    """Whether the tomogram's sidecar names a volume for every feature of the run."""
+    try:
+        volumes = json.loads(_sidecar_path(job_dir, tomo).read_text())["volumes"]
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError):
+        return False  # none, or half-written by an interrupted attempt: written again
+    return all(t["feature"] in volumes for t in targets)
 
 
 def _drop_resampled_copy(job_dir: Path, tomo: str) -> None:
@@ -166,19 +189,22 @@ def _write_json(path: Path, data: dict) -> None:
 
 
 def resolve_targets(params: SegmentParams) -> list[dict]:
-    """What the job runs, one entry per feature: its id, the suffix of its volume file (an Ais model's
-    title as it is, which `ais segment` puts in the name), the engine, the model reference, and the X/Y
-    pixel of a network that decides plane by plane (`plane_angstrom`, None for a 3D one). Raises
-    naming what is missing."""
+    """What the job runs, one entry per feature: its id (`segment_feature_id`: easymode's name or the Ais
+    model's title, then `_ais`), the name of its finished volume (`final`, the id), the suffix the tool
+    gives the volume it writes (an Ais model's title as it is, which `ais segment` puts in the name), the
+    engine, the model reference, and the X/Y pixel of a network that decides plane by plane
+    (`plane_angstrom`, None for a 3D one). Raises naming what is missing."""
     if params.method == SegmentMethod.AIS_MODEL:
         scnm = _ais_model(params)
         if not scnm.name or not scnm.is_file():
             raise FileNotFoundError(f"Ais model not found: {params.ais_model_path!r}")
         title = ais_model_title(scnm)
         model = ModelRef(tool="ais", feature=feature_slug(title), weights_sha256=file_sha256(scnm))
+        feature = segment_feature_id(title)
         return [
             {
-                "feature": model.feature,
+                "feature": feature,
+                "final": feature,
                 "suffix": title,
                 "engine": ENGINE_AIS,
                 "model": model.model_dump(),
@@ -207,9 +233,11 @@ def resolve_targets(params: SegmentParams) -> list[dict]:
         # easymode hands an Ais-engine feature to `ais segment`, which names the volume after the
         # model's title, not after the feature.
         ais = entry.engine == ENGINE_AIS
+        feature = segment_feature_id(name)
         targets.append(
             {
-                "feature": name,
+                "feature": feature,
+                "final": feature,
                 "suffix": ais_model_title(entry.weights) if ais else name,
                 "engine": entry.engine,
                 "model": model.model_dump(),
@@ -301,23 +329,45 @@ class SegmentDriver(ArrayDriver):
             return
         old_settings = before.get("settings") or {}
         old = {t["feature"]: t for t in before.get("targets") or []}
+        settings = self._run["settings"]
         changed = [
             (old[t["feature"]], t)
             for t in self._targets
-            if t["feature"] in old and _identity(old[t["feature"]], old_settings) != _identity(t, self._run["settings"])
+            if t["feature"] in old and _identity(old[t["feature"]], old_settings) != _identity(t, settings)
         ]
-        added = [t["feature"] for t in self._targets if t["feature"] not in old]
-        if not changed and not added:
+        # A run settled before features carried their `_ais` id named each by easymode's name or the model's title:
+        # what the same network made with the same settings is taken over under the id; anything else goes.
+        renamed = {
+            t["feature"]: old[name]
+            for t in self._targets
+            for name in old
+            if name != t["feature"] and segment_feature_id(name) == t["feature"]
+        }
+        taken_over = []
+        for t in self._targets:
+            previous = renamed.get(t["feature"])
+            if previous is None:
+                continue
+            if _identity(previous, old_settings) == _identity(t, settings):
+                for item in items:
+                    _take_over(ctx.job_dir, item, previous, t)
+                taken_over.append(f"{previous['feature']} → {t['feature']}")
+            else:
+                changed.append((previous, t))
+        added = [t["feature"] for t in self._targets if t["feature"] not in old and t["feature"] not in renamed]
+        if not changed and not added and not taken_over:
             return
         for previous, current in changed:
             for item in items:
                 for target in (previous, current):
                     _volume_path(ctx.job_dir, item, target).unlink(missing_ok=True)
                     _tool_output(ctx.job_dir, item, target).unlink(missing_ok=True)
-                for path in _overlay_paths(ctx.job_dir, item, current):
-                    path.unlink(missing_ok=True)
+                    for path in _overlay_paths(ctx.job_dir, item, target):
+                        path.unlink(missing_ok=True)
         if changed:
             self.log(f"Made with other settings, removed: {', '.join(c['feature'] for _p, c in changed)}")
+        if taken_over:
+            self.log(f"Made the same way, taken over under the feature's id: {', '.join(taken_over)}")
         if added:
             self.log(f"New since the last run: {', '.join(added)}")
         self.log("Every tomogram runs again for what it lacks")
@@ -404,7 +454,7 @@ class SegmentDriver(ArrayDriver):
         if any(volume_problem(_volume_path(ctx.job_dir, item, t), grid[0]) for t in run["targets"]):
             return False
         self.log("Every volume is there from an earlier attempt")
-        if not _sidecar_path(ctx.job_dir, item).exists():
+        if not _sidecar_complete(ctx.job_dir, item, run["targets"]):
             self._summarize(ctx, item, tomo, grid, run["targets"])
         _drop_resampled_copy(ctx.job_dir, item)
         return True

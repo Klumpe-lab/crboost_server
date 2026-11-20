@@ -127,6 +127,11 @@ class InputSlot(BaseModel):
     # read only while a search region is set). None: the input always exists.
     when: str | None = Field(default=None)
 
+    # Read beside the job's main inputs rather than down their chain (a search region's segmentations,
+    # a solvent mask, a trained model): it is no chain of its own when the I/O section checks that a
+    # job's inputs lie on one chain (`PathResolutionService.mixed_chains`).
+    beside: bool = Field(default=False)
+
     # The job reads particle images (relion_refine): an optimisation set of positions only (template-match
     # candidates, a coordinates particle set) cannot feed it, whoever chose it.
     needs_extracted: bool = Field(default=False)

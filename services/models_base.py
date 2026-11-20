@@ -70,6 +70,14 @@ class SegmentFormat(str, Enum):
     FLOAT32 = "float32"
 
 
+class PickSource(str, Enum):
+    """The evidence Pick candidates turns into one species' picks: a Template Match job's score maps,
+    or a feature's probability volumes from segmentations (a Segment job's, or imported ones)."""
+
+    TEMPLATE_MATCHING = "template matching"
+    SEGMENTATION = "segmentation"
+
+
 class IsoNetRefineMethod(str, Enum):
     """IsoNet `refine --method` strategy. Values match the CLI strings. AUTO selects
     isonet2-n2n when even/odd halves are present (missing-wedge correction + denoising)."""

@@ -54,9 +54,9 @@ def _sym(v) -> str:
 
 def job_drift(sp, jm) -> list[tuple[str, str]]:
     """(what, message) per difference between a job's snapshot and its species `sp`: the
-    symmetry on Template Match / Reconstruct / Class 3D / Refine 3D, the diameter on Pick
-    candidates, and Template Match's template and mask against the species' selected ones.
-    Empty when the job agrees with its species."""
+    symmetry on Template Match / Reconstruct / Class 3D / Refine 3D, the diameter and (picking
+    from segmentations) the feature on Pick candidates, and Template Match's template and mask
+    against the species' selected ones. Empty when the job agrees with its species."""
     out: list[tuple[str, str]] = []
     species_sym = sp.symmetry or "C1"
     match getattr(jm, "job_type", None):
@@ -77,6 +77,10 @@ def job_drift(sp, jm) -> list[tuple[str, str]]:
                 job_d = float(getattr(jm, "particle_diameter_ang", 0.0) or 0.0)
                 if abs(job_d - float(sp.diameter_ang)) > 1e-6:
                     out.append(("Ø", f"job {job_d:g} Å ≠ species {sp.diameter_ang:g} Å"))
+            want_f = getattr(sp, "segmentation_feature", None)
+            have_f = getattr(jm, "feature", "") or ""
+            if want_f and getattr(jm, "from_segmentation", False) and have_f != want_f:
+                out.append(("feature", f"job {have_f or '—'} ≠ species {want_f}"))
         case JobType.RECONSTRUCT_PARTICLE | JobType.CLASS3D | JobType.REFINE3D:
             job_sym = _sym(getattr(jm, "symmetry", None))
             if job_sym != species_sym:

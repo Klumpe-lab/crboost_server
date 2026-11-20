@@ -90,8 +90,9 @@ _VERBS: tuple[Verb, ...] = (
     ),
     Verb(
         "list_job_types",
-        "Every job type the roster adds: its phase, the types it usually reads from, what is added with it, whether "
-        "it takes a species, its inputs and outputs.",
+        "Every job type the roster adds: its phase, the types it usually reads from (or_requires: types that stand "
+        "in for them), what is added with it, whether it takes a species, its inputs (when: the parameter under which "
+        "the job has the input) and outputs.",
         m.NoInput,
         "read",
         h.list_job_types,
@@ -338,8 +339,9 @@ _VERBS: tuple[Verb, ...] = (
     ),
     Verb(
         "set_species",
-        "Edit a species: name, overlay colour, glyph and its hue, diameter, symmetry, notes, and the extraction "
-        "geometry its new extraction jobs take. Jobs made earlier keep their values.",
+        "Edit a species: name, overlay colour, glyph and its hue, diameter, symmetry, notes, the extraction "
+        "geometry its new extraction jobs take, and the segmentation feature its new Pick candidates jobs pick from. "
+        "Jobs made earlier keep their values.",
         m.SetSpeciesIn,
         "write",
         h.set_species,

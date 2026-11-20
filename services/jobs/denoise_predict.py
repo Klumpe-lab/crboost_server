@@ -61,6 +61,7 @@ class DenoisePredictParams(AbstractJobParams):
             accepts=[JobFileType.DENOISE_MODEL_TAR],
             preferred_source="denoisetrain",
             when="uses_trained_model",
+            beside=True,
         ),
         InputSlot(key="input_star", accepts=[JobFileType.TOMOGRAMS_STAR], preferred_source="tsReconstruct"),
         InputSlot(key="reconstruct_base", accepts=[JobFileType.WARP_TILTSERIES_DIR], preferred_source="tsReconstruct"),

@@ -432,6 +432,11 @@ class SetSpeciesIn(SpeciesIn):
         "oxide; empty or null for the default. The overlay colour (color) stays on the canvases",
     )
     extraction: Extraction | None = Field(None, description="The geometry new extraction jobs of the species take")
+    segmentation_feature: str | None = Field(
+        None,
+        description="The segmentation feature its Pick candidates jobs pick from (a Segment job writes ribosome_ais "
+        "for easymode's ribosome); empty or null clears it",
+    )
 
 
 class ImportTomogramsIn(ProjectIn):

@@ -3,17 +3,37 @@ from typing import Any, ClassVar
 from pydantic import Field, model_validator
 
 from services.computing.slurm_service import SlurmConfig
-from services.jobs._base import M, S, SPECIES_GROUP, AbstractJobParams, ExtractionCutoffMethod, form
-from services.models_base import JobType, JobCategory
+from services.jobs._base import L, M, S, SPECIES_GROUP, AbstractJobParams, ExtractionCutoffMethod, form
+from services.models_base import JobType, JobCategory, PickSource
 from services.io_slots import InputSlot, OutputSlot, JobFileType
+
+# The parameters each source reads; the other source's are hidden on the job page (`shows_param`).
+TM_PARAMS = frozenset(
+    {
+        "max_num_particles",
+        "cutoff_method",
+        "cc_threshold",
+        "expected_false_positives",
+        "apix_score_map",
+        "score_filter_method",
+        "score_filter_value",
+    }
+)
+SEGMENTATION_PARAMS = frozenset({"feature"})
 
 
 class CandidateExtractPytomParams(AbstractJobParams):
+    """One species' picks from evidence over the tomograms: the peaks of a Template Match job's score maps (source
+    template matching), or the pieces of one feature's probability volumes (source segmentation). Both write
+    candidates.star, tomograms.star and a coordinates-only optimisation set."""
+
     job_type: JobType = Field(default=JobType.TEMPLATE_EXTRACT_PYTOM)
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
     USER_PARAMS: ClassVar[set[str]] = {
+        "source",
+        "feature",
         "particle_diameter_ang",
         "max_num_particles",
         "cutoff_method",
@@ -24,15 +44,37 @@ class CandidateExtractPytomParams(AbstractJobParams):
         "score_filter_value",
         "array_throttle",
     }
-    PARAM_GROUPS: ClassVar[tuple[str, ...]] = ("Pick threshold", SPECIES_GROUP, "Score map")
+    PARAM_GROUPS: ClassVar[tuple[str, ...]] = (
+        "Source",
+        "Segmentation",
+        "Detection",
+        "Orientation",
+        "Pick threshold",
+        SPECIES_GROUP,
+        "Score map",
+    )
 
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
-        InputSlot(key="input_tm_job", accepts=[JobFileType.TM_RESULTS_DIR], preferred_source="templatematching"),
+        InputSlot(
+            key="input_tm_job",
+            accepts=[JobFileType.TM_RESULTS_DIR],
+            preferred_source="templatematching",
+            when="from_template_matching",
+        ),
         InputSlot(
             key="input_tomograms",
             accepts=[JobFileType.TOMOGRAMS_STAR, JobFileType.DENOISED_TOMOGRAMS_STAR],
             preferred_source="templatematching",
             required=True,
+            when="from_template_matching",
+        ),
+        # A Segment job's volumes, or imported ones: the evidence of the segmentation source.
+        InputSlot(
+            key="input_segmentations",
+            accepts=[JobFileType.SEGMENTATIONS],
+            preferred_source="segment",
+            when="from_segmentation",
+            beside=True,
         ),
     ]
     OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = [
@@ -44,6 +86,19 @@ class CandidateExtractPytomParams(AbstractJobParams):
             coordinates_only=True,
         ),
     ]
+
+    source: PickSource = Field(
+        default=PickSource.TEMPLATE_MATCHING,
+        description="Template matching: the peaks of a Template Match job's score maps, at least a particle apart. "
+        "Segmentation: the pieces of one feature's probability volumes (a Segment job's, or imported segmentations), "
+        "with no template and no GPU.",
+        title="Source", json_schema_extra=form("Source", M),
+    )
+    # Species-derived (the species' segmentation feature); empty is absent and stated on the page, never guessed.
+    feature: str = Field(
+        default="", description="The feature to pick, one of those the segmentations hold.",
+        title="Feature", json_schema_extra=form("Segmentation", L),
+    )
 
     # Particle params
     particle_diameter_ang: float = Field(
@@ -140,7 +195,21 @@ class CandidateExtractPytomParams(AbstractJobParams):
         default=40, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tomogram candidate extraction"
     )
 
+    @property
+    def from_segmentation(self) -> bool:
+        """Whether the picks come from a feature's segmentations: the job then reads them, and nothing of
+        template matching."""
+        return PickSource(self.source) == PickSource.SEGMENTATION
+
+    @property
+    def from_template_matching(self) -> bool:
+        return not self.from_segmentation
+
     def shows_param(self, name: str) -> bool:
+        if name in TM_PARAMS and self.from_segmentation:
+            return False
+        if name in SEGMENTATION_PARAMS and self.from_template_matching:
+            return False
         # The two strategies keep their thresholds apart (incomparable scales): only the chosen one's shows.
         manual = ExtractionCutoffMethod(self.cutoff_method) == ExtractionCutoffMethod.MANUAL
         if name == "cc_threshold":
@@ -149,9 +218,20 @@ class CandidateExtractPytomParams(AbstractJobParams):
             return not manual
         return True
 
+    def settings_reading(self, slots: set[str]) -> dict[str, Any]:
+        # Made reading segmentations and no template-matching output: it picks from the segmentations.
+        if "input_segmentations" in slots and not slots & {"input_tm_job", "input_tomograms"}:
+            return {"source": PickSource.SEGMENTATION}
+        return {}
+
+    def run_problems(self) -> list[str]:
+        if self.from_segmentation and not self.feature.strip():
+            return ["no feature chosen to pick from the segmentations"]
+        return []
+
     def _get_job_specific_options(self) -> list[tuple[str, str]]:
-        input_tm_job = self.paths.get("input_tm_job", "")
-        return [("in_mic", str(input_tm_job))]
+        key = "input_segmentations" if self.from_segmentation else "input_tm_job"
+        return [("in_mic", str(self.paths.get(key, "")))]
 
     def _get_queue_options(self) -> list[tuple[str, str]]:
         """
@@ -177,7 +257,8 @@ class CandidateExtractPytomParams(AbstractJobParams):
         return True
 
     def get_tool_name(self) -> str:
-        return "pytom"
+        # Ais picks the segmentation source's pieces; it ships in the easymode image.
+        return "easymode" if self.from_segmentation else "pytom"
 
     @staticmethod
     def get_input_requirements() -> dict[str, str]:

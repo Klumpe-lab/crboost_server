@@ -79,9 +79,10 @@ def validate_protocol(protocol: Protocol) -> list[str]:
             problems.append(f"{iid}: tool '{tool}' is not configured in conf.yaml (tools:)")
         if spec.prerequisite is not None and spec.prerequisite.value not in stage_jobs:
             problems.append(f"{iid}: prerequisite '{spec.prerequisite.value}' is not a stage (nothing is auto-added)")
-        for dep in spec.dependencies:
-            if dep.value not in stage_jobs:
-                problems.append(f"{iid}: depends on '{dep.value}', which is not a stage")
+        if not any(a.value in stage_jobs for a in spec.alternatives):
+            for dep in spec.dependencies:
+                if dep.value not in stage_jobs:
+                    problems.append(f"{iid}: depends on '{dep.value}', which is not a stage")
     stage_ids = {s.instance_id for s in protocol.stages if s.job in {jt.value for jt in JobType}}
     for st in protocol.stages:
         for slot, producer in st.inputs.items():

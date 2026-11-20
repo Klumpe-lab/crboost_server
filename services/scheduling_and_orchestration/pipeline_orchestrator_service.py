@@ -25,6 +25,7 @@ from services.particles.set_facets import INPUT_DIR as SET_INPUT_DIR, write_inpu
 from services.event_log import events
 from services.result import ErrorCode, err, ok
 from services.project_state import AbstractJobParams, JobCategory, JobType, JobStatus, ReviewHold
+from services.segmentation.manifest import segment_feature_id
 from services.segmentation.search_region import search_region_problem
 from services.subsets import subset_problem, write_subset_star
 from services.supervisor_owner import read_owner
@@ -750,7 +751,7 @@ class PipelineOrchestratorService:
                 excluded = get_registry_for(project_dir).excluded_ids()
             producer = state.jobs.get(resolver.source_of(iid, "input_segmentations") or "")
             planned = (
-                list(producer.features)
+                [segment_feature_id(f) for f in producer.features]
                 if producer is not None
                 and producer.job_type == JobType.SEGMENT
                 and producer.method == SegmentMethod.EASYMODE

@@ -70,6 +70,9 @@ class JobSpec:
     phase: str | None
     # Roster gating: job types that must be present before this one is addable.
     dependencies: tuple[JobType, ...] = ()
+    # Job types any one of which stands in for `dependencies`: the job reads that one instead (Pick candidates
+    # picks from a Segment job's volumes instead of a Template Match's scores).
+    alternatives: tuple[JobType, ...] = ()
     # Auto-added when this type is inserted and the prerequisite is missing.
     prerequisite: JobType | None = None
     # Script under drivers/; None = command built natively (importmovies).
@@ -306,10 +309,11 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         "Pick candidates",
         PHASE_PARTICLES,
         dependencies=(JobType.TEMPLATE_MATCH_PYTOM,),
+        alternatives=(JobType.SEGMENT,),
         driver="extract_candidates_pytom.py",
         plugins=("candidate_extract", "array_tasks"),
         dir_slug="pick",
-        summary="Picks candidates from the score maps: peaks above a threshold, a particle apart.",
+        summary="Picks one species' candidates from template-matching scores or from a segmented feature.",
         glyph=(
             '<circle cx="3" cy="3.2" r=".9" fill="currentColor"/>'
             '<circle cx="8.8" cy="2.8" r=".9" fill="currentColor"/>'

@@ -312,10 +312,11 @@ async def list_job_types(call: Call) -> dict[str, Any]:
                 "name": spec.display_name,
                 "phase": spec.phase,
                 "requires": [d.value for d in spec.dependencies],
+                "or_requires": [a.value for a in spec.alternatives],
                 "added_with": spec.prerequisite.value if spec.prerequisite else None,
                 "species": spec.phase == PHASE_PARTICLES,
                 "inputs": [
-                    {"slot": s.key, "accepts": [t.value for t in s.accepts], "required": s.required}
+                    {"slot": s.key, "accepts": [t.value for t in s.accepts], "required": s.required, "when": s.when}
                     for s in getattr(cls, "INPUT_SCHEMA", None) or []
                 ],
                 "outputs": [
@@ -397,6 +398,7 @@ def _species_row(sp) -> dict[str, Any]:
         "catalog_id": sp.catalog_id,
         "diameter_ang": sp.diameter_ang,
         "symmetry": sp.symmetry,
+        "segmentation_feature": sp.segmentation_feature,
         "glyph": sp.glyph or DEFAULT_SPECIES_GLYPH,
         "glyph_hue": sp.glyph_hue or DEFAULT_GLYPH_HUE,
         "templates": len(sp.templates),
@@ -1198,6 +1200,8 @@ async def set_species(call: Call) -> dict[str, Any]:
             fields[name] = getattr(a, name) or ""
     if "extraction" in a.model_fields_set and a.extraction is not None:
         fields["extraction"] = (a.extraction.box_size, a.extraction.binning, a.extraction.crop_size)
+    if "segmentation_feature" in a.model_fields_set:
+        fields["segmentation_feature"] = a.segmentation_feature or ""
     res = species_edit.set_species(call.state, a.species, **fields)
     if res["success"]:
         res["ui_url"] = call.url(View.SPECIES, a.species)

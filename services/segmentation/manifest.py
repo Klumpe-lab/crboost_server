@@ -28,10 +28,23 @@ ENGINE_NATIVE = "easymode-native"
 ENGINE_AIS = "ais"
 
 
+# The ending of every feature id a Segment job writes. A feature's colour is the palette slot of its
+# id, as a species' is, so a species `ribosome` and a feature `ribosome` would share name and colour,
+# and its picks would vanish into its fill; the feature is `ribosome_ais`.
+SEGMENT_FEATURE_SUFFIX = "_ais"
+
+
 def feature_slug(name: str) -> str:
     """A feature id from a model title: lower-case ASCII letters, digits and underscores, the form
     easymode's own feature names have."""
     return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_") or "feature"
+
+
+def segment_feature_id(name: str) -> str:
+    """The id a Segment job gives what it segments under `name` (an easymode feature, or an Ais
+    model's title): its slug with `_ais` after it. Volume files, the manifest, the feature registry
+    and the pick columns that name a feature all carry it. Imports keep the names the user gives."""
+    return f"{feature_slug(name)}{SEGMENT_FEATURE_SUFFIX}"
 
 
 class SegmentationEntry(BaseModel):

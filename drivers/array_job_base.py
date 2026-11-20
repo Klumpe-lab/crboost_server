@@ -1072,27 +1072,30 @@ class ArrayDriver(ABC):
 
     # ---------------- driver skeleton ----------------
 
-    def main(self) -> None:
+    def main(self, ctx: DriverContext | None = None) -> None:
+        """Supervisor or array task, as SLURM_ARRAY_TASK_ID says. `ctx`: the context a launcher already loaded
+        to choose this driver (Pick candidates' source); without it each mode loads its own."""
         array_idx_env = os.environ.get("SLURM_ARRAY_TASK_ID")
         if array_idx_env is None:
             start_supervisor()
             print("Python", sys.version, flush=True)
             self._prefix = "[SUPERVISOR]"
             print(f"--- {self.job_name}: SUPERVISOR mode ---", flush=True)
-            self.run_supervisor()
+            self.run_supervisor(ctx)
         else:
             print("Python", sys.version, flush=True)
             self._prefix = f"[TASK {array_idx_env}]"
             print(f"--- {self.job_name}: TASK mode (array idx {array_idx_env}) ---", flush=True)
-            self.run_task(int(array_idx_env))
+            self.run_task(int(array_idx_env), ctx)
 
-    def run_supervisor(self) -> None:
-        try:
-            ctx = DriverContext.load(self.params_class)
-        except Exception as e:
-            print(f"[SUPERVISOR] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
-            traceback.print_exc(file=sys.stderr)
-            sys.exit(1)
+    def run_supervisor(self, ctx: DriverContext | None = None) -> None:
+        if ctx is None:
+            try:
+                ctx = DriverContext.load(self.params_class)
+            except Exception as e:
+                print(f"[SUPERVISOR] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
+                traceback.print_exc(file=sys.stderr)
+                sys.exit(1)
 
         print(f"[SUPERVISOR] CWD (job dir): {ctx.job_dir}", flush=True)
 
@@ -1175,13 +1178,14 @@ class ArrayDriver(ABC):
             traceback.print_exc(file=sys.stderr)
             sys.exit(1)
 
-    def run_task(self, array_idx: int) -> None:
-        try:
-            ctx = DriverContext.load(self.params_class)
-        except Exception as e:
-            print(f"[TASK {array_idx}] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
-            traceback.print_exc(file=sys.stderr)
-            sys.exit(1)
+    def run_task(self, array_idx: int, ctx: DriverContext | None = None) -> None:
+        if ctx is None:
+            try:
+                ctx = DriverContext.load(self.params_class)
+            except Exception as e:
+                print(f"[TASK {array_idx}] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
+                traceback.print_exc(file=sys.stderr)
+                sys.exit(1)
 
         try:
             self.post_bootstrap(ctx)

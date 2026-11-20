@@ -30,6 +30,7 @@ from services.path_resolution_service import (
 )
 from services.project_state import ProjectState
 from services.result import ErrorCode, err, need, ok
+from services.segmentation.manifest import segment_feature_id
 
 logger = logging.getLogger(__name__)
 
@@ -105,11 +106,12 @@ def check_value(job_model, name: str, value: Any) -> tuple[Any, str | None]:
 
 
 def project_features(state: ProjectState) -> list[str]:
-    """The features this project has segmentations of, or a Segment job is set to make."""
+    """The features this project has segmentations of, or a Segment job is set to make (by the id it will write,
+    `ribosome_ais` for easymode's ribosome)."""
     ids = {f.id for f in state.feature_registry}
     for jm in state.jobs.values():
         if jm.job_type == JobType.SEGMENT and jm.method == SegmentMethod.EASYMODE:
-            ids |= set(jm.features)
+            ids |= {segment_feature_id(f) for f in jm.features}
     return sorted(ids)
 
 
@@ -184,6 +186,9 @@ def param_options(state: ProjectState, instance_id: str, name: str) -> list | No
         if name in ("search_include", "search_exclude"):
             held = [*job_model.search_include, *job_model.search_exclude]
             return sorted({*project_features(state), *held})
+    if jt == JobType.TEMPLATE_EXTRACT_PYTOM and name == "feature":
+        # Cleared ("") or a feature of the project; the one the job holds stays a choice.
+        return ["", *sorted({*project_features(state), job_model.feature} - {""})]
     if jt == JobType.SEGMENT and name == "features":
         from services.segmentation.easymode import easymode_cache_dir
 

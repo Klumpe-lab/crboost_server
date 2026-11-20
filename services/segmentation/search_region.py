@@ -14,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
-from services.segmentation.manifest import SegmentationEntry, SegmentationManifest
+from services.segmentation.manifest import SegmentationEntry, SegmentationManifest, segment_feature_id
 from services.segmentation.volumes import DISPLAY_THRESHOLD
 
 MASK_SUFFIX = "_search_mask.mrc"
@@ -29,6 +29,13 @@ def search_mask_path(tm_results: Path, tomo: str) -> Path:
 def read_segmentations(path) -> SegmentationManifest:
     """The segmentations.json at `path` (the file a SEGMENTATIONS input names)."""
     return SegmentationManifest.model_validate_json(Path(path).read_text())
+
+
+def _renamed(named: list[str], have: set[str]) -> str:
+    """For a region naming features the way a Segment job named them before its ids ended in `_ais`: which id
+    each has in these segmentations, to set instead."""
+    hits = [f"{f} → {segment_feature_id(f)}" for f in named if f not in have and segment_feature_id(f) in have]
+    return f" (a Segment job names them with _ais now: {', '.join(hits)}; set those in the region)" if hits else ""
 
 
 def describe(include: list[str], exclude: list[str], dilation_ang: float) -> str:
@@ -118,18 +125,22 @@ def search_region_problem(
     if not Path(source).exists():
         lack = [f for f in named if planned is not None and f not in planned]
         if lack:
-            return f"its search region names {', '.join(lack)}, which its segmentations job is not set to make"
+            return (
+                f"its search region names {', '.join(lack)}, which its segmentations job is not set to make"
+                f"{_renamed(lack, set(planned or ()))}"
+            )
         return None
     try:
         manifest = read_segmentations(source)
     except (OSError, ValueError) as e:
         return f"its segmentations could not be read ({source}): {e}"
     have = {(e.tomogram, e.feature) for e in manifest.entries}
+    held = set(manifest.features())
     table = read_tomo_table(Path(paths["input_tomograms"])) if paths.get("input_tomograms") else None
     if table is None:
         # The tomograms are not written yet: only what the segmentations hold at all can be checked.
-        lack = [f for f in named if f not in {e.feature for e in manifest.entries}]
-        return f"its segmentations have no {', '.join(lack)}" if lack else None
+        lack = [f for f in named if f not in held]
+        return f"its segmentations have no {', '.join(lack)}{_renamed(lack, held)}" if lack else None
     names = sorted(str(n) for n in table["rlnTomoName"])[:: max(1, int(params.every_nth_tomogram or 1))]
     missing = {t: [f for f in named if (t, f) not in have] for t in names if t not in excluded}
     missing = {t: fs for t, fs in missing.items() if fs}
@@ -137,7 +148,8 @@ def search_region_problem(
         return None
     listed = "; ".join(f"{t} ({', '.join(fs)})" for t, fs in list(missing.items())[:_LISTED])
     more = f" and {len(missing) - _LISTED} more" if len(missing) > _LISTED else ""
+    renamed = _renamed(sorted({f for fs in missing.values() for f in fs}), held)
     return (
         f"{len(missing)} tomogram(s) it would match lack a feature of its search region in "
-        f"{manifest.producer}: {listed}{more}. Segment them, or exclude them from processing"
+        f"{manifest.producer}: {listed}{more}{renamed}. Segment them, or exclude them from processing"
     )

@@ -180,6 +180,11 @@ class AbstractJobParams(BaseModel):
         value (a method's own settings) is hidden while it means nothing; its value stays as it was."""
         return True
 
+    def settings_reading(self, slots: set[str]) -> dict[str, Any]:
+        """The parameter values a job made reading `slots` from the start takes, where the inputs decide one (a Pick
+        candidates job made from segmentations picks from them). Empty: they decide nothing."""
+        return {}
+
     def get_effective_slurm_config(self) -> SlurmConfig:
         """
         Returns the effective SLURM config for this job.

@@ -164,11 +164,12 @@ job_resource_profiles:
     cpus_per_task: 4
     time: "1:30:00"
 
-  # Candidate extraction computes on the CPU, but pytom_extract_candidates.py cannot start without a CUDA device
-  # (voltools asks cupy for the device count at import): give it the smallest GPU the partition offers
-  # (CBE.next: "gpu:nvidia_b200_1g.23gb:1", one MIG slice).
+  # Pick candidates runs on CPUs only, from either source: pytom's extraction is numpy (it starts through a
+  # launcher that tells voltools there is no GPU), and picking from segmentations is Ais plus numpy. Where the GPU
+  # partition refuses a job without one, see the tsImport note: a CPU partition, or the cheapest cards as a ticket
+  # (CBE.next: partition: "g", gres: "gpu:1", constraint: "rtx6000|a100|mig").
   tmextractcand:
-    gres: "gpu:1"
+    gres: ""
     mem: "24G"
     cpus_per_task: 2
     time: "1:00:00"

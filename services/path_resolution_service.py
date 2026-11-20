@@ -622,12 +622,12 @@ class PathResolutionService:
         """Two jobs `instance_id` reads from of which neither is upstream of the other, e.g.
         tsReconstruct's tilt series from tsCtf__2 but its settings from an alignment tsCtf__2 does
         not descend from; None when its inputs all lie on one chain. A warning, never a block. An input
-        a job has only while a parameter is set (`InputSlot.when`: template matching's segmentations,
-        made beside its tomograms rather than upstream of them) is no chain of its own."""
+        read beside the main ones (`InputSlot.beside`: template matching's segmentations, made beside
+        its tomograms rather than upstream of them) is no chain of its own."""
         edges = self.resolve_slot_edges()
         job_model = self.state.jobs.get(instance_id)
         side = (
-            {s.key for s in self._get_input_schema(job_model.job_type) if s.when}
+            {s.key for s in self._get_input_schema(job_model.job_type) if s.beside}
             if job_model is not None and job_model.job_type is not None
             else set()
         )

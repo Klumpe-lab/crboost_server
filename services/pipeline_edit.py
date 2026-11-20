@@ -53,6 +53,8 @@ def missing_deps(job_type: JobType, roster: set[str]) -> list[JobType]:
         return []
 
     spec = JOB_SPEC_BY_TYPE.get(job_type)
+    if spec is not None and any(type_present(a) for a in spec.alternatives):
+        return []
     deps = spec.dependencies if spec else ()
     return [d for d in deps if not type_present(d)]
 
@@ -89,10 +91,10 @@ def in_use_notice(state: ProjectState, instance_id: str) -> str | None:
 
 def species_defaults(job_type: JobType, species) -> dict[str, Any]:
     """The values a new job of `job_type` takes from its species when it is made: template matching's selected
-    template and mask and the species' symmetry; candidate extraction's diameter; subtomo extraction's
-    extraction geometry; Warp export's voxel size, output box (crop, else box) and diameter, so both extraction
-    paths can cut the same particles alike. Only what the species has set: the rest keeps the job's own
-    default, and nothing propagates into a job made earlier."""
+    template and mask and the species' symmetry; candidate extraction's diameter and the feature it picks from
+    segmentations; subtomo extraction's extraction geometry; Warp export's voxel size, output box (crop, else
+    box) and diameter, so both extraction paths can cut the same particles alike. Only what the species has
+    set: the rest keeps the job's own default, and nothing propagates into a job made earlier."""
     out: dict[str, Any] = {}
     ep = getattr(species, "extraction_params", None)
     diameter = getattr(species, "diameter_ang", None)
@@ -108,6 +110,8 @@ def species_defaults(job_type: JobType, species) -> dict[str, Any]:
     elif job_type == JobType.TEMPLATE_EXTRACT_PYTOM:
         if diameter:
             out["particle_diameter_ang"] = float(diameter)
+        if getattr(species, "segmentation_feature", None):
+            out["feature"] = species.segmentation_feature
     elif job_type == JobType.SUBTOMO_EXTRACTION:
         if ep is not None:
             out.update(box_size=ep.box_size, binning=ep.binning, crop_size=ep.crop_size)
@@ -267,6 +271,9 @@ def add_job(
                 setattr(job_model, field, value)
     if source is not None:
         job_model.copy_settings_from(source)
+    if reading:
+        for field, value in job_model.settings_reading(set(reading)).items():
+            setattr(job_model, field, value)
 
     # With an active merge, every consumer's optimisation-set input reads it; no-op without one.
     apply_aggregation_overrides(state)
@@ -314,10 +321,15 @@ def _checked_reading(
         return reading, None  # the call on the state refuses the same way
     instance_id = res["instance_id"]
     job_model = copy.jobs[instance_id]
+    # The inputs the job has depend on what the reading decides (a Pick candidates job reading segmentations).
+    for field, value in job_model.settings_reading(set(reading)).items():
+        setattr(job_model, field, value)
     resolver = PathResolutionService(copy)
     schema = {s.key: s for s in resolver.get_input_schema_for_job(job_model.job_type, job_model)}
     checked: dict[str, str] = {}
     for slot, key in reading.items():
+        if slot not in schema:
+            return reading, f"{instance_id} does not read {slot} as it is set (its inputs: {', '.join(schema)})."
         candidates = resolver.get_candidates_for_slot(
             job_model.job_type, slot, consumer_species_id=job_model.species_id, consumer_instance_id=instance_id
         )

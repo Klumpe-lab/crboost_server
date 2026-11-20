@@ -96,11 +96,12 @@ def set_species(
     glyph: Any = KEEP,
     glyph_hue: Any = KEEP,
     extraction: Any = KEEP,
+    segmentation_feature: Any = KEEP,
 ) -> dict[str, Any]:
     """Edit a species: its identity (what the Particles registry's editor sets; a diameter of None clears it; a
-    glyph or hue of "" is the default) and its extraction geometry (box, binning, crop: all three, which the jobs
-    added for it later take). Only what is given changes; a job made earlier keeps the values it took.
-    `ok(species)` as it now is."""
+    glyph or hue of "" is the default), its extraction geometry (box, binning, crop: all three, which the jobs
+    added for it later take) and the segmentation feature its Pick candidates jobs pick from (None or "" clears
+    it). Only what is given changes; a job made earlier keeps the values it took. `ok(species)` as it now is."""
     if state.get_species(species_id) is None:
         listed = ", ".join(s.id for s in state.species_registry) or "none"
         return err(f"No species {species_id} in this project ({listed}).")
@@ -141,6 +142,8 @@ def set_species(
             sp.glyph_hue = "" if glyph_hue == DEFAULT_GLYPH_HUE else glyph_hue
         if geometry is not KEEP:
             sp.extraction_params = geometry
+        if segmentation_feature is not KEEP:
+            sp.segmentation_feature = (segmentation_feature or "").strip() or None
 
     state.mutate_species(species_id, _apply)
     sp = state.get_species(species_id)
@@ -155,6 +158,7 @@ def set_species(
             "glyph": sp.glyph or DEFAULT_SPECIES_GLYPH,
             "glyph_hue": sp.glyph_hue or DEFAULT_GLYPH_HUE,
             "extraction": sp.extraction_params.model_dump() if sp.extraction_params else None,
+            "segmentation_feature": sp.segmentation_feature,
         }
     )
 
