@@ -27,6 +27,7 @@ RELION-model tilt series still holds the rigid model its motion belongs to.
 from __future__ import annotations
 
 import json
+import shutil
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,12 +37,14 @@ import pandas as pd
 import starfile
 
 from services.analysis.alignment_changes import movement_grid_stats
-from services.particles.set_origins import Origin, origins_of
+from services.particles.coord_merge import _absolutize_paths
+from services.particles.set_origins import TILT_DIR, Origin, origins_of, project_of, write_renamed_tilt_star
 from services.subtomo_merge import (
     _parse_optimisation_set,
     _read_input_particles_lenient,
     _read_tomograms_star,
     _write_particles_star,
+    _write_tomograms_star,
     optimisation_set_trajectories,
     write_optimisation_set,
 )
@@ -53,6 +56,8 @@ REPORT_NAME = "warp_trajectories.json"
 MANIFEST_NAME = "warp_trajectories_manifest.json"
 NAMED_PARTICLES_NAME = "warp_particles.star"
 BRIDGED_SET_NAME = "warp_optimisation_set.star"
+# In a job's directory: the tilt-series stars without the tilts that hold no alignment, and the set naming them.
+ALIGNED_TILTS_DIR = "aligned_tilts"
 
 # The origin marker, a column of the tomograms star: whose model a tilt series' star and the set's trajectories for
 # its particles are. RELION keeps unknown labels through its programs ("will ignore (but maintain)"), so the marker
@@ -176,6 +181,89 @@ def local_geometry(xml: Path) -> str | None:
             "particle but not turn it, so RELION cannot be given this model"
         )
     return "; ".join(parts) or None
+
+
+def unaligned_movies(tilts: pd.DataFrame, name: str) -> list[str]:
+    """The movies of a tilt-series star's tilts that hold no rigid alignment. WarpTools ts_import leaves tilts out
+    (its intensity walk from the zero tilt, its max tilt, its masked fraction; none can be turned off), and crboost's
+    stars keep their rows with the alignment empty. Warp's model, reconstruction and exports have no such tilt, and
+    RELION would project it with no geometry. A tilt holding part of an alignment is a broken star: raises."""
+    cols = [c for c in RIGID_STAR_COLS if c in tilts.columns]
+    if not cols:
+        return []
+    empty = tilts[cols].apply(pd.to_numeric, errors="coerce").isna()
+    partial = empty.any(axis=1) & ~empty.all(axis=1)
+    if partial.any():
+        raise ValueError(f"{name}: {int(partial.sum())} tilts hold part of a rigid alignment ({', '.join(cols)})")
+    return [Path(str(m)).name for m in tilts.loc[empty.all(axis=1), "rlnMicrographMovieName"]]
+
+
+def _tilt_table(path: Path, name: str) -> tuple[str, pd.DataFrame]:
+    for block, df in starfile.read(path, always_dict=True).items():
+        if isinstance(df, pd.DataFrame) and "rlnMicrographMovieName" in df.columns:
+            return str(block), df
+    raise ValueError(f"{name}: {path} holds no per-tilt table")
+
+
+def _check_visible_frames(particles_star: Path, kept: dict[str, int]) -> None:
+    """Per-particle visibility (2D stacks) is one flag per tilt of the star it was cut against: it must count the
+    tilts kept, or it belongs to the full star and cannot be read against the shorter one."""
+    particles, _, _ = _read_input_particles_lenient(particles_star)
+    if "rlnTomoVisibleFrames" not in particles.columns:
+        return
+    for name, n in kept.items():
+        rows = particles[particles["rlnTomoName"].astype(str) == name]["rlnTomoVisibleFrames"].astype(str)
+        lengths = {len(v.strip("[]").split(",")) for v in rows}
+        if lengths - {n}:
+            raise ValueError(
+                f"{name}: its particles' rlnTomoVisibleFrames count {sorted(lengths)} tilts, the tilts that hold an "
+                f"alignment are {n}: the images were cut against another tilt list"
+            )
+
+
+def drop_unaligned_tilts(input_set: Path, job_dir: Path) -> tuple[Path, dict[str, list[str]]]:
+    """The set a RELION tilt-image program can read: `input_set` when every tilt of its tomograms holds a rigid
+    alignment; else one in `job_dir/aligned_tilts/` whose tilt-series stars leave out the tilts that hold none
+    (`unaligned_movies`), the rest as it was. Returns it and {tomogram: the movies left out}. Writes only into
+    `job_dir`."""
+    particles_star, tomograms_star = _parse_optimisation_set(input_set)
+    tomograms = _read_tomograms_star(tomograms_star)
+    base = tomograms_star.parent
+    found: dict[str, tuple[Path, str, list[str], int]] = {}
+    for _, row in tomograms.iterrows():
+        name = str(row["rlnTomoName"])
+        src = _abs(row["rlnTomoTiltSeriesStarFile"], base)
+        block, tilts = _tilt_table(src, name)
+        gone = unaligned_movies(tilts, name)
+        if len(gone) == len(tilts):
+            raise ValueError(f"{name}: no tilt of {src} holds an alignment")
+        if gone:
+            found[name] = (src, block, gone, len(tilts) - len(gone))
+    if not found:
+        return input_set, {}
+    _check_visible_frames(particles_star, {n: v[3] for n, v in found.items()})
+    out_dir = job_dir / ALIGNED_TILTS_DIR
+    shutil.rmtree(out_dir, ignore_errors=True)  # an earlier attempt's copies must not pass for this one's
+    project = project_of(tomograms_star, base)
+    rows = []
+    for _, row in tomograms.iterrows():
+        row = _absolutize_paths(row, project)
+        name = str(row["rlnTomoName"])
+        if name in found:
+            src, block, gone, _ = found[name]
+            dst = out_dir / TILT_DIR / f"{name}.star"
+            write_renamed_tilt_star(src, dst, block, name, project_of(src, project), drop=frozenset(gone))
+            row["rlnTomoTiltSeriesStarFile"] = str(dst.resolve())
+        rows.append(row)
+    _write_tomograms_star(out_dir / "tomograms.star", pd.DataFrame(rows))
+    out = out_dir / "optimisation_set.star"
+    write_optimisation_set(
+        out,
+        particles_star=particles_star,
+        tomograms_star=out_dir / "tomograms.star",
+        trajectories_star=optimisation_set_trajectories(input_set),
+    )
+    return out, {n: v[2] for n, v in found.items()}
 
 
 def check_rigid_agrees(xml: Path, tilts: pd.DataFrame, name: str) -> None:

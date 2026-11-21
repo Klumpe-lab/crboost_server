@@ -73,10 +73,15 @@ def tilt_block(path: Path, name: str) -> pd.DataFrame:
     return df
 
 
-def write_renamed_tilt_star(src: Path, dst: Path, old: str, new: str, project: Path) -> None:
+def write_renamed_tilt_star(
+    src: Path, dst: Path, old: str, new: str, project: Path, drop: frozenset[str] = frozenset()
+) -> None:
     """`src`'s block ``data_<old>`` written to `dst` as ``data_<new>``, its relative file names made absolute
-    against `project` (the project the star was written in, where RELION read them from)."""
+    against `project` (the project the star was written in, where RELION read them from). `drop`: the tilts left
+    out, by movie file name."""
     df = tilt_block(src, old).copy()
+    if drop:
+        df = df[~df["rlnMicrographMovieName"].map(lambda m: Path(str(m)).name).isin(drop)]
     for col in _TILT_PATH_COLS:
         if col in df.columns:
             df[col] = [

@@ -26,7 +26,14 @@ def _say(msg: str) -> None:
 def carry_warp_geometry(input_set: Path, job_dir: Path, binds=()) -> Path:
     """`input_set` when its tilt series hold nothing beyond the rigid model the star holds, or when it already
     names this bridge's trajectories for all its particles; else a new optimisation set in `job_dir` naming the
-    trajectories computed here (and, for particles without names, a named copy of the particles)."""
+    trajectories computed here (and, for particles without names, a named copy of the particles). Tilts that hold
+    no alignment (WarpTools ts_import left them out) are first left out of a copy of their stars."""
+    input_set, dropped = wg.drop_unaligned_tilts(input_set, job_dir)
+    for name, movies in dropped.items():
+        _say(
+            f"{name}: {len(movies)} tilt(s) hold no alignment (WarpTools ts_import left them out; Warp's model has "
+            f"no such tilt), so RELION reads its star without them: {', '.join(movies)}"
+        )
     p = wg.plan(input_set)
     if p.unlocated:
         _say(
