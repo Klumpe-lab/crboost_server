@@ -545,7 +545,7 @@ async def create_kitchen_subset(call: Call) -> dict[str, Any]:
     from services.sta_kitchen import agent_ops
 
     a = call.args
-    res = await agent_ops.create_subset(call.path, a.species, a.name, _recipe(a), a.group)
+    res = await agent_ops.create_subset(call.path, a.species, a.name, _recipe(a), a.group, a.uids)
     res["ui_url"] = _kitchen_url(call)
     return res
 
@@ -556,7 +556,9 @@ async def edit_kitchen_subset(call: Call) -> dict[str, Any]:
     a = call.args
     if a.group and a.ungroup:
         return err("group and ungroup: one or the other.")
-    res = await agent_ops.edit_subset(call.path, a.species, a.subset, a.name, a.group, a.ungroup)
+    res = await agent_ops.edit_subset(
+        call.path, a.species, a.subset, a.name, a.group, a.ungroup, a.add_uids, a.remove_uids
+    )
     res["ui_url"] = _kitchen_url(call)
     return res
 

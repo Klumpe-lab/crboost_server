@@ -162,10 +162,18 @@ class RemoveKitchenSourceIn(SpeciesIn):
     source: str = Field(description="The source, by its key or as <project folder>:<job> (get_kitchen lists them)")
 
 
+_UIDS = "a particle star's cbPickUid cells (u + 12 hex digits) or the 12 hex digits alone"
+
+
 class CreateKitchenSubsetIn(SpeciesIn, _Recipe):
     name: str = Field(description="The new subset's name, unique in this kitchen")
     group: str | None = Field(
         None, description="A group (by name or id): its subsets never share a pick, so adding moves picks into it"
+    )
+    uids: list[str] = Field(
+        default_factory=list,
+        description=f"Exactly these picks instead of a recipe, as a selection in the kitchen's gallery makes a subset: "
+        f"{_UIDS}. Refused when one is not a pick of this kitchen",
     )
 
 
@@ -174,6 +182,12 @@ class EditKitchenSubsetIn(SpeciesIn):
     name: str | None = Field(None, description="A new name")
     group: str | None = Field(None, description="Move it into this group (refused when it shares picks there)")
     ungroup: bool = Field(False, description="Take it out of its group")
+    add_uids: list[str] = Field(
+        default_factory=list,
+        description=f"Picks to add, as adding a gallery selection does ({_UIDS}); in a group they leave its other "
+        "subsets",
+    )
+    remove_uids: list[str] = Field(default_factory=list, description=f"Picks to take out ({_UIDS})")
 
 
 class KitchenGroupIn(SpeciesIn):
