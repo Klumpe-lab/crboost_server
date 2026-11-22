@@ -323,6 +323,11 @@ def _checked_reading(
     schema = {s.key: s for s in resolver.get_input_schema_for_job(job_model.job_type, job_model)}
     checked: dict[str, str] = {}
     for slot, key in reading.items():
+        if slot not in schema:
+            return reading, (
+                f"{instance_id}.{slot} is not an input of the job as it is added: another of its parameters turns it "
+                f"on. Add the job, set that parameter, then set_input {slot} (its inputs now: {', '.join(schema)})."
+            )
         candidates = resolver.get_candidates_for_slot(
             job_model.job_type, slot, consumer_species_id=job_model.species_id, consumer_instance_id=instance_id
         )
