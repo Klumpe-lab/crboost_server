@@ -431,8 +431,19 @@ class SegmentDriver(ArrayDriver):
         # earlier run of the job recorded for it.
         registry = get_registry_for(ctx.project_path)
         outputs = tomogram_outputs(manifest, ctx.job_dir)
+        elsewhere = []
         for ts, output in outputs.items():
-            registry.attach_tomogram_output(ts, output)
+            # A tomogram imported from another project's job has no tilt series here to record it on.
+            if registry.has_tilt_series(ts):
+                registry.attach_tomogram_output(ts, output)
+            else:
+                elsewhere.append(ts)
+        if elsewhere:
+            self.log(
+                f"{len(elsewhere)} tomogram(s) are not tilt series of this project (imported from other projects' "
+                "jobs): their volumes are in segmentations.json, which the jobs reading them use, and are not in "
+                "this project's registry, which the overlays on the wall read."
+            )
         for ts in sorted(set(self._tomo_paths) - set(outputs)):
             if registry.has_tilt_series(ts):
                 tomogram = registry.get_tilt_series(ts).tomogram
@@ -558,7 +569,8 @@ class SegmentDriver(ArrayDriver):
             )
         return (
             ToolCommand(f"{env} easymode segment")
-            .raw(" ".join(shlex.quote(t["feature"]) for t in staged["pending"]))
+            # easymode's own names: a feature's id (`<name>_ais`) is crboost's, and easymode knows no such model.
+            .raw(" ".join(shlex.quote(t["model"]["feature"]) for t in staged["pending"]))
             .opt_path("--data", staged["in_dir"], quote=True)
             .opt_path("--output", staged["tool_dir"], quote=True)
             .opt("--format", SegmentFormat(p.output_format).value)
