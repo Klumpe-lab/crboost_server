@@ -183,7 +183,7 @@ def _infer_polarity(volume) -> tuple[PolarityGuess, float]:
     # Take a central cube of side ~ min_dim/2
     r = max(1, min(nz, ny, nx) // 4)
     cz, cy, cx = nz // 2, ny // 2, nx // 2
-    central = volume[max(0, cz - r): cz + r, max(0, cy - r): cy + r, max(0, cx - r): cx + r]
+    central = volume[max(0, cz - r) : cz + r, max(0, cy - r) : cy + r, max(0, cx - r) : cx + r]
     if central.size == 0:
         return "ambiguous", 0.0
     central_mean = float(central.mean())
@@ -319,11 +319,18 @@ def inspect_mask_intrinsics(mask_path: str) -> MaskIntrinsics | None:
 
         if data.size == 0 or float(data.max()) <= 0:
             result = MaskIntrinsics(
-                nx=nx, ny=ny, nz=nz, apix_ang=apix,
+                nx=nx,
+                ny=ny,
+                nz=nz,
+                apix_ang=apix,
                 diameter_ang_at_half_max=None,
-                sigma_x_vox=None, sigma_y_vox=None, sigma_z_vox=None,
+                sigma_x_vox=None,
+                sigma_y_vox=None,
+                sigma_z_vox=None,
                 isotropy_ratio=None,
-                com_offset_x_vox=0.0, com_offset_y_vox=0.0, com_offset_z_vox=0.0,
+                com_offset_x_vox=0.0,
+                com_offset_y_vox=0.0,
+                com_offset_z_vox=0.0,
                 com_offset_magnitude_vox=0.0,
                 looks_spherical=False,
             )
@@ -366,7 +373,10 @@ def inspect_mask_intrinsics(mask_path: str) -> MaskIntrinsics | None:
             looks_spherical = False
 
         result = MaskIntrinsics(
-            nx=nx, ny=ny, nz=nz, apix_ang=apix,
+            nx=nx,
+            ny=ny,
+            nz=nz,
+            apix_ang=apix,
             diameter_ang_at_half_max=diameter_ang,
             sigma_x_vox=sigma_x,
             sigma_y_vox=sigma_y,

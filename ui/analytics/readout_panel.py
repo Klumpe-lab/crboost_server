@@ -45,8 +45,10 @@ from ui.styles import MONO, SANS
 PLOT_WH = (520, 180)
 # Three central slices side by side, at the 160 px a tile is rendered at.
 SLICES_W, SLICES_H = 360, 120
-INK = "#1e293b"
-MUTED = "#94a3b8"
+INK = "var(--cb-ink-2, #1e293b)"
+MUTED = "var(--cb-ink-4, #94a3b8)"
+SOFT = "var(--cb-readout-soft, #64748b)"
+HEAD_INK = "var(--cb-readout-head, #334155)"
 NO_ESTIMATE = (
     "RELION gave no resolution estimate for this class (it wrote inf): its estimate failed, which says nothing "
     "about the map. Look at the map."
@@ -66,15 +68,15 @@ def _class_label(k: int, extra: str = "", *, width: str | None = None) -> None:
     w = f"width: {width};" if width else ""
     html = f"{_swatch(k)} <span style='color:{INK};font-weight:600'>class {k}</span>"
     if extra:
-        html += f" <span style='color:#64748b'>{esc(extra)}</span>"
+        html += f" <span style='color:{SOFT}'>{esc(extra)}</span>"
     ui.html(html, sanitize=False).style(f"{SANS} font-size: 10px; white-space: nowrap; {w}")
 
 
 def _map_preview(png: str | None, volume: str, what: str) -> None:
     """A volume's central slices with the napari / 3dmod / ChimeraX chips in their corner."""
     with ui.element("div").style(
-        f"position: relative; width: {SLICES_W}px; height: {SLICES_H}px; background: #0f172a; "
-        "border-radius: var(--cb-r-md, 4px); overflow: hidden;"
+        f"position: relative; width: {SLICES_W}px; height: {SLICES_H}px; "
+        "background: var(--cb-readout-canvas, #0f172a); border-radius: var(--cb-r-md, 4px); overflow: hidden;"
     ):
         if png:
             ui.image(vis_asset_url(png)).style(f"width: {SLICES_W}px; height: {SLICES_H}px;").props("fit=contain")
@@ -86,8 +88,7 @@ def _map_preview(png: str | None, volume: str, what: str) -> None:
 def _tomogram_names(classes: list[dict]) -> dict[str, str]:
     """What the class table calls each tomogram: its position, and before it what tells its dataset from the
     others' when the table holds more than one (a pooled set: every project has a Position_10). The datasets'
-    common start and end are dropped: <project> -> 20260311_Grid2 ·
-    Position_10."""
+    common start and end are dropped: lab_20260311_grid2_rerun_Position_10 -> 20260311_grid2 · Position_10."""
     full = {t for c in classes for t, _n in c.get("top_tomograms") or []}
     pos = {t: ts_display_name(t) for t in full}
     source = {t: t[: -len(pos[t])].rstrip("_") if pos[t] != t and t.endswith(pos[t]) else "" for t in full}
@@ -139,7 +140,7 @@ class ReadoutPanel:
         its, per = class_iteration_table(self.record)
         with ui.element("div").style("display: flex; gap: 14px; flex-wrap: wrap; min-width: 0; width: 100%;"):
             with ui.element("div").style(f"flex: 1 1 280px; min-width: 0; {CHART_CELL_STYLE}"):
-                with ui.label("convergence").style(f"{SANS} font-size: 9px; font-weight: 600; color: #334155;"):
+                with ui.label("convergence").style(f"{SANS} font-size: 9px; font-weight: 600; color: {HEAD_INK};"):
                     ui.tooltip(
                         "Class shares at each iteration (model.star). The classification has settled when the bars "
                         "stop changing."
@@ -147,7 +148,7 @@ class ReadoutPanel:
                 plot(shares_plot(its, per, class_color), *PLOT_WH)
             with ui.element("div").style(f"flex: 1 1 280px; min-width: 0; {CHART_CELL_STYLE}"):
                 with ui.label("each score bin, by class").style(
-                    f"{SANS} font-size: 9px; font-weight: 600; color: #334155;"
+                    f"{SANS} font-size: 9px; font-weight: 600; color: {HEAD_INK};"
                 ):
                     ui.tooltip(
                         "For each band of template-matching score, the share of its particles in each class: the σ "
@@ -217,7 +218,7 @@ class ReadoutPanel:
                 self._decoy_cell(k, c["n"]),
                 (
                     f"<td title='{esc(CONCENTRATION_RULE)} Ratio {c.get('concentration')}.' "
-                    f"style='color:#64748b;cursor:help'>concentrated</td>"
+                    f"style='color:{SOFT};cursor:help'>concentrated</td>"
                     if c.get("concentrated")
                     else "<td></td>"
                 ),
@@ -384,7 +385,7 @@ class ReadoutPanel:
                     parts.append(
                         f"{label}: FSC 0.143 at {r.get('0.143') or 'Nyquist'} Å, 0.5 at {r.get('0.5') or 'Nyquist'} Å"
                     )
-                with ui.label(" · ".join(parts)).style(f"{MONO} font-size: 10px; color: #1e293b;"):
+                with ui.label(" · ".join(parts)).style(f"{MONO} font-size: 10px; color: {INK};"):
                     ui.tooltip(
                         "Fourier shell correlation between half1.mrc and half2.mrc, over the whole box and inside a "
                         "soft sphere of the species diameter. The halves come from RELION's random split; particles "

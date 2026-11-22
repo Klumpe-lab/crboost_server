@@ -5,6 +5,7 @@ from torchvision.models.resnet import BasicBlock, ResNet
 To add models, define architectures as classes inheriting from nn.Module, and add them to the MODEL_REGISTRY.
 """
 
+
 class ResNet18Gray(ResNet):
     """torchvision's ResNet-18 with a one-channel stem and a two-class head (bad = 0, good = 1),
     built the way the model author's trainTiltCNN_ResNet18 scripts build it, so their state dict
@@ -21,32 +22,30 @@ class ResNet18Gray(ResNet):
 
 
 # Model Registry - maps model names to classes
-MODEL_REGISTRY = {
-    'ResNet18Gray': ResNet18Gray,
-}
+MODEL_REGISTRY = {"ResNet18Gray": ResNet18Gray}
 
 
 def get_model_class(model_name):
     """
     Get model class by name.
-    
+
     Parameters:
     - model_name: Name of the model architecture
-    
+
     Returns:
     - Model class
     """
     if model_name not in MODEL_REGISTRY:
-        available = ', '.join(MODEL_REGISTRY.keys())
+        available = ", ".join(MODEL_REGISTRY.keys())
         raise ValueError(f"Unknown model: {model_name}. Available models: {available}")
-    
+
     return MODEL_REGISTRY[model_name]
 
 
 def get_available_models():
     """
     Get list of available model names.
-    
+
     Returns:
     - List of model names
     """

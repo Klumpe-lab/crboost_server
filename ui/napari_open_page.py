@@ -1,7 +1,8 @@
 """`/napari/open?volume=<path>`: the page behind a tomogram's `napari` chip when the site has an Open OnDemand
 portal (conf.yaml `ood:`). One click on the chip opens this page in a new tab; the page shows the tomogram in the
 user's napari session, starting one with *Start now* when none runs, and as soon as the session's desktop is up it
-moves the tab on to the portal's noVNC, which shows napari (roadmap 55 S1).
+moves the tab on to the portal's noVNC, which shows napari. When the session is EisGreis in the user's own remote
+desktop, the tomogram goes there and the page says so: that desktop has its own tab already.
 
 The chip is a real link because a browser opens a tab only from the click itself: a tab opened later from the
 server, once the session is up, would be blocked as a popup. So the tab exists at once and waits here.
@@ -50,12 +51,18 @@ async def _show_or_start(backend, volume: str) -> dict:
             res = await backend.open_in_napari_session(active["session_dir"], volumes, name)
             if not res.get("success"):
                 return res
-            return ok(session_dir=active["session_dir"], slurm_job_id=active.get("slurm_job_id"), started=False)
+            return ok(
+                session_dir=active["session_dir"],
+                slurm_job_id=active.get("slurm_job_id"),
+                started=False,
+                route=active.get("route") or "job",
+                node=active.get("node"),
+            )
         software = bool(get_config_service().napari.software.partition)
         res = await backend.launch_napari_session(volumes, name, software=software)
         if not res.get("success"):
             return res
-        return ok(session_dir=res["session_dir"], slurm_job_id=res["slurm_job_id"], started=True)
+        return ok(session_dir=res["session_dir"], slurm_job_id=res["slurm_job_id"], started=True, route="job")
 
 
 def render_napari_open_page(backend, volume: str) -> None:
@@ -91,7 +98,7 @@ def render_napari_open_page(backend, volume: str) -> None:
     with page:
         connect_help(get_config_service().ood.url, get_config_service().napari.time)
 
-    sv: dict = {"session_dir": None, "job_id": None, "polling": False, "done": False}
+    sv: dict = {"session_dir": None, "job_id": None, "route": "job", "polling": False, "done": False}
 
     def _stop_polling() -> None:
         poll_timer.deactivate()
@@ -105,7 +112,12 @@ def render_napari_open_page(backend, volume: str) -> None:
             if not res.get("success"):
                 _say(res.get("error") or "The session could not be stopped.", "cb-badge-err")
                 return
-        await asyncio.sleep(2)  # squeue takes a moment to drop the cancelled job
+        # Until no session answers: a stopped one counts as gone at once, one cancelled outright (a pending job)
+        # leaves squeue a moment later.
+        for _ in range(20):
+            await asyncio.sleep(2)
+            if not await backend.find_active_napari_session():
+                break
         await _begin()
 
     async def _poll() -> None:
@@ -117,6 +129,9 @@ def render_napari_open_page(backend, volume: str) -> None:
         finally:
             sv["polling"] = False
         status = info.get("status")
+        if sv["route"] == "desktop":
+            _desktop_progress(info)
+            return
         if status == "ready":
             url = info.get("browser_url")
             if url:
@@ -155,6 +170,28 @@ def render_napari_open_page(backend, volume: str) -> None:
                 + ". The tab moves on to napari once it runs; you can leave it open.",
             )
 
+    def _desktop_progress(info: dict) -> None:
+        """EisGreis in the user's own desktop: there is no tab to move on to, so say where the tomogram went."""
+        requested, opened = info.get("requested") or {}, info.get("opened") or {}
+        if info.get("status") == "ended":
+            sv["done"] = True
+            _stop_polling()
+            _say("EisGreis in your desktop has stopped.", "cb-badge-err", info.get("detail") or "")
+            return
+        if requested and opened.get("seq") == requested.get("seq"):
+            sv["done"] = True
+            _stop_polling()
+            if opened.get("ok"):
+                _say(
+                    f"● Shown in EisGreis in your desktop on {info.get('node') or '?'}.",
+                    "cb-badge-ok",
+                    "Switch to your desktop's tab; you can close this one.",
+                )
+            else:
+                _say(f"Not shown in your desktop: {opened.get('error') or 'no volume could be read'}", "cb-badge-err")
+            return
+        _say(f"◌ Opening it in EisGreis in your desktop on {info.get('node') or '?'}…", "cb-badge-queued")
+
     async def _begin() -> None:
         _say("◌ Asking for your napari session…", "cb-badge-queued")
         try:
@@ -165,7 +202,7 @@ def render_napari_open_page(backend, volume: str) -> None:
         if not res.get("success"):
             _say(res.get("error") or "napari could not be started.", "cb-badge-err")
             return
-        sv.update(session_dir=res["session_dir"], job_id=res["slurm_job_id"], done=False)
+        sv.update(session_dir=res["session_dir"], job_id=res["slurm_job_id"], route=res.get("route"), done=False)
         _say("◌ Starting napari…" if res["started"] else "◌ Showing it in your napari…", "cb-badge-queued")
         poll_timer.activate()
         await _poll()

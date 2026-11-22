@@ -41,7 +41,7 @@ from ui.job_plugins.default_renderer import render_default_params_card
 SCORE_FILTER_CHOICES = ["None", "tophat"]
 _SCORE_FILTER_HINT = "Optional post-extract filter. 'tophat' applies a tophat morphological filter on the score map."
 
-_WARN_STYLE = HELPER_STYLE + " color: #b45309;"
+_WARN_STYLE = HELPER_STYLE + " color: var(--cb-warn-ink, #b45309);"
 _NOTE_STYLE = f" margin: 0 0 4px {NOTE_INDENT}px;"
 # The feature choices touch disk (the manifest, the tomograms star): read at most this often while the page polls.
 _DISK_REFRESH_S = 15.0

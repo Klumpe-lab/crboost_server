@@ -60,7 +60,7 @@ from ui.components.buttons import house_button, icon_button
 from ui.components.copyable import _write_clipboard, imod_command
 from ui.components.dialogs import dialog_host
 from ui.components.reactive import FingerprintedView, SingleFlight
-from ui.job_plugins._field_styles import MONO, SANS, section_head, voice
+from ui.job_plugins._field_styles import MONO, SANS, TH_VOICE, keep_case, section_head
 from ui.local_file_picker import local_file_picker
 from ui.napari_open_page import open_url
 from ui.napari_session_dialog import open_napari_dialog
@@ -72,11 +72,11 @@ logger = logging.getLogger(__name__)
 _DISK_REFRESH_S = 15.0  # rows / refs / curation-dir recompute cadence while shown (star reads + globs)
 _HINT_CLS = "text-[10px] text-gray-400"
 _LINK_CLS = "text-[10px] text-slate-700 cursor-pointer underline decoration-dotted"
-_SOFT = "#5b7089"
-_FAINT = "#94a3b8"
-_BODY = "#1e293b"
+_SOFT = "var(--cb-ink-3, #5b7089)"
+_FAINT = "var(--cb-ink-4, #94a3b8)"
+_BODY = "var(--cb-ink-2, #1e293b)"
+_WARN_INK = "var(--cb-warn-ink, #8a4b06)"
 _CAPTION = f"{SANS} font-size: 9.5px; color: {_SOFT}; line-height: 1.45;"
-_TH = voice("th", font="'IBM Plex Sans', sans-serif", size="9px", weight=600, ink="#7d93ab")
 
 # What the save contract promises, derived from the watcher's own cadence: a full sweep of
 # Curation/*/*/ every FULL_SWEEP_EVERY ticks, plus the settle window that keeps a half-written
@@ -340,8 +340,7 @@ def _table_html(c: _Computed, species_id: str, *, sort: str, opened: set[str], l
             cls.append("x")
         sortable = f' data-act="sort" data-key="{k}"' if k else ""
         heads.append(
-            f'<th class="{" ".join(cls)}" title="{_e(tip)}"{sortable}>'
-            f"{_e(h).replace('σ', '<span style=text-transform:none>σ</span>')}</th>"
+            f'<th class="{" ".join(cls)}" title="{_e(tip)}"{sortable}>{_e(h).replace("σ", keep_case("σ"))}</th>'
         )
     order = sorted(c.rows, key=lambda t: ranks[sort][t.name])
     body = "".join(_tomo_html(t, species_id, ranks, opened, live_tomo, ood) for t in order)
@@ -601,8 +600,8 @@ class _TomogramsView(FingerprintedView):
         )
         with line:
             caret = ui.label("▾" if tab.watcher_open else "▸").style(f"font-size: 8px; color: {_FAINT};")
-            ui.label("watcher").style(_TH)
-            ui.label(words).style(f"{SANS} font-size: 9.5px; color: {'#8a4b06' if unattributed else _SOFT};")
+            ui.label("watcher").style(TH_VOICE)
+            ui.label(words).style(f"{SANS} font-size: 9.5px; color: {_WARN_INK if unattributed else _SOFT};")
         line.tooltip("What the server did with saves for this species, and the folders it could not attribute")
         body = ui.column().classes("w-full gap-0").style("padding-left: 14px;")
         body.set_visibility(tab.watcher_open)
@@ -627,7 +626,7 @@ class _TomogramsView(FingerprintedView):
                     if e.get("message"):
                         ui.label(e["message"]).classes("text-[10px] text-orange-700 truncate").tooltip(e["message"])
             if unattributed:
-                ui.label("Unattributed saves").style(f"{_TH} margin-top: 6px;").tooltip(
+                ui.label("Unattributed saves").style(f"{TH_VOICE} margin-top: 6px;").tooltip(
                     "Project-wide: a save here reached no species, and was never guessed at."
                 )
                 for u in unattributed:

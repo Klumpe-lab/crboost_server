@@ -20,7 +20,7 @@ from pydantic import TypeAdapter, ValidationError
 from services.computing.slurm_service import SlurmConfig
 from services.jobs.spec import instance_display_name
 from services.jobs.template_match import TM_SYMMETRY_CHOICES, set_symmetry
-from services.models_base import DenoiseMethod, JobStatus, JobType, SegmentMethod, resolve_species
+from services.models_base import DenoiseMethod, IsoNetRefineMethod, JobStatus, JobType, SegmentMethod, resolve_species
 from services.particles.particle_sets import SET_PRODUCER_PREFIX, get_set, reads_by_facets
 from services.path_resolution_service import (
     PathResolutionService,
@@ -152,6 +152,46 @@ def denoiser_choices(state: ProjectState, instance_id: str) -> tuple[dict[str, s
         source = PathResolutionService(state).source_of(instance_id, "model_path")
         shown = f"train:{source}" if source else ""
     return options, shown
+
+
+def isonet_halves_warning(state: ProjectState, instance_id: str) -> str | None:
+    """What an IsoNet job's page warns of when its tomograms come from a reconstruction set to deconvolve, else None.
+
+    Warp's --deconv filters the even/odd half-maps as well as writing the deconvolved copy, and IsoNet's even/odd
+    strategies (auto, isonet2-n2n, n2n) train and predict on those halves: Denoise Train refuses them when it starts
+    (drivers/denoise_train.py), Denoise Predict runs a model trained on raw halves on filtered ones. Read from the
+    reconstruction's own setting, so it is said before anything runs; a model file set by hand names no strategy,
+    so its predict job is not warned."""
+    job_model = state.jobs[instance_id]
+    resolver = PathResolutionService(state)
+    if job_model.job_type == JobType.DENOISE_TRAIN:
+        method, strategy = job_model.denoise_method, job_model.isonet_method
+        consequence = "This job refuses them and stops when it starts."
+        other = "use the isonet2 strategy"
+    elif job_model.job_type == JobType.DENOISE_PREDICT and job_model.denoise_method != DenoiseMethod.EASYMODE:
+        train_id = resolver.source_of(instance_id, "model_path") or ""
+        train = state.jobs.get(train_id)
+        if train is None:
+            return None
+        method, strategy = train.denoise_method, train.isonet_method
+        consequence = "The model was trained on raw halves, so its output on these is wrong."
+        other = f"run {instance_display_name(train_id, train)} with the isonet2 strategy"
+    else:
+        return None
+    if method != DenoiseMethod.ISONET or strategy == IsoNetRefineMethod.ISONET2:
+        return None
+    source = resolver.source_of(instance_id, "input_star")
+    rec = state.jobs.get(source or "")
+    if rec is None or not getattr(rec, "deconv", 0):
+        return None
+    shown = getattr(strategy, "value", strategy)
+    if strategy == IsoNetRefineMethod.AUTO:
+        shown = f"auto ({IsoNetRefineMethod.ISONET2_N2N.value})"
+    return (
+        f"The tomograms come from {instance_display_name(source, rec)}, set to Deconvolved copy = 1. Warp then "
+        f"deconvolves the even/odd half-maps too, and IsoNet's {shown} works on those halves. {consequence} Set "
+        f"Deconvolved copy to 0 there (on a clone if it has run), or {other}, which reads the full map."
+    )
 
 
 def _set_denoiser(state: ProjectState, job_model, value: str) -> None:

@@ -24,6 +24,8 @@ __all__ = ["_is_pathlike", "render_config_preamble", "render_default_params", "r
 
 # An open decision, under a field row's value column (label column + gap), in the Segment tab's amber.
 _NOTE_WARN_STYLE = f"{HELPER_STYLE} color: #b45309; margin: 0 0 4px {NOTE_INDENT}px;"
+# A warning about the whole job, above its parameters.
+_BANNER_WARN_STYLE = f"{HELPER_STYLE} color: var(--cb-warn-ink, #8a4b06); margin: 0 0 8px;"
 
 
 def render_denoise_params(
@@ -161,6 +163,34 @@ def render_denoise_params(
     return refresh
 
 
+def _render_halves_note(project_path: Path | None, instance_id: str | None, observe: Callable | None) -> Callable:
+    """IsoNet's warning about deconvolved half-maps (`job_params.isonet_halves_warning`) above the parameters: one
+    line, written only when its text changes. It follows the page's poll as well as edits here, because the
+    setting it reads is on the reconstruction's page."""
+    from services.job_params import isonet_halves_warning
+    from services.project_state import get_project_state_for
+
+    label = ui.label("").style(_BANNER_WARN_STYLE)
+    label.set_visibility(False)
+    shown: list[str | None] = [None]
+
+    def refresh() -> None:
+        if label.is_deleted or project_path is None or instance_id is None:
+            return
+        state = get_project_state_for(project_path)
+        text = isonet_halves_warning(state, instance_id) if instance_id in state.jobs else None
+        if text == shown[0]:
+            return
+        shown[0] = text
+        label.set_text(text or "")
+        label.set_visibility(bool(text))
+
+    refresh()
+    if observe is not None:
+        observe(refresh)
+    return refresh
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Public API
 # ──────────────────────────────────────────────────────────────────────────
@@ -213,6 +243,7 @@ def render_default_params_card(
     # A Path, not str: get_project_state_for() calls .resolve() on it.
     project_path = ui_mgr.project_path if ui_mgr and ui_mgr.project_path else None
     replace = dict(_ctx.pop("replace", None) or {})
+    observe = _ctx.get("observe")
     if job_type == JobType.DENOISE_PREDICT:
         replace["Denoiser"] = lambda _g: render_denoise_params(
             job_model,
@@ -220,13 +251,23 @@ def render_default_params_card(
             _ctx.get("instance_id"),
             is_frozen=is_frozen,
             save_handler=save_handler,
-            observe=_ctx.get("observe"),
+            observe=observe,
         )
     before = _ctx.pop("before", None)
 
     def head():
         render_config_preamble(job_model)
-        return before() if before is not None else None
+        refreshes = []
+        if job_type in (JobType.DENOISE_TRAIN, JobType.DENOISE_PREDICT):
+            refreshes.append(_render_halves_note(project_path, _ctx.get("instance_id"), observe))
+        if before is not None and callable(r := before()):
+            refreshes.append(r)
+
+        def refresh() -> None:
+            for r in refreshes:
+                r()
+
+        return refresh if refreshes else None
 
     return render_default_params(
         job_type, job_model, is_frozen, save_handler, exclude=exclude, before=head, replace=replace, **_ctx

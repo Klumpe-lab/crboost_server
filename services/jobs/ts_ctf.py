@@ -48,8 +48,10 @@ class TsCtfParams(AbstractJobParams):
     ]
 
     do_phase: bool = Field(
-        default=False, description="Estimate phase shifts (CTF phase plate or spurious phase)",
-        title="Estimate phase shifts", json_schema_extra=form("CTF"),
+        default=False,
+        description="Estimate phase shifts (CTF phase plate or spurious phase)",
+        title="Estimate phase shifts",
+        json_schema_extra=form("CTF"),
     )
     window: int = Field(default=512, ge=128, le=2048, title="Window", json_schema_extra=form("CTF", S, "px"))
     # The same band as fsMotionAndCtf; ts_ctf only refines its defoci.

@@ -43,7 +43,9 @@ class SubsetParams(AbstractJobParams):
     OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = []
 
     ts_names: list[str] = Field(
-        default_factory=list, description="The tilt series it keeps, by rlnTomoName", title="Tilt series",
+        default_factory=list,
+        description="The tilt series it keeps, by rlnTomoName",
+        title="Tilt series",
         json_schema_extra=form("Tilt series", L),
     )
 

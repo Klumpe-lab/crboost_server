@@ -135,6 +135,11 @@ def species_defaults(job_type: JobType, species) -> dict[str, Any]:
             out["helix"] = True
             if diameter:
                 out["helical_outer_diameter"] = float(diameter)
+    elif job_type == JobType.M_REFINE:
+        if getattr(species, "symmetry", None):
+            out["symmetry"] = species.symmetry
+        if diameter:
+            out["diameter_ang"] = float(diameter)
     return out
 
 
@@ -282,7 +287,7 @@ def add_job(
     if species is not None:
         job_model.species_id = species_id
         for field, value in species_defaults(job_type, species).items():
-            if field == "symmetry":
+            if field == "symmetry" and job_type == JobType.TEMPLATE_MATCH_PYTOM:
                 set_symmetry(job_model, value)  # I1 and I2 start at their own increment
             else:
                 setattr(job_model, field, value)
@@ -346,7 +351,10 @@ def _checked_reading(
     checked: dict[str, str] = {}
     for slot, key in reading.items():
         if slot not in schema:
-            return reading, f"{instance_id} does not read {slot} as it is set (its inputs: {', '.join(schema)})."
+            return reading, (
+                f"{instance_id}.{slot} is not an input of the job as it is added: another of its parameters turns it "
+                f"on. Add the job, set that parameter, then set_input {slot} (its inputs now: {', '.join(schema)})."
+            )
         candidates = resolver.get_candidates_for_slot(
             job_model.job_type, slot, consumer_species_id=job_model.species_id, consumer_instance_id=instance_id
         )

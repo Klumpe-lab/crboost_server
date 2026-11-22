@@ -64,7 +64,7 @@ class SegmentParams(AbstractJobParams):
         "One GPU per tomogram, with at least 24 GB: easymode peaked at 22 GB",
         "On a 264 × 530 × 530 tomogram, membrane, void, cytoplasm and ribosome together peaked at 22.2 GB of GPU "
         "memory, on a 24 GB card. A smaller card runs out of memory, so set the constraint to the nodes whose "
-        "cards have 24 GB or more (on CBE: g3 = RTX 6000, g4 = A100).\n\n"
+        "cards have 24 GB or more (an RTX 6000 or an A100, for example).\n\n"
         "• On 1024 × 1024 × 512 tomograms at 6.2 Å with TTA 2, cytoplasm and nucleus took about 1.5 min each and "
         "ribosome 4.7 min, plus a minute of start-up per task. The networks' time grows with TTA: 8 takes four "
         "times as long as 2. At 10 Å the 2.5D networks have fewer planes to go through.\n"
@@ -74,26 +74,36 @@ class SegmentParams(AbstractJobParams):
     method: SegmentMethod = Field(
         default=SegmentMethod.EASYMODE,
         description="easymode: its pretrained networks for the features below. Ais model: one model you trained in "
-        "Ais (.scnm).", title="Method", json_schema_extra=form("Segmentation", M),
+        "Ais (.scnm).",
+        title="Method",
+        json_schema_extra=form("Segmentation", M),
     )
     features: list[str] = Field(
-        default_factory=list, description="easymode features to segment, from the weights cache's registry",
-        title="Features", json_schema_extra=form("Segmentation", L),
+        default_factory=list,
+        description="easymode features to segment, from the weights cache's registry",
+        title="Features",
+        json_schema_extra=form("Segmentation", L),
     )
     ais_model_path: str = Field(
-        default="", description="The Ais model (.scnm) to apply; its title becomes the feature's name",
-        title="Ais model", json_schema_extra=form("Segmentation", L),
+        default="",
+        description="The Ais model (.scnm) to apply; its title becomes the feature's name",
+        title="Ais model",
+        json_schema_extra=form("Segmentation", L),
     )
     tta: int = Field(
-        default=8, ge=1, le=8,
+        default=8,
+        ge=1,
+        le=8,
         description="Test-time augmentation: how many rotated and flipped copies of each tomogram are segmented and "
         "averaged. More is smoother and slower: the networks take TTA times as long as one pass. Ais takes at most 8.",
-        title="TTA", json_schema_extra=form("Settings", S),
+        title="TTA",
+        json_schema_extra=form("Settings", S),
     )
     output_format: SegmentFormat = Field(
         default=SegmentFormat.INT8,
         description="How easymode's own 3D networks store p: int8 (p × 127, the smallest), uint16 (p × 255) or "
-        "float32 (p). Ais-engine features are always p × 255.", title="Output format",
+        "float32 (p). Ais-engine features are always p × 255.",
+        title="Output format",
         json_schema_extra=form("Settings", M),
     )
     match_training_voxel: bool = Field(
@@ -103,14 +113,16 @@ class SegmentParams(AbstractJobParams):
         "grid. Off, the tomogram is segmented as it is: easymode's 3D networks resample it themselves, the Ais-engine "
         "ones (cytoplasm, nucleus, void, membrane, …) only in X/Y, so their Z context and contrast differ from "
         "training. A tomogram within 5 % of 10 Å, or coarser, is segmented as it is either way.",
-        title="Segment at 10 Å", json_schema_extra=form("Settings"),
+        title="Segment at 10 Å",
+        json_schema_extra=form("Settings"),
     )
     smooth_z: bool = Field(
         default=True,
         description="Networks that decide each Z plane on its own (2D and 2.5D: cytoplasm, nucleus, void, "
         "mitochondrion, …) see X/Y at a coarse pixel (50 or 30 Å). Smooth their volumes along Z to that same "
         "resolution (a Gaussian whose FWHM is the network's X/Y pixel), which damps their plane-to-plane flips.",
-        title="Smooth along Z", json_schema_extra=form("Settings"),
+        title="Smooth along Z",
+        json_schema_extra=form("Settings"),
     )
     array_throttle: int = Field(default=8, ge=1, le=64, description="Max concurrent SLURM array tasks (one GPU each)")
 

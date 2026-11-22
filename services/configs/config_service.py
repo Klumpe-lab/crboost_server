@@ -231,16 +231,34 @@ class NapariSoftwarePlacement(BaseModel):
     cpus: int = 4  # Mesa renders on as many threads as the job has CPUs
 
 
-class NapariConfig(BaseModel):
-    """napari on a VNC desktop, opened from a tomogram's napari chip (napari_GL.sif, container_defs/napari_GL.def).
+class NapariDesktopConfig(BaseModel):
+    """What the napari dialog tells a user who has no EisGreis running in a remote desktop of the site's Open OnDemand
+    portal, where it runs beside the user's own desktop session (no job of crboost's). Both are the site's: crboost
+    shows them as written and invents neither."""
 
-    It runs on the nodes the curation session runs on, through the same worker: the placement fields left unset
-    here (None) are `curation:`'s (qos included), and so are vgl, login_host and passwordless_vnc. With
-    `curation.vgl` on, napari renders on the GPU through VirtualGL, so the placement must give a full GPU that
-    does OpenGL (not a MIG slice). `software` adds *Start now*, napari with software rendering where a job
-    starts at once.
+    # The portal's Remote Desktop form, as a path under `ood.url`, e.g.
+    # /pun/sys/dashboard/batch_connect/sys/desktop/session_contexts/new. Empty: the dialog links the portal itself.
+    form: str = ""
+    # What to ask that form for, one line, e.g. "partition c, 32 GB, 8 cores; for 3-D partition g with a full GPU".
+    hint: str = ""
+
+
+class NapariConfig(BaseModel):
+    """napari through EisGreis, the lab's tomogram viewer, opened from a tomogram's napari chip.
+
+    `eisgreis` names an EisGreis install (`./crboost eisgreis-install`); crboost runs its `eisgreis-crboost` and talks
+    to it only through session files in ~/.crboost/napari (EisGreis's docs/crboost-protocol.md). It runs either in
+    the user's own remote desktop (`desktop` holds the dialog's hints for starting one) or as a job of crboost's: the
+    same remote desktop, from `sif_path` (the site's desktop image, as its Open OnDemand app runs it: TurboVNC, Xfce
+    through ood-desktop), started by containers/napari/desktop_session.sh on the nodes the curation session runs on.
+    The placement fields left unset here (None) are `curation:`'s (qos included), and so are vgl, login_host and
+    passwordless_vnc. With `curation.vgl` on, the job
+    draws on the GPU through VirtualGL, so the placement must give a full GPU that does OpenGL (not a MIG slice).
+    `software` adds *Start now*, the job with software rendering where it starts at once.
     """
 
+    eisgreis: str = ""
+    desktop: NapariDesktopConfig = Field(default_factory=NapariDesktopConfig)
     sif_path: str | None = None
     cpus: int = 4
     mem: str = "16G"
@@ -253,10 +271,6 @@ class NapariConfig(BaseModel):
     avoid: str | None = None
     qos: str | None = None
     software: NapariSoftwarePlacement = Field(default_factory=NapariSoftwarePlacement)
-    # A checkout of the colleague's napari viewer (napari_mrc_lowpass_fast.py: low-pass, comments, particle STARs).
-    # Set, a session runs that viewer instead of plain napari, loaded from the checkout like the launcher is, and
-    # it saves into the tomogram's project, `<project>/Curation/napari/`. Empty = plain napari.
-    companion: str = ""
 
 
 class OodConfig(BaseModel):
@@ -357,10 +371,21 @@ def _unread_keys(model: Any, data: Any, prefix: str = "") -> list[str]:
     return found
 
 
+# Keys a newer key replaced: the warning names the new one.
+_RENAMED_KEYS = {
+    "napari.companion": "napari.eisgreis, an EisGreis install (./crboost eisgreis-install prints the line)"
+}
+
+
 def _config_warnings(source: Path, layer: dict) -> list[str]:
     """What one config layer sets that this version never reads: unknown keys (misspelled or left
-    over) and resource profiles named after no job type."""
-    warnings = [f"{source}: unknown key {path}" for path in _unread_keys(Config, layer)]
+    over, or replaced: then the warning names the new key) and resource profiles named after no job type."""
+    warnings = [
+        f"{source}: {path} is not read any more; set {_RENAMED_KEYS[path]}"
+        if path in _RENAMED_KEYS
+        else f"{source}: unknown key {path}"
+        for path in _unread_keys(Config, layer)
+    ]
     job_types = {jt.value for jt in JobType}
     warnings += [
         f"{source}: job_resource_profiles.{name} is not a job type"
@@ -385,7 +410,7 @@ class ConfigService:
             raise FileNotFoundError(
                 f"Configuration file not found at: {config_path}\n"
                 f"Repo root: {REPO_ROOT}\n"
-                f"Run 'python preflight.py' to create one from the template."
+                f"Run '{REPO_ROOT / 'crboost'} preflight' to create one from the template."
             )
 
         with open(config_path) as f:

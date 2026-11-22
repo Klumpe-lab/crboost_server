@@ -4,7 +4,8 @@ A set made across projects records, per tomogram row of its ``tomograms.star``, 
 project it lives in, its name there and its per-tilt star there. RELION carries unknown
 columns, and the extraction jobs copy the rows they read, so what an extraction of a set writes keeps them.
 The extraction drivers check each tomogram against its own project's registry by them, and Warp export finds
-the tilt series' Warp files by them.
+the tilt series' Warp files by them: beside the per-tilt star. A set an M refine hands back names, as that star,
+the M job's copy of it, beside the XML M refined; the project and the name stay the tomogram's own.
 
 RELION reads a tomogram's per-tilt star by the block named after it (``data_<rlnTomoName>``). A tomogram
 renamed in a set (two projects' ``Position_1``) or named in its source differently from the set gets a copy
@@ -41,7 +42,7 @@ _TILT_PATH_COLS = (
 class Origin:
     project: str  # absolute
     tomo: str  # its name there
-    tilt_star: str  # its per-tilt star there, absolute
+    tilt_star: str  # its per-tilt star there (or in the M refine that refined its model), absolute
 
 
 def origins_of(tomograms: pd.DataFrame) -> dict[str, Origin] | None:
@@ -73,10 +74,15 @@ def tilt_block(path: Path, name: str) -> pd.DataFrame:
     return df
 
 
-def write_renamed_tilt_star(src: Path, dst: Path, old: str, new: str, project: Path) -> None:
+def write_renamed_tilt_star(
+    src: Path, dst: Path, old: str, new: str, project: Path, drop: frozenset[str] = frozenset()
+) -> None:
     """`src`'s block ``data_<old>`` written to `dst` as ``data_<new>``, its relative file names made absolute
-    against `project` (the project the star was written in, where RELION read them from)."""
+    against `project` (the project the star was written in, where RELION read them from). `drop`: the tilts left
+    out, by movie file name."""
     df = tilt_block(src, old).copy()
+    if drop:
+        df = df[~df["rlnMicrographMovieName"].map(lambda m: Path(str(m)).name).isin(drop)]
     for col in _TILT_PATH_COLS:
         if col in df.columns:
             df[col] = [

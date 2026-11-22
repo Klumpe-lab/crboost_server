@@ -13,10 +13,10 @@ class Refine3DParams(AbstractJobParams):
     Runs until RELION's own convergence criterion; the final map has no iteration tag.
     """
 
-    job_type       : JobType               = Field(default=JobType.REFINE3D)
-    JOB_CATEGORY   : ClassVar[JobCategory] = JobCategory.EXTERNAL
-    RELION_JOB_TYPE: ClassVar[str]         = "relion.external"
-    USER_PARAMS    : ClassVar[set[str]]    = {
+    job_type: JobType = Field(default=JobType.REFINE3D)
+    JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
+    RELION_JOB_TYPE: ClassVar[str] = "relion.external"
+    USER_PARAMS: ClassVar[set[str]] = {
         "healpix_order",
         "auto_local_healpix_order",
         "offset_range",
@@ -58,7 +58,12 @@ class Refine3DParams(AbstractJobParams):
         "random_seed",
     }
     PARAM_GROUPS: ClassVar[tuple[str, ...]] = (
-        "Refinement", "Reference & mask", "Angles & offsets", "Helical", "CTF & scale", "Compute",
+        "Refinement",
+        "Reference & mask",
+        "Angles & offsets",
+        "Helical",
+        "CTF & scale",
+        "Compute",
     )
     # What only a filament refinement reads (helix on), and what only one that imposes its symmetry reads.
     HELICAL_PARAMS: ClassVar[frozenset[str]] = frozenset(
@@ -109,28 +114,43 @@ class Refine3DParams(AbstractJobParams):
     ]
 
     # Angular / translational search
-    healpix_order           : int = Field(
-        default=3, ge=1, le=6, description="Initial angular sampling (2=15deg, 3=7.5deg, 4=3.75deg)",
-        title="Healpix order", json_schema_extra=form("Angles & offsets", S),
+    healpix_order: int = Field(
+        default=3,
+        ge=1,
+        le=6,
+        description="Initial angular sampling (2=15deg, 3=7.5deg, 4=3.75deg)",
+        title="Healpix order",
+        json_schema_extra=form("Angles & offsets", S),
     )
     auto_local_healpix_order: int = Field(
-        default=4, ge=1, le=8, description="Sampling from which auto-refine searches locally (4=3.75deg, 5=1.8deg)",
-        title="Local from order", json_schema_extra=form("Angles & offsets", S),
+        default=4,
+        ge=1,
+        le=8,
+        description="Sampling from which auto-refine searches locally (4=3.75deg, 5=1.8deg)",
+        title="Local from order",
+        json_schema_extra=form("Angles & offsets", S),
     )
-    offset_range            : int = Field(
-        default=5, ge=0, description="Translational search range (pixels)", title="Offset range",
+    offset_range: int = Field(
+        default=5,
+        ge=0,
+        description="Translational search range (pixels)",
+        title="Offset range",
         json_schema_extra=form("Angles & offsets", S, "px"),
     )
-    offset_step             : int = Field(
-        default=1, ge=1, description="Translational search step (pixels)", title="Offset step",
+    offset_step: int = Field(
+        default=1,
+        ge=1,
+        description="Translational search step (pixels)",
+        title="Offset step",
         json_schema_extra=form("Angles & offsets", S, "px"),
     )
     # Template matching already found each particle's orientation; a global search repeats that work over every
     # orientation at once (days per iteration on tens of thousands of tilt-series particles).
-    sigma_ang               : float = Field(
+    sigma_ang: float = Field(
         default=4.0,
         description="Local angular search around the input angles: σ in degrees, searched ±3σ (4 = ±12°, one 12° "
-        "template-matching step). -1 = global search, for particles without angles", title="Sigma angle",
+        "template-matching step). -1 = global search, for particles without angles",
+        title="Sigma angle",
         json_schema_extra=form("Angles & offsets", S, "°"),
     )
 
@@ -219,20 +239,30 @@ class Refine3DParams(AbstractJobParams):
     )
 
     # Symmetry / filtering
-    symmetry             : SymmetryGroup = Field(
-        default=SymmetryGroup.C1, description="Point group symmetry", title="Symmetry",
+    symmetry: SymmetryGroup = Field(
+        default=SymmetryGroup.C1,
+        description="Point group symmetry",
+        title="Symmetry",
         json_schema_extra=form("Refinement", M),
     )
-    ini_high             : float         = Field(
-        default=40.0, ge=0, description="Initial low-pass filter (Angstroms)", title="Low-pass reference",
+    ini_high: float = Field(
+        default=40.0,
+        ge=0,
+        description="Initial low-pass filter (Angstroms)",
+        title="Low-pass reference",
         json_schema_extra=form("Refinement", S, "Å"),
     )
-    low_resol_join_halves: float         = Field(
-        default=40.0, ge=0, description="Half-maps are averaged below this resolution (Angstroms)",
-        title="Join halves below", json_schema_extra=form("Refinement", S, "Å"),
+    low_resol_join_halves: float = Field(
+        default=40.0,
+        ge=0,
+        description="Half-maps are averaged below this resolution (Angstroms)",
+        title="Join halves below",
+        json_schema_extra=form("Refinement", S, "Å"),
     )
-    particle_diameter    : float         = Field(
-        default=-1.0, description="Mask diameter (Angstroms, -1 = auto)", title="Mask diameter",
+    particle_diameter: float = Field(
+        default=-1.0,
+        description="Mask diameter (Angstroms, -1 = auto)",
+        title="Mask diameter",
         json_schema_extra=form("Reference & mask", S, "Å"),
     )
 
@@ -243,83 +273,119 @@ class Refine3DParams(AbstractJobParams):
         description="Start from the template below instead of a job's map (the reference input): for particles "
         "whose own average has no features to align to yet. The template must be white, at the particles' pixel "
         "size and in their box; it is filtered to Low-pass reference before the first iteration.",
-        title="Template as reference", json_schema_extra=form("Reference & mask"),
+        title="Template as reference",
+        json_schema_extra=form("Reference & mask"),
     )
-    reference_path     : str  = Field(
-        default="", description="The template to start from: the species' selected template when the job was made",
-        title="Reference template", json_schema_extra=form("Reference & mask", L),
+    reference_path: str = Field(
+        default="",
+        description="The template to start from: the species' selected template when the job was made",
+        title="Reference template",
+        json_schema_extra=form("Reference & mask", L),
     )
 
     # Optional mask
-    solvent_mask_path  : str  = Field(
-        default="", description="Path to soft mask for references (optional)", title="Solvent mask",
+    solvent_mask_path: str = Field(
+        default="",
+        description="Path to soft mask for references (optional)",
+        title="Solvent mask",
         json_schema_extra=form("Reference & mask", L),
     )
-    mask_from_job      : bool = Field(
-        default=False, description="Take the solvent mask from a Mask job (the mask input) instead of a file path",
-        title="Mask from a job", json_schema_extra=form("Reference & mask"),
+    mask_from_job: bool = Field(
+        default=False,
+        description="Take the solvent mask from a Mask job (the mask input) instead of a file path",
+        title="Mask from a job",
+        json_schema_extra=form("Reference & mask"),
     )
     solvent_correct_fsc: bool = Field(
-        default=True, description="With a solvent mask: report the mask-corrected FSC", title="Mask-corrected FSC",
+        default=True,
+        description="With a solvent mask: report the mask-corrected FSC",
+        title="Mask-corrected FSC",
         json_schema_extra=form("Reference & mask"),
     )
 
     # Reference handling
     flatten_solvent: bool = Field(
-        default=True, description="Apply mask to references during refinement", title="Flatten solvent",
+        default=True,
+        description="Apply mask to references during refinement",
+        title="Flatten solvent",
         json_schema_extra=form("Reference & mask"),
     )
-    zero_mask      : bool = Field(
-        default=True, description="Set outside-mask voxels to zero during refinement", title="Zero mask",
+    zero_mask: bool = Field(
+        default=True,
+        description="Set outside-mask voxels to zero during refinement",
+        title="Zero mask",
         json_schema_extra=form("Reference & mask"),
     )
-    firstiter_cc   : bool = Field(
-        default=True, description="Use CC in first iteration (reference greyscale not on the particles' scale)",
-        title="First iteration CC", json_schema_extra=form("Reference & mask"),
+    firstiter_cc: bool = Field(
+        default=True,
+        description="Use CC in first iteration (reference greyscale not on the particles' scale)",
+        title="First iteration CC",
+        json_schema_extra=form("Reference & mask"),
     )
 
     # CTF / normalisation
-    do_ctf                       : bool = Field(
-        default=True, description="Apply CTF correction", title="CTF correction", json_schema_extra=form("CTF & scale"),
+    do_ctf: bool = Field(
+        default=True, description="Apply CTF correction", title="CTF correction", json_schema_extra=form("CTF & scale")
     )
-    do_norm                      : bool = Field(
-        default=True, description="Normalise particle images", title="Normalise", json_schema_extra=form("CTF & scale"),
+    do_norm: bool = Field(
+        default=True, description="Normalise particle images", title="Normalise", json_schema_extra=form("CTF & scale")
     )
-    do_scale                     : bool = Field(
-        default=True, description="Correct for intensity scale differences", title="Scale",
+    do_scale: bool = Field(
+        default=True,
+        description="Correct for intensity scale differences",
+        title="Scale",
         json_schema_extra=form("CTF & scale"),
     )
     dont_combine_weights_via_disc: bool = Field(
-        default=True, description="Keep combination of weights in memory (faster, needs more RAM)",
-        title="Weights in memory", json_schema_extra=form("Compute"),
+        default=True,
+        description="Keep combination of weights in memory (faster, needs more RAM)",
+        title="Weights in memory",
+        json_schema_extra=form("Compute"),
     )
-    pad                          : int  = Field(
-        default=2, ge=1, description="Fourier padding factor (2 = standard)", title="Pad",
+    pad: int = Field(
+        default=2,
+        ge=1,
+        description="Fourier padding factor (2 = standard)",
+        title="Pad",
         json_schema_extra=form("Compute", S),
     )
 
     # Computation
-    use_gpu       : bool = Field(
-        default=True, description="Use GPU acceleration", title="Use GPU", json_schema_extra=form("Compute"),
+    use_gpu: bool = Field(
+        default=True, description="Use GPU acceleration", title="Use GPU", json_schema_extra=form("Compute")
     )
     preread_images: bool = Field(
-        default=True, description="Pre-read particles into RAM (every MPI follower)", title="Pre-read images",
+        default=True,
+        description="Pre-read particles into RAM (every MPI follower)",
+        title="Pre-read images",
         json_schema_extra=form("Compute"),
     )
-    mpi_ranks     : int  = Field(
-        default=3, ge=3, description="MPI processes: leader + one per half-set (min 3)", title="MPI ranks",
+    mpi_ranks: int = Field(
+        default=3,
+        ge=3,
+        description="MPI processes: leader + one per half-set (min 3)",
+        title="MPI ranks",
         json_schema_extra=form("Compute", S),
     )
-    threads       : int  = Field(
-        default=3, ge=1, description="Threads per MPI process (--j)", title="Threads",
+    threads: int = Field(
+        default=3,
+        ge=1,
+        description="Threads per MPI process (--j)",
+        title="Threads",
         json_schema_extra=form("Compute", S),
     )
-    pool          : int  = Field(
-        default=30, ge=1, description="Number of particles to pool per thread", title="Pool",
+    pool: int = Field(
+        default=30,
+        ge=1,
+        description="Number of particles to pool per thread",
+        title="Pool",
         json_schema_extra=form("Compute", S),
     )
-    random_seed   : int  = Field(
-        default=-1, ge=-1, description="relion_refine --random_seed (-1 = time-based)", title="Random seed",
+    random_seed: int = Field(
+        default=-1,
+        ge=-1,
+        description="relion_refine --random_seed (-1 = time-based)",
+        title="Random seed",
         json_schema_extra=form("Refinement", S),
     )
 

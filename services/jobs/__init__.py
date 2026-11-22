@@ -31,6 +31,8 @@ from services.jobs.refine3d import Refine3DParams
 from services.jobs.mask_create import MaskCreateParams
 from services.jobs.postprocess import PostProcessParams
 from services.jobs.ctf_refine import CtfRefineParams
+from services.jobs.frame_align import FrameAlignParams
+from services.jobs.m_refine import MRefineParams
 
 from collections.abc import Mapping
 
@@ -53,8 +55,10 @@ __all__ = [
     "ExtractPickListParams",
     "ExtractionCutoffMethod",
     "FilamentPickParams",
+    "FrameAlignParams",
     "FsMotionCtfParams",
     "ImportMoviesParams",
+    "MRefineParams",
     "MaskCreateParams",
     "MissAlignParams",
     "PostProcessParams",

@@ -39,7 +39,8 @@ JOB_DIR=$(dirname "XXXoutfileXXX")
 echo "Original CWD: $(pwd)"
 echo "Target Job Directory: ${JOB_DIR}"
 
-cd "${JOB_DIR}"
+# A job directory this node cannot reach fails the job here, before anything runs or writes an exit marker.
+cd "${JOB_DIR}" || exit 1
 echo "New CWD: $(pwd)"
 
 XXXcommandXXX

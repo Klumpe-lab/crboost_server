@@ -69,4 +69,3 @@ def copy_on_click(element, text: str | Callable[[], str]):
         await _write_clipboard(text() if callable(text) else text)
 
     return element.classes("cb-copy-path").on("click.stop", _do)
-

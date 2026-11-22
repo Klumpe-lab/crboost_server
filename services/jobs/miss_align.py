@@ -451,8 +451,8 @@ class MissAlignParams(AbstractJobParams):
         "max_epochs_per_iteration` steps. The learning rate halves at each of `lr_milestones`, and early "
         "stopping only starts after the last one — with the epoch cap at or below it, neither happens. The "
         "tool's own budget is 1000 steps × 30 epochs: about 11 h per iteration on an A100.\n\n"
-        "**Long runs.** The default queue limit is usually 8 h; set a longer QOS in the SLURM tab (e.g. "
-        "`g_long`) and the requested wall-time follows the estimate up to that QOS's limit. The job "
+        "**Long runs.** The default queue limit is usually 8 h; set a longer QOS in the SLURM tab and the "
+        "requested wall-time follows the estimate up to that QOS's limit. The job "
         "checkpoints once per macro-iteration: **if it runs out of time, re-run it** and it continues from "
         "the last finished iteration (the schedule and inputs must be unchanged).\n\n"
         "**Volume box (`z_box`).** The tool trains and scores patches across the whole volume box; the "
@@ -496,7 +496,7 @@ class MissAlignParams(AbstractJobParams):
         "• 2 GPUs (1 training) with 16 CPUs → 1 trainer, 10 loaders, 5 builders.\n"
         "• GPUs on the cluster are mostly taken one at a time: a 4-GPU job waits for a whole node to empty "
         "(days), a 1–2 GPU job for any gap (often minutes).\n"
-        "• The profile says where the cards come from (full B200s when free, else A100s, on CBE.next); num_gpus "
+        "• The profile in the site's conf says which cards (a GPU type, a partition); num_gpus "
         "sets how many. An RTX 6000 is "
         "card-bound at ~2.3 steps/s, an A100 ~3, a B200 ≥ 3.7 with its trainer mostly idle: feed it CPUs.\n"
         "• The training pool (pool_size × ~5.3 MB) lives in the node's RAM and is added to the memory request.\n"
@@ -551,93 +551,135 @@ class MissAlignParams(AbstractJobParams):
         description="Macro-iteration schedule. fast = quick sanity pass; default = balanced coarse->fine->local; "
         "thorough = the tool's 8-iteration template; paper = the preprint's lamella ladder in Å; custom = "
         "custom_schedule. Choosing one also sets steps_per_epoch, max_epochs_per_iteration, lr_milestones and z_box "
-        "to its values; custom keeps them.", title="Schedule", json_schema_extra=form("Schedule", M),
+        "to its values; custom keeps them.",
+        title="Schedule",
+        json_schema_extra=form("Schedule", M),
     )
     custom_schedule: str = Field(
         default="",
         description="Used when iteration_preset is custom. Entries separated by ';', each '<pixel> <alignment> [xN]': "
         "pixel '<Å>A' (converted to the nearest whole downsample of the stack) or 'ds<N>'; alignment anchoring | "
         "global | spline | [Nx,Ny] (local warp) | [X,Y,Z,T] (volume warp). Example: 30A anchoring; 20A anchoring x2; "
-        "10A global; 10A [3,3] x5", title="Custom schedule", json_schema_extra=form("Schedule", L),
+        "10A global; 10A [3,3] x5",
+        title="Custom schedule",
+        json_schema_extra=form("Schedule", L),
     )
     max_epochs_per_iteration: int = Field(
-        default=30, ge=1, le=200,
+        default=30,
+        ge=1,
+        le=200,
         description="Cap on training epochs per macro-iteration. Must exceed the last lr_milestone for the second "
-        "learning-rate cut and early stopping to happen.", title="Epochs / iteration",
+        "learning-rate cut and early stopping to happen.",
+        title="Epochs / iteration",
         json_schema_extra=form("Training", S),
     )
     steps_per_epoch: int = Field(
-        default=250, ge=10, le=5000,
+        default=250,
+        ge=10,
+        le=5000,
         description="Training steps per epoch (split across training_gpus). Total work per macro-iteration = "
         "steps_per_epoch x max_epochs_per_iteration, so this is the single biggest wall-time lever. The tool's own "
-        "default is 1000.", title="Steps / epoch", json_schema_extra=form("Training", S),
+        "default is 1000.",
+        title="Steps / epoch",
+        json_schema_extra=form("Training", S),
     )
     lr_milestones: str = Field(
         default="5,15",
         description="Epochs at which the learning rate halves (comma-separated). Early stopping (patience 5) only "
-        "arms from the last milestone on.", title="LR milestones", json_schema_extra=form("Training", M),
+        "arms from the last milestone on.",
+        title="LR milestones",
+        json_schema_extra=form("Training", M),
     )
     seed: int = Field(
-        default=45132, ge=0,
+        default=45132,
+        ge=0,
         description="Training seed. Two runs that differ only in seed measure the run-to-run noise floor.",
-        title="Seed", json_schema_extra=form("Training", S),
+        title="Seed",
+        json_schema_extra=form("Training", S),
     )
     batch_size: int = Field(
-        default=32, ge=1, le=256, description="Per training GPU. 32 fits a 24 GB card at reconstruction size 128^3.",
-        title="Batch size", json_schema_extra=form("Training", S),
+        default=32,
+        ge=1,
+        le=256,
+        description="Per training GPU. 32 fits a 24 GB card at reconstruction size 128^3.",
+        title="Batch size",
+        json_schema_extra=form("Training", S),
     )
     patch_size: int = Field(
-        default=96, ge=32, le=256,
+        default=96,
+        ge=32,
+        le=256,
         description="Edge of the training / scoring cube in pixels at each iteration's pixel size; its field of view "
-        "in Å grows with the downsample (see the schedule summary).", title="Patch size",
+        "in Å grows with the downsample (see the schedule summary).",
+        title="Patch size",
         json_schema_extra=form("Training", S, "px"),
     )
     pool_size: int = Field(
-        default=3000, ge=16,
+        default=3000,
+        ge=16,
         description="Subtomogram pool size, in the node's RAM (~5.3 MB a file, added to the memory request). Must "
         "hold 2 x batch_size for every data-loading worker of every training GPU (checked by the driver), so it caps "
-        "the loaders.", title="Pool size", json_schema_extra=form("Workers", S),
+        "the loaders.",
+        title="Pool size",
+        json_schema_extra=form("Workers", S),
     )
     num_gpus: int = Field(
-        default=2, ge=1, le=8,
+        default=2,
+        ge=1,
+        le=8,
         description="GPUs to allocate on one node (the profile's GRES names the card, this the count). The first "
         "training_gpus of them train; patch builders go to the others first. More GPUs queue longer, and the node "
-        "must have that many.", title="GPUs", json_schema_extra=form("Workers", S),
+        "must have that many.",
+        title="GPUs",
+        json_schema_extra=form("Workers", S),
     )
     training_gpus: int = Field(
-        default=1, ge=1, le=4,
+        default=1,
+        ge=1,
+        le=4,
         description="GPUs that train the model (at most num_gpus). The steps of each epoch are split between them, "
         "each step taking batch_size cubes, and the tool scales the learning rate by this count. Each trainer needs "
-        "its own loaders and its share of builders (CPUs) to stay busy.", title="Training GPUs",
+        "its own loaders and its share of builders (CPUs) to stay busy.",
+        title="Training GPUs",
         json_schema_extra=form("Workers", S),
     )
     patch_builders: int = Field(
-        default=0, ge=0,
+        default=0,
+        ge=0,
         description="Processes that make the training cubes: each loads a tilt stack, shrinks it and reconstructs "
         "aligned and shifted cubes, using one CPU core and ~1 GB of a GPU. Training runs only as fast as they deliver "
         "(~20 cubes/s each). 0 = auto: the CPUs the trainers leave are split between builders and loaders so their "
         "rates match (the summary above shows the result). Set a number to pin it; with dataloader_workers on auto "
-        "the loaders then take the rest.", title="Patch builders", json_schema_extra=form("Workers", S),
+        "the loaders then take the rest.",
+        title="Patch builders",
+        json_schema_extra=form("Workers", S),
     )
     dataloader_workers: int = Field(
-        default=0, ge=0,
+        default=0,
+        ge=0,
         description="Loaders per training GPU: processes that unpickle cubes from the pool, normalise and mask them, "
         "and batch them for their trainer (one CPU each, ~10 cubes/s). Training runs only as fast as they deliver. 0 "
         "= auto: balanced against the builders (see patch_builders). Each needs 2 × batch_size cubes of pool_size, "
-        "which caps the count.", title="Loaders / GPU", json_schema_extra=form("Workers", S),
+        "which caps the count.",
+        title="Loaders / GPU",
+        json_schema_extra=form("Workers", S),
     )
     prepare_stacks_apix: float = Field(
-        default=0.0, ge=0.0,
+        default=0.0,
+        ge=0.0,
         description="If > 0, the tool rebuilds the tilt stacks from the frame averages at this Å/px before aligning, "
         "and schedule entries in Å are converted against it. 0 = align the alignment job's stacks.",
-        title="Rebuild stacks at", json_schema_extra=form("Stacks & box", S, "Å/px"),
+        title="Rebuild stacks at",
+        json_schema_extra=form("Stacks & box", S, "Å/px"),
     )
     z_box: str = Field(
         default="full",
         description="Z extent of the volume box the tool trains and scores in: 'full' (the tomogram's), 'auto' (per "
         "tilt-series, the lamella's full extent in a coarse reconstruction — out to where its contrast falls back to "
         "the quiet slices on either side), or a size in Å. The box stays centred on the volume centre; the output "
-        "XMLs get the full box back.", title="Z box", json_schema_extra=form("Stacks & box", M),
+        "XMLs get the full box back.",
+        title="Z box",
+        json_schema_extra=form("Stacks & box", M),
     )
 
     def _get_job_specific_options(self) -> list[tuple[str, str]]:
@@ -813,7 +855,7 @@ class MissAlignParams(AbstractJobParams):
             return (
                 f"One macro-iteration needs ~{_minutes_to_hms(int(longest))} (conservative estimate) but {where} "
                 f"allows {_minutes_to_hms(limit)} per run: the job would die inside it and every re-run restarts "
-                f"it. Set a longer QOS in the SLURM tab (e.g. g_long), or lower steps_per_epoch / epochs."
+                f"it. Set a longer QOS in the SLURM tab, or lower steps_per_epoch / epochs."
             )
         if minutes > limit:
             return (

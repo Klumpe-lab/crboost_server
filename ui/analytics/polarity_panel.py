@@ -91,7 +91,7 @@ class PolarityPanel:
                 ui.label("No filament is long enough to test the vote against itself (three boxes).").style(
                     f"{SANS} font-size: 11px; color: {_MUTED};"
                 )
-            ui.html(self._table_html(v["per_filament"]), sanitize=False).classes("cb-atable-wrap").style(
+            ui.html(self._table_html(v["per_filament"])).classes("cb-atable-wrap").style(
                 f"max-height: 260px; {TABLE_ON_PANEL_STYLE}"
             )
             self._make_controls()

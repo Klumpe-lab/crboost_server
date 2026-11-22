@@ -468,11 +468,7 @@ def _build_position_group(pos, overview, refresh_all, row_registry):
                 row_registry[ts.ts_label] = row_el
 
                 with row_el:
-                    cb = (
-                        house_check(value=ts.selected, on_change=lambda e, t=ts: on_ts_checkbox(t, e))
-                        
-                        .style(CB_STYLE)
-                    )
+                    cb = house_check(value=ts.selected, on_change=lambda e, t=ts: on_ts_checkbox(t, e)).style(CB_STYLE)
                     ts_checkboxes.append(cb)
 
                     ui.label("").style(CELL)
@@ -530,10 +526,7 @@ def _build_position_group(pos, overview, refresh_all, row_registry):
         .on("click", toggle_expand)
     ):
         pos_cb = (
-            house_check(value=pos.selected, on_change=on_pos_checkbox)
-            
-            .style(CB_STYLE)
-            .on("click.stop", lambda: None)
+            house_check(value=pos.selected, on_change=on_pos_checkbox).style(CB_STYLE).on("click.stop", lambda: None)
         )
         pos_cb_ref[0] = pos_cb
 

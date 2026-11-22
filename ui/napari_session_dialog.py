@@ -1,16 +1,23 @@
-"""napari for one tomogram: start napari on a GPU node showing it, or show it in the napari already running.
+"""napari for one tomogram: show it in the viewer already running, or start one.
 
-crboost does not proxy the desktop: napari runs on a VNC desktop as a SLURM job (the curation worker with
-CB_APP=napari, services/curation/session_service.py). Where the site has an Open OnDemand portal (conf.yaml
-`ood:`), *Open in browser* opens the desktop in a tab through it; elsewhere this dialog hands over an SSH tunnel,
-an address and a password, the same three the ChimeraX control center gives. With the portal, the napari chip
-itself goes straight to the tab (ui/napari_open_page.py) and this dialog sits behind the chip's ▾. A user has one
-napari session. While it runs, any tomogram's napari chip offers to show that tomogram in it, which replaces the layers
-crboost opened there; layers the user made stay.
+The viewer is EisGreis (conf.yaml `napari.eisgreis`), and it runs in one of two places:
+
+- the user's own remote desktop of the site's Open OnDemand portal, where the user started `eisgreis-crboost` (or
+  the desktop did, User settings): crboost finds it (services/curation/napari_link.py) and *Show in my desktop*
+  writes the tomogram into it. With none running, the dialog says how to start one (*In your desktop*).
+- a VNC desktop crboost starts on a GPU node as a SLURM job (the curation worker with CB_APP=napari,
+  services/curation/session_service.py). crboost does not proxy that desktop: where the site has a portal (conf.yaml
+  `ood:`), *Open in browser* opens it in a tab through the portal; elsewhere this dialog hands over an SSH tunnel, an
+  address and a password, the same three the ChimeraX control center gives. With the portal, the napari chip itself
+  goes straight to the tab (ui/napari_open_page.py) and this dialog sits behind the chip's ▾.
+
+A user has one viewer at a time (the newest started). While it runs, any tomogram's napari chip offers to show that
+tomogram in it, which replaces the tomogram crboost opened there; the user's own layers stay.
 
 The dialog keeps its shape: a header with the status pill, then *Session* (where and how it runs) and *Showing*
 (what the window holds, where its saves go, what crboost added) as label/value rows, then the connection rows where
-there is no portal. Every row is built once and filled; one poll (every 3 s while the dialog is open) moves them.
+there is no portal, or *In your desktop* while nothing runs. Every row is built once and filled; one poll (every 3 s
+while the dialog is open) moves them.
 """
 
 from __future__ import annotations
@@ -98,12 +105,14 @@ def _showing(info: dict, status: str) -> dict[str, tuple[str, str]]:
         rows["grid"] = (f"{x} × {y} × {z} · {voxel[2]:.2f} Å/px", "")
     else:
         rows["grid"] = (f"{x} × {y} × {z} · voxel size unknown (the header has none)", "cb-badge-stale")
-    if opened.get("viewer") == "companion":
-        # The colleague's viewer: where its comments and particle STARs go (the tomogram's project, or not).
-        if opened.get("outputs"):
+    if opened.get("viewer") in ("eisgreis", "companion"):
+        # Where its comments and particle STARs go: the tomogram's project, or the session folder outside every one.
+        if opened.get("outputs") and requested.get("outputs"):
             rows["saves"] = (str(opened["outputs"]), "")
+        elif opened.get("outputs"):
+            rows["saves"] = (f"{opened['outputs']} (the tomogram is outside every project)", "cb-badge-stale")
         else:
-            rows["saves"] = ("home: the tomogram is outside every project", "cb-badge-stale")
+            rows["saves"] = ("the tomogram is outside every project", "cb-badge-stale")
         bundle = opened.get("bundle")
         if isinstance(bundle, dict) and bundle.get("error"):
             rows["crboost"] = (f"not shown: {bundle['error']}", "cb-badge-err")
@@ -115,8 +124,8 @@ def _showing(info: dict, status: str) -> dict[str, tuple[str, str]]:
             denoised = [v.split(" (")[0].removeprefix("denoised · ") for v in volumes if "denoised" in v]
             if denoised:
                 text += f" · denoised: {', '.join(denoised)} (the viewer's crboost volume dock)"
-            notes = bundle.get("notes") or []
-            rows["crboost"] = (text + (f" · {len(notes)} left out" if notes else ""), "")
+            left_out = len(bundle.get("notes") or []) + len(bundle.get("not_shown") or [])
+            rows["crboost"] = (text + (f" · {left_out} left out" if left_out else ""), "")
     return rows
 
 
@@ -202,6 +211,67 @@ async def open_napari_dialog(backend, volume: str | Path) -> None:
         _build(backend, path, name, volumes, passwordless, software_offered, portal, config.napari.time, active)
 
 
+def desktop_form_url() -> str | None:
+    """The portal page where a user opens a Remote Desktop: the form conf.yaml names, else the portal itself; None
+    without a portal."""
+    config = get_config_service()
+    if not config.ood.url:
+        return None
+    form = config.napari.desktop.form
+    return config.ood.url.rstrip("/") + (form if form.startswith("/") else f"/{form}") if form else config.ood.url
+
+
+def desktop_command() -> str | None:
+    """What a user runs in a desktop's terminal so crboost can show tomograms there; None without an install."""
+    install = get_config_service().napari.eisgreis
+    return f"{Path(install).expanduser() / 'eisgreis-crboost'}" if install else None
+
+
+def desktop_help(portal_url: str | None) -> None:
+    """*In your desktop*: how to start EisGreis in the user's own remote desktop, where crboost then finds it. The
+    dialog's and the open page's."""
+    config = get_config_service()
+    command = desktop_command()
+    hint = config.napari.desktop.hint
+    with ui.column().classes("w-full").style("gap: 3px;"):
+        group_title(
+            "In your desktop",
+            tooltip="EisGreis in a Remote Desktop of your own: no job of crboost's, and the desktop's resources.",
+        )
+        steps = []
+        if portal_url:
+            steps.append(
+                f"Open a Remote Desktop at {_faq_link(portal_url)}" + (f": {html.escape(hint)}." if hint else ".")
+            )
+        else:
+            steps.append("Open a remote desktop on the cluster" + (f": {html.escape(hint)}." if hint else "."))
+        steps.append(
+            "In its terminal run the command below; leave it running. EisGreis keeps a tomogram's FFT in memory from "
+            "24 GB, and draws 3-D on the GPU in a desktop with a full GPU."
+        )
+        steps.append(
+            "Then a tomogram's napari chip shows it there. To have every desktop start it, waiting with no window: "
+            "User settings (the person icon on the start page)."
+        )
+        for i, step in enumerate(steps, start=1):
+            # Our own text, the portal URL and the site's hint escaped.
+            ui.html(f"{i}. {step}", sanitize=False).style(f"{HELPER_STYLE} line-height: 1.45;")
+        if command:
+            with ui.row().classes("no-wrap").style(ROW_STYLE + " align-items: center;"):
+                ui.label("Command").style(_KEY_STYLE)
+                ui.label(command).style(_CELL_STYLE).tooltip(command)
+
+                async def _copy() -> None:
+                    await _write_clipboard(command)
+
+                icon_button("content_copy", _copy, tooltip="Copy the command")
+        else:
+            ui.label(
+                "napari.eisgreis is not set in conf.yaml: ./crboost eisgreis-install installs EisGreis and prints "
+                "the line."
+            ).style(f"{HELPER_STYLE} line-height: 1.45;").classes("cb-badge-err")
+
+
 def _build(
     backend,
     path: str,
@@ -216,6 +286,7 @@ def _build(
     sv = {
         "session_dir": None,
         "job_id": None,
+        "route": None,  # "desktop" (the user's own) or "job" (a node of ours)
         "status": "off",
         "tunnel": "",
         "address": "",
@@ -225,6 +296,8 @@ def _build(
     }
     state = {"timer": None, "polling": False, "closed": False, "linked": ""}
     flight = SingleFlight()
+    # Without an install crboost can start no viewer; one already running in a desktop is still reachable.
+    installed = bool(get_config_service().napari.eisgreis)
 
     with (
         dialog_host(),
@@ -232,11 +305,12 @@ def _build(
         ui.card().style("width: 560px; max-width: 94vw; padding: 16px 18px; gap: 12px;"),
     ):
         how = (
-            "napari runs on a cluster node and opens in a browser tab through the cluster's OnDemand portal (the "
-            "first time, it asks you to sign in)."
+            "napari (EisGreis) runs in your own remote desktop, or crboost starts it on a cluster node, which opens in "
+            "a browser tab through the cluster's OnDemand portal (the first time, it asks you to sign in)."
             if portal
-            else "napari runs on a cluster node and you see it through a VNC viewer. Once per session: paste the "
-            "tunnel into a terminal on your computer, then open the address in the viewer and give the password."
+            else "napari (EisGreis) runs in your own remote desktop, or crboost starts it on a cluster node, which you "
+            "see through a VNC viewer: once per session, paste the tunnel into a terminal on your computer, then open "
+            "the address in the viewer and give the password."
         )
         with ui.row().classes("w-full items-center no-wrap").style("gap: 8px;"):
             ui.label("napari").style(PANEL_TITLE_STYLE).tooltip(how)
@@ -302,7 +376,10 @@ def _build(
                 password_lbl = _kv("Password", "password", "Copy the password")
                 viewer_lbl = ui.label("").style(f"{HELPER_STYLE} line-height: 1.45;")
         ui.label(how).style(f"{HELPER_STYLE} line-height: 1.45; margin-top: 2px;")
-        connect_help(portal, walltime)
+        with ui.column().classes("w-full").style("gap: 0;") as desktop_box:
+            desktop_help(desktop_form_url())
+        with ui.column().classes("w-full").style("gap: 0;") as help_box:
+            connect_help(portal, walltime)
 
         with ui.row().classes("w-full items-center no-wrap").style("gap: 6px; margin-top: 4px;"):
             stop_btn = house_button("Stop session", lambda: _stop(), kind="danger")
@@ -311,8 +388,8 @@ def _build(
             gpu_btn = house_button(
                 "Start on a full GPU",
                 lambda: _act(software=False),
-                tooltip="VirtualGL on a full B200, A100 or RTX 6000: 3-D at full resolution. It waits while those "
-                "cards are taken, which can be hours.",
+                tooltip="crboost starts EisGreis on a cluster node, VirtualGL on a full B200, A100 or RTX 6000: 3-D at "
+                "full resolution. It waits while those cards are taken, which can be hours.",
             )
             action_btn = house_button("Start now", lambda: _act(software=software_offered), kind="accent")
             with action_btn:
@@ -330,7 +407,10 @@ def _build(
         text, klass = _STATUS[status]
         info_ = info or {}
         node = info_.get("node") if status in ("starting", "ready") else None
-        if node:
+        if node and sv["route"] == "desktop":
+            waiting = not ((info_.get("desktop") or {}).get("window", True))
+            where = f"your desktop on {node}" + (", waiting for a tomogram (no window yet)" if waiting else "")
+        elif node:
             where = node
         elif status == "pending":
             expected = when_text(info_.get("expected_start"))
@@ -345,17 +425,31 @@ def _build(
             _fill(render_cell, _rendering(info))
         elif status == "off":
             _fill(render_cell, "")
-        tip = f"SLURM job {sv['job_id']}" if sv["job_id"] else "No napari session is running."
+        if sv["route"] == "desktop":
+            tip = "EisGreis in your own remote desktop" + (f" (SLURM job {sv['job_id']})" if sv["job_id"] else "")
+        else:
+            tip = f"SLURM job {sv['job_id']}" if sv["job_id"] else "No napari session is running."
         if status == "pending" and info_.get("slurm_reason"):
             tip += f", waiting: {info_['slurm_reason']} (Priority/Resources: the nodes it may use are taken)"
             if software_offered:
                 tip += ". To look now, stop it and use Start now."
         status_tip.set_text(tip)
         live = status in ("pending", "starting", "ready")
-        stop_btn.set_visibility(live)
-        gpu_btn.set_visibility(software_offered and not live)
-        action_btn.set_text("Show this tomogram" if live else ("Start now" if software_offered else "Start napari"))
-        if live:
+        in_desktop = live and sv["route"] == "desktop"
+        stop_btn.set_visibility(live and not in_desktop)
+        gpu_btn.set_visibility(software_offered and not live and installed)
+        action_btn.set_visibility(installed or in_desktop)
+        desktop_box.set_visibility(not live)
+        help_box.set_visibility(not in_desktop)
+        if in_desktop:
+            action_btn.set_text("Show in my desktop")
+        else:
+            action_btn.set_text(
+                "Show this tomogram" if live else ("Start now" if software_offered else "Start on a node")
+            )
+        if in_desktop:
+            action_tip.set_text("Show this tomogram in EisGreis in your desktop; layers you made stay.")
+        elif live:
             action_tip.set_text("Replace what the running napari shows with this tomogram; layers you made stay.")
         elif software_offered:
             action_tip.set_text(
@@ -363,7 +457,9 @@ def _build(
                 "full GPU, 3-D from a half-size copy."
             )
         else:
-            action_tip.set_text("Start napari on a GPU node, showing this tomogram. It waits while the GPUs are taken.")
+            action_tip.set_text(
+                "crboost starts EisGreis on a GPU node, showing this tomogram. It waits while the GPUs are taken."
+            )
         if status == "ready" and info is not None:
             sv["tunnel"] = info.get("tunnel_cmd") or ""
             sv["address"] = f"localhost:{info['port']}" if info.get("port") else ""
@@ -371,6 +467,14 @@ def _build(
             sv["browser_url"] = info.get("browser_url") or ""
         elif status != "ready":
             sv.update(tunnel="", address="", password="", browser_url="")
+        if in_desktop:
+            set_button_kind(action_btn, "accent")
+            browser_btn.set_visibility(False)
+            if desktop_cell is not None:
+                _fill(desktop_cell, "")
+            if info is not None:
+                _show_info(info, status)
+            return
         if portal:
             if state["linked"] != sv["browser_url"]:  # written when it changes, not on every poll
                 state["linked"] = sv["browser_url"]
@@ -442,7 +546,7 @@ def _build(
         sv["status"] = info.get("status") if info.get("status") in _STATUS else "pending"
         if sv["status"] == "ended":
             _stop_polling()
-            sv["session_dir"] = sv["job_id"] = None
+            sv["session_dir"] = sv["job_id"] = sv["route"] = None
         _apply(info)
 
     async def _act(software: bool = False) -> None:
@@ -454,7 +558,7 @@ def _build(
             else:
                 res = await backend.launch_napari_session(volumes, name, software=software)
                 if res.get("success"):
-                    sv.update(session_dir=res["session_dir"], job_id=res["slurm_job_id"], status="pending")
+                    sv.update(session_dir=res["session_dir"], job_id=res["slurm_job_id"], status="pending", route="job")
             if not res.get("success"):
                 ui.notify(res.get("error") or "napari could not be started.", type="negative", multi_line=True)
                 _fill(tomo_cell, res.get("error") or "", "cb-badge-err")
@@ -473,7 +577,7 @@ def _build(
                 ui.notify(res.get("error") or "The session could not be stopped.", type="negative")
                 return
             _stop_polling()
-            sv.update(session_dir=None, job_id=None, status="off")
+            sv.update(session_dir=None, job_id=None, status="off", route=None)
             _clear_showing()
             _apply()
             await napari_status.poll(backend, force=True)
@@ -488,7 +592,9 @@ def _build(
     dialog.on_value_change(_on_value)
 
     if active:
-        sv.update(session_dir=active.get("session_dir"), job_id=active.get("slurm_job_id"))
+        sv.update(
+            session_dir=active.get("session_dir"), job_id=active.get("slurm_job_id"), route=active.get("route") or "job"
+        )
         sv["status"] = "ready" if active.get("status") == "ready" else "pending"
         _apply(active)
         _start_polling()

@@ -25,18 +25,19 @@ from ui.components.copyable import copy_on_click
 
 PATH_CSS = """
 .cb-path { display: block; width: 100%; min-width: 0; overflow: hidden; white-space: nowrap; cursor: pointer;
-  font-family: var(--cb-mono, 'IBM Plex Mono', monospace); font-size: 9.5px; line-height: 14px; color: #5b7089; }
-.cb-path .n { color: #1e293b; }
-.cb-path .e { color: #94a3b8; }
-.cb-path.cb-copy-path:hover { text-decoration: none; color: #5b7089 !important; }
+  font-family: var(--cb-mono, 'IBM Plex Mono', monospace); font-size: 9.5px; line-height: 14px;
+  color: var(--cb-ink-3, #5b7089); }
+.cb-path .n { color: var(--cb-ink-2, #1e293b); }
+.cb-path .e { color: var(--cb-ink-4, #94a3b8); }
+.cb-path.cb-copy-path:hover { text-decoration: none; color: var(--cb-ink-3, #5b7089) !important; }
 .cb-unfurl { position: fixed; z-index: 9000; pointer-events: none; white-space: pre; padding: 2px 6px;
-  font-family: var(--cb-mono, 'IBM Plex Mono', monospace); font-size: 9.5px; line-height: 14px; color: #94a3b8;
-  background: #0f1d2e; border-radius: 2px;
+  font-family: var(--cb-mono, 'IBM Plex Mono', monospace); font-size: 9.5px; line-height: 14px;
+  color: var(--cb-unfurl-ink, #94a3b8); background: var(--cb-unfurl-bg, #0f1d2e); border-radius: 2px;
   box-shadow: 0 0 0 1px rgba(74, 143, 212, 0.55), 0 0 16px 2px rgba(74, 143, 212, 0.35);
   opacity: 0; transition: opacity 80ms ease-out; }
 .cb-unfurl.on { opacity: 1; }
-.cb-unfurl .n { color: #ffffff; }
-.cb-unfurl .e { color: #5b7089; }
+.cb-unfurl .n { color: var(--cb-unfurl-name, #ffffff); }
+.cb-unfurl .e { color: var(--cb-unfurl-ext, #5b7089); }
 """
 
 PATH_JS = r"""

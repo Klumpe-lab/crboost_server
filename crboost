@@ -6,17 +6,20 @@
 #   ./crboost [--port N] [--debug]   start the server
 #   ./crboost preflight              check this install
 #   ./crboost test [pytest args]     the install self-test (-m cluster: one job per tool)
+#   ./crboost ci [--fast]            every check CI runs (scripts/ci.py), before a push
 #   ./crboost python [args]          run python in the environment, e.g. ./crboost python -m ruff check .
 #   ./crboost mcp                    the Claude Code forwarder (agent/crboost_mcp.py), as Claude Code starts it
 #   ./crboost lock                   recompile requirements.txt from requirements.in
 #   ./crboost env                    print the environment's path
 #   ./crboost clean [--yes]          list (or remove) environments this lock no longer needs
+#   ./crboost eisgreis-install [DIR] [--ref REF]   install EisGreis (the napari viewer) and print its conf line
 here=$(cd "$(dirname "$0")" && pwd -P) || exit 1
 
 case "${1:-}" in
     lock) shift; exec "$here/install.sh" --lock "$@" ;;
     env) shift; exec "$here/install.sh" --path "$@" ;;
     clean) shift; exec "$here/install.sh" --clean "$@" ;;
+    eisgreis-install) shift; exec "$here/scripts/eisgreis_install.sh" "$@" ;;
 esac
 
 env=$("$here/install.sh") || exit 1
@@ -30,10 +33,13 @@ umask 002
 case "${1:-}" in
     preflight) shift; exec "$py" "$here/preflight.py" "$@" ;;
     test) shift; cd "$here" && exec "$py" -m pytest "$@" ;;
+    ci) shift; cd "$here" && exec "$py" scripts/ci.py "$@" ;;
     python) shift; exec "$py" "$@" ;;
-    # Its own two packages come through uv's script mode, with the checkout's uv and Python, whatever folder
-    # Claude Code was started in; nothing of the server's environment is imported.
+    # Its own two packages come through uv's script mode, at the versions its lock (crboost_mcp.py.lock) pins, with
+    # the checkout's uv and Python, whatever folder Claude Code was started in; nothing of the server's environment
+    # is imported. --locked: a lock that no longer fits the script stops it, instead of being rewritten here.
     mcp) shift; exec env UV_NO_CONFIG=1 UV_CACHE_DIR="$here/.uv/cache" UV_PYTHON_INSTALL_DIR="$here/.uv/python" \
-        "${CRBOOST_UV:-$here/.uv/bin/uv}" --config-file "$here/uv.toml" run --script "$here/agent/crboost_mcp.py" "$@" ;;
+        "${CRBOOST_UV:-$here/.uv/bin/uv}" --config-file "$here/uv.toml" \
+        run --locked --script "$here/agent/crboost_mcp.py" "$@" ;;
     *) exec "$py" "$here/crboost.py" "$@" ;;
 esac

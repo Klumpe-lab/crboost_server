@@ -390,16 +390,16 @@ _VERBS: tuple[Verb, ...] = (
         "create_kitchen_subset",
         'A new kitchen subset holding the picks a recipe keeps now (a snapshot, as the kitchen\'s "+ kept" '
         "makes): filters such as sigma ≥ 10 or project = one project, subsets in or out, post-ops; the hand "
-        "verdicts apply. In a group, its picks leave the group's other subsets. The user's filter strip is not "
-        "changed.",
+        "verdicts apply. Or exactly the picks named by uid (`uids`), as a selection in the kitchen's gallery makes "
+        "one. In a group, its picks leave the group's other subsets. The user's filter strip is not changed.",
         m.CreateKitchenSubsetIn,
         "write",
         h.create_kitchen_subset,
     ),
     Verb(
         "edit_kitchen_subset",
-        "Rename a kitchen subset, move it into a group (refused when it shares picks with the group's subsets), or "
-        "take it out of its group.",
+        "Rename a kitchen subset, move it into a group (refused when it shares picks with the group's subsets), "
+        "take it out of its group, or add picks to it and take picks out by uid, as a gallery selection does.",
         m.EditKitchenSubsetIn,
         "write",
         h.edit_kitchen_subset,

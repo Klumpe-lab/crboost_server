@@ -13,6 +13,7 @@ module is imported by the package `__init__`.
 from __future__ import annotations
 
 import os
+import shlex
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -30,8 +31,10 @@ from services.jobs.denoise_predict import DenoisePredictParams
 from services.jobs.denoise_train import DenoiseTrainParams
 from services.jobs.extract_pick_list import ExtractPickListParams
 from services.jobs.filament_pick import FilamentPickParams
+from services.jobs.frame_align import FrameAlignParams
 from services.jobs.fs_motion_ctf import FsMotionCtfParams
 from services.jobs.import_movies import ImportMoviesParams
+from services.jobs.m_refine import MRefineParams
 from services.jobs.mask_create import MaskCreateParams
 from services.jobs.miss_align import MissAlignParams
 from services.jobs.postprocess import PostProcessParams
@@ -491,6 +494,40 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
             '<ellipse cx="6" cy="6" rx="2.2" ry="1.6" transform="rotate(-30 6 6)"/>'
         ),
     ),
+    # Each tilt's rigid alignment, the particles' positions and their motion against a reference at the tilt
+    # series' pixel size; its set is RELION's whole model, cut again by Subtomo Extraction before a Refine 3D.
+    JobSpec(
+        JobType.FRAME_ALIGN,
+        FrameAlignParams,
+        "Frame alignment",
+        PHASE_PARTICLES,
+        dependencies=(JobType.REFINE3D,),
+        driver="frame_align.py",
+        log_format="reconstruct",
+        dir_slug="frame_align",
+        summary="Refines each tilt's alignment and the particles' motion against a reference.",
+        glyph=(
+            '<rect x="1.5" y="2.5" width="6" height="6" rx="0.6"/>'
+            '<rect x="4.5" y="3.5" width="6" height="6" rx="0.6" stroke-dasharray="1.4 1.1"/>'
+        ),
+    ),
+    # One round of Warp's M on a Refine 3D's particles (or one more round of an earlier M refine): the tilt series'
+    # Warp model, the poses and the map together; its halves go to PostProcess in the Refine 3D's box.
+    JobSpec(
+        JobType.M_REFINE,
+        MRefineParams,
+        "M refine",
+        PHASE_PARTICLES,
+        dependencies=(JobType.REFINE3D,),
+        driver="m_refine.py",
+        plugins=("m_refine",),
+        dir_slug="m_refine",
+        summary="Refines the tilt series, the particles and the map together (Warp's M), one round a job.",
+        glyph=(
+            '<circle cx="6" cy="6" r="4.6"/><path d="M1.6 4.4h8.8M1.6 7.6h8.8" stroke-dasharray="1.2 1"/>'
+            '<circle cx="6" cy="6" r="1.4" fill="currentColor"/>'
+        ),
+    ),
 )
 
 JOB_SPEC_BY_TYPE: Final[Mapping[JobType, JobSpec]] = MappingProxyType({s.job_type: s for s in JOB_SPECS})
@@ -590,8 +627,12 @@ def driver_launch_prefix(*, server_dir: Path, driver_script: Path) -> str:
             f"empty = the interpreter running the server)"
         )
     # Only this checkout on the path, and no ~/.local site-packages: whatever a cluster module or the user's
-    # shell put on PYTHONPATH must not shadow the venv's packages.
-    return f"export PYTHONPATH={server_dir} PYTHONNOUSERSITE=1; {python_exe} {driver_script}"
+    # shell put on PYTHONPATH must not shadow the venv's packages. Quoted for the shell, so an install path with a
+    # space in it still runs; a plain path comes out as it went in.
+    return (
+        f"export PYTHONPATH={shlex.quote(str(server_dir))} PYTHONNOUSERSITE=1; "
+        f"{shlex.quote(str(python_exe))} {shlex.quote(str(driver_script))}"
+    )
 
 
 def driver_invocation(*, server_dir: Path, driver_script: Path, instance_id: str, project_path: Path) -> str:
@@ -610,5 +651,5 @@ def driver_invocation(*, server_dir: Path, driver_script: Path, instance_id: str
     return (
         f"{driver_launch_prefix(server_dir=server_dir, driver_script=driver_script)} "
         f"--instance_id {instance_id} "
-        f"--project_path {project_path}"
+        f"--project_path {shlex.quote(str(project_path))}"
     )

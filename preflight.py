@@ -127,6 +127,8 @@ def check_config():
             fail(f"{key} is not set")
     if cfg.curation.sif_path and not cfg.curation.partition:
         warn("curation.partition is not set; curation sessions cannot start")
+    check_eisgreis(cfg)
+    check_napari_desktop(cfg)
 
     if not cfg.crboost_python:
         ok(f"drivers run {sys.executable} (this interpreter, the one ./crboost uses)")
@@ -182,6 +184,60 @@ def check_config():
     else:
         ok(f"gpu_kernel_cache: {cache}")
     return cfg
+
+
+def check_eisgreis(cfg) -> None:
+    """napari.eisgreis: an EisGreis install whose launchers are there, whose eisgreis-crboost answers, and which reads
+    a protocol version this crboost writes."""
+    from services.curation import napari_link
+
+    install = cfg.napari.eisgreis
+    if not install:
+        warn("napari.eisgreis is not set: the napari chip has no viewer to start (./crboost eisgreis-install)")
+        return
+    root = Path(install).expanduser()
+    missing = [name for name in ("eisgreis", napari_link.COMMAND) if not os.access(root / name, os.X_OK)]
+    if missing:
+        fail(f"napari.eisgreis: {root} has no {' or '.join(missing)}; is it an EisGreis install?")
+        return
+    versions = napari_link.install_versions(root)
+    if not versions.get("success"):
+        fail(f"napari.eisgreis: {versions['error']}")
+        return
+    chosen = napari_link.choose_protocol(versions["protocol"], eisgreis=versions["eisgreis"], install=str(root))
+    if not chosen.get("success"):
+        fail(f"napari.eisgreis: {chosen['error']}")
+        return
+    reads = ", ".join(str(v) for v in versions["protocol"])
+    viewer = f"EisGreis {versions['eisgreis']} at {root}"
+    ok(f"napari.eisgreis: {viewer} reads protocol {reads}; crboost writes {chosen['protocol']}")
+
+
+def check_napari_desktop(cfg) -> None:
+    """napari.sif_path: the remote-desktop image a napari job of crboost's runs (TurboVNC, Xfce through ood-desktop)."""
+    sif = cfg.napari.sif_path
+    if not sif:
+        return
+    if not Path(sif).is_file():
+        fail(f"napari.sif_path: {sif} does not exist")
+        return
+    needed = ("ood-desktop", "vncserver", "vncpasswd")
+    try:
+        proc = subprocess.run(
+            [str(cfg.container_runtime), "exec", sif, "sh", "-c", "command -v " + " ".join(needed)],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        warn(f"napari.sif_path: could not look inside {sif}: {e}")
+        return
+    found = {Path(line).name for line in proc.stdout.split()}
+    missing = [name for name in needed if name not in found]
+    if missing:
+        fail(f"napari.sif_path: {sif} has no {', '.join(missing)}; napari jobs need the site's remote-desktop image")
+    else:
+        ok(f"napari.sif_path: {sif} (a remote desktop: TurboVNC, ood-desktop)")
 
 
 def check_slurm(cfg) -> None:

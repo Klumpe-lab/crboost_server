@@ -19,6 +19,7 @@ Two directions, both pure (DataFrames in, DataFrames out; the driver does the fi
 
 from __future__ import annotations
 
+import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,8 @@ import pandas as pd
 from services.particles.coords import CENTERED_COLS
 
 TOMOSTAR_SUFFIX = ".tomostar"
+# The folders a Warp settings file names for its tilt series: their tomostars and their XMLs.
+SETTINGS_FOLDERS = ("DataFolder", "ProcessingFolder")
 
 COORD_COLS = ["rlnCoordinateX", "rlnCoordinateY", "rlnCoordinateZ"]
 ANGLE_COLS = ["rlnAngleRot", "rlnAngleTilt", "rlnAnglePsi"]
@@ -105,6 +108,16 @@ def read_warp_volume(settings_path: Path) -> WarpVolume:
     if apix <= 0 or min(dims) <= 0:
         raise ValueError(f"Non-positive pixel size or volume dimensions in {settings_path}: {apix}, {dims}")
     return WarpVolume(apix=apix, dims=dims)
+
+
+def settings_with_folders(text: str, data_folder: str, processing_folder: str, source: Path) -> str:
+    """A Warp settings file's text with its DataFolder and ProcessingFolder set; the rest as it was. Warp resolves
+    relative folders against its working directory, and writes into whatever ProcessingFolder names."""
+    for name, value in zip(SETTINGS_FOLDERS, (data_folder, processing_folder), strict=True):
+        text, n = re.subn(rf'(<Param Name="{name}" Value=")[^"]*(")', lambda m, v=value: f"{m[1]}{v}{m[2]}", text)
+        if n != 1:
+            raise ValueError(f"{source}: {n} {name} parameters, expected one")
+    return text
 
 
 def tsctf_sources(tomo_row: pd.Series, settings_name: str, tomostar_dir_name: str, origin=None) -> TsCtfSources:

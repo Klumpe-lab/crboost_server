@@ -170,6 +170,12 @@ class JobType(str, Enum):
     POSTPROCESS = "postprocess"
     # Each tilt's defocus, astigmatism and contrast scale refined against a reference (relion_tomo_refine_ctf).
     CTF_REFINE = "ctfRefine"
+    # Each tilt's rigid alignment, the particles' positions and their motion refined against a reference
+    # (relion_tomo_align): RELION's whole model, which the bridge hands on as it is.
+    FRAME_ALIGN = "frameAlign"
+    # One round of Warp's M (MTools, MCore): the tilt series' Warp model, the particles' poses and the map refined
+    # together, in copies of the tilt series' Warp files the job keeps.
+    M_REFINE = "mRefine"
 
     # Synthetic source: not a real pipeline job. Used by PathResolutionService to
     # surface <project>/MergedSources/optimisation_set.star as a producer candidate

@@ -1,8 +1,7 @@
 # miss-alignment — reference
 
 Everything you need to develop with, or run, **miss-alignment** inside crboost.
-Companion: [`container_defs/MISS_ALIGNMENT_INTEGRATION.md`](../container_defs/MISS_ALIGNMENT_INTEGRATION.md)
-(the crboost wiring roadmap). Grounded in a proven end-to-end run on real data
+Grounded in a proven end-to-end run on real data
 (<project>, A100-40GB, 2026-07-02).
 
 ---

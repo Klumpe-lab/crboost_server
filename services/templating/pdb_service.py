@@ -2,16 +2,17 @@ import os
 import json
 import asyncio
 import logging
+import subprocess
 from pathlib import Path
 import textwrap
 from typing import Any
 from services.computing.container_service import get_container_service
+from services.computing.processes import run_process
 from services.configs.config_service import get_config_service
 from services.result import err, ok
 from services.templating.template_service import normalize_white_and_negate_to_black
 
 logger = logging.getLogger(__name__)
-
 
 
 class PDBService:
@@ -256,7 +257,13 @@ except Exception as e:
             logger.info(
                 "Starting PDB → Template Simulation: input=%s, output=%s, "
                 "sim=%sÅ/px box %s, target=%sÅ/px box %s, resolution=%sÅ",
-                pdb_path, output_folder, sim_apix, sim_box, target_apix, target_box, resolution,
+                pdb_path,
+                output_folder,
+                sim_apix,
+                sim_box,
+                target_apix,
+                target_box,
+                resolution,
             )
 
             # Run CISTEM with PyMOL preprocessing
@@ -297,7 +304,8 @@ except Exception as e:
             if final_result.get("success"):
                 logger.info(
                     "✓ Template Generation Complete: White=%s, Black=%s",
-                    Path(final_result["path_white"]).name, Path(final_result["path_black"]).name,
+                    Path(final_result["path_white"]).name,
+                    Path(final_result["path_black"]).name,
                 )
 
             return final_result
@@ -328,7 +336,6 @@ except Exception as e:
         Supports both container and binary modes via ContainerService.
         """
 
-        import asyncio
         import textwrap
         from pathlib import Path
 
@@ -344,7 +351,11 @@ except Exception as e:
 
         logger.info(
             "Step 1/3: PyMOL Structure Preparation: input=%s, output=%s, translate=[%.1f, %.1f, %.1f]",
-            Path(pdb_path).name, struct_file.name, offset, offset, offset,
+            Path(pdb_path).name,
+            struct_file.name,
+            offset,
+            offset,
+            offset,
         )
 
         # === PYMOL PREPARATION ===
@@ -416,26 +427,32 @@ except Exception as e:
 
         logger.info(
             "Step 2/3: cisTEM Density Simulation: mode=%s, cmd=%s, input=%s, output=%s, box=%s, apix=%s, threads=%s",
-            tool_config.exec_mode, inner_cmd, struct_file, sim_output_path, sim_box, sim_apix, num_threads,
+            tool_config.exec_mode,
+            inner_cmd,
+            struct_file,
+            sim_output_path,
+            sim_box,
+            sim_apix,
+            num_threads,
         )
 
         # Prepare stdin parameters (absolute paths)
         # cisTEM reads these line-by-line
         stdin_input = "\n".join(
             [
-                str(sim_output_path),      # outFile - absolute path
-                "Yes",                     # scPotential
-                str(int(sim_box)),         # boxSize
-                str(num_threads),          # threads
-                str(struct_file),          # inputPDBPath - absolute path
-                "No",                      # addPart
-                str(sim_apix),             # outputPix
-                str(mod_scale_bf),         # perAtomScaleBfact
-                str(mod_bf),               # perAtomBfact
-                str(int(oversample)),      # oversample
-                str(num_frames),           # numOfFrames
-                "No",                      # expert
-                "",                        # EOF
+                str(sim_output_path),  # outFile - absolute path
+                "Yes",  # scPotential
+                str(int(sim_box)),  # boxSize
+                str(num_threads),  # threads
+                str(struct_file),  # inputPDBPath - absolute path
+                "No",  # addPart
+                str(sim_apix),  # outputPix
+                str(mod_scale_bf),  # perAtomScaleBfact
+                str(mod_bf),  # perAtomBfact
+                str(int(oversample)),  # oversample
+                str(num_frames),  # numOfFrames
+                "No",  # expert
+                "",  # EOF
             ]
         )
 
@@ -448,30 +465,17 @@ except Exception as e:
             # 2. Wrap command (handles containerization or native pass-through)
             # We must bind the output folder so container can read/write files
             full_command = self.container_service.wrap_command_for_tool(
-                command=inner_cmd,
-                cwd=output_folder,
-                tool_name="cistem",
-                additional_binds=[str(output_folder)],
+                command=inner_cmd, cwd=output_folder, tool_name="cistem", additional_binds=[str(output_folder)]
             )
 
             # 3. Execute without blocking the event loop
-            process = await asyncio.create_subprocess_shell(
-                full_command,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(output_folder),
-            )
-
             try:
-                stdout_b, stderr_b = await asyncio.wait_for(
-                    process.communicate(input=stdin_input.encode("utf-8")),
-                    timeout=600,
+                process = await run_process(
+                    full_command, shell=True, cwd=output_folder, input=stdin_input.encode("utf-8"), timeout=600
                 )
-            except TimeoutError:
-                process.kill()
-                await process.wait()
+            except subprocess.TimeoutExpired:
                 return err("cisTEM timeout (>600s)")
+            stdout_b, stderr_b = process.stdout, process.stderr
 
             stdout = (stdout_b or b"").decode("utf-8", errors="replace")
             stderr = (stderr_b or b"").decode("utf-8", errors="replace")
@@ -516,7 +520,9 @@ except Exception as e:
                     voxel_size = float(mrc.voxel_size.x)
                     logger.info(
                         "✓ Simulation complete: %s, shape=%s, voxel_size=%.3f Å",
-                        sim_output_path.name, shape, voxel_size,
+                        sim_output_path.name,
+                        shape,
+                        voxel_size,
                     )
             except Exception as e:
                 return err(f"Invalid MRC file created: {e}")
@@ -535,7 +541,6 @@ except Exception as e:
 
             error = f"cisTEM execution error: {e!s}\n{traceback.format_exc()}"
             return err(error)
-
 
     async def _process_simulated_map(
         self,

@@ -2,6 +2,8 @@
 # configuration stays out of the build); `uv pip compile` run by hand finds it by itself.
 
 # The uv that builds the environments. install.sh fetches exactly this one into .uv/bin, and uv refuses to run as any other.
+# Its archive, which install.sh checks before unpacking (a new version needs its line from the release's .sha256 file):
+# uv-x86_64-unknown-linux-gnu.tar.gz sha256 = "c5221ff41b7892bfc223543883600125f6a47fe845093e0f5bdff4f359196d83"
 required-version = "==0.13.7"
 
 # uv's own Pythons (python-build-standalone, which needs glibc 2.17), never a cluster module's.

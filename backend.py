@@ -7,6 +7,7 @@ import os
 import pwd
 import re
 import shutil
+import subprocess
 import threading
 import time
 from collections.abc import Callable
@@ -20,6 +21,7 @@ from services.templating.pdb_service import PDBService
 from services.scheduling_and_orchestration.project_service import ProjectService
 from services.scheduling_and_orchestration.pipeline_orchestrator_service import PipelineOrchestratorService
 from services.computing.container_service import get_container_service
+from services.computing.processes import run_process
 from services.scheduling_and_orchestration.pipeline_runner import PipelineRunnerService
 from services.scheduling_and_orchestration.pipeline_monitor import PipelineMonitor
 from services.array_tasks import eta_s as task_eta_s, manifest_items, progress as task_progress
@@ -96,8 +98,8 @@ def _registry_ts_count(project_dir: Path) -> int:
         return 0
 
 
-_RECON_PNG_APIX    = re.compile(r"_(\d+(?:\.\d+)?)Apx\.png$")
-_JOB_NUMBER        = re.compile(r"job(\d+)")
+_RECON_PNG_APIX = re.compile(r"_(\d+(?:\.\d+)?)Apx\.png$")
+_JOB_NUMBER = re.compile(r"job(\d+)")
 _PIPELINE_POSITION = {jt.value: i for i, jt in enumerate(PIPELINE_ORDER)}
 
 
@@ -251,18 +253,18 @@ def _read_extraction_outdir(out_dir: Path) -> tuple[str, dict]:
 class CryoBoostBackend:
     def __init__(self, server_dir: Path):
         global _backend_instance
-        _backend_instance          = self
-        self.username              = getpass.getuser()
-        self.server_dir            = server_dir
-        self.config_service        = get_config_service()
-        self.project_service       = ProjectService(self)
+        _backend_instance = self
+        self.username = getpass.getuser()
+        self.server_dir = server_dir
+        self.config_service = get_config_service()
+        self.project_service = ProjectService(self)
         self.pipeline_orchestrator = PipelineOrchestratorService(self)
-        self.container_service     = get_container_service()
-        self.slurm_service         = SlurmService(self.username)
-        self.pipeline_runner       = PipelineRunnerService(self)
-        self.state_service         = get_state_service()
-        self.template_service      = TemplateService(self)
-        self.pdb_service           = PDBService(self)
+        self.container_service = get_container_service()
+        self.slurm_service = SlurmService(self.username)
+        self.pipeline_runner = PipelineRunnerService(self)
+        self.state_service = get_state_service()
+        self.template_service = TemplateService(self)
+        self.pdb_service = PDBService(self)
         # PipelineMonitor is the single server-side observer of pipeline
         # status across all projects. Started in server_app.py's FastAPI startup
         # hook; not auto-started here so unit-test / one-shot driver paths
@@ -418,14 +420,8 @@ class CryoBoostBackend:
         await self.state_service.save_project(project_path=project_path, force=True)
 
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "sbatch",
-                str(sbatch_path),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(run_dir),
-            )
-            stdout, stderr = await proc.communicate()
+            proc = await run_process(["sbatch", str(sbatch_path)], cwd=run_dir)
+            stdout, stderr = proc.stdout, proc.stderr
         except OSError as e:
             logger.exception("Tilt filter DL: sbatch could not be started")
             run.status = JobStatus.FAILED
@@ -704,14 +700,8 @@ class CryoBoostBackend:
                 driver_cmd,
                 name=crboost_job_name(instance_id),
             )
-            proc = await asyncio.create_subprocess_exec(
-                "sbatch",
-                str(sbatch_path),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(out_dir),
-            )
-            stdout, stderr = await proc.communicate()
+            proc = await run_process(["sbatch", str(sbatch_path)], cwd=out_dir)
+            stdout, stderr = proc.stdout, proc.stderr
             if proc.returncode != 0:
                 msg = f"sbatch failed: {stderr.decode().strip()}"
                 jm.execution_status = JobStatus.FAILED
@@ -903,9 +893,7 @@ class CryoBoostBackend:
         values = None
         if mode == TOMO_IMPORT_JOBS:
             sources = [s.model_dump() for b in all_batches if b.source_mode == TOMO_IMPORT_JOBS for s in b.job_sources]
-            checked = await asyncio.to_thread(
-                check_job_sources, sources, self.config_service.config.container_binds
-            )
+            checked = await asyncio.to_thread(check_job_sources, sources, self.config_service.config.container_binds)
             if not checked["success"]:
                 return checked
             values = checked["values"]
@@ -1772,13 +1760,7 @@ class CryoBoostBackend:
         return ok(vote=vote)
 
     async def create_polarity_set(
-        self,
-        project_path: Path,
-        *,
-        refine3d_instance: str,
-        name: str,
-        species_id: str,
-        keep_undecided: bool = False,
+        self, project_path: Path, *, refine3d_instance: str, name: str, species_id: str, keep_undecided: bool = False
     ) -> dict[str, Any]:
         """A new set of a helical Refine 3D's segments with each filament's direction decided
         (set_ops.create_polarity_set)."""
@@ -2421,27 +2403,15 @@ class CryoBoostBackend:
                 final_command = command
                 logger.info("Running natively: %s", final_command)
 
-            process = await asyncio.create_subprocess_shell(
-                final_command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd or self.server_dir,
-            )
-
             try:
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120.0)
-
-                logger.debug("Process completed with return code: %s", process.returncode)
-                if process.returncode == 0:
-                    return ok(output=stdout.decode())
-                else:
-                    return err(stderr.decode(), output=stdout.decode())
-
-            except TimeoutError:
+                process = await run_process(final_command, shell=True, cwd=cwd or self.server_dir, timeout=120.0)
+            except subprocess.TimeoutExpired:
                 logger.error("Command timed out after 120 seconds: %s", final_command)
-                process.terminate()
-                await process.wait()
                 return err("Command execution timed out", output="")
+            logger.debug("Process completed with return code: %s", process.returncode)
+            if process.returncode == 0:
+                return ok(output=process.stdout.decode())
+            return err(process.stderr.decode(), output=process.stdout.decode())
 
         except Exception as e:
             logger.error("Exception in run_shell_command: %s", e)

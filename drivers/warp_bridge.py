@@ -1,5 +1,6 @@
 """The optimisation set a RELION tilt-image program should read: the input's, or one that carries Warp's local
-geometry as trajectories (services/particles/warp_geometry.py; HOTFIXES H26).
+geometry as trajectories (services/particles/warp_geometry.py; HOTFIXES H26). A set marked as carrying RELION's own
+model (frame alignment, roadmap 53 §15.11) is handed on as it is, once checked.
 
 Called by every driver that hands RELION the tilt images (Reconstruct particle, CTF refine, Subtomo extraction,
 pick-list extraction) before it builds its command. The computation runs in the miss_alignment container
@@ -25,13 +26,37 @@ def _say(msg: str) -> None:
 def carry_warp_geometry(input_set: Path, job_dir: Path, binds=()) -> Path:
     """`input_set` when its tilt series hold nothing beyond the rigid model the star holds, or when it already
     names this bridge's trajectories for all its particles; else a new optimisation set in `job_dir` naming the
-    trajectories computed here (and, for particles without names, a named copy of the particles)."""
+    trajectories computed here (and, for particles without names, a named copy of the particles). Tilts that hold
+    no alignment (WarpTools ts_import left them out) are first left out of a copy of their stars."""
+    input_set, dropped = wg.drop_unaligned_tilts(input_set, job_dir)
+    for name, movies in dropped.items():
+        _say(
+            f"{name}: {len(movies)} tilt(s) hold no alignment (WarpTools ts_import left them out; Warp's model has "
+            f"no such tilt), so RELION reads its star without them: {', '.join(movies)}"
+        )
     p = wg.plan(input_set)
     if p.unlocated:
         _say(
             f"WARN: no Warp XML found for {len(p.unlocated)} tilt series ({', '.join(p.unlocated[:5])}"
             f"{' …' if len(p.unlocated) > 5 else ''}): RELION places their particles by the tilt-series star alone"
         )
+    if p.magnified:
+        _say(
+            f"WARN: {len(p.magnified)} tilt series hold a magnification correction (an M refine's): it moves no "
+            "particle, Warp applies it where it back-projects, and RELION's star holds none, so RELION reconstructs "
+            "them without it"
+        )
+    if p.relion_model or p.marked:
+        wg.check_marked(p)
+        if p.relion_model:
+            _say(
+                f"{len(p.relion_model)} tilt series carry RELION's own model (frame alignment): their stars and motion "
+                "go to RELION as they are, without Warp's local geometry"
+            )
+        if p.series:
+            _say(f"{len(p.series)} tilt series keep Warp's model, with the bridge's offsets the set carries")
+        _say(f"the set is handed on as it is (trajectories: {p.trajectories or 'none'})")
+        return input_set
     if not p.needed:
         if p.rigid_only:
             _say(f"{len(p.rigid_only)} tilt series: Warp's model is the star's rigid one; nothing to carry")

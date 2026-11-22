@@ -40,27 +40,42 @@ class PostProcessParams(AbstractJobParams):
     ]
 
     auto_bfac: bool = Field(
-        default=True, description="Fit the sharpening B-factor from the Guinier plot", title="Fit B-factor",
+        default=True,
+        description="Fit the sharpening B-factor from the Guinier plot",
+        title="Fit B-factor",
         json_schema_extra=form("Sharpening"),
     )
     autob_lowres: float = Field(
-        default=10.0, gt=0, description="Lowest resolution used in the B-factor fit (Å); higher frequencies only",
-        title="Fit from", json_schema_extra=form("Sharpening", S, "Å"),
+        default=10.0,
+        gt=0,
+        description="Lowest resolution used in the B-factor fit (Å); higher frequencies only",
+        title="Fit from",
+        json_schema_extra=form("Sharpening", S, "Å"),
     )
     adhoc_bfac: float = Field(
-        default=0.0, le=0, description="B-factor to sharpen with when auto_bfac is off (Å², negative; 0 = none)",
-        title="B-factor", json_schema_extra=form("Sharpening", S, "Å²"),
+        default=0.0,
+        le=0,
+        description="B-factor to sharpen with when auto_bfac is off (Å², negative; 0 = none)",
+        title="B-factor",
+        json_schema_extra=form("Sharpening", S, "Å²"),
     )
     skip_fsc_weighting: bool = Field(
-        default=False, description="No FSC weighting of the map; low-pass it at low_pass instead",
-        title="Skip FSC weighting", json_schema_extra=form("Filtering"),
+        default=False,
+        description="No FSC weighting of the map; low-pass it at low_pass instead",
+        title="Skip FSC weighting",
+        json_schema_extra=form("Filtering"),
     )
     low_pass: float = Field(
-        default=0.0, ge=0, description="Low-pass filter (Å) with skip_fsc_weighting; 0 = none", title="Low-pass",
+        default=0.0,
+        ge=0,
+        description="Low-pass filter (Å) with skip_fsc_weighting; 0 = none",
+        title="Low-pass",
         json_schema_extra=form("Filtering", S, "Å"),
     )
     other_args: str = Field(
-        default="", description="Extra relion_postprocess flags, appended verbatim", title="Extra arguments",
+        default="",
+        description="Extra relion_postprocess flags, appended verbatim",
+        title="Extra arguments",
         json_schema_extra=form("Extra", L),
     )
 

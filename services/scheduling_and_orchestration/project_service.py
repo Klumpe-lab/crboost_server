@@ -19,6 +19,7 @@ from services.configs.mdoc_service import (
     get_mdoc_service,
     ts_name_from_mdoc,
 )
+from services.computing.processes import run_process
 from services.configs.starfile_service import StarfileService
 from services.stack_import import choose_source_layer, resolve_stack, split_stack
 from services.job_links import sync_job_links
@@ -633,11 +634,8 @@ class ProjectService:
                 command=init_command, cwd=project_dir, tool_name="relion", additional_binds=binds
             )
 
-            proc = await asyncio.create_subprocess_shell(
-                container_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=project_dir
-            )
-            # Read the output as it comes: waiting alone would block once a full pipe stops the process.
-            _out, init_err = await proc.communicate()
+            proc = await run_process(container_cmd, shell=True, cwd=project_dir)
+            init_err = proc.stderr
             if proc.returncode:
                 logger.warning(
                     "%s: relion --do_projdir exited %s: %s",

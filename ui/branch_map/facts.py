@@ -411,6 +411,7 @@ def job_facts(kind: str, jm, job_dir: Path | None, reg: dict[str, dict], iid: st
             f"{n} particles exported · box {param_words(jm, 'box_size')} · bin {getattr(jm, 'binning', 0):g} · "
             f"Ø {getattr(jm, 'diameter_ang', 0):g} Å"
         ]
+        f.lines += _warp_export_model_lines(job_dir)
     elif kind == "reconstructParticle":
         url = map_slices_url(job_dir / "merged.mrc")
         if url:
@@ -429,7 +430,110 @@ def job_facts(kind: str, jm, job_dir: Path | None, reg: dict[str, dict], iid: st
         _postprocess_facts(f, job_dir)
     elif kind == "ctfRefine":
         _ctf_refine_facts(f, job_dir)
+    elif kind == "frameAlign":
+        _frame_align_facts(f, job_dir)
+    elif kind == "mRefine":
+        _m_refine_facts(f, job_dir)
     return f
+
+
+def _warp_export_model_lines(job_dir: Path) -> list[str]:
+    """Whose Warp model the stacks were cut with, when it is an M refine's, and what of it RELION's star leaves
+    out, from the driver's `warp_export_model.json`."""
+    path = job_dir / "warp_export_model.json"
+    if not path.exists():
+        return []
+    d = json.loads(path.read_text())
+    m_jobs = d.get("m_jobs") or {}
+    if not m_jobs:
+        return []
+    lines = [
+        f"cut with M's model: {sum(m_jobs.values())} tilt series from "
+        + ", ".join(f"{Path(j).name} ({n})" for j, n in sorted(m_jobs.items()))
+        + " · M's per-tilt defocus and Cs in the set"
+    ]
+    mag, zern = d.get("magnified") or [], d.get("zernike") or []
+    if mag or zern:
+        lines.append(
+            "left out (Warp applies them only where it back-projects; RELION's star holds neither): "
+            + " · ".join(
+                part
+                for part in (
+                    f"M's magnification on {len(mag)} tilt series" if mag else "",
+                    f"its Zernike terms on {len(zern)}" if zern else "",
+                )
+                if part
+            )
+        )
+    return lines
+
+
+def _m_refine_facts(f: Facts, job_dir: Path) -> None:
+    """M's resolution before and after the round, what it moved per tilt series, and what of the model RELION's
+    tilt-series star cannot hold, from the driver's `m_round.json` and `m_changes.json`."""
+    path = job_dir / "m_round.json"
+    if not path.exists():
+        return
+    rec = json.loads(path.read_text())
+    changes_path = job_dir / "m_changes.json"
+    series = json.loads(changes_path.read_text()).get("tilt_series", []) if changes_path.exists() else []
+
+    def ang(v) -> str:
+        return f"{v:.2f} Å" if isinstance(v, (int, float)) else "—"
+
+    f.tiles = [
+        ("Round", f"R{rec.get('round')}"),
+        ("M", ang(rec.get("resolution_after_ang"))),
+        ("Particles", str(rec.get("particles"))),
+        ("Box", f"{rec.get('m_box')} → {rec.get('box')} px"),
+    ]
+    f.lines = [
+        f"M's own resolution {ang(rec.get('resolution_before_ang'))} → {ang(rec.get('resolution_after_ang'))} · "
+        f"{rec.get('tilt_series')} tilt series in {rec.get('sources')} sources · {rec.get('seconds', 0) / 60:.0f} min "
+        f"on {rec.get('gpus')} GPU",
+        "the half maps are in the Refine 3D's box: a PostProcess reads them in the trunk's masks",
+    ]
+    gate = rec.get("ctf_gate") or {}
+    if gate.get("skipped"):
+        f.lines.append(
+            f"the CTF was not refined: M's species was at {ang(gate.get('species_resolution_ang'))}, coarser than "
+            f"'CTF from' {gate.get('min_resolution_ang'):g} Å ({', '.join(gate.get('switches') or [])} did nothing)"
+        )
+    beyond = rec.get("beyond_star") or {}
+    staged, mag = beyond.get("stage_angles") or {}, beyond.get("magnification") or {}
+    if staged.get("tilt_series") or mag.get("tilt_series"):
+        held = []
+        if staged.get("tilt_series"):
+            held.append(f"stage angles on {staged['tilt_series']} tilt series (up to {staged.get('max_deg', 0):.2f}°)")
+        if mag.get("tilt_series"):
+            held.append(
+                f"a magnification on {mag['tilt_series']} (up to {mag.get('max_anisotropic_pct', 0):.2f} % anisotropic)"
+            )
+        consequences = []
+        if staged.get("tilt_series"):
+            consequences.append("Warp Export and RELION's tilt-image programs refuse the stage angles")
+        if mag.get("tilt_series"):
+            consequences.append("RELION reconstructs without the magnification")
+        f.lines.append(f"RELION's tilt-series star cannot hold {' and '.join(held)}: {'; '.join(consequences)}")
+    for s in series:
+        parts = [f"{s['name']} · {s['particles']} particles"]
+        if "defocus_shift_um" in s:
+            parts.append(f"defocus {s['defocus_shift_um']:+.3f} ± {s['defocus_shift_sd_um']:.3f} µm")
+        if s.get("warp_change_rms_ang") is not None:
+            parts.append(f"warp {s['warp_change_rms_ang']:.1f} Å")
+        if s.get("stage_angle_max_deg"):
+            parts.append(f"stage ≤ {s['stage_angle_max_deg']:.2f}°")
+        pct = s.get("magnification_pct") or {}
+        if abs(pct.get("anisotropic_pct", 0)) > 1e-4 or abs(pct.get("isotropic_pct", 0)) > 1e-4:
+            parts.append(f"mag {pct['x_pct']:+.2f} / {pct['y_pct']:+.2f} %")
+        if s.get("cs_after_mm") is not None and s.get("cs_after_mm") != s.get("cs_before_mm"):
+            parts.append(f"Cs {s['cs_after_mm']:.2f} mm")
+        parts.append(f"moved {s['moved_rms_ang']:.1f} Å · turned {s['turned_rms_deg']:.2f}°")
+        f.lines.append(" · ".join(parts))
+    url = map_slices_url(job_dir / "m_filtered.mrc")
+    if url:
+        f.pictures = [(url, "m_filtered.mrc, three central slices")]
+        f.picture_caption = "M's filtered map, in the Refine 3D's box"
 
 
 def _star(path: Path) -> dict:
@@ -565,6 +669,49 @@ def _ctf_refine_facts(f: Facts, job_dir: Path) -> None:
             f"(largest {s['largest_move_um']:+.2f}) · "
             f"astigmatism {s['astig_before_um']:.2f} → {s['astig_after_um']:.2f} µm"
             + (f" · scale {scale[0]:.2f}–{scale[1]:.2f}" if scale else "")
+        )
+
+
+def _frame_align_facts(f: Facts, job_dir: Path) -> None:
+    """What moved, per tilt series, against the model it came with: the tilt shifts and angles RELION refined, the
+    particles' positions and motion, from the driver's `frame_align_changes.json`."""
+    path = job_dir / "frame_align_changes.json"
+    if not path.exists():
+        return
+    d = json.loads(path.read_text())
+    series = d.get("tilt_series") or []
+    refined = [s for s in series if not s.get("kept")]
+    if not refined:
+        f.lines = ["no tilt series refined"]
+        return
+    worst = max(refined, key=lambda s: s["shift_max_ang"])
+    motion = [s["motion_rms_ang"] for s in refined if s.get("motion_rms_ang") is not None]
+    f.tiles = [
+        ("Refined", f"{len(refined)} of {len(series)}"),
+        ("Largest shift", f"{worst['shift_max_ang']:.0f} Å"),
+        ("Box", f"{d.get('box')} px"),
+    ]
+    if motion:
+        f.tiles.insert(1, ("Motion", f"{max(motion):.1f} Å"))
+    kept = [s for s in series if s.get("kept")]
+    f.lines = [
+        f"{len(refined)} tilt series refined ({sum(s['particles'] for s in refined)} particles)"
+        + (
+            f", {len(kept)} kept as they came ({sum(s['particles'] for s in kept)} particles, under "
+            f"{d.get('min_particles')} each)"
+            if kept
+            else ""
+        ),
+        "the set's particles name no images: Subtomo Extraction cuts them with this model",
+    ]
+    for s in refined:
+        came = s.get("trajectories_in_rms_ang")
+        f.lines.append(
+            f"{s['name']} · {s['particles']} particles · tilt shifts {s['shift_rms_ang']:.1f} Å RMS "
+            f"(largest {s['shift_max_ang']:.1f}) · angles up to {s['angle_max_deg']:.2f}° · positions "
+            f"{s['position_rms_ang']:.1f} Å"
+            + (f" · motion {s['motion_rms_ang']:.1f} Å" if s.get("motion_rms_ang") is not None else "")
+            + (f" · came with {came:.1f} Å" if came is not None else "")
         )
 
 

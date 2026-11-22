@@ -174,10 +174,13 @@ class TemplateService:
         except Exception as e:
             return err(str(e))
 
-
     async def generate_basic_shape_async(
-        self, shape_def: str, pixel_size: float, output_folder: str,
-        min_box_size: int = 96, lowpass_res: float | None = None
+        self,
+        shape_def: str,
+        pixel_size: float,
+        output_folder: str,
+        min_box_size: int = 96,
+        lowpass_res: float | None = None,
     ) -> dict[str, Any]:
         """Generate ellipsoid with numpy and refine with RELION.
         The resulting white/black templates are zero-mean unit-variance,
@@ -232,12 +235,7 @@ class TemplateService:
     # =========================================================
 
     async def create_spherical_mask_async(
-        self,
-        output_path: str,
-        apix_ang: float,
-        box_px: int,
-        diameter_ang: float,
-        soft_edge_pixels: float = 5.0,
+        self, output_path: str, apix_ang: float, box_px: int, diameter_ang: float, soft_edge_pixels: float = 5.0
     ) -> dict[str, Any]:
         """Write a soft-edged spherical mask MRC at the given apix + box.
 
@@ -248,17 +246,11 @@ class TemplateService:
 
         Returns {success, path, ...} like the other generators."""
         return await asyncio.to_thread(
-            self._create_spherical_mask_sync,
-            output_path, apix_ang, box_px, diameter_ang, soft_edge_pixels,
+            self._create_spherical_mask_sync, output_path, apix_ang, box_px, diameter_ang, soft_edge_pixels
         )
 
     def _create_spherical_mask_sync(
-        self,
-        output_path: str,
-        apix_ang: float,
-        box_px: int,
-        diameter_ang: float,
-        soft_edge_pixels: float,
+        self, output_path: str, apix_ang: float, box_px: int, diameter_ang: float, soft_edge_pixels: float
     ) -> dict[str, Any]:
         try:
             if apix_ang <= 0 or box_px <= 0 or diameter_ang <= 0:
@@ -276,7 +268,10 @@ class TemplateService:
             if outer_r_px > half_box:
                 logger.warning(
                     "Spherical mask radius %.1fpx + soft %.1fpx exceeds half-box %.1fpx; "
-                    "mask will be clipped at the box edge", inner_r_px, soft_r_px, half_box,
+                    "mask will be clipped at the box edge",
+                    inner_r_px,
+                    soft_r_px,
+                    half_box,
                 )
 
             n = int(box_px)

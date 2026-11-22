@@ -1,5 +1,4 @@
 # services/slurm_service.py
-import asyncio
 import functools
 import logging
 import subprocess
@@ -13,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from services.computing.processes import run_process
 from services.configs.config_service import REPO_ROOT, get_config_service
 from services.event_log import events
 from services.result import err, ok
@@ -490,14 +490,11 @@ class SlurmService:
     async def _run_command(self, cmd: list[str]) -> tuple[bool, str, str]:
         self.calls.count(cmd)
         try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-            )
-            stdout, stderr = await process.communicate()
-            success = process.returncode == 0
-            return success, stdout.decode(), stderr.decode()
-        except Exception as e:
+            done = await run_process(cmd)
+        except OSError as e:
+            # The command could not be started (not on PATH, no permission): reported to the caller as a failure.
             return False, "", str(e)
+        return done.returncode == 0, done.stdout.decode(errors="replace"), done.stderr.decode(errors="replace")
 
     def _is_cache_valid(self, key: str) -> bool:
         if key not in self._cache or key not in self._cache_timestamp:
@@ -919,6 +916,15 @@ class SlurmService:
             return ok(cancelled=job_ids)
         logger.info("scancel returned non-zero (may be already gone): %s", stderr.strip())
         return err(stderr.strip(), cancelled=job_ids)
+
+    async def signal_batch_script(self, job_id: str, signal: str = "TERM") -> dict[str, Any]:
+        """Send `signal` to a running job's batch script alone (`scancel --batch`), not to every process of the job,
+        so the script can stop what it started in order. `err` when the job is not running (pending, or gone)."""
+        success, _stdout, stderr = await self._run_command(["scancel", "--batch", f"--signal={signal}", job_id])
+        if success:
+            logger.info("Sent SIG%s to the batch script of job %s", signal, job_id)
+            return ok(signalled=job_id)
+        return err(stderr.strip() or f"scancel --batch --signal={signal} {job_id} failed")
 
     async def get_cluster_summary(self) -> dict[str, Any]:
         partitions = await self.get_partitions_info()

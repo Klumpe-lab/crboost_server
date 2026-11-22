@@ -221,20 +221,19 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             select_tab("tomograms")
 
     manage_species = _manage_species if _open_species is not None else None
-    _, ts_names0 = collect_dashboard_journey(state, project_path)
     # The workspace's selected tilt series (the Tomograms view may have made one) when the Journey has
-    # it, else the first; whichever it shows becomes the selection (`_publish`).
+    # it, else the first; whichever it shows becomes the selection (`_publish`). Which tilt series the
+    # Journey has is known once the first paint has collected them in a thread (`refresh_all`), which
+    # settles the choice; the collect reads star files of every job and must not run on the loop.
     shared = (callbacks or {}).get("selected_ts")
-    chosen = shared() if shared is not None else None
-    selected = {"ts": chosen if chosen in ts_names0 else (ts_names0[0] if ts_names0 else None)}
+    selected = {"ts": shared() if shared is not None else None}
+    _first_paint = {"pending": True}
 
     def _publish(ts: str | None) -> None:
         """The tilt series the Journey shows is the workspace's selection: the Tomograms view follows."""
         select = (callbacks or {}).get("select_ts")
         if select is not None and ts:
             select(ts, "journey")
-
-    _publish(selected["ts"])
 
     # Per-mount auto-kick dedup. Cleared on build so a reload after the user
     # fixed a stuck job re-triggers generation.
@@ -359,10 +358,10 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
                 _render_no_data_empty_state()
             else:
                 _render_main_pane_for_ts(
-                    selected["ts"], state, project_path, request_refresh, render_strip, manage_species
+                    selected["ts"], state, project_path, request_refresh, _refresh_strip_soon, manage_species
                 )
 
-    def render_strip(journey_data=None, species_data=None) -> None:
+    def render_strip(journey_data=None, species_data=None, recon_mrc=None) -> None:
         # Signature-gated (FingerprintedView discipline): the 4 s live timer
         # calls refresh_all on every background-task tick, but we only rebuild
         # when the journey data or the selection actually changed — otherwise a
@@ -389,7 +388,8 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         if col_els and sig == _strip_sig["sig"]:
             return
         _strip_sig["sig"] = sig
-        recon_mrc = recon_mrc_map(state, project_path)
+        if recon_mrc is None:
+            recon_mrc = recon_mrc_map(state, project_path)
         col_els.clear()
         col_els.update(
             build_strip(
@@ -457,16 +457,53 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         if mine != _sel_gen["n"]:
             return  # superseded by a newer click during the flush
         # One collect for both renders, as in refresh_all, in a thread.
-        journey_data, species_data = await asyncio.to_thread(_collect)
+        journey_data, species_data, recon_mrc = await asyncio.to_thread(_collect)
         if mine != _sel_gen["n"] or main_area.is_deleted:
             return  # superseded by a newer click during the collect
         render_main(force=True, journey_data=journey_data, species_data=species_data)  # selection changed
-        render_strip(journey_data, species_data)
+        render_strip(journey_data, species_data, recon_mrc)
 
     def _collect() -> tuple:
-        # Both collectors read star files, manifests and task statuses for every tilt series:
-        # callers run this in a thread, never on the event loop.
-        return collect_dashboard_journey(state, project_path), collect_species_journey(state, project_path)
+        # Both collectors read star files, manifests and task statuses for every tilt series, and the
+        # recon map stats every tomogram: callers run this in a thread, never on the event loop.
+        return (
+            collect_dashboard_journey(state, project_path),
+            collect_species_journey(state, project_path),
+            recon_mrc_map(state, project_path),
+        )
+
+    _redraw = {"task": None}
+
+    def _redraw_soon(paint: Callable[[tuple], None]) -> None:
+        """Collect in a thread, then `paint` the collected data in the pane's slot: for a redraw a click
+        asks for (a pick-list save in the gallery, a section switch), which must not collect on the loop."""
+
+        async def _run() -> None:
+            data = await asyncio.to_thread(_collect)
+            if main_area.is_deleted:
+                return
+            with main_area:
+                paint(data)
+
+        _redraw["task"] = asyncio.create_task(_run())
+
+    def _refresh_strip_soon() -> None:
+        """The pick viewer's sidebar refresh after a save or discard: the strip only, the pane stays."""
+        _redraw_soon(lambda d: render_strip(*d))
+
+    def _render_main_soon() -> None:
+        """The section selector's redraw of the pane (the selection is in its signature)."""
+        _redraw_soon(lambda d: render_main(journey_data=d[0], species_data=d[1]))
+
+    def _settle_first_selection(ts_names: list[str]) -> None:
+        """The first paint's choice, once the Journey knows its tilt series: the workspace's when the
+        Journey has it, else its first. It becomes the workspace's selection, and the address's."""
+        if selected["ts"] not in ts_names:
+            selected["ts"] = ts_names[0] if ts_names else None
+        _publish(selected["ts"])
+        set_url = (callbacks or {}).get("set_url")
+        if set_url and selected["ts"] and _active["on"]:
+            set_url(View.JOURNEY, selected["ts"])
 
     _collecting = {"on": False}
     # A section asked for before the first paint, scrolled to once it has landed (_show_ts).
@@ -483,12 +520,15 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             return
         _collecting["on"] = True
         try:
-            journey_data, species_data = await asyncio.to_thread(_collect)
+            journey_data, species_data, recon_mrc = await asyncio.to_thread(_collect)
         finally:
             _collecting["on"] = False
         if main_area.is_deleted:
             return
-        render_strip(journey_data, species_data)
+        if _first_paint["pending"]:
+            _first_paint["pending"] = False
+            _settle_first_selection(journey_data[1])
+        render_strip(journey_data, species_data, recon_mrc)
         render_main(force=force_main, journey_data=journey_data, species_data=species_data)
         if _after_paint["section"]:
             _scroll_section_into_view(_after_paint["section"])
@@ -513,7 +553,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             _refresh_req["force_main"] = True
         _refresh_req["quiet"] = 0
 
-    _build_panel_selector(panel_toggle_container, render_main)
+    _build_panel_selector(panel_toggle_container, _render_main_soon)
 
     # The first paint collects off the loop too; the page shows its spinner meanwhile.
     with main_area, ui.element("div").classes("cb-empty"):
@@ -662,6 +702,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             # Built a moment ago, its first paint still to come (it collects in a thread): that
             # paint starts on this tilt series, and scrolls to the section once it has landed.
             if ts:
+                _first_paint["pending"] = False
                 selected["ts"] = ts
                 _publish(ts)
                 set_url = (callbacks or {}).get("set_url")
@@ -948,8 +989,8 @@ def _render_stage0_chips(project_state, project_path: Path) -> None:
         src = "from Import output" if disk_hand is not None else "from acquisition config"
         tooltip = (
             f"_rlnTomoHand={config_hand:+d} ({src}). Sign convention for "
-            f"depth-dependent defocus in CTF correction. The Klumpe-lab Titan "
-            f"convention is -1 (invert_defocus_hand=True)."
+            f"depth-dependent defocus in CTF correction. The code default is -1 "
+            f"(invert_defocus_hand=True)."
         )
 
     # Third authority (registry): the hand Warp actually applied (ts_defocus_hand,

@@ -15,6 +15,7 @@ from drivers.driver_base import ToolCommand, chosen_solvent_mask, get_driver_con
 from drivers.relion_continue import changed_since_start, continue_command, latest_checkpoint, program_index
 from services.jobs.refine3d import Refine3DParams
 from services.particles.helical import helical_box_problem
+from services.particles.warp_geometry import require_images
 from services.subtomo_merge import _parse_optimisation_set, _read_particles_star, write_optimisation_set
 
 ANGLE_COLS = ("rlnAngleRot", "rlnAngleTilt", "rlnAnglePsi")
@@ -189,6 +190,7 @@ def main():
         if params.reference_from_template:
             check_template_reference(input_optimisation, input_reference)
         print(f"[DRIVER] Job dir: {job_dir}", flush=True)
+        require_images(_parse_optimisation_set(input_optimisation)[0])
         if params.helix:
             check_helical_priors(input_optimisation)
             check_helical_box(input_reference, params)

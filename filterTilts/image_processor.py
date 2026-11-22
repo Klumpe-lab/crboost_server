@@ -16,11 +16,11 @@ except ImportError:
 
 class ImageProcessor:
     """Handles MRC to PIL image conversion and preprocessing."""
-    
+
     def __init__(self, target_size=GALLERY_PNG_SIZE, ignore_non_square=False, max_workers=20):
         """
         Initialize image processor.
-        
+
         Parameters:
         - target_size: Target size for resized images
         - ignore_non_square: Whether to skip non-square images (eg from K3 camera)
@@ -29,70 +29,72 @@ class ImageProcessor:
         self.target_size = target_size
         self.ignore_non_square = ignore_non_square
         self.max_workers = max_workers
-        
+
     def fourier_crop(self, image_array, new_shape):
         """
         Resize image using Fourier cropping to preserve high-frequency information.
-        
+
         Parameters:
         - image_array: 2D numpy array
         - new_shape: Tuple (height, width) for output size
-        
+
         Returns:
         - Resized numpy array
         """
         f_transform = fft2(image_array)
         f_transform_shifted = fftshift(f_transform)
         current_shape = f_transform_shifted.shape
-        
+
         resized_f_transform_shifted = np.zeros(new_shape, dtype=f_transform_shifted.dtype)
-        
+
         center_current = [dim // 2 for dim in current_shape]
         center_new = [dim // 2 for dim in new_shape]
-        
-        slices_current = [slice(center - min(center, new_center), 
-                               center + min(center, new_center)) 
-                         for center, new_center in zip(center_current, center_new, strict=False)]
-        slices_new = [slice(new_center - min(center, new_center), 
-                           new_center + min(center, new_center)) 
-                     for center, new_center in zip(center_current, center_new, strict=False)]
-        
+
+        slices_current = [
+            slice(center - min(center, new_center), center + min(center, new_center))
+            for center, new_center in zip(center_current, center_new, strict=False)
+        ]
+        slices_new = [
+            slice(new_center - min(center, new_center), new_center + min(center, new_center))
+            for center, new_center in zip(center_current, center_new, strict=False)
+        ]
+
         resized_f_transform_shifted[tuple(slices_new)] = f_transform_shifted[tuple(slices_current)]
         resized_f_transform = ifftshift(resized_f_transform_shifted)
         resized_image_array = ifft2(resized_f_transform).real
-        
+
         return resized_image_array
-    
+
     def mrc_to_pil(self, mrc_path, save_png_path=None):
         """
         Convert single MRC file to PIL Image.
-        
+
         Parameters:
         - mrc_path: Path to MRC file
         - save_png_path: Optional path to save PNG
-        
+
         Returns:
         - PIL Image object or None if skipped
         """
         try:
             with mrcfile.open(mrc_path, permissive=True) as mrc:
                 data = mrc.data
-                
+
                 if self.ignore_non_square and data.shape[0] != data.shape[1]:
                     return None
-                
+
                 # Resize using Fourier cropping
                 if data.shape != (self.target_size, self.target_size):
                     data = self.fourier_crop(data, (self.target_size, self.target_size))
-                
+
                 # Normalize to 0-255
                 data = data - np.min(data)
                 if np.max(data) > 0:
                     data = data / np.max(data) * 255
                 data = data.astype(np.uint8)
-                
-                pil_image = Image.fromarray(data, mode='L')
-                
+
+                pil_image = Image.fromarray(data, mode="L")
+
                 # Save PNG if path provided
                 if save_png_path:
                     save_png_path = Path(save_png_path)
@@ -101,26 +103,26 @@ class ImageProcessor:
                     # DL run that starts on the same fsMotion edge) sees a complete PNG or none. The pid keeps the
                     # server's conversion and the driver's, which run at once, off each other's part file.
                     part_path = save_png_path.with_name(f"{save_png_path.name}.{os.getpid()}.part")
-                    pil_image.save(part_path, format='PNG')
+                    pil_image.save(part_path, format="PNG")
                     os.replace(part_path, save_png_path)
-                
+
                 return pil_image
-                
+
         except Exception as e:
             print(f"Error processing {mrc_path}: {e}")
             return None
-    
+
     def _convert_single_parallel(self, args):
         """Helper function for parallel processing.
         Packs arguments into a single tuple for ProcessPoolExecutor."""
         mrc_path, png_output_folder = args
-        
+
         if png_output_folder:
             mrc_path_obj = Path(mrc_path)
             png_path = Path(png_output_folder) / f"{mrc_path_obj.stem}.png"
         else:
             png_path = None
-            
+
         return self.mrc_to_pil(mrc_path, png_path)
 
     def batch_convert(self, mrc_paths, nr_images, png_output_folder=None, show_progress=True, progress_cb=None):
@@ -142,6 +144,7 @@ class ImageProcessor:
             Path(png_output_folder).mkdir(parents=True, exist_ok=True)
 
         import time
+
         start_time = time.time()
 
         print(f"Total images: {nr_images}")
@@ -155,8 +158,7 @@ class ImageProcessor:
         with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
             if progress_cb is not None:
                 future_to_name = {
-                    executor.submit(self._convert_single_parallel, args): Path(args[0]).name
-                    for args in args_list
+                    executor.submit(self._convert_single_parallel, args): Path(args[0]).name for args in args_list
                 }
                 pil_images = []
                 done = 0
@@ -169,11 +171,13 @@ class ImageProcessor:
                     except Exception:
                         pass
             elif show_progress and tqdm is not None:
-                pil_images = list(tqdm(
-                    executor.map(self._convert_single_parallel, args_list),
-                    total=total,
-                    desc="Converting MRC to PIL"
-                ))
+                pil_images = list(
+                    tqdm(
+                        executor.map(self._convert_single_parallel, args_list),
+                        total=total,
+                        desc="Converting MRC to PIL",
+                    )
+                )
             else:
                 pil_images = list(executor.map(self._convert_single_parallel, args_list))
 

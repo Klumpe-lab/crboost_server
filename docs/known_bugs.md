@@ -71,14 +71,15 @@ marked unreliable on diverged fits. Projects A / C / the PI's try2 are its regre
 ## 2. `healpix_order` description in `services/jobs/class3d.py` is one order off from the RELION GUI / tutorials
 
 **Status:** OPEN. Cosmetic in code, but it produced a wrong protocol value.
-**Seen:** `config/protocols/copia-empiar12580/protocol.yaml` (`healpix_order: 4  # 3.75 deg`, 2026-09-07).
+**Seen:** the copia protocol of 2026-09-07 (`healpix_order: 4  # 3.75 deg`); its successor,
+`config/protocols/copia-tutorial/protocol.yaml`, has the GUI's 3.75° as `healpix_order: 3`.
 
 The field description says `2=15deg, 3=7.5deg, 4=3.75deg`. Those are the base HEALPix steps. Every value quoted
 by the RELION GUI, its docs and tutorials is the *oversampled* step, because the GUI always adds
 `--oversampling 1`: GUI 3.75° is `--healpix_order 3`, GUI 1.8° is `--healpix_order 4` (check
 `_rlnPsiStep` in `run_it*_sampling.star`: 3.75 at order 4). Same convention for `offset_step`: GUI step 1 px is
 `--offset_step 2`. Anyone translating a tutorial into a protocol picks one order too fine. Fix: rewrite the
-description and the UI label in GUI terms (order + 1 at oversampling 1); correct the copia protocol comment.
+description and the UI label in GUI terms (order + 1 at oversampling 1).
 
 ---
 

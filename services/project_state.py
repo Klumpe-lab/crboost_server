@@ -1669,9 +1669,28 @@ def loaded_projects() -> list[Path]:
 
 
 def is_in_loaded_project(path: Path) -> bool:
-    """True when `path` (already resolved) lies inside a project this process has loaded. The raw
-    file routes serve only such paths, so a leaked link cannot read the rest of the owner's files."""
-    return any(path.is_relative_to(root) for root in list(_project_states))
+    """True when `path` (already resolved) lies inside a project this process has loaded, or inside a
+    project a loaded one took tomograms from (its imported tomograms' job sources): the volumes there,
+    and the WarpTools PNG beside each, are the loaded project's tomograms too. The raw file routes
+    serve only such paths, so a leaked link cannot read the rest of the owner's files."""
+    for root, state in list(_project_states.items()):
+        if path.is_relative_to(root):
+            return True
+        rec = state.imported_tomograms
+        for batch in rec.batches if rec is not None else ():
+            if any(path.is_relative_to(_resolved_project(src.project)) for src in batch.job_sources):
+                return True
+    return False
+
+
+def _resolved_project(project: str) -> Path:
+    """`project` resolved, once for the life of the process (`_resolved_paths`). Blocking (it may stat
+    NFS): the raw file routes call it from their threads."""
+    p = Path(project)
+    resolved = _resolved_paths.get(p)
+    if resolved is None:
+        resolved = _resolved_paths[p] = p.resolve()
+    return resolved
 
 
 def is_registered_volume(path: Path) -> bool:

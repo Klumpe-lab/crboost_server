@@ -115,7 +115,8 @@ class CandidateExtractPytomParams(AbstractJobParams):
         description="Template matching: the peaks of a Template Match job's score maps, at least a particle apart. "
         "Segmentation: the pieces of one feature's probability volumes (a Segment job's, or imported segmentations), "
         "with no template and no GPU.",
-        title="Source", json_schema_extra=form("Source", M),
+        title="Source",
+        json_schema_extra=form("Source", M),
     )
     # A job submitted before Context existed ran without it, and loads with it off (ProjectState.from_data).
     context: bool = Field(
@@ -123,46 +124,59 @@ class CandidateExtractPytomParams(AbstractJobParams):
         description="Record at every pick what the segmentations input says around it: each feature's mean p "
         "inside the particle, and its distance to the feature's surface, as columns the kitchen filters on. Only "
         "segmentations of the picks' own reconstruction are read. No: the input is not read.",
-        title="Context", json_schema_extra=form("Source"),
+        title="Context",
+        json_schema_extra=form("Source"),
     )
     # Species-derived (the species' segmentation feature); empty is absent and stated on the page, never guessed.
     feature: str = Field(
-        default="", description="The feature to pick, one of those the segmentations hold.",
-        title="Feature", json_schema_extra=form("Segmentation", L),
+        default="",
+        description="The feature to pick, one of those the segmentations hold.",
+        title="Feature",
+        json_schema_extra=form("Segmentation", L),
     )
 
     # Detection on the feature's volumes (Ais's blob pick), and the picks' starting angles.
     p_threshold: float = Field(
-        default=0.5, gt=0.0, lt=1.0,
+        default=0.5,
+        gt=0.0,
+        lt=1.0,
         description="A voxel is the feature where its p is at least this; on a binned volume, the mean p of its "
         "block. 0.5 is the network's own decision, and the fill the wall shows.",
-        title="p threshold", json_schema_extra=form("Detection", S),
+        title="p threshold",
+        json_schema_extra=form("Detection", S),
     )
     min_piece: float = Field(
-        default=0.24, ge=0.0,
+        default=0.24,
+        ge=0.0,
         description="Pieces smaller than this fraction of one particle (a sphere of the diameter) are left out. "
         "easymode's ribosome example keeps pieces from 0.24 of one.",
-        title="Min piece", json_schema_extra=form("Detection", S, "× Ø"),
+        title="Min piece",
+        json_schema_extra=form("Detection", S, "× Ø"),
     )
     one_per_piece: bool = Field(
         default=False,
         description="One pick at the centre of each piece, instead of the points deepest inside the pieces, at "
         "least a diameter apart. For particles that never touch. Only these picks can take a piece's axis as their "
         "angles; the others start from random angles.",
-        title="One per piece", json_schema_extra=form("Detection"),
+        title="One per piece",
+        json_schema_extra=form("Detection"),
     )
     binning: int = Field(
-        default=2, ge=1, le=8,
+        default=2,
+        ge=1,
+        le=8,
         description="The volumes are binned by this (the mean of each block) before detection: faster, and "
         "coarser by as much. The score is read on the volume as it is.",
-        title="Binning", json_schema_extra=form("Detection", S),
+        title="Binning",
+        json_schema_extra=form("Detection", S),
     )
     orientation: PickOrientation = Field(
         default=PickOrientation.RANDOM,
         description="Random: uniform over all orientations, seeded per job; refinement then searches globally. Long "
         "or short axis: the reference's Z along the piece's longest axis (rods) or shortest (discs), rot random; "
         "a piece too round for its axis takes random angles.",
-        title="Angles", json_schema_extra=form("Orientation", M),
+        title="Angles",
+        json_schema_extra=form("Orientation", M),
     )
 
     # A filament's picks (Ais's tracer): which traced lines are kept. The spacing is the species' repeat.
@@ -229,8 +243,11 @@ class CandidateExtractPytomParams(AbstractJobParams):
     # than 0", argparse exit 2); without the bound a stored 0 only fails on the GPU node.
     # There is no "0 = uncapped" spelling; leave the cap high instead.
     max_num_particles: int = Field(
-        default=1500, ge=1, description="Hard cap on candidates per tilt-series after the cutoff is applied.",
-        title="Max picks / TS", json_schema_extra=form("Pick threshold", S),
+        default=1500,
+        ge=1,
+        description="Hard cap on candidates per tilt-series after the cutoff is applied.",
+        title="Max picks / TS",
+        json_schema_extra=form("Pick threshold", S),
     )
 
     # Thresholding strategy + per-strategy values.
@@ -249,13 +266,17 @@ class CandidateExtractPytomParams(AbstractJobParams):
         json_schema_extra=form("Pick threshold", M),
     )
     cc_threshold: float = Field(
-        default=0.1, description="Manual LCC threshold; peaks with score ≥ this are kept. Typical 0.05–0.20.",
-        title="LCC threshold", json_schema_extra=form("Pick threshold", S),
+        default=0.1,
+        description="Manual LCC threshold; peaks with score ≥ this are kept. Typical 0.05–0.20.",
+        title="LCC threshold",
+        json_schema_extra=form("Pick threshold", S),
     )
     expected_false_positives: float = Field(
         default=1.0,
         description="Expected false positives per tomogram (FALSE_POSITIVES strategy). Strict=1, moderate=10, "
-        "loose=100.", title="Expected FPs / TS", json_schema_extra=form("Pick threshold", S),
+        "loose=100.",
+        title="Expected FPs / TS",
+        json_schema_extra=form("Pick threshold", S),
     )
 
     @model_validator(mode="before")

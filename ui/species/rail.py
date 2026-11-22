@@ -26,9 +26,11 @@ from ui.components.reactive import FingerprintedView
 from ui.components.species_pill import render_species_mark
 from ui.styles import MONO, SANS
 
-_SOFT = "#5b7089"
-_FAINT = "#94a3b8"
-_WARN_INK = "#8a4b06"
+_SOFT = "var(--cb-ink-3, #5b7089)"
+_FAINT = "var(--cb-ink-4, #94a3b8)"
+_WARN_INK = "var(--cb-warn-ink, #8a4b06)"
+# The selected species' edge.
+_EDGE_ON = "var(--cb-accent, #4a8fd4)"
 
 
 def _counts(project_path: Path, state) -> tuple[tuple[str, bool, int | None, int, tuple[str, ...]], ...]:
@@ -77,9 +79,7 @@ class SpeciesRail(FingerprintedView):
         for species in state.species_registry:
             has_tpl, n_picks, n_tomos, made = counts.get(species.id, (True, None, 0, ()))
             row = ui.element("div").classes("cb-srail-row" + (" selected" if species.id == active else ""))
-            row.style(
-                f"border-left-color: {'#4a8fd4' if species.id == active else 'transparent'}; border-bottom: none;"
-            )
+            row.style(f"border-left-color: {_EDGE_ON if species.id == active else 'transparent'}; border-bottom: none;")
             row.on("click", lambda _e, sid=species.id: self._on_select(sid))
             with row:
                 render_species_mark(species, named=True).classes("cb-species-mark")

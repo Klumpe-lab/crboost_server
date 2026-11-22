@@ -244,10 +244,13 @@ def _kitchen_sentence(verb: str, a) -> str:
         return f"Take {a.source} out of the {a.species} kitchen"
     if verb == "create_kitchen_subset":
         group = f" in the group {a.group}" if a.group else ""
-        return f"Make the subset {a.name}{group} {where}: {_recipe_text(a)}"
+        what = f"{len(a.uids):,} picks by uid" if a.uids else _recipe_text(a)
+        return f"Make the subset {a.name}{group} {where}: {what}"
     if verb == "edit_kitchen_subset":
         parts = [f"name {a.name}" if a.name else "", f"into the group {a.group}" if a.group else ""]
         parts.append("out of its group" if a.ungroup else "")
+        parts.append(f"add {len(a.add_uids):,} picks by uid" if a.add_uids else "")
+        parts.append(f"take out {len(a.remove_uids):,} picks by uid" if a.remove_uids else "")
         return f"Edit the subset {a.subset} {where}: " + ", ".join(p for p in parts if p)
     if verb == "delete_kitchen_subset":
         return f"Delete the subset {a.subset} {where} (its picks stay in the pool)"

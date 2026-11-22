@@ -1,0 +1,5 @@
+# Volumes are binary: no diffs, no line-ending conversion.
+*.mrc binary
+
+# The Mol* viewer bundle is built elsewhere (static/molstar/LICENSE): not counted as this repo's code, and not diffed.
+static/molstar/embed.js linguist-vendored -diff

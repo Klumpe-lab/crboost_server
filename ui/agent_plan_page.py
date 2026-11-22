@@ -47,20 +47,27 @@ from ui.job_plugins._field_styles import (
 )
 from ui.styles import MONO, SANS
 
-_RED = "#b91c1c"
-_GREEN = "#15803d"
-_AMBER = "#b45309"
-_ACCENT = "#1f4e79"
+_RED = "var(--cb-plan-bad, #b91c1c)"
+_GREEN = "var(--cb-plan-ok, #15803d)"
+_AMBER = "var(--cb-plan-warn, #b45309)"
+_ACCENT = "var(--cb-btn-accent, #1f4e79)"
+# The row the page shows.
+_ON = "var(--cb-plan-on, #e6eef7)"
 
 # Rail marks: (badge text, ink, row tint).
 _MARK = {
     "kept": ("", CLR_VALUE, "transparent"),
-    "added": ("new", _GREEN, "#f0fdf4"),
-    "cloned": ("clone", _GREEN, "#f0fdf4"),
-    "removed": ("off", CLR_SUBLABEL, "#f8fafc"),
-    "deleted": ("Trash", _RED, "#fef2f2"),
+    "added": ("new", _GREEN, "var(--cb-plan-ok-bg, #f0fdf4)"),
+    "cloned": ("clone", _GREEN, "var(--cb-plan-ok-bg, #f0fdf4)"),
+    "removed": ("off", CLR_SUBLABEL, "var(--cb-plan-off-bg, #f8fafc)"),
+    "deleted": ("Trash", _RED, "var(--cb-plan-bad-bg, #fef2f2)"),
 }
-_DOT = {"Succeeded": "#22c55e", "Failed": "#ef4444", "Running": "#0ea5e9", "Queued": "#94a3b8"}
+_DOT = {
+    "Succeeded": "var(--cb-plan-ok-dot, #22c55e)",
+    "Failed": "var(--cb-bad-dot, #ef4444)",
+    "Running": "var(--cb-plan-run-dot, #0ea5e9)",
+    "Queued": "var(--cb-ink-4, #94a3b8)",
+}
 _STATUS_INK = {
     PlanStatus.PROPOSED: _ACCENT,
     PlanStatus.APPROVED: _GREEN,
@@ -158,7 +165,7 @@ class _PlanView(FingerprintedView):
 
     def _header(self, plan: Plan) -> None:
         with ui.row().classes("w-full items-center no-wrap").style("gap: 8px;"):
-            ui.label(plan.title).style(f"{SANS} font-size: 15px; font-weight: 600; color: #12324f;")
+            ui.label(plan.title).style(f"{SANS} font-size: 15px; font-weight: 600; color: var(--cb-head-ink, #12324f);")
             _badge(plan.status.value, _STATUS_INK[plan.status])
             if plan.revision > 1:
                 ui.label(f"revision {plan.revision}").style(HELPER_STYLE)
@@ -190,7 +197,7 @@ class _PlanView(FingerprintedView):
                 badge, ink, tint = _MARK.get(j.mark, _MARK["kept"])
                 if j.mark == "kept" and j.changes:
                     badge, ink = f"{len(j.changes)} set", _ACCENT
-                self._rail_row(plan, pp, j, j.name, badge, ink, tint, _DOT.get(j.status, "#cbd5e1"))
+                self._rail_row(plan, pp, j, j.name, badge, ink, tint, _DOT.get(j.status, "var(--cb-plan-dot, #cbd5e1)"))
 
     def _rail_row(self, plan, pp, job: JobView | None, text, badge, ink, tint, dot) -> None:
         iid = job.instance_id if job else None
@@ -199,7 +206,7 @@ class _PlanView(FingerprintedView):
         row = (
             ui.row()
             .classes("w-full items-center no-wrap cursor-pointer")
-            .style(f"gap: 6px; padding: 2px 6px; border-radius: 3px; background: {'#e6eef7' if on else tint};")
+            .style(f"gap: 6px; padding: 2px 6px; border-radius: 3px; background: {_ON if on else tint};")
         )
         with row:
             if dot is not None:

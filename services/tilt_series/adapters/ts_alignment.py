@@ -31,11 +31,7 @@ import pandas as pd
 from services.configs.starfile_service import StarfileService
 from services.models_base import AlignmentMethod
 from services.tilt_series.adapters._base import BaseIngestAdapter, opt_float, xml_text_lines
-from services.tilt_series.models import (
-    TiltSeries,
-    TsAlignmentPerFrame,
-    TsAlignmentTiltSeriesOutput,
-)
+from services.tilt_series.models import TiltSeries, TsAlignmentPerFrame, TsAlignmentTiltSeriesOutput
 from services.tilt_series.registry import TiltSeriesRegistry
 
 logger = logging.getLogger(__name__)
@@ -75,11 +71,7 @@ class TsAlignmentIngestAdapter(BaseIngestAdapter):
     # ── Public API ─────────────────────────────────────────────────────────
 
     def ingest(
-        self,
-        expected_ts_ids: Iterable[str],
-        alignment_method: AlignmentMethod,
-        *,
-        alignment_angpix: float = 0.0,
+        self, expected_ts_ids: Iterable[str], alignment_method: AlignmentMethod, *, alignment_angpix: float = 0.0
     ) -> list[str]:
         """Populate the registry with per-TS alignment outputs.
 
@@ -101,7 +93,8 @@ class TsAlignmentIngestAdapter(BaseIngestAdapter):
         shift_angpix = alignment_angpix if alignment_angpix > 0 else self._infer_alignment_angpix()
         logger.info(
             "tsAlignment: shift pixel size = %.4f A/px (%s)",
-            shift_angpix, "explicit" if alignment_angpix > 0 else "inferred from .st header",
+            shift_angpix,
+            "explicit" if alignment_angpix > 0 else "inferred from .st header",
         )
 
         missing_in_registry = [t for t in expected if not self.registry.has_tilt_series(t)]
@@ -122,32 +115,24 @@ class TsAlignmentIngestAdapter(BaseIngestAdapter):
                 continue
             self.registry.attach_ts_output(ts_id, output)
             ingested.append(ts_id)
-            logger.info(
-                "tsAlignment: ingested %s (%d/%d frames aligned)",
-                ts_id, len(output.per_frame), ts.frame_count,
-            )
+            logger.info("tsAlignment: ingested %s (%d/%d frames aligned)", ts_id, len(output.per_frame), ts.frame_count)
 
         # Per-TS failure is tolerated (drop + warn); only a total wipeout is fatal.
         if problems:
             detail = "\n  - ".join(f"{tid}: {reason}" for tid, reason in sorted(problems.items()))
             logger.warning(
                 "tsAlignment: %d/%d tilt-series excluded from alignment output:\n  - %s",
-                len(problems), len(expected), detail,
+                len(problems),
+                len(expected),
+                detail,
             )
         if not ingested:
             detail = "\n  - ".join(f"{tid}: {reason}" for tid, reason in sorted(problems.items()))
-            raise RuntimeError(
-                f"tsAlignment ingest failed for ALL {len(expected)} tilt-series:\n  - {detail}"
-            )
+            raise RuntimeError(f"tsAlignment ingest failed for ALL {len(expected)} tilt-series:\n  - {detail}")
         return ingested
 
     def emit_star(
-        self,
-        input_star_path: Path,
-        output_star_path: Path,
-        project_root: Path,
-        *,
-        tomo_dimensions: str,
+        self, input_star_path: Path, output_star_path: Path, project_root: Path, *, tomo_dimensions: str
     ) -> None:
         """Write the RELION-compatible hierarchical STAR with alignment columns
         overlaid. `tomo_dimensions` is a WxHxD string fed into rlnTomoSizeX/Y/Z
@@ -186,8 +171,7 @@ class TsAlignmentIngestAdapter(BaseIngestAdapter):
             per_ts_rel = ts_row["rlnTomoTiltSeriesStarFile"]
             if Path(per_ts_rel).stem != ts_id:
                 problems[ts_id] = (
-                    f"rlnTomoName={ts_id!r} does not match tilt_series filename stem "
-                    f"{Path(per_ts_rel).stem!r}"
+                    f"rlnTomoName={ts_id!r} does not match tilt_series filename stem {Path(per_ts_rel).stem!r}"
                 )
                 continue
 
@@ -225,8 +209,7 @@ class TsAlignmentIngestAdapter(BaseIngestAdapter):
         if problems:
             detail = "\n  - ".join(f"{tid}: {reason}" for tid, reason in sorted(problems.items()))
             logger.warning(
-                "tsAlignment emit_star: %d tilt-series excluded from output STAR:\n  - %s",
-                len(problems), detail,
+                "tsAlignment emit_star: %d tilt-series excluded from output STAR:\n  - %s", len(problems), detail
             )
         if not emitted:
             detail = "\n  - ".join(f"{tid}: {reason}" for tid, reason in sorted(problems.items()))
@@ -237,9 +220,7 @@ class TsAlignmentIngestAdapter(BaseIngestAdapter):
         out_ts_df = out_ts_df[out_ts_df["rlnTomoName"].isin(emitted)].reset_index(drop=True)
 
         # Rewrite global-block columns.
-        out_ts_df["rlnTomoTiltSeriesStarFile"] = out_ts_df["rlnTomoName"].apply(
-            lambda name: f"tilt_series/{name}.star"
-        )
+        out_ts_df["rlnTomoTiltSeriesStarFile"] = out_ts_df["rlnTomoName"].apply(lambda name: f"tilt_series/{name}.star")
 
         if out_ts_df["rlnTomoName"].duplicated().any():
             dups = out_ts_df.loc[out_ts_df["rlnTomoName"].duplicated(keep=False), "rlnTomoName"].tolist()
@@ -258,9 +239,7 @@ class TsAlignmentIngestAdapter(BaseIngestAdapter):
 
         if all_tilts_list:
             all_tilts_df = pd.concat(all_tilts_list, ignore_index=True)
-            self.starfile_service.write(
-                {"all_tilts": all_tilts_df}, output_star_path.parent / "all_tilts.star"
-            )
+            self.starfile_service.write({"all_tilts": all_tilts_df}, output_star_path.parent / "all_tilts.star")
 
         logger.info("tsAlignment: wrote output STAR to %s", output_star_path)
 
@@ -274,9 +253,7 @@ class TsAlignmentIngestAdapter(BaseIngestAdapter):
         if not ts_tiltstack.is_dir():
             raise RuntimeError(f"no tiltstack dir at {ts_tiltstack}")
 
-        aln_data, aln_file, xf_file, tlt_file = self._parse_alignment_files(
-            ts_tiltstack, alignment_method
-        )
+        aln_data, aln_file, xf_file, tlt_file = self._parse_alignment_files(ts_tiltstack, alignment_method)
         if aln_data is None:
             raise RuntimeError(f"no alignment output parsed in {ts_tiltstack}")
 
@@ -369,7 +346,9 @@ class TsAlignmentIngestAdapter(BaseIngestAdapter):
         if not movies or len(movies) != len(fovs):
             logger.warning(
                 "tsAlignment: %s: FOVFraction not ingested (%d values for %d MoviePath entries)",
-                ts_id, len(fovs), len(movies),
+                ts_id,
+                len(fovs),
+                len(movies),
             )
             return {}
         out: dict[str, float] = {}
@@ -396,15 +375,10 @@ class TsAlignmentIngestAdapter(BaseIngestAdapter):
             xf_files = sorted(ts_tiltstack.glob("*.xf"))
             tlt_files = sorted(ts_tiltstack.glob("*.tlt"))
             if len(xf_files) > 1 or len(tlt_files) > 1:
-                raise RuntimeError(
-                    f"expected 1 .xf and 1 .tlt, found {len(xf_files)} .xf / {len(tlt_files)} .tlt"
-                )
+                raise RuntimeError(f"expected 1 .xf and 1 .tlt, found {len(xf_files)} .xf / {len(tlt_files)} .tlt")
             if not xf_files or not tlt_files:
                 return None, None, None, None
-            return (
-                self._read_imod_xf_tlt(xf_files[0], tlt_files[0]),
-                None, xf_files[0], tlt_files[0],
-            )
+            return (self._read_imod_xf_tlt(xf_files[0], tlt_files[0]), None, xf_files[0], tlt_files[0])
 
         raise RuntimeError(f"alignment method {alignment_method} not implemented")
 
@@ -463,10 +437,10 @@ class TsAlignmentIngestAdapter(BaseIngestAdapter):
         st_files = list(self.tiltstack_dir.glob("*/*.st"))
         if not st_files:
             raise FileNotFoundError(
-                f"No .st files under {self.tiltstack_dir}. "
-                f"Cannot determine alignment pixel size for shift conversion."
+                f"No .st files under {self.tiltstack_dir}. Cannot determine alignment pixel size for shift conversion."
             )
         import mrcfile
+
         with mrcfile.open(st_files[0], header_only=True, mode="r") as mrc:
             voxel_x = float(mrc.voxel_size.x)
             if voxel_x <= 0:
@@ -488,17 +462,10 @@ class TsAlignmentIngestAdapter(BaseIngestAdapter):
         a tomostar but no XML/tiltstack output, and must not fail the job.
         Non-expected extras are surfaced as a warning; full-set drift checks
         belong at dispatch time, not at ingest."""
-        tomostar_stems = (
-            {p.stem for p in self.tomostar_dir.glob("*.tomostar")}
-            if self.tomostar_dir.is_dir() else set()
-        )
-        xml_stems = (
-            {p.stem for p in self.warp_dir.glob("*.xml")}
-            if self.warp_dir.is_dir() else set()
-        )
+        tomostar_stems = {p.stem for p in self.tomostar_dir.glob("*.tomostar")} if self.tomostar_dir.is_dir() else set()
+        xml_stems = {p.stem for p in self.warp_dir.glob("*.xml")} if self.warp_dir.is_dir() else set()
         tiltstack_stems = (
-            {p.name for p in self.tiltstack_dir.iterdir() if p.is_dir()}
-            if self.tiltstack_dir.is_dir() else set()
+            {p.name for p in self.tiltstack_dir.iterdir() if p.is_dir()} if self.tiltstack_dir.is_dir() else set()
         )
 
         mismatches: list[str] = []
@@ -518,14 +485,12 @@ class TsAlignmentIngestAdapter(BaseIngestAdapter):
             logger.warning(
                 "tsAlignment ingest: %d TS present in job dir but not ingested "
                 "(muted/failed this run, or stale from a previous one): %s",
-                len(extras), sorted(extras),
+                len(extras),
+                sorted(extras),
             )
 
     def _apply_alignment_to_tilt_df(
-        self,
-        ts: TiltSeries,
-        aln_output: TsAlignmentTiltSeriesOutput,
-        tilt_df: pd.DataFrame,
+        self, ts: TiltSeries, aln_output: TsAlignmentTiltSeriesOutput, tilt_df: pd.DataFrame
     ) -> tuple[pd.DataFrame, list[str]]:
         """Overlay the five alignment columns onto the per-TS tilt DataFrame.
 
@@ -582,13 +547,14 @@ class TsAlignmentIngestAdapter(BaseIngestAdapter):
         if filtered_idx:
             tilt_df = tilt_df.drop(index=filtered_idx).reset_index(drop=True)
             logger.info(
-                "tsAlignment: TS %s: dropped %d tilt-filtered row(s) from output STAR",
-                ts.id, len(filtered_idx),
+                "tsAlignment: TS %s: dropped %d tilt-filtered row(s) from output STAR", ts.id, len(filtered_idx)
             )
         if skipped > 0:
             logger.info(
                 "tsAlignment: TS %s: %d/%d rows left un-aligned (WarpTools ts_import dropped them from tomostar)",
-                ts.id, skipped, len(tilt_df),
+                ts.id,
+                skipped,
+                len(tilt_df),
             )
 
         return tilt_df, errors

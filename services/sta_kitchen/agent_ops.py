@@ -2,7 +2,8 @@
 `LoadedPool` an open tab holds, so the tab shows what they did.
 
 Sources: what a pool can read (`offers`), `add_sources`, `remove_source`. Subsets and groups: `create_subset`
-(the picks a recipe keeps now, as "+ kept" does), `edit_subset`, `delete_subset`, `create_group`,
+(the picks a recipe keeps now, as "+ kept" does, or picks by uid, as a gallery selection does), `edit_subset`
+(name, group, picks added or taken out by uid), `delete_subset`, `create_group`,
 `rename_group`, `delete_group`. Sets: `plan_set` (what Make set would write), `make_set`, `make_sets` (one per
 subset of a group). `state` reads the pool.
 
@@ -15,11 +16,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from services.particles.pick_uids import parse_cell
 from services.result import err, ok
 from services.sta_kitchen import service, store
 from services.sta_kitchen.members import matching_species, member_key, offered_members
@@ -31,6 +34,8 @@ logger = logging.getLogger(__name__)
 
 # Categories whose values `state` lists in full; the others (tomograms, reconstructions) are counted.
 LISTED_CATEGORIES = ("project", "member", "source", "extracted", "tm_marker")
+# A pool uid as the kitchen writes it (`PoolTable.uid_hex`); a star's cell is the same with a leading u.
+_HEX_UID = re.compile(r"[0-9a-f]{12}")
 
 
 def _has_pool(home: Path, species_id: str) -> bool:
@@ -333,9 +338,27 @@ async def remove_source(home: Path, species_id: str, source: str) -> dict[str, A
 # ── Subsets and groups ───────────────────────────────────────────────────────────────────────────
 
 
-async def create_subset(home: Path, species_id: str, name: str, draft: Draft, group: str | None) -> dict[str, Any]:
-    """A new subset of the picks `draft` keeps now (a snapshot, as "+ kept" makes), in `group` when named:
-    inside a group they leave its other subsets."""
+def _pool_uids(lp: service.LoadedPool, given: list[str]) -> tuple[list[str], str]:
+    """`given` as the pool's uids (a star's `u…` cell or the bare 12 hex digits), each once, or why not: every
+    one must be a pick of this pool, so a list from another kitchen or a typo is refused, never thinned."""
+    out, bad = [], []
+    for value in given:
+        text = str(value).strip()
+        uid = parse_cell(text) or (text if _HEX_UID.fullmatch(text) else None)
+        if uid is None or lp.table is None or lp.table.row_of(uid) is None:
+            bad.append(text)
+        else:
+            out.append(uid)
+    if bad:
+        return [], f"{len(bad):,} of {len(given):,} uids are not picks of this kitchen (e.g. {', '.join(bad[:3])})."
+    return list(dict.fromkeys(out)), ""
+
+
+async def create_subset(
+    home: Path, species_id: str, name: str, draft: Draft, group: str | None, uids: list[str] | None = None
+) -> dict[str, Any]:
+    """A new subset of the picks `draft` keeps now (a snapshot, as "+ kept" makes), or of exactly `uids` (as a
+    gallery selection's new subset), in `group` when named: inside a group they leave its other subsets."""
     lp, why = await _open(home, species_id)
     if lp is None:
         return err(why)
@@ -350,31 +373,58 @@ async def create_subset(home: Path, species_id: str, name: str, draft: Draft, gr
             listed = ", ".join(x.name for x in lp.pool.groups) or "none"
             return err(f"No group {group} in this kitchen (its groups: {listed}); create_kitchen_group makes one.")
         gid = g.id
-    draft, why = _resolve_scope(lp, draft)
-    if why or (why := check_draft(draft)):
-        return err(why)
-    kept, _sel = await _kept(lp, draft)
-    rows = np.flatnonzero(kept) if kept is not None else []
-    uids = [lp.table.uid_hex(int(r)) for r in rows]
-    sub = await service.create_subset(lp, name, uids, gid)
+    if uids:
+        if draft != Draft():
+            return err("uids or a recipe, not both: a subset by uid holds exactly those picks.")
+        picked, why = _pool_uids(lp, uids)
+        if why:
+            return err(why)
+        kept = np.zeros(lp.table.n, dtype=bool)
+        kept[[lp.table.row_of(u) for u in picked]] = True
+        recipe = f"{len(picked):,} picks by uid"
+    else:
+        draft, why = _resolve_scope(lp, draft)
+        if why or (why := check_draft(draft)):
+            return err(why)
+        kept, _sel = await _kept(lp, draft)
+        rows = np.flatnonzero(kept) if kept is not None else []
+        picked = [lp.table.uid_hex(int(r)) for r in rows]
+        recipe = service.describe_draft(draft.model_dump(), {x.id: x.name for x in lp.pool.subsets})
+    sub = await service.create_subset(lp, name, picked, gid)
     return ok(
         subset=sub.id,
         name=sub.name,
         picks=len(lp.subset_uids.get(sub.id, ())),
-        recipe=service.describe_draft(draft.model_dump(), {x.id: x.name for x in lp.pool.subsets}),
+        recipe=recipe,
         per_project=_counts(lp, kept, "project") if kept is not None else {},
     )
 
 
 async def edit_subset(
-    home: Path, species_id: str, subset: str, name: str | None, group: str | None, ungroup: bool
+    home: Path,
+    species_id: str,
+    subset: str,
+    name: str | None,
+    group: str | None,
+    ungroup: bool,
+    add_uids: list[str] | None = None,
+    remove_uids: list[str] | None = None,
 ) -> dict[str, Any]:
+    """Rename or regroup a subset, and add or take out picks by uid (as the gallery's selection does). The uids
+    are checked before anything changes."""
     lp, why = await _open(home, species_id)
     if lp is None:
         return err(why)
     sid = _subset_id(lp, subset)
     if sid is None:
         return err(f"No subset {subset} in this kitchen.")
+    moves = []
+    for op, given in (("add", add_uids), ("remove", remove_uids)):
+        if given:
+            picked, why = _pool_uids(lp, given)
+            if why:
+                return err(why)
+            moves.append((op, picked))
     gid: str | None = "-"
     if ungroup:
         gid = None
@@ -386,6 +436,9 @@ async def edit_subset(
     problem = await service.update_subset(lp, sid, name=name, group=gid)
     if problem:
         return err(problem)
+    for op, picked in moves:
+        if problem := await service.edit_subset(lp, op, sid, picked):
+            return err(problem)
     return ok(subset=sid, subsets=_subsets(lp))
 
 

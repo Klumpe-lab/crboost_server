@@ -82,11 +82,7 @@ class TemplateViewerController:
 
 
 def render_template_viewer(
-    template_path: str = "",
-    mask_path: str | None = None,
-    *,
-    height_px: int = 280,
-    show_mask_default: bool = True,
+    template_path: str = "", mask_path: str | None = None, *, height_px: int = 280, show_mask_default: bool = True
 ) -> TemplateViewerController:
     """Mount the orthoslice triplet (XY / XZ / YZ at center) in the
     current NiceGUI parent. Returns a controller for swap/refresh."""
@@ -215,21 +211,16 @@ def render_template_viewer(
                 ("xz", _slice_xz, _mask_xz, ("x", "z")),
                 ("yz", _slice_yz, _mask_yz, ("y", "z")),
             ):
-                refs[axis_key] = (
-                    ui.plotly(_build_slice_fig(slice_fn(), mask_fn(), axis_labels[0], axis_labels[1]))
-                    .style(f"height: {height_px}px; width: {height_px}px; aspect-ratio: 1;")
-                )
+                refs[axis_key] = ui.plotly(
+                    _build_slice_fig(slice_fn(), mask_fn(), axis_labels[0], axis_labels[1])
+                ).style(f"height: {height_px}px; width: {height_px}px; aspect-ratio: 1;")
 
         # Slider row — one slider per axis, plus mask-overlay toggle if mask present
         with ui.row().classes("w-full gap-3 items-center px-2 py-2 bg-gray-50 border-t border-b"):
             for label_text, key, max_v in (("z", "z", v.nz - 1), ("y", "y", v.ny - 1), ("x", "x", v.nx - 1)):
                 with ui.row().classes("items-center gap-1 flex-1"):
                     ui.label(label_text).classes("text-xs text-gray-500 w-3")
-                    sl = (
-                        ui.slider(min=0, max=max(0, max_v), value=state[key], step=1)
-                        .classes("flex-1")
-                        .props("dense")
-                    )
+                    sl = ui.slider(min=0, max=max(0, max_v), value=state[key], step=1).classes("flex-1").props("dense")
                     val_label = ui.label(str(state[key])).classes("text-xs text-gray-700 font-mono w-10")
 
                     def _on_change(e, k=key, lbl=val_label):

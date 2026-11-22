@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
-# Node-side worker for a viewer session on a VNC desktop: ChimeraX+ArtiaX curation, or napari.
+# Node-side worker for a ChimeraX+ArtiaX curation session on a VNC desktop. (napari sessions run on the site's
+# remote desktop instead: containers/napari/desktop_session.sh.)
 #
 # Runs ON a compute node — either submitted by crboost via sbatch (the UI
-# "Launch ChimeraX/ArtiaX" button, a tomogram's napari chip) or started by hand via
-# launch_curation_vnc.sh / containers/napari/launch_napari_vnc.sh (srun --pty). Starts an
-# Xvnc desktop + the app from the SIF, then:
+# "Launch ChimeraX/ArtiaX" button) or started by hand via
+# launch_curation_vnc.sh (srun --pty). Starts an Xvnc desktop + the app from the SIF, then:
 #   - writes a machine-readable session.json into $CB_SESSION_DIR (so crboost can
 #     read back the node/port/password and show the user the tunnel command), and
 #   - prints the same connection info as a human banner (for the manual path).
 # The session lives until the app quits; then the VNC server is torn down.
 #
-# Required env: CX_SIF (path to chimerax_artiax(_GL).sif, or napari_GL.sif with CB_APP=napari).
-# Optional env: CB_APP (chimerax, the default, or napari),
-#               CX_BINDS (colon-separated host paths to bind besides /tmp and $HOME),
+# Required env: CX_SIF (path to chimerax_artiax(_GL).sif).
+# Optional env: CX_BINDS (colon-separated host paths to bind besides /tmp and $HOME),
 #               CX_BIN (chimerax|ChimeraX), CX_DISPLAY, CX_GEOMETRY,
 #               CX_LOGIN_HOST, CB_SESSION_DIR, CX_VGL, CX_VNC_NOPASS (start the
 #               desktop with SecurityTypes None — NO password), CB_CXC (startup .cxc
@@ -20,17 +19,15 @@
 #               CB_WS_SIF (an image with websockify: serve the desktop as a websocket for the site's
 #               Open OnDemand noVNC, which reaches it through its /rnode relay, and keep Xvnc on the
 #               node's localhost; conf.yaml ood:, roadmap 55).
-# napari only:  CB_NAPARI_LAUNCHER (containers/napari/open_tomogram.py of the server's checkout;
-#               it reads its requests from CB_SESSION_DIR, or opens CB_NAPARI_VOLUMES,
-#               colon-separated, when there is no session dir), CB_NAPARI_COMPANION (a checkout of
-#               the colleague's viewer, which the launcher then drives instead of plain napari).
 set -euo pipefail
 
 # Make a pre-banner failure diagnosable. A couple of early apptainer calls below send
 # their output to /dev/null; under `set -e` a failure there would kill the worker with a
 # 0-byte slurm.log, and crboost could then only report a blank "session exited". This ERR
 # trap prints the failing line to stderr (→ slurm.log) before the shell exits, naming the
-# node and the command that died.
+# node and the command that died. rc is assigned at the start of the trap's own string, which ShellCheck does
+# not count as an assignment.
+# shellcheck disable=SC2154
 trap 'rc=$?; echo "==== curation worker FAILED (exit $rc) on $(hostname -s 2>/dev/null) at line ${LINENO}: ${BASH_COMMAND} ====" >&2' ERR
 
 SIF="${CX_SIF:?CX_SIF must be set to the chimerax_artiax.sif path (conf.yaml curation.sif_path)}"
@@ -42,12 +39,8 @@ GEOMETRY="${CX_GEOMETRY:-1920x1080}"
 LOGIN_HOST="${CX_LOGIN_HOST:-$(hostname -f)}"
 SESSION_DIR="${CB_SESSION_DIR:-}"
 NODE="$(hostname -s)"
-APP="${CB_APP:-chimerax}"
-case "$APP" in
-  chimerax) APP_TITLE="CHIMERAX + ARTIAX CURATION SESSION" ;;
-  napari) APP_TITLE="NAPARI SESSION" ;;
-  *) echo "CB_APP must be chimerax or napari, not '$APP'" >&2; exit 2 ;;
-esac
+APP=chimerax
+APP_TITLE="CHIMERAX + ARTIAX CURATION SESSION"
 
 # Choose the X display for this session. CX_DISPLAY (set by crboost, unique-ish per
 # session) is the PREFERENCE; if it's already taken on this node — a concurrent
@@ -140,41 +133,12 @@ if [ "$APP" = chimerax ]; then
   else
     SAVE_DIR="$HOME"
   fi
-else
-  # napari has no command server: the launcher reads crboost's requests from the session
-  # dir (open.json) and answers in it (opened.json). By hand there is no session dir, and
-  # the volumes come as arguments instead.
-  LAUNCHER="${CB_NAPARI_LAUNCHER:?CB_NAPARI_LAUNCHER must name containers/napari/open_tomogram.py}"
-  REST_PORT=""
-  CX_LAUNCH="${VGL_PREFIX}/opt/napari/bin/python $(printf '%q' "$LAUNCHER")"
-  if [ -n "$SESSION_DIR" ]; then
-    CX_LAUNCH="$CX_LAUNCH --session-dir $(printf '%q' "$SESSION_DIR")"
-  fi
-  if [ -n "${CB_NAPARI_COMPANION:-}" ]; then
-    CX_LAUNCH="$CX_LAUNCH --companion $(printf '%q' "$CB_NAPARI_COMPANION")"
-  fi
-  if [ -n "${CB_NAPARI_VOLUMES:-}" ]; then
-    IFS=: read -ra NAPARI_VOLUMES <<< "$CB_NAPARI_VOLUMES"
-    for v in "${NAPARI_VOLUMES[@]}"; do
-      CX_LAUNCH="$CX_LAUNCH $(printf '%q' "$v")"
-    done
-  fi
-  SAVE_DIR="$HOME"
 fi
 
 # /tmp carries the node-wide X locks and $HOME the VNC password. Everything else the session
 # opens (the site's data/software roots, the project) arrives as CX_BINDS, colon-separated:
 # crboost passes conf.yaml's container_binds + the project. A path this node lacks is skipped.
 BINDS=(-B /tmp -B "$HOME")
-if [ "$APP" = napari ]; then
-  BINDS+=(-B "$(dirname "$LAUNCHER")")
-  [ -n "${CB_NAPARI_COMPANION:-}" ] && BINDS+=(-B "$CB_NAPARI_COMPANION")
-  # FFT and BLAS threads to the job's CPUs, not every core of the shared node (as the colleague's HPC launcher).
-  if [ -n "${SLURM_CPUS_PER_TASK:-}" ]; then
-    export OMP_NUM_THREADS="$SLURM_CPUS_PER_TASK" OPENBLAS_NUM_THREADS="$SLURM_CPUS_PER_TASK"
-    export MKL_NUM_THREADS="$SLURM_CPUS_PER_TASK" NUMEXPR_NUM_THREADS="$SLURM_CPUS_PER_TASK"
-  fi
-fi
 if [ -n "${CX_BINDS:-}" ]; then
   IFS=: read -ra EXTRA_BINDS <<< "$CX_BINDS"
   for p in "${EXTRA_BINDS[@]}"; do
@@ -190,8 +154,6 @@ module load Apptainer 2>/dev/null || module load apptainer 2>/dev/null || true
 # ChimeraX must write its config/cache to a WRITABLE dir — the SIF's baked
 # /opt/cx is read-only (only XDG_DATA_HOME, where ArtiaX lives, stays read-only).
 # Unique per-run dirs so two sessions on one shared node don't collide.
-# napari keeps the user's own ~/.config/napari (preferences persist between sessions)
-# and gets a per-run cache.
 CXCFG=""
 if [ "$APP" = chimerax ]; then
   CXCFG="$(mktemp -d /tmp/cx-config.XXXXXX)"
