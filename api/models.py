@@ -357,15 +357,19 @@ _FROM_TEMPLATE = "The template it starts from; the species' selected one when om
 
 
 class MakeTemplateIn(SpeciesIn):
-    kind: Literal["shape", "pdb", "emdb", "resample", "lowpass", "flip"] = Field(
+    kind: Literal["shape", "pdb", "emdb", "resample", "lowpass", "flip", "extend"] = Field(
         description="shape: an ellipsoid; pdb: a density simulated from a PDB entry; emdb: an EMDB map resampled; "
         "resample: a template resampled; lowpass: a template filtered at its own pixel size and box; flip: a "
-        "template's other polarity"
+        "template's other polarity; extend: a filament's template (along Z) made to fill its box with copies of "
+        "itself shifted by whole repeats"
     )
     shape: str | None = Field(None, description="shape: the ellipsoid's axes, x:y:z in Å")
     pdb_id: str | None = Field(None, description="pdb: the PDB entry")
     emdb_id: str | None = Field(None, description="emdb: the EMDB entry")
-    template_id: str | None = Field(None, description=f"resample, lowpass, flip: {_FROM_TEMPLATE}")
+    template_id: str | None = Field(None, description=f"resample, lowpass, flip, extend: {_FROM_TEMPLATE}")
+    repeat_ang: float | None = Field(
+        None, gt=0, description="extend: the filament's repeat along its axis, Å; the species' when omitted"
+    )
     pixel_size: float | None = Field(
         None, gt=0, description="Å; the tomograms' (a Reconstruct job's, or the imported ones') when omitted"
     )

@@ -13,6 +13,7 @@ from typing import Any
 
 from services.computing.container_service import get_container_service
 from services.result import err, ok
+from services.templating import volume_prep
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,12 @@ class TemplateService:
         Creates paired white/black contrast templates.
         If normalize=True (default), zero-means and unit-variance normalizes
         the white template after relion's resample+lowpass, then derives black
-        by negation. Cross-correlation TM (PyTOM, Warp) is scale-invariant so
+        by negation.
+        RELION reads the map as its array lies and rescales to the nearest even
+        box, so the input is first put in X, Y, Z order and padded to a box that
+        rescales to `target_apix` (services/templating/volume_prep.py); a
+        template that still comes out at another pixel size is an error.
+        Cross-correlation TM (PyTOM, Warp) is scale-invariant so
         this does not affect picks, but it makes mask thresholds and molstar
         ISO defaults stable across templates from different sources. Pass
         normalize=False only when you specifically need raw RELION output.
@@ -122,8 +128,17 @@ class TemplateService:
             path_w = os.path.join(output_folder, f"{name_core}_white.mrc")
             path_b = os.path.join(output_folder, f"{name_core}_black.mrc")
 
+            try:
+                prepared = await asyncio.to_thread(
+                    volume_prep.prepare_for_rescale, input_path, output_folder, target_apix
+                )
+            except (OSError, ValueError) as e:
+                return err(f"Not resampled: {e}")
+            for note in prepared.notes:
+                logger.info("%s: %s", os.path.basename(input_path), note)
+
             cmd_w = (
-                f"relion_image_handler --i {input_path} --o {path_w} "
+                f"relion_image_handler --i {prepared.path} --o {path_w} "
                 f"--rescale_angpix {target_apix} --new_box {target_box} "
             )
             if resolution:
@@ -132,9 +147,15 @@ class TemplateService:
             res_w = await self.backend.run_shell_command(
                 cmd_w, tool_name="relion", additional_binds=[os.path.dirname(input_path), output_folder]
             )
+            if prepared.written:
+                await asyncio.to_thread(os.remove, prepared.path)
 
             if not res_w["success"]:
                 return res_w
+            off = await asyncio.to_thread(volume_prep.pixel_problem, path_w, target_apix)
+            if off:
+                await asyncio.to_thread(os.remove, path_w)
+                return err(off)
 
             if normalize:
                 norm_err = await asyncio.to_thread(normalize_white_and_negate_to_black, path_w, path_b)
@@ -148,7 +169,7 @@ class TemplateService:
                 if not res_b["success"]:
                     return res_b
 
-            return ok(path_white=path_w, path_black=path_b)
+            return ok(path_white=path_w, path_black=path_b, notes=list(prepared.notes))
 
         except Exception as e:
             return err(str(e))

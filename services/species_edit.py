@@ -179,7 +179,7 @@ def set_species(
 
 # ── Templates and masks made in the project ───────────────────────────────────
 
-TEMPLATE_KINDS = ("shape", "pdb", "emdb", "resample", "lowpass", "flip")
+TEMPLATE_KINDS = ("shape", "pdb", "emdb", "resample", "lowpass", "flip", "extend")
 MASK_KINDS = ("threshold", "sphere")
 THRESHOLD_METHODS = ("flexible_bounds", "otsu", "isodata", "li", "yen")
 SHAPE_MIN_BOX = 96
@@ -240,12 +240,15 @@ class TemplatePlan:
     pixel_size_from: str = ""
     box_size: int | None = None
     lowpass: float | None = None
+    repeat_ang: float | None = None  # an extension's shift along the filament's axis
+    repeat_from: str = ""
 
     @property
     def key(self) -> str:
         """The same template made twice at once is made once."""
         start = self.source.template_path if self.source is not None else self.entry_id or self.shape
-        return f"make-template:{self.out_dir}:{self.kind}:{start}:{self.pixel_size}:{self.box_size}:{self.lowpass}"
+        made = f"{self.pixel_size}:{self.box_size}:{self.lowpass}:{self.repeat_ang}"
+        return f"make-template:{self.out_dir}:{self.kind}:{start}:{made}"
 
     def values(self) -> dict[str, Any]:
         out: dict[str, Any] = {"kind": self.kind}
@@ -254,7 +257,9 @@ class TemplatePlan:
         for name in ("entry_id", "shape"):
             if getattr(self, name):
                 out[name] = getattr(self, name)
-        if self.kind != "flip":
+        if self.kind == "extend":
+            out.update(repeat_ang=self.repeat_ang, repeat_from=self.repeat_from)
+        elif self.kind != "flip":
             out.update(pixel_size=self.pixel_size, pixel_size_from=self.pixel_size_from, box_size=self.box_size)
             out["lowpass"] = SHAPE_LOWPASS if self.kind == "shape" and not self.lowpass else self.lowpass
         return out
@@ -281,6 +286,7 @@ async def plan_template(
     pixel_size: float | None = None,
     box_size: int | None = None,
     lowpass: float | None = None,
+    repeat_ang: float | None = None,
 ) -> dict[str, Any]:
     """Settle a template to make, as the workbench's generators take it:
     - `shape`: an ellipsoid of `shape` (`x:y:z`, Å) at `pixel_size`, in its own box (`auto_box`, at least
@@ -291,7 +297,9 @@ async def plan_template(
     - `resample`: template `template_id` (the selected one when not given) resampled the same way;
     - `lowpass`: that template filtered at `lowpass`, at its own pixel size and box (from its header; `pixel_size`
       and `box_size` when its header has none);
-    - `flip`: that template's other polarity.
+    - `flip`: that template's other polarity;
+    - `extend`: that template, a filament along Z, made to fill its box along Z with copies of itself shifted by
+      whole repeats of `repeat_ang` (the species' repeat when not given).
     A pixel size not given is the tomograms' (`template_pixel_size`); without tomograms it is a `needs` item, as
     is any other value the kind needs and was not given. `ok(plan=TemplatePlan)`."""
     sp = state.get_species(species_id)
@@ -313,7 +321,7 @@ async def plan_template(
         if value is not None and value <= 0:
             problems.append(f"{name}: must be > 0, not {value:g}")
 
-    if kind in ("resample", "lowpass", "flip"):
+    if kind in ("resample", "lowpass", "flip", "extend"):
         plan.source, why = _source_template(sp, template_id)
         if why:
             return why
@@ -341,6 +349,15 @@ async def plan_template(
         plan.entry_id = (emdb_id or "").strip()
     elif kind == "lowpass" and lowpass is None:
         needs.append(need("value", "lowpass", "the resolution to filter the template at, Å"))
+    elif kind == "extend":
+        if repeat_ang is not None:
+            plan.repeat_ang, plan.repeat_from = repeat_ang, "given"
+        elif sp.repeat_ang:
+            plan.repeat_ang, plan.repeat_from = float(sp.repeat_ang), f"the repeat of {sp.name}"
+        else:
+            needs.append(need("value", "repeat_ang", f"the filament's repeat along its axis, Å ({sp.name} has none)"))
+        if plan.repeat_ang is not None and plan.repeat_ang <= 0:
+            problems.append(f"repeat_ang: must be > 0, not {plan.repeat_ang:g}")
 
     if kind in ("shape", "pdb", "emdb", "resample"):
         if pixel_size is not None:
@@ -431,6 +448,75 @@ async def _flip(state: ProjectState, plan: TemplatePlan) -> dict[str, Any]:
     return ok(template_id=res["template_id"], paths=[target], values=plan.values())
 
 
+def _extended_paths(path: str, polarity: str) -> tuple[str, str]:
+    """Where a template's extension and its negative go: `<stem>_extended_<polarity>.mrc` beside it."""
+    other = "black" if polarity == "white" else "white"
+    stem = Path(path).stem
+    for token in ("_white", "_black"):
+        if stem.endswith(token):
+            stem = stem[: -len(token)]
+            break
+    base = os.path.join(os.path.dirname(path), f"{stem}_extended")
+    return f"{base}_{polarity}.mrc", f"{base}_{other}.mrc"
+
+
+async def _extend(state: ProjectState, plan: TemplatePlan) -> dict[str, Any]:
+    """`plan.source`, a filament along Z, filling its box along Z (`volume_prep.extend_along_z`): written with
+    its negative, both registered, the one of the source's polarity selected. The wall is found on the white
+    volume, so a black source is extended through its negative."""
+    from services.templating import volume_prep
+
+    tpl = plan.source
+    name = os.path.basename(tpl.template_path)
+    same, other = _extended_paths(tpl.template_path, tpl.polarity)
+    white, black = (same, other) if tpl.polarity == "white" else (other, same)
+    if await asyncio.to_thread(lambda: os.path.exists(white) or os.path.exists(black)):
+        return err(f"Not extended: {os.path.basename(white)} or its negative is on disk already.")
+    src = tpl.template_path
+    if tpl.polarity != "white":
+        src = _flipped_path(tpl.template_path, tpl.polarity)
+        if not await asyncio.to_thread(os.path.exists, src):
+            return err(f"Not extended: {name} is black and its white volume ({os.path.basename(src)}) is not on disk.")
+    try:
+        info = await asyncio.to_thread(volume_prep.extend_file, src, white, black, plan.repeat_ang)
+    except (OSError, ValueError) as e:
+        return err(f"Not extended: {e}")
+    source = f"extended along Z by {info.repeat_ang:.1f} Å from {name}"
+    warnings = []
+    if abs(info.repeat_ang - plan.repeat_ang) > 0.01 * plan.repeat_ang:
+        warnings.append(
+            f"{name} repeats every {info.repeat_ang:.1f} Å along Z (its wall agrees with itself shifted by that, "
+            f"correlation {info.repeat_correlation:.2f}), not every {plan.repeat_ang:g} Å ({plan.repeat_from}): its "
+            f"own repeat was used. The map's scale and the repeat differ by "
+            f"{100 * (info.repeat_ang / plan.repeat_ang - 1):+.1f} %."
+        )
+    made: dict[str, str] = {}
+    for path, polarity in ((white, "white"), (black, "black")):
+        reg = species_admin.register_template(
+            state, plan.species_id, path, polarity=polarity, source=source, lowpass=tpl.lowpass_resolution_ang
+        )
+        if not reg["success"]:
+            return reg
+        made[polarity] = reg["template_id"]
+    species_admin.select_template(state, plan.species_id, made[tpl.polarity])
+    return ok(
+        template_id=made[tpl.polarity],
+        templates=made,
+        paths=[white, black],
+        values=plan.values(),
+        warnings=warnings,
+        extension={
+            "repeat_used_ang": round(info.repeat_ang, 2),
+            "repeat_given_ang": plan.repeat_ang,
+            "repeat_correlation": None if info.repeat_correlation is None else round(info.repeat_correlation, 3),
+            "filament_in_source_ang": round(info.extent_ang, 1),
+            "copies_meeting": info.copies,
+            "wall_radius_ang": round(info.wall_radius_ang, 1),
+            "centre_offset_ang": round(info.centre_offset_ang, 1),
+        },
+    )
+
+
 async def make_template(
     backend, state: ProjectState, plan: TemplatePlan, progress_cb: Callable[[str], None] | None = None
 ) -> dict[str, Any]:
@@ -441,6 +527,9 @@ async def make_template(
     await asyncio.to_thread(os.makedirs, plan.out_dir, exist_ok=True)
     if plan.kind == "flip":
         return await _flip(state, plan)
+    if plan.kind == "extend":
+        say(f"Extending {os.path.basename(plan.source.template_path)} by {plan.repeat_ang:g} Å repeats…")
+        return await _extend(state, plan)
     service = backend.template_service
     if plan.kind == "shape":
         say(f"Building ellipsoid {plan.shape}…")
