@@ -116,6 +116,11 @@ def species_defaults(job_type: JobType, species) -> dict[str, Any]:
             out.update(binning=ep.binning, box_size=ep.crop_size if ep.crop_size > 0 else ep.box_size)
         if diameter:
             out["diameter_ang"] = float(diameter)
+    elif job_type == JobType.M_REFINE:
+        if getattr(species, "symmetry", None):
+            out["symmetry"] = species.symmetry
+        if diameter:
+            out["diameter_ang"] = float(diameter)
     return out
 
 
@@ -261,7 +266,7 @@ def add_job(
     if species is not None:
         job_model.species_id = species_id
         for field, value in species_defaults(job_type, species).items():
-            if field == "symmetry":
+            if field == "symmetry" and job_type == JobType.TEMPLATE_MATCH_PYTOM:
                 set_symmetry(job_model, value)  # I1 and I2 start at their own increment
             else:
                 setattr(job_model, field, value)

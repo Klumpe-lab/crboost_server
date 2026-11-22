@@ -37,6 +37,12 @@ logger = logging.getLogger(__name__)
 CTF_COLUMNS = ("rlnDefocusU", "rlnDefocusV", "rlnDefocusAngle", "rlnCtfAstigmatism", "rlnTomoHand")
 
 
+def warp_defocus_uv(defocus_um: float, delta_um: float) -> tuple[float, float]:
+    """RELION's rlnDefocusU and rlnDefocusV (Å) from a Warp tilt's defocus and its astigmatism delta (µm); the
+    angle is Warp's as it is."""
+    return (defocus_um + delta_um) * 10000.0, (defocus_um - delta_um) * 10000.0
+
+
 class TsCtfIngestAdapter(BaseIngestAdapter):
     # ── Public API ─────────────────────────────────────────────────────────
 
@@ -178,8 +184,7 @@ class TsCtfIngestAdapter(BaseIngestAdapter):
                 missing.append(key)
                 continue
 
-            defocus_u = (float(row["defocus_value"]) + float(row["defocus_delta"])) * 10000.0
-            defocus_v = (float(row["defocus_value"]) - float(row["defocus_delta"])) * 10000.0
+            defocus_u, defocus_v = warp_defocus_uv(float(row["defocus_value"]), float(row["defocus_delta"]))
             astig = defocus_u - defocus_v
             per_frame.append(
                 TsCtfPerFrameCtf(

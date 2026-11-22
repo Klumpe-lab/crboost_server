@@ -129,6 +129,10 @@ _FILETYPE_INFO: dict[JobFileType, tuple] = {
     JobFileType.PARTICLES_STAR: ("Particles star", "Extracted subtomogram particles (subtomoExtraction)."),
     JobFileType.REFERENCE_MAP: ("Reference map", "3D reference map (merged.mrc)."),
     JobFileType.HALF_MAP: ("Half map", "Independent half-map (half1.mrc)."),
+    JobFileType.M_ROUND: (
+        "M round",
+        "An M refine's round: its population, sources and species, which a next round copies.",
+    ),
 }
 
 # ── Shared visual tokens ─────────────────────────────────────────────────────

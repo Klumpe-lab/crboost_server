@@ -74,6 +74,7 @@ _ALIASES = {
     "postprocess": "pp sharpen fsc",
     "ctfRefine": "ctf refine",
     "frameAlign": "frame alignment polish motion tilt",
+    "mRefine": "m warp multi-particle refinement mcore",
 }
 _NO_CLONE = ("tiltFilter", "importmovies", "tsImport")
 

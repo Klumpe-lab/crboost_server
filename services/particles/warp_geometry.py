@@ -27,12 +27,14 @@ RELION-model tilt series still holds the rigid model its motion belongs to.
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import mrcfile
+import numpy as np
 import pandas as pd
 import starfile
 
@@ -117,6 +119,7 @@ class BridgePlan:
     rigid_only: list[str] = field(default_factory=list)  # XML found, nothing beyond the rigid model
     unlocated: list[str] = field(default_factory=list)  # no Warp XML found
     relion_model: list[str] = field(default_factory=list)  # marked RELION_MODEL: frame alignment's model
+    magnified: list[str] = field(default_factory=list)  # Warp's model holds a magnification (M's), RELION's none
     marked: bool = False  # every particle tomogram carries a geometry marker
 
     @property
@@ -159,8 +162,78 @@ def _grid_max(root: ET.Element, tag: str) -> float:
     return max(values, default=0.0)
 
 
+IDENTITY_MAG = (1.0, 0.0, 0.0, 1.0)
+
+
+@dataclass(frozen=True)
+class BeyondStar:
+    """What a Warp XML holds, besides the rigid model and the local warps, that RELION's tilt-series star cannot:
+    per-tilt stage angles (GridAngleX/Y/Z; M's --refine_stageangles), a magnification (M's --refine_mag; Warp's 2 x 2
+    as the XML writes it) and Zernike terms of the CTF (M's --ctf_zernike*). Cs, which a tomogram row holds, is read
+    along. None of them moves a particle in Warp (its positions come from the rigid model and the warps,
+    TiltSeries.GetPositionInAllTilts): Warp applies the stage angles to each tilt's projection direction and the
+    magnification and the Zernike terms where it back-projects, so its particle-series stacks carry none of them."""
+
+    stage_angle_max_deg: float
+    magnification: tuple[float, float, float, float]
+    zernike_odd: tuple[float, ...]
+    zernike_even: tuple[float, ...]
+    cs_mm: float | None
+
+    @property
+    def magnified(self) -> bool:
+        return any(abs(a - b) > 1e-6 for a, b in zip(self.magnification, IDENTITY_MAG, strict=True))
+
+    @property
+    def zernike(self) -> bool:
+        return any(v != 0 for v in (*self.zernike_odd, *self.zernike_even))
+
+
+def xml_ctf_params(root: ET.Element) -> dict[str, str]:
+    """The <CTF> block's parameters of a tilt-series XML, by name."""
+    ctf = root.find("CTF")
+    return {p.get("Name"): p.get("Value") or "" for p in ctf.findall("Param")} if ctf is not None else {}
+
+
+def _numbers(raw: str, sep: str) -> tuple[float, ...]:
+    return tuple(float(v) for v in raw.replace(sep, " ").split()) if raw.strip() else ()
+
+
+def beyond_star(xml: Path) -> BeyondStar:
+    root = ET.parse(xml).getroot()
+    raw = root.get("MagnificationCorrection") or "1, 0, 0, 1"
+    mag = _numbers(raw, ",")
+    if len(mag) != 4:
+        raise ValueError(f"{xml}: MagnificationCorrection {raw!r} is not a 2 x 2")
+    ctf = xml_ctf_params(root)
+    cs = ctf.get("Cs", "").strip()
+    return BeyondStar(
+        stage_angle_max_deg=max(_grid_max(root, f"GridAngle{a}") for a in "XYZ"),
+        magnification=(mag[0], mag[1], mag[2], mag[3]),
+        zernike_odd=_numbers(ctf.get("ZernikeCoeffsOdd", ""), ";"),
+        zernike_even=_numbers(ctf.get("ZernikeCoeffsEven", ""), ";"),
+        cs_mm=float(cs) if cs else None,
+    )
+
+
+def magnification_parts(mag: tuple[float, float, float, float]) -> dict[str, float]:
+    """A 2 x 2 magnification in percent: its isotropic part (the singular values' geometric mean), its anisotropic
+    part (their ratio) and its diagonal as written."""
+    m = np.array(mag, dtype=float).reshape(2, 2)
+    s = np.linalg.svd(m, compute_uv=False)
+    return {
+        "isotropic_pct": (math.sqrt(s[0] * s[1]) - 1) * 100,
+        "anisotropic_pct": (s[0] / s[1] - 1) * 100,
+        "x_pct": (m[0, 0] - 1) * 100,
+        "y_pct": (m[1, 1] - 1) * 100,
+    }
+
+
 def local_geometry(xml: Path) -> str | None:
-    """What the XML holds beyond the rigid model the star can hold, in words; None when nothing."""
+    """What the XML holds beyond the rigid model the star can hold, in words; None when nothing. Raises for the
+    per-tilt angle corrections, which the bridge cannot carry. A magnification is not geometry the bridge carries:
+    Warp applies it only where it back-projects, never to a particle's position (`BeyondStar`; `plan` lists the
+    tilt series that hold one)."""
     root = ET.parse(xml).getroot()
     parts = []
     grid = movement_grid_stats(xml)
@@ -345,6 +418,8 @@ def plan(input_set: Path) -> BridgePlan:
             p.unlocated.append(name)
             continue
         local = local_geometry(xml)
+        if beyond_star(xml).magnified:
+            p.magnified.append(name)
         if local is None:
             p.rigid_only.append(name)
             continue

@@ -40,6 +40,12 @@ def carry_warp_geometry(input_set: Path, job_dir: Path, binds=()) -> Path:
             f"WARN: no Warp XML found for {len(p.unlocated)} tilt series ({', '.join(p.unlocated[:5])}"
             f"{' …' if len(p.unlocated) > 5 else ''}): RELION places their particles by the tilt-series star alone"
         )
+    if p.magnified:
+        _say(
+            f"WARN: {len(p.magnified)} tilt series hold a magnification correction (an M refine's): it moves no "
+            "particle, Warp applies it where it back-projects, and RELION's star holds none, so RELION reconstructs "
+            "them without it"
+        )
     if p.relion_model or p.marked:
         wg.check_marked(p)
         if p.relion_model:

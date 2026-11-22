@@ -420,6 +420,7 @@ WORDS = {
     "half_map": "half map",
     "mask": "mask",
     "fsc_star": "FSC",
+    "m_round": "M round",
 }
 # The input row's label per slot key; input_star depends on what it accepts.
 SLOT_LABELS = {
@@ -438,6 +439,7 @@ SLOT_LABELS = {
     "input_mask": "mask",
     "input_half_map": "half maps",
     "input_fsc": "FSC",
+    "input_m": "M round",
 }
 STAR_LABELS = {
     "tilt_series_star": "tilt series",
@@ -471,6 +473,7 @@ NAMES = {
     "postprocess": "PostProcess",
     "ctfRefine": "CTF refine",
     "frameAlign": "Frame alignment",
+    "mRefine": "M refine",
 }
 TOOLS = {
     "warp_aretomo": "WarpTools",
@@ -534,6 +537,7 @@ SLOT_GLOSS = {
     "mask": "a soft solvent mask from a Mask job",
     "half maps": "two unfiltered half maps, a refinement's or a reconstruction's",
     "FSC": "a PostProcess's masked FSC of the reference's half maps: how far the reference is trusted",
+    "M round": "an M refine's round: its population, sources and species, which the next round copies",
 }
 ICON = {
     "importmovies": "download",
@@ -560,6 +564,7 @@ ICON = {
     "postprocess": "tune",
     "ctfRefine": "center_focus_strong",
     "frameAlign": "control_camera",
+    "mRefine": "hub",
 }
 ADDABLE = (
     "aligntiltsWarp",
@@ -581,6 +586,7 @@ ADDABLE = (
     "postprocess",
     "ctfRefine",
     "frameAlign",
+    "mRefine",
 )
 # Parameters the card's form leaves to the SLURM tab or never asks.
 HIDDEN_PARAMS = {"array_throttle", "perdevice", "do_at_most"}
@@ -788,6 +794,36 @@ def _identity(kind: str, jm) -> list[str]:
             if getattr(jm, attr, False)
         ]
         identity.append(f"{' · '.join(what) or 'nothing to refine'} · ±{param_words(jm, 'max_shift_px')} px")
+    if kind == "mRefine":
+        what = [f"warp {jm.refine_imagewarp}"] if getattr(jm, "refine_imagewarp", "") else []
+        what += [
+            w
+            for w, attr in (
+                ("poses", "refine_particles"),
+                ("stage angles", "refine_stageangles"),
+                ("mag", "refine_mag"),
+            )
+            if getattr(jm, attr, False)
+        ]
+        if getattr(jm, "refine_volumewarp", ""):
+            what.append(f"volume warp {jm.refine_volumewarp}")
+        ctf = [
+            w
+            for w, attr in (
+                ("defocus", "ctf_defocus"),
+                ("Cs", "ctf_cs"),
+                ("Z2", "ctf_zernike2"),
+                ("Z3", "ctf_zernike3"),
+                ("Z4", "ctf_zernike4"),
+                ("Z5", "ctf_zernike5"),
+                ("phase", "ctf_phase"),
+            )
+            if getattr(jm, attr, False)
+        ]
+        if ctf:
+            what.append(f"{' + '.join(ctf)} from {getattr(jm, 'ctf_minresolution', 0):g} Å")
+        start = "next round" if getattr(jm, "continue_from_m", False) else "first round"
+        identity.append(f"{start} · {' · '.join(what) or 'nothing refined'} · {param_words(jm, 'iterations')} iter")
     return identity
 
 

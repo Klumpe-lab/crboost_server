@@ -13,6 +13,14 @@ subtomoExtraction and writes the same envelope.
     frame order; submits the array; then merges every TS into particles.star,
     tomograms.star and optimisation_set.star.
 
+    A set an M refine hands back names, for each tilt series, a copy of those files in the M job
+    (services/particles/m_population.py): M's refined XML and the per-tilt star with M's CTF.
+    Warp cuts the particles where M's model places them. What else M refined is in no stack: Warp
+    applies stage angles to each tilt's projection direction and a magnification and Zernike terms
+    where it back-projects. So per-tilt stage angles are refused (RELION would refine the stacks
+    along the star's rigid tilts with poses M refined along its own); a magnification and Zernike
+    terms are written to warp_export_model.json, since a RELION refinement goes without them.
+
   - TASK: runs ts_export_particles inside its staging dir, checks every stack the output
     star names exists, and moves the stacks to <job_dir>/particleseries/<TS>/.
 
@@ -26,6 +34,7 @@ Output layout:
     .staging/task_<TS>/       # settings, tomostar, XML copy, Warp input/output stars
 """
 
+import json
 import shutil
 from pathlib import Path
 
@@ -44,8 +53,9 @@ from drivers.array_job_base import (
 from drivers.driver_base import DriverContext, ToolCommand, require_producer_input
 from drivers.ts_ctf import LOCAL_SETTINGS_NAME, LOCAL_TOMOSTAR_NAME
 from services.jobs.warp_export import WarpExportParams
+from services.particles.m_population import SOURCE_RECORD as M_SOURCE_RECORD
 from services.particles.set_origins import origins_of
-from services.particles.warp_geometry import relion_model_names
+from services.particles.warp_geometry import beyond_star, magnification_parts, relion_model_names
 from services.particles.warp_export import (
     TOMOSTAR_SUFFIX,
     check_volume_agrees,
@@ -55,6 +65,7 @@ from services.particles.warp_export import (
     read_tomostar_movies,
     read_warp_volume,
     relion_particles_from_warp,
+    settings_with_folders,
     tilt_table_in_warp_order,
     tsctf_sources,
     warp_input_particles,
@@ -74,6 +85,7 @@ TILT_STAR = "tilt_series.star"
 OUT_DIR = "out"
 PROCESSING_DIR = "warp_tiltseries"
 PARTICLESERIES_DIR = "particleseries"
+MODEL_REPORT = "warp_export_model.json"
 
 
 def _task_dir(job_dir: Path, ts: str) -> Path:
@@ -87,15 +99,35 @@ def _first_table(path: Path) -> pd.DataFrame:
     raise ValueError(f"No table in {path}")
 
 
-def _stage_ts(task_dir: Path, ts: str, particles: pd.DataFrame, tomo_row: pd.Series, origin=None) -> None:
+def _model_report(src) -> dict:
+    """Whose Warp model a tilt series is cut with (an M refine's, when its files are an M source's), and what of it
+    RELION's tilt-series star cannot hold."""
+    beyond = beyond_star(src.xml)
+    m_job = src.job_dir.parents[2] if (src.job_dir / M_SOURCE_RECORD).is_file() else None
+    return {
+        "xml": str(src.xml),
+        "m_job": str(m_job) if m_job is not None else None,
+        "stage_angle_max_deg": beyond.stage_angle_max_deg,
+        "magnified": beyond.magnified,
+        "magnification_pct": magnification_parts(beyond.magnification),
+        "zernike": beyond.zernike,
+        "cs_mm": beyond.cs_mm,
+    }
+
+
+def _stage_ts(task_dir: Path, ts: str, particles: pd.DataFrame, tomo_row: pd.Series, origin=None) -> dict:
     """Everything one Warp call needs, built from the tilt series' own tsCtf job (in its own project, for a
-    particle set's tomogram: `origin`), staged under the name `ts` the picks use."""
+    particle set's tomogram: `origin`; or an M refine's copy of its files), staged under the name `ts` the picks
+    use. Returns `_model_report` of the XML."""
     src = tsctf_sources(tomo_row, LOCAL_SETTINGS_NAME, LOCAL_TOMOSTAR_NAME, origin=origin)
     volume = read_warp_volume(src.settings)
     check_volume_agrees(tomo_row, volume)
 
     task_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src.settings, task_dir / LOCAL_SETTINGS_NAME)
+    # Relative folders keep Warp inside the staging dir (an M source's settings name the M job's folders).
+    (task_dir / LOCAL_SETTINGS_NAME).write_text(
+        settings_with_folders(src.settings.read_text(), LOCAL_TOMOSTAR_NAME, PROCESSING_DIR, src.settings)
+    )
     (task_dir / LOCAL_TOMOSTAR_NAME).mkdir(exist_ok=True)
     staged_tomostar = task_dir / LOCAL_TOMOSTAR_NAME / f"{ts}{TOMOSTAR_SUFFIX}"
     copy_tomostar_with_absolute_paths(src.tomostar, staged_tomostar, src.tomostar.parent)
@@ -110,6 +142,7 @@ def _stage_ts(task_dir: Path, ts: str, particles: pd.DataFrame, tomo_row: pd.Ser
     movies = read_tomostar_movies(_first_table(staged_tomostar))
     ordered = tilt_table_in_warp_order(_first_table(src.tilt_star), movies, ts)
     starfile.write({ts: ordered}, task_dir / TILT_STAR, overwrite=True)
+    return _model_report(src)
 
 
 class WarpExportDriver(ArrayDriver):
@@ -200,11 +233,44 @@ class WarpExportDriver(ArrayDriver):
         tomo_rows = self._tomograms_df.set_index(self._tomograms_df["rlnTomoName"].astype(str))
         names = self._particles_df["rlnTomoName"].astype(str)
         origins = self._origins or {}
-        for ts in self._ts_with_picks:
-            _stage_ts(
+        reports = {
+            ts: _stage_ts(
                 _task_dir(ctx.job_dir, ts), ts, self._particles_df[names == ts], tomo_rows.loc[ts], origins.get(ts)
             )
+            for ts in self._ts_with_picks
+        }
         self.log(f"Staged {len(self._ts_with_picks)} TS under {ctx.job_dir / '.staging'}")
+        self._record_models(ctx, reports)
+
+    def _record_models(self, ctx: DriverContext[WarpExportParams], reports: dict[str, dict]) -> None:
+        """Whose model each tilt series is cut with, to the log and warp_export_model.json; refuses the tilt series
+        whose model holds per-tilt stage angles, which RELION's star cannot."""
+        staged = {ts: r["stage_angle_max_deg"] for ts, r in reports.items() if r["stage_angle_max_deg"] > 0}
+        if staged:
+            worst = max(staged, key=staged.get)
+            raise ValueError(
+                f"{len(staged)} tilt series hold per-tilt stage angles (up to {staged[worst]:.2f}° on {worst}; an M "
+                "round with stage angles writes them). Warp would cut with them, but the set handed on describes each "
+                "tilt by the star's rigid angles, so a RELION refinement of the stacks would put M's poses on "
+                "another geometry. Export from an M round without stage angles"
+            )
+        m_jobs: dict[str, int] = {}
+        for r in reports.values():
+            if r["m_job"]:
+                m_jobs[r["m_job"]] = m_jobs.get(r["m_job"], 0) + 1
+        magnified = sorted(ts for ts, r in reports.items() if r["magnified"])
+        zernike = sorted(ts for ts, r in reports.items() if r["zernike"])
+        for job, n in sorted(m_jobs.items()):
+            self.log(f"{n} TS cut with M's model from {job}, with M's per-tilt defocus and Cs in the set")
+        if magnified or zernike:
+            self.log(
+                f"M's model holds a magnification on {len(magnified)} TS and Zernike terms on {len(zernike)}: Warp "
+                "applies them only where it back-projects and RELION's star holds neither, so a RELION refinement of "
+                "the stacks goes without them"
+            )
+        (ctx.job_dir / MODEL_REPORT).write_text(
+            json.dumps({"m_jobs": m_jobs, "magnified": magnified, "zernike": zernike, "series": reports}, indent=1)
+        )
 
     def manifest_extras(self, ctx: DriverContext[WarpExportParams], items: list[str]) -> dict:
         return {"input_optimisation_star": str(self._input_optimisation)}

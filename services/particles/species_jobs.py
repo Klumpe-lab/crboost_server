@@ -81,4 +81,13 @@ def job_drift(sp, jm) -> list[tuple[str, str]]:
             job_sym = _sym(getattr(jm, "symmetry", None))
             if job_sym != species_sym:
                 out.append(("symmetry", f"job {job_sym} ≠ species {species_sym}"))
+        case JobType.M_REFINE if not getattr(jm, "continue_from_m", False):
+            # A follow-up round keeps its parent's species; only a first round takes these.
+            job_sym = _sym(getattr(jm, "symmetry", None))
+            if job_sym != species_sym:
+                out.append(("symmetry", f"job {job_sym} ≠ species {species_sym}"))
+            if sp.diameter_ang:
+                job_d = float(getattr(jm, "diameter_ang", 0.0) or 0.0)
+                if abs(job_d - float(sp.diameter_ang)) > 1e-6:
+                    out.append(("Ø", f"job {job_d:g} Å ≠ species {sp.diameter_ang:g} Å"))
     return out

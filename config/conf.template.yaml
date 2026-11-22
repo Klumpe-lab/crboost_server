@@ -253,6 +253,16 @@ job_resource_profiles:
     cpus_per_task: 8
     time: "2:00:00"
 
+  # One M round (MCore) on the GPUs the job gets (--devicelist from the allocation). For the capsid's 600 Å capsid at
+  # 1.55 Å (a 774 px species) a round took ~1 h on one B200 and the species 13 min more: 39 GB of the GPU at most,
+  # 96 GB of host memory (the reconstruction runs there), about one core on average. A species that size does not
+  # fit a small GPU or a MIG slice; where the partition offers those, name the full GPU's type.
+  mRefine:
+    gres: "gpu:1"
+    mem: "128G"
+    cpus_per_task: 8
+    time: "4:00:00"
+
   # DL tilt-filter prediction run: one GPU job over every tilt of the project.
   tiltFilter:
     gres: "gpu:1"

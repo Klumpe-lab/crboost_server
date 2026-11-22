@@ -34,6 +34,7 @@ from services.jobs.filament_pick import FilamentPickParams
 from services.jobs.frame_align import FrameAlignParams
 from services.jobs.fs_motion_ctf import FsMotionCtfParams
 from services.jobs.import_movies import ImportMoviesParams
+from services.jobs.m_refine import MRefineParams
 from services.jobs.mask_create import MaskCreateParams
 from services.jobs.miss_align import MissAlignParams
 from services.jobs.postprocess import PostProcessParams
@@ -487,6 +488,23 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         glyph=(
             '<rect x="1.5" y="2.5" width="6" height="6" rx="0.6"/>'
             '<rect x="4.5" y="3.5" width="6" height="6" rx="0.6" stroke-dasharray="1.4 1.1"/>'
+        ),
+    ),
+    # One round of Warp's M on a Refine 3D's particles (or one more round of an earlier M refine): the tilt series'
+    # Warp model, the poses and the map together; its halves go to PostProcess in the Refine 3D's box.
+    JobSpec(
+        JobType.M_REFINE,
+        MRefineParams,
+        "M refine",
+        PHASE_PARTICLES,
+        dependencies=(JobType.REFINE3D,),
+        driver="m_refine.py",
+        plugins=("m_refine",),
+        dir_slug="m_refine",
+        summary="Refines the tilt series, the particles and the map together (Warp's M), one round a job.",
+        glyph=(
+            '<circle cx="6" cy="6" r="4.6"/><path d="M1.6 4.4h8.8M1.6 7.6h8.8" stroke-dasharray="1.2 1"/>'
+            '<circle cx="6" cy="6" r="1.4" fill="currentColor"/>'
         ),
     ),
 )
