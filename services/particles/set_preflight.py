@@ -31,6 +31,7 @@ NEEDS_IMAGES = frozenset({JobType.CLASS3D, JobType.REFINE3D})
 NEEDS_ANGLES_FOR_POSITIONS = frozenset({JobType.RECONSTRUCT_PARTICLE, JobType.WARP_EXPORT})
 BINS_TILT_SERIES = frozenset({JobType.SUBTOMO_EXTRACTION, JobType.RECONSTRUCT_PARTICLE, JobType.WARP_EXPORT})
 ANGLE_COLS = ("rlnAngleRot", "rlnAngleTilt", "rlnAnglePsi")
+TUBE_COL = "rlnHelicalTubeID"  # a filament's segments carry their filament's id
 OPTICS_CONSTANTS = ("rlnVoltage", "rlnSphericalAberration", "rlnAmplitudeContrast", "rlnTomoTiltSeriesPixelSize")
 IMAGE_GEOMETRY = ("rlnImagePixelSize", "rlnImageSize", "rlnTomoSubtomogramBinning")
 # A tilt series RELION can project: these four (and each tilt's image name), else it uses identity matrices.
@@ -200,6 +201,9 @@ def _check_rows(out: _Found, pset, particles: pd.DataFrame, diameter_a: float | 
     radius = diameter_a / 2.0
     xyz = particles[CENTERED_COLS].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=np.float64)
     names = particles["rlnTomoName"].astype(str).to_numpy()
+    if TUBE_COL in particles.columns:
+        _check_filament_rows(out, xyz, names, pd.to_numeric(particles[TUBE_COL], errors="coerce").to_numpy(), radius)
+        return
     pairs, where = 0, []
     for tomo in np.unique(names):
         p = xyz[names == tomo]
@@ -214,6 +218,49 @@ def _check_rows(out: _Found, pset, particles: pd.DataFrame, diameter_a: float | 
         out.problems.append(
             f"{pairs:,} pairs of particles closer than Ø/2 ({radius:g} Å) on {len(where)} tomogram(s) "
             f"({_names(where)}): the same particle twice?"
+        )
+
+
+def _check_filament_rows(out: _Found, xyz: np.ndarray, names: np.ndarray, tubes: np.ndarray, radius: float) -> None:
+    """Doubles among filament segments, which lie a spacing apart along their filament by design: segments of two
+    filaments whose axes are closer than Ø/2 (one filament traced twice), and segments closer to their nearest
+    neighbour on the same filament than half the filaments' usual spacing (one segment twice)."""
+    from scipy.spatial import cKDTree
+
+    cross, cross_where = 0, []
+    nearest: list[np.ndarray] = []
+    nearest_tomo: list[np.ndarray] = []
+    for tomo in np.unique(names):
+        sel = (names == tomo) & np.isfinite(xyz).all(axis=1) & np.isfinite(tubes)
+        p, t = xyz[sel], tubes[sel]
+        if len(p) < 2:
+            continue
+        pairs = cKDTree(p).query_pairs(radius, output_type="ndarray")
+        k = int(np.count_nonzero(t[pairs[:, 0]] != t[pairs[:, 1]])) if len(pairs) else 0
+        if k:
+            cross += k
+            cross_where.append(tomo)
+        for tube in np.unique(t):
+            q = p[t == tube]
+            if len(q) >= 2:
+                d, _ = cKDTree(q).query(q, k=2)
+                nearest.append(d[:, 1])
+                nearest_tomo.append(np.full(len(q), tomo, dtype=object))
+    if cross:
+        out.problems.append(
+            f"{cross:,} pairs of segments of different filaments closer than Ø/2 ({radius:g} Å) on "
+            f"{len(cross_where)} tomogram(s) ({_names(cross_where)}): one filament traced twice?"
+        )
+    if not nearest:
+        return
+    d, where = np.concatenate(nearest), np.concatenate(nearest_tomo)
+    half = float(np.median(d)) / 2.0
+    close = d < half
+    if close.any():
+        tomos = sorted({str(x) for x in where[close]})
+        out.problems.append(
+            f"{int(close.sum()):,} segments closer to their neighbour on the same filament than half the usual "
+            f"spacing ({half:.0f} Å) on {len(tomos)} tomogram(s) ({_names(tomos)}): the same segment twice?"
         )
 
 
