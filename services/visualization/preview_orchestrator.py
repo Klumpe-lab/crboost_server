@@ -18,6 +18,7 @@ import json
 import logging
 import multiprocessing
 import os
+import re
 import uuid
 from pathlib import Path
 from collections.abc import Callable
@@ -152,6 +153,12 @@ def _resolve_tomo_mrc(tomo_row, project_root: Path | None) -> Path | None:
     return None
 
 
+def is_warp_preview_of(name: str, tomo: str) -> bool:
+    """Whether a file name is Warp's reconstruction PNG of `tomo` (`<tomo>_<pixel>Apx.png`), not of a tomogram whose
+    name starts with it (Position_1 against Position_1_2)."""
+    return re.fullmatch(rf"{re.escape(tomo)}_\d+(?:\.\d+)?Apx\.png", name) is not None
+
+
 def _find_warp_tomo_preview(project_root: Path | None, tomo_name: str, mrc_path: Path | None = None) -> Path | None:
     """Locate the WarpTools tomogram-preview PNG for a given tomogram.
 
@@ -173,7 +180,8 @@ def _find_warp_tomo_preview(project_root: Path | None, tomo_name: str, mrc_path:
     if project_root is None:
         return None
     pat = f"**/warp_tiltseries/reconstruction/{tomo_name}_*Apx.png"
-    candidates = sorted(Path(project_root).glob(pat))
+    # The glob also matches a tomogram whose name starts with this one's (Position_1_2 for Position_1).
+    candidates = sorted(p for p in Path(project_root).glob(pat) if is_warp_preview_of(p.name, tomo_name))
     return candidates[-1] if candidates else None
 
 
