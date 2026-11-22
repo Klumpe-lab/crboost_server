@@ -111,6 +111,10 @@ def look_literals(ctx: Context) -> Outcome:
     return _run([sys.executable, "check_look_literals.py"], ctx.env)
 
 
+def raw_html(ctx: Context) -> Outcome:
+    return _run([sys.executable, "check_raw_html.py"], ctx.env)
+
+
 _COMPILE = r"""
 import sys
 import warnings
@@ -263,6 +267,7 @@ STEPS = (
     Step("ruff format", ruff_format),
     Step("boundaries", boundaries),
     Step("look literals", look_literals),
+    Step("raw html", raw_html),
     Step("compile", compile_files),
     Step("imports", imports),
     Step("repo tests", repo_tests),

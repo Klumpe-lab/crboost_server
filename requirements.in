@@ -1,20 +1,23 @@
 # Top-level dependencies. requirements.txt is generated from this file; edit here, then recompile:
 #   ./crboost lock   (uv pip compile requirements.in -o requirements.txt; Python and platform come from uv.toml)
-nicegui==3.0.3
-fastapi==0.118.0
-uvicorn==0.37.0
-pydantic==2.12.3
+# NiceGUI stays on 3.x (a major is a branch of its own, with a pass over every view in a browser). Starlette's
+# advisories up to 1.3.0 include a Range-header DoS in FileResponse, which every raw-file route uses.
+nicegui==3.19.0
+fastapi==0.162.5
+starlette>=1.3.1
+uvicorn==0.54.0
+pydantic==2.14.3
 pyyaml==6.0.3
-requests==2.31.0
+requests==2.34.2
 
-# numpy, pandas, scipy and requests are the versions the cluster's scipy-bundle/2023.11 and
-# python-bundle-pypi/2023.10 modules provide today (roadmap 39 S0), so the lock reproduces what runs.
+# numpy, pandas and scipy are still 2023's: numpy 2 removes no API this code uses (ruff NPY201), but it changes
+# how scalars promote (NEP 50) in the drivers' arithmetic, so the move waits until that is checked.
 numpy==1.26.2
 pandas==2.1.3
 scipy==1.11.4
-biopython==1.86
+biopython==1.88
 scikit-image==0.26.0
-Pillow==12.0.0
+Pillow==13.0.0
 matplotlib==3.10.9
 
 starfile==0.5.13

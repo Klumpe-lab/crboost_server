@@ -7,6 +7,8 @@ import io
 import os
 import socket
 import warnings
+from collections.abc import Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
@@ -57,9 +59,31 @@ def _preview_thumb(path: str, mtime_ns: int, size: int = 512) -> bytes | None:
     return buf.getvalue()
 
 
-def setup_app(port: int):
-    """Configures and returns the FastAPI app."""
-    app = FastAPI()
+def setup_app(port: int, on_ready: Callable[[], None] | None = None):
+    """Configures and returns the FastAPI app. `on_ready` runs once the background services are up."""
+
+    # Single server-side pipeline observer: runs reconcile_afterok centrally
+    # on a 3-s tick for every project with pipeline_active=True, and on
+    # startup loads the projects that were mid-pipeline when uvicorn last
+    # died, so the tick picks their chains up again. See docs/architecture.md.
+    # NiceGUI's own startup runs first (ui.run_with wraps this), as it did for the startup handlers this replaces.
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        # Logs where the event loop was whenever it stalls, to the log file (services/loop_watchdog.py).
+        LoopWatchdog(asyncio.get_running_loop()).start()
+        workers.warm_up()
+        await backend.pipeline_monitor.start()
+        await backend.curation_watcher.start()
+        try:
+            if on_ready is not None:
+                on_ready()
+            yield
+        finally:
+            await backend.pipeline_monitor.stop()
+            await backend.curation_watcher.stop()
+            workers.shutdown()
+
+    app = FastAPI(lifespan=lifespan)
 
     @app.get("/api/tilt-thumb")
     def serve_tilt_thumb(path: str):
@@ -128,42 +152,11 @@ def setup_app(port: int):
         return Response(content=thumb, media_type="image/jpeg", headers=cache)
 
     app.mount("/static", StaticFiles(directory=REPO_ROOT / "static"), name="static")
-    # mtime-based cache-buster: the browser refetches main.css whenever we edit it,
-    # so dev iteration doesn't require Cmd-Shift-R after every CSS change.
-    css_path = REPO_ROOT / "static" / "main.css"
-    css_version = int(css_path.stat().st_mtime) if css_path.exists() else 0
-    ui.add_head_html(f"""
-        <link rel="preconnect" href="https://fonts.googleapis.com">
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-        <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap"
-              rel="stylesheet">
-        <link rel="stylesheet" href="/static/main.css?v={css_version}">
-    """)
 
     backend = CryoBoostBackend(REPO_ROOT)
     create_ui_router(backend)
     # The agent API: the verbs of api/verbs.py at /api/v1/<verb>, behind the same token gate.
     app.include_router(create_api_router(backend, port))
-
-    # Single server-side pipeline observer: runs reconcile_afterok centrally
-    # on a 3-s tick for every project with pipeline_active=True, and on
-    # startup loads the projects that were mid-pipeline when uvicorn last
-    # died, so the tick picks their chains up again. See docs/architecture.md.
-    async def _start_pipeline_monitor():
-        # Logs where the event loop was whenever it stalls, to the log file (services/loop_watchdog.py).
-        LoopWatchdog(asyncio.get_running_loop()).start()
-        workers.warm_up()
-        await backend.pipeline_monitor.start()
-        await backend.curation_watcher.start()
-
-    async def _stop_pipeline_monitor():
-        await backend.pipeline_monitor.stop()
-        await backend.curation_watcher.stop()
-        workers.shutdown()
-
-    # add_event_handler is the non-deprecated spelling of @app.on_event.
-    app.add_event_handler("startup", _start_pipeline_monitor)
-    app.add_event_handler("shutdown", _stop_pipeline_monitor)
 
     # Browser storage belongs to the user running the server, not to the install: files under ~/.crboost,
     # and a session cookie named per port. NiceGUI only adds its own SessionMiddleware (cookie "session")

@@ -107,6 +107,7 @@ import json
 import sys
 from pathlib import Path
 
+from fastapi.testclient import TestClient
 from starlette.routing import Mount
 
 from services.configs import config_service
@@ -115,18 +116,21 @@ config_service.DEFAULT_CONFIG_PATH = Path(sys.argv[1])
 import server_app
 
 app = server_app.setup_app(24399)
+ui = [r for r in app.routes if isinstance(r, Mount) and r.path == ""]
 print(json.dumps({
-    "routes": len(app.routes),
     "paths": sorted({getattr(r, "path", "") for r in app.routes}),
-    "ui_at_root": any(isinstance(r, Mount) and r.path == "" for r in app.routes),
+    "pages": sorted({getattr(r, "path", "") for mount in ui for r in mount.app.routes}),
+    "tools": TestClient(app).get("/api/v1/tools").status_code,
 }))
 """
 
 
 def test_app_builds(tmp_path):
     """The whole app (FastAPI, the NiceGUI pages, the backend and its services) constructs on the template conf, in
-    a process of its own with an empty HOME. Constructing starts nothing: the startup hooks, the pipeline monitor's
-    recovery of a base's projects among them, run only once a server serves the app."""
+    a process of its own with an empty HOME, and the agent API answers. Constructing starts nothing: the lifespan,
+    the pipeline monitor's recovery of a base's projects among it, runs only once a server serves the app (a
+    TestClient outside a `with` block runs none). FastAPI keeps an included router as one route, so the API's paths
+    are not among the app's own."""
     env = {**os.environ, "HOME": str(tmp_path)}
     run = subprocess.run(
         [sys.executable, "-c", _BUILD_APP, str(CONF_TEMPLATE)],
@@ -138,6 +142,6 @@ def test_app_builds(tmp_path):
     )
     assert run.returncode == 0, run.stderr[-4000:]
     built = json.loads(run.stdout.strip().splitlines()[-1])
-    assert built["routes"] > 50, built
-    assert built["ui_at_root"], built
-    assert {"/api/v1/tools", "/static"} <= set(built["paths"]), built
+    assert {"/static", "/api/vis-asset"} <= set(built["paths"]), built
+    assert {"/", "/workspace", "/p/{project}/{view}"} <= set(built["pages"]), built
+    assert built["tools"] == 200, built

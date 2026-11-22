@@ -168,12 +168,9 @@ def main() -> None:
         spinner.stage("modules", "loading the app")
         import server_app
 
-        spinner.stage("app", "building the app")
-        app = server_app.setup_app(port)
-
         def _ready() -> None:
-            # Added after setup_app's startup handlers, so it runs once the monitors are up; the port has been
-            # listening since claim(), so a click on these links is answered from now on.
+            # Runs once the monitors are up (the app's lifespan calls it); the port has been listening since
+            # claim(), so a click on these links is answered from now on.
             spinner.stop()
             logger.info("Started in %s", _startup_line(spinner.timings))
             install_sticky_banner(banner_lines(port, hostname, token, _ssh_login_host(args.host)))
@@ -181,7 +178,8 @@ def main() -> None:
             # Into the scrolling region under the pinned commands, where log output scrolls it away.
             print("\n".join(trouble_lines(port, found, f"Server log: {log}")) + "\n", flush=True)
 
-        app.add_event_handler("startup", _ready)
+        spinner.stage("app", "building the app")
+        app = server_app.setup_app(port, on_ready=_ready)
         spinner.stage("server", "bringing up the server")
         server_app.serve(app, token, port, sock)
     finally:
