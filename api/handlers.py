@@ -149,6 +149,8 @@ def _job_row(path: Path, state, iid: str) -> dict[str, Any]:
         row["species"] = jm.species_id
     if jm.slurm_job_id:
         row["slurm_job_id"] = jm.slurm_job_id
+    if jm.submissions:
+        row["submitted_by"] = jm.submissions[-1].user
     if jm.relion_job_name:
         row["job_dir"] = jm.relion_job_name.rstrip("/")
     status = array_status_cache.get(path, iid)
@@ -252,6 +254,7 @@ async def get_job(call: Call) -> dict[str, Any]:
         species=jm.species_id,
         job_dir=jm.relion_job_name.rstrip("/") if jm.relion_job_name else None,
         slurm_job_id=jm.slurm_job_id,
+        submissions=[s.model_dump(mode="json") for s in jm.submissions],
         params=params,
         slurm={
             "effective": {n: getattr(effective, n) for n in names},

@@ -65,7 +65,8 @@ logger = logging.getLogger(__name__)
 # 3.15: +ParticleSpecies.segmentation_feature (the feature Pick candidates picks the species from)
 # 3.16: +Pick candidates' context (on; a job submitted before it existed loads with it off)
 # 3.17: +ParticleSpecies.kind, .repeat_ang (the species' shape: a particle, or a filament and its repeat)
-SCHEMA_VERSION: tuple[int, int] = (3, 17)
+# 3.18: +job submissions (who submitted each run of a job, when, as which SLURM id)
+SCHEMA_VERSION: tuple[int, int] = (3, 18)
 
 
 # Sentinel `owner` value marking a project as shared/lab-owned rather than

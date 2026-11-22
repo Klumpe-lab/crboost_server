@@ -715,6 +715,7 @@ class CryoBoostBackend:
                 "%s · per-list extraction %s/%s queued as SLURM %s", project_path.name, species_id, slug, slurm_job_id
             )
             jm.slurm_job_id = slurm_job_id
+            jm.record_submission(self.username, slurm_job_id)
             jm.execution_status = JobStatus.QUEUED
             await self.state_service.save_project(project_path=project_path, force=True)
             return ok(slurm_job_id=slurm_job_id, out_dir=str(out_dir), instance_id=instance_id)

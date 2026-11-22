@@ -2,6 +2,7 @@ from __future__ import annotations
 import copy
 import logging
 import math
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, ClassVar, Self, TYPE_CHECKING
@@ -90,6 +91,15 @@ class SubmittedInput(BaseModel):
     facets: dict[str, str] = Field(default_factory=dict)
 
 
+class JobSubmission(BaseModel):
+    """One time the job was handed to SLURM, or run in the server for a job that runs inline: the Unix user of the
+    server that did it (the user SLURM runs it as), when, and its SLURM id."""
+
+    user: str
+    at: datetime
+    slurm_job_id: str | None = None
+
+
 class AbstractJobParams(BaseModel):
     """
     Abstract base class for job parameters.
@@ -148,6 +158,10 @@ class AbstractJobParams(BaseModel):
     relion_job_name: str | None = None
     relion_job_number: int | None = None
     slurm_job_id: str | None = None  # set when sbatch accepts the job
+    # Every submission of this instance, oldest first: who sent it and when. Kept across reruns, which replace
+    # slurm_job_id and keep the job dir (and its Unix owner) of the first run. Empty for a job submitted before
+    # this was recorded.
+    submissions: list[JobSubmission] = Field(default_factory=list)
 
     is_orphaned: bool = Field(default=False)
     missing_inputs: list[str] = Field(default_factory=list)
@@ -535,6 +549,11 @@ class AbstractJobParams(BaseModel):
         """It reads the inputs recorded at its submit: submitted, and not put back to Scheduled since
         (a job back at Scheduled is chosen afresh at its next Run)."""
         return self.submitted_inputs is not None and self.execution_status != JobStatus.SCHEDULED
+
+    def record_submission(self, user: str, slurm_job_id: str | None) -> None:
+        """Note a submission of this job: by `user` (the server's Unix user), now, as `slurm_job_id` (None for a
+        job that ran inline)."""
+        self.submissions.append(JobSubmission(user=user, at=datetime.now(), slurm_job_id=slurm_job_id))
 
     def copy_settings_from(self, other: AbstractJobParams) -> None:
         """Take `other`'s parameters, SLURM settings and inputs set by hand: a clone, of a job of the

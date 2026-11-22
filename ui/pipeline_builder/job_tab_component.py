@@ -41,8 +41,8 @@ logger = logging.getLogger(__name__)
 # routing and outputs may still change).
 _EXPERIMENTAL_JOB_TYPES = {JobType.MISS_ALIGN}
 
-# The line under the view's title (which names the job) on every job page: its light, tool, number, species and
-# folder, then its chips and actions.
+# The line under the view's title (which names the job) on every job page: its light, tool, number, species, who
+# submitted it and its folder, then its chips and actions.
 _JOB_LINE_STYLE = "flex-shrink: 0; gap: 8px; min-height: 22px; padding: 0 14px 6px;"
 _NUMBER_STYLE = (
     "font-family: var(--cb-mono, 'IBM Plex Mono', monospace); font-size: 10px; color: var(--cb-ink-4, #94a3b8);"
@@ -61,6 +61,35 @@ _MARK_STYLE = (
 )
 _MARK_INFO = _MARK_STYLE + "background: #edf4fb; border: 1px solid #c9dbee; color: #1f4e79;"
 _MARK_WARM = _MARK_STYLE + "background: #fff7e6; border: 1px solid #f3d9a4; color: #8a5a00;"
+_SUBMITTER_STYLE = _NUMBER_STYLE + " white-space: nowrap; flex-shrink: 0; cursor: default;"
+
+
+def _submitted_by(job_model) -> tuple[str, str]:
+    """Who submitted the job, for its line, and the tooltip listing every submission, latest first. ("", "") for a
+    job never submitted; a job SLURM ran before submissions were recorded says so."""
+    subs = job_model.submissions
+    if not subs:
+        if job_model.slurm_job_id:
+            return "submitter not recorded", "Submitted before CryoBoost recorded who submits a job."
+        return "", ""
+    runs = [
+        f"{s.user} · {s.at.strftime('%Y-%m-%d %H:%M')} · "
+        + (f"SLURM {s.slurm_job_id}" if s.slurm_job_id else "run in the server")
+        for s in reversed(subs)
+    ]
+    head = "Submitted by" if len(subs) == 1 else f"Submitted {len(subs)} times, latest first"
+    return f"by {subs[-1].user}", f"{head}\n" + "\n".join(runs)
+
+
+def _render_submitter(job_model) -> None:
+    """The job line's "by <user>": bound to the job's submissions, so a Run from any tab shows up on it."""
+    label = ui.label().style(_SUBMITTER_STYLE)
+    label.bind_text_from(job_model, "submissions", backward=lambda _s, jm=job_model: _submitted_by(jm)[0])
+    label.bind_visibility_from(job_model, "submissions", backward=lambda _s, jm=job_model: bool(_submitted_by(jm)[0]))
+    with label:
+        ui.tooltip().style("white-space: pre-line;").bind_text_from(
+            job_model, "submissions", backward=lambda _s, jm=job_model: _submitted_by(jm)[1]
+        )
 
 
 def create_save_handler(ui_mgr: UIStateManager) -> Callable:
@@ -333,8 +362,8 @@ def render_job_tab(
     frozen = is_job_frozen(instance_id)
     is_live = job_model.execution_status.is_live
 
-    # --- The job's line under the view's title (which names the job): light, tool, number, species, folder, then
-    # its chips and actions ---
+    # --- The job's line under the view's title (which names the job): light, tool, number, species, submitter,
+    # folder, then its chips and actions ---
     with ui.row().classes("w-full items-center no-wrap").style(_JOB_LINE_STYLE):
         BoundStatusDot(instance_id)
         ui.label(_tool_name(job_model)).style(_TOOL_PILL_STYLE)
@@ -346,6 +375,7 @@ def render_job_tab(
         _species = state.get_species(_sp_id) if _sp_id else None
         if _species is not None:
             render_species_mark(_species, named=True)
+        _render_submitter(job_model)
 
         if job_type in _EXPERIMENTAL_JOB_TYPES:
             ui.label("Experimental").style(_MARK_WARM).tooltip(
@@ -415,6 +445,7 @@ def _render_interactive_job(
     with ui.row().classes("w-full items-center no-wrap").style(_JOB_LINE_STYLE):
         BoundStatusDot(instance_id)
         ui.label("Interactive" if interactive else "Automatic").style(_MARK_INFO).tooltip(pill_tip)
+        _render_submitter(job_model)
         with ui.element("div").style("flex: 1 1 0; min-width: 40px; margin-left: 6px;"):
             if job_model.relion_job_name and ui_mgr.project_path:
                 path_text(ui_mgr.project_path / job_model.relion_job_name.rstrip("/"), ui_mgr.project_path)

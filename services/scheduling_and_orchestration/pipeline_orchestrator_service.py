@@ -908,6 +908,7 @@ class PipelineOrchestratorService:
                     (job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
                     job_model.execution_status = JobStatus.SUCCEEDED
                     job_model.slurm_job_id = None
+                    job_model.record_submission(self.backend.username, None)
                 else:
                     fn_exe = self._build_fn_exe(instance_id, job_type, job_model, project_dir, server_dir)
                     try:
@@ -952,6 +953,7 @@ class PipelineOrchestratorService:
             instance_to_slurm[instance_id] = slurm_id
             job_model = state.jobs[instance_id]
             job_model.slurm_job_id = slurm_id
+            job_model.record_submission(self.backend.username, slurm_id)
             job_model.execution_status = JobStatus.QUEUED
             # The run is active (the monitor ticks it -> reconcile_afterok, which winds it back down
             # when every job has ended) and saved as each sbatch returns: a server that dies
