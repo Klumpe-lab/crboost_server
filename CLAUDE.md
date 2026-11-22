@@ -22,6 +22,9 @@ CryoBoost Server — a web-based cryo-electron tomography pipeline manager. It r
 # Architecture-boundary lint (AST-based; catches function-local imports)
 ./crboost python check_boundaries.py
 
+# ui.html(..., sanitize=False) takes a constant or escaped content (html.escape); the rest is an allow-list that shrinks
+./crboost python check_raw_html.py [--list]
+
 # After editing requirements.in
 ./crboost lock
 ```
@@ -101,7 +104,7 @@ Conventions when writing new UI:
 
 - **Polls observe state; they don't rebuild the DOM directly.** A timer's callback should mutate model fields (or trigger a `FingerprintedView.refresh()` which is signature-gated), never call `container.clear()` unconditionally.
 - **Default poll cadence**: 3 s for cheap in-memory state observation, ~15 s for anything that touches disk. Sub-second timers must be replaceable by CSS animations or hard-justified.
-- **Animations are CSS, never server ticks.** `@keyframes` in `ui/main_ui.py` drives the braille spinner (`.cb-braille-spin`) — there is no 0.17 s `ui.timer` advancing a glyph anymore.
+- **Animations are CSS, never server ticks.** `@keyframes` in `ui/dashboard/css.py`, or an SVG carrying its own animation; never a `ui.timer` advancing a glyph.
 - **Nothing heavy on the event loop.** One loop answers every click of every tab (`docs/architecture.md` "Where work runs"). Disk reads (stat, glob, star/JSON parsing) go to `asyncio.to_thread`; a render reads first, then builds. CPU-bound Python (renders, preview passes, filters, registration, thumbnails) goes to `run_in_worker(WorkKind.X, fn, *args)` (`services/workers.py`): a module-level fn, picklable args and result, never a `ProjectState`/job model/callback, state changes back in the server. A thread does not protect the loop from Python-level CPU work (the GIL). Array-job statuses come from `services/array_status_cache.py`, never a per-view scan. If a `signature()` does disk I/O, prefer mtimes or an in-memory cache; it runs on every tick. `services/loop_watchdog.py` logs any stall over 1 s as one line naming where it went, to the log file only; `CRBOOST_TRACE_STALLS=1` logs every stall over 250 ms with the loop's stack, on the console too.
 - **Pictures rendered for display are `Render`s** (`services/renders.py`), shown in a `RenderSlot` (`ui/components/render_slot.py`): one render per key however many views ask, a skeleton with a restart button until it lands, filled in place. No module-level "already kicked" sets, no completion timers in a slot a rebuild can delete, no placeholder text, no "re-render" buttons.
 - **Hidden views do nothing.** A view's pollers are `ViewScope.timer`s (`ui/components/reactive.py`): job pages use `ui_mgr.job_scope(instance_id)`, the roster `ui_mgr.view_scope("pipeline")`, whole views their `set_active` hook. Polled text is one element written only when it changed (`LiveLog`), never `ui.log` re-pushed per tick.
@@ -119,7 +122,7 @@ Conventions when writing new UI:
   theme's grey or a muted hue it chose (`SPECIES_GLYPHS`, `SPECIES_GLYPH_HUES`, `services/models_base.py`). The
   overlay colour (`SPECIES_OVERLAY_COLORS`) stays on the canvases it keys (tomogram overlays, the pick viewer,
   napari, the gallery) and the Species tab's one swatch, never on names, rows or chips.
-- **CSS delivery has two channels and only one is trustworthy.** `ui.add_head_html` at module level (`ui/main_ui.py`) is baked into the page shell, and the shell is served stale on this deployment — new rules there may never reach the browser. `ui/dashboard/css.py` (`ensure_assets_loaded()`) injects per client after `client.connected()`, over the socket, and always arrives. Rule: structural/load-bearing styling goes inline on the element; hover states, pseudo-elements and shared polish go in `ui/dashboard/css.py`; never add new rules to the `main_ui.py` shell block. A component's script goes the same way: a constant run per client from `ensure_assets_loaded()` (`_TITLE_TIP_JS`, `PATH_JS`).
+- **CSS is delivered per client, never at setup.** `ui.add_head_html` outside a page (at module level or in `setup_app`) reaches no page: NiceGUI hands it to a client no browser gets, and 3.19 discards it with a startup warning (the two blocks that did so went in roadmap 63 S3; they had applied nowhere since NiceGUI 3.0). `ui/dashboard/css.py` (`ensure_assets_loaded()`) injects per client after `client.connected()`, over the socket, and always arrives. Rule: structural/load-bearing styling goes inline on the element; hover states, pseudo-elements and shared polish go in `ui/dashboard/css.py`. A component's script goes the same way: a constant run per client from `ensure_assets_loaded()` (`_TITLE_TIP_JS`, `PATH_JS`).
 
 ### Job page parameters — one renderer
 

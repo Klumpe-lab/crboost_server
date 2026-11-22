@@ -1098,10 +1098,9 @@ _CB_CSS = """
 .cb-srail-add:hover { background: var(--cb-hover, #e6eff8); }
 
 /* ── App-wide control chrome ───────────────────────────────────────────────── */
-/* Lives here, not in main_ui's add_head_html: that block is baked into the page
- * shell, which is served stale on this deployment, so new shell CSS may never reach
- * the browser. ensure_assets_loaded() injects per client after connect, over the
- * socket, so these rules always arrive fresh. Structural styling stays inline on the
+/* Lives here: CSS added at setup (ui.add_head_html outside a page) reaches no page.
+ * ensure_assets_loaded() injects per client after connect, over the socket, so these
+ * rules always arrive. Structural styling stays inline on the
  * elements (house_button, _stacked_panels); this file only carries what inline styles
  * cannot express. */
 

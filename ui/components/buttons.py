@@ -7,10 +7,9 @@ section headers, table heads and the segmented strip. Three variants only:
     house_button("Create", ..., kind="accent")        # the one primary action of a dialog/page
     house_button("Delete", ..., kind="danger")        # destructive actions
 
-The core look is inline on the element, not a stylesheet class: page-shell CSS
-(main_ui add_head_html) is served stale on this deployment, and a button whose whole
-identity lives in a class renders as a default blue Quasar pill until the shell
-refreshes. Same approach as ui/job_plugins/_field_styles.py.
+The core look is inline on the element, not a stylesheet class: a button whose whole
+identity lives in a class renders as a default blue Quasar pill until the per-client
+CSS arrives. Same approach as ui/job_plugins/_field_styles.py.
 `.cb-btn*` classes stay on the element for the hover states in ui/dashboard/css.py,
 which is injected per client over the socket and therefore always fresh.
 
