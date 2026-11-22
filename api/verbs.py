@@ -68,8 +68,9 @@ _VERBS: tuple[Verb, ...] = (
     ),
     Verb(
         "get_job",
-        "One job: every parameter (value, default, bounds, choices, help, edited), its SLURM settings, the source "
-        "of each input and how it was chosen, its outputs, and its link.",
+        "One job: every parameter (value, default, bounds, choices, help; `from` says whether the value is the "
+        "species', the default or an edit, and `species` what the species gives), its SLURM settings, the source of "
+        "each input and how it was chosen, its outputs, and its link.",
         m.JobIn,
         "read",
         h.get_job,

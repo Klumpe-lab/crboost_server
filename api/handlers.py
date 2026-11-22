@@ -33,7 +33,7 @@ from services.background_tasks import get_background_task_registry
 from services.code_version import code_version
 from services.configs.config_service import get_config_service
 from services.jobs.spec import JOB_SPECS, PARAM_CLASS_BY_TYPE, PHASE_PARTICLES, display_name, instance_display_name
-from services.models_base import DEFAULT_GLYPH_HUE, DEFAULT_SPECIES_GLYPH, JobType
+from services.models_base import DEFAULT_GLYPH_HUE, DEFAULT_SPECIES_GLYPH, JobType, resolve_species
 from services.path_resolution_service import PathResolutionService, auto_exclusion, unreadable_reason
 from services.project_create import ACQUISITION_FIELDS, ProjectSpec, required_values, spec_problems
 from services.project_resolve import resolve_project
@@ -194,12 +194,18 @@ async def get_project(call: Call) -> dict[str, Any]:
     )
 
 
-def _param_row(state, iid: str, jm, name: str) -> dict[str, Any]:
+def _param_row(state, iid: str, jm, name: str, from_species: dict[str, Any] | None = None) -> dict[str, Any]:
+    """One parameter as `get_job` shows it. `from`: where its value comes from: the species (`species` is what a
+    new job of the species takes), the job type's default, or an edit; `edited` is that last one."""
     field = type(jm).model_fields[name]
     value = getattr(jm, name)
     default = field.get_default(call_default_factory=True)
     row: dict[str, Any] = {"name": name, "value": _plain(value), "default": _plain(default)}
-    row["edited"] = row["value"] != row["default"]
+    starts_as = row["default"]
+    if from_species and name in from_species:
+        row["species"] = starts_as = _plain(from_species[name])
+    row["edited"] = row["value"] != starts_as
+    row["from"] = "edit" if row["edited"] else ("species" if "species" in row else "default")
     if field.title:
         row["title"] = field.title
     if field.description:
@@ -222,7 +228,9 @@ async def get_job(call: Call) -> dict[str, Any]:
     if why:
         return why
     state = call.state
-    params = [_param_row(state, iid, jm, name) for name in sorted(jm.USER_PARAMS)]
+    species, _ = resolve_species(state, jm, iid)
+    from_species = pipeline_edit.species_defaults(jm.job_type, species) if species is not None else None
+    params = [_param_row(state, iid, jm, name, from_species) for name in sorted(jm.USER_PARAMS)]
     if jm.job_type == JobType.DENOISE_PREDICT:
         options, shown = job_params.denoiser_choices(state, iid)
         params.insert(0, {"name": job_params.DENOISER, "value": shown or None, "choices": options})
