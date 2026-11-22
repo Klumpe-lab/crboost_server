@@ -895,6 +895,11 @@ class ProjectState(BaseModel):
     def mark_dirty(self):
         self._dirty = True
 
+    @property
+    def put_back_pending(self) -> bool:
+        """This load put back what an older save dropped (`_put_back_dropped`) and no save has written it yet."""
+        return self._put_back_from is not None
+
     def roster(self) -> list[str]:
         """The jobs on the roster: `pipeline_order`, which adding and removing a job write, in the
         order Run allocates their directories (`instance_order`). Every tab and the API read this

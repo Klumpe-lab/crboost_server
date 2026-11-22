@@ -769,6 +769,9 @@ class ProjectService:
             warnings = [m for m in (state.version_skew, registry.version_skew, registry.load_problem) if m]
             warnings += state.load_warnings
             state.load_warnings = []
+            if state.put_back_pending:
+                # Written at once: what came back must not wait for the next change to reach the file.
+                await self.backend.state_service.save_project(project_dir, force=True)
 
             logger.info("%s · opened (%s)", project_dir.name, project_dir)
             return ok(

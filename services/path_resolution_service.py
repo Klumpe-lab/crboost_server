@@ -608,15 +608,21 @@ class PathResolutionService:
     def source_of(self, instance_id: str, slot_key: str) -> str | None:
         """The job one input slot of `instance_id` reads from, chosen as resolve_inputs chooses it;
         None for a manual file, a synthetic producer, or no source."""
+        c = self.source_candidate_of(instance_id, slot_key)
+        return c.producer_instance_id if c is not None and not is_synthetic_producer(c.producer_instance_id) else None
+
+    def source_candidate_of(self, instance_id: str, slot_key: str) -> OutputCandidate | None:
+        """What one input slot of `instance_id` reads, chosen as resolve_inputs chooses it, synthetic
+        producers (a particle set, a merge, a pick list) included; None for a manual file or no source."""
         job_model = self.state.jobs.get(instance_id)
         if job_model is None or job_model.job_type is None:
             return None
         slot = next((s for s in self._get_input_schema(job_model.job_type, job_model) if s.key == slot_key), None)
         if slot is None:
             return None
-        chosen = self._select_source(job_model.job_type, job_model, slot, self._build_output_index(), instance_id)
-        c = chosen.candidate
-        return c.producer_instance_id if c is not None and not is_synthetic_producer(c.producer_instance_id) else None
+        return self._select_source(
+            job_model.job_type, job_model, slot, self._build_output_index(), instance_id
+        ).candidate
 
     def mixed_chains(self, instance_id: str) -> tuple[str, str] | None:
         """Two jobs `instance_id` reads from of which neither is upstream of the other, e.g.

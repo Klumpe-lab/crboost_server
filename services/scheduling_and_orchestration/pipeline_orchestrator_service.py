@@ -27,6 +27,7 @@ from services.result import ErrorCode, err, ok
 from services.project_state import AbstractJobParams, JobCategory, JobType, JobStatus, ReviewHold
 from services.segmentation.manifest import segment_feature_id
 from services.particles.helical import extraction_box_problem
+from services.particles.angle_origin import random_angle_problem
 from services.particles.pick_context import context_frame_problem
 from services.segmentation.search_region import search_region_problem
 from services.subsets import subset_problem, write_subset_star
@@ -198,6 +199,15 @@ def _constraint_problems(state, instances_to_run: list[str]) -> list[str]:
                 out.append(f"{iid}: {e}")
                 break
     return out
+
+
+def _random_angle_problems(state, resolver: PathResolutionService, instances: list[str]) -> list[str]:
+    """`random_angle_problem` for each job of a Run, as `<job>: <why>`."""
+    return [
+        f"{iid}: {problem}"
+        for iid in instances
+        if (jm := state.jobs.get(iid)) is not None and (problem := random_angle_problem(state, jm, resolver))
+    ]
 
 
 class PipelineOrchestratorService:
@@ -519,6 +529,9 @@ class PipelineOrchestratorService:
             for iid in instances_to_run
             if (jm := state.jobs.get(iid)) is not None and (problem := extraction_box_problem(state, jm))
         ]
+        # A local search from angles a segmentation's picks drew at random refines nothing (roadmap 64 D8): found by
+        # walking each job's particle inputs back to the job that wrote them, so in a thread (a set is read).
+        unset += await asyncio.to_thread(_random_angle_problems, state, check, instances_to_run)
         if unset:
             return err("Not started: " + "; ".join(unset), refused=unset), {}
 
