@@ -190,6 +190,9 @@ if mv -T "$tmp" "$env" 2>/dev/null; then
     log "built $name"
 elif [ -x "$env/bin/python3" ]; then
     log "another start finished $name first; using it"
+elif [ -e "$env" ] && mv -T "$env" "$env.broken-$$" 2>/dev/null && mv -T "$tmp" "$env" 2>/dev/null; then
+    # The lookup above took it for absent: its python3 does not run (e.g. a link into a Python store that is gone).
+    log "built $name; the one that stood there had no working python3 and is kept as $name.broken-$$"
 else
     die "could not move the finished build to $env"
 fi

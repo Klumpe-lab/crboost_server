@@ -77,7 +77,10 @@ def _fill_note(slot, job_model) -> None:
             with (
                 ui.row()
                 .classes("w-full items-center gap-2")
-                .style(f"background: #fffbeb; border: 1px solid #fde68a; {_CHIP_STYLE}")
+                .style(
+                    "background: var(--cb-warn-bg, #fffbeb); border: 1px solid var(--cb-warn-line, #fde68a); "
+                    f"{_CHIP_STYLE}"
+                )
                 .tooltip(tooltip)
             ):
                 ui.icon("warning", size="14px").classes("text-amber-600")
