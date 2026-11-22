@@ -437,6 +437,15 @@ class SetSpeciesIn(SpeciesIn):
         description="The segmentation feature its Pick candidates jobs pick from (a Segment job writes ribosome_ais "
         "for easymode's ribosome); empty or null clears it",
     )
+    kind: Literal["particle", "filament"] | None = Field(
+        None,
+        description="The species' shape, which the jobs added for it later take: particle (a pick is a point on its "
+        "own), or filament (Pick candidates traces lines and places a pick every repeat along them; Refine 3D "
+        "refines a helical tube of the diameter)",
+    )
+    repeat_ang: float | None = Field(
+        None, description="A filament's lattice repeat along its axis, in Å: the spacing of its picks; null clears it"
+    )
 
 
 class ImportTomogramsIn(ProjectIn):

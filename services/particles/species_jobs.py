@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 
 from services.jobs.spec import JOB_SPECS, PHASE_PARTICLES
-from services.models_base import JobType, resolve_species
+from services.models_base import JobType, SpeciesKind, resolve_species
 from services.templating.template_metadata import get_effective_mask_path, get_effective_template_path
 
 PARTICLE_JOB_TYPES: tuple[JobType, ...] = tuple(s.job_type for s in JOB_SPECS if s.phase == PHASE_PARTICLES)
@@ -81,8 +81,27 @@ def job_drift(sp, jm) -> list[tuple[str, str]]:
             have_f = getattr(jm, "feature", "") or ""
             if want_f and getattr(jm, "from_segmentation", False) and have_f != want_f:
                 out.append(("feature", f"job {have_f or '—'} ≠ species {want_f}"))
+            # The shape is the species': a segmentation's picks are points or lines by it.
+            if getattr(jm, "from_segmentation", False):
+                kind = SpeciesKind(getattr(sp, "kind", None) or SpeciesKind.PARTICLE)
+                shape = SpeciesKind(getattr(jm, "shape", None) or SpeciesKind.PARTICLE)
+                if shape != kind:
+                    out.append(("shape", f"job {shape.value} ≠ species {kind.value}"))
+                repeat = getattr(sp, "repeat_ang", None)
+                spacing = float(getattr(jm, "spacing_ang", 0.0) or 0.0)
+                if kind == shape == SpeciesKind.FILAMENT and repeat and abs(spacing - float(repeat)) > 1e-6:
+                    out.append(("spacing", f"job {spacing:g} Å ≠ species repeat {repeat:g} Å"))
         case JobType.RECONSTRUCT_PARTICLE | JobType.CLASS3D | JobType.REFINE3D:
             job_sym = _sym(getattr(jm, "symmetry", None))
             if job_sym != species_sym:
                 out.append(("symmetry", f"job {job_sym} ≠ species {species_sym}"))
+            if getattr(jm, "job_type", None) == JobType.REFINE3D:
+                filament = SpeciesKind(getattr(sp, "kind", None) or SpeciesKind.PARTICLE) == SpeciesKind.FILAMENT
+                helix = bool(getattr(jm, "helix", False))
+                if helix != filament:
+                    job_says = "helical" if helix else "not helical"
+                    out.append(("helix", f"job {job_says} ≠ species {'filament' if filament else 'particle'}"))
+                tube = float(getattr(jm, "helical_outer_diameter", 0.0) or 0.0)
+                if helix and filament and sp.diameter_ang and abs(tube - float(sp.diameter_ang)) > 1e-6:
+                    out.append(("tube Ø", f"job {tube:g} Å ≠ species {sp.diameter_ang:g} Å"))
     return out

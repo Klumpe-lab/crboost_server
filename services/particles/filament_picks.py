@@ -184,13 +184,15 @@ def filament_points(
 def finish_table(points: pd.DataFrame, *, seed: int = 0) -> pd.DataFrame:
     """The whole job's points with a random rot (searched globally) and a half-set per tube. Boxes along a
     tube overlap, so a tube never straddles the halves: tubes go, the longest first and unmarked ones before
-    marked ones, to the half that has fewer points so far."""
+    marked ones, to the half that has fewer points so far. Columns the rows carry besides the module's own (a
+    score, context) are kept, after them."""
     df = points.reset_index(drop=True).copy()
     rng = np.random.default_rng(seed)
     df["rlnAngleRot"] = rng.uniform(-180.0, 180.0, len(df))
     df["rlnRandomSubset"] = 0
+    columns = [*OUTPUT_COLUMNS, *(c for c in df.columns if c not in OUTPUT_COLUMNS)]
     if df.empty:
-        return df[OUTPUT_COLUMNS]
+        return df[columns]
     keys = df["rlnTomoName"].astype(str) + "\t" + df[TUBE_COL].astype(str)
     tubes = (
         pd.DataFrame({"key": keys, "marked": df[MARK_COL] != NOT_MARKED})
@@ -206,7 +208,7 @@ def finish_table(points: pd.DataFrame, *, seed: int = 0) -> pd.DataFrame:
         half_of[key] = half
         counts[half] += int(n)
     df["rlnRandomSubset"] = keys.map(half_of).astype(int)
-    return df[OUTPUT_COLUMNS]
+    return df[columns]
 
 
 def candidates_of(table: pd.DataFrame) -> pd.DataFrame:

@@ -4,7 +4,7 @@ from pydantic import Field, model_validator
 
 from services.computing.slurm_service import SlurmConfig
 from services.jobs._base import L, M, S, SPECIES_GROUP, AbstractJobParams, ExtractionCutoffMethod, form
-from services.models_base import JobType, JobCategory, PickOrientation, PickSource
+from services.models_base import JobType, JobCategory, PickOrientation, PickSource, SpeciesKind
 from services.io_slots import InputSlot, OutputSlot, JobFileType
 
 # The parameters each source reads; the other source's are hidden on the job page (`shows_param`).
@@ -20,13 +20,20 @@ TM_PARAMS = frozenset(
         "score_filter_value",
     }
 )
-SEGMENTATION_PARAMS = frozenset({"feature", "p_threshold", "min_piece", "one_per_piece", "binning", "orientation"})
+# Of the segmentation source's, what only a particle's picks read and what only a filament's do; the feature, the p
+# threshold and the binning are both shapes'.
+PARTICLE_PARAMS = frozenset({"min_piece", "one_per_piece", "orientation"})
+FILAMENT_PARAMS = frozenset(
+    {"spacing_ang", "min_volume_nm3", "min_length_ang", "min_curvature_radius_ang", "min_angle_from_z_deg"}
+)
+SEGMENTATION_PARAMS = frozenset({"feature", "shape", "p_threshold", "binning"}) | PARTICLE_PARAMS | FILAMENT_PARAMS
 
 
 class CandidateExtractPytomParams(AbstractJobParams):
     """One species' picks from evidence over the tomograms: the peaks of a Template Match job's score maps (source
-    template matching), or the pieces of one feature's probability volumes (source segmentation). Both write
-    candidates.star, tomograms.star and a coordinates-only optimisation set."""
+    template matching), or one feature's probability volumes (source segmentation): their pieces for a particle,
+    points along their traced lines for a filament (the species' shape). All write candidates.star, tomograms.star
+    and a coordinates-only optimisation set."""
 
     job_type: JobType = Field(default=JobType.TEMPLATE_EXTRACT_PYTOM)
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
@@ -41,6 +48,12 @@ class CandidateExtractPytomParams(AbstractJobParams):
         "one_per_piece",
         "binning",
         "orientation",
+        "shape",
+        "spacing_ang",
+        "min_volume_nm3",
+        "min_length_ang",
+        "min_curvature_radius_ang",
+        "min_angle_from_z_deg",
         "particle_diameter_ang",
         "max_num_particles",
         "cutoff_method",
@@ -55,6 +68,7 @@ class CandidateExtractPytomParams(AbstractJobParams):
         "Source",
         "Segmentation",
         "Detection",
+        "Filaments",
         "Orientation",
         "Pick threshold",
         SPECIES_GROUP,
@@ -151,10 +165,63 @@ class CandidateExtractPytomParams(AbstractJobParams):
         title="Angles", json_schema_extra=form("Orientation", M),
     )
 
-    # Particle params
+    # A filament's picks (Ais's tracer): which traced lines are kept. The spacing is the species' repeat.
+    min_volume_nm3: float = Field(
+        default=10000.0,
+        ge=0,
+        description="Connected pieces of the feature smaller than this are not traced. 10 000 nm³ is about 20–30 nm "
+        "of microtubule.",
+        title="Min volume",
+        json_schema_extra=form("Filaments", S, "nm³"),
+    )
+    min_length_ang: float = Field(
+        default=1000.0,
+        ge=0,
+        description="Pieces and side branches shorter than this are not traced; filaments still shorter after the "
+        "cut where lines meet are marked.",
+        title="Min length",
+        json_schema_extra=form("Filaments", S, "Å"),
+    )
+    min_curvature_radius_ang: float = Field(
+        default=1000.0,
+        ge=0,
+        description="A filament whose median radius of curvature is smaller is marked: a blob, not a tube.",
+        title="Min bend radius",
+        json_schema_extra=form("Filaments", S, "Å"),
+    )
+    min_angle_from_z_deg: float = Field(
+        default=30.0,
+        ge=0,
+        le=90,
+        description="A filament whose median direction lies closer to Z than this is marked: missing-wedge streaks "
+        "and lamella edges run along Z.",
+        title="Min angle from Z",
+        json_schema_extra=form("Filaments", S, "°"),
+    )
+
+    # Species-derived: the shape, a filament's spacing, the diameter.
+    shape: SpeciesKind = Field(
+        default=SpeciesKind.PARTICLE,
+        description="Particle: a pick in each piece of the feature (Detection). Filament: the feature's pieces are "
+        "thinned to their centre lines, cut where lines meet, and a pick placed every spacing along each; a pick "
+        "lies along its line (tilt and psi, also written as priors), its spin about the line is random and its "
+        "direction along it unknown; a filament's picks share a half-set, and a filament failing the Filaments "
+        "rules is marked whole (filaments_all.star keeps every point, candidates.star the unmarked).",
+        title="Shape",
+        json_schema_extra=form(SPECIES_GROUP, M),
+    )
+    spacing_ang: float = Field(
+        default=0.0,
+        ge=0,
+        description="The distance between two picks along a filament: the lattice's repeat, so no pick sits "
+        "between two units (82 Å is one αβ-tubulin dimer). 0: not set, and Run refuses.",
+        title="Spacing",
+        json_schema_extra=form(SPECIES_GROUP, S, "Å"),
+    )
     particle_diameter_ang: float = Field(
         default=200.0,
-        description="Particle diameter; also the least distance between two picks (non-maximum suppression).",
+        description="Particle diameter, or a filament's tube; for particles also the least distance between two "
+        "picks (non-maximum suppression).",
         title="Diameter",
         json_schema_extra=form(SPECIES_GROUP, S, "Å"),
     )
@@ -263,6 +330,11 @@ class CandidateExtractPytomParams(AbstractJobParams):
         return self.from_segmentation or bool(self.context)
 
     @property
+    def traces_filaments(self) -> bool:
+        """Whether the picks are points along a feature's traced lines (the segmentation source, a filament)."""
+        return self.from_segmentation and SpeciesKind(self.shape) == SpeciesKind.FILAMENT
+
+    @property
     def effective_orientation(self) -> PickOrientation:
         """The angles the segmentation source gives its picks: a piece's axis needs one pick per piece, so the
         distance-transform placement always takes random angles."""
@@ -272,6 +344,10 @@ class CandidateExtractPytomParams(AbstractJobParams):
         if name in TM_PARAMS and self.from_segmentation:
             return False
         if name in SEGMENTATION_PARAMS and self.from_template_matching:
+            return False
+        if name in FILAMENT_PARAMS:
+            return self.traces_filaments
+        if name in PARTICLE_PARAMS and self.traces_filaments:
             return False
         if name == "orientation":
             return self.one_per_piece
@@ -290,9 +366,14 @@ class CandidateExtractPytomParams(AbstractJobParams):
         return {}
 
     def run_problems(self) -> list[str]:
+        problems = []
         if self.from_segmentation and not self.feature.strip():
-            return ["no feature chosen to pick from the segmentations"]
-        return []
+            problems.append("no feature chosen to pick from the segmentations")
+        if self.traces_filaments and self.spacing_ang <= 0:
+            problems.append(
+                "no spacing between a filament's picks: set it here, or the repeat on the Species page for new jobs"
+            )
+        return problems
 
     def _get_job_specific_options(self) -> list[tuple[str, str]]:
         key = "input_segmentations" if self.from_segmentation else "input_tm_job"

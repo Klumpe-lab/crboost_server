@@ -25,6 +25,7 @@ from services.models_base import (
     SPECIES_GLYPH_HUES,
     SPECIES_GLYPHS,
     JobType,
+    SpeciesKind,
     SpeciesOrigin,
 )
 from services.project_state import ExtractionParams, ProjectState, TemplateMask
@@ -97,11 +98,14 @@ def set_species(
     glyph_hue: Any = KEEP,
     extraction: Any = KEEP,
     segmentation_feature: Any = KEEP,
+    kind: Any = KEEP,
+    repeat_ang: Any = KEEP,
 ) -> dict[str, Any]:
     """Edit a species: its identity (what the Particles registry's editor sets; a diameter of None clears it; a
     glyph or hue of "" is the default), its extraction geometry (box, binning, crop: all three, which the jobs
-    added for it later take) and the segmentation feature its Pick candidates jobs pick from (None or "" clears
-    it). Only what is given changes; a job made earlier keeps the values it took. `ok(species)` as it now is."""
+    added for it later take), the segmentation feature its Pick candidates jobs pick from (None or "" clears
+    it) and its shape (kind: particle or filament; a filament's repeat along its axis, None clears it). Only what
+    is given changes; a job made earlier keeps the values it took. `ok(species)` as it now is."""
     if state.get_species(species_id) is None:
         listed = ", ".join(s.id for s in state.species_registry) or "none"
         return err(f"No species {species_id} in this project ({listed}).")
@@ -114,6 +118,10 @@ def set_species(
         problems.append(f"glyph: one of {', '.join(SPECIES_GLYPHS)}, or empty for the default")
     if glyph_hue is not KEEP and glyph_hue and glyph_hue not in SPECIES_GLYPH_HUES:
         problems.append(f"glyph_hue: one of {', '.join(SPECIES_GLYPH_HUES)}, or empty for the default")
+    if kind is not KEEP and kind not in tuple(k.value for k in SpeciesKind):
+        problems.append(f"kind: one of {', '.join(k.value for k in SpeciesKind)}")
+    if repeat_ang is not KEEP and repeat_ang is not None and repeat_ang <= 0:
+        problems.append(f"repeat_ang: must be > 0, not {repeat_ang:g}")
     geometry = KEEP
     if extraction is not KEEP:
         box, binning, crop = extraction
@@ -144,6 +152,10 @@ def set_species(
             sp.extraction_params = geometry
         if segmentation_feature is not KEEP:
             sp.segmentation_feature = (segmentation_feature or "").strip() or None
+        if kind is not KEEP:
+            sp.kind = SpeciesKind(kind)
+        if repeat_ang is not KEEP:
+            sp.repeat_ang = repeat_ang
 
     state.mutate_species(species_id, _apply)
     sp = state.get_species(species_id)
@@ -159,6 +171,8 @@ def set_species(
             "glyph_hue": sp.glyph_hue or DEFAULT_GLYPH_HUE,
             "extraction": sp.extraction_params.model_dump() if sp.extraction_params else None,
             "segmentation_feature": sp.segmentation_feature,
+            "kind": SpeciesKind(sp.kind).value,
+            "repeat_ang": sp.repeat_ang,
         }
     )
 

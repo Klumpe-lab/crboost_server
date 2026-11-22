@@ -38,6 +38,7 @@ from services.models_base import (
     DEFAULT_SPECIES_GLYPH,
     SPECIES_GLYPH_HUES,
     SPECIES_GLYPHS,
+    SpeciesKind,
     SpeciesOrigin,
     species_glyph,
 )
@@ -146,7 +147,7 @@ def _feature_options(project_path: Path, species_id: str) -> dict[str, str]:
 
 
 def render_species_rows(backend, project_path: Path, species_id: str) -> Callable[[], None]:
-    """Name · overlay colour · glyph · diameter · segmentation feature · symmetry · notes. Each edit =
+    """Name · overlay colour · glyph · shape · diameter · repeat · segmentation feature · symmetry · notes. Each edit =
     `set_species` (dirty + rev) and a 1-s debounced save. Returns the refresh of the feature's choices, which
     move as the project's Segment jobs and imports do; nothing else is rebuilt."""
     sp = get_project_state_for(project_path).get_species(species_id)
@@ -190,7 +191,22 @@ def render_species_rows(backend, project_path: Path, species_id: str) -> Callabl
         glyph_row.refresh()
 
     with ui.element("div").style(FIELD_ROW_STYLE):
-        _label("Diameter", "Ø of the particle — the default for new Pick candidates jobs")
+        _label(
+            "Shape",
+            "What the species is, which the jobs added for it take. Particle: a pick is a point on its own. "
+            "Filament: Pick candidates traces the feature's lines and places a pick every repeat along them, "
+            "oriented along the line; Refine 3D refines them as a helical tube of the diameter.",
+        )
+        kinds = {k.value: k.value for k in SpeciesKind}
+        kind = box_select(ui.select(options=kinds, value=SpeciesKind(sp.kind).value), M)
+        ui.label("").style(UNIT_STYLE)
+
+    with ui.element("div").style(FIELD_ROW_STYLE):
+        _label(
+            "Diameter",
+            "Ø of the particle, or of a filament's tube: the default for new Pick candidates jobs, and a filament's "
+            "outer diameter in new Refine 3D jobs",
+        )
         diam = box_input(ui.number(value=sp.diameter_ang, min=0, step=10, placeholder="not set"), S)
         diam.props("debounce=400")
         ui.label("Å").style(UNIT_STYLE)
@@ -205,6 +221,34 @@ def render_species_rows(backend, project_path: Path, species_id: str) -> Callabl
             _set(diameter_ang=v)
 
         diam.on_value_change(_on_diam)
+
+    with ui.element("div").style(FIELD_ROW_STYLE) as repeat_row:
+        _label(
+            "Repeat",
+            "The lattice's repeat along the filament's axis: the spacing of its picks in new Pick candidates jobs, so "
+            "no pick sits between two units (82 Å is one αβ-tubulin dimer). Not set: the job keeps its own spacing.",
+        )
+        repeat = box_input(ui.number(value=sp.repeat_ang, min=0, step=1, placeholder="not set"), S)
+        repeat.props("debounce=400")
+        ui.label("Å").style(UNIT_STYLE)
+
+        def _on_repeat(e) -> None:
+            try:
+                v = float(e.value) if e.value not in (None, "") else None
+            except (TypeError, ValueError):
+                return  # mid-typing garbage; the next valid value lands
+            if v is not None and v <= 0:
+                return  # a zero on the way to a number; the door refuses it
+            _set(repeat_ang=v)
+
+        repeat.on_value_change(_on_repeat)
+    repeat_row.set_visibility(SpeciesKind(sp.kind) == SpeciesKind.FILAMENT)
+
+    def _on_kind(e) -> None:
+        _set(kind=e.value)
+        repeat_row.set_visibility(e.value == SpeciesKind.FILAMENT.value)
+
+    kind.on_value_change(_on_kind)
 
     with ui.element("div").style(FIELD_ROW_STYLE):
         _label(

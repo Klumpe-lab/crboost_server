@@ -12,6 +12,10 @@ every array task.
   into ais/<tomo>/in; then, in this environment, its picks become candidate rows (services/particles/seg_picks.py)
   with the context of the segmentations' other features (services/particles/pick_context.py): picks/<tomo>.star and
   picks/<tomo>.json. Ais's own star stays in ais/<tomo>/out as the raw record.
+- A filament (the job's shape): the task runs Ais's tracer (`ais pick -filament`) instead, and its points become
+  rows by services/particles/filament_picks.py, marked filaments included, with the same score and context. The
+  supervisor gives every filament one half-set over the whole job, and writes every point to filaments_all.star
+  and the unmarked ones to candidates.star.
 """
 
 import json
@@ -32,18 +36,23 @@ from drivers.driver_base import DriverContext, ToolCommand, print_cmd_only, requ
 from services.io_slots import JobFileType
 from services.job_models import CandidateExtractPytomParams
 from services.models_base import JobType, PickOrientation
-from services.particles.coords import pixel_size_from_tomo_row
+from services.particles import filament_picks
+from services.particles.coords import CENTERED_COLS, centered_angst_to_voxel, pixel_size_from_tomo_row
 from services.particles.pick_context import context_columns, tomogram_context
 from services.particles.seg_picks import (
     AIS_ORIENT,
+    ANGLE_SOURCE_COL,
     EDGE,
     MARK_COL,
+    NOT_MARKED,
     OUTPUT_COLUMNS,
     SCORE_COL,
+    SCORE_RADIUS,
     Detection,
     ais_size_px,
     ais_threshold,
     job_seed,
+    mean_p_within,
     min_piece_voxels,
     pick_rows,
     tomogram_rng,
@@ -56,6 +65,10 @@ from services.subtomo_merge import _read_tomograms_star, write_optimisation_set
 
 AIS_DIR = "ais"
 PICKS_DIR = "picks"
+# Where a filament's points take their tilt and psi from (`cbAngleSource`).
+ANGLES_FILAMENT = "filament"
+# Every point of a filament job, marked filaments included; candidates.star holds the unmarked.
+FILAMENTS_ALL = "filaments_all.star"
 # A segmentation's voxel and its tomogram row's pixel size may differ by this fraction at most.
 VOXEL_TOLERANCE = 0.01
 
@@ -98,6 +111,46 @@ def detection(p: CandidateExtractPytomParams) -> Detection:
         orientation=p.effective_orientation,
         diameter_ang=p.particle_diameter_ang,
     )
+
+
+def mark_rules(p: CandidateExtractPytomParams) -> filament_picks.MarkRules:
+    return filament_picks.MarkRules(
+        spacing_ang=p.spacing_ang,
+        min_length_ang=p.min_length_ang,
+        min_curvature_radius_ang=p.min_curvature_radius_ang,
+        min_angle_from_z_deg=p.min_angle_from_z_deg,
+    )
+
+
+def filament_rows(ais: pd.DataFrame, stored, *, tomo: str, entry: SegmentationEntry, p) -> tuple[pd.DataFrame, dict]:
+    """One tomogram's Ais trace as candidate rows (rot and the half-set come with the whole job's merge), each
+    with the feature's mean p around it as its score, and the tomogram's summary. `stored` is the feature's
+    volume as written."""
+    rows = filament_picks.filament_points(
+        ais,
+        tomo=tomo,
+        shape_zyx=tuple(entry.shape_zyx),
+        voxel_angstrom=entry.voxel_angstrom,
+        binning=p.binning,
+        rules=mark_rules(p),
+    )
+    size_xyz = np.asarray(entry.shape_zyx[::-1], dtype=float)
+    centres = centered_angst_to_voxel(rows[CENTERED_COLS].to_numpy(dtype=float), size_xyz, entry.voxel_angstrom)
+    radius_vox = SCORE_RADIUS * p.particle_diameter_ang / entry.voxel_angstrom
+    rows[SCORE_COL] = mean_p_within(stored, centres[:, ::-1], radius_vox, entry.full_scale) if len(rows) else []
+    rows[ANGLE_SOURCE_COL] = ANGLES_FILAMENT
+    unmarked = rows[rows[MARK_COL] == NOT_MARKED]
+    per_tomo = filament_picks.tomogram_summary(rows).get(tomo, {}) if len(rows) else {}
+    summary = {
+        "shape": "filament",
+        "points": len(rows),
+        "picks": len(unmarked),
+        "filaments": int(rows[filament_picks.TUBE_COL].nunique()) if len(rows) else 0,
+        "median_score": float(unmarked[SCORE_COL].median()) if len(unmarked) else None,
+        "angle_sources": {ANGLES_FILAMENT: len(rows)} if len(rows) else {},
+        "trace": per_tomo,
+    }
+    return rows, summary
 
 
 def read_star_block(path: Path) -> pd.DataFrame:
@@ -172,6 +225,15 @@ class PickFromSegmentationDriver(ArrayDriver):
         self._origins = origins_of(tomo_df)
         self.log(f"Segmentations: {seg_json} ({manifest.producer}, {manifest.method})")
         self.log(f"{len(entries)} tomogram(s) with a {p.feature} volume; frame: {frame}")
+        if p.traces_filaments:
+            if p.spacing_ang <= 0:
+                raise ValueError("No spacing between a filament's picks is set (the job's Spacing)")
+            self.log(
+                f"Filaments: p ≥ {p.p_threshold:g}, binning {p.binning}, a pick every {p.spacing_ang:g} Å; traced "
+                f"from {p.min_volume_nm3:g} nm³ and {p.min_length_ang:g} Å; marked under a bend radius of "
+                f"{p.min_curvature_radius_ang:g} Å or within {p.min_angle_from_z_deg:g}° of Z"
+            )
+            return sorted(entries)
         orient = p.effective_orientation.value
         self.log(
             f"Detection: p ≥ {p.p_threshold:g}, pieces ≥ {p.min_piece:g} of a sphere of Ø {p.particle_diameter_ang:g} "
@@ -210,6 +272,9 @@ class PickFromSegmentationDriver(ArrayDriver):
             if len(rows):
                 blocks.append(rows)
         features = context_features(manifest, p.feature)
+        if p.traces_filaments:
+            self._aggregate_filaments(ctx, results, blocks, per_tomo, features)
+            return
         empty = pd.DataFrame(columns=[*OUTPUT_COLUMNS, *context_columns(features)])
         table = pd.concat(blocks, ignore_index=True) if blocks else empty
 
@@ -259,6 +324,69 @@ class PickFromSegmentationDriver(ArrayDriver):
         )
         self.log("Wrote candidates.star, tomograms.star and optimisation_set.star")
 
+    def _aggregate_filaments(self, ctx, results: ArrayResults, blocks, per_tomo: dict, features: list[str]) -> None:
+        """Every tomogram's points as one table: a random rot and one half-set per filament over the whole job
+        (`finish_table`), all of it in filaments_all.star, the unmarked in candidates.star."""
+        p = ctx.params
+        job_dir = ctx.job_dir
+        seg_json, manifest, _ = self._volumes(ctx)
+        points = pd.concat(blocks, ignore_index=True) if blocks else pd.DataFrame(columns=["rlnTomoName"])
+        if points.empty:
+            table = candidates = points
+        else:
+            table = filament_picks.finish_table(points, seed=job_seed(ctx.instance_id))
+            candidates = filament_picks.candidates_of(table)
+        summary = {
+            "source": "segmentation",
+            "shape": "filament",
+            "feature": p.feature,
+            "segmentations": str(seg_json),
+            "producer": manifest.producer,
+            "tomograms_star": str(self._frame),
+            "tracing": {
+                "p_threshold": p.p_threshold,
+                "binning": p.binning,
+                "spacing_ang": p.spacing_ang,
+                "min_volume_nm3": p.min_volume_nm3,
+                "min_length_ang": p.min_length_ang,
+                "min_curvature_radius_ang": p.min_curvature_radius_ang,
+                "min_angle_from_z_deg": p.min_angle_from_z_deg,
+                "diameter_ang": p.particle_diameter_ang,
+                "seed": job_seed(ctx.instance_id),
+            },
+            "context_features": features,
+            "tomograms": len(per_tomo),
+            "tomograms_with_picks": sum(1 for s in per_tomo.values() if s["picks"]),
+            "filaments": sum(s["filaments"] for s in per_tomo.values()),
+            "points": len(table),
+            "picks": len(candidates),
+            "median_score": float(candidates[SCORE_COL].median()) if len(candidates) else None,
+            "skipped": results.skipped,
+            "dropped": results.dropped,
+            "per_tomogram": per_tomo,
+        }
+        (job_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+        self.log(
+            f"{summary['points']} points in {summary['filaments']} filaments in {summary['tomograms_with_picks']} of "
+            f"{summary['tomograms']} tomograms; {summary['picks']} unmarked"
+        )
+        if len(table):
+            starfile.write({"particles": table}, job_dir / FILAMENTS_ALL, overwrite=True)
+        if candidates.empty:
+            raise RuntimeError(
+                f"No unmarked filament points of {p.feature} in any tomogram: see summary.json (per tomogram) and, "
+                f"where filaments were traced, {FILAMENTS_ALL} (cbMarkReason)"
+            )
+        candidates_star = job_dir / "candidates.star"
+        starfile.write({"particles": candidates}, candidates_star, overwrite=True)
+        output_tomograms = job_dir / "tomograms.star"
+        shutil.copy2(self._frame, output_tomograms)
+        write_candidate_views(ctx, candidates_star, output_tomograms, self.log)
+        write_optimisation_set(
+            job_dir / "optimisation_set.star", particles_star=candidates_star, tomograms_star=output_tomograms
+        )
+        self.log(f"Wrote {FILAMENTS_ALL}, candidates.star, tomograms.star and optimisation_set.star")
+
     # ---------------- task ----------------
 
     def task_already_done(self, ctx: DriverContext[CandidateExtractPytomParams], item: str) -> bool:
@@ -280,6 +408,14 @@ class PickFromSegmentationDriver(ArrayDriver):
         for sub in ("in", "out", ".config", ".mpl"):
             (work / sub).mkdir(parents=True)
         (work / "in" / f"{item}__{ctx.params.feature}.mrc").symlink_to(entry.path.resolve())
+        if ctx.params.traces_filaments:
+            with mrcfile.open(entry.path, header_only=True, permissive=True) as m:
+                header_voxel = float(m.voxel_size.x)
+            if abs(header_voxel - entry.voxel_angstrom) > VOXEL_TOLERANCE * entry.voxel_angstrom:
+                raise ValueError(
+                    f"{entry.path.name}: its header says {header_voxel:g} Å a voxel, the manifest "
+                    f"{entry.voxel_angstrom:g} Å; Ais's tracer reads the header for the spacing and the least length"
+                )
         return Staged(entry=entry, dtype=dtype, work=work)
 
     def build_command(self, ctx: DriverContext[CandidateExtractPytomParams], item: str, staged: Staged) -> ToolCommand:
@@ -289,6 +425,22 @@ class PickFromSegmentationDriver(ArrayDriver):
             f"{k}={shlex.quote(str(v))}"
             for k, v in (("AIS_CONFIG_DIR", staged.work / ".config"), ("MPLCONFIGDIR", staged.work / ".mpl"))
         )
+        if p.traces_filaments:
+            # Spacing, volume and length in Å: Ais converts them by the voxel size in the volume's header, which
+            # `stage` has checked against the manifest's.
+            return (
+                ToolCommand(f"{env} ais pick")
+                .opt_path("-d", staged.work / "in", quote=True)
+                .opt("-t", shlex.quote(p.feature))
+                .opt_path("-ou", staged.work / "out", quote=True)
+                .flag("-filament")
+                .opt("-threshold", ais_threshold(p.p_threshold, staged.dtype, e.full_scale))
+                .opt("-b", p.binning)
+                .opt("-spacing", f"{p.spacing_ang:g}")
+                .opt("-size", f"{p.min_volume_nm3 * 1000:.0f}")
+                .opt("-length", f"{p.min_length_ang:g}")
+                .opt("-p", 1)
+            )
         min_voxels = min_piece_voxels(p.min_piece, p.particle_diameter_ang, e.voxel_angstrom, p.binning)
         cmd = (
             ToolCommand(f"{env} ais pick")
@@ -330,15 +482,18 @@ class PickFromSegmentationDriver(ArrayDriver):
             raise FileNotFoundError(f"ais pick exited 0 but wrote no {ais_star.name}")
         ais = read_star_block(ais_star)
         with mrcfile.mmap(e.path, mode="r", permissive=True) as m:
-            rows, summary = pick_rows(
-                ais,
-                m.data,
-                tomo=item,
-                voxel_angstrom=e.voxel_angstrom,
-                full_scale=e.full_scale,
-                det=detection(p),
-                rng=tomogram_rng(job_seed(ctx.instance_id), item),
-            )
+            if p.traces_filaments:
+                rows, summary = filament_rows(ais, m.data, tomo=item, entry=e, p=p)
+            else:
+                rows, summary = pick_rows(
+                    ais,
+                    m.data,
+                    tomo=item,
+                    voxel_angstrom=e.voxel_angstrom,
+                    full_scale=e.full_scale,
+                    det=detection(p),
+                    rng=tomogram_rng(job_seed(ctx.instance_id), item),
+                )
         _, manifest, _ = self._volumes(ctx)
         others = {c.feature: c for c in manifest.entries if c.tomogram == item and c.feature != p.feature}
         for c in others.values():
@@ -359,6 +514,12 @@ class PickFromSegmentationDriver(ArrayDriver):
         starfile.write({"particles": rows}, tmp, overwrite=True)
         os.replace(tmp, out / f"{item}.star")
         median = f"{summary['median_score']:.2f}" if summary["median_score"] is not None else "-"
+        if p.traces_filaments:
+            self.log(
+                f"{summary['points']} points in {summary['filaments']} filaments, {summary['picks']} unmarked "
+                f"(median score {median})"
+            )
+            return
         self.log(
             f"{summary['picks']} picks in {summary['pieces']} pieces (median score {median}, {summary['edge']} near "
             f"the edge); angles: {summary['angle_sources'] or 'none'}"

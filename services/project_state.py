@@ -24,6 +24,7 @@ from services.models_base import (
     JobCategory as JobCategory,
     JobStatus as JobStatus,
     PickListType,
+    SpeciesKind,
     SpeciesOrigin,
     ListExtractionState,
     MicroscopeParams,
@@ -63,7 +64,8 @@ logger = logging.getLogger(__name__)
 # 3.14: +ImportBatch.job_sources, +ImportedTomograms.tilt_series_star (tomograms from other projects' jobs)
 # 3.15: +ParticleSpecies.segmentation_feature (the feature Pick candidates picks the species from)
 # 3.16: +Pick candidates' context (on; a job submitted before it existed loads with it off)
-SCHEMA_VERSION: tuple[int, int] = (3, 16)
+# 3.17: +ParticleSpecies.kind, .repeat_ang (the species' shape: a particle, or a filament and its repeat)
+SCHEMA_VERSION: tuple[int, int] = (3, 17)
 
 
 # Sentinel `owner` value marking a project as shared/lab-owned rather than
@@ -239,6 +241,11 @@ class ParticleSpecies(BaseModel):
     # The segmentation feature this species is picked from (`ribosome_ais`): the default of a Pick candidates job's
     # feature. None: not named, and a job's feature row says so; never matched by name.
     segmentation_feature: str | None = None
+    # The species' shape, which its jobs take from it: Pick candidates picks points or traces lines, Refine 3D
+    # refines a filament as a helical tube. For a filament `diameter_ang` is the tube's, and `repeat_ang` the
+    # lattice's repeat along the axis (the spacing of its picks); None: not given, and the job keeps its own.
+    kind: SpeciesKind = SpeciesKind.PARTICLE
+    repeat_ang: float | None = None
 
     # ── Templates and masks ──────────────────────────────────────────────
     # Templates and masks are independent registers; the workbench manages

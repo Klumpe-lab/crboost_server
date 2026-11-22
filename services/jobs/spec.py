@@ -95,6 +95,9 @@ class JobSpec:
     # False: never added from the roster's add rows; made elsewhere (a Subset, from the tab of the
     # job it cuts).
     roster_add: bool = True
+    # Set on a job type no longer made: what does its work now. Saved jobs of the type load, show and run again;
+    # nothing adds a new one (the roster, the map, the API).
+    retired: str = ""
     # How services/log_progress reads this job's run.out ("relion", "miss_align", ...); None = its
     # generic reader (the last progress bar of any kind).
     log_format: str | None = None
@@ -322,7 +325,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
             '<circle cx="8.2" cy="8.4" r=".7" fill="currentColor"/>'
         ),
     ),
-    # Picks from a Segment job's volumes instead of template-matching scores: one CPU job, no array.
+    # Retired (roadmap 64 S6): Pick candidates traces a filament species' feature itself. One CPU job, no array.
     JobSpec(
         JobType.FILAMENT_PICK,
         FilamentPickParams,
@@ -330,6 +333,8 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         PHASE_PARTICLES,
         dependencies=(JobType.SEGMENT,),
         driver="filament_pick.py",
+        roster_add=False,
+        retired="Pick candidates picks filaments: add it for a filament species, reading the segmentations.",
         dir_slug="filament_pick",
         summary="Places points along the filaments of one segmented feature.",
         glyph=(

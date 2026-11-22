@@ -78,6 +78,15 @@ class PickSource(str, Enum):
     SEGMENTATION = "segmentation"
 
 
+class SpeciesKind(str, Enum):
+    """The shape of a species, which its jobs take from it. A particle's pick is a point on its own. A filament's
+    is one of the points along a traced line: a lattice repeat apart, two angles known from the line's direction
+    up to its polarity, and marks and half-set shared with the rest of its filament."""
+
+    PARTICLE = "particle"
+    FILAMENT = "filament"
+
+
 class PickOrientation(str, Enum):
     """The starting angles of picks from a segmentation: uniform over all orientations, or a piece's longest or
     shortest axis (rods, discs) as the reference's Z, with rot uniform about it."""

@@ -15,7 +15,7 @@ from services.aggregation.extraction import apply_aggregation_overrides
 from services.jobs import jobtype_paramclass
 from services.jobs.spec import JOB_SPEC_BY_TYPE, PHASE_PARTICLES, display_name, instance_display_name, instance_order
 from services.jobs.template_match import set_symmetry
-from services.models_base import InstanceId, JobStatus, JobType
+from services.models_base import InstanceId, JobStatus, JobType, SpeciesKind
 from services.path_resolution_service import (
     PathResolutionService,
     add_after_pins,
@@ -91,10 +91,11 @@ def in_use_notice(state: ProjectState, instance_id: str) -> str | None:
 
 def species_defaults(job_type: JobType, species) -> dict[str, Any]:
     """The values a new job of `job_type` takes from its species when it is made: template matching's selected
-    template and mask and the species' symmetry; candidate extraction's diameter and the feature it picks from
-    segmentations; subtomo extraction's extraction geometry; Warp export's voxel size, output box (crop, else
-    box) and diameter, so both extraction paths can cut the same particles alike. Only what the species has
-    set: the rest keeps the job's own default, and nothing propagates into a job made earlier."""
+    template and mask and the species' symmetry; candidate extraction's diameter, the feature it picks from
+    segmentations, its shape and a filament's spacing; a filament's Refine 3D as a helical tube of its diameter;
+    subtomo extraction's extraction geometry; Warp export's voxel size, output box (crop, else box) and diameter,
+    so both extraction paths can cut the same particles alike. Only what the species has set: the rest keeps the
+    job's own default, and nothing propagates into a job made earlier."""
     out: dict[str, Any] = {}
     ep = getattr(species, "extraction_params", None)
     diameter = getattr(species, "diameter_ang", None)
@@ -112,6 +113,10 @@ def species_defaults(job_type: JobType, species) -> dict[str, Any]:
             out["particle_diameter_ang"] = float(diameter)
         if getattr(species, "segmentation_feature", None):
             out["feature"] = species.segmentation_feature
+        if getattr(species, "kind", None):
+            out["shape"] = SpeciesKind(species.kind)
+        if getattr(species, "repeat_ang", None):
+            out["spacing_ang"] = float(species.repeat_ang)
     elif job_type == JobType.SUBTOMO_EXTRACTION:
         if ep is not None:
             out.update(box_size=ep.box_size, binning=ep.binning, crop_size=ep.crop_size)
@@ -120,6 +125,12 @@ def species_defaults(job_type: JobType, species) -> dict[str, Any]:
             out.update(binning=ep.binning, box_size=ep.crop_size if ep.crop_size > 0 else ep.box_size)
         if diameter:
             out["diameter_ang"] = float(diameter)
+    elif job_type == JobType.REFINE3D:
+        # A filament is refined as a helical tube of its diameter, from the priors its picks carry.
+        if SpeciesKind(getattr(species, "kind", None) or SpeciesKind.PARTICLE) == SpeciesKind.FILAMENT:
+            out["helix"] = True
+            if diameter:
+                out["helical_outer_diameter"] = float(diameter)
     return out
 
 
@@ -189,6 +200,8 @@ def add_job(
     # Phase None: tsImport, added with the jobs that need it, and the per-list extraction.
     if spec is None or spec.phase is None:
         return err(f"{job_type.value} is not a job the roster adds.")
+    if spec.retired:
+        return err(f"{display_name(job_type)} is no longer added. {spec.retired}")
 
     name = display_name(job_type)
     source = None

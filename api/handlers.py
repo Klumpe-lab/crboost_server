@@ -303,7 +303,7 @@ async def get_job_logs(call: Call) -> dict[str, Any]:
 async def list_job_types(call: Call) -> dict[str, Any]:
     types = []
     for spec in JOB_SPECS:
-        if spec.phase is None:
+        if spec.phase is None or spec.retired:
             continue
         cls = spec.param_class
         types.append(
@@ -405,6 +405,8 @@ def _species_row(sp) -> dict[str, Any]:
         "diameter_ang": sp.diameter_ang,
         "symmetry": sp.symmetry,
         "segmentation_feature": sp.segmentation_feature,
+        "kind": getattr(sp.kind, "value", sp.kind),
+        "repeat_ang": sp.repeat_ang,
         "glyph": sp.glyph or DEFAULT_SPECIES_GLYPH,
         "glyph_hue": sp.glyph_hue or DEFAULT_GLYPH_HUE,
         "templates": len(sp.templates),
@@ -1208,6 +1210,10 @@ async def set_species(call: Call) -> dict[str, Any]:
         fields["extraction"] = (a.extraction.box_size, a.extraction.binning, a.extraction.crop_size)
     if "segmentation_feature" in a.model_fields_set:
         fields["segmentation_feature"] = a.segmentation_feature or ""
+    if "kind" in a.model_fields_set and a.kind is not None:
+        fields["kind"] = a.kind
+    if "repeat_ang" in a.model_fields_set:
+        fields["repeat_ang"] = a.repeat_ang
     res = species_edit.set_species(call.state, a.species, **fields)
     if res["success"]:
         res["ui_url"] = call.url(View.SPECIES, a.species)
