@@ -28,6 +28,7 @@ from services.project_state import (
     JobType,
     get_state_service,
     jobtype_paramclass,
+    outside_base_problem,
     preload_project_state,
     set_project_state_for,
 )
@@ -521,6 +522,9 @@ class ProjectService:
         project_name = spec.name.strip()
         try:
             project_dir = Path(spec.base).expanduser() / project_name
+            outside = await asyncio.to_thread(outside_base_problem, project_dir)
+            if outside:
+                return err(outside)
             if project_dir.exists():
                 return err(f"Project directory '{project_dir}' already exists.")
 
@@ -685,6 +689,9 @@ class ProjectService:
             params_file = project_dir / "project_params.json"
             if not params_file.exists():
                 return err("No project_params.json found")
+            outside = await asyncio.to_thread(outside_base_problem, project_dir)
+            if outside:
+                return err(outside)
 
             # Manually read data_sources for compatibility
             movies_glob = ""

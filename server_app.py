@@ -21,6 +21,7 @@ from api.router import create_api_router
 from backend import CryoBoostBackend
 from services import workers
 from services.configs.config_service import REPO_ROOT
+from services.event_log import events
 from services.http_responses import NO_GZIP, json_headers
 from services.loop_watchdog import LoopWatchdog
 from services.project_state import is_in_loaded_project
@@ -141,6 +142,9 @@ def setup_app(port: int):
     """)
 
     backend = CryoBoostBackend(REPO_ROOT)
+    confined = backend.config_service.confined_base
+    if confined is not None:
+        events.info("This server keeps to the projects under %s (ConfineToDefaultProjectBase)", confined)
     create_ui_router(backend)
     # The agent API: the verbs of api/verbs.py at /api/v1/<verb>, behind the same token gate.
     app.include_router(create_api_router(backend, port))

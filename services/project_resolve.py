@@ -51,7 +51,11 @@ def _resolved(path: Path) -> str:
 
 def known_project_bases() -> list[Path]:
     """Bases 3-5, in order, de-duplicated. Order matters only for reporting — a hit in
-    any of them counts the same when checking for ambiguity."""
+    any of them counts the same when checking for ambiguity. A server that keeps to its base
+    (`local.ConfineToDefaultProjectBase`) knows that base alone."""
+    confined = get_config_service().confined_base
+    if confined is not None:
+        return [confined]
     prefs = get_prefs_service().prefs
     raw: list[str] = [prefs.project_base_path or ""]
     raw += [r.path for r in prefs.recent_project_roots]

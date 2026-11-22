@@ -151,6 +151,8 @@ def check_config():
         fail(f"local.DefaultProjectBase is not writable: {base}")
     else:
         ok(f"local.DefaultProjectBase: {base}")
+        if cfg.local.ConfineToDefaultProjectBase:
+            ok("local.ConfineToDefaultProjectBase: this server holds only the projects under it")
 
     for name, tool in cfg.tools.items():
         is_container = tool.exec_mode == "container"

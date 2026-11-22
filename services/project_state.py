@@ -1206,6 +1206,7 @@ class ProjectState(BaseModel):
         save_path = path or (
             self.project_path / "project_params.json" if self.project_path else Path("project_params.json")
         )
+        refuse_outside_base(save_path.parent)
         save_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Always stamp the current code's schema version on save
@@ -1580,6 +1581,36 @@ _project_states: dict[Path, ProjectState] = {}
 _resolved_paths: dict[Path, Path] = {}
 
 
+class OutsideProjectBase(PermissionError):
+    """A project this server may not hold: it keeps to one base (`local.ConfineToDefaultProjectBase`)."""
+
+
+def outside_base_problem(project_path: Path | str) -> str | None:
+    """Why this server may not hold the project at `project_path`, or None when it may. A server set to keep
+    to its base (a test server beside the one in use) holds nothing outside it: a project it held it would
+    reconcile and save, on code the project's own server does not run."""
+    from services.configs.config_service import get_config_service
+
+    base = get_config_service().confined_base
+    if base is None:
+        return None
+    resolved = Path(project_path).expanduser().resolve()
+    if resolved.is_relative_to(base) and resolved != base:
+        return None
+    return (
+        f"This server keeps to the projects under {base} (ConfineToDefaultProjectBase in its conf.yaml): "
+        f"it does not open, create or save {resolved}. Open that project in the server that runs it."
+    )
+
+
+def refuse_outside_base(project_path: Path | str) -> None:
+    """Raise `OutsideProjectBase` for a project this server may not hold. Every way into the registry and the
+    save pass it, so no caller can hold or write such a project by another route."""
+    problem = outside_base_problem(project_path)
+    if problem:
+        raise OutsideProjectBase(problem)
+
+
 def get_project_state_for(project_path: Path) -> ProjectState:
     """Get or create ProjectState for a specific project directory.
 
@@ -1590,6 +1621,7 @@ def get_project_state_for(project_path: Path) -> ProjectState:
     if resolved is None:
         resolved = _resolved_paths[project_path] = project_path.resolve()
     if resolved not in _project_states:
+        refuse_outside_base(resolved)
         params_file = resolved / "project_params.json"
         if params_file.exists():
             _project_states[resolved] = ProjectState.load(params_file)
@@ -1608,12 +1640,14 @@ async def preload_project_state(project_path: Path) -> None:
     params_file = resolved / "project_params.json"
     if resolved in _project_states or not params_file.exists():
         return
+    refuse_outside_base(resolved)
     loaded = await asyncio.to_thread(ProjectState.load, params_file)
     _project_states.setdefault(resolved, loaded)
 
 
 def set_project_state_for(project_path: Path, state: ProjectState):
     """Insert or replace a ProjectState in the registry."""
+    refuse_outside_base(project_path)
     _project_states[project_path.resolve()] = state
 
 

@@ -13,7 +13,7 @@ from typing import Any
 
 from services.event_log import events
 from services.project_resolve import resolve_project
-from services.project_state import get_project_state_for, preload_project_state
+from services.project_state import get_project_state_for, outside_base_problem, preload_project_state
 from services.result import err
 from services.routes import View, workspace_path
 
@@ -53,6 +53,9 @@ async def open_project(project: str) -> tuple[Path | None, dict[str, Any] | None
         path = Path(found["path"])
     if not await asyncio.to_thread((path / "project_params.json").is_file):
         return None, err(f"No CryoBoost project at {path} (no project_params.json).")
+    outside = await asyncio.to_thread(outside_base_problem, path)
+    if outside:
+        return None, err(outside)
     await preload_project_state(path)
     return get_project_state_for(path).project_path or path, None
 

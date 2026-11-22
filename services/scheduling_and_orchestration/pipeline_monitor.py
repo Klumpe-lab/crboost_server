@@ -160,13 +160,16 @@ class PipelineMonitor:
         only, so the next tick reconciles them. A project is otherwise reconciled only once someone
         opens it (or recovery found it at startup), and every roster shows it as it was on disk.
         Returns at once; the loads run in the background."""
-        from services.project_state import _project_states
+        from services.project_state import _project_states, outside_base_problem
 
         for row in rows:
             if not row.get("pipeline_active") or _owner_of(row) != self._backend.username:
                 continue
             path = Path(row.get("resolved_path") or row["path"])
             if path in _project_states or path in self._adopting:
+                continue
+            # A server that keeps to its base leaves the others' projects to the server that runs them.
+            if outside_base_problem(path):
                 continue
             self._adopting.add(path)
             task = asyncio.create_task(self._adopt_one(path), name=f"pipeline-monitor-adopt:{path.name}")

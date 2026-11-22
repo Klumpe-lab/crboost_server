@@ -8,6 +8,11 @@ crboost_python: ""
 local:
   # Default directory where new projects will be created
   DefaultProjectBase: "/path/to/your/projects"
+
+  # A test server beside the one in use (another checkout, another port): true makes this server hold only
+  # the projects under DefaultProjectBase. It refuses to open, create or save any other, so it cannot touch
+  # the projects the other server runs. It can still read from them (their tomograms, their particles).
+  ConfineToDefaultProjectBase: false
   
   # Default glob patterns for data import (optional, can be left empty)
   DefaultMoviesGlob: ""

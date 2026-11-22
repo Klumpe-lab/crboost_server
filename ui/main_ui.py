@@ -10,6 +10,7 @@ from pathlib import Path
 from nicegui import ui, Client, app
 
 from backend import CryoBoostBackend
+from services.configs.config_service import get_config_service
 from services.configs.user_prefs_service import get_prefs_service
 from services.project_resolve import resolve_project
 from services.result import ErrorCode
@@ -134,7 +135,11 @@ def create_ui_router(backend: CryoBoostBackend):
 
         prefs_service = get_prefs_service()
         prefs = prefs_service.load_from_app_storage(app.storage.user)
-        if prefs.project_base_path:
+        confined = get_config_service().confined_base
+        if confined is not None:
+            # A server that keeps to its base shows that base, whatever the prefs last pointed at.
+            ui_mgr.update_data_import(project_base_path=str(confined))
+        elif prefs.project_base_path:
             ui_mgr.update_data_import(project_base_path=prefs.project_base_path)
         if prefs.movies_glob:
             ui_mgr.update_data_import(movies_glob=prefs.movies_glob)

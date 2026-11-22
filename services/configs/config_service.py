@@ -137,6 +137,10 @@ class JobResourceProfile(BaseModel):
 
 class LocalConfig(BaseModel):
     DefaultProjectBase: str | None = None
+    # A test server beside the one in use: on, this server holds only projects under DefaultProjectBase and
+    # refuses to open, create or save any other (`services/project_state.refuse_outside_base`). Other projects
+    # can still be read from (tomograms of their jobs, particle sources).
+    ConfineToDefaultProjectBase: bool = False
     DefaultMoviesGlob: str | None = None
     DefaultMdocsGlob: str | None = None
     # What users ssh to from their own computer, when that is not the headnode itself (a login alias that
@@ -373,6 +377,7 @@ class ConfigService:
         if config_path is None:
             config_path = DEFAULT_CONFIG_PATH
         self._default_path = config_path
+        self._confined_base: Path | None = None
         self._override_path = USER_OVERRIDE_PATH
 
         if not config_path.exists():
@@ -461,6 +466,23 @@ class ConfigService:
     @property
     def default_project_base(self) -> str | None:
         return self._config.local.DefaultProjectBase
+
+    @property
+    def confined_base(self) -> Path | None:
+        """The one base this server may hold projects of (`local.ConfineToDefaultProjectBase`), resolved; None
+        when it may hold any. Read from the checkout's own conf.yaml: a user's override (Settings) neither
+        lifts it nor moves the base. Resolved once: the answer guards every project load and save."""
+        local = self._base_data.get("local") or {}
+        if not local.get("ConfineToDefaultProjectBase"):
+            return None
+        if self._confined_base is None:
+            base = str(local.get("DefaultProjectBase") or "").strip()
+            if not base:
+                raise ValueError(
+                    f"{self._default_path}: local.ConfineToDefaultProjectBase is on, and DefaultProjectBase is empty."
+                )
+            self._confined_base = Path(base).expanduser().resolve()
+        return self._confined_base
 
     @property
     def default_data_globs(self) -> tuple[str | None, str | None]:

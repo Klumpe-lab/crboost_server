@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from backend import CryoBoostBackend
 from services.configs.mdoc_service import describe_duplicate_ts_names, describe_ignored_mdocs
+from services.configs.config_service import get_config_service
 from services.configs.user_prefs_service import get_prefs_service
 from services.dataset_scan import best_mdocs_depth, co_located_mdocs_glob, first_mdoc_values, layer_problems
 from services.project_create import ProjectSpec, model_defaults
@@ -688,6 +689,20 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         """The user settled on a base location: persist it, remember it if it
         holds projects, and refresh the roster. Typing alone never scans."""
         path = (path or "").strip()
+        confined = get_config_service().confined_base
+        if confined is not None and (not path or Path(path).expanduser().resolve() != confined):
+            # A server that keeps to its base lists and makes projects there alone.
+            if path:
+                ui.notify(
+                    f"This server keeps to the projects under {confined} (ConfineToDefaultProjectBase in its "
+                    f"conf.yaml). Open {path} in the server that runs its projects.",
+                    type="warning",
+                    timeout=0,
+                    close_button=True,
+                )
+            path = str(confined)
+            if ui_mgr.panel_refs.project_path_input:
+                ui_mgr.panel_refs.project_path_input.value = path
         local_refs["committed_base_path"] = path
         ui_mgr.update_data_import(project_base_path=path)
         update_create_button_state()
