@@ -26,6 +26,7 @@ from services.event_log import events
 from services.result import ErrorCode, err, ok
 from services.project_state import AbstractJobParams, JobCategory, JobType, JobStatus, ReviewHold
 from services.segmentation.manifest import segment_feature_id
+from services.particles.helical import extraction_box_problem
 from services.particles.pick_context import context_frame_problem
 from services.segmentation.search_region import search_region_problem
 from services.subsets import subset_problem, write_subset_star
@@ -508,6 +509,13 @@ class PipelineOrchestratorService:
             for iid in instances_to_run
             if (jm := state.jobs.get(iid)) is not None
             for problem in jm.run_problems()
+        ]
+        # A filament's particles cut in a box RELION's helical mask does not fit are refused by Refine 3D, after
+        # the export; the box is checked here.
+        unset += [
+            f"{iid}: {problem}"
+            for iid in instances_to_run
+            if (jm := state.jobs.get(iid)) is not None and (problem := extraction_box_problem(state, jm))
         ]
         if unset:
             return err("Not started: " + "; ".join(unset), refused=unset), {}

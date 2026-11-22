@@ -14,6 +14,7 @@ from pathlib import Path
 from drivers.driver_base import ToolCommand, chosen_solvent_mask, get_driver_context, run_tool, start_supervisor
 from drivers.relion_continue import changed_since_start, continue_command, latest_checkpoint, program_index
 from services.jobs.refine3d import Refine3DParams
+from services.particles.helical import helical_box_problem
 from services.subtomo_merge import _parse_optimisation_set, _read_particles_star, write_optimisation_set
 
 ANGLE_COLS = ("rlnAngleRot", "rlnAngleTilt", "rlnAnglePsi")
@@ -83,37 +84,6 @@ def check_helical_priors(input_optimisation: Path) -> None:
         # RELION reads an absent flip ratio as 0.5.
         polarity = f"all tried in both directions along their filament (no {FLIP_RATIO_COL}: RELION takes 0.5)"
     print(f"[DRIVER] Helical: {len(particles)} segments in {tubes} filaments; {polarity}", flush=True)
-
-
-# relion_refine's soft mask edge for a filament when --maskedge is not given (ml_optimiser.cpp), in pixels.
-HELICAL_MASK_EDGE_PX = 10
-
-
-def helical_box_problem(
-    box_px: int, pixel_ang: float, tube_diameter_ang: float, mask_diameter_ang: float
-) -> str | None:
-    """Why relion_refine would refuse this tube in this box (helix.cpp, checkParametersFor3DHelicalReconstruction),
-    or None. The tube must lie within the mask, and the mask within the box. Without a mask diameter RELION takes
-    90 % of the box, less the mask's two edges when the box is under 200 px."""
-    box_ang = box_px * pixel_ang
-    if mask_diameter_ang > 0:
-        mask, how = mask_diameter_ang, "the Mask diameter set"
-    else:
-        inner = box_px - 2 * HELICAL_MASK_EDGE_PX if box_px * 0.05 < HELICAL_MASK_EDGE_PX else box_px
-        mask = 0.9 * inner * pixel_ang
-        how = f"what RELION takes for a box of {box_px} px at {pixel_ang:g} Å/px"
-    if mask > box_ang:
-        return f"The mask diameter of {mask:.0f} Å is wider than the box ({box_ang:.0f} Å)."
-    if tube_diameter_ang < 4 * pixel_ang:
-        return f"The tube diameter of {tube_diameter_ang:g} Å is under 4 px at {pixel_ang:g} Å/px."
-    if tube_diameter_ang > mask:
-        need = int(-(-tube_diameter_ang // (0.9 * pixel_ang))) + 2 * HELICAL_MASK_EDGE_PX
-        need += need % 2
-        return (
-            f"The tube diameter of {tube_diameter_ang:g} Å is wider than the mask, {mask:.0f} Å ({how}). RELION "
-            f"refuses that. Export the particles in a box of at least {need} px, or set a smaller tube diameter."
-        )
-    return None
 
 
 def check_helical_box(input_reference: Path, params: Refine3DParams) -> None:
