@@ -126,6 +126,10 @@ def species_defaults(job_type: JobType, species) -> dict[str, Any]:
         if diameter:
             out["diameter_ang"] = float(diameter)
     elif job_type == JobType.REFINE3D:
+        # The template a Refine 3D starts from when it is set to (off unless the user turns it on).
+        template = get_effective_template_path(species)
+        if template:
+            out["reference_path"] = template
         # A filament is refined as a helical tube of its diameter, from the priors its picks carry.
         if SpeciesKind(getattr(species, "kind", None) or SpeciesKind.PARTICLE) == SpeciesKind.FILAMENT:
             out["helix"] = True

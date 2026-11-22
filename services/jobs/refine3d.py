@@ -37,6 +37,8 @@ class Refine3DParams(AbstractJobParams):
         "ini_high",
         "low_resol_join_halves",
         "particle_diameter",
+        "reference_from_template",
+        "reference_path",
         "solvent_mask_path",
         "mask_from_job",
         "solvent_correct_fsc",
@@ -79,7 +81,13 @@ class Refine3DParams(AbstractJobParams):
             preferred_source="subtomoExtraction",
             needs_extracted=True,
         ),
-        InputSlot(key="input_reference", accepts=[JobFileType.REFERENCE_MAP], preferred_source="reconstructParticle"),
+        # A job's map, unless the species' template is the reference (reference_from_template).
+        InputSlot(
+            key="input_reference",
+            accepts=[JobFileType.REFERENCE_MAP],
+            preferred_source="reconstructParticle",
+            when="reference_from_job",
+        ),
         # A Mask job's mask, read only while mask_from_job is set; solvent_mask_path stays for a file made elsewhere.
         InputSlot(
             key="input_mask",
@@ -228,6 +236,20 @@ class Refine3DParams(AbstractJobParams):
         json_schema_extra=form("Reference & mask", S, "Å"),
     )
 
+    # A template in place of a job's map: for particles no job has averaged with features yet (a filament traced
+    # from a segmentation averages to a smooth tube, which has no protofilaments to lock the rot onto).
+    reference_from_template: bool = Field(
+        default=False,
+        description="Start from the template below instead of a job's map (the reference input): for particles "
+        "whose own average has no features to align to yet. The template must be white, at the particles' pixel "
+        "size and in their box; it is filtered to Low-pass reference before the first iteration.",
+        title="Template as reference", json_schema_extra=form("Reference & mask"),
+    )
+    reference_path     : str  = Field(
+        default="", description="The template to start from: the species' selected template when the job was made",
+        title="Reference template", json_schema_extra=form("Reference & mask", L),
+    )
+
     # Optional mask
     solvent_mask_path  : str  = Field(
         default="", description="Path to soft mask for references (optional)", title="Solvent mask",
@@ -307,6 +329,11 @@ class Refine3DParams(AbstractJobParams):
         return [("in_optimisation", str(input_opt)), ("in_3dref", str(input_ref))]
 
     @property
+    def reference_from_job(self) -> bool:
+        """Whether the reference is a job's map (the reference input), as against the template."""
+        return not self.reference_from_template
+
+    @property
     def imposes_helical_symmetry(self) -> bool:
         return self.helix and not self.ignore_helical_symmetry
 
@@ -318,10 +345,17 @@ class Refine3DParams(AbstractJobParams):
         # A filament refinement searches around its priors by the three sigmas of its own.
         if name == "sigma_ang":
             return not self.helix
+        if name == "reference_path":
+            return self.reference_from_template
         return True
 
     def run_problems(self) -> list[str]:
         problems = list(super().run_problems())
+        if self.reference_from_template and not self.reference_path.strip():
+            problems.append(
+                "Template as reference is on and no template is named: select one on the Species page for new jobs, "
+                "or give its path here."
+            )
         if not self.helix:
             return problems
         if self.sigma_rot > 0 and self.sigma_tilt <= 0:

@@ -86,6 +86,39 @@ def check_helical_priors(input_optimisation: Path) -> None:
     print(f"[DRIVER] Helical: {len(particles)} segments in {tubes} filaments; {polarity}", flush=True)
 
 
+# A template may differ from the particles' pixel size by this fraction: --trust_ref_size takes it as theirs.
+TEMPLATE_PIXEL_TOLERANCE = 0.01
+
+
+def check_template_reference(input_optimisation: Path, reference: Path) -> None:
+    """A template stands in for a job's map only on the particles' own grid: relion_refine runs with
+    --trust_ref_size, which takes the reference's box and pixel size as the particles' without resampling it."""
+    import mrcfile
+
+    with mrcfile.open(reference, header_only=True, permissive=True) as mrc:
+        box_px, pixel_ang = int(mrc.header.nx), float(mrc.voxel_size.x)
+    particles_star, _ = _parse_optimisation_set(input_optimisation)
+    optics, _, _ = _read_particles_star(particles_star)
+    lacking = [c for c in ("rlnImageSize", "rlnImagePixelSize") if c not in optics.columns]
+    if lacking:
+        raise ValueError(f"{particles_star} states no {lacking} in its optics: the template cannot be checked")
+    boxes, pixels = set(optics["rlnImageSize"].astype(int)), set(optics["rlnImagePixelSize"].astype(float).round(4))
+    if len(boxes) != 1 or len(pixels) != 1:
+        raise ValueError(f"{particles_star} holds particles of several grids ({sorted(boxes)} px, {sorted(pixels)} Å)")
+    want_box, want_pixel = boxes.pop(), pixels.pop()
+    problems = []
+    if box_px != want_box:
+        problems.append(f"its box is {box_px} px, the particles' {want_box} px")
+    if pixel_ang <= 0 or abs(pixel_ang - want_pixel) > TEMPLATE_PIXEL_TOLERANCE * want_pixel:
+        problems.append(f"its pixel is {pixel_ang:g} Å, the particles' {want_pixel:g} Å")
+    if problems:
+        raise ValueError(
+            f"The template {reference.name} is not on the particles' grid: {'; '.join(problems)}. Make it at "
+            f"{want_pixel:g} Å in a box of {want_box} px (Species page: resample)."
+        )
+    print(f"[DRIVER] Template reference on the particles' grid: {box_px} px at {pixel_ang:g} Å", flush=True)
+
+
 def check_helical_box(input_reference: Path, params: Refine3DParams) -> None:
     """The reference's box stands for the particles': --trust_ref_size takes its pixel size as theirs."""
     import mrcfile
@@ -139,7 +172,12 @@ def main():
         additional_binds = list(context.get("additional_binds", []))
 
         input_optimisation = paths["input_optimisation"]
-        input_reference = paths["input_reference"]
+        if params.reference_from_template:
+            if not params.reference_path.strip():
+                raise ValueError("Template as reference is on and the job names no template")
+            input_reference = Path(params.reference_path)
+        else:
+            input_reference = paths["input_reference"]
 
         if not input_optimisation.exists():
             raise FileNotFoundError(f"Input optimisation_set.star not found: {input_optimisation}")
@@ -148,6 +186,8 @@ def main():
 
         print(f"[DRIVER] Input optimisation_set: {input_optimisation}", flush=True)
         print(f"[DRIVER] Input reference: {input_reference}", flush=True)
+        if params.reference_from_template:
+            check_template_reference(input_optimisation, input_reference)
         print(f"[DRIVER] Job dir: {job_dir}", flush=True)
         if params.helix:
             check_helical_priors(input_optimisation)
