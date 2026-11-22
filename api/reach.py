@@ -48,6 +48,9 @@ def refusal_for(name: str, *, made_by_api: bool, shared: bool, owner: str | None
 
 
 def _refusal(state, project_path: Path) -> str | None:
+    # Newer code wrote it: this server would drop what it cannot read (HOTFIXES H38).
+    if reason := getattr(state, "read_only_reason", None):
+        return reason
     return refusal_for(
         project_path.name,
         made_by_api=state.made_by_api,

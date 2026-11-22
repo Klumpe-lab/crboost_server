@@ -13,6 +13,9 @@ local:
   # the projects under DefaultProjectBase. It refuses to open, create or save any other, so it cannot touch
   # the projects the other server runs. It can still read from them (their tomograms, their particles).
   ConfineToDefaultProjectBase: false
+  # true: new projects are made only directly under DefaultProjectBase (landing Create, Protocols, the agent API);
+  # projects elsewhere still open, run and save. The landing page starts at that base.
+  CreateOnlyInDefaultProjectBase: false
   
   # Default glob patterns for data import (optional, can be left empty)
   DefaultMoviesGlob: ""

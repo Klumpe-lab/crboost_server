@@ -141,6 +141,9 @@ class LocalConfig(BaseModel):
     # refuses to open, create or save any other (`services/project_state.refuse_outside_base`). Other projects
     # can still be read from (tomograms of their jobs, particle sources).
     ConfineToDefaultProjectBase: bool = False
+    # On: a new project (landing Create, Protocols, the agent API) is made only directly under DefaultProjectBase;
+    # projects elsewhere still open, run and save as before (`project_service.create_project`).
+    CreateOnlyInDefaultProjectBase: bool = False
     DefaultMoviesGlob: str | None = None
     DefaultMdocsGlob: str | None = None
     # What users ssh to from their own computer, when that is not the headnode itself (a login alias that
@@ -403,6 +406,7 @@ class ConfigService:
             config_path = DEFAULT_CONFIG_PATH
         self._default_path = config_path
         self._confined_base: Path | None = None
+        self._creation_base: Path | None = None
         self._override_path = USER_OVERRIDE_PATH
 
         if not config_path.exists():
@@ -508,6 +512,26 @@ class ConfigService:
                 )
             self._confined_base = Path(base).expanduser().resolve()
         return self._confined_base
+
+    @property
+    def creation_base(self) -> Path | None:
+        """The one folder new projects are made in (`local.CreateOnlyInDefaultProjectBase`, or a confined server's
+        base), resolved; None when a new project may go anywhere. From the checkout's own conf.yaml, as
+        `confined_base`."""
+        if (confined := self.confined_base) is not None:
+            return confined
+        local = self._base_data.get("local") or {}
+        if not local.get("CreateOnlyInDefaultProjectBase"):
+            return None
+        if self._creation_base is None:
+            base = str(local.get("DefaultProjectBase") or "").strip()
+            if not base:
+                raise ValueError(
+                    f"{self._default_path}: local.CreateOnlyInDefaultProjectBase is on, and DefaultProjectBase is "
+                    "empty."
+                )
+            self._creation_base = Path(base).expanduser().resolve()
+        return self._creation_base
 
     @property
     def default_data_globs(self) -> tuple[str | None, str | None]:

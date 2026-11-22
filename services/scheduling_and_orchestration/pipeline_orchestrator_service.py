@@ -223,6 +223,8 @@ class PipelineOrchestratorService:
             return err("No jobs selected.")
 
         state = self.backend.state_service.state_for(project_dir)
+        if state.read_only_reason:
+            return err(state.read_only_reason, code=ErrorCode.NOT_WRITABLE)
 
         # A run starts what is not live, around what is: a running pipeline does not refuse it.
         # Membership and order are the roster's (ProjectState.roster), which every Run is given. A job

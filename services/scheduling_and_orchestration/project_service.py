@@ -37,7 +37,7 @@ from services.tilt_series import preload_registry
 from services.dataset_scan import data_values, differences, layer_problems
 from services.event_log import events
 from services.project_create import ProjectSpec, apply_values, spec_problems
-from services.result import err, ok
+from services.result import ErrorCode, err, ok
 from services.shared_files import make_group_writable_dir
 from services.tilt_series.preimport import DatasetOverview
 from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
@@ -526,6 +526,14 @@ class ProjectService:
             outside = await asyncio.to_thread(outside_base_problem, project_dir)
             if outside:
                 return err(outside)
+            creation_base = self.backend.config_service.creation_base
+            parent = Path(spec.base).expanduser()
+            if creation_base is not None and await asyncio.to_thread(parent.resolve) != creation_base:
+                return err(
+                    f"New projects are made in {creation_base} only (CreateOnlyInDefaultProjectBase in this "
+                    f"checkout's conf.yaml); {spec.base} is not it. Projects elsewhere still open as before.",
+                    code=ErrorCode.NOT_WRITABLE,
+                )
             if project_dir.exists():
                 return err(f"Project directory '{project_dir}' already exists.")
 

@@ -48,9 +48,10 @@ def create_ui_router(backend: CryoBoostBackend):
 
         prefs_service = get_prefs_service()
         prefs = prefs_service.load_from_app_storage(app.storage.user)
-        confined = get_config_service().confined_base
+        confined = get_config_service().creation_base
         if confined is not None:
-            # A server that keeps to its base shows that base, whatever the prefs last pointed at.
+            # A server that makes new projects in one base (or keeps to it) shows that base, whatever the prefs
+            # last pointed at.
             ui_mgr.update_data_import(project_base_path=str(confined))
         elif prefs.project_base_path:
             ui_mgr.update_data_import(project_base_path=prefs.project_base_path)

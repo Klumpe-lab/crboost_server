@@ -787,10 +787,15 @@ class ProjectState(BaseModel):
     # `<branch>@<sha>` of the checkout that last saved this file (services/code_version.py).
     saved_by: str | None = None
     # Set when the file on disk was written by newer code than this process runs: the message the
-    # UI shows on every open, and the schema to name the one-time backup after. Jobs still run;
-    # what this code cannot parse is lost when it saves, so the first such save keeps a copy.
+    # UI shows on every open, and the file's schema. Such a project is read-only here: `save` writes
+    # nothing, Run and the API's writes refuse it, the monitor leaves it to the newer server. Saving
+    # it would drop every field this code cannot read (HOTFIXES H38).
     version_skew: str | None = Field(default=None, exclude=True)
     newer_disk_schema: tuple[int, int] | None = Field(default=None, exclude=True)
+    # The newer backup an older server's save left (`project_params.json.schema-X.Y.bak`) whose dropped
+    # fields this load put back (`_put_back_dropped`); the first save after it renames it `.put-back`.
+    _put_back_from: Path | None = PrivateAttr(default=None)
+    _read_only_warned: bool = PrivateAttr(default=False)
 
     movies_glob: str = ""
     mdocs_glob: str = ""
@@ -1208,8 +1213,19 @@ class ProjectState(BaseModel):
     def update_modified(self):
         self.modified_at = datetime.now()
 
+    @property
+    def read_only_reason(self) -> str | None:
+        """Why this server may not change the project, or None: newer code wrote its file."""
+        return self.version_skew if self.newer_disk_schema is not None else None
+
     def save(self, path: Path | None = None):
-        """Atomic file write via tempfile + rename."""
+        """Atomic file write via tempfile + rename. Writes nothing for a project newer code wrote
+        (`read_only_reason`): this code would drop what it cannot read."""
+        if self.newer_disk_schema is not None:
+            if not self._read_only_warned:
+                self._read_only_warned = True
+                events.warning("%s · not saved: %s", self.project_name or "project", self.version_skew)
+            return
         save_path = path or (
             self.project_path / "project_params.json" if self.project_path else Path("project_params.json")
         )
@@ -1219,17 +1235,6 @@ class ProjectState(BaseModel):
         # Always stamp the current code's schema version on save
         self.schema_version = SCHEMA_VERSION
         self.saved_by = code_version()
-
-        if self.newer_disk_schema is not None and save_path.exists():
-            major, minor = self.newer_disk_schema
-            backup = save_path.with_name(f"{save_path.name}.schema-{major}.{minor}.bak")
-            if not backup.exists():
-                shutil.copy2(save_path, backup)
-                events.warning(
-                    "%s · saved by older code than wrote it; the newer file is kept as %s",
-                    save_path.parent.name,
-                    backup.name,
-                )
 
         # One native call writes the JSON: Python's json encoder with an indent is pure Python, and it
         # would hold the GIL (and so the event loop) for the whole write.
@@ -1248,6 +1253,16 @@ class ProjectState(BaseModel):
             raise
 
         self._dirty = False
+        if self._put_back_from is not None and path is None:
+            # What the backup held is in the file now: keep it as a record, never read it again.
+            done = self._put_back_from.with_name(self._put_back_from.name + ".put-back")
+            os.rename(self._put_back_from, done)
+            events.info(
+                "%s · what an older save dropped is back in the file; its source kept as %s",
+                save_path.parent.name,
+                done.name,
+            )
+            self._put_back_from = None
 
     @staticmethod
     def _build_job_params(param_class, job_data: dict) -> tuple[Any, list[str]]:
@@ -1332,11 +1347,17 @@ class ProjectState(BaseModel):
             version_skew = (
                 f"This project was saved by newer CryoBoost code ({data.get('saved_by') or 'version unknown'}, "
                 f"project schema {file_major}.{file_minor}) than this server runs "
-                f"({code_version() or 'version unknown'}, schema {code_major}.{code_minor}). Jobs run as usual, "
-                f"but what this version cannot read is dropped when it saves; the first such save keeps the "
-                f"newer file as {path.name}.schema-{file_major}.{file_minor}.bak. Update this checkout."
+                f"({code_version() or 'version unknown'}, schema {code_major}.{code_minor}). It is read-only here: "
+                f"this server saves nothing of it, runs nothing and lets no agent change it, since it would drop "
+                f"what it cannot read. Jobs already queued run on; the newer server follows them. Update this "
+                f"checkout to work on it."
             )
             events.warning("%s · %s", path.parent.name, version_skew)
+            put_back = None
+        else:
+            # An older server's save may have left the newer file beside this one (HOTFIXES H38): take back what
+            # it dropped, before anything below reads `data`.
+            put_back = _put_back_dropped(data, path, (file_major, file_minor))
 
         if read_only and file_major < 3:
             raise ValueError(
@@ -1394,6 +1415,14 @@ class ProjectState(BaseModel):
         if newer_on_disk:
             project_state.version_skew = version_skew
             project_state.newer_disk_schema = (file_major, file_minor)
+        if put_back is not None:
+            backup, what = put_back
+            if what:
+                message = f"Put back what an older server's save dropped, from {backup.name}: {'; '.join(what)}."
+                events.warning("%s · %s", path.parent.name, message)
+                project_state.load_warnings.append(message)
+            if not read_only:
+                project_state._put_back_from = backup
         project_state.job_path_mapping = data.get("job_path_mapping", {})
         try:
             project_state.species_registry = [ParticleSpecies(**s) for s in data.get("species_registry", [])]
@@ -1608,6 +1637,53 @@ def outside_base_problem(project_path: Path | str) -> str | None:
         f"This server keeps to the projects under {base} (ConfineToDefaultProjectBase in its conf.yaml): "
         f"it does not open, create or save {resolved}. Open that project in the server that runs it."
     )
+
+
+_BACKUP_RE = re.compile(r"\.schema-(\d+)\.(\d+)\.bak$")
+# Stamped on every save, so never "dropped".
+_SAVE_STAMPS = ("schema_version", "saved_by")
+
+
+def _put_back_dropped(data: dict, path: Path, file_schema: tuple[int, int]) -> tuple[Path, list[str]] | None:
+    """What an older server's save dropped, taken back into `data` from the newer file that save kept beside it
+    (`project_params.json.schema-X.Y.bak`; X.Y newer than the file, not newer than this code). Only keys the live
+    file lacks: on the top level, on each species the backup holds under the same id, and on each job it holds
+    under the same instance id and type. A thing the older server added, changed or deleted stays as it is.
+    Returns the backup and what came back of each thing (empty when nothing was missing), or None when there is
+    no such backup."""
+    backups = []
+    for p in path.parent.glob(f"{path.name}.schema-*.bak"):
+        m = _BACKUP_RE.search(p.name)
+        if m and file_schema < (schema := (int(m.group(1)), int(m.group(2)))) <= SCHEMA_VERSION:
+            backups.append((schema, p))
+    if not backups:
+        return None
+    backup = max(backups)[1]
+    try:
+        newer = json.loads(backup.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        # A backup that cannot be read puts nothing back; the user is told on open.
+        return backup, [f"nothing: the backup cannot be read ({e})"]
+    what: list[str] = []
+
+    def take(live: dict, old: dict, label: str) -> None:
+        keys = [k for k in old if k not in live and k not in _SAVE_STAMPS]
+        for k in keys:
+            live[k] = old[k]
+        if keys:
+            what.append(f"{label}: {', '.join(keys)}")
+
+    take(data, {k: v for k, v in newer.items() if k not in ("species_registry", "jobs")}, "the project")
+    old_species = {s.get("id"): s for s in newer.get("species_registry", []) if isinstance(s, dict)}
+    for sp in data.get("species_registry", []):
+        if isinstance(sp, dict) and sp.get("id") in old_species:
+            take(sp, old_species[sp["id"]], f"species {sp['id']}")
+    old_jobs = newer.get("jobs", {})
+    for iid, job in data.get("jobs", {}).items():
+        old = old_jobs.get(iid)
+        if isinstance(old, dict) and isinstance(job, dict) and old.get("job_type") == job.get("job_type"):
+            take(job, old, f"job {iid}")
+    return backup, what
 
 
 def refuse_outside_base(project_path: Path | str) -> None:

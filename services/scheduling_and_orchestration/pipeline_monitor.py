@@ -212,10 +212,11 @@ class PipelineMonitor:
 
         # Snapshot to avoid mutation-during-iteration when a new project
         # opens or closes mid-tick.
+        # A project newer code wrote is the newer server's to follow: this one could not save what it sees.
         targets = [
             (path, state)
             for path, state in list(_project_states.items())
-            if state.pipeline_active or _predict_in_flight(state)
+            if (state.pipeline_active or _predict_in_flight(state)) and not state.read_only_reason
         ]
         if not targets:
             return
