@@ -38,7 +38,7 @@ from services.job_models import CandidateExtractPytomParams
 from services.models_base import JobType, PickOrientation
 from services.particles import filament_picks
 from services.particles.coords import CENTERED_COLS, centered_angst_to_voxel, pixel_size_from_tomo_row
-from services.particles.pick_context import context_columns, tomogram_context
+from services.particles.pick_context import column_ids, context_columns, tomogram_context
 from services.particles.seg_picks import (
     AIS_ORIENT,
     ANGLE_SOURCE_COL,
@@ -275,7 +275,7 @@ class PickFromSegmentationDriver(ArrayDriver):
         if p.traces_filaments:
             self._aggregate_filaments(ctx, results, blocks, per_tomo, features)
             return
-        empty = pd.DataFrame(columns=[*OUTPUT_COLUMNS, *context_columns(features)])
+        empty = pd.DataFrame(columns=[*OUTPUT_COLUMNS, *context_columns(features, column_ids(manifest, features))])
         table = pd.concat(blocks, ignore_index=True) if blocks else empty
 
         summary = {
@@ -504,8 +504,9 @@ class PickFromSegmentationDriver(ArrayDriver):
                     f"{item}: its {c.feature} volume ({tuple(c.shape_zyx)} at {c.voxel_angstrom:g} Å) is not on the "
                     f"grid of its {p.feature} volume ({tuple(e.shape_zyx)} at {e.voxel_angstrom:g} Å)"
                 )
+        features = context_features(manifest, p.feature)
         rows, summary["context"] = tomogram_context(
-            rows, others, context_features(manifest, p.feature), p.particle_diameter_ang
+            rows, others, features, p.particle_diameter_ang, column_ids(manifest, features)
         )
         out = ctx.job_dir / PICKS_DIR
         out.mkdir(exist_ok=True)

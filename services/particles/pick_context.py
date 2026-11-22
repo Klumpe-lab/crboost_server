@@ -25,7 +25,12 @@ from services.job_lineage import recon_of
 from services.models_base import JobType
 from services.particles.coords import CENTERED_COLS, centered_angst_to_voxel
 from services.particles.seg_picks import mean_p_within
-from services.segmentation.manifest import SegmentationEntry
+from services.segmentation.manifest import (
+    SEGMENT_FEATURE_SUFFIX,
+    SegmentationEntry,
+    SegmentationManifest,
+    segment_feature_id,
+)
 from services.segmentation.search_region import read_segmentations
 from services.segmentation.volumes import DISPLAY_THRESHOLD, entry_dtype
 
@@ -35,8 +40,17 @@ DIST_COL = "cbDistAngst_{}"
 P_RADIUS = 0.5
 
 
-def context_columns(features) -> list[str]:
-    return [c for f in sorted(features) for c in (P_COL.format(f), DIST_COL.format(f))]
+def column_ids(manifest: SegmentationManifest, features) -> dict[str, str]:
+    """The id each feature's context columns carry (roadmap 69 G2, D5 there): a Segment job's feature its `_ais` id,
+    whether the job wrote that id or ran before ids had it (roadmap 64 D9), so picks of projects segmented before
+    and after name one feature alike in a pool; an import's feature the name it was given."""
+    segmented = manifest.method != "import"
+    return {f: segment_feature_id(f) if segmented and not f.endswith(SEGMENT_FEATURE_SUFFIX) else f for f in features}
+
+
+def context_columns(features, ids: Mapping[str, str]) -> list[str]:
+    """The two columns of each feature, named by `ids` (`column_ids`)."""
+    return [c for f in sorted(features) for c in (P_COL.format(ids.get(f, f)), DIST_COL.format(ids.get(f, f)))]
 
 
 def feature_context(
@@ -58,16 +72,16 @@ def feature_context(
 
 
 def tomogram_context(
-    rows: pd.DataFrame, entries: Mapping[str, SegmentationEntry], features, diameter_ang: float
+    rows: pd.DataFrame, entries: Mapping[str, SegmentationEntry], features, diameter_ang: float, ids: Mapping[str, str]
 ) -> tuple[pd.DataFrame, dict[str, dict | None]]:
-    """One tomogram's picks (`rows`, centred Å) with the context columns of `features`, read from `entries` (the
-    tomogram's volumes by feature, on its grid), and per feature how many picks sit inside it and their median p;
-    None for a feature the tomogram has no volume of."""
+    """One tomogram's picks (`rows`, centred Å) with the context columns of `features`, named by `ids`
+    (`column_ids`), read from `entries` (the tomogram's volumes by feature, on its grid), and per feature how many
+    picks sit inside it and their median p; None for a feature the tomogram has no volume of."""
     out = rows.copy()
     summary: dict[str, dict | None] = {}
     coords = out[CENTERED_COLS].to_numpy(dtype=float) if len(out) else np.empty((0, 3))
     for feature in sorted(features):
-        p_col, dist_col = P_COL.format(feature), DIST_COL.format(feature)
+        p_col, dist_col = P_COL.format(ids.get(feature, feature)), DIST_COL.format(ids.get(feature, feature))
         entry = entries.get(feature)
         if entry is None:
             out[p_col], out[dist_col] = np.nan, np.nan

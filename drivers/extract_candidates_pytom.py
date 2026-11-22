@@ -50,7 +50,7 @@ from drivers.driver_base import DriverContext, ToolCommand, print_cmd_only, requ
 from drivers.pick_from_segmentation import VOXEL_TOLERANCE, PickFromSegmentationDriver
 from services.models_base import PickSource
 from services.particles.coords import binned_tomo_size_from_tomo_row, pixel_size_from_tomo_row
-from services.particles.pick_context import context_frame_problem, tomogram_context
+from services.particles.pick_context import column_ids, context_frame_problem, tomogram_context
 from services.segmentation.search_region import read_segmentations
 from services.subtomo_merge import _read_tomograms_star, write_optimisation_set
 from services.job_models import CandidateExtractPytomParams, ExtractionCutoffMethod
@@ -463,8 +463,9 @@ class ExtractCandidatesPytomDriver(ArrayDriver):
         name = next(k for k, v in blocks.items() if isinstance(v, pd.DataFrame))
         manifest = read_segmentations(self._task_context(ctx))
         entries = {e.feature: e for e in manifest.entries if e.tomogram == item}
+        features = manifest.features()
         blocks[name], summary = tomogram_context(
-            blocks[name], entries, manifest.features(), ctx.params.particle_diameter_ang
+            blocks[name], entries, features, ctx.params.particle_diameter_ang, column_ids(manifest, features)
         )
         tmp = local_tm_results / f".{item}_particles.star.tmp"
         starfile.write(blocks, tmp, overwrite=True)
