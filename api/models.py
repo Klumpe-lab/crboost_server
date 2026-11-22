@@ -201,6 +201,15 @@ class MakeClassSetIn(JobIn):
     name: str = Field(description="The set's name")
 
 
+class MakePolaritySetIn(JobIn):
+    name: str = Field(description="The set's name")
+    keep_undecided: bool = Field(
+        False,
+        description="Keep the filaments without a 2:1 majority, as they went in (both directions open); by "
+        "default they are left out of the set",
+    )
+
+
 class TaskIn(_In):
     task_id: str = Field(description="The id a verb that runs in the background returned")
 

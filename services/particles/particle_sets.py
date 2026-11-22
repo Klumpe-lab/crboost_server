@@ -65,6 +65,7 @@ class SetOp(StrEnum):
     DECOY_POSITIONS = "decoy_positions"
     UNION = "union"
     POOL = "pool"  # made in the STA kitchen from a pool's members, possibly across projects
+    POLARITY = "polarity"  # a helical Refine 3D's segments, each filament turned to its majority's direction
 
 
 class ParentRef(BaseModel):
@@ -73,7 +74,7 @@ class ParentRef(BaseModel):
 
     kind: Literal["job", "set", "merge", "list"]
     instance_id: str = ""  # kind "job": the producing instance
-    output: str = ""  # kind "job": candidates | particles | particles_filtered | class3d_data
+    output: str = ""  # kind "job": candidates | particles | particles_filtered | class3d_data | refine3d_data
     set_id: str = ""  # kind "set"
     merge_slug: str = ""  # kind "merge"
     list_ref: str = ""  # kind "list": "<species>/<tomo>/<slug>"

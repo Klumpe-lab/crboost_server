@@ -689,6 +689,47 @@ async def make_class_set(call: Call) -> dict[str, Any]:
     return res
 
 
+def _helical_refine3d(call: Call, iid: str):
+    """The Refine 3D `iid` and None, or None and the refusal."""
+    jm, problem = call.job(iid)
+    if problem:
+        return None, problem
+    if jm.job_type != JobType.REFINE3D:
+        return None, err(f"{iid} is a {jm.job_type.value} job, not a Refine 3D.")
+    if not getattr(jm, "helix", False):
+        return None, err(f"{iid} refined without helix: its particles are not segments of filaments.")
+    return jm, None
+
+
+async def get_polarity(call: Call) -> dict[str, Any]:
+    """What the polarity vote over a helical Refine 3D decides, as its Results tab shows it."""
+    _jm, problem = _helical_refine3d(call, call.args.job)
+    if problem:
+        return problem
+    res = await call.backend.polarity_readout(call.path, call.args.job)
+    if res["success"]:
+        res.update(res.pop("vote"))
+    res["ui_url"] = call.url(View.JOB, call.args.job)
+    return res
+
+
+async def make_polarity_set(call: Call) -> dict[str, Any]:
+    """A set of a helical Refine 3D's segments with each filament's direction decided, as its Results tab's
+    Make set does."""
+    a = call.args
+    jm, problem = _helical_refine3d(call, a.job)
+    if problem:
+        return problem
+    res = await call.backend.create_polarity_set(
+        call.path, refine3d_instance=a.job, name=a.name, species_id=jm.species_id or "", keep_undecided=a.keep_undecided
+    )
+    if res["success"]:
+        ps = res.pop("set")
+        res.update(set=ps.id, name=ps.name, picks=ps.n_particles, funnel=[f.model_dump() for f in ps.funnel])
+    res["ui_url"] = call.url(View.JOB, a.job)
+    return res
+
+
 async def plan_run(call: Call) -> dict[str, Any]:
     res = await call.backend.pipeline_orchestrator.plan_run(call.path)
     res["ui_url"] = call.url()

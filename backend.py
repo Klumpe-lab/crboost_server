@@ -28,6 +28,7 @@ from services.jobs.spec import PIPELINE_ORDER, display_name, driver_invocation
 from services.jobs.tilt_filter import FilterMode
 from services.models_base import JobStatus, JobType
 from services.particles import class_readout, particle_sets, set_ops
+from services.particles.analytics_store import job_dir_of
 from services.particles.list_ref import extract_pick_list_instance_id
 from services.particles.particle_sets import ParentRef, Rule
 from services.project_state import get_state_service, remove_project_state
@@ -1748,6 +1749,55 @@ class CryoBoostBackend:
             return err(str(e))
         except Exception as e:
             logger.exception("Class subset of %s failed", class3d_instance)
+            return err(f"{type(e).__name__}: {e}")
+        state.bump_registry_rev()
+        return ok(set=pset)
+
+    async def polarity_readout(self, project_path: Path, refine3d_instance: str) -> dict[str, Any]:
+        """What the polarity vote over a helical Refine 3D decides (set_ops.polarity_readout), as ok(vote=…)."""
+        project_path = Path(project_path)
+        state = self.state_service.state_for(project_path)
+        job_dir = job_dir_of(state, project_path, refine3d_instance)
+        if job_dir is None:
+            return err(f"{refine3d_instance} has not run yet.", code=ErrorCode.NOT_WRITTEN_YET)
+        try:
+            vote = await asyncio.to_thread(set_ops.polarity_readout, job_dir)
+        except FileNotFoundError as e:
+            return err(str(e), code=ErrorCode.NOT_WRITTEN_YET)
+        except ValueError as e:
+            return err(str(e))
+        except Exception as e:
+            logger.exception("Polarity vote of %s failed", refine3d_instance)
+            return err(f"{type(e).__name__}: {e}")
+        return ok(vote=vote)
+
+    async def create_polarity_set(
+        self,
+        project_path: Path,
+        *,
+        refine3d_instance: str,
+        name: str,
+        species_id: str,
+        keep_undecided: bool = False,
+    ) -> dict[str, Any]:
+        """A new set of a helical Refine 3D's segments with each filament's direction decided
+        (set_ops.create_polarity_set)."""
+        project_path = Path(project_path)
+        state = self.state_service.state_for(project_path)
+        try:
+            pset = await asyncio.to_thread(
+                set_ops.create_polarity_set,
+                project_path,
+                state,
+                refine3d_instance=refine3d_instance,
+                name=name,
+                species_id=species_id,
+                keep_undecided=keep_undecided,
+            )
+        except (ValueError, FileNotFoundError, FileExistsError) as e:
+            return err(str(e))
+        except Exception as e:
+            logger.exception("Polarity set of %s failed", refine3d_instance)
             return err(f"{type(e).__name__}: {e}")
         state.bump_registry_rev()
         return ok(set=pset)

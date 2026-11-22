@@ -22,7 +22,7 @@ import pandas as pd
 import starfile
 
 from services.models_base import JobType
-from services.particles import analytics
+from services.particles import analytics, filament_polarity
 from services.particles.analytics import fit_pick_plane, min_distances, plane_depth, tomogram_extents
 from services.particles.analytics_store import job_dir_of
 from services.particles.coords import CENTERED_COLS
@@ -426,6 +426,145 @@ def create_class_subset_set(
         tomograms_star=str(tomograms),
     )
     return publish_set(project_path, pset, lambda out: table.write(subset, out))
+
+
+# ── Polarity of filaments ────────────────────────────────────────────────────────────────────────
+
+
+def polarity_vote(job_dir: Path, *, min_majority: float = filament_polarity.MIN_MAJORITY):
+    """The vote of a helical Refine 3D's segments (`filament_polarity.vote`), with the files it read."""
+    files = filament_polarity.refine3d_files(job_dir)
+    table = read_table(files["data"])
+    if filament_polarity.TUBE_COL not in table.df.columns:
+        raise ValueError(f"{Path(job_dir).name} refined no filaments: its particles carry no rlnHelicalTubeID")
+    started = read_table(files["started"]).df
+    box = filament_polarity.particle_box_ang(table.blocks)
+    return filament_polarity.vote(table.df, started, min_majority=min_majority, box_ang=box), files, table
+
+
+def polarity_readout(job_dir: Path, *, min_majority: float = filament_polarity.MIN_MAJORITY) -> dict[str, Any]:
+    """What the vote over a helical Refine 3D would decide, for its Results tab and `get_job`: the counts, the
+    pieces test and one row per filament. Writes nothing."""
+    v, files, _table = polarity_vote(job_dir, min_majority=min_majority)
+    fil = v.filaments
+    return {
+        **v.counts,
+        "iteration": files["iteration"],
+        "converged": files["iteration"] is None,
+        "min_majority": v.min_majority,
+        "pieces": v.pieces,
+        "per_filament": [
+            {
+                "tomo": str(r[filament_polarity.TOMO_COL]),
+                "tube": int(r[filament_polarity.TUBE_COL]),
+                "segments": int(r["segments"]),
+                "reversed": int(r["n_reversed"]),
+                "majority": round(float(r["majority"]), 3),
+                "verdict": str(r["verdict"]),
+            }
+            for _, r in fil.iterrows()
+        ],
+    }
+
+
+def create_polarity_set(
+    project_path: Path,
+    state,
+    *,
+    refine3d_instance: str,
+    name: str,
+    species_id: str = "",
+    min_majority: float = filament_polarity.MIN_MAJORITY,
+    keep_undecided: bool = False,
+) -> ParticleSet:
+    """A new set: a helical Refine 3D's segments with each filament's direction decided by the vote of its
+    segments (`filament_polarity`): the minority turned round, the priors along the decided direction, the flip
+    ratio 0 so the next refinement keeps it. Filaments without a `min_majority` are left out, or kept as they
+    went in with `keep_undecided`. Extracted: the segments' images are the refinement's."""
+    from services.subtomo_merge import _parse_optimisation_set
+
+    job_dir = job_dir_of(state, project_path, refine3d_instance)
+    if job_dir is None:
+        raise FileNotFoundError(f"{refine3d_instance} has no job directory")
+    v, files, table = polarity_vote(job_dir, min_majority=min_majority)
+    if not files["optset"].exists():
+        raise FileNotFoundError(f"{files['optset'].name} is missing; it names the tomograms these particles live in")
+    _particles, tomograms = _parse_optimisation_set(files["optset"])
+    rows = filament_polarity.decided_rows(v, keep_undecided=keep_undecided)
+    if rows.empty:
+        raise ValueError(f"no filament of {job_dir.name} has a {min_majority:.0%} majority")
+    c = v.counts
+    when = "converged" if files["iteration"] is None else f"iteration {files['iteration']}, not converged"
+    parent = ParentRef(
+        kind="job",
+        instance_id=refine3d_instance,
+        output="refine3d_data",
+        label=f"Refine 3D {job_dir.name} ({when})",
+        particles_star=str(files["data"]),
+        tomograms_star=str(tomograms),
+        level=SetLevel.EXTRACTED,
+        species_id=species_id,
+        mtime=file_mtime(files["data"]),
+    )
+    funnel = [FunnelStep(label=parent.label, kept=c["segments"], removed=0)]
+    turned = f"{c['segments_turned']:,} segments turned round to their filament's direction"
+    if keep_undecided:
+        funnel.append(FunnelStep(label="decided", kept=c["segments"], removed=0, note=turned))
+    else:
+        funnel.append(
+            FunnelStep(
+                label=f"{c['kept'] + c['reversed']} of {c['filaments']} filaments decided",
+                kept=len(rows),
+                removed=c["segments_undecided"],
+                note=turned,
+            )
+        )
+    undecided = v.filaments[v.filaments["verdict"] == filament_polarity.UNDECIDED]
+    pieces = v.pieces or {}
+    notes = []
+    if pieces.get("decided"):
+        notes.append(
+            f"two pieces of one filament more than a box apart chose the same direction in {pieces['agree']} of "
+            f"{pieces['decided']} filaments (about half when the map cannot tell the ends apart)"
+        )
+    pset = ParticleSet(
+        id=allocate_id(project_path, name),
+        name=name,
+        species_id=species_id,
+        level=SetLevel.EXTRACTED,
+        recipe=Recipe(
+            op=SetOp.POLARITY,
+            parents=[parent],
+            params={
+                "min_majority": float(min_majority),
+                "keep_undecided": bool(keep_undecided),
+                "iteration": files["iteration"],
+                "description": f"the filaments of {job_dir.name} turned to their segments' majority "
+                f"({min_majority:.0%}), {when}",
+            },
+        ),
+        n_particles=len(rows),
+        n_tomograms=rows[analytics.TOMO_COL].nunique(),
+        per_tomo=per_tomo_counts(rows),
+        funnel=funnel,
+        details={
+            **c,
+            "pieces": pieces,
+            "undecided_filaments": [
+                {
+                    "tomo": str(r[filament_polarity.TOMO_COL]),
+                    "tube": int(r[filament_polarity.TUBE_COL]),
+                    "segments": int(r["segments"]),
+                    "majority": round(float(r["majority"]), 3),
+                }
+                for _, r in undecided.iterrows()
+            ],
+        },
+        notes=notes,
+        module=__name__,
+        tomograms_star=str(tomograms),
+    )
+    return publish_set(project_path, pset, lambda out: table.write(rows, out))
 
 
 # ── Random-position decoys ───────────────────────────────────────────────────────────────────────
@@ -920,6 +1059,18 @@ def replay_set(project_path: Path, state, pset: ParticleSet) -> list[ParticleSet
                 classes=list(r.params.get("classes") or []),
                 name=name,
                 species_id=pset.species_id,
+            )
+        ]
+    if r.op == SetOp.POLARITY:
+        return [
+            create_polarity_set(
+                project_path,
+                state,
+                refine3d_instance=r.parents[0].instance_id,
+                name=name,
+                species_id=pset.species_id,
+                min_majority=float(r.params.get("min_majority", filament_polarity.MIN_MAJORITY)),
+                keep_undecided=bool(r.params.get("keep_undecided", False)),
             )
         ]
     if r.op in (SetOp.DIFFERENCE, SetOp.INTERSECTION):

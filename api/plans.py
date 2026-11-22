@@ -217,6 +217,9 @@ def sentence(verb: str, a, state: ProjectState | None) -> str:
     if verb == "make_class_set":
         classes = ", ".join(str(c) for c in a.classes)
         return f"Make the set {a.name} of {j(a.job)}'s class{'es' if len(a.classes) > 1 else ''} {classes}"
+    if verb == "make_polarity_set":
+        undecided = "kept as they are" if a.keep_undecided else "left out"
+        return f"Make the set {a.name} of {j(a.job)}'s filaments turned to their majority (undecided {undecided})"
     text = _args_text(a)
     return verb.replace("_", " ").capitalize() + (f": {text}" if text else "")
 

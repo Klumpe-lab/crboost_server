@@ -55,6 +55,25 @@ def _failure(job_dir: Path) -> str | None:
     return next((x.strip() for x in reversed(lines) if x.strip()), "RELION marked the job failed")
 
 
+def _optimiser_facts(model: Path) -> dict[str, Any]:
+    """From the optimiser star beside a model star: the resolution below which RELION averaged the two half maps
+    (`--low_resol_join_halves`; their FSC is 1 there by construction) and whether it refined filaments."""
+    name = model.name.replace("_half1_model.star", "_optimiser.star").replace("_model.star", "_optimiser.star")
+    path = model.with_name(name)
+    if not path.exists():
+        return {"joined_below": None, "helical": False}
+    try:
+        general = _star(path).get("optimiser_general") or {}
+    except (OSError, ValueError):
+        logger.exception("refine3d readout: %s", path)
+        return {"joined_below": None, "helical": False}
+    joined = _num(general.get("rlnJoinHalvesUntilThisResolution"))
+    return {
+        "joined_below": joined if joined and joined > 0 else None,
+        "helical": bool(general.get("rlnDoHelicalRefine")),
+    }
+
+
 def refine3d_fsc(job_dir: Path) -> dict[str, Any]:
     """The gold-standard FSC of a Refine 3D: of the converged run, else of its last iteration so far."""
     job_dir = Path(job_dir)
@@ -93,6 +112,7 @@ def refine3d_fsc(job_dir: Path) -> dict[str, Any]:
         nyquist=2 * apix if apix else None,
         curves=curves,
         failure=_failure(job_dir),
+        **_optimiser_facts(model),
     )
 
 

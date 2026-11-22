@@ -1,7 +1,8 @@
 """Results tabs of the particle jobs. Class 3D and Reconstruct particle: the job's readout
 (ui/analytics/results_section.py). Refine 3D and
 PostProcess: the resolution RELION reports, said with what it measures, and the FSC curves
-(services/particles/fsc_readout.py, read in a thread)."""
+(services/particles/fsc_readout.py, read in a thread); a helical Refine 3D also the filaments' polarity vote
+(ui/analytics/polarity_panel.py)."""
 
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ from services.project_state import get_project_state_for
 from services.particles.fsc_readout import crossing, postprocess_fsc, refine3d_fsc
 from services.result import ErrorCode
 from ui.analytics.common import ERROR_CLS, HINT_CLS
+from ui.analytics.polarity_panel import PolarityPanel
 from ui.analytics.results_section import ResultsSection
 from ui.components.plot import SERIES, fsc_plot, plot
 from ui.components.reactive import owned_timer
@@ -56,7 +58,7 @@ _BODY = f"{SANS} font-size: 11px; color: var(--cb-ink-2, #1e293b);"
 _WARN = f"{SANS} font-size: 11px; color: var(--cb-warn-ink, #8a4b06);"
 
 
-def _fsc_tab(instance_id: str, job_model, ui_mgr, reader) -> None:
+def _fsc_tab(instance_id: str, job_model, ui_mgr, reader, after=None) -> None:
     ensure_assets_loaded()
     project_path = ui_mgr.project_path
     rel = getattr(job_model, "relion_job_name", None)
@@ -75,6 +77,8 @@ def _fsc_tab(instance_id: str, job_model, ui_mgr, reader) -> None:
         box.clear()
         with box:
             _fsc_body(res)
+            if after is not None and res["success"]:
+                after(res)
 
     owned_timer(0.05, load, box, once=True)
 
@@ -119,11 +123,23 @@ def _fsc_body(res: dict) -> None:
                     )
                     ui.label(name).style(f"{SANS} font-size: 10px; color: var(--cb-ink-2, #1e293b);")
         plot(fsc_plot(curves, *_PLOT_WH, mark=main), *_PLOT_WH)
+        if res.get("joined_below"):
+            ui.label(
+                f"Below {res['joined_below']:g} Å RELION averaged the two half maps (low_resol_join_halves), so the "
+                "FSC there is 1 by construction: only the finer shells are measured."
+            ).style(HELPER_STYLE)
 
 
 @register_extra_tab(JobType.REFINE3D, key="results", label="Results", icon="insights")
 def render_refine3d_results(job_type, instance_id, job_model, backend, ui_mgr) -> None:
-    _fsc_tab(instance_id, job_model, ui_mgr, refine3d_fsc)
+    def polarity(res: dict) -> None:
+        if not res.get("helical") or not ui_mgr.project_path:
+            return
+        state = get_project_state_for(Path(ui_mgr.project_path))
+        _species, species_id = resolve_species(state, job_model, instance_id)
+        PolarityPanel(backend, Path(ui_mgr.project_path), instance_id, species_id or "").build()
+
+    _fsc_tab(instance_id, job_model, ui_mgr, refine3d_fsc, after=polarity)
 
 
 @register_extra_tab(JobType.POSTPROCESS, key="results", label="Results", icon="insights")

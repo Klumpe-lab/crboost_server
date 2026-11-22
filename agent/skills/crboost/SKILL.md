@@ -146,6 +146,10 @@ of its picks; Make set turns what a recipe keeps into a particle set of the home
    pick a cut for them. Several kitchen writes are one plan, like any other.
 6. `make_class_set(project, job, classes, name)`: a set of a Class 3D's classes, as its Results tab makes it.
    Which classes to keep is the user's call, from what they saw.
+7. Filaments: after a helical Refine 3D, `get_polarity(project, job)` says which way each filament points by its
+   segments' vote, and whether the vote means anything (`pieces`: about half agree when the map cannot tell a
+   filament's ends apart). Show it; `make_polarity_set(project, job, name)` makes the set the next Refine 3D
+   reads with the directions held, on the user's word.
 
 Verdicts on single picks, the review sample, and the choice between two reconstructions or sources of one tilt
 series stay in the kitchen: `get_kitchen` says when such a choice stops Make set; give the user the `ui_url`.

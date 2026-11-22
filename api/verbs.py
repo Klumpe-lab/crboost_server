@@ -90,6 +90,16 @@ _VERBS: tuple[Verb, ...] = (
         h.get_job_logs,
     ),
     Verb(
+        "get_polarity",
+        "What the polarity vote over a helical Refine 3D decides, as its Results tab shows: per filament the "
+        "segments, how many RELION turned round from the trace and the verdict (kept, reversed, undecided); "
+        "and whether the vote means anything (pieces: two ends of one filament agree about half the time when "
+        "the map cannot tell its ends apart). Changes nothing.",
+        m.JobIn,
+        "read",
+        h.get_polarity,
+    ),
+    Verb(
         "list_job_types",
         "Every job type the roster adds: its phase, the types it usually reads from (or_requires: types that stand "
         "in for them), what is added with it, whether it takes a species, its inputs (when: the parameter under which "
@@ -440,6 +450,16 @@ _VERBS: tuple[Verb, ...] = (
         m.MakeClassSetIn,
         "write",
         h.make_class_set,
+    ),
+    Verb(
+        "make_polarity_set",
+        "A particle set of a helical Refine 3D's segments with each filament's direction decided by its segments' "
+        "2:1 majority, as its Results tab's Make set does: the minority turned round, the priors along the "
+        "decided direction, RELION's search of the other direction off. Read get_polarity first and show the user "
+        "what it decides; making the set is their call.",
+        m.MakePolaritySetIn,
+        "write",
+        h.make_polarity_set,
     ),
     # ── Deletions ──
     Verb(
