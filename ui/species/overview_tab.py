@@ -43,7 +43,9 @@ from services.models_base import (
     species_glyph,
 )
 from services.particles.catalog import is_enabled as catalog_is_enabled
+from services.models_base import JobStatus
 from services.particles.species_overview import SpeciesOverview, species_overview
+from services.particles.species_progress import STAGE_TITLES, STAGES, SpeciesProgress, Step, species_progress
 from services.project_state import ParticleSpecies, TemplateMask, get_project_state_for
 from services.species_admin import delete_species
 from services.species_edit import set_species
@@ -70,6 +72,7 @@ from ui.job_plugins._field_styles import (
 from ui.particles.list_actions import commit_extraction_geometry
 from ui.species.catalog import publish_to_catalog
 from ui.species.tab import TabContext
+from ui.status_indicator import _dot_html
 
 logger = logging.getLogger(__name__)
 
@@ -535,11 +538,81 @@ def _geometry_descriptions() -> dict[str, str]:
 class _Computed:
     overview: SpeciesOverview | None
     error: str | None
+    progress: SpeciesProgress | None = None
 
 
 def _compute(state, project_path: Path, species_id: str) -> _Computed:
     """Thread body: star reads happen here, never on the event loop."""
-    return _Computed(species_overview(state, project_path, species_id), None)
+    return _Computed(
+        species_overview(state, project_path, species_id), None, species_progress(state, project_path, species_id)
+    )
+
+
+_STAGE_HINTS = {
+    "evidence": "What the species is found in: its Template Match jobs, and the segmentations holding its feature",
+    "picks": "Its pick jobs, each with where its picks come from: TM (template matching), SEG (the pieces of a "
+    "segmented feature) or TRACE (points along a segmented filament)",
+    "extracted": "Its picks cut from the tilt series as particles: how many, at which pixel size and box",
+    "maps": "What has been averaged from them, with a resolution where the job gives one",
+}
+_STRIP_GRID = "display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); column-gap: 18px; width: 100%;"
+_STEP_ROW = "display: flex; flex-direction: column; gap: 1px; padding: 3px 0; cursor: pointer; min-width: 0;"
+_STEP_HEAD = "display: flex; align-items: center; gap: 5px; min-width: 0;"
+_STEP_NAME = f"{SANS} font-size: 10.5px; font-weight: 600; color: {_BODY}; white-space: nowrap;"
+_STEP_JOB = f"{MONO} font-size: 9px; color: {_SOFT}; white-space: nowrap;"
+_STEP_FACT = (
+    f"{SANS} font-size: 10px; color: {_BODY}; padding-left: 13px; white-space: nowrap; overflow: hidden; "
+    "text-overflow: ellipsis;"
+)
+_STEP_TOKEN = f"{MONO} font-size: 9px; color: {_SOFT}; padding-left: 13px; white-space: nowrap;"
+_STAGE_EMPTY = f"{SANS} font-size: 10px; color: #94a3b8; padding: 3px 0;"
+
+
+class _ProgressView(FingerprintedView):
+    """How far the species has come (`species_progress`): four columns, evidence → picks → extracted → maps, a
+    row per job with its light, where a pick job's picks come from, and the one number it made. A row opens its
+    job."""
+
+    def __init__(self, container: ui.element, tab: OverviewTab) -> None:
+        super().__init__(container)
+        self._tab = tab
+
+    def signature(self) -> Any:
+        c = self._tab.computed
+        return (self._tab.ctx.species_id, None if c is None else c.progress)
+
+    def _step(self, step: Step) -> None:
+        open_job = self._tab.ctx.callbacks.get("open_job")
+        row = ui.element("div").style(_STEP_ROW)
+        if open_job is not None:
+            row.on("click", lambda _e, iid=step.instance_id: open_job(iid))
+        tip = " · ".join(x for x in (f"{step.name} {step.job}".strip(), step.status, step.note) if x)
+        with row.tooltip(tip):
+            with ui.element("div").style(_STEP_HEAD):
+                ui.html(_dot_html(JobStatus(step.status), size_px=7), sanitize=False, tag="span")
+                ui.label(step.name).style(_STEP_NAME)
+                if step.job:
+                    ui.label(step.job).style(_STEP_JOB)
+            if step.token:
+                ui.label(step.token).style(_STEP_TOKEN)
+            ui.label(step.fact or ("nothing yet" if step.status != JobStatus.SUCCEEDED.value else "")).style(_STEP_FACT)
+
+    def render(self) -> None:
+        c = self._tab.computed
+        progress = c.progress if c is not None else None
+        if progress is None:
+            ui.label("computing…" if c is None else "").style(f"{SANS} font-size: 10px; color: #94a3b8;")
+            return
+        with ui.element("div").style(_STRIP_GRID):
+            for i, name in enumerate(STAGES):
+                steps = progress.stage(name)
+                with ui.element("div").style("display: flex; flex-direction: column; min-width: 0;"):
+                    title = STAGE_TITLES[name] + (" →" if i < len(STAGES) - 1 else "")
+                    ui.label(title).style(_TH + " padding-bottom: 3px;").tooltip(_STAGE_HINTS[name])
+                    if not steps:
+                        ui.label("none yet").style(_STAGE_EMPTY)
+                    for step in steps:
+                        self._step(step)
 
 
 class _StatusView(FingerprintedView):
@@ -564,6 +637,10 @@ class _StatusView(FingerprintedView):
             )
             return
         ov = c.overview
+        # The curated lists' roll-up. It counts the lists of the species' candidate jobs it knows; a species with
+        # none such says nothing here rather than "0 picks" beside the strip's counts.
+        if not ov.n_picks:
+            return
         ui.label(
             f"{ov.n_picks:,} pick{'s' if ov.n_picks != 1 else ''} on "
             f"{ov.n_tomos_with_picks} tomogram{'s' if ov.n_tomos_with_picks != 1 else ''} · "
@@ -585,6 +662,7 @@ class OverviewTab:
         self._template_line: _TemplateLineView | None = None
         self._geometry: ExtractionGeometry | None = None
         self._status: _StatusView | None = None
+        self._progress: _ProgressView | None = None
         self._refresh_features: Callable[[], None] = lambda: None
 
     # ── Tab protocol ──────────────────────────────────────────────────────────
@@ -600,7 +678,9 @@ class OverviewTab:
                 self._template_line = _TemplateLineView(line_slot, self)
             self._geometry = ExtractionGeometry(self)
             self._geometry.build()
-            with section("Status"):
+            with section("Status", tooltip="How far the species has come: each column's jobs, and what they made"):
+                progress_slot = ui.element("div").style("width: 100%;")
+                self._progress = _ProgressView(progress_slot, self)
                 status_slot = ui.element("div").style("width: 100%;")
                 self._status = _StatusView(status_slot, self)
             with ui.element("div").style("display: flex; gap: 8px; align-items: center;"):
@@ -621,6 +701,7 @@ class OverviewTab:
                         ),
                     )
         self._template_line.refresh()
+        self._progress.refresh()
         self._status.refresh()
 
     def refresh(self) -> None:
@@ -637,6 +718,7 @@ class OverviewTab:
         if self.computed is None or key != self._last_key or stale:
             asyncio.create_task(self._recompute(key))
         elif self._status is not None:
+            self._progress.refresh()
             self._status.refresh()
 
     # ── Compute ───────────────────────────────────────────────────────────────
@@ -664,6 +746,7 @@ class OverviewTab:
             self._last_key = key
             self._last_at = time.monotonic()
             if self._status is not None:
+                self._progress.refresh()
                 self._status.refresh()
 
     # ── Delete ────────────────────────────────────────────────────────────────

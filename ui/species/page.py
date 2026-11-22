@@ -27,6 +27,7 @@ from nicegui import ui
 
 from services.models_base import SpeciesOrigin
 from services.particles.species_overview import latest_overview, species_overview
+from services.particles.species_progress import species_progress
 from services.project_state import get_project_state_for
 from ui.components.buttons import house_button
 from ui.components.reactive import FingerprintedView, SingleFlight
@@ -69,6 +70,7 @@ def _count_picks(state, project_path: Path, species_ids: list[str]) -> dict[str,
     for sid in species_ids:
         try:
             species_overview(state, project_path, sid)
+            species_progress(state, project_path, sid)  # lands in `latest_progress`, for the rail's pick jobs
         except Exception as e:  # reported on the rail row, traceback to the log
             logger.exception("Counting the picks of species %s failed", sid)
             errors[sid] = f"{type(e).__name__}: {e}"

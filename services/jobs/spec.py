@@ -98,6 +98,9 @@ class JobSpec:
     # Set on a job type no longer made: what does its work now. Saved jobs of the type load, show and run again;
     # nothing adds a new one (the roster, the map, the API).
     retired: str = ""
+    # Where the job stands in a species' progress (services/particles/species_progress.py): "evidence", "picks",
+    # "extracted" or "maps"; None for a job that is none of them.
+    progress_stage: str | None = None
     # How services/log_progress reads this job's run.out ("relion", "miss_align", ...); None = its
     # generic reader (the last progress bar of any kind).
     log_format: str | None = None
@@ -298,6 +301,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         TemplateMatchPytomParams,
         "Template Match",
         PHASE_PARTICLES,
+        progress_stage="evidence",
         dependencies=(JobType.TS_CTF,),
         driver="template_match_pytom.py",
         plugins=("template_match", "array_tasks"),
@@ -311,6 +315,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         CandidateExtractPytomParams,
         "Pick candidates",
         PHASE_PARTICLES,
+        progress_stage="picks",
         dependencies=(JobType.TEMPLATE_MATCH_PYTOM,),
         alternatives=(JobType.SEGMENT,),
         driver="extract_candidates_pytom.py",
@@ -331,6 +336,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         FilamentPickParams,
         "Filament pick",
         PHASE_PARTICLES,
+        progress_stage="picks",
         dependencies=(JobType.SEGMENT,),
         driver="filament_pick.py",
         roster_add=False,
@@ -349,6 +355,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         SubtomoExtractionParams,
         "Subtomo Extraction",
         PHASE_PARTICLES,
+        progress_stage="extracted",
         dependencies=(JobType.TEMPLATE_EXTRACT_PYTOM,),
         driver="subtomo_extraction.py",
         plugins=("subtomo_extraction",),
@@ -369,6 +376,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         WarpExportParams,
         "Warp Export",
         PHASE_PARTICLES,
+        progress_stage="extracted",
         dependencies=(JobType.TEMPLATE_EXTRACT_PYTOM,),
         driver="warp_export.py",
         plugins=("array_tasks",),
@@ -401,6 +409,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         ReconstructParticleParams,
         "Reconstruct Particle",
         PHASE_PARTICLES,
+        progress_stage="maps",
         dependencies=(JobType.SUBTOMO_EXTRACTION,),
         driver="reconstruct_particle.py",
         plugins=("particle_results",),
@@ -414,6 +423,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         Class3DParams,
         "Class 3D",
         PHASE_PARTICLES,
+        progress_stage="maps",
         dependencies=(JobType.RECONSTRUCT_PARTICLE,),
         driver="class3d.py",
         plugins=("particle_results",),
@@ -429,6 +439,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         Refine3DParams,
         "Refine 3D",
         PHASE_PARTICLES,
+        progress_stage="maps",
         dependencies=(JobType.RECONSTRUCT_PARTICLE,),
         driver="refine3d.py",
         log_format="relion",
@@ -455,6 +466,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         PostProcessParams,
         "PostProcess",
         PHASE_PARTICLES,
+        progress_stage="maps",
         dependencies=(JobType.REFINE3D,),
         driver="postprocess.py",
         dir_slug="postprocess",

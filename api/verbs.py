@@ -116,7 +116,9 @@ _VERBS: tuple[Verb, ...] = (
     Verb("list_species", "The project's particle species, and the lab catalog's.", m.ProjectIn, "read", h.list_species),
     Verb(
         "get_species",
-        "One species: its templates and masks, which are selected, symmetry, diameter, extraction geometry.",
+        "One species: its templates and masks, which are selected, symmetry, diameter, shape, extraction geometry, "
+        "and how far it has come (progress: its jobs as evidence, picks, extracted and maps, each with what it "
+        "made; finding: whether it can be found by template matching and from a segmentation).",
         m.SpeciesIn,
         "read",
         h.get_species,
@@ -306,7 +308,8 @@ _VERBS: tuple[Verb, ...] = (
     Verb(
         "make_template",
         "Make a template for a species as the workbench does: an ellipsoid, a density simulated from a PDB entry, "
-        "an EMDB map, or a resample, lowpass or polarity flip of a template. Its white and black volumes are "
+        "an EMDB map, or a resample, lowpass, polarity flip or extension (a filament's map made to fill its box "
+        "along Z) of a template. Its white and black volumes are "
         "registered and the white selected (a flip selects the flipped one). Runs in the background: follow "
         "get_task. Values it needs and nobody gave come back as needs.",
         m.MakeTemplateIn,

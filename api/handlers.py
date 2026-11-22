@@ -34,6 +34,7 @@ from services.code_version import code_version
 from services.configs.config_service import get_config_service
 from services.jobs.spec import JOB_SPECS, PARAM_CLASS_BY_TYPE, PHASE_PARTICLES, display_name, instance_display_name
 from services.models_base import DEFAULT_GLYPH_HUE, DEFAULT_SPECIES_GLYPH, JobType, resolve_species
+from services.particles.species_progress import species_progress
 from services.path_resolution_service import PathResolutionService, auto_exclusion, unreadable_reason
 from services.project_create import ACQUISITION_FIELDS, ProjectSpec, required_values, spec_problems
 from services.project_resolve import resolve_project
@@ -453,6 +454,9 @@ async def get_species(call: Call) -> dict[str, Any]:
         extraction=sp.extraction_params.model_dump() if sp.extraction_params else None,
         catalog_version=sp.catalog_version,
     )
+    # How far it has come: its jobs by stage with what each made (the Species page's Status strip).
+    progress = await asyncio.to_thread(species_progress, call.state, call.path, sp.id)
+    row["progress"] = progress.to_dict() if progress is not None else None
     return ok(**row, ui_url=call.url(View.SPECIES, sp.id))
 
 
@@ -1129,6 +1133,7 @@ async def make_template(call: Call) -> dict[str, Any]:
         pixel_size=a.pixel_size,
         box_size=a.box_size,
         lowpass=a.lowpass,
+        repeat_ang=a.repeat_ang,
     )
     if not planned["success"]:
         return planned

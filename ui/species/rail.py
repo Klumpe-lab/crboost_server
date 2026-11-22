@@ -20,6 +20,7 @@ from nicegui import ui
 
 from services.particles.catalog import is_enabled as catalog_is_enabled
 from services.particles.species_overview import latest_overview
+from services.particles.species_progress import PICKS, latest_progress
 from services.project_state import get_project_state_for
 from ui.components.reactive import FingerprintedView
 from ui.components.species_pill import render_species_mark
@@ -30,13 +31,16 @@ _FAINT = "#94a3b8"
 _WARN_INK = "#8a4b06"
 
 
-def _counts(project_path: Path, state) -> tuple[tuple[str, bool, int | None, int], ...]:
-    """(species_id, has_template, n_picks, n_tomograms_with_picks) per species, registry order; n_picks None before
-    the first overview."""
+def _counts(project_path: Path, state) -> tuple[tuple[str, bool, int | None, int, tuple[str, ...]], ...]:
+    """(species_id, has_template, n_picks, n_tomograms_with_picks, what its pick jobs made) per species, registry
+    order; n_picks None before the first overview. The overview counts the curated lists; a species picked from a
+    segmentation has its counts on its pick jobs (`latest_progress`)."""
     out = []
     for sp in state.species_registry:
         ov = latest_overview(project_path, sp.id)
-        out.append((sp.id, bool(sp.templates), ov.n_picks if ov else None, ov.n_tomos_with_picks if ov else 0))
+        progress = latest_progress(project_path, sp.id)
+        made = tuple(s.fact for s in progress.stage(PICKS) if s.fact) if progress else ()
+        out.append((sp.id, bool(sp.templates), ov.n_picks if ov else None, ov.n_tomos_with_picks if ov else 0, made))
     return tuple(out)
 
 
@@ -68,10 +72,10 @@ class SpeciesRail(FingerprintedView):
     def render(self) -> None:
         state = get_project_state_for(self._project_path)
         active = self._active_id()
-        counts = {sid: (has_tpl, n, n_tomos) for sid, has_tpl, n, n_tomos in _counts(self._project_path, state)}
+        counts = {sid: rest for sid, *rest in _counts(self._project_path, state)}
         errors = self._count_errors()
         for species in state.species_registry:
-            has_tpl, n_picks, n_tomos = counts.get(species.id, (True, None, 0))
+            has_tpl, n_picks, n_tomos, made = counts.get(species.id, (True, None, 0, ()))
             row = ui.element("div").classes("cb-srail-row" + (" selected" if species.id == active else ""))
             row.style(
                 f"border-left-color: {'#4a8fd4' if species.id == active else 'transparent'}; border-bottom: none;"
@@ -91,10 +95,13 @@ class SpeciesRail(FingerprintedView):
                 elif n_picks:
                     meta = f"{n_picks:,} pick{'s' if n_picks != 1 else ''}"
                     tip = f"{n_picks:,} picks on {n_tomos} tomogram{'s' if n_tomos != 1 else ''}, every list together"
+                elif made:
+                    meta = f"{len(made)} pick job{'s' if len(made) != 1 else ''}"
+                    tip = "Picked by " + "; ".join(made) + ". The Species tab's Status has each job."
                 else:
                     meta, tip = "no picks", "Nothing picked yet"
                 ui.label(meta).style(
-                    f"{MONO} font-size: 8.5px; color: {_SOFT if n_picks else _FAINT}; white-space: nowrap; "
+                    f"{MONO} font-size: 8.5px; color: {_SOFT if n_picks or made else _FAINT}; white-space: nowrap; "
                     "flex-shrink: 0;"
                 ).tooltip(tip)
         add = (
