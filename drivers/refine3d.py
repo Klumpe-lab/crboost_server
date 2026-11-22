@@ -31,6 +31,14 @@ ITERATION_FILES = (
     "_half1_class001.mrc",
     "_half2_class001.mrc",
 )
+# What relion_refine --helix reads of a filament segment besides its angles: the priors its tilt and psi are searched
+# around, and the filament it belongs to (half-sets are split by tube).
+HELICAL_COLS = ("rlnAngleTiltPrior", "rlnAnglePsiPrior", "rlnHelicalTubeID")
+FLIP_RATIO_COL = "rlnAnglePsiFlipRatio"
+# RELION tries a segment in both directions along its filament while its flip ratio is above this
+# (HealpixSampling::selectOrientationsWithNonZeroPriorProbabilityFor3DHelicalReconstruction).
+FLIP_RATIO_UNIMODAL = 0.01
+
 # The converged result carries no iteration tag (RELION's MlOptimiser::write with fn_root = fn_out): the
 # OUTPUT_SCHEMA files plus the two half-maps.
 RESULT_FILES = ("_optimisation_set.star", "_class001.mrc", "_half1_class001_unfil.mrc", "_half2_class001_unfil.mrc")
@@ -53,6 +61,97 @@ def check_angle_priors(input_optimisation: Path) -> None:
             f"{unoriented}/{len(particles)} particles in {particles_star} sit at 0,0,0 (no orientation): a local "
             "angular search would keep them there. Set sigma_ang to -1 for a global search."
         )
+
+
+def check_helical_priors(input_optimisation: Path) -> None:
+    """A filament refinement searches around each segment's priors: refuse a set without them, and say how many
+    segments it tries in both directions along their filament."""
+    particles_star, _ = _parse_optimisation_set(input_optimisation)
+    _, particles, _ = _read_particles_star(particles_star)
+    missing = [c for c in (*ANGLE_COLS, *HELICAL_COLS) if c not in particles.columns]
+    if missing:
+        raise ValueError(
+            f"{particles_star} has no {missing}: a helical refinement needs each segment's tilt and psi priors and "
+            "its filament's tube id, as filament picks carry them. Particles of another picker are refined with "
+            "Helical off."
+        )
+    tubes = particles.groupby(["rlnTomoName", "rlnHelicalTubeID"]).ngroups if "rlnTomoName" in particles.columns else 0
+    if FLIP_RATIO_COL in particles.columns:
+        both = int((particles[FLIP_RATIO_COL].astype(float) > FLIP_RATIO_UNIMODAL).sum())
+        polarity = f"{both} tried in both directions along their filament ({FLIP_RATIO_COL} > {FLIP_RATIO_UNIMODAL})"
+    else:
+        # RELION reads an absent flip ratio as 0.5.
+        polarity = f"all tried in both directions along their filament (no {FLIP_RATIO_COL}: RELION takes 0.5)"
+    print(f"[DRIVER] Helical: {len(particles)} segments in {tubes} filaments; {polarity}", flush=True)
+
+
+# relion_refine's soft mask edge for a filament when --maskedge is not given (ml_optimiser.cpp), in pixels.
+HELICAL_MASK_EDGE_PX = 10
+
+
+def helical_box_problem(
+    box_px: int, pixel_ang: float, tube_diameter_ang: float, mask_diameter_ang: float
+) -> str | None:
+    """Why relion_refine would refuse this tube in this box (helix.cpp, checkParametersFor3DHelicalReconstruction),
+    or None. The tube must lie within the mask, and the mask within the box. Without a mask diameter RELION takes
+    90 % of the box, less the mask's two edges when the box is under 200 px."""
+    box_ang = box_px * pixel_ang
+    if mask_diameter_ang > 0:
+        mask, how = mask_diameter_ang, "the Mask diameter set"
+    else:
+        inner = box_px - 2 * HELICAL_MASK_EDGE_PX if box_px * 0.05 < HELICAL_MASK_EDGE_PX else box_px
+        mask = 0.9 * inner * pixel_ang
+        how = f"what RELION takes for a box of {box_px} px at {pixel_ang:g} Å/px"
+    if mask > box_ang:
+        return f"The mask diameter of {mask:.0f} Å is wider than the box ({box_ang:.0f} Å)."
+    if tube_diameter_ang < 4 * pixel_ang:
+        return f"The tube diameter of {tube_diameter_ang:g} Å is under 4 px at {pixel_ang:g} Å/px."
+    if tube_diameter_ang > mask:
+        need = int(-(-tube_diameter_ang // (0.9 * pixel_ang))) + 2 * HELICAL_MASK_EDGE_PX
+        need += need % 2
+        return (
+            f"The tube diameter of {tube_diameter_ang:g} Å is wider than the mask, {mask:.0f} Å ({how}). RELION "
+            f"refuses that. Export the particles in a box of at least {need} px, or set a smaller tube diameter."
+        )
+    return None
+
+
+def check_helical_box(input_reference: Path, params: Refine3DParams) -> None:
+    """The reference's box stands for the particles': --trust_ref_size takes its pixel size as theirs."""
+    import mrcfile
+
+    with mrcfile.open(input_reference, header_only=True, permissive=True) as mrc:
+        box_px, pixel_ang = int(mrc.header.nx), float(mrc.voxel_size.x)
+    if pixel_ang <= 0:
+        raise ValueError(f"{input_reference} states no pixel size: the tube diameter cannot be checked against its box")
+    problem = helical_box_problem(box_px, pixel_ang, params.helical_outer_diameter, params.particle_diameter)
+    if problem:
+        raise ValueError(f"Helical: {problem}")
+    print(
+        f"[DRIVER] Helical: tube {params.helical_outer_diameter:g} Å in a box of {box_px} px at {pixel_ang:g} Å/px",
+        flush=True,
+    )
+
+
+def add_helical_options(cmd: ToolCommand, params: Refine3DParams) -> None:
+    """relion_refine's filament options. The three sigmas stand in for --sigma_ang, which would put one prior on
+    all three angles and so hold rot at the picker's random draw."""
+    cmd.flag("--helix")
+    cmd.opt("--helical_outer_diameter", params.helical_outer_diameter)
+    for name in ("rot", "tilt", "psi"):
+        value = getattr(params, f"sigma_{name}")
+        if value > 0:
+            cmd.opt(f"--sigma_{name}", value)
+    if params.keep_tilt_prior_fixed:
+        cmd.flag("--helical_keep_tilt_prior_fixed")
+    if params.ignore_helical_symmetry:
+        cmd.flag("--ignore_helical_symmetry")
+        return
+    cmd.opt("--helical_twist_initial", params.helical_twist)
+    cmd.opt("--helical_rise_initial", params.helical_rise)
+    cmd.opt("--helical_nr_asu", params.helical_nr_asu)
+    # RELION takes the fraction of the box.
+    cmd.opt("--helical_z_percentage", params.helical_z_percentage / 100.0)
 
 
 def main():
@@ -80,7 +179,10 @@ def main():
         print(f"[DRIVER] Input optimisation_set: {input_optimisation}", flush=True)
         print(f"[DRIVER] Input reference: {input_reference}", flush=True)
         print(f"[DRIVER] Job dir: {job_dir}", flush=True)
-        if params.sigma_ang > 0:
+        if params.helix:
+            check_helical_priors(input_optimisation)
+            check_helical_box(input_reference, params)
+        elif params.sigma_ang > 0:
             check_angle_priors(input_optimisation)
 
         output_root = job_dir / "run"
@@ -113,7 +215,9 @@ def main():
             .flag("--trust_ref_size")
         )
 
-        if params.sigma_ang > 0:
+        if params.helix:
+            add_helical_options(cmd, params)
+        elif params.sigma_ang > 0:
             cmd.opt("--sigma_ang", params.sigma_ang)
         if params.ini_high > 0:
             cmd.opt("--ini_high", params.ini_high)

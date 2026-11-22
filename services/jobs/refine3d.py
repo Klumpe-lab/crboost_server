@@ -22,6 +22,17 @@ class Refine3DParams(AbstractJobParams):
         "offset_range",
         "offset_step",
         "sigma_ang",
+        "helix",
+        "helical_outer_diameter",
+        "sigma_tilt",
+        "sigma_psi",
+        "sigma_rot",
+        "keep_tilt_prior_fixed",
+        "ignore_helical_symmetry",
+        "helical_twist",
+        "helical_rise",
+        "helical_nr_asu",
+        "helical_z_percentage",
         "symmetry",
         "ini_high",
         "low_resol_join_halves",
@@ -45,7 +56,21 @@ class Refine3DParams(AbstractJobParams):
         "random_seed",
     }
     PARAM_GROUPS: ClassVar[tuple[str, ...]] = (
-        "Refinement", "Reference & mask", "Angles & offsets", "CTF & scale", "Compute",
+        "Refinement", "Reference & mask", "Angles & offsets", "Helical", "CTF & scale", "Compute",
+    )
+    # What only a filament refinement reads (helix on), and what only one that imposes its symmetry reads.
+    HELICAL_PARAMS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "helical_outer_diameter",
+            "sigma_tilt",
+            "sigma_psi",
+            "sigma_rot",
+            "keep_tilt_prior_fixed",
+            "ignore_helical_symmetry",
+        }
+    )
+    HELICAL_SYMMETRY_PARAMS: ClassVar[frozenset[str]] = frozenset(
+        {"helical_twist", "helical_rise", "helical_nr_asu", "helical_z_percentage"}
     )
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(
@@ -99,6 +124,90 @@ class Refine3DParams(AbstractJobParams):
         description="Local angular search around the input angles: σ in degrees, searched ±3σ (4 = ±12°, one 12° "
         "template-matching step). -1 = global search, for particles without angles", title="Sigma angle",
         json_schema_extra=form("Angles & offsets", S, "°"),
+    )
+
+    # Filaments (relion_refine --helix): tilt and psi are searched around each segment's priors, which filament
+    # picks write from the traced direction. Polarity is the particles' own: a segment whose rlnAnglePsiFlipRatio
+    # is above 0.01 is tried both ways along its filament in the global stages, whatever --bimodal_psi says
+    # (RELION reads that flag for non-helical data only).
+    helix: bool = Field(
+        default=False,
+        description="Refine filament segments (relion_refine --helix). Tilt and psi are searched around each "
+        "segment's priors, the filament's traced direction; the angle around the filament (rot) as Rot sigma says. "
+        "The particles need rlnAngleTiltPrior, rlnAnglePsiPrior and rlnHelicalTubeID, as filament picks carry them. "
+        "A segment is tried in both directions along its filament while its rlnAnglePsiFlipRatio says the polarity "
+        "is unknown (0.5).",
+        title="Helical",
+        json_schema_extra=form("Helical"),
+    )
+    helical_outer_diameter: float = Field(
+        default=300.0,
+        gt=0,
+        description="Outer diameter of the filament's mask, on the reference and the particles "
+        "(a microtubule is about 250 Å across)",
+        title="Tube diameter",
+        json_schema_extra=form("Helical", S, "Å"),
+    )
+    sigma_tilt: float = Field(
+        default=5.0,
+        description="σ of the search around the tilt prior, searched ±3σ. -1 = no prior on tilt",
+        title="Tilt sigma",
+        json_schema_extra=form("Helical", S, "°"),
+    )
+    sigma_psi: float = Field(
+        default=5.0,
+        description="σ of the search around the psi prior, searched ±3σ. -1 = no prior on psi",
+        title="Psi sigma",
+        json_schema_extra=form("Helical", S, "°"),
+    )
+    sigma_rot: float = Field(
+        default=-1.0,
+        description="σ of the search of the angle around the filament. -1 = every angle, for segments "
+        "whose rot is unknown (filament picks draw it at random). A value needs a tilt sigma too",
+        title="Rot sigma",
+        json_schema_extra=form("Helical", S, "°"),
+    )
+    keep_tilt_prior_fixed: bool = Field(
+        default=True,
+        description="The tilt prior stays the traced direction through the run; off, each iteration "
+        "takes the tilt the one before found as its prior",
+        title="Keep tilt prior",
+        json_schema_extra=form("Helical"),
+    )
+    ignore_helical_symmetry: bool = Field(
+        default=True,
+        description="Impose no helical symmetry: the priors alone carry the filament's geometry (a "
+        "microtubule's seam breaks its symmetry). Off, the twist and rise below are imposed",
+        title="No helical symmetry",
+        json_schema_extra=form("Helical"),
+    )
+    helical_twist: float = Field(
+        default=0.0,
+        description="Helical twist per subunit, positive for a right-handed helix (actin: -166.7)",
+        title="Twist",
+        json_schema_extra=form("Helical", S, "°"),
+    )
+    helical_rise: float = Field(
+        default=0.0,
+        ge=0,
+        description="Helical rise per subunit (actin: 27.5)",
+        title="Rise",
+        json_schema_extra=form("Helical", S, "Å"),
+    )
+    helical_nr_asu: int = Field(
+        default=1,
+        ge=1,
+        description="Asymmetric units per box that the symmetry is imposed on",
+        title="Units per box",
+        json_schema_extra=form("Helical", S),
+    )
+    helical_z_percentage: float = Field(
+        default=30.0,
+        gt=0,
+        le=100,
+        description="The central part of the box along the filament that the symmetry is read from and imposed with",
+        title="Z percentage",
+        json_schema_extra=form("Helical", S, "%"),
     )
 
     # Symmetry / filtering
@@ -196,6 +305,35 @@ class Refine3DParams(AbstractJobParams):
         input_opt = self.paths.get("input_optimisation", "")
         input_ref = self.paths.get("input_reference", "")
         return [("in_optimisation", str(input_opt)), ("in_3dref", str(input_ref))]
+
+    @property
+    def imposes_helical_symmetry(self) -> bool:
+        return self.helix and not self.ignore_helical_symmetry
+
+    def shows_param(self, name: str) -> bool:
+        if name in self.HELICAL_PARAMS:
+            return self.helix
+        if name in self.HELICAL_SYMMETRY_PARAMS:
+            return self.imposes_helical_symmetry
+        # A filament refinement searches around its priors by the three sigmas of its own.
+        if name == "sigma_ang":
+            return not self.helix
+        return True
+
+    def run_problems(self) -> list[str]:
+        problems = list(super().run_problems())
+        if not self.helix:
+            return problems
+        if self.sigma_rot > 0 and self.sigma_tilt <= 0:
+            problems.append(
+                "Helical: a rot sigma needs a tilt sigma too (RELION takes no prior on rot without one on tilt)."
+            )
+        if self.imposes_helical_symmetry and (self.helical_twist == 0 or self.helical_rise <= 0):
+            problems.append(
+                "Helical: imposing the symmetry needs its twist and rise; neither has a default. Set them, or turn "
+                "No helical symmetry on."
+            )
+        return problems
 
     def is_driver_job(self) -> bool:
         return True
