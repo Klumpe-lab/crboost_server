@@ -113,8 +113,10 @@ class ReadoutPanel:
         *,
         decoys: dict[int, int] | None = None,
         on_make_subset: Callable[[list[int], str], Awaitable[dict]] | None = None,
+        maps: bool = True,
     ) -> None:
         self.record = record
+        self.maps = maps
         self.decoys = {int(k): int(v) for k, v in (decoys or {}).items()}
         self._on_make_subset = on_make_subset
         self._chosen: set[int] = set()
@@ -159,7 +161,8 @@ class ReadoutPanel:
         ui.html(self._class_table_html(), sanitize=False).classes("cb-atable-wrap").style(
             f"max-height: none; {TABLE_ON_PANEL_STYLE}"
         )
-        self._class_maps()
+        if self.maps:
+            self._class_maps()
         self._galleries()
         if self._on_make_subset is not None:
             self._subset_controls()
@@ -370,9 +373,10 @@ class ReadoutPanel:
     def _reconstruct(self) -> None:
         d = self.record.data
         with ui.element("div").style("display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-start;"):
-            with ui.element("div").style("display: flex; flex-direction: column; gap: 2px;"):
-                ui.label("merged.mrc · central slices XY | XZ | YZ").classes(LABEL_CLS)
-                _map_preview(d["slices_png"], d["merged"], "map")
+            if self.maps:
+                with ui.element("div").style("display: flex; flex-direction: column; gap: 2px;"):
+                    ui.label("merged.mrc · central slices XY | XZ | YZ").classes(LABEL_CLS)
+                    _map_preview(d["slices_png"], d["merged"], "map")
             fsc = d.get("fsc")
             with ui.element("div").style(f"flex: 1 1 280px; min-width: 0; {CHART_CELL_STYLE}"):
                 if not fsc:

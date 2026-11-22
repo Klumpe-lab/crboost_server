@@ -134,6 +134,16 @@ is its own, through hooks (`before`, `custom`, `replace`, `after`); a parameter 
 under another's value says so in `shows_param` and its row is hidden, never rebuilt. A new user
 parameter without a group lands in "Other" with a warning in the log.
 
+### Job results — one reader
+
+A job's Results (`ui/job_plugins/results.py`) is on top of its page once it has run, open: a computed line, what
+stands out by name (`warn`), its pictures as a wall of one per tilt series or a volume's three central slices, one
+plot, a table. `services/job_results.py` reads them, one reader per job type (`@_reads(JobType.X)`), and the branch
+map's large card reads the same result (`ui/branch_map/facts.facts_of`), so a number never differs between the two.
+A new job type with something to show adds a reader there; what is a job's own (Class 3D's subsets, an FSC readout)
+is a `@results_part(JobType.X)` drawn under it. Outliers are marked by one rule (`OUTLIER_RULE`) or the job's own
+cut, never hidden; a plot that would be flat or all zeros, and a table column that says nothing, are left out.
+
 ### Job parameter tabs — species-derived fields
 
 A particle-phase job tab (TM, Pick candidates, Subtomo extraction) shows three kinds of

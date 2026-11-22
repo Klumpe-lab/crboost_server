@@ -32,8 +32,11 @@ class ResultsSection:
         jobs: list[tuple[str, str]],
         *,
         on_set_created: Callable[[], Any] | None = None,
+        maps: bool = True,
     ) -> None:
+        """`maps`: draw the maps' central slices (a job's own Results draws them above the readout)."""
         self.backend = backend
+        self.maps = maps
         self.project_path = project_path
         self.species_id = species_id
         self.jobs = jobs
@@ -80,7 +83,7 @@ class ResultsSection:
                 record: Record = res["record"]
                 is_class3d = record.provenance.kind == "class3d"
                 make = self._make_subset(iid) if is_class3d else None
-                ReadoutPanel(record, decoys=res.get("decoys"), on_make_subset=make).build()
+                ReadoutPanel(record, decoys=res.get("decoys"), on_make_subset=make, maps=self.maps).build()
                 others = [(j, label) for j, label in self.jobs if j != iid] if is_class3d else []
                 if others:
                     self._compare_controls(record, others)

@@ -49,12 +49,17 @@ class Axis:
 
 @dataclass
 class Series:
+    """One series: a line, or (`mode`) a dot or a bar per value, for values that are each their own estimate (one
+    per tilt series), never joined. `colors`: a colour per value, where some are marked."""
+
     xs: list[float]
     ys: list[float]
     color: str
     name: str
     width: float = 1.6
     dash: str = ""
+    mode: str = "line"  # line / dots / bars
+    colors: list[str] | None = None
 
 
 @dataclass
@@ -69,6 +74,15 @@ class Plot:
 
 
 ML, MR, MT, MB = 36, 10, 18, 28  # the margins: y labels, a little room, the y title, x labels and the x title
+
+
+def _title(title: str) -> str:
+    """An axis title, its unit (after the last comma) in its own case: a look that sets titles in capitals would make
+    σ a capital sigma and µm a capital mu."""
+    head, sep, unit = title.rpartition(", ")
+    if not sep:
+        return title
+    return f'{head}, <tspan style="text-transform:none">{unit}</tspan>'
 
 
 def plot_svg(p: Plot, w: int, h: int) -> str:
@@ -95,10 +109,12 @@ def plot_svg(p: Plot, w: int, h: int) -> str:
             f"{words}</text>"
         )
     out.append(
-        f'<text x="{ML + iw}" y="{h - 3}" text-anchor="end" {_WORD}fill:{TITLE};font-size:8.5px">{p.x.title}</text>'
+        f'<text x="{ML + iw}" y="{h - 3}" text-anchor="end" {_WORD}fill:{TITLE};font-size:8.5px">{_title(p.x.title)}'
+        "</text>"
     )
     out.append(
-        f'<text x="{ML}" y="{MT - 7}" text-anchor="start" {_WORD}fill:{TITLE};font-size:8.5px">{p.y.title}</text>'
+        f'<text x="{ML}" y="{MT - 7}" text-anchor="start" {_WORD}fill:{TITLE};font-size:8.5px">{_title(p.y.title)}'
+        "</text>"
     )
     for v, words in p.refs:
         y = Y(v)
@@ -106,7 +122,7 @@ def plot_svg(p: Plot, w: int, h: int) -> str:
             f'<line x1="{ML}" x2="{ML + iw}" y1="{y:.1f}" y2="{y:.1f}" '
             f'style="stroke:{REF};stroke-dasharray:3 3;stroke-width:1"/>'
             f'<text x="{ML + iw - 2}" y="{y - 3:.1f}" text-anchor="end" '
-            f'{_NUM}fill:{TICK};font-size:8.5px">{words}</text>'
+            f'{_NUM}fill:{TICK};font-size:8.5px;paint-order:stroke;stroke:{SURFACE};stroke-width:3px">{words}</text>'
         )
     for v, words in p.marks:
         x = X(v)
@@ -129,6 +145,9 @@ def plot_svg(p: Plot, w: int, h: int) -> str:
             base = top
     else:
         for s in p.series:
+            if s.mode != "line":
+                out.append(_marks(s, X, Y, iw, ih, p.y.lo))
+                continue
             pts = " ".join(f"{X(x):.1f},{Y(y):.1f}" for x, y in zip(s.xs, s.ys, strict=True))
             dash = f";stroke-dasharray:{s.dash}" if s.dash else ""
             out.append(
@@ -139,6 +158,24 @@ def plot_svg(p: Plot, w: int, h: int) -> str:
     return (
         f'<svg viewBox="0 0 {w} {h}" width="100%" style="display:block;overflow:visible;max-width:{w}px">'
         f"{''.join(out)}</svg>"
+    )
+
+
+def _marks(s: Series, X, Y, iw: float, ih: float, base: float) -> str:
+    """A series' values as dots, or as bars from the axis' foot, each in its own colour when it has one."""
+    colors = s.colors or [s.color] * len(s.xs)
+    if s.mode == "dots":
+        return "".join(
+            f'<circle cx="{X(x):.1f}" cy="{Y(y):.1f}" r="2.4" style="fill:{c}"/>'
+            for x, y, c in zip(s.xs, s.ys, colors, strict=True)
+        )
+    step = iw / max(1, len(s.xs))
+    bw = max(1.0, min(14.0, step * 0.72))
+    foot = Y(base)
+    return "".join(
+        f'<rect x="{X(x) - bw / 2:.1f}" y="{min(Y(y), foot):.1f}" width="{bw:.1f}" height="{abs(foot - Y(y)):.1f}" '
+        f'style="fill:{c}"/>'
+        for x, y, c in zip(s.xs, s.ys, colors, strict=True)
     )
 
 

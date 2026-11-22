@@ -1336,6 +1336,58 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 /* The top-left switch between a tile's slice and a mosaic of its tilt series. */
 .cb-gal-mosaic-toggle { background: rgba(15,23,42,0.62); color: #e2e8f0; }
 .cb-gal-mosaic-toggle:hover, .cb-gal-mosaic-toggle.on { background: rgba(37,99,235,0.88); color: #ffffff; }
+/* A job's Results (ui/job_plugins/results.py). The wall: the gallery's tiles, one per tilt series, its number at the
+ * caption's end; a marked tile (an outlier, a failed task) ringed in its state's colour. Folded, it shows three rows'
+ * worth; a before/after wall shows one or the other on every tile. The map: three square cells, the axis in a
+ * corner. */
+.cb-rw .cb-gal-tile { cursor: pointer; }
+.cb-rw .cb-gal-cap { cursor: pointer; }
+.cb-rw-val {
+    flex: 0 0 auto; font-family: var(--cb-mono, 'IBM Plex Mono', monospace); font-size: 9.5px;
+    color: var(--cb-ink-3, #5b7089); font-variant-numeric: tabular-nums;
+}
+.cb-rw-tile.cb-rw-warn { border-color: var(--cb-warn-dot, #fbbf24); }
+.cb-rw-tile.cb-rw-warn .cb-rw-val { color: var(--cb-warn-ink, #92400e); font-weight: 600; }
+.cb-rw-tile.cb-rw-bad { border-color: var(--cb-bad-dot, #ef4444); }
+.cb-rw-tile.cb-rw-bad .cb-gal-note, .cb-rw-tile.cb-rw-bad .cb-rw-val { color: var(--cb-bad-ink, #991b1b); }
+/* Folded: three whole rows at any width. A tile is at least 150 px, 8 px apart: a wall W px wide has
+ * floor((W + 8) / 158) columns, and each column count shows its first three rows. */
+.cb-rw-wrap { container-type: inline-size; }
+.cb-rw { counter-reset: cb-fig; }
+.cb-rw.cb-rw-folded > .cb-gal-tile:nth-child(n+4) { display: none; }
+@container (min-width: 308px) { .cb-rw.cb-rw-folded > .cb-gal-tile:nth-child(n+7) { display: none; } }
+@container (min-width: 308px) { .cb-rw.cb-rw-folded > .cb-gal-tile:nth-child(-n+6) { display: flex; } }
+@container (min-width: 466px) { .cb-rw.cb-rw-folded > .cb-gal-tile:nth-child(n+10) { display: none; } }
+@container (min-width: 466px) { .cb-rw.cb-rw-folded > .cb-gal-tile:nth-child(-n+9) { display: flex; } }
+@container (min-width: 624px) { .cb-rw.cb-rw-folded > .cb-gal-tile:nth-child(n+13) { display: none; } }
+@container (min-width: 624px) { .cb-rw.cb-rw-folded > .cb-gal-tile:nth-child(-n+12) { display: flex; } }
+@container (min-width: 782px) { .cb-rw.cb-rw-folded > .cb-gal-tile:nth-child(n+16) { display: none; } }
+@container (min-width: 782px) { .cb-rw.cb-rw-folded > .cb-gal-tile:nth-child(-n+15) { display: flex; } }
+@container (min-width: 940px) { .cb-rw.cb-rw-folded > .cb-gal-tile:nth-child(n+19) { display: none; } }
+@container (min-width: 940px) { .cb-rw.cb-rw-folded > .cb-gal-tile:nth-child(-n+18) { display: flex; } }
+@container (min-width: 1098px) { .cb-rw.cb-rw-folded > .cb-gal-tile:nth-child(n+22) { display: none; } }
+@container (min-width: 1098px) { .cb-rw.cb-rw-folded > .cb-gal-tile:nth-child(-n+21) { display: flex; } }
+@container (min-width: 1256px) { .cb-rw.cb-rw-folded > .cb-gal-tile:nth-child(n+25) { display: none; } }
+@container (min-width: 1256px) { .cb-rw.cb-rw-folded > .cb-gal-tile:nth-child(-n+24) { display: flex; } }
+@container (min-width: 1414px) { .cb-rw.cb-rw-folded > .cb-gal-tile:nth-child(n+28) { display: none; } }
+@container (min-width: 1414px) { .cb-rw.cb-rw-folded > .cb-gal-tile:nth-child(-n+27) { display: flex; } }
+@container (min-width: 1572px) { .cb-rw.cb-rw-folded > .cb-gal-tile:nth-child(n+31) { display: none; } }
+@container (min-width: 1572px) { .cb-rw.cb-rw-folded > .cb-gal-tile:nth-child(-n+30) { display: flex; } }
+@container (min-width: 1730px) { .cb-rw.cb-rw-folded > .cb-gal-tile:nth-child(n+34) { display: none; } }
+@container (min-width: 1730px) { .cb-rw.cb-rw-folded > .cb-gal-tile:nth-child(-n+33) { display: flex; } }
+@container (min-width: 1888px) { .cb-rw.cb-rw-folded > .cb-gal-tile:nth-child(n+37) { display: none; } }
+@container (min-width: 1888px) { .cb-rw.cb-rw-folded > .cb-gal-tile:nth-child(-n+36) { display: flex; } }
+.cb-rw:not(.cb-rw-show-before) .cb-rw-before { display: none; }
+.cb-rw.cb-rw-show-before .cb-rw-before + .cb-rw-after { display: none; }
+.cb-rw-more {
+    align-self: center; padding: 1px 8px; border-radius: var(--cb-r-sm, 3px); cursor: pointer;
+    font: 500 10px 'IBM Plex Sans', sans-serif; color: var(--cb-ink-3, #5b7089);
+}
+.cb-rw-more:hover { background: var(--cb-hover, #e6eff8); color: var(--cb-head-ink, #12324f); }
+.cb-map-axis {
+    position: absolute; left: 4px; top: 3px; pointer-events: none; letter-spacing: .06em;
+    font: 8px var(--cb-mono, 'IBM Plex Mono', monospace); color: rgba(226, 232, 240, 0.72);
+}
 /* Tilt previews (ui/tilt_previews.py): the Tilts tab's groups and cards, and a tile's
  * mosaic cells. A series is one HTML string; its sizes and layout are inline there. */
 /* A series is a pale gray-blue panel, the Journey's section look; its tilt cards stay white. */
@@ -2635,8 +2687,8 @@ _THEME_CSS = """
 }
 body { background: var(--cb-page) !important; }
 /* A wide job page in two columns: Parameters on the left (its groups in columns of 330 px), the 360 px rail
- * on the right (Inputs & Outputs over SLURM), the folded sections across both below. Narrower than 860 px it
- * stays one column. */
+ * on the right (Inputs & Outputs over SLURM), the folded sections across both below; a job's Results, once it has
+ * run, across both on top. Narrower than 860 px it stays one column. */
 .cb-jobscroll .q-scrollarea__content { container-type: inline-size; }
 @container (min-width: 860px) {
     .cb-jobpage {
@@ -2646,5 +2698,8 @@ body { background: var(--cb-page) !important; }
     .cb-jsec-params { grid-column: 1; grid-row: 1; }
     .cb-jsec-rail { grid-column: 2; grid-row: 1; }
     .cb-jsec-fold { grid-column: 1 / -1; }
+    /* A job that has run: its Results across both columns on top, the two columns under it. */
+    .cb-jsec-results { grid-column: 1 / -1; grid-row: 1; }
+    .cb-jobpage.cb-has-results .cb-jsec-params, .cb-jobpage.cb-has-results .cb-jsec-rail { grid-row: 2; }
 }
 """

@@ -19,6 +19,7 @@ from ui.current_project import current_project_state
 from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
 from services.scheduling_and_orchestration import stop_after_iteration
 from ui.job_plugins import get_extra_tabs, get_full_panel_renderer
+from ui.job_plugins.results import ResultsSection
 from ui.job_plugins._field_styles import SECTION_STYLE, config_section, section_head
 from services.routes import View
 from ui.components.species_pill import render_species_mark
@@ -107,8 +108,8 @@ def _has_tasks(job_type: JobType) -> bool:
 
 def _lazy_sections(job_type: JobType) -> list[tuple[str, str, int | None]]:
     """(key, title, box height in px) of the page's folded sections, in page order: the extra tabs
-    (Tasks, Results), the log, the files. A boxed one fills a box that high; None takes its content's
-    height. An array job's log is the supervisor's row of its Tasks panel, so it has no Log section."""
+    (Tasks), the log, the files. A boxed one fills a box that high; None takes its content's height.
+    An array job's log is the supervisor's row of its Tasks panel, so it has no Log section."""
     out = [(et.key, et.label, _TASKS_BOX_PX if et.key == _TASKS else None) for et in get_extra_tabs(job_type)]
     if not _has_tasks(job_type):
         out.append((MonitorTab.LOGS.value, "Log", _BOX_PX))
@@ -143,7 +144,7 @@ def _render_lazy_section(
     title: str, box_px: int | None, *, open_: bool, dom_id: str, build: Callable, accent: bool = False
 ) -> Callable:
     """A folded section: its Rule head opens and closes it (the caret on its left); the content is built on the
-    first opening. `accent`: a section that asks to be looked at (a failed job's log, Results). Returns its opener."""
+    first opening. `accent`: a section that asks to be looked at (a failed job's log). Returns its opener."""
     built = {"done": False}
     panel = ui.column().classes("w-full cb-jsec-fold").style(SECTION_STYLE)
     with panel.props(f"id={dom_id}"):
@@ -189,8 +190,8 @@ def _render_job_page(
     ui_mgr: UIStateManager,
     callbacks: dict[str, Callable] | None = None,
 ) -> dict[str, Callable]:
-    """The job's one page: Parameters, Inputs / Outputs and SLURM resources open, then the folded
-    sections (_lazy_sections). Returns each folded section's opener by key."""
+    """The job's one page: once it has run its Results on top, open; Parameters, Inputs / Outputs and
+    SLURM resources open, then the folded sections (_lazy_sections). Returns each section's opener by key."""
     # An edit in one section can change what another shows: missAlign's parameters set the time limit
     # and GRES its SLURM section displays, and its warnings read the SLURM settings. Parameters and
     # SLURM save through `on_edit`, which then reruns the refresh each of them hands back.
@@ -219,6 +220,15 @@ def _render_job_page(
     # section in the two-column grid the styles lay a wide page out in (ui/dashboard/css.py `_THEME_CSS`).
     with ui.scroll_area().classes("w-full h-full cb-scroll-tight cb-jobscroll"):
         with ui.column().classes("w-full cb-jobpage").style("padding: 4px 14px 16px; gap: 14px;") as page:
+
+            def results_shown(on: bool) -> None:
+                if on:
+                    page.classes(add="cb-has-results")
+                else:
+                    page.classes(remove="cb-has-results")
+
+            results = ResultsSection(job_type, instance_id, job_model, backend, ui_mgr, callbacks, results_shown)
+            openers[MonitorTab.RESULTS.value] = results.open
             with config_section("Parameters") as params_sec:
                 params_sec.classes("cb-jsec-params")
                 params_refresh = render_config_tab(
@@ -289,7 +299,7 @@ def _render_job_page(
                     open_=open_,
                     dom_id=_section_dom_id(instance_id, key),
                     build=builders[key],
-                    accent=key == "results" or (key == log_key and failed),
+                    accent=key == log_key and failed,
                 )
             if tasks:
                 openers.update(_task_panel_openers(instance_id, openers[_TASKS], ui_mgr))

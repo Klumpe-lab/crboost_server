@@ -14,7 +14,6 @@ import io
 import json
 import logging
 import math
-import re
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -23,6 +22,9 @@ from fastapi import Response
 from nicegui import app
 
 from services.dashboard_data import vis_asset_url
+from services import renders
+from services.job_results import JobResults, job_results, map_slices_render
+from services.visualization.preview_orchestrator import is_warp_preview_of
 from services.http_responses import NO_GZIP
 from ui.branch_map.model import Facts, Job, Plot, TiltPlot, TsFacts, param_words
 
@@ -89,54 +91,9 @@ def composite_url(path: Path, overlay: Path) -> str | None:
     return _keep(key, buf.getvalue())
 
 
-def map_slices_url(mrc: Path) -> str | None:
-    """Three central slices of a small map (a particle average), side by side, as a JPEG."""
-    if not mrc.exists():
-        return None
-    try:
-        import mrcfile
-        import numpy as np
-        from PIL import Image
-
-        key = (str(mrc), mrc.stat().st_mtime)
-        if key in _thumbs:
-            return _thumbs[key]
-        with mrcfile.mmap(mrc, mode="r", permissive=True) as m:
-            v = np.asarray(m.data, dtype=np.float32)
-        n = v.shape[0]
-        slabs = [v[n // 2], v[:, n // 2], v[:, :, n // 2]]
-        tiles = []
-        for s in slabs:
-            lo, hi = np.percentile(s, (1, 99))
-            s = np.clip((s - lo) / ((hi - lo) or 1), 0, 1)
-            tiles.append(Image.fromarray((s * 255).astype(np.uint8)).resize((THUMB, THUMB)))
-        sheet = Image.new("L", (THUMB * 3 + 12, THUMB), 255)
-        for i, t in enumerate(tiles):
-            sheet.paste(t, (i * (THUMB + 6), 0))
-        buf = io.BytesIO()
-        sheet.save(buf, "JPEG", quality=72)
-        return _keep(key, buf.getvalue())
-    except (OSError, ValueError):
-        logger.exception("branch map: slices of %s", mrc)
-        return None
-
-
-def _fullest_masks(masks: list[Path]) -> list[Path]:
-    """The overlay masks with the most in them first, so the picture shows a tomogram with membranes."""
-    from PIL import Image
-
-    def coverage(p: Path) -> float:
-        try:
-            a = Image.open(p).convert("LA").getchannel("A").reduce(8)
-            return sum(a.getdata()) / (a.size[0] * a.size[1])
-        except OSError:
-            return -1.0
-
-    return sorted(masks, key=coverage, reverse=True)
-
-
 def _recon_png(job_dir: Path, ts: str) -> Path | None:
-    return next(iter(sorted((job_dir / "warp_tiltseries" / "reconstruction").glob(f"{ts}_*.png"))), None)
+    found = (job_dir / "warp_tiltseries" / "reconstruction").glob(f"{ts}_*Apx.png")
+    return next(iter(sorted(p for p in found if is_warp_preview_of(p.name, ts))), None)
 
 
 # ── readers ──────────────────────────────────────────────────────────────────
@@ -144,55 +101,6 @@ def _recon_png(job_dir: Path, ts: str) -> Path | None:
 
 def _median(vals: list[float]) -> float:
     return sorted(vals)[len(vals) // 2]
-
-
-def _plot_or_none(values: list[float], kind: str, caption: str, **kw) -> Plot | None:
-    return Plot(kind, values, caption, **kw) if values else None
-
-
-def _loss_curve(job_dir: Path) -> list[float]:
-    """The training loss from the job's log: the value at the end of each epoch, else every log line's, thinned
-    to eighty points."""
-    log = job_dir / "run.out"
-    if not log.exists():
-        return []
-    ends: list[float] = []
-    every: list[float] = []
-    try:
-        with open(log, errors="replace") as f:
-            for line in f:
-                for piece in line.split("\r"):
-                    m = re.search(r"Loss: ([0-9.]+)", piece)
-                    if not m:
-                        continue
-                    every.append(float(m.group(1)))
-                    if "100%" in piece:
-                        ends.append(float(m.group(1)))
-    except OSError:
-        logger.exception("branch map: reading %s", log)
-        return []
-    vals = ends or every
-    if len(vals) > 80:
-        step = len(vals) / 80
-        vals = [vals[int(i * step)] for i in range(80)]
-    return vals
-
-
-def _count_star_rows(star: Path) -> int:
-    if not star.exists():
-        return 0
-    n = 0
-    in_loop = False
-    with open(star, errors="replace") as f:
-        for line in f:
-            s = line.strip()
-            if s.startswith("loop_"):
-                in_loop = True
-                n = 0
-                continue
-            if in_loop and s and not s.startswith("_"):
-                n += 1
-    return n
 
 
 def _frame_rows(reg: dict, ts: str, iid: str) -> list[tuple[float, dict, bool]]:
@@ -230,489 +138,53 @@ def set_parent(project: Path, set_id: str) -> tuple[str | None, str]:
 
 
 def job_facts(kind: str, jm, job_dir: Path | None, reg: dict[str, dict], iid: str, ts_order: list[str]) -> Facts:
-    """What the large card shows of a finished job, from what is already on disk."""
-    f = Facts()
-    if job_dir is None:
-        return f
-    done = [t for t in ts_order if t in reg]
-    if kind == "importmovies":
-        tilts = sum(len(reg[t].get("frames", [])) for t in done)
-        f.lines = [f"{len(done)} tilt series · {tilts} tilts · from the mdocs"]
-    elif kind == "tsImport":
-        f.lines = [f"{len(done)} tilt series as Warp tomostars · {param_words(jm, 'tomo_dimensions')}"]
-    elif kind == "fsMotionAndCtf":
-        vals = []
-        for t in done:
-            res = []
-            for fr in reg[t].get("frames", []):
-                o = (fr.get("outputs") or {}).get(iid) or {}
-                if o.get("ctf_resolution"):
-                    res.append(o["ctf_resolution"])
-            if res:
-                vals.append(sorted(res)[len(res) // 2])
-        f.plot = _plot_or_none(
-            vals,
-            "dots",
-            f"CTF fit resolution per tilt series, Å · median {_median(vals):.1f} Å" if vals else "",
-            lo=min(vals, default=0) * 0.9,
-            hi=max(vals, default=1) * 1.05,
-        )
-    elif kind == "tiltFilter":
-        out = sum(1 for t in done for fr in reg[t].get("frames", []) if fr.get("is_filtered_out"))
-        tilts = sum(len(reg[t].get("frames", [])) for t in done)
-        per = [sum(1 for fr in reg[t].get("frames", []) if fr.get("is_filtered_out")) for t in done]
-        f.plot = Plot(
-            "bars",
-            [float(v) for v in per],
-            f"tilts taken out per tilt series · {out} of {tilts} · threshold {param_words(jm, 'threshold')}",
-        )
-    elif kind == "aligntiltsWarp":
-        vals = []
-        for t in done:
-            o = (reg[t].get("outputs") or {}).get(iid) or {}
-            pf = o.get("per_frame") or []
-            if pf:
-                vals.append(pf[0].get("z_rot_deg") or 0.0)
-        f.plot = _plot_or_none(
-            vals,
-            "dots",
-            f"tilt axis per tilt series, ° · {param_words(jm, 'alignment_method')}",
-            lo=min(vals, default=0) - 1,
-            hi=max(vals, default=1) + 1,
-        )
-    elif kind == "missAlign":
-        ch = job_dir / "missalign_changes.json"
-        vals, flags = [], set()
-        if ch.exists():
-            with open(ch) as fh:
-                d = json.load(fh)
-            per = d.get("tilt_series", {})
-            for t in done:
-                r = per.get(t)
-                if r:
-                    vals.append(r.get("residual_rms_angstrom") or 0.0)
-                    if r.get("tilts_over_threshold"):
-                        flags.add(len(vals) - 1)
-            f.plot = _plot_or_none(
-                vals,
-                "bars",
-                f"residual per tilt series after refinement, Å rms · {d.get('threshold', '')}",
-                flags=flags,
-            )
-    elif kind == "tsCtf":
-        vals = []
-        for t in done:
-            o = (reg[t].get("outputs") or {}).get(iid) or {}
-            if o.get("ctf_resolution"):
-                vals.append(o["ctf_resolution"])
-        f.plot = _plot_or_none(
-            vals,
-            "dots",
-            f"CTF fit resolution per tilt series, Å · median {_median(vals):.1f} Å" if vals else "",
-            lo=min(vals, default=0) * 0.9,
-            hi=max(vals, default=1) * 1.05,
-        )
-    elif kind == "tsReconstruct":
-        apix = getattr(jm, "rescale_angpixs", 0)
-        pngs = sorted((job_dir / "warp_tiltseries" / "reconstruction").glob("*.png"))
-        for p in pngs[:3]:
-            url = picture_url(p)
-            if url:
-                f.pictures.append((url, p.stem))
-        dims = ""
-        for t in done:
-            o = ((reg[t].get("tomogram") or {}).get("outputs") or {}).get(iid)
-            if o:
-                dims = f" · {o.get('size_x')}×{o.get('size_y')}×{o.get('size_z')}"
-                break
-        f.picture_caption = f"{len(pngs)} tomograms at {apix:g} Å{dims}" + (
-            " · deconvolved" if getattr(jm, "deconv", 0) else ""
-        )
-    elif kind == "denoisepredict":
-        slabs = sorted((job_dir / "vis" / "slabs").glob("*_xy.png"))
-        src = Path(jm.paths.get("input_star", "")).parent if jm.paths.get("input_star") else None
-        for p in slabs:
-            ts = p.name.removesuffix("_xy.png")
-            before = _recon_png(src, ts) if src else None
-            if before is not None:
-                a, b = picture_url(before), picture_url(p)
-                if a and b:
-                    f.pictures = [(a, f"{ts} before"), (b, f"{ts} after")]
-                    f.arrow = True
-                    break
-        f.picture_caption = f"a tomogram before and after · {param_words(jm, 'denoise_method')} · {len(slabs)} denoised"
-    elif kind == "segment":
-        feats = list(getattr(jm, "features", []) or [])
-        masks = _fullest_masks(sorted((job_dir / "vis" / "segment").glob("*__membrane_xy.png")))
-        src = Path(jm.paths.get("input_tomograms", "")).parent if jm.paths.get("input_tomograms") else None
-        for m in masks:
-            ts = m.name.removesuffix("__membrane_xy.png")
-            base = (src / "vis" / "slabs" / f"{ts}_xy.png") if src else None
-            if (base is None or not base.exists()) and src is not None:
-                base = _recon_png(src, ts)
-            if base is not None and base.exists():
-                a, b = picture_url(base), composite_url(base, m)
-                if a and b:
-                    f.pictures = [(a, ts), (b, f"{ts} · membrane")]
-                    f.arrow = True
-                    break
-        n_seg = len({p.name.split("__")[0] for p in (job_dir / "segmentations").glob("*.mrc")})
-        f.picture_caption = f"membranes on a tomogram · {len(feats)} features: {', '.join(feats)} · {n_seg} tomograms"
-    elif kind == "denoisetrain":
-        vals = _loss_curve(job_dir)
-        f.plot = _plot_or_none(vals, "curve", f"training loss over the log · {param_words(jm, 'denoise_method')}")
-    elif kind == "templatematching":
-        vals, cut = [], None
-        for p in sorted((job_dir / "analytics" / "tm_tomo").glob("*.json")):
-            with open(p) as fh:
-                d = json.load(fh).get("data", {})
-            top = (d.get("scan") or {}).get("top_sigma")
-            if top is not None:
-                vals.append(top)
-                cut = d.get("fp1_sigma") or cut
-        f.plot = _plot_or_none(
-            vals,
-            "dots",
-            f"best peak per tomogram, σ · the line is one false positive · {param_words(jm, 'angular_search')}° search",
-            lo=0,
-            hi=max(vals, default=1) * 1.1,
-            cut=cut,
-        )
-    elif kind == "tmextractcand":
-        rec = job_dir / "analytics" / "candidates.json"
-        if rec.exists():
-            with open(rec) as fh:
-                d = json.load(fh).get("data", {})
-            toms = d.get("tomograms") or []
-            scores = sorted(s for t in toms for s in (t.get("scores") or []))
-            if scores:
-                lo, hi = scores[0], scores[-1]
-                bins = 32
-                counts = [0] * bins
-                for s in scores:
-                    counts[min(bins - 1, int((s - lo) / ((hi - lo) or 1) * bins))] += 1
-                cut = min((t.get("cutoff_sigma") for t in toms if t.get("cutoff_sigma")), default=None)
-                cut_bin = int((cut - lo) / ((hi - lo) or 1) * bins) if cut is not None else None
-                cap = (
-                    f"scores of all {d.get('n_total', len(scores))} picks, σ {lo:.1f}–{hi:.1f} · cut at one false "
-                    f"positive · {d.get('n_with_picks')} of {d.get('n_tomograms')} tomograms with picks"
-                )
-                f.plot = Plot("hist", [float(c) for c in counts], cap, cut=cut_bin)
-        prev = job_dir / "vis" / "preview"
-        atlas = next(iter(sorted(prev.glob("*/cutout_atlas.png"))), None)
-        if atlas is not None:
-            url = picture_url(atlas)
-            if url:
-                f.pictures = [(url, f"cut-outs · {atlas.parent.name}")]
-                f.picture_caption = "the picks of one tomogram, cut out"
-    elif kind == "warpExport":
-        n = _count_star_rows(job_dir / "particles.star")
-        f.lines = [
-            f"{n} particles exported · box {param_words(jm, 'box_size')} · bin {getattr(jm, 'binning', 0):g} · "
-            f"Ø {getattr(jm, 'diameter_ang', 0):g} Å"
-        ]
-        f.lines += _warp_export_model_lines(job_dir)
-    elif kind == "reconstructParticle":
-        url = map_slices_url(job_dir / "merged.mrc")
+    """What the large card shows of a finished job: the job's Results (services/job_results.py), cut to a card."""
+    return facts_of(job_results(kind, jm, job_dir, reg, iid), kind, job_dir)
+
+
+def facts_of(r: JobResults, kind: str, job_dir: Path | None) -> Facts:
+    """A job's results as the large card draws them: its maps or its first pictures, its plot, its lines."""
+    f = Facts(tiles=list(r.tiles))
+    if r.maps:
+        f.pictures = [(m.url, f"{m.label}, three central slices") for m in r.maps[:6] if m.url]
+    elif kind == "tmextractcand" and job_dir is not None:
+        atlas = next(iter(sorted((job_dir / "vis" / "preview").glob("*/cutout_atlas.png"))), None)
+        url = picture_url(atlas) if atlas is not None else None
         if url:
-            f.pictures = [(url, "merged.mrc, three central slices")]
-        f.picture_caption = (
-            f"the average · box {param_words(jm, 'box_size')} · {param_words(jm, 'symmetry')} · "
-            f"bin {getattr(jm, 'binning', 0):g}"
-        )
-    elif kind == "class3d":
-        _class3d_facts(f, job_dir)
-    elif kind == "refine3d":
-        _refine3d_facts(f, job_dir)
-    elif kind == "maskCreate":
-        _mask_facts(f, job_dir)
-    elif kind == "postprocess":
-        _postprocess_facts(f, job_dir)
-    elif kind == "ctfRefine":
-        _ctf_refine_facts(f, job_dir)
-    elif kind == "frameAlign":
-        _frame_align_facts(f, job_dir)
-    elif kind == "mRefine":
-        _m_refine_facts(f, job_dir)
+            f.pictures = [(url, f"cut-outs · {atlas.parent.name}")]
+    elif r.wall is not None and r.wall.pair:
+        tile = next((t for t in r.wall.tiles if t.before_url and (t.url or t.overlays)), None)
+        if tile is not None:
+            after = _card_after(tile)
+            if after:
+                f.pictures, f.arrow = [(tile.before_url, f"{tile.ts} {r.wall.pair[0]}"), (after, tile.ts)], True
+    elif r.wall is not None and not r.wall.thumbs:
+        f.pictures = [(t.url, t.tip or t.ts) for t in r.wall.tiles if t.url][:3]
+    if f.pictures:
+        f.picture_caption = r.headline
+    if r.plot is not None and r.plot.values:
+        f.plot = _card_plot(r.plot)
+    f.lines = ([r.headline] if r.headline and not f.pictures else []) + r.warn + r.notes + r.lines
+    if r.table is not None and not r.lines:
+        f.lines += [" · ".join(row) for row in r.table.rows]
     return f
 
 
-def _warp_export_model_lines(job_dir: Path) -> list[str]:
-    """Whose Warp model the stacks were cut with, when it is an M refine's, and what of it RELION's star leaves
-    out, from the driver's `warp_export_model.json`."""
-    path = job_dir / "warp_export_model.json"
-    if not path.exists():
-        return []
-    d = json.loads(path.read_text())
-    m_jobs = d.get("m_jobs") or {}
-    if not m_jobs:
-        return []
-    lines = [
-        f"cut with M's model: {sum(m_jobs.values())} tilt series from "
-        + ", ".join(f"{Path(j).name} ({n})" for j, n in sorted(m_jobs.items()))
-        + " · M's per-tilt defocus and Cs in the set"
-    ]
-    mag, zern = d.get("magnified") or [], d.get("zernike") or []
-    if mag or zern:
-        lines.append(
-            "left out (Warp applies them only where it back-projects; RELION's star holds neither): "
-            + " · ".join(
-                part
-                for part in (
-                    f"M's magnification on {len(mag)} tilt series" if mag else "",
-                    f"its Zernike terms on {len(zern)}" if zern else "",
-                )
-                if part
-            )
-        )
-    return lines
+def _card_after(tile) -> str | None:
+    """The after picture of a before/after tile: the slab itself, or (a segmentation) its first mask tinted onto it."""
+    if not tile.overlays:
+        return tile.url
+    if tile.before_path:
+        return composite_url(Path(tile.before_path), Path(tile.overlays[0][2]))
+    return tile.url
 
 
-def _m_refine_facts(f: Facts, job_dir: Path) -> None:
-    """M's resolution before and after the round, what it moved per tilt series, and what of the model RELION's
-    tilt-series star cannot hold, from the driver's `m_round.json` and `m_changes.json`."""
-    path = job_dir / "m_round.json"
-    if not path.exists():
-        return
-    rec = json.loads(path.read_text())
-    changes_path = job_dir / "m_changes.json"
-    series = json.loads(changes_path.read_text()).get("tilt_series", []) if changes_path.exists() else []
-
-    def ang(v) -> str:
-        return f"{v:.2f} Å" if isinstance(v, (int, float)) else "—"
-
-    f.tiles = [
-        ("Round", f"R{rec.get('round')}"),
-        ("M", ang(rec.get("resolution_after_ang"))),
-        ("Particles", str(rec.get("particles"))),
-        ("Box", f"{rec.get('m_box')} → {rec.get('box')} px"),
-    ]
-    f.lines = [
-        f"M's own resolution {ang(rec.get('resolution_before_ang'))} → {ang(rec.get('resolution_after_ang'))} · "
-        f"{rec.get('tilt_series')} tilt series in {rec.get('sources')} sources · {rec.get('seconds', 0) / 60:.0f} min "
-        f"on {rec.get('gpus')} GPU",
-        "the half maps are in the Refine 3D's box: a PostProcess reads them in the trunk's masks",
-    ]
-    gate = rec.get("ctf_gate") or {}
-    if gate.get("skipped"):
-        f.lines.append(
-            f"the CTF was not refined: M's species was at {ang(gate.get('species_resolution_ang'))}, coarser than "
-            f"'CTF from' {gate.get('min_resolution_ang'):g} Å ({', '.join(gate.get('switches') or [])} did nothing)"
-        )
-    beyond = rec.get("beyond_star") or {}
-    staged, mag = beyond.get("stage_angles") or {}, beyond.get("magnification") or {}
-    if staged.get("tilt_series") or mag.get("tilt_series"):
-        held = []
-        if staged.get("tilt_series"):
-            held.append(f"stage angles on {staged['tilt_series']} tilt series (up to {staged.get('max_deg', 0):.2f}°)")
-        if mag.get("tilt_series"):
-            held.append(
-                f"a magnification on {mag['tilt_series']} (up to {mag.get('max_anisotropic_pct', 0):.2f} % anisotropic)"
-            )
-        consequences = []
-        if staged.get("tilt_series"):
-            consequences.append("Warp Export and RELION's tilt-image programs refuse the stage angles")
-        if mag.get("tilt_series"):
-            consequences.append("RELION reconstructs without the magnification")
-        f.lines.append(f"RELION's tilt-series star cannot hold {' and '.join(held)}: {'; '.join(consequences)}")
-    for s in series:
-        parts = [f"{s['name']} · {s['particles']} particles"]
-        if "defocus_shift_um" in s:
-            parts.append(f"defocus {s['defocus_shift_um']:+.3f} ± {s['defocus_shift_sd_um']:.3f} µm")
-        if s.get("warp_change_rms_ang") is not None:
-            parts.append(f"warp {s['warp_change_rms_ang']:.1f} Å")
-        if s.get("stage_angle_max_deg"):
-            parts.append(f"stage ≤ {s['stage_angle_max_deg']:.2f}°")
-        pct = s.get("magnification_pct") or {}
-        if abs(pct.get("anisotropic_pct", 0)) > 1e-4 or abs(pct.get("isotropic_pct", 0)) > 1e-4:
-            parts.append(f"mag {pct['x_pct']:+.2f} / {pct['y_pct']:+.2f} %")
-        if s.get("cs_after_mm") is not None and s.get("cs_after_mm") != s.get("cs_before_mm"):
-            parts.append(f"Cs {s['cs_after_mm']:.2f} mm")
-        parts.append(f"moved {s['moved_rms_ang']:.1f} Å · turned {s['turned_rms_deg']:.2f}°")
-        f.lines.append(" · ".join(parts))
-    url = map_slices_url(job_dir / "m_filtered.mrc")
-    if url:
-        f.pictures = [(url, "m_filtered.mrc, three central slices")]
-        f.picture_caption = "M's filtered map, in the Refine 3D's box"
-
-
-def _star(path: Path) -> dict:
-    import starfile
-
-    return starfile.read(path, always_dict=True)
-
-
-def _class3d_facts(f: Facts, job_dir: Path) -> None:
-    """The last iteration's classes: share and Class 3D's own resolution estimate (not a gold-standard FSC)."""
-    from services.particles.class_readout import _model_classes, class3d_iterations
-
-    its = class3d_iterations(job_dir)
-    if not its:
-        f.lines = ["no iteration written yet"]
-        return
-    final = its[-1]
-    classes = _model_classes(job_dir / f"run_it{final:03d}_model.star")
-    f.lines = [
-        f"class {c['class']} · {c['distribution']:.0%}"
-        + (f" · {c['resolution_ang']:.1f} Å (Class 3D estimate)" if c["resolution_ang"] else "")
-        for c in classes
-    ]
-    for c in classes[:6]:
-        url = map_slices_url(job_dir / f"run_it{final:03d}_class{c['class']:03d}.mrc")
-        if url:
-            f.pictures.append((url, f"class {c['class']}, three central slices"))
-    f.picture_caption = f"the classes of iteration {final}"
-
-
-def _refine3d_facts(f: Facts, job_dir: Path) -> None:
-    """The converged run's gold-standard FSC of the unmasked half maps, else the last iteration's resolution."""
-    model = job_dir / "run_model.star"
-    converged = model.exists()
-    if not converged:
-        models = sorted(job_dir.glob("run*_it*_half1_model.star"))
-        if not models:
-            f.lines = ["no iteration written yet"]
-            return
-        model = models[-1]
-    blocks = _star(model)
-    general = blocks.get("model_general")
-    res = general.get("rlnCurrentResolution") if isinstance(general, dict) else None
-    where = "converged" if converged else model.name.split("_half1")[0]
-    f.lines = [f"{float(res):.2f} Å (gold-standard FSC, unmasked half maps) · {where}" if res else where]
-    fsc = blocks.get("model_class_1")
-    if fsc is not None and {"rlnResolution", "rlnGoldStandardFsc"} <= set(getattr(fsc, "columns", ())):
-        from services.particles.fsc_readout import crossing
-
-        freq = [float(v) for v in fsc["rlnResolution"]]
-        if crossing(freq, [float(v) for v in fsc["rlnGoldStandardFsc"]], 0.143) is None:
-            f.lines.append("the FSC never drops below 0.143: that number is the sampling limit, not a resolution")
-    f.lines.append("the FSC curve: the job's Results tab")
-    url = map_slices_url(job_dir / "run_class001.mrc")
-    if url:
-        f.pictures = [(url, "run_class001.mrc, three central slices")]
-        f.picture_caption = "the refined map"
-
-
-def _mask_facts(f: Facts, job_dir: Path) -> None:
-    stats_path = job_dir / "mask_stats.json"
-    if stats_path.exists():
-        st = json.loads(stats_path.read_text())
-        f.lines = [
-            f"threshold {st['threshold']:.4g} ({st['threshold_source']}) on the map low-passed at "
-            f"{st['lowpass_ang']:g} Å, range {st['lowpass_min']:.3g} … {st['lowpass_max']:.3g}",
-            f"encloses {st['enclosed_fraction']:.1%} of the box · grown {st['extend_px']} px, soft edge "
-            f"{st['soft_edge_px']} px",
-        ]
-        inner, outer = st.get("inner_radius_ang") or 0, st.get("outer_radius_ang") or 0
-        if inner or outer:
-            f.lines.append(
-                f"kept between {inner:g} and {outer:g} Å from the centre" if outer else f"kept beyond {inner:g} Å"
-            )
-    url = map_slices_url(job_dir / "mask.mrc")
-    if url:
-        f.pictures = [(url, "mask.mrc, three central slices")]
-        f.picture_caption = "the mask"
-
-
-def _postprocess_facts(f: Facts, job_dir: Path) -> None:
-    star = job_dir / "postprocess.star"
-    if not star.exists():
-        return
-    blocks = _star(star)
-    general = blocks.get("general")
-    if isinstance(general, dict) and "rlnFinalResolution" in general:
-        bfac = general.get("rlnBfactorUsedForSharpening")
-        f.lines = [
-            f"{float(general['rlnFinalResolution']):.2f} Å (masked gold-standard FSC, 0.143)"
-            + (f" · B {float(bfac):g} Å²" if bfac is not None else "")
-        ]
-    f.lines.append("the FSC curves: the job's Results tab")
-    url = map_slices_url(job_dir / "postprocess.mrc")
-    if url:
-        f.pictures = [(url, "postprocess.mrc, three central slices")]
-        f.picture_caption = "the sharpened map"
-
-
-def _ctf_refine_facts(f: Facts, job_dir: Path) -> None:
-    """What moved, per tilt series: the defocus (mean of U and V) and the astigmatism, medians over the tilts, from
-    the driver's comparison of the refined tilt-series stars with those the job read."""
-    path = job_dir / "ctf_changes.json"
-    if not path.exists():
-        return
-    d = json.loads(path.read_text())
-    series = d.get("tilt_series") or []
-    if not series:
-        f.lines = ["no tilt series compared"]
-        return
-    worst = max(series, key=lambda s: abs(s["largest_move_um"]))
-    n_tilts = sum(len(s["tilts"]) for s in series)
-    moves = sorted(abs(t["mean_move_ang"]) / 1e4 for s in series for t in s["tilts"])
-    f.tiles = [
-        ("Moved", f"{moves[len(moves) // 2]:.2f} µm"),
-        ("Largest", f"{worst['largest_move_um']:+.2f} µm"),
-        ("Box", f"{d.get('box')} px"),
-    ]
-    f.lines = [
-        f"{len(series)} tilt series · {n_tilts} tilts · defocus moved median {moves[len(moves) // 2]:.3f} µm, largest "
-        f"{worst['largest_move_um']:+.3f} µm ({worst['name']}, {worst['largest_move_angle']:+.0f}°)"
-    ]
-    if d.get("flagged"):
-        f.lines.append(
-            f"{len(d['flagged'])} tilts failed the checks (defocus ≤ 0, a move over {d.get('limit_um')} µm or a "
-            "negative contrast scale)"
-        )
-    for s in series:
-        scale = s.get("scale_range")
-        f.lines.append(
-            f"{s['name']} · {len(s['tilts'])} tilts · defocus {s['mean_defocus_before_um']:.2f} → "
-            f"{s['mean_defocus_after_um']:.2f} · moved {s['median_move_um']:.2f} "
-            f"(largest {s['largest_move_um']:+.2f}) · "
-            f"astigmatism {s['astig_before_um']:.2f} → {s['astig_after_um']:.2f} µm"
-            + (f" · scale {scale[0]:.2f}–{scale[1]:.2f}" if scale else "")
-        )
-
-
-def _frame_align_facts(f: Facts, job_dir: Path) -> None:
-    """What moved, per tilt series, against the model it came with: the tilt shifts and angles RELION refined, the
-    particles' positions and motion, from the driver's `frame_align_changes.json`."""
-    path = job_dir / "frame_align_changes.json"
-    if not path.exists():
-        return
-    d = json.loads(path.read_text())
-    series = d.get("tilt_series") or []
-    refined = [s for s in series if not s.get("kept")]
-    if not refined:
-        f.lines = ["no tilt series refined"]
-        return
-    worst = max(refined, key=lambda s: s["shift_max_ang"])
-    motion = [s["motion_rms_ang"] for s in refined if s.get("motion_rms_ang") is not None]
-    f.tiles = [
-        ("Refined", f"{len(refined)} of {len(series)}"),
-        ("Largest shift", f"{worst['shift_max_ang']:.0f} Å"),
-        ("Box", f"{d.get('box')} px"),
-    ]
-    if motion:
-        f.tiles.insert(1, ("Motion", f"{max(motion):.1f} Å"))
-    kept = [s for s in series if s.get("kept")]
-    f.lines = [
-        f"{len(refined)} tilt series refined ({sum(s['particles'] for s in refined)} particles)"
-        + (
-            f", {len(kept)} kept as they came ({sum(s['particles'] for s in kept)} particles, under "
-            f"{d.get('min_particles')} each)"
-            if kept
-            else ""
-        ),
-        "the set's particles name no images: Subtomo Extraction cuts them with this model",
-    ]
-    for s in refined:
-        came = s.get("trajectories_in_rms_ang")
-        f.lines.append(
-            f"{s['name']} · {s['particles']} particles · tilt shifts {s['shift_rms_ang']:.1f} Å RMS "
-            f"(largest {s['shift_max_ang']:.1f}) · angles up to {s['angle_max_deg']:.2f}° · positions "
-            f"{s['position_rms_ang']:.1f} Å"
-            + (f" · motion {s['motion_rms_ang']:.1f} Å" if s.get("motion_rms_ang") is not None else "")
-            + (f" · came with {came:.1f} Å" if came is not None else "")
-        )
+def _card_plot(p) -> Plot:
+    """The reader's plot as the card's small one: a cut is in the values' units, a histogram's in bins."""
+    cut = next((v for v, words in p.refs if not words.startswith("median")), None)
+    if p.kind == "hist" and cut is not None and p.lo is not None and p.hi is not None:
+        cut = int((cut - p.lo) / ((p.hi - p.lo) or 1) * len(p.values))
+    return Plot(p.kind, list(p.values), p.caption or p.y_title, flags=set(p.flags), lo=p.lo, hi=p.hi, cut=cut)
 
 
 def ts_facts(kind: str, jm, job_dir: Path | None, reg: dict, iid: str, ts: str) -> TsFacts | None:
@@ -1016,9 +488,12 @@ class FactsStore:
         if key in self._loading:
             return
         self._loading.add(key)
+        missing: list = []
         try:
             reg = await asyncio.to_thread(self._registry_dict, series, stamp)
-            facts = await asyncio.to_thread(job_facts, j.kind, jm, j.job_dir, reg, j.id, ts_order)
+            res = await asyncio.to_thread(job_results, j.kind, jm, j.job_dir, reg, j.id)
+            facts = facts_of(res, j.kind, j.job_dir)
+            missing = [m for m in res.maps[:6] if m.url is None]
         except Exception:  # the card then shows the magazine and the tally only
             logger.exception("branch map: facts of %s", j.id)
             facts = Facts()
@@ -1026,6 +501,15 @@ class FactsStore:
             self._loading.discard(key)
         self._job[j.id] = (time.monotonic(), j.status, facts)
         self.version += 1
+        if missing:
+            # The maps' slices are rendered in a worker; once they land the card's facts are read again.
+            renders_ = [map_slices_render(m.volume, m.png, self.path) for m in missing]
+            for r in renders_:
+                await renders.ensure(r)
+            for r in renders_:
+                await renders.wait(r.key)
+            self._job.pop(j.id, None)
+            self.version += 1
 
     async def load_ts(self, j: Job, jm, ts_obj, ts: str) -> None:
         key = ("ts", j.id, ts)

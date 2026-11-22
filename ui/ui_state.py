@@ -18,6 +18,8 @@ class MonitorTab(str, Enum):
     CONFIG = "config"
     LOGS = "logs"
     FILES = "files"
+    # Every job page's Results, on top once the job has run (ui/job_plugins/results.py).
+    RESULTS = "results"
 
 
 class JobCardUIState(BaseModel):
