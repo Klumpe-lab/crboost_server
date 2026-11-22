@@ -28,6 +28,10 @@ class JobIn(ProjectIn):
     job: str = Field(description=_JOB)
 
 
+class StopAfterIterationIn(JobIn):
+    withdraw: bool = Field(False, description="Take back a stop asked before: the job runs on to its end")
+
+
 # ── Needs ─────────────────────────────────────────────────────────────────────
 
 

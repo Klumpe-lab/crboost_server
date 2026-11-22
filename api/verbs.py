@@ -293,6 +293,15 @@ _VERBS: tuple[Verb, ...] = (
         h.cancel_job,
         asks=True,
     ),
+    Verb(
+        "stop_after_iteration",
+        "Stop a running Refine 3D or Class 3D once the iteration it is on has landed (the job page's Stop dialog "
+        "offers the same); run again in place, it goes on from that iteration. `withdraw` takes it back.",
+        m.StopAfterIterationIn,
+        "write",
+        h.stop_after_iteration,
+        asks=True,
+    ),
     # ── Species and templates ──
     Verb(
         "import_species",

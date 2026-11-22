@@ -1088,6 +1088,11 @@ async def cancel_job(call: Call) -> dict[str, Any]:
     return _job_answer(call, await call.backend.cancel_job(call.path, call.args.job))
 
 
+async def stop_after_iteration(call: Call) -> dict[str, Any]:
+    a = call.args
+    return _job_answer(call, await call.backend.stop_after_iteration(call.path, a.job, withdraw=a.withdraw))
+
+
 # ── Species and templates ─────────────────────────────────────────────────────
 
 

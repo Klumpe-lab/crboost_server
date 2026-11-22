@@ -18,7 +18,7 @@ Families:
   subsets, post-ops; or a subset of picks by uid), edit_/delete_ subsets and groups (picks added or taken out by
   uid), make_kitchen_set (background: get_task), make_class_set, make_polarity_set; reads get_kitchen,
   list_kitchen_sources, plan_kitchen_set, get_polarity. Every cut, subset and class comes from the user.
-- running: plan_run, then run; stop, cancel_job, cancel_leftovers, predict_tilts
+- running: plan_run, then run; stop, cancel_job, stop_after_iteration, cancel_leftovers, predict_tilts
 - deleting: delete_job (to Trash), delete_species, delete_template, delete_mask; clear_trash and delete_project
   only as plan steps
 

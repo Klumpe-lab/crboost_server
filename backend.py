@@ -24,6 +24,7 @@ from services.computing.container_service import get_container_service
 from services.computing.processes import run_process
 from services.scheduling_and_orchestration.pipeline_runner import PipelineRunnerService
 from services.scheduling_and_orchestration.pipeline_monitor import PipelineMonitor
+from services.scheduling_and_orchestration import stop_after_iteration
 from services.array_tasks import eta_s as task_eta_s, manifest_items, progress as task_progress
 from services.log_progress import human_duration, read as read_log_progress
 from services.jobs.spec import PIPELINE_ORDER, display_name, driver_invocation
@@ -2428,6 +2429,40 @@ class CryoBoostBackend:
     async def cancel_job(self, project_path: Path | str, instance_id: str) -> dict[str, Any]:
         """Cancel one live job; the rest of the run goes on (`PipelineRunnerService.cancel_job`)."""
         return await self.pipeline_runner.cancel_job(Path(project_path), instance_id)
+
+    async def stop_after_iteration(
+        self, project_path: Path | str, instance_id: str, *, withdraw: bool = False
+    ) -> dict[str, Any]:
+        """Stop a running Refine 3D or Class 3D once the iteration it is on has landed, or take that back
+        (`services/scheduling_and_orchestration/stop_after_iteration.py`; the monitor does the stop)."""
+        project_path = Path(project_path)
+        state = self.state_service.state_for(project_path)
+        job_model = state.jobs.get(instance_id)
+        if job_model is None:
+            return err(f"No job {instance_id} in {project_path.name}.")
+        if state.read_only_reason:
+            return err(state.read_only_reason, code=ErrorCode.NOT_WRITABLE)
+        if job_model.job_type not in stop_after_iteration.STOPPABLE:
+            return err(
+                f"{instance_id} is a {job_model.job_type.value} job: only Refine 3D and Class 3D stop at an iteration."
+            )
+        job_dir = project_path / job_model.relion_job_name.rstrip("/")
+        if withdraw:
+            had = await asyncio.to_thread(stop_after_iteration.withdraw, job_dir)
+            return ok(message=f"{instance_id} runs on." if had else f"{instance_id} had no stop asked.")
+        if job_model.execution_status != JobStatus.RUNNING:
+            return err(
+                f"{instance_id} is {job_model.execution_status.value}, not running: a queued job is cancelled instead "
+                "(cancel_job), a finished one has nothing to stop."
+            )
+        marker = await asyncio.to_thread(stop_after_iteration.request, job_dir)
+        last = marker["after_iteration"]
+        events.info("%s · %s stops once an iteration after %d lands", project_path.name, instance_id, last)
+        return ok(
+            after_iteration=last,
+            message=f"{instance_id} stops once iteration {last + 1} has landed (it is at {last}); run again, it goes "
+            "on from there.",
+        )
 
     async def get_instance_logs(
         self, project_path: Path | str, instance_id: str, *, ts: str | None = None, lines: int = 200

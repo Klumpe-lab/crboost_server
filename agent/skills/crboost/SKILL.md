@@ -177,5 +177,6 @@ the sources; two producers of one input tie until one is pinned, which `plan_run
 ## Follow a run
 
 `get_project` (statuses and per-tilt-series counts), `get_job_tasks`, `get_job_logs`. `stop` cancels every
-live job and `cancel_job` one; both ask the user. After a refused run that names leftover SLURM work,
+live job and `cancel_job` one; both ask the user. `stop_after_iteration` ends a running Refine 3D or Class 3D
+once its current iteration has landed, so run again it goes on from there; it asks the user too. After a refused run that names leftover SLURM work,
 `cancel_leftovers` cancels exactly that work once the user agrees.

@@ -61,9 +61,10 @@ now → after, deletions with their sizes, what the run submits. Then:
   with `apply_changes`, which refuses until you have. A plan that deletes something for good (emptying a
   Trash, deleting a project, a species, a template or a mask) is approved only here.
 
-A write called on its own still prompts; `create_project`, `run`, `stop`, `cancel_job`, `cancel_leftovers`
-and the two tilt-prediction verbs ask on every call whatever the rules say. The deny rules keep Claude Code's
-own file tools off the project files and off the switch below; they do not stop a script run through Bash.
+A write called on its own still prompts; `create_project`, `run`, `stop`, `cancel_job`, `stop_after_iteration`,
+`cancel_leftovers` and the two tilt-prediction verbs ask on every call whatever the rules say. The deny rules keep
+Claude Code's own file tools off the project files and off the switch below; they do not stop a script run
+through Bash.
 
 ## Your own projects
 

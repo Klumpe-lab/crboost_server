@@ -38,11 +38,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from services.configs.user_prefs_service import get_prefs_service
+from services.event_log import events
+from services.models_base import JobStatus
 from services.project_resolve import known_project_bases
+from services.scheduling_and_orchestration import stop_after_iteration
 
 if TYPE_CHECKING:
     from backend import CryoBoostBackend
@@ -50,6 +54,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 TICK_INTERVAL_SEC = 3.0
+# How often the monitor looks for a landed iteration a stop waits for (disk: job folders' globs and stats).
+STOP_CHECK_SEC = 15.0
+
+
+def _due_stops(running: dict[str, Path]) -> dict[str, int]:
+    """Of these running jobs' folders, those whose asked stop is due, with the iteration it stops after."""
+    return {iid: it for iid, job_dir in running.items() if (it := stop_after_iteration.due(job_dir)) is not None}
 
 
 def _predict_in_flight(state) -> bool:
@@ -98,6 +109,7 @@ class PipelineMonitor:
         # Projects `adopt` is loading, and its load tasks (held, or the loop may drop them).
         self._adopting: set[Path] = set()
         self._adopt_tasks: set[asyncio.Task] = set()
+        self._stop_checked_at = 0.0
 
     async def start(self) -> None:
         await self._discover_and_recover()
@@ -233,3 +245,38 @@ class PipelineMonitor:
                 await self._backend.pipeline_runner.reconcile_afterok(str(project_path))
             except Exception:
                 logger.exception("Monitor: reconcile_afterok failed for %s", project_path)
+        await self._stop_after_iterations(targets)
+
+    async def _stop_after_iterations(self, targets: list) -> None:
+        """Cancel each running Refine 3D / Class 3D whose stop was asked once a later iteration has landed
+        (`stop_after_iteration`), and record where it stopped. Every STOP_CHECK_SEC, its disk reads in a thread."""
+        now = time.monotonic()
+        if now - self._stop_checked_at < STOP_CHECK_SEC:
+            return
+        self._stop_checked_at = now
+        for project_path, state in targets:
+            running = {
+                iid: project_path / jm.relion_job_name.rstrip("/")
+                for iid, jm in list(state.jobs.items())
+                if state.pipeline_active
+                and jm.job_type in stop_after_iteration.STOPPABLE
+                and jm.execution_status == JobStatus.RUNNING
+                and jm.relion_job_name
+            }
+            if not running:
+                continue
+            due = await asyncio.to_thread(_due_stops, running)
+            for iid, iteration in due.items():
+                res = await self._backend.pipeline_runner.cancel_job(project_path, iid)
+                if not res["success"]:
+                    logger.warning(
+                        "Stop after iteration: %s %s not cancelled: %s", project_path.name, iid, res["error"]
+                    )
+                    continue
+                await asyncio.to_thread(stop_after_iteration.settle, running[iid], iteration)
+                events.info(
+                    "%s · %s stopped after iteration %d, as asked; run again, it goes on from there",
+                    project_path.name,
+                    iid,
+                    iteration,
+                )

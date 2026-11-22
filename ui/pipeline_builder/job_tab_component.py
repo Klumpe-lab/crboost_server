@@ -17,6 +17,7 @@ from ui.components.path_text import path_text
 from ui.components.reactive import Debounced
 from ui.current_project import current_project_state
 from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
+from services.scheduling_and_orchestration import stop_after_iteration
 from ui.job_plugins import get_extra_tabs, get_full_panel_renderer
 from ui.job_plugins._field_styles import SECTION_STYLE, config_section, section_head
 from services.routes import View
@@ -446,6 +447,13 @@ async def _handle_stop_job(
 ):
     project_path = ui_mgr.project_path
     job_dir = (project_path / job_model.relion_job_name.rstrip("/")) if job_model.relion_job_name else None
+    # A relion_refine job may also stop once the iteration it is on has landed (roadmap 69 G3).
+    at_iteration = (
+        job_dir is not None
+        and job_type in stop_after_iteration.STOPPABLE
+        and job_model.execution_status == JobStatus.RUNNING
+    )
+    asked = await asyncio.to_thread(stop_after_iteration.pending, job_dir) if at_iteration else None
 
     with ui.dialog() as dialog, ui.card().style("min-width: 360px; padding: 16px;"):
         ui.label(f"Cancel {instance_display_name(instance_id, job_model)}?").classes(
@@ -457,11 +465,31 @@ async def _handle_stop_job(
             "The SLURM job will be cancelled and this job marked Failed; jobs that wait for it fail too, "
             "the rest keep running."
         ).classes("text-sm text-gray-600 mt-2")
+        if asked is not None:
+            ui.label(
+                f"Asked at {asked['asked_at'][11:16]}: it stops by itself once an iteration after "
+                f"{asked['after_iteration']} has landed."
+            ).classes("text-sm text-gray-600 mt-2")
+        elif at_iteration:
+            ui.label(
+                "Or let the iteration it is on land first: it stops then, and run again it goes on from there."
+            ).classes("text-sm text-gray-600 mt-2")
         with ui.row().classes("mt-4 gap-2 justify-end w-full"):
             house_button("Cancel", lambda: dialog.submit(False))
+            if asked is not None:
+                house_button("Run on", lambda: dialog.submit("withdraw"), tooltip="Take the stop back")
+            elif at_iteration:
+                house_button("After this iteration", lambda: dialog.submit("iteration"))
             house_button("Stop job", lambda: dialog.submit(True), kind="accent")
 
     confirmed = await dialog
+    if confirmed in ("iteration", "withdraw"):
+        result = await backend.stop_after_iteration(project_path, instance_id, withdraw=confirmed == "withdraw")
+        if result.get("success"):
+            ui.notify(result["message"], type="info", timeout=6000)
+        else:
+            ui.notify(result["error"], type="negative", timeout=8000)
+        return
     if not confirmed:
         return
 

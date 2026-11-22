@@ -196,6 +196,8 @@ def sentence(verb: str, a, state: ProjectState | None) -> str:
         return "Stop the run: cancel every queued and running job"
     if verb == "cancel_job":
         return f"Cancel {j(a.job)}"
+    if verb == "stop_after_iteration":
+        return f"Let {j(a.job)} run on to its end" if a.withdraw else f"Stop {j(a.job)} once its iteration has landed"
     if verb == "predict_tilts":
         return f"Run {j(a.job)}'s DL prediction"
     if verb == "cancel_predict_tilts":
