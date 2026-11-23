@@ -36,6 +36,8 @@ NOT_IMPORTED = ("agent/", "containers/", "docs/", "memory/", "scripts/", "tests/
 # Shell scripts that are part of the notes, not the product.
 NOT_SHELL_CHECKED = ("docs/", "memory/")
 STEP_TIMEOUT_S = 900
+# The tests that need no site (marked `repo`).
+REPO_TESTS = ("tests/test_repo.py", "tests/test_subparticles.py")
 
 
 @dataclass
@@ -169,9 +171,7 @@ def imports(ctx: Context) -> Outcome:
 
 
 def repo_tests(ctx: Context) -> Outcome:
-    return _run(
-        [sys.executable, "-m", "pytest", "-m", "repo", "-q", "-p", "no:cacheprovider", "tests/test_repo.py"], ctx.env
-    )
+    return _run([sys.executable, "-m", "pytest", "-m", "repo", "-q", "-p", "no:cacheprovider", *REPO_TESTS], ctx.env)
 
 
 def _pins(path: Path) -> list[str]:

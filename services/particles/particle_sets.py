@@ -66,6 +66,8 @@ class SetOp(StrEnum):
     UNION = "union"
     POOL = "pool"  # made in the STA kitchen from a pool's members, possibly across projects
     POLARITY = "polarity"  # a helical Refine 3D's segments, each filament turned to its majority's direction
+    # The copies of a unit each refined particle is built from (capsomers, a filament's monomers), cut anew
+    SUBPARTICLES = "subparticles"
 
 
 class ParentRef(BaseModel):

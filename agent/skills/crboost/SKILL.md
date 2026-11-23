@@ -150,6 +150,14 @@ of its picks; Make set turns what a recipe keeps into a particle set of the home
    segments' vote, and whether the vote means anything (`pieces`: about half agree when the map cannot tell a
    filament's ends apart). Show it; `make_polarity_set(project, job, name)` makes the set the next Refine 3D
    reads with the directions held, on the user's word.
+8. Sub-particles (capsomers of a capsid, the monomers of a filament): after a Refine 3D or an M refine,
+   `get_subparticles(project, job)` says whether its particles hold copies of a unit, the axes of its point group
+   a unit can sit on (or a helical refinement's own twist and rise) and the species a sub-unit can be. The
+   sub-unit is a species of its own (`create_species` when it is missing: its symmetry and Ø are what jobs on the
+   set start from). Where the unit sits (`axis` and `radius_ang`; for a filament `twist_deg`, `rise_ang`,
+   `radius_ang`, and `axial_repeat_ang` when the lattice has several starts) is the user's, read off their map:
+   never fill one in. `plan_subparticle_set` counts without writing; `make_subparticle_set(project, job, species,
+   name, …)` writes a coordinates set, which a Warp Export or a Reconstruct Particle cuts anew.
 
 Verdicts on single picks, the review sample, and the choice between two reconstructions or sources of one tilt
 series stay in the kitchen: `get_kitchen` says when such a choice stops Make set; give the user the `ui_url`.

@@ -184,6 +184,7 @@ def _check_rows(out: _Found, pset, particles: pd.DataFrame, diameter_a: float | 
     from services.particles.coords import CENTERED_COLS
     from services.particles.particle_sets import SetOp
     from services.particles.pick_uids import UID_COL, read_uid_column
+    from services.particles.subparticles import ASSEMBLY_COL
 
     col = read_uid_column(particles)
     if col is None:
@@ -201,6 +202,9 @@ def _check_rows(out: _Found, pset, particles: pd.DataFrame, diameter_a: float | 
     radius = diameter_a / 2.0
     xyz = particles[CENTERED_COLS].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=np.float64)
     names = particles["rlnTomoName"].astype(str).to_numpy()
+    if ASSEMBLY_COL in particles.columns:
+        _check_subparticle_rows(out, xyz, names, particles[ASSEMBLY_COL].astype(str).to_numpy(), radius)
+        return
     if TUBE_COL in particles.columns:
         _check_filament_rows(out, xyz, names, pd.to_numeric(particles[TUBE_COL], errors="coerce").to_numpy(), radius)
         return
@@ -218,6 +222,34 @@ def _check_rows(out: _Found, pset, particles: pd.DataFrame, diameter_a: float | 
         out.problems.append(
             f"{pairs:,} pairs of particles closer than Ø/2 ({radius:g} Å) on {len(where)} tomogram(s) "
             f"({_names(where)}): the same particle twice?"
+        )
+
+
+def _check_subparticle_rows(
+    out: _Found, xyz: np.ndarray, names: np.ndarray, assembly: np.ndarray, radius: float
+) -> None:
+    """Doubles among sub-particles (`services/particles/subparticles.py`). The copies of one capsid or filament sit
+    a site's spacing apart by design, however that compares with their Ø, and the doubles among them were removed
+    when the set was made. Copies of two assemblies closer than Ø/2 are one unit placed twice: a capsid picked
+    twice, a filament traced twice."""
+    from scipy.spatial import cKDTree
+
+    codes = pd.factorize(assembly)[0]
+    cross, where = 0, []
+    for tomo in np.unique(names):
+        sel = (names == tomo) & np.isfinite(xyz).all(axis=1)
+        p, a = xyz[sel], codes[sel]
+        if len(p) < 2:
+            continue
+        pairs = cKDTree(p).query_pairs(radius, output_type="ndarray")
+        k = int(np.count_nonzero(a[pairs[:, 0]] != a[pairs[:, 1]])) if len(pairs) else 0
+        if k:
+            cross += k
+            where.append(tomo)
+    if cross:
+        out.problems.append(
+            f"{cross:,} pairs of sub-particles of different particles or filaments closer than Ø/2 ({radius:g} Å) on "
+            f"{len(where)} tomogram(s) ({_names(where)}): one particle picked twice, or one filament traced twice?"
         )
 
 
@@ -450,3 +482,12 @@ def _check_halves(out: _Found, particles: pd.DataFrame) -> None:
         out.problems.append(f"{other:,} rows hold a {HALF_COL} that is not 1 or 2: relion_refine refuses the star")
     elif halves.nunique() < 2:
         out.problems.append(f"every row is in half {int(halves.iloc[0])}: relion_refine needs both halves")
+    from services.particles.subparticles import ASSEMBLY_COL
+
+    if ASSEMBLY_COL in particles.columns and not other:
+        split = int((halves.groupby(particles[ASSEMBLY_COL].astype(str)).nunique() > 1).sum())
+        if split:
+            out.problems.append(
+                f"{split:,} particles or filaments have sub-particles in both half-sets: the two half maps would "
+                "share them, and the FSC would measure each against itself"
+            )

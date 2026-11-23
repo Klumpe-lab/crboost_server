@@ -1786,6 +1786,80 @@ class CryoBoostBackend:
         state.bump_registry_rev()
         return ok(set=pset)
 
+    # ── Sub-particles (services/particles/subparticles.py, roadmap 71) ──
+
+    async def subparticle_readout(self, project_path: Path, instance_id: str) -> dict[str, Any]:
+        """What a Refine 3D's or an M refine's Sub-units block shows (set_ops.subparticle_readout), as
+        ok(readout=…)."""
+        project_path = Path(project_path)
+        state = self.state_service.state_for(project_path)
+        try:
+            readout = await asyncio.to_thread(set_ops.subparticle_readout, project_path, state, instance_id)
+        except ValueError as e:
+            return err(str(e))
+        except Exception as e:
+            logger.exception("Sub-units of %s failed", instance_id)
+            return err(f"{type(e).__name__}: {e}")
+        return ok(readout=readout)
+
+    async def subparticle_plan(
+        self, project_path: Path, *, instance_id: str, species_id: str, values: dict[str, Any]
+    ) -> dict[str, Any]:
+        """What a sub-particle set of these values would hold (set_ops.subparticle_plan), as ok(plan=…). Writes
+        nothing."""
+        project_path = Path(project_path)
+        state = self.state_service.state_for(project_path)
+        try:
+            plan = await asyncio.to_thread(
+                set_ops.subparticle_plan,
+                project_path,
+                state,
+                instance_id=instance_id,
+                species_id=species_id,
+                values=values,
+            )
+        except FileNotFoundError as e:
+            return err(str(e), code=ErrorCode.NOT_WRITTEN_YET)
+        except ValueError as e:
+            return err(str(e))
+        except Exception as e:
+            logger.exception("Sub-particle plan of %s failed", instance_id)
+            return err(f"{type(e).__name__}: {e}")
+        return ok(plan=plan)
+
+    async def create_subparticle_set(
+        self,
+        project_path: Path,
+        *,
+        instance_id: str,
+        species_id: str,
+        name: str,
+        values: dict[str, Any],
+        measured_on: str = "",
+    ) -> dict[str, Any]:
+        """A new coordinates set of the copies of one unit in a job's refined particles
+        (set_ops.create_subparticle_set)."""
+        project_path = Path(project_path)
+        state = self.state_service.state_for(project_path)
+        try:
+            pset = await asyncio.to_thread(
+                set_ops.create_subparticle_set,
+                project_path,
+                state,
+                instance_id=instance_id,
+                species_id=species_id,
+                name=name,
+                values=values,
+                measured_on=measured_on,
+            )
+        except (ValueError, FileNotFoundError, FileExistsError) as e:
+            return err(str(e))
+        except Exception as e:
+            logger.exception("Sub-particle set of %s failed", instance_id)
+            return err(f"{type(e).__name__}: {e}")
+        state.bump_registry_rev()
+        return ok(set=pset)
+
     # ── Controls (services/templating/control_templates.py, services/particles/set_ops.py) ──
 
     async def make_control_template(

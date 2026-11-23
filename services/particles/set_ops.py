@@ -22,7 +22,7 @@ import pandas as pd
 import starfile
 
 from services.models_base import JobType
-from services.particles import analytics, filament_polarity
+from services.particles import analytics, filament_polarity, sites, subparticles
 from services.particles.analytics import fit_pick_plane, min_distances, plane_depth, tomogram_extents
 from services.particles.analytics_store import job_dir_of
 from services.particles.coords import CENTERED_COLS
@@ -567,6 +567,334 @@ def create_polarity_set(
     return publish_set(project_path, pset, lambda out: table.write(rows, out))
 
 
+# ── Sub-particles ────────────────────────────────────────────────────────────────────────────────
+
+# The jobs whose particles carry refined poses: what a sub-particle set is made of.
+REFINED_JOB_TYPES = (JobType.REFINE3D, JobType.M_REFINE)
+
+
+@dataclass
+class RefinedParticles:
+    """A job's refined particles as a set's parent, with what its site follows from: the symmetry it refined with,
+    and whether its particles are segments of filaments (then the lattice it imposed, when it imposed one)."""
+
+    parent: ParentRef
+    job_type: JobType
+    symmetry: str
+    helix: bool
+    helical: dict[str, float] | None
+    species_id: str
+
+
+def refined_particles(state, project_path: Path, instance_id: str) -> RefinedParticles:
+    """The refined particles of a Refine 3D (its last data star) or an M refine. Raises FileNotFoundError when
+    the job has written none yet, ValueError for any other job."""
+    from services.models_base import resolve_species
+    from services.subtomo_merge import _parse_optimisation_set
+
+    jm = (state.jobs or {}).get(instance_id)
+    if jm is None:
+        raise ValueError(f"no job {instance_id}")
+    if jm.job_type not in REFINED_JOB_TYPES:
+        raise ValueError(
+            f"{instance_id} is a {jm.job_type.value} job: sub-particles are made of a Refine 3D or an M refine"
+        )
+    job_dir = job_dir_of(state, project_path, instance_id)
+    if job_dir is None:
+        raise FileNotFoundError(f"{instance_id} has not run yet")
+    _species, species_id = resolve_species(state, jm, instance_id)
+    helical = None
+    if jm.job_type == JobType.REFINE3D:
+        files = filament_polarity.refine3d_files(job_dir)
+        if not files["optset"].exists():
+            raise FileNotFoundError(
+                f"{files['optset'].name} is missing; it names the tomograms these particles live in"
+            )
+        _particles, tomograms = _parse_optimisation_set(files["optset"])
+        when = "converged" if files["iteration"] is None else f"iteration {files['iteration']}, not converged"
+        data, label, output = files["data"], f"Refine 3D {job_dir.name} ({when})", "refine3d_data"
+        helix = bool(getattr(jm, "helix", False))
+        if helix and jm.imposes_helical_symmetry:
+            helical = {"twist_deg": float(jm.helical_twist), "rise_ang": float(jm.helical_rise)}
+    else:
+        data, tomograms = job_dir / "particles.star", job_dir / "tomograms.star"
+        for f in (data, tomograms):
+            if not f.exists():
+                raise FileNotFoundError(f"{f.name} is missing from {job_dir.name}")
+        label, output, helix = f"M refine {job_dir.name}", "particles", False
+    symmetry = getattr(jm.symmetry, "value", jm.symmetry)
+    parent = ParentRef(
+        kind="job",
+        instance_id=instance_id,
+        output=output,
+        label=label,
+        particles_star=str(data),
+        tomograms_star=str(tomograms),
+        level=SetLevel.EXTRACTED,
+        species_id=species_id or "",
+        mtime=file_mtime(data),
+    )
+    return RefinedParticles(parent, jm.job_type, sites.group_name(str(symmetry)), helix, helical, species_id or "")
+
+
+def site_description(refined: RefinedParticles, values: dict[str, Any]) -> dict[str, Any]:
+    """The site a job's particles take, from the values a person gives. Its kind follows from the job: segments of
+    filaments take a helix, particles the point group they were refined with. Nothing is filled in: a value not
+    given is refused where the site is built. A whole description (a recipe's, with its kind) is taken as it is
+    when it still fits the job, so a set made again sits where it sat."""
+    v = dict(values or {})
+    kind = sites.HELIX if refined.helix else sites.POINT_GROUP
+    if not refined.helix and refined.symmetry in ("", "C1"):
+        raise ValueError(
+            f"{refined.parent.instance_id} refined without symmetry (C1): its particles hold no copies of a unit that "
+            "a point group could place"
+        )
+    if v.get("kind"):
+        if v["kind"] != kind:
+            raise ValueError(f"the site is a {v['kind']}, and {refined.parent.instance_id}'s particles take a {kind}")
+        if kind == sites.POINT_GROUP and sites.group_name(v.get("group", "")) != refined.symmetry:
+            raise ValueError(
+                f"the site is of {v.get('group')}, and {refined.parent.instance_id} refined with {refined.symmetry}"
+            )
+        return v
+    if refined.helix:
+        return {
+            "kind": sites.HELIX,
+            "twist_deg": v.get("twist_deg"),
+            "rise_ang": v.get("rise_ang"),
+            "radius_ang": v.get("radius_ang"),
+            "axial_repeat_ang": v.get("axial_repeat_ang"),
+            "every": v.get("every") or 1,
+            "azimuth_deg": v.get("azimuth_deg") or 0.0,
+            "axial_ang": v.get("axial_ang") or 0.0,
+        }
+    axis = str(v.get("axis") or "").strip()
+    named = axis not in ("", sites.DIRECTION)
+    if not named and v.get("direction") is None:
+        raise ValueError("where the unit sits is not given: an axis of the group, or a direction (three numbers)")
+    return {
+        "kind": sites.POINT_GROUP,
+        "group": refined.symmetry,
+        "axis": axis,
+        "direction": None if named else v.get("direction"),
+        "radius_ang": v.get("radius_ang"),
+    }
+
+
+def _sub_unit(state, species_id: str):
+    species = state.get_species(species_id) if species_id else None
+    if species is None:
+        raise ValueError(
+            f"no species {species_id!r}: a sub-unit is a species of its own (its symmetry and Ø are what its jobs "
+            "start from). Make it on the Species page first"
+        )
+    return species
+
+
+def _place_subparticles(state, project_path: Path, instance_id: str, species_id: str, values: dict[str, Any]):
+    refined = refined_particles(state, project_path, instance_id)
+    species = _sub_unit(state, species_id)
+    if species_id == refined.species_id:
+        raise ValueError(f"{species.name} is the species these particles are of: its sub-unit is another species")
+    description = site_description(refined, values)
+    table = read_table(refined.parent.particles_star)
+    margin = float(species.diameter_ang) / 2.0 if species.diameter_ang else 0.0
+    placement = subparticles.place(
+        table.df, description, extents=tomogram_extents(refined.parent.tomograms_star), margin_ang=margin
+    )
+    if not species.diameter_ang:
+        placement.notes.append(
+            f"{species.name} has no Ø: a copy is kept when its centre is inside its tomogram, however close to a face"
+        )
+    return refined, species, placement
+
+
+def _subparticle_funnel(refined: RefinedParticles, placement) -> list[FunnelStep]:
+    site = placement.site
+    per = "segment" if refined.helix else "particle"
+    steps = [
+        FunnelStep(label=refined.parent.label, kept=placement.n_parents, removed=0),
+        FunnelStep(label=f"{placement.per_parent} per {per}: {site.text()}", kept=placement.n_placed, removed=0),
+    ]
+    kept = placement.n_placed - placement.n_outside
+    inside = (
+        f"inside its tomogram by {placement.margin_ang:g} Å (Ø/2)" if placement.margin_ang else "inside its tomogram"
+    )
+    steps.append(FunnelStep(label=inside, kept=kept, removed=placement.n_outside))
+    if placement.doubles_radius_ang is not None:
+        steps.append(
+            FunnelStep(
+                label=f"one of each unit (the same from two segments, within {placement.doubles_radius_ang:.0f} Å)",
+                kept=kept - placement.n_doubles,
+                removed=placement.n_doubles,
+            )
+        )
+    return steps
+
+
+def subparticle_plan(
+    project_path: Path, state, *, instance_id: str, species_id: str, values: dict[str, Any]
+) -> dict[str, Any]:
+    """What `create_subparticle_set` would make, without writing: the site as it was understood, the counts and
+    the funnel."""
+    refined, species, placement = _place_subparticles(state, project_path, instance_id, species_id, values)
+    return {
+        "site": placement.site.description,
+        "site_text": placement.site.text(),
+        "own_symmetry": placement.site.own_symmetry,
+        "species_symmetry": species.symmetry,
+        "per_parent": placement.per_parent,
+        "parents": placement.n_parents,
+        "picks": len(placement.rows),
+        "spacing_ang": placement.site.spacing_ang,
+        "funnel": [f.model_dump() for f in _subparticle_funnel(refined, placement)],
+        "notes": list(placement.notes),
+    }
+
+
+def create_subparticle_set(
+    project_path: Path,
+    state,
+    *,
+    instance_id: str,
+    species_id: str,
+    name: str,
+    values: dict[str, Any],
+    measured_on: str = "",
+) -> ParticleSet:
+    """A new coordinates set: the copies of one unit in every refined particle of `instance_id` (a Refine 3D or an
+    M refine), each with its pose composed from its parent's, its parent's uid and its assembly's half-set
+    (`subparticles.place`). `species_id` is the sub-unit's own species, whose symmetry and Ø the jobs on the set
+    start from; `values` are the site's (`site_description`), `measured_on` the job whose map they were read
+    from. The whole site is kept in the recipe, so the set is made again exactly."""
+    refined, species, placement = _place_subparticles(state, project_path, instance_id, species_id, values)
+    rows = placement.rows
+    if rows.empty:
+        raise ValueError("no copy of the unit is inside its tomogram; nothing to make a set of")
+    site = placement.site
+    parent_species = state.get_species(refined.species_id) if refined.species_id else None
+    parent_name = parent_species.name if parent_species is not None else "parent"
+    job_dir = Path(refined.parent.particles_star).parent.name
+    per = f"{placement.per_parent} per {parent_name} {'segment' if refined.helix else 'particle'}"
+    notes = list(placement.notes)
+    own = site.own_symmetry
+    if own and sites.group_name(species.symmetry) != own:
+        notes.append(f"the unit's own symmetry where it sits is {own}; {species.name} has {species.symmetry}")
+    pset = ParticleSet(
+        id=allocate_id(project_path, name),
+        name=name,
+        species_id=species_id,
+        level=SetLevel.COORDINATES,
+        recipe=Recipe(
+            op=SetOp.SUBPARTICLES,
+            parents=[refined.parent],
+            params={
+                "site": site.description,
+                "measured_on": measured_on,
+                "parent_species": refined.species_id,
+                "description": f"{species.name} of {job_dir} · {per}",
+            },
+        ),
+        n_particles=len(rows),
+        n_tomograms=rows[analytics.TOMO_COL].nunique(),
+        per_tomo=per_tomo_counts(rows),
+        funnel=_subparticle_funnel(refined, placement),
+        details={
+            "site_text": site.text(),
+            "own_symmetry": own,
+            "per_parent": placement.per_parent,
+            "n_parents": placement.n_parents,
+            "n_outside": placement.n_outside,
+            "n_doubles": placement.n_doubles,
+            "n_close": placement.n_close,
+            "spacing_ang": site.spacing_ang,
+            "doubles_radius_ang": placement.doubles_radius_ang,
+            "half_window_ang": placement.half_window_ang,
+        },
+        notes=notes,
+        module=__name__,
+        tomograms_star=refined.parent.tomograms_star,
+    )
+    return publish_set(project_path, pset, lambda out: starfile.write({"particles": rows}, out, overwrite=True))
+
+
+def subparticle_readout(project_path: Path, state, instance_id: str) -> dict[str, Any]:
+    """What a job's Sub-units block and `get_subparticles` show, without reading a star: whether the job's
+    particles can have sub-units and of which kind, the axes or the lattice the site starts from, the species a
+    sub-unit can be, the jobs a site's values can have been measured on, the sets already made of this job and,
+    per sub-unit species, the values of the last set made from this parent species."""
+    from services.models_base import resolve_species
+
+    jm = (state.jobs or {}).get(instance_id)
+    if jm is None:
+        raise ValueError(f"no job {instance_id}")
+    if jm.job_type not in REFINED_JOB_TYPES:
+        raise ValueError(
+            f"{instance_id} is a {jm.job_type.value} job: sub-particles are made of a Refine 3D or an M refine"
+        )
+    _species, parent_species = resolve_species(state, jm, instance_id)
+    parent_species = parent_species or ""
+    helix = jm.job_type == JobType.REFINE3D and bool(getattr(jm, "helix", False))
+    symmetry = sites.group_name(str(getattr(jm.symmetry, "value", jm.symmetry)))
+    out: dict[str, Any] = {
+        "job": instance_id,
+        "parent_species": parent_species,
+        "kind": None,
+        "reason": "",
+        "group": symmetry,
+        "axes": [],
+        "helical": None,
+    }
+    if helix:
+        out["kind"] = sites.HELIX
+        if jm.imposes_helical_symmetry:
+            out["helical"] = {"twist_deg": float(jm.helical_twist), "rise_ang": float(jm.helical_rise)}
+    elif symmetry in ("", "C1"):
+        out["reason"] = "refined without symmetry (C1): no point group places a unit in its particles"
+    elif not sites.known_group(symmetry):
+        out["reason"] = f"the operators of {symmetry} have not been read from RELION ({sites.READ_SCRIPT})"
+    else:
+        out["kind"] = sites.POINT_GROUP
+        out["axes"] = [
+            {"axis": c.label, "per_particle": c.copies, "own_symmetry": f"C{c.order}", "direction": list(c.direction)}
+            for c in sites.axis_classes(symmetry)
+        ]
+    out["species"] = [
+        {"id": sp.id, "name": sp.name, "symmetry": sp.symmetry, "diameter_ang": sp.diameter_ang}
+        for sp in state.species_registry or []
+        if sp.id != parent_species
+    ]
+    out["measured_on"] = [
+        {"job": iid, "label": f"{'Refine 3D' if m.job_type == JobType.REFINE3D else 'M refine'} ({d.name})"}
+        for iid, m in jobs_for_species(state, parent_species)
+        if m.job_type in REFINED_JOB_TYPES and (d := job_dir_of(state, project_path, iid)) is not None
+    ]
+    made = [ps for ps in list_sets(project_path) if ps.recipe.op == SetOp.SUBPARTICLES]
+    out["sets"] = [
+        {
+            "set": ps.id,
+            "name": ps.name,
+            "species": ps.species_id,
+            "picks": ps.n_particles,
+            "site": ps.details.get("site_text", ""),
+        }
+        for ps in made
+        if ps.recipe.parents and ps.recipe.parents[0].instance_id == instance_id
+    ]
+    last: dict[str, Any] = {}
+    for ps in made:
+        params = ps.recipe.params
+        if params.get("parent_species") == parent_species and params.get("site", {}).get("kind") == out["kind"]:
+            last[ps.species_id] = {
+                "set": ps.id,
+                "name": ps.name,
+                "site": ps.recipe.params["site"],
+                "measured_on": ps.recipe.params.get("measured_on", ""),
+            }
+    out["last"] = last
+    return out
+
+
 # ── Random-position decoys ───────────────────────────────────────────────────────────────────────
 
 DECOYS_FILE = "decoys.star"
@@ -1071,6 +1399,19 @@ def replay_set(project_path: Path, state, pset: ParticleSet) -> list[ParticleSet
                 species_id=pset.species_id,
                 min_majority=float(r.params.get("min_majority", filament_polarity.MIN_MAJORITY)),
                 keep_undecided=bool(r.params.get("keep_undecided", False)),
+            )
+        ]
+    if r.op == SetOp.SUBPARTICLES:
+        site = dict(r.params.get("site") or {})
+        return [
+            create_subparticle_set(
+                project_path,
+                state,
+                instance_id=r.parents[0].instance_id,
+                species_id=pset.species_id,
+                name=name,
+                values=site,
+                measured_on=str(r.params.get("measured_on") or ""),
             )
         ]
     if r.op in (SetOp.DIFFERENCE, SetOp.INTERSECTION):

@@ -100,6 +100,16 @@ _VERBS: tuple[Verb, ...] = (
         h.get_polarity,
     ),
     Verb(
+        "get_subparticles",
+        "What a Refine 3D's or an M refine's Sub-units block shows: whether its particles hold copies of a unit "
+        "(a point group other than C1, or filament segments), the axes of its group a unit can sit on with the "
+        "copies each gives, a helical refinement's own twist and rise, the species a sub-unit can be, the sets "
+        "already made of it and the values of the last one per sub-unit. Changes nothing.",
+        m.JobIn,
+        "read",
+        h.get_subparticles,
+    ),
+    Verb(
         "list_job_types",
         "Every job type the roster adds: its phase, the types it usually reads from (or_requires: types that stand "
         "in for them), what is added with it, whether it takes a species, its inputs (when: the parameter under which "
@@ -178,6 +188,15 @@ _VERBS: tuple[Verb, ...] = (
         m.MakeKitchenSetIn,
         "read",
         h.plan_kitchen_set,
+    ),
+    Verb(
+        "plan_subparticle_set",
+        "What make_subparticle_set would write, writing nothing: the site as understood, the copies per particle, "
+        "the unit's own symmetry where it sits, the funnel (copies outside their tomogram, doubles from "
+        "neighbouring segments) and the count.",
+        m.SubparticleSiteIn,
+        "read",
+        h.plan_subparticle_set,
     ),
     Verb(
         "plan_run",
@@ -469,6 +488,18 @@ _VERBS: tuple[Verb, ...] = (
         m.MakePolaritySetIn,
         "write",
         h.make_polarity_set,
+    ),
+    Verb(
+        "make_subparticle_set",
+        "A coordinates set of the copies of one unit in every refined particle of a Refine 3D or an M refine "
+        "(capsomers of a capsid, the monomers of a filament), as its Results' Make sub-particle set does: each "
+        "copy's pose composed from its parent's, its parent's uid, its capsid's or filament's half-set. The "
+        "images are cut anew by a Warp Export or a Reconstruct Particle reading the set. Where the unit sits (the "
+        "axis and radius, or the helix) comes from the user, measured on their map: never fill one in. Read "
+        "get_subparticles and plan_subparticle_set first.",
+        m.MakeSubparticleSetIn,
+        "write",
+        h.make_subparticle_set,
     ),
     # ── Deletions ──
     Verb(
