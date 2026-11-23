@@ -2,7 +2,8 @@
 maps). Class 3D and Reconstruct particle: the job's readout (ui/analytics/results_section.py) without its maps.
 Refine 3D and PostProcess: what the resolution measures, the box and Nyquist, and the FSC curves
 (services/particles/fsc_readout.py, read in a thread); a helical Refine 3D also the filaments' polarity vote
-(ui/analytics/polarity_panel.py)."""
+(ui/analytics/polarity_panel.py). Refine 3D and M refine: the sub-particle sets made of their refined particles
+(ui/analytics/subunits_panel.py)."""
 
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ from services.result import ErrorCode
 from ui.analytics.common import ERROR_CLS, HINT_CLS
 from ui.analytics.polarity_panel import PolarityPanel
 from ui.analytics.results_section import ResultsSection
+from ui.analytics.subunits_panel import SubUnitsPanel
 from ui.components.plot import SERIES, fsc_plot, plot
 from ui.components.reactive import owned_timer
 from ui.job_plugins._field_styles import HELPER_STYLE, PANEL_TITLE_STYLE
@@ -120,14 +122,23 @@ def _fsc_body(res: dict) -> None:
 
 @results_part(JobType.REFINE3D)
 def render_refine3d_results(job_type, instance_id, job_model, backend, ui_mgr) -> None:
-    def polarity(res: dict) -> None:
-        if not res.get("helical") or not ui_mgr.project_path:
+    def after(res: dict) -> None:
+        if not ui_mgr.project_path:
             return
-        state = get_project_state_for(Path(ui_mgr.project_path))
-        _species, species_id = resolve_species(state, job_model, instance_id)
-        PolarityPanel(backend, Path(ui_mgr.project_path), instance_id, species_id or "").build()
+        if res.get("helical"):
+            state = get_project_state_for(Path(ui_mgr.project_path))
+            _species, species_id = resolve_species(state, job_model, instance_id)
+            PolarityPanel(backend, Path(ui_mgr.project_path), instance_id, species_id or "").build()
+        SubUnitsPanel(backend, Path(ui_mgr.project_path), instance_id).build()
 
-    _fsc_tab(instance_id, job_model, ui_mgr, refine3d_fsc, after=polarity)
+    _fsc_tab(instance_id, job_model, ui_mgr, refine3d_fsc, after=after)
+
+
+@results_part(JobType.M_REFINE)
+def render_m_refine_results(job_type, instance_id, job_model, backend, ui_mgr) -> None:
+    ensure_assets_loaded()
+    if ui_mgr.project_path and getattr(job_model, "relion_job_name", None):
+        SubUnitsPanel(backend, Path(ui_mgr.project_path), instance_id).build()
 
 
 @results_part(JobType.POSTPROCESS)
