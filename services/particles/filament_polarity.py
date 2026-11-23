@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 
 from services.particles.filament_picks import tangents_from_angles
+from services.particles.poses import euler_angles, euler_matrices
 
 TOMO_COL = "rlnTomoName"
 TUBE_COL = "rlnHelicalTubeID"
@@ -41,41 +42,6 @@ _PIECE_MARGIN = 0.1
 _PIECE_MIN_SEGMENTS = 5
 
 KEPT, REVERSED, UNDECIDED = "kept", "reversed", "undecided"
-
-
-# ── RELION's Euler angles ────────────────────────────────────────────────────────────────────────
-
-
-def euler_matrices(rot: np.ndarray, tilt: np.ndarray, psi: np.ndarray) -> np.ndarray:
-    """RELION's Euler_angles2matrix for each row (degrees): N × 3 × 3. Its third column is the reference's Z axis
-    in the tomogram (`tangents_from_angles`)."""
-    a, b, g = (np.radians(np.asarray(x, dtype=float)) for x in (rot, tilt, psi))
-    ca, sa, cb, sb, cg, sg = np.cos(a), np.sin(a), np.cos(b), np.sin(b), np.cos(g), np.sin(g)
-    cc, cs, sc, ss = cb * ca, cb * sa, sb * ca, sb * sa
-    m = np.empty((len(a), 3, 3))
-    m[:, 0, 0], m[:, 0, 1], m[:, 0, 2] = cg * cc - sg * sa, cg * cs + sg * ca, -cg * sb
-    m[:, 1, 0], m[:, 1, 1], m[:, 1, 2] = -sg * cc - cg * sa, -sg * cs + cg * ca, sg * sb
-    m[:, 2, 0], m[:, 2, 1], m[:, 2, 2] = sc, ss, cb
-    return m
-
-
-def euler_angles(m: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """RELION's Euler_matrix2angles for each N × 3 × 3 matrix: rot, tilt, psi in degrees."""
-    eps = np.finfo(np.float32).eps
-    abs_sb = np.hypot(m[:, 0, 2], m[:, 1, 2])
-    general = abs_sb > 16 * eps
-    psi = np.where(general, np.arctan2(m[:, 1, 2], -m[:, 0, 2]), 0.0)
-    rot = np.where(general, np.arctan2(m[:, 2, 1], m[:, 2, 0]), 0.0)
-    sin_g, cos_g = np.sin(psi), np.cos(psi)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        by_cos = np.sign(-m[:, 0, 2] / cos_g)
-    sign_sb = np.where(np.abs(sin_g) < eps, by_cos, np.where(sin_g > 0, np.sign(m[:, 1, 2]), -np.sign(m[:, 1, 2])))
-    tilt = np.where(general, np.arctan2(sign_sb * abs_sb, m[:, 2, 2]), 0.0)
-    # Along Z the matrix fixes only rot + psi: RELION puts it all in psi.
-    up = m[:, 2, 2] > 0
-    psi = np.where(general, psi, np.where(up, np.arctan2(-m[:, 1, 0], m[:, 0, 0]), np.arctan2(m[:, 1, 0], -m[:, 0, 0])))
-    tilt = np.where(general, tilt, np.where(up, 0.0, np.pi))
-    return np.degrees(rot), np.degrees(tilt), np.degrees(psi)
 
 
 def reverse_poses(rot: np.ndarray, tilt: np.ndarray, psi: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
