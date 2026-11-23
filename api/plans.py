@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from api.context import ApiContext, open_project
-from api.handlers import Call, _plain, _recipe
+from api.handlers import Call, _plain, _recipe, check_create
 from api.reach import write_refusal
 from services import job_params, pipeline_edit
 from services.agent_plan_view import dialog_form, overview, show
@@ -612,6 +612,11 @@ async def build(ctx: ApiContext, title: str, raw_steps: list[dict[str, Any]]) ->
             target = Path(a.base).expanduser() / a.name.strip()
             if await asyncio.to_thread(target.exists):
                 return err(f"Step {i}: {target} exists already: the API makes new projects only.", step=i)
+            if a.tomograms_from is None:
+                # The step's own checks (the scan, every value the data needs), so the plan asks what it would.
+                checked = await check_create(a)
+                if not checked["success"]:
+                    return {**checked, "error": f"Step {i} (create_project): {checked['error']}", "step": i}
             made[a.name.strip()] = made[str(target)] = target
             creates[str(target)] = a
             projects[str(target)] = ProjectPlan(path=str(target), name=target.name, new=True)

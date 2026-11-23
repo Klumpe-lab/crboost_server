@@ -1008,6 +1008,19 @@ async def create_project(call: Call) -> dict[str, Any]:
     a = call.args
     if a.tomograms_from is not None:
         return await _create_from_tomograms(call)
+    checked = await check_create(a)
+    if not checked["success"]:
+        return checked
+    return await _submit_create(
+        call, checked["spec"], overview=checked["overview"], protocol=checked["protocol"], warnings=checked["warnings"]
+    )
+
+
+async def check_create(a) -> dict[str, Any]:
+    """create_project's checks on raw data, making nothing: the scan, the series, the layer, every value the data
+    needs (an EER movie's grouping only once the scan says the movies are EER). `ok(spec, overview, protocol,
+    warnings)` for the server's own use, or the refusal with its needs. A plan's check runs it too
+    (`api/plans.py`), so a plan never passes a project its step would refuse."""
     protocol = None
     if a.protocol:
         from services.protocols.discovery import load_named_protocol
@@ -1105,7 +1118,7 @@ async def create_project(call: Call) -> dict[str, Any]:
     if protocol is not None and not spec.has_raw_data:
         return err("A protocol makes a project from raw data: give the data folder or the globs.")
     warnings = dataset_scan.differences(spec, values) if values else []
-    return await _submit_create(call, spec, overview=overview, protocol=protocol, warnings=warnings)
+    return ok(spec=spec, overview=overview, protocol=protocol, warnings=warnings)
 
 
 # ── Composition and setting ───────────────────────────────────────────────────
